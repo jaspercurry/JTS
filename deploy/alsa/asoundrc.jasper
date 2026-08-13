@@ -10,8 +10,7 @@
 # docs/HANDOFF-aec.md). Affects:
 #   - shairport-sync writing shairport_substream (44.1k → 48k)
 #   - bluealsa-aplay's plug operations
-#   - explicit AEC fallback/diagnostics reading pcm.jasper_ref
-#     (a `plug:` wrapper)
+#   - operator diagnostics reading pcm.jasper_ref (a `plug:` wrapper)
 # Medium preserves the speech/AEC band while saving CPU; Best keeps
 # the highest-frequency edge for critical listening. Toggle at
 # http://jts.local/system/.
@@ -41,8 +40,8 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #     them sample-wise, and writes the single "summed music" stream to
 #     substream 7.
 #   - CamillaDSP reads that summed stream via `pcm.jasper_capture`.
-#     `pcm.jasper_ref` remains as an explicit AEC fallback/diagnostic
-#     view; production AEC now consumes outputd's speaker monitor.
+#     `pcm.jasper_ref` remains as an operator-diagnostic view; AEC
+#     consumes outputd's speaker monitor and nothing else.
 #   - In the outputd topology, CamillaDSP writes post-DSP content to
 #     `outputd_content_playback`, and jasper-outputd is the only reader
 #     of `outputd_content_capture` and the only normal writer to
@@ -120,15 +119,15 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #     outputd config. plug keeps the consumer tolerant of
 #     operator mistakes, but the intended fan-in output shape is fixed
 #     at 48 kHz S16_LE.
-#   - Explicit AEC fallback/diagnostics can open `jasper_ref` (defined
-#     below) — a plug-wrapped alias of jasper_capture. That path gets
-#     samples at whatever rate it requests via alsaaudio, regardless of
-#     the loopback's actual locked rate.
+#   - Operator diagnostics can open `jasper_ref` (defined below) — a
+#     plug-wrapped alias of jasper_capture. That path gets samples at
+#     whatever rate it requests, regardless of the loopback's actual
+#     locked rate.
 #
 # Why two names: keeps `pcm.jasper_capture` semantically "the raw
 # dsnoop tap" so CamillaDSP and diagnostics see exactly what the kernel
-# produced, while `pcm.jasper_ref` advertises its fallback intent
-# ("pre-DSP AEC reference, rate-agnostic") at the call site.
+# produced, while `pcm.jasper_ref` advertises its own intent
+# ("pre-DSP view, rate-agnostic") at the call site.
 #
 # We never want camilla to read a raw `hw:Loopback,1,N` capture
 # directly — that would deny dsnoop the slave, and the bridge would
@@ -316,22 +315,23 @@ pcm.jasper_capture {
     }
 }
 
-# Plug-wrapped alias for explicit AEC fallback/diagnostic reference capture.
+# Plug-wrapped alias for pre-DSP diagnostic capture. Its only reader is
+# scripts/aec-probe-timing.py, whose --jasper-capture-pcm defaults here;
+# AEC consumes outputd's speaker monitor and never opens this.
 #
-# `plug` is defense in depth around the AEC bridge's requested shape.
+# `plug` is defense in depth around a reader's requested shape.
 # In the production fan-in topology, jasper_capture's dsnoop slave is
-# pinned to 48 kHz S16_LE stereo. If an operator deliberately runs the
-# AEC bridge in ALSA fallback mode, the bridge requests that same shape,
-# so this is normally an identity wrapper. If a future diagnostic or
-# stale topology hands the bridge a different shape, ALSA applies the
-# configured libsamplerate converter instead of feeding mismatched
+# pinned to 48 kHz S16_LE stereo, and a diagnostic normally requests that
+# same shape, so this is normally an identity wrapper. If a future
+# diagnostic or a stale topology asks for a different shape, ALSA applies
+# the configured libsamplerate converter instead of feeding mismatched
 # samples. CPU cost is sub-1% of a Pi 5 core at S16 stereo / speech
 # rates; latency cost is a few ms of buffer.
 #
-# Without this wrapper, the bridge would receive distorted or
-# silent samples when the loopback's locked rate ≠ 48 kHz —
-# the root cause of the AEC-broken-with-AirPlay regression
-# diagnosed on 2026-05-15.
+# Without this wrapper, a reader would receive distorted or silent
+# samples when the loopback's locked rate ≠ 48 kHz — the root cause of
+# the AEC-broken-with-AirPlay regression diagnosed on 2026-05-15, back
+# when the AEC bridge was one of these readers.
 pcm.jasper_ref {
     type plug
     slave.pcm "jasper_capture"

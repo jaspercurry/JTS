@@ -465,8 +465,9 @@ def check_fanin_asound_wiring() -> CheckResult:
         return CheckResult(
             label,
             "fail",
-            "pcm.jasper_capture missing — CamillaDSP and AEC bridge "
-            "have no shared reference tap.",
+            "pcm.jasper_capture missing — CamillaDSP has no capture "
+            "device on a loopback-coupled box, and jasper-aec-tune "
+            "loses its pre-DSP tap.",
         )
     if 'pcm "hw:Loopback,1,7"' not in capture:
         detail = (
@@ -494,15 +495,17 @@ def check_fanin_asound_wiring() -> CheckResult:
         return CheckResult(
             label,
             "fail",
-            "pcm.jasper_ref missing — AEC bridge opens jasper_ref, not "
+            "pcm.jasper_ref missing — the timing probe "
+            "(scripts/aec-probe-timing.py) opens jasper_ref, not "
             "jasper_capture directly.",
         )
     if 'slave.pcm "jasper_capture"' not in ref:
         return CheckResult(
             label,
             "fail",
-            "pcm.jasper_ref must plug-wrap pcm.jasper_capture so the AEC "
-            "bridge reads the summed fan-in reference.",
+            "pcm.jasper_ref must plug-wrap pcm.jasper_capture so a "
+            "diagnostic reader gets rate/format conversion off the "
+            "summed fan-in tap.",
         )
 
     stale_state = Path("/var/lib/jasper/audio_topology.env")

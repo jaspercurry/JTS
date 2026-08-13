@@ -658,7 +658,10 @@ down the chain** — converging music + TTS *after* CamillaDSP.
    including `sd_notify` Tier 1+2 hardening from
    [`jasper/watchdog.py`](../jasper/watchdog.py).
 5. Update [`jasper/cli/aec_bridge.py`](../jasper/cli/aec_bridge.py)
-   `REF_DEVICE` to point at the new dsnoop on sub2.
+   `REF_DEVICE` to point at the new dsnoop on sub2. (`REF_DEVICE` and the
+   whole ALSA reference path were removed in U4 / P7-1 — the bridge now
+   reads only outputd's UDP speaker monitor, so this step would have to be
+   re-derived if the option were ever revived.)
 6. Update [`audio-paths.md`](audio-paths.md) and
    [`HANDOFF-aec.md`](HANDOFF-aec.md) topology diagrams.
 

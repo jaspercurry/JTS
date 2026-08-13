@@ -1211,9 +1211,11 @@ def _aec_reference_failure_remediation(
             "Lessons learned for the original silent-ref failure mode."
         )
 
-    # Provenance is only returned for source=outputd_udp, so every branch
-    # below can name that source directly.
-    bridge_endpoint = provenance[1]
+    # Report the source the runtime actually published rather than a
+    # hard-coded literal: the caller can also hand us a trusted identity,
+    # and a remediation that names a source it did not read is the exact
+    # mis-attribution this function exists to avoid.
+    source, bridge_endpoint = provenance
     references = (
         outputd_status.get("reference_outputs")
         if isinstance(outputd_status, dict)
@@ -1221,7 +1223,7 @@ def _aec_reference_failure_remediation(
     )
     if not isinstance(references, dict):
         return (
-            "Bridge runtime provenance reports source=outputd_udp at "
+            f"Bridge runtime provenance reports source={source} at "
             f"{bridge_endpoint}, but outputd STATUS/reference_outputs is "
             "unavailable, so the publisher endpoint and health cannot be "
             "compared. Run `sudo systemctl start jasper-aec-reconcile`, "
@@ -1242,7 +1244,7 @@ def _aec_reference_failure_remediation(
         else "unknown"
     )
     observed = (
-        f"Bridge runtime provenance reports source=outputd_udp at "
+        f"Bridge runtime provenance reports source={source} at "
         f"{bridge_endpoint}; outputd STATUS reports "
         f"reference_outputs.udp_target={target_text!r}, "
         f"udp_active={active_text}, udp_error_count={error_text}. "

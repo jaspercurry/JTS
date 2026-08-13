@@ -19,6 +19,7 @@ import logging
 import re
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -157,9 +158,13 @@ def test_an_unknown_source_is_still_a_hard_failure(value):
 def test_main_resolves_the_reference_source_before_publishing_provenance():
     """Ordering is the point, not just that the call exists.
 
-    `jasper-doctor` trusts `mic_reference_identity.ref_source` out of the
-    bridge stats snapshot to name the failed hop, so the retired spelling
-    must never reach `_bridge_stats.reset`.
+    `_bridge_stats.reset` stores the value the snapshot publishes as
+    `reference_input.source` — the field the doctor's exact-v4 assessment
+    compares against the configured source. (`set_active_capture_plan`
+    later republishes the same `config.ref_source` as
+    `mic_reference_identity.ref_source`, the legacy provenance the doctor
+    falls back to.) `reset` is the earlier of the two, so pinning it ahead
+    of resolution keeps the retired spelling out of both.
     """
     tree = ast.parse(BRIDGE_SOURCE.read_text())
     main = next(
@@ -202,3 +207,75 @@ def test_the_reconciler_never_assigns_the_retired_ref_source():
         f"jasper-aec-reconcile assigns ref_source={sorted(set(assignments))}; "
         "outputd_udp is the bridge's only reference source"
     )
+
+
+# ---------------------------------------------------------------------------
+# 4. The surviving chip-AEC precondition.
+#
+# Retiring the ALSA source made `main()`'s chip-AEC block a single guard:
+# the `ref_source != outputd_udp` half became unreachable and was removed,
+# leaving `JASPER_OUTPUTD_CHIP_REF_PCM` as the ONE thing standing between
+# `JASPER_AEC_CHIP_AEC_ENABLED=1` and a bridge that forwards the chip beam
+# while nothing feeds the chip's USB-IN reference — i.e. chip AEC running
+# open-loop against the speaker. Nothing pinned it before.
+# ---------------------------------------------------------------------------
+
+
+def _arm_chip_aec(monkeypatch, tmp_path, *, chip_ref_pcm: str) -> None:
+    """Env + seams that get `main()` as far as the chip-AEC guard."""
+    monkeypatch.setenv("JASPER_AEC_CHIP_AEC_ENABLED", "1")
+    monkeypatch.setenv("JASPER_OUTPUTD_CHIP_REF_PCM", chip_ref_pcm)
+    # Never touch /run from a test.
+    monkeypatch.setenv(
+        "JASPER_AEC_BRIDGE_STATS_PATH", str(tmp_path / "aec_bridge_stats.json")
+    )
+    # A validated beam plan is checked BEFORE this guard and exits 1 with its
+    # own message; stub it so a missing plan cannot masquerade as this guard
+    # firing.
+    monkeypatch.setattr(
+        aec_bridge,
+        "_chip_beam_plan",
+        lambda: aec_bridge._mic_profile.SQUARE_FIXED_150_210_PLAN,
+    )
+
+
+def test_chip_aec_refuses_to_start_without_a_chip_reference_producer(
+    monkeypatch, tmp_path, caplog
+):
+    """`JASPER_AEC_CHIP_AEC_ENABLED=1` requires JASPER_OUTPUTD_CHIP_REF_PCM.
+
+    Without it, outputd never feeds the XVF's USB-IN reference, so the chip
+    cancels against nothing while the bridge forwards its beam as the live
+    mic — echo straight back into the session with no software AEC3 behind
+    it (chip-AEC mode bypasses the engine). Fail closed instead.
+    """
+    _arm_chip_aec(monkeypatch, tmp_path, chip_ref_pcm="")
+    sd_mod = MagicMock()
+    monkeypatch.setattr(aec_bridge, "sd", sd_mod)
+
+    with caplog.at_level(logging.ERROR, logger="jasper.aec_bridge"):
+        assert aec_bridge.main() == 1
+
+    assert "JASPER_OUTPUTD_CHIP_REF_PCM" in caplog.text
+    # Failed at THIS guard, not incidentally at a later one: the guard sits
+    # ahead of mic validation, so the mic was never even queried.
+    sd_mod.query_devices.assert_not_called()
+
+
+def test_the_chip_reference_guard_lets_a_configured_producer_through(
+    monkeypatch, tmp_path
+):
+    """Positive control for the test above.
+
+    Without this, deleting the guard's `return 1` would still leave the
+    negative test green for the wrong reason — `main()` exits 1 on the
+    missing mic a few lines later either way. Here the guard is satisfied,
+    so reaching mic validation proves it passed rather than short-circuited.
+    """
+    _arm_chip_aec(monkeypatch, tmp_path, chip_ref_pcm="hw:Array,0")
+    sd_mod = MagicMock()
+    sd_mod.query_devices.side_effect = ValueError("no such device")
+    monkeypatch.setattr(aec_bridge, "sd", sd_mod)
+
+    assert aec_bridge.main() == 1
+    sd_mod.query_devices.assert_called_once()

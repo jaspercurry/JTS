@@ -268,11 +268,11 @@ REF_SOURCE = "outputd_udp"
 # Retired reference source (U4 / P7-1). The bridge used to be able to
 # read the summed snd-aloop tap (`pcm.jasper_ref`) directly; that path is
 # gone and the tap itself is deleted later in the same arc. A box whose
-# /var/lib/jasper/aec_mode.env still carries the retired value — written
-# by a pre-P7-1 reconciler while the bridge was parked — converges on the
-# next `jasper-aec-reconcile` run, so the bridge warns and uses
-# REF_SOURCE rather than refusing to start: a hard failure here would
-# leave jasper-voice with an unfed UDP mic and no wake detection.
+# /etc/jasper/jasper.env still carries the retired value — written there by
+# a pre-P7-1 reconciler while the bridge was parked — converges on the next
+# `jasper-aec-reconcile` run, so the bridge warns and uses REF_SOURCE
+# rather than refusing to start: a hard failure here would leave
+# jasper-voice with an unfed UDP mic and no wake detection.
 RETIRED_REF_SOURCE_ALSA = "alsa"
 OUT_PORT_AEC3_SWEEP = {
     variant.leg: variant.default_port
@@ -1474,7 +1474,7 @@ def _resolved_reference_source(config: BridgeConfig) -> BridgeConfig:
             detail=(
                 "the ALSA reference fallback is gone; run "
                 "`sudo systemctl start jasper-aec-reconcile` to converge "
-                "/var/lib/jasper/aec_mode.env"
+                "/etc/jasper/jasper.env"
             ),
         )
         return replace(config, ref_source=REF_SOURCE)
