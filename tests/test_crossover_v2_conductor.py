@@ -484,18 +484,30 @@ def test_unexpected_store_failure_cannot_double_bank_on_a_retry(caplog):
         tuning_attempt_id="candidate-a",
         speaker_id="speaker-a",
     )
-    # WARNING, not ERROR, so the named-family event WOULD be captured if it
-    # fired — otherwise the "not filed under the other arm" assertion is
-    # vacuous.
+    # The raise is TOLERATED rather than allowed to end the test, because the
+    # original bug is a COUNT: a test that dies on the first propagating run
+    # never reaches the second write and so never observes the double-bank it
+    # claims to pin. Pre-fix this loop collects two calls and two propagated
+    # exceptions; post-fix, one call and none.
+    #
+    # caplog at WARNING, not ERROR, so the named-family event WOULD be captured
+    # if it fired — otherwise "not filed under the other arm" is vacuous.
+    verdicts: list[dict] = []
+    propagated: list[str] = []
     with caplog.at_level(logging.WARNING):
-        first = _run_phase(c, 1, 1)
-        retried = _run_phase(c, 1, 2)
+        for run in (1, 2):
+            try:
+                verdicts.append(_run_phase(c, 1, run))
+            except MemoryError:
+                propagated.append("MemoryError")
 
-    assert first["accepted"] is True
-    assert retried["accepted"] is True
-    assert len(calls) == 1
+    # The property, asserted first so a regression reddens on the count itself.
+    assert len(calls) == 1  # was 2
+    assert propagated == []  # was ["MemoryError", "MemoryError"]
+    # The mechanism that produces it.
     assert [item.attempt_id for item in c.attempt_history] == ["candidate-a"]
     # The forensics failure did not reverse the VERIFY the gate accepted.
+    assert [verdict["accepted"] for verdict in verdicts] == [True, True]
     assert c.current_phase == PHASE_DONE
     assert (
         "event=correction.crossover_v2_model_error_write_unexpected"
