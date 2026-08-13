@@ -375,10 +375,12 @@ def _source_payload(
         else {}
     )
     # The baseline config cache invalidates whenever this source fingerprint
-    # changes, so the topology fingerprint must cover ONLY fields that determine
-    # the emitted CamillaDSP config. `pairing_intent` is commission-time design
-    # intent that, by contract, drives no config (the multiroom reconciler
-    # resolves the runtime role from grouping.env, not from this field — see
+    # changes, so the topology fingerprint must cover ONLY topology fields that
+    # determine the emitted CamillaDSP config (a one-directional constraint --
+    # nothing spurious in; see this function's docstring for what is left out
+    # altogether). `pairing_intent` is commission-time design intent that, by
+    # contract, drives no config (the multiroom reconciler resolves the runtime
+    # role from grouping.env, not from this field — see
     # output_topology.py and docs/HANDOFF-distributed-active.md gap 1), so it is
     # excluded: toggling it must not force a needless baseline recompile, and
     # excluding it keeps the fingerprint stable across the field's introduction.
