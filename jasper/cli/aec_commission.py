@@ -26,7 +26,7 @@ import numpy as np
 
 from jasper.atomic_io import atomic_write_json
 from jasper.audio_hardware import dac as dac_registry
-from jasper.audio_measurement.correction_lane import CORRECTION_SUBSTREAM
+from jasper.audio_measurement.correction_lane import correction_play_argv
 from jasper.chip_aec_alignment import (
     ARTIFACT_PATH,
     AlignmentArtifact,
@@ -447,7 +447,7 @@ class SystemIO:
         )
         try:
             time.sleep(0.25)
-            _run(("aplay", "-q", "-D", CORRECTION_SUBSTREAM, str(stimulus)), timeout=5)
+            _run(correction_play_argv(stimulus, quiet_before_device=True), timeout=5)
             if recorder.wait(timeout=5):
                 raise CommissioningError("XVF capture failed")
         finally:
@@ -490,7 +490,7 @@ class SystemIO:
             target.setparams(params)
             for _ in range(ADAPTATION_REPEATS):
                 target.writeframesraw(frames)
-        _run(("aplay", "-q", "-D", CORRECTION_SUBSTREAM, str(repeated)), timeout=120)
+        _run(correction_play_argv(repeated, quiet_before_device=True), timeout=120)
 
     def product(
         self, dev, hardware: Hardware, delay: int, stimulus: Path,

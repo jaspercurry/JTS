@@ -20,9 +20,7 @@ import threading
 from http import HTTPStatus
 from typing import Any, Callable
 
-from jasper.audio_measurement.correction_lane import (
-    CORRECTION_SUBSTREAM as PLAYBACK_DEVICE,
-)
+from jasper.audio_measurement.correction_lane import exec_correction_play
 from jasper.log_event import log_event
 
 from .pair_flow import members_by_channel, resolve_pair
@@ -165,8 +163,8 @@ def _marker_wav_path() -> str:
 
 
 async def _start_playback(wav_path: str):
-    return await asyncio.create_subprocess_exec(
-        "aplay", "-D", PLAYBACK_DEVICE, "-q", str(wav_path),
+    return await exec_correction_play(
+        wav_path,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
     )

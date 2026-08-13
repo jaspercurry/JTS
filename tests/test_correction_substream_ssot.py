@@ -62,7 +62,7 @@ import pytest
 from jasper.active_speaker import program_playback, web_commissioning
 from jasper.audio_measurement.correction_lane import CORRECTION_SUBSTREAM
 from jasper.correction import playback
-from jasper.web import balance_flow, sound_setup, sync_flow
+from jasper.web import sound_setup
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 JASPER_ROOT = REPO_ROOT / "jasper"
@@ -115,7 +115,7 @@ def test_owning_module_value_is_the_expected_lane_name() -> None:
 
 
 def test_known_consuming_sites_resolve_to_the_ssot() -> None:
-    """The sites that used to hold their own named copy still agree.
+    """The sites that still hold a named copy of the device agree with it.
 
     Each of these imports ``CORRECTION_SUBSTREAM`` under its own historical
     local name (``as``-import or same-file alias) rather than re-declaring
@@ -123,15 +123,19 @@ def test_known_consuming_sites_resolve_to_the_ssot() -> None:
     DEFAULT_ALSA_DEVICE`` is the one deliberate exception: it is a named
     back-compat re-export (for ``jasper.active_speaker.commissioning_host``),
     not a historical local alias, but it must resolve to the same value too.
+
+    Three historical aliases are gone rather than listed here: P6c-0
+    dissolved ``sound_setup.VOLUME_FLOOR_TONE_ALSA_DEVICE``,
+    ``sync_flow.PLAYBACK_DEVICE``, and ``balance_flow.PLAYBACK_DEVICE`` —
+    those modules no longer name the device at all; their spawns route
+    through the play helpers in the owning module (whose device use is
+    pinned by ``tests/test_correction_lane_play.py``'s goldens).
     """
     assert playback.CORRECTION_SUBSTREAM == CORRECTION_SUBSTREAM
     assert playback.DEFAULT_ALSA_DEVICE == CORRECTION_SUBSTREAM
     assert program_playback.CORRECTION_SUBSTREAM == CORRECTION_SUBSTREAM
     assert web_commissioning.COMMISSION_TONE_ALSA_DEVICE == CORRECTION_SUBSTREAM
-    assert sound_setup.VOLUME_FLOOR_TONE_ALSA_DEVICE == CORRECTION_SUBSTREAM
     assert sound_setup.COMMISSION_TONE_ALSA_DEVICE == CORRECTION_SUBSTREAM
-    assert sync_flow.PLAYBACK_DEVICE == CORRECTION_SUBSTREAM
-    assert balance_flow.PLAYBACK_DEVICE == CORRECTION_SUBSTREAM
 
 
 def test_guard_detects_a_reintroduced_literal(tmp_path) -> None:

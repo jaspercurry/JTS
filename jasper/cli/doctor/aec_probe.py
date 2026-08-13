@@ -23,7 +23,7 @@ import wave
 from contextlib import contextmanager
 from typing import Iterator
 
-from ...audio_measurement.correction_lane import CORRECTION_SUBSTREAM
+from ...audio_measurement.correction_lane import correction_play_argv
 from ...control import client as control
 from ...correction.coordinator import MeasurementWindowError, measurement_window
 from ._shared import CheckResult, _loopback_playback_active, _run
@@ -278,7 +278,7 @@ def _play_and_assess_probe() -> list[CheckResult]:
     probe_start = datetime.datetime.now(datetime.timezone.utc)
     since = probe_start.strftime("%Y-%m-%d %H:%M:%S UTC")
     play = _run(
-        ["aplay", "-q", "-D", CORRECTION_SUBSTREAM, _PROBE_SINE_PATH],
+        correction_play_argv(_PROBE_SINE_PATH, quiet_before_device=True),
         timeout=_PROBE_SINE_DURATION_S + 5.0,
     )
     try:
