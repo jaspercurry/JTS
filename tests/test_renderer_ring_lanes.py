@@ -25,6 +25,7 @@ import argparse
 import pathlib
 import re
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -278,6 +279,12 @@ def _unit_text(lane) -> str:
     whole point, since P6a's "every ring-writing renderer unit" test read only
     librespot's.
     """
+    assert lane.unit is not None, (
+        f"lane {lane.label!r} is unitless (ephemeral writers) — there is no "
+        "unit text to pin; route through the per-identity branches instead "
+        "(see the '_lane_*_fact' dispatchers and P6c-i's unitless-writer "
+        "section below)"
+    )
     direct = REPO / "deploy" / "systemd" / lane.unit
     if direct.exists():
         return direct.read_text()
@@ -295,18 +302,163 @@ def _unit_text(lane) -> str:
     return "\n".join(texts)
 
 
+# --- Per-lane writer facts, dispatched on unit-ful vs unitless -------------
+#
+# P6c-ii will add the `correction` lane, whose writers are EPHEMERAL aplay
+# spawns from four process identities (jasper-web wizards, the root
+# jasper-correction-web, the root streambox variant, root operator CLIs) —
+# no renderer unit exists to read. The dispatchers below give every
+# unit-reading pin an explicit unitless branch NOW (P6c-i), keyed to
+# `lane.unit is None`, so the row's arrival routes each pin to either the
+# per-identity alternative facts (umask, group — assertable today) or an
+# instructive failure naming the contract P6c-ii still has to define
+# (device/map coupling, writer liveness). NEVER a bare skip: a unitless row
+# must land on an assertion or a named gap, not silence.
+
+WEB_UNIT = REPO / "deploy" / "jasper-web.service"
+CORRECTION_WEB_UNIT = REPO / "deploy" / "jasper-correction-web.service"
+STREAMBOX_WEB_UNIT = REPO / "deploy" / "jasper-web-streambox.service"
+
+
+def _unitless_contract_gap(lane, what: str):
+    pytest.fail(
+        f"lane {lane.label!r} is unitless and {what} has no defined "
+        "alternative yet — P6c-ii must decide how ephemeral spawns learn "
+        "this fact (or that it is structurally n/a) and extend this branch "
+        "with the decided pin. See tests/test_renderer_ring_lanes.py's "
+        "'Per-lane writer facts' section (P6c-i)."
+    )
+
+
+def _assert_unitless_writer_umask_facts():
+    """The unitless UMask alternative: the spawn helper owns the ring-file
+    mode for every ephemeral writer identity.
+
+    Unit-based writers need `UMask=0007` because the unit is the only thing
+    wrapping the renderer process. An ephemeral writer's spawn point IS a
+    process wrapper — jasper.audio_measurement.correction_lane passes
+    CORRECTION_PLAY_UMASK on every spawn (pinned per-wrapper by
+    tests/test_correction_lane_play.py's goldens; proven to reach the child
+    by its mechanism tests). So:
+
+    * The constant equals the unit-writers' 0007 — one mode rule, two
+      delivery mechanisms.
+    * jasper-web needs NO UMask= line for the lane (its spawns carry the
+      umask), so none is demanded here — and none of its OTHER duties want
+      one.
+    * jasper-correction-web KEEPS its deliberately tight `UMask=0077` (its
+      own correction profiles/bundles stay owner-only) while running as
+      root (no `User=`): the per-spawn umask overrides in the CHILD only,
+      which is the whole reason the umask rides the spawn rather than the
+      units.
+    """
+    from jasper.audio_measurement.correction_lane import CORRECTION_PLAY_UMASK
+
+    assert CORRECTION_PLAY_UMASK == 0o007
+    correction_web = CORRECTION_WEB_UNIT.read_text()
+    assert re.search(r"^UMask=0077$", correction_web, re.M), (
+        "jasper-correction-web's tight unit UMask=0077 is part of the "
+        "unitless-lane design (per-spawn umask overrides it in the child); "
+        "if the unit changed, re-derive the correction-lane umask story"
+    )
+    assert not re.search(r"^User=", correction_web, re.M), (
+        "jasper-correction-web was root when the unitless-writer facts were "
+        "pinned; a User= drop changes its ring-group story — extend "
+        "_assert_unitless_writer_group_facts for it"
+    )
+
+
+def _assert_unitless_writer_group_facts():
+    """The unitless group alternative, per writer identity.
+
+    Same rule as `test_non_root_ring_writers_join_the_ring_group` (root
+    writes the 2775 root-owned directory regardless — the P6b root
+    exemption; group membership is only required of non-root writers):
+
+    * jasper-web (non-root) — the one non-root ephemeral identity; its unit
+      must carry jts-ring so wizard-spawned aplay children can create the
+      lane's ring.
+    * jasper-correction-web and the streambox variant — root (no `User=`),
+      exempt.
+    * Root operator CLIs (aec_tune / aec_commission / doctor aec_probe) —
+      root by the doctor/CLI contract and unit-less by nature, exempt the
+      same way.
+    """
+    web = WEB_UNIT.read_text()
+    assert re.search(
+        rf"^SupplementaryGroups=.*\b{re.escape(rl.RING_GROUP)}\b", web, re.M
+    ), (
+        "jasper-web runs non-root and its wizard-spawned aplay children "
+        f"must be able to create the correction lane's ring: {rl.RING_GROUP} "
+        "membership is required (U3/P6c-i)"
+    )
+    for root_unit in (CORRECTION_WEB_UNIT, STREAMBOX_WEB_UNIT):
+        text = root_unit.read_text()
+        assert not re.search(r"^User=", text, re.M), (
+            f"{root_unit.name} was root (P6b root exemption — no jts-ring "
+            "needed) when the unitless-writer facts were pinned; a User= "
+            "drop must add group membership and extend this pin"
+        )
+
+
+def _lane_device_fact(lane):
+    if lane.unit is None:
+        _unitless_contract_gap(lane, "the device indirection (device_key)")
+    unit = _unit_text(lane).replace("\\\n", " ")
+    # librespot spells it --device, bluealsa-aplay --pcm; what matters is
+    # that the value is the indirection, not which flag carries it.
+    assert f"${{{lane.device_key}}}" in unit, (
+        f"{lane.renderer} must read its device from {lane.device_key}"
+    )
+    assert f'Environment="{lane.device_key}={lane.aloop_device}"' in unit, (
+        f"{lane.renderer}'s in-unit DEFAULT must be the shipped snd-aloop "
+        "device, so a box with no lane map behaves byte-identically"
+    )
+
+
+def _lane_map_order_fact(lane):
+    if lane.unit is None:
+        _unitless_contract_gap(lane, "the lane-map load ordering")
+    unit = _unit_text(lane)
+    assert f"EnvironmentFile=-{rl.RENDERER_LANES_ENV}" in unit, lane.unit
+    default_at = unit.index(f'Environment="{lane.device_key}=')
+    envfile_at = unit.index(f"EnvironmentFile=-{rl.RENDERER_LANES_ENV}")
+    assert envfile_at > default_at, (
+        f"{lane.unit}: the lane map must load AFTER the Environment= "
+        "default, or an arm cannot take effect"
+    )
+
+
+def _lane_umask_fact(lane):
+    if lane.unit is None:
+        _assert_unitless_writer_umask_facts()
+        return
+    unit = _unit_text(lane)
+    assert re.search(r"^UMask=0007$", unit, re.M), (
+        f"{lane.unit} writes a ring and must set UMask=0007"
+    )
+
+
+def _lane_group_fact(lane):
+    if lane.unit is None:
+        _assert_unitless_writer_group_facts()
+        return
+    unit = _unit_text(lane)
+    user = re.search(r"^User=(\S+)", unit, re.M)
+    in_group = bool(
+        re.search(r"^SupplementaryGroups=.*\bjts-ring\b", unit, re.M)
+    )
+    if user is None or user.group(1) == "root":
+        return  # root: capable without the group
+    assert in_group, (
+        f"{lane.unit} runs as {user.group(1)!r} (non-root) and must be in "
+        f"{rl.RING_GROUP!r} to create its ring"
+    )
+
+
 def test_every_renderer_unit_reads_its_device_from_the_lane_map():
     for lane in rl.RENDERER_LANES:
-        unit = _unit_text(lane).replace("\\\n", " ")
-        # librespot spells it --device, bluealsa-aplay --pcm; what matters is
-        # that the value is the indirection, not which flag carries it.
-        assert f"${{{lane.device_key}}}" in unit, (
-            f"{lane.renderer} must read its device from {lane.device_key}"
-        )
-        assert f'Environment="{lane.device_key}={lane.aloop_device}"' in unit, (
-            f"{lane.renderer}'s in-unit DEFAULT must be the shipped snd-aloop "
-            "device, so a box with no lane map behaves byte-identically"
-        )
+        _lane_device_fact(lane)
 
 
 def test_both_ends_load_the_same_lane_map_file_last():
@@ -320,14 +472,7 @@ def test_both_ends_load_the_same_lane_map_file_last():
     """
     assert f"EnvironmentFile=-{rl.RENDERER_LANES_ENV}" in FANIN_UNIT.read_text()
     for lane in rl.RENDERER_LANES:
-        unit = _unit_text(lane)
-        assert f"EnvironmentFile=-{rl.RENDERER_LANES_ENV}" in unit, lane.unit
-        default_at = unit.index(f'Environment="{lane.device_key}=')
-        envfile_at = unit.index(f"EnvironmentFile=-{rl.RENDERER_LANES_ENV}")
-        assert envfile_at > default_at, (
-            f"{lane.unit}: the lane map must load AFTER the Environment= "
-            "default, or an arm cannot take effect"
-        )
+        _lane_map_order_fact(lane)
 
 
 def test_every_ring_writing_renderer_unit_sets_the_umask():
@@ -338,12 +483,11 @@ def test_every_ring_writing_renderer_unit_sets_the_umask():
     systemd's default 0022 it lands 0640 — group-readable, NOT group-writable.
     That bites a non-root reader even when the WRITER is root, which is why this
     is required of the root renderers too and not only the group-based ones.
+    (A unitless lane satisfies the same rule through the spawn helper — see
+    `_assert_unitless_writer_umask_facts`.)
     """
     for lane in rl.RENDERER_LANES:
-        unit = _unit_text(lane)
-        assert re.search(r"^UMask=0007$", unit, re.M), (
-            f"{lane.unit} writes a ring and must set UMask=0007"
-        )
+        _lane_umask_fact(lane)
 
 
 def test_non_root_ring_writers_join_the_ring_group():
@@ -353,20 +497,11 @@ def test_non_root_ring_writers_join_the_ring_group():
     `SupplementaryGroups=jts-ring` of a root renderer would be cargo-culted
     ceremony. This asserts the real rule: a unit that declares a non-root
     `User=` must join the group; one that declares none (systemd's root) need
-    not, and must not be failed for it.
+    not, and must not be failed for it. (A unitless lane applies the same
+    rule per writer identity — see `_assert_unitless_writer_group_facts`.)
     """
     for lane in rl.RENDERER_LANES:
-        unit = _unit_text(lane)
-        user = re.search(r"^User=(\S+)", unit, re.M)
-        in_group = bool(
-            re.search(r"^SupplementaryGroups=.*\bjts-ring\b", unit, re.M)
-        )
-        if user is None or user.group(1) == "root":
-            continue  # root: capable without the group
-        assert in_group, (
-            f"{lane.unit} runs as {user.group(1)!r} (non-root) and must be in "
-            f"{rl.RING_GROUP!r} to create its ring"
-        )
+        _lane_group_fact(lane)
 
 
 def test_the_ring_directory_group_matches_what_the_installer_creates():
@@ -398,9 +533,12 @@ def test_the_ring_directory_group_matches_what_the_installer_creates():
     )
     # At least one migrated renderer must actually use the group, or creating it
     # is dead ceremony. (Root renderers legitimately do not — see
-    # `test_non_root_ring_writers_join_the_ring_group`.)
+    # `test_non_root_ring_writers_join_the_ring_group`. Unitless lanes have no
+    # unit text to scan; their group story is per writer identity —
+    # `_assert_unitless_writer_group_facts` — and cannot satisfy or violate
+    # THIS directory-level sanity, so they contribute nothing here.)
     users = [
-        _unit_text(lane) for lane in rl.RENDERER_LANES
+        _unit_text(lane) for lane in rl.RENDERER_LANES if lane.unit is not None
     ]
     assert any(
         re.search(rf"^SupplementaryGroups=.*\b{re.escape(group)}\b", u, re.M)
@@ -418,6 +556,92 @@ def test_the_installer_adds_the_renderer_user_to_the_ring_group():
         "a box brought up with a custom user has no `pi`; an unguarded usermod "
         "would fail the install under set -euo pipefail"
     )
+
+
+def test_the_installer_adds_jasper_web_to_the_ring_group():
+    """jasper-web's jts-ring membership needs BOTH delivery paths (P6c-i):
+    the useradd -G covers a fresh box, and — because useradd is skipped when
+    the user already exists — a guarded usermod covers every box installed
+    before P6c-i. Same shape as the `pi` membership above and the
+    jasper-secrets upgrade blocks."""
+    users = SERVICE_USERS.read_text()
+    useradd_lines = [
+        ln for ln in users.splitlines()
+        if "useradd" in ln and " jasper-web" in ln
+    ]
+    assert useradd_lines and "jts-ring" in useradd_lines[0], (
+        "fresh installs must put jasper-web in jts-ring via its useradd -G"
+    )
+    assert "usermod -aG jts-ring jasper-web" in users, (
+        "pre-P6c-i boxes skip the useradd; the upgrade path needs the "
+        "idempotent usermod"
+    )
+
+
+def _synthetic_unitless_lane():
+    """A stand-in for P6c-ii's `correction` row: unit=None, everything else
+    shaped like a real RendererLane. SimpleNamespace rather than a real
+    RendererLane on purpose — whether the product dataclass models
+    unitlessness as `unit: str | None` or something richer is P6c-ii's
+    call, and these tests only read attributes."""
+    return SimpleNamespace(
+        label="correction",
+        renderer="correction-lane ephemeral aplay",
+        unit=None,
+        device_key="JASPER_CORRECTION_DEVICE",
+        aloop_device="correction_substream",
+        ring_device="correction_ring_lane",
+    )
+
+
+def test_unitless_correction_writer_facts_hold_today():
+    """The per-identity alternative facts must be TRUE now, not merely when
+    P6c-ii activates them: the helper's spawn umask equals the unit-writers'
+    0007, jasper-correction-web still pairs root with its tight UMask=0077,
+    jasper-web carries jts-ring, and the two root web variants stay root.
+    If any of these drift, the pin should say so BEFORE the correction row
+    lands, while the fix is still a one-file edit."""
+    _assert_unitless_writer_umask_facts()
+    _assert_unitless_writer_group_facts()
+
+
+def test_the_pin_machinery_routes_a_unitless_row(monkeypatch):
+    """Every unit-reading pin handles a unitless row correctly, proven with
+    a synthetic row BEFORE P6c-ii needs it: the identity pins route to the
+    per-identity facts and pass today; the pins whose unitless contract
+    P6c-ii still has to define fail INSTRUCTIVELY (naming the decision),
+    never as a TypeError from pathlib swallowing None; and a stray
+    `_unit_text` on a unitless row is a guided AssertionError."""
+    fake = _synthetic_unitless_lane()
+    monkeypatch.setattr(rl, "RENDERER_LANES", rl.RENDERER_LANES + (fake,))
+
+    # Identity pins: routed to per-identity facts, which hold today.
+    test_every_ring_writing_renderer_unit_sets_the_umask()
+    test_non_root_ring_writers_join_the_ring_group()
+
+    # The directory-level sanity keeps scanning only unit-ful lanes.
+    test_the_ring_directory_group_matches_what_the_installer_creates()
+
+    # Contract-gap pins: each names what P6c-ii must decide.
+    gap_calls = [
+        (test_every_renderer_unit_reads_its_device_from_the_lane_map, ()),
+        (test_both_ends_load_the_same_lane_map_file_last, ()),
+        (
+            test_every_ring_writing_renderer_restarts_slower_than_the_liveness_window,
+            ("correction",),
+        ),
+        (
+            test_every_ring_writing_renderer_tolerates_a_burst_of_refusals,
+            ("correction",),
+        ),
+        (test_the_ring_liveness_window_is_enumerated_for_every_writer, ()),
+    ]
+    for fn, args in gap_calls:
+        with pytest.raises(pytest.fail.Exception, match="P6c-ii must decide"):
+            fn(*args)
+
+    with pytest.raises(AssertionError, match="unitless"):
+        _unit_text(fake)
 
 
 def test_the_installer_ships_the_renderer_lane_confd():
@@ -1256,6 +1480,8 @@ def test_every_ring_writing_renderer_restarts_slower_than_the_liveness_window(la
     """
     lane = rl.lane_by_label(label)
     assert lane is not None
+    if lane.unit is None:
+        _unitless_contract_gap(lane, "the writer-liveness respawn cadence")
     unit = _unit_text(lane)
     m = re.search(r"^RestartSec=(\d+(?:\.\d+)?)", unit, re.M)
     assert m, (
@@ -1282,6 +1508,8 @@ def test_every_ring_writing_renderer_tolerates_a_burst_of_refusals(label):
     """
     lane = rl.lane_by_label(label)
     assert lane is not None
+    if lane.unit is None:
+        _unitless_contract_gap(lane, "the start-limit burst tolerance")
     unit = _unit_text(lane)
     burst = re.search(r"^StartLimitBurst=(\d+)", unit, re.M)
     interval = re.search(r"^StartLimitIntervalSec=(\d+)", unit, re.M)
@@ -1308,6 +1536,8 @@ def test_the_ring_liveness_window_is_enumerated_for_every_writer():
         re.findall(r"^//\s+-\s+(\S+)\s+RestartSec=(\d+)", header, re.M)
     )
     for lane in rl.RENDERER_LANES:
+        if lane.unit is None:
+            _unitless_contract_gap(lane, "the liveness-header enumeration")
         assert lane.unit in entries, (
             f"{lane.unit} writes a ring but has no `- {lane.unit} RestartSec=N` "
             "entry beside the liveness constant it must clear"

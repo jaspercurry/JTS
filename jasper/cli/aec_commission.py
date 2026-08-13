@@ -26,7 +26,7 @@ import numpy as np
 
 from jasper.atomic_io import atomic_write_json
 from jasper.audio_hardware import dac as dac_registry
-from jasper.audio_measurement.correction_lane import correction_play_argv
+from jasper.audio_measurement.correction_lane import run_correction_play
 from jasper.chip_aec_alignment import (
     ARTIFACT_PATH,
     AlignmentArtifact,
@@ -86,6 +86,21 @@ def _run(command: Sequence[str], *, timeout: float = 30) -> None:
     if result.returncode:
         detail = (result.stderr or result.stdout).strip()
         raise CommissioningError(f"{' '.join(command)}: {detail}")
+
+
+def _play_correction(wav: Path, *, timeout: float) -> None:
+    """Correction-lane playback with this CLI's error policy.
+
+    The spawn (argv, captured text output, and the lane umask) is the shared
+    helper's since P6c-i; what stays HERE is commissioning's own contract —
+    a nonzero exit becomes ``CommissioningError`` with the same
+    ``"<argv joined>: <detail>"`` message ``_run`` produces for every other
+    command this CLI shells out to.
+    """
+    result = run_correction_play(wav, timeout=timeout)
+    if result.returncode:
+        detail = (result.stderr or result.stdout).strip()
+        raise CommissioningError(f"{' '.join(result.args)}: {detail}")
 
 
 def _create_marker(path: Path) -> None:
@@ -447,7 +462,7 @@ class SystemIO:
         )
         try:
             time.sleep(0.25)
-            _run(correction_play_argv(stimulus, quiet_before_device=True), timeout=5)
+            _play_correction(stimulus, timeout=5)
             if recorder.wait(timeout=5):
                 raise CommissioningError("XVF capture failed")
         finally:
@@ -490,7 +505,7 @@ class SystemIO:
             target.setparams(params)
             for _ in range(ADAPTATION_REPEATS):
                 target.writeframesraw(frames)
-        _run(correction_play_argv(repeated, quiet_before_device=True), timeout=120)
+        _play_correction(repeated, timeout=120)
 
     def product(
         self, dev, hardware: Hardware, delay: int, stimulus: Path,

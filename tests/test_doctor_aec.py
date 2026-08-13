@@ -141,6 +141,11 @@ def test_second_aec_probe_cannot_reach_precheck_wave_or_aplay(monkeypatch):
         "_run",
         lambda cmd, **_kwargs: calls.append(cmd),
     )
+    monkeypatch.setattr(
+        doctor.aec_probe,
+        "run_correction_play",
+        lambda wav_path, **_kwargs: calls.append(["aplay", str(wav_path)]),
+    )
 
     with doctor.aec_probe._probe_lock():
         results = doctor.probe_aec_ref_path()
@@ -168,6 +173,16 @@ def test_aec_probe_reports_unavailable_process_lock(monkeypatch, tmp_path):
 
 
 def _active_probe_run_recorder():
+    """One ledger over BOTH probe spawn seams.
+
+    Since P6c-i the sine spawn rides jasper.audio_measurement.
+    correction_lane.run_correction_play (which does a REAL subprocess.run),
+    while systemctl/journalctl still go through the module's `_run`. The
+    not-reached tests must fake both: a regression that reached the play
+    stage with only `_run` faked would spawn a real aplay instead of
+    tripping the ledger assert. Both fakes record into one `calls` list so
+    the existing `cmd[0] == "aplay"` asserts keep guarding the real seam.
+    """
     calls = []
 
     def _run(cmd, **_kwargs):
@@ -176,7 +191,11 @@ def _active_probe_run_recorder():
             return SimpleNamespace(stdout="active\n", stderr="", returncode=0)
         raise AssertionError(f"probe continued unexpectedly: {cmd}")
 
-    return calls, _run
+    def _play(wav_path, **_kwargs):
+        calls.append(["aplay", str(wav_path)])
+        raise AssertionError(f"probe played unexpectedly: {wav_path}")
+
+    return calls, _run, _play
 
 
 @pytest.mark.parametrize(
@@ -189,12 +208,13 @@ def _active_probe_run_recorder():
     ids=["control-unreachable", "malformed-json", "invalid-utf8"],
 )
 def test_active_aec_probe_fails_closed_when_state_unavailable(monkeypatch, error):
-    calls, fake_run = _active_probe_run_recorder()
+    calls, fake_run, fake_play = _active_probe_run_recorder()
 
     def raise_state_error(**_kwargs):
         raise error
 
     monkeypatch.setattr(doctor.aec_probe, "_run", fake_run)
+    monkeypatch.setattr(doctor.aec_probe, "run_correction_play", fake_play)
     monkeypatch.setattr(
         doctor.aec_probe.control,
         "get_state",
@@ -222,8 +242,9 @@ def test_active_aec_probe_fails_closed_when_state_unavailable(monkeypatch, error
 def test_active_aec_probe_fails_closed_for_untrusted_active_source(
     monkeypatch, state
 ):
-    calls, fake_run = _active_probe_run_recorder()
+    calls, fake_run, fake_play = _active_probe_run_recorder()
     monkeypatch.setattr(doctor.aec_probe, "_run", fake_run)
+    monkeypatch.setattr(doctor.aec_probe, "run_correction_play", fake_play)
     monkeypatch.setattr(
         doctor.aec_probe.control, "get_state", lambda **_kwargs: state
     )
@@ -247,8 +268,9 @@ def test_active_aec_probe_fails_closed_for_untrusted_active_source(
 def test_active_aec_probe_refuses_known_active_playback(
     monkeypatch, active_source, loopback_active, detail
 ):
-    calls, fake_run = _active_probe_run_recorder()
+    calls, fake_run, fake_play = _active_probe_run_recorder()
     monkeypatch.setattr(doctor.aec_probe, "_run", fake_run)
+    monkeypatch.setattr(doctor.aec_probe, "run_correction_play", fake_play)
     monkeypatch.setattr(
         doctor.aec_probe.control,
         "get_state",
@@ -289,10 +311,6 @@ def test_active_aec_probe_trustworthy_idle_reaches_aplay(monkeypatch, tmp_path):
         calls.append(cmd)
         if cmd[:2] == ["systemctl", "is-active"]:
             return SimpleNamespace(stdout="active\n", stderr="", returncode=0)
-        if cmd and cmd[0] == "aplay":
-            assert isolation_open
-            assert Path(doctor.aec_probe._PROBE_SINE_PATH).exists()
-            return SimpleNamespace(stdout="", stderr="", returncode=0)
         if cmd and cmd[0] == "journalctl":
             return SimpleNamespace(
                 stdout=_rms_log_line(ref=300, mic=400, aec=80, attn_db=-14.0),
@@ -301,7 +319,15 @@ def test_active_aec_probe_trustworthy_idle_reaches_aplay(monkeypatch, tmp_path):
             )
         raise AssertionError(f"unexpected command: {cmd}")
 
+    def fake_play(wav_path, **_kwargs):
+        # P6c-i: the sine spawn rides the shared correction-lane helper.
+        calls.append(["aplay", str(wav_path)])
+        assert isolation_open
+        assert Path(doctor.aec_probe._PROBE_SINE_PATH).exists()
+        return SimpleNamespace(stdout="", stderr="", returncode=0)
+
     monkeypatch.setattr(doctor.aec_probe, "_run", fake_run)
+    monkeypatch.setattr(doctor.aec_probe, "run_correction_play", fake_play)
     monkeypatch.setattr(
         doctor.aec_probe, "measurement_window", fake_measurement_window
     )
@@ -340,12 +366,15 @@ def test_active_aec_probe_releases_isolation_after_aplay_failure(
     def fake_run(cmd, **_kwargs):
         if cmd[:2] == ["systemctl", "is-active"]:
             return SimpleNamespace(stdout="active\n", stderr="", returncode=0)
-        if cmd and cmd[0] == "aplay":
-            events.append("aplay-failed")
-            return SimpleNamespace(stdout="", stderr="device busy", returncode=1)
         raise AssertionError(f"unexpected command: {cmd}")
 
+    def fake_play(_wav_path, **_kwargs):
+        # P6c-i: the sine spawn rides the shared correction-lane helper.
+        events.append("aplay-failed")
+        return SimpleNamespace(stdout="", stderr="device busy", returncode=1)
+
     monkeypatch.setattr(doctor.aec_probe, "_run", fake_run)
+    monkeypatch.setattr(doctor.aec_probe, "run_correction_play", fake_play)
     monkeypatch.setattr(
         doctor.aec_probe.control,
         "get_state",
@@ -370,7 +399,7 @@ def test_active_aec_probe_releases_isolation_after_aplay_failure(
 def test_active_aec_probe_never_generates_or_plays_without_isolation(
     monkeypatch, tmp_path
 ):
-    calls, fake_run = _active_probe_run_recorder()
+    calls, fake_run, fake_play = _active_probe_run_recorder()
 
     @asynccontextmanager
     async def unavailable_window(**kwargs):
@@ -380,6 +409,7 @@ def test_active_aec_probe_never_generates_or_plays_without_isolation(
 
     sine_path = tmp_path / "must-not-exist.wav"
     monkeypatch.setattr(doctor.aec_probe, "_run", fake_run)
+    monkeypatch.setattr(doctor.aec_probe, "run_correction_play", fake_play)
     monkeypatch.setattr(
         doctor.aec_probe.control,
         "get_state",

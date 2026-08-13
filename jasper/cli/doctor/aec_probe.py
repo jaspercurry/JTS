@@ -23,7 +23,7 @@ import wave
 from contextlib import contextmanager
 from typing import Iterator
 
-from ...audio_measurement.correction_lane import correction_play_argv
+from ...audio_measurement.correction_lane import run_correction_play
 from ...control import client as control
 from ...correction.coordinator import MeasurementWindowError, measurement_window
 from ._shared import CheckResult, _loopback_playback_active, _run
@@ -277,8 +277,17 @@ def _play_and_assess_probe() -> list[CheckResult]:
 
     probe_start = datetime.datetime.now(datetime.timezone.utc)
     since = probe_start.strftime("%Y-%m-%d %H:%M:%S UTC")
-    play = _run(
-        correction_play_argv(_PROBE_SINE_PATH, quiet_before_device=True),
+    # No euid gate here, by decision (P6c-i): the doctor's documented
+    # contract is a root run (`jasper-doctor --help`: "Run as root."; the
+    # non-root jasper-control gets root fidelity via the oneshot --out
+    # path), its CheckResult vocabulary has no skip status, and no doctor
+    # check anywhere gates on euid — preconditions in this module fail
+    # LOUDLY as CheckResults instead (renderers-idle, loopback-lane,
+    # isolation-window above). An unprivileged run therefore fails this
+    # probe at device open — today on /dev/snd (root:audio), post-P6c-ii
+    # on the ring lane — and the guidance below names the fix.
+    play = run_correction_play(
+        _PROBE_SINE_PATH,
         timeout=_PROBE_SINE_DURATION_S + 5.0,
     )
     try:
@@ -291,7 +300,9 @@ def _play_and_assess_probe() -> list[CheckResult]:
             f"aplay failed: {play.stderr.strip() or f'rc={play.returncode}'}. "
             "If 'Unknown PCM', re-run install.sh so /etc/asound.conf defines "
             "correction_substream; if 'invalid argument', check "
-            "/proc/asound/Loopback exists.",
+            "/proc/asound/Loopback exists; if 'Permission denied', run the "
+            "doctor as root (its documented contract) — an unprivileged run "
+            "cannot open the playback lane.",
         ))
         return results
     results.append(CheckResult(

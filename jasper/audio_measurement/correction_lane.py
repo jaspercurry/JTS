@@ -52,10 +52,10 @@ technique catches a stray convenience re-export added to THIS module's own
 package ``__init__.py`` (``jasper/audio_measurement/__init__.py``), not just
 a direct import in a consumer.
 
-The play helpers (P6c-0)
-------------------------
+The play helpers (P6c-0, P6c-i)
+-------------------------------
 This module also owns **building the ``aplay`` argv** that plays a WAV onto
-the correction lane, plus two thin spawn wrappers over it — the same
+the correction lane, plus three thin spawn wrappers over it — the same
 consolidation issue #1789 applied to the device *name*, applied to the
 device *spawn*. Before P6c-0 (campaign #2285, U3 arc) ten call sites across
 six files each assembled their own inline ``["aplay", ..., "-D", <lane>,
@@ -77,33 +77,45 @@ have meant ten synchronized edits. Now:
   ``"audio_device": {"pcm": ...}`` (four in ``jasper.web.sound_setup``,
   five in ``web_commissioning``), which would otherwise keep reporting a
   lane the spawn no longer uses.
-* :func:`popen_correction_play` (sync/thread contexts) and
+* :func:`popen_correction_play` (sync/thread contexts),
   :func:`exec_correction_play` (asyncio contexts, returns a terminable
-  handle) are deliberately thin: stdio routing stays an explicit per-site
-  parameter, and neither adds timeout/retry/error policy — the sites that
-  need richer semantics (deadman timeouts, cleanup state machines,
-  cancellable tone loops) already route through the heavier shared
-  machinery in :mod:`jasper.audio_measurement.playback` (``play_wav`` /
-  ``play_sweep`` / ``TonePlayer`` / ``play_verified_wav``), which keeps its
-  policy-free ``alsa_device`` parameter (see "What is NOT owned here").
-* The root-CLI writers (``jasper.cli.aec_commission``,
-  ``jasper.cli.doctor.aec_probe``) keep their module-local ``_run``
-  wrappers — those wrappers ARE the site-owned run policy (commissioning's
-  ``CommissioningError`` translation, the doctor's plain-``subprocess.run``
-  convention) — and feed them argv from :func:`correction_play_argv`
-  instead of a hand-spelled list.
+  handle), and :func:`run_correction_play` (blocking run-to-completion with
+  captured output, the root-CLI shape) are deliberately thin: stdio routing
+  and timeouts stay explicit per-site parameters, and none adds
+  retry/error policy — the sites that need richer semantics (deadman
+  timeouts, cleanup state machines, cancellable tone loops) already route
+  through the heavier shared machinery in
+  :mod:`jasper.audio_measurement.playback` (``play_wav`` / ``play_sweep`` /
+  ``TonePlayer`` / ``play_verified_wav``), which keeps its policy-free
+  ``alsa_device`` parameter (see "What is NOT owned here").
+* **Every wrapper spawns with** :data:`CORRECTION_PLAY_UMASK` (P6c-i) —
+  see that constant's comment for the full story. This is why the
+  root-CLI writers (``jasper.cli.aec_commission``, ``jasper.cli.doctor.
+  aec_probe``) moved from builder-fed module-local ``_run`` wrappers
+  (P6c-0's shape) onto :func:`run_correction_play`: a umask is spawn-time
+  state, not argv, and the ring FILE's mode matters whatever the writer's
+  uid — a root CLI whose spawn kept the root shell's 0022 would create a
+  ring the non-root reader end cannot write its header half into
+  (``tests/test_renderer_ring_lanes.py``'s umask pin states the same rule
+  for unit-based writers). Their error policies stayed at the sites:
+  commissioning still translates a nonzero rc into ``CommissioningError``
+  (now beside its call), and the doctor still reads the returned
+  ``CompletedProcess`` exactly as ``_shared._run`` produced it — the
+  kwargs are byte-identical minus the added ``umask``.
 * ``tests/test_correction_lane_play.py`` pins the argv/kwargs of every
   migrated site shape and carries the conventions guard that fails any NEW
   inline ``aplay``/``-D`` spawn outside this module's allowlist. The five
   stdlib-only lab probe scripts under ``scripts/`` remain exempt by design
   (see "Scope of the drift guard" above — same exemption, same reason).
 
-The ``quiet_before_device`` knob exists because the pre-P6c-0 sites used
-two flag orders — the web/wizard family spelled ``aplay -D <dev> -q`` and
-the root-CLI family spelled ``aplay -q -D <dev>``. ``aplay`` treats both
-identically; P6c-0 is bit-for-bit argv-preserving by contract, so the knob
-reproduces each site's historical order rather than silently normalizing.
-Normalizing to one order is a P6c-i/-ii decision, not this refactor's.
+Argv order: P6c-0 preserved each site's historical flag order bit-for-bit
+behind a ``quiet_before_device`` knob (the web family spelled ``aplay -D
+<dev> -q``, the root-CLI family ``aplay -q -D <dev>`` — identical to
+``aplay``, which parses flags positionally-independently). P6c-i retired
+the knob, normalizing on the web-family order (also
+:mod:`jasper.audio_measurement.playback`'s own order) — the normalization
+the P6c-0 review banked as safe once the refactor step no longer needed
+byte-identical argv.
 
 Scope of the drift guard
 -------------------------
@@ -171,12 +183,38 @@ if TYPE_CHECKING:
 # CORRECTION_SUBSTREAM directly from here.
 CORRECTION_SUBSTREAM = "correction_substream"
 
+# The umask every correction-lane spawn runs under (P6c-i), passed to the
+# child via subprocess's `umask=` parameter (Python >= 3.9; set in the child
+# between fork and exec — no `preexec_fn`, which is documented unsafe in
+# threaded programs, and jasper-web is threaded).
+#
+# Why 0o007: a lane writer and jasper-fanin BOTH write the shared ring
+# HEADER, so a ring file must come up group-writable (0660) for whichever
+# end did not create it — the same rule tests/test_renderer_ring_lanes.py
+# pins as `UMask=0007` on every unit-based ring writer. For the correction
+# lane the writers are EPHEMERAL aplay spawns from four different process
+# identities (jasper-web wizards, the root jasper-correction-web, the root
+# streambox variant, root operator CLIs), so the umask cannot live in one
+# unit file — it rides the spawn instead, HERE, beside the argv owner.
+#
+# Per-spawn beats per-unit in both directions that matter:
+#   * jasper-correction-web keeps its deliberately tight `UMask=0077` for
+#     the correction profiles/bundles it writes itself; this child-only
+#     override loosens nothing but the spawned player.
+#   * A root identity's inherited 0022 (shell or systemd default) would
+#     create the ring 0640 — group-READABLE, not group-writable — and the
+#     non-root reader end could not write its header half.
+#
+# Inert today (aloop path): aplay opens the snd-aloop pcm and reads the
+# WAV; the `correction_substream` chain (`plug` over `hw:Loopback,0,4`,
+# deploy/alsa/asoundrc.jasper) creates no filesystem objects, so the umask
+# governs nothing yet. It becomes load-bearing at P6c-ii, when the lane's
+# PCM becomes the ring ioplug and the ring FILE is created INSIDE aplay's
+# process.
+CORRECTION_PLAY_UMASK = 0o007
 
-def correction_play_argv(
-    wav_path: str | os.PathLike[str],
-    *,
-    quiet_before_device: bool = False,
-) -> list[str]:
+
+def correction_play_argv(wav_path: str | os.PathLike[str]) -> list[str]:
     """The ``aplay`` argv that plays one WAV onto the correction lane.
 
     Single owner of the lane-play command line (module docstring, "The play
@@ -187,26 +225,18 @@ def correction_play_argv(
     (heavier-machinery ``alsa_device=`` consumers and the observability
     payloads that report the lane).
 
-    ``quiet_before_device`` reproduces the two historical flag orders
-    (``aplay -q -D <dev> <wav>`` for the root-CLI family, ``aplay -D <dev>
-    -q <wav>`` — the default, matching :mod:`jasper.audio_measurement.
-    playback`'s own spawns — for the web/wizard family). Both are identical
-    to ``aplay``; see the module docstring for why P6c-0 preserves rather
-    than normalizes them.
+    One flag order for every caller since P6c-i — see "Argv order" in the
+    module docstring for the retirement of P6c-0's per-site order knob.
     """
-    wav = str(wav_path)
-    if quiet_before_device:
-        return ["aplay", "-q", "-D", CORRECTION_SUBSTREAM, wav]
-    return ["aplay", "-D", CORRECTION_SUBSTREAM, "-q", wav]
+    return ["aplay", "-D", CORRECTION_SUBSTREAM, "-q", str(wav_path)]
 
 
-# The two spawn wrappers stay THIN on purpose: stdio routing is an explicit
-# per-site parameter (no hidden default redirection), and run policy —
-# timeouts, rc checks, error translation, cleanup — stays at each site or in
-# jasper.audio_measurement.playback's heavier machinery. P6c-i's spawn-time
-# policy hook (the ring-lane umask for group-writable SHM files) lands in
-# these wrappers, next to the argv owner, so every lane writer inherits it
-# in one edit.
+# The three spawn wrappers stay THIN on purpose: stdio routing and timeouts
+# are explicit per-site parameters (no hidden default redirection), and run
+# policy — rc checks, error translation, cleanup — stays at each site or in
+# jasper.audio_measurement.playback's heavier machinery. What every wrapper
+# DOES own is the spawn-time lane policy: CORRECTION_PLAY_UMASK rides each
+# spawn so every lane writer inherits the ring-file mode rule in one edit.
 
 
 def popen_correction_play(
@@ -214,7 +244,6 @@ def popen_correction_play(
     *,
     stdout: int | None,
     stderr: int | None,
-    quiet_before_device: bool = False,
 ) -> subprocess.Popen[bytes]:
     """Spawn a correction-lane ``aplay`` from sync/thread contexts.
 
@@ -226,9 +255,10 @@ def popen_correction_play(
     passes ``None`` to keep aplay's stderr on the operator's terminal.
     """
     return subprocess.Popen(
-        correction_play_argv(wav_path, quiet_before_device=quiet_before_device),
+        correction_play_argv(wav_path),
         stdout=stdout,
         stderr=stderr,
+        umask=CORRECTION_PLAY_UMASK,
     )
 
 
@@ -246,6 +276,11 @@ async def exec_correction_play(
     exactly why they never routed through ``play_sweep``'s
     blocking-to-completion shape (see balance_flow's ``_start_playback``).
 
+    ``umask=`` reaches the child because ``create_subprocess_exec`` forwards
+    unknown keywords to the underlying :class:`subprocess.Popen`
+    (pinned empirically by the mechanism tests in
+    ``tests/test_correction_lane_play.py``).
+
     ``asyncio`` is imported lazily so wizard modules that only read
     :data:`CORRECTION_SUBSTREAM` or use the sync wrapper never pay for it
     at import time (module docstring, placement promise).
@@ -256,4 +291,32 @@ async def exec_correction_play(
         *correction_play_argv(wav_path),
         stdout=stdout,
         stderr=stderr,
+        umask=CORRECTION_PLAY_UMASK,
+    )
+
+
+def run_correction_play(
+    wav_path: str | os.PathLike[str],
+    *,
+    timeout: float,
+) -> subprocess.CompletedProcess[str]:
+    """Play one WAV onto the correction lane, blocking until it exits.
+
+    The root-CLI shape (``jasper.cli.aec_commission``, ``jasper.cli.doctor.
+    aec_probe``): captured text output, a required per-site ``timeout`` (no
+    default — every caller states its bound), and NO rc policy — the
+    returned :class:`subprocess.CompletedProcess` is exactly what those
+    sites' module-local ``_run`` wrappers produced
+    (``subprocess.run(argv, capture_output=True, text=True, timeout=...)``),
+    so each site's error translation stays its own. The one addition over
+    P6c-0's builder-fed shape is :data:`CORRECTION_PLAY_UMASK` on the
+    spawn — see the module docstring for why that had to move the spawn
+    itself into the helper.
+    """
+    return subprocess.run(
+        correction_play_argv(wav_path),
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        umask=CORRECTION_PLAY_UMASK,
     )

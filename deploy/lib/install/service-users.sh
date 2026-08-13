@@ -136,7 +136,7 @@ create_jasper_service_users() {
     # then. Add both groups idempotently (also the upgrade path: useradd is
     # skipped when the user already exists).
     if ! getent passwd jasper-web >/dev/null 2>&1; then
-        useradd -r -M -s /usr/sbin/nologin -g jasper -G audio,systemd-journal,jasper-secrets,jasper-intsecrets jasper-web
+        useradd -r -M -s /usr/sbin/nologin -g jasper -G audio,systemd-journal,jasper-secrets,jasper-intsecrets,jts-ring jasper-web
     fi
     usermod -aG audio jasper-web 2>/dev/null || true
     usermod -aG systemd-journal jasper-web 2>/dev/null || true
@@ -184,8 +184,19 @@ create_jasper_service_users() {
         if getent passwd pi >/dev/null 2>&1; then
             usermod -aG jts-ring pi 2>/dev/null || true
         fi
+        # U3/P6c-i — jasper-web's wizard-spawned aplay children will create
+        # the correction lane's ring once P6c-ii arms it. The useradd -G
+        # above is skipped when the user already exists (every pre-P6c-i
+        # box), so the upgrade path needs this idempotent add — same shape
+        # as the jasper-secrets/jasper-intsecrets upgrade blocks. The other
+        # correction-lane writer identities (jasper-correction-web, the
+        # streambox variant, operator CLIs) run as root and write the 2775
+        # root-owned directory regardless — the P6b root exemption; their
+        # ring FILE mode comes from the shared spawn helper's umask, not a
+        # group.
+        usermod -aG jts-ring jasper-web 2>/dev/null || true
     fi
-    echo "  Service users ready: jasper-voice, jasper-mux, jasper-input, jasper-usbmic, jasper-control, jasper-web, jasper-recon (group: jasper; secrets: jasper-secrets = voice+web; intsecrets: jasper-intsecrets = voice+control+mux+web; ring writers: jts-ring = pi; bluealsa-aplay writes rings as root)"
+    echo "  Service users ready: jasper-voice, jasper-mux, jasper-input, jasper-usbmic, jasper-control, jasper-web, jasper-recon (group: jasper; secrets: jasper-secrets = voice+web; intsecrets: jasper-intsecrets = voice+control+mux+web; ring writers: jts-ring = pi + jasper-web; bluealsa-aplay and the root correction-lane identities write rings as root)"
 
     # The /var/lib/jasper directory itself is widened to root:jasper 0770 by the
     # group-aware ensure_state_dir() (env-migrations.sh), which runs on every
