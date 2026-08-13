@@ -366,9 +366,8 @@ def test_the_leak_bound_keeps_its_margin_over_the_longest_legitimate_hold() -> N
     ``_systemd`` is shared by seven wizards and deliberately does NOT import
     the correction session model at runtime, so its bound is a literal derived
     by hand from ``session_volume_plan.MAX_WALL_CLOCK_CEILING_S`` — the hard cap
-    on ``crossover_v2_flow.session_wall_clock_ceiling_s``, which already reaches
-    3360 s at the shipped 16-capture Full tier. A test may import freely, so the
-    relationship is pinned here instead of drifting silently.
+    on ``crossover_v2_flow.session_wall_clock_ceiling_s``. A test may import
+    freely, so the relationship is pinned here instead of drifting silently.
 
     If this fails, the ceiling grew and the margin eroded. RAISE THE BOUND
     deliberately — do not relax the assertion. A leak alarm that fires on a

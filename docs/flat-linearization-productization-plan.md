@@ -18,11 +18,15 @@
 > work order**
 > ([`flat-linearization-flow-simplification-plan.md`](flat-linearization-flow-simplification-plan.md))
 > subsequently replaced that UX surface — the one-instruction-per-step
-> screen grammar, the Express tier (7 captures) alongside Full (16), and
-> the wizard's tier chooser — without touching the honesty machinery this
-> doc productized (`combine_positions`, the null identification method,
-> `detect_echo`, the spec-flatness gauge). Read that plan for the current
-> UX; read this doc for the instrument it still accurately describes.
+> screen grammar, an Express tier alongside Full, and the wizard's tier
+> chooser — without touching the honesty machinery this doc productized
+> (`combine_positions`, the null identification method, `detect_echo`,
+> the spec-flatness gauge). The tier capture counts moved again after
+> flow-simplification shipped, with the two-stage commission split
+> (#2400 — re-verified 2026-08-13); current counts are in
+> [`HANDOFF-crossover-measurement-v2.md`](HANDOFF-crossover-measurement-v2.md)
+> "What it is", not restated here. Read that plan for the current UX;
+> read this doc for the instrument it still accurately describes.
 
 ## Mission
 

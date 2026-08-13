@@ -318,7 +318,15 @@ def test_a_candidate_with_no_crossover_degrades_to_trims_only(caplog):
     assert candidate.linearization == {}
     assert state.linearized_predicted_sum is None
     assert state.realized_level_match is None
-    assert "event=correction.crossover_v2_linearization_fit_failed" in caplog.text
+    # startswith(), not a bare `in caplog.text` substring check: the
+    # journal_dropped line's own `dropped_event=` field ends in the six
+    # characters "event=", so a substring search would also match a drop of
+    # this same event -- see test_the_fit_failure_line_is_said_through_the_
+    # host_and_keeps_its_traceback's comment on the same hazard (#2368).
+    assert any(
+        r.getMessage().startswith(f"event={planning.EVENT_FIT_FAILED} ")
+        for r in caplog.records
+    )
     assert "reason=NoCrossoverSectionsError" in caplog.text
 
 
@@ -397,8 +405,7 @@ def test_the_fit_failure_line_is_said_through_the_host_and_keeps_its_traceback(
 
     said = [
         record for record in caplog.records
-        if "event=correction.crossover_v2_linearization_fit_failed"
-        in record.getMessage()
+        if record.getMessage().startswith(f"event={planning.EVENT_FIT_FAILED} ")
     ]
     assert len(said) == 1, "the degrade discloses exactly once"
     line = said[0]

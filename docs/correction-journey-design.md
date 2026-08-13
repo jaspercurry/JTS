@@ -22,18 +22,18 @@ A household calibrates a JTS speaker in a fixed physical order:
    human mid-flow Apply gate; a trusted candidate is applied by the
    conductor itself, per `crossover_v2_flow.py`). Makes the drivers
    coherent. Passive speakers skip this step entirely.
-   > **Spine annotation (2026-07-27).** The line above predates the
-   > spatial cloud and is stale three times over. Since PR-3b the flow is
-   > 16 captures with two prompted position groups (Full tier's shipped
-   > defaults — the flow-simplification work order's PR-U1 later added a
-   > 7-capture Express tier alongside it, the household's explicit choice
-   > on the wizard's tier chooser, PR-U3), and since the 2026-07-27 owner
-   > timing decision the fit and the candidate happen at the PRE-APPLY
-   > group's close rather than at MEASURE. Current spine:
+   > **Spine annotation (2026-07-27; re-verified 2026-08-13).** The line
+   > above predates the spatial cloud and is stale three times over: the
+   > capture counts, the group structure, and the fit/candidate timing
+   > have each moved at least once since. Current spine:
    > `CHECK → gain solve → MEASURE → pre-apply position group → fit +
-   > candidate → APPLYING (auto) → VERIFY → post-apply position group`.
-   > Automatic-with-no-human-tap is unchanged, which is all this
-   > three-step journey actually depends on. Current truth:
+   > candidate → APPLYING (auto) → VERIFY → post-apply position group`
+   > — since the two-stage commission split this is two separate relay
+   > sessions with an untimed apply between them, not one continuous
+   > flow. Automatic-with-no-human-tap is unchanged, which is all this
+   > three-step journey actually depends on. Current tier counts and
+   > group structure move at every plan change, so they are not restated
+   > here — current truth:
    > [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md)
    > "The capture flow" / "When the fit runs".
 2. **Room** — measure and apply room correction at the listening
@@ -322,6 +322,7 @@ Strip copy (initial set — keep this terse, user-centric voice):
   calibration step" hint on `jts.local`'s landing page. Read-only, same
   endpoint, zero new state.
 
-Last verified: 2026-07-27 (flow-simplification PR-U3 — the 2026-07-27 spine
-annotation now also names the Express tier alongside the 16-capture Full
-spine it already corrected)
+Last verified: 2026-08-13 (#2400 — the spine annotation's capture-count and
+position-group claims had drifted again since the two-stage commission
+split; corrected to point at HANDOFF-crossover-measurement-v2.md instead of
+restating numbers that move at every plan change)
