@@ -38,6 +38,9 @@ from jasper.active_speaker.fc_selector import (
 from tests.crossover_v2_fixtures import (
     FC_HZ,
     FakeSeams,
+    _branch_operators,
+    _candidate_priors,
+    _candidate_sections,
     _conductor,
     _eligible_measure_analysis,
     _preset,
@@ -156,8 +159,8 @@ def test_candidate_priors_move_three_fc_fields_and_carry_the_other_two():
     _run_phase(c, 1, 1)
     _run_phase(c, 2, 1)
     base = c._measure_priors()
-    sections = c._fc_candidate_sections(1750.0)
-    candidate = c._fc_candidate_priors(1750.0, sections)
+    sections = _candidate_sections(c, 1750.0)
+    candidate = _candidate_priors(c, 1750.0, sections)
 
     assert candidate.crossover_fc_hz == 1750.0 != base.crossover_fc_hz
     freqs = np.array([1000.0, 1750.0, 4000.0])
@@ -184,7 +187,7 @@ def test_a_candidates_sections_move_only_the_corner():
     """R17 adjudicates WHERE to cross, never what shape to cross with."""
     c = _selector_conductor(FakeSeams())
     configured = flow.sections_by_role(_preset().crossover_regions)
-    moved = c._fc_candidate_sections(1750.0)
+    moved = _candidate_sections(c, 1750.0)
     assert set(moved) == set(configured)
     for role, sections in moved.items():
         assert [(s.order, s.highpass) for s in sections] == [
@@ -229,24 +232,25 @@ def test_the_fit_targets_each_candidates_own_branch_not_the_configured_one():
 
 
 def _operators(c, *, fc_hz=1750.0, polarity="normal", trims=None, delay_us=0.0):
-    """``_fc_branch_operators`` over a hand-built alignment, so each factor can
+    """``_branch_operators`` over a hand-built alignment, so each factor can
     be moved on its own. The analysis stand-in carries only ``alignment`` —
-    which is all this method reads from it."""
+    which is all this function reads from it."""
     alignment = SimpleNamespace(
         polarity_sign=1 if polarity == "normal" else -1,
         anchor_delay_us=0.0, delay_us=delay_us, status=flow.ALIGNMENT_OK,
     )
-    return c._fc_branch_operators(
+    return _branch_operators(
+        c,
         flow.lateral_evidence_grid_hz(),
         SimpleNamespace(alignment=alignment),
-        c._fc_candidate_sections(fc_hz),
+        _candidate_sections(c, fc_hz),
         {},
         trims if trims is not None else {"woofer": 0.0, "tweeter": 0.0},
     )
 
 
 def test_the_branch_operator_carries_polarity_trim_and_the_candidates_corner():
-    """``_fc_branch_operators`` is what turns a pose's NEUTRAL measurement into
+    """``_branch_operators`` is what turns a pose's NEUTRAL measurement into
     this candidate's model, so a wrong factor there makes the whole lateral
     robustness term noise while every other test stays green.
 
@@ -1143,7 +1147,7 @@ def test_an_alternative_winner_publishes_its_exact_candidate_and_preset():
 # read it: **a strangler phase's goldens must anchor on the DECLARED source of
 # truth, never on the method under test — self-referential pins are blind to
 # uniform drift.** Earned: the first cut of the re-cornering test below compared
-# ``_fc_candidate_sections(fc)`` against ``_fc_candidate_sections(FC_HZ)``, and a
+# ``_candidate_sections(fc)`` against ``_candidate_sections(FC_HZ)``, and a
 # uniform ``order += 2`` applied to every section passed it (measured: 6 passed
 # with that anchor, 6 failed with the declared one). A port that changed the
 # whole family the same way — which is what a port does — would have shipped.
@@ -1228,14 +1232,14 @@ def test_only_the_corner_moves_when_a_candidate_is_re_cornered(fc_hz):
     changes).
     """
     c = _selector_conductor(FakeSeams(), bands=WIDENED_BANDS)
-    # The DECLARED sections, not ``_fc_candidate_sections(FC_HZ)``. Anchoring on
+    # The DECLARED sections, not ``_candidate_sections(FC_HZ)``. Anchoring on
     # the method under test makes this blind to any UNIFORM change to the
     # re-cornering — a ``+2`` applied to every section's order compares equal to
     # itself and passes. That is precisely the 5a-v port failure mode this golden
     # exists to catch, so the anchor is the preset.
     configured = flow.sections_by_role(_preset().crossover_regions)
 
-    sections = c._fc_candidate_sections(fc_hz)
+    sections = _candidate_sections(c, fc_hz)
 
     assert set(sections) == set(configured)
     for role, at_corner in sections.items():
@@ -1246,7 +1250,7 @@ def test_only_the_corner_moves_when_a_candidate_is_re_cornered(fc_hz):
             (s.order, s.highpass) for s in configured[role]
         ]
 
-    priors = c._fc_candidate_priors(fc_hz, sections)
+    priors = _candidate_priors(c, fc_hz, sections)
     assert priors.crossover_fc_hz == fc_hz
     lo, hi = priors.candidate_required_band_hz_by_role["woofer"]
     assert lo == 0.0

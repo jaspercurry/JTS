@@ -26,6 +26,7 @@ from typing import Any
 import numpy as np
 
 from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.crossover_v2 import fc_sweep as _fc
 from jasper.active_speaker.crossover_v2 import intervention as iv
 from jasper.active_speaker.crossover_v2.round_evidence import (
     EntryBaseline,
@@ -530,6 +531,48 @@ def _configured_sections(conductor, role: str) -> tuple:
     return sections_by_role(
         getattr(conductor._preset, "crossover_regions", ()) or ()
     ).get(role, ())
+
+
+def _candidate_sections(conductor, fc_hz: float) -> dict:
+    """This session's preset sections, re-cornered at ``fc_hz``.
+
+    Same shape and same reason as :func:`_configured_sections` above: the
+    session carried ``_fc_candidate_sections`` until #2291 Phase 5c-iv, where
+    it was deleted because the sweep organ binds this argument itself — the
+    method had no production caller and was not one of the substitutable ports
+    (#2354), so only test convenience kept it on the class. The binding it did
+    is one line and belongs beside the tests that want it.
+    """
+    return _fc.candidate_sections(
+        getattr(conductor._preset, "crossover_regions", ()) or (), fc_hz,
+    )
+
+
+def _candidate_priors(conductor, fc_hz: float, sections):
+    """MEASURE's priors re-cornered for one swept candidate.
+
+    Retired from the session with :func:`_candidate_sections` (#2291 Phase
+    5c-iv) for the same reason; ``_measure_priors`` is still the session's own.
+    """
+    from jasper.active_speaker.crossover_v2 import priors as _pr
+
+    return _pr.candidate_priors(conductor._measure_priors(), fc_hz, sections)
+
+
+def _branch_operators(conductor, freqs, analysis, sections, linearization, trims):
+    """The per-branch operators for a hand-built alignment.
+
+    Retired from the session with :func:`_candidate_sections` (#2291 Phase
+    5c-iv); the sweep organ passes these same three session values itself.
+    """
+    return _fc.branch_operators(
+        freqs, analysis, sections, linearization, trims,
+        preset=conductor._preset,
+        tweeter_role=conductor._tweeter.role,
+        protection_sections_by_role=(
+            conductor._measurement_protection_sections_by_role
+        ),
+    )
 
 
 def _plan_spy(mp) -> list:

@@ -33,6 +33,7 @@ from jasper.active_speaker.crossover_v2.contracts import (
 )
 from tests.crossover_v2_fixtures import (
     FakeSeams,
+    _candidate_sections,
     _conductor,
     _eligible_measure_analysis,
     _run_phase,
@@ -80,7 +81,7 @@ def test_the_request_takes_its_corner_from_the_candidates_sections():
         c._plan_linearization(analysis, analysis.candidate, None)
         c._plan_linearization(
             analysis, analysis.candidate, None,
-            candidate_sections=c._fc_candidate_sections(swept_fc_hz),
+            candidate_sections=_candidate_sections(c, swept_fc_hz),
         )
 
     assert seen == [c._fc_hz, swept_fc_hz]
@@ -330,7 +331,7 @@ def test_sections_naming_two_corners_degrade_to_trims_only(caplog):
     """
     caplog.set_level("WARNING", logger=_DIAG_LOGGER)
     c, analysis = _walked_to_measure()
-    split = c._fc_candidate_sections(1750.0)
+    split = _candidate_sections(c, 1750.0)
     split["tweeter"] = tuple(
         replace(section, fc_hz=1648.7) for section in split["tweeter"]
     )

@@ -246,7 +246,6 @@ ATTEMPT_INTEGRITY_UNAVAILABLE = "capture_integrity_unavailable"
 # constructed with no explicit ``index_phase_map``; the shipped session builds
 # its map through ``build_v2_cloud_index_phase_map``.
 _INDEX_PHASE = {1: PHASE_CHECK, 2: PHASE_MEASURE, 3: PHASE_VERIFY}
-_PHASE_INDEX = {phase: index for index, phase in _INDEX_PHASE.items()}
 CAPTURE_PLAN_TARGET = 3
 
 # This flow's own capture retry budget: the total admission attempts a v2
@@ -5009,11 +5008,6 @@ class CrossoverV2Session:
     def _check_priors(self) -> MeasurementPriors:
         return _priors.check_priors(fc_hz=self._fc_hz)
 
-    def _configured_crossover_transfers(
-        self,
-    ) -> tuple[dict[str, Any] | None, dict[str, int]]:
-        return _priors.configured_crossover_transfers(self._preset)
-
     def _measure_priors(self) -> MeasurementPriors:
         return _priors.measure_priors(
             fc_hz=self._fc_hz,
@@ -6671,37 +6665,15 @@ class CrossoverV2Session:
     # and :mod:`~jasper.active_speaker.crossover_v2.priors`, which own R17's
     # decisions — which corners are proposable, what each one does to the
     # sections and the priors, and what a candidate's model is. What is left
-    # here is this conductor's own reading of its session state, plus the ports
-    # that keep a substituted conductor attribute binding on production (#2354).
-
-    def _fc_candidate_sections(
-        self, fc_hz: float,
-    ) -> dict[str, tuple[CrossoverSection, ...]]:
-        return _fc.candidate_sections(
-            getattr(self._preset, "crossover_regions", ()) or (), fc_hz,
-        )
-
-    def _fc_candidate_priors(
-        self, fc_hz: float, sections: Mapping[str, tuple[CrossoverSection, ...]],
-    ) -> MeasurementPriors:
-        return _priors.candidate_priors(self._measure_priors(), fc_hz, sections)
-
-    def _fc_branch_operators(
-        self,
-        freqs: np.ndarray,
-        analysis: Any,
-        sections: Mapping[str, tuple[CrossoverSection, ...]],
-        linearization: Mapping[str, Any],
-        trims: Mapping[str, float],
-    ) -> dict[str, np.ndarray]:
-        return _fc.branch_operators(
-            freqs, analysis, sections, linearization, trims,
-            preset=self._preset,
-            tweeter_role=self._tweeter.role,
-            protection_sections_by_role=(
-                self._measurement_protection_sections_by_role
-            ),
-        )
+    # here is this session's own reading of its session state, plus the ports
+    # that keep a substituted session attribute binding on production (#2354).
+    #
+    # Three siblings that used to sit here — ``_fc_candidate_sections``,
+    # ``_fc_candidate_priors``, ``_fc_branch_operators`` — were deleted in
+    # #2291 phase 5c-iv: the sweep organ binds those arguments itself, so the
+    # methods had no production caller and no port, and only test convenience
+    # kept them alive. The equivalent bindings live beside the tests that want
+    # them, in ``tests/crossover_v2_fixtures.py``.
 
     def _evaluate_fc_candidate(
         self, fc_hz: float, anchor: Any, program: Any, result: Any,
@@ -9969,13 +9941,6 @@ def build_v2_capture_plan(
         schema_version=2,
         entries=tuple(entries),
     )
-
-
-def _index_of_phase(index_phase: Mapping[int, str], phase: str) -> int:
-    for index, value in sorted(index_phase.items()):
-        if value == phase:
-            return index
-    raise CrossoverV2FlowError(f"cloud index map has no {phase} entry")
 
 
 def build_v2_verify_capture_plan(
