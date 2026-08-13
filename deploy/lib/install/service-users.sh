@@ -46,9 +46,9 @@ create_jasper_service_users() {
     # U3 / P6 — `jts-ring` owns /dev/shm/jts-ring (mode 2775, see
     # deploy/tmpfiles/jts-ring.conf). It grants exactly one thing: write access
     # to the SHM slot rings. Membership is what lets a NON-ROOT renderer
-    # (librespot as `pi`, later shairport-sync) create and write its lane's ring
-    # while jasper-fanin reads it — both ends write the ring HEADER, so both need
-    # write on a file the other may have created.
+    # (librespot as `pi`, shairport-sync as its own user) create and write its
+    # lane's ring while jasper-fanin reads it — both ends write the ring
+    # HEADER, so both need write on a file the other may have created.
     #
     # NOT every migrated renderer needs it. bluealsa-aplay (U3/P6b) runs as ROOT
     # — its packaged unit sets no User= and neither does the JTS drop-in — and
@@ -200,8 +200,18 @@ create_jasper_service_users() {
         # ring FILE mode comes from the shared spawn helper's umask, not a
         # group.
         usermod -aG jts-ring jasper-web 2>/dev/null || true
+        # U3/P6d — shairport-sync writes the airplay lane's ring as its own
+        # non-root user. Fresh boxes get the group at useradd time
+        # (renderers.sh hard-lists it, which is safe because THIS function
+        # creates the group first); this guarded usermod is the UPGRADE path
+        # for boxes whose shairport-sync user predates P6d. Guarded on the
+        # account existing because on a fresh box install_renderers has not
+        # run yet at this point — same shape as the `pi` guard above.
+        if getent passwd shairport-sync >/dev/null 2>&1; then
+            usermod -aG jts-ring shairport-sync 2>/dev/null || true
+        fi
     fi
-    echo "  Service users ready: jasper-voice, jasper-mux, jasper-input, jasper-usbmic, jasper-control, jasper-web, jasper-recon (group: jasper; secrets: jasper-secrets = voice+web; intsecrets: jasper-intsecrets = voice+control+mux+web; ring writers: jts-ring = pi + jasper-web; bluealsa-aplay and the root correction-lane identities write rings as root)"
+    echo "  Service users ready: jasper-voice, jasper-mux, jasper-input, jasper-usbmic, jasper-control, jasper-web, jasper-recon (group: jasper; secrets: jasper-secrets = voice+web; intsecrets: jasper-intsecrets = voice+control+mux+web; ring writers: jts-ring = pi + jasper-web + shairport-sync; bluealsa-aplay and the root correction-lane identities write rings as root)"
 
     # The /var/lib/jasper directory itself is widened to root:jasper 0770 by the
     # group-aware ensure_state_dir() (env-migrations.sh), which runs on every

@@ -152,7 +152,16 @@ install_renderers() {
         groupadd -r shairport-sync
     fi
     if ! getent passwd shairport-sync >/dev/null 2>&1; then
-        useradd -r -M -s /usr/sbin/nologin -g shairport-sync -G audio shairport-sync
+        # -G jts-ring (U3/P6d): the airplay renderer lane's ioplug creates its
+        # SHM ring under /dev/shm/jts-ring (2775) inside the shairport-sync
+        # process. Safe to hard-list because WE create the group:
+        # create_jasper_service_users runs before install_renderers in
+        # install.sh, so on a fresh box the group exists here — and if that
+        # ordering ever broke, this useradd would fail LOUDLY (exit 6 under
+        # set -euo pipefail), not silently. Boxes whose user predates P6d take
+        # the guarded usermod in service-users.sh instead (the useradd here is
+        # skipped for them). Inert until the lane is armed.
+        useradd -r -M -s /usr/sbin/nologin -g shairport-sync -G audio,jts-ring shairport-sync
     fi
 
     # shairport-sync config is templated: deploy/shairport-sync.conf.template

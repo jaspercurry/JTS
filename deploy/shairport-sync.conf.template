@@ -1,13 +1,18 @@
-// JTS shairport-sync config TEMPLATE — AirPlay 2 receiver into
-// snd-aloop. Rendered to /etc/shairport-sync.conf by
-// `jasper-apply-airplay-mode` (script installed to /usr/local/sbin/).
+// JTS shairport-sync config TEMPLATE — AirPlay 2 receiver into its
+// private fan-in lane (snd-aloop, or the SHM ring when the airplay
+// renderer lane is armed — U3/P6d). Rendered to /etc/shairport-sync.conf
+// by `jasper-apply-airplay-mode` (script installed to /usr/local/sbin/).
 // The renderer substitutes `__DISABLE_SYNCHRONIZATION__` based on
-// `JASPER_AIRPLAY_FREE_RUNNING` in /var/lib/jasper/airplay_mode.env.
+// `JASPER_AIRPLAY_FREE_RUNNING` in /var/lib/jasper/airplay_mode.env,
+// and `__RENDERER_DEVICE__` from the renderer-lane map (see the alsa
+// block below).
 // Default = no (synced) — synced is glitch-free since we raised
 // `resync_threshold_in_seconds` below. Toggle via
 // http://jts.local/airplay/ or `jasper-airplay-mode set
 // [free-running|synced]`. See jasper/web/airplay_setup.py +
 // docs/HANDOFF-airplay.md for the toggle UX and full rationale.
+// SYNC-CONSTANT PROVENANCE: the tuned values below were derived on the
+// snd-aloop transport — see the U3 note above drift_tolerance.
 //
 // Requires source-built shairport-sync with --with-airplay-2 plus
 // nqptp.service running (UDP 319/320). The Debian Trixie apt package
@@ -21,6 +26,22 @@ general = {
     // 17-second underrun cadence visible in the journal.
     interpolation = "auto";
     output_backend = "alsa";
+    // U3/P6d TRANSPORT PROVENANCE — read before retuning any of the four
+    // sync values below (drift_tolerance, resync_threshold, the latency
+    // offset, buffer_desired_length). All four were derived and
+    // empirically validated on the SND-ALOOP transport, where
+    // snd_pcm_delay() lies (it reports loopback ring FILL, not
+    // presentation latency — the mechanism the resync comment below
+    // documents). On the armed SHM-ring transport the ioplug reports an
+    // honest occupancy-derived delay (jts_ring_delay,
+    // c/jts-ring-ioplug/pcm_jts_ring.c), so the delay signal shairport
+    // disciplines against has DIFFERENT dynamics even though the offset
+    // formula's own terms are all downstream of fan-in and
+    // transport-independent in kind. Validation does not transfer
+    // automatically: keep resync_threshold at 0.2 through the migration,
+    // and re-derive on measurement in the box's per-lane source pass
+    // (docs/HANDOFF-audio-graph-consolidation.md, U3 arc row). The arm
+    // CLI prints the same advisory when the airplay lane is armed.
     // Default 0.002 s is unachievable in this topology (snd-aloop +
     // CamillaDSP + Apple dongle PLL drift). With the default,
     // shairport corrects on every cycle and the correction itself is
@@ -89,10 +110,15 @@ sessioncontrol = {
 };
 
 alsa = {
-    // shairport_substream is AirPlay's private fan-in lane. The plug
-    // wrapper handles shairport's native 44100 → 48000 S16_LE conversion
-    // through libsamplerate (samplerate_medium by default, toggleable
-    // at /system/). shairport-sync still only
+    // AirPlay's private fan-in lane, substituted from the renderer-lane
+    // map (/var/lib/jasper/renderer_lanes.env, single writer
+    // `jasper-audio-config renderer-lanes`): shairport_substream — the
+    // snd-aloop lane, and the fallback when no map exists — or
+    // shairport_ring_lane when the airplay lane is armed (U3/P6d). Both
+    // are plug wrappers that handle shairport's native 44100 → 48000
+    // S16_LE conversion through libsamplerate (samplerate_medium by
+    // default, toggleable at /system/); only the slave under the wrapper
+    // differs. shairport-sync still only
     // accepts output_rate values that are integer multiples of 44100, so
     // 44100 stays here as shairport's native AirPlay rate.
     output_device = "__RENDERER_DEVICE__";

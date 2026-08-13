@@ -40,7 +40,14 @@ ExecStartPre=+/usr/local/sbin/jasper-apply-airplay-mode
 ExecStart=/usr/local/bin/shairport-sync
 User=shairport-sync
 Group=shairport-sync
-SupplementaryGroups=audio
+# jts-ring: lets the ioplug create/write the airplay lane's SHM ring under
+# /dev/shm/jts-ring (2775) when the lane is armed (U3/P6d). Inert unarmed.
+SupplementaryGroups=audio jts-ring
+# The ioplug creates the ring file 0660 & ~umask INSIDE this process, and
+# fan-in's reader end must write the shared header — systemd's default 0022
+# would land it 0640, group-unwritable. Required of every ring-writing
+# renderer unit (see tests/test_renderer_ring_lanes.py).
+UMask=0007
 # Scheduling priority matches jasper-camilla. shairport produces audio
 # that camilla consumes via snd-aloop; if shairport runs at default
 # Nice=0 while camilla + jasper-aec-bridge run at Nice=-10, brief

@@ -107,6 +107,11 @@ def _render(
             "JASPER_OUTPUTD_STATUS_SOCKET": str(
                 outputd_status_socket or tmp_path / "no-outputd-status.sock"
             ),
+            # Hermetic: never read the HOST's renderer-lane map — on an
+            # armed box these tests would otherwise render the ring device.
+            # The armed/disarmed device behavior itself is pinned end to end
+            # in tests/test_renderer_ring_lanes.py's conf-renderer facts.
+            "JASPER_RENDERER_LANES_ENV": str(tmp_path / "no-renderer-lanes.env"),
         }
     )
 
@@ -428,3 +433,8 @@ def test_renderer_device_placeholder_validated(tmp_path: Path):
         """,
     )
     assert "__RENDERER_DEVICE__" not in rendered
+    # With no renderer-lane map (the harness pins one that does not exist),
+    # the device falls back to the shipped snd-aloop lane — the
+    # byte-identical fleet default. The armed→ring flip is pinned in
+    # tests/test_renderer_ring_lanes.py.
+    assert 'output_device = "shairport_substream"' in rendered

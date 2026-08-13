@@ -113,6 +113,29 @@ completed fan-in handoff remains authoritative if cleanup fails.
 Voice transport "pause AirPlay" remains separate: it uses MPRIS/DACP
 pause semantics and intentionally keeps the session available to resume.
 
+**Which lane transport is this box on? (U3/P6d)** `output_device` in the
+rendered `/etc/shairport-sync.conf` is substituted by
+`jasper-apply-airplay-mode` from the renderer-lane map
+(`/var/lib/jasper/renderer_lanes.env`, single writer
+`jasper-audio-config renderer-lanes`): `shairport_substream` — the
+snd-aloop lane, the fleet default, and the fallback when no map exists —
+or `shairport_ring_lane` (the SHM ring) when the `airplay` lane is armed.
+The conf re-renders at every unit start, so a conf that disagrees with
+the armed set means the unit has not restarted since the map changed;
+`jasper-doctor`'s "shairport-sync.conf: output_device" check names that
+state with the restart remedy. **This document's mechanism claims are
+aloop-path claims**: the loopback-ring-fill `snd_pcm_delay()` lie, the
+fill-ramp cadence behind Pattern B, and the tuned constants
+(`drift_tolerance=0.1`, `resync_threshold=0.2`,
+`audio_backend_buffer_desired_length=0.5`, the derived latency offset)
+were all derived and validated on the aloop transport. The ring ioplug
+reports an honest occupancy-derived delay instead, so on an armed box the
+delay signal has different dynamics — keep `resync_threshold=0.2` through
+the migration and re-derive on measurement in that box's per-lane source
+pass (see `deploy/shairport-sync.conf.template`'s provenance note and
+docs/HANDOFF-audio-graph-consolidation.md's U3 arc row; the arm CLI
+prints the same advisory).
+
 If you're hearing artifacts, something has changed (active
 correction profile, DAC swap, software update, network change,
 hardware fault, topology flipped). This doc helps you find what.

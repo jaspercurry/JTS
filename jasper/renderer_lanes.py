@@ -29,8 +29,14 @@ last so it beats their in-unit defaults:
 
 * ``JASPER_FANIN_RENDERER_RING_LANES`` — read by ``jasper-fanin``; selects the
   lane's read path (``rust/jasper-fanin/src/mixer/ring_capture.rs``).
-* ``JASPER_<RENDERER>_DEVICE`` — read by the renderer unit's ``ExecStart``;
-  selects the ALSA PCM it writes.
+* ``JASPER_<RENDERER>_DEVICE`` — selects the ALSA PCM the renderer writes.
+  Three delivery shapes, one per lane kind: a unit-ful lane's ``ExecStart``
+  substitutes it from the loaded-last env chain (librespot, bluealsa); a
+  CONF-RENDERER lane's per-start renderer script reads the rendered line out
+  of this file and substitutes it into the renderer's own config artifact
+  (shairport — see :attr:`RendererLane.conf_renderer`); a unitless lane's
+  spawn helper derives the same value at call time and the line is the map's
+  own record (correction).
 
 Writing them together is what makes a half-flip unrepresentable **by this
 writer**. Be precise about the scope, because two other things could still
@@ -126,9 +132,11 @@ RING_SLOTS_MAX = 16
 class RendererLane:
     """One migratable renderer lane.
 
-    Holds every per-lane fact the flip needs, so adding the next lane (P6b
-    bluealsa, P6c correction, P6d shairport) is one entry here plus its conf.d
-    block and unit edit — not a new rule.
+    Holds every per-lane fact the flip needs, so adding a lane is one entry
+    here plus its conf.d block and unit/renderer edit — not a new rule. P6b–d
+    each landed that way; the per-lane variation lives in the optional fields
+    (``unit=None`` for ephemeral writers, ``conf_renderer`` for a
+    conf-rendered device, ``arm_advisory`` for arm-time operator notes).
     """
 
     #: The fan-in lane LABEL. This is the identity fan-in already has for the
@@ -146,9 +154,12 @@ class RendererLane:
     #: only jasper-fanin's.
     unit: str | None
     #: The env key rendered into the lane map. For a unit-ful lane the unit's
-    #: ``ExecStart`` substitutes it; for a unitless lane the line is the
-    #: map's own record of the resolved device (the spawn path derives the
-    #: same value through ``device_for`` at call time and reads no env key).
+    #: ``ExecStart`` substitutes it; for a conf-renderer lane
+    #: (:attr:`conf_renderer`) the renderer script reads the rendered line and
+    #: substitutes the value into the renderer's own config artifact; for a
+    #: unitless lane the line is the map's own record of the resolved device
+    #: (the spawn path derives the same value through ``device_for`` at call
+    #: time and reads no env key).
     device_key: str
     #: The ALSA PCM name the renderer writes on an UNARMED box — the shipped
     #: snd-aloop path, which stays defined until P9 because it is the
@@ -166,6 +177,22 @@ class RendererLane:
     #: root and pass the predicate trivially, so preflighting the one
     #: non-root identity is the complete check.
     arm_preflight_user: str | None = None
+    #: Unit-ful lanes whose renderer reads a STATIC CONFIG ARTIFACT rather
+    #: than argv/env: the repo-relative path of the per-start renderer script
+    #: that derives that artifact — the script reads this lane's
+    #: :attr:`device_key` line out of the rendered map (falling back to
+    #: :attr:`aloop_device` when no map exists) and substitutes the value
+    #: into the artifact it is the single writer of. The flip therefore still
+    #: lands on the unit's next start, exactly like the ``ExecStart``
+    #: substitution lanes, because the unit's ``ExecStartPre`` runs the
+    #: script. ``None`` for lanes whose unit reads :attr:`device_key`
+    #: directly and for unitless lanes.
+    conf_renderer: str | None = None
+    #: Optional operator note the arm CLI prints when this label is NEWLY
+    #: armed. Plain data, no machinery: for facts the operator must carry to
+    #: the box's source pass (P6d: AirPlay's sync constants were derived on
+    #: the aloop transport). Never a refusal — advisories inform, gates gate.
+    arm_advisory: str | None = None
 
 
 #: Every lane this mechanism knows about — one row per MIGRATED renderer.
@@ -173,9 +200,9 @@ class RendererLane:
 #: A lane appears here when its own PR lands, together with its conf.d block and
 #: its unit edit; a lane that has not been migrated is absent rather than
 #: pre-declared, because a row here is what makes a label armable and arming a
-#: renderer whose ring PCM does not exist would be a silent source. Adding the
-#: next one (P6b bluealsa, P6c correction, P6d shairport) is one entry plus
-#: those two files — not a new rule.
+#: renderer whose ring PCM does not exist would be a silent source. All four
+#: renderer lanes are registered as of P6d (shairport); adding another is one
+#: entry plus those two files — not a new rule.
 RENDERER_LANES: tuple[RendererLane, ...] = (
     RendererLane(
         label="spotify",
@@ -218,6 +245,43 @@ RENDERER_LANES: tuple[RendererLane, ...] = (
         aloop_device=CORRECTION_SUBSTREAM,
         ring_device="correction_ring_lane",
         arm_preflight_user="jasper-web",
+    ),
+    RendererLane(
+        # The AirPlay lane — U3/P6d, the LAST renderer lane, and the first
+        # CONF-RENDERER lane: shairport-sync reads `output_device` from
+        # /etc/shairport-sync.conf, a derived artifact that
+        # jasper-apply-airplay-mode re-renders from its template on EVERY
+        # unit start (ExecStartPre) and at install/CLI/wizard time. That
+        # script — the artifact's single writer from all four invocation
+        # sites — reads THIS row's device_key line out of the rendered map
+        # and falls back to the aloop device when no map exists, so the
+        # armed-set fact is never re-derived in a second language (the bash
+        # side reads the RESOLVED value, never the armed set). The Tier-3
+        # wedge supervisor's recovery restart runs the same ExecStartPre, so
+        # the recovery path follows this map for free.
+        label="airplay",
+        renderer="shairport-sync",
+        unit="shairport-sync.service",
+        device_key="JASPER_SHAIRPORT_DEVICE",
+        aloop_device="shairport_substream",
+        ring_device="shairport_ring_lane",
+        conf_renderer="deploy/bin/jasper-apply-airplay-mode",
+        # Printed at arm time. AirPlay is the one lane whose SYNC machinery
+        # was tuned against the transport this arm replaces; the constants
+        # are not invalidated by the arm, but their validation does not
+        # transfer automatically — the per-box source pass owns re-deriving
+        # them (docs/HANDOFF-audio-graph-consolidation.md, U3 arc row).
+        arm_advisory=(
+            "AirPlay's sync tuning was derived on the snd-aloop transport: "
+            "the audio_backend_latency_offset's VISIBLE-delay half changes "
+            "on the ring (the ioplug reports honest occupancy where aloop "
+            "reported buffer fill), and drift_tolerance / resync_threshold "
+            "/ audio_backend_buffer_desired_length in "
+            "deploy/shairport-sync.conf.template were tuned against aloop "
+            "fill dynamics. Keep resync_threshold at 0.2 through the "
+            "migration; re-verify A/V sync and watch the resync log on this "
+            "box's source pass (docs/HANDOFF-airplay.md, U3)."
+        ),
     ),
 )
 

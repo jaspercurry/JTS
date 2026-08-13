@@ -574,19 +574,31 @@ def check_spotify_connect_device(cfg: Config) -> CheckResult:
 @doctor_check(order=72, group="renderers")
 def check_shairport_sync_loopback_plughw() -> CheckResult:
     """Verify the deployed shairport-sync.conf uses a multi-writer-safe
-    renderer device.
+    renderer device that MATCHES the lane map's intent.
 
-    Canonical: `shairport_substream` — AirPlay's private fan-in lane.
-    jasper-fanin reads the capture side and publishes the summed music
-    stream to CamillaDSP/AEC. A stale `jasper_renderer_in` value means
-    shairport is still pointed at the retired renderer-side dmix path.
+    Canonical is transport-dependent since U3/P6d: `shairport_substream`
+    (AirPlay's private snd-aloop fan-in lane — the unarmed/fleet default)
+    or `shairport_ring_lane` (the SHM ring, when the airplay renderer lane
+    is armed). Both names come from the `airplay` row in
+    `jasper.renderer_lanes.RENDERER_LANES` — never respelled here — and the
+    armed set from the same lane map `jasper-apply-airplay-mode` reads, so
+    this check and the conf renderer cannot disagree about intent.
 
-    Legacy `plughw:Loopback,0,0` and raw `hw:Loopback,0,0` are both
-    stale now. The raw form is additionally broken because it bypasses
-    ALSA's plug layer.
+    The conf is a DERIVED artifact re-rendered at every unit start, so a
+    conf that disagrees with the armed set means exactly one thing: the
+    unit has not restarted since the map changed. That is the half-flip
+    window the arm CLI's restart_required instruction exists to close, and
+    naming it here makes that instruction verifiable after the fact.
+
+    A stale `jasper_renderer_in` value means shairport is still pointed at
+    the retired renderer-side dmix path. Legacy `plughw:Loopback,0,0` and
+    raw `hw:Loopback,0,0` are both stale now; the raw form is additionally
+    broken because it bypasses ALSA's plug layer.
 
     Check runs against the DEPLOYED file (not the repo) so it catches
     both kinds of drift: branch not yet merged, and manual on-Pi edits."""
+    from jasper.renderer_lanes import lane_by_label, read_armed_labels
+
     label = "shairport-sync.conf: output_device"
     p = Path("/etc/shairport-sync.conf")
     if not p.exists():
@@ -612,10 +624,42 @@ def check_shairport_sync_loopback_plughw() -> CheckResult:
             "on shairport-sync's default (probably wrong).",
         )
     line = active_lines[0]
-    if "shairport_substream" in line:
+    lane = lane_by_label("airplay")
+    if lane is None:  # registry regression — a doctor check never raises
+        return CheckResult(
+            label, "warn",
+            "no `airplay` row in jasper.renderer_lanes.RENDERER_LANES — "
+            "cannot judge the rendered device against the lane map",
+        )
+    armed = lane.label in read_armed_labels()
+    if lane.ring_device in line:
+        if armed:
+            return CheckResult(
+                label, "ok",
+                f"{lane.ring_device} (renderer ring lane, armed)",
+            )
+        return CheckResult(
+            label, "warn",
+            f"conf renders {lane.ring_device} but the {lane.label} lane is "
+            "NOT armed — shairport-sync has not restarted since the disarm, "
+            "and is writing a ring jasper-fanin no longer reads (silent "
+            f"AirPlay). Restart {lane.unit} (its ExecStartPre re-renders "
+            "the conf from the lane map).",
+        )
+    if lane.aloop_device in line:
+        if armed:
+            return CheckResult(
+                label, "warn",
+                f"the {lane.label} lane is ARMED but the conf still renders "
+                f"{lane.aloop_device} — shairport-sync has not restarted "
+                "since the arm, so it is writing the aloop lane while "
+                "jasper-fanin reads the ring (silent AirPlay). Restart "
+                f"{lane.unit} (its ExecStartPre re-renders the conf from "
+                "the lane map).",
+            )
         return CheckResult(
             label, "ok",
-            "shairport_substream (fan-in private AirPlay lane)",
+            f"{lane.aloop_device} (fan-in private AirPlay lane)",
         )
     if "jasper_renderer_in" in line:
         return CheckResult(

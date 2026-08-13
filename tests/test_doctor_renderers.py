@@ -136,8 +136,27 @@ def test_check_bluetooth_pairing_policy_warns_when_pairing_window_open(monkeypat
     assert "pairing window open" in r.detail
 
 
+def _patch_lane_map(monkeypatch, tmp_path: Path, armed):
+    """Pin the renderer-lane map the shairport conf check consults.
+
+    ``armed=None`` means NO map file — the shipped fleet state. Anything
+    else is rendered through the map's real writer-side text so the test
+    reads exactly what production would. Without this pin the check would
+    read the HOST's /var/lib/jasper map, making these tests answer
+    differently on an armed box.
+    """
+    import jasper.renderer_lanes as rl
+
+    map_path = tmp_path / "renderer_lanes.env"
+    monkeypatch.setattr(rl, "RENDERER_LANES_ENV", str(map_path))
+    if armed is not None:
+        map_path.write_text(rl.render_env_text(tuple(armed)))
+
+
 def test_shairport_check_substream_is_ok(monkeypatch, tmp_path):
-    """Canonical fan-in wiring: AirPlay targets its private lane."""
+    """Canonical fan-in wiring: AirPlay targets its private aloop lane —
+    the unarmed/fleet default (no lane map exists)."""
+    _patch_lane_map(monkeypatch, tmp_path, None)
     _patch_shairport_conf(
         monkeypatch,
         'alsa = {\n    output_device = "shairport_substream";\n};\n',
@@ -146,6 +165,58 @@ def test_shairport_check_substream_is_ok(monkeypatch, tmp_path):
     r = doctor.check_shairport_sync_loopback_plughw()
     assert r.status == "ok"
     assert "shairport_substream" in r.detail
+
+
+def test_shairport_check_ring_device_ok_when_armed(monkeypatch, tmp_path):
+    """Armed lane + conf rendering the ring device = the coherent armed
+    state (U3/P6d)."""
+    _patch_lane_map(monkeypatch, tmp_path, ["airplay"])
+    _patch_shairport_conf(
+        monkeypatch,
+        'alsa = {\n    output_device = "shairport_ring_lane";\n};\n',
+        tmp_path,
+    )
+    r = doctor.check_shairport_sync_loopback_plughw()
+    assert r.status == "ok"
+    assert "shairport_ring_lane" in r.detail
+    assert "armed" in r.detail
+
+
+def test_shairport_check_armed_but_conf_aloop_warns_restart(
+    monkeypatch, tmp_path
+):
+    """ARMED lane but the conf still renders the aloop device: the unit has
+    not restarted since the arm — the half-flip window the arm CLI's
+    restart_required instruction exists to close. The conf is re-rendered
+    at every unit start, so this disagreement means exactly that, and the
+    detail must say so with the unit named."""
+    _patch_lane_map(monkeypatch, tmp_path, ["airplay"])
+    _patch_shairport_conf(
+        monkeypatch,
+        'alsa = {\n    output_device = "shairport_substream";\n};\n',
+        tmp_path,
+    )
+    r = doctor.check_shairport_sync_loopback_plughw()
+    assert r.status == "warn"
+    assert "not restarted since the arm" in r.detail
+    assert "shairport-sync.service" in r.detail
+
+
+def test_shairport_check_ring_conf_but_disarmed_warns(monkeypatch, tmp_path):
+    """Conf renders the ring device while the lane is NOT armed: the
+    rollback half of the same window (disarm without restart). shairport
+    would write a ring fan-in no longer reads — silence — so this warns
+    with the restart remedy rather than counting as 'not recognized'."""
+    _patch_lane_map(monkeypatch, tmp_path, [])
+    _patch_shairport_conf(
+        monkeypatch,
+        'alsa = {\n    output_device = "shairport_ring_lane";\n};\n',
+        tmp_path,
+    )
+    r = doctor.check_shairport_sync_loopback_plughw()
+    assert r.status == "warn"
+    assert "NOT armed" in r.detail
+    assert "shairport-sync.service" in r.detail
 
 
 def test_shairport_check_jasper_renderer_in_fails(monkeypatch, tmp_path):
