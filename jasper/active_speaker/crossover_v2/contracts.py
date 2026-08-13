@@ -943,8 +943,8 @@ ENTRY_GRAPH_FINGERPRINT_UNKNOWN = "unknown"
 
 #: What :attr:`RoundReceipt.proposal_fingerprint` identifies, as a closed word.
 #:
-#: **The field's meaning changed on 2026-08-13 (#2392), and a durable record
-#: whose meaning changed silently is a record a later reader will misattribute.**
+#: **The field's meaning changed in #2392, and a durable record whose meaning
+#: changed silently is a record a later reader will misattribute.**
 #: Before #2392 the receipt was fed ``_tuning_attempt_id or
 #: candidate.fingerprint`` — both of which are a *candidate* fingerprint. Since
 #: #2392 it is fed :attr:`InterventionProposal.fingerprint`. The two cannot be
