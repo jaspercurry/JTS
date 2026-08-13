@@ -35,7 +35,7 @@ from jasper.audio_measurement.null_walk import (
     NullWalkSpec,
     select_scheduled_delay,
 )
-from jasper.correction.playback import DEFAULT_ALSA_DEVICE
+from jasper.audio_measurement.correction_lane import correction_play_device
 from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology
 
@@ -2032,7 +2032,9 @@ class CommissioningEvidenceHost:
                 evidence_store=self.evidence_store,
                 load_current_authority=load_capture_authority,
                 raw_transport=self._raw_capture_transport,
-                alsa_device=DEFAULT_ALSA_DEVICE,
+                # The lane's transport reader (P6c-ii): armed boxes play
+                # through the ring lane, unarmed through the aloop alias.
+                alsa_device=correction_play_device(),
                 playback_timeout_s=CROSSOVER_CAPTURE_PLAY_DEADLINE_S,
             )
             mutation_journal, restored_by_caller = self._runtime_mutation_journal(

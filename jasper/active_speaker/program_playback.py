@@ -42,7 +42,7 @@ from typing import Awaitable, Callable
 # The ALSA lane a program WAV is played into — the correction fan-in substream
 # that feeds CamillaDSP's capture, same as the isolated driver sweep
 # (``jasper.active_speaker.web_commissioning.COMMISSION_TONE_ALSA_DEVICE``).
-from jasper.audio_measurement.correction_lane import CORRECTION_SUBSTREAM
+from jasper.audio_measurement.correction_lane import correction_play_device
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity
 from jasper.audio_measurement.playback import (
     PlaybackResult,
@@ -95,7 +95,7 @@ async def verified_program_aplay(
     bundle_dir: str | Path,
     artifact: ArtifactIdentity,
     *,
-    alsa_device: str = CORRECTION_SUBSTREAM,
+    alsa_device: str | None = None,
     timeout_s: float,
 ) -> PlaybackResult:
     """The production ``play_wav`` seam: verified-aplay of the program WAV.
@@ -104,7 +104,15 @@ async def verified_program_aplay(
     sha256-verifies the exact program WAV bytes, ``play_verified_wav`` re-verifies
     and emits them through a stable fd. Wave 5 binds this as ``play_program``'s
     ``play_wav`` seam; tests inject a fake so no aplay is spawned.
+
+    ``alsa_device=None`` (the production shape) resolves the correction
+    lane's CURRENT transport per call via ``correction_play_device()`` — a
+    def-time constant default would freeze the device at import and ignore
+    an arm (P6c-ii). Passing a device explicitly remains the test/override
+    seam.
     """
+    if alsa_device is None:
+        alsa_device = correction_play_device()
     async with verified_wav_source(bundle_dir, artifact) as source:
         return await play_verified_wav(
             source, alsa_device=alsa_device, timeout_s=timeout_s

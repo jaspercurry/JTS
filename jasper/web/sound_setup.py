@@ -86,7 +86,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping
 
-from jasper.audio_measurement.correction_lane import popen_correction_play
+# correction_play_device: the lane's one transport reader (P6c-ii) — the
+# static COMMISSION_TONE_ALSA_DEVICE alias dissolved with the ring-lane flip;
+# payloads resolve the device fresh so they report the transport the spawn
+# actually used.
+from jasper.audio_measurement.correction_lane import (
+    correction_play_device,
+    popen_correction_play,
+)
 from jasper.audio_hardware.dac import INNOMAKER_HIFI_AMP_PRO_ID, by_id as dac_by_id
 from jasper.audio_hardware.usb_port_role import (
     DEFAULT_I2S_HAT_INTENT_PATH,
@@ -128,7 +135,6 @@ from jasper.active_speaker.commission_wiring import (
 # household music into a live sweep. tests/test_commission_tone_single_owner.py
 # pins both the import and the lease headroom.
 from jasper.active_speaker.web_commissioning import (
-    COMMISSION_TONE_ALSA_DEVICE,
     COMMISSION_TONE_DURATION_S,
     COMMISSION_TONE_RESTART_MARGIN_S,
     COMMISSION_TONE_STARTUP_CHECK_S,
@@ -3443,7 +3449,7 @@ async def _active_speaker_play_summed_commission_tone(
                     )
                     current_playback.update(
                         {
-                            "audio_device": {"pcm": COMMISSION_TONE_ALSA_DEVICE},
+                            "audio_device": {"pcm": correction_play_device()},
                             "stimulus": stimulus,
                         }
                     )
@@ -3471,7 +3477,7 @@ async def _active_speaker_play_summed_commission_tone(
                     )
                     current_playback.update(
                         {
-                            "audio_device": {"pcm": COMMISSION_TONE_ALSA_DEVICE},
+                            "audio_device": {"pcm": correction_play_device()},
                             "stimulus": stimulus,
                         }
                     )
@@ -3515,7 +3521,7 @@ async def _active_speaker_play_summed_commission_tone(
                     )
                     current_playback.update(
                         {
-                            "audio_device": {"pcm": COMMISSION_TONE_ALSA_DEVICE},
+                            "audio_device": {"pcm": correction_play_device()},
                             "stimulus": stimulus,
                         }
                     )
@@ -3536,7 +3542,7 @@ async def _active_speaker_play_summed_commission_tone(
                     )
                     current_playback.update(
                         {
-                            "audio_device": {"pcm": COMMISSION_TONE_ALSA_DEVICE},
+                            "audio_device": {"pcm": correction_play_device()},
                             "stimulus": stimulus,
                         }
                     )

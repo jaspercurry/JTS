@@ -282,7 +282,7 @@ install_jts_ring_conf_assets() {
     if [[ -f "${lanes_src}" ]]; then
         install -d -m 0755 /etc/alsa/conf.d
         install -m 0644 "${lanes_src}" /etc/alsa/conf.d/61-jts-renderer-lanes.conf
-        echo "  Installed /etc/alsa/conf.d/61-jts-renderer-lanes.conf (pcm.jts_ring_lane_spotify + pcm.librespot_ring_lane; inert)"
+        echo "  Installed /etc/alsa/conf.d/61-jts-renderer-lanes.conf (renderer-lane ring PCMs; inert until a lane is armed)"
     else
         echo "  WARN: ${lanes_src} missing; renderer-ingress lane PCMs not installed" >&2
     fi

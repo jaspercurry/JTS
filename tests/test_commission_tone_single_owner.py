@@ -67,8 +67,13 @@ SHARED_COMMISSION_TONE_HELPERS = (
 # string constant passes an identity assertion silently. The binding-shape
 # guard below is the load-bearing one; identity is kept only as a cheap
 # same-value cross-check.
+# COMMISSION_TONE_ALSA_DEVICE left this family at P6c-ii: the lane's device
+# stopped being a constant at all — both surfaces resolve it per call
+# through the one transport reader
+# (jasper.audio_measurement.correction_lane.correction_play_device), and a
+# re-fork of the DEVICE now means re-declaring the lane literal, which
+# tests/test_correction_substream_ssot.py's guard catches instead.
 SHARED_COMMISSION_TONE_CONSTANTS = (
-    "COMMISSION_TONE_ALSA_DEVICE",
     "COMMISSION_TONE_DURATION_S",
     "COMMISSION_TONE_RESTART_MARGIN_S",
     "COMMISSION_TONE_STARTUP_CHECK_S",
@@ -188,7 +193,6 @@ _FORKED_FIXTURE = '''\
 """Prose that names COMMISSION_TONE_DURATION_S must not trip the guard."""
 # nor may this comment mentioning SUMMED_COMMISSION_SPEECH_BACKEND = "x"
 COMMISSION_TONE_DURATION_S = 35.0
-COMMISSION_TONE_ALSA_DEVICE: str = "correction_substream"
 COMMISSION_TONE_RESTART_MARGIN_S = COMMISSION_TONE_STARTUP_CHECK_S = 3.0
 
 
@@ -200,8 +204,8 @@ def _local_shadow():
 _IMPORTED_FIXTURE = '''\
 """COMMISSION_TONE_DURATION_S is imported, not declared."""
 from jasper.active_speaker.web_commissioning import (
-    COMMISSION_TONE_ALSA_DEVICE,
     COMMISSION_TONE_DURATION_S,
+    COMMISSION_TONE_RESTART_MARGIN_S,
 )
 
 SOMETHING_ELSE = 1.0
@@ -220,7 +224,6 @@ def test_constant_guard_detects_a_re_fork():
     assert _forked_constant_bindings(
         _FORKED_FIXTURE, SHARED_COMMISSION_TONE_CONSTANTS
     ) == [
-        "COMMISSION_TONE_ALSA_DEVICE",
         "COMMISSION_TONE_DURATION_S",
         "COMMISSION_TONE_RESTART_MARGIN_S",
         "COMMISSION_TONE_STARTUP_CHECK_S",
@@ -235,8 +238,8 @@ def test_constant_guard_accepts_imports_and_ignores_prose():
         == []
     )
     assert _names_imported_from(_IMPORTED_FIXTURE, OWNER_MODULE) == {
-        "COMMISSION_TONE_ALSA_DEVICE",
         "COMMISSION_TONE_DURATION_S",
+        "COMMISSION_TONE_RESTART_MARGIN_S",
     }
 
 

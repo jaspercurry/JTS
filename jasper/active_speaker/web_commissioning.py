@@ -81,8 +81,13 @@ from jasper.active_speaker.startup_load import (
     rollback_driver_commissioning_config,
 )
 from jasper.active_speaker.topology_tone import build_summed_topology_tone_plan
+# P6c-ii dissolved the static COMMISSION_TONE_ALSA_DEVICE alias: the lane's
+# device is no longer one import-time constant but this box's armed-vs-unarmed
+# transport, resolved fresh per use by correction_play_device() (the lane's
+# one reader) so a spawn and the payload reporting it can never disagree in
+# steady state about which transport the box is on.
 from jasper.audio_measurement.correction_lane import (
-    CORRECTION_SUBSTREAM as COMMISSION_TONE_ALSA_DEVICE,
+    correction_play_device,
     popen_correction_play,
 )
 from jasper.camilla import CamillaUnavailable
@@ -796,7 +801,7 @@ def _commission_tone_payload(
             "commission_gain_db": level_dbfs,
             "duration_ms": int(round(COMMISSION_TONE_DURATION_S * 1000)),
         },
-        "audio_device": {"pcm": COMMISSION_TONE_ALSA_DEVICE},
+        "audio_device": {"pcm": correction_play_device()},
         "issues": issues,
     }
     if fanin_gate is not None:
@@ -2496,9 +2501,12 @@ async def _play_capture_sweep(
         )
         duration_s = float(sweep_meta.get("duration_s") or 6.0)
         fanin_gate = await _commission_tone_select_fanin_lane_async()
+        # Resolved ONCE for this operation: the spawn and every payload
+        # reporting it use the same transport answer.
+        alsa_device = correction_play_device()
         await play_sweep(
             wav_path,
-            alsa_device=COMMISSION_TONE_ALSA_DEVICE,
+            alsa_device=alsa_device,
             timeout_s=duration_s + 5.0,
         )
         payload = {
@@ -2511,7 +2519,7 @@ async def _play_capture_sweep(
             "sweep_meta": sweep_meta,
             "excitation": excitation,
             "tone": {"level_dbfs": level_dbfs},
-            "audio_device": {"pcm": COMMISSION_TONE_ALSA_DEVICE},
+            "audio_device": {"pcm": alsa_device},
             "commissioning_load": load_payload,
             "fanin_gate": fanin_gate,
             "issues": [],
@@ -2527,7 +2535,7 @@ async def _play_capture_sweep(
             "sweep_meta": sweep_meta,
             "excitation": None,
             "tone": {"level_dbfs": level_dbfs},
-            "audio_device": {"pcm": COMMISSION_TONE_ALSA_DEVICE},
+            "audio_device": {"pcm": correction_play_device()},
             "commissioning_load": load_payload,
             "fanin_gate": fanin_gate,
             "issues": [_capture_sweep_issue(exc)],
@@ -2816,6 +2824,9 @@ async def play_driver_capture_sweep(
                     fanin_gate = await _commission_tone_select_fanin_lane_async(
                         fanin_gate_context,
                     )
+                    # Resolved ONCE for this operation: the spawn and the
+                    # payload reporting it use the same transport answer.
+                    alsa_device = correction_play_device()
                     admitted = await play_admitted_driver_capture(
                         topology=topology,
                         safety_profile=safety_profile,
@@ -2829,7 +2840,7 @@ async def play_driver_capture_sweep(
                         read_running_config=read_running_config,
                         read_main_volume_db=read_main_volume_db,
                         load_current_context=load_current_context,
-                        alsa_device=COMMISSION_TONE_ALSA_DEVICE,
+                        alsa_device=alsa_device,
                         # Margin over the *realized* sweep duration, not a fixed
                         # literal -- mirrors _play_capture_sweep's
                         # duration_s + 5.0 above. A hardcoded timeout here
@@ -2858,7 +2869,7 @@ async def play_driver_capture_sweep(
                         "sweep_meta": sweep_meta,
                         "excitation": excitation,
                         "tone": {"level_dbfs": commissioning_gain_db},
-                        "audio_device": {"pcm": COMMISSION_TONE_ALSA_DEVICE},
+                        "audio_device": {"pcm": alsa_device},
                         "commissioning_load": load_payload,
                         "fanin_gate": fanin_gate,
                         "capture_admission": admitted.handoff.to_dict(),
@@ -3125,9 +3136,12 @@ async def _play_summed_commission_tone(
         # ``duration_s + 1.0`` deadman bound (capture-sweep above uses
         # ``duration_s + 5.0``); ``play_sweep`` raises ``SweepPlaybackError``
         # (a ``RuntimeError``) on non-zero exit or timeout, caught below.
+        # Resolved ONCE for this operation: the spawn and the payload
+        # reporting it use the same transport answer.
+        alsa_device = correction_play_device()
         await play_sweep(
             wav_path,
-            alsa_device=COMMISSION_TONE_ALSA_DEVICE,
+            alsa_device=alsa_device,
             timeout_s=duration_s + 1.0,
         )
         playback_result = dict(artifact_playback)
@@ -3136,7 +3150,7 @@ async def _play_summed_commission_tone(
             "backend": SUMMED_COMMISSION_SPEECH_BACKEND,
             "audio_emitted": True,
             "confirmable": True,
-            "audio_device": {"pcm": COMMISSION_TONE_ALSA_DEVICE},
+            "audio_device": {"pcm": alsa_device},
             "stimulus": stimulus,
             "commissioning_load": load_payload,
             "fanin_gate": fanin_gate,

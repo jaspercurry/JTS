@@ -142,9 +142,11 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             "systemd-journal",
             "jasper-secrets",
             "jasper-intsecrets",
-            # U3/P6c-i: /dev/shm/jts-ring write access for the wizard-spawned
-            # correction-lane aplay children (inert until P6c-ii arms the
-            # lane; the ring-file mode rides the spawn helper's umask).
+            # U3/P6c: /dev/shm/jts-ring write access for the wizard-spawned
+            # correction-lane aplay children. Exercised only while this
+            # box's correction lane is armed — unarmed boxes spawn on the
+            # aloop alias and touch no ring; the ring-file mode rides the
+            # spawn helper's umask either way.
             "jts-ring",
         ),
         paths=(

@@ -2286,3 +2286,78 @@ def test_unarmed_renderer_lanes_exit_zero_through_render(monkeypatch, capsys):
     exit_code = doctor.render([result])
     capsys.readouterr()  # swallow render()'s printed report
     assert exit_code == 0
+
+
+def _resting_ring_entry(label):
+    """An armed lane's STATUS entry: attached, never fed since attach."""
+    from jasper.fanin.status import FANIN_INPUT_SOURCE_RING
+
+    return {
+        "label": label,
+        "source": FANIN_INPUT_SOURCE_RING,
+        "frames_read": 0,
+        "ring": {
+            "attached": True,
+            "startup_empty_reads": 40,
+            "empty_reads": 0,
+            "writer_alive": False,
+            "occupancy": 0,
+            "epoch_resets": 0,
+        },
+    }
+
+
+def test_armed_on_demand_lane_resting_state_is_healthy(monkeypatch):
+    """An armed correction lane that has never been fed is RESTING, not
+    broken (U3/P6c-ii): its writers are ephemeral measurement spawns, so
+    between measurements the ring sits attached with only startup empty
+    reads — the same "not a fault" class as a paused renderer. The
+    never-fed WARN diagnoses a DAEMON renderer that failed to reopen its
+    ring after an arm; applying it to an on-demand lane would put a
+    standing false warning on every armed box.
+
+    The detail must also CARRY the carve-out's stated residual: resting
+    and broken-at-open are byte-identical to this check, so the healthy
+    line must hint at the unproven writer path rather than implying it
+    was verified (an operator reading "ok" as "the lane works" would be
+    over-reading — the hint is what keeps the reading honest)."""
+    import jasper.renderer_lanes as rl
+
+    monkeypatch.setattr(rl, "read_armed_labels", lambda *a, **kw: ("correction",))
+    monkeypatch.setattr(
+        doctor.audio_runtime,
+        "_read_status_socket",
+        lambda _path: {"inputs": [_resting_ring_entry("correction")]},
+    )
+    result = doctor.audio_runtime.check_renderer_ring_lanes()
+    assert result.status == "ok"
+    assert "on-demand" in result.detail
+    assert "no measurement played yet" in result.detail
+    assert "a writer that cannot open looks identical here" in result.detail
+    assert "run a measurement to confirm" in result.detail
+
+
+def test_armed_daemon_lane_never_fed_still_warns(monkeypatch):
+    """Control for the on-demand carve-out: a unit-ful lane in the same
+    never-fed state keeps the WARN and its restart-the-unit remedy — the
+    carve-out is keyed on the lane's writers, not applied lane-wide."""
+    import jasper.renderer_lanes as rl
+
+    monkeypatch.setattr(
+        rl, "read_armed_labels", lambda *a, **kw: ("spotify", "correction")
+    )
+    monkeypatch.setattr(
+        doctor.audio_runtime,
+        "_read_status_socket",
+        lambda _path: {
+            "inputs": [
+                _resting_ring_entry("spotify"),
+                _resting_ring_entry("correction"),
+            ]
+        },
+    )
+    result = doctor.audio_runtime.check_renderer_ring_lanes()
+    assert result.status == "warn"
+    assert "spotify" in result.detail and "NEVER FED" in result.detail
+    assert "librespot.service" in result.detail
+    assert "correction:" not in result.detail  # no correction problem entry

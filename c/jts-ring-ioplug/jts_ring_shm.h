@@ -125,6 +125,23 @@ _Static_assert(ATOMIC_LLONG_LOCK_FREE == 2,
 //     whatever the packaged unit sets, so that value cannot bite
 //   - jasper-camilla               RestartSec=2  — sits ON the boundary for
 //     Ring B, worth knowing before anyone shortens it
+//   - correction lane: EPHEMERAL aplay writers (wizards / correction web /
+//     operator CLIs via jasper.audio_measurement.correction_lane) — no unit,
+//     no auto-respawn, so no RestartSec to clear. The only programmatic
+//     re-spawners (sound_setup's volume-floor and summed-test loops) STOP on
+//     the first nonzero exit rather than retrying, so a writer killed inside
+//     this window surfaces as one cleanly-failed session, never a respawn
+//     loop; every other spawn is human-paced, orders of magnitude slower
+//     than the window. Stop-on-first-nonzero does NOT cover the one mid-flip
+//     residual: a spawn that opens a ring fan-in is not reading — not YET
+//     (an arm before fan-in's restart, inherent to every arm transaction)
+//     or no LONGER (a disarm racing a running loop) — SUCCEEDS: aplay exits
+//     0 into the free-running ring, so that loop iteration records silence
+//     AS DATA
+//     rather than an error. Bounded and accepted: flips are
+//     operator-initiated (the arm CLI prints the fan-in restart
+//     instruction), and the correction pipeline's capture-quality checks
+//     reject the truncated/absent capture the spanned iteration produces.
 // Pinned by test_writer_lock_survives_a_sigkilled_incumbent (the window itself)
 // and by tests/test_renderer_ring_lanes.py (each renderer's RestartSec against
 // this constant).

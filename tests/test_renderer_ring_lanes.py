@@ -25,7 +25,6 @@ import argparse
 import pathlib
 import re
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -304,30 +303,96 @@ def _unit_text(lane) -> str:
 
 # --- Per-lane writer facts, dispatched on unit-ful vs unitless -------------
 #
-# P6c-ii will add the `correction` lane, whose writers are EPHEMERAL aplay
-# spawns from four process identities (jasper-web wizards, the root
-# jasper-correction-web, the root streambox variant, root operator CLIs) —
-# no renderer unit exists to read. The dispatchers below give every
-# unit-reading pin an explicit unitless branch NOW (P6c-i), keyed to
-# `lane.unit is None`, so the row's arrival routes each pin to either the
-# per-identity alternative facts (umask, group — assertable today) or an
-# instructive failure naming the contract P6c-ii still has to define
-# (device/map coupling, writer liveness). NEVER a bare skip: a unitless row
-# must land on an assertion or a named gap, not silence.
+# The `correction` lane (P6c-ii) is the first UNITLESS lane: its writers are
+# EPHEMERAL aplay spawns from four process identities (jasper-web wizards,
+# the root jasper-correction-web, the root streambox variant, root operator
+# CLIs) — no renderer unit exists to read. Every unit-reading pin routes on
+# `lane.unit is None` to a per-identity or per-mechanism alternative fact.
+# The routing machinery landed one PR ahead (P6c-i) with instructive
+# failures where the unitless contract was undecided; the row's arrival
+# replaced each with its decision — device/map coupling became the
+# call-time reader pins below, and writer liveness became the ephemeral
+# enumeration in the C header. NEVER a bare skip.
 
 WEB_UNIT = REPO / "deploy" / "jasper-web.service"
 CORRECTION_WEB_UNIT = REPO / "deploy" / "jasper-correction-web.service"
 STREAMBOX_WEB_UNIT = REPO / "deploy" / "jasper-web-streambox.service"
+RING_SHM_HEADER = REPO / "c" / "jts-ring-ioplug" / "jts_ring_shm.h"
+
+#: The C header's enumeration marker for the correction lane's writers —
+#: the ephemeral counterpart of the `- <unit> RestartSec=N` entries. Spelled
+#: once here; `_assert_unitless_liveness_facts` pins the header carries it.
+EPHEMERAL_LIVENESS_MARKER = "- correction lane: EPHEMERAL aplay writers"
 
 
-def _unitless_contract_gap(lane, what: str):
-    pytest.fail(
-        f"lane {lane.label!r} is unitless and {what} has no defined "
-        "alternative yet — P6c-ii must decide how ephemeral spawns learn "
-        "this fact (or that it is structurally n/a) and extend this branch "
-        "with the decided pin. See tests/test_renderer_ring_lanes.py's "
-        "'Per-lane writer facts' section (P6c-i)."
+def _assert_unitless_liveness_facts(lane):
+    """The unitless liveness alternative (decided at P6c-ii).
+
+    A unit-ful ring writer needs `RestartSec > liveness window` and a
+    generous start limit because systemd AUTO-respawns it: a SIGKILLed
+    writer's frozen-fresh heartbeat refuses a successor for up to the
+    window, and a fast respawn loop with a tight start limit PARKS the
+    unit — the one non-self-healing shape.
+
+    An ephemeral writer has NO respawn machinery to constrain: nothing
+    auto-respawns an aplay child. The programmatic re-spawners that exist
+    (sound_setup's volume-floor loop and summed-test loop) STOP on the
+    first nonzero exit instead of retrying — a killed writer inside the
+    window surfaces as one cleanly-failed session, not a loop — and every
+    other spawn is human-paced (wizard retry, CLI re-run), slower than the
+    2 s window by orders of magnitude. So the cadence facts are
+    structurally n/a; what remains pinnable is the C header's writer
+    enumeration ("a writer missing from that list is one nobody checked"),
+    which must name the lane's ephemeral cadence class explicitly.
+    """
+    assert lane.unit is None
+    header = RING_SHM_HEADER.read_text()
+    assert EPHEMERAL_LIVENESS_MARKER in header, (
+        "jts_ring_shm.h's writer-cadence enumeration must name the "
+        "correction lane's ephemeral writers — every ring writer's cadence "
+        "is enumerated there so the set is checkable rather than assumed"
     )
+
+
+def _assert_unitless_device_facts(lane):
+    """The unitless device/map coupling (decided at P6c-ii).
+
+    A unit-ful lane couples through the rendered env file: the unit's
+    ExecStart substitutes ${device_key}, defaulted to the aloop device and
+    overridden by the map loaded last. An ephemeral writer reads no env —
+    jasper.audio_measurement.correction_lane.correction_play_device() is
+    the lane's one transport reader, resolving the SAME map through the
+    SAME device_for rule at every call. Pinned here end-to-end through a
+    real map file: unarmed -> aloop device; armed -> ring device; and the
+    read is call-time FRESH (a flip lands on the very next call with no
+    restart), which is the unitless replacement for the load-order pin —
+    ordering cannot apply where nothing caches.
+    """
+    from jasper.audio_measurement.correction_lane import (
+        correction_play_device,
+    )
+
+    assert lane.unit is None
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        map_path = str(pathlib.Path(tmp) / "renderer_lanes.env")
+        original = rl.RENDERER_LANES_ENV
+        rl.RENDERER_LANES_ENV = map_path
+        try:
+            # No map file at all — the shipped fleet state.
+            assert correction_play_device() == lane.aloop_device
+            # Armed: the map file is written and the SAME process resolves
+            # the ring device on the next call — no import-time caching.
+            pathlib.Path(map_path).write_text(
+                rl.render_env_text((lane.label,))
+            )
+            assert correction_play_device() == lane.ring_device
+            # Disarmed again: freshness in the other direction too.
+            pathlib.Path(map_path).write_text(rl.render_env_text(()))
+            assert correction_play_device() == lane.aloop_device
+        finally:
+            rl.RENDERER_LANES_ENV = original
 
 
 def _assert_unitless_writer_umask_facts():
@@ -403,7 +468,8 @@ def _assert_unitless_writer_group_facts():
 
 def _lane_device_fact(lane):
     if lane.unit is None:
-        _unitless_contract_gap(lane, "the device indirection (device_key)")
+        _assert_unitless_device_facts(lane)
+        return
     unit = _unit_text(lane).replace("\\\n", " ")
     # librespot spells it --device, bluealsa-aplay --pcm; what matters is
     # that the value is the indirection, not which flag carries it.
@@ -418,7 +484,10 @@ def _lane_device_fact(lane):
 
 def _lane_map_order_fact(lane):
     if lane.unit is None:
-        _unitless_contract_gap(lane, "the lane-map load ordering")
+        # Ordering cannot apply where nothing caches: the unitless
+        # replacement is the call-time-freshness half of the device pin.
+        _assert_unitless_device_facts(lane)
+        return
     unit = _unit_text(lane)
     assert f"EnvironmentFile=-{rl.RENDERER_LANES_ENV}" in unit, lane.unit
     default_at = unit.index(f'Environment="{lane.device_key}=')
@@ -577,7 +646,13 @@ def test_the_installer_adds_jasper_web_to_the_ring_group():
         ln for ln in users.splitlines()
         if "useradd" in ln and " jasper-web" in ln
     ]
-    assert useradd_lines and "jts-ring" in useradd_lines[0], (
+    assert useradd_lines, "service-users.sh must `useradd ... jasper-web`"
+    # Same membership-pattern shape as test_systemd_hardening's
+    # install-contract check: the group must appear IN the -G list, not
+    # merely anywhere on the line (a comment fragment would satisfy a
+    # whole-line substring).
+    line = useradd_lines[0]
+    assert "-G jts-ring" in line or ",jts-ring" in line, (
         "fresh installs must put jasper-web in jts-ring via its useradd -G"
     )
     assert "usermod -aG jts-ring jasper-web" in users, (
@@ -586,70 +661,34 @@ def test_the_installer_adds_jasper_web_to_the_ring_group():
     )
 
 
-def _synthetic_unitless_lane():
-    """A stand-in for P6c-ii's `correction` row: unit=None, everything else
-    shaped like a real RendererLane. SimpleNamespace rather than a real
-    RendererLane on purpose — whether the product dataclass models
-    unitlessness as `unit: str | None` or something richer is P6c-ii's
-    call, and these tests only read attributes."""
-    return SimpleNamespace(
-        label="correction",
-        renderer="correction-lane ephemeral aplay",
-        unit=None,
-        device_key="JASPER_CORRECTION_DEVICE",
-        aloop_device="correction_substream",
-        ring_device="correction_ring_lane",
-    )
+# The P6c-i synthetic-row apparatus (a SimpleNamespace stand-in driven
+# through every pin plus a routing test expecting instructive
+# "P6c-ii must decide" failures) RETIRED with the real `correction` row:
+# every branch it rehearsed is now exercised natively by the row itself on
+# every run of the pins above, and the former contract gaps hold their
+# decisions (`_assert_unitless_device_facts` /
+# `_assert_unitless_liveness_facts`). Graduation, not deletion of coverage.
 
 
-def test_unitless_correction_writer_facts_hold_today():
-    """The per-identity alternative facts must be TRUE now, not merely when
-    P6c-ii activates them: the helper's spawn umask equals the unit-writers'
-    0007, jasper-correction-web still pairs root with its tight UMask=0077,
-    jasper-web carries jts-ring, and the two root web variants stay root.
-    If any of these drift, the pin should say so BEFORE the correction row
-    lands, while the fix is still a one-file edit."""
+def test_unitless_correction_writer_facts():
+    """The correction lane's per-identity facts, asserted directly.
+
+    Redundant with the routed pins above BY DESIGN (they reach the same
+    assertions through the row): this direct call keeps the unitless facts
+    diagnosable as their own failure — a drift names this test, not a
+    generic per-lane loop."""
     _assert_unitless_writer_umask_facts()
     _assert_unitless_writer_group_facts()
 
 
-def test_the_pin_machinery_routes_a_unitless_row(monkeypatch):
-    """Every unit-reading pin handles a unitless row correctly, proven with
-    a synthetic row BEFORE P6c-ii needs it: the identity pins route to the
-    per-identity facts and pass today; the pins whose unitless contract
-    P6c-ii still has to define fail INSTRUCTIVELY (naming the decision),
-    never as a TypeError from pathlib swallowing None; and a stray
-    `_unit_text` on a unitless row is a guided AssertionError."""
-    fake = _synthetic_unitless_lane()
-    monkeypatch.setattr(rl, "RENDERER_LANES", rl.RENDERER_LANES + (fake,))
-
-    # Identity pins: routed to per-identity facts, which hold today.
-    test_every_ring_writing_renderer_unit_sets_the_umask()
-    test_non_root_ring_writers_join_the_ring_group()
-
-    # The directory-level sanity keeps scanning only unit-ful lanes.
-    test_the_ring_directory_group_matches_what_the_installer_creates()
-
-    # Contract-gap pins: each names what P6c-ii must decide.
-    gap_calls = [
-        (test_every_renderer_unit_reads_its_device_from_the_lane_map, ()),
-        (test_both_ends_load_the_same_lane_map_file_last, ()),
-        (
-            test_every_ring_writing_renderer_restarts_slower_than_the_liveness_window,
-            ("correction",),
-        ),
-        (
-            test_every_ring_writing_renderer_tolerates_a_burst_of_refusals,
-            ("correction",),
-        ),
-        (test_the_ring_liveness_window_is_enumerated_for_every_writer, ()),
-    ]
-    for fn, args in gap_calls:
-        with pytest.raises(pytest.fail.Exception, match="P6c-ii must decide"):
-            fn(*args)
-
+def test_stray_unit_text_on_a_unitless_row_is_guided():
+    """A `_unit_text` call on the unitless row must stay a guided
+    AssertionError pointing at the per-identity branches, never a TypeError
+    from pathlib swallowing None."""
+    lane = rl.lane_by_label("correction")
+    assert lane is not None and lane.unit is None
     with pytest.raises(AssertionError, match="unitless"):
-        _unit_text(fake)
+        _unit_text(lane)
 
 
 def test_the_installer_ships_the_renderer_lane_confd():
@@ -1489,7 +1528,8 @@ def test_every_ring_writing_renderer_restarts_slower_than_the_liveness_window(la
     lane = rl.lane_by_label(label)
     assert lane is not None
     if lane.unit is None:
-        _unitless_contract_gap(lane, "the writer-liveness respawn cadence")
+        _assert_unitless_liveness_facts(lane)
+        return
     unit = _unit_text(lane)
     m = re.search(r"^RestartSec=(\d+(?:\.\d+)?)", unit, re.M)
     assert m, (
@@ -1517,7 +1557,8 @@ def test_every_ring_writing_renderer_tolerates_a_burst_of_refusals(label):
     lane = rl.lane_by_label(label)
     assert lane is not None
     if lane.unit is None:
-        _unitless_contract_gap(lane, "the start-limit burst tolerance")
+        _assert_unitless_liveness_facts(lane)
+        return
     unit = _unit_text(lane)
     burst = re.search(r"^StartLimitBurst=(\d+)", unit, re.M)
     interval = re.search(r"^StartLimitIntervalSec=(\d+)", unit, re.M)
@@ -1545,7 +1586,11 @@ def test_the_ring_liveness_window_is_enumerated_for_every_writer():
     )
     for lane in rl.RENDERER_LANES:
         if lane.unit is None:
-            _unitless_contract_gap(lane, "the liveness-header enumeration")
+            # Ephemeral writers have no unit cadence to enumerate; the
+            # header instead names the lane's cadence CLASS explicitly, so
+            # the "every writer is enumerated" property still holds.
+            _assert_unitless_liveness_facts(lane)
+            continue
         assert lane.unit in entries, (
             f"{lane.unit} writes a ring but has no `- {lane.unit} RestartSec=N` "
             "entry beside the liveness constant it must clear"
@@ -1554,6 +1599,8 @@ def test_the_ring_liveness_window_is_enumerated_for_every_writer():
     # And each enumerated value must match what the unit really declares, or
     # the enumeration is decoration.
     for lane in rl.RENDERER_LANES:
+        if lane.unit is None:
+            continue  # enumerated by cadence class above, not by RestartSec
         declared = re.search(r"^RestartSec=(\d+)", _unit_text(lane), re.M)
         assert declared, lane.unit
         assert entries[lane.unit] == declared.group(1), (
@@ -1608,3 +1655,134 @@ def test_the_arm_asks_the_group_predicate_even_for_a_root_renderer(
         f"None; got {calls!r}. An empty list means the caller short-circuited "
         "and the root branch is dead again"
     )
+
+
+def test_the_arm_cli_handles_the_unitless_lane(tmp_path, monkeypatch, capsys):
+    """Arming `correction` preflights the row's non-root writer identity and
+    names NO renderer unit in restart_required.
+
+    Both halves were real crashes before P6c-ii's CLI edits (the banked
+    "zero-edit" claim was false): `_renderer_unit_user(None)` fed
+    ``Path(base, None)`` a ``TypeError``, and the restart set's
+    ``" ".join(sorted({lane.unit ...}))`` cannot join ``None``. The unitless
+    row instead supplies ``arm_preflight_user`` (jasper-web — its root
+    writer identities pass the group predicate trivially), and the flip
+    restarts jasper-fanin ONLY: the ephemeral writers read the map fresh on
+    their next spawn.
+    """
+    from jasper.cli import audio_config as ac
+
+    calls: list[object] = []
+
+    def recording(user, group=rl.RING_GROUP):
+        calls.append(user)
+        return True
+
+    monkeypatch.setattr(rl, "renderer_user_in_ring_group", recording)
+    import jasper.ring_assets as ring_assets
+
+    monkeypatch.setattr(
+        ring_assets, "ring_asset_presence",
+        lambda: type("P", (), {"all_present": True, "missing": lambda self: ()})(),
+    )
+    monkeypatch.setattr(rl, "RENDERER_LANES_CONF_D", str(tmp_path / "conf"))
+    (tmp_path / "conf").write_text("")
+
+    args = argparse.Namespace(
+        arm=["correction"], disarm=[], set=None,
+        path=str(tmp_path / "lanes.env"),
+        input_buffer_frames=4096, period_frames=256,
+    )
+    rc = ac._cmd_renderer_lanes(args)
+    out = capsys.readouterr()
+    assert rc == 0, out.err
+
+    assert calls == ["jasper-web"], (
+        "the unitless lane's preflight must ask about its arm_preflight_user; "
+        f"got {calls!r}"
+    )
+    restart_lines = [
+        line for line in out.out.splitlines()
+        if line.startswith("restart_required")
+    ]
+    assert restart_lines == ["restart_required jasper-fanin.service"], (
+        "a unitless flip restarts fan-in only — no renderer unit exists to "
+        f"bounce; got {restart_lines!r}"
+    )
+
+
+# --- #2344 fourth state: ingress-armed + active-endpoint-unarmed -----------
+#
+# The commissioning transport gate (jasper.active_speaker.staging) keys on
+# RING_PCM_DEVICES membership of the graph's resolved PLAYBACK device — the
+# CamillaDSP-endpoint axis. The correction lane arms the INGRESS axis: what
+# measurement spawns OPEN, never what the graph plays out of. The two tests
+# below pin that independence from both directions, so the fourth state
+# (ingress armed, endpoint still aloop) cannot trip the gate.
+
+
+def test_ingress_lane_devices_are_never_camilla_endpoint_rings():
+    """Neither of the correction lane's devices may join RING_PCM_DEVICES.
+
+    Set-membership there IS the commissioning gate's predicate
+    (`resolved_playback_device not in RING_PCM_DEVICES`, staging's
+    COMMISSIONING_TRANSPORT_GATE_ID) and the CamillaDSP-endpoint guard's
+    (`ring_edge_width_ready`). Adding an ingress device to that set would
+    make arming ingress read as "the active graph plays out of a ring" —
+    the exact conflation #2344's fourth state exists to rule out.
+    """
+    from jasper.fanin_coupling import RING_PCM_DEVICES
+
+    lane = rl.lane_by_label("correction")
+    assert lane is not None
+    assert lane.ring_device not in RING_PCM_DEVICES
+    assert lane.aloop_device not in RING_PCM_DEVICES
+
+
+@pytest.mark.parametrize("ingress_armed", [False, True])
+@pytest.mark.parametrize("endpoint_ringed", [False, True])
+def test_ingress_arming_and_endpoint_transport_are_independent_axes(
+    ingress_armed, endpoint_ringed, tmp_path
+):
+    """All four states of (ingress armed?, endpoint ringed?): each axis
+    answers from its own source, unmoved by the other.
+
+    The endpoint answer is RING_PCM_DEVICES membership of the resolved
+    playback device (the gate's exact predicate — the resolved device comes
+    from the CamillaDSP statefile, which the lane map never feeds); the
+    ingress answer is the transport reader over the lane map (which the
+    statefile never feeds). The fourth state — ingress armed while the
+    endpoint is still the aloop tap — must therefore keep the
+    commissioning gate OPEN while the measurement spawns move to the ring.
+    """
+    from jasper.audio_measurement.correction_lane import (
+        CORRECTION_SUBSTREAM,
+        correction_play_device,
+    )
+    from jasper.fanin_coupling import RING_PCM_DEVICES, RING_PLAYBACK_DEVICE
+
+    lane = rl.lane_by_label("correction")
+    assert lane is not None
+
+    map_path = str(pathlib.Path(tmp_path) / "renderer_lanes.env")
+    original = rl.RENDERER_LANES_ENV
+    rl.RENDERER_LANES_ENV = map_path
+    try:
+        if ingress_armed:
+            pathlib.Path(map_path).write_text(
+                rl.render_env_text((lane.label,))
+            )
+        playback_device = (
+            RING_PLAYBACK_DEVICE if endpoint_ringed else "jasper_out"
+        )
+        gate_open = playback_device not in RING_PCM_DEVICES
+
+        # The endpoint axis answers from the playback device alone.
+        assert gate_open == (not endpoint_ringed)
+        # The ingress axis answers from the lane map alone.
+        expected_device = (
+            lane.ring_device if ingress_armed else CORRECTION_SUBSTREAM
+        )
+        assert correction_play_device() == expected_device
+    finally:
+        rl.RENDERER_LANES_ENV = original

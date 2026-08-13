@@ -184,8 +184,8 @@ create_jasper_service_users() {
         if getent passwd pi >/dev/null 2>&1; then
             usermod -aG jts-ring pi 2>/dev/null || true
         fi
-        # U3/P6c-i — jasper-web's wizard-spawned aplay children will create
-        # the correction lane's ring once P6c-ii arms it. The RUNTIME grant
+        # U3/P6c — jasper-web's wizard-spawned aplay children create the
+        # correction lane's ring while this box has the lane armed. The RUNTIME grant
         # comes from the unit's SupplementaryGroups= (systemd adds the
         # group to the process directly; the group need only exist). This
         # passwd record serves the non-systemd consumers — `sudo -u

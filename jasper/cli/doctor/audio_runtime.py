@@ -3168,6 +3168,33 @@ def check_renderer_ring_lanes() -> CheckResult:
         startup = ring.get("startup_empty_reads") or 0
         frames = entry.get("frames_read") or 0
         if not frames and startup:
+            if _ring_lane_is_on_demand(lane_label):
+                # An on-demand lane (correction — ephemeral aplay writers,
+                # U3/P6c) is fed only while a measurement is playing, so
+                # armed-attached-never-fed is its RESTING state between
+                # measurements — the same "not a fault" class as a paused
+                # renderer, not the daemon-renderer wiring failure the WARN
+                # below diagnoses. Warning here would put a standing false
+                # warning on every armed box.
+                #
+                # STATED RESIDUAL: this carve-out cannot tell resting from
+                # broken-at-open. A writer that can NEVER open its ring
+                # (missing jts-ring membership, geometry shear) produces the
+                # SAME armed-attached-never-fed signature, and this branch
+                # reports it healthy. Accepted because correction playback
+                # is operator-initiated: the first real measurement fails at
+                # the point of use (aplay open error -> PlaybackError ->
+                # _raise_legacy_error -> the wizard surfaces it), which is
+                # louder and better-attributed than a standing doctor WARN
+                # could be — but the detail string below must carry the
+                # hint so a doctor reading never implies the writer path
+                # was PROVEN.
+                healthy.append(
+                    f"{lane_label}(attached, on-demand, no measurement "
+                    "played yet — a writer that cannot open looks identical "
+                    "here; run a measurement to confirm)"
+                )
+                continue
             problems.append(
                 f"{lane_label}: attached but NEVER FED (startup_empty_reads="
                 f"{startup}, frames_read=0) — the renderer has not opened its "
@@ -3197,11 +3224,43 @@ def rl_source_ring() -> str:
     return FANIN_INPUT_SOURCE_RING
 
 
-def _ring_lane_unit(label: str) -> str:
+def _ring_lane_is_on_demand(label: str) -> bool:
+    """Whether this lane's writers are ephemeral spawns (no renderer unit).
+
+    Unitless lanes (correction, U3/P6c) are fed only while a measurement
+    plays; the never-fed WARN's daemon-renderer wiring diagnosis does not
+    apply to them.
+
+    STATED RESIDUAL of routing a lane through the on-demand branch: the
+    doctor then cannot distinguish "resting between measurements" from "the
+    writer can NEVER open its ring" (missing group membership, geometry
+    shear) — both are armed-attached-never-fed. Accepted for
+    operator-initiated lanes: the first real measurement fails loudly at
+    the point of use (the wizard surfaces the playback error), and the
+    healthy detail carries a run-a-measurement-to-confirm hint so the
+    doctor reading never claims the writer path was proven.
+    """
     from jasper import renderer_lanes as rl
 
     lane = rl.lane_by_label(label)
-    return lane.unit if lane else "the renderer"
+    return lane is not None and lane.unit is None
+
+
+def _ring_lane_unit(label: str) -> str:
+    """The restartable thing a lane's remedy strings should name.
+
+    Only unit-ful lanes reach the never-fed remedy (on-demand lanes branch
+    off before it), but the fallbacks stay total so a remedy string can
+    never interpolate ``None``.
+    """
+    from jasper import renderer_lanes as rl
+
+    lane = rl.lane_by_label(label)
+    if lane is None:
+        return "the renderer"
+    if lane.unit is None:
+        return f"{lane.renderer} (spawn-time writers; nothing to restart)"
+    return lane.unit
 
 
 def _ring_detach_remedy(reason: str) -> str:

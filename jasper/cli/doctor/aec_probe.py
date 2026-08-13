@@ -286,8 +286,9 @@ def _play_and_assess_probe() -> list[CheckResult]:
     # gates on euid — preconditions in this module fail LOUDLY as
     # CheckResults instead (renderers-idle, loopback-lane,
     # isolation-window above). An unprivileged run therefore fails this
-    # probe at device open — today on /dev/snd (root:audio), post-P6c-ii
-    # on the ring lane — and the guidance below names the fix.
+    # probe at device open — on the aloop path at /dev/snd (root:audio);
+    # on an armed box, at the correction ring lane — and the guidance
+    # below names the fix.
     play = run_correction_play(
         _PROBE_SINE_PATH,
         timeout=_PROBE_SINE_DURATION_S + 5.0,

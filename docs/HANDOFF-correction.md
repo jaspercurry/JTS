@@ -2718,7 +2718,9 @@ Concrete changes:
 4. Tap Apply → CamillaDSP swaps config without audio dropout (verify
    by playing music continuously across the apply boundary;
    `aplay -D correction_substream white_noise.wav` is the easiest
-   no-streaming-service way to verify mid-stream).
+   no-streaming-service way to verify mid-stream — on a box whose
+   `correction` ingress lane is armed onto its ring (U3/P6c; fleet
+   default is unarmed), substitute `correction_ring_lane`).
 5. Re-running Measure shows a different curve (filter actually
    reaches the speaker).
 6. **Manual A/B verification:** play a familiar bass-heavy track
@@ -3044,7 +3046,8 @@ These items can only be verified on real hardware. Deploy with
       render. **Apply room correction** swaps the CamillaDSP config without an
       audio dropout (verify by playing music continuously across the apply
       boundary, for example with
-      `aplay -D correction_substream white_noise.wav` in another shell).
+      `aplay -D correction_substream white_noise.wav` in another shell —
+      `correction_ring_lane` on a ring-armed box, see U3/P6c).
 - [ ] Return the phone to the main seat and choose **Verify correction**. The
       fresh like-for-like capture completes, the verification curve overlays
       the chart, and the RMS/max-deviation summary appears without treating an
