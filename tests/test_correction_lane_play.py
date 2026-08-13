@@ -193,6 +193,37 @@ async def test_exec_walkthrough_shape_matches_pre_refactor_sites(monkeypatch) ->
     }
 
 
+def test_popen_forwards_stdout_and_stderr_independently(monkeypatch) -> None:
+    """Forwarding proof, not a site golden: both current popen sites pass
+    symmetric values (DEVNULL/DEVNULL or None/None), so the site goldens
+    above cannot distinguish a swapped or aliased forwarding bug. Distinct
+    values here can."""
+    captured: dict[str, object] = {}
+
+    def fake_popen(*args, **kwargs):
+        captured["kwargs"] = kwargs
+        return object()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    popen_correction_play("/tmp/x.wav", stdout=subprocess.DEVNULL, stderr=None)
+    assert captured["kwargs"] == {"stdout": subprocess.DEVNULL, "stderr": None}
+
+
+async def test_exec_forwards_stdout_and_stderr_independently(monkeypatch) -> None:
+    """Same forwarding proof for the asyncio wrapper (same rationale)."""
+    import asyncio
+
+    captured: dict[str, object] = {}
+
+    async def fake_exec(*args, **kwargs):
+        captured["kwargs"] = kwargs
+        return object()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    await exec_correction_play("/tmp/x.wav", stdout=None, stderr=subprocess.DEVNULL)
+    assert captured["kwargs"] == {"stdout": None, "stderr": subprocess.DEVNULL}
+
+
 # ---------------------------------------------------------------------------
 # Check 2 — the conventions guard: no new inline aplay/-D spawn shapes.
 # ---------------------------------------------------------------------------
@@ -279,7 +310,9 @@ def test_guard_detects_the_three_spawn_shapes(tmp_path) -> None:
         "DEV = 'somewhere'\n"
         "\n"
         "def popen_shape(p):\n"
-        "    return subprocess.Popen(['aplay', '-D', DEV, '-q', str(p)])\n"
+        "    # Deliberately no '-q': the guard keys on 'aplay' + '-D' only,\n"
+        "    # and this line fails the self-test if the rule over-tightens.\n"
+        "    return subprocess.Popen(['aplay', '-D', DEV, str(p)])\n"
         "\n"
         "def wrapper_tuple_shape(run, p):\n"
         "    run(('aplay', '-q', '-D', DEV, str(p)), timeout=5)\n"
