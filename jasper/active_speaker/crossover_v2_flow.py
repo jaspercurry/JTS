@@ -1836,6 +1836,22 @@ VERIFY_PILOT_TRANSFER_STEP_CEILING_DB = 0.35
 # **0.2 dB, twice the consecutive-pair p95**. That number is what is used here;
 # this module derives nothing.
 #
+# **The rule already has an owner, and this is its second spelling — so it says
+# so.** :data:`~jasper.active_speaker.attempts_loop.CLAIM_FLOOR_P95_MULTIPLE`
+# (2.0) owns "an honest per-attempt claim floor is twice the observed
+# consecutive-pair p95", and its own comment records that the p95 over the 13
+# accepted pairs is 0.08508 dB — so the rule computes 0.17016 dB, and the
+# README's 0.2 is that same rule at conservative display rounding, not a second
+# threshold. The kernel there COMPUTES the floor from a banked repeat study;
+# this constant HARDCODES the rounded value instead, because a live VERIFY
+# sitting has no such bank to read — it holds two attempts of its own and
+# nothing else, and importing a kernel that needs a study it cannot supply would
+# buy a dependency rather than a number. The 17.5% gap between the two spellings
+# is therefore deliberate and one-directional: 0.2 > 0.17016 makes THIS
+# discriminator strictly harder to fire, which is the same conservative
+# direction the fixed-mic caveat below argues for. If that kernel ever gains a
+# VERIFY-time source for its floor, this constant is what should go.
+#
 # **It is a fixed-mic floor, and that direction is the safe one.** The same
 # README is explicit that the mic-replacement arm — remove, replace, re-aim — is
 # unmeasured and is the dominant cross-session term (the panel's 3.2 dB bound).
@@ -8992,10 +9008,25 @@ class CrossoverV2Session:
         deterministic code: nothing downstream re-reads it, and leaving the
         pair stale would be a second rule to keep true.
 
-        Non-finite values (a NaN grade) are never called agreement. ``NaN`` is
-        not close to anything, and the arithmetic below would silently answer
-        "not deterministic" anyway — this states it rather than relying on it,
-        and clears the pair so the NaN cannot become a predecessor either.
+        **The non-finite guard is load-bearing for NaN — do not read it as
+        defensive tidying.** Delete it and a NaN grade arriving with a
+        predecessor in hand returns the DETERMINISTIC code: ``abs(nan - x)`` is
+        ``nan``, ``nan > VERIFY_REPEAT_FLOOR_DB`` is ``False``, so the
+        comparison below falls THROUGH to the mismatch branch and a household
+        is told an unmeasurable capture agreed with a real one. (The
+        infinities are the inert case — ``+inf`` reaches here and answers
+        ``out_of_tolerance`` with or without the guard, and ``-inf`` never
+        reaches here at all.)
+
+        It is unreachable for NaN today, and only by an upstream accident this
+        method must not depend on: the caller gates on
+        ``max_db > VERIFY_TOLERANCE_DB``, which is ``False`` for ``nan``, so a
+        NaN grade takes the PASS branch instead of arriving here. That is a
+        property of one comparison in one caller, not a contract — and the
+        answer it protects is the one that would be wrong.
+
+        Clearing the pair is the second half: a value nothing can agree with
+        must not become the thing a later attempt agrees WITH either.
         """
         if not isinstance(max_db, (int, float)) or not math.isfinite(float(max_db)):
             # No usable grade: this attempt is a mismatch nothing can agree

@@ -536,10 +536,13 @@ authenticated-envelope sequence.
 
 A host consume verdict may carry `terminal: true` plus a named
 `terminal_outcome` when that just-finished capture proves the set cannot become
-usable (the crossover-v2 per-position bound below its phase/group floor is the
-shipped caller). The runner publishes that exact `capture_result` and returns
-immediately instead of waiting for a next begin that can only be refused. The
-page renders the host's terminal reason with no retry affordance. Separately,
+usable. Two shipped callers: the crossover-v2 per-position bound falling below
+its phase/group floor, and a VERIFY mismatch that repeats within the
+instrument's own floor — a finding about the speaker, which no further capture
+of the same applied graph can change (#1873). The runner publishes that exact
+`capture_result` and returns immediately instead of waiting for a next begin
+that can only be refused. The page renders the host's terminal reason with no
+retry affordance. Separately,
 when an accepted final slot carries `unresolved`, the runner repeats that
 object on `capture_set_complete`: the relay's host-event slot is last-write-wins
 and completion can otherwise erase the final position's left-out disclosure
