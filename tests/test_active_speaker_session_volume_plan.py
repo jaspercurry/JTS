@@ -256,10 +256,10 @@ def test_wall_clock_ceiling_force_drains_stale_active(tmp_path):
 
 
 def test_set_wall_clock_ceiling_stamps_the_next_open_and_stays_bounded(tmp_path):
-    """The ceiling is a property of the measurement about to run — a 16-capture
-    crossover cloud legitimately outlasts the 3-entry flow's default — so the
-    caller that built the plan sets it, and the OPEN session's own recorded
-    value is what ``stale_active`` reads.
+    """The ceiling is a property of the measurement about to run — a full
+    crossover-cloud commission legitimately outlasts the 3-entry flow's
+    default — so the caller that built the plan sets it, and the OPEN
+    session's own recorded value is what ``stale_active`` reads.
 
     Fail-closed both ways: a nonsense value is refused rather than silently
     disabling the walked-away guarantee, and no caller can stretch the ceiling

@@ -39,6 +39,7 @@ import yaml
 
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import intervention as iv
+from jasper.active_speaker.crossover_v2 import planning
 from jasper.active_speaker.crossover_v2.intervention import (
     compose_sigma_db as _compose_sigma_db,
 )
@@ -5702,9 +5703,9 @@ def test_cloud_position_count_outside_the_declared_range_is_refused(positions):
 
 
 def test_session_wall_clock_ceiling_scales_with_the_plan_and_is_capped():
-    """The walked-away guarantee survives a 16-capture session — and stays a
-    guarantee: the ceiling grows with plan length but can never be scaled
-    away."""
+    """The walked-away guarantee survives a long crossover-cloud session —
+    and stays a guarantee: the ceiling grows with plan length but can never
+    be scaled away."""
     from jasper.active_speaker.session_volume_plan import (
         DEFAULT_WALL_CLOCK_CEILING_S,
         MAX_WALL_CLOCK_CEILING_S,
@@ -8171,8 +8172,19 @@ def test_fit_engine_bug_falls_back_to_raw_trim_with_warning(caplog, monkeypatch)
     assert c.candidate.role_attenuations_db == dict(_FIXTURE_RAW_TRIM_DB)
     assert c.candidate.linearization == {}
     assert c.candidate.linearization_outcome == "fit_failed"
-    assert "event=correction.crossover_v2_linearization_fit_failed" in caplog.text
-    assert "reason=ValueError" in caplog.text
+    # Anchored to the SAME record two ways: startswith() rather than a bare
+    # `in caplog.text` substring search (the journal_dropped line's own
+    # `dropped_event=` field ends in "event=", so a substring search would
+    # also match a drop of this same event), and the `reason=` check reads
+    # off that specific record rather than the whole caplog blob, so a drop
+    # line whose port also raised ValueError could not satisfy both
+    # assertions the way two independent bare-substring checks could (#2368).
+    fit_failed_lines = [
+        r.getMessage() for r in caplog.records
+        if r.getMessage().startswith(f"event={planning.EVENT_FIT_FAILED} ")
+    ]
+    assert fit_failed_lines, "the fit_failed event was never said"
+    assert "reason=ValueError" in fit_failed_lines[0]
     assert "linearization=fit_failed" in caplog.text
 
 

@@ -23,8 +23,10 @@ operational reference: [`HANDOFF-crossover-measurement-v2.md`](HANDOFF-crossover
    measurements"); each step shows ONE clear instruction in the SAME
    visible place every time; the user confirms — THEN the tone plays.
 2. **Fewer measurements — an express tier.** ~3–4 positions with honestly
-   degraded claims. Full commission (the current 16-capture instrument)
-   remains for first-run / precision work.
+   degraded claims. Full commission (then a 16-capture instrument; the
+   count has since moved with the two-stage commission split — see
+   [`HANDOFF-crossover-measurement-v2.md`](HANDOFF-crossover-measurement-v2.md)
+   for current tier counts) remains for first-run / precision work.
 3. Express sessions should land well under 5 minutes (full walk today is
    ~10–15 min wall clock).
 

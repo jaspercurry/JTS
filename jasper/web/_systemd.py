@@ -94,17 +94,17 @@ DEFERRED_EXIT_LOG_PERIOD_SEC = 300.0
 # audit trail): the longest-lived hold any wizard takes today is
 # correction-web's crossover-v2 relay session, whose own sizing is
 # `session_volume_plan.MAX_WALL_CLOCK_CEILING_S` = 3600 s — the hard cap on
-# `crossover_v2_flow.session_wall_clock_ceiling_s`, which reaches 3360 s at the
-# shipped 16-capture Full tier. (NOT the 900 s relay `DEFAULT_TTL_S`: a cloud
-# session legitimately outlasts that, which is why the ceiling had to be scaled
-# per-entry in the first place.) A hold may then stand a little past the cap
-# through the terminal drain / analysis / purge tails. Doubling the cap gives a
-# bound nothing legitimate reaches, which is the property that matters — this
-# line is a leak alarm, and one that cried wolf on every Full-tier commission
-# would be worse than none. Escalation is the ONLY behavior change: nothing
-# reaps the process, per `correction_setup._run_async`'s fail-closed invariant
-# (a terminal response must never release measurement ownership while the
-# graph/volume finalizer can still mutate the speaker).
+# `crossover_v2_flow.session_wall_clock_ceiling_s`. (NOT the 900 s relay
+# `DEFAULT_TTL_S`: a cloud session legitimately outlasts that, which is why
+# the ceiling had to be scaled per-entry in the first place.) A hold may then
+# stand a little past the cap through the terminal drain / analysis / purge
+# tails. Doubling the cap gives a bound nothing legitimate reaches, which is
+# the property that matters — this line is a leak alarm, and one that cried
+# wolf on every Full-tier commission would be worse than none. Escalation is
+# the ONLY behavior change: nothing reaps the process, per
+# `correction_setup._run_async`'s fail-closed invariant (a terminal response
+# must never release measurement ownership while the graph/volume finalizer
+# can still mutate the speaker).
 HOLD_LEAK_WARN_AFTER_SEC = 7200.0
 
 
