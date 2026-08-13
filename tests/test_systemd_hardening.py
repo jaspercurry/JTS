@@ -798,6 +798,44 @@ def test_usbnet_dhcp_unit_is_hardened_scoped_dnsmasq():
     )
 
 
+USB_NETWORK_PLAN_UNIT = ROOT / "deploy/systemd/jasper-usb-network-plan.service"
+
+
+def test_usb_network_plan_unit_allows_netlink_for_if_nameindex():
+    """RestrictAddressFamilies must allow AF_NETLINK, or the gate dies with
+    errno 97 on real hardware.
+
+    `jasper-usb-network-plan.service` runs `jasper.usb_network promote`,
+    which calls `observe_ipv4_cidr()` before promoting the plan (to avoid
+    clobbering a live legacy USB address mid-session). `observe_ipv4_cidr`
+    calls `socket.if_nameindex()` (jasper/usb_network.py) to check whether
+    `usb0` exists yet. On Linux/glibc, `if_nameindex()` opens an AF_NETLINK
+    socket internally to do that enumeration — invisible at the call site,
+    unlike an explicit `socket.socket(AF_NETLINK, ...)`. Without AF_NETLINK
+    allowed, the kernel refuses that socket with `OSError: [Errno 97]
+    Address family not supported by protocol`, `observe_ipv4_cidr` returns
+    an ERROR observation, `promote_plan` raises, the gate unit exits 1, and
+    `jasper-usbgadget.service` (Requires=) dependency-fails — the USB
+    management network never comes up. Root-caused on jts3 hardware
+    2026-08-13 (issue #2436): 4/4 boot-time starts failed identically. CI
+    cannot catch this on its own because tests run without the systemd
+    sandbox that RestrictAddressFamilies enforces — this directive
+    assertion is the guard.
+    """
+    assert USB_NETWORK_PLAN_UNIT.is_file()
+    pairs = set(_directives(USB_NETWORK_PLAN_UNIT))
+    families = [v for k, v in pairs if k == "RestrictAddressFamilies"]
+    assert families, (
+        "jasper-usb-network-plan.service must set RestrictAddressFamilies="
+    )
+    assert set(families[-1].split()) == {"AF_INET", "AF_NETLINK", "AF_UNIX"}, (
+        "AF_INET is the SIOCGIFADDR/SIOCGIFNETMASK ioctl socket "
+        "(observe_ipv4_cidr's address/netmask read); AF_NETLINK is opened "
+        "internally by socket.if_nameindex() and must stay allowed or the "
+        f"gate dies with errno 97 (issue #2436). got {families[-1]!r}"
+    )
+
+
 @pytest.mark.parametrize("unit,path", sorted(TIER_B_DAC_MIXER_UNITS.items()))
 def test_dac_mixer_units_run_as_recon_user(unit, path):
     """WS1 Tier-B DAC mixer slice: the service/daemon pin paths are non-root.
