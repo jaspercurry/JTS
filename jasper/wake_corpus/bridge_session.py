@@ -821,7 +821,10 @@ def _dac_reference_context(
             "source": env_value(
                 env,
                 "JASPER_AEC_REF_SOURCE",
-                "alsa",
+                # Matches the bridge's own default (aec_bridge.REF_SOURCE).
+                # The retired `alsa` fallback this used to name is gone, and a
+                # corpus session must not record a source nothing can read.
+                "outputd_udp",
                 process_env=process_env,
             ),
             "outputd_chip_ref_pcm": env_value(

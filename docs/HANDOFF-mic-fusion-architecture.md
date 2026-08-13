@@ -32,10 +32,10 @@
 ## TL;DR
 
 1. **The mic-swap boundary is narrow because the AEC reference is
-   already mic-independent.** The bridge normally sources its
-   echo-cancellation reference from outputd's speaker monitor, not from
-   the mic; explicit ALSA fallback can still use `jasper_ref` →
-   `jasper_capture` → `hw:Loopback,1,7`. So the
+   already mic-independent.** The bridge sources its echo-cancellation
+   reference from outputd's speaker monitor, not from the mic, and that
+   is now its only source — the `jasper_ref` → `jasper_capture` →
+   `hw:Loopback,1,7` ALSA fallback was retired. So the
    three software legs — **aec3, raw, dtln** — run against *any* mic
    that delivers one mono 16 kHz voice frame. "Always have those three
    lines no matter the mic" is nearly free today. A mic only needs a
@@ -110,7 +110,7 @@ capture is actually coupled to the XVF3800:
 
 | Component | Mic-dependent? | Why |
 |---|---|---|
-| AEC3 reference signal | **No** | From outputd's speaker monitor, not the mic. Explicit fallback can read the snd-aloop `jasper_ref` tap. Exists for any mic. |
+| AEC3 reference signal | **No** | From outputd's speaker monitor, not the mic, and from nothing else since the snd-aloop `jasper_ref` fallback was retired. Exists for any mic. |
 | AEC3 / DTLN engines | **No** | Pure `process(mono_mic, ref) → bytes` on 16 kHz mono. Already reused for the experimental `usb_webrtc` corpus leg. |
 | Voice-daemon consumption | **No** | `make_mic_capture(device, rate, channels)` handles UDP or PortAudio; polyphase-downsamples arbitrary rates. UMIK-2 is a documented working second device. |
 | Config layer | **No** | `mic_device`, `mic_capture_rate`, `mic_capture_channels` already parameterize the mic; comments anticipate non-XVF mics. |
@@ -468,7 +468,7 @@ same supervisor/health-probe pattern as the shipped T5.2
 | Music context (proxy) + bridge DSP config snapshot per event | **Shipped** | 38-col schema |
 | Corpus pull + audit + reset + `analyze-three-leg.sh` (incl. a threshold-tuning hint engine) | **Shipped** | `scripts/` |
 | Operator visibility for active mic/topology | **Shipped** | `/wake/` mic status card, backed by `jasper-control` `/aec` |
-| Mic-independent AEC reference | **Shipped** | outputd final-reference UDP in production, with the `jasper_ref` ALSA fallback; both use `aec_bridge._ReferenceFrameConverter` |
+| Mic-independent AEC reference | **Shipped** | outputd final-reference UDP, the bridge's only reference transport since the `jasper_ref` ALSA fallback was retired; converted by `aec_bridge._ReferenceFrameConverter` |
 | Profile-first input policy: `/wake/` profile → reconciler → outputd reference fanout / AEC3 fallback / direct mic as appropriate | **Shipped** (`auto`, `xvf_chip_aec`, `xvf_chip_aec_testing`, `xvf_software_aec3`, `direct_mic`, `custom`) | `jasper/audio_profile_state.py`, `jasper/chip_aec_policy.py`, `deploy/bin/jasper-aec-reconcile`, `jasper/control/server.py` |
 | Chip-AEC producer path: profile intent → outputd reference fanout → `aec-init` profile → bridge `:9876` repoint + `:9887`/`:9888` beams | **Shipped; used by `auto` only when the detected XVF profile and output DAC gate are approved; unapproved DACs use explicit `xvf_chip_aec_testing`** | `jasper/mics/xvf3800.py`, `jasper/cli/xvf_profile.py`, `jasper/chip_aec_policy.py`, `deploy/bin/jasper-aec-reconcile`, `jasper/cli/aec_init.py`, `jasper/cli/aec_bridge.py` |
 | Cheap-USB capture (resample + AEC3 + DTLN) | **Prototype** (corpus-only legs `usb_*`) | `_usb_mic_thread` |

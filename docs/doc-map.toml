@@ -519,7 +519,7 @@ requires_docs_when = [
   "The mandatory-v1 / optional-v2 capability boundary, background install state, runtime authorization gate, or enhancement status API changes.",
 ]
 verification = [
-  "pytest tests/test_aec_reconcile.py tests/test_aec_bridge_systemd.py tests/test_aec_bridge_stall.py tests/test_control_aec_state.py tests/test_enhanced_aec.py tests/test_enhanced_aec_systemd.py",
+  "pytest tests/test_aec_reconcile.py tests/test_aec_bridge_systemd.py tests/test_aec_bridge_stall.py tests/test_aec_ref_source_retirement.py tests/test_control_aec_state.py tests/test_enhanced_aec.py tests/test_enhanced_aec_systemd.py",
 ]
 
 [[subsystem]]

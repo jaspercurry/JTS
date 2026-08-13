@@ -1159,8 +1159,10 @@ def _bridge_reference_provenance(
     age = now - updated
     if not math.isfinite(updated) or age < 0 or age > _BRIDGE_STATS_FRESH_SEC:
         return None
-    if source == "alsa":
-        return source, None
+    # outputd's UDP monitor is the bridge's only reference source since
+    # U4 / P7-1 retired the `alsa` (`pcm.jasper_ref`) fallback. Anything
+    # else is a source doctor cannot name a producer for, so it reports
+    # provenance as unavailable rather than guessing a hop.
     if source != "outputd_udp":
         return None
     endpoint = identity.get("outputd_ref_udp")
@@ -1209,18 +1211,11 @@ def _aec_reference_failure_remediation(
             "Lessons learned for the original silent-ref failure mode."
         )
 
+    # Report the source the runtime actually published rather than a
+    # hard-coded literal: the caller can also hand us a trusted identity,
+    # and a remediation that names a source it did not read is the exact
+    # mis-attribution this function exists to avoid.
     source, bridge_endpoint = provenance
-    if source == "alsa":
-        return (
-            "Bridge runtime provenance reports source=alsa. In the fan-in "
-            "topology, first verify /etc/asound.conf maps pcm.jasper_capture "
-            "to hw:Loopback,1,7 (jasper-fanin's summed output) and that "
-            "jasper-fanin is active. A stale dmix-era capture tap on "
-            "substream 0 can make jasper_ref busy or silent. See "
-            "docs/HANDOFF-aec.md Lessons learned for the original silent-ref "
-            "failure mode."
-        )
-
     references = (
         outputd_status.get("reference_outputs")
         if isinstance(outputd_status, dict)
@@ -1228,7 +1223,7 @@ def _aec_reference_failure_remediation(
     )
     if not isinstance(references, dict):
         return (
-            "Bridge runtime provenance reports source=outputd_udp at "
+            f"Bridge runtime provenance reports source={source} at "
             f"{bridge_endpoint}, but outputd STATUS/reference_outputs is "
             "unavailable, so the publisher endpoint and health cannot be "
             "compared. Run `sudo systemctl start jasper-aec-reconcile`, "
@@ -1249,7 +1244,7 @@ def _aec_reference_failure_remediation(
         else "unknown"
     )
     observed = (
-        f"Bridge runtime provenance reports source=outputd_udp at "
+        f"Bridge runtime provenance reports source={source} at "
         f"{bridge_endpoint}; outputd STATUS reports "
         f"reference_outputs.udp_target={target_text!r}, "
         f"udp_active={active_text}, udp_error_count={error_text}. "

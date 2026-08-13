@@ -267,9 +267,11 @@ When `jasper-doctor` detects a sustained silent reference, its remediation is
 bound to the bridge's applied runtime provenance in the fresh
 `/run/jasper/aec_bridge_stats.json` snapshot. An `outputd_udp` bridge is
 diagnosed against outputd STATUS (`reference_outputs.udp_target`,
-`udp_active`, and `udp_error_count`); only an applied `alsa` bridge receives
-the `pcm.jasper_capture` / `jasper_ref` advice. Missing, stale, malformed, or
-unknown provenance stays source-neutral rather than guessing a legacy path.
+`udp_active`, and `udp_error_count`), and that is the only provenance doctor
+will name a producer for. Missing, stale, malformed, or unknown provenance —
+which now includes the retired `alsa` spelling — stays source-neutral rather
+than guessing a legacy path; the `pcm.jasper_capture` / `jasper_ref` advice
+that used to fire for an applied `alsa` bridge is gone with the fallback.
 The reader is shared with the DTLN doctor check, so both checks identify the
 same live bridge snapshot source.
 
@@ -305,8 +307,9 @@ DSP, and routing are unchanged.
 
 **CamillaDSP is a soft startup dependency, not a bridge lifecycle owner.**
 The bridge reads the XVF mic directly and consumes outputd's final-reference
-UDP stream; its explicit ALSA fallback is the pre-Camilla `pcm.jasper_ref`
-tap. Consequently, `jasper-aec-bridge.service` uses `After=` plus `Wants=` for
+UDP stream, which is its only reference source — the pre-Camilla
+`pcm.jasper_ref` ALSA fallback was retired. Consequently,
+`jasper-aec-bridge.service` uses `After=` plus `Wants=` for
 CamillaDSP and deliberately has neither `Requires=` nor `PartOf=`. A brief
 Camilla pause must leave the UDP mic producer running so `jasper-voice` keeps
 making watchdog progress. `jasper-aec-reconcile` remains the single owner of
@@ -507,7 +510,7 @@ The HPF stack, layered defense:
 |---|---|---|---|---|
 | Chip mic ingress | 4th-order Butterworth | 125 Hz | XVF3800 `AEC_HPFONOFF`, set in `jasper-aec-init` | `JASPER_AEC_CHIP_HPF_HZ` env, values 0/70/125/150/180 |
 | AEC3 internal capture | 2nd-order Butterworth | 100 Hz | `AudioProcessing` upstream of `EchoCanceller3`, enabled in `jasper_aec3/src/aec3_binding.cpp` | always on (compile-time) |
-| Bridge ref pipeline | 2nd-order Butterworth | **125 Hz** | `_ReferenceFrameConverter` in `jasper/cli/aec_bridge.py`, shared by the outputd UDP and ALSA fallback transports, after `resample_poly`, before REF_GAIN | `JASPER_AEC_REF_HPF_HZ` env, default 125 Hz |
+| Bridge ref pipeline | 2nd-order Butterworth | **125 Hz** | `_ReferenceFrameConverter` in `jasper/cli/aec_bridge.py`, on the outputd UDP transport, after `resample_poly`, before REF_GAIN | `JASPER_AEC_REF_HPF_HZ` env, default 125 Hz |
 
 **Why HPFs on both legs are not redundant**: AEC3 applies its
 internal HPF to the **capture** (mic) signal only. The reference
@@ -732,7 +735,7 @@ somewhere in the chain:
 | AirPlay (shairport-sync) | 44.1 kHz | shairport writes `shairport_substream` → ALSA plug |
 | Spotify Connect (librespot) | 44.1 / 48 kHz | librespot → snd-aloop, plug if mismatch |
 | Bluetooth A2DP (bluealsa-aplay) | 44.1 / 48 kHz | bluealsa-aplay → snd-aloop, plug if mismatch |
-| AEC bridge ref read | 16 kHz (internal) | Normal path: outputd UDP speaker monitor at 48 kHz → bridge resamples/downmixes. Explicit fallback: `pcm.jasper_ref` plug → bridge requests 48k from 48k loopback. |
+| AEC bridge ref read | 16 kHz (internal) | Only path: outputd UDP speaker monitor at 48 kHz → bridge resamples/downmixes. |
 
 The bridge's *own* 48→16 resample is scipy `resample_poly`, which
 is high-quality polyphase. That step has never been the issue.
@@ -1978,8 +1981,8 @@ Captured here so future sessions don't repeat the mistakes.
    matched HPFs on both legs improve the matched-filter delay
    estimator's adaptation in noisy environments. Our bridge applies
    AEC3's internal capture HPF automatically; the ref-side HPF in
-   `_ReferenceFrameConverter` brings the ref to the same band for both
-   the production outputd UDP transport and the ALSA fallback.
+   `_ReferenceFrameConverter` brings the ref to the same band on the
+   outputd UDP transport.
 
 6. **`pcm.jasper_capture` (dsnoop) must be wrapped in `plug:`**
    when consumed by clients that lock a different rate than the
@@ -2040,12 +2043,13 @@ Captured here so future sessions don't repeat the mistakes.
     to be in the reference. Assistant TTS is *not* such a source on
     current main: it rides the same fan-in → CamillaDSP → outputd
     path as music, so it reaches outputd's final-speaker UDP monitor
-    — the production `JASPER_AEC_REF_SOURCE` — like any other program
-    audio. On a solo speaker it reaches the `jasper_ref` ALSA fallback
-    too, since fan-in mixes TTS into the same sum it writes to lane 7.
-    The one exception is a passive bonded multiroom member, whose
-    local TTS enters at outputd downstream of fan-in: absent from
-    `jasper_ref`, still present in the outputd tap.
+    — the bridge's only `JASPER_AEC_REF_SOURCE` — like any other program
+    audio. That holds for a passive bonded multiroom member too, whose
+    local TTS enters at outputd downstream of fan-in. (Before the ALSA
+    fallback was retired, a solo speaker's TTS also reached the
+    `jasper_ref` tap, since fan-in mixes TTS into the same sum it writes
+    to lane 7, while the bonded member's did not. Only the outputd tap
+    counts now.)
     Prose here used to cite the pre-outputd dmix that genuinely did
     bypass the reference; that alias was retired in issue #2240, and
     naming TTS as the reason for a ref-silent window is now a wrong
@@ -2442,8 +2446,9 @@ loopback fallbacks at both sides of CamillaDSP. The product-default eligible
 path uses Ring A from fan-in to CamillaDSP and Ring B from CamillaDSP to
 outputd; the fallback uses `jasper_capture` and `outputd_content_*`. In both
 cases outputd owns the DAC and publishes the final-speaker UDP monitor that
-the production bridge consumes. `pcm.jasper_ref` remains an explicit
-pre-Camilla diagnostic fallback, and active tuner noise enters through the
+the bridge consumes — its only reference source. `pcm.jasper_ref` remains a
+pre-Camilla diagnostic tap, no longer a bridge fallback, and active tuner
+noise enters through the
 ordinary `correction_substream` fan-in lane. The AEC'd mic from bridge to voice
 rides UDP localhost instead of a second snd-aloop card; see
 [HANDOFF-resilience.md](HANDOFF-resilience.md) for why we retired
@@ -2617,14 +2622,15 @@ true`). We haven't implemented this; AEC3 currently rides on its
 own delay-estimator robustness. Listed as a Tier 2 item in
 PLAN.md's tuning roadmap.
 
-### Legacy ALSA fallback reference is pre-CamillaDSP
+### The legacy ALSA tap is pre-CamillaDSP
 
-Normal production AEC consumes outputd's final speaker monitor, after
-CamillaDSP processing and ducking. `jasper_capture` / `pcm.jasper_ref` remains
-an explicit diagnostic fallback and taps the renderer→Camilla loopback
-*before* CamillaDSP. Do not infer speaker amplitude or final reference timing
-from that legacy tap. `jasper-aec-tune` deliberately captures it only to
-estimate the host-to-XVF bulk delay; in active mode its noise enters through
+Production AEC consumes outputd's final speaker monitor, after CamillaDSP
+processing and ducking, and has no other source. `jasper_capture` /
+`pcm.jasper_ref` remains a diagnostics-only tap on the renderer→Camilla
+loopback *before* CamillaDSP; the bridge can no longer be pointed at it. Do
+not infer speaker amplitude or final reference timing from that legacy tap.
+`jasper-aec-tune` deliberately captures it only to estimate the host-to-XVF
+bulk delay; in active mode its noise enters through
 `correction_substream`, so the stimulus is present in that tap while
 CamillaDSP `main_volume` still governs the audible output.
 
@@ -3084,7 +3090,7 @@ build, with reasoning so we don't keep re-litigating:
 - HA Voice PE community forum threads on XU316 AEC behavior
   (closest neighbor; same chip family)
 
-Last verified: 2026-08-08 (scope: the bridge reference-input freshness paragraph, silent-reference source-aware remediation, current bridge-stats schema prose, and lesson #10 only — exact-schema-v4 receiver-side source/endpoint/frame-count/monotonic snapshot/process/last-frame-age telemetry, the 10 s startup grace, 5 s sustained-staleness failure, fail-closed malformed/stale-v4 contract, one-way precedence over journal content/drift assessment, exact-v4 identity precedence over legacy epoch provenance, outputd-STATUS localization-only rule, old/future-schema journal fallback, bridge-stats provenance, and outputd STATUS fields were rechecked against `jasper/cli/aec_bridge.py`, `jasper/cli/doctor/aec.py`, and focused tests; separately, the active-probe idleness gate was rechecked against `jasper/cli/doctor/aec_probe.py` and focused tests; the rest of this file was NOT re-verified in those passes. Prior same-day pass: the K-lifecycle section only — the chip-reference window comes out of outputd's per-write sample ring, with the sliding window, the split-half median-drift bound, the collection-start floor, and boot's MIN_EDGE_MARGIN bound against the commissioned SYS_DELAY rechecked against `jasper/cli/aec_init.py`, `jasper/chip_aec_alignment.py`, and `rust/jasper-outputd/src/state.rs`. Prior 2026-07-30: managed XVF chip-or-park policy, foreground
+Last verified: 2026-08-13 (scope: the AEC reference-source contract only — that outputd's UDP speaker monitor is the bridge's sole reference, that the retired `JASPER_AEC_REF_SOURCE=alsa` / `pcm.jasper_ref` fallback is gone from the bridge, the reconciler, and doctor's remediation, and that a box still carrying the retired value converges with a warning while an unknown value still fails, rechecked against `jasper/cli/aec_bridge.py`, `deploy/bin/jasper-aec-reconcile`, `jasper/cli/doctor/aec.py`, and `tests/test_aec_ref_source_retirement.py`; the rest of this file was NOT re-verified in this pass. Prior 2026-08-08 pass, scope: the bridge reference-input freshness paragraph, silent-reference source-aware remediation, current bridge-stats schema prose, and lesson #10 only — exact-schema-v4 receiver-side source/endpoint/frame-count/monotonic snapshot/process/last-frame-age telemetry, the 10 s startup grace, 5 s sustained-staleness failure, fail-closed malformed/stale-v4 contract, one-way precedence over journal content/drift assessment, exact-v4 identity precedence over legacy epoch provenance, outputd-STATUS localization-only rule, old/future-schema journal fallback, bridge-stats provenance, and outputd STATUS fields were rechecked against `jasper/cli/aec_bridge.py`, `jasper/cli/doctor/aec.py`, and focused tests; separately, the active-probe idleness gate was rechecked against `jasper/cli/doctor/aec_probe.py` and focused tests; the rest of this file was NOT re-verified in those passes. Prior same-day pass: the K-lifecycle section only — the chip-reference window comes out of outputd's per-write sample ring, with the sliding window, the split-half median-drift bound, the collection-start floor, and boot's MIN_EDGE_MARGIN bound against the commissioned SYS_DELAY rechecked against `jasper/cli/aec_init.py`, `jasper/chip_aec_alignment.py`, and `rust/jasper-outputd/src/state.rs`. Prior 2026-07-30: managed XVF chip-or-park policy, foreground
 SYS_DELAY-only commissioning, strict identity-plus-K artifact, silent
 K-minus-live-queue lifecycle, native 16 kHz/stereo/S16_LE/128/256 writer
 boundary, and reconciler/status ownership rechecked against implementation and
