@@ -314,13 +314,91 @@ def test_the_operator_divides_out_the_protection_filter_the_graph_emitted():
     assert np.allclose(guarded["woofer"], bare["woofer"]), "P is per-role"
 
 
-def test_an_ineligible_session_refuses_candidates_without_calling_the_fit():
+def _inverted_woofer_preset():
+    """The fixture preset with its LOWER driver declared inverted.
+
+    Every other preset in this suite declares both drivers non-inverted, which
+    leaves ``role_polarity``'s factor identically ``1`` — so the driver-wiring
+    polarity was never exercised and dropping it changed nothing (#2357 item 2).
+    The WOOFER is the inverted one on purpose: the tweeter also carries the
+    ALIGNMENT's polarity, and a factor that only ever appears beside another of
+    the same sign cannot be told apart from it.
+    """
+    preset = _preset()
+    return replace(preset, crossover_regions=tuple(
+        replace(region, lower_polarity="inverted")
+        for region in preset.crossover_regions
+    ))
+
+
+def test_a_driver_declared_inverted_keeps_its_sign_in_the_candidate_model():
+    """The preset's driver-wiring polarity is a HEARING-SAFETY factor: it is
+    how a speaker whose woofer is wired out of phase gets modelled as the
+    speaker it is. Dropped, every candidate's summed model would predict the
+    constructive sum of a pair that actually cancels — and the whole comparison
+    would recommend a corner chosen from a fiction.
+
+    Asserted on the woofer, which carries no other sign, so the assertion can
+    only be satisfied by ``role_polarity``'s own factor.
+    """
+    base = _operators(_selector_conductor(FakeSeams()))
+    inverted = _operators(_selector_conductor(
+        FakeSeams(), source_preset=_inverted_woofer_preset(),
+    ))
+
+    assert np.allclose(inverted["woofer"], -base["woofer"]), (
+        "the declared driver polarity is not reaching the operator"
+    )
+    # …and it is PER-ROLE: inverting the woofer's wiring may not sign the
+    # tweeter, or the summation would be identical and the model silently wrong
+    # in exactly the way a global sign is invisible.
+    assert np.allclose(inverted["tweeter"], base["tweeter"])
+
+
+def test_the_committed_residual_delays_the_tweeter_rather_than_advancing_it():
+    """DIRECTION, not just magnitude (#2357 item 2).
+
+    The sibling assertion above pins that a committed delay phases the tweeter
+    and preserves its magnitude — both of which a sign flip keeps, so ``-1j``
+    could become ``+1j`` unnoticed. A model that ADVANCES the tweeter by the
+    residual instead of retarding it puts the pair's null on the wrong side of
+    the crossover, which is a wrong recommendation about acoustic summation.
+
+    Recovered as a GROUP DELAY off the phase slope — the physical quantity —
+    rather than by re-deriving the exponent. The delay is small enough that the
+    phase never wraps across the grid, so no unwrapping can hide a sign.
+    """
+    c = _selector_conductor(FakeSeams())
+    grid = flow.lateral_evidence_grid_hz()
+    delay_us = 10.0
+    ratio = _operators(c, delay_us=delay_us)["tweeter"] / _operators(c)["tweeter"]
+
+    phase = np.angle(ratio)
+    assert np.all(np.abs(phase) < np.pi), "the fixture delay must not wrap"
+    slope = np.polyfit(2.0 * np.pi * grid, phase, 1)[0]
+
+    assert -slope == pytest.approx(delay_us * 1e-6, rel=1e-6), (
+        "a committed residual must RETARD the tweeter, not advance it"
+    )
+
+
+def test_an_ineligible_session_refuses_candidates_without_calling_the_fit(caplog):
     """``plan_linearization`` states that it ASSUMES eligibility and does not
     re-check, so calling it on a phone-tier or under-repeated session raises
     inside the fit engine instead of declining — six spurious WARNING refusals
     per capture, and a documented precondition violated. The sweep applies the
     same gate ``_build_candidate`` does and refuses honestly instead.
+
+    **The refusal CODE cannot carry this guard** (#2357 item 3). Dropping the
+    eligibility clause leaves every candidate refused anyway, via the exception
+    the fit then raises, and the handler stamps that with the same
+    ``EVAL_REFUSED_UNFITTABLE`` an honest decline uses — so a suite reading only
+    codes sees an identical sweep either way. What actually differs is the
+    JOURNAL: an honest decline says nothing, a violated precondition says
+    ``reason=ValueError`` once per candidate. So the absence of those lines is
+    asserted here, which is the only place the difference is observable.
     """
+    caplog.set_level(logging.WARNING)
     fakes = FakeSeams()  # the DEFAULT measure fixture: no mic tier, no repeats
     c = _selector_conductor(fakes)
     calls: list[object] = []
@@ -338,6 +416,14 @@ def test_an_ineligible_session_refuses_candidates_without_calling_the_fit():
     assert c._fc_evaluations, "the candidates must still be disclosed"
     assert all(
         e.refusal == EVAL_REFUSED_UNFITTABLE for e in c._fc_evaluations
+    )
+    refused = [
+        record.getMessage() for record in caplog.records
+        if f"event={fc_sweep.EVENT_CANDIDATE_REFUSED} " in record.getMessage()
+    ]
+    assert refused == [], (
+        "an ineligible session declined honestly; these WARNING lines are the "
+        f"fit raising past its own precondition: {refused}"
     )
 
 
@@ -624,6 +710,104 @@ def test_each_evaluation_retains_its_own_realized_level_verdict():
     assert len({
         repr(plan.realized_level_match.to_dict()) for plan in by_fc.values()
     }) > 1, "every corner reported the same realized level"
+
+
+#: The finite cost the fixture below puts on the SECOND role, and therefore the
+#: worst finite cost in the mapping — what the canonical reducer must return
+#: when the first role's cost is not a number.
+_STAMPED_FINITE_COST_DB = 2.0
+
+
+def _evaluation_with_linearization(linearization):
+    """``fc_sweep.evaluate_candidate`` over stand-in ports.
+
+    Direct on the organ rather than through a conductor, for the reason
+    ``_sweep_ports`` gives and for one more that is specific to this subject: a
+    candidate the fit engine actually builds CANNOT carry a non-finite cost
+    (pinned by ``test_a_candidate_refuses_to_carry_a_non_finite_fit_cost`` in
+    ``tests/test_active_speaker_measured_crossover_candidate.py``), so a fixture
+    that goes through a real build cannot present the reducer with the input it
+    is being asked about. ``build`` is an injected port precisely so the value
+    it returns can be chosen here.
+
+    ``fc_hz`` is the configured corner, which is the arm that reuses the anchor
+    rather than re-analyzing — so ``analyze`` and ``measure_priors`` must not
+    be reached at all, and they fail loudly if they are.
+    """
+    grid = flow.lateral_evidence_grid_hz()
+    predicted_sum = (grid, np.zeros_like(grid))
+    alignment = SimpleNamespace(
+        polarity_sign=1, anchor_delay_us=0.0, delay_us=0.0,
+        status=flow.ALIGNMENT_OK,
+    )
+    close = SimpleNamespace(
+        candidate=SimpleNamespace(
+            linearization_outcome="fitted",
+            role_attenuations_db={"woofer": 0.0, "tweeter": 0.0},
+            linearization=linearization,
+            to_dict=lambda: {"linearization": dict(linearization)},
+        ),
+        predicted_sum=predicted_sum,
+        linearization=SimpleNamespace(
+            linearized_predicted_sum=predicted_sum, realized_branch_level=None,
+        ),
+        level_frame_finding=None,
+    )
+    return fc_sweep.evaluate_candidate(
+        FC_HZ,
+        SimpleNamespace(
+            candidate=object(), alignment=alignment, predicted_sum=predicted_sum,
+        ),
+        analyze=lambda priors: pytest.fail("the configured corner reuses the anchor"),
+        build=lambda *args, **kwargs: close,
+        measure_priors=lambda: pytest.fail("no re-analysis at the configured corner"),
+        sweep_bounds=lambda: (None, None),
+        predicted_spec_report=lambda: None,
+        ineligible_reason=lambda analysis: None,
+        commanded_delta=lambda raw, built: None,
+        configured_fc_hz=FC_HZ,
+        preset=_preset(),
+        tweeter_role="tweeter",
+        protection_sections_by_role=dict(PROTECTION),
+        grid=grid,
+    )
+
+
+def test_a_non_finite_fit_cost_is_reduced_by_the_canonical_owner():
+    """The sweep's headroom figure is ``worst_headroom_cost_db``'s answer, not
+    a second spelling of it (#2357 item 1).
+
+    The reducer that used to sit inline here was a bare ``max`` over the same
+    values, and it disagreed with the canonical one on a NON-FINITE cost. That
+    disagreement is worth pinning rather than merely tidying because of where
+    the number lands: the selector charges it as the saturation penalty behind
+    a ``max(0.0, ...)`` clamp, and ``max(0.0, NaN)`` is ``0.0`` — so a NaN
+    would not surface as a wrong number or a raise. It would silently spend the
+    penalty and tip the recommendation toward a headroom-hungrier corner.
+
+    The NaN sits on the role that iterates FIRST, deliberately: ``max``
+    propagates a NaN only when it meets one before a larger finite value
+    (``max([2.0, nan])`` is 2.0, ``max([nan, 2.0])`` is NaN), so a fixture that
+    let role order decide would prove nothing on half the orderings.
+
+    This is a CONTRACT guard, not a live-bug regression. ``MeasuredCrossover
+    Candidate`` already refuses to CARRY a non-finite cost — pinned by
+    ``test_a_candidate_refuses_to_carry_a_non_finite_fit_cost`` over in
+    ``tests/test_active_speaker_measured_crossover_candidate.py``, beside the
+    validation it guards — so no candidate this system builds reaches the
+    reducer with one. What this pins is which reducer OWNS the figure, which is
+    the property that has to survive the next edit here.
+    """
+    evaluation = _evaluation_with_linearization({
+        "woofer": {"headroom_cost_db": float("nan")},
+        "tweeter": {"headroom_cost_db": _STAMPED_FINITE_COST_DB},
+    })
+
+    assert np.isfinite(evaluation.headroom_cost_db), (
+        "a non-finite cost reached the selector, where the clamp charges it "
+        "as zero and the saturation penalty vanishes"
+    )
+    assert evaluation.headroom_cost_db == pytest.approx(_STAMPED_FINITE_COST_DB)
 
 
 def _retained_bytes(evaluation) -> int:
