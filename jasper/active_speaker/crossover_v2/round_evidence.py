@@ -661,6 +661,7 @@ def build_round_receipt(
     entry_graph_fingerprint: str,
     rollback_anchor: Mapping[str, Any] | None,
     proposal_fingerprint: str,
+    proposal_fingerprint_kind: str,
     applied_graph_fingerprint: str,
     post_measurement: Mapping[str, Any] | None,
     restore_result: Mapping[str, Any] | None,
@@ -684,7 +685,15 @@ def build_round_receipt(
     The commanded delta has no field of its own on
     :class:`~.contracts.RoundReceipt`; its identity rides in
     ``evidence_identities``, which is where the issue's "evidence/version
-    identities" belong.
+    identities" belong.  So does the applied candidate's fingerprint, since
+    #2392 moved ``proposal_fingerprint`` off it: the caller puts it there, and
+    the reason it must is that the receipt would otherwise carry no candidate
+    identity at all once the proposal took that field over.
+
+    ``proposal_fingerprint_kind`` is passed through unvalidated on purpose —
+    :class:`~.contracts.RoundReceipt` owns the closed vocabulary
+    (:data:`~.contracts.PROPOSAL_FINGERPRINT_KINDS`) and re-checking it here
+    would be a second owner of the same rule.
     """
 
     return RoundReceipt(
@@ -695,6 +704,7 @@ def build_round_receipt(
             None if entry_baseline is None else _baseline_identity(entry_baseline)
         ),
         proposal_fingerprint=proposal_fingerprint,
+        proposal_fingerprint_kind=proposal_fingerprint_kind,
         applied_graph_fingerprint=applied_graph_fingerprint,
         post_measurement=post_measurement,
         verification=evaluation.result,

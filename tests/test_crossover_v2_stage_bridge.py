@@ -473,8 +473,8 @@ def _seed_applied_stage_1_state() -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
-def test_persisted_verify_priors_carries_exactly_the_six_bridge_keys(monkeypatch):
-    """The write side of the bridge: ``verify_priors`` has SIX keys.
+def test_persisted_verify_priors_carries_exactly_the_seven_bridge_keys(monkeypatch):
+    """The write side of the bridge: ``verify_priors`` has SEVEN keys.
 
     Named exhaustively rather than checked for presence, because a new key is a
     deliberate widening of the contract and not an incidental one.
@@ -489,7 +489,14 @@ def test_persisted_verify_priors_carries_exactly_the_six_bridge_keys(monkeypatch
     measured "before" the round's benefit verdict differences against, captured
     at the mark immediately before apply.
 
-    The top-level payload is unchanged by both widenings — each new key is
+    **Deliberate widening (#2392): ``proposal_fingerprint``.** The seventh, and
+    the same shape as the fifth: the identity of the ``InterventionProposal``
+    stage 1 committed, which the round receipt names. Stage 2 grades the round
+    and plans nothing, so the fingerprint has no other channel — and it is the
+    fingerprint rather than the proposal because a proposal reassembled from
+    the decimated priors around it would digest to a different value.
+
+    The top-level payload is unchanged by all three widenings — each new key is
     nested inside ``verify_priors``, so
     ``test_persisted_payload_top_level_keys_are_the_whole_bridge`` below still
     pins the same set.
@@ -503,10 +510,11 @@ def test_persisted_verify_priors_carries_exactly_the_six_bridge_keys(monkeypatch
         "pilot_transfer_reference",
         "commanded_delta",
         "entry_baseline",
+        "proposal_fingerprint",
     }
 
 
-def test_all_four_verify_priors_reach_the_stage_2_conductor(monkeypatch):
+def test_the_simple_verify_priors_reach_the_stage_2_conductor(monkeypatch):
     """The read side: each persisted prior lands on the fresh conductor.
 
     Driven through the real ``prepare_v2_verify`` against a seeded applied
@@ -515,6 +523,15 @@ def test_all_four_verify_priors_reach_the_stage_2_conductor(monkeypatch):
     boundary: ``pilot_transfer_reference`` is written by the session that owned
     it and read as the next session's ``verify_pilot_transfer_prior``, because
     stage 2 may only disclose it (#1927).
+
+    **This covers four of the write side's seven keys**, and the name no longer
+    carries the count because the count has drifted twice: ``commanded_delta``
+    and ``entry_baseline`` earned their own read-side pins in sections 2 and 3
+    below, and ``proposal_fingerprint`` (#2392) is read back through the real
+    ``prepare_v2_verify`` in
+    ``tests/test_crossover_v2_round_wiring.py::test_the_receipt_names_the_proposal_that_was_made``,
+    where the receipt it feeds can be asserted in the same breath. A number in
+    a test name that no assertion owns is a comment that rots.
     """
     _seed_applied_stage_1_state()
 

@@ -65,6 +65,7 @@ __all__ = [
     "InterventionProposal",
     "NoCrossoverSectionsError",
     "PLAN_REFUSAL_REASONS",
+    "PROPOSAL_FINGERPRINT_KINDS",
     "PlanRefusal",
     "RealizationStatus",
     "ResponseCurve",
@@ -429,16 +430,26 @@ class TrimStrategy(str, Enum):
     :attr:`RESOLVED_COMMITTED_AFTER_SANITY_DRIFT` is the one exception and is
     unreachable from the live path (see its own doc).
 
-    :attr:`COMMITTED_PAIR_UNRECORDED` and
-    :attr:`COMMITTED_PAIR_UNRECORDED_AFTER_SANITY_DRIFT` are the two members
-    for the *artifact-derived* case: a persisted candidate artifact records
-    drift but not the winning pair, so a strategy read back off one can only
-    state that evidence gap honestly.  **Nothing produces them today.**  Their
-    only producer was ``planner_facade.trim_strategy_for_outcome``, deleted
-    with the write-only Phase-1 facade in #2291 Phase 5c-iii.  They are kept
-    because #2392 — which wires a proposal fingerprint into the round receipt
-    — is the issue that decides whether an artifact-derived strategy comes
-    back; if it does not, these two members go with it.
+    :attr:`COMMITTED_PAIR_UNRECORDED` is the *artifact-derived* member: the
+    proposal assembled at the commit seam
+    (:func:`~.proposal.trim_strategy_for_outcome`, restored by #2392) reads the
+    ``linearization_outcome`` string the build stamped onto the candidate,
+    because that is the one trim fact both commit routes certainly share, and
+    the string does not record which pair won the realized-level grading.  It
+    states that evidence gap rather than guessing a precise member.
+
+    It had a second, drift-qualified sibling until #2392 — the issue #2291
+    Phase 5c-iii left the question to — and that member is deleted rather than
+    restored, because the drift case turned out not to need one:
+    :attr:`~.intervention.TrimDecision.outcome` is ``"trim_rejected"`` if and
+    only if :attr:`~.intervention.TrimDecision.beyond_sanity_margin`, and
+    :func:`~.intervention.decide_trim` commits the anchor on exactly that
+    branch, so the string determines
+    :attr:`ANCHORED_COMMITTED_AFTER_SANITY_DRIFT` precisely.  An "unrecorded"
+    name for a fact the artifact does record would understate the evidence.
+    ``test_the_unrecorded_drift_member_is_gone_and_referenced_nowhere`` keeps
+    the name itself out of the tree, which is why it is described here rather
+    than spelled.
     """
 
     NOT_FITTED = "not_fitted"
@@ -475,11 +486,6 @@ class TrimStrategy(str, Enum):
 
     COMMITTED_PAIR_UNRECORDED = "committed_pair_unrecorded"
     """A trim pair was committed, in margin; the artifact does not say which."""
-
-    COMMITTED_PAIR_UNRECORDED_AFTER_SANITY_DRIFT = (
-        "committed_pair_unrecorded_after_sanity_drift"
-    )
-    """A trim pair was committed after drift; the artifact does not say which."""
 
 
 # --------------------------------------------------------------------------
@@ -935,6 +941,34 @@ class AdoptionDecision:
 ENTRY_GRAPH_FINGERPRINT_UNKNOWN = "unknown"
 
 
+#: What :attr:`RoundReceipt.proposal_fingerprint` identifies, as a closed word.
+#:
+#: **The field's meaning changed in #2392, and a durable record whose meaning
+#: changed silently is a record a later reader will misattribute.**
+#: Before #2392 the receipt was fed ``_tuning_attempt_id or
+#: candidate.fingerprint`` — both of which are a *candidate* fingerprint. Since
+#: #2392 it is fed :attr:`InterventionProposal.fingerprint`. The two cannot be
+#: told apart by inspection: every one of them is a 64-character SHA-256 hex
+#: digest from :func:`~jasper.audio_measurement.evidence_identity.json_fingerprint`,
+#: so "the formats are disjoint" was never available as a migration story.
+#:
+#: So the receipt SAYS which it is, and the three states are total:
+#:
+#: * key **absent** from a banked ``round_receipt.json`` — written before
+#:   #2392, therefore a candidate fingerprint.
+#: * ``"candidate"`` — written after #2392, but proposal assembly refused
+#:   (:func:`~.proposal.plan_intervention_proposal`) or the round was graded
+#:   from a state that predates the proposal, so the candidate identity is what
+#:   the round could honestly name.
+#: * ``"intervention_proposal"`` — the fingerprint of the
+#:   :class:`InterventionProposal` this round actually proposed.
+#:
+#: Closed rather than free text for :data:`PLAN_REFUSAL_REASONS`' reason: a
+#: typo'd kind on a write-once artifact is a mislabelled durable record, and
+#: failing closed at construction is the only place it can still be caught.
+PROPOSAL_FINGERPRINT_KINDS = frozenset({"candidate", "intervention_proposal"})
+
+
 @dataclass(frozen=True, init=False)
 class RoundReceipt:
     """The immutable record one correction round leaves behind.
@@ -949,6 +983,12 @@ class RoundReceipt:
     :func:`~jasper.active_speaker.crossover_v2.round_evidence.build_round_receipt`,
     and persisted as a write-once evidence-bundle artifact at
     ``crossover_v2/<relay_session_id>/round_receipt.json``.
+
+    :attr:`proposal_fingerprint_kind` is REQUIRED rather than defaulted, and
+    that is the whole migration story of #2392: a receipt that cannot say what
+    its proposal fingerprint identifies is a receipt a later session will
+    misread, and a default would let a caller claim one regime by forgetting to
+    state the other.  See :data:`PROPOSAL_FINGERPRINT_KINDS`.
     """
 
     round_id: str
@@ -956,6 +996,7 @@ class RoundReceipt:
     rollback_anchor: Mapping[str, Any]
     entry_baseline: Mapping[str, Any]
     proposal_fingerprint: str
+    proposal_fingerprint_kind: str
     applied_graph_fingerprint: str
     post_measurement: Mapping[str, Any]
     verification: VerificationResult
@@ -971,6 +1012,7 @@ class RoundReceipt:
         round_id: str,
         entry_graph_fingerprint: str,
         proposal_fingerprint: str,
+        proposal_fingerprint_kind: str,
         verification: VerificationResult,
         adoption: AdoptionDecision,
         created_at: str,
@@ -991,6 +1033,13 @@ class RoundReceipt:
             raise CrossoverV2ContractError(
                 "applied_graph_fingerprint must be a string"
             )
+        kind = _text(
+            proposal_fingerprint_kind, field_name="proposal_fingerprint_kind"
+        )
+        if kind not in PROPOSAL_FINGERPRINT_KINDS:
+            raise CrossoverV2ContractError(
+                f"unknown proposal fingerprint kind {kind!r}"
+            )
         restore = _json_mapping(restore_result, field_name="restore_result")
         if adoption.outcome is AdoptionOutcome.RECOVERY_REQUIRED and not restore:
             raise CrossoverV2ContractError(
@@ -1007,6 +1056,7 @@ class RoundReceipt:
             "proposal_fingerprint",
             _text(proposal_fingerprint, field_name="proposal_fingerprint"),
         )
+        object.__setattr__(self, "proposal_fingerprint_kind", kind)
         object.__setattr__(
             self, "created_at", _text(created_at, field_name="created_at")
         )
@@ -1047,6 +1097,7 @@ class RoundReceipt:
             "rollback_anchor": dict(self.rollback_anchor),
             "entry_baseline": dict(self.entry_baseline),
             "proposal_fingerprint": self.proposal_fingerprint,
+            "proposal_fingerprint_kind": self.proposal_fingerprint_kind,
             "applied_graph_fingerprint": self.applied_graph_fingerprint,
             "post_measurement": dict(self.post_measurement),
             "verification": self.verification.to_dict(),
