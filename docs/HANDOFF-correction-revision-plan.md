@@ -23,20 +23,20 @@ panel's joint verdict, the corrected headline, and the ladder below. Like every
 `captures/` path in this document it is **gitignored and laptop-durable** — not
 linkable from the repo, and not a substitute for what belongs in-repo.
 
-### The four-layer vision — which layer this program is, and what comes after
+### Which layer this program is, and what comes after
 
-The owner's standing lens, re-affirmed 2026-08-02 and written down here because
-it had been living only in session briefs (`captures/NEXT-SESSION-PROMPT-*.md`),
-which are laptop-durable and disappear from a fresh checkout. **Four layers,
-strictly ordered, each its own workstream:**
+Where **this program** sits in the layer model (the model itself is owned
+elsewhere — see below):
 
-1. **Bass response** — its own tab, near-field. *Not this program* (the
-   bass-extension program owns it).
-2. **Driver linearization** — **this program**: gating, time-of-flight,
-   detect → hypothesize → prescribe → verify.
-3. **Room correction** — after linearization, and **deliberately simple**: the
-   REW/CamillaDSP pattern, not a second machine.
-4. **Taste EQ** — parametric; already good.
+- **Layer 1a driver linearization — this program**: gating, time-of-flight,
+  detect → hypothesize → prescribe → verify.
+- **Layer 3 room correction — also this program**, and **deliberately
+  simple**: the REW/CamillaDSP pattern, not a second machine.
+- **Layer 2 bass — not this program.** The bass-extension program owns it
+  ([`HANDOFF-bass-extension-plan.md`](HANDOFF-bass-extension-plan.md)): its
+  captures are near-field, and its profile is a Layer-A artifact bound to
+  the applied baseline, so it is commissioned *after* the speaker layer.
+- **Layer 4 taste EQ — not this program**: parametric; already good.
 
 **The ordering rule.** Linearize the speaker first, **room-blind**; only then
 room-correct; only then taste. A layer that runs out of order corrects
@@ -61,18 +61,11 @@ layer measures, with which instrument, and when it re-runs — is
 [`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md).
 Read it for the layers; read this for the workstream order.
 
-> **Honest note on the apparent bass-position difference — flagged, not
-> resolved (owner's call).** The design doc tables **five** layers with bass at
-> position 2 (after driver linearization 1a and crossover integration 1b); the
-> lens above tables **four** with bass response first. The two are answering
-> different questions — the design doc's order is the **graph-composition
-> axis** ("one DSP graph, composed in fixed order"), while the lens above is
-> the **workstream sequence** (which tab a household fills in, and which
-> program builds it). That reading makes them compatible rather than
-> contradictory, but it is a reading, not a ruling: nobody has stated whether
-> bass response is meant to be *measured and set* before driver linearization
-> or merely *composed* after it. Do not silently reconcile them in either
-> direction — put it in the rulings queue.
+> **Ruled 2026-08-13 (#2067).** An earlier revision of this section tabled a
+> competing four-layer order with bass response first. The design doc's
+> order won: shipped code refuses both room correction and bass extension
+> until the speaker layer's baseline is applied. Nothing in this note
+> restates the layers.
 
 ## Read the three "P" namespaces before you read anything else
 
@@ -816,7 +809,8 @@ generated in R8; R12 confirms the rest), and the round-13 Monday-E2E brief.
 > remain Monday-gated; #1973, the corpus-pin trio, #1948, and the nit
 > ledgers move to ordinary backlog — named cuts, not omissions. The
 > authoritative brief is `captures/NEXT-SESSION-PROMPT-round-12.md`,
-> which also carries the owner's re-affirmed four-layer vision lens and
+> which also carries the owner's re-affirmed four-layer vision lens
+> (later reconciled to the design doc's five-layer order, #2067) and
 > the two-stop-kernels rule (if the room lane ever wants floor-aware
 > stopping, it reuses the attempts kernel with its own floor stats —
 > never a third kernel).
@@ -1828,11 +1822,12 @@ A **second 2026-08-02 pass (the post-campaign
 docs-drift repair)** re-verified, and is warranted by the date below, exactly
 these sections:
 
-- **the charter** — including the newly-written four-layer vision, its ordering
-  rule, and the two-stop-kernels rule (both kernel paths opened and confirmed
-  to exist; the bass-position difference against
+- **the charter** — including its layer-placement section, ordering rule, and
+  two-stop-kernels rule (both kernel paths opened and confirmed to exist; the
+  bass-position difference against
   [`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md)
-  is flagged for the owner, deliberately not resolved);
+  was flagged for the owner and ruled 2026-08-13 — the design doc's order
+  won, see #2067);
 - **the ratification callout** and the **Status paragraph of every rung
   P1–P4** — each rung's merged/unbuilt claim re-derived from `main`'s merge
   history, and P4's "no live writer" claim re-derived by grepping every caller
