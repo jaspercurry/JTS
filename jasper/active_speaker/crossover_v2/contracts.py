@@ -424,14 +424,21 @@ class TrimStrategy(str, Enum):
     Every member below therefore names **what was committed**.  Drift is a
     qualifier on a commitment, never a substitute for one.
 
-    Reachability.  :func:`~.planner_facade.trim_strategy_for_outcome` maps a
-    persisted candidate artifact, which records drift but *not* the winning
-    pair, so an artifact-derived strategy is :attr:`COMMITTED_PAIR_UNRECORDED`
-    or :attr:`COMMITTED_PAIR_UNRECORDED_AFTER_SANITY_DRIFT` — the honest
-    statement of that evidence gap.  The planner itself returns the winning
-    pair as data since #2291 Phase 2b, so a LIVE plan carries one of the
-    precise members; :attr:`RESOLVED_COMMITTED_AFTER_SANITY_DRIFT` is the one
-    exception and is unreachable from the live path (see its own doc).
+    Reachability.  The planner returns the winning pair as data since #2291
+    Phase 2b, so a LIVE plan carries one of the precise members;
+    :attr:`RESOLVED_COMMITTED_AFTER_SANITY_DRIFT` is the one exception and is
+    unreachable from the live path (see its own doc).
+
+    :attr:`COMMITTED_PAIR_UNRECORDED` and
+    :attr:`COMMITTED_PAIR_UNRECORDED_AFTER_SANITY_DRIFT` are the two members
+    for the *artifact-derived* case: a persisted candidate artifact records
+    drift but not the winning pair, so a strategy read back off one can only
+    state that evidence gap honestly.  **Nothing produces them today.**  Their
+    only producer was ``planner_facade.trim_strategy_for_outcome``, deleted
+    with the write-only Phase-1 facade in #2291 Phase 5c-iii.  They are kept
+    because #2392 — which wires a proposal fingerprint into the round receipt
+    — is the issue that decides whether an artifact-derived strategy comes
+    back; if it does not, these two members go with it.
     """
 
     NOT_FITTED = "not_fitted"

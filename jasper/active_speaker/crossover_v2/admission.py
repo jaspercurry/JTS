@@ -419,6 +419,20 @@ def assess_begin(
     # with no meter yet has had none, which is why ``ledger`` is read rather
     # than created. Nothing is charged before the answer is ADMIT, so the hold
     # above leaves no ledger entry behind for a capture that never started.
+    #
+    # Both halves state this function's PRECONDITION, which is why the second
+    # one stays even though today's only caller cannot reach it. This is a
+    # public pure function: "no attempts yet" is expressible two ways — no
+    # ledger at all, or a ledger with ``admitted == 0`` — and both must mean a
+    # free first attempt. The flow happens to produce only the first spelling
+    # (it holds one ledger per slot and reaches it through ``setdefault``, which
+    # returns the existing entry, so a zero-attempt ledger is never handed
+    # back), but that is a fact about one caller, not about the contract.
+    # Dropping ``not ledger.admitted`` would make
+    # ``assess_begin(ledger=SlotAttempts())`` charge an extra for a household's
+    # very first attempt at a position, attributed to the household. Pinned by
+    # ``test_crossover_v2_admission_wiring
+    # .test_a_zero_attempt_ledger_gets_a_free_first_attempt``.
     if ledger is None or not ledger.admitted:
         return BeginDecision(ADMIT)
     # The ``is not None`` half narrows the code this returns and changes no

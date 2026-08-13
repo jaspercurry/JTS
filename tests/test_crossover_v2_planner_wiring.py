@@ -536,3 +536,55 @@ def test_a_split_section_set_refuses_before_the_missing_measure_program():
             analysis, analysis.candidate, None,
             candidate_sections={"woofer": (), "tweeter": ()},
         )
+
+
+# --------------------------------------------------------------------------- #
+# the no-candidate precondition: kept, on evidence (#2291 Phase 5c-iii)
+# --------------------------------------------------------------------------- #
+
+
+def test_the_no_candidate_refusal_is_not_the_same_as_its_fallback():
+    """``_build_candidate``'s ``analysis.candidate is None`` raise is load-bearing.
+
+    #2291's 5c plan carried it as a candidate for deletion — a "duplicate"
+    precondition, because ``_measure_verdict`` hoisted the same check to the
+    capture that produces the analysis, so production cannot reach this one.
+    The ruling was conditional: delete it **only** if the fallback reaches the
+    same host mapping. It does not, for two independent reasons, and this pins
+    both so the question is settled by a test rather than re-argued.
+
+    **One — the household is told something different.**
+    ``correction_crossover_v2.classify_program_failure`` is the ONE classifier
+    the failure screen and the operator wizard both read. It claims
+    ``CrossoverV2FlowError`` for the program family; it returns ``None`` for
+    bare builtins, which is the catch-all arm's ``internal_error``. Delete the
+    raise and whatever ``build_candidate`` eventually does with ``None`` is a
+    builtin — so a named, classified refusal silently becomes an unclassified
+    internal error.
+
+    **Two — the organ contracts on the caller having refused it.**
+    ``planning.build_candidate`` takes ``cand`` as an argument rather than
+    re-reading ``analysis.candidate``, precisely so it does not hold a second
+    opinion about a fact the caller settled. It carries no ``None`` guard of
+    its own, so deleting this one does not move the responsibility — it drops
+    it.
+    """
+    from jasper.web.correction_crossover_v2 import classify_program_failure
+
+    c, analysis = _walked_to_measure()
+
+    with pytest.raises(flow.CrossoverV2FlowError):
+        c._build_candidate(replace(analysis, candidate=None))
+
+    # One: the two outcomes are different sentences, not the same one.
+    assert classify_program_failure(
+        flow.CrossoverV2FlowError("MEASURE analysis produced no candidate")
+    ) == (flow.REASON_PROGRAM_UNPLAYABLE, ())
+    for fallback in (AttributeError("NoneType"), TypeError("NoneType"), ValueError("x")):
+        assert classify_program_failure(fallback) is None
+
+    # Two: the organ really does have no guard of its own to fall back on.
+    body = inspect.getsource(planning.build_candidate)
+    signature, _, _ = body.partition('"""')
+    assert "cand" in signature, "build_candidate still takes the candidate as an argument"
+    assert "cand is None" not in body

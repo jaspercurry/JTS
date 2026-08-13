@@ -453,10 +453,23 @@ def verify_integrity_screens(
 # ``program_analysis.SWEEP_SCHEDULE_RESIDUAL_CEILING_MS`` /
 # ``SWEEP_LOCATE_CONFIDENCE_FLOOR`` — which apply the SAME two judgments to
 # VERIFY's single ``KIND_SUMMED_SWEEP`` (issue #1971), a segment kind neither
-# gate here has ever filtered for. ``program_analysis`` cannot import them
-# from this module without inverting the dependency, so they are duplicated
-# and pinned by tests/test_measurement_integrity_floor_contracts.py: a
-# deliberate move of either number must update BOTH copies and that test.
+# gate here has ever filtered for. They are duplicated and pinned by
+# tests/test_measurement_integrity_floor_contracts.py: a deliberate move of
+# either number must update BOTH copies and that test.
+#
+# WHY duplicated, restated correctly (#2291 Phase 5c-iii, closing the #2391
+# gate's docket item). The original reason given was that ``program_analysis``
+# cannot import from this module without inverting the dependency. True, but
+# it answers the wrong question — the LEGAL direction is available and this
+# module already uses it (``INTEGRITY_CHECK_SWEEP_HEARD`` is imported from
+# ``program_analysis`` above), so these two could be imported rather than
+# re-declared. They are not, for a reason about the NUMBERS rather than the
+# import graph: both are marked PROVISIONAL pending W6 bench validation, and
+# they judge different segment kinds through different gates. Bench work may
+# well settle them at different values, and two owners can diverge by editing
+# one line where one owner would first have to be re-split. The contract test
+# is what keeps "equal today" honest until then; it is the guard for the
+# duplication, not an excuse for it.
 SWEEP_SCHEDULE_RESIDUAL_CEILING_MS = 5.0
 SWEEP_LOCATE_CONFIDENCE_FLOOR = 0.3
 
