@@ -88,7 +88,7 @@ Caveats this implementation does NOT yet address:
 from __future__ import annotations
 
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import logging
 import math
 import os
@@ -155,14 +155,11 @@ AEC3_SWEEP_INPUT_SOURCE = AEC3_SWEEP_SOURCE_XVF
 FRAME_SAMPLES = 320
 SAMPLE_RATE = 16000
 
-# Fallback capture device for the reference (host-clocked dsnoop on
-# the fan-in loopback). Production reconcile sets JASPER_AEC_REF_SOURCE
-# to outputd_udp so software AEC consumes outputd's final speaker
-# monitor. `jasper_ref` remains available for explicit diagnostics and
-# rollback because it is a plug-wrapped alias of `jasper_capture`
-# defined in /etc/asound.conf.
-REF_DEVICE = "jasper_ref"
-REF_RATE = 48000  # what we ask plug for; plug resamples slave to this
+# Wire geometry of the far-end reference. outputd sends its final
+# speaker monitor at this rate/channel count; `_ReferenceFrameConverter`
+# folds it to the 16 kHz mono frames AEC3 consumes. The bridge has no
+# other reference transport — see REF_SOURCE below.
+REF_RATE = 48000
 REF_CHANNELS = 2
 
 # Capture device for the mic. Chip's 6-ch firmware exposes
@@ -264,7 +261,19 @@ OUT_PORT_XVF_RAW0_WEBRTC_AEC3 = _leg_default_port("xvf_raw0_webrtc_aec3")
 OUT_PORT_XVF_RAW0_DTLN = _leg_default_port("xvf_raw0_dtln")
 OUTPUTD_REF_UDP_HOST = "127.0.0.1"
 OUTPUTD_REF_UDP_PORT = 9891
+# The bridge's only reference source. Software AEC3, chip-AEC, corpus,
+# and diagnostics all consume outputd's final speaker monitor, so they
+# all see the same reference contract.
 REF_SOURCE = "outputd_udp"
+# Retired reference source (U4 / P7-1). The bridge used to be able to
+# read the summed snd-aloop tap (`pcm.jasper_ref`) directly; that path is
+# gone and the tap itself is deleted later in the same arc. A box whose
+# /var/lib/jasper/aec_mode.env still carries the retired value — written
+# by a pre-P7-1 reconciler while the bridge was parked — converges on the
+# next `jasper-aec-reconcile` run, so the bridge warns and uses
+# REF_SOURCE rather than refusing to start: a hard failure here would
+# leave jasper-voice with an unfed UDP mic and no wake detection.
+RETIRED_REF_SOURCE_ALSA = "alsa"
 OUT_PORT_AEC3_SWEEP = {
     variant.leg: variant.default_port
     for variant in AEC3_SWEEP_VARIANTS
@@ -917,6 +926,10 @@ class UsbMicUnavailable(RuntimeError):
     """The configured corpus USB mic device is not currently present."""
 
 
+class UnsupportedReferenceSource(RuntimeError):
+    """JASPER_AEC_REF_SOURCE names a source this bridge cannot read."""
+
+
 # Clipping counters (module-level for cheap cross-thread access; small
 # race conditions in increment+reset are benign — worst case a single
 # log window's percentage is off by a frame). Tracked separately for
@@ -1437,13 +1450,45 @@ class _SimpleAGC:
         return (out * 32767.0).astype(np.int16).tobytes()
 
 
-def _validate_mic_device(config: BridgeConfig | None = None) -> None:
-    """Fail before opening the shared reference tap if the mic is absent.
+def _resolved_reference_source(config: BridgeConfig) -> BridgeConfig:
+    """Return `config` with a supported `ref_source`, or reject it.
 
-    Validate the mic first so missing hardware fails before we start
-    the far-end reference thread. In the normal outputd UDP path this
-    avoids useless socket work; in explicit ALSA fallback mode it also
-    avoids opening an unnecessary `jasper_ref` reader.
+    `RETIRED_REF_SOURCE_ALSA` is converged, not rejected: a parked box can
+    still carry it on disk, and refusing to start would leave jasper-voice
+    with an unfed UDP mic. Anything else is a typo or a source this bridge
+    genuinely cannot read, which stays a hard failure as it always was.
+
+    Call this before anything reads `config.ref_source` — the bridge-stats
+    snapshot publishes it as runtime provenance that `jasper-doctor` trusts,
+    so the retired spelling must never reach it.
+    """
+    if config.ref_source == REF_SOURCE:
+        return config
+    if config.ref_source == RETIRED_REF_SOURCE_ALSA:
+        log_event(
+            logger,
+            "aec_ref_source_retired",
+            level=logging.WARNING,
+            retired=config.ref_source,
+            using=REF_SOURCE,
+            detail=(
+                "the ALSA reference fallback is gone; run "
+                "`sudo systemctl start jasper-aec-reconcile` to converge "
+                "/var/lib/jasper/aec_mode.env"
+            ),
+        )
+        return replace(config, ref_source=REF_SOURCE)
+    raise UnsupportedReferenceSource(
+        f"unsupported JASPER_AEC_REF_SOURCE={config.ref_source!r} "
+        f"(expected {REF_SOURCE!r})"
+    )
+
+
+def _validate_mic_device(config: BridgeConfig | None = None) -> None:
+    """Fail before opening the far-end reference if the mic is absent.
+
+    Validate the mic first so missing hardware fails before we start the
+    reference thread and its UDP socket work.
     """
     config = config or BridgeConfig.from_env()
     try:
@@ -1488,6 +1533,29 @@ class _ReferenceFrameConverter:
     Transport adapters own capture and lifecycle. This class owns only the
     shared DSP contract: stereo folding, exact-size accumulation, resampling,
     stateful HPF, gain, clipping telemetry, and int16 framing.
+
+    Why L+R sum (not left-only): the speakers radiate the sum of L and R
+    into a single mic. AEC3 is mono-reference, so we get one shot at
+    modeling the echo path. Feeding it L-only would blind it to whatever is
+    panned to R — bass, vocals, lead instruments — which for typical stereo
+    music is a substantial portion of the energy. Summing matches what the
+    room actually contains. (The XMOS chip's USB-IN AEC requires left-only
+    per datasheet §3.3, but that is the chip's own reference, not this one.)
+
+    Why accumulate rather than convert per delivery: a transport can hand
+    over partial or oversized buffers, so we accumulate at 48 kHz and only
+    emit complete `capture_block`-sized chunks. That guarantees every queued
+    frame matches the mic frame size — the WebRTC AEC3 engine enforces equal
+    lengths strictly.
+
+    Optional pre-AEC reference gain (`JASPER_AEC_REF_GAIN_DB`) boosts the
+    digital ref before it enters the AEC engine. AEC3 was tuned for
+    conferencing setups where ref RMS ≈ mic RMS or ref is louder; in our
+    smart-speaker setup the digital ref is typically 25-30 dB *quieter* than
+    what the mic captures (amp + speakers + room amplify the chain).
+    Boosting ref closes that gap so the adaptive filter operates near its
+    design point. See docs/HANDOFF-aec.md "Tuning findings" for measured
+    impact.
     """
 
     def __init__(self, *, ref_gain_db: float, ref_hpf_hz: float) -> None:
@@ -1584,80 +1652,6 @@ def _enqueue_reference_frames(
         logger.warning(drop_message, *report)
 
 
-def _ref_thread(ref_q: Queue) -> None:
-    """Capture 48k stereo ref via alsaaudio (PortAudio doesn't see
-    custom asoundrc PCMs like `jasper_capture`), sum L+R to mono,
-    downsample to 16k. Push frames of exactly FRAME_SAMPLES samples
-    (= 2*FRAME_SAMPLES bytes mono int16) onto the queue.
-
-    Why L+R sum (not left-only): the speakers radiate the sum of
-    L and R into a single mic. AEC3 is mono-reference, so we get
-    one shot at modeling the echo path. Feeding it L-only would
-    blind it to whatever is panned to R — bass, vocals, lead
-    instruments — which for typical stereo music is a substantial
-    portion of the energy. Summing matches what the room actually
-    contains. (The XMOS chip's USB-IN AEC requires left-only per
-    datasheet §3.3, but we are not using that path.)
-
-    alsaaudio.PCM.read() can return partial reads (especially the
-    first one as the stream warms up), so we accumulate at the 48k
-    rate and only emit complete capture_block-sized chunks. This
-    guarantees every queued frame matches the mic frame size — the
-    WebRTC AEC3 engine enforces equal lengths strictly.
-
-    Optional pre-AEC reference gain (`JASPER_AEC_REF_GAIN_DB`):
-    boosts the digital ref before it enters the AEC engine. AEC3
-    was tuned for conferencing setups where ref RMS ≈ mic RMS or
-    ref is louder; in our smart-speaker setup the digital ref is
-    typically 25-30 dB *quieter* than what the mic captures (amp +
-    speakers + room amplify the chain). Boosting ref closes that
-    gap so the adaptive filter operates near its design point. See
-    docs/HANDOFF-aec.md "Tuning findings" for measured impact."""
-    import alsaaudio
-    converter = _ReferenceFrameConverter.from_env()
-
-    pcm = alsaaudio.PCM(
-        type=alsaaudio.PCM_CAPTURE,
-        mode=alsaaudio.PCM_NORMAL,  # blocking
-        device=REF_DEVICE,
-        rate=REF_RATE,
-        channels=REF_CHANNELS,
-        format=alsaaudio.PCM_FORMAT_S16_LE,
-        periodsize=converter.capture_block,
-    )
-    logger.info(
-        "ref capture opened: %s @ %d Hz, %d ch "
-        "(pre-AEC gain=%+.1f dB, HPF=%.0f Hz 2nd Butter)",
-        REF_DEVICE,
-        REF_RATE,
-        REF_CHANNELS,
-        converter.ref_gain_db,
-        converter.ref_hpf_hz,
-    )
-    # Drop-rate debouncing: during a mic stall the ref keeps producing
-    # at ~50 Hz, so a naive per-frame WARNING floods the journal with
-    # hundreds of entries that all say the same thing. Aggregate the
-    # count and log one summary per second instead.
-    drop_log = _DropLogDebouncer()
-    try:
-        while not _shutdown.is_set():
-            length, data = pcm.read()
-            if length <= 0:
-                continue
-            arr = np.frombuffer(data, dtype=np.int16)
-            _enqueue_reference_frames(
-                ref_q,
-                converter.feed(arr),
-                drop_log=drop_log,
-                drop_message=(
-                    "ref queue full, dropped %d frames in last %.1fs "
-                    "(mic queue likely empty — see next stall log)"
-                ),
-            )
-    finally:
-        pcm.close()
-
-
 def _outputd_ref_udp_thread(
     ref_q: Queue,
     config: BridgeConfig | None = None,
@@ -1665,10 +1659,10 @@ def _outputd_ref_udp_thread(
     """Receive outputd's final speaker-reference UDP tap and convert it
     to the 16 kHz mono frames AEC3 consumes.
 
-    Unlike `jasper_ref`, this is not a clocked ALSA capture loop: outputd
-    sends the exact post-mix buffer it writes to the DAC. Production
-    software AEC, chip-AEC, corpus, and diagnostics use this path so they
-    all see the same final speaker reference.
+    This is the bridge's only reference transport. It is not a clocked
+    ALSA capture loop: outputd sends the exact post-mix buffer it writes
+    to the DAC. Production software AEC, chip-AEC, corpus, and diagnostics
+    all use it, so they all see the same final speaker reference.
     """
     config = config or BridgeConfig.from_env()
     converter = _ReferenceFrameConverter.from_env()
@@ -2659,13 +2653,12 @@ def _aec_loop(  # noqa: PLR0915
             # Consume ONE ref frame per main-loop iteration, in order.
             # If the queue is empty, carry forward the previous ref.
             #
-            # Background: ALSA's pcm.read() on jasper_ref returns
-            # 1024-frame periods (negotiated up from the bridge's
-            # request of 960 to match dsnoop's underlying period).
-            # With buffer_size = 4 × period_size, ALSA delivers two
-            # periods back-to-back every ~40 ms — the bursting is at
-            # the ALSA layer, not the bridge. Meanwhile the mic
-            # delivers smoothly at the bridge's 20 ms cadence.
+            # Background (diagnosed on the retired ALSA ref path, whose
+            # dsnoop read delivered two periods back-to-back every ~40 ms;
+            # the invariant is transport-independent and still holds for
+            # outputd's UDP tap, which bursts for its own reasons): the
+            # reference arrives in bursts while the mic delivers smoothly
+            # at the bridge's 20 ms cadence.
             #
             # The original code's "drain to newest" pattern reacted to
             # the burst by discarding the older of the two frames and
@@ -3081,10 +3074,15 @@ def main() -> int:
     from .. import flight_recorder
     flight_recorder.install("aec")
     config = BridgeConfig.from_env(log_sweep=True, logger_=logger)
+    # Resolve the reference source before anything reads it: the stats
+    # snapshot below publishes it as the runtime provenance doctor trusts.
+    try:
+        config = _resolved_reference_source(config)
+    except UnsupportedReferenceSource as e:
+        logger.error("%s", e)
+        return 1
     reference_endpoint = (
         f"{config.outputd_ref_udp_host}:{config.outputd_ref_udp_port}"
-        if config.ref_source == "outputd_udp"
-        else REF_DEVICE
     )
     _bridge_stats.reset(
         config.aec3_sweep_variants,
@@ -3132,11 +3130,7 @@ def main() -> int:
         "corpus_chip_aec=%s production_chip_aec=%s "
         "chip_beam_plan=%s chip_aec_primary=%s corpus_xvf_raw0_webrtc=%s "
         "corpus_xvf_raw0_dtln=%s",
-        (
-            REF_DEVICE
-            if config.ref_source == "alsa"
-            else f"udp:{config.outputd_ref_udp_port}"
-        ),
+        f"udp:{config.outputd_ref_udp_port}",
         REF_RATE, config.mic_device, SAMPLE_RATE,
         MIC_CHANNELS, MIC_CHANNEL_INDEX,
         config.out_host, config.out_port, raw_out_detail, OUT_RATE,
@@ -3152,21 +3146,7 @@ def main() -> int:
         "on" if corpus_xvf_raw0_webrtc_enabled else "off",
         "on" if corpus_xvf_raw0_dtln_enabled else "off",
     )
-    if config.ref_source not in {"alsa", "outputd_udp"}:
-        logger.error(
-            "unsupported JASPER_AEC_REF_SOURCE=%r "
-            "(expected 'alsa' or 'outputd_udp')",
-            config.ref_source,
-        )
-        return 1
     if production_chip_aec_enabled:
-        if config.ref_source != "outputd_udp":
-            logger.error(
-                "JASPER_AEC_CHIP_AEC_ENABLED=1 requires "
-                "JASPER_AEC_REF_SOURCE=outputd_udp; got %r",
-                config.ref_source,
-            )
-            return 1
         if not os.environ.get("JASPER_OUTPUTD_CHIP_REF_PCM", "").strip():
             logger.error(
                 "JASPER_AEC_CHIP_AEC_ENABLED=1 requires "
@@ -3224,14 +3204,11 @@ def main() -> int:
         Queue(maxsize=QUEUE_MAXSIZE) if corpus_usb_enabled else None
     )
 
-    if config.ref_source == "outputd_udp":
-        ref_t = threading.Thread(
-            target=_outputd_ref_udp_thread,
-            args=(ref_q, config),
-            daemon=True,
-        )
-    else:
-        ref_t = threading.Thread(target=_ref_thread, args=(ref_q,), daemon=True)
+    ref_t = threading.Thread(
+        target=_outputd_ref_udp_thread,
+        args=(ref_q, config),
+        daemon=True,
+    )
     mic_t = threading.Thread(
         target=_mic_thread,
         args=(mic_q, raw0_q, chip_aec_qs, chip_beam_plan, config),

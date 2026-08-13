@@ -1502,7 +1502,7 @@ def test_explicit_chip_profile_parks_for_compensable_verdict(
                 "raw_udp": False,
                 "dtln_udp": False,
                 "chip_enabled": "0",
-                "ref_source": "alsa",
+                "ref_source": "outputd_udp",
             },
         ),
     ],
@@ -1970,7 +1970,7 @@ def test_chip_aec_cleared_when_aec_disabled(tmp_path: Path) -> None:
     assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:" not in body
     assert "JASPER_MIC_DEVICE_CHIP_AEC_210=udp:" not in body
     assert "JASPER_AEC_CHIP_AEC_ENABLED=1" not in body
-    assert "JASPER_AEC_REF_SOURCE=alsa" in body
+    assert "JASPER_AEC_REF_SOURCE=outputd_udp" in body
     assert "JASPER_OUTPUTD_REFERENCE_UDP_TARGET=''" in body
     mode_body = (tmp_path / "aec_mode.env").read_text()
     assert "JASPER_WAKE_LEG_CHIP_AEC=1" in mode_body
@@ -1989,7 +1989,7 @@ def test_chip_aec_not_armed_without_6ch_firmware(tmp_path: Path) -> None:
     body = (tmp_path / "jasper.env").read_text()
     assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:" not in body
     assert "JASPER_AEC_CHIP_AEC_ENABLED=1" not in body
-    assert "JASPER_AEC_REF_SOURCE=alsa" in body
+    assert "JASPER_AEC_REF_SOURCE=outputd_udp" in body
 
 
 # ---------- Chip-ref observe mode (chip-AEC Layer 0 bootstrap) ------------

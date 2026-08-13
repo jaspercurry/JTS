@@ -678,7 +678,14 @@ def test_assess_aec_output_unusable_outputd_target_is_comparison_neutral(
     assert "/etc/asound.conf" not in result.detail
 
 
-def test_assess_aec_output_alsa_remediation_retains_asound_advice():
+def test_assess_aec_output_retired_alsa_provenance_gets_no_asound_advice():
+    """U4 / P7-1: the bridge cannot read `pcm.jasper_ref` any more.
+
+    A stats file still claiming `source=alsa` therefore names a producer
+    that does not exist, so doctor must fall through to the generic
+    unknown-provenance remediation instead of sending the operator to
+    /etc/asound.conf for a hop nothing reads.
+    """
     lines = [_rms_log_line(ref=0, mic=2500, aec=2400, attn_db=-0.4) for _ in range(8)]
 
     result = doctor._assess_aec_bridge_output(
@@ -688,10 +695,11 @@ def test_assess_aec_output_alsa_remediation_retains_asound_advice():
     )
 
     assert result.status == "fail"
-    assert "source=alsa" in result.detail
-    assert "/etc/asound.conf" in result.detail
-    assert "pcm.jasper_capture" in result.detail
-    assert "jasper_ref" in result.detail
+    assert "cannot safely name the failed hop" in result.detail
+    assert "source=alsa" not in result.detail
+    assert "/etc/asound.conf" not in result.detail
+    assert "pcm.jasper_capture" not in result.detail
+    assert "jasper_ref" not in result.detail
 
 
 @pytest.mark.parametrize(
@@ -1598,18 +1606,16 @@ def test_check_fresh_v4_identity_overrides_contradictory_legacy_plan(
 
 
 @pytest.mark.parametrize(
-    ("legacy_source", "expected_detail"),
-    [
-        ("alsa", "source=alsa"),
-        ("future_transport", "cannot safely name the failed hop"),
-    ],
-    ids=["alsa", "unknown"],
+    "legacy_source",
+    # `alsa` is the retired source (U4 / P7-1) and gets no special
+    # treatment: it reads exactly like a source doctor has never heard of.
+    ["alsa", "future_transport"],
+    ids=["retired-alsa", "unknown"],
 )
 def test_check_legacy_non_outputd_fallback_skips_status(
     monkeypatch,
     tmp_path: Path,
     legacy_source,
-    expected_detail,
 ):
     stats = _reference_input_stats(schema_version=3)
     stats["active_capture_plan"]["mic_reference_identity"] = {
@@ -1630,7 +1636,7 @@ def test_check_legacy_non_outputd_fallback_skips_status(
     result = doctor.aec.check_aec_bridge_output_health()
 
     assert result.status == "fail"
-    assert expected_detail in result.detail
+    assert "cannot safely name the failed hop" in result.detail
     assert not any(command[0] == "outputd-status" for command in calls)
 
 

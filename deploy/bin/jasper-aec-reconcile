@@ -700,6 +700,15 @@ write_leg_env() {
     local ref_source outputd_chip_ref_pcm outputd_ref_target observe_flag
     local outputd_chip_ref_rate outputd_chip_ref_period outputd_chip_ref_buffer
     local bridge_ref_host bridge_ref_port producer_was_active
+    # outputd's final speaker monitor is the bridge's only reference
+    # source, in every state. The retired `alsa` value the parked
+    # branches below used to write named the snd-aloop tap the bridge no
+    # longer reads (U4 / P7-1). Those states stop the bridge outright —
+    # `stop_disable_aec` for bridge_running="0", `park_managed_xvf` for
+    # "reference" — so what they publish is a resting value, not a live
+    # transport choice; publishing the one supported value keeps the
+    # parked file self-consistent for whoever reads it next.
+    ref_source="outputd_udp"
     producer_was_active=0
     if [[ -n "${JASPER_OUTPUTD_CHIP_REF_PCM-}" || -n "${JASPER_OUTPUTD_REFERENCE_UDP_TARGET-}" ]]; then
         producer_was_active=1
@@ -726,7 +735,6 @@ write_leg_env() {
         raw_udp=""
         dtln_udp=""
         dtln_flag="0"
-        ref_source="outputd_udp"
         bridge_ref_host="127.0.0.1"
         bridge_ref_port="${AEC_OUTPUTD_REF_UDP_PORT}"
         outputd_chip_ref_pcm="${OUTPUTD_CHIP_REF_PCM}"
@@ -743,7 +751,6 @@ write_leg_env() {
         # Init needs the production flag while bridge/voice remain parked.
         chip_flag="1"
         observe_flag="0"
-        ref_source="alsa"
         bridge_ref_host="127.0.0.1"
         bridge_ref_port="${AEC_OUTPUTD_REF_UDP_PORT}"
         outputd_chip_ref_pcm="${OUTPUTD_CHIP_REF_PCM}"
@@ -771,7 +778,6 @@ write_leg_env() {
         chip_150_udp=""
         chip_210_udp=""
         chip_flag="0"
-        ref_source="outputd_udp"
         bridge_ref_host="127.0.0.1"
         bridge_ref_port="${AEC_OUTPUTD_REF_UDP_PORT}"
         # Explicit custom/lab observation only; this never authorizes a
@@ -795,7 +801,6 @@ write_leg_env() {
         chip_210_udp=""
         chip_flag="0"
         observe_flag="0"
-        ref_source="alsa"
         bridge_ref_host="127.0.0.1"
         bridge_ref_port="${AEC_OUTPUTD_REF_UDP_PORT}"
         outputd_chip_ref_pcm=""
