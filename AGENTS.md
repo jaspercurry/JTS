@@ -181,11 +181,11 @@ worked example of getting this wrong and repairing it.
   `jasper-apply-airplay-mode` (the conf's per-start renderer, run
   from `ExecStartPre`), which reads the same map's resolved line.
   Either way `$DEVICE` above is whatever the lane map resolves it
-  to — the doctor resolves it the same way before probing. `$USER` is likewise the
-  unit's real `User=`, which is **not** always non-root:
-  bluealsa-aplay runs as root and therefore needs no `jts-ring`
-  membership, while librespot (`pi`) does. This catches the
-  PR #214 bug class: a user-space ALSA PCM defined only in a
+  to — the doctor resolves it the same way before probing. `$USER`
+  is likewise the unit's real `User=`, which is **not** always
+  non-root: bluealsa-aplay runs as root and therefore needs no
+  `jts-ring` membership, while librespot (`pi`) does. This catches
+  the PR #214 bug class: a user-space ALSA PCM defined only in a
   root-readable `~/.asoundrc` fails to resolve under non-root
   renderer users (shairport-sync, pi). System-wide PCM defs go
   in `/etc/asound.conf` (mode 0644). `jasper-doctor`'s

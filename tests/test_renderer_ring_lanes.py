@@ -864,22 +864,25 @@ def test_the_installer_adds_jasper_web_to_the_ring_group():
     )
 
 
-def test_the_installer_adds_shairport_sync_to_the_ring_group():
-    """Both delivery paths of shairport-sync's jts-ring membership (P6d).
+# shairport-sync's jts-ring membership has TWO delivery paths in TWO files
+# (P6d): unlike every other member, its USER is created in renderers.sh
+# (the source-build section), not service-users.sh. Each path gets its OWN
+# test function below — deliberately not one function with both assert
+# groups, because pytest short-circuits at the first failing assert: a
+# mutation of the fresh path would leave the upgrade-path asserts
+# never-executed, so their green would be composition, not observation,
+# and no single run could demonstrate the two guards independently
+# (found by the P6d panel's correctness lens).
 
-    Unlike every other jts-ring member, the shairport-sync USER is created
-    in renderers.sh (the source-build section), not service-users.sh — so
-    the two delivery paths live in two files and each is the sole guard of
-    its path:
 
-    * **fresh boxes** — renderers.sh's `useradd -G` hard-lists jts-ring,
-      which is safe because create_jasper_service_users (the group's
-      creator) runs before install_renderers in install.sh, and an
-      ordering regression fails LOUDLY (useradd exit 6 under
-      set -euo pipefail) rather than silently;
-    * **upgrade boxes** — the useradd is skipped when the user already
-      exists (every box installed before P6d), so service-users.sh carries
-      the guarded idempotent usermod, same shape as the `pi` membership.
+def test_the_installer_fresh_path_adds_shairport_sync_to_the_ring_group():
+    """FRESH boxes: renderers.sh's `useradd -G` hard-lists jts-ring.
+
+    Safe to hard-list because create_jasper_service_users (the group's
+    creator) runs before install_renderers in install.sh, and an ordering
+    regression fails LOUDLY (useradd exit 6 under set -euo pipefail)
+    rather than silently. This test is the fresh path's sole guard; the
+    upgrade path has its own test below.
     """
     renderers = RENDERERS_SH.read_text()
     useradd_lines = [
@@ -892,6 +895,18 @@ def test_the_installer_adds_shairport_sync_to_the_ring_group():
         "fresh installs must put shairport-sync in jts-ring via its "
         "useradd -G (renderers.sh)"
     )
+
+
+def test_the_installer_upgrade_path_adds_shairport_sync_to_the_ring_group():
+    """UPGRADE boxes: service-users.sh carries the guarded usermod.
+
+    The useradd in renderers.sh is skipped when the user already exists
+    (every box installed before P6d), so the membership needs the
+    idempotent `usermod -aG` — guarded on the account existing, because
+    on a fresh box install_renderers has not run yet when
+    create_jasper_service_users does (the `pi` shape). This test is the
+    upgrade path's sole guard; the fresh path has its own test above.
+    """
     users = SERVICE_USERS.read_text()
     assert "usermod -aG jts-ring shairport-sync" in users, (
         "pre-P6d boxes skip the useradd; the upgrade path needs the "
