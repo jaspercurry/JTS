@@ -5628,7 +5628,7 @@ class CrossoverV2Session:
         session_id: str,
         **kwargs: Any,
     ) -> "CrossoverV2Session":
-        """Rebuild a conductor, applying the §5.6 session-binding rule.
+        """Rebuild a session, applying the §5.6 session-binding rule.
 
         Same session ⇒ resume, keeping the accepted phases + gain plan (skips
         accepted phases). A different or absent session ⇒ fresh start at CHECK
