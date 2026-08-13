@@ -266,9 +266,63 @@ install -m 0644 "{tmp_path / 'missing.service'}" \
     assert path.read_text(encoding="utf-8") == "old path generation\n"
     assert not (systemd_dir / "later.service").exists()
     assert sorted(item.name for item in systemd_dir.iterdir()) == [
+        "NetworkManager.service.d",
         "jasper-usbgadget-forensics.path",
         "jasper-usbgadget-forensics.service",
     ]
+    assert list((systemd_dir / "NetworkManager.service.d").iterdir()) == []
+    assert not transaction.exists()
+
+
+def test_later_install_failure_restores_usb_projections_and_gate_state(tmp_path):
+    """The generated pair belongs to the full-profile rollback generation."""
+
+    transaction = tmp_path / "transaction"
+    nm = tmp_path / "jts-usb.nmconnection"
+    dnsmasq = tmp_path / "usbnet-dnsmasq.conf"
+    gate = tmp_path / "jasper-usb-network-plan.service"
+    dropin_dir = tmp_path / "NetworkManager.service.d"
+    dropin = dropin_dir / "jasper-usb-network-plan.conf"
+    staged_gate = tmp_path / "staged-gate.service"
+    staged_dropin = tmp_path / "staged-plan.conf"
+    nm.write_text("old nm generation\n", encoding="utf-8")
+    dnsmasq.write_text("old dnsmasq generation\n", encoding="utf-8")
+    gate.write_text("old gate generation\n", encoding="utf-8")
+    staged_gate.write_text("new gate generation\n", encoding="utf-8")
+    staged_dropin.write_text("new drop-in generation\n", encoding="utf-8")
+    script = f"""
+set -euo pipefail
+REPO_DIR="{ROOT}"
+SYSTEMD_DIR="{tmp_path / 'systemd'}"
+source "{FRAGMENT}"
+systemctl() {{ return 0; }}
+install_transaction_dir="{transaction}"
+mkdir -p "$install_transaction_dir" "{dropin_dir}"
+declare -a install_transaction_paths=()
+declare -a install_transaction_existed=()
+set -E
+trap '_rollback_full_unit_install_transaction' ERR
+install() {{ _transactional_full_unit_install "$@"; }}
+install -m 0644 "{staged_gate}" "{gate}"
+install -m 0644 "{staged_dropin}" "{dropin}"
+_snapshot_full_unit_install_destination "{nm}"
+_snapshot_full_unit_install_destination "{dnsmasq}"
+printf 'new nm generation\n' > "{nm}"
+printf 'new dnsmasq generation\n' > "{dnsmasq}"
+install -m 0644 "{tmp_path / 'missing.service'}" "{tmp_path / 'later.service'}"
+"""
+
+    result = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, timeout=20
+    )
+
+    assert result.returncode != 0
+    assert "rolled back the incomplete full-profile unit generation" in result.stderr
+    assert nm.read_text(encoding="utf-8") == "old nm generation\n"
+    assert dnsmasq.read_text(encoding="utf-8") == "old dnsmasq generation\n"
+    assert gate.read_text(encoding="utf-8") == "old gate generation\n"
+    assert not dropin.exists()
+    assert not (tmp_path / "later.service").exists()
     assert not transaction.exists()
 
 

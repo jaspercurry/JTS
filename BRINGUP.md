@@ -474,9 +474,11 @@ Full design + RAM analysis + failure-mode matrix:
 
 **Same USB-C port, hardware-conditional management network.** On a Pi 5,
 the USB-C port carries an NCM network link (`ncm.usb0`) after install — plugging
-a laptop in gets you `http://<JASPER_HOSTNAME>/` (or the documented fallback
-`http://10.12.194.1/`) even with Wi-Fi off, whether or not USB Audio Input is
-enabled. On a Zero-class speaker with a USB output DAC, its one OTG data port is
+a laptop in gets you `http://<JASPER_HOSTNAME>/` over a speaker-derived private
+`/30` even with Wi-Fi off, whether or not USB Audio Input is enabled. Installed
+JTS has no fleet-wide fixed IP fallback; `10.12.194.1` is only the separate Pi
+Imager rescue gadget or a legacy address preserved until migration reboot. On a
+Zero-class speaker with a USB output DAC, its one OTG data port is
 reserved for that DAC, so both the management link and USB Audio Input are
 unavailable. A registered I²S DAC leaves the Zero port free. The Sources page
 shows the resolved availability; see

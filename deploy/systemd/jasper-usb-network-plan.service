@@ -1,0 +1,28 @@
+[Unit]
+Description=Jasper USB management network address-plan gate
+Documentation=file:///opt/jasper/docs/HANDOFF-usb-gadget.md
+After=local-fs.target
+Before=NetworkManager.service jasper-usbgadget.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/jasper/.venv/bin/python -m jasper.usb_network promote
+RemainAfterExit=yes
+TimeoutStartSec=10s
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ReadWritePaths=/etc/NetworkManager/system-connections /etc/jasper /var/lib/jasper-usb-network
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_INET AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

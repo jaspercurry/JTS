@@ -308,9 +308,10 @@ you actually observed.
    single OTG data port for a USB output DAC unless a registered I²S DAC leaves
    it free. On a gadget-capable product, plug a
    laptop in at any time, any day, and `http://<JASPER_HOSTNAME>/`
-   (e.g. `http://jts.local/`) resolves over the USB link, with
-   `http://10.12.194.1/` as the documented IP fallback, even if the Pi
-   has no Wi-Fi at all. See
+   (e.g. `http://jts.local/`) resolves over the speaker-derived private
+   `/30` even if the Pi has no Wi-Fi at all. Installed JTS deliberately has no
+   fleet-wide fixed IP fallback: `10.12.194.1` above belongs to the separate
+   Pi Imager rescue gadget (or a preserved legacy JTS migration). See
    [docs/HANDOFF-usb-gadget.md](docs/HANDOFF-usb-gadget.md) for the
    hardware-role policy and how the two mechanisms avoid controller contention.
 

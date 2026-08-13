@@ -23,7 +23,8 @@ Description=Jasper composite USB gadget (management network + optional audio)
 # NAMING DEBT: the ConfigFS gadget dir name stays `jts-usb-audio` (the doctor's
 # low-latency contract reads that exact path). Accepted debt — see
 # docs/HANDOFF-usb-gadget.md.
-After=systemd-modules-load.service sys-kernel-config.mount jasper-audio-hardware-reconcile.service jasper-fanin.service
+Requires=jasper-usb-network-plan.service
+After=systemd-modules-load.service sys-kernel-config.mount jasper-usb-network-plan.service jasper-audio-hardware-reconcile.service jasper-fanin.service
 Wants=jasper-audio-hardware-reconcile.service jasper-fanin.service
 Before=jasper-usbsink.service
 ConditionPathExists=/sys/kernel/config

@@ -17,6 +17,18 @@ import subprocess
 from pathlib import Path
 
 from jasper.output_hardware import current_usb_data_role
+from jasper.usb_network import (
+    DEFAULT_DNSMASQ_PATH,
+    DEFAULT_NM_PATH,
+    DEFAULT_PENDING_PATH,
+    IPv4ObservationState,
+    UsbNetworkPlanError,
+    attest_plan as attest_usb_network_plan,
+    load_plan as load_usb_network_plan,
+    observe_ipv4_cidr,
+    render_dnsmasq,
+    render_nmconnection,
+)
 
 from ._registry import doctor_check
 from ._shared import CheckResult, _run
@@ -580,11 +592,9 @@ def check_identity_coherence() -> CheckResult:
 # ----------------------------------------------------------------------
 
 USBNET_IFACE = "usb0"
-USBNET_ADDRESS = "10.12.194.1"
 USBNET_NM_PROFILE = "jts-usb"
 USBNET_DHCP_UNIT = "jasper-usbnet-dhcp.service"
 USBNET_SYS_CLASS_NET = Path("/sys/class/net")
-USBNET_PROBE_URL = f"http://{USBNET_ADDRESS}/system/data.json"
 
 
 def _usb_network_wanted() -> bool:
@@ -629,10 +639,60 @@ def _udc_present() -> bool:
         return False
 
 
+@doctor_check(order=67.55, group="network")
+def check_usbnet_address_plan() -> CheckResult:
+    """The persisted plan and its two installed projections must agree."""
+
+    label = "USB network address plan"
+    try:
+        plan = attest_usb_network_plan(load_usb_network_plan())
+    except UsbNetworkPlanError as exc:
+        return CheckResult(
+            label,
+            "fail",
+            f"missing or invalid plan ({exc}); USB gadget start is blocked, "
+            "while NetworkManager/Wi-Fi remain available. Re-run deploy/install.sh.",
+        )
+    try:
+        pending = DEFAULT_PENDING_PATH.exists()
+    except OSError:
+        pending = False
+    if pending:
+        return CheckResult(
+            label,
+            "warn",
+            f"version={plan.version} fingerprint={plan.identity_fingerprint} "
+            f"desired={plan.device_cidr}; legacy live generation is preserved "
+            "until next boot",
+        )
+    expected = (
+        (DEFAULT_NM_PATH, render_nmconnection(plan)),
+        (DEFAULT_DNSMASQ_PATH, render_dnsmasq(plan)),
+    )
+    for path, content in expected:
+        try:
+            observed = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            return CheckResult(label, "fail", f"cannot read {path}: {exc}")
+        if observed != content:
+            return CheckResult(
+                label,
+                "fail",
+                f"{path} does not match plan version={plan.version} "
+                f"fingerprint={plan.identity_fingerprint}; the gadget boot "
+                "gate will refuse an incoherent projection. Re-run install.",
+            )
+    return CheckResult(
+        label,
+        "ok",
+        f"version={plan.version} fingerprint={plan.identity_fingerprint} "
+        f"subnet={plan.subnet} device={plan.device_address}",
+    )
+
+
 @doctor_check(order=67.6, group="network")
 def check_usbnet_interface() -> CheckResult:
-    """The usb0 NCM interface must exist with the fixed management
-    address whenever the network function is composed and bound.
+    """The usb0 NCM interface must use its plan-derived management /30.
 
     ``jasper-usbgadget-up`` composes ``ncm.usb0`` whenever
     ``JASPER_USB_NETWORK`` is not the literal ``disabled``
@@ -641,8 +701,8 @@ def check_usbnet_interface() -> CheckResult:
     *network* consequence: ``u_ether`` registers the ``usb0`` netdev at
     gadget-BIND time (not host-attach time), so on a bound gadget ``usb0``
     exists regardless of whether a laptop is plugged in, and NetworkManager's
-    ``jts-usb`` profile (see check_usbnet_nm_profile) should have put
-    10.12.194.1/24 on it. A missing ``usb0`` while the network is wanted AND a
+    ``jts-usb`` profile (see check_usbnet_nm_profile) should have put the
+    plan-derived /30 on it. A missing ``usb0`` while the network is wanted AND a
     UDC exists therefore means the compose/bind FAILED — a real problem, not
     "nothing plugged in". No carrier on an existing ``usb0`` is the normal
     nothing-plugged-in state and reports ok."""
@@ -656,6 +716,14 @@ def check_usbnet_interface() -> CheckResult:
                 "network function.",
             )
         return CheckResult(label, "ok", "network kill-switched (disabled)")
+    try:
+        plan = attest_usb_network_plan(load_usb_network_plan())
+    except UsbNetworkPlanError as exc:
+        return CheckResult(
+            label,
+            "fail",
+            f"cannot determine desired address from USB network plan: {exc}",
+        )
     usb_role = current_usb_data_role()
     if not usb_role.management_transport_available:
         if _usbnet_iface_present():
@@ -703,10 +771,23 @@ def check_usbnet_interface() -> CheckResult:
             f"{USBNET_IFACE} present but `ip addr show` failed: "
             f"{addr_proc.stderr.strip() or 'no output'}",
         )
-    if f"inet {USBNET_ADDRESS}/" not in addr_proc.stdout:
+    if f"inet {plan.device_cidr}" not in addr_proc.stdout:
+        try:
+            pending = DEFAULT_PENDING_PATH.exists()
+        except OSError:
+            pending = False
+        if pending:
+            return CheckResult(
+                label,
+                "warn",
+                f"{USBNET_IFACE} still has the preserved legacy generation; "
+                f"desired={plan.device_cidr}, observed: "
+                f"{addr_proc.stdout.strip() or '(no address)'}. Next boot "
+                "promotes both network projections before the gadget starts.",
+            )
         return CheckResult(
             label, "fail",
-            f"{USBNET_IFACE} present but missing {USBNET_ADDRESS} — "
+            f"{USBNET_IFACE} present but missing {plan.device_cidr} — "
             f"observed: {addr_proc.stdout.strip() or '(no address)'}. Check "
             f"`nmcli connection show {USBNET_NM_PROFILE}` and "
             "check_usbnet_nm_profile.",
@@ -724,7 +805,7 @@ def check_usbnet_interface() -> CheckResult:
     )
     return CheckResult(
         label, status,
-        f"{USBNET_IFACE} has {USBNET_ADDRESS}"
+        f"{USBNET_IFACE} has {plan.device_cidr}"
         + (f" (carrier={'up' if carrier else 'down'})" if carrier is not None else "")
         + suffix,
     )
@@ -737,10 +818,9 @@ def check_usbnet_nm_profile() -> CheckResult:
 
     NetworkManager is the box's single network owner for usb0 (no
     systemd-networkd, no dispatcher scripts); the profile is shipped
-    in-repo (``deploy/usb-network/jts-usb.nmconnection``) and installed
-    read-only. A different active connection on usb0 means either a
+    from the persisted plan. A different active connection on usb0 means either a
     manual `nmcli` override or a profile-install regression — either way
-    the fixed 10.12.194.1 address is not guaranteed. Skips (ok) when
+    the plan-derived address is not guaranteed. Skips (ok) when
     usb0 doesn't exist yet or nmcli isn't on PATH (dev host)."""
     label = "USB network NM profile"
     if not _usbnet_iface_present():
@@ -776,7 +856,7 @@ def check_usbnet_nm_profile() -> CheckResult:
             label, "fail",
             f"{USBNET_IFACE} is bound to {active_on_usb0!r}, not the "
             f"shipped {USBNET_NM_PROFILE!r} profile — a manual override or "
-            "install regression. The fixed 10.12.194.1 address is not "
+            "install regression. The plan-derived address is not "
             "guaranteed under a different profile.",
         )
     return CheckResult(label, "ok", f"{USBNET_NM_PROFILE} active on {USBNET_IFACE}")
@@ -831,12 +911,12 @@ def check_usbnet_management_probe() -> CheckResult:
     """The management UI must answer over the USB fallback address.
 
     Mirrors ``check_management_surface`` (jasper/cli/doctor/web.py) but
-    probes ``http://10.12.194.1/system/data.json`` (the same endpoint the
+    probes the interface's observed IPv4 address (the same endpoint the
     deploy-time management-surface verification hits) with
     ``Host: <JASPER_HOSTNAME>`` instead of nginx's loopback IPv4 — this is
     the exact path a plugged-in laptop with no WiFi exercises when it falls
     back from ``http://<hostname>.local/`` to the raw fallback IP. Pins both the
-    guard's acceptance of the 10.12.194.1 Host/source (see
+    guard's acceptance of a private-IP Host/source (see
     tests/test_http_security.py) and that nginx is actually listening on
     usb0's address, without needing hardware. Skips when usb0 doesn't
     exist (nothing to probe) or nginx isn't installed (dev host)."""
@@ -850,8 +930,30 @@ def check_usbnet_management_probe() -> CheckResult:
         return CheckResult(label, "ok", f"{USBNET_IFACE} not present (skipped)")
     if not NGINX_SITE.exists():
         return CheckResult(label, "ok", "nginx site not installed (skipped)")
+    observation = observe_ipv4_cidr(USBNET_IFACE)
+    if observation.state is IPv4ObservationState.ERROR:
+        return CheckResult(
+            label,
+            "fail",
+            f"could not inspect {USBNET_IFACE}'s IPv4 address: "
+            f"{observation.error}",
+        )
+    if observation.state is IPv4ObservationState.ABSENT:
+        return CheckResult(
+            label,
+            "warn",
+            f"{USBNET_IFACE} disappeared while its IPv4 address was inspected",
+        )
+    if observation.state is IPv4ObservationState.NO_ADDRESS:
+        return CheckResult(
+            label, "fail", f"{USBNET_IFACE} is present but has no IPv4 address"
+        )
+    observed_cidr = observation.cidr
+    assert observed_cidr is not None
+    address = observed_cidr.split("/", 1)[0]
+    probe_url = f"http://{address}/system/data.json"
     host = (os.environ.get("JASPER_HOSTNAME") or "jts.local").strip()
-    req = urllib.request.Request(USBNET_PROBE_URL, headers={"Host": host})
+    req = urllib.request.Request(probe_url, headers={"Host": host})
     try:
         with urllib.request.urlopen(req, timeout=6.0) as resp:
             status = resp.status
@@ -862,16 +964,16 @@ def check_usbnet_management_probe() -> CheckResult:
     except (urllib.error.URLError, OSError) as e:
         return CheckResult(
             label, "fail",
-            f"no answer from nginx on {USBNET_ADDRESS} for Host: {host} "
+            f"no answer from nginx on {address} for Host: {host} "
             f"({e}) — is nginx bound to {USBNET_IFACE}?",
         )
     if status == 200:
-        return CheckResult(label, "ok", f"200 via {USBNET_ADDRESS} as Host: {host}")
+        return CheckResult(label, "ok", f"200 via {address} as Host: {host}")
     detail = body.decode("utf-8", "replace").strip()[:120]
     if status == 403:
         hint = (
             " — the management-host guard rejected the fallback address; "
-            "check tests/test_http_security.py's 10.12.194.1 acceptance "
+            "check tests/test_http_security.py's private-address acceptance "
             "and `journalctl -u jasper-control | grep event=http.reject`"
         )
     elif status == 502:

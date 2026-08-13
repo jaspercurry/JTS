@@ -26,10 +26,21 @@ import pytest
 
 from jasper.cli import doctor
 from jasper.cli.doctor import network as doctor_network
+from jasper.usb_network import (
+    IPv4Observation,
+    IPv4ObservationState,
+    UsbNetworkPlanError,
+    derive_plan,
+    render_dnsmasq,
+    render_nmconnection,
+)
+
+
+PLAN = derive_plan("10000000abcdef01")
 
 
 @pytest.fixture(autouse=True)
-def _available_usb_role(monkeypatch):
+def _available_usb_role(monkeypatch, tmp_path):
     monkeypatch.setattr(
         doctor_network,
         "current_usb_data_role",
@@ -40,6 +51,89 @@ def _available_usb_role(monkeypatch):
             reason="available",
         ),
     )
+    monkeypatch.setattr(doctor_network, "load_usb_network_plan", lambda: PLAN)
+    monkeypatch.setattr(
+        doctor_network, "attest_usb_network_plan", lambda plan: plan
+    )
+    monkeypatch.setattr(
+        doctor_network,
+        "observe_ipv4_cidr",
+        lambda _iface: IPv4Observation(
+            IPv4ObservationState.OBSERVED, cidr=PLAN.device_cidr
+        ),
+    )
+    pending = tmp_path / "usb-network-pending"
+    nm = tmp_path / "jts-usb.nmconnection"
+    dnsmasq = tmp_path / "usbnet-dnsmasq.conf"
+    nm.write_text(render_nmconnection(PLAN))
+    dnsmasq.write_text(render_dnsmasq(PLAN))
+    monkeypatch.setattr(doctor_network, "DEFAULT_PENDING_PATH", pending)
+    monkeypatch.setattr(doctor_network, "DEFAULT_NM_PATH", nm)
+    monkeypatch.setattr(doctor_network, "DEFAULT_DNSMASQ_PATH", dnsmasq)
+
+
+# ----------------------------------------------------------------------
+# check_usbnet_address_plan
+# ----------------------------------------------------------------------
+
+
+def test_usbnet_address_plan_valid_and_consistent_is_ok():
+    result = doctor.check_usbnet_address_plan()
+
+    assert result.status == "ok"
+    assert PLAN.subnet in result.detail
+    assert PLAN.identity_fingerprint in result.detail
+
+
+def test_usbnet_address_plan_missing_fails_without_blocking_wifi(monkeypatch):
+    monkeypatch.setattr(
+        doctor_network,
+        "load_usb_network_plan",
+        lambda: (_ for _ in ()).throw(UsbNetworkPlanError("missing")),
+    )
+
+    result = doctor.check_usbnet_address_plan()
+
+    assert result.status == "fail"
+    assert "gadget start is blocked" in result.detail
+    assert "wi-fi remain available" in result.detail.lower()
+
+
+def test_usbnet_address_plan_attests_current_pi_identity(monkeypatch):
+    monkeypatch.setattr(
+        doctor_network,
+        "attest_usb_network_plan",
+        lambda _plan: (_ for _ in ()).throw(
+            UsbNetworkPlanError("does not match this Pi CPU serial")
+        ),
+    )
+
+    result = doctor.check_usbnet_address_plan()
+
+    assert result.status == "fail"
+    assert "does not match this Pi" in result.detail
+
+
+def test_usbnet_address_plan_projection_drift_fails(monkeypatch, tmp_path):
+    drifted = tmp_path / "jts-usb.nmconnection"
+    drifted.write_text("wrong generation\n")
+    monkeypatch.setattr(doctor_network, "DEFAULT_NM_PATH", drifted)
+
+    result = doctor.check_usbnet_address_plan()
+
+    assert result.status == "fail"
+    assert "does not match plan" in result.detail
+
+
+def test_usbnet_address_plan_pending_migration_is_visible_warn(monkeypatch, tmp_path):
+    pending = tmp_path / "pending"
+    pending.write_text("pending\n")
+    monkeypatch.setattr(doctor_network, "DEFAULT_PENDING_PATH", pending)
+
+    result = doctor.check_usbnet_address_plan()
+
+    assert result.status == "warn"
+    assert "until next boot" in result.detail
 
 
 def _stub_run(monkeypatch, table):
@@ -168,13 +262,13 @@ def test_usbnet_interface_present_with_address_is_ok(monkeypatch, tmp_path):
     _stub_run(monkeypatch, {
         ("ip", "-4", "-o", "addr", "show", "dev", "usb0"): subprocess.CompletedProcess(
             [], 0,
-            stdout="3: usb0    inet 10.12.194.1/24 brd 10.12.194.255 scope global usb0\\n",
+            stdout=f"3: usb0    inet {PLAN.device_cidr} brd {PLAN.broadcast_address} scope global usb0\n",
             stderr="",
         ),
     })
     r = doctor.check_usbnet_interface()
     assert r.status == "ok"
-    assert "10.12.194.1" in r.detail
+    assert PLAN.device_cidr in r.detail
     assert "carrier=up" in r.detail
 
 
@@ -191,7 +285,7 @@ def test_usbnet_interface_present_no_carrier_is_ok(monkeypatch, tmp_path):
     monkeypatch.setattr(doctor_network, "USBNET_SYS_CLASS_NET", net_root)
     _stub_run(monkeypatch, {
         ("ip", "-4", "-o", "addr", "show", "dev", "usb0"): subprocess.CompletedProcess(
-            [], 0, stdout="3: usb0    inet 10.12.194.1/24 scope global usb0\\n", stderr="",
+            [], 0, stdout=f"3: usb0    inet {PLAN.device_cidr} scope global usb0\n", stderr="",
         ),
     })
     r = doctor.check_usbnet_interface()
@@ -212,7 +306,7 @@ def test_usbnet_interface_present_missing_address_is_fail(monkeypatch, tmp_path)
     })
     r = doctor.check_usbnet_interface()
     assert r.status == "fail"
-    assert "missing 10.12.194.1" in r.detail
+    assert f"missing {PLAN.device_cidr}" in r.detail
 
 
 def test_usbnet_interface_ip_command_failure_is_warn(monkeypatch, tmp_path):
@@ -488,17 +582,48 @@ def test_usbnet_probe_200_is_ok(monkeypatch, tmp_path):
     with patch("urllib.request.urlopen", return_value=_Resp(200)) as m:
         r = doctor.check_usbnet_management_probe()
     assert r.status == "ok"
-    assert "10.12.194.1" in r.detail
+    assert PLAN.device_address in r.detail
     assert "jts3.local" in r.detail
     req = m.call_args[0][0]
-    assert req.full_url == "http://10.12.194.1/system/data.json"
+    assert req.full_url == f"http://{PLAN.device_address}/system/data.json"
     assert req.get_header("Host") == "jts3.local"
+
+
+def test_usbnet_probe_ipv4_inspection_error_fails_loudly(monkeypatch, tmp_path):
+    _iface_and_nginx(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        doctor_network,
+        "observe_ipv4_cidr",
+        lambda _iface: IPv4Observation(
+            IPv4ObservationState.ERROR, error="inspection denied"
+        ),
+    )
+
+    result = doctor.check_usbnet_management_probe()
+
+    assert result.status == "fail"
+    assert "could not inspect" in result.detail
+    assert "inspection denied" in result.detail
+
+
+def test_usbnet_probe_existing_interface_without_ipv4_fails(monkeypatch, tmp_path):
+    _iface_and_nginx(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        doctor_network,
+        "observe_ipv4_cidr",
+        lambda _iface: IPv4Observation(IPv4ObservationState.NO_ADDRESS),
+    )
+
+    result = doctor.check_usbnet_management_probe()
+
+    assert result.status == "fail"
+    assert "has no IPv4 address" in result.detail
 
 
 def test_usbnet_probe_403_fails_with_guard_hint(monkeypatch, tmp_path):
     _iface_and_nginx(monkeypatch, tmp_path)
     err = urllib.error.HTTPError(
-        doctor_network.USBNET_PROBE_URL, 403, "Forbidden", None,
+        f"http://{PLAN.device_address}/system/data.json", 403, "Forbidden", None,
         io.BytesIO(b'{"error": "host_not_allowed"}'),
     )
     with patch("urllib.request.urlopen", side_effect=err):
@@ -511,7 +636,7 @@ def test_usbnet_probe_403_fails_with_guard_hint(monkeypatch, tmp_path):
 def test_usbnet_probe_502_fails_naming_control(monkeypatch, tmp_path):
     _iface_and_nginx(monkeypatch, tmp_path)
     err = urllib.error.HTTPError(
-        doctor_network.USBNET_PROBE_URL, 502, "Bad Gateway", None,
+        f"http://{PLAN.device_address}/system/data.json", 502, "Bad Gateway", None,
         io.BytesIO(b'{"error": "jasper-control unreachable"}'),
     )
     with patch("urllib.request.urlopen", side_effect=err):

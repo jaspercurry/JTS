@@ -342,8 +342,10 @@ computer gets a mono USB input.
   gadget mode, the same USB-C data port carries a USB NCM network link
   (`ncm.usb0`, on by default and independent of the USB Audio Input toggle
   above): plug a laptop in and
-  `http://<JASPER_HOSTNAME>/` (or the documented fallback
-  `http://10.12.194.1/`) works even with the Pi's Wi-Fi off. No IP
+  `http://<JASPER_HOSTNAME>/` works even with the Pi's Wi-Fi off. Each speaker
+  receives a stable CPU-serial-derived /30 so multiple USB-connected speakers
+  do not collide; `/state.usb_network.desired_address` exposes the raw
+  diagnostic fallback. No IP
   forwarding/NAT — the plugged-in laptop keeps its own default route. A
   Zero-class speaker using its shared OTG port for a USB output DAC
   intentionally has no gadget network; a supported I²S DAC leaves that port

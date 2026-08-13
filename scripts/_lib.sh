@@ -472,23 +472,16 @@ oom_unit_is_production() {
 # PI_HOST resolution and the printed advisory live in deploy-to-pi.sh
 # (they need python3 and PI_HOST's live value, not just REPO_ROOT).
 
-# usb_gadget_management_cidr
-# Echo the gadget management network's CIDR ("10.12.194.1/24"), parsed
-# from its single source of truth —
-# deploy/usb-network/jts-usb.nmconnection's `address1=` line — so this
-# advisory can never carry its own, possibly-stale copy of the address.
-# Echoes nothing and returns 1 when the file is missing or its address1=
-# line is absent/unparsed (a fresh/atypical checkout); the caller must
-# read that as "can't determine" and skip its advisory quietly, never as
-# "not the gadget subnet."
-usb_gadget_management_cidr() {
-    local nmfile="${REPO_ROOT}/deploy/usb-network/jts-usb.nmconnection"
-    local line cidr
-    [[ -f "$nmfile" ]] || return 1
-    line="$(grep -m1 '^address1=' "$nmfile" 2>/dev/null || true)"
-    cidr="${line#address1=}"
-    [[ "$cidr" == *.*.*.*/* ]] || return 1
-    printf '%s\n' "$cidr"
+# usb_gadget_management_cidrs
+# Echo the address-plan owner's laptop-side advisory ranges: the allocation
+# supernet (new per-speaker /30 plans) and the legacy migration subnet. The
+# broad allocation range is NEVER installed as a route; it is only how a
+# checkout identifies that PI_HOST may be riding an unknown speaker's derived
+# USB link before SSH. Missing Python/module means "can't determine": callers
+# skip the advisory rather than carrying a driftable fallback copy.
+usb_gadget_management_cidrs() {
+    python3 "${REPO_ROOT}/jasper/usb_network.py" advisory-cidrs \
+        2>/dev/null
 }
 
 # _ipv4_to_int <ip>

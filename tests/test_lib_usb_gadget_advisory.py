@@ -17,16 +17,9 @@ instead of an unbounded hang.
 
 These tests pin the pure classification helpers in _lib.sh:
 
-* ``usb_gadget_management_cidr`` — parses the gadget subnet from its
-  single source of truth, deploy/usb-network/jts-usb.nmconnection's
-  address1= line, so the advisory can never carry a second, driftable
-  copy of the address (checked here against the real file's content, not
-  a hardcoded literal, so this test itself doesn't become that copy).
-  Liveness is proven by VARYING the source — the helper is pointed at a
-  checkout whose nmconnection carries a different subnet and must follow
-  it — because agreement with an unchanging file cannot tell a live parse
-  apart from a literal that happens to match, and would only catch the
-  regression the next time someone edited that file;
+* ``usb_gadget_management_cidrs`` — asks ``jasper.usb_network``, the address
+  plan owner, for both the derived allocation range and legacy migration
+  subnet. A varied fake module proves the shell helper has no copied range;
 * ``ipv4_in_cidr`` — pure IPv4 subnet-membership arithmetic, including its
   documented "malformed input reads as false, never an error" contract.
 
@@ -54,83 +47,51 @@ import re
 import subprocess
 from pathlib import Path
 
+from jasper.usb_network import ALLOCATION_SUPERNET, LEGACY_MANAGEMENT_CIDR
+
 ROOT = Path(__file__).resolve().parents[1]
 LIB = ROOT / "scripts" / "_lib.sh"
 DEPLOY = ROOT / "scripts" / "deploy-to-pi.sh"
-NMCONNECTION = ROOT / "deploy" / "usb-network" / "jts-usb.nmconnection"
 AGENTS_MD = ROOT / "AGENTS.md"
 
 
-# ── usb_gadget_management_cidr ────────────────────────────────────────────
+# ── usb_gadget_management_cidrs ───────────────────────────────────────────
 
 
-def _management_cidr(*, repo_root: Path | None = None) -> subprocess.CompletedProcess[str]:
+def _management_cidrs(*, repo_root: Path | None = None) -> subprocess.CompletedProcess[str]:
     script = f'source "{LIB}"; '
     if repo_root is not None:
         script += f'REPO_ROOT="{repo_root}"; '
-    script += "usb_gadget_management_cidr"
+    script += "usb_gadget_management_cidrs"
     return subprocess.run(
         ["bash", "-c", script], capture_output=True, text=True, timeout=30,
     )
 
 
-def _address1_of(text: str) -> str:
-    return next(
-        line.split("=", 1)[1].strip()
-        for line in text.splitlines()
-        if line.startswith("address1=")
+def test_management_cidrs_match_the_plan_owner():
+    proc = _management_cidrs()
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.splitlines() == [
+        str(ALLOCATION_SUPERNET),
+        LEGACY_MANAGEMENT_CIDR,
+    ]
+
+
+def test_management_cidrs_follow_the_module_rather_than_hardcoded_copies(tmp_path):
+    package = tmp_path / "jasper"
+    package.mkdir()
+    (package / "usb_network.py").write_text(
+        'print("10.99.0.0/16")\nprint("10.98.7.1/25")\n'
     )
 
-
-def test_management_cidr_matches_the_nmconnection_ssot():
-    # Read the real file directly instead of hardcoding "10.12.194.1/24"
-    # here — a fifth restatement of the subnet in this test is exactly
-    # what the helper exists to avoid.
-    #
-    # What this pins is agreement TODAY, against the real file's real
-    # formatting. It is NOT the liveness proof: two static reads of one
-    # unchanging value agree just as well when the helper has stopped
-    # reading the file at all. That is the next test's job.
-    proc = _management_cidr()
+    proc = _management_cidrs(repo_root=tmp_path)
     assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.strip() == _address1_of(NMCONNECTION.read_text(encoding="utf-8"))
+    assert proc.stdout.splitlines() == ["10.99.0.0/16", "10.98.7.1/25"]
 
 
-def test_management_cidr_follows_the_file_rather_than_a_hardcoded_copy(tmp_path):
-    # The liveness proof (adversarial review of PR #2358, note N2: "SSOT
-    # liveness pinned one step late — hardcode-matching-current-value passes
-    # until the file changes"). Comparing the helper against the real file
-    # cannot distinguish "parses the file" from "returns a literal that
-    # happens to equal the file", so a hardcoding regression would sit green
-    # until someone edited the nmconnection — possibly years later, and by
-    # then the advisory is silently classifying against a stale subnet.
-    #
-    # Vary the source instead: hand the helper a checkout whose nmconnection
-    # carries a DIFFERENT subnet and require the answer to follow. A literal
-    # fails this immediately. Both octets and prefix differ, so a partial
-    # hardcode (right network, fixed /24) fails too.
-    real = NMCONNECTION.read_text(encoding="utf-8")
-    divergent = real.replace(f"address1={_address1_of(real)}", "address1=10.99.7.1/25")
-    assert "10.99.7.1/25" in divergent, "test setup: address1= rewrite did not apply"
-
-    nmfile = tmp_path / "deploy" / "usb-network" / "jts-usb.nmconnection"
-    nmfile.parent.mkdir(parents=True)
-    nmfile.write_text(divergent, encoding="utf-8")
-
-    proc = _management_cidr(repo_root=tmp_path)
-    assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.strip() == "10.99.7.1/25", (
-        "usb_gadget_management_cidr did not follow its source file — it is "
-        "carrying its own copy of the subnet instead of parsing "
-        "deploy/usb-network/jts-usb.nmconnection"
-    )
-
-
-def test_management_cidr_missing_file_is_a_clean_skip(tmp_path):
-    # A checkout without deploy/usb-network/ must return 1, not error —
-    # callers depend on this to skip the advisory quietly.
-    proc = _management_cidr(repo_root=tmp_path)
-    assert proc.returncode == 1
+def test_management_cidrs_missing_module_is_a_clean_skip(tmp_path):
+    proc = _management_cidrs(repo_root=tmp_path)
+    assert proc.returncode != 0
     assert proc.stdout == ""
 
 
@@ -241,6 +202,13 @@ def test_advisory_warns_on_stderr_for_an_in_subnet_ip():
     assert "#2340" in proc.stderr
     # It is a warning: it must not leak onto stdout.
     assert "10.12.194.77" not in proc.stdout
+
+
+def test_advisory_warns_for_new_plan_allocation_range():
+    proc = _run_advisory("10.64.0.2")
+    assert proc.returncode == 0, proc.stderr
+    assert "10.64.0.2" in proc.stderr
+    assert str(ALLOCATION_SUPERNET) in proc.stderr
 
 
 def test_advisory_is_quiet_for_an_out_of_subnet_ip():

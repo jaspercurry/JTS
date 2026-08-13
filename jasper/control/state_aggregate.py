@@ -33,6 +33,15 @@ from ..source_state import (
     usbsink_direct_rms_dbfs,
 )
 from ..usbgadget import DEFAULT_UDC_CLASS_DIR, udc_host_connected
+from ..usb_network import (
+    DEFAULT_PENDING_PATH as USB_NETWORK_PENDING_PATH,
+    IPv4Observation,
+    IPv4ObservationState,
+    UsbNetworkPlanError,
+    attest_plan as attest_usb_network_plan,
+    load_plan as load_usb_network_plan,
+    observe_ipv4_cidr,
+)
 from ..active_speaker.setup_status import read_active_speaker_setup_status
 from ..multiroom.airplay_latency import with_airplay_latency_fit
 from ..multiroom import cascade_timeline
@@ -567,17 +576,7 @@ def _disk_snapshot(path: str = "/") -> dict[str, Any] | None:
         return None
 
 
-# Fixed v1 management address for the USB gadget's NCM function (usb0).
-# docs/HANDOFF-usb-gadget.md: deliberately the same address Raspberry Pi
-# OS uses for its first-boot USB rescue gadget; no env override in v1 (the
-# HANDOFF documents how to change it if that ever becomes necessary). Not
-# read from anywhere at runtime — the NM keyfile (deploy/usb-network/
-# jts-usb.nmconnection) and jasper-usbgadget-up both hardcode this same
-# literal, so surfacing the constant here is exactly as fresh as reading
-# it from NetworkManager would be, without a subprocess shell-out on
-# every /state poll.
 USB_NETWORK_IFACE = "usb0"
-USB_NETWORK_ADDRESS = "10.12.194.1"
 
 
 def _usb_network_wanted() -> bool:
@@ -599,17 +598,18 @@ def _usb_network_wanted() -> bool:
 def _usb_network_snapshot() -> dict[str, Any]:
     """USB management-network summary for /state — fail-soft, uncached.
 
-    ``{enabled, iface_present, carrier, address}``. ``enabled`` reflects
+    ``enabled`` reflects
     the kill-switch intent (not composition — jasper-doctor's
     check_usbgadget_composition/check_usbnet_* own the actionable
     composed-vs-intent mismatch story); ``iface_present``/``carrier`` are
     read fresh from ``/sys/class/net/usb0`` every call, never cached, so
     plug/unplug shows up on the next poll. ``carrier=False`` (or
     ``iface_present=False``) is the normal "nothing plugged in" state, not
-    an error — the dashboard should not alarm on it. ``address`` is the
-    fixed v1 management IP (see USB_NETWORK_ADDRESS) when the interface
-    exists, else None; it is a constant, not a live read, because the
-    address has no env override in v1 (docs/HANDOFF-usb-gadget.md)."""
+    an error — the dashboard should not alarm on it. The observed address is
+    read from the interface while desired address/subnet/version/fingerprint
+    come only from the validated installer-owned plan. A missing or corrupt
+    plan reports those desired fields as null rather than fabricating an
+    address; jasper-doctor owns the actionable failure."""
     enabled = _usb_network_wanted()
     iface_root = Path("/sys/class/net") / USB_NETWORK_IFACE
     iface_present = False
@@ -620,11 +620,35 @@ def _usb_network_snapshot() -> dict[str, Any]:
             carrier = (iface_root / "carrier").read_text().strip() == "1"
     except OSError:
         logger.debug("usb_network sysfs read failed", exc_info=True)
+    observation = (
+        observe_ipv4_cidr(USB_NETWORK_IFACE)
+        if iface_present
+        else IPv4Observation(IPv4ObservationState.ABSENT)
+    )
+    observed_cidr = observation.cidr
+    observed_address = observed_cidr.split("/", 1)[0] if observed_cidr else None
+    try:
+        plan = attest_usb_network_plan(load_usb_network_plan())
+    except UsbNetworkPlanError:
+        plan = None
+        logger.debug("usb_network plan read failed", exc_info=True)
+    try:
+        migration_pending = USB_NETWORK_PENDING_PATH.exists()
+    except OSError:
+        migration_pending = False
     return {
         "enabled": enabled,
         "iface_present": iface_present,
         "carrier": carrier,
-        "address": USB_NETWORK_ADDRESS if iface_present else None,
+        "address": observed_address,
+        "cidr": observed_cidr,
+        "observation_status": observation.state.value,
+        "observation_error": observation.error,
+        "desired_address": plan.device_address if plan else None,
+        "subnet": plan.subnet if plan else None,
+        "plan_version": plan.version if plan else None,
+        "identity_fingerprint": plan.identity_fingerprint if plan else None,
+        "migration_pending": migration_pending,
     }
 
 
@@ -1432,7 +1456,7 @@ async def _get_state(
         # USB management network (docs/HANDOFF-usb-gadget.md): the default-on,
         # hardware-gated NCM link on usb0 that lets http://<JASPER_HOSTNAME>/
         # work with WiFi off when the resolved USB role permits gadget mode.
-        # {enabled, iface_present, carrier, address} — read fresh from
+        # Observed link/address plus the validated desired plan — read fresh from
         # /sys/class/net/usb0 and the kill-switch env every call, never
         # cached; carrier=False/absent is normal (nothing plugged in), never
         # an error. jasper-doctor's check_usbnet_* own the actionable

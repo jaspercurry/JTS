@@ -235,11 +235,12 @@ Could not reach ${HOST}. Try (in order):
   3. ARP scan for Pi MAC OUIs from your laptop:
          arp -a | grep -iE 'b8:27:eb|d8:3a:dd|dc:a6:32|2c:cf:67'
 
-  4. USB-C gadget rescue (Pi 5 only, WiFi unreachable case):
+  4. Raspberry Pi OS USB-C rescue gadget (Pi 5 only, WiFi unreachable case):
          - Power the Pi from the GPIO 5V/GND header (NOT USB-C)
          - Connect a USB-A→USB-C cable laptop → Pi USB-C port
          - Use USB-A→USB-C, NOT USB-C→USB-C (kernel bug #6289)
-         - Pi appears at 10.12.194.1:
+         - A fresh Pi Imager rescue gadget appears at 10.12.194.1 (this is
+           separate from JTS's installed, per-speaker USB management /30):
              bash scripts/onboard.sh 10.12.194.1
 EOF
     log_event probe fail "reason=no_ping host=${HOST}"

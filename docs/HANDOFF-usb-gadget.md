@@ -20,7 +20,14 @@ link to the Pi so
 `http://<JASPER_HOSTNAME>/` works even when the Pi has no Wi-Fi. When Wi-Fi
 and USB are both up, the experience is invisible — same hostname, either
 path. Multiple speakers keep distinct hostnames (mDNS) and distinct MACs
-(derived from each Pi's CPU serial).
+(derived from each Pi's CPU serial), and now also receive independently derived,
+collision-resistant USB IPv4 subnets so several household speakers can be
+attached to one computer simultaneously.
+The prior fleet-wide `10.12.194.1/24` design was unsafe here: macOS could
+resolve `jts3.local` to that shared address and route it through the USB
+interface connected to a different speaker. Distinct names and MACs do not
+disambiguate overlapping IP routes; the management-host guard correctly
+rejected the resulting wrong-speaker request.
 
 ## Product decisions
 
@@ -34,10 +41,16 @@ path. Multiple speakers keep distinct hostnames (mDNS) and distinct MACs
    `/etc/jasper/jasper.env` (exact literal, case-insensitive; any other
    value logs a warning and stays enabled — mirrors
    `JASPER_SHAIRPORT_SUPERVISOR` / `JASPER_SYSTEM_SUPERVISOR`).
-2. **Pi-side address: `10.12.194.1/24` on `usb0`** — deliberately the same
-   number Raspberry Pi OS's own first-boot USB rescue gadget uses (see
-   "Relationship to Raspberry Pi OS's own USB rescue gadget" below). No env
-   override for the IP in v1 — see "Changing the IP" below if you need one.
+2. **Stable per-speaker IPv4 /30 on `usb0`.** `jasper.usb_network` derives one
+   subnet from the immutable Pi CPU serial using the versioned
+   `cpu-serial-sha256-v1` plan. The Pi is the first usable address and the
+   attached computer receives the second/only other usable address. The
+   allocation space is `10.64.0.0/10` (1,048,576 possible /30s), making a
+   household collision negligible without a registry or operator setting.
+   Only the derived /30 is installed as a route; the broad /10 exists solely
+   as the allocation namespace and laptop-side deploy-warning classifier.
+   This private range can overlap an enterprise/VPN range, but the installed
+   route is narrowly scoped to four addresses and `never-default=true`.
 3. **NCM only** (`ncm.usb0`). No RNDIS, no ECM. OS support is summarized in
    "OS support" below, with verified-vs-assumed called out explicitly.
 4. **No IP forwarding / NAT / internet sharing.** The DHCP server pushes no
@@ -47,8 +60,9 @@ path. Multiple speakers keep distinct hostnames (mDNS) and distinct MACs
 5. **mDNS is the canonical UX.** `jts.local` (the configured
    `JASPER_HOSTNAME`) is expected to resolve over the USB link because
    Avahi already advertises on all multicast interfaces and this feature
-   adds no interface restriction. The raw IP (`http://10.12.194.1/`) is the
-   documented fallback, not the primary story.
+   adds no interface restriction. The plan-derived raw device address is an
+   observable diagnostic fallback, not a fleet-wide address the user must
+   remember; `/state.usb_network.desired_address` and `jasper-doctor` show it.
 6. **Port role is hardware-resolved, never selected by source intent.** Toggling
    USB Audio Input cannot switch a controller between host and peripheral.
 7. **The computer microphone is explicit, subordinate, and off by default.** Its
@@ -454,9 +468,23 @@ partial (unbound) one is torn down and rebuilt.
 NetworkManager is the box's **single** network owner for `usb0` — no
 systemd-networkd, no dispatcher scripts.
 
-- **NM keyfile**: [`deploy/usb-network/jts-usb.nmconnection`](../deploy/usb-network/jts-usb.nmconnection),
-  installed to `/etc/NetworkManager/system-connections/jts-usb.nmconnection`
-  (mode `0600`, root:root) by `install.sh`. Raspberry Pi OS deliberately marks
+- **Address-plan owner**: [`jasper/usb_network.py`](../jasper/usb_network.py)
+  is the only derivation, validation, rendering, and attestation surface. The
+  installer reads `/proc/cpuinfo`, fails loudly if no stable non-zero hex CPU
+  serial exists, and writes a validated plan to the dedicated root-owned
+  `/var/lib/jasper-usb-network/plan.json`. The raw serial is not persisted;
+  observability uses a 12-hex SHA-256 fingerprint. A boot-time
+  `jasper-usb-network-plan.service` re-attests the artifact against the current
+  Pi (so a cloned/moved SD card cannot reuse another Pi's subnet), then renders
+  the NetworkManager and dnsmasq projections under one bounded owner lock.
+  Confirmed interface absence or an existing interface with no IPv4 permits
+  promotion; an inspection error fails loudly instead of being mistaken for
+  safe absence. A
+  missing, corrupt, mismatched, or partially unwritable plan blocks
+  `jasper-usbgadget.service` but does **not** block NetworkManager or Wi-Fi.
+- **NM keyfile**: the owner generates
+  `/etc/NetworkManager/system-connections/jts-usb.nmconnection` (mode `0600`,
+  root:root). Raspberry Pi OS deliberately marks
   all `DEVTYPE=gadget` interfaces unmanaged; JTS overrides that distribution
   default for `usb0` only with
   [`deploy/usb-network/90-jasper-usbnet.conf`](../deploy/usb-network/90-jasper-usbnet.conf).
@@ -464,24 +492,23 @@ systemd-networkd, no dispatcher scripts.
   `ignore-carrier=yes` lets this static-address profile activate before a
   laptop is attached. Install reloads both files and performs one bounded
   activation for an already-present `usb0`; later gadget rebuilds use normal
-  NetworkManager autoconnect, with no poller. The keyfile is `type=ethernet`,
+  NetworkManager autoconnect, with no poller. The generated keyfile is `type=ethernet`,
   `interface-name=usb0`, fixed
   `uuid`, `autoconnect=true` with a low `autoconnect-priority` (so a real
   network connection is always preferred when both exist), IPv4
-  `method=manual, address1=10.12.194.1/24, never-default=true`
+  `method=manual, address1=<derived-device-address>/30, never-default=true`
   (no gateway is set — nothing to advertise as a route even if a future
   change forgot the dnsmasq option suppression), IPv6 `method=link-local`.
 - **dnsmasq**: `install.sh` apt-installs **`dnsmasq-base`** — the binary
   only (verified current on Debian trixie, v2.91-1 per packages.debian.org;
   it ships no systemd service scaffolding of its own — see "OS support" §4)
   — **not** the full `dnsmasq` package, which would register a global
-  system service we don't want. Conf file
-  [`deploy/usb-network/usbnet-dnsmasq.conf`](../deploy/usb-network/usbnet-dnsmasq.conf)
-  installs to `/etc/jasper/usbnet-dnsmasq.conf`:
-  `interface=usb0`, `bind-dynamic` (tolerates `10.12.194.1` appearing on the
+  system service we don't want. The same plan owner generates
+  `/etc/jasper/usbnet-dnsmasq.conf`:
+  `interface=usb0`, `bind-dynamic` (tolerates the derived address appearing on the
   interface after dnsmasq starts), `except-interface=lo`, `port=0` (DNS
   listener fully disabled — this instance does DHCP only),
-  `dhcp-range=10.12.194.10,10.12.194.20,12h`, empty-valued `dhcp-option=3`
+  one-host `dhcp-range=<host>,<host>,255.255.255.252,12h`, empty-valued `dhcp-option=3`
   (router) and `dhcp-option=6` (DNS) to explicitly suppress both, lease
   file under the unit's `RuntimeDirectory` (`/run/jasper-usbnet/`, tmpfs,
   cleared on stop), `log-facility=-` (journal).
@@ -500,15 +527,30 @@ systemd-networkd, no dispatcher scripts.
   laptop" config is left clean (a config-file-level addition, gated
   behind an explicit opt-in) — nothing toward it is built here.
 
-### Changing the IP
+### Upgrade migration
 
-There is no wizard or env knob for `10.12.194.1/24` in v1. To use a
-different subnet, edit both
-`deploy/usb-network/jts-usb.nmconnection` (`address1=`) and
-`deploy/usb-network/usbnet-dnsmasq.conf` (`dhcp-range=`) to match, then
-redeploy. Keep them in sync — a mismatch between the interface address and
-the DHCP pool leaves the DHCP server handing out a range the interface
-itself isn't on.
+There is no wizard, env knob, or per-speaker manual address setting. On an
+upgrade from the legacy `10.12.194.1/24` generation, the installer first
+stages the derived plan. If `usb0` is live on any different address, promotion
+is explicitly deferred: neither installed projection nor either running
+consumer is touched, and
+`event=install.usb_network_migration_pending activation=next_boot
+live_files=preserved` records the boundary. This matters even if the later
+install path recomposes the gadget for USB Audio Input; that recompose still
+returns on the complete legacy pair and cannot strand an install riding it.
+At the next boot, before NetworkManager and the gadget start, the plan service
+publishes both generated projections through the canonical durable atomic-file
+writer under the owner lock, then removes the pending marker. There is no
+filesystem primitive that atomically replaces two files: catchable replacement
+failures restore the prior pair, and
+a process death between replacements is repaired by the next successful plan
+service run before the gadget may expose `usb0`; NetworkManager remains free to
+bring up Wi-Fi if that repair fails. During a full-profile install, both
+projection destinations join the enclosing unit-generation
+rollback snapshot, so a later staging failure restores the projections and
+gate files together.
+`/state` and doctor show desired versus observed address plus
+`migration_pending` throughout the transition.
 
 ## Relationship to Raspberry Pi OS's own USB rescue gadget
 
@@ -527,9 +569,10 @@ README (`github.com/raspberrypi/rpi-usb-gadget`, `pios/trixie` branch):
   polling for a host-side Internet Connection Sharing gateway and
   switching between two NetworkManager profiles).
 - Its documented IP is **`10.12.194.1/28`** in its "SHARED" mode (host has
-  no ICS), the same number JTS deliberately reuses — chosen specifically
-  so a household member who used the rescue gadget to adopt a fresh Pi
-  doesn't need to remember two different addresses.
+  no ICS). JTS's original USB network deliberately reused that device address,
+  but retired the fleet-wide reuse after simultaneous speakers exposed
+  overlapping host routes. Current JTS derives a distinct /30 and therefore
+  no longer promises the rescue gadget's raw address.
 
 **Load-bearing, unverified-upstream fact: only one gadget can bind the
 single dwc2 UDC at a time.** The Pi 5's dwc2 controller has exactly one
@@ -787,7 +830,8 @@ NCM-only deploy does not bounce the management link. Pinned by
 ## Guard acceptance
 
 The management-host guard (`jasper.http_security`) accepts `Host:`
-headers for `10.12.194.1`, `10.12.194.1:8780`, and IPv4 link-local
+headers for the plan-derived RFC 1918 address (with or without port), the
+legacy `10.12.194.1` during migration, and IPv4 link-local
 (`169.254.0.0/16`, reachable before/without DHCP completing) alongside the
 existing mDNS/LAN acceptance, with a public-IP rejection pinned as the
 contrast case. See `tests/test_http_security.py`.
@@ -798,21 +842,33 @@ contrast case. See `tests/test_http_security.py`.
   composition matches the same gates as the scripts (network enabled ⇒
   `ncm.usb0` present; authorized audio + derived unit enabled + live fan-in
   DIRECT consumer ⇒ `uac2.usb0`; kill-switch + no ready audio ⇒ nothing
-  loaded), that `usb0` exists with `10.12.194.1` when NCM
-  is composed, that the `jts-usb` NetworkManager profile is active on
+  loaded). Its network checks validate and identify-attest the persisted plan,
+  compare both installed projections with the one renderer, verify `usb0`
+  carries the desired /30 (or visibly report a pending legacy migration), and
+  confirm the `jts-usb` NetworkManager profile is active on
   `usb0`, that `jasper-usbnet-dhcp`'s unit state is coherent with `usb0`'s
-  presence, and a loopback HTTP probe of
-  `http://10.12.194.1/system/data.json` with `Host: <JASPER_HOSTNAME>`
+  presence. A loopback HTTP probe uses `usb0`'s observed device address with
+  `Host: <JASPER_HOSTNAME>`
   expecting 200 (mirrors the deploy-time `/system/data.json` verification
   and `check_management_surface` — this pins nginx bind + guard acceptance
   of the fallback URL without needing hardware). The USB-microphone export
   check first reads that same resolved hardware role and skips cleanly before
   requiring wizard-owned intent when the topology cannot expose a gadget.
 - `/state` carries a compact `usb_network` block
-  (`{enabled, iface_present, carrier, address}`), read fresh from
-  `/sys/class/net/usb0/*` and the kill-switch env on every call — never
-  cached. `carrier=false`/absent is normal (nothing plugged in), never an
-  error state.
+  with enabled/interface/carrier state, observed `address`/`cidr`, desired
+  `desired_address`/`subnet`, plan version, identity fingerprint, and
+  `migration_pending`. `observation_status` distinguishes `absent`,
+  `no_address`, `observed`, and `error`; `observation_error` carries the
+  inspection failure when present. It reads live sysfs/interface state and the validated
+  plan on every call — never cached. A missing or corrupt plan leaves desired
+  fields null instead of fabricating an address. `carrier=false`/absent is
+  normal (nothing plugged in), never an error state.
+- Plan lifecycle events are
+  `event=usb_network.plan_staged`,
+  `event=usb_network.plan_applied`,
+  `event=usb_network.plan_deferred`, and
+  `event=usb_network.plan_failed`, plus
+  `event=install.usb_network_migration_pending`.
 - Structured logs: `event=usb_gadget.compose|up|down|skip ...` from the
   gadget scripts (the wifi-guardian idiom).
 - Bounded pre-reset/post-start controller artifacts and
@@ -827,10 +883,12 @@ contrast case. See `tests/test_http_security.py`.
 ## Hardware-validation checklist
 
 Item 1 now has a positive enumeration/return-capture proof but retains its
-simultaneous-traffic stress half. Items 2-8 and 10 otherwise remain open. The
+simultaneous-traffic stress half. Items 2-8 and 10-13 otherwise remain open. The
 carrierless lifecycle subset of item 9 was verified on JTS3 on
-2026-07-15: `usb0` activated with `10.12.194.1` and DHCP active without a host
-cable, then automatically reconverged after a full gadget destroy/recreate.
+2026-07-15 on the prior address generation: `usb0` activated with
+`10.12.194.1` and DHCP active without a host cable, then automatically
+reconverged after a full gadget destroy/recreate. This remains evidence for
+the carrierless lifecycle, not for current derived addressing.
 Each item names the specific claim above it verifies.
 
 1. **Composite enumeration on macOS.** Plug a Mac into a configured
@@ -846,9 +904,9 @@ Each item names the specific claim above it verifies.
    above). Still run a long-lived bridge with sustained
    Mac→Pi playback and Pi→Mac capture together while exercising NCM before
    calling the traffic-stress half complete.
-2. **`jts.local` resolution + fallback + no-hijack.** With the Pi's Wi-Fi
+2. **`jts.local` resolution + diagnostic address + no-hijack.** With the Pi's Wi-Fi
    off, confirm `jts.local` resolves from the plugged-in host over usb0,
-   `http://10.12.194.1/` works as a fallback, DHCP hands out a lease, and
+   `http://<derived-device-address>/` works as a diagnostic fallback, DHCP hands out the one host lease, and
    the host keeps its own default route and internet access (i.e. the
    no-forwarding/no-router-push design actually holds on a real DHCP
    client, not just in the dnsmasq conf). **Also confirm dnsmasq itself
@@ -900,13 +958,20 @@ Each item names the specific claim above it verifies.
     first establishes the network-only baseline without losing management,
     then the canonical source replay rearms fan-in, recomposes UAC2, and restores
     the readiness marker so audio resumes.
-11. **Windows UAC2 input.** On a current Windows 11 host (and Windows 10 1703+
+11. **Two simultaneous speakers + legacy migration.** Attach two speakers to
+    one Mac, disable Wi-Fi, and confirm each hostname and derived diagnostic
+    address reaches the correct physical speaker with no overlapping `/30`
+    route. Upgrade one speaker while connected over its legacy USB address:
+    confirm both live config files remain legacy through any same-install
+    recompose, doctor/state report pending migration, and the next boot
+    promotes the derived pair before the gadget returns.
+12. **Windows UAC2 input.** On a current Windows 11 host (and Windows 10 1703+
     if available), confirm the in-box `usbaudio2.sys` driver binds without a
     vendor driver, `JTS Mic` appears as a mono 48 kHz input, and a sustained
     recording has advancing audio with no gaps or relay drops. Repeat with NCM
     both bound and unbound: Windows audio compatibility must not be conflated
     with the separate management-network driver caveats above.
-12. **Return-path latency certification.** During a real host capture, verify
+13. **Return-path latency certification.** During a real host capture, verify
     schema-4 bridge-emit→ALSA-write percentiles, `appl_ptr - hw_ptr` fill,
     reset/xrun/splice deltas, and the separately negotiated XVF/PortAudio
     capture geometry. Pair the Pi metrics with a simultaneous host capture to
@@ -950,7 +1015,13 @@ Each item names the specific claim above it verifies.
 
 ---
 
-Last verified: 2026-08-05 (board-neutral USB data-port mission wording and Pi 4/5 versus Zero connector mapping rechecked; prior 2026-07-30 pass covered the live Mac Studio total-audio wedge localized to the
+Last verified: 2026-08-13 (USB network ownership, serial-derived /30 geometry,
+two-file projection, cloned-Pi attestation, legacy-active deferred migration,
+boot failure isolation, state/doctor surfaces, deploy advisory, and focused
+contracts rechecked against current code; multi-speaker hardware checklist
+item 11 remains open. Prior 2026-08-05 pass covered board-neutral USB data-port
+mission wording and Pi 4/5 versus Zero connector mapping; prior 2026-07-30 pass
+covered the live Mac Studio total-audio wedge localized to the
 JTS composite DWC2 path and recovered by a gadget-only restart; pre-reset,
 post-start, and opt-in RAM-bounded rolling controller capture added and covered
 by focused tests; the active-plan-derived computer-microphone source
