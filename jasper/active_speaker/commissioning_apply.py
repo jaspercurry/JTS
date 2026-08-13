@@ -767,7 +767,7 @@ def finalize_retained_candidate_apply(
         state_path=state_path,
     )
     # #1666: build_baseline_profile_candidate now writes every candidate to a
-    # content-addressed sibling, never the canonical baseline_config_path()
+    # source-fingerprinted sibling, never the canonical baseline_config_path()
     # name directly -- the same treatment as the /correction/ apply/restore
     # seam in baseline_profile.py, since commissioning rides the identical
     # write-then-apply-then-persist shape (and is, on a fresh speaker, the

@@ -8536,7 +8536,7 @@ def test_apply_stashes_pre_apply_profile_and_restore_reverts_through_real_seams(
     monkeypatch, tmp_path,
 ):
     """Apply the household's pre-existing crossover, apply a run-8-shaped
-    measured candidate over it (landing on a content-addressed sibling file
+    measured candidate over it (landing on a source-fingerprinted sibling file
     — the prior config is never overwritten), then Undo. The active config,
     the applied-baseline identity, and the durable v2 state must all revert
     — never the legacy path's 500."""
@@ -8569,10 +8569,10 @@ def test_apply_stashes_pre_apply_profile_and_restore_reverts_through_real_seams(
         )
     )
     assert prior_payload["status"] == "applied", prior_payload.get("issues")
-    # #1666: "prior's own file" is prior's OWN content-addressed sibling, not
-    # config_path (the canonical name, which the successful apply above just
-    # promoted a copy onto -- still prior's bytes at this point, but via a
-    # promote, not because nothing ever touched it).
+    # #1666: "prior's own file" is prior's OWN source-fingerprinted sibling,
+    # not config_path (the canonical name, which the successful apply above
+    # just promoted a copy onto -- still prior's bytes at this point, but via
+    # a promote, not because nothing ever touched it).
     prior_config_text = Path(
         prior_payload["profile"]["config"]["path"]
     ).read_text(encoding="utf-8")
@@ -9214,7 +9214,7 @@ def test_second_apply_pre_apply_profile_survives_the_deferred_verify_rearm(
     )
     assert run1_payload["status"] == "applied", run1_payload.get("issues")
     # #1666: run 1 (the speaker's first-ever apply) lands on its own
-    # content-addressed sibling too, not config_path directly -- read the
+    # source-fingerprinted sibling too, not config_path directly -- read the
     # stable reference value from run 1's own reported path. The successful
     # apply's promote step means config_path (canonical) also currently
     # holds these same bytes, as a COPY.

@@ -3969,16 +3969,16 @@ Tracked in the post-W6 follow-ups GitHub issue (filed 2026-07-19):
 - **`sound_current.yml` does NOT update on a v2 apply — by decision, not
   omission (#1605).** `sound_current.yml` means "the last durable `/sound`
   render," never "the config CamillaDSP is currently running." A v2 apply
-  writes the content-addressed `active_speaker_baseline_candidate_<fp>.yml`
+  writes the source-fingerprinted `active_speaker_baseline_candidate_<fp>.yml`
   and points CamillaDSP at it; the runtime truth is whatever CamillaDSP's
   statefile reports, and the Layer-A truth is
   `active_speaker_baseline_profile.json`. Mirroring v2 applies into
   `sound_current.yml` would create a second mutable Layer-A artifact and
-  weaken the content-addressed Apply/Undo ownership, so we deliberately do
+  weaken the source-fingerprinted Apply/Undo ownership, so we deliberately do
   not converge the bytes. Readers treat it accordingly: `graph_carrier`
   recognizes generated configs by content (the fixed name matters only for
   the PR #1009 stale-bake recovery), `jasper-doctor` uses it as a
-  last-resort fallback and recognizes content-addressed active-baseline
+  last-resort fallback and recognizes source-fingerprinted active-baseline
   names, and `multiroom.leader_config` stashes/restores whatever CamillaDSP
   reports live rather than opening a fixed name. See
   [`HANDOFF-sound-preferences.md`](HANDOFF-sound-preferences.md) for the

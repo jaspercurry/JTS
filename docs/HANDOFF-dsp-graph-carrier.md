@@ -299,9 +299,9 @@ the arm/rollback lifecycle in
 not restated here. Mutable design drafts,
 crossover previews, and candidate measurements are deliberately not inputs, so
 a later capture cannot alter production audio during an unrelated EQ recompose.
-While a replacement candidate is staged, its state and content-addressed config
-remain separate and the retained `applied_recomposition_profile` stays the one
-carrier SSOT until apply succeeds.
+While a replacement candidate is staged, its state and source-fingerprinted
+config remain separate and the retained `applied_recomposition_profile` stays
+the one carrier SSOT until apply succeeds.
 The production measured-candidate lane uses this same baseline compiler and
 state boundary: it requires the reviewed preset to match the compiled preset
 exactly, emits the candidate's attenuation/polarity/delay corrections, and

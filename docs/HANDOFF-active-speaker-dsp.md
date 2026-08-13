@@ -191,7 +191,7 @@ above; this is only the entry points:
   commissioning can never complete there),
   `/state.resilience.active_speaker_parked` carries the same pair, and
   `/state.audio_health` keeps reporting "Speaker is parked".
-- **The applied baseline candidate is always a content-addressed
+- **The applied baseline candidate is always a source-fingerprinted
   sibling, never the canonical filename, until a promote step runs
   (issue #1666).** `baseline_profile.build_baseline_profile_candidate`
   writes every candidate to
@@ -627,7 +627,7 @@ AGENTS.md "Debugging — fetch evidence before guessing".
 > `/var/lib/camilladsp/configs/active_speaker_baseline.yml`. Compilation is
 > explicit and no-audio: it writes YAML plus
 > `/var/lib/jasper/active_speaker_baseline_profile.json`, but does not load
-> CamillaDSP. Every candidate is written to a content-addressed sibling,
+> CamillaDSP. Every candidate is written to a source-fingerprinted sibling,
 > never the canonical `active_speaker_baseline.yml` name in place — whether
 > or not a baseline was already applied (issue #1666 fixed an alternation
 > bug where that WAS conditional, and unvalidated bytes could land on the

@@ -335,16 +335,52 @@ def _source_payload(
     *,
     measured_candidate_fingerprint: str | None = None,
 ) -> dict[str, Any]:
+    """Fingerprint the SOURCE inputs one baseline candidate was compiled from.
+
+    ``build_baseline_profile_candidate`` names every solo candidate
+    ``<stem>_candidate_<fingerprint12><suffix>`` from the ``fingerprint`` below,
+    so this payload decides that filename (it also gates the ``write=False``
+    cache hit there, which separately compares ``candidate_graph_context``).
+    What it covers is exactly what it is handed: the topology's config
+    fingerprint, the design draft's and crossover preview's identities, the
+    measurement summary's identity, and — when the caller has one — the measured
+    candidate's own fingerprint.
+
+    **It is a source fingerprint, not a content hash of the emitted graph.**
+    ``bass_extension_profile`` goes straight into
+    ``emit_active_speaker_baseline_config`` and never reaches here, and neither
+    do ``candidate_graph_context``'s graph fields — resolved playback device,
+    capture device and format, domain, program channel, pair trim — since that
+    dict is assembled after this call returns (only its
+    ``measured_candidate_fingerprint`` is also a keyword argument here). Two
+    candidates differing only in one of those land on the SAME filename
+    carrying DIFFERENT bytes.
+
+    **So a candidate's path must never be read as its graph identity.** PR
+    #2311's adversarial gate refuted a double-load guard that made exactly that
+    inference — same filename as the live config, therefore skip the CamillaDSP
+    load. It reproduced the unsafe direction (household disables bass boost, the
+    UI reports the apply applied, the speaker keeps running the boosted graph)
+    and the guard was dropped. If a "skip the redundant load" optimization is
+    ever wanted again, its oracle has to be the LIVE graph —
+    :meth:`jasper.camilla.CamillaController.get_active_config_raw` normalized —
+    never the path. That method's own docstring says the same thing for a second
+    reason: ``set_active_config_raw`` deliberately leaves the persisted
+    ``config_file_path`` unchanged, so after any audition the path reports the
+    durable anchor rather than what is running.
+    """
     measurement_summary = (
         measurements.get("summary")
         if isinstance(measurements.get("summary"), Mapping)
         else {}
     )
     # The baseline config cache invalidates whenever this source fingerprint
-    # changes, so the topology fingerprint must cover ONLY fields that determine
-    # the emitted CamillaDSP config. `pairing_intent` is commission-time design
-    # intent that, by contract, drives no config (the multiroom reconciler
-    # resolves the runtime role from grouping.env, not from this field — see
+    # changes, so the topology fingerprint must cover ONLY topology fields that
+    # determine the emitted CamillaDSP config (a one-directional constraint --
+    # nothing spurious in; see this function's docstring for what is left out
+    # altogether). `pairing_intent` is commission-time design intent that, by
+    # contract, drives no config (the multiroom reconciler resolves the runtime
+    # role from grouping.env, not from this field — see
     # output_topology.py and docs/HANDOFF-distributed-active.md gap 1), so it is
     # excluded: toggling it must not force a needless baseline recompile, and
     # excluding it keeps the fingerprint stable across the field's introduction.
@@ -1733,10 +1769,14 @@ def build_baseline_profile_candidate(
             # Never trust the persisted derived field for evidence admission.
             # Re-derive the context from the applied immutable graph inputs.
             applied_profile_context_id = baseline_candidate_fingerprint(applied_anchor)
-    # Every SOLO (non-driver-domain) candidate is content-addressed to its
-    # OWN sibling file -- unconditionally, whether or not a profile was ever
-    # applied before, and regardless of what that prior profile's own path
-    # was. Never the bare ``baseline_config_path()`` name (issue #1666): a
+    # Every SOLO (non-driver-domain) candidate lands on its OWN
+    # source-fingerprinted sibling file -- unconditionally, whether or not a
+    # profile was ever applied before, and regardless of what that prior
+    # profile's own path was. (``_source_payload``'s docstring is the single
+    # statement of what that fingerprint does and does not cover, and why a
+    # candidate's path is never its graph identity.)
+    #
+    # Never the bare ``baseline_config_path()`` name (issue #1666): a
     # candidate write must never overwrite the file CamillaDSP's own
     # statefile, jasper-doctor, the multiroom follower fallback, and a human
     # inspecting the box all read as the durable truth. Before this was
@@ -2901,7 +2941,7 @@ def persist_applied_baseline_profile(
     return applied
 
 
-# Newest-by-mtime content-addressed candidate siblings to keep around a
+# Newest-by-mtime source-fingerprinted candidate siblings to keep around a
 # canonical baseline config on every successful promote. Orphaned candidates
 # accumulate forever now that promotion is a byte COPY, never a move/rename
 # (a fleet Pi was observed carrying 38 of them); this is a bounded-I/O
@@ -2981,7 +3021,7 @@ def _prune_baseline_candidate_siblings(
     applied anchor) or any path in ``also_protect`` — or the canonical file
     itself (which never matches the glob below; it carries no ``_candidate_``
     suffix). ``also_protect`` carries the Undo target the apply just stashed as
-    ``pre_apply_profile`` (#1605): a content-addressed sibling like any other
+    ``pre_apply_profile`` (#1605): a source-fingerprinted sibling like any other
     that ``handle_v2_restore`` reloads, and would otherwise be prunable by
     mtime once ~K newer candidates accumulate — silently breaking Undo. A
     protected sibling costs one of the K slots rather than adding to K, so the
@@ -3484,7 +3524,7 @@ async def restore_applied_baseline_profile(
     prior profile's own already-compiled, already-validated YAML — composing
     a NEW candidate never overwrites a config file an applied anchor still
     points to (``build_baseline_profile_candidate`` gives the new candidate a
-    content-addressed sibling instead). This reloads THAT exact file — never
+    source-fingerprinted sibling instead). This reloads THAT exact file — never
     recomposed — through the same atomic validate-load-confirm-rollback
     transaction (:func:`jasper.dsp_apply.apply_dsp_config`)
     :func:`apply_baseline_profile` rides, then persists it back as the
