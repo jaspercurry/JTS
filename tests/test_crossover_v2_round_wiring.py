@@ -1082,6 +1082,190 @@ def test_the_receipt_records_what_the_round_DID_not_only_what_it_decided(
 
 
 # --------------------------------------------------------------------------- #
+# 6b. #2392 — WHICH identity the receipt's proposal fingerprint is
+# --------------------------------------------------------------------------- #
+#
+# The migration story, driven through the real two-stage host rather than
+# asserted on a hand-built contract, because the fact under test is a durable
+# WRITE: a proposal fingerprint that never crosses ``verify_priors`` reaches
+# the receipt as an empty string, which the contract refuses, and the round
+# loses its receipt to the fail-soft handler. That is the exact shape of the
+# defect the ERROR log line above was earned by.
+#
+# ``_seed_applied_stage_1_state`` writes NO ``verify_priors.proposal_
+# fingerprint``, which makes it a genuine pre-#2392 durable state rather than a
+# simulated one — so the "old regime" side of every comparison below is the
+# real thing.
+
+#: Stands in for an ``InterventionProposal.fingerprint``. Deliberately the same
+#: SHAPE as the candidate fingerprint it must be told apart from (both are what
+#: ``json_fingerprint`` returns), because a discrimination that only works when
+#: the two look different is not a discrimination.
+_PROPOSAL_FP = "e" * 64
+
+
+def _seed_round_state_proposing(fingerprint: str) -> dict[str, Any]:
+    """Stage-1 durable state that DID cross a proposal fingerprint (#2392)."""
+    state = _seed_round_state()
+    state["verify_priors"]["proposal_fingerprint"] = fingerprint
+    v2host.save_v2_state(state)
+    return state
+
+
+def test_the_receipt_names_the_proposal_that_was_made(monkeypatch, real_bundle):
+    """#2392's acceptance criterion, on the durable artifact.
+
+    The receipt's ``proposal_fingerprint`` is the fingerprint of the
+    ``InterventionProposal`` stage 1 committed — NOT ``fp-stage-1``, the
+    candidate that happened to be applied, which is what every receipt written
+    before #2392 carried in this field.
+
+    The candidate identity is asserted too, and on the same receipt: taking the
+    field over for the proposal must not cost the record a fact it used to
+    carry, or "identifies the proposal" would have been bought by losing
+    "identifies the candidate".
+    """
+    _seed_round_state_proposing(_PROPOSAL_FP)
+    conductor, _attempts = _restoring_stage_2(monkeypatch)
+    _install_entry_baseline(conductor, scale=1.5)
+    _install_applied_graph(monkeypatch, boosts=False)
+
+    assert conductor.measure_proposal_fingerprint == _PROPOSAL_FP, (
+        "the fingerprint has to survive the durable hop before it can reach a receipt"
+    )
+    assert _consume_verify(conductor, _post_apply_analysis(conductor)).accepted is True
+
+    receipt = _round_receipt_json(real_bundle, _MINTED_RELAY_SESSION_ID)
+
+    assert receipt["proposal_fingerprint"] == _PROPOSAL_FP
+    assert receipt["proposal_fingerprint_kind"] == "intervention_proposal"
+    assert receipt["evidence_identities"]["candidate_fingerprint"] == "fp-stage-1"
+    # Still a real receipt, re-derivable from its own bytes.
+    core = {key: value for key, value in receipt.items() if key != "fingerprint"}
+    assert receipt["fingerprint"] == json_fingerprint(core)
+
+
+def test_a_pre_2392_stage_1_still_gets_a_receipt_and_it_says_so(
+    monkeypatch, real_bundle,
+):
+    """The other half of the migration story: the old regime, still honest.
+
+    A stage-2 re-arm whose stage 1 ran before #2392 has no proposal fingerprint
+    to carry — and a household mid-commission when the deploy lands is exactly
+    that. It must still get a receipt (losing one to a missing field would be a
+    regression against the very handler #2291 Phase 3c made ERROR), and that
+    receipt must not claim a proposal identity it never had.
+    """
+    _seed_round_state()  # NO verify_priors.proposal_fingerprint — the old shape
+    conductor, _attempts = _restoring_stage_2(monkeypatch)
+    _install_entry_baseline(conductor, scale=1.5)
+    _install_applied_graph(monkeypatch, boosts=False)
+
+    assert conductor.measure_proposal_fingerprint == ""
+    assert _consume_verify(conductor, _post_apply_analysis(conductor)).accepted is True
+
+    receipt = _round_receipt_json(real_bundle, _MINTED_RELAY_SESSION_ID)
+
+    assert receipt["proposal_fingerprint"] == "fp-stage-1"
+    assert receipt["proposal_fingerprint_kind"] == "candidate"
+    assert receipt["evidence_identities"]["candidate_fingerprint"] == "fp-stage-1"
+    assert conductor.round_receipt_identity is not None, "a receipt was still written"
+
+
+def test_two_receipts_from_the_two_regimes_are_told_apart_by_the_receipt_itself(
+    monkeypatch, real_bundle, tmp_path,
+):
+    """The discrimination, stated as the property a later reader depends on.
+
+    Both fingerprints are 64-hex SHA-256 — ``json_fingerprint``'s output — so
+    NOTHING about the value distinguishes them, and "the formats are disjoint"
+    was never available as a migration story. This asserts that the shapes really
+    are identical AND that the receipts are still separable, which is only true
+    because the receipt carries the marker.
+    """
+    from jasper.active_speaker.crossover_v2.contracts import (
+        PROPOSAL_FINGERPRINT_KINDS,
+    )
+
+    _seed_round_state_proposing(_PROPOSAL_FP)
+    conductor, _attempts = _restoring_stage_2(monkeypatch)
+    _install_entry_baseline(conductor, scale=1.5)
+    _install_applied_graph(monkeypatch, boosts=False)
+    _consume_verify(conductor, _post_apply_analysis(conductor))
+    new_regime = _round_receipt_json(real_bundle, _MINTED_RELAY_SESSION_ID)
+
+    # The pre-#2392 record, as a banked artifact would present it: the key is
+    # ABSENT, not empty. That is the third state, and it is the one a reader
+    # meets on every receipt already on disk.
+    old_regime = {
+        key: value for key, value in new_regime.items()
+        if key != "proposal_fingerprint_kind"
+    }
+    old_regime["proposal_fingerprint"] = "fp-stage-1"
+
+    # Indistinguishable by value…
+    assert len(new_regime["proposal_fingerprint"]) == 64
+    assert len(old_regime["proposal_fingerprint"]) == len("fp-stage-1")
+    for fingerprint in (new_regime["proposal_fingerprint"], _PROPOSAL_FP):
+        assert len(fingerprint) == 64 and int(fingerprint, 16) >= 0, (
+            "a proposal fingerprint is the same 64-hex shape a candidate's is"
+        )
+
+    # …and separable anyway, by the receipt's own word, in all three states.
+    assert "proposal_fingerprint_kind" not in old_regime, "pre-#2392: absent"
+    assert new_regime["proposal_fingerprint_kind"] in PROPOSAL_FINGERPRINT_KINDS
+    assert new_regime["proposal_fingerprint_kind"] == "intervention_proposal"
+
+
+def test_the_receipt_is_written_exactly_once_with_the_payload_that_was_graded(
+    monkeypatch, real_bundle,
+):
+    """The write property: one call, and the bytes are the receipt's own.
+
+    A write-once artifact path punishes a second write, and a payload that
+    disagreed with the contract object would make the fingerprint in the
+    identity block a claim about something else. Both are asserted at the seam
+    the host actually binds, so a future caller that grades twice or hands the
+    seam a re-serialized copy fails here.
+    """
+    written: list[dict[str, Any]] = []
+    real_publish = None
+
+    _seed_round_state_proposing(_PROPOSAL_FP)
+    conductor, _attempts = _restoring_stage_2(monkeypatch)
+    _install_entry_baseline(conductor, scale=1.5)
+    _install_applied_graph(monkeypatch, boosts=False)
+
+    real_publish = _flow_seams(conductor).publish_round_receipt
+
+    def _recording_publish(receipt: dict[str, Any]) -> str:
+        written.append(dict(receipt))
+        return real_publish(receipt)
+
+    conductor._seams = dataclasses.replace(
+        _flow_seams(conductor), publish_round_receipt=_recording_publish,
+    )
+
+    _consume_verify(conductor, _post_apply_analysis(conductor))
+    # Same trigger again — the fire-once guard is what keeps this at one write.
+    _consume_verify(conductor, _post_apply_analysis(conductor), attempt=2)
+
+    assert len(written) == 1, "a write-once receipt path may be written once"
+    payload = written[0]
+    assert payload["proposal_fingerprint"] == _PROPOSAL_FP
+    assert payload["proposal_fingerprint_kind"] == "intervention_proposal"
+    assert payload["round_id"] == _MINTED_RELAY_SESSION_ID
+    # The bytes handed to the seam ARE the receipt: same digest, and it is the
+    # digest the session then reports.
+    core = {key: value for key, value in payload.items() if key != "fingerprint"}
+    assert payload["fingerprint"] == json_fingerprint(core)
+    assert conductor.round_receipt_identity["receipt_fingerprint"] == (
+        payload["fingerprint"]
+    )
+    assert _round_receipt_json(real_bundle, _MINTED_RELAY_SESSION_ID) == payload
+
+
+# --------------------------------------------------------------------------- #
 # 7. a receipt-write failure does not lose the verdict
 # --------------------------------------------------------------------------- #
 
