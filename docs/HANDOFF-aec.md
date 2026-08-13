@@ -787,8 +787,8 @@ acceptable. Effects:
   libsamplerate sinc conversion
 - bluealsa-aplay's rate conversion (if any) uses the same configured
   converter
-- `pcm.jasper_ref`'s plug wrapper (in case it ever does rate
-  conversion) uses the same configured converter
+- `pcm.jasper_ref`'s plug wrapper used the same configured converter
+  (it has had no reader since U4/P7-3, so this one is spent)
 - Same fix benefits the speaker playback chain too — music quality
   is incidentally improved
 
@@ -1487,11 +1487,14 @@ worst-case FP cost.
 > still enter reversible chip-AEC comparison profiles that use outputd
 > direct source fanout, apply the volatile chip profile, and capture
 > explicit `chip_aec_150` / `chip_aec_210` legs for validation.
-> Full test record and current lab recipe live in
-> [CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md). The checked-in
-> `scripts/chip-aec-*` helpers are still lab infrastructure; teardown
-> fully reverts. User-authorized carve-out from the "Architecture is
-> fixed" policy in [AGENTS.md](../AGENTS.md).
+> Full test record lives in
+> [CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md), which is historical:
+> the `scripts/chip-aec-*` helpers it drives, and the
+> `jasper.chip_aec_experiment` daemon behind them, were deleted in
+> U4/P7-3 once the production path had shipped and the pre-DSP tap they
+> captured entered the deletion arc. Read that doc for the record, not
+> for a runnable recipe. User-authorized carve-out from the
+> "Architecture is fixed" policy in [AGENTS.md](../AGENTS.md).
 
 As of 2026-07-09, corpus chip-AEC mode has its own capture-plan
 contract. `JASPER_AEC_CORPUS_CHIP_AEC_ENABLED=1` is enough for
@@ -2446,8 +2449,9 @@ loopback fallbacks at both sides of CamillaDSP. The product-default eligible
 path uses Ring A from fan-in to CamillaDSP and Ring B from CamillaDSP to
 outputd; the fallback uses `jasper_capture` and `outputd_content_*`. In both
 cases outputd owns the DAC and publishes the final-speaker UDP monitor that
-the bridge consumes — its only reference source. `pcm.jasper_ref` remains a
-pre-Camilla diagnostic tap, no longer a bridge fallback, and active tuner
+the bridge consumes — its only reference source. `pcm.jasper_ref` is a
+pre-Camilla alias with no reader left at all (U4/P7-1 took the bridge
+fallback, P7-3 the timing probe), and active tuner
 noise enters through the
 ordinary `correction_substream` fan-in lane. The AEC'd mic from bridge to voice
 rides UDP localhost instead of a second snd-aloop card; see
@@ -2625,9 +2629,10 @@ PLAN.md's tuning roadmap.
 ### The legacy ALSA tap is pre-CamillaDSP
 
 Production AEC consumes outputd's final speaker monitor, after CamillaDSP
-processing and ducking, and has no other source. `jasper_capture` /
-`pcm.jasper_ref` remains a diagnostics-only tap on the renderer→Camilla
-loopback *before* CamillaDSP; the bridge can no longer be pointed at it. Do
+processing and ducking, and has no other source. `jasper_capture` remains a
+diagnostics-and-CamillaDSP tap on the renderer→Camilla loopback *before*
+CamillaDSP; its `pcm.jasper_ref` alias has no reader at all since U4/P7-3.
+The bridge can no longer be pointed at either. Do
 not infer speaker amplitude or final reference timing from that legacy tap.
 `jasper-aec-tune` deliberately captures it only to estimate the host-to-XVF
 bulk delay; in active mode its noise enters through
@@ -2736,8 +2741,9 @@ Files involved in the AEC subsystem:
   settings, and tuning gains
 - `scripts/aec-probe-timing.py` — current multi-source diagnostic timing
   probe for outputd's final speaker-reference UDP stream, outputd's
-  chip-ref writer tee, and selected XVF3800 channels. It writes JSON/CSV/Markdown artifacts and can repeat
-  the standard 1024/3072, 1024/2048, and 512/1024 outputd profiles. See
+  chip-ref writer tee, and selected XVF3800 channels. It writes
+  JSON/CSV/Markdown artifacts and can repeat the standard 1024/3072,
+  1024/2048, and 512/1024 outputd profiles. See
   [AEC-DIAG-03 Timing Probe](AEC-DIAG-03-timing-probe.md).
 - `scripts/aec-probe-latency.sh` — older chirp + cross-correlation
   diagnostic. Existing historical results from this script must be read

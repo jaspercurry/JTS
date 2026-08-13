@@ -1395,7 +1395,12 @@ write a third version.
 ## Maintaining this doc
 
 If you add a new tool, **add it here in the same PR**. If a tool gets
-superseded or removed, strike it through here. If you do a forensic
+deleted, **delete its row in the same PR** — a row for a file that no
+longer exists is the stale prose this repo forbids, and where the tool
+went belongs in the ticket or campaign doc that removed it, not in a
+struck-through line here. Strike a row through only when the tool still
+exists but is superseded, so a reader who finds it knows to reach for
+the replacement named in the row. If you do a forensic
 investigation that uses a `/tmp/` script you'll likely want again,
 promote it to `scripts/_analyze_*.py` AND add an entry above.
 

@@ -79,7 +79,7 @@ Phone (AirPlay / Spotify Connect / BT)
                        hw:Loopback,0,7
                               │
                               ▼ (loop)
-                       pcm.jasper_capture / pcm.jasper_ref
+                       pcm.jasper_capture
                               │
                               ▼
                     jasper-camilla (CamillaDSP, port 1234)

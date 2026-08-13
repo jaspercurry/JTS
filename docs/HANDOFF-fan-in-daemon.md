@@ -154,8 +154,9 @@ Renderers (each on its own snd-aloop substream pair):
   bluealsa-aplay       → hw:Loopback,0,2
   jasper-usbsink       → hw:Loopback,0,3
   correction/test      → hw:Loopback,0,4
-  (reserved)           → hw:Loopback,0,5    [debug/monitor mirror, for offline AEC capture]
-  (reserved)           → hw:Loopback,0,6
+  outputd active lane  → hw:Loopback,0,5    [Camilla → outputd, N-channel active-speaker content]
+  outputd content lane → hw:Loopback,0,6    [Camilla → outputd on a passive box; also the
+                                             active-follower grouping round-trip]
 
 jasper-fanin (the new Rust daemon):
   reads from           ← hw:Loopback,1,0..4 (via per-substream dsnoop or direct hw)
@@ -164,7 +165,8 @@ jasper-fanin (the new Rust daemon):
 
 The "summed music" substream:
   CamillaDSP captures  ← pcm.jasper_capture → dsnoop on hw:Loopback,1,7
-  AEC diagnostics      ← pcm.jasper_ref     → dsnoop on hw:Loopback,1,7
+  jasper-aec-tune      ← pcm.jasper_capture → same dsnoop, bounded capture
+  (no reader)          ← pcm.jasper_ref     → plug alias, unread since U4/P7-3
   Production AEC ref   ← outputd UDP speaker monitor after CamillaDSP/outputd
 
 CamillaDSP → outputd_content_playback → jasper-outputd → Apple USB-C dongle
@@ -263,8 +265,10 @@ which looks identical to "paused" on every other signal).
   pre-duck program loudness, applies the provider/profile peak-capped
   assistant gain policy, applies program ducking to renderer lanes, then
   mixes TTS/cues before CamillaDSP crossover/protection.
-- **AEC diagnostic tap shape.** `pcm.jasper_ref` remains a plug-wrapped
-  dsnoop for explicit diagnostics. It is not an AEC fallback: outputd's
+- **AEC diagnostic tap shape.** `pcm.jasper_ref` is a plug-wrapped
+  alias that nothing opens — U4/P7-1 retired the bridge fallback and
+  P7-3 the timing probe, and it ships only until P9-B deletes the
+  aloop PCMs. It is not an AEC fallback: outputd's
   UDP speaker monitor after CamillaDSP/outputd is the bridge's only
   reference source.
 - **Mux arbitration.** `jasper-mux` still owns source policy:
@@ -698,8 +702,9 @@ Fan-in checks are in the main doctor run-list:
 1. **`check_fanin_asound_wiring`** verifies `/etc/asound.conf` has no
    retired `jasper_renderer_*` dmix blocks, defines every private
    renderer/test lane with a pinned 48 kHz stereo S16_LE plug wrapper,
-   points `pcm.jasper_capture` at summed substream 7, and keeps
-   `pcm.jasper_ref` as the explicit pre-DSP AEC diagnostic wrapper.
+   points `pcm.jasper_capture` at summed substream 7, and checks that
+   the now-readerless `pcm.jasper_ref` alias still plug-wraps it — a
+   shipped-vs-deployed asoundrc drift check until P9-B.
 
 2. **`check_fanin_service`** treats disabled or inactive
    `jasper-fanin.service` as a failure, probes
@@ -1162,8 +1167,9 @@ plug played, but per-renderer instead of fronting a shared dmix.
   `hw:Loopback,1,7` (the new "summed music" substream).
 - `pcm.jasper_ref` plug wrapper unchanged (slave is still
   `jasper_capture`). It was still the AEC bridge's explicit fallback at
-  the time of this migration; that fallback has since been retired and
-  the tap is diagnostics-only.
+  the time of this migration; that fallback has since been retired
+  (U4/P7-1), as has the timing probe that briefly inherited it (P7-3),
+  so the alias now has no reader at all.
 - CamillaDSP's `v1.yml` capture device unchanged (still `plug:jasper_capture`)
   at the time of this migration; `v1.yml` itself was later retired (issue
   #2240) once the outputd mainline topology shipped.
