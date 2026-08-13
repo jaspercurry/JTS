@@ -5307,21 +5307,25 @@ def build_v2_run_and_consume(
             the operator wizard also shows the persisted failure.
 
             Issue #2089: the exhausted fallback used to carry only
-            ``{"phase": ...}`` — no ``budget``, no cause. An absent ``budget``
-            is exactly what ``_post_session_over_host_event`` below documents
-            as dishonest: the phone's ``renderPlanExhausted`` reads it as "the
-            speaker reached its measurement attempt limit", which is untrue of
-            a play-seam/program failure or an admission refusal that escapes
-            before anything is armed — no attempt limit was reached and no
-            clock ran out either. ``TIME_BUDGET_NONE`` is the same "neither
-            clock ran out" bucket that arm already publishes, so the phone
-            renders "lost its connection" instead of the false attempt-limit
-            claim, reusing the wire vocabulary PR #2084 already shipped — no
-            capture-page change needed. The cause fields
-            (``code``/``reason``/``banner``) ride along whenever the code
-            resolves, mirroring the armed branch's shape, so a later
-            capture-page change (its own build-stamp-gated deploy) can say
-            what actually happened without a second host change.
+            ``{"phase": ...}`` — no ``budget``, no cause. Only the catch-all
+            program-failure classifier below can reach this branch in
+            practice: the OTHER caller (the ``CaptureBeginRefused`` arm)
+            never does, because every refusal that can fire before anything
+            is armed sets ``relay_published_refusal`` first inside
+            ``authorize_begin``, which gates that caller's own post.
+
+            The wire now carries an honest cause: ``budget`` is always
+            ``TIME_BUDGET_NONE`` (the same "neither clock ran out" bucket PR
+            #2084 shipped for ``_post_session_over_host_event``), plus
+            ``code``/``reason``/``banner`` whenever the failure code
+            resolves. **This does not change what the phone shows today** —
+            its only pre-arm observer, ``waitForCaptureAuthorized``, ignores
+            ``budget`` entirely and renders generic session-ended /
+            "Link expired" copy from the relay spec, never from this event.
+            Rendering the honest cause is issue #2446, which must NOT route
+            a pre-arm failure through ``renderPlanExhausted``'s
+            transport-flavored copy — that renderer describes a session that
+            had already begun.
             """
             spec = REASON_REGISTRY.get(code)
             armed = conductor.armed_capture

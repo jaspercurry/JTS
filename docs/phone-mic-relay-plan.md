@@ -548,19 +548,28 @@ before the phone polls.
 A `capture_set_exhausted` posted by a HOST (rather than by the runner reaching
 its attempt limit) may carry `budget: "step" | "link" | "none"` — which clock
 ran out, so the page stops calling a timeout an attempt limit (work order D8).
-`"none"` is the explicit negative: the session died of a transport outage, or
-(issue #2089) of a play-seam/program failure or an admission refusal that
-escaped before anything was armed — none of which is a clock running out —
-which the Pi used to signal by omitting the field, landing on the attempt-limit
-copy, a third claim that was equally untrue (issue #2083). Both HOST posters —
-`_post_session_over_host_event` and `_post_terminal_failure_host_event`'s
-no-capture-armed branch — always send one of the three; the latter also carries
-`code`/`reason`/`banner` from the §5.10 reason when it resolves, so a future
-page consumer can name the cause without a second host change (the page does
-not read those fields yet). The field stays absent only from the runner's OWN
-exhaustion event, which genuinely is an attempt limit, and from an older Pi.
-The page keeps the attempt-limit copy for those two, and for any budget name
-it does not recognize.
+`"none"` is the explicit negative: the session died of a transport outage,
+which the Pi used to signal by omitting the field, landing on the
+attempt-limit copy, a third claim that was equally untrue (issue #2083). The
+session-over poster (`_post_session_over_host_event`) always sends one of the
+three, and the page's post-arm observers render it honestly through
+`renderPlanExhausted`.
+
+Issue #2089 gave `_post_terminal_failure_host_event`'s no-capture-armed
+branch the same `budget: "none"`, plus `code`/`reason`/`banner` from the
+§5.10 reason when it resolves — reachable only from the catch-all
+program-failure classifier (`CaptureBeginRefused`'s own post is gated by
+`relay_published_refusal`, set by every refusal that can fire before
+anything is armed). This is wire honesty only: the page reads `reason` into
+its session-over state but does not render it — its pre-arm observer,
+`waitForCaptureAuthorized`, ignores `budget` entirely and shows generic
+"Link expired" / session-ended copy from the relay spec instead. Rendering
+the honest cause is issue #2446, which must not route a pre-arm failure
+through `renderPlanExhausted`'s transport-flavored copy — that describes a
+session that had already begun. The field stays absent only from the
+runner's OWN exhaustion event, which genuinely is an attempt limit, and from
+an older Pi. The page keeps the attempt-limit copy for those two, and for
+any budget name it does not recognize.
 
 **Per-capture entries (plan `schema_version: 2` — dormant).** `capture_plan`
 may additionally carry an `entries` table (one `{index, kind_label,

@@ -7083,12 +7083,18 @@ def test_a_program_failure_before_any_capture_is_armed_posts_an_honest_exhausted
     """Issue #2089. A play-seam/program failure that escapes ``run_capture_plan``
     before ANY capture in the session was armed (``conductor.armed_capture is
     None``) used to fall back to a bare ``{"phase": "capture_set_exhausted"}``
-    — no ``budget``, no cause. The capture page's ``renderPlanExhausted``
-    treats an absent ``budget`` as the runner's OWN attempt-limit exhaustion
-    (the same false-claim class issue #2083 named and PR #2084 already fixed
-    for the session-over poster), so a household whose speaker never even
-    played the tone was told it had "reached its measurement attempt limit"
-    — naming a cause the system never observed.
+    — no ``budget``, no cause. This is the catch-all program-failure
+    classifier's path — the only caller of
+    ``_post_terminal_failure_host_event`` that can reach this branch; the
+    other caller (``CaptureBeginRefused``) never does, because every refusal
+    that can fire before anything is armed sets ``relay_published_refusal``
+    first, which gates that caller's own post.
+
+    This asserts WIRE honesty, not a rendering change: the phone's pre-arm
+    observer (``waitForCaptureAuthorized``) does not read ``budget`` or the
+    new cause fields, so the household sees no different copy yet — see
+    issue #2446 for the render half. What this closes is the terminal event
+    itself no longer omitting the failure's real cause.
 
     ``authorize_begin`` is monkeypatched to raise a classified program
     failure the moment it is called — mirroring a real admission-time
