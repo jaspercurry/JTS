@@ -45,9 +45,9 @@ never hides inside a level knob, level never hides inside a shape. All five
 compose into one CamillaDSP graph, but the *signal* order inside that graph
 is different — room and preference ride the stereo bus ahead of the split
 mixer, so they are emitted before everything numbered 1a–2. Do not read
-these numbers as filter order; the graph shape is in
-[HANDOFF-active-speaker-dsp.md's "Layer
-Boundary"](HANDOFF-active-speaker-dsp.md#layer-boundary).
+these numbers as filter order; the graph shape is in the
+["Layer Boundary"](HANDOFF-active-speaker-dsp.md#layer-boundary)
+section of HANDOFF-active-speaker-dsp.md.
 
 | # | Layer | Job | Instrument | Re-runs when |
 |---|---|---|---|---|
