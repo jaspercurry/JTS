@@ -3234,12 +3234,24 @@ static void test_capture_destage_partial_reads(void) {
 }
 
 int main(void) {
-    // WATCHDOG for the M1 class: a lock wait that loses its deadline makes this
-    // binary HANG rather than fail. Without this, the only thing that notices is
-    // CI's 15-minute job timeout — a slow, remote, uninformative signal for a
-    // local, immediate bug. SIGALRM kills us in seconds with an obvious cause.
-    // The budget is far above any legitimate run (the whole suite is ~1 s
-    // wall-clock, and the slowest single test is one 500 ms lock wait).
+    // BACKSTOP for a true hang — a wait that never returns at all.
+    //
+    // It is NOT what catches a lost or raised deadline; be precise about that,
+    // because overstating it would let someone delete the assertion that does
+    // the real work. The elapsed-time bound in
+    // test_writer_ebusy_second_writer ("the writer-lock wait must be BOUNDED")
+    // is the primary detector: with the deadline removed, the incumbent in the
+    // concurrent-open test still eventually releases, so the mutated wait
+    // returns LATE rather than never — measured at 11 s, caught locally by that
+    // named assertion, not by this alarm.
+    //
+    // This covers only the residue that leaves behind: a wait whose holder never
+    // releases, where no elapsed bound is ever reached because the CHECK is
+    // never evaluated. Nothing has triggered it — it is untriggered insurance,
+    // and its value is turning that case into a prompt signal instead of CI's
+    // 15-minute job timeout. The budget is far above any legitimate run (the
+    // whole suite is ~1 s wall-clock; the slowest single test is one 500 ms
+    // lock wait).
     alarm(120);
     snprintf(g_owned_dir, sizeof(g_owned_dir), "/tmp/jts-ring-ctest-owned-%d",
              (int)getpid());
