@@ -646,7 +646,13 @@ def test_the_installer_adds_jasper_web_to_the_ring_group():
         ln for ln in users.splitlines()
         if "useradd" in ln and " jasper-web" in ln
     ]
-    assert useradd_lines and "jts-ring" in useradd_lines[0], (
+    assert useradd_lines, "service-users.sh must `useradd ... jasper-web`"
+    # Same membership-pattern shape as test_systemd_hardening's
+    # install-contract check: the group must appear IN the -G list, not
+    # merely anywhere on the line (a comment fragment would satisfy a
+    # whole-line substring).
+    line = useradd_lines[0]
+    assert "-G jts-ring" in line or ",jts-ring" in line, (
         "fresh installs must put jasper-web in jts-ring via its useradd -G"
     )
     assert "usermod -aG jts-ring jasper-web" in users, (
