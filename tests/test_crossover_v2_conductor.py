@@ -457,6 +457,89 @@ def test_model_error_store_failure_warns_without_blocking_verify(caplog):
     assert "event=correction.crossover_v2_model_error_write_failed" in caplog.text
 
 
+def test_unexpected_store_failure_cannot_double_bank_on_a_retry(caplog):
+    """#2386: an out-of-family seam raise must not let a retry re-fire the write.
+
+    The rung that stops a second durable write is the attempt landing in
+    ``attempt_history``, which ``_grade_verify_attempt`` appends AFTER the seam
+    call. Before the fix a raise outside the named family skipped that append,
+    so a retry of the SAME applied candidate was assessed as a new attempt and
+    asked the seam a second time — measured on the shipped code as two writes
+    for two runs of one attempt. Both halves are asserted here: the write fires
+    once, and the attempt is banked, which is the mechanism that makes it once.
+    """
+    calls: list[dict[str, Any]] = []
+
+    def unexpected_write(**observation: Any) -> bool:
+        calls.append(dict(observation))
+        # Deliberately outside (OSError, RuntimeError, TypeError, ValueError,
+        # OverflowError). MemoryError is the shape a 1 GB Pi can actually
+        # produce; the property is about the interface, not this class.
+        raise MemoryError("synthetic out-of-family store failure")
+
+    fakes = FakeSeams()
+    c = _verify_only_conductor(
+        fakes,
+        seams=replace(fakes.seams(), record_model_error=unexpected_write),
+        tuning_attempt_id="candidate-a",
+        speaker_id="speaker-a",
+    )
+    # The raise is TOLERATED rather than allowed to end the test, because the
+    # original bug is a COUNT: a test that dies on the first propagating run
+    # never reaches the second write and so never observes the double-bank it
+    # claims to pin. Pre-fix this loop collects two calls and two propagated
+    # exceptions; post-fix, one call and none.
+    #
+    # caplog at WARNING, not ERROR, so the named-family event WOULD be captured
+    # if it fired — otherwise "not filed under the other arm" is vacuous.
+    verdicts: list[dict] = []
+    propagated: list[str] = []
+    with caplog.at_level(logging.WARNING):
+        for run in (1, 2):
+            try:
+                verdicts.append(_run_phase(c, 1, run))
+            except MemoryError:
+                propagated.append("MemoryError")
+
+    # The property, asserted first so a regression reddens on the count itself.
+    assert len(calls) == 1  # was 2
+    assert propagated == []  # was ["MemoryError", "MemoryError"]
+    # The mechanism that produces it.
+    assert [item.attempt_id for item in c.attempt_history] == ["candidate-a"]
+    # The forensics failure did not reverse the VERIFY the gate accepted.
+    assert [verdict["accepted"] for verdict in verdicts] == [True, True]
+    assert c.current_phase == PHASE_DONE
+    assert (
+        "event=correction.crossover_v2_model_error_write_unexpected"
+        in caplog.text
+    )
+    assert (
+        "event=correction.crossover_v2_model_error_write_failed"
+        not in caplog.text
+    )
+
+
+def test_base_exception_from_the_store_seam_still_propagates():
+    """The broad catch is ``Exception``, deliberately not ``BaseException``.
+
+    A ``KeyboardInterrupt`` must not be swallowed by a forensics guard, and
+    containing it would buy no retry-safety anyway: nothing this method appends
+    is persisted by this method, so a dying process has no retry to protect.
+    """
+    def interrupted_write(**_observation: Any) -> bool:
+        raise KeyboardInterrupt("operator stopped the run")
+
+    fakes = FakeSeams()
+    c = _verify_only_conductor(
+        fakes,
+        seams=replace(fakes.seams(), record_model_error=interrupted_write),
+        tuning_attempt_id="candidate-a",
+        speaker_id="speaker-a",
+    )
+    with pytest.raises(KeyboardInterrupt):
+        _run_phase(c, 1, 1)
+
+
 def test_glitched_verify_reaches_loop_as_stop_evidence():
     integrity = CaptureIntegrity(checks=(
         IntegrityCheck(INTEGRITY_CHECK_SWEEP_HEARD, INTEGRITY_FAIL),

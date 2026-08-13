@@ -196,7 +196,24 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # broad-exception boundaries elsewhere. Keeping the old slack would let nine
 # total suppressions and five BLE001 suppressions return without tripping this
 # contract.
-MAX_NOQA_MARKERS = 808
+#
+# 2026-08-13 (#2386 exactly-once banking): +1 broad catch in crossover_v2_flow's
+# ``_grade_verify_attempt``, on the ``record_model_error`` seam call. The arm is
+# a fall-THROUGH boundary and the fall-through is the property: the rung that
+# stops a second durable write is the attempt landing in ``_attempt_history``,
+# which the method appends AFTER this call, so any exception that escapes the
+# call skips the append and the next capture of the same applied candidate asks
+# the seam again (measured: two runs, two writes, on every propagating class).
+# It cannot name a family — the seam is a Protocol any host may implement, so
+# enumerating what today's single binding raises makes the property a fact about
+# one implementation instead of about the interface. Never silent: logs
+# event=correction.crossover_v2_model_error_write_unexpected at ERROR with the
+# traceback, deliberately a DIFFERENT event from the named-family arm above it
+# so "the store had an outage" and "the seam raised something nobody
+# enumerated" stay distinguishable. ``BaseException`` is still not caught.
+# The tokenized B-L-E-0-0-1 count fits the existing ceiling (618 -> 619), so
+# only the total moves: 808 -> 809.
+MAX_NOQA_MARKERS = 809
 MAX_BLE001_MARKERS = 619
 # (Total reflects two independent +1 entries dated 2026-06-21: the AirPlay
 # latency-fit /state snapshot and the barge-in truncate wire-send guard.)
