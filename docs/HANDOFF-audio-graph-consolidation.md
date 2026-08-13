@@ -903,6 +903,30 @@ the aloop ring; and the 0.2 threshold may be revisitable afterwards, but
 only on measurement — keep 0.2 through the migration. This is why
 AirPlay migrates last.
 
+> **Amended by P6d.** Two sharpenings from building the lane. (1) The
+> device flip is a THIRD shape, not the P6a/P6b env substitution:
+> shairport reads a static conf, so `jasper-apply-airplay-mode` — already
+> the conf's single writer from all four invocation sites, re-run at every
+> unit start — became a lane-map READER of the already-rendered
+> `JASPER_SHAIRPORT_DEVICE` line (never the armed set: the armed→device
+> rule stays stated once, in `jasper/renderer_lanes.py`, and the bash side
+> re-derives nothing). The unit deliberately carries NO
+> `EnvironmentFile=` of the map and no device argv — one statement of the
+> device, in the rendered conf, pinned so the conf-vs-argv double-statement
+> drift class cannot creep in. The Tier-3 wedge supervisor's recovery
+> restart runs the same `ExecStartPre`, so recovery follows the map for
+> free. (2) The offset RE-derivation is per box and hardware-gated, so
+> P6d ships the *visibility*, not new values: the formula's own terms are
+> all downstream of fan-in and transport-independent in kind — what
+> changes is the VISIBLE-delay half shairport disciplines against
+> (honest ring occupancy vs the aloop fill lie), which is exactly why the
+> empirical validation does not transfer. The provenance note in
+> `deploy/shairport-sync.conf.template`, the `airplay` row's
+> `arm_advisory` (printed by the arm CLI), and the doctor's
+> armed-vs-rendered-conf coherence check carry that dependency to the
+> operator; the re-derivation itself rides each box's per-lane source
+> pass, per the risk register's top row.
+
 **Per-lane clock reconciliation stays at fan-in ring-read.** The
 one-rate-matcher-per-foreign-clock PLACEMENT does not move: the transport
 changes, the reconciliation stays at fan-in's per-lane read. The ioplug is

@@ -22,8 +22,10 @@ wrong:
 from __future__ import annotations
 
 import argparse
+import os
 import pathlib
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -39,6 +41,7 @@ FANIN_UNIT = REPO / "deploy" / "systemd" / "jasper-fanin.service"
 TMPFILES = REPO / "deploy" / "tmpfiles" / "jts-ring.conf"
 SERVICE_USERS = REPO / "deploy" / "lib" / "install" / "service-users.sh"
 RING_PLATFORM = REPO / "deploy" / "lib" / "install" / "ring-platform.sh"
+RENDERERS_SH = REPO / "deploy" / "lib" / "install" / "renderers.sh"
 
 
 # --- 1. The default is nothing -------------------------------------------
@@ -144,9 +147,12 @@ def test_the_render_is_write_on_change(tmp_path):
 
 
 def test_the_render_refuses_an_unknown_label(tmp_path):
+    # "minidisc" will never be a lane; earlier drafts used "airplay" as the
+    # unknown example, which P6d registered — an unknown-label fixture must
+    # be a name the registry can never grow.
     path = str(tmp_path / "lanes.env")
     with pytest.raises(ValueError, match="unknown renderer lane"):
-        rl.render_renderer_lanes_env(("airplay",), path=path)
+        rl.render_renderer_lanes_env(("minidisc",), path=path)
     assert not Path(path).exists(), "a refused render must write nothing"
 
 
@@ -466,9 +472,163 @@ def _assert_unitless_writer_group_facts():
         )
 
 
+def _run_conf_renderer(lane, tmp: pathlib.Path, map_text: str | None) -> str:
+    """Run the lane's REAL conf-renderer script against a tmp world.
+
+    Returns the rendered conf text. The template carries only the device
+    placeholder — the script substitutes what it knows and refuses to
+    install a conf with any placeholder left, so a minimal template
+    exercises the real substitution path. Every env-file input is pointed
+    into ``tmp`` (mostly at nonexistent paths, which the script treats as
+    absent — its shipped fallbacks), so the run is hermetic on any host.
+    """
+    script = REPO / lane.conf_renderer
+    template = tmp / "template.conf"
+    target = tmp / "rendered.conf"
+    map_path = tmp / "renderer_lanes.env"
+    template.write_text('alsa = {\n    output_device = "__RENDERER_DEVICE__";\n};\n')
+    if map_text is None:
+        if map_path.exists():
+            map_path.unlink()
+    else:
+        map_path.write_text(map_text)
+    env = os.environ.copy()
+    env.update(
+        {
+            "JASPER_SHAIRPORT_TEMPLATE": str(template),
+            "JASPER_SHAIRPORT_CONF": str(target),
+            "JASPER_RENDERER_LANES_ENV": str(map_path),
+            # Absent inputs — the script's own missing-file fallbacks.
+            "JASPER_AIRPLAY_MODE_ENV": str(tmp / "no-airplay-mode.env"),
+            "JASPER_ENV_FILE": str(tmp / "no-jasper.env"),
+            "JASPER_SPEAKER_NAME_FILE": str(tmp / "no-speaker.env"),
+            "JASPER_CAMILLA_STATEFILE": str(tmp / "no-statefile.yml"),
+            "JASPER_CAMILLA_DEFAULT_CONFIG": str(tmp / "no-camilla.yml"),
+            "JASPER_FANIN_ENV_FILE": str(tmp / "no-fanin.env"),
+            "JASPER_OUTPUTD_ENV_FILE": str(tmp / "no-outputd.env"),
+            "JASPER_GROUPING_AIRPLAY_ENV_FILE": str(tmp / "no-grouping.env"),
+            "JASPER_FANIN_STATUS_SOCKET": str(tmp / "no-fanin.sock"),
+            "JASPER_OUTPUTD_STATUS_SOCKET": str(tmp / "no-outputd.sock"),
+        }
+    )
+    result = subprocess.run(
+        ["bash", str(script)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    return target.read_text()
+
+
+def _assert_conf_renderer_device_facts(lane):
+    """The conf-renderer device/map coupling (decided at P6d).
+
+    shairport's device is neither an ExecStart env substitution nor a
+    per-spawn Python read: /etc/shairport-sync.conf is a DERIVED artifact
+    the unit's ExecStartPre re-renders from a template on every start, and
+    the renderer script reads the lane map's already-rendered device line
+    (never the armed set — the armed→device rule stays stated once, in
+    jasper.renderer_lanes). Pinned end to end through the REAL script:
+    no map → the shipped aloop device (byte-identical fleet default);
+    armed → the ring device; disarmed → aloop again. The re-invocation IS
+    the freshness fact: the script reads the map per run and the unit runs
+    it per start, so a flip lands on the next start exactly as it does for
+    the ExecStart-substitution lanes.
+    """
+    assert lane.conf_renderer is not None
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = pathlib.Path(tmp_str)
+        # No map at all — the shipped fleet state.
+        rendered = _run_conf_renderer(lane, tmp, None)
+        assert f'output_device = "{lane.aloop_device}"' in rendered
+        # Armed: the SAME script invocation path picks up the map.
+        rendered = _run_conf_renderer(
+            lane, tmp, rl.render_env_text((lane.label,))
+        )
+        assert f'output_device = "{lane.ring_device}"' in rendered
+        # Disarmed again: freshness in the rollback direction too.
+        rendered = _run_conf_renderer(lane, tmp, rl.render_env_text(()))
+        assert f'output_device = "{lane.aloop_device}"' in rendered
+
+
+def _assert_conf_renderer_static_facts(lane):
+    """The cross-language literal pins for a conf-renderer lane.
+
+    The script is bash, the map's writer is Python, and neither imports the
+    other — so the shared spellings are pinned verbatim, exactly as the
+    Rust mirrors are:
+
+    * the script names the PRODUCTION map path (its test override rides
+      ``JASPER_RENDERER_LANES_ENV``, which must also exist);
+    * it reads THIS lane's ``device_key``;
+    * its fallback assignment is the lane's aloop device — the
+      byte-identical no-map default;
+    * the unit invokes the script in ``ExecStartPre`` — the coupling that
+      makes "the flip lands on the unit's next start" true.
+
+    And the option-(c) drift guard, stated as intent: the device must have
+    exactly ONE statement, the rendered conf. shairport accepts backend
+    args after ``--`` (``shairport-sync -- -d <device>``), and an ExecStart
+    that carried one — or a unit that loaded the map as an
+    ``EnvironmentFile=`` nothing consumes — would create a second statement
+    with shairport's parser owning precedence, so every conf reader (the
+    doctor's parse, an operator's cat) would read the LOSING copy. That is
+    the drift class this campaign exists to kill; these assertions block it
+    permanently.
+    """
+    assert lane.conf_renderer is not None
+    script = (REPO / lane.conf_renderer).read_text()
+    assert rl.RENDERER_LANES_ENV in script, (
+        f"{lane.conf_renderer} must read the production lane map path"
+    )
+    assert "JASPER_RENDERER_LANES_ENV" in script, (
+        f"{lane.conf_renderer} must honor the map-path override its "
+        "hermetic tests ride"
+    )
+    assert lane.device_key in script, (
+        f"{lane.conf_renderer} must read {lane.device_key} from the map"
+    )
+    assert f'renderer_device="{lane.aloop_device}"' in script, (
+        f"{lane.conf_renderer}'s no-map fallback must be the shipped "
+        f"aloop device {lane.aloop_device!r} verbatim"
+    )
+    unit = _unit_text(lane)
+    script_name = pathlib.Path(lane.conf_renderer).name
+    assert re.search(
+        rf"^ExecStartPre=.*{re.escape(script_name)}", unit, re.M
+    ), (
+        f"{lane.unit} must run {script_name} in ExecStartPre — that is "
+        "what makes a lane flip land on the unit's next start"
+    )
+    assert f"${{{lane.device_key}}}" not in unit, (
+        f"{lane.unit} must NOT substitute {lane.device_key} itself — the "
+        "conf renderer is the single delivery path (see docstring)"
+    )
+    assert f"EnvironmentFile=-{rl.RENDERER_LANES_ENV}" not in unit, (
+        f"{lane.unit} must not load the lane map it does not consume — a "
+        "false mechanism statement (see docstring)"
+    )
+    execstart = re.search(r"^ExecStart=(.+)$", unit, re.M)
+    assert execstart, lane.unit
+    assert re.fullmatch(r"\S*shairport-sync\s*", execstart.group(1)), (
+        f"{lane.unit}'s ExecStart grew arguments ({execstart.group(1)!r}) — "
+        "re-review against the one-statement-of-the-device guard before "
+        "accepting any (see docstring: `-- -d` would silently override the "
+        "rendered conf)"
+    )
+
+
 def _lane_device_fact(lane):
     if lane.unit is None:
         _assert_unitless_device_facts(lane)
+        return
+    if lane.conf_renderer is not None:
+        _assert_conf_renderer_device_facts(lane)
+        _assert_conf_renderer_static_facts(lane)
         return
     unit = _unit_text(lane).replace("\\\n", " ")
     # librespot spells it --device, bluealsa-aplay --pcm; what matters is
@@ -487,6 +647,14 @@ def _lane_map_order_fact(lane):
         # Ordering cannot apply where nothing caches: the unitless
         # replacement is the call-time-freshness half of the device pin.
         _assert_unitless_device_facts(lane)
+        return
+    if lane.conf_renderer is not None:
+        # No env chain to order: the script reads the map file per
+        # invocation and the unit invokes it per start, so the freshness
+        # half of the device pin is the replacement fact here too — plus
+        # the static ExecStartPre/one-statement guards.
+        _assert_conf_renderer_device_facts(lane)
+        _assert_conf_renderer_static_facts(lane)
         return
     unit = _unit_text(lane)
     assert f"EnvironmentFile=-{rl.RENDERER_LANES_ENV}" in unit, lane.unit
@@ -658,6 +826,46 @@ def test_the_installer_adds_jasper_web_to_the_ring_group():
     assert "usermod -aG jts-ring jasper-web" in users, (
         "pre-P6c-i boxes skip the useradd; the upgrade path needs the "
         "idempotent usermod"
+    )
+
+
+def test_the_installer_adds_shairport_sync_to_the_ring_group():
+    """Both delivery paths of shairport-sync's jts-ring membership (P6d).
+
+    Unlike every other jts-ring member, the shairport-sync USER is created
+    in renderers.sh (the source-build section), not service-users.sh — so
+    the two delivery paths live in two files and each is the sole guard of
+    its path:
+
+    * **fresh boxes** — renderers.sh's `useradd -G` hard-lists jts-ring,
+      which is safe because create_jasper_service_users (the group's
+      creator) runs before install_renderers in install.sh, and an
+      ordering regression fails LOUDLY (useradd exit 6 under
+      set -euo pipefail) rather than silently;
+    * **upgrade boxes** — the useradd is skipped when the user already
+      exists (every box installed before P6d), so service-users.sh carries
+      the guarded idempotent usermod, same shape as the `pi` membership.
+    """
+    renderers = RENDERERS_SH.read_text()
+    useradd_lines = [
+        ln for ln in renderers.splitlines()
+        if "useradd" in ln and " shairport-sync" in ln
+    ]
+    assert useradd_lines, "renderers.sh must `useradd ... shairport-sync`"
+    line = useradd_lines[0]
+    assert "-G audio,jts-ring" in line or ",jts-ring" in line, (
+        "fresh installs must put shairport-sync in jts-ring via its "
+        "useradd -G (renderers.sh)"
+    )
+    users = SERVICE_USERS.read_text()
+    assert "usermod -aG jts-ring shairport-sync" in users, (
+        "pre-P6d boxes skip the useradd; the upgrade path needs the "
+        "guarded idempotent usermod in service-users.sh"
+    )
+    assert "getent passwd shairport-sync" in users, (
+        "on a FRESH box install_renderers has not run when "
+        "create_jasper_service_users does, so the usermod must be guarded "
+        "on the account existing — an unguarded one would fail the install"
     )
 
 
@@ -1786,3 +1994,92 @@ def test_ingress_arming_and_endpoint_transport_are_independent_axes(
         assert correction_play_device() == expected_device
     finally:
         rl.RENDERER_LANES_ENV = original
+
+
+# --- The conf-renderer lane (airplay, U3 / P6d) ----------------------------
+
+
+def test_conf_renderer_airplay_facts():
+    """The airplay lane's conf-renderer facts, asserted directly.
+
+    Redundant with the routed pins above BY DESIGN (they reach the same
+    assertions through the row): this direct call keeps the conf-renderer
+    facts diagnosable as their own failure — a drift names this test, not
+    a generic per-lane loop. Same shape as
+    `test_unitless_correction_writer_facts`.
+    """
+    lane = rl.lane_by_label("airplay")
+    assert lane is not None and lane.conf_renderer is not None
+    _assert_conf_renderer_device_facts(lane)
+    _assert_conf_renderer_static_facts(lane)
+
+
+def test_the_conf_renderer_path_is_real():
+    """The row's `conf_renderer` names a file that exists in the repo — a
+    renamed/moved script would otherwise fail only at the subprocess pins,
+    with a less obvious message."""
+    lane = rl.lane_by_label("airplay")
+    assert lane is not None and lane.conf_renderer is not None
+    assert (REPO / lane.conf_renderer).is_file(), lane.conf_renderer
+
+
+def _arm_via_cli(monkeypatch, tmp_path, capsys, labels):
+    """Run a real `_cmd_renderer_lanes` arm with the host probes stubbed.
+
+    Same stubbing shape as
+    `test_the_arm_asks_the_group_predicate_even_for_a_root_renderer`:
+    presence/conf/user answered locally so the decision logic runs for
+    real, off-box.
+    """
+    from jasper.cli import audio_config as ac
+
+    monkeypatch.setattr(
+        rl, "renderer_user_in_ring_group", lambda user, group=rl.RING_GROUP: True
+    )
+    monkeypatch.setattr(ac, "_renderer_unit_user", lambda unit: None)
+    import jasper.ring_assets as ring_assets
+
+    monkeypatch.setattr(
+        ring_assets, "ring_asset_presence",
+        lambda: type("P", (), {"all_present": True, "missing": lambda self: ()})(),
+    )
+    monkeypatch.setattr(rl, "RENDERER_LANES_CONF_D", str(tmp_path / "conf"))
+    (tmp_path / "conf").write_text("")
+
+    args = argparse.Namespace(
+        arm=list(labels), disarm=[], set=None,
+        path=str(tmp_path / "lanes.env"),
+        input_buffer_frames=4096, period_frames=256,
+    )
+    rc = ac._cmd_renderer_lanes(args)
+    captured = capsys.readouterr()
+    assert rc == 0, captured.err
+    return captured.out
+
+
+def test_arming_airplay_prints_the_transport_advisory(
+    monkeypatch, tmp_path, capsys
+):
+    """A NEWLY armed lane with an `arm_advisory` prints it — the operator
+    carries AirPlay's derived-on-aloop sync facts to the box's source pass
+    from this terminal, not from remembering to open a doc."""
+    out = _arm_via_cli(monkeypatch, tmp_path, capsys, ["airplay"])
+    assert "advisory airplay: " in out
+    assert "derived on the snd-aloop transport" in out
+    lane = rl.lane_by_label("airplay")
+    assert lane is not None and lane.arm_advisory
+    assert lane.arm_advisory in out, (
+        "the CLI must print the row's advisory verbatim, not a paraphrase"
+    )
+
+
+def test_arming_a_lane_without_an_advisory_prints_none(
+    monkeypatch, tmp_path, capsys
+):
+    """Control for the advisory print: a no-advisory lane arms silently.
+    Guards against the print firing unconditionally (which would teach
+    operators to skim past it)."""
+    out = _arm_via_cli(monkeypatch, tmp_path, capsys, ["spotify"])
+    assert "advisory" not in out
+    lane = rl.lane_by_label("spotify")
+    assert lane is not None and lane.arm_advisory is None

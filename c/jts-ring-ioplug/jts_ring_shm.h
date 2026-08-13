@@ -125,6 +125,13 @@ _Static_assert(ATOMIC_LLONG_LOCK_FREE == 2,
 //     whatever the packaged unit sets, so that value cannot bite
 //   - jasper-camilla               RestartSec=2  — sits ON the boundary for
 //     Ring B, worth knowing before anyone shortens it
+//   - shairport-sync.service       RestartSec=5  — clears it comfortably.
+//     Doubly insulated in practice: shairport opens its output PCM per
+//     AirPlay SESSION (sessioncontrol releases the device ~1 s after idle),
+//     not at process start, so even the Tier-3 wedge supervisor's
+//     `systemctl restart` — which skips RestartSec entirely — cannot race
+//     this window: it is gated on no-active-session (ring closed) and the
+//     new process's first ring open waits for the next session, human-paced
 //   - correction lane: EPHEMERAL aplay writers (wizards / correction web /
 //     operator CLIs via jasper.audio_measurement.correction_lane) — no unit,
 //     no auto-respawn, so no RestartSec to clear. The only programmatic

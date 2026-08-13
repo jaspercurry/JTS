@@ -361,6 +361,14 @@ def _cmd_renderer_lanes(args: argparse.Namespace) -> int:
         })
     )
     print(f"restart_required jasper-fanin.service {restart}".rstrip())
+    # Arm-time advisories: registry data a NEWLY armed lane wants in front of
+    # the operator (P6d: AirPlay's sync constants were derived on the aloop
+    # transport). Informational only — refusals happened above; an advisory
+    # never gates. Printed last so it is the freshest thing on the terminal.
+    for label in newly_armed:
+        lane = rl.lane_by_label(label)
+        if lane is not None and lane.arm_advisory:
+            print(f"advisory {label}: {lane.arm_advisory}")
     return 0
 
 

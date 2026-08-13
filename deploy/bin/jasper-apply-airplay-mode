@@ -16,12 +16,21 @@
 #     an active bonded leader, the Snapcast round-trip playout buffer
 #     (JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC, written by
 #     jasper-grouping-reconcile). Absent on solo/follower => unchanged.
-#   - output_device fixed to `shairport_substream`, AirPlay's private
-#     fan-in lane
+#   - output_device from the renderer-lane map (U3/P6d):
+#     /var/lib/jasper/renderer_lanes.env's JASPER_SHAIRPORT_DEVICE line,
+#     written by `jasper-audio-config renderer-lanes` — shairport_ring_lane
+#     when the airplay lane is armed, shairport_substream otherwise. A
+#     missing map or missing key falls back to shairport_substream, the
+#     shipped snd-aloop lane, so an unarmed box renders byte-identically.
+#     This script READS the map's already-resolved value; it never parses
+#     the armed set, so the armed→device rule stays stated once, in
+#     jasper/renderer_lanes.py.
 #
 # Invoked from three places:
 #   1. shairport-sync.service ExecStartPre (so every restart picks up
-#      the current mode).
+#      the current mode). This is also what makes a lane flip land on the
+#      unit's next start, and why the Tier-3 wedge supervisor's recovery
+#      restart follows the lane map for free.
 #   2. install.sh (so a fresh install lands with the conf rendered).
 #   3. jasper-airplay-mode CLI and the /airplay/ web UI, after they
 #      update the env file and before they try-restart shairport if active.
@@ -54,6 +63,11 @@
 #                                 solo/follower (the common case) => the
 #                                 offset is byte-identical to before.
 #                                 Default: /var/lib/jasper/grouping-airplay.env.
+#   JASPER_RENDERER_LANES_ENV   — the renderer-lane map read for
+#                                 JASPER_SHAIRPORT_DEVICE (see the
+#                                 output_device note above). Absent =>
+#                                 shairport_substream.
+#                                 Default: /var/lib/jasper/renderer_lanes.env.
 # File outputs:
 #   /etc/shairport-sync.conf — atomic write via /etc/shairport-sync.conf.tmp.
 #
@@ -74,6 +88,9 @@ OUTPUTD_ENV_FILE="${JASPER_OUTPUTD_ENV_FILE:-/var/lib/jasper/outputd.env}"
 # bonded-leader AirPlay offset delta. ABSENT/empty on solo + followers,
 # so a non-bonded speaker derives the byte-identical solo offset.
 GROUPING_AIRPLAY_ENV_FILE="${JASPER_GROUPING_AIRPLAY_ENV_FILE:-/var/lib/jasper/grouping-airplay.env}"
+# The renderer-lane map (single writer: `jasper-audio-config renderer-lanes`).
+# Read — never written — for the resolved JASPER_SHAIRPORT_DEVICE.
+RENDERER_LANES_FILE="${JASPER_RENDERER_LANES_ENV:-/var/lib/jasper/renderer_lanes.env}"
 FANIN_STATUS_SOCKET="${JASPER_FANIN_STATUS_SOCKET:-/run/jasper-fanin/control.sock}"
 OUTPUTD_STATUS_SOCKET="${JASPER_OUTPUTD_STATUS_SOCKET:-/run/jasper-outputd/control.sock}"
 DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES=3072
@@ -400,7 +417,17 @@ if [[ -f "$ENV_FILE" ]]; then
     # shellcheck disable=SC1090
     source "$ENV_FILE" 2>/dev/null || true
 fi
-renderer_device="shairport_substream"
+# U3/P6d: the renderer device comes from the lane map's already-resolved
+# JASPER_SHAIRPORT_DEVICE line (shairport_ring_lane when the airplay lane
+# is armed, shairport_substream otherwise). Empty/missing — a fleet box
+# with no map, or a map written before the airplay row existed — falls
+# back to shairport_substream, the shipped snd-aloop lane. Reading the
+# RESOLVED value (never the armed set) keeps the armed→device rule stated
+# once, in jasper/renderer_lanes.py.
+renderer_device="$(env_file_value "$RENDERER_LANES_FILE" JASPER_SHAIRPORT_DEVICE || true)"
+if [[ -z "$renderer_device" ]]; then
+    renderer_device="shairport_substream"
+fi
 # Also source jasper.env (mode 0640, readable by root only — this
 # script runs with the leading `+` privilege escalation from
 # shairport-sync.service's ExecStartPre, so root-read is fine).
@@ -434,6 +461,10 @@ esac
 
 latency_offset="$(derive_audio_backend_latency_offset)"
 airplay_name_sed="$(printf '%s' "$airplay_name" | sed -e 's/[\/&]/\\&/g')"
+# The map's writer only ever renders two known literals here, but the value
+# crosses a sed replacement like the speaker name does, so it gets the same
+# escape rather than a trust argument.
+renderer_device_sed="$(printf '%s' "$renderer_device" | sed -e 's/[\/&]/\\&/g')"
 
 tmp="${TARGET}.tmp.$$"
 trap 'rm -f "$tmp"' EXIT
@@ -441,7 +472,7 @@ trap 'rm -f "$tmp"' EXIT
 sed -e "s/__DISABLE_SYNCHRONIZATION__/${disable_sync}/g" \
     -e "s/__AIRPLAY_NAME__/${airplay_name_sed}/g" \
     -e "s/__AUDIO_BACKEND_LATENCY_OFFSET_SECONDS__/${latency_offset}/g" \
-    -e "s/__RENDERER_DEVICE__/${renderer_device}/g" \
+    -e "s/__RENDERER_DEVICE__/${renderer_device_sed}/g" \
     "$TEMPLATE" > "$tmp"
 
 # Validate the substitution actually happened — refuse to install a
