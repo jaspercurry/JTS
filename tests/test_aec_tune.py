@@ -10,7 +10,9 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
+import threading
 import time
+import wave
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call
 
@@ -620,89 +622,377 @@ def test_bridge_restore_timeout_does_not_skip_voice_restore(
     assert restored == ["jasper-aec-bridge.service", "jasper-voice.service"]
 
 
-def test_partial_arecord_start_terminates_and_reaps_first_child(
+# ---------------------------------------------------------------------------
+# The reference leg: jasper-outputd's UDP speaker monitor (U4/P7-2).
+#
+# Since P7-2 the passive reference is NOT an `arecord` child on the aloop
+# dsnoop tap — it is a bound socket drained on a thread. These pin the wire
+# contract and the lifecycle that replaced the second child.
+# ---------------------------------------------------------------------------
+
+
+def _stub_reference_socket(monkeypatch, payload: bytes | None) -> MagicMock:
+    """Replace the socket + drain with a stub, so no real port is bound.
+
+    Returns the stub socket the caller can assert was closed. `payload=None`
+    means the monitor delivered nothing.
+
+    Also pins the target resolution. `_capture_simultaneous` resolves it for
+    real, which reads the HOST's env files — so without this these tests pass
+    on a laptop and fail on a parked Pi, where the reconciler has written an
+    empty `JASPER_OUTPUTD_REFERENCE_UDP_TARGET`. The value is irrelevant here
+    (the socket is a stub); not depending on the host is the point.
+    """
+    monkeypatch.delenv(aec_tune.REFERENCE_UDP_TARGET_ENV, raising=False)
+    monkeypatch.setattr(
+        aec_tune,
+        "merged_env_files",
+        lambda: {aec_tune.REFERENCE_UDP_TARGET_ENV: "127.0.0.1:9891"},
+    )
+    sock = MagicMock()
+    monkeypatch.setattr(aec_tune, "_open_reference_socket", lambda host, port: sock)
+
+    def drain(_sock, _deadline, out: list[bytes], _stop) -> None:
+        if payload is not None:
+            out.append(payload)
+
+    monkeypatch.setattr(aec_tune, "_drain_reference_socket", drain)
+    return sock
+
+
+def test_reference_wav_decodes_the_wire_as_48k_stereo_s16(tmp_path: Path) -> None:
+    """The :9891 wire is headerless little-endian interleaved stereo int16.
+
+    Pinned against the producer's own guard,
+    `the_reference_datagram_is_exactly_one_s16_stereo_period` in
+    `rust/jasper-outputd/src/main.rs`: one datagram is one narrowed playout
+    period, `period_frames * 2 channels * 2 bytes`, no header to skip. If this
+    tool ever mis-framed it, the correlation would still produce a plausible
+    number — which is exactly why the decode is asserted rather than assumed.
+    """
+    frames = np.array([[1, -2], [3, -4], [5, -6]], dtype="<i2")
+    wire = frames.tobytes()
+    ref_wav = tmp_path / "ref.wav"
+
+    aec_tune._write_reference_wav(ref_wav, [wire])
+
+    samples, rate, channels = aec_tune._read_wav_int16(ref_wav)
+    assert (rate, channels) == (48000, 2)
+    assert samples.tolist() == frames.tolist()
+    # BYTE-TRANSPARENT, asserted on the bytes. Both the wire and a WAV payload
+    # are little-endian S16, so this stage must pass the payload through
+    # untouched. Defense in depth, not a gap the value check leaves open: a
+    # real `.byteswap()` trips BOTH assertions, and merely respelling the
+    # decode dtype is transparent in values AND bytes (so it is no bug and
+    # neither assertion should fire). This one states the property the wire
+    # actually has, in the units the wire actually has it in.
+    with wave.open(str(ref_wav), "rb") as handle:
+        assert handle.readframes(handle.getnframes()) == wire
+
+
+def test_the_reference_contract_matches_outputd_the_producer() -> None:
+    """48 kHz stereo is jasper-outputd's fact, not this tool's free parameter.
+
+    Cross-language pin against the producer's own source. Asserting only
+    `rate == REFERENCE_RATE` would be self-referential — moving the constant
+    would move both sides of the comparison and stay green — so the constant is
+    checked against `rust/jasper-outputd/src/types.rs`, where the value is
+    fixed and `Config::from_env` refuses any other rate.
+    """
+    types_rs = (
+        Path(__file__).resolve().parents[1]
+        / "rust"
+        / "jasper-outputd"
+        / "src"
+        / "types.rs"
+    ).read_text()
+
+    assert f"pub const SAMPLE_RATE: u32 = {aec_tune.REFERENCE_RATE:_};" in types_rs, (
+        "aec_tune.REFERENCE_RATE must equal jasper-outputd's core sample rate; "
+        "the reference datagrams are that daemon's playout periods"
+    )
+    assert f"pub const CHANNELS: u16 = {aec_tune.REFERENCE_CHANNELS};" in types_rs, (
+        "aec_tune.REFERENCE_CHANNELS must equal jasper-outputd's channel count; "
+        "the reference is stereo whatever the sink's width"
+    )
+
+    # ONE wire fact, so pin EVERY Python declarer of it against the same
+    # producer literals. The bridge and the tuner bind the same monitor; if
+    # they could disagree about its geometry, only one of them would be right.
+    from jasper.cli import aec_bridge
+
+    assert (aec_bridge.REF_RATE, aec_bridge.REF_CHANNELS) == (
+        aec_tune.REFERENCE_RATE,
+        aec_tune.REFERENCE_CHANNELS,
+    ), (
+        "jasper-aec-bridge and jasper-aec-tune read the SAME outputd speaker "
+        "monitor; their declared rate/channels must not diverge"
+    )
+
+
+def test_reference_wav_drops_a_partial_trailing_frame(tmp_path: Path) -> None:
+    """A short tail is trimmed, not reshaped into an exception."""
+    ref_wav = tmp_path / "ref.wav"
+    whole = np.array([[7, 8]], dtype="<i2").tobytes()
+
+    aec_tune._write_reference_wav(ref_wav, [whole, b"\x01"])
+
+    samples, _rate, _channels = aec_tune._read_wav_int16(ref_wav)
+    assert samples.tolist() == [[7, 8]]
+
+
+def test_reference_datagrams_survive_a_real_loopback_round_trip(
+    tmp_path: Path,
+) -> None:
+    """Bind, receive, and decode for real — the three helpers composed.
+
+    Ephemeral port, so this can never collide with a parallel worker or with
+    the production monitor. This is the one test that proves the socket
+    options, the drain loop, and the decode agree with each other rather than
+    each agreeing with a stub.
+    """
+    import socket as socket_module
+
+    sock = aec_tune._open_reference_socket("127.0.0.1", 0)
+    try:
+        target = sock.getsockname()
+        period = np.array([[100, -100], [200, -200]], dtype="<i2")
+        sender = socket_module.socket(socket_module.AF_INET, socket_module.SOCK_DGRAM)
+        try:
+            sender.sendto(period.tobytes(), target)
+            sender.sendto(period.tobytes(), target)
+        finally:
+            sender.close()
+
+        chunks: list[bytes] = []
+        aec_tune._drain_reference_socket(
+            sock,
+            time.monotonic() + aec_tune.REFERENCE_POLL_SEC * 4,
+            chunks,
+            threading.Event(),
+        )
+    finally:
+        sock.close()
+
+    assert len(chunks) == 2
+    ref_wav = tmp_path / "ref.wav"
+    aec_tune._write_reference_wav(ref_wav, chunks)
+    samples, rate, _channels = aec_tune._read_wav_int16(ref_wav)
+    assert rate == aec_tune.REFERENCE_RATE
+    assert samples.tolist() == period.tolist() * 2
+
+
+def test_drain_returns_quietly_when_the_socket_closes_under_it() -> None:
+    """A closed socket ends the drain rather than raising out of the thread."""
+    sock = aec_tune._open_reference_socket("127.0.0.1", 0)
+    sock.close()
+    chunks: list[bytes] = []
+
+    aec_tune._drain_reference_socket(
+        sock, time.monotonic() + 5.0, chunks, threading.Event()
+    )
+
+    assert chunks == []
+
+
+def test_the_stop_event_ends_the_drain_without_waiting_out_the_window() -> None:
+    """Interrupt and mic-start failure must not sit out the capture window.
+
+    `jasper-aec-tune` is a foreground operator CLI; a Ctrl-C that appears to
+    hang for the rest of a five-second capture reads as a wedge.
+
+    The deadline is a few poll intervals out — long enough that only the stop
+    event can explain a prompt return, short enough that a guard which stopped
+    working fails HERE in seconds rather than being cut off by the suite's
+    global hang timeout minutes later.
+    """
+    window_sec = aec_tune.REFERENCE_POLL_SEC * 6
+    sock = aec_tune._open_reference_socket("127.0.0.1", 0)
+    stop = threading.Event()
+    stop.set()
+    chunks: list[bytes] = []
+    try:
+        started = time.monotonic()
+        aec_tune._drain_reference_socket(sock, started + window_sec, chunks, stop)
+        elapsed = time.monotonic() - started
+    finally:
+        sock.close()
+
+    assert elapsed < aec_tune.REFERENCE_POLL_SEC, (
+        f"a set stop event must end the drain at once; took {elapsed:.2f}s of "
+        f"a {window_sec:.1f}s window"
+    )
+    assert chunks == []
+
+
+def test_capture_signals_the_drain_before_joining_it(monkeypatch, tmp_path) -> None:
+    """The stop is SET on the way out, on the failure path too.
+
+    A `join` that precedes the signal is the same wait this exists to remove,
+    so the order is asserted, not just the call.
+    """
+    # Socket close is pinned by its own test; this one is about ordering.
+    _stub_reference_socket(monkeypatch, payload=b"\x00\x00\x00\x00")
+    monkeypatch.setattr(aec_tune, "_drain_reference_socket", lambda *a: None)
+
+    stop_events: list[threading.Event] = []
+    set_at_join: list[bool] = []
+
+    class RecordingThread(threading.Thread):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            # The drain's 4th positional arg is the stop event.
+            stop_events.append(kw["args"][3])
+
+        def join(self, timeout=None):  # type: ignore[override]
+            set_at_join.append(stop_events[0].is_set())
+            return super().join(timeout)
+
+    monkeypatch.setattr(aec_tune.threading, "Thread", RecordingThread)
+    monkeypatch.setattr(
+        aec_tune.subprocess, "Popen", MagicMock(side_effect=OSError("mic failed"))
+    )
+
+    with pytest.raises(OSError, match="mic failed"):
+        aec_tune._capture_simultaneous(
+            1.0, tmp_path / "ref.wav", tmp_path / "mic.wav", "hw:Mic", 2
+        )
+
+    assert set_at_join == [True], "the drain must be signalled BEFORE it is joined"
+
+
+def test_an_unarmed_reference_target_names_the_reconciler(monkeypatch) -> None:
+    """An EMPTY target is `jasper-aec-reconcile` saying outputd is not publishing.
+
+    The reconciler is the single writer of the key and leaves it empty on its
+    parked branches, so this is a distinct, actionable state — not the same
+    thing as "nobody was playing music".
+    """
+    monkeypatch.setenv(aec_tune.REFERENCE_UDP_TARGET_ENV, "")
+
+    with pytest.raises(aec_tune.TuneError, match="jasper-aec-reconcile"):
+        aec_tune._resolve_reference_udp_target()
+
+
+def test_reference_target_prefers_the_env_files_over_the_shipped_default(
+    monkeypatch,
+) -> None:
+    """The box's own env files win over the default; an explicit shell wins over both."""
+    monkeypatch.delenv(aec_tune.REFERENCE_UDP_TARGET_ENV, raising=False)
+    monkeypatch.setattr(
+        aec_tune,
+        "merged_env_files",
+        lambda: {aec_tune.REFERENCE_UDP_TARGET_ENV: "10.0.0.9:19191"},
+    )
+    assert aec_tune._resolve_reference_udp_target() == ("10.0.0.9", 19191)
+
+    monkeypatch.setenv(aec_tune.REFERENCE_UDP_TARGET_ENV, "127.0.0.1:12345")
+    assert aec_tune._resolve_reference_udp_target() == ("127.0.0.1", 12345)
+
+
+def test_reference_target_falls_back_to_the_shipped_default(monkeypatch) -> None:
+    monkeypatch.delenv(aec_tune.REFERENCE_UDP_TARGET_ENV, raising=False)
+    monkeypatch.setattr(aec_tune, "merged_env_files", dict)
+
+    assert aec_tune._resolve_reference_udp_target() == ("127.0.0.1", 9891)
+    assert aec_tune.DEFAULT_REFERENCE_UDP_TARGET == "127.0.0.1:9891"
+
+
+@pytest.mark.parametrize("raw", ["9891", "127.0.0.1:", "127.0.0.1:nope", ":9891"])
+def test_a_malformed_reference_target_is_rejected(monkeypatch, raw: str) -> None:
+    monkeypatch.setenv(aec_tune.REFERENCE_UDP_TARGET_ENV, raw)
+
+    with pytest.raises(aec_tune.TuneError):
+        aec_tune._resolve_reference_udp_target()
+
+
+def test_a_silent_reference_monitor_names_outputd(monkeypatch, tmp_path: Path) -> None:
+    """Zero datagrams is its own diagnosis, not a generic "capture failed"."""
+    sock = _stub_reference_socket(monkeypatch, payload=None)
+    mic_proc = MagicMock()
+    mic_proc.wait.return_value = 0
+    mic_proc.poll.return_value = 0
+    monkeypatch.setattr(aec_tune.subprocess, "Popen", MagicMock(return_value=mic_proc))
+
+    with pytest.raises(aec_tune.TuneError, match="no reference datagrams"):
+        aec_tune._capture_simultaneous(
+            1.0, tmp_path / "ref.wav", tmp_path / "mic.wav", "hw:Mic", 2
+        )
+
+    sock.close.assert_called_once_with()
+
+
+def test_mic_start_failure_still_closes_the_reference_socket(
     monkeypatch, tmp_path: Path
 ) -> None:
-    ref_proc = MagicMock()
-    ref_proc.poll.return_value = None
-    ref_proc.wait.return_value = 0
+    """The socket and its thread are owned even when the surviving child never starts.
+
+    This is the P7-2 shape of the old two-`arecord` partial-start test: the
+    reference leg is opened first, so a mic-start failure must not leak it.
+    """
+    sock = _stub_reference_socket(monkeypatch, payload=b"\x00\x00\x00\x00")
     monkeypatch.setattr(
         aec_tune.subprocess,
         "Popen",
-        MagicMock(side_effect=[ref_proc, OSError("mic Popen failed")]),
+        MagicMock(side_effect=OSError("mic Popen failed")),
     )
 
     with pytest.raises(OSError, match="mic Popen failed"):
         aec_tune._capture_simultaneous(
-            1.0,
-            tmp_path / "ref.wav",
-            tmp_path / "mic.wav",
-            "hw:Mic",
-            2,
+            1.0, tmp_path / "ref.wav", tmp_path / "mic.wav", "hw:Mic", 2
         )
 
-    ref_proc.terminate.assert_called_once_with()
-    ref_proc.wait.assert_called_once_with(timeout=aec_tune.PROCESS_EXIT_GRACE_SEC)
+    sock.close.assert_called_once_with()
 
 
-def test_successful_arecord_children_are_bounded_and_reaped(
+def test_successful_capture_bounds_and_reaps_the_single_mic_child(
     monkeypatch, tmp_path: Path
 ) -> None:
     ref_wav = tmp_path / "ref.wav"
     mic_wav = tmp_path / "mic.wav"
-    ref_wav.write_bytes(b"r" * 1025)
     mic_wav.write_bytes(b"m" * 1025)
-    ref_proc = MagicMock()
-    mic_proc = MagicMock()
-    for proc in (ref_proc, mic_proc):
-        proc.wait.return_value = 0
-        proc.poll.return_value = 0
-    monkeypatch.setattr(
-        aec_tune.subprocess,
-        "Popen",
-        MagicMock(side_effect=[ref_proc, mic_proc]),
+    sock = _stub_reference_socket(
+        monkeypatch, payload=np.zeros((600, 2), dtype="<i2").tobytes()
     )
+    mic_proc = MagicMock()
+    mic_proc.wait.return_value = 0
+    mic_proc.poll.return_value = 0
+    popen = MagicMock(return_value=mic_proc)
+    monkeypatch.setattr(aec_tune.subprocess, "Popen", popen)
 
     assert aec_tune._capture_simultaneous(1.0, ref_wav, mic_wav, "hw:Mic", 2)
 
+    # ONE child now — the reference is a socket, not a second arecord.
+    assert popen.call_count == 1
+    argv = popen.call_args.args[0]
+    assert argv[:4] == ["arecord", "-q", "-D", "hw:Mic"]
     expected_capture_timeout = 1 + 1 + aec_tune.PROCESS_EXIT_GRACE_SEC
-    for proc in (ref_proc, mic_proc):
-        assert proc.wait.call_args_list == [
-            call(timeout=expected_capture_timeout),
-            call(timeout=aec_tune.PROCESS_EXIT_GRACE_SEC),
-        ]
-        proc.terminate.assert_not_called()
-        proc.kill.assert_not_called()
+    assert mic_proc.wait.call_args_list == [
+        call(timeout=expected_capture_timeout),
+        call(timeout=aec_tune.PROCESS_EXIT_GRACE_SEC),
+    ]
+    mic_proc.terminate.assert_not_called()
+    mic_proc.kill.assert_not_called()
+    sock.close.assert_called_once_with()
 
 
-def test_keyboard_interrupt_reaps_both_arecord_children(
+def test_keyboard_interrupt_reaps_the_mic_child_and_closes_the_socket(
     monkeypatch, tmp_path: Path
 ) -> None:
-    ref_proc = MagicMock()
+    sock = _stub_reference_socket(monkeypatch, payload=b"\x00\x00\x00\x00")
     mic_proc = MagicMock()
-    ref_proc.wait.side_effect = [KeyboardInterrupt, 0]
-    ref_proc.poll.return_value = None
+    mic_proc.wait.side_effect = [KeyboardInterrupt, 0]
     mic_proc.poll.return_value = None
-    mic_proc.wait.return_value = 0
-    monkeypatch.setattr(
-        aec_tune.subprocess,
-        "Popen",
-        MagicMock(side_effect=[ref_proc, mic_proc]),
-    )
+    monkeypatch.setattr(aec_tune.subprocess, "Popen", MagicMock(return_value=mic_proc))
 
     with pytest.raises(KeyboardInterrupt):
         aec_tune._capture_simultaneous(
-            1.0,
-            tmp_path / "ref.wav",
-            tmp_path / "mic.wav",
-            "hw:Mic",
-            2,
+            1.0, tmp_path / "ref.wav", tmp_path / "mic.wav", "hw:Mic", 2
         )
 
     mic_proc.terminate.assert_called_once_with()
-    ref_proc.terminate.assert_called_once_with()
-    assert ref_proc.wait.call_count == 2
-    mic_proc.wait.assert_called_once_with(timeout=aec_tune.PROCESS_EXIT_GRACE_SEC)
+    assert mic_proc.wait.call_count == 2
+    sock.close.assert_called_once_with()
 
 
 def test_timed_out_aplay_is_terminated_killed_reaped_and_volume_restored(

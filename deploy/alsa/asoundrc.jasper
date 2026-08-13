@@ -38,11 +38,11 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #   - jasper-fanin reads those per-renderer capture substreams, sums
 #     them sample-wise, and writes the single "summed music" stream to
 #     substream 7.
-#   - CamillaDSP reads that summed stream via `pcm.jasper_capture`, and
-#     jasper-aec-tune opens the same tap for a bounded capture.
-#     `pcm.jasper_ref`, the plug-wrapped alias, has no reader left at
-#     all (U4/P7-1 then P7-3) and is shipped only until P9-B deletes
-#     these definitions; AEC consumes outputd's speaker monitor.
+#   - CamillaDSP reads that summed stream via `pcm.jasper_capture` and
+#     is its only reader. `pcm.jasper_ref`, the plug-wrapped alias, has
+#     no reader left at all (U4/P7-1 then P7-3) and is shipped only
+#     until P9-B deletes these definitions; everything AEC — the bridge
+#     and jasper-aec-tune alike — consumes outputd's speaker monitor.
 #   - In the outputd topology, CamillaDSP writes post-DSP content to
 #     `outputd_content_playback`, and jasper-outputd is the only reader
 #     of `outputd_content_capture` and the only normal writer to
@@ -101,13 +101,14 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 # preserves the good part of that work (multi-renderer safety) without
 # a shared userspace dmix write lock in front of the renderer path.
 #
-# The `pcm.jasper_capture` dsnoop tap below lets CamillaDSP and
-# jasper-aec-tune share the summed capture side as multiple readers.
-# dsnoop is the multi-reader-safe ALSA primitive (the dual of dmix on
-# the playback side). The dsnoop slave is configured for 48 kHz S16_LE
-# stereo — the shape both readers target. (The AEC bridge was the
-# original second reader; since U4/P7-1 it takes outputd's UDP speaker
-# monitor and opens nothing here.)
+# The `pcm.jasper_capture` dsnoop tap below is CamillaDSP's capture
+# side of the summed stream. dsnoop is the multi-reader-safe ALSA
+# primitive (the dual of dmix on the playback side); it stays because
+# a raw `hw:` open would deny the slave to anything else. The dsnoop
+# slave is configured for 48 kHz S16_LE stereo — the shape CamillaDSP
+# targets. Both former second readers are gone and both took the same
+# exit: the AEC bridge at U4/P7-1 and jasper-aec-tune at U4/P7-2, each
+# onto outputd's UDP speaker monitor.
 #
 # RATE LOCK: snd-aloop's parameters are set per substream pair, not for
 # the whole card. Each renderer writes through a `plug:` wrapper to its
@@ -115,12 +116,11 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 # S16_LE and publishes the summed output at the same shape. A renderer's
 # native rate cannot lock another renderer or the AEC/Camilla reference.
 #
-# Who opens this tap — two live readers, plus one alias nobody opens:
+# Who opens this tap — one live reader, plus one alias nobody opens:
 #   - CamillaDSP opens `plug:jasper_capture` (note the `plug:`) in the
 #     outputd config. plug keeps the consumer tolerant of
 #     operator mistakes, but the intended fan-in output shape is fixed
 #     at 48 kHz S16_LE.
-#   - jasper-aec-tune opens `jasper_capture` for a bounded capture.
 #   - `jasper_ref` (defined below), the plug-wrapped alias, is opened by
 #     nothing: U4/P7-1 retired the AEC bridge's ALSA fallback and P7-3
 #     retired the timing probe's `--jasper-capture-pcm`, which were its
@@ -133,9 +133,9 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 # one ticket's worth of deletion ordering, not for a consumer.
 #
 # We never want camilla to read a raw `hw:Loopback,1,N` capture
-# directly — that would deny dsnoop the slave, and the tap's other
-# reader (today jasper-aec-tune) would fail to open with `unable to
-# open slave`. In particular,
+# directly — that would deny dsnoop the slave, so any future second
+# reader (and an operator's ad-hoc `arecord -D jasper_capture`) would
+# fail with `unable to open slave`. In particular,
 # `hw:Loopback,1,0` is now a private fan-in input lane; the summed
 # music reference is `pcm.jasper_capture` on substream 7.
 
@@ -154,7 +154,7 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #       CamillaDSP; distributed-active Slice 3). Mutually exclusive by hardware
 #       mode — an active follower's outputd is Composite (lane 5), never opens
 #       lane 6; snd_aloop caps at 8 pairs so no dedicated extra pair exists.
-#   7 — fan-in daemon's summed output → CamillaDSP / pre-DSP diagnostics
+#   7 — fan-in daemon's summed output → CamillaDSP (its only reader)
 #
 # Each alias is a `plug:` wrapper so the renderer's native rate/format
 # gets converted to the substream's 48 kHz S16_LE via the configured
@@ -325,7 +325,7 @@ pcm.jasper_capture {
 # only because P9-B, not P7, deletes the snd-aloop PCM definitions —
 # so this block is shipped, unread, and on its way out. Do not attach a
 # new reader to it; a live consumer of the pre-DSP sum reads
-# `jasper_capture` directly, as CamillaDSP and jasper-aec-tune do.
+# `jasper_capture` directly, as CamillaDSP does.
 #
 # What `plug` bought while it had readers, kept here so the deletion PR
 # does not also relitigate the wrapper: jasper_capture's dsnoop slave is

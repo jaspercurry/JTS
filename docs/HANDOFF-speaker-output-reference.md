@@ -1669,7 +1669,8 @@ datum: how much assistant audio was actually heard.
    bridge kept alongside it has since been retired, and so has the
    timing probe that briefly inherited the alias (U4/P7-3), so nothing
    opens `pcm.jasper_ref` at all; the underlying `pcm.jasper_capture`
-   tap survives for CamillaDSP and `jasper-aec-tune`.
+   tap survives for CamillaDSP alone, `jasper-aec-tune` having moved
+   onto the same monitor at U4/P7-2.
 5. **Enable robust barge-in.** Wire the local TTS flush and final
    playout-ledger acknowledgement to provider truncation/cancel logic,
    capture barge-in telemetry, and use the "volume down while assistant

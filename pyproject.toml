@@ -86,11 +86,13 @@ full = [
     # vendor-control interface for boot-time profile writes and diagnostics.
     "pyusb>=1.2",
     "libusb_package>=1.0",
-    # ALSA-native PCM access for jasper-aec-bridge and jasper-usbmic — needed because
-    # PortAudio (sounddevice's backend) only enumerates hw: devices,
-    # not custom asoundrc PCMs like `jasper_capture` (the dsnoop tap
-    # we capture the AEC reference from), while the USB-mic relay needs
-    # nonblocking period writes and explicit gadget-ring occupancy control.
+    # ALSA-native PCM access for jasper-usbmic and the AEC probe scripts —
+    # needed because the USB-mic relay wants nonblocking period writes and
+    # explicit gadget-ring occupancy control, and the probes capture the XVF
+    # mic directly. NOT for an AEC reference: every reference consumer reads
+    # jasper-outputd's UDP speaker monitor now (the bridge since U4/P7-1,
+    # jasper-aec-tune since U4/P7-2), so nothing opens a custom asoundrc PCM
+    # for it any more.
     "pyalsaaudio>=0.11; sys_platform == 'linux'",
     # Google integration (Calendar + Gmail voice tools). google-auth and
     # google-auth-oauthlib drive the per-account OAuth + refresh flow;

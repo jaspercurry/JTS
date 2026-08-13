@@ -166,9 +166,9 @@ jasper-fanin (the new Rust daemon):
 
 The "summed music" substream:
   CamillaDSP captures  ← pcm.jasper_capture → dsnoop on hw:Loopback,1,7
-  jasper-aec-tune      ← pcm.jasper_capture → same dsnoop, bounded capture
   (no reader)          ← pcm.jasper_ref     → plug alias, unread since U4/P7-3
-  Production AEC ref   ← outputd UDP speaker monitor after CamillaDSP/outputd
+  All AEC reference    ← outputd UDP speaker monitor after CamillaDSP/outputd
+    (bridge, U4/P7-1; jasper-aec-tune, U4/P7-2)
 
 CamillaDSP → outputd_content_playback → jasper-outputd → Apple USB-C dongle
 ```

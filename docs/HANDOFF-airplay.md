@@ -588,9 +588,12 @@ The 2026-05-14 investigation isolated this from the shairport layer:
   immediately after restart, then steady-state shairport events 0 and
   Camilla events 0.
 
-Interpretation: dsnoop itself is still the right architecture because it
-lets CamillaDSP and the optional AEC bridge share the music reference.
-The missing piece was playback-buffer margin, not removing dsnoop.
+Interpretation: dsnoop itself is still the right architecture — it keeps
+the slave available rather than letting one reader claim it exclusively.
+(At the time it was shared with the optional AEC bridge; since U4/P7-1 and
+P7-2 every AEC reference comes from outputd's speaker monitor and
+CamillaDSP is the tap's only reader.) The missing piece was
+playback-buffer margin, not removing dsnoop.
 
 Latency implication: any `target_level > chunksize` adds a fixed
 downstream delay of `(target_level - chunksize)` samples. At CamillaDSP's
@@ -648,8 +651,8 @@ Required places:
   offset
 
 Do **not** ship direct `plughw:Loopback,1,0` as the permanent fix. It is
-a useful isolation test, but it prevents the AEC bridge from opening the
-`pcm.jasper_capture` dsnoop slave later.
+a useful isolation test, but a raw open claims the slave exclusively and
+denies it to any other reader of the `pcm.jasper_capture` dsnoop.
 
 ### Verify the fix
 After the initial restart/fill, a 2-5 minute scan should show zero
@@ -1308,10 +1311,10 @@ TPA3255 class-D amp + speakers
 Other renderers (librespot, bluealsa-aplay, USB-in) write to their own
 private fan-in lanes. `jasper-fanin` is the only renderer summing point
 and publishes the combined music stream on substream 7. `pcm.jasper_capture`
-is a dsnoop reader on `hw:Loopback,1,7`; it lets multiple readers
-(CamillaDSP and jasper-aec-tune) safely tap the same summed music
-stream. The AEC bridge was the original second reader; since U4/P7-1
-its only reference is outputd's UDP speaker monitor. The summing point for music + TTS is downstream at
+is a dsnoop reader on `hw:Loopback,1,7`, and CamillaDSP is its only
+consumer. Both former second readers moved to outputd's UDP speaker
+monitor — the AEC bridge at U4/P7-1 and jasper-aec-tune at U4/P7-2.
+The summing point for music + TTS is downstream at
 `jasper-outputd`, which owns direct DAC playback.
 
 The final-output card is detected at install time in `install.sh`.
@@ -1734,7 +1737,7 @@ So future operators don't re-walk the same paths.
 | Stop `jasper-aec-bridge` | **No effect**. AEC bridge is not involved. |
 | `resync_threshold_in_seconds = 0.2` | **THIS is the fix.** Eliminated all Pattern B events. PR #83. |
 | Active correction profile still had `AsyncSinc` | **Real regression path.** `/etc/camilladsp/outputd-cutover.yml` can be clean while `/var/lib/camilladsp/configs/correction_*.yml` remains active and stale. Fix generator and regenerate/reset active profile. |
-| Direct `plughw:Loopback,1,0` instead of `plug:jasper_capture` | Clean in the 2026-05-14 isolation test, proving shairport was not the tear source. **Not shippable** because it breaks AEC bridge sharing. |
+| Direct `plughw:Loopback,1,0` instead of `plug:jasper_capture` | Clean in the 2026-05-14 isolation test, proving shairport was not the tear source. **Not shippable** because it breaks AEC bridge sharing. *(Era note: the bridge stopped reading this tap at U4/P7-1 — the verdict stands on dsnoop slave exclusivity generally, not on that one reader.)* |
 | `target_level: 4096` with `plug:jasper_capture` | **Fix for Pattern A2.** Preserves dsnoop/AEC-compatible topology and eliminated steady-state Camilla underruns in the watch window. |
 | Derived `audio_backend_latency_offset_in_seconds` | **Required companion for video/multi-room sync.** Does not affect underrun margin; exposes the fixed CamillaDSP buffer delay to shairport's AirPlay timing model without duplicating target-level constants. |
 | Folding only the renderer-side dmix into the offset (Tier 1A as first shipped 2026-05-25) | **Did not reduce drops.** Investigated, expected drops to fall; rate stayed at ~5/min. Latency offset is still load-bearing for video/multi-room sync — keep — but it does not fix the drop class we were chasing. |

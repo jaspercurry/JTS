@@ -1622,7 +1622,7 @@ topology XMOS designed the chip for.
 > a ref→air *delay* that wanders over time past the chip's fixed bulk
 > delay (0–500 ms) + 192 ms tail. Only measurement settles it. Software
 > AEC3 (the fallback for unvalidated DACs) sidesteps the whole question — its
-> reference is the digital `pcm.jasper_capture` tap and AEC3 handles
+> reference is jasper-outputd's digital speaker monitor and AEC3 handles
 > render/capture clock mismatch in software; a DAC8x on AEC3 is a
 > routing + re-tune at low/negligible risk, **recommended until that
 > DAC passes the chip-AEC validation gate**.
@@ -2630,14 +2630,19 @@ PLAN.md's tuning roadmap.
 
 Production AEC consumes outputd's final speaker monitor, after CamillaDSP
 processing and ducking, and has no other source. `jasper_capture` remains a
-diagnostics-and-CamillaDSP tap on the renderer→Camilla loopback *before*
-CamillaDSP; its `pcm.jasper_ref` alias has no reader at all since U4/P7-3.
-The bridge can no longer be pointed at either. Do
-not infer speaker amplitude or final reference timing from that legacy tap.
-`jasper-aec-tune` deliberately captures it only to estimate the host-to-XVF
-bulk delay; in active mode its noise enters through
-`correction_substream`, so the stimulus is present in that tap while
-CamillaDSP `main_volume` still governs the audible output.
+CamillaDSP-only tap on the renderer→Camilla loopback *before* CamillaDSP; its
+`pcm.jasper_ref` alias has no reader at all since U4/P7-3. The bridge can no
+longer be pointed at either. Do not infer speaker amplitude or final reference
+timing from that legacy tap.
+
+`jasper-aec-tune` does not read it either as of U4/P7-2: its passive reference
+leg takes the same outputd speaker monitor the bridge does, which is also where
+outputd publishes the chip's own USB-IN reference from one shared narrowed
+period. Numbers printed before P7-2 came from the pre-CamillaDSP tap and are
+not comparable — re-run rather than compare. In active mode the tuner's noise
+still enters through the correction lane, upstream of CamillaDSP, so
+`main_volume` continues to govern the audible output while the stimulus reaches
+the reference by the ordinary post-DSP path.
 
 ### Bridge is Python (RAM-heavy)
 
@@ -2997,10 +3002,12 @@ top of this section.)
    detection rate ≥ 80% at 75 dB SPL music with current bridge
    config, no further AEC work needed. ~½ day.
 2. **Drift / reference-tap diagnosis** (per the Caveats section
-   above). ERLE decay over 10 min indicates clock-domain drift; the
-   `jasper_capture` tap is PRE-CamillaDSP while the speaker is POST,
-   so the clean divergence-fix is moving the AEC reference consumer to
-   outputd's speaker reference fanout. ~1-2 days each.
+   above). ERLE decay over 10 min indicates clock-domain drift.
+   **The reference-tap half is DONE — no longer a costed option.**
+   Every AEC reference consumer now reads outputd's speaker monitor:
+   the bridge at U4/P7-1 and `jasper-aec-tune` at U4/P7-2, so nothing
+   takes a PRE-CamillaDSP reference any more. Only the drift
+   measurement itself remains open here.
 3. **Vendor v2.1 + custom `EchoCanceller3Config`** (per "Clean
    path" above). ~1-3 days. **DONE 2026-05-22 night (offline laptop
    spike); BEST_A config identified.** The cross-reference research's

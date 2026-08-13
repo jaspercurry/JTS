@@ -2,20 +2,26 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The snd-aloop program lane's width is ONE fact with four declarers (U2, #2223).
+"""The snd-aloop program lane's width is ONE fact with three declarers (U2, #2223).
 
 The lane: ``jasper-fanin`` writes its summed program to ``hw:Loopback,0,7`` and
 ``pcm.jasper_capture`` dsnoops ``hw:Loopback,1,7``. On a ``loopback``-coupled
 box that lane IS the program path into CamillaDSP; on a ``shm_ring`` box the
-same write is the deliberately lossy aloop MIRROR that keeps the AEC-fallback
-and diagnostic taps alive (``Mixer::new``'s ``open_music_output``).
+same write is the deliberately lossy aloop MIRROR that keeps the surviving
+dsnoop consumer alive (``Mixer::new``'s ``open_music_output``).
 
-**It is narrow, and four separate places say so without any of them knowing
+**It is narrow, and three separate places say so without any of them knowing
 about the others.** Before this file, ``mixer::FORMAT`` — the writer, and the
-one that decides what the other three must say — had NO test anywhere in the
+one that decides what the other two must say — had NO test anywhere in the
 tree, Rust or Python. This pins the set together so the lane's width cannot be
 half-moved: a widening has to move every declarer in the same commit or fail
 here with the list of what it missed.
+
+**There were four, and U4/P7-2 retired the fourth.** ``jasper/cli/aec_tune.py``
+used to open the dsnoop RAW to record its AEC reference, which made it a
+declarer by accident — a raw open cannot absorb a format move. It reads
+jasper-outputd's speaker-monitor UDP feed now, so it declares nothing about
+this lane, and the guard below keeps it that way rather than merely noting it.
 
 **Narrow here is a DECLARATION, not a driver limit**, and that distinction is
 load-bearing enough to be a test rather than a comment. An snd-aloop substream
@@ -39,16 +45,17 @@ Why the campaign has not widened it (U2 PR-3): the box-level program-width
 capability is the ring's — ``JASPER_FANIN_RING_WIRE_FORMAT`` plus the
 ``shm_ring`` coupling, resolved by ``jasper.fanin_coupling.resolve_ring_wire``
 and read by every declaring end. A second width mechanism on this lane would
-have to move the realtime pacer's own write, teach the asound.conf render path
-a per-box format it does not carry today, and fix
-``jasper/cli/aec_tune.py``'s RAW dsnoop open — dsnoop does not convert, so that
-tool breaks the moment the slave format moves under it. Ownership of the hop
-sits with P7 (re-point the dsnoop consumers, drop the mirror) and P9 (remove
+have to move the realtime pacer's own write and teach the asound.conf render
+path a per-box format it does not carry today. It no longer has to fix a raw
+dsnoop open: ``jasper/cli/aec_tune.py`` was the one reader that could not
+absorb a format move, and P7-2 moved it off the tap. Ownership of the hop sits
+with P7 (re-point the dsnoop consumers, drop the mirror) and P9 (remove
 snd-aloop), not with U2.
 """
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -84,7 +91,7 @@ def _pcm_block(text: str, name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# The four declarers.
+# The three declarers, and the guard that keeps the retired fourth retired.
 # ---------------------------------------------------------------------------
 
 
@@ -93,8 +100,8 @@ def test_the_writer_declares_the_lane_narrow():
 
     This constant configures the `hw:Loopback,0,7` open. It had no test before
     this one, which meant the lane's width could be changed in the daemon with
-    the whole suite still green while the dsnoop, the doctor, and the raw
-    diagnostic reader all still said S16.
+    the whole suite still green while the dsnoop and the doctor both still said
+    S16.
     """
     text = FANIN_MIXER_RS.read_text()
     assert (
@@ -103,13 +110,12 @@ def test_the_writer_declares_the_lane_narrow():
         "rust/jasper-fanin/src/mixer.rs must declare the aloop program lane's "
         f"width as Format::{ALOOP_PROGRAM_LANE_FORMAT_RUST}. If this lane is "
         "being widened, every declarer in tests/test_aloop_program_lane_width.py "
-        "moves in the same commit — including jasper/cli/aec_tune.py, whose RAW "
-        "dsnoop open does not convert."
+        "moves in the same commit."
     )
 
 
 def test_the_dsnoop_reader_declares_the_same_width():
-    """`pcm.jasper_capture`'s slave — what CamillaDSP and the AEC taps share.
+    """`pcm.jasper_capture`'s slave — CamillaDSP's capture side of the lane.
 
     dsnoop is a direct-access plugin: unlike `plug:`, it does NOT convert, so
     this literal must equal what the writer above opens or the lane fails to
@@ -128,11 +134,11 @@ def test_the_dsnoop_reader_declares_the_same_width():
 def _slice_between(text: str, start: str, end: str) -> str:
     """The region of `text` from `start` up to the next `end` after it.
 
-    SCOPED ON PURPOSE. Both files below name this format TWICE — once for a
-    lane this contract does not own (the renderer substreams in the doctor, the
-    mic capture in aec_tune) and once for the dsnoop. A bare substring
-    assertion passes while the site that matters moves, which is the
-    half-guarded shape that reads as covered and guards nothing.
+    SCOPED ON PURPOSE. The doctor names this format TWICE — once for a lane
+    this contract does not own (the renderer substreams) and once for the
+    dsnoop. A bare substring assertion passes while the site that matters
+    moves, which is the half-guarded shape that reads as covered and guards
+    nothing.
     """
     begin = text.index(start)
     tail = text[begin + len(start) :]
@@ -162,25 +168,57 @@ def test_the_doctor_pins_the_same_width_on_the_live_box():
     )
 
 
-def test_the_raw_dsnoop_diagnostic_reader_declares_the_same_width():
-    """`aec_tune` opens the dsnoop RAW (no `plug:`), so it cannot absorb a move.
+def _docstring_node_ids(tree: ast.AST) -> set[int]:
+    """Ids of every node that is a docstring rather than a value."""
+    ids = set()
+    for node in ast.walk(tree):
+        if not isinstance(
+            node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+        ):
+            continue
+        body = getattr(node, "body", None)
+        if (
+            body
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)
+        ):
+            ids.add(id(body[0].value))
+    return ids
 
-    The only other in-tree consumer, CamillaDSP, reaches this lane through
-    `plug:jasper_capture` and is format-tolerant by construction. (The
-    `jasper_ref` plug alias would be too, but nothing has opened it since
-    U4/P7-3.) This one is the exception, and it is the concrete cost of
-    widening the lane.
+
+def test_the_raw_dsnoop_diagnostic_reader_is_retired():
+    """The fourth declarer is gone, and this is what keeps it gone (U4/P7-2).
+
+    `aec_tune` used to open the dsnoop RAW (no `plug:`), so it could not absorb
+    a format move — it was the concrete cost of widening this lane. It reads
+    jasper-outputd's speaker-monitor UDP feed now. The only in-tree consumer
+    left, CamillaDSP, reaches the lane through `plug:jasper_capture` and is
+    format-tolerant by construction. (The `jasper_ref` plug alias would be too,
+    but nothing has opened it since U4/P7-3.)
+
+    Asserted as an ABSENCE over *values* only, docstrings excluded, mirroring
+    P7-1's guard in `tests/test_aec_ref_source_retirement.py`: the tool's own
+    prose names the retired PCM to explain the retirement, and must neither
+    satisfy nor trip the guard against it. A grep would do both. A re-point
+    back onto the tap fails here with the reason, not silently at the next
+    widening.
     """
-    text = AEC_TUNE.read_text()
-    assert '"jasper_capture",' in text, "aec_tune must still open the raw dsnoop"
-    # The argv list of the capture that names the raw dsnoop, only — the mic
-    # capture a few lines below asks for the same format for its own reasons.
-    argv = _slice_between(text, '"jasper_capture",', "]")
-    assert '"-f",' in argv, "the raw dsnoop capture must ask for an explicit format"
-    assert f'"{ALOOP_PROGRAM_LANE_FORMAT}",' in argv, (
-        "jasper/cli/aec_tune.py opens the RAW dsnoop and asks arecord for an "
-        "explicit format; dsnoop does not convert, so this must equal the "
-        "slave format"
+    tree = ast.parse(AEC_TUNE.read_text())
+    docstrings = _docstring_node_ids(tree)
+    offenders = sorted(
+        f"{AEC_TUNE.name}:{node.lineno}: {node.value!r}"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and ("jasper_capture" in node.value or "jasper_ref" in node.value)
+        and id(node) not in docstrings
+    )
+    assert not offenders, (
+        "jasper/cli/aec_tune.py must not name the aloop dsnoop tap — it moved "
+        "to jasper-outputd's UDP speaker monitor in U4/P7-2, and re-opening "
+        "the raw tap would make it a width declarer again:\n"
+        + "\n".join(offenders)
     )
 
 

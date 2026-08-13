@@ -15,15 +15,14 @@ and wake-word fires on the speaker's own playback.
 Two modes:
 
   PASSIVE (default, safe). Records both the reference signal
-  (pcm.jasper_capture, the pre-Camilla fan-in diagnostic tap)
-  and the XVF mic for ~5 seconds, then cross-correlates. NO test
-  signal injected — uses whatever you're already playing. Requires
-  music or other audio to be audible during the test. Volume is
-  not modified.
+  (jasper-outputd's final speaker-monitor UDP datagrams) and the XVF
+  mic for ~5 seconds, then cross-correlates. NO test signal injected
+  — uses whatever you're already playing. Requires music or other
+  audio to be audible during the test. Volume is not modified.
 
   ACTIVE (`--inject-noise`). Plays a brief, low-level noise burst
-  through pcm.correction_substream, the canonical pre-Camilla fan-in
-  lane. Volume is RELATIVELY ducked from the current
+  through the correction lane resolved by `correction_play_device()`.
+  Volume is RELATIVELY ducked from the current
   level by `--duck-by` dB (default 20 dB quieter); the code refuses
   to ever raise the volume above the current setting. Use only
   when nothing is playing.
@@ -34,14 +33,67 @@ Procedure (passive mode):
      audio is actually flowing.
   2. Stop whichever managed services currently own or consume the XVF
      capture endpoint (jasper-voice and, on supported profiles,
-     jasper-aec-bridge) for the duration.
+     jasper-aec-bridge) for the duration. Stopping the bridge is also
+     what frees the reference monitor port this tool then binds.
   3. For 5 seconds, capture from BOTH:
-        - pcm.jasper_capture (the pre-Camilla fan-in reference)
+        - jasper-outputd's final speaker-reference UDP monitor
+          (see "Where the reference is tapped" below)
         - the detected supported XVF card, device 0 (the processed
           mic — what the chip actually hears from the room)
   4. Cross-correlate (200-3400 Hz bandpass to focus on speech-band
      echo). Lag in samples = AUDIO_MGR_SYS_DELAY.
   5. Restore every service that was active and print the diagnostic candidate.
+
+Where the reference is tapped, and what the number is comparable to
+-------------------------------------------------------------------
+
+The reference leg reads jasper-outputd's final speaker monitor —
+headerless little-endian interleaved stereo int16 datagrams, one
+playout period each, at outputd's fixed 48 kHz core rate. The target
+is `JASPER_OUTPUTD_REFERENCE_UDP_TARGET` (shipped default
+`127.0.0.1:9891`), which is also the address `jasper-aec-bridge`
+binds in production, so this tool and production AEC see the exact
+same reference stream.
+
+That tap point is deliberate. `AUDIO_MGR_SYS_DELAY` is defined
+against what the chip receives on its USB-IN reference, and outputd
+publishes the UDP monitor and the chip-reference writer from ONE
+narrowed period — pinned Rust-side by
+`both_reference_taps_consume_one_narrowing_of_the_same_period`. So
+the reference sampled here is co-located, at outputd's publish point,
+with the chip's own reference.
+
+Before U4/P7-2 this leg read `pcm.jasper_capture`, the aloop dsnoop
+tap on jasper-fanin's summed output — a point UPSTREAM of CamillaDSP
+and of outputd. Numbers printed by that older tool are NOT comparable
+with numbers printed by this one: the old tap observed the same audio
+earlier, so its lag carried an extra CamillaDSP-plus-outputd offset
+that was never part of the quantity being estimated. Treat any
+recorded pre-P7-2 reading as archaeology and re-run rather than
+compare.
+
+No persisted artifact is affected. The alignment artifact that gates
+chip-AEC arming (`/var/lib/jasper/chip-aec-alignment.json`) is written
+ONLY by `jasper-aec-commission`, which measures on its own capture path
+(the mic card direct, against a known commissioning stimulus and
+outputd's own STATUS reference queue) and never consults this tool's
+measurement — the two share only two CamillaDSP volume helpers, imported
+the other way. A commission measures fresh every time it runs; nothing
+here changes what an existing artifact means or how `jasper-aec-init`
+verifies it.
+
+Honest limit, unchanged by P7-2: the two legs are started
+independently, so whatever start skew exists between the socket and
+the mic capture is added straight onto the reported lag. And the UDP
+monitor is outputd's final ELECTRICAL reference, not the XVF USB-IN
+chip-reference PCM — the chip leg diverges downstream of the shared
+period (16 kHz downsample, then USB transport), so this measurement
+does not prove chip-ref writer or chip USB-IN timing. And the wire
+carries no sequence number, so a dropped or late datagram is an
+undetectable splice in the reference — it surfaces only as lowered
+correlation confidence, alongside the received-duration line this tool
+logs after the capture. All of these are why this stays a diagnostic
+and why `--apply` is volatile.
 
 The command is diagnostic-only by default. `--apply` performs one
 explicit, volatile write after checking confidence, the firmware's
@@ -51,8 +103,10 @@ that value from the profile-owned `JASPER_AEC_*_CHIP_SYS_DELAY` setting;
 this tool never persists configuration and never calls the XVF brick-risk
 SAVE_CONFIGURATION or REBOOT commands.
 
-Run from the Pi after `jasper-camilla` and `jasper-aec-bridge` are
-both up. Idempotent — re-run any time room layout changes.
+Run from the Pi with `jasper-outputd` up — it is the reference
+producer, and this tool stops `jasper-aec-bridge` for the duration
+rather than needing it running. Idempotent — re-run any time room
+layout changes.
 
 Usage:
     sudo /opt/jasper/.venv/bin/jasper-aec-tune
@@ -66,10 +120,13 @@ import argparse
 from contextlib import contextmanager
 import logging
 import math
+import os
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import wave
 from collections.abc import Iterator
@@ -79,12 +136,26 @@ from types import FrameType
 import numpy as np
 
 from jasper.audio_measurement.correction_lane import popen_correction_play
+from jasper.env_load import merged_env_files
 from jasper.mics import xvf3800
 
 logger = logging.getLogger("jasper.aec_tune")
 
 TEST_DURATION_SEC = 5
 SAMPLE_RATE = 16000  # XVF internal AEC rate
+# jasper-outputd's core is fixed at 48 kHz stereo (`rust/jasper-outputd`
+# `types.rs`: SAMPLE_RATE/CHANNELS, and `Config::from_env` refuses any other
+# rate), and it publishes the reference as one narrowed S16 period per
+# datagram. Both halves of this tool's reference contract read from here.
+REFERENCE_RATE = 48000
+REFERENCE_CHANNELS = 2
+# Where jasper-outputd publishes that monitor. The reconciler is the single
+# writer of the key and leaves it EMPTY on its parked branches, which is the
+# difference between "outputd is not publishing" and "nobody was playing".
+REFERENCE_UDP_TARGET_ENV = "JASPER_OUTPUTD_REFERENCE_UDP_TARGET"
+DEFAULT_REFERENCE_UDP_TARGET = "127.0.0.1:9891"
+REFERENCE_RECV_BYTES = 65536
+REFERENCE_POLL_SEC = 0.5
 NOISE_AMPLITUDE_FS = 0.02  # 2% FS = ~ -34 dBFS — quiet even before ducking
 MIN_APPLY_CONFIDENCE = 0.001
 MIN_SYS_DELAY = -64
@@ -406,6 +477,103 @@ def _wait_for_audio_process(
         return False
 
 
+def _resolve_reference_udp_target() -> tuple[str, int]:
+    """Resolve where jasper-outputd publishes its final speaker reference.
+
+    An explicit shell value wins (CLI-style override), then the merged env
+    files this box actually runs on — `jasper-aec-reconcile` writes the key
+    there, so reading `os.environ` alone would make an unarmed box look armed
+    and turn a precise diagnosis into a silent five-second wait.
+    """
+    raw = os.environ.get(REFERENCE_UDP_TARGET_ENV)
+    if raw is None:
+        raw = merged_env_files().get(REFERENCE_UDP_TARGET_ENV)
+    if raw is None:
+        raw = DEFAULT_REFERENCE_UDP_TARGET
+    raw = raw.strip()
+    if not raw:
+        raise TuneError(
+            f"{REFERENCE_UDP_TARGET_ENV} is empty, so jasper-outputd is not "
+            "publishing a speaker reference and there is nothing to correlate "
+            "against. Run `sudo systemctl start jasper-aec-reconcile` and "
+            "check that the AEC profile is not parked."
+        )
+    host, separator, port_text = raw.rpartition(":")
+    if not separator or not host:
+        raise TuneError(f"{REFERENCE_UDP_TARGET_ENV}={raw!r} is not HOST:PORT")
+    try:
+        port = int(port_text)
+    except ValueError as exc:
+        raise TuneError(
+            f"{REFERENCE_UDP_TARGET_ENV}={raw!r} has a non-numeric port"
+        ) from exc
+    if not 1 <= port <= 65535:
+        raise TuneError(f"{REFERENCE_UDP_TARGET_ENV}={raw!r} port is out of range")
+    return host, port
+
+
+def _open_reference_socket(host: str, port: int) -> socket.socket:
+    """Bind outputd's reference monitor, failing with the actionable reason."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.bind((host, port))
+    except OSError as exc:
+        sock.close()
+        raise TuneError(
+            f"cannot bind jasper-outputd's reference monitor at {host}:{port}: "
+            f"{exc}. jasper-aec-bridge owns this port while it runs — this tool "
+            "stops the bridge first, so a bind failure here means something "
+            "else is holding the port."
+        ) from exc
+    sock.settimeout(REFERENCE_POLL_SEC)
+    return sock
+
+
+def _drain_reference_socket(
+    sock: socket.socket,
+    deadline: float,
+    out: list[bytes],
+    stop: threading.Event,
+) -> None:
+    """Collect reference datagrams until `deadline` or `stop`. Never raises.
+
+    Runs on its own thread while the mic `arecord` child records, started
+    first so the reference is already collecting when the mic opens.
+
+    `stop` is how the caller ends this early — on Ctrl-C, or when the mic child
+    never started — instead of making a foreground operator CLI sit out the
+    whole capture window before it can report. Signalling rather than closing
+    the socket under a blocked `recvfrom` is the AEC bridge's own idiom
+    (`_shutdown.is_set()`), and it avoids reading a reused fd: the very next
+    thing this tool opens is the reference WAV. `OSError` still ends the loop
+    quietly, so a close from the caller remains safe.
+    """
+    while not stop.is_set() and time.monotonic() < deadline:
+        try:
+            data, _addr = sock.recvfrom(REFERENCE_RECV_BYTES)
+        except socket.timeout:
+            continue
+        except OSError:
+            return
+        if data:
+            out.append(data)
+
+
+def _write_reference_wav(ref_wav: Path, chunks: list[bytes]) -> None:
+    """Render collected datagrams as the 48 kHz stereo S16 WAV analysis reads.
+
+    The wire is headerless little-endian interleaved stereo int16, so the
+    payloads concatenate directly. Trim to a whole number of stereo frames
+    first: a short datagram would otherwise raise out of `frombuffer` or
+    `reshape` rather than costing one frame.
+    """
+    raw = b"".join(chunks)
+    frame_bytes = REFERENCE_CHANNELS * 2
+    usable = len(raw) - (len(raw) % frame_bytes)
+    samples = np.frombuffer(raw[:usable], dtype="<i2")
+    _write_wav(ref_wav, samples.reshape(-1, REFERENCE_CHANNELS), REFERENCE_RATE)
+
+
 def _capture_simultaneous(
     duration_sec: float,
     ref_wav: Path,
@@ -413,32 +581,39 @@ def _capture_simultaneous(
     mic_device: str,
     mic_channels: int,
 ) -> bool:
-    """Capture both legs, with bounded cleanup for every child-start outcome."""
-    # Capture from pcm.jasper_capture — the dsnoop fan-out on the
-    # renderer→Camilla loopback. Camilla and optional diagnostic readers can
-    # share this tap; production AEC normally consumes outputd's final-speaker
-    # UDP monitor instead. The tuner is one temporary diagnostic reader.
-    ref_proc: subprocess.Popen | None = None
+    """Capture both legs, with bounded cleanup for every child-start outcome.
+
+    The reference comes from jasper-outputd's final speaker-monitor UDP feed —
+    the same stream production AEC consumes — and the mic from a bounded
+    `arecord` child. See the module docstring for why the tap sits there.
+    """
+    host, port = _resolve_reference_udp_target()
+    capture_sec = int(duration_sec) + 1
+    capture_timeout = capture_sec + PROCESS_EXIT_GRACE_SEC
+    ref_chunks: list[bytes] = []
     mic_proc: subprocess.Popen | None = None
-    capture_timeout = int(duration_sec) + 1 + PROCESS_EXIT_GRACE_SEC
+
+    # Bind before the mic starts, so the reference is already collecting when
+    # the mic opens and a port conflict is reported before anything else has
+    # been disturbed. This orders the two starts; it does not align them — see
+    # the module docstring on start skew.
+    sock = _open_reference_socket(host, port)
+    logger.info(
+        "reference: jasper-outputd speaker monitor at %s:%d "
+        "(%d Hz stereo S16, one playout period per datagram)",
+        host,
+        port,
+        REFERENCE_RATE,
+    )
+    stop_reference = threading.Event()
+    ref_thread = threading.Thread(
+        target=_drain_reference_socket,
+        args=(sock, time.monotonic() + capture_sec, ref_chunks, stop_reference),
+        name="aec-tune-reference",
+        daemon=True,
+    )
+    ref_thread.start()
     try:
-        ref_proc = subprocess.Popen(
-            [
-                "arecord",
-                "-q",
-                "-D",
-                "jasper_capture",
-                "-d",
-                str(int(duration_sec) + 1),
-                "-f",
-                "S16_LE",
-                "-r",
-                "48000",
-                "-c",
-                "2",
-                str(ref_wav),
-            ],
-        )
         mic_proc = subprocess.Popen(
             [
                 "arecord",
@@ -446,7 +621,7 @@ def _capture_simultaneous(
                 "-D",
                 mic_device,
                 "-d",
-                str(int(duration_sec) + 1),
+                str(capture_sec),
                 "-f",
                 "S16_LE",
                 "-r",
@@ -456,20 +631,50 @@ def _capture_simultaneous(
                 str(mic_wav),
             ],
         )
-        ref_ok = _wait_for_audio_process(ref_proc, "reference arecord", capture_timeout)
         mic_ok = _wait_for_audio_process(
             mic_proc, "microphone arecord", capture_timeout
         )
-        files_ok = (
-            ref_wav.exists()
-            and ref_wav.stat().st_size > 1024
-            and mic_wav.exists()
-            and mic_wav.stat().st_size > 1024
-        )
-        return ref_ok and mic_ok and files_ok
     finally:
+        # The mic leg is over one way or another, so the reference window is
+        # too: on the normal path the thread has already hit its own deadline,
+        # and on an interrupt or a failed mic start this is what stops it
+        # promptly instead of waiting the window out.
+        stop_reference.set()
         _terminate_and_reap(mic_proc, "microphone arecord")
-        _terminate_and_reap(ref_proc, "reference arecord")
+        ref_thread.join(timeout=capture_timeout)
+        sock.close()
+
+    if not ref_chunks:
+        raise TuneError(
+            f"no reference datagrams arrived on {host}:{port} in {capture_sec}s. "
+            "jasper-outputd publishes this monitor only while it is running "
+            "with a reference target armed — check `systemctl status "
+            "jasper-outputd` and run `sudo systemctl start jasper-aec-reconcile`."
+        )
+    _write_reference_wav(ref_wav, ref_chunks)
+
+    # Name how much of the window actually arrived. A dropped or late datagram
+    # is an invisible splice — the wire carries no sequence number — and shows
+    # up only as lowered correlation confidence. This says whether the
+    # reference was short, so a weak result has a cause instead of a shrug.
+    received_sec = (
+        sum(len(chunk) for chunk in ref_chunks)
+        / (REFERENCE_RATE * REFERENCE_CHANNELS * 2)
+    )
+    logger.info(
+        "reference: received %.2fs of a %ds window in %d datagrams",
+        received_sec,
+        capture_sec,
+        len(ref_chunks),
+    )
+
+    files_ok = (
+        ref_wav.exists()
+        and ref_wav.stat().st_size > 1024
+        and mic_wav.exists()
+        and mic_wav.stat().st_size > 1024
+    )
+    return mic_ok and files_ok
 
 
 def _argument_parser() -> argparse.ArgumentParser:
@@ -530,8 +735,8 @@ def _analyze_capture(
     mic_channel: int,
 ) -> tuple[int, float]:
     ref48_arr, ref_rate, _ref_channels = _read_wav_int16(ref_wav)
-    if ref_rate != 48000:
-        raise TuneError(f"ref captured at {ref_rate} Hz, expected 48000")
+    if ref_rate != REFERENCE_RATE:
+        raise TuneError(f"ref captured at {ref_rate} Hz, expected {REFERENCE_RATE}")
     mic_arr, mic_rate, mic_channels = _read_wav_int16(mic_wav)
     if mic_rate != SAMPLE_RATE:
         raise TuneError(f"mic captured at {mic_rate} Hz, expected {SAMPLE_RATE}")
@@ -546,7 +751,7 @@ def _analyze_capture(
         ref_mono48 = ref48_arr[:, 0].astype(np.float32)
     else:
         ref_mono48 = ref48_arr.astype(np.float32)
-    ref_mono16 = resample_poly(ref_mono48, up=1, down=3)
+    ref_mono16 = resample_poly(ref_mono48, up=1, down=REFERENCE_RATE // SAMPLE_RATE)
 
     ref_rms = float(np.sqrt(np.mean(ref_mono16 * ref_mono16)))
     mic_rms = float(np.sqrt(np.mean(mic_mono * mic_mono)))

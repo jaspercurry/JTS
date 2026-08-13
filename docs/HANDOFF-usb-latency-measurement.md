@@ -518,6 +518,15 @@ they're queued:
   never the pacer, the ring runs without it — feeding the AEC fallback
   dsnoop and aloop diagnostics. Removing it saves zero latency and breaks
   the software-AEC fallback reference path.
+
+  **This entry's premise has since been retired.** The AEC fallback it
+  protects is gone — the bridge's ALSA reference at U4/P7-1, the aloop-tap
+  diagnostics at U4/P7-3, and `jasper-aec-tune` at U4/P7-2 — so no AEC
+  consumer reads this mirror. The deletion is no longer an out-of-scope
+  temptation but planned work, U4/P7-4, tracked in
+  [#2437](https://github.com/jaspercurry/JTS/issues/2437); the latency
+  reasoning above (removing it saves zero latency) still holds and is the
+  only part of this entry that survives.
 - **PipeWire / topology re-architecture** of the AEC or reference path.
   Standing constraint (AGENTS.md: swap the engine, not the topology; full
   rationale in `docs/HANDOFF-aec.md`). Nothing in this review produced
