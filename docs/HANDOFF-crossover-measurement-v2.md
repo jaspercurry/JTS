@@ -376,7 +376,7 @@ journalctl -u jasper-correction-web | grep -E 'event=correction\.session_volume_
 # Apply boundary, and the volume hazard. volume_close_failed is CRITICAL and
 # means the speaker may still be sitting at measurement volume — sweep for it
 # by name, never infer safety from a quiet log.
-journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(applied|volume_close_failed|volume_abandon_failed|volume_open_failed|volume_unresolved)'
+journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(applied|volume_close_failed|volume_abandon_failed|volume_open_failed|volume_recovery_timeout)'
 
 # Why a session refused, and what the speaker actually did with the correction.
 journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(level_frame_refused|level_frame_finding|level_match_refused|prediction_gate|predicted_spec_failed|realized_level_match|delta_probe|delta_probe_rollback|delta_probe_restore)'

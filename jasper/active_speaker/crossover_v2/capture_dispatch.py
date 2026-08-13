@@ -137,9 +137,10 @@ ANCHOR_SCREEN_KINDS = frozenset({
     SCREEN_LOW_ALIGNMENT_CONFIDENCE,
 })
 
-#: Every kind any capture ladder in this package can return.  The flow's
-#: ``SCREEN_KIND_REASONS`` is checked for completeness against THIS set, so a
-#: new rung in either owner cannot ship without a household sentence.
+#: Every kind any capture ladder in this package can return.
+#: :mod:`.vocabulary`'s ``SCREEN_KIND_REASONS`` (which the flow only
+#: re-exports) is checked for completeness against THIS set, so a new rung
+#: in either owner cannot ship without a household sentence.
 CAPTURE_SCREEN_KINDS = SCREEN_KINDS | ANCHOR_SCREEN_KINDS
 
 

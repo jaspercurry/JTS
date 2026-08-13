@@ -26,12 +26,18 @@ the conductor IN PLACE: the spine is
 the flow file, so nothing about the spine forces anything about this module.
 
 What actually holds it here is smaller and true: this module binds the
-package's OWN refusal kinds to household copy.  :data:`SCREEN_KIND_REASONS`
-maps :data:`~.spatial.SCREEN_KINDS` to codes, and its completeness is checked
-against that package-owned set — so the binding sits beside the kinds it
-binds.  The flow then imports this module, which is the legal direction
-(``test_no_domain_module_imports_the_host_or_the_legacy_flow`` forbids only
-the reverse).  Legal and coherent; not forced.
+package's OWN refusal kinds to household copy, and it binds ALL of them.
+:data:`SCREEN_KIND_REASONS` is keyed by
+:data:`~.capture_dispatch.CAPTURE_SCREEN_KINDS` — the union of
+:data:`~.spatial.SCREEN_KINDS` (the walked phases' rungs) and
+:data:`~.capture_dispatch.ANCHOR_SCREEN_KINDS` (the sit-still phases'),
+two disjoint package-owned sets — and covers it exactly, checked in
+``tests/test_crossover_v2_spatial.py`` along with the rule that every code
+it names is in :data:`REASON_REGISTRY`.  So a new rung in EITHER owner
+cannot ship without a household sentence, and the binding sits beside the
+kinds it binds.  The flow then imports this module, which is the legal
+direction (``test_no_domain_module_imports_the_host_or_the_legacy_flow``
+forbids only the reverse).  Legal and coherent; not forced.
 
 **This settles only where the vocabulary *can* live.**  Where it *belongs* is
 deliberately still open: the largest single consumer is
