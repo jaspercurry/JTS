@@ -425,8 +425,8 @@ def verify_integrity_screens(
 # them read (#2291 Phase 5c-ii)
 #
 # Private on purpose, and re-exported from the flow under these exact
-# spellings: the conductor calls them by name today, and the spine that
-# survives it lands in this package. The precedent is ``fc_sweep``'s
+# spellings, because the conductor calls them by those names. The precedent
+# for a private name crossing a module boundary is ``fc_sweep``'s
 # ``_fc_rejection`` / ``_FC_GRID_EPS_HZ``.
 # --------------------------------------------------------------------------- #
 

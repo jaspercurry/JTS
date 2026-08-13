@@ -1568,9 +1568,11 @@ def build_v2_verify_index_phase_map(
 # names and not one of them was edited.
 #
 # **These doors are READ-ONLY for anything the package resolves itself.**
-# Substituting one here binds only while the reader is also in this module —
-# which is true of every reader today, because the spine has not moved yet. Once
-# it does (5c-iii), patch the owning module or inject through the spine's ports.
+# Substituting one here rebinds THIS module's name and nothing else, so it binds
+# only for readers that are themselves in this module. Every reader of these
+# names is, which is why the existing substitutions still work. A reader that
+# lives in the package resolves the owning module directly and would not see the
+# patch: patch that module, or inject through the ports its caller takes.
 # --------------------------------------------------------------------------- #
 
 from jasper.active_speaker.crossover_v2.vocabulary import (
