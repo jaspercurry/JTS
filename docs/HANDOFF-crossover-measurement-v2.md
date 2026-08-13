@@ -19,9 +19,14 @@ through a handful of prompted positions around one mark — then proposes a
 correction, applies it on an explicit tap, and measures again to grade what
 changed.
 
-- **Two tiers, chosen every session** on the `/correction/` wizard.
-  `TIER_FULL` is 16 captures at the shipped defaults; `TIER_EXPRESS` is 7
-  (`TIER_FULL` / `TIER_EXPRESS` / `DEFAULT_TIER`, in
+- **Two tiers, chosen every session** on the `/correction/` wizard. At the
+  shipped defaults `TIER_FULL` is **15 captures — 9 then 6**, and
+  `TIER_EXPRESS` is **10 — the same 9, then 1**. The tiers differ in
+  **stage 2 only**: stage 1 is 9 captures for both. Do not restate those
+  numbers anywhere a plan change cannot reach them —
+  `tier_display_info()` derives them from the plans themselves and is what
+  the household-facing chooser reads (`TIER_FULL` / `TIER_EXPRESS` /
+  `DEFAULT_TIER` / `tier_display_info`, in
   [`crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py)).
   This doc describes Full unless it says otherwise.
 - **It is the only flow.** The legacy per-driver near-field procedure and its
@@ -131,7 +136,7 @@ The class they were named after — `CrossoverV2Conductor` — was dissolved in
 The journey is **two relay sessions** with an untimed household decision
 between them. Both use `crossover_v2:session` / `crossover_v2:verify`.
 
-**Stage 1 — `POST /crossover/v2/session`, 9 captures at Full.**
+**Stage 1 — `POST /correction/crossover/v2/session`, 9 captures — the same 9 on both tiers.**
 
 | index | phase | what it is |
 |---|---|---|
@@ -152,8 +157,9 @@ The set is held open past its capture target until the phone posts
 group and publishes the candidate; until it arrives the final position is
 still retakeable. **Nothing is applied inside this session.**
 
-**Stage 2 — `POST /crossover/v2/verify` with `{"stage": "post_apply"}`,
-6 captures at Full.**
+**Stage 2 — `POST /correction/crossover/v2/verify` with
+`{"stage": "post_apply"}`, 6 captures at Full (1 on Express — this stage
+is the whole difference between the tiers).**
 
 | index | phase | what it is |
 |---|---|---|
@@ -344,12 +350,20 @@ the module, not a second copy here.
 
 **Terminal verdicts are internal reason codes, not screens.** `REASON_REGISTRY`
 in [`crossover_v2/vocabulary.py`](../jasper/active_speaker/crossover_v2/vocabulary.py)
-is the single source of truth: it maps each `REASON_*` code to one of four
-templates (`silent_auto_retry` / `fix_and_retry` / `hard_stop` /
-`session_restart`) plus the two special screens, its owning phase, and its
-retry budget (`retry_budget == 0` ⇒ non-retriable). **Read the registry, not a
-table.** The session decides the code; the envelope renders the copy — one
-copy source, no drift. The retry COUNT is per *position*, not per code.
+is the single source of truth for the copy: it maps each `REASON_*` code to
+one of four templates (`silent_auto_retry` / `fix_and_retry` / `hard_stop` /
+`session_restart`) plus the two special screens, the household sentence, and
+the retry budget (`retry_budget == 0` ⇒ non-retriable). **Read the registry,
+not a table.** The session decides the code; the envelope renders the copy —
+one copy source, no drift. The retry COUNT is per *position*, not per code.
+
+**The registry does NOT carry an owning phase** — `ReasonSpec`'s fields are
+`code` / `template` / `retry_budget` / `banner` / `message` / `next_action` /
+`retry_copy`, and that is the whole record. Which phase a refusal came from
+is on the journal line instead: `event=correction.crossover_v2_result` logs
+`phase=` beside the code. The per-code phase column in the appendix's reason
+table is a historical reading aid written when that mapping was prose — treat
+it as dated, and read `phase=` for the answer about a specific session.
 
 ```sh
 # The phase walk (the /correction/ wizard runs under jasper-correction-web).
@@ -359,13 +373,13 @@ journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(a
 # durable intent could not be written; sweep for it, not just the happy three.
 journalctl -u jasper-correction-web | grep -E 'event=correction\.session_volume_(opened|restored|restore_failed|persist_failed)'
 
-# Apply boundary: the declared level move, and the CRITICAL line when a
-# volume close could not be confirmed (speaker possibly still at measurement
-# volume).
-journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(applied|apply_failure_volume_closed|volume_abandon_failed)'
+# Apply boundary, and the volume hazard. volume_close_failed is CRITICAL and
+# means the speaker may still be sitting at measurement volume — sweep for it
+# by name, never infer safety from a quiet log.
+journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(applied|volume_close_failed|volume_abandon_failed|volume_open_failed|volume_unresolved)'
 
 # Why a session refused, and what the speaker actually did with the correction.
-journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(level_frame_refused|level_frame_finding|level_match_refused|prediction_refused|realized_level_match|delta_probe|delta_probe_rollback|delta_probe_restore)'
+journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(level_frame_refused|level_frame_finding|level_match_refused|prediction_gate|predicted_spec_failed|realized_level_match|delta_probe|delta_probe_rollback|delta_probe_restore)'
 
 # Calibration handoff / uncalibrated warnings.
 journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(calibration_resolve_failed|uncalibrated_capture|default_calibration_hint_failed)'
@@ -2829,12 +2843,12 @@ journalctl -u jasper-correction-web | grep -E 'event=correction\.session_volume_
 # Apply boundary (#1811): the declared level move, the proactive volume close
 # when the auto-apply dies, and the CRITICAL line when that close could not be
 # confirmed (a speaker possibly still at measurement volume — sweep for it):
-journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(applied|apply_failure_volume_closed|volume_abandon_failed)'
+journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(applied|volume_close_failed|volume_abandon_failed)'
 # Calibration handoff / uncalibrated warnings:
 journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(calibration_resolve_failed|uncalibrated_capture|default_calibration_hint_failed)'
 # Accountability + delta probe (PR-L4/L5) — why a session refused, and what
 # the speaker actually did with the correction:
-journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(level_frame_refused|level_frame_finding|level_match_refused|prediction_refused|realized_level_match|delta_probe|delta_probe_rollback|delta_probe_restore)'
+journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(level_frame_refused|level_frame_finding|level_match_refused|prediction_gate|realized_level_match|delta_probe|delta_probe_rollback|delta_probe_restore)'
 ```
 
 `event=correction.crossover_v2_level_frame_finding` is the #1866 banked-and-

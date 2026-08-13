@@ -1963,7 +1963,7 @@ def _tier_action(
         # quoted ONE number of measurements against ONE duration, which stopped
         # being a session the moment stage 1 and stage 2 became separate ones:
         # a household choosing a tier is choosing both, with its own decision in
-        # between, and a chooser that hid the interlude would sell a 16-capture
+        # between, and a chooser that hid the interlude would sell a 15-capture
         # Full as one uninterrupted sitting. Every number here is still derived
         # from the plans themselves (``tier_display_info``), never written down.
         "description": (

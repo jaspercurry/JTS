@@ -28,13 +28,16 @@ time over Phase 5, and what remained was a session owner, so it is named one.
 per-driver distributed transaction with this shape: the Pi compiles one
 excitation program per phase, plays it as one continuous stream, and analyzes
 ``(program, capture) → analysis`` as a pure function. The session owns the
-phase state machine that drives the relay session — 16 captures at the FULL
-tier's shipped defaults (7 on the express tier, ``TIER_EXPRESS``), since the
-spatial cloud replaced the original three:
+phase state machine that drives the relay session. At the shipped defaults a
+FULL-tier commission is 15 captures (9 in stage 1, then 6) and an express one
+is 10 (the same 9, then 1, ``TIER_EXPRESS``) — the tiers differ in stage 2
+only. :func:`tier_display_info` derives both from the plans themselves and is
+what the household-facing chooser reads; do not restate the numbers where a
+plan change cannot reach them. The spatial cloud replaced the original three:
 
-    CHECK → gain solve → MEASURE → the pre-apply position group → fit +
-      candidate → APPLYING (auto) → VERIFY → the post-apply position group
-      → done
+    CHECK → gain solve → MEASURE → the lateral walk → the entry baseline
+      → fit + candidate → [the household reviews, then POSTs the apply]
+      → VERIFY → the post-apply position group → done
 
 **Owner decision (2026-07-27): the fit is the last thing before the apply.**
 The candidate used to be built the moment MEASURE was accepted, which put it
@@ -52,16 +55,14 @@ it had before the move — its ``candidate.json`` does gain an always-empty
 ``exclusion_evidence`` key, which leaves the fingerprint unchanged.
 See :meth:`CrossoverV2Session._measure_verdict`.
 
-**Owner ruling (2026-07-20): no human mid-flow Apply gate.** A hardware
-session proved the prior REVIEW/APPLY human tap a dead end — phone-only
-users cannot bounce to a second browser tab, and "apply this?" is
-unanswerable the moment after measuring (the household has no basis to
-judge). A trusted candidate (all quality gates pass, including
-:data:`ALIGNMENT_CONFIDENCE_TRUST_FLOOR`, promoted here from a review-screen
-nudge to a hard gate) is applied by the session itself; an untrusted one is
-rejected with guidance to re-measure, never a question. See
-[docs/HANDOFF-crossover-measurement-v2.md](../../docs/HANDOFF-crossover-measurement-v2.md)
-gotcha #18.
+**Owner ruling (2026-07-20), SUPERSEDED — kept for archaeology, not as
+behaviour.** It ruled out a human mid-flow Apply gate and had the session
+apply a trusted candidate itself. Two-stage T3 (commit ``61ba33ff1``,
+#1806 / #1906) replaced that: the apply left the session entirely and is now
+the household's explicit POST from the review screen, so nothing here applies
+anything. Read that commit for what replaced it rather than this paragraph.
+What did NOT change is :data:`ALIGNMENT_CONFIDENCE_TRUST_FLOOR`, still a hard
+gate on the candidate rather than a review-screen nudge.
 
 It is deliberately I/O-free: every side effect (playback, analysis, evidence
 publish, apply-gate observation) crosses an INJECTED seam
@@ -10194,7 +10195,7 @@ def session_wall_clock_ceiling_s(capture_plan: Any) -> float:
     """The walked-away volume ceiling for one plan, scaled by its length.
 
     ``session_volume_plan.DEFAULT_WALL_CLOCK_CEILING_S`` (1800 s ≈ 2× the relay
-    TTL) was sized for the 3-entry flow. A 16-capture cloud is a genuinely
+    TTL) was sized for the 3-entry flow. A 15-capture commission is a genuinely
     longer session — the operator walks the mic to a new spot, reads a prompt,
     and taps, once per position — so a fixed 1800 s would force-drain the
     measurement volume mid-cloud and turn a good session into a

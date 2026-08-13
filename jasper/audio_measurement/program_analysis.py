@@ -197,14 +197,15 @@ DISCONTINUITY_RSS_RATIO = 0.25
 # tests/test_measurement_integrity_floor_contracts.py.
 #
 # WHY duplicated rather than imported: NOT the import graph. That module
-# already imports from this one, so this one importing back would be a cycle
-# — but the legal direction is available and unused, so the graph is not what
-# decides it. The reason is the NUMBERS. Both are PROVISIONAL pending W6
-# bench validation and they judge different segment kinds through different
-# gates, so bench work may well settle them at different values; two owners
-# diverge by editing one line where one owner would first have to be
-# re-split. That module's own declaration carries the same rationale — keep
-# the two in step. This module also needs its own "was this sweep even
+# already imports from this one (`capture_dispatch` takes
+# `INTEGRITY_CHECK_SWEEP_HEARD` from here), so this one importing back would
+# be a cycle — but the legal direction is available AND already in use for
+# exactly this kind of constant, so the graph is not what decides it. The
+# reason is the NUMBERS. Both are PROVISIONAL pending W6 bench validation and
+# they judge different segment kinds through different gates, so bench work
+# may well settle them at different values; two owners diverge by editing one
+# line where one owner would first have to be re-split. That module's own
+# declaration carries the same rationale — keep the two in step. This module also needs its own "was this sweep even
 # heard" precondition before it fits a step, not merely a return value a
 # caller might forget to cross-check.
 #

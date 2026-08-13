@@ -943,8 +943,9 @@ reference. Currently:
   — **Operational canon for the crossover measurement v2 commission session**
   (the only `/sound/crossover/` flow since W5b retired the legacy
   per-driver flow and the `JASPER_CROSSOVER_FLOW` selector). Hybrid shape: a
-  live spine — the three-party model (phone = dumb recorder, Pi = session
-  owner, analysis = pure functions), the two-stage capture flow (a guided
+  live spine — the four-party model (phone = dumb recorder, Pi = session
+  owner, the pure decision organs under `crossover_v2/`, analysis = pure
+  functions), the two-stage capture flow (a guided
   spatial cloud since flat-linearization PR-3b; nothing applies inside a
   session), how a round is graded, the file map, and the invariants — over a
   historical appendix holding the campaign narrative, the failure-taxonomy
