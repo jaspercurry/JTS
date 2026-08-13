@@ -758,10 +758,12 @@ reader at all — U4/P7-3 retired the timing probe's
 survives only as a shipped definition until P9-B deletes the aloop
 PCMs: a plug wrapper over
 `pcm.jasper_capture`, which is a dsnoop on the summed fan-in output
-`hw:Loopback,1,7` before CamillaDSP processing and read only by
-CamillaDSP — which reaches it only under `loopback` coupling, the one
-place the lane still has a producer. Since U4/P7-4 a ring-coupled box
-does not write it at all, and since U4/P7-2 nothing reads it there. So:
+`hw:Loopback,1,7` before CamillaDSP processing. Since U4/P7-4 that lane
+has a producer only under `loopback` coupling, where CamillaDSP reads it
+as the program path; a ring-coupled box writes it not at all. Nothing
+reads it there either: U4/P7-2 re-pointed `jasper-aec-tune`, the last
+RAW dsnoop consumer, at outputd's UDP monitor before P7-4 removed the
+writer. So:
 
 - Production AEC now consumes outputd's 48 kHz stereo speaker monitor over
   UDP. That reference includes renderer/content, TTS/cues, fan-in

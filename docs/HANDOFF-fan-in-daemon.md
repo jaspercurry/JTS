@@ -172,7 +172,9 @@ On a shm_ring box it has neither a writer nor a reader:
                          (shm_ring boxes capture jts_ring_capture instead)
   (no reader)          ← pcm.jasper_ref     → plug alias, unread since U4/P7-3
   All AEC reference    ← outputd UDP speaker monitor after CamillaDSP/outputd
-    (bridge, U4/P7-1; jasper-aec-tune, U4/P7-2)
+    (bridge, U4/P7-1; jasper-aec-tune, U4/P7-2 — that second move re-pointed
+     the tap's last RAW reader, and only then did P7-4 drop the ring box's
+     writer)
 
 CamillaDSP → outputd_content_playback → jasper-outputd → Apple USB-C dongle
 ```

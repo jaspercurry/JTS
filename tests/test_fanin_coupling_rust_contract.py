@@ -226,6 +226,13 @@ def _rust_code_only(text: str) -> str:
     so a bare `"mirror" not in text` fails on the very sentence documenting the
     removal, and the natural "fix" is to delete the explanation. Strip the prose
     instead and let the assertion mean what it says.
+
+    WHOLE-LINE ONLY, deliberately. A trailing comment (`let n = 1; // output_pcm`)
+    survives the strip and will trip the negative assertions below. That is the
+    conservative direction — a naive `//`-to-end-of-line cut would eat the `//`
+    inside a string literal or a URL and quietly shrink what the guard inspects —
+    but the failure message has to say so, or the next reader sees an assertion
+    blaming code for something a comment did.
     """
     return "\n".join(
         line for line in text.splitlines() if not line.lstrip().startswith("//")
@@ -258,8 +265,8 @@ def test_shm_ring_mixer_publishes_slots_and_opens_no_aloop_pcm():
 
     Until P7-4 this arm ALSO opened `config.output_pcm` as a lossy aloop mirror,
     so a ring-coupled box kept feeding `hw:Loopback,0,7` for the dsnoop taps.
-    Those taps are gone (P7-1, P7-3) or moving (P7-2), and the mirror with them:
-    on a ring box the ring is the whole output. Re-adding any playback open here
+    Those readers are gone (P7-1, P7-2, P7-3) and the mirror went last, in that
+    order: on a ring box the ring is the whole output. Re-adding any playback open here
     silently restores a second writer of a lane nobody reads — and, worse, one
     that would make the aloop tap look alive to the next consumer that reaches
     for it.
@@ -275,11 +282,15 @@ def test_shm_ring_mixer_publishes_slots_and_opens_no_aloop_pcm():
     for opener in ("open_output(", "open_music_output(", "PCM::new("):
         assert opener not in ring_arm, (
             f"the ShmRing arm must open no ALSA PCM — found {opener!r}. The aloop "
-            "mirror was removed in U4/P7-4; the ring is the whole output here."
+            "mirror was removed in U4/P7-4; the ring is the whole output here. "
+            "(If that hit is inside a TRAILING comment, the strip only drops "
+            "whole-line comments — move it onto its own line.)"
         )
     assert "output_pcm" not in ring_arm, (
         "the ShmRing arm must not reach for config.output_pcm — that field "
-        "belongs to the Coupling::Loopback arm now"
+        "belongs to the Coupling::Loopback arm now. (If that hit is inside a "
+        "TRAILING comment, the strip only drops whole-line comments — move it "
+        "onto its own line.)"
     )
 
     # POSITIVE CONTROL: the same slicing + stripping applied to the arm that DOES
