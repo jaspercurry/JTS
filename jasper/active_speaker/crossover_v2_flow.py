@@ -4444,6 +4444,7 @@ class CrossoverV2Session:
         measure_commanded_delta: Any = None,
         measure_entry_baseline: "EntryBaseline | None" = None,
         measure_gate_window_ms: float | None = None,
+        measure_proposal_fingerprint: str = "",
         verify_pilot_transfer_prior: Mapping[str, Any] | None = None,
         driver_class_by_role: Mapping[str, str] | None = None,
         radiating_diameter_mm_by_role: Mapping[str, float] | None = None,
@@ -4754,6 +4755,27 @@ class CrossoverV2Session:
         # against. Same field, same two routes, same reason as
         # ``_measure_commanded_delta`` directly above.
         self._measure_entry_baseline: "EntryBaseline | None" = measure_entry_baseline
+        # #2392's proposal identity, on exactly ``_measure_commanded_delta``'s
+        # two routes and for exactly its reason. WRITTEN by the stage that
+        # commits (:meth:`commit_intervention_proposal`); PASSED IN on the
+        # stage that GRADES, which builds a fresh session from durable state
+        # and has no candidate to re-derive one from. It must travel as the
+        # fingerprint rather than as the ingredients: a proposal reassembled at
+        # VERIFY from decimated priors would digest to a different value, and a
+        # receipt naming a proposal that never existed is worse than one naming
+        # the candidate honestly.
+        #
+        # ``""`` means "this session has proposed nothing yet", which is true
+        # of every session before its commit and of a stage-2 re-arm whose
+        # stage 1 predates #2392. The receipt reads it as the candidate arm,
+        # never as a missing proposal.
+        self._measure_proposal_fingerprint: str = str(measure_proposal_fingerprint or "")
+        # The proposal itself, for THIS session only — an
+        # ``InterventionProposal``, a ``PlanRefusal``, or ``None`` before the
+        # commit. Deliberately not persisted: the fingerprint above is the
+        # durable identity, and a second copy of the payload would be a second
+        # owner of the same fact.
+        self._intervention_proposal: Any = None
         # #2291's round grading, and its fire-once guard. The round is graded
         # at the point stage 2's post-apply evidence is COMPLETE, which is two
         # different moments on the two tiers (see :meth:`_grade_round_once`),
@@ -5332,6 +5354,28 @@ class CrossoverV2Session:
     @property
     def measure_commanded_delta(self) -> Any:
         return self._measure_commanded_delta
+
+    @property
+    def measure_proposal_fingerprint(self) -> str:
+        """This round's :class:`InterventionProposal` identity, or ``""``.
+
+        Read by the host's durable persist and handed back to the stage that
+        grades the round, exactly like :attr:`measure_commanded_delta` (#2392).
+        ``""`` is "nothing proposed", never "the proposal is unknown".
+        """
+        return self._measure_proposal_fingerprint
+
+    @property
+    def last_intervention_proposal(self) -> Any:
+        """This session's proposal, its refusal, or ``None`` before the commit.
+
+        In-memory and session-scoped: the durable identity is
+        :attr:`measure_proposal_fingerprint`. Exposed because a refusal that
+        only ever reached a log line is how the Phase-1 facade became
+        write-only in the first place — a test, and any future review surface,
+        can now ask the session what it proposed.
+        """
+        return self._intervention_proposal
 
     @property
     def round_receipt_identity(self) -> dict[str, Any] | None:
@@ -7617,6 +7661,7 @@ class CrossoverV2Session:
         predicted_sum: Any,
         commanded_delta: Any,
         level_frame_finding: Mapping[str, Any] | None,
+        realized_branch_level: Mapping[str, Any] | None = None,
     ) -> None:
         """The ONE seam through which a planned candidate becomes real (#2291).
 
@@ -7628,9 +7673,9 @@ class CrossoverV2Session:
 
         **What this seam covers, exactly:** the three session state writes
         that were byte-identical at both sites (``_candidate``,
-        ``_measure_predicted_sum``, ``_measure_commanded_delta``) and the two
-        irreversible seam fires (``publish_candidate`` then
-        ``_publish_level_frame_finding``).
+        ``_measure_predicted_sum``, ``_measure_commanded_delta``), the
+        proposal assembly #2392 added, and the two irreversible seam fires
+        (``publish_candidate`` then ``_publish_level_frame_finding``).
 
         **What it deliberately does NOT cover:** ``_measure_predicted_spec_
         report``, and the ``correction.crossover_v2_candidate_built``
@@ -7647,22 +7692,54 @@ class CrossoverV2Session:
         observable side effect, so a re-entrant reader sees exactly what it saw
         before.
 
-        This seam no longer assembles a proposal.  #2291 Phase 5c-iii deleted
-        the Phase-1 planner facade: it was write-only in production — nothing
-        outside its own test file read ``last_intervention_proposal``, and
-        ``RoundReceipt.proposal_fingerprint`` is fed by the tuning-attempt id
-        or the candidate's own fingerprint, never by the proposal's.  Wiring
-        the proposal fingerprint into the receipt is #2392, which is a change
-        to a durable write and gets its own PR.  Its ``realized_branch_level``
-        argument went with it; both call sites still hold that verdict — the
-        walk off its build's :class:`_LinearizationState`, the selection off
-        the retained
-        :class:`~jasper.active_speaker.fc_selector.FcCandidateEvaluation` — so
-        re-supplying it here is a one-line change when #2392 needs it.
+        **The proposal is assembled here, and its fingerprint is what the round
+        receipt names (#2392).**  This is the one moment every value the
+        contract needs is in one place, and it is the moment the prescription
+        is decided — a receipt built later from durable state could only
+        re-identify the *candidate*, which is exactly the confusion #2392
+        closed.  ``realized_branch_level`` is the argument #2291 Phase 5c-iii
+        removed with the write-only facade and this issue re-supplies: the walk
+        reads it off its build's :class:`_LinearizationState`, the selection
+        off the retained
+        :class:`~jasper.active_speaker.fc_selector.FcCandidateEvaluation`.
+
+        **Assembly cannot fail this commit.**
+        :func:`~jasper.active_speaker.crossover_v2.proposal.plan_intervention_proposal`
+        returns a refusal rather than raising, and the refusal is *recorded*,
+        not swallowed: the receipt then names the candidate under an explicit
+        ``proposal_fingerprint_kind="candidate"``.  Ordering is preserved
+        rather than merely similar — every session attribute write, the new one
+        included, still completes before ``publish_candidate``, the first
+        observable side effect, so a re-entrant reader sees exactly what it saw
+        before.
         """
+        from jasper.active_speaker.crossover_v2.contracts import InterventionProposal
+        from jasper.active_speaker.crossover_v2.proposal import (
+            plan_intervention_proposal,
+        )
+
         self._candidate = candidate
         self._measure_predicted_sum = predicted_sum
         self._measure_commanded_delta = commanded_delta
+        planned = plan_intervention_proposal(
+            candidate,
+            session_id=self.session_id,
+            predicted_response_after=predicted_sum,
+            commanded_delta=commanded_delta,
+            accountability=level_frame_finding,
+            realized_branch_level=realized_branch_level,
+            evidence_identities={
+                "session_id": self.session_id,
+                "tier": self._tier,
+                "speaker_id": self._speaker_id,
+            },
+        )
+        self._intervention_proposal = planned
+        self._measure_proposal_fingerprint = (
+            planned.fingerprint
+            if isinstance(planned, InterventionProposal)
+            else ""
+        )
         self._seams.publish_candidate(candidate)
         self._publish_level_frame_finding(level_frame_finding)
 
@@ -7679,6 +7756,11 @@ class CrossoverV2Session:
             predicted_sum=evaluation.predicted_sum,
             commanded_delta=evaluation.commanded_delta,
             level_frame_finding=evaluation.level_frame_finding,
+            # #2392 re-supplies what 5c-iii removed. The selection's copy is the
+            # one the sweep retained on the evaluation — read from there rather
+            # than re-derived, so the proposal quotes the verdict that belongs
+            # to THIS candidate rather than to whichever build ran last.
+            realized_branch_level=evaluation.realized_branch_level,
         )
         log_event(
             logger, "correction.crossover_v2_candidate_built",
@@ -7712,6 +7794,10 @@ class CrossoverV2Session:
             predicted_sum=predicted_sum,
             commanded_delta=_commanded_delta(analysis.predicted_sum, predicted_sum),
             level_frame_finding=built.level_frame_finding,
+            # #2392's other half of the same one-line re-supply: the walk reads
+            # the verdict off its own build's state, the same accessor
+            # ``_sweep_fc_candidates`` retains onto its evaluations.
+            realized_branch_level=built.linearization.realized_branch_level,
         )
         log_event(
             logger, "correction.crossover_v2_candidate_built",
@@ -8291,6 +8377,24 @@ class CrossoverV2Session:
             publish_round_receipt=self._seams.publish_round_receipt,
         )
 
+    def _applied_candidate_id(self) -> str:
+        """The APPLIED candidate's fingerprint, by the one honest chain.
+
+        ``_tuning_attempt_id`` first — on the stage that grades a round it is
+        the only one populated, read from the durable state's candidate
+        fingerprint at prepare time — then this session's own candidate for the
+        stage that committed one.
+
+        A method rather than the inline expression it used to be because #2392
+        made the receipt read it TWICE: once as the fallback for
+        ``proposal_fingerprint`` and once as the candidate identity that now
+        rides in the evidence identities. Two copies of a chain whose ordering
+        is load-bearing is how the two quietly disagree.
+        """
+        return self._tuning_attempt_id or str(
+            getattr(self._candidate, "fingerprint", "") or ""
+        )
+
     def _grade_round_once(self, verdict: PhaseVerdict) -> PhaseVerdict:
         """Grade this round and act on the adoption table. Once per session.
 
@@ -8336,18 +8440,37 @@ class CrossoverV2Session:
                 # no cloud, which the evaluator reads as "no report" rather than
                 # as a pass (#2160's honest wire).
                 spec_report=self._group_spec_report.get(PHASE_CLOUD_VERIFY),
-                # The APPLIED candidate's identity. ``_tuning_attempt_id``
-                # first, for :meth:`_grade_verify_attempt`'s reason and by the
-                # same chain: on the stage that grades a round it is the only
-                # one populated, read from the durable state's candidate
-                # fingerprint at prepare time. Reading ``self._candidate`` alone
-                # was the dead stage-2 read that emptied the receipt's
-                # ``proposal_fingerprint``, which the contract refuses, so every
-                # production round lost its receipt to the fail-soft handler.
+                # WHAT THIS ROUND PROPOSED (#2392), preferred over what it
+                # applied. The fingerprint travelled here from the committing
+                # stage through durable ``verify_priors``, exactly as the
+                # commanded delta and the entry baseline do, because the stage
+                # that grades a round builds a fresh session and holds no
+                # candidate to derive one from.
+                #
+                # The candidate arm below is the fallback, and it is a real one
+                # rather than a formality: it serves a stage-2 re-arm whose
+                # stage 1 ran before #2392, and a commit whose proposal
+                # assembly was refused. ``_tuning_attempt_id`` leads it for
+                # :meth:`_grade_verify_attempt`'s reason and by the same chain
+                # — on the grading stage it is the only one populated, read
+                # from the durable state's candidate fingerprint at prepare
+                # time. Reading ``self._candidate`` alone was the dead stage-2
+                # read that emptied this field, which the contract refuses, so
+                # every production round lost its receipt to the fail-soft
+                # handler.
                 proposal_fingerprint=(
-                    self._tuning_attempt_id
-                    or str(getattr(self._candidate, "fingerprint", "") or "")
+                    self._measure_proposal_fingerprint or self._applied_candidate_id()
                 ),
+                # The receipt says which of the two it got, because they are
+                # indistinguishable by inspection — both are 64-hex SHA-256.
+                proposal_fingerprint_kind=(
+                    "intervention_proposal"
+                    if self._measure_proposal_fingerprint
+                    else "candidate"
+                ),
+                # Kept on the record either way, so taking the field above for
+                # the proposal does not cost the receipt its candidate identity.
+                candidate_fingerprint=self._applied_candidate_id(),
                 commanded_delta_present=self._measure_commanded_delta is not None,
                 realization_tolerance_db=VERIFY_TOLERANCE_DB,
                 reference_mark=REFERENCE_MARK_DESIGN_AXIS,

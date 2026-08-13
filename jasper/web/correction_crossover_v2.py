@@ -3054,6 +3054,24 @@ def persist_conductor_state(
             # own absence already means downstream — never a raise that loses
             # the whole snapshot.
             "entry_baseline": _entry_baseline_prior(conductor),
+            # What stage 1 PROPOSED, as an identity (#2392). The round receipt
+            # is written by the stage that GRADES, which runs in a different
+            # process against a conductor that never planned anything — so,
+            # exactly like ``commanded_delta`` and ``entry_baseline`` above,
+            # this durable state is the only channel the fingerprint has.
+            #
+            # The fingerprint travels, never the proposal: reassembling one at
+            # VERIFY out of the decimated priors around it would digest to a
+            # different value, and a receipt naming a proposal that never
+            # existed is worse than one naming the candidate honestly.
+            #
+            # Read through ``getattr`` for ``_predicted_spec_prior``'s reason:
+            # this function persists duck-typed conductors too, and a stand-in
+            # without the property means "nothing proposed" — which is what the
+            # empty string already means downstream.
+            "proposal_fingerprint": str(
+                getattr(conductor, "measure_proposal_fingerprint", "") or ""
+            ),
             "gate_window_ms": conductor.measure_gate_window_ms,
             # Measurement-honesty gate G3's reference, DATED — history, not a
             # comparator (#1927). ``prepare_v2_verify`` hands it to the next
@@ -6804,6 +6822,16 @@ def prepare_v2_verify(
     # stays ``VERDICT_UNAVAILABLE`` — no evidence to refuse on, and no
     # permission granted either.
     commanded_delta = commanded_delta_prior_from_state(state)
+    # What stage 1 proposed, rehydrated (#2392) — the identity the round
+    # receipt names. Stage 2 plans nothing, so this is the only channel, and an
+    # absent key (a state written before #2392, or a stage 1 whose proposal
+    # assembly was refused) stays ``""``: the receipt then records the
+    # candidate fingerprint under an explicit ``proposal_fingerprint_kind``
+    # rather than claiming a proposal identity it never had.
+    proposal_fingerprint = (
+        str(priors_raw.get("proposal_fingerprint") or "")
+        if isinstance(priors_raw, Mapping) else ""
+    )
     # #2291's measured "before", rehydrated. Stage 2 never captures one — its
     # plan has no ``PHASE_ENTRY_BASELINE`` entry, by construction, because the
     # baseline has to precede the apply this stage is verifying — so this is
@@ -6919,6 +6947,7 @@ def prepare_v2_verify(
             measure_predicted_sum=predicted_sum,
             measure_predicted_spec_report=predicted_spec,
             measure_commanded_delta=commanded_delta,
+            measure_proposal_fingerprint=proposal_fingerprint,
             measure_entry_baseline=entry_baseline,
             measure_gate_window_ms=(
                 float(gate_ms) if isinstance(gate_ms, (int, float)) else None

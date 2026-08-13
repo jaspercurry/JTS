@@ -269,7 +269,9 @@ class RoundEvidence:
     #: The post-apply spatial cloud's spec report, or ``None`` on a tier that
     #: walks no cloud (which the evaluator reads as "no report", not a pass).
     spec_report: "FlatSpecReport | None"
-    #: The applied candidate's identity, for the receipt.
+    #: What this round proposed, for the receipt. Since #2392 this is the
+    #: :class:`~.contracts.InterventionProposal`'s fingerprint whenever the
+    #: session has one, and the applied candidate's when it does not.
     proposal_fingerprint: str
     #: Did stage 1's commanded delta cross the bridge? (identity, not payload)
     commanded_delta_present: bool
@@ -277,6 +279,18 @@ class RoundEvidence:
     realization_tolerance_db: float
     #: The mark both captures were taken at.
     reference_mark: str
+    #: Which of the two the field above is
+    #: (:data:`~.contracts.PROPOSAL_FINGERPRINT_KINDS`). Defaulted to
+    #: ``"candidate"`` and NOT to the proposal, because that is the answer that
+    #: is true of a caller which has not been taught to supply one — a default
+    #: naming the new regime would let an un-migrated host claim a proposal
+    #: identity it never had, on a write-once artifact.
+    proposal_fingerprint_kind: str = "candidate"
+    #: The applied candidate's own fingerprint, which rides into the receipt's
+    #: evidence identities. It used to BE ``proposal_fingerprint``; #2392 gave
+    #: that field to the proposal, and a receipt that dropped the candidate
+    #: identity on the way would have lost a fact it used to carry.
+    candidate_fingerprint: str = ""
 
 
 @dataclass(frozen=True)
@@ -619,6 +633,7 @@ def _write_round_receipt(
                 ),
             },
             proposal_fingerprint=evidence.proposal_fingerprint,
+            proposal_fingerprint_kind=evidence.proposal_fingerprint_kind,
             applied_graph_fingerprint=entry_graph_fingerprint(
                 ports, session_id=evidence.session_id,
             ),
@@ -635,6 +650,13 @@ def _write_round_receipt(
                     baseline.artifact_ref if baseline is not None else ""
                 ),
                 "commanded_delta_present": evidence.commanded_delta_present,
+                # The applied candidate, kept on the record now that the
+                # ``proposal_fingerprint`` field above names the proposal
+                # instead (#2392). Written unconditionally, including as ``""``
+                # — an absent key would be a second way of saying "unknown"
+                # alongside the empty string, and this map is read by a human
+                # off a banked artifact.
+                "candidate_fingerprint": evidence.candidate_fingerprint,
             },
             created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         )
@@ -663,5 +685,9 @@ def _write_round_receipt(
         artifact_fingerprint=str(fingerprint or ""),
         receipt_fingerprint=receipt.fingerprint,
         adoption=evaluation.adoption.outcome.value,
+        # Which regime wrote this receipt, in the journal as well as in the
+        # artifact (#2392) — the journal is where a session that has not yet
+        # fetched the bundle looks first.
+        proposal_fingerprint_kind=receipt.proposal_fingerprint_kind,
     )
     return identity
