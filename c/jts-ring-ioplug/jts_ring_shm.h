@@ -133,9 +133,11 @@ _Static_assert(ATOMIC_LLONG_LOCK_FREE == 2,
 //     this window surfaces as one cleanly-failed session, never a respawn
 //     loop; every other spawn is human-paced, orders of magnitude slower
 //     than the window. Stop-on-first-nonzero does NOT cover the one mid-flip
-//     residual: a spawn that opens a ring fan-in has just stopped reading (a
-//     disarm racing a running loop) SUCCEEDS — aplay exits 0 into the
-//     free-running ring — so that loop iteration records silence AS DATA
+//     residual: a spawn that opens a ring fan-in is not reading — not YET
+//     (an arm before fan-in's restart, inherent to every arm transaction)
+//     or no LONGER (a disarm racing a running loop) — SUCCEEDS: aplay exits
+//     0 into the free-running ring, so that loop iteration records silence
+//     AS DATA
 //     rather than an error. Bounded and accepted: flips are
 //     operator-initiated (the arm CLI prints the fan-in restart
 //     instruction), and the correction pipeline's capture-quality checks
