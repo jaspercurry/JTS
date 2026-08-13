@@ -133,10 +133,10 @@ class RoundPorts:
 def applied_boosts(ports: RoundPorts, *, session_id: str) -> bool:
     """Does the applied intervention put energy IN? (#2291 ``boosted``)
 
-    **Asked of the HOST, not of any conductor's own state, and that is the
+    **Asked of the HOST, not of any session's own state, and that is the
     whole point.** This originally read a ``_candidate`` field assigned in
     exactly one place, stage 1's commit. The stage that GRADES a round is a
-    different process with a fresh conductor and no ctor parameter for a
+    different process with a fresh session and no ctor parameter for a
     candidate, so the read was ``None`` on every shipped round, ``boosted`` was
     always ``False``, and #2318's fail-closed cell was unreachable: a boosted
     intervention with unprovable benefit ended ``accepted=True`` with the graph
@@ -254,7 +254,7 @@ def _post_measurement_identity(
 class RoundEvidence:
     """Everything one round is graded from, stated once by its caller.
 
-    A frozen argument bundle rather than a live view of the conductor: the
+    A frozen argument bundle rather than a live view of the session: the
     round is graded exactly once, from the evidence as it stood at that moment,
     and a bundle makes that literally true instead of merely intended.
     """
@@ -328,7 +328,7 @@ class RoundDecision:
 
     **What a restore DID is deliberately not here.** It has two owners already —
     the receipt's ``restore_result`` and the ``crossover_v2_round_restore``
-    journal line — and the conductor had no reader for it once this module took
+    journal line — and the session had no reader for it once this module took
     the receipt.  Returning it anyway would put a third copy in the caller's
     hands with nothing to check it against.
     """

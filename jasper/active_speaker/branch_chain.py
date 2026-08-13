@@ -31,7 +31,7 @@ headroom_cost_db`), the CHARGE
 the emitted YAML). A charge and a proof that disagree by a hair refuse a
 correct graph on hardware; two implementations of one number is exactly the
 drift this file exists to remove. :func:`sections_by_role` is here for the
-same reason and not a smaller one: the conductor and the emitter each derived
+same reason and not a smaller one: the session and the emitter each derived
 role -> crossover independently for one review cycle and had already
 disagreed about the no-region case, in the direction that makes a disclosure
 smaller than its own charge.
@@ -229,11 +229,11 @@ def sections_by_role(regions: Iterable[Any]) -> dict[str, tuple[CrossoverSection
     through, from a preset's crossover regions.
 
     **The single derivation, and it has to be single.** Two consumers read
-    this: the conductor, which bounds the fit's lift band and stamps the
+    this: the session, which bounds the fit's lift band and stamps the
     disclosed ``headroom_cost_db`` with it, and the emitter, which charges
     ``active_baseline_headroom`` with it. They were separate derivations for
     one review cycle and had already drifted — on a preset with no region for
-    a role the conductor invented ``(session Fc, order 4)`` while the emitter
+    a role the session invented ``(session Fc, order 4)`` while the emitter
     credited no crossover at all, which would have made the disclosure SMALLER
     than the charge: the one direction the ledger promises is impossible.
 

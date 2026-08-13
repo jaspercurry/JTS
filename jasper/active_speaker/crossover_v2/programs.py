@@ -44,7 +44,7 @@ identities captured from the pre-extraction conductor.
 **What this module is not.**  It composes; it does not decide when to play, does
 not consume a capture, does not journal, and holds no session state — a
 :class:`SessionExcitation` is a frozen bundle of the session's own declarations
-and every composer is a pure function of it.  The conductor still owns *when* a
+and every composer is a pure function of it.  The session still owns *when* a
 program is composed and *which* composed objects it holds, because those are
 lifecycle facts: MEASURE cannot be composed until the CHECK gain solve produces
 a plan, and it is recomposed on the clip-retry rearm.
@@ -194,7 +194,7 @@ class SessionExcitation:
     def leading_pilot_role(self) -> str:
         """The role whose solved gain the leading pilot pair rides — the woofer.
 
-        First in ``roles`` by the conductor's own 2-way contract, named here so
+        First in ``roles`` by the session's own 2-way contract, named here so
         the composers below state the rule rather than repeating ``roles[0]``.
         """
         return self.roles[0].role
@@ -322,7 +322,7 @@ def program_for_phase(
         # identical excitation, identical min-cap clamp, identical
         # ``program.phase`` ("verify") so the analyzer routes it to
         # ``_analyze_verify`` unchanged. What differs between the three is the
-        # PRIORS the conductor hands the analysis and the verdict it draws —
+        # PRIORS the session hands the analysis and the verdict it draws —
         # never the sound the speaker makes.
         return verify
     raise NoProgramForPhaseError(f"no program for phase {phase!r}")

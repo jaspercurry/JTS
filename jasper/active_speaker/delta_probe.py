@@ -9,7 +9,7 @@ The linearization-integrity ladder's PR-L5 primitive
 verified as a **realized-vs-commanded per-frequency map** and classified into
 one of four verdicts; the three non-matched ones roll the correction back
 automatically. Pure computation — numpy in, a frozen verdict record out. No
-I/O, no conductor state, no rollback: the conductor owns those.
+I/O, no session state, no rollback: the session owns those.
 
 **Why this exists.** On 2026-07-27 a linearization shipped whose emitted
 shelves were realized at Q 0.476 while every gate in the fit engine evaluated
@@ -147,7 +147,7 @@ VERDICT_SPATIALLY_COSTLY = "spatially_costly"
 VERDICT_LEVEL_MISMATCH = "level_mismatch"
 #: No verdict is available — the correction commands nothing inside the
 #: probe band, or the curves could not be compared. **Not a pass.** The
-#: conductor must treat this the way every other honesty instrument in this
+#: session must treat this the way every other honesty instrument in this
 #: flow treats an unknown: no evidence to refuse on, and no permission
 #: granted either.
 VERDICT_UNAVAILABLE = "unavailable"

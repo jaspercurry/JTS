@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Session-scoped fixed measurement volume for the crossover conductor (Wave 2).
+"""Session-scoped fixed measurement volume for the crossover session (Wave 2).
 
 The v2 crossover measurement flow
 (docs/crossover-measurement-productization-design.md §5.5) replaces the per-step
@@ -163,7 +163,7 @@ def session_measurement_volume_db(
     caps: list[float] = []
     for target_fingerprint in target_fingerprints:
         # program_admission=True: this session volume exists ONLY to serve
-        # the v2 conductor's CHECK/MEASURE programs (this module's own
+        # the v2 session's CHECK/MEASURE programs (this module's own
         # docstring) -- always the proven-HP path. ``declared_sensitivities``
         # (the declaration's per-role datasheet values) rides along so the
         # caps entering max(caps) are the SAME derived caps admission

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Program-playback entry for the crossover conductor (Wave 2, deliverable D).
+"""Program-playback entry for the crossover session (Wave 2, deliverable D).
 
 :func:`play_program` is the one entry that plays a compiled excitation program
 (CHECK / MEASURE) through the speaker's real DSP chain. It composes the other

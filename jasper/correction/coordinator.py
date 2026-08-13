@@ -146,7 +146,7 @@ class MeasurementAbortTarget:
     The refresh task's default isolation-loss abort cancels the task that
     ENTERED the window. That is right for the per-sweep flows (the entering
     task is the playing task), but a flow that holds one window for a whole
-    multi-capture session (the v2 crossover conductor, W6.1) enters it from
+    multi-capture session (the v2 crossover session, W6.1) enters it from
     its long-lived session task while each play runs as its OWN task — the
     default cancel would not stop the actual in-flight sweep. Such a holder
     passes one of these to :func:`measurement_window`:

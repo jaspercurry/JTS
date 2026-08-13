@@ -32,7 +32,7 @@ a second flow-local type appearing behind it.
 **No behaviour lives here.**  These are frozen values with one projection
 (:meth:`LinearizationState.from_plan`) and one derived property; every
 decision that reads them belongs to :mod:`.accountability` or, still, to the
-conductor.  A value that could refuse something would be a gate wearing a
+session.  A value that could refuse something would be a gate wearing a
 dataclass, and the gate has its own module for the reason its docstring gives.
 
 Dependency direction, as for every module here: no ``jasper.web`` import and
@@ -129,7 +129,7 @@ class LinearizationState:
     exists, applied one layer down.
 
     ``outcome`` is the union of the planner's own verdict
-    (``"fitted"``/``"trim_rejected"``) and the two the conductor decides
+    (``"fitted"``/``"trim_rejected"``) and the two the session decides
     without planning at all: an eligibility refusal
     (``"ineligible_mic_tier"``/``"ineligible_repeats"``) and the SF2 degrade
     (``"fit_failed"``). Empty means no build ran. It is stamped verbatim onto
@@ -157,7 +157,7 @@ class LinearizationState:
         """Everything a planned candidate leaves behind, read off the plan.
 
         A straight projection — no policy, no re-derivation. The plan is the
-        single owner of each of these values; this is the conductor naming the
+        single owner of each of these values; this is the session naming the
         subset it consumes downstream.
         """
         return cls(
@@ -189,7 +189,7 @@ class SpeculativeClose:
     back to a browser and tapped Continue — dead air that read as a stalled
     screen. The fit now starts on the ACCEPT and parks its product here.
 
-    **Why the built candidate cannot simply be stashed on the conductor.**
+    **Why the built candidate cannot simply be stashed on the session.**
     ``_candidate`` is ``confirm_cloud_measure_group``'s fire-once guard AND,
     until this rider, the held-set predicate; writing a speculative build into
     it would have closed the retake window in the same instant it opened (both
@@ -203,7 +203,7 @@ class SpeculativeClose:
 
     ``level_frame_finding`` is the #1866 record — present only when THIS
     build's frame gate took the finding+proceed path. It rides the built
-    close rather than the conductor for the reason the whole class exists: a
+    close rather than the session for the reason the whole class exists: a
     speculative build a retake moots is dropped whole, and a record left on
     ``self`` would survive that drop and be published against the next
     candidate, which measured something else.

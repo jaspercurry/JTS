@@ -32,7 +32,7 @@ alone prevents torn JSON, but cannot prevent one process from publishing a
 stale snapshot over another process's update.
 ``record_model_error`` is idempotent by its per-speaker stable observation
 identity, closing the process-crash window between this file's atomic write and
-the conductor journey's separate atomic write.
+the session journey's separate atomic write.
 """
 
 from __future__ import annotations
@@ -268,7 +268,7 @@ def record_model_error(
     identity. Replaying an identical write is an idempotent no-op; reusing
     that identity with different numbers raises :class:`ModelErrorConflictError`
     without changing the store. That closes the crash window between this
-    write and the conductor's separate journey-state persist.
+    write and the session's separate journey-state persist.
 
     ``context`` is free-form provenance (build sha, session id, band) stored
     verbatim under ``context``. It is never interpreted here; the store's job

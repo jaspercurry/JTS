@@ -522,8 +522,11 @@ parameterized `index_phase_map` (already used by `prepare_v2_verify`'s
   max 12), M = 6 cloud-verify (`DEFAULT_CLOUD_MEASURE_POSITIONS` /
   `DEFAULT_CLOUD_VERIFY_POSITIONS`, `crossover_v2_flow.py` — N counts the
   MEASURE anchor plus 8 prompted positions, which is why the default is 9
-  and not 8; see `HANDOFF-crossover-measurement-v2.md`'s "Position groups"
-  section). One geometry-locked retry loop: when
+  and not 8). The "Position groups" section that used to be cited here now
+  sits inside `HANDOFF-crossover-measurement-v2.md`'s tagged-historical
+  appendix — a shipped stage 1 no longer walks a pre-apply cloud at all. For
+  the walk that ships, read that doc's live-spine "The capture flow" and
+  "What it is". One geometry-locked retry loop: when
   the group-end combine reports `geometry.locked` (and not
   `thin_evidence`-soft), the conductor prompts up to 2 extra
   wider-spread positions, once. Bounded, then proceed with the

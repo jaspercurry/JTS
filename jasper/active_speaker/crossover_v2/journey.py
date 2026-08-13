@@ -48,9 +48,12 @@ from typing import AbstractSet, Iterable, Mapping
 
 PHASE_CHECK = "check"
 PHASE_MEASURE = "measure"
-# The owner ruling (2026-07-20) removed the human mid-flow Apply gate: a
-# trusted candidate is applied by the CONDUCTOR itself, never by a household
-# tap. This phase now names the brief machine-paced window between "MEASURE
+# The owner ruling (2026-07-20) removed the human mid-flow Apply gate and had
+# the session apply a trusted candidate itself. SUPERSEDED by two-stage T3
+# (commit ``61ba33ff1``, #1806 / #1906): the apply is the household's explicit
+# POST now. Read :mod:`jasper.active_speaker.crossover_v2_flow`'s module
+# docstring for what replaced it rather than this comment.
+# This phase names the brief machine-paced window between "MEASURE
 # accepted" and "apply observed" — the phone sees it as the existing
 # CaptureBeginDeferred hold (now captioned "Applying…", not "waiting for the
 # household"), and the wizard shows a plain in-progress screen. It is still a
@@ -66,11 +69,11 @@ PHASE_VERIFY = "verify"
 # anchor). See ``CLOUD_POSITION_PROMPTS`` for the physics the prompts encode
 # and ``build_v2_cloud_index_phase_map`` for the index layout.
 #
-# These are CONDUCTOR phases, deliberately distinct from the EXCITATION
+# These are SESSION phases, deliberately distinct from the EXCITATION
 # PROGRAM's own ``program.phase``: every cloud position plays the VERIFY-
 # shaped mono summed sweep (``phase="verify"``), so
 # ``program_analysis.analyze_program_capture`` routes it to ``_analyze_verify``
-# with no dispatch change and the conductor still knows which group the
+# with no dispatch change and the session still knows which group the
 # capture belongs to. Do not conflate the two vocabularies.
 PHASE_CLOUD_MEASURE = "cloud_measure"
 PHASE_CLOUD_VERIFY = "cloud_verify"
@@ -170,7 +173,7 @@ class JourneyPlan:
     ``post_apply_verifies`` is the boost-permission evidence gate. It reads
     ``PHASE_VERIFY in phases`` unless a caller DECLARES otherwise, and the
     declaration exists because the two-stage split (work order D2) moved the
-    post-apply sweep into its own session: a measuring conductor's phases
+    post-apply sweep into its own session: a measuring session's phases
     correctly contain no VERIFY while the verification is very much still part
     of the journey, so reading the phases alone would silently demote every
     two-stage correction to cut-only.
@@ -390,7 +393,7 @@ CAPABILITY_ENTRY_BASELINE = "entry_baseline"
 class V2StageCapabilities:
     """What ONE commission stage binds, and what it needs handed to it.
 
-    The v2 commission runs as two relay sessions against two conductors
+    The v2 commission runs as two relay sessions against two session objects
     (``prepare_v2_session`` measures and stops; the household applies;
     ``prepare_v2_verify`` verifies). The seams they bind are identical except in
     two places, and until #2291 Phase 3 both shapes were hand-assembled at their
@@ -428,7 +431,7 @@ STAGE_MEASURE_CAPABILITIES = V2StageCapabilities(
 
 #: Stage 2 — the post-apply verdict. Binds rollback because this is the only
 #: stage that reaches the delta probe, and PR-L5's rollback is automatic on the
-#: non-matched verdicts: a conductor without the seam still refuses, but under
+#: non-matched verdicts: a session without the seam still refuses, but under
 #: ``REASON_CORRECTION_ROLLBACK_FAILED``, whose copy tells the household the
 #: correction is STILL APPLIED. Requires the two stage-1 curves the probe and
 #: the tracking check grade against, plus #2291's entry baseline — the measured

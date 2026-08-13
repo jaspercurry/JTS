@@ -681,7 +681,7 @@ banking the journey projection,
 the tracking model's predicted error (`0`) and the analyzer's realized error;
 ordinary I/O failures warn at
 `event=correction.crossover_v2_model_error_write_failed`, any other store
-exception is contained at
+`Exception` is contained at
 `event=correction.crossover_v2_model_error_write_unexpected` (ERROR), and
 neither reverses an accepted flow verdict — nor lets the next capture of the
 same applied candidate re-fire the write, since the attempt is banked in
@@ -1847,8 +1847,14 @@ write-once, canonical-JSON, fsync'd file and parent, tamper-checked, beside the
 evidence its own identities name. `round_id` is the stage-2 relay session id —
 one graded post-apply session is one round, and a recovery re-verify writes its
 own rather than amending this one. Its identity lands in `state.round_receipt`
-so the next round resolves it without scanning bundles. Writing is fail-soft: a
-receipt that could not be written is a WARN, never a lost verdict.
+so the next round resolves it without scanning bundles. Writing is fail-soft —
+a receipt that could not be written is never a lost verdict — but it is logged
+at **ERROR**, not WARN
+(`event=correction.crossover_v2_round_receipt_failed`). `coordinator.py`'s own
+handler records why: this is the exact event that would have fired on every
+shipped round for a whole phase while nobody looked, and a fail-soft path whose
+only trace is a WARNING is one nobody reads. Its sibling, the no-anchor recovery
+path, is already ERROR.
 
 **What `proposal_fingerprint` identifies, and how to tell (#2392).** Since
 #2392 the field carries `InterventionProposal.fingerprint` — the proposal the

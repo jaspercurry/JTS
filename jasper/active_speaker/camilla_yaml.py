@@ -1672,7 +1672,7 @@ def linearization_headroom_db(
     Public because the runtime contract's prover has to agree with the emitter
     about this number, and the candidate payload and ``/correction/`` browser
     summary disclose it (via ``linearization_fit.worst_headroom_cost_db``
-    reading the per-branch numbers the conductor stamps). The evaluation
+    reading the per-branch numbers the session stamps). The evaluation
     itself lives in :mod:`jasper.active_speaker.branch_chain` — one
     implementation, read by the fit's disclosure, this charge, and that proof.
     0.0 for a cut-only linearization, which is every one before PR-L5.
@@ -1747,7 +1747,7 @@ def _branch_context(
     the chain the next few lines emit — not a description of it.
 
     The role -> sections half is :func:`jasper.active_speaker.branch_chain.
-    sections_by_role`, shared with the conductor that stamps the disclosed
+    sections_by_role`, shared with the session that stamps the disclosed
     ``headroom_cost_db`` — one derivation, because two of them had already
     drifted on the no-region case in a way that would have made the disclosure
     smaller than this charge.
@@ -2752,7 +2752,7 @@ pipeline:
     return yaml
 
 
-# --- channel-routed program graph (crossover measurement conductor, W2) ------
+# --- channel-routed program graph (crossover measurement session, W2) --------
 # The v2 crossover measurement flow plays ONE continuous 2-channel program WAV
 # (docs/crossover-measurement-productization-design.md §5.4): program capture
 # ch0 carries the woofer stimulus, ch1 the tweeter stimulus, sequenced in the
@@ -3059,7 +3059,7 @@ def emit_active_speaker_program_config(
 ) -> str:
     """Emit the static channel-routed program graph for CHECK/MEASURE playback.
 
-    The v2 crossover conductor plays one 2-channel program WAV
+    The v2 crossover session plays one 2-channel program WAV
     (``jasper.audio_measurement.program``) once through ``correction_substream``;
     ``role_channels`` maps each driver role to the program-WAV channel carrying
     its stimulus (ch0 → woofer, ch1 → tweeter — design §5.4). This graph:
@@ -3082,7 +3082,7 @@ def emit_active_speaker_program_config(
     """
 
     preset.validate()
-    # W2 scope gate: the conductor's program topology (2 program channels,
+    # W2 scope gate: the session's program topology (2 program channels,
     # woofer/tweeter role routing, the repeat-pair drift estimator) is designed
     # for a 2-way crossover. A 3-way needs a designed reshape (program channel
     # count, mid-band MESM schedule, per-region alignment), not a silent

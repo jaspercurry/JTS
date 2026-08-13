@@ -629,7 +629,7 @@ class LinearizationRequest:
         here would make the planner's stamped disclosure smaller than the
         emitter's charge.
 
-        Representable is not the same as correct. **On a 2-way conductor a role
+        Representable is not the same as correct. **On a 2-way session a role
         with no crossover region is a defect upstream**, which is why
         :func:`plan_linearization` names it in the journal rather than passing
         over it silently — the same disposition, and the same event, the

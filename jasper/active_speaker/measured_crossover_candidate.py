@@ -235,7 +235,7 @@ class MeasuredCrossoverCandidate:
     persisted linearization result trips the same ``candidate_tampered``
     refusal as tampering with anything else in this candidate. The empty
     dict (the default, and what every non-reference-tier or under-repeated
-    MEASURE produces — see the v2 conductor's linearization gate) is
+    MEASURE produces — see the v2 session's linearization gate) is
     deliberately OMITTED from the fingerprinted core instead of
     participating as ``{}`` — see ``_core()``'s own docstring — so it is a
     fully valid, era-tolerant shape: "no linearization was fit," identical

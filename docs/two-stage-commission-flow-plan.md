@@ -203,7 +203,7 @@ Three changes, and PR-T3's **first and load-bearing** item:
    `runPlanCapture` in [`capture-page/js/main.js`](../capture-page/js/main.js)
    tests `if (verdict.setComplete || (verdict.accepted && index >= target))`
    → `renderPlanAllDone` **before** it tests `verdict.awaitingConfirm`.
-   In today's 16-entry plan the final cloud position is index 10 of 16,
+   In the pre-split 16-entry plan the final cloud position was index 10 of 16,
    so the confirm screen renders. In a 10-entry stage-1 plan that
    position IS the target, `run_capture_plan` emits
    `capture_set_complete`, and the household would get the "All

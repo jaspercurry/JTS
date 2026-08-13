@@ -2,7 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The v2 conductor screen envelope (schema 11, Wave 5a; two-stage since PR-T3).
+"""The v2 session screen envelope (Wave 5a; two-stage since PR-T3).
+
+Its schema version is :data:`CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION` below, which
+is where it is read from rather than restated — two docstrings in this file had
+already drifted to different stale numbers.
 
 ``docs/crossover-measurement-productization-design.md`` §5.9/§5.10 defines the
 v2 screen sequence — ``("speaker_setup", "microphone_check", "measure",
@@ -18,12 +22,15 @@ generic data-driven JS renderer consumes (``schema_version`` / ``screen`` / ``st
 ``nudges`` / ``relay`` / ``next_action`` / ``alternate_actions`` / ``progress``
 / ``applied``) so the generic data-driven JS renderer needs no v2-specific code.
 
-**Owner ruling (2026-07-20): no human mid-flow Apply gate.** The former
-``review_apply`` screen (a human tap over the measured candidate) is gone from
-the happy path — the conductor auto-applies a trusted candidate itself (see
-``jasper.active_speaker.crossover_v2_flow``'s module docstring). This module's
+**Owner ruling (2026-07-20), SUPERSEDED.** It removed the human mid-flow Apply
+gate — the former ``review_apply`` screen, a human tap over the measured
+candidate — and had the session apply a trusted candidate itself. Two-stage T3
+(commit ``61ba33ff1``, #1806 / #1906) replaced that: the apply is the
+household's explicit POST now. Read
+``jasper.active_speaker.crossover_v2_flow``'s module docstring for what replaced
+it rather than this paragraph. This module's
 ``"applying"`` screen is the brief machine-paced in-flight state; the ``"done"``
-screen is now the RESULT screen — plain-language outcome first, numbers in a
+screen is the RESULT screen — plain-language outcome first, numbers in a
 collapsed expert disclosure, Undo prominent.
 
 The v2-specific state the backend threads onto the status lives under
@@ -149,7 +156,7 @@ _STEP_LABELS = {
     "verify": "Verify",
 }
 
-# Which step is active for a given conductor phase. The position groups
+# Which step is active for a given session phase. The position groups
 # (flat-linearization PR-3b) do NOT add wizard steps: a household walking the
 # pre-apply cloud is still "measuring" and the post-apply cloud is still
 # "verifying" — the cloud changed how many captures each step takes, not what
@@ -298,7 +305,7 @@ def _candidate_review_payload(
     trims, delay, polarity, ripple, plus confidence/fingerprint provenance).
 
     W6.10 blocker #2: the generic renderer's review body expected a candidate
-    shape (``retained_crossover_regions``/``drivers``) the conductor never
+    shape (``retained_crossover_regions``/``drivers``) the session never
     builds, so ``#crossover-review-body`` rendered empty. This is the single
     conversion point from what ``_candidate_summary`` DOES build (trims_db /
     alignment / confidence / ripple / fingerprint) into rows the page can
@@ -695,7 +702,7 @@ def _verify_expert_details(
 ) -> list[str]:
     """The verify_fail screen's collapsed expert numbers (#1605): the gated
     level error against its limit, the average error, and the band checked.
-    Empty when the conductor persisted neither tracking evidence nor a graded
+    Empty when the session persisted neither tracking evidence nor a graded
     band (an early-return verify verdict — locate/agc/gate/level-shift —
     reaches neither).
 
@@ -1499,7 +1506,7 @@ def _cloud_verify_block(status: Mapping[str, Any]) -> Mapping[str, Any]:
     """The compact CLOUD-VERIFY entry of the ``cloud`` block, or empty.
 
     ``PHASE_CLOUD_VERIFY`` is spelled through the shared phase constant, not
-    a literal, so this and the conductor cannot drift apart on the key name.
+    a literal, so this and the session cannot drift apart on the key name.
     """
     return _mapping(_mapping(_v2(status).get("cloud")).get(PHASE_CLOUD_VERIFY))
 
@@ -1791,7 +1798,7 @@ _ATTEMPT_SENTENCE_BY_REASON = {
 
 
 def attempt_loop_verdict_sentence(status: Mapping[str, Any]) -> str:
-    """One household sentence from the conductor/kernel's last S3 output."""
+    """One household sentence from the session/kernel's last S3 output."""
     attempts = _mapping(_v2(status).get("attempts_loop"))
     decision = _mapping(attempts.get("last_decision"))
     reason = decision.get("reason")
@@ -2799,7 +2806,11 @@ def _failure_envelope(
 
 
 def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
-    """The v2 conductor envelope (schema 8) for the served status."""
+    """The v2 session envelope for the served status.
+
+    Stamped with :data:`CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION` rather than a
+    number written down here.
+    """
     if not bool(status.get("active")):
         return {
             "schema_version": CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION,

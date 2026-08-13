@@ -14,7 +14,7 @@ rather than by a method reaching into the object it hangs off.
 **This module DECIDES; it does not act** — the split :mod:`.accountability` set
 and :mod:`.admission` restated.  A ladder answers "is this recording evidence
 about the speaker, and if not, which finding is the honest one".  Everything a
-finding then *causes* stays with the conductor: recomposing the MEASURE program
+finding then *causes* stays with the session: recomposing the MEASURE program
 for a silent auto-retry, banking the gain plan and ambient report, stashing the
 analysis for a deferred fit, publishing CHECK evidence across the seam, raising
 :class:`CrossoverV2FlowError` on a candidate-less analysis, and constructing the
@@ -36,17 +36,17 @@ have done differently:
   first reaches ``program_for_phase``, which *raises* when MEASURE has no
   composed program, and hoisting that raise above the glitch rung would move a
   failure the shipped flow reports later.  So they are ports, invoked exactly
-  where the conductor invoked them — the call-count reason :mod:`.admission`
+  where the session invokes them — the call-count reason :mod:`.admission`
   made ``apply_failure_code`` a callable.  Every other fact is a value, because
   every other fact is already in hand.
 * **The MEASURE ladder returns a directive, not just a kind.**  Three of its
   rungs re-arm the phase and one of those backs the level off, and the guard
   label two rungs set is the field telemetry tells shared codes apart by.  Those
   are facts about *which rung fired*, so the rung is where they are decided; the
-  re-arm itself is the conductor's.
+  re-arm itself is the session's.
 * **The ripple reservation is a rung that does not refuse.**  Owner ruling
   #2087 converted it from a gate to a disclosure, so it lives here as a
-  predicate (:func:`ripple_reservation_due`) and the conductor does the
+  predicate (:func:`ripple_reservation_due`) and the session does the
   disclosing.  Keeping it beside the refusals is the point: it is one more
   thing this ladder decides about a capture, and a reader who finds only the
   refusals here would conclude MEASURE has no other judgement to make.
@@ -213,7 +213,7 @@ def check_screens(screens: CheckScreens) -> str | None:
 
 @dataclass(frozen=True)
 class MeasureScreen:
-    """One MEASURE rung's finding, and what it asks the conductor to do.
+    """One MEASURE rung's finding, and what it asks the session to do.
 
     ``guard`` is the telemetry label that tells two rungs sharing one household
     code apart (§5.2's "never a new user-facing code for a capture-glitch
@@ -221,7 +221,7 @@ class MeasureScreen:
     know which check fired).  Empty when the kind alone is the whole finding.
 
     ``rearm`` asks for the silent auto-retry, and ``rearm_backoff_db`` is the
-    level it should come back at — ``0.0`` reproducing the conductor's
+    level it should come back at — ``0.0`` reproducing the session's
     no-argument call exactly.
     """
 
@@ -373,8 +373,8 @@ def verify_integrity_screens(
     """VERIFY's pre-grade ladder: a refusal, or ``None`` to go on grading.
 
     Everything below this in the shipped verdict — the gate-comparability rule,
-    G3's pilot-transfer step, the tracking-max comparison — reads conductor
-    state that outlives one capture, so it stays with the conductor.  What
+    G3's pilot-transfer step, the tracking-max comparison — reads session
+    state that outlives one capture, so it stays with the session.  What
     leaves is the part that asks only about THIS recording, and it runs first
     for the reason MEASURE puts the same class of check first: a spliced or
     clipped recording is not evidence about the speaker, so no verdict drawn
@@ -426,7 +426,7 @@ def verify_integrity_screens(
 # them read (#2291 Phase 5c-ii)
 #
 # Private on purpose, and re-exported from the flow under these exact
-# spellings, because the conductor calls them by those names. The precedent
+# spellings, because the session calls them by those names. The precedent
 # for a private name crossing a module boundary is ``fc_sweep``'s
 # ``_fc_rejection`` / ``_FC_GRID_EPS_HZ``.
 # --------------------------------------------------------------------------- #
@@ -530,7 +530,7 @@ def _sweep_schedule_ok(analysis: ProgramAnalysis, sample_rate_hz: int) -> bool:
     spec fixes every phone upload at ``REQUIRED_SAMPLE_RATE_HZ`` (48 kHz,
     ``jasper.capture_relay.spec``) — so no resampling ever runs between the
     phone's WAV and this analysis, and ``SegmentLocation.residual_samples``
-    is always expressed in exactly that domain (the conductor's own composed
+    is always expressed in exactly that domain (the session's own composed
     program's ``sample_rate_hz``).
 
     Filtered to ``KIND_SWEEP`` only — mirrors ``_estimate_drift``'s exclusion

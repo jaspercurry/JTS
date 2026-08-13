@@ -160,7 +160,7 @@ def describe_level_solve_refusal(refusal: Mapping[str, Any]) -> str:
 
 
 def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
-    """Serve the v2 conductor crossover envelope for ``status``.
+    """Serve the v2 session crossover envelope for ``status``.
 
     The legacy per-driver flow and the ``JASPER_CROSSOVER_FLOW`` selector
     that chose between it and v2 were retired in W5b — v2 is the only flow

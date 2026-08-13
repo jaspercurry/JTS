@@ -23,7 +23,7 @@ established and :mod:`.admission` and :mod:`.capture_dispatch` restated.  Here
 that rule carries more weight than usual, because the act it stays away from is
 an **irreversible durable write**: banking prediction error into
 :mod:`~jasper.active_speaker.model_error_store`.  So the boundary is drawn at
-the write and stated twice — once here and once at the conductor's call site:
+the write and stated twice — once here and once at the session's call site:
 
 * :func:`assess_attempt_identity` runs **before** the write, and answers the
   only question that can prevent it.
@@ -32,7 +32,7 @@ the write and stated twice — once here and once at the conductor's call site:
 
 Nothing in between is this module's.  The seam call, the guard that decides
 whether to make it, its ``except`` arms, all of its log lines, and the identity
-conflict it can report all stay on the conductor, unchanged and in one place, so
+conflict it can report all stay on the session, unchanged and in one place, so
 "how many times can this write fire" is answered by reading one method rather
 than by tracing a callable through a module boundary.  That is the same reason
 :mod:`.admission` left the group close under ``_close_lock`` with its caller:
@@ -179,7 +179,7 @@ def assess_attempt_identity(
 
     ``candidate_fingerprint`` is a **callable** for the reason
     :func:`~.admission.settle_spent_slot`'s ``is_group`` is one — call count. It
-    reaches a host object the conductor holds, and the shipped flow does not
+    reaches a host object the session holds, and the shipped flow does not
     read it while a tuning attempt id is in hand; a value resolved at call time
     would reach into that object on every graded capture, which is a read the
     flow does not make. It answers ``None`` when there is no candidate to ask.

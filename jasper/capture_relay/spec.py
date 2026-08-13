@@ -449,7 +449,7 @@ class CapturePlanEntry:
     Wave 3 (crossover-measurement-productization-design.md §5.7) extends the
     session-spanning ``CapturePlan`` from "N repeats of ONE spec" to N
     captures that may each be a DIFFERENT kind of measurement (e.g. a
-    conductor-model CHECK -> MEASURE -> VERIFY sequence) inside the SAME
+    session-model CHECK -> MEASURE -> VERIFY sequence) inside the SAME
     relay session.
 
     ``index`` is 0-based (``0..capture_target-1``) — deliberately distinct
@@ -1769,9 +1769,11 @@ def build_crossover_sweep_spec(
 
     ``guided_captures`` (> 0) declares that this summed session is a GUIDED
     SPATIAL CLOUD of that many prompted CAPTURES — the count the phone itself
-    counts down ("Measurement 4 of 16" at the Full tier's shipped defaults,
-    "Measurement 4 of 7" on the flow-simplification Express tier), NOT the
-    smaller number of distinct mic positions the conductor thinks in.
+    counts down ("Measurement 4 of N"), NOT the smaller number of distinct mic
+    positions the session thinks in. ``N`` is per RELAY SESSION, so the
+    two-stage commission's two stages count separately; the shipped per-stage
+    numbers come from ``crossover_v2_flow.tier_display_info()`` and are not
+    restated here, where a plan change cannot reach them.
     (Flow-simplification §2.1 retired the older per-group "Spot i of n"
     counter this comment used to contrast against — every entry now carries
     the SAME single, server-derived ``screen.progress`` counter, which is

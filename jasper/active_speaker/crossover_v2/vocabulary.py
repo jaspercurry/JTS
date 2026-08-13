@@ -125,7 +125,7 @@ REASON_LOCATE_FAILED = "locate_failed"
 REASON_RELAY_TIMEOUT = "relay_timeout"
 REASON_VOLUME_UNRESOLVED = "volume_unresolved"
 # The play seam refused/failed the program (safety re-admission over-cap, a
-# graph-restore failure, or a conductor program error) — distinct from a relay
+# graph-restore failure, or a session program error) — distinct from a relay
 # transport death (``relay_timeout``). After the W6.1 cap-aware composition a
 # play-time refusal is unexpected (a bug, a tampered readback, or a genuinely
 # infeasible profile), so it is terminal: hard-stop, budget 0.
@@ -213,7 +213,7 @@ REASON_VERIFY_CROSSOVER_REGION = "verify_crossover_region"
 # raw confidence number, so doubt becomes guidance ("move the mic"), never a
 # question ("apply anyway?").
 REASON_LOW_ALIGNMENT_CONFIDENCE = "low_alignment_confidence"
-# The apply transaction came back blocked or raised. It was the conductor's
+# The apply transaction came back blocked or raised. It was the session's
 # OWN auto-apply until the two-stage split (D1); since then the only apply is
 # the household's POST from the review screen, which persists its blocking
 # issue through ``_persist_apply_blocked`` and answers the request directly.
@@ -608,7 +608,7 @@ def _retriable_reason(
     )
 
 
-# The §5.10 table, as data. The envelope and the conductor both read it, so copy
+# The §5.10 table, as data. The envelope and the session both read it, so copy
 # and budget never drift between the verdict and its screen.
 REASON_REGISTRY: dict[str, ReasonSpec] = {
     REASON_AGC_BEHAVIORAL_FAIL: _retriable_reason(
@@ -857,7 +857,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         #   failed against. A level that moved and stayed moved repeats here
         #   until the budget dies.
         # * wizard (``_verify_fail_envelope``) — a FRESH relay session, which
-        #   since #1927 builds a fresh conductor and re-baselines, so this gate
+        #   since #1927 builds a fresh session and re-baselines, so this gate
         #   is structurally unreachable on its first attempt. Retry settles it
         #   in one capture.
         #
@@ -910,7 +910,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     REASON_CLOUD_GEOMETRY_LOCKED: _retriable_reason(
         REASON_CLOUD_GEOMETRY_LOCKED, TEMPLATE_FIX_AND_RETRY,
         # RETRIABLE (any non-zero value; see ``ReasonSpec.retry_budget``). The
-        # count kept here for readability is the conductor's own ceiling on
+        # count kept here for readability is the session's own ceiling on
         # wider-spot asks — ``_close_cloud_group`` stops at
         # ``GEOMETRY_RETRY_POSITIONS`` — but it is no longer what admits the
         # retake: since the bounded-retry ruling (#2086) every rung spends one

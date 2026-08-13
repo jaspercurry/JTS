@@ -108,13 +108,13 @@ STATUS_POLL_WARN_BUDGET = 10
 # work order D10, PR-T3). The sole consumer is ``begin_budget``'s
 # ``auto_advance == on_apply`` arm, and no plan emits that entry any more:
 # stage 1 has no VERIFY index at all and stage 2 opens already-applied. Kept
-# because D10 keeps the hold itself — a conductor built without a prior apply
+# because D10 keeps the hold itself — a session built without a prior apply
 # still gets the honest deferral — but no new design may depend on it.
 #
 # The history below is why the number is 30 and not 900, and it describes a
 # ruling that has since been REVERSED; read it as archaeology, not as current
 # behaviour. Owner ruling (2026-07-20): the human mid-flow Apply gate is gone
-# — the conductor auto-applied the candidate itself, so this hold covered only
+# — the session auto-applied the candidate itself, so this hold covered only
 # the auto-apply TRANSACTION's own latency (a CamillaDSP set-config + confirm
 # round trip, typically well under a few seconds), not a human reading a
 # candidate and deciding whether to tap Apply. The budget shrank from the prior
@@ -1436,7 +1436,7 @@ def run_capture_plan(
       check and every index→phase lookup are untouched.
     * The capture flows through the normal authorize → arm → upload → verdict
       path for that slot. REPLACING the retained evidence on acceptance is the
-      host's job (the v2 conductor's position retention is already per-index
+      host's job (the v2 session's position retention is already per-index
       idempotent), which is also why a rejected or abandoned retake leaves the
       original take standing: nothing was dropped on its behalf.
     * The attempt budget is the plan's own ``max_attempts`` — a retake spends
@@ -1461,10 +1461,13 @@ def run_capture_plan(
 
     **Deferred admission.** ``authorize_begin`` may raise
     :class:`CaptureBeginDeferred` instead of :class:`CaptureBeginRefused` for
-    a NON-terminal "not yet" — e.g. the v2 crossover conductor's heterogeneous
+    a NON-terminal "not yet" — e.g. the v2 crossover session's heterogeneous
     plan parked between MEASURE and VERIFY while its own auto-apply is in
-    flight (jasper.active_speaker.crossover_v2_flow — no household tap
-    involved since the 2026-07-20 owner ruling). The Pi posts a
+    flight (jasper.active_speaker.crossover_v2_flow). Read that example as
+    archaeology: the 2026-07-20 ruling it rested on was superseded by two-stage
+    T3, which moved the apply out of the session entirely — see
+    :data:`REVIEW_HOLD_BUDGET_S`'s comment above for why no shipped plan
+    reaches it. The Pi posts a
     ``capture_deferred`` host event and stays in ``awaiting_begin`` with the
     attempt budget untouched, so the phone may retry the IDENTICAL
     ``begin_capture {index, attempt}``; unlike a refusal this never ends the
@@ -1779,7 +1782,7 @@ def _poll_capture_plan(
             try:
                 on_completion_signal()
             except CaptureBeginRefused as refusal:
-                # The host refused ON the confirmation (the v2 conductor's
+                # The host refused ON the confirmation (the v2 session's
                 # pre-apply accountability veto is the shipped case). Same
                 # publication an admission refusal gets, so the phone renders
                 # the named reason rather than waiting out a budget.
@@ -2161,7 +2164,7 @@ def _poll_capture_plan(
                 if accepted and not current_retake:
                     # A retake re-measures a slot that is ALREADY counted, so
                     # its acceptance replaces evidence rather than adding a
-                    # capture (the swap is the host's — see the v2 conductor's
+                    # capture (the swap is the host's — see the v2 session's
                     # per-index position retention). Counting it here would
                     # complete the set one capture short of the plan.
                     accepted_count += 1
@@ -2236,7 +2239,7 @@ def _poll_capture_plan(
                         # duplicate-close path. Widening the window ships
                         # deliberately: closing it would also close the
                         # legitimate voluntary-retake case (the whole point of
-                        # this hold), so #1872's fix lives on the CONDUCTOR
+                        # this hold), so #1872's fix lives on the SESSION
                         # side instead of here, and does not shut this window
                         # at all. ``_close_cloud_group`` still re-enters and
                         # fully RECOMPUTES on every retake of the final index —

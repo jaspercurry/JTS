@@ -1682,7 +1682,7 @@ def _search_band_issues(
     operator-confirmed datasheet minimum for exactly that question.
 
     Every crossover search runs on that path --
-    :mod:`jasper.active_speaker.program_admission` and the v2 conductor in
+    :mod:`jasper.active_speaker.program_admission` and the v2 session in
     ``jasper.web.correction_crossover_v2`` both pass ``program_admission=True``
     -- so requiring ``search`` to be a subset of ``measurement`` made a search
     band that MEASURE legitimately sweeps unstorable: the tweeter repair

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Excitation-program model + composers for the crossover conductor flow.
+"""Excitation-program model + composers for the crossover session flow.
 
 The v2 crossover measurement flow (docs/crossover-measurement-productization-design.md
 §5.3) replaces a distributed transaction of per-sweep taps with a single
@@ -76,7 +76,7 @@ The prelude rides the SAME admitted
 playback as the stimulus that follows it -- never a second, unguarded
 playback path (see AGENTS.md's ``/sound/`` Combined-test-wedge cautionary
 tale) -- because the prelude is just more segments on the one
-``ExcitationProgram`` the conductor already composes, admits, and plays. Its
+``ExcitationProgram`` the session already composes, admits, and plays. Its
 kind (``KIND_COURTESY_TONE``) is deliberately NOT in ``STIMULUS_KINDS``: the
 locate/analysis machinery in ``program_analysis.py`` correlates against and
 deconvolves only ``STIMULUS_KINDS`` segments, so the prelude is as
@@ -413,7 +413,7 @@ class ProgramSegment:
 
 @dataclass(frozen=True)
 class ExcitationProgram:
-    """A pure-data schedule of stimuli the conductor plays as one stream.
+    """A pure-data schedule of stimuli the session plays as one stream.
 
     ``program_id`` is a content hash over the schedule (phase, rate, channels,
     every segment, total length) — it fingerprints the analysis and the derived
@@ -970,7 +970,7 @@ def build_check_program(
     and their band-concentrated energy drives channel-map sanity. ``pilot_levels_db``
     are RELATIVE offsets: pilot digital gain = ``base_peak_dbfs + level``.
 
-    ``role_base_peak_dbfs`` (v2 conductor, Wave 6.1 — cap-aware composition)
+    ``role_base_peak_dbfs`` (v2 session, Wave 6.1 — cap-aware composition)
     OPT-IN overrides ``base_peak_dbfs`` PER ROLE so a driver whose safety cap
     binds below the shared reference (e.g. a compression tweeter) rides a lower
     per-driver base. Because both pilots keep the same ``pilot_levels_db``
@@ -1104,7 +1104,7 @@ def build_measure_program(
     the sweep that sizes them: ``gap_w_t`` / ``gap_t_w`` for the first cycle,
     ``gap_w_t_rep`` / ``gap_t_w_rep`` for the second, and so on.
 
-    ``leading_pilot_gains_db`` (v2 conductor, Wave 5a — design §5.2) OPT-IN
+    ``leading_pilot_gains_db`` (v2 session, Wave 5a — design §5.2) OPT-IN
     prepends a two-level ``(lo, hi)`` pilot pair on ``leading_pilot_role``'s
     channel (default the lower/woofer driver) so this capture carries its own
     behavioral-linearity evidence, preceded by the short
@@ -1269,7 +1269,7 @@ def build_verify_program(
     is low so the lower shoulder ``fc/2`` is always excited:
     ``f1 = min(VERIFY_F_LO_HZ, fc/2)``.
 
-    ``leading_pilot_gains_db`` (v2 conductor, Wave 5a — design §5.2) OPT-IN
+    ``leading_pilot_gains_db`` (v2 session, Wave 5a — design §5.2) OPT-IN
     prepends a two-level ``(lo, hi)`` mono pilot pair (role ``"summed"``),
     preceded by the :data:`PILOT_AMBIENT_WINDOW_S` room-listening window
     (issue #1810), so VERIFY also carries its own behavioral-linearity
