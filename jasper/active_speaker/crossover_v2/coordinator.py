@@ -27,9 +27,12 @@ every output leaves as a return value), it reaches **no host object** (only the
 five callables in :class:`RoundPorts`), and it owns **no household vocabulary**
 — a refusal leaves as :class:`RoundRefusal`, a typed *kind*, and the flow maps
 it to the ``REASON_REGISTRY`` code whose copy the household reads.  That last
-line is why :func:`run_round` can live outside the flow at all: the reason
-codes are the flow's, and importing them back would be the reverse dependency
-this package exists to prevent.
+line is why :func:`run_round` can live outside the flow at all.  Its original
+form argued that the codes were the flow's and importing them back would invert
+the dependency; since #2291 Phase 5c-ii they are :mod:`.vocabulary`'s, a
+sibling, so the import would be legal now.  The rule stands on its own without
+that argument: a module that decides answers with a kind, and one that renders
+copy is doing a different job.
 
 Dependency direction, as for every module here: no ``jasper.web`` import and
 nothing from :mod:`jasper.active_speaker.crossover_v2_flow`.
@@ -61,8 +64,8 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 logger = logging.getLogger(__name__)
 
 #: The refusal kinds :func:`run_round` can return. Kinds rather than reason
-#: codes: the code, and the sentence it renders, belong to the flow's
-#: ``REASON_REGISTRY``.
+#: codes: the code, and the sentence it renders, belong to
+#: :mod:`.vocabulary`'s ``REASON_REGISTRY``.
 REFUSAL_RESTORED = "restored"
 REFUSAL_ROLLBACK_FAILED = "rollback_failed"
 

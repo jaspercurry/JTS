@@ -174,11 +174,12 @@ SCREEN_KINDS = frozenset({
 class CaptureScreens:
     """The shipped capture-integrity predicates, EVALUATED, for one take.
 
-    Every field is a fact the caller computed with the flow's own module-level
+    Every field is a fact the caller computed with a shared module-level
     predicate — the same ones MEASURE's and VERIFY's verdicts use.  Those
-    predicates are not moved here on purpose: they serve verdicts that stay on
-    the conductor until the capture-dispatch vertical, and a shared predicate
-    with two owners is worse than one stated argument.
+    predicates live in :mod:`.capture_dispatch` since #2291 Phase 5c-ii, and
+    still do not live *here* on purpose: they serve verdicts this module does
+    not own, and a shared predicate with two owners is worse than one stated
+    argument.  They arrive as arguments either way.
 
     **Stating them eagerly is exact, and that is checkable rather than
     asserted.**  The ladders below short-circuit, so on a rejected take the
