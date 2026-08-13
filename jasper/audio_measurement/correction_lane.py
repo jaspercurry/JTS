@@ -64,8 +64,19 @@ have meant ten synchronized edits. Now:
 
 * :func:`correction_play_argv` is the **single owner** of the argv (binary
   + ``-q`` + ``-D`` + device + WAV). P6c-ii makes the device here
-  lane-map-aware (SHM ring lane instead of the static snd-aloop alias);
-  it changes THIS function only.
+  lane-map-aware (SHM ring lane instead of the static snd-aloop alias) —
+  one edit in this module covers every spawn that routes through these
+  helpers. That is the SPAWN's device, not every statement of the lane
+  fact: P6c-ii must also sweep the consumers that pass
+  :data:`CORRECTION_SUBSTREAM` (under their aliases) into the heavier
+  playback machinery — ``web_commissioning``'s ``play_sweep``
+  ``alsa_device=`` arguments, ``commissioning_verification``'s ``play_wav``
+  call, ``program_playback.verified_program_aplay``'s parameter default,
+  and ``correction.playback``'s ``DEFAULT_ALSA_DEVICE`` re-export plus its
+  function defaults — and the nine observability payloads reporting
+  ``"audio_device": {"pcm": ...}`` (four in ``jasper.web.sound_setup``,
+  five in ``web_commissioning``), which would otherwise keep reporting a
+  lane the spawn no longer uses.
 * :func:`popen_correction_play` (sync/thread contexts) and
   :func:`exec_correction_play` (asyncio contexts, returns a terminable
   handle) are deliberately thin: stdio routing stays an explicit per-site
@@ -171,7 +182,10 @@ def correction_play_argv(
     Single owner of the lane-play command line (module docstring, "The play
     helpers"). Device resolution is the P6c-ii seam: when the correction/
     test lane moves from the snd-aloop alias onto an SHM ring lane, the
-    device below becomes lane-map-aware HERE and nowhere else.
+    SPAWN's device becomes lane-map-aware here — and the module docstring
+    names the other device-fact sites P6c-ii must sweep alongside this one
+    (heavier-machinery ``alsa_device=`` consumers and the observability
+    payloads that report the lane).
 
     ``quiet_before_device`` reproduces the two historical flag orders
     (``aplay -q -D <dev> <wav>`` for the root-CLI family, ``aplay -D <dev>
