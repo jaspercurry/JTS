@@ -722,10 +722,11 @@ def _name_patch_env(
 
 
 # #2176 depmod stand-in cost. Far above the publish phase's real work (a
-# handful of short python startups) and far below the wall-clock bound, so a
-# regression that puts depmod back on the publish path is unambiguous.
+# handful of short python startups). The stand-in writes its sentinel file
+# the instant it is invoked, before this sleep -- so a regression that puts
+# depmod back on the publish path is caught by the sentinel assertion below
+# regardless of how long the stand-in (or a real depmod) takes to return.
 _SLOW_DEPMOD_SEC = 4.0
-_PUBLISH_WALL_BOUND_SEC = 2.0
 
 
 @pytest.mark.parametrize(
@@ -750,10 +751,16 @@ def test_publish_phase_never_runs_depmod_on_the_gadget_start_path(
     jasper-usbsink-name-index.service instead.
 
     All three paths are pinned because the script header states the invariant
-    for all three. Each is double-guarded: the depmod stand-in leaves a
-    sentinel if it is ever executed (timing-independent), and it sleeps long
-    enough that a synchronous call also blows the wall-clock bound
-    (independent of the sentinel)."""
+    for all three. The depmod stand-in writes its sentinel file as the FIRST
+    thing it does, before it sleeps -- so "the sentinel is absent after the
+    process exits" is a complete, timing-independent proof that depmod was
+    never reached, on any host under any load. (A prior version of this test
+    additionally asserted a wall-clock bound on the whole subprocess as a
+    second, "independent" check of the same invariant; it was strictly
+    weaker -- a contended CI host can blow a fixed wall-clock bound on
+    ordinary subprocess/scheduling overhead having nothing to do with
+    depmod, which is exactly what made #2443 flaky -- so it added false
+    failures without adding coverage and was dropped.)"""
     tree = _fake_modules_tree(
         tmp_path, stock_body=stock_body, indexed=True, preexisting_override=True
     )
@@ -764,27 +771,23 @@ def test_publish_phase_never_runs_depmod_on_the_gadget_start_path(
         inflate_override_size=inflate,
     )
 
-    started = time.monotonic()
     proc = subprocess.run(
         [str(NAME_PATCH)],
         env=shims["env"],
         capture_output=True,
         text=True,
-        # Only a hang guard. The real assertions are below, so a slow machine
-        # produces a readable failure rather than a TimeoutExpired error.
+        # Hang guard only. If a regression reintroduces a synchronous depmod
+        # call, the sentinel assertion below fails the instant the stand-in
+        # returns; this generous bound only protects the suite from a
+        # genuinely wedged process, and is far too loose to itself flake.
         timeout=60,
     )
-    elapsed = time.monotonic() - started
 
     assert proc.returncode == 0, proc.stderr
     assert f"event=usbsink_name.{expect_event}" in proc.stderr, proc.stderr
     assert not shims["depmod_ran"].exists(), (
         f"the {case} path ran depmod inside jasper-usbgadget's 5s "
         "TimeoutStartSec -- #2176 regression"
-    )
-    assert elapsed < _PUBLISH_WALL_BOUND_SEC, (
-        f"the {case} path blocked {elapsed:.2f}s, past jasper-usbgadget's 5s "
-        "TimeoutStartSec budget -- #2176 regression"
     )
     # The slow half must actually be handed off, not silently dropped.
     assert shims["systemctl_log"].exists(), (
