@@ -5305,6 +5305,23 @@ def build_v2_run_and_consume(
             the failure screen) to the armed capture; fall back to
             ``capture_set_exhausted`` when no capture was armed. Best-effort —
             the operator wizard also shows the persisted failure.
+
+            Issue #2089: the exhausted fallback used to carry only
+            ``{"phase": ...}`` — no ``budget``, no cause. An absent ``budget``
+            is exactly what ``_post_session_over_host_event`` below documents
+            as dishonest: the phone's ``renderPlanExhausted`` reads it as "the
+            speaker reached its measurement attempt limit", which is untrue of
+            a play-seam/program failure or an admission refusal that escapes
+            before anything is armed — no attempt limit was reached and no
+            clock ran out either. ``TIME_BUDGET_NONE`` is the same "neither
+            clock ran out" bucket that arm already publishes, so the phone
+            renders "lost its connection" instead of the false attempt-limit
+            claim, reusing the wire vocabulary PR #2084 already shipped — no
+            capture-page change needed. The cause fields
+            (``code``/``reason``/``banner``) ride along whenever the code
+            resolves, mirroring the armed branch's shape, so a later
+            capture-page change (its own build-stamp-gated deploy) can say
+            what actually happened without a second host change.
             """
             spec = REASON_REGISTRY.get(code)
             armed = conductor.armed_capture
@@ -5322,7 +5339,16 @@ def build_v2_run_and_consume(
                     "auto_retry": spec.code in TRANSIENT_AUTO_RETRY_CODES,
                 }
             else:
-                event = {"phase": HOST_PHASE_CAPTURE_SET_EXHAUSTED}
+                event = {
+                    "phase": HOST_PHASE_CAPTURE_SET_EXHAUSTED,
+                    "budget": TIME_BUDGET_NONE,
+                }
+                if spec is not None:
+                    event.update(
+                        code=spec.code,
+                        reason=spec.message or spec.banner,
+                        banner=spec.banner,
+                    )
             try:
                 await asyncio.to_thread(
                     client.post_host_event,
