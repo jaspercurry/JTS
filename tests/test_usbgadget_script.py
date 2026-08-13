@@ -683,8 +683,14 @@ def _name_patch_env(
     _write_python_shim(
         bin_dir / "depmod",
         "import pathlib, sys, time\n"
-        f"time.sleep({depmod_sleep!r})\n"
+        # Sentinel written BEFORE the sleep: a detached background invocation
+        # (`depmod ... &`) returns control to the caller without waiting for
+        # this process to exit, so a check ordered the other way around could
+        # race a caller that already moved on. Writing first makes "the
+        # sentinel is absent" true immediately on invocation, independent of
+        # scheduling, backgrounding, or how long the sleep below takes.
         f"pathlib.Path({str(depmod_ran)!r}).write_text(sys.argv[1])\n"
+        f"time.sleep({depmod_sleep!r})\n"
         f"sys.exit({depmod_rc!r})\n",
     )
     _write_python_shim(
@@ -721,11 +727,12 @@ def _name_patch_env(
     }
 
 
-# #2176 depmod stand-in cost. Far above the publish phase's real work (a
-# handful of short python startups). The stand-in writes its sentinel file
-# the instant it is invoked, before this sleep -- so a regression that puts
-# depmod back on the publish path is caught by the sentinel assertion below
-# regardless of how long the stand-in (or a real depmod) takes to return.
+# #2176 depmod stand-in cost. The depmod shim in _name_patch_env writes its
+# sentinel file before this sleep runs, so nothing about the #2176 guard's
+# correctness depends on how long the stand-in takes -- this duration exists
+# only to make a regression that reintroduces depmod on the publish path
+# obvious in CI logs (the run visibly hangs), not to prove anything by
+# itself.
 _SLOW_DEPMOD_SEC = 4.0
 
 
