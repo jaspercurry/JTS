@@ -676,8 +676,12 @@ The conductor performs no persistence itself. Its injected writer calls
 banking the journey projection,
 the tracking model's predicted error (`0`) and the analyzer's realized error;
 ordinary I/O failures warn at
-`event=correction.crossover_v2_model_error_write_failed` and never reverse an
-accepted flow verdict. An identity/value conflict instead warns at
+`event=correction.crossover_v2_model_error_write_failed`, any other store
+exception is contained at
+`event=correction.crossover_v2_model_error_write_unexpected` (ERROR), and
+neither reverses an accepted flow verdict — nor lets the next capture of the
+same applied candidate re-fire the write, since the attempt is banked in
+history either way (#2386). An identity/value conflict instead warns at
 `event=correction.crossover_v2_model_error_identity_conflict` and leaves both
 journey record and decision unbanked, rather than publishing two grades for
 one candidate identity. The store serializes floor adoption and record writes
