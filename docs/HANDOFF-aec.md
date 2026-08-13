@@ -2628,8 +2628,9 @@ Production AEC consumes outputd's final speaker monitor, after CamillaDSP
 processing and ducking, and has no other source. `jasper_capture` /
 `pcm.jasper_ref` remains a diagnostics-only tap on the renderer→Camilla
 loopback *before* CamillaDSP; the bridge can no longer be pointed at it. Do
-not infer speaker amplitude or final reference timing from that legacy tap. `jasper-aec-tune` deliberately captures it only to
-estimate the host-to-XVF bulk delay; in active mode its noise enters through
+not infer speaker amplitude or final reference timing from that legacy tap.
+`jasper-aec-tune` deliberately captures it only to estimate the host-to-XVF
+bulk delay; in active mode its noise enters through
 `correction_substream`, so the stimulus is present in that tap while
 CamillaDSP `main_volume` still governs the audible output.
 
