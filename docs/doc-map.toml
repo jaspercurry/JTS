@@ -759,8 +759,10 @@ code = [
   "deploy/usbsink/jasper-usbgadget-*",
   "deploy/systemd/jasper-usbgadget.service",
   "deploy/systemd/jasper-usbnet-dhcp.service",
+  "deploy/systemd/jasper-usb*.service",
   "deploy/usb-network/**",
   "jasper/usbgadget.py",
+  "jasper/usb*.py",
   "jasper/cli/doctor/usbsink.py",
   "jasper/cli/doctor/network.py",
   # NOTE: jasper/control/state_aggregate.py is deliberately NOT routed here.
@@ -778,10 +780,10 @@ docs = [
   "docs/HANDOFF-usbsink.md",
 ]
 requires_docs_when = [
-  "The hardware-conditional USB NCM network function, its NetworkManager keyfile or dnsmasq conf, the `10.12.194.1/24` address, the kill switch (`JASPER_USB_NETWORK`), the function truth table shared with USB audio, or the relationship to Raspberry Pi OS's own `rpi-usb-gadget` rescue feature changes.",
+  "The hardware-conditional USB NCM network function, its per-speaker address plan or generated NetworkManager/dnsmasq projections, the kill switch (`JASPER_USB_NETWORK`), the function truth table shared with USB audio, or the relationship to Raspberry Pi OS's own `rpi-usb-gadget` rescue feature changes.",
 ]
 verification = [
-  "pytest tests/test_usbgadget_script.py tests/test_doctor_usbsink.py tests/test_control_server.py tests/test_http_security.py",
+  "pytest tests/test_usb_network_plan.py tests/test_install_usbgadget_migration.py tests/test_state_usb_network.py tests/test_doctor_usbnet.py tests/test_usbgadget_script.py tests/test_doctor_usbsink.py tests/test_control_server.py tests/test_http_security.py",
 ]
 
 [[subsystem]]

@@ -464,7 +464,7 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      the obsolete standalone binary and build cache are removed.
    - Enable the hardware-gated composite USB gadget
      (jasper-usbgadget.service): where the resolved USB role permits, its USB
-     management network (usb0 10.12.194.1/24, no forwarding) makes
+     management network (a CPU-serial-derived usb0 /30, no forwarding) makes
      http://<hostname>/ work over USB even with Wi-Fi off, alongside the
      wizard-toggled USB audio function. Install first parks derived USB audio
      and establishes an NCM-only baseline when management transport is
@@ -678,7 +678,7 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      intent after fan-in and the composite gadget are installed.
    - Enable the hardware-gated composite USB gadget
      (jasper-usbgadget.service): where the resolved USB role permits, it carries
-     a USB management network (ncm.usb0, 10.12.194.1/24, no forwarding) so
+     a USB management network (ncm.usb0, CPU-serial-derived /30, no forwarding) so
      http://<hostname>/ works over USB even with Wi-Fi off, plus the
      wizard-toggled USB audio function. Install first parks derived USB audio
      and establishes an NCM-only baseline when management transport is

@@ -7,6 +7,10 @@ from __future__ import annotations
 from email.message import Message
 
 from jasper import http_security
+from jasper.usb_network import derive_plan
+
+
+USB_PLAN = derive_plan("10000000abcdef01")
 
 
 def _headers(**values: str) -> Message:
@@ -41,15 +45,17 @@ def test_allowed_management_host_rejects_public_hostname():
 
 
 def test_allowed_management_host_accepts_usb_gadget_network_address():
-    """10.12.194.1/24 on usb0 is the fixed USB management-network address
-    (docs/HANDOFF-usb-gadget.md) — same RFC 1918 /8 the rest of the
-    private-IP allowlist already covers, but pinned explicitly so a
+    """The derived USB management address and legacy migration address are
+    inside the RFC 1918 /8 the private-IP allowlist already covers, pinned so a
     future tightening of the RFC1918 ranges can't silently lock out the
     USB fallback path. Both bare and Host-header-with-port forms must
     pass, and a link-local (no-DHCP-yet) address must too, contrasted
     against a public IP that must still be rejected."""
+    assert http_security.is_allowed_management_host(USB_PLAN.device_address)
+    assert http_security.is_allowed_management_host(
+        f"{USB_PLAN.device_address}:8780"
+    )
     assert http_security.is_allowed_management_host("10.12.194.1")
-    assert http_security.is_allowed_management_host("10.12.194.1:8780")
     # 169.254.x.x: IPv4 link-local, reachable before/without the usbnet
     # DHCP lease landing (or if dnsmasq is down) — must stay allowed.
     assert http_security.is_allowed_management_host("169.254.12.34")
@@ -137,11 +143,15 @@ def test_mutating_request_rejects_origin_host_mismatch_between_local_aliases():
 
 def test_management_read_accepts_usb_gadget_and_link_local_host_headers():
     """Guard-layer contrast case for the USB management network fallback
-    URL (http://10.12.194.1/): the fixed gadget address, its with-port
+    URL: a plan-derived gadget address, its with-port
     Host form, and a pre-DHCP link-local address must all pass
     management_read_allowed, while a public IP one /8 over must still
     be rejected as host_not_allowed."""
-    for host in ("10.12.194.1", "10.12.194.1:8780", "169.254.12.34"):
+    for host in (
+        USB_PLAN.device_address,
+        f"{USB_PLAN.device_address}:8780",
+        "169.254.12.34",
+    ):
         ok, reason = http_security.management_read_allowed({"Host": host})
         assert (ok, reason) == (True, "ok"), host
     ok, reason = http_security.management_read_allowed({"Host": "11.12.194.1"})

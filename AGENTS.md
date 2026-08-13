@@ -930,33 +930,34 @@ interactive-sudo deploys skip it too. The helper
 `tests/test_lib_deploy_direction.py`.
 
 **USB-gadget-network deploy advisory:** the preflight also warns (never
-blocks) when `PI_HOST` resolves inside the USB gadget's management subnet
-— `10.12.194.1/24` on `usb0`, see
+blocks) when `PI_HOST` resolves inside either the USB gadget's per-speaker
+address allocation (`10.64.0.0/10`) or its legacy migration subnet
+(`10.12.194.1/24`), see
 [docs/HANDOFF-usb-gadget.md](docs/HANDOFF-usb-gadget.md). It fires on
-every in-subnet address regardless of the speaker's USB-audio state,
+every in-range address regardless of the speaker's USB-audio state,
 since the laptop can't see that state from here — warning often is the
-safe default. What it's warning about: if USB Audio Input is enabled on
-the speaker, `install.sh` rebuilds the composite USB gadget mid-install
-and tears down `ncm.usb0` out from under the deploy's own ssh session (a
-USB-audio-off box's converged NCM-only gadget is not bounced — pinned by
-`tests/test_install_usbgadget_migration.py`). When that happens, the
-install itself keeps going and **succeeds on the Pi** — but the laptop's
-ssh half-opens with no FIN, and the transcript freezes around
-`event=install.usb_gadget_baseline`, which reads as a wedged deploy that
-actually landed (issue #2340, the 2026-08-11 U2 deploy — USB Audio Input
-was on). The advisory never blocks — `SKIP_INSTALL=1` rsync-only deploys
-never touch the gadget, and deploying over USB anyway is sometimes the
-only option — but the fix is to deploy over the Wi-Fi/LAN address instead
-(`PI_HOST=<lan-hostname-or-ip>`). `SSH_BATCH_OPTS` also now carries
+safe default. The broad `/10` is only a classifier: each Pi installs one
+narrow serial-derived `/30`, never a `/10` route. What it's warning about:
+an install can rebuild the composite gadget, and any USB transport failure
+or pre-address-plan release can still tear down `ncm.usb0` under the deploy's
+own ssh session. Current installs explicitly defer an address migration while
+a legacy address is live, preserving both NetworkManager and dnsmasq files
+until the next boot, but the advisory remains a bounded defense for gadget
+recomposition and older speakers. A severed session may freeze around
+`event=install.usb_gadget_baseline` even though work continued on the Pi
+(issue #2340). The advisory never blocks — `SKIP_INSTALL=1` rsync-only
+deploys never touch the gadget, and USB may be the only path — but Wi-Fi/LAN
+is preferred when available (`PI_HOST=<lan-hostname-or-ip>`).
+`SSH_BATCH_OPTS` also carries
 `ServerAliveInterval=15`/`ServerAliveCountMax=4`, so a severed transport
 surfaces as an ssh error in about a minute instead of an unbounded hang;
 that keepalive is transport-level only (the encrypted probe gets a reply
 as long as sshd is alive), so it does not touch a live-but-quiet install
 phase such as a long, silent Rust build. Helpers
-(`usb_gadget_management_cidr`, `ipv4_in_cidr`) live in
+(`usb_gadget_management_cidrs`, `ipv4_in_cidr`) live in
 [`scripts/_lib.sh`](scripts/_lib.sh), parse the subnet out of
-[`deploy/usb-network/jts-usb.nmconnection`](deploy/usb-network/jts-usb.nmconnection)
-at runtime so it can't drift from that single source of truth, and are
+[`jasper/usb_network.py`](jasper/usb_network.py) at runtime so the classifier
+cannot drift from the address-plan owner, and are
 pinned by `tests/test_lib_usb_gadget_advisory.py`.
 
 **Skip / opt-in flags:** `SKIP_INSTALL=1` (rsync only),

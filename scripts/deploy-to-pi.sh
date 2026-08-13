@@ -350,7 +350,7 @@ PY
 }
 
 # USB-gadget-network deploy advisory (non-blocking, prints BEFORE rsync).
-# See _lib.sh's usb_gadget_management_cidr/ipv4_in_cidr docstrings for the
+# See _lib.sh's usb_gadget_management_cidrs/ipv4_in_cidr docstrings for the
 # "why" (issue #2340): when USB Audio Input is enabled on the speaker,
 # install.sh's mid-install gadget rebuild can sever a deploy whose own
 # ssh session is riding ncm.usb0 (a USB-audio-off box's converged
@@ -368,22 +368,32 @@ PY
 # will actually pick — ssh resolves DNS internally with no introspection
 # hook, so "warn on any match, name which" is the honest simplest answer.
 warn_if_pi_host_on_gadget_network() {
-    local cidr matched="" addr addrs
-    cidr="$(usb_gadget_management_cidr)" || return 0
+    local cidr cidrs matched="" matched_cidr="" addr addrs
+    cidrs="$(usb_gadget_management_cidrs)" || return 0
+    [[ -n "$cidrs" ]] || return 0
 
     if is_ipv4_host "$PI_HOST"; then
-        if ipv4_in_cidr "$PI_HOST" "$cidr"; then
-            matched="$PI_HOST"
-        fi
+        while IFS= read -r cidr; do
+            [[ -z "$cidr" ]] && continue
+            if ipv4_in_cidr "$PI_HOST" "$cidr"; then
+                matched="$PI_HOST"
+                matched_cidr="$cidr"
+                break
+            fi
+        done <<< "$cidrs"
     else
         addrs="$(resolve_pi_host_ipv4_addrs)" || true
         [[ -n "$addrs" ]] || return 0
         while IFS= read -r addr; do
             [[ -z "$addr" ]] && continue
-            if ipv4_in_cidr "$addr" "$cidr"; then
-                matched="$addr"
-                break
-            fi
+            while IFS= read -r cidr; do
+                [[ -z "$cidr" ]] && continue
+                if ipv4_in_cidr "$addr" "$cidr"; then
+                    matched="$addr"
+                    matched_cidr="$cidr"
+                    break 2
+                fi
+            done <<< "$cidrs"
         done <<< "$addrs"
     fi
 
@@ -392,7 +402,7 @@ warn_if_pi_host_on_gadget_network() {
     cat <<EOF >&2
 ─────────────────────────────────────────────────────────────
  ⚠ ${PI_HOST} resolves to ${matched}, inside the USB gadget
-   management network (${cidr}).
+   management allocation (${matched_cidr}).
    If that's this deploy's own transport AND USB Audio Input is
    enabled on the speaker: install.sh rebuilds the composite USB
    gadget mid-install and tears down that link out from under it

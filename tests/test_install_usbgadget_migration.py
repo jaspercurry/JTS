@@ -18,6 +18,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 FRAGMENT = ROOT / "deploy" / "lib" / "install" / "systemd-units.sh"
 NM_DEVICE_POLICY = ROOT / "deploy" / "usb-network" / "90-jasper-usbnet.conf"
+PLAN_UNIT = ROOT / "deploy" / "systemd" / "jasper-usb-network-plan.service"
+NM_PLAN_DROPIN = (
+    ROOT
+    / "deploy"
+    / "systemd"
+    / "NetworkManager.service.d"
+    / "jasper-usb-network-plan.conf"
+)
+GADGET_UNIT = ROOT / "deploy" / "systemd" / "jasper-usbgadget.service"
 
 
 def _harness(
@@ -254,6 +263,19 @@ def test_usbnet_install_reloads_policy_and_bounds_existing_device_activation():
 
     assert 'deploy/usb-network/90-jasper-usbnet.conf"' in body
     assert "/etc/NetworkManager/conf.d/90-jasper-usbnet.conf" in body
+    assert "jasper.usb_network converge" in body
+    assert "jasper.usb_network stage" not in body
+    assert "jasper.usb_network promote" not in body
+    nm_snapshot = body.index(
+        '_snapshot_full_unit_install_destination "${nm_path}"'
+    )
+    dnsmasq_snapshot = body.index(
+        '_snapshot_full_unit_install_destination "${dnsmasq_path}"'
+    )
+    converge = body.index("jasper.usb_network converge")
+    assert nm_snapshot < dnsmasq_snapshot < converge
+    assert "usb_network_migration_pending" in body
+    assert "live_files=preserved" in body
     assert "nmcli --wait 10 general reload conf" in body
     assert "nmcli --wait 10 connection load" in body
     assert "/etc/NetworkManager/system-connections/jts-usb.nmconnection" in body
@@ -262,3 +284,45 @@ def test_usbnet_install_reloads_policy_and_bounds_existing_device_activation():
     assert "nmcli --wait 10 -t -f NAME,DEVICE connection show --active" in body
     assert "nmcli --wait 10 connection up jts-usb ifname usb0" in body
     assert "event=install.usb_network_converged" in body
+
+
+def test_usb_network_boot_gate_blocks_gadget_but_never_wifi_on_plan_failure():
+    plan_unit = PLAN_UNIT.read_text(encoding="utf-8")
+    nm_dropin = NM_PLAN_DROPIN.read_text(encoding="utf-8")
+    gadget = GADGET_UNIT.read_text(encoding="utf-8")
+
+    assert "Before=NetworkManager.service jasper-usbgadget.service" in plan_unit
+    assert "ExecStart=/opt/jasper/.venv/bin/python -m jasper.usb_network promote" in plan_unit
+    assert "Requires=jasper-usb-network-plan.service" in gadget
+    assert "jasper-usb-network-plan.service" in next(
+        line for line in gadget.splitlines() if line.startswith("After=")
+    )
+    assert "Wants=jasper-usb-network-plan.service" in nm_dropin
+    assert "After=jasper-usb-network-plan.service" in nm_dropin
+    assert "Requires=jasper-usb-network-plan.service" not in nm_dropin
+
+
+def test_deferred_install_never_replaces_either_live_projection():
+    source = FRAGMENT.read_text(encoding="utf-8")
+    body = source.split("install_usb_network_files() {", 1)[1].split("\n}\n", 1)[0]
+
+    pending_start = body.index('if [[ -e "${pending_path}" ]]')
+    return_index = body.index("return 0", pending_start)
+    nmcli_index = body.index("if command -v nmcli", pending_start)
+    assert pending_start < return_index < nmcli_index
+    pending_branch = body[pending_start:return_index]
+    assert "nmcli" not in pending_branch
+    assert "install -m 0600" not in body
+    assert "install -m 0644" not in body.split('local plan_path=', 1)[1]
+
+
+def test_usb_network_plan_trust_anchor_is_root_owned_and_separate_from_shared_state():
+    source = FRAGMENT.read_text(encoding="utf-8")
+    body = source.split("install_usb_network_files() {", 1)[1].split("\n}\n", 1)[0]
+    plan_unit = PLAN_UNIT.read_text(encoding="utf-8")
+
+    assert 'usb_network_state_dir="/var/lib/jasper-usb-network"' in body
+    assert 'install -d -o root -g root -m 0755 "${usb_network_state_dir}"' in body
+    assert 'install -d -m 0755 "${STATE_DIR}"' not in body
+    assert "ReadWritePaths=/etc/NetworkManager/system-connections /etc/jasper /var/lib/jasper-usb-network" in plan_unit
+    assert " /var/lib/jasper\n" not in plan_unit

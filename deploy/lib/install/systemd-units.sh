@@ -422,6 +422,13 @@ install_usbsink_unit_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-usbnet-dhcp.service" \
         "${SYSTEMD_DIR}/jasper-usbnet-dhcp.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-usb-network-plan.service" \
+        "${SYSTEMD_DIR}/jasper-usb-network-plan.service"
+    install -d -m 0755 "${SYSTEMD_DIR}/NetworkManager.service.d"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/NetworkManager.service.d/jasper-usb-network-plan.conf" \
+        "${SYSTEMD_DIR}/NetworkManager.service.d/jasper-usb-network-plan.conf"
     install -m 0755 \
         "${REPO_DIR}/deploy/usbsink/jasper-usbgadget-up" \
         /usr/local/sbin/jasper-usbgadget-up
@@ -450,22 +457,54 @@ install_usbsink_unit_files() {
 }
 
 install_usb_network_files() {
-    # NetworkManager keyfile owning usb0 (10.12.194.1/24, no default route) +
-    # a device policy overriding Raspberry Pi OS's blanket "USB gadgets are
-    # unmanaged" udev default + the scoped dnsmasq conf the device-activated
-    # jasper-usbnet-dhcp.service reads. NM stays the box's single network owner. See
-    # docs/HANDOFF-usb-gadget.md.
+    # One immutable-hardware-derived plan owns both the NetworkManager keyfile
+    # and dnsmasq projection. A live interface on a different address means an
+    # install may itself be riding that link: promote leaves BOTH old files
+    # untouched for this run, and the boot gate applies the pair before NM and
+    # the gadget next start. A same-install gadget recompose therefore returns
+    # on its current address instead of severing the deploy mid-flight.
     install -d -m 0755 /etc/NetworkManager/system-connections
     install -d -m 0755 /etc/NetworkManager/conf.d
-    install -m 0600 \
-        "${REPO_DIR}/deploy/usb-network/jts-usb.nmconnection" \
-        /etc/NetworkManager/system-connections/jts-usb.nmconnection
     install -m 0644 \
         "${REPO_DIR}/deploy/usb-network/90-jasper-usbnet.conf" \
         /etc/NetworkManager/conf.d/90-jasper-usbnet.conf
-    install -m 0644 \
-        "${REPO_DIR}/deploy/usb-network/usbnet-dnsmasq.conf" \
-        /etc/jasper/usbnet-dnsmasq.conf
+    local usb_network_state_dir="/var/lib/jasper-usb-network"
+    install -d -o root -g root -m 0755 "${usb_network_state_dir}"
+    local plan_python="${INSTALL_DIR:-/opt/jasper}/.venv/bin/python"
+    if [[ ! -x "${plan_python}" ]]; then
+        plan_python=python3
+    fi
+    local plan_path="${usb_network_state_dir}/plan.json"
+    local pending_path="${usb_network_state_dir}/migration_pending"
+    local nm_path="/etc/NetworkManager/system-connections/jts-usb.nmconnection"
+    local dnsmasq_path="/etc/jasper/usbnet-dnsmasq.conf"
+    # Full-profile installs already own a rollback domain for the gate unit and
+    # NetworkManager drop-in. Include the two generated consumers before the
+    # plan owner replaces either one, so any later catchable staging failure
+    # restores the complete prior generation rather than old ungated units with
+    # a partially promoted address pair. Streambox installs have no surrounding
+    # transaction and converge directly.
+    if declare -p install_transaction_paths >/dev/null 2>&1; then
+        _snapshot_full_unit_install_destination "${nm_path}"
+        _snapshot_full_unit_install_destination "${dnsmasq_path}"
+    fi
+    local plan_output
+    if ! plan_output="$(PYTHONPATH="${REPO_DIR}" "${plan_python}" \
+            -m jasper.usb_network converge \
+            --plan "${plan_path}" \
+            --nm "${nm_path}" \
+            --dnsmasq "${dnsmasq_path}" \
+            --pending "${pending_path}" 2>&1)"; then
+        echo "  ERROR: USB network plan generation/promotion failed; refusing a fleet-wide fallback address. The USB gadget will remain boot-blocked while NetworkManager/Wi-Fi remain available: ${plan_output}" >&2
+        return 1
+    fi
+    echo "  ${plan_output}"
+    if [[ -e "${pending_path}" ]]; then
+        # Deliberately skip every live NM/dnsmasq action. The files and their
+        # running consumers remain one legacy generation until next boot.
+        echo "  event=install.usb_network_migration_pending activation=next_boot live_files=preserved"
+        return 0
+    fi
     # Reload both policy and profile. On an upgrade usb0 may already exist, so
     # also make NM reconsider that device and activate the static profile once.
     # Bounds keep the install path finite. Load only JTS's keyfile: a global
@@ -478,7 +517,7 @@ install_usb_network_files() {
         nmcli --wait 10 general reload conf >/dev/null 2>&1 || \
             echo "  WARN: NetworkManager did not reload USB network device policy"
         nmcli --wait 10 connection load \
-            /etc/NetworkManager/system-connections/jts-usb.nmconnection \
+            "${nm_path}" \
             >/dev/null 2>&1 || \
             echo "  WARN: NetworkManager did not reload jts-usb profile"
         if [[ -e /sys/class/net/usb0 ]]; then
@@ -545,6 +584,10 @@ enable_usbgadget() {
     # The path watcher is always cheap/inert; the sampler starts only while the
     # persistent operator marker exists. try-restart picks up helper updates on
     # deploy without turning a disabled sampler on.
+    systemctl enable jasper-usb-network-plan.service >/dev/null 2>&1 || {
+        echo "  ERROR: could not enable USB network address-plan boot gate" >&2
+        return 1
+    }
     systemctl enable --now jasper-usbgadget-forensics.path >/dev/null 2>&1 || \
         echo "  WARN: could not arm opt-in USB gadget forensics watcher"
     systemctl try-restart jasper-usbgadget-forensics.service >/dev/null 2>&1 || true
