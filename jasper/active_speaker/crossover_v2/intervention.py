@@ -168,10 +168,12 @@ class PlannerInputError(PlannerError):
 
 # What a misbehaving disclosure port may raise without taking the plan down.
 # Enumerated rather than a blind ``except Exception`` (ruff BLE, and the
-# repository's frozen broad-except budget), and mirroring
-# ``planner_facade._ASSEMBLY_ERRORS`` with ``OSError`` added: the likeliest real
-# consumer is a logging handler, and a handler writing to a closed stream or a
-# full disk raises exactly that.
+# repository's frozen broad-except budget). ``OSError`` is in the set because
+# the likeliest real consumer is a logging handler, and a handler writing to a
+# closed stream or a full disk raises exactly that. The set was originally
+# derived by mirroring the Phase-1 planner facade's own assembly-error tuple,
+# which #2291 Phase 5c-iii deleted along with the facade; it stands on its own
+# reasoning now, not on a second copy elsewhere.
 _PORT_ERRORS = (
     ArithmeticError,
     AttributeError,

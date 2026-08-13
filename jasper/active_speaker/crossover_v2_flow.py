@@ -185,9 +185,6 @@ from jasper.active_speaker.crossover_v2.journey import (
     CommissionJourney,
     JourneyPlan,
 )
-from jasper.active_speaker.crossover_v2.planner_facade import (
-    plan_intervention_proposal,
-)
 from jasper.active_speaker.fc_selector import (
     FcCandidateEvaluation,
     FcSelection,
@@ -4791,10 +4788,6 @@ class CrossoverV2Conductor:
         # ``hydrate`` — see that method for why production cannot.
         self._measure_analysis: Any = None
         self._candidate: Any = None
-        # The #2291 Phase 1 proposal contract for whatever ``_candidate`` holds.
-        # Written only by ``commit_intervention_proposal``, so it can never
-        # describe a candidate that was planned but not committed.
-        self._intervention_proposal: InterventionProposal | PlanRefusal | None = None
         # HAS THE HOUSEHOLD CONFIRMED? — the held-set predicate, decoupled from
         # the fire-once guard above by the eager-fit rider (owner UX direction,
         # 2026-07-30). ``cloud_measure_group_awaiting_confirm`` used to answer
@@ -5349,23 +5342,6 @@ class CrossoverV2Conductor:
         return self._measure_entry_baseline
 
     @property
-    def last_intervention_proposal(self) -> "InterventionProposal | PlanRefusal | None":
-        """The #2291 contract for the committed candidate, or why there is none.
-
-        ``None`` before any candidate is committed; an
-        :class:`~jasper.active_speaker.crossover_v2.contracts.InterventionProposal`
-        after; a
-        :class:`~jasper.active_speaker.crossover_v2.contracts.PlanRefusal` when
-        the committed candidate could not satisfy the contract.  Both the
-        configured-Fc walk and the alternative-Fc selection produce it through
-        the same :meth:`commit_intervention_proposal` seam.
-
-        Read-only and immutable, so unlike the ``_last_*`` scratch fields this
-        cannot be a caller's return channel.
-        """
-        return self._intervention_proposal
-
-    @property
     def delta_probe(self) -> DeltaProbeMap | None:
         """This session's realized-vs-commanded verdict (PR-L5), or ``None``
         when no post-apply capture has been consumed yet."""
@@ -5819,18 +5795,6 @@ class CrossoverV2Conductor:
             extra_by_speaker=ledger.by_speaker,
         )
 
-    def _extra_initiator(self, slot: str) -> str:
-        """Who is asking for the extra attempt about to be admitted.
-
-        The attribution rule is
-        :func:`~jasper.active_speaker.crossover_v2.admission.extra_initiator`;
-        this reads the rejection it is derived from, which is the conductor's.
-        """
-        return _admission.extra_initiator(
-            self._last_reason.get(slot),
-            geometry_locked_code=REASON_CLOUD_GEOMETRY_LOCKED,
-        )
-
     @staticmethod
     def _extras_spent_message(
         ledger: SlotAttempts, *, diagnosis: str, outcome: str,
@@ -5970,9 +5934,10 @@ class CrossoverV2Conductor:
         )
         if not verdict.accepted and verdict.code is not None:
             # Recorded BEFORE the settle so both readers see it: the settle's
-            # own attribution fallback, and ``_extra_initiator`` at the next
-            # begin (a geometry rung is only identifiable from the rejection
-            # that produced it).
+            # own attribution fallback, and
+            # :func:`~jasper.active_speaker.crossover_v2.admission.extra_initiator`
+            # at the next begin (a geometry rung is only identifiable from the
+            # rejection that produced it).
             self._last_reason[slot] = verdict.code
             self._last_pilot_evidence[slot] = (
                 verdict.code,
@@ -7644,7 +7609,6 @@ class CrossoverV2Conductor:
         predicted_sum: Any,
         commanded_delta: Any,
         level_frame_finding: Mapping[str, Any] | None,
-        realized_branch_level: Mapping[str, Any] | None = None,
     ) -> None:
         """The ONE seam through which a planned candidate becomes real (#2291).
 
@@ -7656,10 +7620,9 @@ class CrossoverV2Conductor:
 
         **What this seam covers, exactly:** the three conductor state writes
         that were byte-identical at both sites (``_candidate``,
-        ``_measure_predicted_sum``, ``_measure_commanded_delta``), the two
+        ``_measure_predicted_sum``, ``_measure_commanded_delta``) and the two
         irreversible seam fires (``publish_candidate`` then
-        ``_publish_level_frame_finding``), and — new, and consuming nothing —
-        the #2291 proposal contract.
+        ``_publish_level_frame_finding``).
 
         **What it deliberately does NOT cover:** ``_measure_predicted_spec_
         report``, and the ``correction.crossover_v2_candidate_built``
@@ -7671,39 +7634,29 @@ class CrossoverV2Conductor:
         fields.  Folding either in would be a behavior change, which no phase
         of this migration has sanctioned; they stay at their call sites.
 
-        ``realized_branch_level`` arrives ALREADY SERIALIZED (#2291 Phase 2b).
-        Both sites now hold their candidate's own verdict, but by different
-        routes — the walk off its build's :class:`_LinearizationState`, the
-        selection off the retained
-        :class:`~jasper.active_speaker.fc_selector.FcCandidateEvaluation`,
-        which may only carry plain data across the walk — so the mapping is
-        what they have in common. This seam does no conversion; the owner of
-        each verdict serializes it.
-
         Ordering is preserved rather than merely similar: every conductor
         attribute write still completes before ``publish_candidate``, the first
         observable side effect, so a re-entrant reader sees exactly what it saw
-        before.  The proposal is assembled last, after every pre-existing side
-        effect, and cannot raise — see :func:`plan_intervention_proposal`.
+        before.
+
+        This seam no longer assembles a proposal.  #2291 Phase 5c-iii deleted
+        the Phase-1 planner facade: it was write-only in production — nothing
+        outside its own test file read ``last_intervention_proposal``, and
+        ``RoundReceipt.proposal_fingerprint`` is fed by the tuning-attempt id
+        or the candidate's own fingerprint, never by the proposal's.  Wiring
+        the proposal fingerprint into the receipt is #2392, which is a change
+        to a durable write and gets its own PR.  Its ``realized_branch_level``
+        argument went with it; both call sites still hold that verdict — the
+        walk off its build's :class:`_LinearizationState`, the selection off
+        the retained
+        :class:`~jasper.active_speaker.fc_selector.FcCandidateEvaluation` — so
+        re-supplying it here is a one-line change when #2392 needs it.
         """
         self._candidate = candidate
         self._measure_predicted_sum = predicted_sum
         self._measure_commanded_delta = commanded_delta
         self._seams.publish_candidate(candidate)
         self._publish_level_frame_finding(level_frame_finding)
-        self._intervention_proposal = plan_intervention_proposal(
-            candidate,
-            session_id=self.session_id,
-            predicted_response_after=predicted_sum,
-            predicted_spec_after=self._measure_predicted_spec_report,
-            commanded_delta=commanded_delta,
-            accountability=level_frame_finding,
-            realized_branch_level=realized_branch_level,
-            evidence_identities={
-                "session_id": self.session_id,
-                "program_id": str(getattr(candidate, "program_id", "") or ""),
-            },
-        )
 
     def _commit_fc_candidate(self, evaluation: FcCandidateEvaluation) -> dict[str, Any]:
         from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate
@@ -7713,20 +7666,11 @@ class CrossoverV2Conductor:
         candidate = MeasuredCrossoverCandidate.from_mapping(evaluation.candidate)
         self._measure_predicted_spec_report = dict(
             evaluation.predicted_spec_report or {}) or None
-        # THIS candidate's own realized-level verdict, retained on its own
-        # evaluation (#2291 Phase 2b, closing #2307 gate note N6). Until the
-        # cutover the only verdict reachable here belonged to the ANCHOR — the
-        # sweep restored the conductor's scratch fields when it ended — so
-        # passing anything would have been the cross-context leak #2291 exists
-        # to close, and the proposal recorded the absence instead. The sweep
-        # now carries each candidate's own, so the selected corner's proposal
-        # describes the corner that was selected.
         self.commit_intervention_proposal(
             candidate,
             predicted_sum=evaluation.predicted_sum,
             commanded_delta=evaluation.commanded_delta,
             level_frame_finding=evaluation.level_frame_finding,
-            realized_branch_level=evaluation.realized_branch_level,
         )
         log_event(
             logger, "correction.crossover_v2_candidate_built",
@@ -7755,15 +7699,11 @@ class CrossoverV2Conductor:
         predicted_sum = built.predicted_sum
         analysis = built.analysis
         cloud = built.cloud
-        # This build's own realized-level verdict, off the state it returned —
-        # the same route the selected-Fc path takes, differing only in where
-        # the state was held between planning and commit.
         self.commit_intervention_proposal(
             candidate,
             predicted_sum=predicted_sum,
             commanded_delta=_commanded_delta(analysis.predicted_sum, predicted_sum),
             level_frame_finding=built.level_frame_finding,
-            realized_branch_level=built.linearization.realized_branch_level,
         )
         log_event(
             logger, "correction.crossover_v2_candidate_built",
@@ -9549,9 +9489,31 @@ class CrossoverV2Conductor:
                 and not analysis.configured_path_composed):
             raise ValueError("protected-neutral capture reached the fitter uncomposed")
         if analysis.candidate is None:
-            # The residual. ``_measure_verdict`` hoisted this same check to the
-            # capture that produces the analysis (2026-07-27 timing move), so
-            # reaching it here means a caller that did not walk that path.
+            # ``_measure_verdict`` hoisted this same check to the capture that
+            # produces the analysis (2026-07-27 timing move), so reaching it
+            # here means a caller that did not walk that path.
+            #
+            # #2291 Phase 5c-iii examined this as a duplicate and KEPT it, on
+            # two measured findings rather than on caution:
+            #
+            # 1. The fallback is NOT the same answer. Delete this and
+            #    ``build_candidate`` receives ``None``; whatever it eventually
+            #    raises is a bare builtin, and
+            #    ``correction_crossover_v2.classify_program_failure`` returns
+            #    ``None`` for those — the catch-all arm's ``internal_error``.
+            #    This raise is claimed by that classifier as
+            #    ``program_unplayable``. Two different sentences for the
+            #    household, so "duplicate" was never true.
+            # 2. The organ CONTRACTS on it.
+            #    :func:`~...crossover_v2.planning.build_candidate` takes ``cand``
+            #    as an argument rather than re-reading ``analysis.candidate``,
+            #    and its docstring gives the reason: the caller has already
+            #    refused an analysis carrying none, under its own error
+            #    vocabulary. Removing the check here does not move that
+            #    responsibility anywhere — it drops it.
+            #
+            # Pinned by ``test_crossover_v2_planner_wiring
+            # .test_the_no_candidate_refusal_is_not_the_same_as_its_fallback``.
             raise CrossoverV2FlowError("MEASURE analysis produced no candidate")
         return _planning.build_candidate(
             analysis, analysis.candidate, cloud,

@@ -657,3 +657,54 @@ def test_the_settle_kinds_are_the_journal_and_payload_words_the_phone_reads():
     assert admission.SETTLE_BELOW_POSITION_FLOOR == "below_position_floor"
     assert admission.SETTLE_KEPT_EARLIER_TAKE == "kept_earlier_take"
     assert admission.SETTLE_POSITION_UNRESOLVED == "position_unresolved"
+
+
+def test_a_zero_attempt_ledger_gets_a_free_first_attempt():
+    """``assess_begin``'s precondition, asserted against the pure function.
+
+    Deliberately the one test in this module NOT written against
+    ``authorize_begin`` — because the production wiring cannot reach the branch
+    it pins, which is exactly why the branch needed a test before #2291 Phase
+    5c-iii could be trusted not to delete it as dead code.
+
+    "No attempts yet" is expressible two ways: no ledger at all, or a ledger
+    that exists with ``admitted == 0``. The flow only ever produces the first
+    spelling — it holds one :class:`~...admission.SlotAttempts` per slot and
+    reaches it through ``setdefault``, which returns the existing entry, so a
+    zero-attempt ledger is never handed back. That is a property of one caller.
+    ``assess_begin`` is a public pure function, and any caller may construct a
+    fresh ledger and ask.
+
+    Both spellings must mean the same thing: ADMIT, free. Were the
+    ``not ledger.admitted`` half dropped as unreachable, this call would fall
+    through to the extras arithmetic and charge a household's very first
+    attempt at a position — spending one of ``MAX_EXTRA_ATTEMPTS_PER_POSITION``
+    before the planned capture has happened at all.
+    """
+    fresh = admission.SlotAttempts()
+    assert fresh.admitted == 0
+
+    from_fresh_ledger = admission.assess_begin(
+        ledger=fresh,
+        verify_hold=False,
+        apply_failure_code=lambda: None,
+        last_reason=None,
+        non_retriable=frozenset(),
+        default_code="unused",
+        geometry_locked_code="unused",
+    )
+    from_no_ledger = admission.assess_begin(
+        ledger=None,
+        verify_hold=False,
+        apply_failure_code=lambda: None,
+        last_reason=None,
+        non_retriable=frozenset(),
+        default_code="unused",
+        geometry_locked_code="unused",
+    )
+
+    assert from_fresh_ledger.kind == admission.ADMIT
+    assert from_fresh_ledger.spends_extra is False
+    # The two spellings of "no attempts yet" are the same decision, field for
+    # field — including the initiator, which must not be attributed to anyone.
+    assert from_fresh_ledger == from_no_ledger

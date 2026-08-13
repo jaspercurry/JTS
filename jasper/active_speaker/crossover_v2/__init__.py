@@ -11,8 +11,6 @@ order — so this list is what exists, not a plan:
 * :mod:`.contracts` — the immutable domain values (candidate acoustic context,
   intervention proposal, plan refusal, verification result, adoption decision,
   round receipt) with their construction-time invariants and fingerprints.
-* :mod:`.planner_facade` — assembles a proposal from the existing conductor's
-  candidate output, computing nothing of its own.
 * :mod:`.intervention` — the side-effect-free prescription planner.
 * :mod:`.verification` — realization / benefit / spec grading and the adoption
   decision over them.
@@ -39,9 +37,13 @@ order — so this list is what exists, not a plan:
 * :mod:`.vocabulary` — what the household is told when a round refuses: the
   reason codes, their copy and retry budgets, and the verdict that carries them.
 
-Only :mod:`.contracts` and :mod:`.planner_facade` are re-exported below; the
-rest are imported by module path, which is also what keeps a caller that wants
-one of them from paying for all of them.
+Only :mod:`.contracts` is re-exported below; the rest are imported by module
+path, which is also what keeps a caller that wants one of them from paying for
+all of them.
+
+The list above is deliberately unnumbered.  A stated count goes stale the next
+time a module arrives or leaves — as one did in #2291 Phase 5c-iii — and a
+count that disagrees with the list is worse than no count at all.
 
 Dependency direction: this package imports no ``jasper.web`` and nothing from
 :mod:`jasper.active_speaker.crossover_v2_flow`.  The flow imports these
@@ -69,18 +71,9 @@ from .contracts import (
     TrimStrategy,
     VerificationResult,
 )
-from .planner_facade import (
-    PROPOSAL_CREATED_EVENT,
-    PROPOSAL_REFUSED_EVENT,
-    build_intervention_proposal,
-    plan_intervention_proposal,
-    trim_strategy_for_outcome,
-)
 
 __all__ = [
     "PLAN_REFUSAL_REASONS",
-    "PROPOSAL_CREATED_EVENT",
-    "PROPOSAL_REFUSED_EVENT",
     "AdoptionDecision",
     "AdoptionOutcome",
     "BenefitStatus",
@@ -95,7 +88,4 @@ __all__ = [
     "SpecStatus",
     "TrimStrategy",
     "VerificationResult",
-    "build_intervention_proposal",
-    "plan_intervention_proposal",
-    "trim_strategy_for_outcome",
 ]
