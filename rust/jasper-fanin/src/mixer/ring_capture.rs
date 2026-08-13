@@ -712,7 +712,7 @@ mod tests {
         assert_eq!(
             obs.detach_reason_str(),
             RingDetachReason::Refused.as_str(),
-            "a parent-is-a-file path fails ENOTDIR, which is a refusal to map \
+            "a parent-is-a-file path fails EEXIST, which is a refusal to map \
              rather than an absent ring"
         );
         assert_eq!(
