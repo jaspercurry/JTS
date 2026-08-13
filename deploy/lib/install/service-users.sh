@@ -50,6 +50,13 @@ create_jasper_service_users() {
     # while jasper-fanin reads it — both ends write the ring HEADER, so both need
     # write on a file the other may have created.
     #
+    # NOT every migrated renderer needs it. bluealsa-aplay (U3/P6b) runs as ROOT
+    # — its packaged unit sets no User= and neither does the JTS drop-in — and
+    # uid 0 writes this 2775 root-owned directory regardless, so it gets no
+    # usermod here and demanding one would be ceremony. What it DOES need is
+    # `UMask=0007`, which governs the ring FILE's mode rather than the
+    # directory's group; that lives in its drop-in.
+    #
     # A dedicated group rather than either obvious alternative, both of which the
     # tmpfiles header flagged for decision at P6:
     #   - NOT `jasper`: that group also carries /var/lib/jasper at mode 0770 plus
