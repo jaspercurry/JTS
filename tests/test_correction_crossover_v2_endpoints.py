@@ -7077,6 +7077,76 @@ def test_terminal_failure_purge_waits_for_grace_but_volume_restore_is_immediate(
     assert session.session_id not in backend.sessions
 
 
+def test_a_program_failure_before_any_capture_is_armed_posts_an_honest_exhausted_event(
+    monkeypatch,
+):
+    """Issue #2089. A play-seam/program failure that escapes ``run_capture_plan``
+    before ANY capture in the session was armed (``conductor.armed_capture is
+    None``) used to fall back to a bare ``{"phase": "capture_set_exhausted"}``
+    — no ``budget``, no cause. This is the catch-all program-failure
+    classifier's path — the only caller of
+    ``_post_terminal_failure_host_event`` that can reach this branch; the
+    other caller (``CaptureBeginRefused``) never does, because every refusal
+    that can fire before anything is armed sets ``relay_published_refusal``
+    first, which gates that caller's own post.
+
+    This asserts WIRE honesty, not a rendering change: the phone's pre-arm
+    observer (``waitForCaptureAuthorized``) does not read ``budget`` or the
+    new cause fields, so the household sees no different copy yet — see
+    issue #2446 for the render half. What this closes is the terminal event
+    itself no longer omitting the failure's real cause.
+
+    ``authorize_begin`` is monkeypatched to raise a classified program
+    failure the moment it is called — mirroring a real admission-time
+    failure (for example ``AttemptOverspendError`` translated to
+    ``CrossoverV2FlowError`` inside ``CrossoverV2Session.authorize_begin``)
+    — so the raise happens BEFORE the line that sets
+    ``self._armed_capture``. ``conductor.armed_capture`` is therefore
+    genuinely ``None`` when the catch-all cleanup arm's
+    ``_post_terminal_failure_host_event`` runs: exactly the "no capture
+    armed" branch the issue names.
+    """
+    from jasper.active_speaker.crossover_v2_flow import (
+        CrossoverV2FlowError,
+        REASON_PROGRAM_UNPLAYABLE,
+    )
+    from jasper.capture_relay import session as session_mod
+
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec)
+    conductor = _conductor(backend, session, phone, published=[])
+    assert conductor.armed_capture is None  # nothing has authorized yet
+
+    def refuse_before_arming(index: int, attempt: int, entry: Any = None) -> None:
+        raise CrossoverV2FlowError("ledger overspend")
+
+    monkeypatch.setattr(conductor, "authorize_begin", refuse_before_arming)
+
+    volume = VolumeRecorder()
+    runner = _build_runner(conductor, volume)
+    with pytest.raises(CrossoverV2FlowError):
+        _run(runner, client, session)
+
+    # The failure never reached admission for any capture in this session.
+    assert conductor.armed_capture is None
+    events = backend.host_events[session.session_id]
+    event = events[-1]
+    assert event["phase"] == "capture_set_exhausted"
+    # Honest budget: NEITHER clock ran out — the same "none" bucket #2083
+    # gave the session-over poster — not the omission that used to draw the
+    # false attempt-limit render.
+    assert event["budget"] == session_mod.TIME_BUDGET_NONE == "none"
+    # The old misleading shape (bare phase, nothing else) is gone.
+    assert set(event) != {"phase"}
+    # The cause rides along too, mirroring the armed branch's
+    # capture_result shape, for a future capture-page consumer.
+    reason_spec = REASON_REGISTRY[REASON_PROGRAM_UNPLAYABLE]
+    assert event["code"] == REASON_PROGRAM_UNPLAYABLE
+    assert event["reason"] == reason_spec.message
+    assert event["banner"] == reason_spec.banner
+
+
 def test_watchdog_collapse_posts_session_over_then_grace_then_purge(monkeypatch):
     """W6.10 blocker #3: a watchdog collapse (CaptureTimeout) — the review-hold
     inactivity death — must reach the phone. The relay-death arm posts a

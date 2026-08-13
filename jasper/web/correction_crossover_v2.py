@@ -5305,6 +5305,27 @@ def build_v2_run_and_consume(
             the failure screen) to the armed capture; fall back to
             ``capture_set_exhausted`` when no capture was armed. Best-effort —
             the operator wizard also shows the persisted failure.
+
+            Issue #2089: the exhausted fallback used to carry only
+            ``{"phase": ...}`` — no ``budget``, no cause. Only the catch-all
+            program-failure classifier below can reach this branch in
+            practice: the OTHER caller (the ``CaptureBeginRefused`` arm)
+            never does, because every refusal that can fire before anything
+            is armed sets ``relay_published_refusal`` first inside
+            ``authorize_begin``, which gates that caller's own post.
+
+            The wire now carries an honest cause: ``budget`` is always
+            ``TIME_BUDGET_NONE`` (the same "neither clock ran out" bucket PR
+            #2084 shipped for ``_post_session_over_host_event``), plus
+            ``code``/``reason``/``banner`` whenever the failure code
+            resolves. **This does not change what the phone shows today** —
+            its only pre-arm observer, ``waitForCaptureAuthorized``, ignores
+            ``budget`` entirely and renders generic session-ended /
+            "Link expired" copy from the relay spec, never from this event.
+            Rendering the honest cause is issue #2446, which must NOT route
+            a pre-arm failure through ``renderPlanExhausted``'s
+            transport-flavored copy — that renderer describes a session that
+            had already begun.
             """
             spec = REASON_REGISTRY.get(code)
             armed = conductor.armed_capture
@@ -5322,7 +5343,16 @@ def build_v2_run_and_consume(
                     "auto_retry": spec.code in TRANSIENT_AUTO_RETRY_CODES,
                 }
             else:
-                event = {"phase": HOST_PHASE_CAPTURE_SET_EXHAUSTED}
+                event = {
+                    "phase": HOST_PHASE_CAPTURE_SET_EXHAUSTED,
+                    "budget": TIME_BUDGET_NONE,
+                }
+                if spec is not None:
+                    event.update(
+                        code=spec.code,
+                        reason=spec.message or spec.banner,
+                        banner=spec.banner,
+                    )
             try:
                 await asyncio.to_thread(
                     client.post_host_event,
