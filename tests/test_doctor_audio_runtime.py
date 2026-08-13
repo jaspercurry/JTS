@@ -2196,8 +2196,6 @@ def test_check_fanin_ring_stall_ok_when_draining(monkeypatch):
                 "drop_no_reader": 0,
                 "stall_active": False,
                 "last_stall_ms": 0,
-                "mirror_frames": 1000,
-                "mirror_drops": 0,
             }
         ),
     )
@@ -2223,8 +2221,6 @@ def test_check_fanin_ring_stall_warns_when_active(monkeypatch):
                 "drop_no_reader": 0,
                 "stall_active": True,
                 "last_stall_ms": 4200,
-                "mirror_frames": 1000,
-                "mirror_drops": 0,
             }
         ),
     )
