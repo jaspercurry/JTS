@@ -32,8 +32,9 @@ MUSIC chain (gets CamillaDSP processing)
               (a lane ARMED for ring ingress replaces its snd-aloop hop with
                a per-renderer SHM slot ring — /dev/shm/jts-ring/lane-<label>.ring,
                written by the renderer's own jts_ring ioplug and read by fan-in.
-               No box is armed today; the aloop path above is what every box
-               runs. See HANDOFF-fan-in-daemon.md "Lane sources".)
+               Arming is per box and operator-explicit; the fleet default is
+               unarmed, and an unarmed box runs the aloop path above.
+               See HANDOFF-fan-in-daemon.md "Lane sources".)
               → snd-aloop → pcm.jasper_capture (dsnoop on hw:Loopback,1,7)
               → jasper-camilla (main_volume + filters)
               → outputd_content_playback

@@ -23,7 +23,6 @@ import yaml
 
 import jasper.active_speaker.startup_load as startup_load_mod
 import jasper.web.sound_setup as sound_setup
-from jasper.audio_measurement.correction_lane import CORRECTION_SUBSTREAM
 from jasper.active_speaker import (
     ActiveSpeakerPreset,
     load_commission_load_state,
@@ -373,6 +372,81 @@ def test_commission_continuous_tone_uses_planner_frequency_for_tweeter(
     assert result["tone"]["frequency_hz"] != 5000.0
     assert result["signal_plan"]["allowed_band"]["highpass_hz"] == 5000.0
     assert result["signal_plan"]["selection_reason"] == "above_strictest_highpass_edge"
+
+
+@pytest.mark.parametrize("lane_armed", [False, True])
+def test_commission_tone_payload_reports_the_device_the_spawn_used(
+    monkeypatch, tmp_path, lane_armed
+):
+    """Payload-equals-spawn is the sweep's actual promise, pinned ARMED.
+
+    The device-fact sweep (P6c-ii) exists "precisely so an armed box can
+    never spawn on the ring while its telemetry reports the substream" —
+    but every prior payload assertion ran UNARMED, where the reader and
+    the old constant agree by construction, so a payload regressing to
+    the IMPORTED CONSTANT (`{"pcm": CORRECTION_SUBSTREAM}`) passed the
+    whole suite while diverging on exactly the armed box (found
+    empirically by the review panel; the SSOT literal guard is blind to
+    imported-constant references by design). This drives the tone flow —
+    the spawn through the shared helper AND web_commissioning's
+    `_commission_tone_payload` builder — on BOTH transports and asserts
+    the payload equals the SPAWN'S OWN argv device, which is stronger
+    than asserting either value alone.
+    """
+    from jasper import renderer_lanes as rl
+
+    map_path = tmp_path / "renderer_lanes.env"
+    monkeypatch.setattr(rl, "RENDERER_LANES_ENV", str(map_path))
+    lane = rl.lane_by_label("correction")
+    assert lane is not None
+    if lane_armed:
+        map_path.write_text(rl.render_env_text((lane.label,)))
+    expected_device = lane.ring_device if lane_armed else lane.aloop_device
+
+    monkeypatch.setattr(sound_setup, "_COMMISSION_TONE_SESSION", None)
+    wav_path = tmp_path / "tone.wav"
+    wav_path.write_bytes(b"not a real wav; Popen is faked")
+    monkeypatch.setattr(
+        sound_setup,
+        "_commission_tone_wav_path",
+        lambda *, frequency_hz: wav_path,
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_commission_tone_select_fanin_lane",
+        lambda: {"active_source": "correction", "test_source": "correction"},
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_commission_tone_release_fanin_lane",
+        lambda *, reason: {"active_source": "airplay", "test_source": None},
+    )
+    processes: list[_FakeToneProcess] = []
+
+    def _fake_popen(args, **_kwargs):
+        proc = _FakeToneProcess(list(args))
+        processes.append(proc)
+        return proc
+
+    monkeypatch.setattr(sound_setup.subprocess, "Popen", _fake_popen)
+    try:
+        result = asyncio.run(
+            sound_setup._active_speaker_play_commission_tone(
+                group_id="mono",
+                role="woofer",
+                level_dbfs=-80.0,
+                playback_id="armed-payload-pin",
+                target={"speaker_group_id": "mono", "role": "woofer"},
+                preset=_tone_preset(),
+            )
+        )
+    finally:
+        sound_setup._active_speaker_stop_commission_tone(reason="test_cleanup")
+
+    assert result["status"] == "completed"
+    assert processes, "the tone flow must have spawned aplay"
+    spawn_device = processes[0].args[2]  # ["aplay", "-D", <device>, "-q", wav]
+    assert result["audio_device"]["pcm"] == spawn_device == expected_device
 
 
 def test_commission_continuous_tone_blocks_when_planner_has_no_safe_band(
@@ -1091,9 +1165,24 @@ def _summed_test_stubs(monkeypatch, tmp_path) -> dict:
     }
 
 
+@pytest.mark.parametrize("lane_armed", [False, True])
 def test_summed_test_audio_path_loads_plays_rolls_back_and_records(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, lane_armed
 ):
+    # Both lane transports (P6c-ii): the payload-equals-spawn assertions
+    # below are the armed-state pin for sound_setup's summed payload site —
+    # an unarmed-only run is satisfied by an imported-constant regression
+    # by construction (reader == old constant there).
+    from jasper import renderer_lanes as rl
+
+    lane_map = tmp_path / "renderer_lanes.env"
+    monkeypatch.setattr(rl, "RENDERER_LANES_ENV", str(lane_map))
+    lane = rl.lane_by_label("correction")
+    assert lane is not None
+    if lane_armed:
+        lane_map.write_text(rl.render_env_text((lane.label,)))
+    expected_device = lane.ring_device if lane_armed else lane.aloop_device
+
     summed = _summed_test_stubs(monkeypatch, tmp_path)
     controller = summed["controller"]
     env = summed["env"]
@@ -1139,9 +1228,9 @@ def test_summed_test_audio_path_loads_plays_rolls_back_and_records(
     assert payload["calibration_level"]["test_signal"][
         "requested_level_dbfs"
     ] == -40.0
-    # The payload reports the lane transport the spawn resolved (P6c-ii);
-    # this test box has no lane map, so that is the fleet-default aloop alias.
-    assert playback["audio_device"]["pcm"] == CORRECTION_SUBSTREAM
+    # Payload-equals-spawn (P6c-ii): the payload must report the device the
+    # spawn ACTUALLY opened, on whichever transport this box is on.
+    assert playback["audio_device"]["pcm"] == processes[0].args[2] == expected_device
     assert playback["commissioning_load"]["load"]["status"] == "loaded"
     assert playback["commissioning_load"]["load"]["target"]["role"] == "summed"
     assert playback["rollback"]["rollback"]["status"] == "rolled_back"
@@ -1159,9 +1248,7 @@ def test_summed_test_audio_path_loads_plays_rolls_back_and_records(
     assert [proc.args for proc in processes] == [[
         "aplay",
         "-D",
-        # The spawn resolves the lane transport per call (P6c-ii); no lane
-        # map on this test box means the fleet-default aloop alias.
-        CORRECTION_SUBSTREAM,
+        expected_device,
         "-q",
         str(wav_path),
     ]]
