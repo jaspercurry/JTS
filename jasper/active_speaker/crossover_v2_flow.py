@@ -141,10 +141,6 @@ from jasper.active_speaker.crossover_v2 import spatial as _spatial
 from jasper.active_speaker.crossover_v2.contracts import (
     ENTRY_GRAPH_FINGERPRINT_UNKNOWN as _ENTRY_GRAPH_FINGERPRINT_UNKNOWN,
 )
-from jasper.active_speaker.crossover_v2.contracts import (
-    InterventionProposal,
-    PlanRefusal,
-)
 
 # #2291 Phase 2 moved the prescription policy — the two Layer-1a constants, the
 # σ-composition table and gate, and three small pure derivations — into the
