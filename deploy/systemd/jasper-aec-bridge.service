@@ -34,8 +34,8 @@ After=jasper-fanin.service jasper-camilla.service jasper-outputd.service jasper-
 # state and a successful active init, so the bridge fails closed.
 # Camilla is also a SOFT startup dependency. The current bridge reads
 # the XVF mic directly and consumes outputd's final-reference UDP stream
-# (or the pre-Camilla jasper_ref diagnostic fallback), so it has no
-# runtime lifecycle dependency on CamillaDSP. Do not add Requires= or
+# as its only reference source, so it has no runtime lifecycle
+# dependency on CamillaDSP. Do not add Requires= or
 # PartOf= back: a coordinated Camilla pause during a USB combo toggle
 # otherwise clean-stops the bridge, leaves voice's UDP mic unfed, and
 # triggers its 30 s progress watchdog (#1264). jasper-aec-reconcile

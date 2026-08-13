@@ -345,11 +345,13 @@ Rechecked against the current tree on 2026-06-01:
   config, `deploy/camilladsp/v1.yml` (writing `S16_LE` to the `jasper_out`
   dmix, pinned narrow with no outputd spine behind it), was retired
   (issue #2240).
-- `jasper/cli/aec_bridge.py` normally receives outputd's 48 kHz stereo
-  speaker monitor via `JASPER_AEC_REF_SOURCE=outputd_udp`, downsamples it
-  to 16 kHz mono, and tracks reference starvation/queue drops. Explicit
-  `JASPER_AEC_REF_SOURCE=alsa` fallback/diagnostic mode can still open
-  `jasper_ref`, a pre-DSP `pcm.jasper_capture` wrapper.
+- `jasper/cli/aec_bridge.py` receives outputd's 48 kHz stereo speaker
+  monitor via `JASPER_AEC_REF_SOURCE=outputd_udp`, downsamples it to
+  16 kHz mono, and tracks reference starvation/queue drops. That is its
+  only reference source: the `JASPER_AEC_REF_SOURCE=alsa` fallback that
+  opened the pre-DSP `jasper_ref` wrapper was retired, and the bridge
+  converges a box still carrying that value with a warning rather than
+  refusing to start.
 - `rust/jasper-fanin` is already a good model for the Rust service
   style: blocking ALSA output as timing owner, non-blocking inputs,
   preallocated buffers, systemd watchdog, xrun counters, and small
@@ -1663,8 +1665,9 @@ datum: how much assistant audio was actually heard.
    `pcm.jasper_ref` to outputd's speaker monitor. Treat reference drops
    as capture-health degradation, not playback failure. **Landed
    2026-06-08:** software AEC, chip-AEC, corpus, and diagnostics consume
-   the same outputd monitor contract; `pcm.jasper_ref` remains explicit
-   fallback/diagnostic mode.
+   the same outputd monitor contract. The `pcm.jasper_ref` fallback the
+   bridge kept alongside it has since been retired; the tap survives for
+   diagnostics only.
 5. **Enable robust barge-in.** Wire the local TTS flush and final
    playout-ledger acknowledgement to provider truncation/cancel logic,
    capture barge-in telemetry, and use the "volume down while assistant

@@ -164,7 +164,7 @@ jasper-fanin (the new Rust daemon):
 
 The "summed music" substream:
   CamillaDSP captures  ← pcm.jasper_capture → dsnoop on hw:Loopback,1,7
-  AEC fallback/diag    ← pcm.jasper_ref     → dsnoop on hw:Loopback,1,7
+  AEC diagnostics      ← pcm.jasper_ref     → dsnoop on hw:Loopback,1,7
   Production AEC ref   ← outputd UDP speaker monitor after CamillaDSP/outputd
 
 CamillaDSP → outputd_content_playback → jasper-outputd → Apple USB-C dongle
@@ -263,9 +263,10 @@ which looks identical to "paused" on every other signal).
   pre-duck program loudness, applies the provider/profile peak-capped
   assistant gain policy, applies program ducking to renderer lanes, then
   mixes TTS/cues before CamillaDSP crossover/protection.
-- **AEC fallback tap shape.** `pcm.jasper_ref` remains a plug-wrapped
-  dsnoop for explicit fallback/diagnostics. The normal production AEC
-  reference is outputd's UDP speaker monitor after CamillaDSP/outputd.
+- **AEC diagnostic tap shape.** `pcm.jasper_ref` remains a plug-wrapped
+  dsnoop for explicit diagnostics. It is not an AEC fallback: outputd's
+  UDP speaker monitor after CamillaDSP/outputd is the bridge's only
+  reference source.
 - **Mux arbitration.** `jasper-mux` still owns source policy:
   latest-source-wins in auto mode, and user-selected source override
   from the landing page. Fan-in only enforces the low-level selected
@@ -698,8 +699,7 @@ Fan-in checks are in the main doctor run-list:
    retired `jasper_renderer_*` dmix blocks, defines every private
    renderer/test lane with a pinned 48 kHz stereo S16_LE plug wrapper,
    points `pcm.jasper_capture` at summed substream 7, and keeps
-   `pcm.jasper_ref` as the explicit pre-DSP AEC fallback/diagnostic
-   wrapper.
+   `pcm.jasper_ref` as the explicit pre-DSP AEC diagnostic wrapper.
 
 2. **`check_fanin_service`** treats disabled or inactive
    `jasper-fanin.service` as a failure, probes
@@ -1160,8 +1160,10 @@ plug played, but per-renderer instead of fronting a shared dmix.
 
 - `pcm.jasper_capture` dsnoop's slave shifts from `hw:Loopback,1,0` →
   `hw:Loopback,1,7` (the new "summed music" substream).
-- `pcm.jasper_ref` plug wrapper unchanged as explicit fallback/diagnostics
-  (slave is still `jasper_capture`).
+- `pcm.jasper_ref` plug wrapper unchanged (slave is still
+  `jasper_capture`). It was still the AEC bridge's explicit fallback at
+  the time of this migration; that fallback has since been retired and
+  the tap is diagnostics-only.
 - CamillaDSP's `v1.yml` capture device unchanged (still `plug:jasper_capture`)
   at the time of this migration; `v1.yml` itself was later retired (issue
   #2240) once the outputd mainline topology shipped.

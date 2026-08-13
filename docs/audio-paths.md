@@ -89,7 +89,7 @@ Each renderer has its own snd-aloop lane, and room-correction/test
 playback has a dedicated `correction_substream` lane. `jasper-fanin`
 sums those lanes; on ring-coupled boxes it writes Ring A for CamillaDSP
 and keeps a lossy lane-7 mirror so `pcm.jasper_capture` /
-`pcm.jasper_ref` remain explicit pre-DSP fallback/diagnostic views until
+`pcm.jasper_ref` remain explicit pre-DSP diagnostic views until
 the snd-aloop cleanup phases remove them. On loopback fallback boxes,
 CamillaDSP still captures `pcm.jasper_capture` directly. Production AEC
 consumes outputd's post-Camilla speaker monitor. This replaced the
@@ -747,19 +747,20 @@ CamillaDSP multi-device output remains unsupported.
 
 ## AEC bridge implications
 
-The bridge normally receives outputd's speaker monitor over localhost
-UDP. Explicit fallback/diagnostic mode can still read `pcm.jasper_ref`, a
-plug wrapper over `pcm.jasper_capture`, which is a dsnoop on the summed
-fan-in output `hw:Loopback,1,7` before CamillaDSP processing. So:
+The bridge receives outputd's speaker monitor over localhost UDP, and that
+is its only reference source — the `JASPER_AEC_REF_SOURCE=alsa` fallback
+that read `pcm.jasper_ref` was retired. `pcm.jasper_ref` survives as a
+diagnostic PCM for the timing probe: a plug wrapper over
+`pcm.jasper_capture`, which is a dsnoop on the summed fan-in output
+`hw:Loopback,1,7` before CamillaDSP processing. So:
 
 - Production AEC now consumes outputd's 48 kHz stereo speaker monitor over
   UDP. That reference includes renderer/content, TTS/cues, fan-in
   ducking/gain, CamillaDSP filters/crossover/protection, and outputd sink
   selection. It is the final software/electrical reference; no software
   reference can include DAC, amp, driver, or room acoustics except through
-  microphone observation. Explicit `JASPER_AEC_REF_SOURCE=alsa`
-  fallback/diagnostic mode can still read the pre-DSP `pcm.jasper_ref`
-  path — see
+  microphone observation. It is also the bridge's *only* reference: the
+  pre-DSP `pcm.jasper_ref` path is no longer selectable — see
   [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md).
 - A 25 dB ducking step is a transient the AEC's adaptive filter has
   to re-converge through. Acceptable today; if it becomes a problem,

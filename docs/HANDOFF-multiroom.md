@@ -1296,8 +1296,8 @@ outputd reader lands + the flag is on):**
 **Invariant compliance:** inv-1 (DAC loop sole timing owner — the snapclient
 FIFO is a side-feed; underrun = silence, never back-pressure) ✓; inv-2
 (snapclient writes raw PCM to a FIFO via `--player file`, never snd-aloop — no
-`snd_pcm_delay`-lies trap) ✓; inv-4 (AEC's `pcm.jasper_ref` is untouched —
-still a separate reference consumer) ✓; inv-5 (CamillaDSP-B is the post-snapclient
+`snd_pcm_delay`-lies trap) ✓; inv-4 (AEC's reference — outputd's UDP speaker
+monitor — is untouched, still a separate reference consumer) ✓; inv-5 (CamillaDSP-B is the post-snapclient
 member DSP, `rate_adjust=false` — shipped) ✓; `volume_limit:0.0` is applied by
 CamillaDSP-A *before* the tap (followers inherit the clamp) AND by CamillaDSP-B
 before the DAC (the leader's own playback is clamped) ✓.
