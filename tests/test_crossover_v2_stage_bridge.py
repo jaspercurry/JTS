@@ -514,7 +514,7 @@ def test_persisted_verify_priors_carries_exactly_the_seven_bridge_keys(monkeypat
     }
 
 
-def test_all_four_verify_priors_reach_the_stage_2_conductor(monkeypatch):
+def test_the_simple_verify_priors_reach_the_stage_2_conductor(monkeypatch):
     """The read side: each persisted prior lands on the fresh conductor.
 
     Driven through the real ``prepare_v2_verify`` against a seeded applied
@@ -523,6 +523,15 @@ def test_all_four_verify_priors_reach_the_stage_2_conductor(monkeypatch):
     boundary: ``pilot_transfer_reference`` is written by the session that owned
     it and read as the next session's ``verify_pilot_transfer_prior``, because
     stage 2 may only disclose it (#1927).
+
+    **This covers four of the write side's seven keys**, and the name no longer
+    carries the count because the count has drifted twice: ``commanded_delta``
+    and ``entry_baseline`` earned their own read-side pins in sections 2 and 3
+    below, and ``proposal_fingerprint`` (#2392) is read back through the real
+    ``prepare_v2_verify`` in
+    ``tests/test_crossover_v2_round_wiring.py::test_the_receipt_names_the_proposal_that_was_made``,
+    where the receipt it feeds can be asserted in the same breath. A number in
+    a test name that no assertion owns is a comment that rots.
     """
     _seed_applied_stage_1_state()
 

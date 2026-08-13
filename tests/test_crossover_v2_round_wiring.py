@@ -1179,9 +1179,10 @@ def test_two_receipts_from_the_two_regimes_are_told_apart_by_the_receipt_itself(
 
     Both fingerprints are 64-hex SHA-256 — ``json_fingerprint``'s output — so
     NOTHING about the value distinguishes them, and "the formats are disjoint"
-    was never available as a migration story. This asserts that the shapes really
-    are identical AND that the receipts are still separable, which is only true
-    because the receipt carries the marker.
+    was never available as a migration story. Given that premise (proved on real
+    objects elsewhere; see the comment below), this asserts the receipts are
+    separable anyway, in all three states, which is only true because the
+    receipt carries the marker.
     """
     from jasper.active_speaker.crossover_v2.contracts import (
         PROPOSAL_FINGERPRINT_KINDS,
@@ -1203,15 +1204,18 @@ def test_two_receipts_from_the_two_regimes_are_told_apart_by_the_receipt_itself(
     }
     old_regime["proposal_fingerprint"] = "fp-stage-1"
 
-    # Indistinguishable by value…
+    # The two regimes' VALUES carry no discriminator. That premise is proved on
+    # real objects — a real candidate fingerprint against a real proposal
+    # fingerprint, both 64-hex from ``json_fingerprint`` — by
+    # ``test_a_proposal_fingerprint_and_a_candidate_fingerprint_are_the_same_shape``
+    # in tests/test_crossover_v2_proposal.py. It is not re-derived here,
+    # because the candidate identity this harness seeds is the placeholder
+    # ``fp-stage-1`` rather than a real digest: asserting a shape against it
+    # would be asserting a property of the fixture.
     assert len(new_regime["proposal_fingerprint"]) == 64
-    assert len(old_regime["proposal_fingerprint"]) == len("fp-stage-1")
-    for fingerprint in (new_regime["proposal_fingerprint"], _PROPOSAL_FP):
-        assert len(fingerprint) == 64 and int(fingerprint, 16) >= 0, (
-            "a proposal fingerprint is the same 64-hex shape a candidate's is"
-        )
 
-    # …and separable anyway, by the receipt's own word, in all three states.
+    # What IS this test's own claim: separable anyway, by the receipt's own
+    # word, in all three states.
     assert "proposal_fingerprint_kind" not in old_regime, "pre-#2392: absent"
     assert new_regime["proposal_fingerprint_kind"] in PROPOSAL_FINGERPRINT_KINDS
     assert new_regime["proposal_fingerprint_kind"] == "intervention_proposal"

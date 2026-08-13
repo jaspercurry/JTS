@@ -22,6 +22,7 @@ import dataclasses
 import logging
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_v2 import intervention as iv
@@ -343,6 +344,21 @@ def test_a_successful_plan_says_what_it_proposed(caplog):
 # --------------------------------------------------------------------------- #
 
 
+@dataclasses.dataclass(frozen=True)
+class _FakeRealizedMatch:
+    """A ``RealizedLevelMatch`` reduced to what ``LinearizationState`` reads.
+
+    That accessor is exactly ``self.realized_level_match.to_dict()``, so a
+    stand-in with one method drives the real derivation without dragging a
+    fit's worth of arrays into a wiring test.
+    """
+
+    payload: dict
+
+    def to_dict(self) -> dict:
+        return dict(self.payload)
+
+
 def _session():
     """The smallest real session, with recorder seams."""
     from jasper.active_speaker import crossover_v2_flow as flow
@@ -432,6 +448,108 @@ def test_an_unassemblable_candidate_costs_the_round_its_proposal_not_its_commit(
     assert session.measure_proposal_fingerprint == "", (
         "an empty identity is what routes the receipt to its candidate arm"
     )
+
+
+#: The verdict both routes must carry from their own evidence onto the
+#: proposal. Distinctive so an assertion cannot pass on a coincidence, and
+#: non-empty so a severed accessor collapses it to ``{}`` and reddens.
+_REALIZED = {"difference_db": -1.63, "matched": True}
+
+
+def test_the_walk_route_carries_its_builds_own_realized_level_verdict():
+    """WIRING, not contract: the configured-Fc route's accessor is real.
+
+    ``test_the_realized_level_verdict_is_what_5c_iii_removed_and_this_restores``
+    hand-supplies the value, so it pins the CONTRACT and would stay green if
+    :meth:`_commit_measure_candidate` stopped reading
+    ``built.linearization.realized_branch_level`` altogether. The value now
+    sits inside a write-once digest, so a dropped accessor would silently
+    change what ``proposal_fingerprint`` covers — the exact failure class this
+    PR closes. This drives the real call site instead.
+    """
+    from jasper.active_speaker.crossover_v2.candidates import (
+        LinearizationState,
+        SpeculativeClose,
+    )
+    from types import SimpleNamespace
+
+    session, seams = _session()
+    candidate = _candidate(linearization_outcome="fitted")
+    built = SpeculativeClose(
+        candidate=candidate,
+        predicted_sum=None,
+        analysis=SimpleNamespace(predicted_sum=None),
+        cloud=None,
+        level_frame_finding=None,
+        linearization=LinearizationState(
+            outcome="fitted", realized_level_match=_FakeRealizedMatch(_REALIZED),
+        ),
+    )
+
+    session._commit_measure_candidate(built)
+
+    assert seams.published_candidates == [candidate], "the real commit ran"
+    proposal = session.last_intervention_proposal
+    assert isinstance(proposal, InterventionProposal)
+    assert dict(proposal.realized_branch_level) == _REALIZED, (
+        "the walk must read the verdict off its OWN build's linearization state"
+    )
+
+
+def test_the_selection_route_carries_its_evaluations_own_realized_level_verdict():
+    """The same wiring pin for the alternative-Fc route.
+
+    Its accessor is a different one — ``evaluation.realized_branch_level``, the
+    copy the sweep retained — so severing either route leaves the other's pin
+    green. Two routes, two assertions, on purpose.
+    """
+    from jasper.active_speaker.fc_selector import FcCandidateEvaluation
+
+    session, seams = _session()
+    candidate = _candidate(linearization_outcome="fitted")
+    evaluation = FcCandidateEvaluation(
+        fc_hz=FC_HZ,
+        freqs_hz=np.asarray([100.0, 1000.0, 10000.0]),
+        branch_operator_by_role={},
+        anchor_sum_db=np.asarray([0.0, 0.0, 0.0]),
+        scoring_band_hz=None,
+        candidate=candidate.to_dict(),
+        predicted_sum=(np.asarray([100.0]), np.asarray([0.0])),
+        realized_branch_level=dict(_REALIZED),
+    )
+
+    session._commit_fc_candidate(evaluation)
+
+    assert len(seams.published_candidates) == 1, "the real commit ran"
+    proposal = session.last_intervention_proposal
+    assert isinstance(proposal, InterventionProposal)
+    assert dict(proposal.realized_branch_level) == _REALIZED, (
+        "the selection must read the verdict off ITS OWN retained evaluation"
+    )
+
+
+def test_a_proposal_fingerprint_and_a_candidate_fingerprint_are_the_same_shape():
+    """The premise the whole #2392 migration story rests on, on real objects.
+
+    Both identities come out of
+    :func:`~jasper.audio_measurement.evidence_identity.json_fingerprint`, so
+    they are the same 64-character lowercase SHA-256 hex and NOTHING about a
+    banked value tells a later reader which regime wrote it. That is why the
+    receipt carries an explicit ``proposal_fingerprint_kind`` rather than a
+    claimed format difference — see
+    ``tests/test_crossover_v2_round_wiring.py`` section 6b for the receipt end.
+    """
+    candidate = _candidate(linearization_outcome="fitted")
+    proposal = build_intervention_proposal(candidate)
+
+    for label, fingerprint in (
+        ("candidate", candidate.fingerprint),
+        ("proposal", proposal.fingerprint),
+    ):
+        assert len(fingerprint) == 64, label
+        assert set(fingerprint) <= set("0123456789abcdef"), label
+    # Same shape, different values — indistinguishable, and not the same thing.
+    assert proposal.fingerprint != candidate.fingerprint
 
 
 def test_every_assembly_failure_worth_surviving_is_in_the_refusal_arms_tuple():

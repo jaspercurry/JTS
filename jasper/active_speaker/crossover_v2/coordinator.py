@@ -280,17 +280,19 @@ class RoundEvidence:
     #: The mark both captures were taken at.
     reference_mark: str
     #: Which of the two the field above is
-    #: (:data:`~.contracts.PROPOSAL_FINGERPRINT_KINDS`). Defaulted to
-    #: ``"candidate"`` and NOT to the proposal, because that is the answer that
-    #: is true of a caller which has not been taught to supply one — a default
-    #: naming the new regime would let an un-migrated host claim a proposal
-    #: identity it never had, on a write-once artifact.
-    proposal_fingerprint_kind: str = "candidate"
+    #: (:data:`~.contracts.PROPOSAL_FINGERPRINT_KINDS`). REQUIRED, like the
+    #: receipt field it feeds: this type has exactly one production constructor
+    #: and no test constructs it, so a default protects nobody — it only buys a
+    #: caller the ability to mislabel a write-once artifact by omission, which
+    #: the closed vocabulary cannot catch because ``"candidate"`` is a legal
+    #: word. Stating it is one line at the one call site.
+    proposal_fingerprint_kind: str
     #: The applied candidate's own fingerprint, which rides into the receipt's
     #: evidence identities. It used to BE ``proposal_fingerprint``; #2392 gave
     #: that field to the proposal, and a receipt that dropped the candidate
-    #: identity on the way would have lost a fact it used to carry.
-    candidate_fingerprint: str = ""
+    #: identity on the way would have lost a fact it used to carry. Required
+    #: for the reason directly above.
+    candidate_fingerprint: str
 
 
 @dataclass(frozen=True)
