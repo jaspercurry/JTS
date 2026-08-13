@@ -394,7 +394,7 @@ def test_baseline_profile_compiles_durable_camilla_yaml(
         validate=_valid_config,
         created_at="2026-06-14T12:20:00Z",
     )
-    # #1666: every write=True candidate lands on its own content-addressed
+    # #1666: every write=True candidate lands on its own source-fingerprinted
     # sibling next to config_path, never config_path itself -- read back
     # through the candidate's own reported path.
     assert Path(payload["config"]["path"]) != config_path
@@ -492,7 +492,7 @@ def test_baseline_profile_compiles_with_local_subwoofer(tmp_path: Path) -> None:
         validate=_valid_config,
         created_at="2026-06-14T12:20:00Z",
     )
-    # #1666: candidate lands on a content-addressed sibling, not config_path.
+    # #1666: candidate lands on a source-fingerprinted sibling, not config_path.
     yaml = Path(payload["config"]["path"]).read_text(encoding="utf-8")
 
     assert payload["status"] == "ready_to_apply"
@@ -578,7 +578,7 @@ def test_baseline_capture_device_threads_through_surgically(tmp_path: Path) -> N
             created_at="2026-06-14T12:20:00Z",
             **kwargs,
         )
-        # #1666: candidate lands on a content-addressed sibling, not config_path.
+        # #1666: candidate lands on a source-fingerprinted sibling, not config_path.
         return payload, Path(payload["config"]["path"]).read_text(encoding="utf-8")
 
     implicit, implicit_yaml = _emit("implicit", None)
@@ -631,7 +631,11 @@ def test_driver_domain_seam_emits_layer_a_only_follower_graph(
         validate=_valid_config,
         created_at="2026-06-14T12:20:00Z",
     )
-    # #1666: candidate lands on a content-addressed sibling, not config_path.
+    # #1666's sibling rename is gated OFF for driver_domain=True (see
+    # build_baseline_profile_candidate): this seam compiles and immediately
+    # consumes its OWN config_path, so unlike a solo candidate the reported
+    # path IS config_path. Read back through the reported path either way.
+    assert Path(payload["config"]["path"]) == config_path
     yaml = Path(payload["config"]["path"]).read_text(encoding="utf-8")
 
     assert payload["status"] == "ready_to_apply"
@@ -1402,7 +1406,7 @@ async def test_apply_baseline_profile_uses_shared_dsp_apply_transaction(
     assert payload["status"] == "applied"
     assert payload["profile"]["status"] == "applied"
     assert payload["profile"]["permissions"]["may_apply"] is False
-    # #1666: the transaction loads the candidate's own content-addressed
+    # #1666: the transaction loads the candidate's own source-fingerprinted
     # sibling, never the literal config_path passed in.
     assert calls == [payload["profile"]["config"]["path"]]
     assert payload["profile"]["config"]["path"] != str(tmp_path / "active_speaker_baseline.yml")
@@ -2498,7 +2502,7 @@ def test_recompose_baseline_yaml_matches_durable_builder_when_flat(
         config_path=config_path,
         validate=_valid_config,
     )
-    # #1666: candidate lands on a content-addressed sibling, not config_path.
+    # #1666: candidate lands on a source-fingerprinted sibling, not config_path.
     durable_yaml = Path(built["config"]["path"]).read_text(encoding="utf-8")
 
     flat_yaml, flat_issues = recompose_baseline_yaml(
@@ -4488,7 +4492,7 @@ async def test_apply_baseline_profile_emits_started_before_dsp_apply(
     assert "baseline_id=baseline-bench_mono" in started[0]
     assert "tuning_owner=manual" in started[0]
     assert "topology_id=bench_mono" in started[0]
-    # #1666: the started event names the candidate's own content-addressed
+    # #1666: the started event names the candidate's own source-fingerprinted
     # sibling, never the literal config_path passed in.
     assert f"config_path={payload['profile']['config']['path']}" in started[0]
     assert f"config_path={tmp_path}/active_speaker_baseline.yml" not in started[0]
@@ -4642,7 +4646,7 @@ async def test_apply_baseline_profile_dsp_error_reports_real_rollback_attempt(
         )
 
     assert payload["status"] == "apply_failed"
-    # #1666: the transaction loads the candidate's own content-addressed
+    # #1666: the transaction loads the candidate's own source-fingerprinted
     # sibling, never the literal config_path passed in; a failed apply never
     # touches config_path either (nothing promotes on failure).
     assert calls == [payload["profile"]["config"]["path"], str(prior)]
@@ -4738,7 +4742,7 @@ def test_build_baseline_profile_candidate_accepts_v2_measured_candidate(
         "woofer": {"gain_db": 0.0, "delay_ms": 0.0, "inverted": False},
         "tweeter": {"gain_db": -2.0, "delay_ms": 0.25, "inverted": True},
     }
-    # #1666: candidate lands on a content-addressed sibling, not the literal
+    # #1666: candidate lands on a source-fingerprinted sibling, not the literal
     # config_path passed in.
     config_text = Path(payload["config"]["path"]).read_text()
     assert "delay: 0.2500" in config_text
@@ -4974,8 +4978,8 @@ async def test_apply_baseline_profile_applies_v2_measured_candidate(
         "delay_ms": 0.25,
         "inverted": True,
     }
-    # #1666: the applied candidate lands on its own content-addressed sibling
-    # (what load_config was actually called with); the canonical file at
+    # #1666: the applied candidate lands on its own source-fingerprinted
+    # sibling (what load_config was actually called with); the canonical file at
     # tmp_path/active_speaker_baseline.yml is a POST-success promoted copy, so
     # it independently carries the same content.
     config_text = (tmp_path / "active_speaker_baseline.yml").read_text()
@@ -5796,7 +5800,7 @@ async def _apply_prior_then_run8(monkeypatch, tmp_path: Path):
     )
     assert run8_payload["status"] == "applied"
     run8_config_path = Path(run8_payload["profile"]["config"]["path"])
-    assert run8_config_path != config_path, "run-8 must land on a content-addressed sibling"
+    assert run8_config_path != config_path, "run-8 must land on a source-fingerprinted sibling"
     assert "applied_recomposition_profile" not in run8_payload["profile"]
 
     return (
@@ -5812,7 +5816,7 @@ async def test_restore_applied_baseline_profile_reverts_active_config_and_state(
         state_path, config_path, load_config, current_config_path,
         prior_payload, run8_payload, retained,
     ) = await _apply_prior_then_run8(monkeypatch, tmp_path)
-    # #1666: every apply lands on its own content-addressed sibling, so
+    # #1666: every apply lands on its own source-fingerprinted sibling, so
     # "prior's bytes" live at prior's OWN reported path, not config_path
     # (the canonical name, which by now holds run-8's post-apply promoted
     # copy -- see the canonical-tracks-run8 assertion below).
@@ -5900,9 +5904,9 @@ async def test_restore_applied_baseline_profile_blocked_when_config_missing(
         state_path, config_path, load_config, current_config_path,
         _prior_payload, _run8_payload, retained,
     ) = await _apply_prior_then_run8(monkeypatch, tmp_path)
-    # #1666: restore reloads retained's OWN reported path (a content-addressed
-    # sibling), never config_path (the canonical name) -- delete the actual
-    # restore target, not the unrelated canonical file.
+    # #1666: restore reloads retained's OWN reported path (a
+    # source-fingerprinted sibling), never config_path (the canonical name) --
+    # delete the actual restore target, not the unrelated canonical file.
     Path(retained["config"]["path"]).unlink()
 
     payload = await restore_applied_baseline_profile(
@@ -5975,7 +5979,7 @@ async def test_restore_applied_baseline_profile_reports_restore_failed(
 # --- #1666: apply-promotion durability ---------------------------------- #
 #
 # build_baseline_profile_candidate never writes baseline_config_path()
-# directly; every write=True candidate lands on its own content-addressed
+# directly; every write=True candidate lands on its own source-fingerprinted
 # sibling. The canonical name is published ONLY by a post-success promote
 # (a byte copy of the just-applied candidate) in _apply_baseline_profile_locked
 # and restore_applied_baseline_profile. Root cause: the OLD parity check
@@ -6012,7 +6016,7 @@ async def test_first_ever_apply_lands_on_sibling_and_promotes_canonical(
     monkeypatch, tmp_path: Path,
 ) -> None:
     """#1666: even a speaker's FIRST-EVER apply (no prior applied anchor)
-    lands its candidate on a content-addressed sibling -- never writes
+    lands its candidate on a source-fingerprinted sibling -- never writes
     baseline_config_path() in place, changing today's behaviour where a
     first apply wrote canonical directly -- and canonical ends up holding
     the applied bytes via the post-success promote."""
@@ -6347,7 +6351,7 @@ def test_prune_keeps_the_protected_undo_target_even_when_it_is_oldest(
     tmp_path: Path,
 ) -> None:
     """Item 3 (#1605): the Undo target (pre_apply_profile.config.path) is a
-    content-addressed sibling that handle_v2_restore reloads. Even when it is
+    source-fingerprinted sibling that handle_v2_restore reloads. Even when it is
     the OLDEST candidate — so the newest-K mtime prune would evict it —
     passing it via ``also_protect`` keeps it on disk, while the on-disk total
     stays bounded to K (a protected sibling costs a slot, it does not add to

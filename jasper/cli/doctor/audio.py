@@ -1431,7 +1431,7 @@ def check_dsp_apply_state() -> CheckResult:
     return CheckResult("DSP apply state", status, detail)
 
 def _is_baseline_candidate_sibling(live_path: Path, canonical: Path) -> bool:
-    """True if ``live_path`` is a content-addressed sibling of ``canonical``.
+    """True if ``live_path`` is a source-fingerprinted sibling of ``canonical``.
 
     ``build_baseline_profile_candidate`` names every candidate
     ``<canonical stem>_candidate_<fingerprint12><canonical suffix>`` beside

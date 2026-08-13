@@ -999,7 +999,7 @@ def test_active_speaker_setup_rederives_baseline_freshness(
         created_at="2026-06-14T12:20:00Z",
     )
     assert payload["status"] == "ready_to_apply"
-    # #1666: the candidate lands on its own content-addressed sibling, never
+    # #1666: the candidate lands on its own source-fingerprinted sibling, never
     # baseline_config_path directly -- that literal file is never written by
     # a bare build_baseline_profile_candidate() call (only the real apply
     # transaction's post-success promote publishes it). What CamillaDSP would
