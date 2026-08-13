@@ -248,7 +248,7 @@ class MeasuredCrossoverCandidate:
     ``linearization`` above: one of "fitted" / "trim_rejected" /
     "ineligible_mic_tier" / "ineligible_repeats" / "fit_failed", or "" when
     linearization was never evaluated this attempt. This is the single
-    writer's own verdict (``crossover_v2_flow._LinearizationState.outcome``,
+    writer's own verdict (``crossover_v2.candidates.LinearizationState.outcome``,
     stamped verbatim at candidate-build time) — this module never re-derives
     it. Era-tolerant exactly like ``linearization``: omitted from the
     fingerprint when empty, and accepted absent on ``from_mapping`` (every

@@ -4,7 +4,7 @@
 
 """WHERE to cross, and what it costs to find out (#2291 Phase 5a-v(b)).
 
-The fifth sibling of :mod:`.programs`, :mod:`.priors`, :mod:`.spatial` and
+A sibling of :mod:`.programs`, :mod:`.priors`, :mod:`.spatial` and
 :mod:`.candidates`.  Those answer what a phase plays, what the analyzer is told,
 what a capture-consuming phase decides, and what one build produced.  This one
 answers R17's question: **given a capture that is alive exactly once, which

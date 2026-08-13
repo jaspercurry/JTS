@@ -5,7 +5,7 @@
 """ONE candidate, assembled — and what its linearization produced (#2291
 Phase 5a-v(c)).
 
-The sixth sibling of :mod:`.programs`, :mod:`.priors`, :mod:`.spatial`,
+A sibling of :mod:`.programs`, :mod:`.priors`, :mod:`.spatial`,
 :mod:`.candidates` and :mod:`.fc_sweep`.  :mod:`.candidates` owns the *values*
 one build returns; :mod:`.fc_sweep` owns which corners are worth building at
 all.  This one owns the build itself: the eligibility gate, the planner request

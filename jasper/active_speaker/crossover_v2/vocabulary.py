@@ -19,7 +19,7 @@ the selectors that pick between two sentences for one code, and
 opposite.**  #2291 Phase 5a-vii ruled that the vocabulary did *not* have to
 move, and that ruling was correct for what it was about: an *organ* answers with
 a kind, so no organ needed the carrier.  Phase 5c changed the fact it rested on.
-The conductor is dissolving, its surviving spine lands in this package, and the
+The conductor dissolved, its surviving spine landed in this package, and the
 spine's whole job is building :class:`PhaseVerdict`s —
 while ``test_no_domain_module_imports_the_host_or_the_legacy_flow`` forbids any
 module here importing the flow.  Spine-in-package therefore forces

@@ -940,15 +940,16 @@ reference. Currently:
   correction descriptor, the bass-extension classifier) into per-step state
   and one "next" pointer. Deliberately not a wizard framework.
 - [`HANDOFF-crossover-measurement-v2.md`](docs/HANDOFF-crossover-measurement-v2.md)
-  — **Operational canon for the crossover measurement v2 "conductor" flow**
+  — **Operational canon for the crossover measurement v2 commission session**
   (the only `/sound/crossover/` flow since W5b retired the legacy
-  per-driver flow and the `JASPER_CROSSOVER_FLOW` selector). The conductor
-  model (phone = dumb recorder, Pi = conductor, analysis = pure functions), the
-  CHECK → MEASURE → cloud → automatic APPLYING → VERIFY → cloud capture
-  flow (a guided spatial cloud since flat-linearization PR-3b), the file map,
-  invariants, failure taxonomy, session-state paths, and the W6 hardware bug
-  catalog. Read this for how the flow works today; the design/decision record
-  below is the "why."
+  per-driver flow and the `JASPER_CROSSOVER_FLOW` selector). Hybrid shape: a
+  live spine — the three-party model (phone = dumb recorder, Pi = session
+  owner, analysis = pure functions), the two-stage capture flow (a guided
+  spatial cloud since flat-linearization PR-3b; nothing applies inside a
+  session), how a round is graded, the file map, and the invariants — over a
+  historical appendix holding the campaign narrative, the failure-taxonomy
+  catalog, and the W6 hardware bug list. Read the spine for how the flow works
+  today; the design/decision record below is the "why."
 - [`active-speaker-tuning-layers-design.md`](docs/active-speaker-tuning-layers-design.md)
   — **Adopted design (2026-07-23): the five-layer tuning model** — driver
   linearization (the layer the "no sparkle" incident exposed) + crossover

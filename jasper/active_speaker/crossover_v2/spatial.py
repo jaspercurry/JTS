@@ -4,7 +4,7 @@
 
 """What a capture-consuming phase DECIDES about one take (#2291 Phase 5a-iv).
 
-The third sibling of :mod:`.programs` and :mod:`.priors`.  Those two answer
+A sibling of :mod:`.programs` and :mod:`.priors`.  Those two answer
 "what does this phase play, and how loud" and "what is the analyzer told about
 what came back"; this one answers the question immediately after — **is this
 take evidence, what does it record, and does the group want another one**.  In

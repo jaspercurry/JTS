@@ -1,30 +1,498 @@
-# Handoff: crossover measurement v2 — the conductor flow
+# Handoff: crossover measurement v2 — the commission session
 
-The v2 flow measures and applies a fully-active 2-way crossover's
-**level, delay, and polarity** from a **guided spatial cloud** — 16
-captures at the **Full tier's** defaults, walked through a handful of
-prompted microphone positions around one mark. (It was three captures at
-a single fixed position until flat-linearization PR-3b made the cloud the
-measurement; see "Position groups" below for what did and did not move.)
-Since the flow-simplification work order's PR-U1
-([`flat-linearization-flow-simplification-plan.md`](flat-linearization-flow-simplification-plan.md))
-there is also an **Express tier** — 7 captures, a 4-position pre-apply
-cloud and a mark-only post-apply check, no cross-position post-apply
-claim. The household picks explicitly, every session, on the
-`/correction/` wizard; the rest of this doc describes the Full tier's
-walk unless a section says otherwise — read the plan doc for Express's
-exact shape and its degraded-claims table.
-The phone is a dumb recorder; the Pi is
-the conductor; the analysis is a pure function of
-`(ExcitationProgram, captured WAV)`. It replaces the legacy per-driver
-near-field procedure, which never achieved a reliable end-to-end pass
-on hardware. Canonical home for how v2 operates today — other docs link
-here. The design/decision record (why it exists, the rejected
-alternatives, the wave plan) is
-[`crossover-measurement-productization-design.md`](crossover-measurement-productization-design.md);
-this doc is the current operational truth.
+> **Two documents in one file, deliberately.** Everything down to
+> "[Appendix — the campaign record](#appendix--the-campaign-record-historical)"
+> is the **live spine**: what v2 is, how to run it, the shape it has today, the
+> contracts that must survive a refactor, and where to look when it breaks.
+> The appendix below it is the campaign narrative — dated bench results, the
+> bug-class catalog, the decision archaeology — and is **tagged historical**;
+> its specific facts (env defaults, thresholds, "what's working" lists, class
+> names that no longer exist) are deliberately not kept in sync with the code.
+> Read the spine for "what does this do"; read the appendix for "why is it
+> like this."
 
-> **R15 candidate status (2026-08-05):** [#2106](https://github.com/jaspercurry/JTS/issues/2106)
+## What it is
+
+v2 measures a fully-active 2-way crossover's **level, delay, and polarity**
+from a **guided spatial cloud** — the household walks a phone microphone
+through a handful of prompted positions around one mark — then proposes a
+correction, applies it on an explicit tap, and measures again to grade what
+changed.
+
+- **Two tiers, chosen every session** on the `/correction/` wizard.
+  `TIER_FULL` is 16 captures at the shipped defaults; `TIER_EXPRESS` is 7
+  (`TIER_FULL` / `TIER_EXPRESS` / `DEFAULT_TIER`, in
+  [`crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py)).
+  This doc describes Full unless it says otherwise.
+- **It is the only flow.** The legacy per-driver near-field procedure and its
+  `JASPER_CROSSOVER_FLOW` selector are gone; `build_crossover_envelope`
+  dispatches straight to `build_crossover_envelope_v2`.
+- **Nothing applies inside a capture session.** A session produces a proposal;
+  the household applies it from the `review` screen.
+
+This is the canonical operational doc for v2. The design record — why it
+exists, what was rejected, the wave plan — is
+[`crossover-measurement-productization-design.md`](crossover-measurement-productization-design.md).
+
+## How to run it
+
+**Household surface:** `http://jts.local/correction/` → the crossover step.
+Screens are `speaker_setup → microphone_check → measure → apply → verify`.
+Place the mic ~1 m in front of the speaker at tweeter height, pick a tier on
+`microphone_check`, tap Start, follow the phone. When measurement ends, return
+to jts.local and choose Apply explicitly.
+
+**Three independent releases ship in a fixed order.** The phone page and the
+relay Worker both go out **before** the Pi, because each must be able to
+accept what the Pi will emit:
+
+1. **Phone capture page** — [`capture-page/`](../capture-page/README.md), a
+   Cloudflare Pages app at `capture.jasper.tech`. Deploy from the repo root:
+   `npx wrangler pages deploy capture-page/dist --project-name jts-capture-page --branch=main`.
+   `--branch=main` is load-bearing — without it wrangler publishes a preview
+   alias and the production domain keeps serving the stale page. The custom
+   domain lags the deploy by ~5 min; verify it before moving on.
+2. **Relay Worker** — [`relay/`](../relay/README.md) at `relay.jasper.tech`.
+   `cd relay && npx wrangler deploy`, then confirm the public artifact:
+   `curl -fsS https://relay.jasper.tech/capabilities` and check
+   `max_capture_plan_attempts` is at least what the Pi build will emit. The
+   Worker's blob-index space *is* the capture-plan attempt ceiling.
+3. **The Pi** — `bash scripts/deploy-to-pi.sh`.
+
+The Pi reads `/capabilities` at session setup and refuses before registering
+rather than dying on the ninth capture
+(`event=capture_relay.plan_capacity_refused`). Both READMEs own the full
+ordering rule, including the removal direction (page last).
+
+**Commissioning is memory-privileged.** A MEASURE-accept analysis peaks around
+400–430 MB and its co-residency headroom on a 1 GB Pi has never been budgeted
+— see "Boundaries" below before assuming it fits.
+
+## Architecture — four parties, one direction of authority
+
+```
+phone (dumb recorder)  →  relay  →  Pi session owner  →  pure decision organs
+                                          ↓
+                                   pure analysis
+```
+
+**Phone = dumb recorder.** Per phase it records a known-length window and
+uploads one encrypted WAV. No live phone↔Pi feedback mid-capture and no
+per-repeat gestures: it reads the next capture's plan entry (duration +
+prompt) from the relay session and posts a WAV back.
+
+**Pi = the session owner.** `CrossoverV2Session` in
+[`crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py) holds
+one session's mutable state, the injected seams, the locks, and the acts that
+cannot be undone or repeated (play, publish, apply, commit, journal). It is
+also the **adapter** for its one caller, the web host — which is why a
+one-line `return self._x` accessor there is a contract rather than
+scaffolding. Hand `authorize_begin` / `on_armed` / `consume_capture` to
+`run_capture_plan` ([`capture_relay/session.py`](../jasper/capture_relay/session.py))
+to drive a session; `snapshot` / `hydrate` carry phase persistence.
+
+**The decisions are not there.** Every verdict rule, admission policy, prior,
+program composition, fit, sweep, spatial close and grade lives in
+[`jasper/active_speaker/crossover_v2/`](../jasper/active_speaker/crossover_v2/__init__.py)
+— one module per organ, each pure and separately testable. The session reads
+its state, calls an organ, and records what came back.
+
+**The direction is the invariant: the session imports the package; the package
+never imports the session or the web host.** `test_no_domain_module_imports_
+the_host_or_the_legacy_flow` in
+[`test_crossover_v2_journey.py`](../tests/test_crossover_v2_journey.py) holds
+that line. When a decision starts being made in the session file it belongs in
+an organ; when session state or a seam starts being read in an organ it
+belongs in the session file.
+
+**Analysis = pure functions.** `analyze_program_capture` in
+[`program_analysis.py`](../jasper/audio_measurement/program_analysis.py) maps
+`(ExcitationProgram, WAV, cal, geometry, priors) → ProgramAnalysis` with no
+hidden state, so every verdict is reproducible offline from the stored
+artifacts.
+
+**All side effects cross one boundary.** `V2FlowSeams` carries six required
+seams (`play`, `analyze`, `publish_check`, `publish_candidate`,
+`apply_complete`, `apply_failed`) plus optional ones a session can run
+without. The web host
+([`correction_crossover_v2.py`](../jasper/web/correction_crossover_v2.py))
+binds the real ones; tests inject fakes.
+
+Two names still say *conductor* on purpose: `V2ConductorSnapshot` (the
+session's persisted form) and `V2ConductorContext` (the host's resolved
+construction context), with `resolve_conductor_context` and
+`persist_conductor_state` beside them. They are persistence- and
+host-adjacent, and renaming them would rewrite a durable shape for cosmetics.
+The class they were named after — `CrossoverV2Conductor` — was dissolved in
+#2291 Phase 5c-iv; what survived was a session owner, so it is named one.
+
+## The capture flow
+
+The journey is **two relay sessions** with an untimed household decision
+between them. Both use `crossover_v2:session` / `crossover_v2:verify`.
+
+**Stage 1 — `POST /crossover/v2/session`, 9 captures at Full.**
+
+| index | phase | what it is |
+|---|---|---|
+| 1 | `check` | microphone check |
+| 2 | `measure` | design-axis anchor, per-driver |
+| 3–8 | `lateral` | 6 prompted poses off the design axis |
+| 9 | `entry_baseline` | summed sweep back at the mark — the round's measured "before" |
+
+Which phases stage 1 walks is three flags in the flow file, not a guess:
+`STAGE1_INCLUDES_LATERAL` and `STAGE1_INCLUDES_ENTRY_BASELINE` are `True`,
+`STAGE1_INCLUDES_CLOUD_MEASURE` is `False`, so a shipped session emits no
+`cloud_measure` phase or prompt. The entry baseline is **last** on purpose:
+the less the room, the mic and the household have moved between it and the
+graph change, the more of the before→after difference is the graph.
+
+The set is held open past its capture target until the phone posts
+`complete_capture_set` — the household's "Continue". That signal closes the
+group and publishes the candidate; until it arrives the final position is
+still retakeable. **Nothing is applied inside this session.**
+
+**Stage 2 — `POST /crossover/v2/verify` with `{"stage": "post_apply"}`,
+6 captures at Full.**
+
+| index | phase | what it is |
+|---|---|---|
+| 1 | `verify` | design-axis anchor, summed |
+| 2–6 | `cloud_verify` | 5 prompted post-apply positions |
+
+The same endpoint with no `stage` is the 1-entry recovery re-verify.
+
+**The phase vocabulary is data, in one place.** `PHASE_*`, `CAPTURE_PHASES`
+and `GROUP_PHASES` live in
+[`crossover_v2/journey.py`](../jasper/active_speaker/crossover_v2/journey.py),
+with `JourneyPlan` (index map → ordered walk → group index spans →
+`post_apply_verifies`) and `CommissionJourney` (the `accept` / `mark_applied`
+transitions). `GROUP_PHASES` are the three whose accepted-capture bookkeeping
+is per *index* rather than per phase, because one phase spans many prompted
+positions: `cloud_measure`, `cloud_verify`, `lateral`.
+
+**The fit is the last thing before the apply.** Building the candidate at the
+group's close rather than at MEASURE's accept is what lets it consume the
+cloud evidence the household was just asked to produce. MEASURE keeps every
+trust gate it owned — they read the analysis, not the candidate — so a session
+doomed at sweep two still fails at sweep two.
+
+## The round, graded
+
+A round is *capture → plan → apply → verify → adopt*. Its **tail** — grade,
+act, restore if the table says restore, bank the receipt — is
+[`crossover_v2/coordinator.py`](../jasper/active_speaker/crossover_v2/coordinator.py):
+`run_round(evidence, ports)` over a frozen `RoundEvidence` and a narrowed
+`RoundPorts` (five seams), returning a `RoundDecision` whose refusal is a
+typed `RoundRefusal` kind. It is the one module in the package that calls
+seams and journals; it still holds no session state and reaches no host
+object.
+
+**Four independent verdicts, never one overloaded pass/fail.** Each is its own
+function in
+[`crossover_v2/verification.py`](../jasper/active_speaker/crossover_v2/verification.py):
+
+| question | function |
+|---|---|
+| is this capture evidence at all? | `evaluate_capture_validity` |
+| did the graph do what the model said? | `evaluate_realization` |
+| is the after better than the before? | `evaluate_benefit` |
+| does it meet the flat spec? | `evaluate_spec` |
+
+`verification_result` bundles them and `decide_adoption` combines their
+**statuses** — never their internals — through a table it does not get to
+reinterpret. That split exists because a realization answer once stood in for
+an acoustic one and a failing round read as passed.
+
+The two measurements a round compares, reduced to comparands and carrying the
+margin below which a difference is not a change, are
+[`crossover_v2/round_evidence.py`](../jasper/active_speaker/crossover_v2/round_evidence.py).
+
+## File map
+
+One line per file. Design prose lives in each module's own docstring — read
+the module, not a second copy here.
+
+| File | What it owns |
+|---|---|
+| [`crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py) | `CrossoverV2Session` — session state, seams, irreversible acts, and the host adapter; plus the capture-plan builders, tier/plan shape, cloud prompts, and `confirm_graph_is_live`. |
+| [`crossover_v2/__init__.py`](../jasper/active_speaker/crossover_v2/__init__.py) | The organ package's index — what each sibling owns, and the rule that they are no longer numbered. |
+| [`crossover_v2/contracts.py`](../jasper/active_speaker/crossover_v2/contracts.py) | The immutable domain values and their construction-time invariants and fingerprints. |
+| [`crossover_v2/vocabulary.py`](../jasper/active_speaker/crossover_v2/vocabulary.py) | What the household is told when a round refuses: `REASON_*` codes, `TEMPLATE_*` shapes, `REASON_REGISTRY`, and `PhaseVerdict`. |
+| [`crossover_v2/journey.py`](../jasper/active_speaker/crossover_v2/journey.py) | Where a round is and what its stage can do: the phase vocabulary, `JourneyPlan`, `CommissionJourney`, `open_stage`. |
+| [`crossover_v2/programs.py`](../jasper/active_speaker/crossover_v2/programs.py) | What a session plays and how loud: `back_off_gain`, `SessionExcitation`, `program_for_phase`. |
+| [`crossover_v2/priors.py`](../jasper/active_speaker/crossover_v2/priors.py) | What the analyzer is TOLD about each capture — every function a decision about what to withhold. |
+| [`crossover_v2/spatial.py`](../jasper/active_speaker/crossover_v2/spatial.py) | What a capture-consuming phase decides about one take: the three screen ladders, the geometry-retake rule, the retained records. |
+| [`crossover_v2/candidates.py`](../jasper/active_speaker/crossover_v2/candidates.py) | What one candidate build produced, as values that travel without `self`. |
+| [`crossover_v2/fc_sweep.py`](../jasper/active_speaker/crossover_v2/fc_sweep.py) | Which crossover corners may be asked about, what each costs to score, and which one the evidence recommends. |
+| [`crossover_v2/planning.py`](../jasper/active_speaker/crossover_v2/planning.py) | One candidate assembled: the eligibility gate, the planner request, and the emitted candidate. |
+| [`crossover_v2/admission.py`](../jasper/active_speaker/crossover_v2/admission.py) | Who may start one more capture and what it costs — the bounded-retry meter, `MAX_EXTRA_ATTEMPTS_PER_POSITION`. |
+| [`crossover_v2/capture_dispatch.py`](../jasper/active_speaker/crossover_v2/capture_dispatch.py) | Which screens an anchor capture must clear, and in what order, for the three sit-still phases (CHECK, MEASURE, VERIFY). |
+| [`crossover_v2/intervention.py`](../jasper/active_speaker/crossover_v2/intervention.py) | The deterministic prescription planner as pure functions — assembly around existing DSP primitives, never a second fitter. |
+| [`crossover_v2/accountability.py`](../jasper/active_speaker/crossover_v2/accountability.py) | Whether a built candidate may be PROPOSED at all — three assertions, most-specific first. |
+| [`crossover_v2/verification.py`](../jasper/active_speaker/crossover_v2/verification.py) | The four independent verification verdicts and adoption as data. |
+| [`crossover_v2/round_evidence.py`](../jasper/active_speaker/crossover_v2/round_evidence.py) | The two measurements one round compares, and the margin that makes a difference a change. |
+| [`crossover_v2/coordinator.py`](../jasper/active_speaker/crossover_v2/coordinator.py) | The round's tail: grade, act on the adoption table, restore, bank the receipt. |
+| [`crossover_v2/attempt_grading.py`](../jasper/active_speaker/crossover_v2/attempt_grading.py) | Whether a VERIFY capture is a new tuning attempt, and how it grades against the cross-session ledger. |
+| [`fc_selector.py`](../jasper/active_speaker/fc_selector.py) | R17's Fc selector as pure functions over small arrays. No session state, no I/O, no import of the flow. |
+| [`session_volume_plan.py`](../jasper/active_speaker/session_volume_plan.py) | One fixed measurement volume per session: the `min(−20, max(caps))` SSOT plus open/close/abandon and the restore-once latch. |
+| [`measured_crossover_candidate.py`](../jasper/active_speaker/measured_crossover_candidate.py) | `MeasuredCrossoverCandidate` — the fingerprinted apply artifact. |
+| [`linearization_envelope.py`](../jasper/active_speaker/linearization_envelope.py) | The Layer-1a correction envelope: per-bin allowed depth and the terms it takes the `min` across. |
+| [`linearization_fit.py`](../jasper/active_speaker/linearization_fit.py) | The Layer-1a fit engine: `fit_driver_linearization` and its budgets, bands, and give-back. |
+| [`camilla_yaml.py`](../jasper/active_speaker/camilla_yaml.py) | The baseline emitter, and the independent re-validation of every linearization filter before it reaches CamillaDSP. |
+| [`crossover_envelope_v2.py`](../jasper/active_speaker/crossover_envelope_v2.py) | The pure `status → envelope` renderer: step list, screen dispatch, registry copy. |
+| [`web/correction_crossover_v2.py`](../jasper/web/correction_crossover_v2.py) | The web host: endpoint bindings, durable v2 state, the real seams, apply/restore, `resolve_conductor_context`, `persist_conductor_state`. |
+| [`audio_measurement/program.py`](../jasper/audio_measurement/program.py) | The excitation-program model and its composers. Pure data, no safety decisions. |
+| [`audio_measurement/program_analysis.py`](../jasper/audio_measurement/program_analysis.py) | The pure analysis: locate/segment, drift, gated transfer functions, prediction, VERIFY tracking. |
+| [`audio_measurement/spatial_combine.py`](../jasper/audio_measurement/spatial_combine.py) | The spatial-cloud combiner and the echo/geometry diagnostics. numpy only. |
+| [`audio_measurement/interference_nulls.py`](../jasper/audio_measurement/interference_nulls.py) | The interference-null identification gate and the per-position variance classifier. |
+| [`audio_measurement/frame_fit.py`](../jasper/audio_measurement/frame_fit.py) | The frame between two curves about to be differenced — the model and its disclosure record, no band and no verdict. |
+| [`attribution/`](../jasper/attribution/__init__.py) | Mechanism attribution's schema and persistence half: findings, the declaration registry, promotion, bundle-lifetime storage. |
+| [`capture_relay/session.py`](../jasper/capture_relay/session.py), [`spec.py`](../jasper/capture_relay/spec.py) | Session-spanning capture plans, the begin/deferred/refused vocabulary, hold and timeout budgets, `CAPTURE_PROTOCOL_VERSION`. |
+| [`capture-page/`](../capture-page/README.md) | The static phone recorder and the capture protocol it advertises. |
+
+## Contracts & invariants (preserve these)
+
+1. **Two safety invariants, one owner each.** *Never too loud* — one derived
+   ceiling per driver, from declared sensitivities
+   (`derive_hf_measurement_ceiling_dbfs` in `driver_protection.py`). *Never
+   the wrong frequency range* — declared band plus a proven high-pass before
+   any full-range content; MEASURE's channel routing carries each driver's
+   crossover filter by construction.
+2. **Sensitivities live in exactly one place: the declaration.**
+   `declared_effective_driver_sensitivities(draft)` in `design_draft.py` is
+   the SSOT, folded through any declared in-line pad. The same mapping threads
+   into program admission *and* play-time readmission, so composed levels and
+   the admission gate can never disagree about a derived ceiling.
+3. **Session volume is `min(−20 dB, max(caps))`, not `min(caps)`.**
+   `session_measurement_volume_db` lets the least-sensitive driver reach the
+   reference level while more-sensitive drivers attenuate down digitally —
+   attenuating downward is always satisfiable, so every driver's cap is
+   enforceable at this volume. `min(caps)` starved multi-way systems. Latched
+   once per session; refused below the −60 dB emergency floor
+   (`EMERGENCY_MEASUREMENT_VOLUME_DB`). **Nothing moves it, including the
+   apply boundary.**
+4. **Analysis is a pure function of `(program, WAV)`.** No side-channel state.
+   The `program_id` is a content hash and fingerprints both the analysis and
+   the candidate, so a re-run can never be mistaken for a resume.
+5. **Clock drift is estimated in-capture.** Each MEASURE capture embeds a
+   repeated sweep so ε is estimated from the longest available baseline;
+   baseline disagreement ⇒ glitch ⇒ reject plus one retry. The repeated sweep
+   is **mandatory**, and the primary gate is anchored to the WOOFER's
+   first-vs-last located sweep specifically — a design invariant, not an
+   artifact of there being only one repeat.
+6. **Adaptive gating, never a false verdict.** The reflection gate width sets
+   a validity floor `f_valid_hz = 1/window_s`. VERIFY requires its gate window
+   ≥ MEASURE's; a forced shorter VERIFY gate yields `verify_inconclusive` —
+   never a false pass or fail.
+7. **Apply is read-only compose, then transactional apply.** `handle_v2_apply`
+   reopens the published candidate (the tamper check), gates on
+   `expected_candidate_fingerprint`, translates the measured fingerprint into
+   the baseline candidate's own fingerprint at the host boundary, then rides
+   the existing `apply_baseline_profile` transaction with rollback.
+8. **Undo survives everything.** `handle_v2_apply` stashes the
+   `pre_apply_profile` and `persist_conductor_state` carries it
+   *unconditionally* across every snapshot, so `handle_v2_restore` can pin a
+   restore to the prior compiled config even after a VERIFY re-arm. The
+   `/sound` declaration undo is written in the SAME state write, so neither
+   half can describe a different apply from the other.
+9. **The walked-away guarantee.** `SessionVolumePlan` holds one measurement
+   window with an abort target, a wall-clock ceiling, and a restore-once latch
+   drained by close, session death, or the ceiling. **Each stage arms its own
+   ceiling, sized from the plan it actually emits** — the number moves with the
+   plan; the cap is what makes the guarantee. A household that walks away can
+   never leave the speaker pinned at measurement volume. The voice-daemon
+   measurement pause is held for the whole session so the idle reconciler
+   cannot revert it.
+10. **The CamillaDSP safety ceiling stays.** `devices.volume_limit` is `0.0`
+    (`DEFAULT_VOLUME_LIMIT_DB` in `camilla_config_contract.py`) and positive
+    writes clamp to 0 dB in `CamillaController.set_volume_db`. The program
+    graph adds no headroom beyond the main volume.
+
+    **10a. The apply boundary's level move is DECLARED, never compensated.**
+    An applied graph absorbs its correction's boost as a pre-split common
+    attenuation, so the same commanded volume drives the speaker measurably
+    quieter. **That attenuation is the excitation-safety property, not a bug
+    to cancel** — the graph is `−H` pre-split and `+L_r(f)` post-split with
+    `L_r ≤ H`, so a boosted band lands at or under unity however deep the
+    correction. Raising the commanded volume to "restore" the level would put
+    the boosted band over the compression driver's cap on a sustained swept
+    sine. VERIFY therefore measures the corrected speaker at the **unchanged**
+    commanded level, and the move is instead *declared to the analysis*:
+    `observe_apply_success` persists `expected_post_apply_offset_db` in the
+    same state write as the `applied` flag, so the flag that releases VERIFY's
+    hold can never become visible without the offset beside it. The VERIFY
+    tracking gate needs no such treatment — it is already level-offset
+    invariant. The delta probe deliberately is not, because a level shortfall
+    is one of the things it classifies.
+11. **Linearization emission is independently re-validated at every boundary,
+    never trust-the-caller.** The emitter and the runtime-safety verifier each
+    re-prove biquad type ∈ {Peaking, Highshelf, Lowshelf}, non-positive gain,
+    and the shelf-placement structure from scratch — the fit engine's own
+    cut-only invariant is not assumed to have survived a JSON round-trip. The
+    safety-posture rationale is owned by
+    [`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md).
+12. **A submitted graph is proven live before anything plays.**
+    `confirm_graph_is_live` normalizes the submitted YAML through CamillaDSP's
+    own `ReadConfig` and compares fingerprints strictly. Text equality against
+    `GetConfig` cannot work — the readback is a default-filled, value-
+    normalizing superset — so both sides come back through the same
+    deserialization path. Normalization failure and mismatch stay distinct
+    refusals.
+
+## Debugging — where to look first
+
+**Terminal verdicts are internal reason codes, not screens.** `REASON_REGISTRY`
+in [`crossover_v2/vocabulary.py`](../jasper/active_speaker/crossover_v2/vocabulary.py)
+is the single source of truth: it maps each `REASON_*` code to one of four
+templates (`silent_auto_retry` / `fix_and_retry` / `hard_stop` /
+`session_restart`) plus the two special screens, its owning phase, and its
+retry budget (`retry_budget == 0` ⇒ non-retriable). **Read the registry, not a
+table.** The session decides the code; the envelope renders the copy — one
+copy source, no drift. The retry COUNT is per *position*, not per code.
+
+```sh
+# The phase walk (the /correction/ wizard runs under jasper-correction-web).
+journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(authorized|play|result|apply|apply_complete|restored|cloud_group_complete|cloud_geometry_retry|cloud_spec|cloud_publish_skipped)'
+
+# Session volume lifecycle (fail-closed). persist_failed is CRITICAL — the
+# durable intent could not be written; sweep for it, not just the happy three.
+journalctl -u jasper-correction-web | grep -E 'event=correction\.session_volume_(opened|restored|restore_failed|persist_failed)'
+
+# Apply boundary: the declared level move, and the CRITICAL line when a
+# volume close could not be confirmed (speaker possibly still at measurement
+# volume).
+journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(applied|apply_failure_volume_closed|volume_abandon_failed)'
+
+# Why a session refused, and what the speaker actually did with the correction.
+journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(level_frame_refused|level_frame_finding|level_match_refused|prediction_refused|realized_level_match|delta_probe|delta_probe_rollback|delta_probe_restore)'
+
+# Calibration handoff / uncalibrated warnings.
+journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(calibration_resolve_failed|uncalibrated_capture|default_calibration_hint_failed)'
+```
+
+Reading the results:
+
+- **`cloud_group_complete` and `cloud_spec` fire on EVERY close of a cloud
+  group**, including a retake's re-close. Seeing either twice for one phase is
+  the retake contract working, not a bug. `cloud_publish_skipped` is the line
+  that means "the durable artifact now lags the candidate".
+- **Triage a `locate_failed` by reading `event=program_analysis.anchor`
+  first.** A mis-anchored timeline fabricates that verdict on pristine
+  captures.
+- **`crossover_v2_level_frame_finding` is the banked-and-proceeded arm** — grep
+  it when a session COMPLETED but the two level estimators disagreed.
+- **A failure screen has a lifetime.** The persisted `failure` record carries
+  its own `at` stamp and the terminal screen renders only inside
+  `crossover_envelope_v2.FAILURE_FRESH_WINDOW_S`; older than that the
+  household gets the ordinary entry screen plus one dated nudge. A record with
+  no `at` reads as aged.
+
+Deeper catalogs — the full reason-code table with its history, per-capture
+diagnostics, the anchor cross-check, operator capture retention, and the W6
+bug-class list — are in the appendix below.
+
+## Boundaries / non-goals
+
+- **3-way is a v2 non-goal.** The program/WAV layer generalizes to N channels,
+  but the candidate and prediction would need to reshape from one alignment
+  triple to per-boundary entries — a schema change.
+- **Subwoofer/main alignment belongs to the bass-extension program.** v2
+  measures nothing below its gated validity floor.
+- **Fc/slope re-derivation and driver EQ beyond trims are a v3 door.** v2
+  deliberately measures *as-crossed* branches and cannot recover them.
+- **Commissioning's headroom on a literal 1 GB Pi is unmeasured** (#2168). One
+  production-shaped MEASURE-accept analysis peaks ~400–430 MB and cannot
+  complete under a 384 MB cgroup — measured 2026-08-06 on jts3 with the
+  bounded runner: indefinite reclaim-thrash at PSI 92%, 8421 `memory.high`
+  breaches, stalls rather than OOMs. Co-residency headroom against the
+  resident daemon set has never been measured or budgeted — say "unmeasured",
+  not "fine". Commissioning is rare and owner-present, which is why this is
+  disclosed rather than engineered around; the three candidate fixes stay open
+  on #2168.
+
+---
+
+## Appendix — the campaign record (historical)
+
+> **Status: historical.** Everything below this heading is the v2 campaign's
+> dated narrative — bench sessions, the bug-class catalog, hardware results,
+> and the decision archaeology behind the spine above. Snapshots from
+> 2026-07-17 through 2026-08-11. Read it for "why is it like this," never for
+> current state: specific facts here (thresholds, env defaults, file
+> responsibilities, "what's working" lists) drift, and names that no longer
+> exist in the code — chiefly the `CrossoverV2Conductor` class, dissolved in
+> #2291 Phase 5c-iv — are kept where they are what the entry was about at the
+> time. Current operational truth is the spine above; the file map there is
+> the current shape.
+
+### #2291 — the crossover-v2 contract migration (2026-08-10 → 2026-08-13)
+
+A mutable session object owned measurement context, candidate context,
+prescription policy, verification semantics, and lifecycle at once. On
+2026-08-10 that produced a candidate whose crossover sections said 1,648.7 Hz
+while its trim arithmetic still read the session's configured 2,000 Hz, and a
+trim recorded as rejected that was nevertheless committed — two
+single-source-of-truth failures from one object. The migration answered them
+by giving every decision its own pure, separately-testable owner, then
+dissolving the object that had held them.
+
+Twenty-five merged PRs, in order:
+
+| Phase | What it moved | PR |
+|---|---|---|
+| 0 | Characterization pins: stage bridge, incident replay fixture, strangler baseline | [#2299](https://github.com/jaspercurry/JTS/pull/2299), [#2298](https://github.com/jaspercurry/JTS/pull/2298), [#2304](https://github.com/jaspercurry/JTS/pull/2304) |
+| 1 | Immutable contracts + the planner facade | [#2307](https://github.com/jaspercurry/JTS/pull/2307) |
+| 2a | The pure intervention planner, with dual-run equivalence evidence | [#2313](https://github.com/jaspercurry/JTS/pull/2313) |
+| 2b | Cutover — the pure planner becomes production truth | [#2317](https://github.com/jaspercurry/JTS/pull/2317) |
+| 3a | Stage-bridge repair: commanded delta survives, rollback binds where VERIFY runs | [#2316](https://github.com/jaspercurry/JTS/pull/2316) |
+| 3b | The verification/adoption evaluator — four independent verdicts | [#2318](https://github.com/jaspercurry/JTS/pull/2318) |
+| 3c | The honest loop: entry baseline, wired verdicts, exactly-once restore, round receipt | [#2323](https://github.com/jaspercurry/JTS/pull/2323) |
+| 4 | The journey state machine; hosts become thin adapters | [#2328](https://github.com/jaspercurry/JTS/pull/2328) |
+| 5a-i | The round's tail moves behind a coordinator | [#2331](https://github.com/jaspercurry/JTS/pull/2331) |
+| 5a-ii | Level policy and program composition get an owner | [#2333](https://github.com/jaspercurry/JTS/pull/2333) |
+| 5a-iii | The analyzer's priors get an owner | [#2336](https://github.com/jaspercurry/JTS/pull/2336) |
+| 5a-iv | The capture-consuming organs: cloud group, lateral, entry baseline | [#2341](https://github.com/jaspercurry/JTS/pull/2341) |
+| 5a-v(a) | The candidate organ's values and the accountability gate | [#2352](https://github.com/jaspercurry/JTS/pull/2352) |
+| 5a-v(b) | The fc sweep — ports, not patches | [#2356](https://github.com/jaspercurry/JTS/pull/2356) |
+| 5a-v(c) | Candidate build + planning | [#2360](https://github.com/jaspercurry/JTS/pull/2360) |
+| 5a-vi | Admission/retry | [#2366](https://github.com/jaspercurry/JTS/pull/2366) |
+| 5a-vii | Capture dispatch | [#2377](https://github.com/jaspercurry/JTS/pull/2377) |
+| 5b | The residual seams — the remainder becomes scaffolding | [#2382](https://github.com/jaspercurry/JTS/pull/2382) |
+| 5b-ii | The verify grade leaves; the durable write stays exactly where it was | [#2385](https://github.com/jaspercurry/JTS/pull/2385) |
+| 5c-i | The test surface leaves | [#2388](https://github.com/jaspercurry/JTS/pull/2388) |
+| 5c-ii | The vocabulary and the flow library find their homes | [#2391](https://github.com/jaspercurry/JTS/pull/2391) |
+| 5c-iii | The carried code decisions land; the relocation is measured and re-scoped | [#2394](https://github.com/jaspercurry/JTS/pull/2394) |
+| 5c-iv | `CrossoverV2Conductor` dissolves — the flow file becomes the session owner | [#2396](https://github.com/jaspercurry/JTS/pull/2396) |
+| 5c-v | This rewrite: the doc describes what exists | this PR |
+
+Three findings from the campaign are worth carrying forward, because each
+corrected a plausible belief with a measurement:
+
+- **The "87 delegates are scaffolding" count was wrong, and deleting them
+  would have been a regression.** The forwarders sampled were defensive
+  copies — `dict(...)` on the way out — so removing them would have handed the
+  web host live mutable references into session state. Only the measured-dead
+  set was deleted; the kept forwarders were tabled with per-item reasons
+  ([#2396](https://github.com/jaspercurry/JTS/pull/2396)).
+- **The household vocabulary had to move with the spine.** An earlier ruling
+  kept it in the flow file. When the verdict-building spine landed in the
+  package — which is forbidden from importing the flow — that ruling stopped
+  being available. Where the vocabulary *philosophically* belongs is still
+  open ([#2390](https://github.com/jaspercurry/JTS/issues/2390)).
+- **The Phase-1 planner facade was write-only in production.** Its result
+  reached no production reader, and the round receipt's
+  `proposal_fingerprint` came from elsewhere. It was deleted rather than
+  documented; wiring a real proposal fingerprint into the receipt is
+  [#2392](https://github.com/jaspercurry/JTS/issues/2392).
+
+What #2291 did **not** close: the hardware run. The definition-of-done's
+Pi-side budget line and its live-speaker items need a real speaker, phone,
+relay and CamillaDSP, and the issue stays open until that run happens.
+
+### R15 candidate status (2026-08-05)
+
+> [#2106](https://github.com/jaspercurry/JTS/issues/2106)
 > owns the re-ratified atomic contract. The branch is under independent
 > three-lens adversarial review; nothing here is deployed and no hardware
 > measurement is claimed. When it lands, stage 1 is exactly CHECK then MEASURE
@@ -45,8 +513,7 @@ this doc is the current operational truth.
 > labels are provisional, and the [canonical
 > plan](crossover-linearization-80-20-plan.md) owns that contract. The deployed
 > pre-R15 flow remains described below.
-
-### Composing the configured-Fc path
+#### Composing the configured-Fc path
 
 `program_analysis._compose_configured_path_ir` turns a protected-neutral
 capture into what the fitter needs: `S = M * C_configured / P` (design §4.2),
@@ -112,7 +579,7 @@ identically between them. Production `full_ir` comes from a real deconvolution
 window, so wrap behaviour on a realistic IR is part of the outstanding hardware
 gap, not something the fixture can close.
 
-### Confirming a program graph is live
+#### Confirming a program graph is live
 
 `crossover_v2_flow.confirm_graph_is_live` is the one policy function that
 proves the graph CamillaDSP is running is the graph just submitted. It must
@@ -141,72 +608,9 @@ deserialization path, so the check does not depend on what `SetConfig` does to
 the text. The two refusals stay distinct — normalization failure means the YAML
 we submitted is invalid, mismatch means something else is live.
 
-## How to run it
+### Current status (2026-08-05)
 
-- **Household surface:** `http://jts.local/correction/` → the crossover
-  step. The screens are `speaker_setup → microphone_check → measure →
-  apply → verify`. The one-liner: place the mic ~1 m in front of the
-  speaker at tweeter height, choose Quick tune or Full measurement (the
-  `microphone_check` screen's tier chooser, flow-simplification PR-U3 —
-  both first-class; **Full carries the Recommended badge until a Full
-  commission has completed on this topology** — S4, adversarial review of
-  PR #1780 — then Quick tune does, so an express-only household is never
-  nudged away from the wider walk that mitigates §1.3's HF-null row), tap
-  Start, then follow the phone; after measurement, return to jts.local's review
-  screen and choose Apply explicitly. Nothing applies inside a capture session.
-  Since flat-linearization PR-3b the deployed phone
-  also prompts a series of small mic moves inside the measure and verify
-  steps (the spatial cloud); the wizard's five screens are unchanged,
-  because the cloud changed how many captures a step takes, not what the
-  household is doing.
-- **Commissioning is memory-privileged.** A MEASURE session's accept-time
-  analysis is not yet budgeted against the resident daemon set on a 1 GB
-  Pi — see "Boundaries / non-goals" below for the measured peak and the
-  open options (#2168).
-- **Only flow — v2.** W5b (2026-07-24) retired the legacy per-driver
-  flow and the `JASPER_CROSSOVER_FLOW` selector.
-  `build_crossover_envelope` dispatches straight to
-  `build_crossover_envelope_v2` now; a stale
-  `JASPER_CROSSOVER_FLOW=legacy` carried on an old box no longer selects
-  anything (pinned by `test_legacy_env_still_serves_v2_envelope`).
-- **Phone capture page:** the Cloudflare Pages app under
-  [`capture-page/`](../capture-page/README.md), served at
-  `capture.jasper.tech`, relaying through `relay.jasper.tech`. Deploy
-  from the repo root:
-  `npx wrangler pages deploy capture-page/dist --project-name jts-capture-page --branch=main`
-  — `--branch=main` is load-bearing: without it wrangler deploys a
-  preview alias and the production domain keeps serving the stale page
-  (the W6.10 Chrome-deadlock bug class); the custom domain lags the
-  deploy by ~5 min. See the capture-page README's release ordering, which
-  depends on direction: the page must advertise a protocol BEFORE any Pi
-  emits it (add → page first), and must keep advertising it UNTIL no Pi
-  emits it (remove → Pi first). The list holds exactly one entry today, so
-  the two sides have to move close together.
-  #2097's terminal result is a page-first compatibility cut; follow the
-  fixture and rollback order owned by [`capture-page/README.md`](../capture-page/README.md).
-  P0.3's phone-sequence fix is also **page first, Pi second**: publish build
-  `20260808.2`, verify the custom domain serves it, then update the Pi host.
-  The new page remains compatible with the old host; reversing the order leaves
-  a cached page able to restart or race its authenticated event counter.
-- **Relay Worker:** the Cloudflare Worker under
-  [`relay/`](../relay/README.md), served at `relay.jasper.tech`. It is a
-  **third independent release**, and like the page it ships **before**
-  the Pi — accepting a larger capture plan is backwards compatible,
-  emitting one is not. Deploy `cd relay && npx wrangler deploy`, then
-  verify the public artifact before touching any Pi:
-  `curl -fsS https://relay.jasper.tech/capabilities` — confirm
-  `max_capture_plan_attempts` is at least what the Pi build will emit
-  (32 as of PR-3a; the pre-capacity Worker's ceiling was 8). Only then
-  `bash scripts/deploy-to-pi.sh`. The Worker's blob-index space IS the
-  capture-plan attempt ceiling, so a stale Worker would otherwise reject
-  the ninth capture mid-session; the Pi instead reads `/capabilities` at
-  session setup and refuses before registering
-  (`event=capture_relay.plan_capacity_refused`). Full rule in
-  [`relay/README.md`](../relay/README.md) "Release order".
-
-## Current status (2026-08-05)
-
-### Relay sequence and terminal precedence (2026-08-08)
+#### Relay sequence and terminal precedence (2026-08-08)
 
 `capture-page/js/relay-client.js` is the single owner of the phone-event
 sequence. It serializes event signing and POST delivery, and keeps the active
@@ -232,7 +636,7 @@ their result is reported by `correction.crossover_v2_cleanup_complete` or
 the existing component-specific `correction.crossover_v2_volume_*_failed`
 events; relay-purge failure uses `correction.crossover_v2_cleanup_failed`.
 
-### Live attempts loop (2026-08-03)
+#### Live attempts loop (2026-08-03)
 
 An accepted applied-candidate VERIFY now crosses one lifecycle seam in
 `CrossoverV2Conductor`: `ProgramAnalysis.capture_integrity` and the shipped
@@ -564,31 +968,7 @@ artifact, not in-repo).
 
 ---
 
-## Architecture — the conductor model
-
-Three parties, one direction of authority (the Pi):
-
-- **Phone = dumb recorder.** Per phase it records a known-length window
-  and uploads one encrypted WAV. No live phone↔Pi feedback mid-capture,
-  no per-repeat gestures. It reads the next capture's plan entry
-  (duration + prompt) from the relay session and posts a WAV back.
-- **Pi = conductor.** `CrossoverV2Conductor` in
-  [`jasper/active_speaker/crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py)
-  owns sequencing, admission, retry budgets, and verdicts. It compiles
-  one **excitation program** per phase (a pure-data schedule of stimuli
-  with per-segment digital gains + safety attestation), plays it as one
-  continuous stream at a single session volume, and analyzes the upload.
-- **Analysis = pure functions.** `analyze_program_capture` in
-  [`jasper/audio_measurement/program_analysis.py`](../jasper/audio_measurement/program_analysis.py)
-  maps `(ExcitationProgram, WAV, cal, geometry, priors) → ProgramAnalysis`
-  with no hidden state, so every verdict is reproducible offline from
-  the stored artifacts.
-
-The conductor is I/O-free: all side effects cross an injected
-`V2FlowSeams` boundary (`play`, `analyze`, `publish_check`,
-`publish_candidate`, `apply_complete`, `apply_failed`). The web host
-([`jasper/web/correction_crossover_v2.py`](../jasper/web/correction_crossover_v2.py))
-binds the real seams and tests inject fakes.
+### Architecture detail — the capture flow, the groups, and the graded round
 
 > **AUTO-APPLY IS GONE (two-stage commission work order D1, PR-T3,
 > 2026-07-29).** Everything below that describes the host "firing the
@@ -604,7 +984,7 @@ binds the real seams and tests inject fakes.
 > accountability veto (`_assert_accountable`) is untouched and now refuses
 > on the confirmation instead.
 
-### The capture flow — TWO sessions since the two-stage split
+#### The capture flow — TWO sessions since the two-stage split
 
 The journey is **two relay sessions** with an untimed household decision
 between them (two-stage commission work order D1/D2, PR-T3). Both use
@@ -1065,7 +1445,7 @@ together. Design rationale:
 6. **CLOUD-VERIFY** (5 × ~16 s, one tap each). The post-apply cloud,
    walking the same prompted positions.
 
-### Position groups — the operational rules
+#### Position groups — the operational rules
 
 - **Constants** (`crossover_v2_flow.py`, each with its rationale in
   place): `DEFAULT_CLOUD_MEASURE_POSITIONS` 9 (min 6, max 12),
@@ -1382,7 +1762,7 @@ written before Phase 3a still opens stage 2 and still verifies, it just cannot
 run the probe, and the journal says so instead of leaving an `unavailable`
 verdict unexplained.
 
-### The round, graded
+#### The round, graded
 
 Since #2291 Phase 3c a correction round answers the question it exists for —
 *did the speaker get better* — and acts on the answer. Before it, a round could
@@ -1864,7 +2244,7 @@ open with) and points at the speaker page, rather than pre-committing
 slot is last-write-wins, and `capture_set_complete` routinely overwrites the
 final `capture_result` before the page's ~250 ms poll reads it.
 
-## Recommending an Fc
+### Recommending an Fc
 
 R17. The session evaluates the crossover frequencies the DECLARATIONS admit and
 tells the household which one measured best. A configured-Fc winner keeps the
@@ -2002,194 +2382,7 @@ be scored is disclosed with a reason code, never dropped: `fit_refused`
 (no candidate, or the session is not Layer-1a eligible), `no_trusted_crossover_region`,
 `evaluation_budget_spent`.
 
-## File map
-
-| File | Responsibility |
-|---|---|
-| [`jasper/active_speaker/crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py) | The conductor: `CrossoverV2Conductor`, capture-plan builders (`build_v2_session_spec` / `build_v2_capture_plan` / `build_v2_verify_*`), `bind_program_playback_seams`, `derive_session_volume_db`, `open`/`abandon_measurement_volume`. Also the position-group choreography (flat-linearization PR-3b): the cloud constants + `CLOUD_POSITION_PROMPTS`, `build_v2_cloud_index_phase_map`, `cloud_capture_target` / `cloud_plan_max_attempts` / `assert_cloud_plan_fits_relay_capacity`, `session_wall_clock_ceiling_s`, and the combine seam (`cloud_position_capture` / `cloud_geometry_verdict`). PR-4 adds the contract-derived bands (`_composed_swept_band_hz`, `_derive_cloud_echo_band_hz` → `_CloudEchoBand`, which clamps the analysis band up to `ECHO_BAND_HF_REGIME_FLOOR_HZ` and discloses the clamp — issue #1763) and the wiring-contract assembly (`assemble_cloud_group_result`, `group_cloud_result`). |
-| [`jasper/active_speaker/fc_selector.py`](../jasper/active_speaker/fc_selector.py) | R17's Fc selector, as pure functions over small arrays: `band_flatness`, `predict_pose_sum_db`, `score_candidate`, `select_fc`, and the `FcCandidateEvaluation` memory contract. No conductor state, no I/O, no imports from the flow. Produces a recommendation; the host retains the exact winner for Sound-owned acceptance and existing DSP apply. |
-| [`jasper/audio_measurement/program.py`](../jasper/audio_measurement/program.py) | Excitation-program model + composers: `ExcitationProgram`, `ProgramSegment`, `RoleBand`, `build_check_program` / `build_measure_program` / `build_verify_program`, `render_program_pcm`, `write_program_wav`, `mesm_gap_samples`. Pure data + pure composers, no safety decisions. |
-| [`jasper/audio_measurement/program_analysis.py`](../jasper/audio_measurement/program_analysis.py) | The pure analysis: `analyze_program_capture` → `ProgramAnalysis`; locate/segment, drift (ε), per-driver gated TF, GCC-PHAT polarity/confidence seed + physical-gap-lobed declaration-bounded summed-flatness refinement, prediction, VERIFY tracking. All the analysis tuning constants. It no longer owns any flatness claim — flatness-verify (#1668 PR-D) was retired here by the flat-linearization plan's PR-5 and now lives on the cloud pipeline; see "Flatness" above. |
-| [`jasper/audio_measurement/spatial_combine.py`](../jasper/audio_measurement/spatial_combine.py) | The spatial-cloud combiner + echo/geometry diagnostics (flat-linearization S1, #1741 offline core; wired into the live flow by PR-4, #1756): `combine_positions` → `CombinedResponse` (power-mean spec curve, per-position curves, exclusion mask, `.geometry`/`GeometryLock`), `detect_echo` → `EchoDiagnostic` (two-estimator echo detection; `effective_floor_us`, `earlier_dominant_arrival`/`band_below_passband` refusal hardening from PR-2, #1749), `assess_geometry`, `usable_echo_estimates`. Pure computation, numpy only, no I/O/logging/policy. |
-| [`jasper/audio_measurement/interference_nulls.py`](../jasper/audio_measurement/interference_nulls.py) | The orthogonal interference-null identification gate (PR-1, #1751): `identify_interference_nulls` → `InterferenceNullReport` of `IdentifiedNull` records (τ/r/rung/depth/classification), fits a null ladder to the combined cloud's measured minima and corroborates against the cloud's arrival estimates; `position_invariant` / `position_dependent` / `insufficient_evidence`. Consumed by PR-4's `assemble_cloud_group_result` and PR-6b's (#1760) carve-out disclosure. Since #1967 it also exports `classify_dip_position_variance` → `PositionVarianceReport` of `PositionVarianceDip` records: the gate's own per-position presence step run WITHOUT the arrival/ladder corroboration, so a dip the ladder never explained can still be classified `position_invariant` / `position_dependent` (refusing by name with `REASON_TOO_FEW_POSITIONS` / `REASON_NO_PER_POSITION_CURVES` / `REASON_NO_CANDIDATE_NULLS`). `_validated_band` and `_classify_presence` are the shared owners of the band rule and the invariant/dependent line, so the two entry points cannot drift. Same purity contract as `spatial_combine`, zero production callers until PR-4. |
-| [`jasper/audio_measurement/frame_fit.py`](../jasper/audio_measurement/frame_fit.py) | The FRAME between two curves about to be differenced (rung P1): `fit_frame` → `FrameFit` (least-squares `offset_db` + `tilt_db_per_octave` on log-magnitude, plus the pivot/span they were fitted over) and `FrameComparison`, the typed disclosure record pairing that frame with a comparison's raw and tilt-removed grades. Owns the frame model and its JSON shape; owns no band, no threshold, no verdict, and computes no grade of its own — the CALLER owes it the bins the comparison trusts (see `analysis.notch_excluded_band_mask`). One production caller — `program_analysis._analyze_verify`. Pure numpy. |
-| [`jasper/attribution/`](../jasper/attribution/__init__.py) | Mechanism attribution's schema + persistence half (attribution plan WO-1, issue #1866). `findings.py` — the `Finding` artifact (`{mechanism, band, evidence, confidence, fix_class, household_copy, probes_run, probes_recommended}` + its evidence citations) and its self-describing serialization; `mechanisms.py` — the pure-data declaration registry, the shipped `REASON_REGISTRY` shape; `vocabulary.py` — the closed fix-class / confidence-tier / probe sets; `promotion.py` — the excluded-band promotion path (carve-out records → findings); `position_evidence.py` — the per-position members serializer consumed by `assemble_cloud_group_result`; `session_identity.py` — the one identifier that survives every store hop; `storage.py` — bundle-lifetime persistence (Q-C) **and `read_finding_set`, whose one production caller is `correction_crossover_v2._bank_household_findings`** — it reopens a just-published set through the strict reader and projects `household_copy` (and nothing else) into the durable v2 state for the envelope's `findings` key. No detectors (WO-4), no rich report (WO-6 — mechanism/evidence/confidence and the two-panel visualization), no daemon. |
-| [`jasper/active_speaker/session_volume_plan.py`](../jasper/active_speaker/session_volume_plan.py) | One fixed measurement volume per session: `session_measurement_volume_db` (the `min(−20, max(caps))` SSOT) + `SessionVolumePlan` (open/close/abandon, wall-clock ceiling, restore-once latch). |
-| [`jasper/web/correction_crossover_v2.py`](../jasper/web/correction_crossover_v2.py) | The web host: `/correction/crossover/v2/*` endpoint bindings, durable v2 state, the real analyze/publish/playback seams, `resolve_conductor_context`, `handle_v2_apply` / `handle_v2_restore`, calibration resolution, `ensure_crossover_preview_ready`, `persist_conductor_state`. |
-| [`jasper/active_speaker/crossover_envelope_v2.py`](../jasper/active_speaker/crossover_envelope_v2.py) | The pure `status → envelope` renderer (schema 8): step list, screen dispatch, `REASON_REGISTRY` → template copy. |
-| [`jasper/active_speaker/measured_crossover_candidate.py`](../jasper/active_speaker/measured_crossover_candidate.py) | `MeasuredCrossoverCandidate` — the fingerprinted apply artifact (trims + `MeasuredCrossoverAlignment` + `linearization`), folded through `emit_active_speaker_baseline_config` (`camilla_yaml.py`) and the delay/graph-safety proofs. |
-| [`jasper/active_speaker/linearization_envelope.py`](../jasper/active_speaker/linearization_envelope.py) | Layer-1a correction envelope (#1668 PR-B): `compose_envelope` → per-bin allowed correction depth + `ReasonCode`, `compute_sigma_curve`, and the term functions it takes the `min` across — `mic_trust_limit` / `repeatability_limit` / `class_prior_limit`, the two stubs, plus the optional cloud-derived `spatial_exclusion_limit` / `position_stability_limit` (flat-linearization PR-6a). Read the module for the current set; this list is illustrative, not a contract. Pure computation, no policy. |
-| [`jasper/active_speaker/linearization_fit.py`](../jasper/active_speaker/linearization_fit.py) | Layer-1a fit engine (#1668 PR-C): `fit_driver_linearization` → `LinearizationFit` (cut-only rising Highshelf + `jasper.correction.peq.design_peq` peaking loop, adaptive band trim, the CD-horn top-octave `_hf_continuation_stage` — a Lowshelf-backbone give-back + declared-class hold/taper policy, #1668 — `MAX_NORMALIZATION_SPEND_DB` budget now 18 dB, `correction_giveback_db` (the SSOT the conductor's anchored trim consumes), the `verify_band_hz`/`observe_octave_summary` honesty-ladder fields added in PR-D). Pure computation; the σ-composition policy (`crossover_v2.intervention.compose_sigma_db`, re-exported by the flow under its historical private name) and the conductor's `_build_candidate` own eligibility policy and wiring. `FitVocabulary.boost_excluded_bands_hz` (#1967) bounds the lift stage against bands the composer's cross-position evidence contradicted. Applied PER FILTER on the emitted response (`_boost_exclusion_verdicts`): a boost is dropped when the band lies inside its own half-gain bandwidth — i.e. its action region overlaps the band — while skirt spill from a filter working elsewhere is kept and disclosed (`lift_boost_excluded_drops` / `lift_boost_excluded_residual`). A whole-lift `boost_excluded_band` reason only when EVERY boost was aimed. Deliberately not a request mask (confines bell centres, not skirts, and is non-monotone) and deliberately not a whole-cascade test at `SIGNIFICANT_GAIN_DB` (calibrated outside a widened passband; inside one it refused 94.4% of multi-dip fits). Cuts are untouched. Also owns `linearization_filters_by_role`, the reduction the two rich-candidate emission call sites share (`recompose_applied_baseline_yaml` deliberately does not call it — see "Linearization EMISSION" above). |
-| [`jasper/active_speaker/camilla_yaml.py`](../jasper/active_speaker/camilla_yaml.py) | The baseline emitter. `emit_active_speaker_baseline_config`'s `linearization` parameter (#1668 PR-D) is what actually plays the Layer-1a fit — see "Linearization EMISSION" above; `_validated_linearization` independently re-validates it (Peaking/Highshelf/Lowshelf, non-positive gain, one leading shelf + one optional trailing Highshelf taper) before any filter reaches CamillaDSP. |
-| [`jasper/capture_relay/session.py`](../jasper/capture_relay/session.py), [`spec.py`](../jasper/capture_relay/spec.py) | Session-spanning capture plans: `CapturePlanEntry`, `CaptureBeginDeferred` / `CaptureBeginRefused`, `run_capture_plan`, hold/timeout budgets. Also the one `CAPTURE_PROTOCOL_VERSION`. |
-| [`capture-page/`](../capture-page/README.md) | The static phone recorder (Cloudflare Pages). `js/main.js` runs the session-spanning loop when the spec carries a `capture_plan`; `version.json` carries the supported capture protocol. |
-| [`jasper/active_speaker/crossover_v2/`](../jasper/active_speaker/crossover_v2/__init__.py) | The #2291 strangler destination package. `contracts.py` — the immutable domain values (`CandidateAcousticContext`, `InterventionProposal`, `PlanRefusal`, `VerificationResult`, `AdoptionDecision`, `RoundReceipt`), their construction-time invariants, and their fingerprints (via `evidence_identity.json_fingerprint`, no second hasher). `intervention.py` — the side-effect-free prescription planner (`plan_linearization`, `decide_trim`), assembled around the existing pure DSP primitives, plus the Layer-1a policy constants and σ-composition gate it is the only reader of. It reads its crossover corner from a `CandidateAcousticContext` and nothing else, and returns its journal lines as data. `verification.py` — independent realization / benefit / spec grading and the adoption decision over them. `round_evidence.py` — the two measurements a round compares, reduced to comparands. `journey.py` — the phase vocabulary (`PHASE_*`, `CAPTURE_PHASES`, `GROUP_PHASES`, re-exported by the flow), `JourneyPlan` (index map → ordered walk → group index spans → `post_apply_verifies`), `CommissionJourney` (the `accept` / `mark_applied` transitions the conductor's phase state now lives in), and the stage capability declarations with `open_stage` / `StageOpening`. `programs.py` — what a session plays and how loud: the `back_off_gain` clamp (re-exported by the flow), `SessionExcitation` (the session's four level declarations, frozen, with the three composers over them), `SUMMED_SWEEP_PHASES`, and `program_for_phase`, which answers BY OBJECT IDENTITY so the entry baseline and VERIFY share one `program_id`. The compose-time min-cap clamp on the summed sweep is the only level guard on the post-apply program, and `tests/test_crossover_v2_programs.py` pins it and the identity invariant against golden program ids captured before the extraction. `priors.py` — the sibling of `programs.py`: what the ANALYZER is told about each capture (`check_priors` / `measure_priors` / `lateral_priors` / `verify_priors` / `cloud_priors` / `entry_baseline_priors`, plus `role_transfers`, `configured_crossover_transfers` and `measure_sweep_bounds`). Every function is a decision about what to WITHHOLD — each field licenses a claim the analyzer will then make — and session evidence arrives as arguments rather than being read off the conductor. `spatial.py` — the third sibling: what a capture-consuming phase DECIDES about one take. The three ladders (`cloud_position_screens`, `lateral_pose_screens` + `lateral_curves_sufficient`, `entry_baseline_screens`), the geometry-retake rule (`geometry_retake`), the two retained records (`cloud_position_record`, `entry_baseline_record`), `group_position_floor`, and the blind-span derivation `boost_excluded_bands_hz`. Each ladder's content is its ORDER and its DROPPED gates — a cloud position drops the two VERIFY gates a moved microphone invalidates, a lateral pose drops the three that judge the alignment solve §4.4 forbids re-running, an entry baseline drops the tracking comparison because nothing is applied yet. Refusals leave as KINDS from `SCREEN_KINDS`, which `vocabulary.py` maps to `REASON_REGISTRY` codes through `SCREEN_KIND_REASONS` (completeness checked, not trusted); the shared capture-integrity predicates moved to `capture_dispatch.py` in #2291 Phase 5c-ii, and still arrive at each ladder as stated arguments. `coordinator.py` — the round's tail: `run_round` grades, acts on the adoption table, restores when the table says restore, and banks the receipt, over a narrowed `RoundPorts` (five seams) and a frozen `RoundEvidence`; it returns a `RoundDecision` whose refusal is a typed `RoundRefusal` kind, which the flow maps to the `REASON_REGISTRY` code the household reads. It is the one module here that calls seams and journals — the others are side-effect-free — and it still holds no session state and reaches no host object. `vocabulary.py` — what the household is TOLD when a round refuses: the `REASON_*` codes, the `TEMPLATE_*` remediation shapes, `ReasonSpec`/`RetryableReasonCopy`, `REASON_REGISTRY`, the copy selectors, and `PhaseVerdict`. It moved here in #2291 Phase 5c-ii because the spine that builds verdicts lands in this package and the package cannot import the flow; where the vocabulary *philosophically* belongs is deliberately still open (issue #2390). No import of `jasper.web` and nothing from `crossover_v2_flow.py` in ANY of them; the flow imports these, and `test_crossover_v2_journey.py` walks the package to keep it that way. The conductor installs a built candidate through one `commit_intervention_proposal` seam. That seam used to also assemble a Phase-1 `InterventionProposal` through a `planner_facade.py` module and expose it as `last_intervention_proposal`; #2291 Phase 5c-iii deleted both, because nothing in production ever read the result — `RoundReceipt.proposal_fingerprint` is fed by the tuning-attempt id or the candidate's own fingerprint. Wiring a proposal fingerprint into the receipt is issue #2392, and `contracts.py` keeps `InterventionProposal` for it. **Architecture prose is deliberately not here yet** — #2291 defers the canonical rewrite to its Phase 5 so this doc does not become a second source of truth for a design still being extracted. |
-
-## Contracts & invariants (preserve these)
-
-1. **Two-invariant protection model.** Exactly two safety invariants,
-   one owner each — everything that once looked like "safety hedging"
-   was deleted:
-   - *Never too loud:* one derived ceiling per driver. On the
-     program-admission path an HF driver's ceiling is
-     `min(declared_lf_cap − (sens_hf − sens_lf), −35 dBFS)`, derived
-     from declared sensitivities (`derive_hf_measurement_ceiling_dbfs`
-     in `driver_protection.py`). This **supersedes** the old −65 dB
-     seed on the proven-HP path.
-   - *Never the wrong frequency range:* declared band + a proven
-     high-pass before any full-range content. MEASURE's channel routing
-     carries each driver's crossover filter by construction, so the
-     tweeter is always behind its ≥24 dB/oct HP.
-2. **Sensitivities live in exactly one place: the declaration.**
-   `declared_effective_driver_sensitivities(draft)` (`design_draft.py`,
-   #1665) is the SSOT (`manual_settings.drivers[].sensitivity_db_2v83_1m`,
-   folded through any declared in-line pad —
-   `jasper.active_speaker.driver_pad.effective_sensitivity_db`; the older
-   `declared_driver_sensitivities` reader still exists but no longer feeds
-   `resolve_conductor_context`). The same mapping threads into program
-   admission *and* play-time readmission, so composed levels and the
-   admission gate can never disagree about a derived ceiling — and, as of
-   #1665, an L-pad'd driver's EFFECTIVE (not naked) sensitivity is what
-   sets that ceiling and the session measurement volume.
-3. **Session volume is `min(−20 dB, max(caps))`, not `min(caps)`.**
-   `session_measurement_volume_db` lets the least-sensitive driver reach
-   the reference level; more-sensitive drivers attenuate down digitally.
-   `min(caps)` starved multi-way systems (a woofer 40 dB under —
-   hardware-found). The value is latched once per session and refused
-   below the −60 dB emergency floor. **Nothing moves it, including the
-   apply boundary** — see invariant 10a.
-4. **Analysis is a pure function of `(program, WAV)`.** No side-channel
-   state. The `program_id` is a content hash and fingerprints the
-   analysis and the candidate, so a re-run can never be mistaken for a
-   resume.
-5. **Clock drift is estimated in-capture.** Alignment error = ε ×
-   T_separation. Each MEASURE capture embeds a repeated sweep so ε is
-   estimated from the longest available baseline (Gamper least-squares
-   ratio); baseline disagreement ⇒ glitch ⇒ reject + one retry. The
-   repeated sweep is **mandatory**. The primary gate (both the timing
-   epsilon and the woofer-repeat level-agreement check) is anchored to the
-   WOOFER's first-vs-last located sweep specifically — a design invariant,
-   not an artifact of there being only one repeat (sweep-composition PR-A,
-   #1668, three interleaved cycles per driver). The tweeter's own repeats
-   contribute a diagnostic-only per-role epsilon (never gated) as evidence
-   for future hardening.
-6. **Adaptive gating, never a false verdict.** The reflection gate width
-   sets a validity floor `f_valid_hz = 1/window_s`. VERIFY requires its
-   gate window ≥ MEASURE's; if a shorter VERIFY gate is forced, the
-   verdict is `verify_inconclusive` — never a false pass/fail.
-7. **Apply is read-only compose, then transactional apply.**
-   `handle_v2_apply` reopens the published candidate
-   (`MeasuredCrossoverCandidate.from_mapping`, the tamper check), gates
-   on `expected_candidate_fingerprint`, translates the *measured*
-   fingerprint into the *baseline* candidate's own
-   `candidate_fingerprint` at the host boundary (asserting the
-   composition is still bound to the reviewed measured candidate), then
-   rides the existing `apply_baseline_profile` transaction with rollback.
-8. **Undo survives everything.** `handle_v2_apply` stashes the
-   `pre_apply_profile` and `persist_conductor_state` carries it
-   *unconditionally* forward across every snapshot, so
-   `handle_v2_restore` can sha-pin a restore to the prior compiled
-   config even after a VERIFY re-arm. `sound_declaration_undo` (#2292)
-   is written in the SAME `observe_apply_success` state write, so the
-   `/sound` declaration goes back with the graph and neither half can
-   describe a different apply from the other — see "Recommending an
-   Fc" for the two-leg contract.
-9. **The walked-away guarantee.** The `SessionVolumePlan` holds one
-   measurement window with an abort target, a wall-clock ceiling, and a
-   restore-once latch drained by close / session-death / ceiling. The
-   ceiling is sized from the plan the session actually emits —
-   `DEFAULT_WALL_CLOCK_CEILING_S` (1800 s) plus
-   `WALL_CLOCK_CEILING_PER_ENTRY_S` (120 s) per capture beyond the
-   3-entry baseline, hard-capped at `MAX_WALL_CLOCK_CEILING_S`
-   (3600 s). **Each STAGE arms its own, from its own plan** (two-stage
-   D2): Full's stage 1 (10 captures) gets 2640 s and its stage 2 (6) gets
-   2160 s; Express's stage 1 (6) gets 2160 s and its stage 2 (1) the bare
-   1800 s, as does the recovery re-verify. **The number moves with the
-   plan; the cap is what makes the guarantee.** The split lowers the worst
-   case from the single session's 3360 s and gives each stage a fresh relay
-   TTL — it does NOT make either stage fit inside that 900 s TTL, and
-   nothing here should be read as claiming it does. A user who walks away can never
-   leave the speaker pinned at measurement volume. The voice-daemon measurement pause is held for
-   the *whole* session (acquired before the first volume set) so the
-   idle reconciler can't revert it. (#1811's **failed auto-apply** drain is
-   history since PR-T3: the apply left the session entirely, so no apply
-   can die inside one. A measure-only session that finishes takes the
-   ordinary CLOSE path — exact restore — and every other enforcement here
-   is unchanged.)
-10. **CamillaDSP safety ceiling stays.** As everywhere in the DSP
-    graph, `devices.volume_limit = 0.0` and positive writes clamp to
-    0 dB. The program graph adds no headroom beyond the main volume.
-
-    **10a. The apply boundary's level move is DECLARED, never
-    compensated (#1811).** The conductor's auto-apply swaps the
-    production graph ~3 s before VERIFY arms. The applied graph absorbs
-    its correction's boost as a pre-split common attenuation
-    (`camilla_yaml.linearization_headroom_db` → `active_baseline_headroom`),
-    so the same commanded volume drives the speaker measurably quieter —
-    −7.9 dB broadband, −14.5/−18 dB in the pilot band, on the session whose
-    apply moved that attenuation 0 → −22.458 dB.
-
-    **That attenuation is the excitation-safety property, not a bug to
-    cancel.** It is what makes the emitted boost safe: the graph is
-    `−H` pre-split and `+L_r(f)` post-split with `L_r ≤ H`, so a boosted
-    band lands at or under unity no matter how deep the correction
-    (`camilla_yaml.MAX_LINEARIZATION_BOOST_DB`'s note). The compose-time
-    excitation clamp (`programs.SessionExcitation.verify_program` →
-    `back_off_gain`) models
-    `program_peak + session_volume ≤ min(caps)` and knows nothing of
-    `L_r`, so raising the commanded volume by `H` to "restore" the level
-    would put the boosted band at `min(caps) + L_r(f)` — over the
-    compression driver's cap by the branch's own boost, on a sustained
-    swept sine, far below the per-driver limiters' −12 dBFS reach. The
-    exactly-safe grant is `H − max(L_peak) = 0`. **VERIFY therefore
-    measures the corrected speaker at the unchanged commanded level.**
-
-    What the move needs is to be *declared to the analysis*, because the
-    post-apply capture is compared against a prediction that carries no
-    such term. `handle_v2_apply` computes it
-    (`baseline_profile.applied_program_level_delta_db` — a difference of
-    two `linearization_headroom_db` calls, so it cannot drift from the
-    emitted gain) and `observe_apply_success` persists it as
-    `expected_post_apply_offset_db` in the **same state write** as the
-    `applied` flag — so the flag that releases VERIFY's hold can never
-    become visible without the offset beside it. The conductor reads it
-    back through the `applied_offset_db` seam and hands it to
-    `classify_delta_probe`, which removes it before classifying.
-
-    The **VERIFY tracking gate needs no such treatment** — it is already
-    level-offset-invariant (`audio_measurement.analysis.
-    _offset_invariant_rms_and_max` mean-centers; pinned by
-    `test_the_notch_excluded_gate_is_level_offset_invariant_too`). The
-    delta probe deliberately is not, because a level shortfall is one of
-    the things it classifies, which is exactly why it needs the offset
-    handed to it explicitly.
-
-    The declared offset is an honest **partial** account: it reads the
-    linearization headroom only, so a household with room-PEQ or
-    output-trim attenuation can carry a real move it does not see. That
-    remainder is measured where the correction commanded nothing and
-    surfaces as `delta_probe.VERDICT_LEVEL_MISMATCH` — a named finding,
-    not a rollback (see that constant's own note for why reverting on our
-    own bookkeeping gap would be a false accusation).
-
-    The household-facing loudness drop is **not** owned here: its root
-    cause is the size of the charge (#1808 shrinks it to ~4 dB) and the
-    two-stage flow (#1806) makes the apply user-confirmed, so the change
-    stops being a surprise.
-11. **Linearization emission is independently re-validated at every
-    boundary, never trust-the-caller (#1668 PR-D).** The emitter
-    (`_validated_linearization`) and the runtime-safety verifier
-    (`_consume_linearization_chain`) each re-prove biquad type ∈
-    {Peaking, Highshelf, Lowshelf}, non-positive gain, and the
-    shelf-placement structure (one leading shelf + one optional
-    trailing Highshelf taper, #1668) from scratch — the fit engine's
-    own cut-only invariant is not assumed to have survived a JSON
-    round-trip. Full safety-posture rationale (the
-    non-positive-gain policy, the boost-cap deferral) is owned by
-    [`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md);
-    this doc does not restate it.
-
-## Failure taxonomy & debugging
+### Failure taxonomy & debugging
 
 Terminal verdicts are **internal reason codes, not screens.**
 `REASON_REGISTRY` (in `crossover_v2/vocabulary.py`, re-exported by
@@ -2551,6 +2744,13 @@ with their own copy, unchanged), and any non-zero value now means only
 "retriable". The relay plan's `max_attempts` still bounds the whole
 session.
 
+*Where these live now (#2291 Phase 5c):* the meter and the settle ladder
+are `crossover_v2/admission.py` (`MAX_EXTRA_ATTEMPTS_PER_POSITION`,
+`SlotAttempts`, `assess_begin`, `settle_spent_slot`); the retry vocabulary
+is `crossover_v2/vocabulary.py` (`ReasonSpec`, `NON_RETRIABLE_CODES`).
+`crossover_v2_flow.py` re-exports the first two under their historical
+names and keeps `_resolve_spent_slot` as the thin caller.
+
 Every verdict carries the count on the wire as `attempts`
 (`{used, allowed, left, by_speaker, by_household}`), and the capture page
 renders it — "Measurement 6 of 6 — extra try 2 of 3", plus a note naming
@@ -2695,7 +2895,7 @@ number than re-emitting it would charge today — ~22.5 dB vs ~5 on the
 2026-07-28 JTS3 profile. The stamp is deliberately not re-derived on load
 (it records what that graph was emitted with); a recommission replaces it.
 
-### Per-capture diagnostics — every capture logs its numbers
+#### Per-capture diagnostics — every capture logs its numbers
 
 Before this, `event=correction.crossover_v2_result` carried only
 `accepted`/`code` — a failed hardware run left no numbers to look at, and
@@ -2856,7 +3056,7 @@ on the object: `program_analysis.DriftEstimate.repeat_level_delta_db` and
 `.channel_map_cross_rise_db` (previously local variables inside
 `_estimate_drift` / `_channel_map_ok`, logged transiently or not at all).
 
-### Timeline anchor — which stimulus the whole capture is pinned to
+#### Timeline anchor — which stimulus the whole capture is pinned to
 
 `program_analysis._global_offset` recovers ONE integer offset G for the whole
 capture by locating a single stimulus; `_locate_segments` then searches every
@@ -2924,7 +3124,7 @@ fourth failure was a `pilot_level_collapse` at 11.27 dB. The anchor no longer
 depends on the quiet pilot, but the linearity evidence still does. Worth
 revisiting the pilot level plan on its own merits.
 
-### Operator capture retention — raw WAVs for offline analysis
+#### Operator capture retention — raw WAVs for offline analysis
 
 Off by default. An operator debugging a hardware failure creates the marker
 file, and every subsequent capture's raw WAV + a diagnostic sidecar lands on
@@ -3007,7 +3207,7 @@ Endpoints (POST, dispatched from `correction_setup`):
 `/correction/crossover/v2/session`, `/apply`, `/verify`, `/restore`,
 and the shared `/correction/crossover/recover-volume`.
 
-## Hardware benchmarks (campaign results, 2026-07-18/19, JTS3 + UMIK-2)
+### Hardware benchmarks (campaign results, 2026-07-18/19, JTS3 + UMIK-2)
 
 Attributed as campaign measurements, not code guarantees:
 
@@ -3048,7 +3248,7 @@ SSOT helper, `_overlap_band_hz` in `program_analysis.py`, computes the
 clamp; every consumer reads the real sweep bounds off the program's own
 segments rather than re-deriving the nominal edges.
 
-### Delay selection — physical anchor primary, gated local-peak snap
+#### Delay selection — physical anchor primary, gated local-peak snap
 
 **Selection is anchor-primary; summed-magnitude flatness is evidence, never a
 selector.** Methodology decision:
@@ -3181,7 +3381,7 @@ notch-exclusion mask. Comparing a smoothed capture with a raw prediction caused
 a false 1.99 dB failure at the hardware-best delay; like-for-like comparison of
 that same capture is 0.490 dB max (raw-to-raw is 0.606 dB).
 
-## Gotchas — the W6 bug-class catalog (do not reintroduce)
+### Gotchas — the W6 bug-class catalog (do not reintroduce)
 
 Each was found on hardware and fixed at root cause (no wrapper layers,
 no retries-as-bodge). Treat these as regression fences.
@@ -3701,7 +3901,7 @@ no retries-as-bodge). Treat these as regression fences.
     the abandoned-capture production restore, is correct again precisely
     because the exit now only fires when nothing is running).
 
-## Future work — the post-W6 follow-ups issue
+### Future work — the post-W6 follow-ups issue
 
 Tracked in the post-W6 follow-ups GitHub issue (filed 2026-07-19):
 
@@ -3746,34 +3946,9 @@ Tracked in the post-W6 follow-ups GitHub issue (filed 2026-07-19):
   active-path-unavailable report, and a name migration to
   `sound_preferences_current.yml` — both owner-gated.)
 
-## Boundaries / non-goals
-
-- **3-way is a v2 non-goal.** The program/WAV layer generalizes to N
-  channels, but the candidate and prediction would need to reshape from
-  one alignment triple to per-boundary entries — a schema change.
-- **Subwoofer/main alignment belongs to the bass-extension program.**
-  v2 measures nothing below its gated validity floor.
-- **Fc/slope re-derivation and driver EQ beyond trims are a v3 door.**
-  v2 deliberately measures *as-crossed* branches and cannot recover them
-  (dividing out the target filter explodes stopband noise).
-- **Commissioning is a memory-privileged window, and its headroom on a
-  literal 1 GB Pi is unmeasured** (issue #2168; disclosed here by the R19
-  honest-grading round, whose bar is that a known fact is not a silent
-  one). One production-shaped MEASURE-accept analysis peaks **~400–430 MB**
-  and cannot complete under a 384 MB cgroup — measured 2026-08-06 on jts3
-  with the bounded runner: indefinite reclaim-thrash at PSI 92%, 8421
-  `memory.high` breaches, stalls rather than OOMs. That is today's shipped
-  single-Fc behaviour, and the co-residency headroom against the resident
-  daemon set on a 1 GB box has **never been measured or budgeted** — say
-  "unmeasured", not "fine". Commissioning is rare and owner-present, which
-  is why this is disclosed rather than engineered around for now; the three
-  candidate fixes (a declared resource-privileged commissioning window, a
-  leaner analysis pipeline, or an explicit 2 GB+ floor for the
-  active-speaker correction tier) stay open on #2168.
-
 ---
 
-## History appendix — the campaign (W1–W6)
+### The W1–W6 rebuild campaign (2026-07-17 → 2026-07-19)
 
 Snapshot narrative, for "why did we end up here," not current state.
 
@@ -3882,7 +4057,7 @@ the floor-first solve those numbers are actually used for gives `1.31053`, not
 `1.3108`. The `|P(1600)|` and margin figures were unaffected. Still no
 hardware.
 
-Last verified: 2026-08-11 — #2291 Phase 3c re-verified only the sections it
+**Prior verification passes (through 2026-08-11).** #2291 Phase 3c re-verified only the sections it
 changed: "The round, graded" (new), the stage-bridge key list (now six keys,
 with `entry_baseline` and why it needs no carry-forward), the stage-1
 capture table (now 9
@@ -3932,3 +4107,19 @@ section, written and verified against `fc_selector.py` and the conductor's
 the phone-deadline figures re-derived from `capture-page/js/main.js` and the
 memory/wall numbers quoted from the #1894 on-Pi profile rather than re-measured
 here. Sections outside those paths carry their 2026-07-30 verification.
+
+---
+
+**Scope of this verification.** #2291 Phase 5c-v rewrote the **live spine**
+above (everything down to "Appendix — the campaign record") and verified every
+claim in it against the code at `main` — module and class names, the seam list,
+the stage flags, the phase vocabulary, the four verdict functions, the file
+map, and the numeric constants in "Contracts & invariants" — by reading the
+named symbols, not by trusting the previous text. Hardware claims were not
+re-measured: the memory figures under "Boundaries" are quoted from the
+2026-08-06 jts3 measurement, not re-taken. **The appendix below the spine was
+NOT re-verified**; per the documentation paradigm, historical sections are
+deliberately not kept in sync with code, and the date below is not a warranty
+on any fact in them.
+
+Last verified: 2026-08-13

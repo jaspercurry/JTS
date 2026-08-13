@@ -190,13 +190,23 @@ DISCONTINUITY_RSS_RATIO = 0.25
 # cap_-Us10xORVNlFa_dgi-sP7g's sweeps located at confidence 0.0298 (too
 # quiet, #1838's field incident), and this fit still reported a
 # confident-looking -2090.5-sample step fitted from what was actually noise.
-# `jasper.active_speaker.crossover_v2_flow`'s `_sweep_locate_confidence_ok`
-# makes the identical judgment against the identical `SegmentLocation.confidence`
-# signal, at the same 0.3 floor — but that constant lives one layer up (the
-# flow conductor depends on this module, not the reverse), so importing it
-# here would invert that dependency. Duplicated deliberately: this module
-# needs its own "was this sweep even heard" precondition before it fits a
-# step, not merely a return value a caller might forget to cross-check.
+# `jasper.active_speaker.crossover_v2.capture_dispatch`'s
+# `_sweep_locate_confidence_ok` makes the identical judgment against the
+# identical `SegmentLocation.confidence` signal, at the same 0.3 floor, from
+# its own `SWEEP_LOCATE_CONFIDENCE_FLOOR`. The two copies are pinned equal by
+# tests/test_measurement_integrity_floor_contracts.py.
+#
+# WHY duplicated rather than imported: NOT the import graph. That module
+# already imports from this one, so this one importing back would be a cycle
+# — but the legal direction is available and unused, so the graph is not what
+# decides it. The reason is the NUMBERS. Both are PROVISIONAL pending W6
+# bench validation and they judge different segment kinds through different
+# gates, so bench work may well settle them at different values; two owners
+# diverge by editing one line where one owner would first have to be
+# re-split. That module's own declaration carries the same rationale — keep
+# the two in step. This module also needs its own "was this sweep even
+# heard" precondition before it fits a step, not merely a return value a
+# caller might forget to cross-check.
 #
 # Named for the JUDGMENT, not for its first caller (#1971). It carried a
 # `DISCONTINUITY_` prefix while the step fit was its only consumer;
@@ -205,13 +215,14 @@ DISCONTINUITY_RSS_RATIO = 0.25
 # "was this sweep even heard".
 SWEEP_LOCATE_CONFIDENCE_FLOOR = 0.3
 
-# `crossover_v2_flow.SWEEP_SCHEDULE_RESIDUAL_CEILING_MS`'s twin (#1971) — the
-# G2 xrun detector's ceiling, duplicated here for the same layering reason as
-# the floor above and pinned against it by the same contract test. A located
-# stimulus further than this off its SCHEDULED slot did not drift there; the
-# timeline was spliced. The flow keeps applying it to MEASURE's `KIND_SWEEP`
-# segments; this module applies it to VERIFY's single `KIND_SUMMED_SWEEP`,
-# which no flow-side gate has ever filtered for (the whole of #1971).
+# `crossover_v2.capture_dispatch.SWEEP_SCHEDULE_RESIDUAL_CEILING_MS`'s twin
+# (#1971) — the G2 xrun detector's ceiling, duplicated here for the same
+# provisional-numbers reason as the floor above and pinned against it by the
+# same contract test. A located stimulus further than this off its SCHEDULED
+# slot did not drift there; the timeline was spliced. That module keeps
+# applying it to MEASURE's `KIND_SWEEP` segments; this one applies it to
+# VERIFY's single `KIND_SUMMED_SWEEP`, which no MEASURE-side gate has ever
+# filtered for (the whole of #1971).
 #
 # INHERITED, NOT RE-DERIVED. The 5 ms number comes from the 2026-07-22 MEASURE
 # evidence the flow's copy documents (a glitched capture at −25…−28 ms against
@@ -351,7 +362,7 @@ RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB = 0.25
 # it is treated as untrustworthy and discarded in favor of the seed (with a
 # WARNING — never a silent wild trim). Deliberately narrower than the search
 # window above, so the guard has real teeth. Mirrors
-# jasper.active_speaker.crossover_v2_flow.LINEARIZATION_TRIM_SANITY_MARGIN_DB
+# jasper.active_speaker.crossover_v2.intervention.LINEARIZATION_TRIM_SANITY_MARGIN_DB
 # — same reasoning, applied one layer earlier to the raw (pre-linearization)
 # solve.
 RIPPLE_TRIM_SANITY_MARGIN_DB = 6.0
@@ -2369,7 +2380,7 @@ def _verify_capture_integrity(
        :data:`SWEEP_LOCATE_CONFIDENCE_FLOOR`. First because a sweep the
        correlator could barely find lands in the wrong place and then
        manufactures a large residual: report the cause, not the symptom
-       (``crossover_v2_flow._sweep_locate_confidence_ok``'s D3 / #1838
+       (``crossover_v2.capture_dispatch._sweep_locate_confidence_ok``'s D3 / #1838
        rationale, which VERIFY never inherited because that gate filters
        ``KIND_SWEEP``).
     2. **schedule** — |residual| against
@@ -3122,7 +3133,7 @@ def summed_model_residual_delay_us(
     ``anchor_delay_us`` is ``None`` exactly when the aligner refused the
     estimate (:data:`ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW`): there is then no
     trustworthy argmax-frame reference AND, by the same status,
-    ``crossover_v2_flow.alignment_to_candidate_fields`` applies no delay at
+    ``crossover_v2.planning.alignment_to_candidate_fields`` applies no delay at
     all. Both facts point the same way, so the model keeps the
     independently-aligned frame it is already in and returns ``0.0`` — a
     fabricated gap from an estimate the aligner itself refused would be worse
@@ -5005,7 +5016,7 @@ def _build_candidate(
     # alignment_delay_bounds_us`: "None keeps GCC as the applied-delay
     # estimate"), so its model should carry that delay too. The status gate is
     # what keeps a direct caller's hand-built refused estimate — which
-    # `crossover_v2_flow.alignment_to_candidate_fields` turns into a
+    # `crossover_v2.planning.alignment_to_candidate_fields` turns into a
     # trims-only, NO-delay apply — from being modelled as though a delay ran.
     residual_delay_us = summed_model_residual_delay_us(
         alignment.anchor_delay_us if alignment.status == ALIGNMENT_OK else None,

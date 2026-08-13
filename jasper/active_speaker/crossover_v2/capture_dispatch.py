@@ -4,11 +4,11 @@
 
 """Which screens an anchor capture must clear, and in what order (#2291 5a-vii).
 
-The eighth sibling, and the last of the capture-consuming decision layers.
+The last of the capture-consuming decision layers.
 :mod:`.spatial` owns the ladders of the three phases a household *walks* — the
 cloud positions, the lateral poses, the entry baseline.  This one owns the
 ladders of the three it *sits still* for: CHECK, MEASURE and VERIFY.  Between
-them every capture the conductor consumes is now screened by a stated ladder
+them every capture the session consumes is now screened by a stated ladder
 rather than by a method reaching into the object it hangs off.
 
 **This module DECIDES; it does not act** — the split :mod:`.accountability` set
@@ -53,7 +53,7 @@ have done differently:
 
 **On the household vocabulary.**  This note used to argue that the vocabulary
 did not have to move.  #2291 Phase 5c-ii moved it, to :mod:`.vocabulary` — on a
-fact that changed (the conductor is dissolving and its spine lands in this
+fact that changed (the conductor dissolved and its spine landed in this
 package, which cannot import the flow), not on that argument having been wrong.
 The reasoning lives in that module's docstring and is not restated here.  What
 is unchanged is the boundary above: a ladder still answers with a kind and still

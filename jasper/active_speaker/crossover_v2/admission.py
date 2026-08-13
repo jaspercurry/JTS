@@ -4,7 +4,7 @@
 
 """Who may start one more capture, and what it costs (#2291 Phase 5a-vi).
 
-The seventh sibling of :mod:`.programs`, :mod:`.priors`, :mod:`.spatial`,
+A sibling of :mod:`.programs`, :mod:`.priors`, :mod:`.spatial`,
 :mod:`.candidates`, :mod:`.fc_sweep` and :mod:`.planning`.  Those own what a
 capture *means*; this one owns the meter in front of it — the bounded-retry
 ruling of 2026-08-03 (issue #2086), which says one prompted position gets its
