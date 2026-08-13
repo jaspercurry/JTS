@@ -283,6 +283,13 @@ def _unit_text(lane) -> str:
         return direct.read_text()
     dropin_dir = REPO / "deploy" / "systemd" / f"{lane.unit}.d"
     assert dropin_dir.is_dir(), f"no unit or drop-in dir for {lane.unit}"
+    # ORDERING ASYMMETRY, safe only because of the signpost below. This joins
+    # drop-ins in sorted() order and the pins `re.search` the FIRST match, but
+    # systemd applies the LATER-lexical drop-in — so a directive duplicated
+    # across two files would be read here as the losing copy. That is exactly
+    # the duplication `jts-output.conf`'s restart-cadence comment forbids (this
+    # PR nearly created it before the SF-B refutation), so no machinery here:
+    # keep one owner per directive and the first match is the only match.
     texts = [p.read_text() for p in sorted(dropin_dir.glob("*.conf"))]
     assert texts, f"no drop-in .conf for {lane.unit}"
     return "\n".join(texts)
