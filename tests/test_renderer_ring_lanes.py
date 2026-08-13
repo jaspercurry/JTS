@@ -256,20 +256,55 @@ def test_the_confd_ring_geometry_matches_the_shipped_fanin_geometry():
         )
 
 
-def test_the_confd_ring_slave_is_plug_wrapped_at_the_lane_wire():
-    """The `plug:` wrapper is load-bearing: librespot emits 44.1 kHz S24_3, the
-    lane is 48 kHz S16_LE, and doing the conversion here keeps it on
-    `defaults.pcm.rate_converter` — the knob whose fallback to ALSA's linear
-    resampler cost ~12 dB of 4-8 kHz in the 2026-05 AEC investigation."""
+@pytest.mark.parametrize("label", rl.MIGRATABLE_LABELS)
+def test_the_confd_ring_slave_is_plug_wrapped_at_the_lane_wire(label):
+    """EVERY lane's `plug:` wrapper is pinned at the lane wire — 48 kHz
+    S16_LE, 2ch, converting through `defaults.pcm.rate_converter` (the knob
+    whose fallback to ALSA's linear resampler cost ~12 dB of 4-8 kHz in the
+    2026-05 AEC investigation). Each renderer's native emit differs
+    (librespot 44.1 kHz S24_3, shairport 44.1 kHz S32, Bluetooth
+    codec-dependent, correction WAV-dependent); the wire they convert TO is
+    one boundary and must not drift per lane.
+
+    Was a librespot-only test from P6a through P6d's build — the same
+    "every ring-writing renderer" generalization gap `_unit_text`'s
+    docstring records for the unit pins, found here by a P6d survive-shape
+    mutation (an airplay plug at `rate 44100` passed the suite; so would
+    the bluealsa and correction wires have). Parametrized so the next lane
+    cannot reopen it."""
+    lane = rl.lane_by_label(label)
+    assert lane is not None
     conf = LANES_CONF.read_text()
-    block = re.search(r"pcm\.librespot_ring_lane\s*\{(.*?)\n\}", conf, re.S)
-    assert block
+    block = re.search(
+        rf"pcm\.{re.escape(lane.ring_device)}\s*\{{(.*?)\n\}}", conf, re.S
+    )
+    assert block, f"no plug block for {lane.ring_device}"
     body = block.group(1)
-    assert "type plug" in body
-    assert 'pcm "jts_ring_lane_spotify"' in body
-    assert "rate 48000" in body
-    assert "format S16_LE" in body
-    assert "channels 2" in body
+    assert "type plug" in body, f"{label}: wrapper must be type plug"
+    assert f'pcm "{rl.ring_conf_pcm_name(label)}"' in body
+    assert "rate 48000" in body, f"{label}: plug slave must pin rate 48000"
+    assert "format S16_LE" in body, f"{label}: plug slave must pin S16_LE"
+    assert "channels 2" in body, f"{label}: plug slave must pin 2 channels"
+
+
+def test_the_airplay_plug_conversion_story_matches_the_template():
+    """The airplay plug block's comment states what shairport EMITS —
+    44.1 kHz S32, from the rendered conf's `output_rate` / `output_format`
+    — which is a cross-file claim about the template. Pin the template's
+    side so the conversion story cannot silently drift out from under the
+    conf.d comment (found unpinned by a P6d survive-shape mutation:
+    `output_rate = 88200` passed the whole suite)."""
+    template = (REPO / "deploy" / "shairport-sync.conf.template").read_text()
+    assert re.search(r"^\s*output_rate = 44100;", template, re.M), (
+        "the airplay conf.d conversion story says shairport emits 44.1 kHz; "
+        "the template no longer sets output_rate = 44100 — update both "
+        "together"
+    )
+    assert re.search(r'^\s*output_format = "S32";', template, re.M), (
+        "the airplay conf.d conversion story says shairport emits S32; the "
+        "template no longer sets output_format = \"S32\" — update both "
+        "together"
+    )
 
 
 # --- Unit wiring ----------------------------------------------------------
@@ -2083,3 +2118,22 @@ def test_arming_a_lane_without_an_advisory_prints_none(
     assert "advisory" not in out
     lane = rl.lane_by_label("spotify")
     assert lane is not None and lane.arm_advisory is None
+
+
+def test_the_advisorys_resync_number_is_the_templates_live_value():
+    """The advisory instructs "keep resync_threshold at <x>" — a decimal
+    claim about the template's LIVE value, which is exactly the kind of
+    restated number that drifts (found unpinned by a P6d survive-shape
+    mutation: an advisory saying 0.3 against a 0.2 template passed the
+    suite). If the shipped threshold is ever retuned, the migration-posture
+    instruction changes meaning and must be rewritten, not inherited."""
+    template = (REPO / "deploy" / "shairport-sync.conf.template").read_text()
+    m = re.search(r"^\s*resync_threshold_in_seconds = ([0-9.]+);", template, re.M)
+    assert m, "the template no longer sets resync_threshold_in_seconds"
+    live = m.group(1)
+    lane = rl.lane_by_label("airplay")
+    assert lane is not None and lane.arm_advisory
+    assert f"resync_threshold at {live} " in lane.arm_advisory, (
+        f"the advisory's resync number must be the template's live value "
+        f"({live}); rewrite the advisory when the threshold is retuned"
+    )
