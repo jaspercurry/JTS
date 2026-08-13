@@ -457,8 +457,8 @@ def test_disabled_when_threshold_is_zero(monkeypatch):
 
 
 def test_validate_mic_device_raises_before_bridge_starts(monkeypatch):
-    """A missing XVF/Array device must fail before the bridge opens the
-    shared `jasper_capture` reference tap used by the music path."""
+    """A missing XVF/Array device must fail before the bridge opens any
+    audio endpoint at all."""
     sd_mod = MagicMock()
     sd_mod.query_devices.side_effect = ValueError(
         "No input device matching 'Array'"
@@ -473,7 +473,7 @@ def test_validate_mic_device_raises_before_bridge_starts(monkeypatch):
 
 def test_main_exits_before_engine_init_when_mic_missing(monkeypatch):
     """If the mic is absent, do not construct the AEC engine or start
-    capture threads that would touch `jasper_capture`."""
+    the capture threads behind it."""
     sd_mod = MagicMock()
     sd_mod.query_devices.side_effect = ValueError(
         "No input device matching 'Array'"

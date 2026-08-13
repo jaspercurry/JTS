@@ -62,8 +62,9 @@ and correction/test playback gets `correction_substream`
 (`hw:Loopback,0,4`). A small Rust daemon (`jasper-fanin`) reads the
 capture side of each substream, sums them sample-wise, and writes to a
 single dedicated
-"summed music" substream (`hw:Loopback,0,7`). CamillaDSP and the AEC bridge
-both dsnoop on the capture side of that summed substream (`hw:Loopback,1,7`)
+"summed music" substream (`hw:Loopback,0,7`). CamillaDSP dsnoops on the
+capture side of that summed substream (`hw:Loopback,1,7`), and so did the
+AEC bridge until U4/P7-1 moved it to outputd's UDP speaker monitor
 — same consumer shape, just one substream pair shifted from the old
 dmix tap. The renderer dmix layer and its ~85 ms of latency disappear;
 the AEC reference signal becomes cleaner (post-mix, single point of

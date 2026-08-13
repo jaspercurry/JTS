@@ -101,13 +101,13 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 # preserves the good part of that work (multi-renderer safety) without
 # a shared userspace dmix write lock in front of the renderer path.
 #
-# When the AEC bridge is enabled (see AGENTS.md "Acoustic echo
-# cancellation"), the `pcm.jasper_capture` dsnoop tap below lets
-# CamillaDSP and the AEC bridge share the summed capture side as
-# multiple readers. dsnoop is the multi-reader-safe ALSA primitive
-# (the dual of dmix on the playback side). The dsnoop slave is
-# configured for 48 kHz S16_LE stereo — the rate the bridge and
-# CamillaDSP both target internally.
+# The `pcm.jasper_capture` dsnoop tap below lets CamillaDSP and
+# jasper-aec-tune share the summed capture side as multiple readers.
+# dsnoop is the multi-reader-safe ALSA primitive (the dual of dmix on
+# the playback side). The dsnoop slave is configured for 48 kHz S16_LE
+# stereo — the shape both readers target. (The AEC bridge was the
+# original second reader; since U4/P7-1 it takes outputd's UDP speaker
+# monitor and opens nothing here.)
 #
 # RATE LOCK: snd-aloop's parameters are set per substream pair, not for
 # the whole card. Each renderer writes through a `plug:` wrapper to its
@@ -133,8 +133,9 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 # one ticket's worth of deletion ordering, not for a consumer.
 #
 # We never want camilla to read a raw `hw:Loopback,1,N` capture
-# directly — that would deny dsnoop the slave, and the bridge would
-# fail to open with `unable to open slave`. In particular,
+# directly — that would deny dsnoop the slave, and the tap's other
+# reader (today jasper-aec-tune) would fail to open with `unable to
+# open slave`. In particular,
 # `hw:Loopback,1,0` is now a private fan-in input lane; the summed
 # music reference is `pcm.jasper_capture` on substream 7.
 

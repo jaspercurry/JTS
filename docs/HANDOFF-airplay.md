@@ -1309,8 +1309,9 @@ Other renderers (librespot, bluealsa-aplay, USB-in) write to their own
 private fan-in lanes. `jasper-fanin` is the only renderer summing point
 and publishes the combined music stream on substream 7. `pcm.jasper_capture`
 is a dsnoop reader on `hw:Loopback,1,7`; it lets multiple readers
-(CamillaDSP and optional AEC bridge) safely tap the same summed music
-reference. The summing point for music + TTS is downstream at
+(CamillaDSP and jasper-aec-tune) safely tap the same summed music
+stream. The AEC bridge was the original second reader; since U4/P7-1
+its only reference is outputd's UDP speaker monitor. The summing point for music + TTS is downstream at
 `jasper-outputd`, which owns direct DAC playback.
 
 The final-output card is detected at install time in `install.sh`.
