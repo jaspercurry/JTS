@@ -1,7 +1,7 @@
 # AEC-DIAG-03 Timing Probe
 
 Date: 2026-06-18
-Scope: diagnostic timing probe for outputd final-reference, chip-ref writer tee, legacy `jasper_capture`, and XVF3800 capture channels.
+Scope: diagnostic timing probe for outputd final-reference, chip-ref writer tee, and XVF3800 capture channels.
 Constraint: diagnostic only. No production routing change.
 
 ## Summary
@@ -33,7 +33,6 @@ Supported `--ref-source` values:
 |---|---|---|---|
 | `outputd_udp` | outputd's UDP final speaker-reference monitor on `127.0.0.1:9891` | 48 kHz S16_LE stereo, downmixed/decimated to 16 kHz mono by the probe | This is outputd's final electrical reference, not the XVF USB-IN chip-reference PCM. It does not prove chip-ref writer or chip USB-IN timing. |
 | `chip_ref_tee` | outputd's optional chip-ref writer tee at `/run/jasper-outputd/aec-timing-probe-chip-ref.s16le` | 16 kHz S16_LE dual mono, downmixed to mono by the probe | This is writer-side sample content. It does not timestamp XVF internal USB-IN consumption. |
-| `jasper_capture` | legacy pre-DSP `pcm.jasper_capture` path via the `jasper_ref` ALSA diagnostic wrapper by default | 48 kHz S16_LE stereo, downmixed/decimated to 16 kHz mono by the probe | Historical comparison only. It must not be confused with outputd final timing. |
 
 `chip_ref_tee` uses the outputd tee described in
 [`docs/AEC-DIAG-02-observability.md`](AEC-DIAG-02-observability.md).
@@ -103,15 +102,6 @@ python3 scripts/aec-probe-timing.py \
   --mic-channel 2 \
   --profiles all \
   --runs 2
-```
-
-Historical pre-DSP comparison, explicitly labeled:
-
-```sh
-python3 scripts/aec-probe-timing.py \
-  --ref-source jasper_capture \
-  --jasper-capture-pcm jasper_ref \
-  --mic-channel 2
 ```
 
 The laptop-side wrapper SSHes to `${PI_USER:-pi}@${PI_HOST:-jts.local}`,
@@ -279,6 +269,5 @@ profile had been applied, and the failed-run remote artifact directory
 was `0700 root:root`.
 
 Validation still needed: rerun `chip_ref_tee` after deploying an outputd
-build with `JASPER_OUTPUTD_CHIP_REF_TEE_PATH` support, run
-`jasper_capture` if the legacy tap is still present, and collect a
+build with `JASPER_OUTPUTD_CHIP_REF_TEE_PATH` support, and collect a
 successful `512/1024` timing result against a supported reference source.

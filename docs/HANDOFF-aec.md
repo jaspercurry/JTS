@@ -2736,8 +2736,7 @@ Files involved in the AEC subsystem:
   settings, and tuning gains
 - `scripts/aec-probe-timing.py` — current multi-source diagnostic timing
   probe for outputd's final speaker-reference UDP stream, outputd's
-  chip-ref writer tee, the legacy `jasper_capture` tap, and selected
-  XVF3800 channels. It writes JSON/CSV/Markdown artifacts and can repeat
+  chip-ref writer tee, and selected XVF3800 channels. It writes JSON/CSV/Markdown artifacts and can repeat
   the standard 1024/3072, 1024/2048, and 512/1024 outputd profiles. See
   [AEC-DIAG-03 Timing Probe](AEC-DIAG-03-timing-probe.md).
 - `scripts/aec-probe-latency.sh` — older chirp + cross-correlation

@@ -64,7 +64,6 @@ def test_capture_scripts_share_the_wav_stats_cli() -> None:
     for name in (
         "capture-chip-mic.sh",
         "capture-reference-condition.sh",
-        "chip-aec-capture-comparison.sh",
     ):
         text = (ROOT / "scripts" / name).read_text(encoding="utf-8")
         assert "_wav_stats.py" in text
