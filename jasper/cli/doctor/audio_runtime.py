@@ -3074,8 +3074,9 @@ def check_aec_clock_drift() -> CheckResult:
 def check_renderer_ring_lanes() -> CheckResult:
     """Every ARMED renderer-ingress lane is attached, fed, and coherent (U3/P6).
 
-    SKIPS on the shipped fleet state — no lane armed means nothing to judge, and
-    a check that reported on an unarmed box would be noise on every speaker.
+    An unarmed box — the shipped fleet state — reports ``ok``: no lane armed
+    means nothing to judge, and the fleet default is a healthy state, not a
+    finding.
 
     On an armed box it answers three questions, in the order an operator needs
     them, because they have different remedies:
@@ -3105,7 +3106,15 @@ def check_renderer_ring_lanes() -> CheckResult:
     label_name = "renderer ring lanes"
     armed = rl.read_armed_labels()
     if not armed:
-        return CheckResult(label_name, "skip", "no renderer lane armed (fleet default)")
+        # "ok", NOT a novel "skip" status: the doctor vocabulary is
+        # ok|warn|fail (CheckResult.status), and render()'s else-branch
+        # turns anything unknown into a red ✗ + exit 1 — which briefly made
+        # every unarmed box (the fleet default) report failure. Unarmed-is-
+        # healthy follows the established unconfigured-is-ok convention
+        # (check_chip_reference above, Spotify auth, capture relay, Google
+        # integrations). Pinned by tests/test_doctor_audio_runtime.py's
+        # unarmed-lane tests, including one through render()'s exit path.
+        return CheckResult(label_name, "ok", "no renderer lane armed (fleet default)")
 
     try:
         status = _read_status_socket(_FANIN_STATUS_SOCKET)
