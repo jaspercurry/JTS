@@ -22,7 +22,7 @@ RestrictNamespaces=true
 RestrictSUIDSGID=true
 LockPersonality=true
 SystemCallArchitectures=native
-RestrictAddressFamilies=AF_INET AF_UNIX
+RestrictAddressFamilies=AF_INET AF_NETLINK AF_UNIX
 
 [Install]
 WantedBy=multi-user.target
