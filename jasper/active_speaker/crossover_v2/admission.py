@@ -22,19 +22,23 @@ gate can be asked the same question twice and answer the same way, which is
 what makes a replayed begin safe to re-evaluate.
 
 **No household vocabulary lives here** — the rule :mod:`.coordinator` states.
-A refusal leaves as a *kind* plus the opaque reason code it concerns; the flow
-owns ``REASON_REGISTRY`` and renders the sentence.  Two consequences are worth
-naming, because both look like things this module should own:
+A refusal leaves as a *kind* plus the opaque reason code it concerns;
+:mod:`.vocabulary` owns ``REASON_REGISTRY`` and the flow renders the sentence.
+Two consequences are worth naming, because both look like things this module
+should own:
 
 * **The registry projections arrive as arguments.**  ``non_retriable`` and
-  ``default_code`` are the flow's, derived from ``REASON_REGISTRY`` there.
-  Stating them keeps the "inputs are stated, never reached for" rule
-  :mod:`.priors` set, and it is also the only shape available: importing the
-  registry back would be the reverse dependency this package exists to prevent.
+  ``default_code`` are passed in by the flow, derived from
+  :mod:`.vocabulary`'s ``REASON_REGISTRY``.  Stating them keeps the "inputs are
+  stated, never reached for" rule :mod:`.priors` set.  It was once also the only
+  shape available — while the registry lived in the flow, importing it back
+  would have inverted the dependency — but since #2291 Phase 5c-ii the registry
+  is a sibling, so the stated-inputs rule is now the whole reason rather than
+  half of it.
 * **The two sentence builders take their diagnosis, they do not render it.**
   :func:`extras_spent_message` and :func:`spent_slot_outcome` compose the
   *count* and the *consequence*, which are facts about the ledger and the
-  group.  The ``diagnosis`` half is rendered by the flow's
+  group.  The ``diagnosis`` half is rendered by :mod:`.vocabulary`'s
   ``reason_diagnosis`` and passed in.
 
 **The apply gate is a port for one reason: call count.**  The VERIFY hold asks
@@ -48,7 +52,7 @@ is.
 **The settle path's decision half lives here too** (#2291 Phase 5b), in
 :func:`settle_spent_slot` and :func:`settle_group_position`.  This module's
 first version recorded that it could not leave — true of moving
-``_resolve_spent_slot`` *whole*, since it returns the flow's ``PhaseVerdict``
+``_resolve_spent_slot`` *whole*, since it returns a ``PhaseVerdict``
 and performs the group close under ``_close_lock``, and false of the
 decision/act split the package actually uses: a ladder that answers with a
 *kind* never touches the carrier.  What stayed with the conductor is every act
@@ -195,7 +199,8 @@ class SlotAttempts:
     before it, acceptance left the old cumulative counter standing and one
     voluntary retake of a healthy position could start at zero headroom.
 
-    Mutable on purpose (the frozen ``PhaseVerdict`` in the flow is a value;
+    Mutable on purpose (the frozen ``PhaseVerdict`` in :mod:`.vocabulary` is a
+    value;
     this is per-session state the conductor advances).
     """
 

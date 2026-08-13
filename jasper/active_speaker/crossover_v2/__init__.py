@@ -36,6 +36,8 @@ order — so this list is what exists, not a plan:
   VERIFY) must clear, and in what order.
 * :mod:`.attempt_grading` — whether a VERIFY capture is a new *tuning* attempt,
   and whether the loop may grade it.
+* :mod:`.vocabulary` — what the household is told when a round refuses: the
+  reason codes, their copy and retry budgets, and the verdict that carries them.
 
 Only :mod:`.contracts` and :mod:`.planner_facade` are re-exported below; the
 rest are imported by module path, which is also what keeps a caller that wants

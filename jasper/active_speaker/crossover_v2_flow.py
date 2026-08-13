@@ -83,7 +83,7 @@ import logging
 import math
 import threading
 import time
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from typing import (
     TYPE_CHECKING,
@@ -122,10 +122,7 @@ from jasper.active_speaker.attempts_loop import (
 )
 from jasper.active_speaker.delta_probe import (
     DELTA_PROBE_ROLLBACK_VERDICTS,
-    VERDICT_LEVEL_DEPENDENT_SHORTFALL,
     VERDICT_LEVEL_MISMATCH,
-    VERDICT_MODEL_ERROR,
-    VERDICT_SPATIALLY_COSTLY,
     DeltaProbeMap,
     classify_delta_probe,
     spatial_cost_from_group_spreads,
@@ -242,23 +239,12 @@ logger = logging.getLogger(__name__)
 # ``PRE_CLOUD_CAPTURE_PHASES`` records what a session ran before the position
 # groups shipped. None of those answers "where is this round".
 
-# Where the pre-apply cloud's close has got to. Read by the wizard through
-# durable state; see :attr:`V2ConductorSnapshot.cloud_close`.
-CLOUD_CLOSE_NONE = ""
-CLOUD_CLOSE_AWAITING_CONFIRM = "awaiting_confirm"
-CLOUD_CLOSE_RUNNING = "running"
-
 # The absolute VERIFY tracking error used by both the live attempts loop and
 # the offline repeat-floor replay. Lower is better: zero is the model's
 # prediction of perfect realization, while the analyzer's value is what the
 # applied speaker actually realized.
 ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED = "max_db_notch_excluded"
 
-# A flow-owned status, deliberately not a synthetic kernel decision. The
-# kernel requires a real FloorStats and the store returns ``None`` until an
-# offline repeat study adopts one, so the honest live result is ungraded — no
-# invented floor and no improvement claim.
-ATTEMPT_REASON_NO_FLOOR = "ungraded_no_floor"
 ATTEMPT_INTEGRITY_UNAVAILABLE = "capture_integrity_unavailable"
 
 # Capture-plan index → phase. APPLYING is a control-page phase (no capture)
@@ -408,36 +394,6 @@ DEFAULT_CLOUD_VERIFY_POSITIONS = 6
 # literal: reordering the prompts must move the floor with them, not leave a
 # stale number behind.
 MIN_CLOUD_VERIFY_POSITIONS = 5
-
-# How many wider-spread RETAKES of the group's last position the
-# geometry-locked check may ask for, once per group.
-#
-# Retakes rather than appended positions for ONE reason, and it is the protocol
-# rather than the physics: the relay runner completes a set at exactly
-# ``capture_target`` accepted captures with ``index == accepted_count + 1``, so
-# rejecting a capture is the only lever that keeps a plan alive at the same
-# index — appending would need a variable-length plan the shipped runner cannot
-# express.
-#
-# A "replacing is better physics" argument was made and WITHDRAWN under review
-# (2026-07-26): the reviewer computed the power-mean counterexample, where
-# APPENDING a wide position to a clustered cloud fills a −15 dB null further
-# than replacing does (−6.1 dB vs −7.7 dB) and lowers ``clustered_fraction``
-# more besides. Replacing is what the protocol permits, not what the estimator
-# prefers; if the runner ever grows variable-length sets, appending is the
-# better answer.
-#
-# Bounded on purpose: `geometry.locked` is a "spread the mic further" hint, not
-# a failure, and an unbounded loop against a genuinely position-invariant
-# defect (S0's source-fixed horn-rim comb — see the plan doc's "S0 executed"
-# §b) would never terminate, because no amount of mic movement decorrelates a
-# source-fixed null. Two retakes, then proceed and RECORD the verdict — it
-# lands in the journal and the durable v2 state's `cloud` block. PR-4 carries
-# it further: `_geometry_guidance_copy`'s plain-language guidance rides the
-# envelope's own `cloud` key and `/state`'s compact projection
-# (`crossover_v2_status_block`) — but no household-facing surface renders it
-# yet (zero JS/asset changes in PR-4). PR-7 renders it.
-GEOMETRY_RETRY_POSITIONS = 2
 
 # Retake headroom a cloud plan carries ABOVE its entry count and its geometry
 # retries. Deliberately the same ABSOLUTE spare the shipped 3-entry flow has
@@ -1584,1126 +1540,129 @@ def build_v2_verify_index_phase_map(
 
 
 # --------------------------------------------------------------------------- #
-# failure taxonomy (§5.10)
+# failure taxonomy (§5.10) — re-exported, no longer defined here
+#
+# #2291 Phase 5c-ii moved the whole household vocabulary — the reason codes, the
+# remediation templates, the ``ReasonSpec``/``RetryableReasonCopy`` carriers, the
+# ``REASON_REGISTRY`` that binds a code to its sentence and its retry budget, the
+# copy selectors, and ``PhaseVerdict`` — into
+# :mod:`jasper.active_speaker.crossover_v2.vocabulary`, and the four library
+# clusters below into the package siblings that already own their decisions.
+#
+# Why the vocabulary had to move, when 5a-vii ruled it did not: that ruling was
+# about ORGANS, and an organ answers with a kind. Phase 5c dissolves the
+# conductor, and the spine that survives it lands in the package — whose whole
+# job is building ``PhaseVerdict``s, while
+# ``test_no_domain_module_imports_the_host_or_the_legacy_flow`` forbids any
+# module there importing this one. Spine-in-package forces
+# vocabulary-in-package. Where the vocabulary PHILOSOPHICALLY belongs is a
+# separate, still-open question (issue #2390) — the envelope is its largest
+# consumer, and 5c-ii settled only the mechanical half.
+#
+# The ``X as X`` spelling is the explicit-re-export form, exactly as the Phase
+# 5a-v(b) fc_sweep block below uses it: a plain ``import X`` would read as dead,
+# and a suppression marker would spend the repository's frozen ``noqa`` budget
+# (``test_lint_contracts.test_noqa_debt_does_not_grow``) on something that is not
+# a suppression at all. Every name keeps its historical spelling, so this move
+# changed no importer anywhere — 3 production files and 17 test files reach these
+# names and not one of them was edited.
+#
+# **These doors are READ-ONLY for anything the package resolves itself.**
+# Substituting one here rebinds THIS module's name and nothing else, so it binds
+# only for readers that are themselves in this module. Every reader of these
+# names is, which is why the existing substitutions still work. A reader that
+# lives in the package resolves the owning module directly and would not see the
+# patch: patch that module, or inject through the ports its caller takes.
 # --------------------------------------------------------------------------- #
 
-# The four screen templates W5 ships, each parameterized by reason copy.
-TEMPLATE_SILENT_AUTO_RETRY = "silent_auto_retry"
-TEMPLATE_FIX_AND_RETRY = "fix_and_retry"
-TEMPLATE_HARD_STOP = "hard_stop"
-TEMPLATE_SESSION_RESTART = "session_restart"
-# Two special screens defined in §5.2 (not among the four generic templates).
-TEMPLATE_VERIFY_FAIL = "verify_fail"
-TEMPLATE_VOLUME_RECOVERY = "volume_recovery"
-
-# Reason codes (internal — never a bare code reaches the household; the envelope
-# renders each through its template copy).
-REASON_AGC_BEHAVIORAL_FAIL = "agc_behavioral_fail"
-# W6.12: the SAME captured-delta-vs-programmed-delta pilot mismatch
-# ``REASON_AGC_BEHAVIORAL_FAIL`` names has a second, honest cause hardware
-# round 4 proved distinct from the phone's own AGC: a loud ambient burst
-# during the pilot pair corrupts the captured level just as effectively, with
-# the phone's AGC verifiably off. ``_consume_check`` distinguishes the two
-# using the CHECK gain solve's own SNR-floor verdict (``gain_plan.
-# snr_floor_ok``, already computed against this exact capture's ambient bands
-# independent of the linearity outcome) rather than blaming the phone's
-# microphone when the room itself was the problem.
-REASON_NOISY_ROOM_LINEARITY = "noisy_room_linearity"
-# Issue #1810 (2026-07-28): the same discriminator W6.12 gave CHECK, for the
-# phases CHECK's evidence cannot speak for. MEASURE / cloud / VERIFY each
-# carry their own leading pilot pair, and since #1810 their own pre-pilot
-# ambient window, so `analysis.pilot_snr_ok` is a real verdict there: False
-# means the quiet pilot did not clear the room's own in-band floor by enough
-# to trust ANY level comparison drawn from the pair. That is a statement
-# about the room and the playback level — a loud room, a mic too far away, or
-# (the session that exposed this) a freshly-applied correction that dropped
-# the pilot band 14-18 dB and left the quiet pilot ~5 dB over the floor. It is
-# NOT evidence about the phone's microphone, which is exactly what the copy
-# said before this code existed. `_pilot_observations` reports
-# ``linearity_ok`` as None — unknown — whenever the SNR guard fails (it forced
-# True until issue #1838, which made an unreadable capture look like a PASS),
-# so this branch is the only path that can fail on it, and every verdict below
-# checks it BEFORE `REASON_AGC_BEHAVIORAL_FAIL`.
-REASON_PILOT_LEVEL_COLLAPSE = "pilot_level_collapse"
-REASON_SNR_FLOOR = "snr_floor"
-REASON_CHANNEL_MAP_MISMATCH = "channel_map_mismatch"
-REASON_CLIPPED = "clipped"
-REASON_DRIFT_BASELINES_DISAGREE = "drift_baselines_disagree"
-REASON_DELAY_EXCEEDS_SEARCH_WINDOW = "delay_exceeds_search_window"
-REASON_LOCATE_FAILED = "locate_failed"
-REASON_RELAY_TIMEOUT = "relay_timeout"
-REASON_VOLUME_UNRESOLVED = "volume_unresolved"
-# The play seam refused/failed the program (safety re-admission over-cap, a
-# graph-restore failure, or a conductor program error) — distinct from a relay
-# transport death (``relay_timeout``). After the W6.1 cap-aware composition a
-# play-time refusal is unexpected (a bug, a tampered readback, or a genuinely
-# infeasible profile), so it is terminal: hard-stop, budget 0.
-REASON_PROGRAM_UNPLAYABLE = "program_unplayable"
-# R15 (#2106): the program PLAYED — the offline evidence math refused. Design
-# §4.2 divides the emitted measurement protection back out of the capture, and
-# on a candidate-required bin that division is inadmissible when the protection
-# attenuates more than 12 dB or the recovery would exceed 12 dB. Its own code
-# exists for the #1820 reason: ``program_unplayable``'s copy claims JTS "could
-# not play the measurement signal within the speaker's safe limits", which is
-# simply not what happened, and its action (re-check driver details) does not
-# reach the lever. Deterministic, so terminal — the same protection and the
-# same crossover reproduce it exactly. The offending slug rides out in the
-# refusal detail.
-REASON_PROTECTION_NOT_SEPARABLE = "protection_not_separable"
-# Sibling for the OTHER conditioning branch (panel SF3): `abs(P) < floor` does
-# not involve `C`, so "change the crossover frequency" cannot clear it (#1820).
-REASON_PROTECTION_SWEEP_TOO_LOW = "protection_sweep_too_low"
-# Issue #1820 (2026-07-28): the ONE program refusal that is neither unexpected
-# nor about levels, split back out of ``program_unplayable``'s collapse. The
-# household changed a declared driver value (an enclosure kind, a sensitivity),
-# which rotates the safety profile's fingerprint and so CLEARS its confirmation
-# by design (``driver_safety.build_driver_safety_profile``) — a deterministic,
-# self-inflicted, one-control-away state, not a level ceiling the speaker could
-# not meet. Collapsed into ``program_unplayable`` it inherited that code's copy
-# ("Re-check the driver details in speaker setup"), which is the one action that
-# makes it WORSE: every edit rotates the fingerprint again. Its own code exists
-# so the copy can name the actual exit and its ``next_action`` can point at it.
-# Terminal (hard-stop, budget 0) for the same reason it is deterministic — a
-# second identical measurement reproduces it exactly.
-REASON_PROGRAM_PROFILE_NOT_CONFIRMED = "program_profile_not_confirmed"
-# Its two siblings, added in the same issue's review round. "Confirm the safety
-# limits" is only the honest action when there ARE visible limits to confirm and
-# a control that confirms them. Two profile states fail both halves, and the
-# session-open pre-flight can tell them apart because it holds the full
-# ``DriverSafetyProfileEvaluation``:
-#
-#   * ``missing``    — no profile exists at all (never-saved / unreadable /
-#                      pre-crossover draft). ``/sound/`` deliberately renders NO
-#                      confirm control in this state, so telling the household
-#                      to confirm names a button that is not on the page.
-#   * ``incomplete`` — declared values are still missing.
-#                      ``build_driver_safety_profile`` REFUSES a confirm while
-#                      derived issues exist, so "Confirm" would 400 even if the
-#                      household found the control.
-#
-# These have no ``ProgramAdmissionRefusal`` counterpart — the play-seam
-# vocabulary carries one ``PROFILE_NOT_CONFIRMED`` slug for all three — so they
-# are reachable only from the pre-flight, which is the point: the gate that has
-# the evidence is the gate that names the action.
-REASON_PROGRAM_PROFILE_MISSING = "program_profile_missing"
-REASON_PROGRAM_PROFILE_INCOMPLETE = "program_profile_incomplete"
-# Any OTHER host-side fault the session runner's catch-all cleanup arm caught
-# (W6.1 gate: the seams raise open-endedly — CamillaUnavailable is a bare
-# Exception, analyze/emit raise ValueError/RuntimeError, the held measurement
-# window raises MeasurementWindowError — so an enumerated except list is how
-# failures escape with the volume active and the phone frozen). Terminal for
-# the session; the household's one action is to try again.
-REASON_INTERNAL_ERROR = "internal_error"
-REASON_VERIFY_OUT_OF_TOLERANCE = "verify_out_of_tolerance"
-# Internal-only addition BEYOND the §5.10 table: §5.2's "inconclusive —
-# re-verify" verdict (VERIFY's own detected first reflection forced a shorter
-# gate than MEASURE's, so the overlay difference is not evidence about driver
-# alignment). Renders through the same VERIFY-fail template — it is a distinct
-# reason parameterizing that screen's copy, not a fifth screen.
-REASON_VERIFY_INCONCLUSIVE = "verify_inconclusive"
-# Measurement-honesty gate G3 (2026-07-22): a THIRD, distinct VERIFY-outcome
-# reason — the phone's own input chain drifted between VERIFY attempts (see
-# VERIFY_PILOT_TRANSFER_STEP_CEILING_DB below for the evidence), not the
-# speaker going out of tolerance. Renders through the SAME verify_fail
-# template as the two codes above (one more parameterization of that
-# screen, not a fifth screen) with its own copy naming the actual cause.
-REASON_VERIFY_LEVEL_SHIFT = "verify_level_shift"
-# R18 / #1868: the applied result tracks the model but does NOT meet the
-# candidate's own crossover target through the handoff — the case
-# ``REASON_VERIFY_OUT_OF_TOLERANCE`` structurally cannot catch, since it grades
-# measured-vs-model and a defect present in BOTH sides cancels. Its own code
-# because the household's situation differs: the graph did what it was told,
-# and the crossover as designed-and-aligned is what does not sum.
-REASON_VERIFY_CROSSOVER_REGION = "verify_crossover_region"
-# Owner ruling (2026-07-20): the alignment-estimator confidence floor that
-# used to gate ONLY a review-screen nudge (informed consent, Apply stayed
-# available regardless) is now a hard MEASURE-phase gate — see
-# ALIGNMENT_CONFIDENCE_TRUST_FLOOR below. A household has no basis to judge a
-# raw confidence number, so doubt becomes guidance ("move the mic"), never a
-# question ("apply anyway?").
-REASON_LOW_ALIGNMENT_CONFIDENCE = "low_alignment_confidence"
-# The apply transaction came back blocked or raised. It was the conductor's
-# OWN auto-apply until the two-stage split (D1); since then the only apply is
-# the household's POST from the review screen, which persists its blocking
-# issue through ``_persist_apply_blocked`` and answers the request directly.
-# The code is retained: it is still the honest name for "the apply failed",
-# and ``_persist_terminal_failure`` still scopes its §5.6 evidence reset away
-# from it (an apply failure says nothing about the mic position).
-REASON_APPLY_FAILED = "apply_failed"
-# A deliberate phone Stop (CaptureAborted, abort_reason == "stopped") is not a
-# relay-transport death — see the catch-all's exception classification in
-# jasper.web.correction_crossover_v2. Reuses TEMPLATE_SESSION_RESTART's
-# rendering shape (a fresh session is the only way forward either way) with
-# honest copy instead of a manufactured "timed out" claim.
-REASON_USER_STOPPED = "user_stopped"
-# The deferred apply/"review" hold (CaptureBeginDeferred "awaiting_apply")
-# expired before an apply completed. Distinct from a relay-transport death
-# (relay_timeout) and a deliberate phone Stop (user_stopped): name the actual
-# cause rather than a generic "the measurement link timed out" claim (#1605).
-# Same TEMPLATE_SESSION_RESTART shape — a fresh session is the only way
-# forward. RETAINED but unreached since the two-stage split (D10): no shipped
-# session holds for an apply any more.
-REASON_REVIEW_HOLD_TIMEOUT = "review_hold_timeout"
-# Position-group choreography (flat-linearization PR-3b): the pre-apply cloud
-# closed with `spatial_combine.assess_geometry` reporting `locked` — every
-# position's echo estimate landed on the same tau, so the nulls are not moving
-# and spatial averaging cannot fill them. NOT a bad capture: the capture is
-# fine and the operator did nothing wrong. It is the one actionable thing the
-# geometry instrument can say ("spread the mic further"), so the group asks for
-# that position again from a wider spot, at most ``GEOMETRY_RETRY_POSITIONS``
-# times, and then proceeds with the verdict RECORDED (journal + durable
-# state; PR-4 carries it on the envelope and `/state` — no household-facing
-# surface renders it yet, PR-7 renders it) rather than blocking a
-# measurement on a defect no mic move can decorrelate.
-REASON_CLOUD_GEOMETRY_LOCKED = "cloud_geometry_locked"
-# Accountability assertions (linearization-integrity PR-L4). Both refuse a
-# candidate at the confirm seam, so no proposal ever reaches the review screen
-# and the speaker is never touched: the honest outcome of "we cannot show this
-# makes your speaker better" is to leave it alone and say so.
-#
-# item 1 — the two drivers' realized levels, read on their own mirrored
-# ±1-octave half-bands about Fc after the committed trim, sit further apart than
-# REALIZED_LEVEL_MATCH_TOLERANCE_DB. A 2-way sums flat only when both branches
-# hand off at the same level, so this is a tonal-balance defect that no amount
-# of per-driver flattening can hide. Fired at ~9 dB on the 2026-07-27 JTS3
-# profile the owner heard as dark. (It grades the HANDOFF, not the whole
-# passband: a driver whose own band tilts while its half-band level is right is
-# the fit's problem to catch, not this assertion's.)
-REASON_DRIVER_LEVELS_DISAGREE = "driver_levels_disagree"
-# item 2 — the PREDICTED post-apply response fails the flat spec and is not
-# materially better than the measured pre-apply response. Applying it would
-# spend the household's speaker on a change we can already show does not help.
-REASON_CORRECTION_NOT_AN_IMPROVEMENT = "correction_not_an_improvement"
-# Delta-probe verdicts (linearization-integrity PR-L5). Unlike the two above,
-# these fire AFTER the apply — they are what the post-apply sweep found — so
-# each one rolls the correction back before it names itself. The household is
-# left on the sound they had, and told why, which is the difference between an
-# automatic rollback and a silent one.
-#
-# The correction did not do what its own filters said it would: a chain defect
-# (the shelf realized at a Q the fit never modelled is the archetype, and the
-# reason this code exists permanently rather than as a one-off fix).
-REASON_CORRECTION_MODEL_ERROR = "correction_model_error"
-# The correction's shape landed but its depth did not — the driver delivered
-# materially less level than it was asked for. A compression diagnostic.
-REASON_CORRECTION_LEVEL_SHORTFALL = "correction_level_shortfall"
-# The correction tracked at the measuring spot and made the room LESS even
-# everywhere else: it fitted one position's interference rather than the
-# speaker. The remedy is placement, not a different filter.
-REASON_CORRECTION_SPATIALLY_COSTLY = "correction_spatially_costly"
-# The probe found a defect AND the automatic rollback could not run (no
-# rollback binding, a refused restore, or a seam that raised). The correction
-# is therefore STILL APPLIED, and the copy has to say so — the household is
-# listening to it right now, and telling them it was put back would be a false
-# statement about their speaker. Mirrors the room-correction acceptance
-# precedent: a failed automatic restore must continue to say the correction is
-# still applied, and name the manual action.
-REASON_CORRECTION_ROLLBACK_FAILED = "correction_rollback_failed"
-# #2291's round verdict, and the one cause no code above can carry: the
-# correction was applied, MEASURED at the same mark with the same program, and
-# the speaker is measurably worse than it was before — so it came back off.
-# Distinct from ``REASON_CORRECTION_NOT_AN_IMPROVEMENT``, whose copy says "it
-# was not applied" and which grades a PREDICTED response before the apply, and
-# distinct from the three delta-probe codes, which say the graph did not do
-# what its own filters commanded. Here the graph did exactly what it was told
-# and the room liked it less, which is a different sentence to the household
-# and a different next step.
-REASON_CORRECTION_MEASURED_REGRESSION = "correction_measured_regression"
-# #2291's fail-closed boost. The benefit could not be measured — no comparable
-# "before", or a capture that could not be compared — and the applied
-# intervention puts energy INTO a driver. An unverified cut can wait for a
-# household to decide; an unverified boost cannot, so it comes off. Its own
-# code because "we could not tell, and erred toward your drivers" is a
-# different and more honest sentence than "it measured worse".
-REASON_CORRECTION_UNPROVEN_BOOST = "correction_unproven_boost"
-
-def round_restore_reason(cause: str) -> str:
-    """#2291 adoption cause → the code a SUCCESSFUL round restore surfaces.
-
-    Only the three causes the table can reach with a ``restore`` intent exist,
-    and each maps to the code whose copy states that cause truthfully. A
-    realization failure IS the graph not doing what its own filters commanded,
-    which is :data:`REASON_CORRECTION_MODEL_ERROR`'s existing sentence, so it
-    is reused rather than duplicated.
-
-    A function with a lazy import rather than a module-level dict, because
-    :mod:`~jasper.active_speaker.crossover_v2.verification` reaches
-    :mod:`~jasper.active_speaker.flat_spec`, which this module imports lazily
-    everywhere for that reason.
-
-    Anything unlisted falls back to the measured-regression code — the weakest
-    true statement available for "the round asked for a restore". The mapping
-    is exhaustive today and pinned by a test, so the fallback is a floor, not
-    a branch anything reaches.
-    """
-    from jasper.active_speaker.crossover_v2.verification import (
-        ADOPTION_MEASURED_REGRESSION,
-        ADOPTION_REALIZATION_FAILED,
-        ADOPTION_UNPROVEN_BOOST,
-    )
-
-    return {
-        ADOPTION_MEASURED_REGRESSION: REASON_CORRECTION_MEASURED_REGRESSION,
-        ADOPTION_REALIZATION_FAILED: REASON_CORRECTION_MODEL_ERROR,
-        ADOPTION_UNPROVEN_BOOST: REASON_CORRECTION_UNPROVEN_BOOST,
-    }.get(cause, REASON_CORRECTION_MEASURED_REGRESSION)
-
-
-#: Delta-probe verdict → the reason code its rollback surfaces. Exhaustive
-#: over :data:`delta_probe.DELTA_PROBE_ROLLBACK_VERDICTS`, pinned by a test.
-#:
-#: The stated intent has always been "a new NON-MATCHED verdict cannot ship
-#: without a surface", and until #1811 the rollback set and the non-matched set
-#: were the same thing, so equality here enforced it. ``level_mismatch`` is the
-#: first verdict that is non-matched WITHOUT being a rollback, so the two sets
-#: diverged and this mapping alone stopped covering the intent. The guard test
-#: is now written against the non-matched set: a verdict that is not here must
-#: prove it reaches a household some OTHER way (``level_mismatch`` does — the
-#: persisted ``verify.delta_probe`` summary and the done screen's caveat
-#: nudge), never merely by being absent from a rollback list.
-DELTA_PROBE_REASON_BY_VERDICT: Mapping[str, str] = {
-    VERDICT_MODEL_ERROR: REASON_CORRECTION_MODEL_ERROR,
-    VERDICT_LEVEL_DEPENDENT_SHORTFALL: REASON_CORRECTION_LEVEL_SHORTFALL,
-    VERDICT_SPATIALLY_COSTLY: REASON_CORRECTION_SPATIALLY_COSTLY,
-}
-
-
-def verify_inconclusive_cause(
-    code: str | None, reflection_measured: bool | None,
-) -> str:
-    """WHY a verify check could not settle, as one household clause (#1974).
-
-    **THE single writer of that clause**, because it renders on TWO screens —
-    the verify_fail screen's reason copy and the done screen's ungraded
-    verdict — and those two screens is exactly how the bug this fixes stayed
-    invisible: each carried its own paraphrase of "the room reflection cut the
-    window short", so neither could be corrected without the other being
-    noticed. There is now one sentence and two framings of it.
-
-    Two things produce the "inconclusive" outcome and they share no mechanism:
-
-    * ``REASON_VERIFY_INCONCLUSIVE`` — VERIFY's own gate came out SHORTER than
-      MEASURE's, so the two captures cannot be compared like for like. That is
-      the whole of what the rule observed; WHY the window is short is a
-      separate fact, and it is the one the old copy asserted without ever
-      consulting. ``reflection_measured`` is that fact, taken from
-      :attr:`~jasper.audio_measurement.gate_disclosure.GateDisclosure.gated_anything`
-      — the single owner of "is the reflections claim true here", whose own
-      docstring says it is true THERE and nowhere else. Across the whole
-      2026-07-30 corpus it was False (issue #1966), i.e. the sentence people
-      actually read was false on every capture that produced it.
-    * ``REASON_VERIFY_LEVEL_SHIFT`` — the recording chain moved between
-      attempts. No reflection and no window are involved at all, and this path
-      never reaches the verify_fail screen's inconclusive copy (it has its own
-      ReasonSpec); it reaches the DONE screen's, because that screen keys on
-      the coarse outcome rather than the code.
-
-    The two arguments go unknown for different reasons and get different
-    answers, and the difference is load-bearing:
-
-    * ``code=None`` — the record does not say WHICH verdict fired (a durable
-      state written before this shipped). Nothing at all is established, so
-      the clause is EMPTY: the caller states the outcome and stops, which is
-      the honest rendering of an unrecorded cause.
-    * ``reflection_measured=None`` — the verdict IS known, only its gate is
-      not. That collapses into the no-reflection-claim branch below rather
-      than emptying the clause, because the code alone already establishes the
-      observation ("the window came out shorter than the tuning's") — that is
-      what the rule measured, independent of any gate record. Emptying here
-      would also break :func:`verify_inconclusive_message`, whose registry
-      rendering passes exactly this and would otherwise read "The check was
-      inconclusive — . Re-verify to try again."
-
-    Returned without terminal punctuation: the caller owns the sentence it
-    lands in.
-    """
-    if code == REASON_VERIFY_LEVEL_SHIFT:
-        # Same vocabulary as REASON_VERIFY_LEVEL_SHIFT's own ReasonSpec below,
-        # deliberately: one cause should not have two names depending on which
-        # screen a household happens to be reading.
-        return "the microphone's levels changed between measurements"
-    if code != REASON_VERIFY_INCONCLUSIVE:
-        return ""
-    if reflection_measured:
-        # The ONE state where blaming a reflection is true — and it says what
-        # the comparison actually lost, not merely that a reflection existed.
-        return (
-            "a reflection reached the microphone sooner than it did during "
-            "tuning, so there was less of the sound to compare"
-        )
-    # Reflection NOT measured, or not recorded. Both render the observation the
-    # rule made and stop there: a window capped at the search ceiling proves
-    # nothing about reflections, so naming one would be the same overstatement
-    # in a new place. The precise gate state is disclosed a line below in
-    # expert details, by ``gate_disclosure.describe_gate``.
-    return "this measurement had less usable sound to compare than the tuning did"
-
-
-def verify_inconclusive_diagnosis(reflection_measured: bool | None) -> str:
-    """What VERIFY established, without advice about the next action."""
-    cause = verify_inconclusive_cause(REASON_VERIFY_INCONCLUSIVE, reflection_measured)
-    return f"The check was inconclusive — {cause}."
-
-
-def verify_inconclusive_message(reflection_measured: bool | None) -> str:
-    """``REASON_VERIFY_INCONCLUSIVE``'s household sentence. Single writer.
-
-    The registry entry below holds this function's ``None`` (cause-unknown)
-    rendering, so a caller with no gate record on hand — and every reader of
-    ``REASON_REGISTRY`` — gets copy that is true rather than copy that guesses.
-    The envelope re-renders it with the persisted fact when it has one.
-    """
-    return f"{verify_inconclusive_diagnosis(reflection_measured)} Re-verify to try again."
-
-
-def locate_failed_diagnosis(pilot_heard: bool | None) -> str:
-    """What the locator established, without advice about the next action."""
-    if pilot_heard:
-        return (
-            "JTS could hear the speaker, but couldn't line up the test tones "
-            "in the recording."
-        )
-    return "Couldn't hear the speaker clearly."
-
-
-def locate_failed_message(pilot_heard: bool | None) -> str:
-    """``REASON_LOCATE_FAILED``'s household sentence. Single writer (#2085).
-
-    SELECTION, never composition — the same shape
-    :func:`verify_inconclusive_message` above uses, and for the same reason:
-    one code, two honest causes, and a registry that cannot hold one literal
-    true of both.
-
-    ``locate_failed`` fires when the correlator could not place this capture's
-    stimuli (:func:`_stimulus_locate_ok`, :func:`_sweep_locate_confidence_ok`,
-    or VERIFY's ``summed_sweep_heard`` integrity check — all three are
-    locate-CONFIDENCE floors). Its copy asserted the one cause that would
-    explain that on its own: the speaker was not audible, so check the volume
-    and the microphone. The JTS3 session of 2026-08-03 measured that claim
-    false three times in one sitting. Every one of those captures carried
-    ``pilot_snr_ok=True`` — the leading pilot pair cleared the room's own
-    in-band floor by 13.9-15.5 dB, direct evidence from THIS capture that the
-    speaker was heard — while its sweeps scored 0.019-0.097 against a 0.3
-    floor. A household told to check the volume then goes and changes the one
-    thing the measurement had already proved was fine.
-
-    **The copy names the operation that failed, and stops there.** Forensics
-    on those same three WAVs found the audio pristine: the analyzer had
-    anchored the timeline on ``pilot_lo`` — deliberately the quietest segment
-    in the program — missed the anchor gate by an NCC margin of 0.005-0.049,
-    snapped to ``pilot_hi`` instead, and put every subsequent sweep 1296.5 ms
-    (exactly the pilot spacing) outside a +/-30 ms search window. Re-scored
-    with a whole-capture search the same recordings give 0.67-0.82. So "the
-    recording came back damaged" would have been a THIRD false sentence, told
-    to households whose volume AND whose recording were both fine. What is
-    true in every case — a corrupted capture and this mis-anchor alike — is
-    that JTS could not line up the test tones. That is what the household is
-    told. (The anchor itself is a separate fix in ``program_analysis``; this
-    copy does not depend on it landing, and does not become wrong when it
-    does.)
-
-    ``pilot_heard`` is the discriminator:
-
-    * ``True`` — the pilot pair was measurably heard, so "couldn't hear the
-      speaker" is refuted BY THIS CAPTURE. The copy reports the lining-up
-      failure and asks for one retry, asserting no cause for it.
-    * ``False`` / ``None`` — the pilot failed too, or there is no pilot
-      evidence at all. Then the level/microphone reading is either supported
-      or simply unknown, and the original copy stands. The registry holds
-      this rendering, so every reader of ``REASON_REGISTRY`` with no capture
-      in hand gets copy that is true rather than copy that guesses.
-
-    Deliberately keyed on the EVIDENCE, not on which gate fired. The three
-    call sites above measure the same thing (a locate-confidence floor) and
-    the falsifying fact is the same field on the same analysis, so keying on
-    the site would let one measured situation produce two different sentences
-    depending on which floor happened to be checked first — the drift this
-    file already fixed once for the inconclusive copy (#1974).
-    """
-    diagnosis = locate_failed_diagnosis(pilot_heard)
-    if pilot_heard:
-        return f"{diagnosis} Try again."
-    return f"{diagnosis} Check the volume and the microphone, then try again."
-
-
-@dataclass(frozen=True)
-class RetryableReasonCopy:
-    """One retryable reason's diagnosis and still-available action.
-
-    ``diagnosis`` is the observation that remains true after the slot's last
-    extra attempt.  ``retry_action`` is appended only on surfaces where an
-    attempt is still available.  Keeping both pieces in this one value lets
-    :class:`ReasonSpec` expose the historical full ``message``/``banner``
-    strings without duplicating the diagnosis in a terminal-copy registry.
-
-    ``strip_before_join`` supports the two existing em-dash sentences: their
-    standalone diagnosis ends with a period, while the retryable rendering
-    removes that period before the dash.  The diagnosis itself remains a
-    complete household sentence.
-    """
-
-    diagnosis: str
-    retry_action: str
-    joiner: str = " "
-    strip_before_join: str = ""
-
-    @property
-    def message(self) -> str:
-        diagnosis = self.diagnosis
-        if self.strip_before_join and diagnosis.endswith(self.strip_before_join):
-            diagnosis = diagnosis[: -len(self.strip_before_join)]
-        return f"{diagnosis}{self.joiner}{self.retry_action}"
-
-
-@dataclass(frozen=True)
-class ReasonSpec:
-    """One terminal verdict's template + budget + copy (§5.10)."""
-
-    code: str
-    template: str
-    # RETRIABLE-OR-NOT, since the bounded-retry ruling (#2086) moved the COUNT
-    # to :data:`MAX_EXTRA_ATTEMPTS_PER_POSITION`. Zero still means "no extra
-    # attempt can help" — a statement about the CONDITION (wiring is wrong, the
-    # tuning would not have improved the speaker), not a budget — and those
-    # codes still stop the moment they fire. Any non-zero value now says only
-    # "retriable"; the specific 1 vs 2 no longer changes behaviour, because a
-    # per-code count was exactly the fragmentation the ruling replaced (five
-    # attempts at one position on 2026-08-03 came from three codes each holding
-    # its own meter). Kept as an int rather than collapsed to a bool to keep
-    # this change off every registry entry's line; see
-    # :data:`NON_RETRIABLE_CODES`.
-    retry_budget: int
-    # Short banner shown while a transient code auto-retries (template 1). Empty
-    # for codes whose template is a decision screen.
-    banner: str
-    # The fix/action copy the decision-screen template renders. One reason, one
-    # action (the Language guide).
-    message: str
-    # Optional per-reason override for the HARD-STOP screen's action button
-    # (issue #1820). Consulted by that template ONLY, because it is the one
-    # screen whose default action is a generic destination ("Back to speaker
-    # setup", ``/sound/``) rather than a semantically load-bearing control —
-    # verify_fail owns Undo, session_restart owns Start over, fix_and_retry
-    # owns Try again, and none of those may be replaced by copy data. A
-    # hard-stop reason that knows the exact control which clears it declares
-    # that control here so the household lands ON it instead of on the page
-    # that contains it. Shape is the ``next_action`` mapping the envelope
-    # emits: ``{"id", "label", "href"}``.
-    next_action: Mapping[str, Any] | None = None
-    # Structured only for retryable rows.  ``message``/``banner`` above is
-    # derived from this value by :func:`_retriable_reason`, so the diagnosis
-    # used at exhaustion and the diagnosis inside retry copy have one writer.
-    retry_copy: RetryableReasonCopy | None = None
-
-
-def _retriable_reason(
-    code: str,
-    template: str,
-    retry_budget: int,
-    copy: RetryableReasonCopy,
-    *,
-    auto_retry: bool = False,
-) -> ReasonSpec:
-    """Build a retryable registry row from one structured copy source."""
-    if retry_budget <= 0:
-        raise ValueError("a retryable reason needs a positive retry budget")
-    return ReasonSpec(
-        code,
-        template,
-        retry_budget,
-        copy.message if auto_retry else "",
-        "" if auto_retry else copy.message,
-        retry_copy=copy,
-    )
-
-
-# The §5.10 table, as data. The envelope and the conductor both read it, so copy
-# and budget never drift between the verdict and its screen.
-REASON_REGISTRY: dict[str, ReasonSpec] = {
-    REASON_AGC_BEHAVIORAL_FAIL: _retriable_reason(
-        REASON_AGC_BEHAVIORAL_FAIL, TEMPLATE_FIX_AND_RETRY, 1,
-        # Copy amended 2026-07-28 (issue #1810). It used to state the cause
-        # outright — "Your phone's microphone changed its own levels
-        # mid-measurement" — and the JTS3 session that filed the issue proved
-        # that claim can be false: the pilot pair had collapsed into the room
-        # floor, the only direct recording-chain evidence path
-        # (``pilot_transfer_step_db``) was null, and the household was told to
-        # go re-allow a microphone that had done nothing wrong. What this code
-        # actually observes is that the captured two-pilot level delta did not
-        # match the programmed one at a level where it should have. Two things
-        # produce that — the phone's input chain riding gain, or the speaker's
-        # own output compressing — so the copy names the observation and the
-        # one action that helps either way. The definite mic accusation now
-        # lives ONLY on REASON_VERIFY_LEVEL_SHIFT, which has the cross-attempt
-        # transfer step to back it.
-        RetryableReasonCopy(
-            "The two test tones didn't come back at the levels JTS played them.",
-            "Re-allow the microphone, then try again.",
-        ),
-    ),
-    REASON_NOISY_ROOM_LINEARITY: _retriable_reason(
-        REASON_NOISY_ROOM_LINEARITY, TEMPLATE_FIX_AND_RETRY, 1,
-        RetryableReasonCopy(
-            "The room got loud during that measurement.",
-            "quiet it and try again.",
-            joiner=" — ",
-            strip_before_join=".",
-        ),
-    ),
-    REASON_PILOT_LEVEL_COLLAPSE: _retriable_reason(
-        REASON_PILOT_LEVEL_COLLAPSE, TEMPLATE_FIX_AND_RETRY, 1,
-        # One reason, one action (the Language guide) — but the cause is
-        # genuinely two-sided and naming only half of it would be the same
-        # over-claim this code exists to stop. "Not your phone" is the point:
-        # the household's previous experience of this failure was being told
-        # to re-allow a microphone that was working.
-        RetryableReasonCopy(
-            "The test tones didn't rise clearly above the room — it was too "
-            "loud, or the speaker too quiet, for this check.",
-            "Quiet the room or move the microphone closer, then try again.",
-        ),
-    ),
-    REASON_SNR_FLOOR: _retriable_reason(
-        REASON_SNR_FLOOR, TEMPLATE_FIX_AND_RETRY, 1,
-        RetryableReasonCopy(
-            "The room is too loud right now, or the microphone is too far away.",
-            "Quiet the room or move the microphone closer, then try again.",
-        ),
-    ),
-    REASON_CHANNEL_MAP_MISMATCH: ReasonSpec(
-        REASON_CHANNEL_MAP_MISMATCH, TEMPLATE_HARD_STOP, 0, "",
-        # Fix 3 (W6.4): with Fix 1's band-relative discriminator this should
-        # be rare and genuinely wiring, but the honest failure mode also
-        # includes a very quiet/noisy room (the discriminator needs both a
-        # driver's own band to rise over its ambient AND the other driver's
-        # band to stay quiet) — name both causes rather than blaming wiring
-        # unconditionally.
-        "The drivers didn't play in the expected order — check the speaker "
-        "wiring, or if the room is noisy, quiet it and try again.",
-    ),
-    REASON_CLIPPED: _retriable_reason(
-        REASON_CLIPPED, TEMPLATE_SILENT_AUTO_RETRY, 1,
-        RetryableReasonCopy(
-            "That was a touch loud.",
-            "measuring again a bit quieter.",
-            joiner=" — ",
-            strip_before_join=".",
-        ),
-        auto_retry=True,
-    ),
-    REASON_DRIFT_BASELINES_DISAGREE: _retriable_reason(
-        REASON_DRIFT_BASELINES_DISAGREE, TEMPLATE_SILENT_AUTO_RETRY, 1,
-        RetryableReasonCopy(
-            "The capture glitched.",
-            "measuring again.",
-            joiner=" — ",
-            strip_before_join=".",
-        ),
-        auto_retry=True,
-    ),
-    REASON_DELAY_EXCEEDS_SEARCH_WINDOW: _retriable_reason(
-        REASON_DELAY_EXCEEDS_SEARCH_WINDOW, TEMPLATE_FIX_AND_RETRY, 1,
-        RetryableReasonCopy(
-            "The microphone may be off the spot in the picture.",
-            "Re-check its placement, then try again.",
-        ),
-    ),
-    REASON_LOCATE_FAILED: _retriable_reason(
-        REASON_LOCATE_FAILED, TEMPLATE_FIX_AND_RETRY, 1,
-        # NOT a literal (issue #2085). This code is a locate-CONFIDENCE floor,
-        # and its copy named the one cause that would explain a miss on its own
-        # — an inaudible speaker — on captures whose own pilot pair proved the
-        # speaker was heard. The sentence has one writer now
-        # (``locate_failed_message``, which also explains why the heard-speaker
-        # branch names no cause at all); what the registry holds is its
-        # no-pilot-evidence rendering, true for any reader with no capture in
-        # hand. The relay verdict and the envelope both re-render it with the
-        # measured fact.
-        RetryableReasonCopy(
-            locate_failed_diagnosis(None),
-            "Check the volume and the microphone, then try again.",
-        ),
-    ),
-    REASON_RELAY_TIMEOUT: ReasonSpec(
-        REASON_RELAY_TIMEOUT, TEMPLATE_SESSION_RESTART, 0, "",
-        # The old link is dead once the session collapses — do NOT tell the
-        # household to "open the link again" (W6.10 fold-in: that link and its
-        # QR are gone). Start over mints a FRESH session from this page.
-        "The measurement link timed out. Start over from this page to measure "
-        "again — the quick microphone check runs first.",
-    ),
-    REASON_VOLUME_UNRESOLVED: ReasonSpec(
-        REASON_VOLUME_UNRESOLVED, TEMPLATE_VOLUME_RECOVERY, 0, "",
-        "JTS could not confirm the listening volume was restored. Recover the "
-        "safe volume before continuing.",
-    ),
-    REASON_PROGRAM_UNPLAYABLE: ReasonSpec(
-        REASON_PROGRAM_UNPLAYABLE, TEMPLATE_HARD_STOP, 0, "",
-        "JTS could not play the measurement signal within the speaker's safe "
-        "limits. Re-check the driver details in speaker setup, then measure "
-        "again.",
-    ),
-    REASON_PROTECTION_SWEEP_TOO_LOW: ReasonSpec(
-        REASON_PROTECTION_SWEEP_TOO_LOW, TEMPLATE_HARD_STOP, 0, "",
-        "JTS played the measurement fine, but it swept this driver lower than "
-        "the driver's own protection lets through, so the bottom of the sweep "
-        "is too quiet to trust. Re-check this driver's protection settings in "
-        "speaker setup, then measure again.",
-    ),
-    REASON_PROTECTION_NOT_SEPARABLE: ReasonSpec(
-        REASON_PROTECTION_NOT_SEPARABLE, TEMPLATE_HARD_STOP, 0, "",
-        "JTS played the measurement fine, but the safety limits it had to keep "
-        "in place overlap the crossover you have set, so it cannot tell the two "
-        "apart well enough to trust the result. Change the crossover frequency "
-        "in speaker setup, then measure again.",
-    ),
-    REASON_PROGRAM_PROFILE_NOT_CONFIRMED: ReasonSpec(
-        REASON_PROGRAM_PROFILE_NOT_CONFIRMED, TEMPLATE_HARD_STOP, 0, "",
-        # Issue #1820 defect 2: the copy this refusal used to inherit from
-        # ``program_unplayable`` sent the household to "re-check the driver
-        # details" — and re-checking (editing) them rotates the profile
-        # fingerprint, which clears the confirmation again. That is a LOOP, not
-        # a fix. This copy names the actual exit, warns why edits do not help,
-        # and the ``next_action`` below lands ON the control rather than on the
-        # page that hides it behind a disclosure.
-        "This speaker's safety limits are not confirmed, so JTS did not play "
-        "the measurement signal. Confirm the safety limits in speaker setup — "
-        "changing a driver detail clears them — then measure again.",
-        next_action={
-            "id": "confirm_safety_limits",
-            "label": "Confirm safety limits",
-            # ``/sound/``'s Component setup card renders the hoisted confirm
-            # control under this exact id when the profile needs confirmation
-            # (deploy/assets/sound-profile/js/main.js), and its boot path opens
-            # the owning step for this fragment. Both halves are pinned by
-            # tests/test_sound_profile_confirm_deeplink.py.
-            "href": "/sound/setup/#confirm-safety-limits",
-        },
-    ),
-    REASON_PROGRAM_PROFILE_MISSING: ReasonSpec(
-        REASON_PROGRAM_PROFILE_MISSING, TEMPLATE_HARD_STOP, 0, "",
-        # NOT "confirm the safety limits": there is nothing to confirm and no
-        # control to confirm it with. This is the state the pre-gate's original
-        # copy was right about, kept for exactly this branch.
-        "This speaker's driver details are not finished, so JTS has no safety "
-        "limits to measure within. Finish the driver details in speaker setup, "
-        "then measure again.",
-        next_action={
-            "id": "speaker_setup",
-            "label": "Finish speaker setup",
-            # No fragment: ``/sound/`` renders no confirm callout in this state,
-            # so a deep link would land on nothing. The page opens on its own
-            # first unfinished step, which IS the action.
-            "href": "/sound/setup/",
-        },
-    ),
-    REASON_PROGRAM_PROFILE_INCOMPLETE: ReasonSpec(
-        REASON_PROGRAM_PROFILE_INCOMPLETE, TEMPLATE_HARD_STOP, 0, "",
-        # Matches what ``/sound/``'s own callout says in this state — the two
-        # surfaces name one action, and it is not "Confirm", which the server
-        # would refuse while values are missing.
-        "Some of this speaker's safety limits are still missing, so JTS did "
-        "not play the measurement signal. Add them under Advanced in speaker "
-        "setup, then confirm the limits and measure again.",
-        next_action={
-            "id": "add_safety_limits",
-            "label": "Add the missing limits",
-            # The callout DOES render for this state (button-less, naming the
-            # add-the-values action), so the fragment lands on the explanation.
-            "href": "/sound/setup/#confirm-safety-limits",
-        },
-    ),
-    REASON_INTERNAL_ERROR: ReasonSpec(
-        REASON_INTERNAL_ERROR, TEMPLATE_FIX_AND_RETRY, 0, "",
-        "Something went wrong on the speaker during that measurement. "
-        "Try again.",
-    ),
-    REASON_VERIFY_OUT_OF_TOLERANCE: _retriable_reason(
-        REASON_VERIFY_OUT_OF_TOLERANCE, TEMPLATE_VERIFY_FAIL, 2,
-        RetryableReasonCopy(
-            "The result didn't quite match the prediction.",
-            "Try again, or undo to restore the previous sound.",
-        ),
-    ),
-    REASON_VERIFY_CROSSOVER_REGION: _retriable_reason(
-        REASON_VERIFY_CROSSOVER_REGION, TEMPLATE_VERIFY_FAIL, 2,
-        # Says what was measured, no diagnosis — a handoff dip can be
-        # alignment, spacing, Fc, or the horn, and this cannot tell them apart.
-        # The hint deliberately does NOT lead with "try again": a retry
-        # re-checks the SAME applied graph and this defect is deterministic, so
-        # that is a near-dead lever. It names the two that change the outcome.
-        RetryableReasonCopy(
-            "The two drivers didn't blend as designed where they hand over.",
-            "Re-measure to fit it again, or undo to restore the previous sound.",
-        ),
-    ),
-    REASON_VERIFY_INCONCLUSIVE: _retriable_reason(
-        REASON_VERIFY_INCONCLUSIVE, TEMPLATE_VERIFY_FAIL, 2,
-        # NOT a literal (issue #1974). This copy used to assert "the room
-        # reflection cut the window short" on a verdict that never consulted
-        # whether a reflection was found — and across the whole 2026-07-30
-        # corpus none was. The sentence has one writer now
-        # (``verify_inconclusive_message``), and what the registry holds is its
-        # cause-unknown rendering: true for any reader with no gate record.
-        # The envelope re-renders it with the persisted fact.
-        RetryableReasonCopy(
-            verify_inconclusive_diagnosis(None),
-            "Re-verify to try again.",
-        ),
-    ),
-    REASON_VERIFY_LEVEL_SHIFT: _retriable_reason(
-        REASON_VERIFY_LEVEL_SHIFT, TEMPLATE_VERIFY_FAIL, 2,
-        # The instrument is named device-agnostically (#1941 R4): the session
-        # mic may be a UMIK-2 or a laptop, and #1924's field evidence is a
-        # UMIK-2 session told its phone had drifted.
-        #
-        # ROUTING (#1924, the half R4 deferred). ONE string renders on TWO
-        # surfaces where "try again" is a DIFFERENT control, so the copy has to
-        # be true on both without discrediting either:
-        #
-        # * measurement page (``renderPlanRetry``) — the in-session re-arm,
-        #   which re-compares against the SAME reference this attempt just
-        #   failed against. A level that moved and stayed moved repeats here
-        #   until the budget dies.
-        # * wizard (``_verify_fail_envelope``) — a FRESH relay session, which
-        #   since #1927 builds a fresh conductor and re-baselines, so this gate
-        #   is structurally unreachable on its first attempt. Retry settles it
-        #   in one capture.
-        #
-        # The old ending ("re-verify to try again") commanded the retry, which
-        # is the phone's dead end. Naming only Re-measure/Undo would have been
-        # the mirror-image error: it discredits a wizard button that works, and
-        # the screen's visible primary IS "Try again". So the sentence states
-        # the fact, CONTEXTUALIZES the retry rather than commanding or
-        # dismissing it, and names the escalation conditionally — "if it
-        # repeats" is honest on the wizard (it will not) and on the phone (it
-        # may). Both escalations are already on the verify-fail screen.
-        #
-        # NOT an owner ruling: #1924's body offers remedies explicitly labelled
-        # "not decisions", and the issue carries no ruling comment. This
-        # wording is the pipeline's call, derived from #1927's mechanics above,
-        # and is the owner's to change.
-        RetryableReasonCopy(
-            "The microphone's levels changed between measurements, so this "
-            "check couldn't settle.",
-            "Try again — if it repeats, re-measure, or undo to restore the "
-            "previous sound.",
-        ),
-    ),
-    REASON_LOW_ALIGNMENT_CONFIDENCE: _retriable_reason(
-        REASON_LOW_ALIGNMENT_CONFIDENCE, TEMPLATE_FIX_AND_RETRY, 1,
-        RetryableReasonCopy(
-            "Alignment is less certain at this mic position.",
-            "Place the microphone about 1 m in front of the speaker at tweeter "
-            "height, then measure again.",
-        ),
-    ),
-    REASON_APPLY_FAILED: _retriable_reason(
-        REASON_APPLY_FAILED, TEMPLATE_FIX_AND_RETRY, 1,
-        RetryableReasonCopy(
-            "JTS could not apply the measured crossover automatically.",
-            "Try again.",
-        ),
-    ),
-    REASON_USER_STOPPED: ReasonSpec(
-        REASON_USER_STOPPED, TEMPLATE_SESSION_RESTART, 0, "",
-        "You stopped the measurement. Start over from this page when you're "
-        "ready.",
-    ),
-    REASON_REVIEW_HOLD_TIMEOUT: ReasonSpec(
-        REASON_REVIEW_HOLD_TIMEOUT, TEMPLATE_SESSION_RESTART, 0, "",
-        "Applying the measured crossover took too long, so the measurement "
-        "timed out before it could finish. Start over from this page to "
-        "measure again — the quick microphone check runs first.",
-    ),
-    REASON_CLOUD_GEOMETRY_LOCKED: _retriable_reason(
-        REASON_CLOUD_GEOMETRY_LOCKED, TEMPLATE_FIX_AND_RETRY,
-        # RETRIABLE (any non-zero value; see ``ReasonSpec.retry_budget``). The
-        # count kept here for readability is the conductor's own ceiling on
-        # wider-spot asks — ``_close_cloud_group`` stops at
-        # ``GEOMETRY_RETRY_POSITIONS`` — but it is no longer what admits the
-        # retake: since the bounded-retry ruling (#2086) every rung spends one
-        # of the POSITION's pooled extras, booked to the speaker rather than the
-        # household. Before that, this code's own budget and every other code's
-        # ran side by side on the same operator.
-        GEOMETRY_RETRY_POSITIONS,
-        # Copy names the ACTION, not the diagnosis — a household has no way to
-        # judge "the echo estimates clustered". The per-attempt wider-spot
-        # instruction rides the verdict payload's ``prompt`` field on top of
-        # this (see ``_cloud_measure_group_verdict``).
-        RetryableReasonCopy(
-            "These spots were too close together to tell a real dip from an echo.",
-            "Take this one from further out and we will use it instead.",
-        ),
-    ),
-    # PR-L4. Both are HARD_STOP with budget 0: the defects are systematic, not
-    # transient — a second identical measurement reproduces them — and both name
-    # the one thing a household can actually act on, the declared driver details
-    # the level frame is built from. Copy names the ACTION, not the arithmetic.
-    REASON_DRIVER_LEVELS_DISAGREE: ReasonSpec(
-        REASON_DRIVER_LEVELS_DISAGREE, TEMPLATE_HARD_STOP, 0, "",
-        "The two drivers would not have ended up at matching levels, so JTS "
-        "left your speaker alone. Re-check the driver details — sensitivity "
-        "and any resistor pad — in speaker setup, then measure again.",
-    ),
-    REASON_CORRECTION_NOT_AN_IMPROVEMENT: ReasonSpec(
-        REASON_CORRECTION_NOT_AN_IMPROVEMENT, TEMPLATE_HARD_STOP, 0, "",
-        "The tuning JTS worked out would not have made this speaker measure "
-        "better, so it was not applied. Re-check the driver details in speaker "
-        "setup, then measure again.",
-    ),
-    # PR-L5 delta-probe rollbacks. All three are TEMPLATE_HARD_STOP with no
-    # retry budget: the correction has already been undone, so "try again"
-    # would re-run the same measurement into the same defect. Each names what
-    # was restored FIRST — a household whose speaker just changed twice needs
-    # to know where it ended up before it needs a diagnosis — and then the one
-    # thing that would actually change the outcome. No hardware nouns, matching
-    # the null-classification copy rule.
-    REASON_CORRECTION_MODEL_ERROR: ReasonSpec(
-        REASON_CORRECTION_MODEL_ERROR, TEMPLATE_HARD_STOP, 0, "",
-        "JTS checked the tuning against what your speaker actually did, and "
-        "they did not match — so the previous sound has been put back. This "
-        "usually means something in the chain is not behaving as described; "
-        "re-check the driver details in speaker setup, then measure again.",
-    ),
-    REASON_CORRECTION_LEVEL_SHORTFALL: ReasonSpec(
-        REASON_CORRECTION_LEVEL_SHORTFALL, TEMPLATE_HARD_STOP, 0, "",
-        "Your speaker delivered noticeably less than the tuning asked it for, "
-        "so the previous sound has been put back. Try measuring again at a "
-        "lower listening volume.",
-    ),
-    REASON_CORRECTION_SPATIALLY_COSTLY: ReasonSpec(
-        REASON_CORRECTION_SPATIALLY_COSTLY, TEMPLATE_HARD_STOP, 0, "",
-        "The tuning helped at the measuring spot but made the sound less even "
-        "elsewhere in the room, so the previous sound has been put back. "
-        "Moving the speaker away from nearby walls and surfaces, then "
-        "measuring again, is what changes this.",
-    ),
-    # #2291's measured regression. Same promise as the three above — and it is
-    # true on the same terms: this row renders only when the restore actually
-    # ran, and the failed-restore row below is what renders when it did not.
-    # The remedy differs from its neighbours because the finding does: nothing
-    # misbehaved, so there is no chain to re-check and no level to drop. The
-    # honest next step is a different measurement, which usually means moving
-    # the microphone or the speaker.
-    REASON_CORRECTION_MEASURED_REGRESSION: ReasonSpec(
-        REASON_CORRECTION_MEASURED_REGRESSION, TEMPLATE_HARD_STOP, 0, "",
-        "JTS measured your speaker before and after the tuning, and it "
-        "measured worse afterwards — so the previous sound has been put back. "
-        "Nothing is broken; this room and this speaker position did not suit "
-        "the tuning. Moving the speaker a little, or measuring from your usual "
-        "listening spot, is what changes this.",
-    ),
-    # #2291's fail-closed boost, and the one row here that reports a
-    # NON-finding. Says what JTS could not establish before what it did about
-    # it, because the household's speaker changed twice and "why" is otherwise
-    # unanswerable from the screen.
-    REASON_CORRECTION_UNPROVEN_BOOST: ReasonSpec(
-        REASON_CORRECTION_UNPROVEN_BOOST, TEMPLATE_HARD_STOP, 0, "",
-        "JTS could not measure whether this tuning improved your speaker, and "
-        "it turns some parts up rather than only down — so the previous sound "
-        "has been put back rather than leaving an unproven change driving your "
-        "speaker harder. Measuring again, from your usual listening spot, is "
-        "what settles it.",
-    ),
-    # The five rows above all promise "the previous sound has been put back",
-    # which is only true when the rollback actually ran. When it did not, THIS
-    # is the row that renders instead — same finding, opposite state of the
-    # speaker, and it says so first.
-    #
-    # ONE row rather than three verdict-specific ones, deliberately. Splitting
-    # it would let each keep its own remedy ("move the speaker away from
-    # walls"), but that remedy is the SECOND thing this household needs: the
-    # first is that a correction they are listening to right now was found
-    # faulty and is still applied, and the action is Undo in all three cases.
-    # Three near-duplicate rows for a state that should be rare is registry
-    # bloat, and the specific finding is on the verdict itself
-    # (``delta_probe.verdict``, in the payload and the journal) for whoever
-    # needs it after the undo.
-    REASON_CORRECTION_ROLLBACK_FAILED: ReasonSpec(
-        REASON_CORRECTION_ROLLBACK_FAILED, TEMPLATE_HARD_STOP, 0, "",
-        "JTS checked the tuning against what your speaker actually did, and "
-        "they did not match — but it could not put the previous sound back on "
-        "its own, so the new tuning is STILL APPLIED. Tap Undo on the speaker "
-        "page to restore the previous sound.",
-    ),
-}
-
-# The transient codes whose first retry is automatic (a banner, no decision
-# screen) per §5.10 template 1.
-TRANSIENT_AUTO_RETRY_CODES = frozenset(
-    code for code, spec in REASON_REGISTRY.items()
-    if spec.template == TEMPLATE_SILENT_AUTO_RETRY
+from jasper.active_speaker.crossover_v2.vocabulary import (
+    DELTA_PROBE_REASON_BY_VERDICT as DELTA_PROBE_REASON_BY_VERDICT,
+    NON_RETRIABLE_CODES as NON_RETRIABLE_CODES,
+    REASON_AGC_BEHAVIORAL_FAIL as REASON_AGC_BEHAVIORAL_FAIL,
+    REASON_APPLY_FAILED as REASON_APPLY_FAILED,
+    REASON_CHANNEL_MAP_MISMATCH as REASON_CHANNEL_MAP_MISMATCH,
+    REASON_CLIPPED as REASON_CLIPPED,
+    REASON_CLOUD_GEOMETRY_LOCKED as REASON_CLOUD_GEOMETRY_LOCKED,
+    REASON_CORRECTION_LEVEL_SHORTFALL as REASON_CORRECTION_LEVEL_SHORTFALL,
+    REASON_CORRECTION_MEASURED_REGRESSION as REASON_CORRECTION_MEASURED_REGRESSION,
+    REASON_CORRECTION_MODEL_ERROR as REASON_CORRECTION_MODEL_ERROR,
+    REASON_CORRECTION_NOT_AN_IMPROVEMENT as REASON_CORRECTION_NOT_AN_IMPROVEMENT,
+    REASON_CORRECTION_ROLLBACK_FAILED as REASON_CORRECTION_ROLLBACK_FAILED,
+    REASON_CORRECTION_SPATIALLY_COSTLY as REASON_CORRECTION_SPATIALLY_COSTLY,
+    REASON_CORRECTION_UNPROVEN_BOOST as REASON_CORRECTION_UNPROVEN_BOOST,
+    REASON_DELAY_EXCEEDS_SEARCH_WINDOW as REASON_DELAY_EXCEEDS_SEARCH_WINDOW,
+    REASON_DRIFT_BASELINES_DISAGREE as REASON_DRIFT_BASELINES_DISAGREE,
+    REASON_DRIVER_LEVELS_DISAGREE as REASON_DRIVER_LEVELS_DISAGREE,
+    REASON_INTERNAL_ERROR as REASON_INTERNAL_ERROR,
+    REASON_LOCATE_FAILED as REASON_LOCATE_FAILED,
+    REASON_LOW_ALIGNMENT_CONFIDENCE as REASON_LOW_ALIGNMENT_CONFIDENCE,
+    REASON_NOISY_ROOM_LINEARITY as REASON_NOISY_ROOM_LINEARITY,
+    REASON_PILOT_LEVEL_COLLAPSE as REASON_PILOT_LEVEL_COLLAPSE,
+    REASON_PROGRAM_PROFILE_INCOMPLETE as REASON_PROGRAM_PROFILE_INCOMPLETE,
+    REASON_PROGRAM_PROFILE_MISSING as REASON_PROGRAM_PROFILE_MISSING,
+    REASON_PROGRAM_PROFILE_NOT_CONFIRMED as REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
+    REASON_PROGRAM_UNPLAYABLE as REASON_PROGRAM_UNPLAYABLE,
+    REASON_PROTECTION_NOT_SEPARABLE as REASON_PROTECTION_NOT_SEPARABLE,
+    REASON_PROTECTION_SWEEP_TOO_LOW as REASON_PROTECTION_SWEEP_TOO_LOW,
+    REASON_REGISTRY as REASON_REGISTRY,
+    REASON_RELAY_TIMEOUT as REASON_RELAY_TIMEOUT,
+    REASON_REVIEW_HOLD_TIMEOUT as REASON_REVIEW_HOLD_TIMEOUT,
+    REASON_SNR_FLOOR as REASON_SNR_FLOOR,
+    REASON_USER_STOPPED as REASON_USER_STOPPED,
+    REASON_VERIFY_CROSSOVER_REGION as REASON_VERIFY_CROSSOVER_REGION,
+    REASON_VERIFY_INCONCLUSIVE as REASON_VERIFY_INCONCLUSIVE,
+    REASON_VERIFY_LEVEL_SHIFT as REASON_VERIFY_LEVEL_SHIFT,
+    REASON_VERIFY_OUT_OF_TOLERANCE as REASON_VERIFY_OUT_OF_TOLERANCE,
+    REASON_VOLUME_UNRESOLVED as REASON_VOLUME_UNRESOLVED,
+    SCREEN_KIND_REASONS as SCREEN_KIND_REASONS,
+    TEMPLATE_FIX_AND_RETRY as TEMPLATE_FIX_AND_RETRY,
+    TEMPLATE_HARD_STOP as TEMPLATE_HARD_STOP,
+    TEMPLATE_SESSION_RESTART as TEMPLATE_SESSION_RESTART,
+    TEMPLATE_SILENT_AUTO_RETRY as TEMPLATE_SILENT_AUTO_RETRY,
+    TEMPLATE_VERIFY_FAIL as TEMPLATE_VERIFY_FAIL,
+    TEMPLATE_VOLUME_RECOVERY as TEMPLATE_VOLUME_RECOVERY,
+    TRANSIENT_AUTO_RETRY_CODES as TRANSIENT_AUTO_RETRY_CODES,
+    PhaseVerdict as PhaseVerdict,
+    ReasonSpec as ReasonSpec,
+    RetryableReasonCopy as RetryableReasonCopy,
+    _retriable_reason as _retriable_reason,
+    _screen_refusal_code as _screen_refusal_code,
+    correction_rollback_failed_message as correction_rollback_failed_message,
+    locate_failed_diagnosis as locate_failed_diagnosis,
+    locate_failed_message as locate_failed_message,
+    reason_diagnosis as reason_diagnosis,
+    reason_message as reason_message,
+    round_restore_reason as round_restore_reason,
+    verify_inconclusive_cause as verify_inconclusive_cause,
+    verify_inconclusive_diagnosis as verify_inconclusive_diagnosis,
+    verify_inconclusive_message as verify_inconclusive_message,
 )
 
-#: #2291 Phase 5a-iv: the capture-consuming ladders' refusal KINDS, mapped to
-#: the codes whose copy the household reads.
-#:
-#: :mod:`jasper.active_speaker.crossover_v2.spatial` owns the ORDER those
-#: ladders run in and returns a kind; this file owns the registry above, so the
-#: sentence stays here. The same split :mod:`.crossover_v2.coordinator` makes
-#: with :data:`~jasper.active_speaker.crossover_v2.coordinator.REFUSAL_KINDS`,
-#: and it is a mapping rather than an identity because two kinds do NOT share
-#: their code's name: a glitched timeline renders as
-#: ``drift_baselines_disagree`` and a bent curve as ``agc_behavioral_fail``.
-#:
-#: Completeness is CHECKED, not trusted — see :func:`_screen_refusal_code` and
-#: ``test_every_screen_kind_has_a_household_sentence``.
-SCREEN_KIND_REASONS: dict[str, str] = {
-    _spatial.SCREEN_LOCATE_FAILED: REASON_LOCATE_FAILED,
-    _spatial.SCREEN_PILOT_LEVEL_COLLAPSE: REASON_PILOT_LEVEL_COLLAPSE,
-    _spatial.SCREEN_LINEARITY_FAILED: REASON_AGC_BEHAVIORAL_FAIL,
-    _spatial.SCREEN_CAPTURE_GLITCH: REASON_DRIFT_BASELINES_DISAGREE,
-    _spatial.SCREEN_CLIPPED: REASON_CLIPPED,
-    # The five an ANCHOR phase adds (#2291 Phase 5a-vii). Two of them do not
-    # share their code's name either: an unresolved alignment renders as
-    # ``delay_exceeds_search_window``, and a bent curve the room caused renders
-    # as ``noisy_room_linearity`` rather than blaming the phone's microphone.
-    _dispatch.SCREEN_CHANNEL_MAP_MISMATCH: REASON_CHANNEL_MAP_MISMATCH,
-    _dispatch.SCREEN_SNR_FLOOR: REASON_SNR_FLOOR,
-    _dispatch.SCREEN_NOISY_ROOM_LINEARITY: REASON_NOISY_ROOM_LINEARITY,
-    _dispatch.SCREEN_ALIGNMENT_UNRESOLVED: REASON_DELAY_EXCEEDS_SEARCH_WINDOW,
-    _dispatch.SCREEN_LOW_ALIGNMENT_CONFIDENCE: REASON_LOW_ALIGNMENT_CONFIDENCE,
-}
+from jasper.active_speaker.crossover_v2.spatial import (
+    CLOUD_CLOSE_AWAITING_CONFIRM as CLOUD_CLOSE_AWAITING_CONFIRM,
+    CLOUD_CLOSE_NONE as CLOUD_CLOSE_NONE,
+    CLOUD_CLOSE_RUNNING as CLOUD_CLOSE_RUNNING,
+    GEOMETRY_RETRY_POSITIONS as GEOMETRY_RETRY_POSITIONS,
+)
 
+from jasper.active_speaker.crossover_v2.attempt_grading import (
+    ATTEMPT_REASON_NO_FLOOR as ATTEMPT_REASON_NO_FLOOR,
+    PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB as PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
+)
 
-def _screen_refusal_code(kind: str) -> str:
-    """One screen kind's household code, LOUDLY on an unmapped one.
-
-    A kind arriving here unmapped is a wiring defect — a new ladder step shipped
-    without a sentence — and answering it with another kind's copy is the shape
-    :meth:`CrossoverV2Conductor._round_refusal_for` already refuses. It still
-    returns rather than raising, under the most conservative code available: the
-    capture was screened and something was wrong with it, and losing that
-    refusal to a mapping gap would be worse than naming it imprecisely for one
-    release.
-    """
-    code = SCREEN_KIND_REASONS.get(kind)
-    if code is not None:
-        return code
-    log_event(
-        logger, "correction.crossover_v2_screen_kind_unmapped",
-        level=logging.ERROR, kind=str(kind),
-    )
-    return REASON_LOCATE_FAILED
-
-
-def correction_rollback_failed_message(rollback_anchor_available: bool | None) -> str:
-    """``correction_rollback_failed``'s sentence, branched on the anchor.
-
-    One code, two situations, and until #2291 one sentence — which pointed the
-    wrong half at a control that cannot help it.
-
-    * **A restore was attempted and did not complete** (``True``/``None``):
-      there IS a stored previous sound, the automatic attempt failed, and Undo
-      is a real remedy the household can press. Unchanged copy.
-    * **There was never an anchor** (``False``): the adoption table routed here
-      *because* no previous sound exists, and Undo refuses on that same
-      predicate. Telling this household to tap it sends them to a dead end on
-      the most ordinary case there is — a speaker's first-ever correction. So
-      this arm names no Undo, states what is true about their speaker, and
-      offers the two remedies that DO exist.
-
-    ``None`` takes the Undo arm deliberately: an unestablished fact must not
-    invent the more alarming claim ("nothing to go back to") about a speaker
-    that may well have a perfectly good anchor.
-    """
-    if rollback_anchor_available is False:
-        return (
-            "The new tuning is still applied, and this speaker has no stored "
-            "previous sound to go back to — this was its first measured "
-            "crossover. You can measure again to try for a better result, or "
-            "clear the tuning from the Sound page to return to the standard "
-            "setup."
-        )
-    return (
-        "JTS checked the tuning against what your speaker actually did, and "
-        "they did not match — but it could not put the previous sound back, "
-        "so the newer tuning is STILL APPLIED. Tap Undo to restore the "
-        "previous sound."
-    )
-
-
-def reason_message(
-    code: str,
-    spec: ReasonSpec,
-    *,
-    pilot_heard: bool | None = None,
-    reflection_measured: bool | None = None,
-    rollback_anchor_available: bool | None = None,
-) -> str:
-    """The household sentence for ``code``, given what the capture measured.
-
-    **THE single copy selector**, because one failure is narrated on several
-    surfaces that never see each other: the relay verdict the measurement page
-    shows the moment a capture is refused
-    (:meth:`PhaseVerdict.to_relay_dict`), the envelope jts.local serves for
-    the persisted terminal failure
-    (``crossover_envelope_v2._reason_message``), the apply-seam refusal, and
-    :meth:`_refuse`'s accountability refusals. Two codes now choose their copy
-    from evidence rather than holding a literal, and a household looking at
-    two of those surfaces after ONE failure must not be handed two different
-    accounts of it — which is exactly how the inconclusive copy's own bug
-    stayed invisible for as long as it did (#1974). Adding a third
-    evidence-keyed code means adding a branch HERE; a caller that renders
-    ``spec.message`` directly re-opens the gap.
-
-    Exhaustion is state-aware: :meth:`authorize_begin` keeps the diagnosis
-    selected here but replaces retry advice with the terminal outcome. That is
-    intentionally not whole-sentence equality. The observation must agree
-    across surfaces; an action that is no longer available must not survive.
-
-    ``spec`` is passed in rather than looked up so each caller keeps the
-    existence guard it already had — ``REASON_REGISTRY[code]`` raising
-    ``KeyError`` on an unregistered code is load-bearing in :meth:`_refuse`,
-    whose whole purpose is that a refusal never ships a bare code where a
-    household expects a sentence.
-
-    Facts are keyword-only and each defaults to "not established", so a caller
-    holding none of them gets the registry's own renderings — the same answer
-    reading ``REASON_REGISTRY`` by hand would give.
-    """
-    if code == REASON_LOCATE_FAILED:
-        return locate_failed_message(pilot_heard)
-    if code == REASON_VERIFY_INCONCLUSIVE:
-        return verify_inconclusive_message(reflection_measured)
-    if code == REASON_CORRECTION_ROLLBACK_FAILED:
-        return correction_rollback_failed_message(rollback_anchor_available)
-    # ``or spec.banner`` for the silent-auto-retry codes, whose household text
-    # IS the banner and whose ``message`` is empty by construction.
-    return spec.message or spec.banner
-
-
-def reason_diagnosis(
-    code: str,
-    spec: ReasonSpec,
-    *,
-    pilot_heard: bool | None = None,
-    reflection_measured: bool | None = None,
-) -> str:
-    """The observation inside any retryable reason, without retry advice.
-
-    The two evidence-keyed reasons select their diagnosis from this capture's
-    facts. Every literal reason reads the diagnosis stored in its structured
-    :class:`RetryableReasonCopy`; that same value also composes the registry's
-    full retryable ``message``/``banner``. Exhaustion therefore preserves X
-    for every retryable code without maintaining a second prose table.
-    """
-    if code == REASON_LOCATE_FAILED:
-        return locate_failed_diagnosis(pilot_heard)
-    if code == REASON_VERIFY_INCONCLUSIVE:
-        return verify_inconclusive_diagnosis(reflection_measured)
-    return spec.retry_copy.diagnosis if spec.retry_copy is not None else ""
-
-
-# Conditions no extra attempt can clear — wiring in the wrong order, a tuning
-# that would not have improved the speaker, a dead link. The bounded-retry
-# ruling (#2086) is a CEILING on retries, not a floor: it stops the flow asking
-# a household for a fifth take of the same spot, and it does not start it asking
-# for a second take of something a second take cannot fix. These refuse on the
-# next begin, with their own copy, exactly as they always have.
-NON_RETRIABLE_CODES = frozenset(
-    code for code, spec in REASON_REGISTRY.items() if spec.retry_budget == 0
+from jasper.active_speaker.crossover_v2.capture_dispatch import (
+    SWEEP_LOCATE_CONFIDENCE_FLOOR as SWEEP_LOCATE_CONFIDENCE_FLOOR,
+    SWEEP_SCHEDULE_RESIDUAL_CEILING_MS as SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
+    _gate_disclosure as _gate_disclosure,
+    _gate_floor_source as _gate_floor_source,
+    _gate_record as _gate_record,
+    _gate_window_ms as _gate_window_ms,
+    _pilot_by_role as _pilot_by_role,
+    _pilot_diag_fields as _pilot_diag_fields,
+    _pilot_transfer_by_role as _pilot_transfer_by_role,
+    _sweep_locate_confidence_ok as _sweep_locate_confidence_ok,
+    _sweep_schedule_diag_fields as _sweep_schedule_diag_fields,
+    _sweep_schedule_ok as _sweep_schedule_ok,
 )
 
 # --------------------------------------------------------------------------- #
@@ -2830,36 +1789,6 @@ ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS = 0.1
 # PROVISIONAL pending W6 bench validation, same status as every other
 # MEASURE-phase threshold in this block.
 MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB = 15.0
-
-# Measurement-honesty gate G2 (2026-07-22): an ``event=outputd.xrun`` playback
-# glitch on 2026-07-22 hardware shifted a MEASURE capture's three sweeps
-# −25…−28 ms off their SCHEDULED slot with per-segment locate confidence
-# 0.07-0.12 (the measured clean corpus's WORST capture ran ≤1.5 ms residual
-# at ≥0.6926 confidence) while ``glitch_detected`` stayed False — the
-# repeat-pair drift check (``_estimate_drift``) is structurally blind to a
-# uniform whole-capture shift (its own residual guard demeans per role, so
-# it only catches a WITHIN-driver desync), and ``_stimulus_locate_ok`` passed
-# on the max() confidence across every located stimulus, so one good segment
-# masked three bad sweeps (that max() is per-ROLE since #1838's D8, which
-# narrows but does not close the hole — a role's own pilots can still be the
-# segment that clears it, which is why this per-sweep floor exists). Both
-# thresholds carry wide margin on both sides of the two clusters above.
-# PROVISIONAL pending W6 bench validation.
-#
-# The two are read by DIFFERENT gates since #1838's D3: the residual ceiling
-# by ``_sweep_schedule_ok`` (a glitch — silent auto-retry), the confidence
-# floor by ``_sweep_locate_confidence_ok`` (too quiet — no retry).
-#
-# Both have a deliberate twin one layer down —
-# ``program_analysis.SWEEP_SCHEDULE_RESIDUAL_CEILING_MS`` /
-# ``SWEEP_LOCATE_CONFIDENCE_FLOOR`` — which apply the SAME two judgments to
-# VERIFY's single ``KIND_SUMMED_SWEEP`` (issue #1971), a segment kind neither
-# gate here has ever filtered for. ``program_analysis`` cannot import them
-# from this module without inverting the dependency, so they are duplicated
-# and pinned by tests/test_measurement_integrity_floor_contracts.py: a
-# deliberate move of either number must update BOTH copies and that test.
-SWEEP_SCHEDULE_RESIDUAL_CEILING_MS = 5.0
-SWEEP_LOCATE_CONFIDENCE_FLOOR = 0.3
 
 # Measurement-honesty gate G3 (2026-07-22): the gate's OWN metric (summed-
 # pilot transfer step) measured the phone's input chain stepping 0.75-0.82
@@ -3017,102 +1946,6 @@ def _stimulus_locate_ok(analysis: ProgramAnalysis) -> bool:
     return all(best >= LOCATE_MIN_CONFIDENCE for best in by_role.values())
 
 
-def _sweep_locate_confidence_ok(analysis: ProgramAnalysis) -> bool:
-    """False when a MEASURE sweep was only weakly located — i.e. too quiet.
-
-    Split out of :func:`_sweep_schedule_ok` by D3 (issue #1838). The two
-    halves of that gate answer different questions and deserve different
-    verdicts:
-
-    * a sweep whose RESIDUAL is out of bounds landed off its scheduled slot —
-      a timeline splice, a genuine capture glitch, retry;
-    * a sweep the locator could barely find at all is not a splice. It is a
-      capture too quiet to hear, and the fix is the level or the mic, not a
-      retry of the same level.
-
-    In session cap_-Us10xORVNlFa_dgi-sP7g the sweeps located at 0.0298
-    against this 0.3 floor, the mis-located sweeps then produced a 1018-sample
-    residual, and the residual tripped ``glitch_detected`` — so the household
-    was told the capture glitched and the flow silently re-armed the same
-    unwinnable level. Low SNR CAUSES the glitch signal; ordering this check
-    ahead of it is what makes the reported cause the real one.
-
-    Same ``KIND_SWEEP`` domain as :func:`_sweep_schedule_ok`: the leading
-    pilot pair's short, quiet windows locate coarsely by design and would
-    manufacture spurious fires here.
-
-    That domain is MEASURE-only, and deliberately stays so. VERIFY's sweep is
-    ``KIND_SUMMED_SWEEP``, and the same judgment is made for it one layer down
-    by ``program_analysis._verify_capture_integrity`` (issue #1971) — where
-    the capture's own record can also say which MEASURE-era checks could not
-    run there at all.
-    """
-    return all(
-        loc.confidence >= SWEEP_LOCATE_CONFIDENCE_FLOOR
-        for loc in analysis.locations
-        if loc.kind == KIND_SWEEP
-    )
-
-
-def _sweep_schedule_ok(analysis: ProgramAnalysis, sample_rate_hz: int) -> bool:
-    """False when a MEASURE sweep landed off its scheduled slot
-    (measurement-honesty gate G2, 2026-07-22 — the xrun detector; see
-    :data:`SWEEP_SCHEDULE_RESIDUAL_CEILING_MS` for the evidence).
-
-    Since D3 (issue #1838) this is the RESIDUAL half of G2 only. The
-    locate-confidence half moved to :func:`_sweep_locate_confidence_ok`,
-    which runs earlier and answers "too quiet" instead of "glitched" — see
-    that function for why the two must not share a verdict.
-
-    ``sample_rate_hz`` is deliberately the CALLER's own MEASURE program rate,
-    not something read off ``analysis`` itself:
-    ``analyze_program_capture`` HARD-REFUSES a capture whose sample rate
-    disagrees with the program's own (``capture rate != program rate``,
-    ``jasper.audio_measurement.program_analysis``), and the relay capture
-    spec fixes every phone upload at ``REQUIRED_SAMPLE_RATE_HZ`` (48 kHz,
-    ``jasper.capture_relay.spec``) — so no resampling ever runs between the
-    phone's WAV and this analysis, and ``SegmentLocation.residual_samples``
-    is always expressed in exactly that domain (the conductor's own composed
-    program's ``sample_rate_hz``).
-
-    Filtered to ``KIND_SWEEP`` only — mirrors ``_estimate_drift``'s exclusion
-    of the leading pilot pair from residual/drift logic (their short/quiet
-    windows locate more coarsely and would manufacture spurious fires here).
-    VERIFY's ``KIND_SUMMED_SWEEP`` is out of this domain on purpose; see
-    :func:`_sweep_locate_confidence_ok` for where its twin lives (#1971).
-    No sweeps at all (nothing to judge) passes — the pre-existing
-    ``_stimulus_locate_ok`` check, which runs earlier in ``_measure_verdict``'s
-    ladder, already covers "nothing usable in this capture".
-    """
-    sweeps = [loc for loc in analysis.locations if loc.kind == KIND_SWEEP]
-    if not sweeps:
-        return True
-    for loc in sweeps:
-        residual_ms = abs(loc.residual_samples) / sample_rate_hz * 1000.0
-        if residual_ms > SWEEP_SCHEDULE_RESIDUAL_CEILING_MS:
-            return False
-    return True
-
-
-def _sweep_schedule_diag_fields(
-    analysis: ProgramAnalysis, sample_rate_hz: int,
-) -> tuple[float | None, float | None]:
-    """``(sweep_residual_ms_worst, sweep_locate_confidence_min)`` — diagnostic
-    only, over the SAME ``KIND_SWEEP`` domain ``_sweep_schedule_ok`` and
-    ``_sweep_locate_confidence_ok`` gate on (one figure each, since #1838's
-    D3 split them), but never itself gates a verdict. ``sweep_residual_ms_worst`` is the
-    SIGNED residual (not its magnitude) of whichever sweep has the largest
-    absolute residual, so a reviewer sees which direction the schedule broke,
-    not just how far. ``(None, None)`` when there are no sweeps to judge —
-    mirrors ``_sweep_schedule_ok``'s own "nothing to judge" stance.
-    """
-    sweeps = [loc for loc in analysis.locations if loc.kind == KIND_SWEEP]
-    if not sweeps:
-        return None, None
-    worst = max(sweeps, key=lambda loc: abs(loc.residual_samples))
-    residual_ms_worst = worst.residual_samples / sample_rate_hz * 1000.0
-    confidence_min = min(loc.confidence for loc in sweeps)
-    return residual_ms_worst, confidence_min
 
 
 def _capture_integrity_log_field(integrity: CaptureIntegrity | None) -> str:
@@ -3134,13 +1967,6 @@ def _any_sweep_clipped(analysis: ProgramAnalysis) -> bool:
     return any(
         loc.clipped for loc in analysis.locations if loc.kind in STIMULUS_KINDS
     )
-
-
-def _gate_window_ms(response: Any) -> float | None:
-    if response is None:
-        return None
-    window = response.gating.get("window_ms") if response.gating else None
-    return float(window) if isinstance(window, (int, float)) else None
 
 
 def _band_edge(band: Any, index: int) -> float | None:
@@ -3194,77 +2020,6 @@ def _per_band_flatness_log_field(bands: Any) -> str:
             f"{lo:.0f}-{hi:.0f}Hz:{deviation_db:+.2f}dB:{'pass' if passed else 'fail'}"
         )
     return ";".join(parts)
-
-
-def _gate_floor_source(response: Any) -> str | None:
-    """WHY ``_gate_window_ms`` is what it is — travels beside it everywhere.
-
-    ``gating.FLOOR_MEASURED`` = a reflection onset was found and the window
-    stops at it; ``gating.FLOOR_SEARCH_BOUND`` = the search reached
-    ``gating.SEARCH_T_MAX_MS`` without finding one and the window was CAPPED
-    there. Both print as the same ``gate_window_ms`` number, and the whole
-    2026-07-30 corpus was the second state while every consumer read it as
-    the first (issue #1966). ``None`` is an ungateable capture, never a
-    guess. See ``program_analysis._gate_floor_source_of``, which does the
-    same job for the retained-capture sidecar.
-    """
-    if response is None:
-        return None
-    source = response.gating.get("floor_source") if response.gating else None
-    return str(source) if isinstance(source, str) else None
-
-
-def _gate_disclosure(response: Any) -> str | None:
-    """``_gate_floor_source`` and its floors, rendered as one sentence.
-
-    Rendered, never composed here: the copy has a single writer,
-    ``jasper.audio_measurement.gate_disclosure.describe_gate``, so the
-    per-position evidence file and the retained-capture sidecar cannot
-    describe the same gate two different ways.
-
-    Imported inside the function, matching how this module reaches its
-    other cross-package helpers — it deliberately does not import
-    :mod:`~jasper.audio_measurement.gating` at module scope either, and
-    reads a gating block purely as data.
-    """
-    if response is None or not getattr(response, "gating", None):
-        return None
-    from jasper.audio_measurement import gate_disclosure
-
-    return gate_disclosure.describe_gate(response.gating)
-
-
-def _gate_record(response: Any) -> dict[str, Any] | None:
-    """The gate reduced to the two facts a household SCREEN needs, or ``None``.
-
-    ``{"disclosure": <the sentence>, "reflection_measured": <bool>}``. Both are
-    :mod:`~jasper.audio_measurement.gate_disclosure`'s own derivations, taken
-    here at compose time — one is :func:`_gate_disclosure`'s sentence, the
-    other is
-    :attr:`~jasper.audio_measurement.gate_disclosure.GateDisclosure.gated_anything`,
-    the single owner of "may this record claim reflections were removed".
-    Neither is re-derived downstream.
-
-    **A reduction, not the block.** What travels to the wizard's durable state
-    is these two derived facts rather than the gating fragment itself, so the
-    state file does not take a dependency on
-    :mod:`~jasper.audio_measurement.gating`'s schema — that schema is versioned
-    and moves (it went 1 -> 2 in R9), and a screen re-deriving copy from it
-    would be a second place the two epistemic states could be collapsed back
-    into one. A response with no gating block yields ``None``: absent stays
-    absent, and no screen invents a gate that was never applied.
-    """
-    disclosure = _gate_disclosure(response)
-    if disclosure is None:
-        return None
-    from jasper.audio_measurement import gate_disclosure
-
-    return {
-        "disclosure": disclosure,
-        "reflection_measured": gate_disclosure.build_gate_disclosure(
-            response.gating
-        ).gated_anything,
-    }
 
 
 def _capture_wav_sha256(result: Any) -> str | None:
@@ -3549,56 +2304,6 @@ def _verify_frame_from_tracking(
 
 
 
-def _pilot_by_role(analysis: ProgramAnalysis, role: str) -> Any | None:
-    for pilot in analysis.pilots:
-        if pilot.role == role:
-            return pilot
-    return None
-
-
-def _pilot_transfer_by_role(analysis: ProgramAnalysis) -> dict[str, float]:
-    """Per-role pilot transfer: captured hi level minus the programmed hi gain.
-
-    Measurement-honesty gate G3's raw material (2026-07-22): VERIFY replays
-    the identical program through the identical applied graph on every
-    attempt, so this transfer should not move between attempts either — see
-    :data:`VERIFY_PILOT_TRANSFER_STEP_CEILING_DB`. Excludes any pilot whose
-    ``programmed_hi_gain_db`` is unset (a legacy program built without
-    ``leading_pilot_gains_db`` never threads it, per
-    ``program_analysis.PilotObservation``'s docstring) — nothing to compare
-    that pilot against.
-
-    ``level_hi_dbfs`` safety note: ``PilotObservation``'s own docstring warns
-    it "must never feed an ABSOLUTE-level consumer" (ambient subtraction
-    shifts it by however much ambient power was removed). This use is safe
-    for TWO independent reasons.
-
-    (1) It is a RELATIVE cross-ATTEMPT comparison (this attempt's transfer
-    minus the FIRST attempt's), never a true absolute-level read.
-
-    (2) The ambient-difference confound the older version of this note
-    deferred is now REAL but bounded far below the gate. Until issue #1810
-    (2026-07-28) a VERIFY pilot pair had no ambient window at all, so
-    subtraction was a literal no-op here; it now has a ~1 s pre-pilot window
-    and subtraction is live. The bound: ``_verify_verdict`` refuses any
-    attempt whose ``pilot_snr_ok`` is False BEFORE reaching the G3 block, so
-    every attempt that gets here cleared ``PILOT_MIN_SNR_DB`` (≈12.4 dB) on
-    the QUIET pilot — and the HI pilot sits a further
-    ``PILOT_LEVEL_DELTA_DB`` (10 dB) above it, i.e. ≥22.4 dB in-band SNR. At
-    that SNR the subtraction moves ``level_hi_dbfs`` by at most
-    ``10·log10(1 − 10**−2.24)`` ≈ **0.025 dB**, so two admissible attempts can
-    differ by at most ~0.05 dB from this term alone — an order of magnitude
-    under :data:`VERIFY_PILOT_TRANSFER_STEP_CEILING_DB` (0.35 dB). Lowering
-    that ceiling toward ~0.1 dB, or raising ``PILOT_AMBIENT_WINDOW_S``'s trust
-    without the SNR gate in front of it, is what would put this back in play.
-    """
-    return {
-        pilot.role: pilot.level_hi_dbfs - pilot.programmed_hi_gain_db
-        for pilot in analysis.pilots
-        if pilot.programmed_hi_gain_db is not None
-    }
-
-
 def _driver_snr_fields(resp: Any | None) -> tuple[float | None, str | None]:
     """``(estimated_snr_db, verdict)`` from a driver's worst-relevant SNR band."""
     if resp is None or resp.snr is None:
@@ -3645,32 +2350,6 @@ def _worst_pilot_snr_db(analysis: ProgramAnalysis) -> float | None:
         if p.snr_db != math.inf
     ]
     return round(min(values), 2) if values else None
-
-
-def _pilot_diag_fields(pilot: Any | None) -> dict[str, float | None]:
-    """One pilot's linearity/SNR/channel-map diagnostics, ``None``-safe."""
-    if pilot is None:
-        return {
-            "snr_db": None,
-            "captured_delta_db": None,
-            "programmed_delta_db": None,
-            "channel_map_target_rise_db": None,
-            "channel_map_cross_rise_db": None,
-        }
-    snr_db = pilot.snr_db
-    target_rise = pilot.channel_map_target_rise_db
-    cross_rise = pilot.channel_map_cross_rise_db
-    return {
-        "snr_db": round(snr_db, 2) if math.isfinite(snr_db) else None,
-        "captured_delta_db": round(float(pilot.captured_delta_db), 3),
-        "programmed_delta_db": round(float(pilot.programmed_delta_db), 3),
-        "channel_map_target_rise_db": (
-            round(target_rise, 3) if target_rise is not None else None
-        ),
-        "channel_map_cross_rise_db": (
-            round(cross_rise, 3) if cross_rise is not None else None
-        ),
-    }
 
 
 # --------------------------------------------------------------------------- #
@@ -3738,36 +2417,6 @@ def _pilot_diag_fields(pilot: Any | None) -> dict[str, float | None]:
 # ARE in-repo and are a different session's bytes — both true, neither derived
 # from the other.
 LEVEL_FRAME_AGREEMENT_TOLERANCE_DB = REALIZED_LEVEL_MATCH_TOLERANCE_DB
-
-# How much the correction must improve ITS OWN two-branch model before a
-# spec-failing prediction is allowed onto the speaker (linearization-integrity
-# PR-L4 item 2). Both numbers are the pooled spec residual
-# (`flat_spec.spec_convergence_residual`) of the RAW pre-fit and the LINEARIZED
-# predicted sum, graded through the identical evaluator, in dB.
-#
-# The gate only bites when the prediction ALREADY fails the spec — a prediction
-# that meets it needs no improvement argument, and gating an in-spec result on
-# "how much did it improve" would refuse the flattest speakers hardest. So the
-# question this threshold answers is narrow: *we can already see this will not
-# reach spec — is it at least clearly moving the right way?*
-#
-# 0.5 dB, and the derivation changed with the frame (PR-L4 review B1). While
-# this compared the model against the measured in-room cloud, the threshold had
-# to absorb the whole cross-frame gap and was set at `SPEC_BANDS[0]`'s 1.5 dB
-# for that reason — which, as the review demonstrated, made the verdict a
-# function of the ROOM rather than the correction. Now that both terms are the
-# same instrument (same branches, same grid, same evaluator, differing ONLY by
-# the emitted filters) the comparison carries no measurement noise at all, so
-# the threshold is a product-policy floor instead of a noise margin.
-#
-# 0.5 dB is that floor because it is this model's own measured tracking error:
-# `crossover_v2.intervention.plan_linearization` records the complex-correction
-# model tracking the real
-# VERIFY summation to ~0.5 dB on JTS3 (the zero-phase model it replaced
-# mistracked by ~2.0 dB). An improvement smaller than the gap between what we
-# model and what the hardware realizes is not an improvement we can honestly
-# claim, so it does not earn an apply.
-PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB = 0.5
 
 
 # --------------------------------------------------------------------------- #
@@ -4125,64 +2774,6 @@ def attempt_record_from_verify(
 # the flow because that is where the endpoints suite and the capture-sequence
 # pins name it.
 SlotAttempts = _admission.SlotAttempts
-
-
-@dataclass(frozen=True)
-class PhaseVerdict:
-    """A consume verdict: the relay dict + the internal reason (if any)."""
-
-    accepted: bool
-    code: str | None = None
-    payload: dict[str, Any] = field(default_factory=dict)
-    # Whether THIS capture's leading pilot pair cleared the room's own in-band
-    # floor — ``analysis.pilot_snr_ok``, carried verbatim including its ``None``
-    # (no pilot evidence). The one fact ``locate_failed``'s copy branches on
-    # (#2085): it is the direct, same-capture refutation of "couldn't hear the
-    # speaker", so it has to reach the sentence. Carried on the verdict rather
-    # than dug out of ``payload`` because it is decided at the gate, where the
-    # analysis is in hand, and a typed field cannot be misspelled into silence.
-    pilot_heard: bool | None = None
-    # VERIFY's gate discriminator for ``verify_inconclusive`` (#1974/#2095),
-    # paired with the verdict for the same reason ``pilot_heard`` is: terminal
-    # exhaustion must repeat this capture's diagnosis, not the registry's
-    # evidence-unknown fallback.
-    reflection_measured: bool | None = None
-
-    def to_relay_dict(self) -> dict[str, Any]:
-        """The mapping ``consume_capture`` returns to ``run_capture_plan``.
-
-        Always carries ``accepted``; a rejection adds the reason code + template
-        + copy so the phone renders the right §5.10 screen. Every non-``accepted``
-        field is relayed verbatim in the ``capture_result`` host event.
-
-        ``reason`` comes from :func:`reason_message`, not from the registry
-        entry directly, so a code whose honest sentence depends on what was
-        measured renders that sentence HERE — on the surface the household is
-        actually looking at when a capture is refused — and not only in the
-        envelope served later. ``pilot_heard`` rides out beside it so the
-        journal and the phone's own record can tell the two accounts apart
-        without re-deriving the discriminator.
-        """
-        out: dict[str, Any] = {"accepted": self.accepted}
-        if self.code is not None:
-            spec = REASON_REGISTRY[self.code]
-            out.update(
-                code=self.code,
-                template=spec.template,
-                reason=reason_message(
-                    self.code,
-                    spec,
-                    pilot_heard=self.pilot_heard,
-                    reflection_measured=self.reflection_measured,
-                ),
-                banner=spec.banner,
-                auto_retry=self.code in TRANSIENT_AUTO_RETRY_CODES,
-                pilot_heard=self.pilot_heard,
-            )
-            if self.code == REASON_VERIFY_INCONCLUSIVE:
-                out["reflection_measured"] = self.reflection_measured
-        out.update(self.payload)
-        return out
 
 
 @dataclass(frozen=True)

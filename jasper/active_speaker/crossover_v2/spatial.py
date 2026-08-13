@@ -39,10 +39,11 @@ consequence that has (a rejected take now evaluates every predicate rather than
 short-circuiting) and why it is safe.
 
 **No household vocabulary**, the rule :mod:`.coordinator` established: a refusal
-leaves as a *kind* from :data:`SCREEN_KINDS`, and the flow maps it to the
-``REASON_REGISTRY`` code whose copy the household reads.  The registry is the
-flow's, and importing it back would be the reverse dependency this package
-exists to prevent.
+leaves as a *kind* from :data:`SCREEN_KINDS`, and something else maps it to the
+``REASON_REGISTRY`` code whose copy the household reads.  That registry is
+:mod:`.vocabulary`'s since #2291 Phase 5c-ii; the rule here is unchanged, only
+the owner's name is.  This module still does not import it — the mapping is
+built there, over the kinds declared here.
 
 **Side-effect-free**, unlike :mod:`.coordinator` — deliberately, because that
 module's docstring asserts it is the package's only exception and an assertion
@@ -73,6 +74,10 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from jasper.audio_measurement.program_analysis import ProgramAnalysis
 
 __all__ = [
+    "CLOUD_CLOSE_NONE",
+    "CLOUD_CLOSE_AWAITING_CONFIRM",
+    "CLOUD_CLOSE_RUNNING",
+    "GEOMETRY_RETRY_POSITIONS",
     "SCREEN_LOCATE_FAILED",
     "SCREEN_PILOT_LEVEL_COLLAPSE",
     "SCREEN_LINEARITY_FAILED",
@@ -93,6 +98,47 @@ __all__ = [
     "entry_baseline_record",
     "boost_excluded_bands_hz",
 ]
+
+
+# --------------------------------------------------------------------------- #
+# cloud close state, and the geometry-retry ceiling (#2291 Phase 5c-ii)
+# --------------------------------------------------------------------------- #
+
+# Where the pre-apply cloud's close has got to. Read by the wizard through
+# durable state; see :attr:`V2ConductorSnapshot.cloud_close`.
+CLOUD_CLOSE_NONE = ""
+CLOUD_CLOSE_AWAITING_CONFIRM = "awaiting_confirm"
+CLOUD_CLOSE_RUNNING = "running"
+
+# How many wider-spread RETAKES of the group's last position the
+# geometry-locked check may ask for, once per group.
+#
+# Retakes rather than appended positions for ONE reason, and it is the protocol
+# rather than the physics: the relay runner completes a set at exactly
+# ``capture_target`` accepted captures with ``index == accepted_count + 1``, so
+# rejecting a capture is the only lever that keeps a plan alive at the same
+# index — appending would need a variable-length plan the shipped runner cannot
+# express.
+#
+# A "replacing is better physics" argument was made and WITHDRAWN under review
+# (2026-07-26): the reviewer computed the power-mean counterexample, where
+# APPENDING a wide position to a clustered cloud fills a −15 dB null further
+# than replacing does (−6.1 dB vs −7.7 dB) and lowers ``clustered_fraction``
+# more besides. Replacing is what the protocol permits, not what the estimator
+# prefers; if the runner ever grows variable-length sets, appending is the
+# better answer.
+#
+# Bounded on purpose: `geometry.locked` is a "spread the mic further" hint, not
+# a failure, and an unbounded loop against a genuinely position-invariant
+# defect (S0's source-fixed horn-rim comb — see the plan doc's "S0 executed"
+# §b) would never terminate, because no amount of mic movement decorrelates a
+# source-fixed null. Two retakes, then proceed and RECORD the verdict — it
+# lands in the journal and the durable v2 state's `cloud` block. PR-4 carries
+# it further: `_geometry_guidance_copy`'s plain-language guidance rides the
+# envelope's own `cloud` key and `/state`'s compact projection
+# (`crossover_v2_status_block`) — but no household-facing surface renders it
+# yet (zero JS/asset changes in PR-4). PR-7 renders it.
+GEOMETRY_RETRY_POSITIONS = 2
 
 
 # --------------------------------------------------------------------------- #
@@ -128,11 +174,12 @@ SCREEN_KINDS = frozenset({
 class CaptureScreens:
     """The shipped capture-integrity predicates, EVALUATED, for one take.
 
-    Every field is a fact the caller computed with the flow's own module-level
+    Every field is a fact the caller computed with a shared module-level
     predicate — the same ones MEASURE's and VERIFY's verdicts use.  Those
-    predicates are not moved here on purpose: they serve verdicts that stay on
-    the conductor until the capture-dispatch vertical, and a shared predicate
-    with two owners is worse than one stated argument.
+    predicates live in :mod:`.capture_dispatch` since #2291 Phase 5c-ii, and
+    still do not live *here* on purpose: they serve verdicts this module does
+    not own, and a shared predicate with two owners is worse than one stated
+    argument.  They arrive as arguments either way.
 
     **Stating them eagerly is exact, and that is checkable rather than
     asserted.**  The ladders below short-circuit, so on a rejected take the
