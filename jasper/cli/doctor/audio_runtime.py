@@ -477,8 +477,8 @@ def check_fanin_asound_wiring() -> CheckResult:
         if 'pcm "hw:Loopback,1,0"' in capture:
             detail += (
                 " It currently points at substream 0, which is now a "
-                "private fan-in input lane and can make jasper_ref fail "
-                "with EBUSY."
+                "private fan-in input lane and can make the tap's "
+                "readers fail with EBUSY."
             )
         return CheckResult(label, "fail", detail)
     for required in ("rate 48000", "channels 2", "format S16_LE"):
@@ -490,22 +490,26 @@ def check_fanin_asound_wiring() -> CheckResult:
                 f"48 kHz stereo S16_LE; missing {required!r}.",
             )
 
+    # `pcm.jasper_ref` has had NO reader since U4/P7-3 retired the last one
+    # (the AEC bridge's ALSA fallback went first, in P7-1). The definition is
+    # deliberately retained — `deploy/alsa/asoundrc.jasper` still ships it and
+    # P9-B deletes the aloop PCMs — so what these two branches report is
+    # deployed-asoundrc drift from the shipped file, not a broken consumer.
     ref = _asound_pcm_block(active, "jasper_ref")
     if ref is None:
         return CheckResult(
             label,
             "fail",
-            "pcm.jasper_ref missing — the timing probe "
-            "(scripts/aec-probe-timing.py) opens jasper_ref, not "
-            "jasper_capture directly.",
+            "pcm.jasper_ref missing — deploy/alsa/asoundrc.jasper still "
+            "ships this plug wrapper, so the deployed asoundrc has "
+            "drifted from it. Re-run install.sh.",
         )
     if 'slave.pcm "jasper_capture"' not in ref:
         return CheckResult(
             label,
             "fail",
-            "pcm.jasper_ref must plug-wrap pcm.jasper_capture so a "
-            "diagnostic reader gets rate/format conversion off the "
-            "summed fan-in tap.",
+            "pcm.jasper_ref must plug-wrap pcm.jasper_capture; the "
+            "deployed block wraps something else.",
         )
 
     stale_state = Path("/var/lib/jasper/audio_topology.env")

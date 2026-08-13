@@ -6,8 +6,8 @@
 //!
 //! Reads from N capture PCMs (one per renderer's snd-aloop substream
 //! pair), sums sample-wise, writes the summed stream to one playback
-//! PCM (the "summed music" substream that CamillaDSP + AEC bridge
-//! dsnoop on).
+//! PCM (the "summed music" substream that CamillaDSP dsnoops on; the
+//! AEC bridge's read of it was retired in U4/P7-1).
 //!
 //! ## Pacing
 //!
@@ -78,8 +78,8 @@ pub use direct_capture::{DirectObservability, DrainStats};
 use ring_capture::read_ring_and_render;
 pub use ring_capture::RingLaneObservability;
 
-/// Stereo. The CamillaDSP capture + AEC bridge tap both expect 2
-/// channels (matches the dmix's declared shape). Not configurable.
+/// Stereo. The CamillaDSP capture expects 2 channels, and so does the
+/// `jasper_capture` dsnoop it reads through. Not configurable.
 pub const CHANNELS: u32 = 2;
 
 /// PCM sample format for this daemon's snd-aloop lanes — the per-renderer
@@ -2068,7 +2068,7 @@ impl Mixer {
         // the SPSC ring inside step() and paces on the ring.
         if let Output::Alsa(pcm) = &self.output {
             // Prime the output: write one period of zeros so the kernel
-            // ring is non-empty when CamillaDSP / AEC bridge start reading.
+            // ring is non-empty when CamillaDSP starts reading.
             // Without this prime, the first writei could see -EPIPE
             // (underrun) before any data has been queued.
             self.output_buf.fill(0);

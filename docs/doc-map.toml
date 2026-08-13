@@ -281,7 +281,6 @@ code = [
   "deploy/systemd/librespot.service",
   "deploy/systemd/shairport-sync.service",
   "deploy/systemd/bluealsa-aplay.service.d/**",
-  "scripts/airplay-receiver-timing-proof.py",
   "rust/jasper-env/**",
   "rust/jasper-fanin/**",
   "rust/jasper-outputd/**",
@@ -474,7 +473,6 @@ code = [
   "jasper/control/aec_endpoints.py",
   "jasper/mics/**",
   "jasper/xvf/**",
-  "jasper/chip_aec_experiment.py",
   # The commissioned-alignment artifact and its identity. outputd's final-edge
   # format is one of those identity fields, so the daemon that negotiates it
   # routes here too — two PRs in the final-edge format program needed this
@@ -489,7 +487,6 @@ code = [
   "deploy/systemd/jts-mic.slice",
   "deploy/udev/99-jasper-aec-reconcile.rules",
   "scripts/aec-*",
-  "scripts/chip-aec-*",
   "scripts/xvf-interrogate.sh",
 ]
 docs = [
@@ -909,7 +906,6 @@ code = [
   "scripts/*capture*",
   "scripts/*audit*",
   "scripts/*probe*",
-  "scripts/airplay-receiver-timing-proof.py",
   "scripts/*score*",
   "scripts/*soak*",
 ]

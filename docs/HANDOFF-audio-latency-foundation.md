@@ -550,8 +550,10 @@ and the requested-vs-actual is logged (`event=fanin.fifo.pipe_sized`).
 
 **AEC note.** Production AEC reads outputd's UDP monitor (`:9891`), so removing
 the fan-in loopback write under `transport_pipe` does not break production AEC. It DOES
-disable the `jasper_ref`/`jasper_capture` dsnoop diagnostic fallback — acceptable
-(fallback/diagnostic only), but worth knowing during the soak.
+disable the `jasper_capture` dsnoop diagnostic tap — acceptable
+(diagnostic only), but worth knowing during the soak. (Its `jasper_ref`
+alias has had no reader since U4/P7-3, so only the `jasper_capture`
+half of that pair was ever at stake here.)
 
 **What's built vs learned.** Built and proven default-inert: the Rust transport
 (`fifo.rs`, `local_content_pipe.rs` — both deleted 2026-07-11), the `Coupling` flag with

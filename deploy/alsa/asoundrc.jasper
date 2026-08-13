@@ -10,7 +10,6 @@
 # docs/HANDOFF-aec.md). Affects:
 #   - shairport-sync writing shairport_substream (44.1k → 48k)
 #   - bluealsa-aplay's plug operations
-#   - operator diagnostics reading pcm.jasper_ref (a `plug:` wrapper)
 # Medium preserves the speech/AEC band while saving CPU; Best keeps
 # the highest-frequency edge for critical listening. Toggle at
 # http://jts.local/system/.
@@ -39,9 +38,11 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #   - jasper-fanin reads those per-renderer capture substreams, sums
 #     them sample-wise, and writes the single "summed music" stream to
 #     substream 7.
-#   - CamillaDSP reads that summed stream via `pcm.jasper_capture`.
-#     `pcm.jasper_ref` remains as an operator-diagnostic view; AEC
-#     consumes outputd's speaker monitor and nothing else.
+#   - CamillaDSP reads that summed stream via `pcm.jasper_capture`, and
+#     jasper-aec-tune opens the same tap for a bounded capture.
+#     `pcm.jasper_ref`, the plug-wrapped alias, has no reader left at
+#     all (U4/P7-1 then P7-3) and is shipped only until P9-B deletes
+#     these definitions; AEC consumes outputd's speaker monitor.
 #   - In the outputd topology, CamillaDSP writes post-DSP content to
 #     `outputd_content_playback`, and jasper-outputd is the only reader
 #     of `outputd_content_capture` and the only normal writer to
@@ -100,13 +101,13 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 # preserves the good part of that work (multi-renderer safety) without
 # a shared userspace dmix write lock in front of the renderer path.
 #
-# When the AEC bridge is enabled (see AGENTS.md "Acoustic echo
-# cancellation"), the `pcm.jasper_capture` dsnoop tap below lets
-# CamillaDSP and the AEC bridge share the summed capture side as
-# multiple readers. dsnoop is the multi-reader-safe ALSA primitive
-# (the dual of dmix on the playback side). The dsnoop slave is
-# configured for 48 kHz S16_LE stereo — the rate the bridge and
-# CamillaDSP both target internally.
+# The `pcm.jasper_capture` dsnoop tap below lets CamillaDSP and
+# jasper-aec-tune share the summed capture side as multiple readers.
+# dsnoop is the multi-reader-safe ALSA primitive (the dual of dmix on
+# the playback side). The dsnoop slave is configured for 48 kHz S16_LE
+# stereo — the shape both readers target. (The AEC bridge was the
+# original second reader; since U4/P7-1 it takes outputd's UDP speaker
+# monitor and opens nothing here.)
 #
 # RATE LOCK: snd-aloop's parameters are set per substream pair, not for
 # the whole card. Each renderer writes through a `plug:` wrapper to its
@@ -114,24 +115,27 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 # S16_LE and publishes the summed output at the same shape. A renderer's
 # native rate cannot lock another renderer or the AEC/Camilla reference.
 #
-# Two readers, two access paths:
+# Who opens this tap — two live readers, plus one alias nobody opens:
 #   - CamillaDSP opens `plug:jasper_capture` (note the `plug:`) in the
 #     outputd config. plug keeps the consumer tolerant of
 #     operator mistakes, but the intended fan-in output shape is fixed
 #     at 48 kHz S16_LE.
-#   - Operator diagnostics can open `jasper_ref` (defined below) — a
-#     plug-wrapped alias of jasper_capture. That path gets samples at
-#     whatever rate it requests, regardless of the loopback's actual
-#     locked rate.
+#   - jasper-aec-tune opens `jasper_capture` for a bounded capture.
+#   - `jasper_ref` (defined below), the plug-wrapped alias, is opened by
+#     nothing: U4/P7-1 retired the AEC bridge's ALSA fallback and P7-3
+#     retired the timing probe's `--jasper-capture-pcm`, which were its
+#     only two readers. It ships until P9-B deletes these definitions.
 #
-# Why two names: keeps `pcm.jasper_capture` semantically "the raw
-# dsnoop tap" so CamillaDSP and diagnostics see exactly what the kernel
-# produced, while `pcm.jasper_ref` advertises its own intent
-# ("pre-DSP view, rate-agnostic") at the call site.
+# Why two names: `pcm.jasper_capture` is semantically "the raw dsnoop
+# tap", so its readers see exactly what the kernel produced, while
+# `pcm.jasper_ref` advertised rate-agnostic intent at a call site. With
+# both call sites retired the second name is vestigial — it is kept for
+# one ticket's worth of deletion ordering, not for a consumer.
 #
 # We never want camilla to read a raw `hw:Loopback,1,N` capture
-# directly — that would deny dsnoop the slave, and the bridge would
-# fail to open with `unable to open slave`. In particular,
+# directly — that would deny dsnoop the slave, and the tap's other
+# reader (today jasper-aec-tune) would fail to open with `unable to
+# open slave`. In particular,
 # `hw:Loopback,1,0` is now a private fan-in input lane; the summed
 # music reference is `pcm.jasper_capture` on substream 7.
 
@@ -315,20 +319,20 @@ pcm.jasper_capture {
     }
 }
 
-# Plug-wrapped alias for pre-DSP diagnostic capture. Its only reader is
-# scripts/aec-probe-timing.py, whose --jasper-capture-pcm defaults here;
-# AEC consumes outputd's speaker monitor and never opens this.
+# Plug-wrapped alias for pre-DSP capture. It has NO reader: the AEC
+# bridge's ALSA fallback was the first to go (U4/P7-1) and the timing
+# probe's --jasper-capture-pcm was the last (U4/P7-3). It is retained
+# only because P9-B, not P7, deletes the snd-aloop PCM definitions —
+# so this block is shipped, unread, and on its way out. Do not attach a
+# new reader to it; a live consumer of the pre-DSP sum reads
+# `jasper_capture` directly, as CamillaDSP and jasper-aec-tune do.
 #
-# `plug` is defense in depth around a reader's requested shape.
-# In the production fan-in topology, jasper_capture's dsnoop slave is
-# pinned to 48 kHz S16_LE stereo, and a diagnostic normally requests that
-# same shape, so this is normally an identity wrapper. If a future
-# diagnostic or a stale topology asks for a different shape, ALSA applies
-# the configured libsamplerate converter instead of feeding mismatched
-# samples. CPU cost is sub-1% of a Pi 5 core at S16 stereo / speech
-# rates; latency cost is a few ms of buffer.
-#
-# Without this wrapper, a reader would receive distorted or silent
+# What `plug` bought while it had readers, kept here so the deletion PR
+# does not also relitigate the wrapper: jasper_capture's dsnoop slave is
+# pinned to 48 kHz S16_LE stereo, so for a reader requesting that shape
+# this was an identity wrapper, and for one requesting anything else
+# ALSA applied the configured libsamplerate converter instead of feeding
+# mismatched samples. Without it a reader received distorted or silent
 # samples when the loopback's locked rate ≠ 48 kHz — the root cause of
 # the AEC-broken-with-AirPlay regression diagnosed on 2026-05-15, back
 # when the AEC bridge was one of these readers.

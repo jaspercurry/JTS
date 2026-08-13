@@ -1,5 +1,20 @@
 # Bass Extension — limiter bench-runner implementation (fresh-session prompt)
 
+> **Status: historical — this prompt has been executed.** Snapshot from
+> 2026-07-20 (PRs [#1627](https://github.com/jaspercurry/JTS/pull/1627) and
+> [#1629](https://github.com/jaspercurry/JTS/pull/1629)), written to
+> commission the limiter bench runner in a fresh session. **The runner it
+> commissions exists**: the code is
+> [`jasper/bass_extension/bench/`](../../jasper/bass_extension/bench/) and
+> its tests are `tests/test_bass_extension_bench_*.py`. Preserved for
+> primary-source archaeology — read it for what the runner was asked to be
+> and why, not as a live work order, and not for current state: specific
+> facts (file paths, reuse seams, "read this first" pointers, preflight
+> snapshots) have drifted since it was written and at least one prior-art
+> pointer named code that has since been deleted. Current operational truth
+> for the program is
+> [`docs/HANDOFF-bass-extension-plan.md`](../HANDOFF-bass-extension-plan.md).
+
 > **This is the runner-implementation prompt** that the accepted
 > [`limiter-bench-runner-protocol.md`](limiter-bench-runner-protocol.md)
 > amendment defers to. Execute it in a **fresh context window**. **Understand the
@@ -53,8 +68,12 @@ Building the runner is authorized — gate 1 (the amendment is merged) is done. 
    `patch_config` (`jasper/camilla.py`, the Wave-0 micro-stepped graph mutation);
    and `driver_safety.py` (`hard_excitation_band_hz`, `level_duration_limits`).
 4. Read the closest **prior-art shape**: the operator-driven bench experiment
-   [`CHIP-AEC-EXPERIMENT.md`](../CHIP-AEC-EXPERIMENT.md) +
-   `jasper/chip_aec_experiment.py` + `scripts/chip-aec-*.sh`. The bench runner is
+   written up in [`CHIP-AEC-EXPERIMENT.md`](../CHIP-AEC-EXPERIMENT.md), itself
+   a historical document. (It described a `jasper/chip_aec_experiment.py`
+   daemon and `scripts/chip-aec-*.sh` drivers; those were deleted in U4/P7-3
+   once the production chip-AEC path shipped and the pre-DSP tap they captured
+   entered the snd-aloop deletion arc, so the write-up is all that remains.)
+   The bench runner is
    the same *kind* of thing — an operator-run, bench-only campaign that produces
    evidence — mirror that shape, not a household-facing wizard.
 5. **Verify the preflight facts below.** If any has drifted, STOP and report —

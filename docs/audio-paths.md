@@ -88,9 +88,10 @@ AirPlay latency rendering no longer carries a bridge term at all.
 Each renderer has its own snd-aloop lane, and room-correction/test
 playback has a dedicated `correction_substream` lane. `jasper-fanin`
 sums those lanes; on ring-coupled boxes it writes Ring A for CamillaDSP
-and keeps a lossy lane-7 mirror so `pcm.jasper_capture` /
-`pcm.jasper_ref` remain explicit pre-DSP diagnostic views until
-the snd-aloop cleanup phases remove them. On loopback fallback boxes,
+and keeps a lossy lane-7 mirror so `pcm.jasper_capture` remains an
+explicit pre-DSP view until the snd-aloop cleanup phases remove it.
+(Its `pcm.jasper_ref` alias is shipped alongside but has no reader —
+see below.) On loopback fallback boxes,
 CamillaDSP still captures `pcm.jasper_capture` directly. Production AEC
 consumes outputd's post-Camilla speaker monitor. This replaced the
 short-lived renderer-side dmix (`jasper_renderer_mix`) after AirPlay
@@ -749,10 +750,14 @@ CamillaDSP multi-device output remains unsupported.
 
 The bridge receives outputd's speaker monitor over localhost UDP, and that
 is its only reference source — the `JASPER_AEC_REF_SOURCE=alsa` fallback
-that read `pcm.jasper_ref` was retired. `pcm.jasper_ref` survives as a
-diagnostic PCM for the timing probe: a plug wrapper over
+that read `pcm.jasper_ref` was retired. `pcm.jasper_ref` now has no
+reader at all — U4/P7-3 retired the timing probe's
+`--jasper-capture-pcm`, the one consumer it briefly had left — and
+survives only as a shipped definition until P9-B deletes the aloop
+PCMs: a plug wrapper over
 `pcm.jasper_capture`, which is a dsnoop on the summed fan-in output
-`hw:Loopback,1,7` before CamillaDSP processing. So:
+`hw:Loopback,1,7` before CamillaDSP processing and still read by
+CamillaDSP and `jasper-aec-tune`. So:
 
 - Production AEC now consumes outputd's 48 kHz stereo speaker monitor over
   UDP. That reference includes renderer/content, TTS/cues, fan-in

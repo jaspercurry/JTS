@@ -2,7 +2,7 @@
 name = "jasper-fanin"
 version = "0.1.0"
 edition = "2021"
-description = "JTS renderer fan-in: sums per-renderer snd-aloop substreams into a single summed-music output stream for CamillaDSP + AEC bridge."
+description = "JTS renderer fan-in: sums per-renderer snd-aloop substreams into a single summed-music output stream for CamillaDSP."
 license = "Apache-2.0"
 repository = "https://github.com/jaspercurry/JTS"
 authors = ["Jasper Curry <jaspercurry@gmail.com>"]

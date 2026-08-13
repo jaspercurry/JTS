@@ -114,6 +114,17 @@ _UNCODIFIED = {
     #    the UDP port numbers are loopback wiring with paired defaults
     #    on both ends.
     "JASPER_AEC_CHIP_AEC_PRIMARY_LEG",
+    # Read at exactly one site — voice_daemon stamps it onto the wake-event
+    # bridge-config row — and applied by nothing: the managed-XVF profile
+    # fixes AEC_HPFONOFF=2 as product policy (`chip_aec_profile_commands` in
+    # jasper/mics/xvf3800.py, whose docstring says filters are fixed there).
+    # So it is a telemetry-stamp default, not an operator knob, and an
+    # .env.example entry would advertise a setting that changes nothing.
+    # Its only prior surface was a *reader* in the deleted chip-AEC
+    # experiment teardown script (U4/P7-3), which is why it surfaces here now.
+    # NOTE: docs/HANDOFF-aec.md still calls it a live chip-HPF tuning knob in
+    # two rows — flagged, not fixed, by the PR that moved this entry.
+    "JASPER_AEC_CHIP_HPF_HZ",
     "JASPER_AEC_CHIP_SYS_DELAY",
     "JASPER_AEC_CORPUS_CHIP_AEC_ENABLED",
     # Explicit wake-corpus lab seam; production commissioning never reads it

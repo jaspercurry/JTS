@@ -165,9 +165,11 @@ def test_the_doctor_pins_the_same_width_on_the_live_box():
 def test_the_raw_dsnoop_diagnostic_reader_declares_the_same_width():
     """`aec_tune` opens the dsnoop RAW (no `plug:`), so it cannot absorb a move.
 
-    Every other in-tree consumer reaches this lane through `plug:jasper_capture`
-    or `jasper_ref` and is format-tolerant by construction. This one is the
-    exception, and it is the concrete cost of widening the lane.
+    The only other in-tree consumer, CamillaDSP, reaches this lane through
+    `plug:jasper_capture` and is format-tolerant by construction. (The
+    `jasper_ref` plug alias would be too, but nothing has opened it since
+    U4/P7-3.) This one is the exception, and it is the concrete cost of
+    widening the lane.
     """
     text = AEC_TUNE.read_text()
     assert '"jasper_capture",' in text, "aec_tune must still open the raw dsnoop"

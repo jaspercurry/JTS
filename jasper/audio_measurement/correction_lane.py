@@ -134,10 +134,9 @@ things legitimately spell the literal outside that scope, on purpose:
   ``pcm.correction_substream`` block byte-for-byte. So the Python constant and
   the checked-in ALSA config stay cross-validated through that doctor check,
   even though the AST guard here never reads either non-Python file.
-* Five stdlib-only AEC lab-probe scripts under ``scripts/`` — ``aec-probe-
+* Four stdlib-only AEC lab-probe scripts under ``scripts/`` — ``aec-probe-
   timing.py``, ``aec-probe-latency.sh``, ``aec-probe-xvf-ref-level.sh``,
-  ``aec-probe-pinknoise.sh``, ``chip-aec-baseline-check.sh`` — spell the
-  literal by design. They are meant to run standalone (bash, or Python using
+  ``aec-probe-pinknoise.sh`` — spell the literal by design. They are meant to run standalone (bash, or Python using
   only the stdlib), often copied straight onto the Pi for isolated hardware
   debugging outside the project venv; importing ``jasper`` would defeat that.
 

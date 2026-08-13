@@ -1666,8 +1666,10 @@ datum: how much assistant audio was actually heard.
    as capture-health degradation, not playback failure. **Landed
    2026-06-08:** software AEC, chip-AEC, corpus, and diagnostics consume
    the same outputd monitor contract. The `pcm.jasper_ref` fallback the
-   bridge kept alongside it has since been retired; the tap survives for
-   diagnostics only.
+   bridge kept alongside it has since been retired, and so has the
+   timing probe that briefly inherited the alias (U4/P7-3), so nothing
+   opens `pcm.jasper_ref` at all; the underlying `pcm.jasper_capture`
+   tap survives for CamillaDSP and `jasper-aec-tune`.
 5. **Enable robust barge-in.** Wire the local TTS flush and final
    playout-ledger acknowledgement to provider truncation/cancel logic,
    capture barge-in telemetry, and use the "volume down while assistant

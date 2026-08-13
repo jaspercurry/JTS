@@ -6,7 +6,9 @@
 //!
 //! Reads N snd-aloop substream pairs (one per music renderer), sums
 //! them sample-wise, writes to a single dedicated "summed music"
-//! substream that CamillaDSP and the AEC bridge dsnoop on. This is
+//! substream that CamillaDSP dsnoops on. (The AEC bridge used to read
+//! that tap too; since U4/P7-1 its only reference is outputd's UDP
+//! speaker monitor.) This is
 //! the production renderer topology; the old renderer-side dmix path
 //! was retired after AirPlay burst testing exposed timing drops.
 //!

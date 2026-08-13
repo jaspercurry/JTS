@@ -94,16 +94,6 @@ REFERENCE_SOURCES: dict[str, ReferenceSource] = {
             "reference samples."
         ),
     ),
-    "jasper_capture": ReferenceSource(
-        name="jasper_capture",
-        label="legacy pcm.jasper_capture pre-DSP diagnostic tap",
-        sample_rate_hz=PLAYBACK_RATE_HZ,
-        channels=2,
-        warning=(
-            "jasper_capture is the old pre-Camilla/pre-outputd diagnostic tap. "
-            "It must not be confused with production outputd final timing."
-        ),
-    ),
 }
 
 
@@ -553,33 +543,6 @@ def capture_udp_ref(*, host: str, port: int, duration_s: float, out: list[bytes]
         sock.close()
 
 
-def capture_alsa_ref(
-    *,
-    device: str,
-    duration_s: float,
-    out: list[bytes],
-) -> None:
-    import alsaaudio
-
-    pcm = alsaaudio.PCM(
-        type=alsaaudio.PCM_CAPTURE,
-        mode=alsaaudio.PCM_NORMAL,
-        device=device,
-        rate=PLAYBACK_RATE_HZ,
-        channels=2,
-        format=alsaaudio.PCM_FORMAT_S16_LE,
-        periodsize=1024,
-    )
-    try:
-        end = time.time() + duration_s
-        while time.time() < end:
-            length, data = pcm.read()
-            if length > 0:
-                out.append(data)
-    finally:
-        pcm.close()
-
-
 def run_capture_once(args: argparse.Namespace, profile: OutputProfile, run_index: int, out_dir: Path) -> dict[str, Any]:
     np = _np()
     if args.mic_channel < 0 or args.mic_channel >= args.mic_channels:
@@ -628,18 +591,6 @@ def run_capture_once(args: argparse.Namespace, profile: OutputProfile, run_index
                 "fn": capture_udp_ref,
                 "host": args.ref_udp_host,
                 "port": args.ref_udp_port,
-                "duration_s": args.duration_s,
-                "out": ref_chunks,
-            },
-            daemon=True,
-        )
-    elif args.ref_source == "jasper_capture":
-        ref_thread = threading.Thread(
-            target=guarded,
-            kwargs={
-                "label": "ref",
-                "fn": capture_alsa_ref,
-                "device": args.jasper_capture_pcm,
                 "duration_s": args.duration_s,
                 "out": ref_chunks,
             },
@@ -713,7 +664,6 @@ def run_capture_once(args: argparse.Namespace, profile: OutputProfile, run_index
                 if args.ref_source == "outputd_udp"
                 else None
             ),
-            "alsa_pcm": args.jasper_capture_pcm if args.ref_source == "jasper_capture" else None,
             "tee_path": str(tee_path) if args.ref_source == "chip_ref_tee" else None,
             "tee_offset_bytes": tee_offset if args.ref_source == "chip_ref_tee" else None,
         },
@@ -849,7 +799,7 @@ def write_results(out_dir: Path, payload: dict[str, Any]) -> None:
             "## What This Does Not Prove",
             "",
             "- It does not directly timestamp DAC diaphragm motion, XVF USB-IN internal consumption, or chip-internal AEC alignment.",
-            "- `outputd_udp` and `jasper_capture` comparisons are not chip-ref input measurements.",
+            "- `outputd_udp` comparisons are not chip-ref input measurements.",
             "- `chip_ref_tee` is a writer-side diagnostic sample tap, not a hardware timestamp.",
             "",
             "Machine-readable files: `results.json`, `results.csv`.",
@@ -1022,8 +972,6 @@ def run_via_ssh(args: argparse.Namespace) -> int:
         args.ref_udp_host,
         "--ref-udp-port",
         str(args.ref_udp_port),
-        "--jasper-capture-pcm",
-        args.jasper_capture_pcm,
     ]
     if args.remote_dir:
         remote_args.extend(["--remote-dir", args.remote_dir])
@@ -1072,11 +1020,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--ref-udp-host", default=DEFAULT_REF_UDP_HOST)
     parser.add_argument("--ref-udp-port", type=int, default=DEFAULT_REF_UDP_PORT)
-    parser.add_argument(
-        "--jasper-capture-pcm",
-        default="jasper_ref",
-        help="ALSA PCM used for --ref-source jasper_capture",
-    )
     parser.add_argument("--mic-device", default=DEFAULT_MIC_DEVICE)
     parser.add_argument("--mic-channels", type=int, default=DEFAULT_MIC_CHANNELS)
     parser.add_argument(

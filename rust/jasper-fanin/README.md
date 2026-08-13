@@ -2,7 +2,9 @@
 
 Per-renderer snd-aloop substream fan-in for JTS. Reads N capture-side
 substreams (one per music renderer), sums them sample-wise, writes one
-summed-music stream that CamillaDSP and the AEC bridge dsnoop on.
+summed-music stream that CamillaDSP dsnoops on. (The AEC bridge read
+that stream too until U4/P7-1; it now takes outputd's UDP speaker
+monitor as its only reference.)
 
 See [`docs/HANDOFF-fan-in-daemon.md`](../../docs/HANDOFF-fan-in-daemon.md)
 for the architecture, the resilience + observability contract, and the

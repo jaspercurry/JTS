@@ -79,7 +79,7 @@ Phone (AirPlay / Spotify Connect / BT)
                        hw:Loopback,0,7
                               │
                               ▼ (loop)
-                       pcm.jasper_capture / pcm.jasper_ref
+                       pcm.jasper_capture
                               │
                               ▼
                     jasper-camilla (CamillaDSP, port 1234)
@@ -899,8 +899,9 @@ reference. Currently:
 - [`HANDOFF-fan-in-daemon.md`](docs/HANDOFF-fan-in-daemon.md) —
   Production fan-in renderer topology: each renderer gets its own
   snd-aloop substream pair; the Rust `jasper-fanin` daemon sums the
-  capture sides into substream 7, which both CamillaDSP and the AEC
-  bridge dsnoop. Covers buffer sizing (`4096` frames for WiFi-burst
+  capture sides into substream 7, which CamillaDSP dsnoops (the AEC
+  bridge did too, until it moved to outputd's UDP speaker monitor).
+  Covers buffer sizing (`4096` frames for WiFi-burst
   absorption), systemd resilience, observability, and the retired
   dmix failure mode.
 - [`HANDOFF-supply-chain.md`](docs/HANDOFF-supply-chain.md) —

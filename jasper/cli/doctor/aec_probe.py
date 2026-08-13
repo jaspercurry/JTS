@@ -30,9 +30,14 @@ from ._shared import CheckResult, _loopback_playback_active, _run
 from .aec import _AEC_MIC_MUSIC_THRESHOLD, _AEC_RMS_RE
 
 
-# A 5 s, -26 dBFS sine through dsnoop + plug + the bridge's 125 Hz HPF +
-# (default) 0 dB pre-gain lands in the low thousands of RMS at the bridge's
-# `ref`. A broken path stays at roughly 0-50 RMS.
+# A 5 s, -26 dBFS sine played to the correction lane reaches the bridge's
+# `ref` through fan-in, CamillaDSP, outputd, and outputd's UDP speaker
+# monitor, then the bridge's 125 Hz HPF + (default) 0 dB pre-gain; it lands
+# in the low thousands of RMS there. A broken path stays at roughly 0-50 RMS.
+# (This describes the path; the thresholds below are unchanged. The older
+# "dsnoop + plug" wording described the bridge's retired ALSA reference —
+# U4/P7-1 — which was never how this probe's signal reached `ref` on a box
+# running the production default.)
 _PROBE_REF_PASS_THRESHOLD = 200
 _PROBE_SINE_PATH = "/tmp/jasper-doctor-probe-sine.wav"
 _PROBE_SINE_DURATION_S = 5.0

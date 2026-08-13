@@ -35,19 +35,27 @@ def test_reference_sources_are_explicit_and_distinct() -> None:
     assert set(aec.REFERENCE_SOURCES) == {
         "outputd_udp",
         "chip_ref_tee",
-        "jasper_capture",
     }
     assert "final speaker-reference" in aec.REFERENCE_SOURCES["outputd_udp"].label
     assert "chip-ref writer" in aec.REFERENCE_SOURCES["chip_ref_tee"].label
-    assert "pre-DSP" in aec.REFERENCE_SOURCES["jasper_capture"].label
 
     udp_warnings = aec.source_warnings("outputd_udp", 2)
     assert any("not the actual XVF USB-IN" in warning for warning in udp_warnings)
-    old_warnings = aec.source_warnings("jasper_capture", 2)
-    assert any("must not be confused with production outputd" in warning for warning in old_warnings)
     tee_warnings = aec.source_warnings("chip_ref_tee", 0)
     assert any("does not prove when the XVF3800 internally consumes" in warning for warning in tee_warnings)
     assert any("processed chip beam" in warning for warning in tee_warnings)
+
+
+def test_probe_names_no_retired_aloop_tap() -> None:
+    """The `jasper_capture` reference source went out with the snd-aloop
+    program tap it captured (U4/P7-3). Mirrors the same pin on
+    `aec-probe-latency.sh`, which was re-pointed off that tap earlier."""
+
+    text = SCRIPT.read_text(encoding="utf-8")
+
+    assert "jasper_capture" not in text
+    assert "jasper_ref" not in text
+    assert "capture_alsa_ref" not in text
 
 
 def test_mic_channel_labels_match_chip_aec_contract() -> None:
