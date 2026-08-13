@@ -92,6 +92,41 @@ _Static_assert(ATOMIC_LLONG_LOCK_FREE == 2,
 // Writer liveness window (ns): past this heartbeat age the reader is treated as
 // gone and the writer free-runs (drops frames) instead of blocking. Mirrors the
 // Rust WRITER_LIVENESS_TIMEOUT_NS.
+//
+// THE HEARTBEAT OWNS OBSERVABILITY, THE LOCK OWNS EXCLUSIVITY (U3/P6a). Since a
+// C writer holds an EXCLUSIVE flock on <ring>.writer.lock for the life of its
+// mapping, this window no longer decides who may WRITE a ring — it decides only
+// what a reader REPORTS (`writer_alive` in /state) and when a blocked writer
+// gives up on a reader. That split is deliberate and each half is the right
+// tool: a heartbeat is stamped on publish, so it correctly says "nothing is
+// flowing" the moment a renderer pauses — which is exactly what makes it WRONG
+// as an ownership test, because a paused renderer still owns its device. The
+// lock is fd-scoped, so it holds through a pause and drops automatically when
+// the process dies.
+//
+// PRECISELY, because "no timing window" would be false: the LOCK is windowless
+// — the kernel releases it with the fd, so a SIGKILLed writer's ring is
+// claimable immediately. The SECONDARY heartbeat guard is NOT. SIGKILL leaves
+// writer_pid stamped and the heartbeat frozen at its last publish, so for up to
+// this window a fresh writer is still refused by foreign_writer_is_live even
+// though the lock is already free. The window did not vanish when the lock
+// landed — it MOVED from the primary guard to the secondary one.
+//
+// So a ring-writing renderer's RestartSec must still exceed this window, or a
+// fast respawn races its own predecessor's frozen heartbeat into an avoidable
+// -EBUSY. librespot's RestartSec=5 clears it comfortably; jasper-camilla's
+// RestartSec=2 sits ON the boundary for Ring B, which is worth knowing before
+// anyone shortens it. Pinned by test_writer_lock_survives_a_sigkilled_incumbent.
+//
+// One consequence worth naming: the two can legitimately disagree. A paused
+// renderer reports `writer_alive:false` while still holding the ring, and that
+// is correct on both counts.
+//
+// A Rust `RingWriter` does NOT take the lock (fan-in owns Ring A by
+// construction and has no second opener), so on a Rust-written ring the
+// heartbeat remains the only exclusivity signal available — which is why
+// `foreign_writer_is_live` still runs as a secondary guard rather than being
+// deleted.
 #define JTS_RING_WRITER_LIVENESS_TIMEOUT_NS 2000000000ull
 
 // One bounded attach budget covers the O_EXCL creator's ftruncate and its
@@ -107,7 +142,20 @@ _Static_assert(ATOMIC_LLONG_LOCK_FREE == 2,
 // file is persistent (flock ownership is on the fd), group-shared like the ring,
 // and bounded so a wedged opener cannot stall audio startup indefinitely.
 #define JTS_RING_OPEN_LOCK_SUFFIX ".open.lock"
+
+// Adjacent lock file whose EXCLUSIVE flock a C writer holds for the LIFE of its
+// mapping — the fd-open-scoped half of the SPSC writer guard. Distinct from
+// JTS_RING_OPEN_LOCK_SUFFIX, which is released as soon as the open transaction
+// completes. See foreign_writer_is_live / jts_ring_writer_open for why a
+// heartbeat alone is not enough.
+#define JTS_RING_WRITER_LOCK_SUFFIX ".writer.lock"
 #define JTS_RING_OPEN_LOCK_MODE 0660
+// DEPENDENT: jasper-doctor's renderer probe (`_PROBE_TIMEOUT_SEC` in
+// jasper/cli/doctor/renderers.py) MUST outlast this wait. The probe reads a
+// timeout-kill as SUCCESS, so a probe shorter than this window would be killed
+// while still blocked on a contended ring lock and report a healthy lane it
+// never actually opened — hiding the EBUSY the ownership check needs.
+// tests/test_renderer_ring_lanes.py pins the two values against each other.
 #define JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS 500ull
 #define JTS_RING_OPEN_LOCK_WAIT_STEP_US 1000ull
 #define JTS_RING_OPEN_MAX_ATTEMPTS 8u
@@ -180,6 +228,23 @@ typedef struct {
     uint64_t published_slots;
     uint64_t drop_no_reader;   // slots discarded because no live reader
     uint64_t full_waits;       // publish attempts that had to wait for space
+    // EXCLUSIVE flock held for the life of this mapping (see
+    // JTS_RING_WRITER_LOCK_SUFFIX). -1 means NOT HELD, which happens on exactly
+    // one path: acquire_writer_lock could not open or chmod the lock FILE
+    // (-2 internally), so the open proceeded fail-open on the heartbeat guard
+    // alone and logged `event=jts_ring.writer.lock_unavailable`. A writer that
+    // was REFUSED the lock never gets a struct at all — jts_ring_writer_open
+    // returns -EBUSY before writer_take_mapping. So a live writer with -1 here
+    // is a ring running WITHOUT fd-scoped exclusivity, not merely one that has
+    // not taken it yet.
+    //
+    // RELEASE ORDERING (F-8): jts_ring_writer_close releases this AFTER its
+    // `if (!w || !w->base) return;` guard, so a struct with a held fd but no
+    // mapping would leak the lock. That state is unreachable today — the fd is
+    // only ever stored by writer_take_mapping, which sets base in the same
+    // breath — and it is stated here so nobody makes it reachable by storing
+    // the fd earlier without moving the release ahead of the guard.
+    int writer_lock_fd;
 } jts_ring_writer_t;
 
 // Result of jts_ring_writer_publish.

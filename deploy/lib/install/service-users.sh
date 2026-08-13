@@ -43,6 +43,29 @@ create_jasper_service_users() {
     if ! getent group jasper-intsecrets >/dev/null 2>&1; then
         groupadd -r jasper-intsecrets
     fi
+    # U3 / P6 — `jts-ring` owns /dev/shm/jts-ring (mode 2775, see
+    # deploy/tmpfiles/jts-ring.conf). It grants exactly one thing: write access
+    # to the SHM slot rings. Membership is what lets a NON-ROOT renderer
+    # (librespot as `pi`, later shairport-sync) create and write its lane's ring
+    # while jasper-fanin reads it — both ends write the ring HEADER, so both need
+    # write on a file the other may have created.
+    #
+    # A dedicated group rather than either obvious alternative, both of which the
+    # tmpfiles header flagged for decision at P6:
+    #   - NOT `jasper`: that group also carries /var/lib/jasper at mode 0770 plus
+    #     control_token and household_secret at 0640, so adding a renderer user
+    #     would grant write on all shared JTS state to buy write on one directory.
+    #     docs/HANDOFF-privilege-separation.md already refused this shape for the
+    #     source-intent files ("renderers do not join the writer group").
+    #   - NOT `audio`: that is the ALSA DEVICE-access group (/dev/snd), which is
+    #     orthogonal to SHM-file sharing, and it is far broader than the set of
+    #     processes that should be able to write frames into the mix.
+    # Created here, before the -G lists below, for the same reason as the two
+    # groups above; the guarded usermod for the pre-existing `pi` account is at
+    # the end of this function.
+    if ! getent group jts-ring >/dev/null 2>&1; then
+        groupadd -r jts-ring
+    fi
     # Primary group `jasper` for every dropped daemon. Supplementary groups
     # match each unit's SupplementaryGroups=: audio (ALSA) for voice, input
     # (/dev/input/event*) for input. -r = system account, -M = no home,
@@ -140,7 +163,22 @@ create_jasper_service_users() {
         usermod -aG jasper-intsecrets jasper-mux 2>/dev/null || true
         usermod -aG jasper-intsecrets jasper-web 2>/dev/null || true
     fi
-    echo "  Service users ready: jasper-voice, jasper-mux, jasper-input, jasper-usbmic, jasper-control, jasper-web, jasper-recon (group: jasper; secrets: jasper-secrets = voice+web; intsecrets: jasper-intsecrets = voice+control+mux+web)"
+    # U3 / P6 — renderer users join `jts-ring` so a migrated lane's ioplug can
+    # create and write its ring under /dev/shm/jts-ring. Guarded on the account
+    # EXISTING: `pi` is the distro's login account, not one this installer
+    # creates, and a box brought up with a custom user has no `pi` at all — a
+    # bare usermod there would fail the install under `set -euo pipefail`. Same
+    # shape as the `bluetooth` guard above, and idempotent on upgrade.
+    #
+    # This is INERT until a lane is armed: group membership grants the ability to
+    # write the ring directory, it does not point any renderer at a ring. The
+    # lane map (jasper.renderer_lanes) is what arms one.
+    if getent group jts-ring >/dev/null 2>&1; then
+        if getent passwd pi >/dev/null 2>&1; then
+            usermod -aG jts-ring pi 2>/dev/null || true
+        fi
+    fi
+    echo "  Service users ready: jasper-voice, jasper-mux, jasper-input, jasper-usbmic, jasper-control, jasper-web, jasper-recon (group: jasper; secrets: jasper-secrets = voice+web; intsecrets: jasper-intsecrets = voice+control+mux+web; ring writers: jts-ring = pi)"
 
     # The /var/lib/jasper directory itself is widened to root:jasper 0770 by the
     # group-aware ensure_state_dir() (env-migrations.sh), which runs on every

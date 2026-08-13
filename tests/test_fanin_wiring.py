@@ -89,7 +89,12 @@ def test_asoundrc_capture_reads_fanin_summed_output():
 
 def test_renderer_units_use_private_lanes():
     librespot = (REPO / "deploy" / "systemd" / "librespot.service").read_text()
-    assert "--device librespot_substream" in librespot
+    # Since U3 / P6a the device is an indirection so a per-box ring flip is one
+    # env write rather than a unit edit — but the in-unit DEFAULT is still the
+    # private aloop lane, which is what this test is actually about: a box with
+    # no lane map writes librespot_substream, byte-identically to before.
+    assert "--device ${JASPER_LIBRESPOT_DEVICE}" in librespot
+    assert 'Environment="JASPER_LIBRESPOT_DEVICE=librespot_substream"' in librespot
     assert "audio_topology.env" not in librespot
     assert "jasper_renderer_in" not in librespot
 

@@ -272,10 +272,25 @@ install_jts_ring_conf_assets() {
         echo "  WARN: ${conf_src} missing; jts_ring PCM definitions not installed" >&2
     fi
 
+    # 1b. Renderer-ingress lane PCMs (U3 / P6). Same shape and same reason as
+    #     the block above: system-wide 0644 so the non-root renderer users can
+    #     resolve the names. INERT until a lane is armed — a PCM definition is
+    #     not an open, and no renderer points at one of these until
+    #     `jasper-audio-config renderer-lanes --arm` has written the matching
+    #     device override.
+    local lanes_src="${REPO_DIR}/deploy/alsa/conf.d/61-jts-renderer-lanes.conf"
+    if [[ -f "${lanes_src}" ]]; then
+        install -d -m 0755 /etc/alsa/conf.d
+        install -m 0644 "${lanes_src}" /etc/alsa/conf.d/61-jts-renderer-lanes.conf
+        echo "  Installed /etc/alsa/conf.d/61-jts-renderer-lanes.conf (pcm.jts_ring_lane_spotify + pcm.librespot_ring_lane; inert)"
+    else
+        echo "  WARN: ${lanes_src} missing; renderer-ingress lane PCMs not installed" >&2
+    fi
+
     # 2. /dev/shm/jts-ring directory via tmpfiles.d. Group-writable +
     #    setgid so the (root today) ring writer + reader share it, and a
-    #    future non-root reader in group `jasper` inherits write access to
-    #    the header files created there. Applied immediately so a deploy
+    #    non-root RENDERER in group `jts-ring` can create and write its lane's
+    #    ring there (U3 / P6). Applied immediately so a deploy
     #    does not have to wait for a reboot; the tmpfiles entry also
     #    recreates it on every boot (tmpfs is volatile). SHM files created
     #    under it survive an outputd restart because the DIRECTORY persists
@@ -283,7 +298,7 @@ install_jts_ring_conf_assets() {
     local tmpfiles_src="${REPO_DIR}/deploy/tmpfiles/jts-ring.conf"
     if [[ -f "${tmpfiles_src}" ]]; then
         install -m 0644 "${tmpfiles_src}" /etc/tmpfiles.d/jts-ring.conf
-        # --create is idempotent; a failure here (e.g. group `jasper` not
+        # --create is idempotent; a failure here (e.g. group `jts-ring` not
         # yet present on a partial box) must not fail the install — the
         # dir self-heals on the next boot/apply. Capture stderr into the WARN
         # so a PERSISTENT failure (not the transient partial-box case) carries

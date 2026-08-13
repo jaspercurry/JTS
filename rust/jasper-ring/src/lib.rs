@@ -243,6 +243,28 @@ pub struct RingMetrics {
 
 /// Writer liveness window: past this heartbeat age the writer is treated as
 /// dead (reader reports `writer_alive:false`; the writer side free-runs).
+///
+/// **The heartbeat owns OBSERVABILITY; the lock owns EXCLUSIVITY** (U3/P6a).
+/// The C ioplug's writer holds an exclusive `flock` on `<ring>.writer.lock` for
+/// the life of its mapping, so this window decides only what a reader REPORTS
+/// and when a blocked writer gives up — never who may write a ring. The split
+/// matters because a heartbeat is stamped on PUBLISH: it correctly reports
+/// "nothing is flowing" the instant a renderer pauses, which is exactly what
+/// makes it wrong as an ownership test, since a paused renderer still owns its
+/// device. So `writer_alive:false` on an attached ring is an ordinary paused
+/// source, NOT an invitation to take the ring.
+///
+/// This crate's [`RingWriter`] deliberately takes no such lock: fan-in owns
+/// Ring A by construction and has no second opener, so there is nothing to
+/// exclude. A ring whose writer is this crate is therefore guarded by the
+/// heartbeat alone, which is why the C reader-side guard still consults it.
+///
+/// **The window moved; it did not vanish.** A SIGKILLed writer's flock drops
+/// with its fd, but SIGKILL leaves `writer_pid` stamped and the heartbeat frozen
+/// at its last publish — so for up to this window the C secondary guard still
+/// refuses a fresh writer. A ring-writing renderer's `RestartSec` must therefore
+/// exceed it: librespot's 5 s clears it, and `jasper-camilla`'s 2 s sits on the
+/// boundary for Ring B.
 pub const WRITER_LIVENESS_TIMEOUT_NS: u64 = 2_000_000_000;
 
 /// One bounded attach budget for the creator's ftruncate + magic publish.
@@ -621,6 +643,26 @@ impl RingReader {
 
     pub fn path(&self) -> &str {
         &self.path
+    }
+
+    /// Whether this reader's MAPPING is still the file its path names.
+    ///
+    /// A ring file can be replaced underneath a live reader — unlinked and
+    /// recreated by a writer whose geometry changed, or cleared by the
+    /// arm/disarm path — and an mmap survives the unlink. The reader then holds
+    /// a perfectly valid mapping of an ORPHANED inode: it reports attached,
+    /// reads happily, and receives nothing forever, because the writer is
+    /// publishing into a different file at the same name. No counter
+    /// distinguishes that from an idle source.
+    ///
+    /// Compares this mapping's `(dev, ino)` against the path's. `Err` when the
+    /// path cannot be stat'd (typically: the file is gone entirely), which the
+    /// caller treats the same as a mismatch.
+    ///
+    /// Costs an `fstat` + a `stat`, so callers sample it on a slow cadence
+    /// rather than per period.
+    pub fn owns_linked_path(&self) -> io::Result<bool> {
+        mapping_owns_linked_path(&self.path, &self.map)
     }
 
     pub fn metrics(&self) -> RingMetrics {

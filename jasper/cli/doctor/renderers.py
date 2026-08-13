@@ -11,6 +11,7 @@ preserved. No check logic changed in the split."""
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -18,6 +19,9 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 from ...config import Config
+from ...log_event import log_event
+
+_LANE_LOG = logging.getLogger(__name__)
 from ...mux_mode_persistence import DEFAULT_PATH as _MUX_MODE_DEFAULT_PATH
 from ...music_sources import MUSIC_SOURCES, Source
 from ...source_intent import (
@@ -727,41 +731,148 @@ def _systemd_user_for(unit: str) -> Optional[str]:
     u = r.stdout.strip()
     return u or None
 
+def _renderer_lane_device_overrides() -> dict[str, str]:
+    """Renderer `--device` values the lane map declares (U3 / P6).
+
+    The lane map is the SSOT for which PCM each migrated renderer writes, so
+    resolving from it is exact by construction rather than reconstructed from a
+    systemd surface. This is the pattern-3 shape the rest of the ring platform
+    uses: the reconciler/CLI is the single writer of the resolved value, and
+    every reader — the daemon, the doctor — reads that same file.
+
+    Returns `{}` when NO map exists, which is the shipped fleet state. That
+    emptiness is load-bearing: an absent map has no opinion about any device, so
+    it must not assert the aloop default over a genuine operator override that
+    `/proc/<MainPID>/environ` can see. (`fanin_env_expectations` deliberately
+    names every lane's device including the unarmed ones — that is right for a
+    drift check against a map that exists, and wrong as a claim when none does.)
+    """
+    try:
+        from jasper import renderer_lanes as rl
+    except ImportError:  # pragma: no cover - the package is always present
+        return {}
+    if not os.path.exists(rl.RENDERER_LANES_ENV):
+        return {}
+    try:
+        return rl.fanin_env_expectations()
+    except (OSError, ValueError):
+        # Fail-SOFT, as this function's contract says: a torn or malformed map
+        # must degrade to "no opinion" and let the next tier answer, never raise
+        # into a doctor check. ValueError belongs here alongside OSError because
+        # the map is parsed, not just read.
+        return {}
+
+
+def _unit_runtime_environ(unit: str) -> dict[str, str]:
+    """The FULLY RESOLVED environment the running unit was exec'd with.
+
+    Read from `/proc/<MainPID>/environ`, which carries the complete
+    `EnvironmentFile=` chain. `systemctl show -p Environment` does NOT: see
+    :func:`_resolve_systemd_env_vars` for why that matters here.
+
+    Returns `{}` when the unit has no MainPID (parked/stopped/failed) or the
+    environ cannot be read — the caller then falls back, and a genuinely
+    unresolvable `${VAR}` reaches aplay and fails loudly, which is correct.
+    """
+    try:
+        r = subprocess.run(
+            ["systemctl", "show", unit, "-p", "MainPID", "--value"],
+            capture_output=True, text=True, timeout=2,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return {}
+    pid = r.stdout.strip()
+    if r.returncode != 0 or not pid.isdigit() or pid == "0":
+        return {}
+    try:
+        raw = Path(f"/proc/{pid}/environ").read_bytes()
+    except OSError:
+        return {}
+    out: dict[str, str] = {}
+    for entry in raw.split(b"\0"):
+        if not entry or b"=" not in entry:
+            continue
+        name, _, value = entry.partition(b"=")
+        out[name.decode("utf-8", "replace")] = value.decode("utf-8", "replace")
+    return out
+
+
 def _resolve_systemd_env_vars(device: str, unit: str) -> str:
-    """Expand `${VAR}` references in a device string using the
-    systemd unit's resolved environment.
+    """Expand `${VAR}` references in a device string to what the renderer
+    actually writes.
 
-    Most renderer service files now use literal fan-in lane names, but
-    this helper remains useful for operator overrides that use systemd
-    environment variables. systemd expands those references at daemon
-    start time; when the doctor reads the unit file directly it sees
-    the literal `${VAR}` string. Passing that to aplay would fail with
-    "Unknown PCM ${VAR}" — a false positive.
+    Renderer units use a `${VAR}` device so a per-box ring flip is one env write
+    rather than a unit edit (U3 / P6). systemd expands the reference at daemon
+    start; the doctor reading the unit file sees the literal `${VAR}`, and
+    passing that to aplay would fail with "Unknown PCM ${VAR}" — a false
+    positive.
 
-    We ask systemd for the unit's resolved environment
-    (`systemctl show -p Environment`), which already accounts for
-    both `Environment=` directives and `EnvironmentFile=` lookups
-    (with the leading-`-` "optional file" semantics). Whatever
-    value systemd would substitute at ExecStart time is what we
-    pass to aplay.
+    **`systemctl show -p Environment` CANNOT answer this, and used to be the
+    only thing this function asked.** That property returns the unit's
+    `Environment=` directives ONLY — it does not include `EnvironmentFile=`
+    layers, which is exactly where every JTS runtime override lives.
+    `scripts/ring-proto/arm.sh` documents the same finding empirically
+    (2026-07-02): "on jts.local `systemctl show` reports PERIOD_FRAMES=1024
+    while the box actually runs 128; on jts3 ACTIVE_LANE=1 is invisible to
+    `systemctl show`", and it reads `/proc/<MainPID>/environ` for that reason.
+    Confirmed again on jts.local hardware during the P6a review. Trusting the
+    old surface here would have made the doctor probe an ARMED box's *aloop*
+    device — reporting a lane healthy while the live ring lane went unprobed.
 
-    Returns the original string unchanged if it contains no
-    `${VAR}` references or if resolution fails (best-effort — the
-    caller's aplay probe will then fail loudly with a clear
-    error, which is the right behavior).
+    Three sources, most authoritative first:
+
+    1. **The lane map** (`jasper.renderer_lanes`) — the SSOT that WROTE the
+       override. Exact by construction, and readable whether or not the unit is
+       running.
+    2. **`/proc/<MainPID>/environ`** — the running daemon's real environment,
+       the arm.sh precedent. Catches an operator override the lane map does not
+       know about, and disagreement with (1) is itself worth surfacing.
+    3. **`systemctl show -p Environment`** — kept LAST, and only for what it can
+       actually answer: a genuine in-unit `Environment=` directive on a unit
+       that is not running.
+
+    Returns the original string unchanged when it contains no `${VAR}` or when
+    nothing can resolve it (best-effort — the caller's aplay probe then fails
+    loudly with a clear error, which is the right behavior).
     """
     if "${" not in device:
         return device
+
+    env_map: dict[str, str] = {}
+    # Least authoritative first, so the better source overwrites it.
     try:
         r = subprocess.run(
             ["systemctl", "show", unit, "-p", "Environment", "--value"],
             capture_output=True, text=True, timeout=2,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return device
-    if r.returncode != 0:
-        return device
-    env_map = _parse_systemd_environment(r.stdout)
+        if r.returncode == 0:
+            env_map.update(_parse_systemd_environment(r.stdout))
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
+    observed = _unit_runtime_environ(unit)
+    env_map.update(observed)
+    declared = _renderer_lane_device_overrides()
+    # The map WINS (it is what the next restart will apply), but a disagreement
+    # with what the daemon is actually running is the single most diagnostic
+    # fact available here — it means the unit has not restarted since the lane
+    # was armed or disarmed, which is exactly the half-flip window. Naming it
+    # costs one line; swallowing it leaves an operator comparing a healthy-
+    # looking probe against a lane that is silent.
+    for name, value in declared.items():
+        was = observed.get(name)
+        if was is not None and was != value:
+            # The unit has not restarted since the lane map changed; the
+            # probe follows the map.
+            log_event(
+                _LANE_LOG,
+                "renderer_lane.device_disagreement",
+                level=logging.WARNING,
+                unit=unit,
+                key=name,
+                lane_map=value,
+                running=was,
+            )
+    env_map.update(declared)
 
     def _sub(match: re.Match[str]) -> str:
         name = match.group(1)
@@ -769,8 +880,32 @@ def _resolve_systemd_env_vars(device: str, unit: str) -> str:
 
     return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", _sub, device)
 
+#: How long the probe lets `aplay` run before SIGTERMing it.
+#:
+#: **This MUST exceed `JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS`** (500 ms, in
+#: `c/jts-ring-ioplug/jts_ring_shm.h`), which is how long a `jts_ring` writer
+#: waits for the ring's exclusive lock before returning EBUSY.
+#:
+#: Why, concretely: probing an ARMED renderer lane whose renderer is PLAYING
+#: means opening a ring someone already holds. The ioplug blocks inside
+#: `snd_pcm_prepare` for the full lock wait and only then returns EBUSY. At the
+#: old 0.3 s the probe was killed first, exited 124 — which this function counts
+#: as SUCCESS ("aplay was happily writing") — so `_alsa_busy()` never saw the
+#: EBUSY and `_ring_lane_busy_owner_matches` (the pid→cgroup ownership proof)
+#: was unreachable in exactly the contended case it exists for. The probe
+#: reported a healthy lane without ever proving the right process owned it.
+#:
+#: Second-order cost, accepted: a HEALTHY probe now runs 0.8 s instead of 0.3 s,
+#: and 124 remains its success path. Three renderers make that ~1.5 s more per
+#: doctor run — cheap against a check that could not fail.
+#:
+#: `tests/test_renderer_ring_lanes.py` pins this against the C header's value,
+#: so neither side can drift alone.
+_PROBE_TIMEOUT_SEC = "0.8"
+
+
 def _probe_open_as_user(device: str, user: Optional[str]) -> tuple[bool, str]:
-    """Attempt to open `device` for ~0.1 s of silence playback AS `user`.
+    """Attempt to open `device` for a short silence playback AS `user`.
     Returns (success, detail). success=True means snd_pcm_open and a
     short write both succeeded; detail is the underlying aplay stderr
     for diagnostics (best-effort short).
@@ -779,9 +914,11 @@ def _probe_open_as_user(device: str, user: Optional[str]) -> tuple[bool, str]:
     uses (alsalib's snd_pcm_open through the user-space plugin chain)
     while writing only silence — sample-wise additive into any mix,
     so safe to run while music is playing.
+
+    The duration is `_PROBE_TIMEOUT_SEC`; read its note before shortening it.
     """
     cmd = [
-        "timeout", "0.3",
+        "timeout", _PROBE_TIMEOUT_SEC,
         "aplay", "-q",
         "-D", device,
         "-c", "2", "-r", "48000", "-f", "S16_LE",
@@ -796,9 +933,12 @@ def _probe_open_as_user(device: str, user: Optional[str]) -> tuple[bool, str]:
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
         return False, f"probe subprocess failed: {e}"
     # Exit code 124 = timeout fired = aplay was happily writing
-    # silence for the full 0.3 s, which means open + write succeeded.
+    # silence for the full _PROBE_TIMEOUT_SEC, which means open + write
+    # succeeded. That is why the timeout must outlast the ring writer-lock
+    # wait: a probe killed WHILE still blocked on the lock would also exit
+    # 124 and be read as success.
     # Exit code 0 = aplay exited cleanly before timeout (rare; means
-    # /dev/zero was fully consumed, which won't happen at 0.3 s but
+    # /dev/zero was fully consumed, which won't happen at this duration but
     # still success).
     # Any other code = failure; stderr should explain.
     stderr_tail = (r.stderr or "").strip().splitlines()[-2:]
@@ -823,6 +963,47 @@ def _alsa_busy(detail: str) -> bool:
         or "errno 16" in detail
     )
 
+# The renderer-ingress RING lane devices (U3 / P6): the `plug:` PCM a migrated
+# renderer writes, mapped to the fan-in lane LABEL whose ring it carries. Like
+# the aloop lanes above these are single-writer, but the exclusivity is enforced
+# by the ioplug's writer guard rather than by snd-aloop, and the owner pid lives
+# in the ring HEADER rather than in /proc/asound.
+_FANIN_RING_RENDERER_DEVICES = {
+    "librespot_ring_lane": "spotify",
+}
+
+
+def _ring_lane_busy_owner_matches(device: str, unit: str) -> tuple[bool, str]:
+    """Return whether an EBUSY renderer RING lane is owned by `unit`.
+
+    The ring's exact analogue of the aloop `owner_pid` check below: the ioplug
+    stamps its pid into the ring header's `writer_pid` on attach and refuses a
+    second live writer with EBUSY, so an EBUSY here proves the PCM resolved AND
+    that someone holds it — this then proves it is the RIGHT someone, by reading
+    the pid the ring itself published and checking its cgroup.
+
+    Without this the probe could not tell "the renderer legitimately owns its
+    ring" from "some stray process is writing frames into the mix", which is the
+    same distinction the aloop path already refuses to skip.
+    """
+    label = _FANIN_RING_RENDERER_DEVICES.get(device)
+    if label is None:
+        return False, "not a known fan-in ring lane"
+    from jasper.renderer_lanes import ring_writer_pid
+
+    pid = ring_writer_pid(label)
+    if pid is None:
+        return False, f"ring for lane {label} names no writer"
+    cgroup_path = Path(f"/proc/{pid}/cgroup")
+    try:
+        cgroup = cgroup_path.read_text()
+    except OSError as e:
+        return False, f"could not read {cgroup_path}: {e}"
+    if f"/{unit}" in cgroup:
+        return True, f"busy/owned pid={pid} (ring writer)"
+    return False, f"busy but ring writer pid={pid} cgroup={cgroup.strip()!r}"
+
+
 def _fanin_lane_busy_owner_matches(device: str, unit: str) -> tuple[bool, str]:
     """Return whether an EBUSY private fan-in lane is owned by `unit`.
 
@@ -830,7 +1011,12 @@ def _fanin_lane_busy_owner_matches(device: str, unit: str) -> tuple[bool, str]:
     prove the expected renderer owns the lane. The snd-aloop proc status
     exposes `owner_pid`; systemd cgroups expose the owning unit. Combine
     both so a stale test process cannot make doctor green.
+
+    Ring lanes take the sibling path above (`_ring_lane_busy_owner_matches`),
+    which reads the same fact out of the ring header.
     """
+    if device in _FANIN_RING_RENDERER_DEVICES:
+        return _ring_lane_busy_owner_matches(device, unit)
     substream = _FANIN_PRIVATE_RENDERER_DEVICES.get(device)
     if substream is None:
         return False, "not a known fan-in private lane"
@@ -921,7 +1107,10 @@ def check_renderer_device_resolvable() -> CheckResult:
         if ok:
             successes.append(f"{name}({who})→{display}")
         elif (
-            resolved_device in _FANIN_PRIVATE_RENDERER_DEVICES
+            (
+                resolved_device in _FANIN_PRIVATE_RENDERER_DEVICES
+                or resolved_device in _FANIN_RING_RENDERER_DEVICES
+            )
             and _alsa_busy(detail)
         ):
             owned, owner_detail = _fanin_lane_busy_owner_matches(

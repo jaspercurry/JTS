@@ -809,3 +809,243 @@ def test_voice_aec_checks_read_parked_on_bonded_follower(monkeypatch):
         r = check()
         assert r.status == "ok", r
         assert "parked (bonded follower)" in r.detail
+
+
+# ---------------------------------------------------------------------------
+# U3 / P6a — the renderer device is a ${VAR}, and `systemctl show` cannot
+# resolve it. These pin the surfaces that CAN.
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_device_prefers_the_lane_map_over_systemctl_show(monkeypatch, tmp_path):
+    """`systemctl show -p Environment` returns ONLY `Environment=` directives —
+    never `EnvironmentFile=` layers, which is where every JTS runtime override
+    lives (scripts/ring-proto/arm.sh documents the same finding empirically,
+    2026-07-02; re-confirmed on jts.local during the P6a review).
+
+    So on an ARMED box `systemctl show` reports the in-unit aloop DEFAULT while
+    the renderer is really writing its ring device. Trusting it would make the
+    doctor probe the wrong PCM and call an unprobed ring lane healthy. The lane
+    map — the SSOT that wrote the override — must win.
+    """
+    from jasper import renderer_lanes as rl
+    from jasper.cli.doctor import renderers as rdoc
+
+    lanes = str(tmp_path / "renderer_lanes.env")
+    rl.render_renderer_lanes_env(("spotify",), path=lanes)
+    monkeypatch.setattr(rl, "RENDERER_LANES_ENV", lanes)
+
+    # Exactly what a real armed box reports: the stale in-unit default.
+    def fake_run(cmd, **kwargs):
+        class R:
+            returncode = 0
+            stdout = "JASPER_LIBRESPOT_DEVICE=librespot_substream"
+
+        return R()
+
+    monkeypatch.setattr(rdoc.subprocess, "run", fake_run)
+    monkeypatch.setattr(rdoc, "_unit_runtime_environ", lambda unit: {})
+
+    resolved = rdoc._resolve_systemd_env_vars(
+        "${JASPER_LIBRESPOT_DEVICE}", "librespot.service"
+    )
+    assert resolved == "librespot_ring_lane", (
+        "an armed box must resolve to its RING device; resolving to the "
+        "systemctl-visible aloop default would probe the wrong PCM"
+    )
+
+
+def test_resolve_device_falls_back_to_proc_environ(monkeypatch, tmp_path):
+    """With no lane map (an operator override, or a box predating it), the
+    running daemon's own `/proc/<MainPID>/environ` is the next-best surface —
+    the arm.sh precedent — and it still beats `systemctl show`."""
+    from jasper import renderer_lanes as rl
+    from jasper.cli.doctor import renderers as rdoc
+
+    monkeypatch.setattr(rl, "RENDERER_LANES_ENV", str(tmp_path / "absent.env"))
+
+    def fake_run(cmd, **kwargs):
+        class R:
+            returncode = 0
+            stdout = "JASPER_LIBRESPOT_DEVICE=librespot_substream"
+
+        return R()
+
+    monkeypatch.setattr(rdoc.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        rdoc,
+        "_unit_runtime_environ",
+        lambda unit: {"JASPER_LIBRESPOT_DEVICE": "operator_override_pcm"},
+    )
+
+    assert (
+        rdoc._resolve_systemd_env_vars(
+            "${JASPER_LIBRESPOT_DEVICE}", "librespot.service"
+        )
+        == "operator_override_pcm"
+    )
+
+
+def test_unarmed_box_resolves_to_the_shipped_aloop_device(monkeypatch, tmp_path):
+    """The shipped fleet state: no lane map, no override — the in-unit default
+    is what the renderer writes and what the probe must open."""
+    from jasper import renderer_lanes as rl
+    from jasper.cli.doctor import renderers as rdoc
+
+    monkeypatch.setattr(rl, "RENDERER_LANES_ENV", str(tmp_path / "absent.env"))
+
+    def fake_run(cmd, **kwargs):
+        class R:
+            returncode = 0
+            stdout = "JASPER_LIBRESPOT_DEVICE=librespot_substream"
+
+        return R()
+
+    monkeypatch.setattr(rdoc.subprocess, "run", fake_run)
+    monkeypatch.setattr(rdoc, "_unit_runtime_environ", lambda unit: {})
+
+    assert (
+        rdoc._resolve_systemd_env_vars(
+            "${JASPER_LIBRESPOT_DEVICE}", "librespot.service"
+        )
+        == "librespot_substream"
+    )
+
+
+def test_ring_lane_ebusy_owner_is_read_from_the_ring_header(monkeypatch, tmp_path):
+    """An EBUSY on a ring lane proves the PCM resolved AND that someone holds
+    it; this proves it is the RIGHT someone, from the pid the ring itself
+    published. Reachable only because the resolver above now returns the ring
+    device on an armed box.
+    """
+    from jasper import renderer_lanes as rl
+    from jasper.cli.doctor import renderers as rdoc
+
+    monkeypatch.setattr(
+        rdoc, "_FANIN_RING_RENDERER_DEVICES", {"librespot_ring_lane": "spotify"}
+    )
+    monkeypatch.setattr(rl, "ring_writer_pid", lambda label: 4242)
+
+    cgroup = tmp_path / "cgroup"
+    cgroup.write_text("0::/system.slice/librespot.service\n")
+    real_path = rdoc.Path
+
+    def fake_path(p):
+        if str(p) == "/proc/4242/cgroup":
+            return cgroup
+        return real_path(p)
+
+    monkeypatch.setattr(rdoc, "Path", fake_path)
+
+    owned, detail = rdoc._fanin_lane_busy_owner_matches(
+        "librespot_ring_lane", "librespot.service"
+    )
+    assert owned, detail
+    assert "4242" in detail and "ring writer" in detail
+
+    # A DIFFERENT unit holding the ring is NOT accepted — that is a stray
+    # writer in the music path, which is the whole reason the guard exists.
+    other = tmp_path / "other"
+    other.write_text("0::/system.slice/some-other.service\n")
+
+    def fake_path_other(p):
+        if str(p) == "/proc/4242/cgroup":
+            return other
+        return real_path(p)
+
+    monkeypatch.setattr(rdoc, "Path", fake_path_other)
+    owned, detail = rdoc._fanin_lane_busy_owner_matches(
+        "librespot_ring_lane", "librespot.service"
+    )
+    assert not owned
+    assert "4242" in detail
+
+
+def test_unit_runtime_environ_parses_real_nul_delimited_bytes(monkeypatch, tmp_path):
+    """Execute the /proc tier end to end on real bytes.
+
+    This is the tier the B1 fix EXISTS for — `systemctl show` cannot see
+    `EnvironmentFile=` and the lane map only knows lanes it wrote — and it was
+    the one mutation survivor: every other path was covered by a monkeypatched
+    stand-in. Feed it a genuine NUL-delimited environ blob.
+    """
+    from jasper.cli.doctor import renderers as rdoc
+
+    environ = tmp_path / "environ"
+    environ.write_bytes(
+        b"PATH=/usr/bin\x00JASPER_LIBRESPOT_DEVICE=librespot_ring_lane\x00"
+        b"EMPTY=\x00NOEQUALS\x00LANG=C.UTF-8\x00"
+    )
+
+    def fake_run(cmd, **kwargs):
+        class R:
+            returncode = 0
+            stdout = "4242\n"
+        return R()
+
+    monkeypatch.setattr(rdoc.subprocess, "run", fake_run)
+    real_path = rdoc.Path
+    monkeypatch.setattr(
+        rdoc, "Path",
+        lambda p: environ if str(p) == "/proc/4242/environ" else real_path(p),
+    )
+
+    env = rdoc._unit_runtime_environ("librespot.service")
+    assert env["JASPER_LIBRESPOT_DEVICE"] == "librespot_ring_lane"
+    assert env["PATH"] == "/usr/bin"
+    assert env["EMPTY"] == "", "an empty value is a value, not an absence"
+    assert "NOEQUALS" not in env, "a malformed entry is dropped, not crashed on"
+
+
+def test_unit_runtime_environ_returns_empty_for_a_parked_unit(monkeypatch):
+    """MainPID 0 means stopped/parked/failed. There is no environ to read, and
+    guessing one would be worse than deferring to the next tier."""
+    from jasper.cli.doctor import renderers as rdoc
+
+    for mainpid in ("0", "", "not-a-pid"):
+        def fake_run(cmd, _v=mainpid, **kwargs):
+            class R:
+                returncode = 0
+                stdout = _v
+            return R()
+
+        monkeypatch.setattr(rdoc.subprocess, "run", fake_run)
+        assert rdoc._unit_runtime_environ("librespot.service") == {}, mainpid
+
+
+def test_resolver_surfaces_a_lanemap_vs_proc_disagreement(monkeypatch, tmp_path, caplog):
+    """The docstring promises `/proc` is worth naming as ground truth. When the
+    map's implied device differs from what the daemon is ACTUALLY running, that
+    disagreement is the single most diagnostic fact available — the map wins
+    (it is what the next restart will apply) but the divergence must not be
+    silent."""
+    import logging
+
+    from jasper import renderer_lanes as rl
+    from jasper.cli.doctor import renderers as rdoc
+
+    lanes = str(tmp_path / "renderer_lanes.env")
+    rl.render_renderer_lanes_env(("spotify",), path=lanes)
+    monkeypatch.setattr(rl, "RENDERER_LANES_ENV", lanes)
+
+    def fake_run(cmd, **kwargs):
+        class R:
+            returncode = 0
+            stdout = ""
+        return R()
+
+    monkeypatch.setattr(rdoc.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        rdoc, "_unit_runtime_environ",
+        lambda unit: {"JASPER_LIBRESPOT_DEVICE": "librespot_substream"},
+    )
+
+    with caplog.at_level(logging.WARNING):
+        resolved = rdoc._resolve_systemd_env_vars(
+            "${JASPER_LIBRESPOT_DEVICE}", "librespot.service"
+        )
+    assert resolved == "librespot_ring_lane", "the map wins — it is what restarts apply"
+    assert any(
+        "renderer_lane.device_disagreement" in r.getMessage()
+        for r in caplog.records
+    ), "the map-vs-running disagreement must be surfaced, not swallowed"

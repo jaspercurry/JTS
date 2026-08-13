@@ -1892,8 +1892,10 @@ class Mux:
         active instance to drop its FD on the Spotify fan-in lane.
 
         Effects observed at the audio layer: librespot exits and closes
-        its private `librespot_substream` writer; fanin then reads
-        silence on that lane while the new winner's lane continues.
+        its private Spotify lane writer (`librespot_substream`, or that
+        lane's SHM ring on a box armed for ring ingress — the arbitration
+        is identical either way); fanin then reads silence on that lane
+        while the new winner's lane continues.
         systemd respawns librespot in ~2-3 s (Restart=always); during
         that gap, the new winner (AirPlay / Bluetooth) is heard alone.
         After respawn, librespot is back as an idle Spotify Connect

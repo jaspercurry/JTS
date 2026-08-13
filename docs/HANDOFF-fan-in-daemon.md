@@ -170,6 +170,92 @@ The "summed music" substream:
 CamillaDSP → outputd_content_playback → jasper-outputd → Apple USB-C dongle
 ```
 
+### Lane sources — three transports, one lane shape
+
+A fan-in lane's audio arrives over exactly one of three transports, and the
+lane is otherwise identical in every case: same position in the sum, same
+selection/mute gate at the sum stage, same per-period RMS meter. `Input::pcm`
+is `Option<PCM>` and is `None` on the two non-aloop sources, which do not open
+an aloop substream at all.
+
+**A ring lane has no `LaneResampler`, and may not have one.** No renderer lane
+does: `lane_wants_resampler` is true only for the configured clock-crossing
+lane, which is the USB one, and that lane is `direct`. A renderer's producer is
+DAC-paced through its own blocking write, so it needs no rate matcher. The ring
+read path renders slots straight into the lane buffer and never feeds
+`input.resampler`, so arming both on one lane would report a resampler that
+reconciles nothing — `Config::from_env` REFUSES that combination as a
+config-class fault (fan-in parks; it does not silently drop the resampler). If
+a ring lane ever needs one, P6b designs the placement rather than inheriting a
+combination nobody validated.
+
+| `source` | Transport | `Input` field | Armed by |
+|---|---|---|---|
+| `lane` | snd-aloop capture substream | `pcm: Some(..)` | the default; every lane on every unarmed box |
+| `direct` | `hw:UAC2Gadget` capture, read directly | `direct: Some(..)` | `JASPER_FANIN_USB_DIRECT=enabled`, usbsink lane only |
+| `ring` | a per-renderer SHM slot ring the renderer's `jts_ring` ioplug writes | `ring: Some(..)` | the lane's label in `JASPER_FANIN_RENDERER_RING_LANES` |
+
+`Input::lane_source()` derives the token from those `Option`s, so the read
+dispatch, `pcm`'s emptiness, and what `/state` publishes cannot disagree. The
+mixer's dispatch matches them in the same precedence order.
+
+**The ring lane's presence model** (`src/mixer/ring_capture.rs`) mirrors the
+USB DIRECT precedent, because both face a source that comes and goes:
+`Attached` consumes exactly one slot per render period (the ring's slot IS one
+fan-in period, so there is no drain loop); `Detached` renders silence and
+retries the attach at most once per ~2 s, counted in render periods so the hot
+loop reads no wall clock. Neither state can fail the daemon — the fail-hard
+"every configured input is required" contract is exempted for a ring lane
+exactly as it is for the direct one.
+
+**An empty ring or a dead writer is NOT a detach.** `jasper_ring`'s reader
+already owns writer liveness: an empty ring zero-fills the buffer and reports
+`SlotRead::Empty`, and `writer_alive` goes false within ~2 s of the writer
+stopping. The ring is still perfectly attached, so the retry latch is armed
+ONLY by an attach failure. Arming it on empty reads would tear down and rebuild
+a healthy mapping every time a renderer paused.
+
+**Ring geometry is derived, not chosen.** One slot per `JASPER_FANIN_PERIOD_FRAMES`,
+depth `JASPER_FANIN_INPUT_BUFFER_FRAMES / JASPER_FANIN_PERIOD_FRAMES` (shipped:
+256-frame slots × 16 = 4096 frames). The aloop lane it replaces gives the
+renderer exactly `input_buffer_frames` of cushion, and a renderer is a network
+player whose ALSA write blocks when its buffer fills — so deriving the depth
+from the same number keeps the renderer's flow-control regime unchanged across
+the transport swap. A geometry that is not expressible in whole slots fails
+loud at config rather than quietly handing the renderer a different cushion.
+
+Which lanes are ring lanes is decided in ONE place on the Python side
+(`jasper/renderer_lanes.py`) and is deliberately independent of the CamillaDSP
+coupling — a renderer ring and the fan-in → CamillaDSP hop are separate
+transports. See
+[HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md)
+Appendix A and its P6a row.
+
+### Arming a lane
+
+```sh
+# Report (never writes):
+python3 -m jasper.cli.audio_config renderer-lanes
+
+# Arm / disarm one lane, then restart BOTH ends:
+python3 -m jasper.cli.audio_config renderer-lanes --arm spotify
+systemctl restart jasper-fanin.service librespot.service
+```
+
+The command is the single writer of `/var/lib/jasper/renderer_lanes.env`, which
+carries both halves of the flip and which `jasper-fanin.service` and the
+renderer unit each load LAST. It preflights the ring platform, the lane conf.d,
+the renderer user's `jts-ring` membership, and the derived geometry, refusing
+rather than arming into a silent source; it also clears a geometry-mismatched
+ring file so an arm after a geometry change is not a one-shot lever. It restarts
+nothing — the two restarts are the operator's, and the gap between them is
+silence on that lane.
+
+`jasper-doctor`'s `check_renderer_ring_lanes` reports every armed lane's attach
+state, writer liveness, and whether the lane has ever actually been fed
+(`startup_empty_reads` with no frames means the renderer never opened its ring —
+which looks identical to "paused" on every other signal).
+
 ### What this preserves
 
 - **Pre-DSP TTS for every output profile.** TTS/cues enter
@@ -1104,9 +1190,15 @@ Each renderer's `--device` / `output_device` flag shifts from
 
 | Renderer | Old | New |
 |---|---|---|
-| librespot | `--device jasper_renderer_in` | `--device librespot_substream` |
+| librespot | `--device jasper_renderer_in` | `--device librespot_substream` (see note below) |
 | shairport-sync | `output_device = "jasper_renderer_in"` | `output_device = "shairport_substream"` |
 | bluealsa-aplay | `--pcm=jasper_renderer_in` | `--pcm=bluealsa_substream` |
+
+Note (U3 / P6a): librespot's unit now spells this `--device
+${JASPER_LIBRESPOT_DEVICE}`, whose in-unit default IS `librespot_substream` — so
+the value in the table is still what every unarmed box runs. The variable exists
+so a per-box ring flip is one env write plus a restart rather than a unit-file
+edit; see "Lane sources" above.
 
 USB no longer has a renderer device: `jasper-usbsink.service` is a process-free
 readiness marker and fan-in owns the direct gadget capture.
@@ -1124,6 +1216,8 @@ rust/jasper-fanin/                  ← new
   src/
     main.rs                         ← entry, signal handling, sd_notify wiring
     mixer.rs                        ← the work loop: read N → sum → write 1
+    mixer/direct_capture.rs         ← the USB DIRECT lane source
+    mixer/ring_capture.rs           ← the renderer-ingress RING lane source (U3/P6)
     state.rs                        ← UDS status server
     json.rs                         ← canonical serializer for variable JSON strings
     config.rs                       ← env-var parsing

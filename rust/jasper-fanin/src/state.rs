@@ -71,7 +71,8 @@ use crate::impulse_tap::{TapConfig, TapState};
 use crate::json::json_string;
 use crate::lane_resampler::LaneResamplerObservability;
 use crate::mixer::{
-    CouplingObservability, DirectObservability, Mixer, TrimControl, OUTPUT_DELAY_UNAVAILABLE,
+    CouplingObservability, DirectObservability, LaneSource, Mixer, RingLaneObservability,
+    TrimControl, OUTPUT_DELAY_UNAVAILABLE,
 };
 use crate::tts::TtsMetrics;
 use crate::watchdog::Heartbeat;
@@ -173,12 +174,19 @@ pub struct StateServer {
 pub struct InputSnapshotSource {
     pub label: String,
     pub pcm_name: String,
-    /// `true` on the USB DIRECT lane (STATUS `source:"direct"`); every other
-    /// lane is `source:"lane"` (C7).
-    pub is_direct: bool,
+    /// Which transport this lane's audio arrives over — published verbatim as
+    /// STATUS `source`. A three-way [`LaneSource`] rather than a boolean since
+    /// U3 / P6 added the renderer-ingress ring beside `lane` and `direct`; the
+    /// mixer derives it from the lane-source `Option`s themselves
+    /// (`Input::lane_source`), so it cannot disagree with the read path.
+    pub source: LaneSource,
     /// USB DIRECT observability for the STATUS `direct{}` block (C7). `Some`
     /// only on the direct lane; `None` (and absent from STATUS) otherwise.
     pub direct: Option<DirectObservability>,
+    /// Renderer-ingress ring observability for the STATUS `ring{}` block (U3 /
+    /// P6). `Some` only on a ring lane; `None` (and absent from STATUS)
+    /// otherwise — the same optional-block idiom as `direct` and `resampler`.
+    pub ring: Option<RingLaneObservability>,
     pub frames_read: Arc<AtomicU64>,
     pub xrun_count: Arc<AtomicU64>,
     /// Per-lane content level: the most recent period's RMS in dBFS ×100 (the
@@ -243,8 +251,9 @@ impl StateServer {
             .map(|inp| InputSnapshotSource {
                 label: inp.label.clone(),
                 pcm_name: inp.pcm_name.clone(),
-                is_direct: inp.is_direct(),
+                source: inp.lane_source(),
                 direct: inp.direct_observability(),
+                ring: inp.ring_observability(),
                 frames_read: Arc::clone(&inp.frames_read),
                 xrun_count: Arc::clone(&inp.xrun_count),
                 rms_dbfs_x100: Arc::clone(&inp.rms_dbfs_x100),
@@ -757,14 +766,13 @@ impl StateServer {
             buf.push(',');
             push_kv_str(buf, "pcm", &input.pcm_name);
             buf.push(',');
-            // source: "direct" on the USB DIRECT lane (reads hw:UAC2Gadget
-            // directly), "lane" on every aloop-reading lane. Always present,
-            // additive (the TRIM-block precedent) — C7.
-            push_kv_str(
-                buf,
-                "source",
-                if input.is_direct { "direct" } else { "lane" },
-            );
+            // source: this lane's TRANSPORT — "direct" on the USB DIRECT lane
+            // (reads hw:UAC2Gadget directly), "ring" on a renderer-ingress SHM
+            // slot ring (U3 / P6), "lane" on every aloop-reading lane. Always
+            // present, additive (the TRIM-block precedent) — C7. The token set is
+            // owned by `crate::mixer::LaneSource`, so this serializer cannot
+            // invent a spelling the mixer does not use.
+            push_kv_str(buf, "source", input.source.as_str());
             buf.push(',');
             // muted: the lane's MIX-MUTE state (mux latest-source-wins arbitration
             // on a combo/direct box). SEPARATE from the telemetry fields below —
@@ -1053,6 +1061,55 @@ impl StateServer {
                 }
                 buf.push(']');
                 buf.push('}');
+                buf.push('}');
+            }
+            // OPTIONAL renderer-ingress RING block (U3 / P6). Rendered only on a
+            // ring lane (same optional-block idiom as `direct` / `resampler`), so
+            // the default STATUS shape on an unarmed box is unchanged.
+            //
+            // Every counter here is MIRRORED from `jasper_ring`'s own reader
+            // metrics rather than re-derived in fan-in, so /state and the ring
+            // agree by construction. Read them as a CONJUNCTION, not
+            // individually: `attached:true` with `writer_alive:false` is the
+            // ordinary "renderer is not playing" state and not a fault, while
+            // `empty_reads` climbing with `epoch_resets` FLAT is a real drain and
+            // both climbing together is a writer-restart artefact — the same
+            // discriminator the campaign's standing ring watch uses.
+            if let Some(r) = &input.ring {
+                buf.push(',');
+                buf.push_str(r#""ring":{"#);
+                push_kv_str(buf, "path", &r.path);
+                buf.push(',');
+                push_kv_bool(buf, "attached", r.attached.load(Ordering::Relaxed));
+                buf.push(',');
+                // Why it is not attached. Retained across a self-heal, so an
+                // operator reading after recovery still sees what it healed FROM;
+                // read it together with `attached`.
+                push_kv_str(buf, "detach_reason", r.detach_reason_str());
+                buf.push(',');
+                push_kv_u64(buf, "slot_frames", r.geometry.period_frames as u64);
+                buf.push(',');
+                push_kv_u64(buf, "n_slots", r.geometry.n_slots as u64);
+                buf.push(',');
+                push_kv_u64(buf, "attaches", r.attaches.load(Ordering::Relaxed));
+                buf.push(',');
+                push_kv_u64(buf, "retries", r.retries.load(Ordering::Relaxed));
+                buf.push(',');
+                push_kv_bool(buf, "writer_alive", r.writer_alive.load(Ordering::Relaxed));
+                buf.push(',');
+                push_kv_u64(buf, "writer_pid", r.writer_pid.load(Ordering::Relaxed));
+                buf.push(',');
+                push_kv_u64(buf, "occupancy", r.occupancy.load(Ordering::Relaxed));
+                buf.push(',');
+                push_kv_u64(buf, "empty_reads", r.empty_reads.load(Ordering::Relaxed));
+                buf.push(',');
+                push_kv_u64(
+                    buf,
+                    "startup_empty_reads",
+                    r.startup_empty_reads.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(buf, "epoch_resets", r.epoch_resets.load(Ordering::Relaxed));
                 buf.push('}');
             }
             buf.push('}');
@@ -1388,8 +1445,9 @@ mod tests {
                     label: "spotify".to_string(),
                     pcm_name: "hw:Loopback,1,0".to_string(),
                     // Ordinary aloop lane → source:"lane", no direct block.
-                    is_direct: false,
+                    source: LaneSource::Lane,
                     direct: None,
+                    ring: None,
                     frames_read: Arc::new(AtomicU64::new(12345)),
                     xrun_count: Arc::new(AtomicU64::new(0)),
                     // Silent aloop lane fixture → the -120 floor (×100).
@@ -1405,8 +1463,9 @@ mod tests {
                 InputSnapshotSource {
                     label: "airplay".to_string(),
                     pcm_name: "hw:Loopback,1,1".to_string(),
-                    is_direct: false,
+                    source: LaneSource::Lane,
                     direct: None,
+                    ring: None,
                     frames_read: Arc::new(AtomicU64::new(0)),
                     xrun_count: Arc::new(AtomicU64::new(2)),
                     // A lane playing audible content — ~-12.34 dBFS (×100).
@@ -1450,7 +1509,8 @@ mod tests {
                     // substream (pcm name kept for parity with the label).
                     label: "usbsink".to_string(),
                     pcm_name: "hw:Loopback,1,3".to_string(),
-                    is_direct: true,
+                    source: LaneSource::Direct,
+                    ring: None,
                     direct: Some(DirectObservability {
                         device: "hw:UAC2Gadget".to_string(),
                         period_frames: 256,
@@ -2303,6 +2363,79 @@ mod tests {
     }
 
     // ---- C7: source + direct{} STATUS shape --------------------------------
+
+    /// A renderer-ingress lane publishes `source:"ring"` and a `ring{}` block,
+    /// and NO other lane grows one — the same optional-block discipline the
+    /// `direct{}` block follows, so an unarmed box's STATUS shape is unchanged.
+    #[test]
+    fn snapshot_json_ring_block_present_only_on_a_ring_lane() {
+        use crate::mixer::LaneSource;
+        use jasper_ring::{Geometry, SAMPLE_FORMAT_S16LE};
+
+        let mut server = make_test_server();
+        let obs = RingLaneObservability {
+            path: "/dev/shm/jts-ring/lane-spotify.ring".to_string(),
+            geometry: Geometry {
+                rate: 48_000,
+                channels: 2,
+                sample_format: SAMPLE_FORMAT_S16LE,
+                period_frames: 256,
+                n_slots: 16,
+            },
+            attached: Arc::new(AtomicBool::new(true)),
+            detach_reason: Arc::new(AtomicU64::new(0)),
+            attaches: Arc::new(AtomicU64::new(1)),
+            retries: Arc::new(AtomicU64::new(0)),
+            writer_alive: Arc::new(AtomicBool::new(true)),
+            writer_pid: Arc::new(AtomicU64::new(4242)),
+            occupancy: Arc::new(AtomicU64::new(3)),
+            empty_reads: Arc::new(AtomicU64::new(7)),
+            startup_empty_reads: Arc::new(AtomicU64::new(11)),
+            epoch_resets: Arc::new(AtomicU64::new(2)),
+        };
+        // Move the spotify lane onto the ring, exactly as an armed box does.
+        server.inputs[0].source = LaneSource::Ring;
+        server.inputs[0].pcm_name = obs.path.clone();
+        server.inputs[0].ring = Some(obs);
+
+        let j = server.snapshot_json();
+        assert_eq!(
+            j.matches(r#""ring":{"#).count(),
+            1,
+            "only the ring lane renders a ring block: {j}"
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&j).unwrap();
+        let inputs = parsed["inputs"].as_array().unwrap();
+        let ring = inputs.iter().find(|i| i["label"] == "spotify").unwrap();
+        assert_eq!(ring["source"].as_str(), Some("ring"));
+        assert_eq!(
+            ring["pcm"].as_str(),
+            Some("/dev/shm/jts-ring/lane-spotify.ring"),
+            "a ring lane's `pcm` must name where its audio ACTUALLY comes from, \
+             not the aloop device it ignores"
+        );
+        let block = &ring["ring"];
+        assert_eq!(block["attached"].as_bool(), Some(true));
+        assert_eq!(block["detach_reason"].as_str(), Some("unavailable"));
+        assert_eq!(block["slot_frames"].as_u64(), Some(256));
+        assert_eq!(block["n_slots"].as_u64(), Some(16));
+        assert_eq!(block["attaches"].as_u64(), Some(1));
+        assert_eq!(block["retries"].as_u64(), Some(0));
+        assert_eq!(block["writer_alive"].as_bool(), Some(true));
+        assert_eq!(block["writer_pid"].as_u64(), Some(4242));
+        assert_eq!(block["occupancy"].as_u64(), Some(3));
+        // empty_reads and startup_empty_reads stay SPLIT: "this lane has never
+        // been written" and "this lane slipped" need different responses.
+        assert_eq!(block["empty_reads"].as_u64(), Some(7));
+        assert_eq!(block["startup_empty_reads"].as_u64(), Some(11));
+        // The discriminator the standing ring watch reads alongside empty_reads.
+        assert_eq!(block["epoch_resets"].as_u64(), Some(2));
+
+        // The other lanes are untouched — no ring block, original source.
+        let airplay = inputs.iter().find(|i| i["label"] == "airplay").unwrap();
+        assert!(airplay.get("ring").is_none());
+        assert_eq!(airplay["source"].as_str(), Some("lane"));
+    }
 
     #[test]
     fn snapshot_json_source_field_on_every_input() {

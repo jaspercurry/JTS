@@ -286,7 +286,7 @@ def _fanin_status_payload(
             "output": output,
             "inputs": [
                 {"label": label, "pcm": pcm, "xrun_count": 0}
-                for label, pcm in doctor._FANIN_EXPECTED_INPUTS
+                for label, pcm in doctor._FANIN_EXPECTED_ALOOP_INPUTS
             ],
             "tts": {
                 "enabled": True,

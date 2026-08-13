@@ -21,14 +21,41 @@ TimeoutStartSec=2s
 TimeoutStopSec=5s
 User=pi
 Group=audio
+# Renderer-ingress ring (U3/P6a). Both are inert on an unarmed box and both are
+# prerequisites for an armed one:
+#   - jts-ring: write access to /dev/shm/jts-ring (mode 2775, group jts-ring), the
+#     directory the ioplug create-or-attaches this lane's ring file in. A
+#     dedicated group rather than `jasper` (which would also grant write on all of
+#     /var/lib/jasper, mode 0770) or `audio` (the ALSA DEVICE-access group, which
+#     is orthogonal to SHM-file sharing).
+#   - UMask=0007: the ioplug creates the ring file 0660 & ~umask. Under systemd's
+#     default 0022 that lands 0640 — group-READABLE but not group-WRITABLE — and
+#     BOTH ends of a ring write its header (the reader stamps read_seq and its
+#     heartbeat), so fan-in would take EACCES on a ring this renderer created.
+#     The directory's setgid bit fixes the file's GROUP; only the umask fixes its
+#     MODE. Every other JTS daemon sharing a group-written file sets this.
+SupplementaryGroups=jts-ring
+UMask=0007
 # Spotify Connect display name. Sourced from /etc/jasper/jasper.env if
 # JASPER_SPEAKER_NAME is the one user-facing display name shown by
 # Spotify Connect, AirPlay, Bluetooth, and USB Audio. The /speaker/
 # wizard writes /var/lib/jasper/speaker_name.env; the Environment=
 # default covers very early bringup before that file exists.
 Environment="JASPER_SPEAKER_NAME=JTS"
+# The ALSA PCM this renderer writes. The DEFAULT is the shipped snd-aloop lane,
+# so a box with no lane map — every box today — behaves byte-identically to
+# before this variable existed. jasper-audio-config's `renderer-lanes` writer
+# overrides it in renderer_lanes.env below when this lane is armed for ring
+# ingress (U3/P6a). The variable exists so a per-box flip is one env write and a
+# restart rather than a unit-file edit, and so BOTH ends of the flip (this device
+# and fan-in's armed-lane set) are written together into one file.
+Environment="JASPER_LIBRESPOT_DEVICE=librespot_substream"
 EnvironmentFile=-/etc/jasper/jasper.env
 EnvironmentFile=-/var/lib/jasper/speaker_name.env
+# LAST, so it beats the Environment= defaults above (systemd applies a later
+# EnvironmentFile= over an earlier Environment=). jasper.renderer_lanes is the
+# single writer; jasper-fanin.service loads the same file for its half.
+EnvironmentFile=-/var/lib/jasper/renderer_lanes.env
 # RuntimeDirectory creates /run/librespot/ at start with mode 0755.
 # Other components (jasper-mux, jasper-voice volume_observers,
 # jasper-control coordinator) read /run/librespot/state.json — the
@@ -54,10 +81,16 @@ CacheDirectoryMode=0700
 # Format: S24_3 + tpdf dither = 24-bit packed output with triangular-
 # distribution dither, ~141 dB SNR, well below any DAC noise floor.
 #
-# Audio device: librespot_substream — Spotify's private snd-aloop
-# lane. jasper-fanin reads the capture side and publishes the summed
-# music stream to CamillaDSP/AEC. The private lane keeps renderer
-# opens independent; latest-source-wins remains jasper-mux policy.
+# Audio device: ${JASPER_LIBRESPOT_DEVICE}, whose default is
+# librespot_substream — Spotify's private snd-aloop lane. jasper-fanin
+# reads the capture side and publishes the summed music stream to
+# CamillaDSP/AEC. The private lane keeps renderer opens independent;
+# latest-source-wins remains jasper-mux policy.
+#
+# On a box whose Spotify lane is ARMED for ring ingress (U3/P6a) the same
+# variable resolves to librespot_ring_lane and the audio reaches fan-in
+# over an SHM slot ring instead — same private-lane property, same mux
+# policy, different transport. Nothing else about this unit changes.
 UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES
 ExecCondition=+/usr/bin/env -i PATH=/opt/jasper/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /opt/jasper/.venv/bin/jasper-local-source-allowed --source spotify
 ExecStart=/usr/bin/librespot \
@@ -65,7 +98,7 @@ ExecStart=/usr/bin/librespot \
     --device-type speaker \
     --bitrate 320 \
     --backend alsa \
-    --device librespot_substream \
+    --device ${JASPER_LIBRESPOT_DEVICE} \
     --format S24_3 \
     --dither tpdf \
     --mixer softvol \

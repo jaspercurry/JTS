@@ -50,6 +50,10 @@ VOICE_DOES_NOT_READ: dict[str, str] = {
     "/var/lib/jasper/outputd.env":
         "JASPER_OUTPUTD_* read by jasper-outputd and the AEC bridge; voice "
         "gets its TTS socket from an inline Environment= line, not this file",
+    "/var/lib/jasper/renderer_lanes.env":
+        "the renderer-ingress lane map (U3/P6): JASPER_FANIN_RENDERER_RING_LANES "
+        "read by the Rust jasper-fanin, and JASPER_<RENDERER>_DEVICE read by the "
+        "renderer units' own ExecStart; voice reads neither",
     "/var/lib/jasper/usb_mic.env":
         "JASPER_USB_MIC* export intent read by the AEC bridge and USB-mic "
         "relay/application path; voice keeps its independent clean stream",

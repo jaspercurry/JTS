@@ -74,6 +74,7 @@ ENV_FILES = (
     "/var/lib/jasper/grouping-voice.env",
     "/var/lib/jasper/outputd.env",
     "/var/lib/jasper/peering.env",
+    "/var/lib/jasper/renderer_lanes.env",
     "/var/lib/jasper/accessory-mics.env",
     "/var/lib/jasper/usb_mic.env",
     "/var/lib/jasper/wake_corpus_bridge.env",

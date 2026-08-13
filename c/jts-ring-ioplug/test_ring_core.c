@@ -129,14 +129,38 @@ static int report_fd_identity(int report_fd, int ring_fd) {
     return write_bytes(report_fd, &observed, sizeof(observed));
 }
 
+// Every adjacent lock file a ring can accumulate. BOTH must be listed here and
+// in cleanup_all_test_paths: a suffix this array does not know is a per-run leak
+// in /tmp that nothing ever collects (measured at 34 files per clean run when
+// the writer lock was missing from it).
+static const char *const k_ring_lock_suffixes[] = {
+    JTS_RING_OPEN_LOCK_SUFFIX,
+    JTS_RING_WRITER_LOCK_SUFFIX,
+};
+#define K_RING_LOCK_SUFFIX_COUNT \
+    (sizeof(k_ring_lock_suffixes) / sizeof(k_ring_lock_suffixes[0]))
+
 static void cleanup_owned_test_locks(void) {
     DIR *dir = opendir(g_owned_dir);
     if (dir == NULL) return;
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL) {
-        if (strstr(entry->d_name, JTS_RING_OPEN_LOCK_SUFFIX) == NULL) continue;
+        int is_lock = 0;
+        for (size_t i = 0; i < K_RING_LOCK_SUFFIX_COUNT; i++) {
+            if (strstr(entry->d_name, k_ring_lock_suffixes[i]) != NULL) {
+                is_lock = 1;
+                break;
+            }
+        }
+        if (!is_lock) continue;
+        // Same truncation rule as compose_path below, and the same reason: this
+        // string is unlinked. `d_name` is unbounded from the compiler's view
+        // (up to NAME_MAX), so gcc flags the composition; a short buffer here
+        // would also be a real hazard, not just a warning.
         char path[512];
-        snprintf(path, sizeof(path), "%s/%s", g_owned_dir, entry->d_name);
+        int n = snprintf(path, sizeof(path), "%s/%s", g_owned_dir,
+                         entry->d_name);
+        if (n < 0 || (size_t)n >= sizeof(path)) continue;
         (void)unlink(path);
     }
     closedir(dir);
@@ -148,15 +172,36 @@ static void remember_test_path(const char *path) {
     g_test_path_count++;
 }
 
+// Compose `<base><suffix>` into `out`, or return 0 if it would not fit.
+//
+// TRUNCATION MUST NOT UNLINK. This is a correctness rule before it is a warning
+// fix: a truncated path is a DIFFERENT path, and these composed strings are fed
+// straight to unlink(2). Silently shortening `/tmp/…/foo.ring.writer.lock` could
+// name some other file entirely and delete it. Skipping instead leaks one lock
+// file in a case that cannot occur with the fixed-size test paths this file
+// builds — the safe direction by a wide margin.
+//
+// Matches acquire_writer_lock's own idiom in jts_ring_shm.c (check the snprintf
+// return against the buffer, treat >= size as failure). Also silences gcc's
+// -Wformat-truncation, which fires here and not under clang: the suffix is a
+// `const char *` the compiler cannot bound, so it assumes up to 65535 bytes.
+static int compose_path(char *out, size_t out_size, const char *base,
+                        const char *suffix) {
+    int n = snprintf(out, out_size, "%s%s", base, suffix);
+    return n >= 0 && (size_t)n < out_size;
+}
+
 static void cleanup_all_test_paths(void) {
     for (size_t i = 0; i < g_test_path_count; i++) {
         (void)unlink(g_test_paths[i]);
-        char lock_path[sizeof(g_test_paths[0]) + sizeof(JTS_RING_OPEN_LOCK_SUFFIX)];
-        size_t path_len = strlen(g_test_paths[i]);
-        memcpy(lock_path, g_test_paths[i], path_len);
-        memcpy(lock_path + path_len, JTS_RING_OPEN_LOCK_SUFFIX,
-               sizeof(JTS_RING_OPEN_LOCK_SUFFIX));
-        (void)unlink(lock_path);
+        for (size_t j = 0; j < K_RING_LOCK_SUFFIX_COUNT; j++) {
+            char lock_path[600];
+            if (!compose_path(lock_path, sizeof(lock_path), g_test_paths[i],
+                              k_ring_lock_suffixes[j])) {
+                continue;
+            }
+            (void)unlink(lock_path);
+        }
     }
 }
 
@@ -1113,15 +1158,25 @@ static void test_attach_second_writer_bumps_epoch(void) {
     CHECK(jts_ring_writer_open(path, &g, &w1) == 0, "writer 1 open");
     jts_ring_header_t *h = (jts_ring_header_t *)w1.base;
     uint64_t e1 = atomic_load_explicit(&h->writer_epoch, memory_order_acquire);
+    uint64_t wseq1 = w1.write_seq;
     // A second writer attaching to the SAME file bumps the epoch again.
+    //
+    // Writer 1 is CLOSED first: that is what a reattach IS in production (the
+    // old writer's process exits, or the ioplug closes its PCM). Since U3/P6a a
+    // writer holds an EXCLUSIVE flock for the life of its mapping, so two live
+    // writers on one ring is refused rather than modelled. The epoch and
+    // write_seq both live in the HEADER and survive the close, which is exactly
+    // what this test asserts.
+    jts_ring_writer_close(&w1);
+    h = NULL; // w1's mapping is gone; do not read through it again.
     jts_ring_writer_t w2;
     CHECK(jts_ring_writer_open(path, &g, &w2) == 0, "writer 2 attach");
-    uint64_t e2 = atomic_load_explicit(&h->writer_epoch, memory_order_acquire);
+    uint64_t e2 = atomic_load_explicit(
+        &((jts_ring_header_t *)w2.base)->writer_epoch, memory_order_acquire);
     CHECK(e2 > e1, "epoch bumped on second writer attach");
     // write_seq is file-lifetime monotonic: the second writer continues from it.
-    CHECK(w2.write_seq == w1.write_seq, "second writer continues from stored write_seq");
+    CHECK(w2.write_seq == wseq1, "second writer continues from stored write_seq");
     jts_ring_writer_close(&w2);
-    jts_ring_writer_close(&w1);
     unlink(path);
 }
 
@@ -2118,6 +2173,278 @@ static void test_reader_ebusy_second_reader(void) {
     unlink(path);
 }
 
+static void test_writer_ebusy_second_writer(void) {
+    // The SPSC guard's WRITER half (U3 / P6a) — the exact mirror of
+    // test_reader_ebusy_second_reader above.
+    //
+    // Why it exists now and not before: until renderer-ingress rings, every ring
+    // WRITER was a single controlled daemon and a second one was unreachable. A
+    // renderer lane's ring is written by a renderer whose ALSA device name is
+    // public and DELIBERATELY probed — jasper-doctor runs `aplay -D <device>` as
+    // the renderer user on every install (the PR #214 class). Without this guard
+    // that probe's open would SUCCEED and two writers advancing write_seq would
+    // interleave their slots, injecting the probe's silence into live music. On
+    // an snd-aloop lane the same probe bounces off with EBUSY, which the doctor
+    // accepts as proof the incumbent owns the lane; this restores that property.
+    char path[256];
+    tmp_path(path, sizeof(path), "wtr-ebusy");
+    jts_ring_geometry_t g = proto_geometry();
+    g.n_slots = 4;
+
+    jts_ring_writer_t w1;
+    CHECK(jts_ring_writer_open(path, &g, &w1) == 0, "writer 1 attaches");
+    jts_ring_header_t *h = (jts_ring_header_t *)w1.base;
+    // Publish a slot so write_seq/epoch are nonzero and a corrupting second open
+    // would be observable.
+    unsigned char slot[JTS_RING_MAX_SLOT_BYTES];
+    memset(slot, 0x5A, jts_ring_slot_bytes(&g));
+    (void)jts_ring_writer_publish(&w1, slot);
+    uint64_t wseq_before = atomic_load_explicit(&h->write_seq, memory_order_relaxed);
+    uint64_t epoch_before =
+        atomic_load_explicit(&h->writer_epoch, memory_order_relaxed);
+    CHECK(wseq_before > 0, "writer 1 advanced write_seq");
+
+    // --- (1) THE LOCK, in isolation --------------------------------------
+    //
+    // Writer 1 is still open and its pid is OURS, so `foreign_writer_is_live`
+    // returns 0 (a same-process re-prepare is deliberately not a pid conflict).
+    // The ONLY thing that can refuse here is the fd-scoped flock — which is the
+    // point: this is the `aplay -D` probe arriving while the renderer holds its
+    // ring.
+    jts_ring_writer_t w2;
+    memset(&w2, 0, sizeof(w2));
+    // TIME the refusal. The wait's only SAFETY requirement is that it is
+    // FINITE (see acquire_writer_lock), and nothing else in this suite pins
+    // that: raising the ceiling 10x leaves every assertion green and merely
+    // slower, and removing the deadline entirely makes the whole binary HANG —
+    // caught today only by CI's 15-minute job timeout. One elapsed-time bound
+    // turns both into an immediate, local failure.
+    //
+    // The bound is deliberately generous. This is ONE lock wait
+    // (JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS = 500 ms; measured ~501 ms here), and
+    // 1.5 s leaves room for a loaded CI box without admitting a 10x regression.
+    uint64_t t0 = jts_ring_monotonic_ns();
+    int rc = jts_ring_writer_open(path, &g, &w2);
+    uint64_t elapsed_ms = (jts_ring_monotonic_ns() - t0) / 1000000ull;
+    CHECK(rc == -EBUSY, "a second live writer is refused with -EBUSY by the lock");
+    CHECK(elapsed_ms < 1500,
+          "the writer-lock wait must be BOUNDED — a refusal took too long, "
+          "which means the deadline was raised or removed (an unbounded wait "
+          "hangs the daemon inside snd_pcm_prepare, not just this test)");
+    CHECK(elapsed_ms >= 400,
+          "...and it must actually WAIT: a refusal that returns instantly means "
+          "the bounded wait became fail-fast again, which spuriously fails the "
+          "transient concurrent-open case this suite also covers");
+    CHECK(w2.base == NULL, "refused writer struct left detached");
+    CHECK(w2.fd == -1, "refused writer fd left detached");
+    CHECK(atomic_load_explicit(&h->write_seq, memory_order_relaxed) == wseq_before,
+          "EBUSY did not clobber write_seq");
+    CHECK(atomic_load_explicit(&h->writer_epoch, memory_order_relaxed) == epoch_before,
+          "EBUSY did not bump writer_epoch (a reader must not see a phantom "
+          "reattach because someone probed the device)");
+
+    // --- (2) A PAUSED-BUT-OPEN writer stays protected ---------------------
+    //
+    // THE HOLE THE LOCK EXISTS TO CLOSE. `writer_heartbeat_ns` is stamped on
+    // PUBLISH paths only, so a renderer that holds its PCM open and stops
+    // writing — an ordinary pause — goes heartbeat-stale within
+    // JTS_RING_WRITER_LIVENESS_TIMEOUT_NS. Under the heartbeat test alone its
+    // ring would become takeable while it still owned the device, and a probe
+    // could then interleave slots into a stream it resumes into. The lock is
+    // held for the LIFE OF THE MAPPING, so it survives the pause.
+    atomic_store_explicit(&h->writer_heartbeat_ns, 1, memory_order_relaxed); // ancient
+    jts_ring_writer_t w_paused;
+    memset(&w_paused, 0, sizeof(w_paused));
+    CHECK(jts_ring_writer_open(path, &g, &w_paused) == -EBUSY,
+          "a PAUSED but still-open writer keeps its ring (the heartbeat has gone "
+          "stale; the fd-scoped lock has not)");
+    CHECK(w_paused.base == NULL, "refused paused-case writer left detached");
+
+    // --- (3) A DEAD writer's ring IS reclaimable --------------------------
+    //
+    // Death closes the fd and the kernel drops the flock, so the reclaim
+    // property survives without depending on heartbeat timing — a restarted
+    // renderer takes its own lane back with no operator. Closing is exactly what
+    // a crash/SIGKILL does to the lock.
+    jts_ring_writer_close(&w1);
+    jts_ring_writer_t w3;
+    CHECK(jts_ring_writer_open(path, &g, &w3) == 0,
+          "a dead writer's ring is reclaimable");
+    jts_ring_header_t *h3 = (jts_ring_header_t *)w3.base;
+    CHECK(atomic_load_explicit(&h3->writer_pid, memory_order_relaxed)
+              == (uint64_t)getpid(),
+          "fresh attach took ownership (our pid)");
+    // Assert the WRITER'S OWN mirror, not the header's. The header value is
+    // never reset by an open, so testing it is true by construction and admits
+    // a writer that zeroed `out->write_seq` — which would make the next
+    // publish compute a huge `write_seq - read_seq` occupancy and free-run
+    // drop-oldest against a reader that is perfectly healthy.
+    CHECK(w3.write_seq == wseq_before,
+          "the takeover writer's own seq continues from the header rather than "
+          "resetting to 0");
+    CHECK(atomic_load_explicit(&h3->write_seq, memory_order_relaxed) == wseq_before,
+          "the header's file-lifetime write_seq is untouched by a takeover");
+
+    // --- (4) The HEARTBEAT guard still covers the cross-implementation case -
+    //
+    // A Rust `RingWriter` does not take this lock, so on a ring whose writer is
+    // the Rust side the heartbeat is the only signal available and the guard
+    // must still fire. Model that: release the lock (close), then stamp a
+    // FOREIGN live pid + fresh heartbeat through a reader's mapping.
+    jts_ring_writer_close(&w3);
+    jts_ring_reader_t rr;
+    CHECK(jts_ring_reader_open(path, &g, &rr) == 0, "reader mapping for step 4");
+    jts_ring_header_t *hf = (jts_ring_header_t *)rr.base;
+    uint64_t foreign = (uint64_t)getpid() + 1; // definitely not us
+    atomic_store_explicit(&hf->writer_pid, foreign, memory_order_relaxed);
+    atomic_store_explicit(&hf->writer_heartbeat_ns, jts_ring_monotonic_ns(),
+                          memory_order_relaxed);
+    jts_ring_writer_t w4;
+    memset(&w4, 0, sizeof(w4));
+    CHECK(jts_ring_writer_open(path, &g, &w4) == -EBUSY,
+          "a live FOREIGN writer with no lock (the Rust writer) is still refused "
+          "by the heartbeat guard");
+    CHECK(atomic_load_explicit(&hf->writer_pid, memory_order_relaxed) == foreign,
+          "EBUSY did not clobber the incumbent writer_pid");
+
+    // --- (5) A DEAD foreign writer must NOT block -------------------------
+    //
+    // The other half of the heartbeat guard, and the one that keeps a ring
+    // RECLAIMABLE: a foreign pid with a STALE heartbeat is a crashed renderer or
+    // a ring left behind by a previous boot, and it must not wedge the lane
+    // until an operator intervenes. Same foreign pid as step 4, ancient
+    // heartbeat — the only thing that changed is liveness.
+    atomic_store_explicit(&hf->writer_heartbeat_ns, 1, memory_order_relaxed);
+    jts_ring_writer_t w5;
+    CHECK(jts_ring_writer_open(path, &g, &w5) == 0,
+          "a DEAD foreign writer (stale heartbeat) does not block a fresh attach");
+    CHECK(atomic_load_explicit(&hf->writer_pid, memory_order_relaxed)
+              == (uint64_t)getpid(),
+          "the fresh attach took ownership from the dead foreign writer");
+    jts_ring_writer_close(&w5);
+
+    jts_ring_reader_close(&rr);
+    unlink(path);
+}
+
+static void test_writer_lock_unopenable_fails_open_and_is_logged(void) {
+    // The -2 path: the lock FILE cannot be opened at all. Reachable in
+    // production when an out-of-unit first creator (the doctor's sudo aplay
+    // probe, an operator shell — neither carries UMask=0007) lands the lock file
+    // 0640 under a different uid; the renderer then takes EACCES forever, and
+    // the sticky bit stops it deleting the file, so only a reboot clears tmpfs.
+    //
+    // We FAIL OPEN there — refusing would take a renderer down over a lock file
+    // — which means the ring silently loses fd-scoped exclusivity. That is
+    // exactly why it must be LOUD: this pins the journal line, because a box in
+    // that state is otherwise indistinguishable from a healthy one.
+    char path[256];
+    tmp_path(path, sizeof(path), "wtr-lock-unopenable");
+    char lock_path[320];
+    snprintf(lock_path, sizeof(lock_path), "%s%s", path,
+             JTS_RING_WRITER_LOCK_SUFFIX);
+    char log_path[320];
+    snprintf(log_path, sizeof(log_path), "%s.log", path);
+    unlink(lock_path);
+    unlink(log_path);
+
+    // Make the lock path unopenable for THIS process by putting a directory
+    // where the file must go: open(O_RDWR) on a directory returns EISDIR.
+    CHECK(mkdir(lock_path, 0700) == 0, "stage an unopenable writer-lock path");
+
+    jts_ring_geometry_t g = proto_geometry();
+    int log_fd = open(log_path, O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0660);
+    CHECK(log_fd >= 0, "open fail-open event capture");
+    int saved_stderr = dup(STDERR_FILENO);
+    CHECK(saved_stderr >= 0, "save stderr");
+    jts_ring_writer_t w;
+    int rc = -1;
+    if (log_fd >= 0 && saved_stderr >= 0) {
+        fflush(stderr);
+        CHECK(dup2(log_fd, STDERR_FILENO) >= 0, "capture fail-open event");
+        rc = jts_ring_writer_open(path, &g, &w);
+        fflush(stderr);
+        CHECK(dup2(saved_stderr, STDERR_FILENO) >= 0, "restore stderr");
+    }
+
+    CHECK(rc == 0, "an unopenable lock file FAILS OPEN rather than refusing "
+                   "(a renderer must not die over a lock file)");
+    CHECK(w.writer_lock_fd == -1,
+          "the fail-open writer records that it holds NO lock, so the sentinel "
+          "cannot be mistaken for a held fd (0 would be stdin)");
+
+    if (log_fd >= 0) {
+        CHECK(lseek(log_fd, 0, SEEK_SET) == 0, "rewind fail-open event");
+        char log_buf[1024] = {0};
+        ssize_t got = read(log_fd, log_buf, sizeof(log_buf) - 1);
+        CHECK(got > 0 &&
+                  strstr(log_buf, "event=jts_ring.writer.lock_unavailable") != NULL,
+              "losing fd-scoped exclusivity emits a stable, greppable event — "
+              "a box running without it must be VISIBLE");
+        // ...and the errno in it must be the REAL cause, not whatever close(2)
+        // last set. A directory where the lock file belongs makes open(O_RDWR)
+        // fail EISDIR; an operator reading `errno=0` (or a stale EBADF) would
+        // be sent looking in the wrong place entirely.
+        char want_errno[32];
+        snprintf(want_errno, sizeof(want_errno), "errno=%d", EISDIR);
+        CHECK(got > 0 && strstr(log_buf, want_errno) != NULL,
+              "the fail-open event must carry the REAL errno (EISDIR here); "
+              "close(2) clobbers errno, so every -2 path has to preserve it");
+    }
+
+    if (rc == 0) jts_ring_writer_close(&w);
+    if (saved_stderr >= 0) close(saved_stderr);
+    if (log_fd >= 0) close(log_fd);
+    rmdir(lock_path);
+    unlink(log_path);
+    unlink(path);
+}
+
+static void test_writer_lock_survives_a_sigkilled_incumbent(void) {
+    // SIGKILL truth. The LOCK is windowless — the kernel drops it with the fd,
+    // so a killed writer's ring is immediately claimable. The SECONDARY
+    // heartbeat guard is NOT: SIGKILL leaves writer_pid stamped and the
+    // heartbeat frozen at its last publish, so for up to
+    // JTS_RING_WRITER_LIVENESS_TIMEOUT_NS a fresh writer is still refused.
+    //
+    // That is the real shape (a close() model would clear writer_pid and hide
+    // it), and it is why a ring-writing renderer's RestartSec must exceed that
+    // window: it moved from the lock to the secondary guard, it did not vanish.
+    char path[256];
+    tmp_path(path, sizeof(path), "wtr-sigkill");
+    jts_ring_geometry_t g = proto_geometry();
+
+    // Model the survivor state directly: no lock held (the kill dropped it),
+    // but a FOREIGN pid stamped with a FRESH heartbeat.
+    jts_ring_writer_t seed;
+    CHECK(jts_ring_writer_open(path, &g, &seed) == 0, "seed the ring");
+    jts_ring_writer_close(&seed);
+
+    jts_ring_reader_t rr;
+    CHECK(jts_ring_reader_open(path, &g, &rr) == 0, "reader mapping");
+    jts_ring_header_t *h = (jts_ring_header_t *)rr.base;
+    uint64_t killed = (uint64_t)getpid() + 11; // a pid that is not us
+    atomic_store_explicit(&h->writer_pid, killed, memory_order_relaxed);
+    atomic_store_explicit(&h->writer_heartbeat_ns, jts_ring_monotonic_ns(),
+                          memory_order_relaxed);
+
+    jts_ring_writer_t w;
+    memset(&w, 0, sizeof(w));
+    CHECK(jts_ring_writer_open(path, &g, &w) == -EBUSY,
+          "a SIGKILLed incumbent's frozen-fresh heartbeat still refuses a new "
+          "writer even though its lock is already free — the secondary guard's "
+          "<=2s window is real, and this is where RestartSec matters");
+
+    // Once the frozen heartbeat ages past the window, the ring is claimable.
+    atomic_store_explicit(&h->writer_heartbeat_ns, 1, memory_order_relaxed);
+    CHECK(jts_ring_writer_open(path, &g, &w) == 0,
+          "past the liveness window the killed writer's ring is reclaimable");
+    jts_ring_writer_close(&w);
+
+    jts_ring_reader_close(&rr);
+    unlink(path);
+}
+
 static void test_reader_close_clears_pid_only_if_ours(void) {
     // Close must clear reader_pid ONLY if it is still ours — a second reader that
     // stamped its own pid then this instance dropping must not clear the new
@@ -2160,7 +2487,16 @@ static void test_reader_epoch_reset_on_writer_reattach(void) {
     (void)jts_ring_reader_consume(&r, out); // observes epoch 1
     CHECK(r.epoch_resets == 0, "no epoch reset yet");
 
-    // Second writer attaches to the SAME ring (writer 1 still mapped) -> epoch++.
+    // Second writer attaches to the SAME ring -> epoch++.
+    //
+    // Writer 1 is CLOSED first, which is what a reattach actually is in
+    // production: the old writer's process exits (or the ioplug closes its PCM)
+    // and a new one opens. This used to leave writer 1 mapped, which worked only
+    // because the pid guard exempted our own pid; since U3/P6a a writer holds an
+    // EXCLUSIVE flock for the life of its mapping, so two live writers on one
+    // ring is refused rather than simulated. The epoch lives in the HEADER and
+    // survives the close, so this still exercises exactly what it always did.
+    jts_ring_writer_close(&w1);
     jts_ring_writer_t w2;
     CHECK(jts_ring_writer_open(path, &g, &w2) == 0, "writer 2 reattach (epoch++)");
     (void)jts_ring_reader_consume(&r, out); // observes the epoch change
@@ -2488,9 +2824,21 @@ static void test_capture_alias_dead_to_live_recovery(void) {
     int16_t *s = calloc(n, sizeof(int16_t));
     int16_t *out = calloc(n, sizeof(int16_t));
 
-    // Writer 1 dies immediately (stale heartbeat); the app free-runs on silence.
-    jts_ring_header_t *h = (jts_ring_header_t *)w1.base;
-    atomic_store_explicit(&h->writer_heartbeat_ns, 1, memory_order_relaxed);
+    // Writer 1 DIES; the app free-runs on silence.
+    //
+    // Death is modelled by CLOSING the writer rather than by stamping a stale
+    // heartbeat under a still-open mapping. That is what dying is: the process
+    // exits, its fd closes, and the kernel drops the writer's flock — which is
+    // precisely the property that lets a new writer reclaim the ring without
+    // waiting on heartbeat timing (U3/P6a).
+    //
+    // NOTE what this CHANGED, honestly: the reader still sees a dead writer,
+    // but via a DIFFERENT branch of `writer_is_live` — the `pid == 0` test
+    // (close clears writer_pid), not the heartbeat-age test. So this test no
+    // longer exercises the stale-heartbeat branch at all. That coverage lives
+    // in test_capture_alias_writer_death_flip, which stamps an ancient
+    // heartbeat without closing and is unaffected by this change.
+    jts_ring_writer_close(&w1);
     (void)cap_model_avail(&m, &r);
     uint64_t hw_before = m.alsa_hw_ptr;
     uint64_t prev = m.alsa_hw_ptr;
@@ -2913,6 +3261,25 @@ static void test_capture_destage_partial_reads(void) {
 }
 
 int main(void) {
+    // BACKSTOP for a true hang — a wait that never returns at all.
+    //
+    // It is NOT what catches a lost or raised deadline; be precise about that,
+    // because overstating it would let someone delete the assertion that does
+    // the real work. The elapsed-time bound in
+    // test_writer_ebusy_second_writer ("the writer-lock wait must be BOUNDED")
+    // is the primary detector: with the deadline removed, the incumbent in the
+    // concurrent-open test still eventually releases, so the mutated wait
+    // returns LATE rather than never — measured at 11 s, caught locally by that
+    // named assertion, not by this alarm.
+    //
+    // This covers only the residue that leaves behind: a wait whose holder never
+    // releases, where no elapsed bound is ever reached because the CHECK is
+    // never evaluated. Nothing has triggered it — it is untriggered insurance,
+    // and its value is turning that case into a prompt signal instead of CI's
+    // 15-minute job timeout. The budget is far above any legitimate run (the
+    // whole suite is ~1 s wall-clock; the slowest single test is one 500 ms
+    // lock wait).
+    alarm(120);
     snprintf(g_owned_dir, sizeof(g_owned_dir), "/tmp/jts-ring-ctest-owned-%d",
              (int)getpid());
     CHECK(setenv("JTS_RING_TEST_OWNED_DIR", g_owned_dir, 1) == 0,
@@ -2951,6 +3318,9 @@ int main(void) {
     test_reader_attach_resync_drops_stale();
     test_reader_defensive_resync_on_overrun();
     test_reader_ebusy_second_reader();
+    test_writer_ebusy_second_writer();
+    test_writer_lock_unopenable_fails_open_and_is_logged();
+    test_writer_lock_survives_a_sigkilled_incumbent();
     test_reader_close_clears_pid_only_if_ours();
     test_reader_epoch_reset_on_writer_reattach();
     test_capture_pointer_advances_on_publish();
