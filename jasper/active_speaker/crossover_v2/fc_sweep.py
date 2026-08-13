@@ -78,7 +78,10 @@ from jasper.active_speaker.fc_selector import (
     FcSelection,
     fc_comparison_complete,
 )
-from jasper.active_speaker.linearization_fit import linearization_filters_by_role
+from jasper.active_speaker.linearization_fit import (
+    linearization_filters_by_role,
+    worst_headroom_cost_db,
+)
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_OK,
     MeasurementPriors,
@@ -629,11 +632,16 @@ def evaluate_candidate(
             tweeter_sweep_lo_hz=tweeter_lo,
             woofer_sweep_hi_hz=woofer_hi,
         ),
-        headroom_cost_db=max(
-            (float(fit.get("headroom_cost_db") or 0.0)
-             for fit in linearization.values() if isinstance(fit, Mapping)),
-            default=0.0,
-        ),
+        # The canonical reducer, not a second spelling of it (#2357 item 1).
+        # ``worst_headroom_cost_db`` documents itself as the one owner of this
+        # figure and takes exactly this input — a persisted
+        # ``{role: LinearizationFit.to_dict()}`` mapping — so its ``isfinite``
+        # guard belongs to this read too. An inline ``max`` over the same
+        # values disagreed with it on a NON-FINITE cost: ``max`` returns NaN or
+        # not depending on which role iterates first, and a NaN that reaches
+        # the selector is clamped by ``max(0.0, ...)`` to 0.0, which spends the
+        # saturation penalty rather than charging it.
+        headroom_cost_db=worst_headroom_cost_db(linearization),
         candidate=candidate.to_dict(),
         predicted_sum=(np.asarray(built.predicted_sum[0]).copy(),
                        np.asarray(built.predicted_sum[1]).copy()),

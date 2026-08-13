@@ -333,6 +333,28 @@ def test_linearization_populated_round_trips():
     assert reopened.linearization == payload
 
 
+def test_a_candidate_refuses_to_carry_a_non_finite_fit_cost():
+    """``linearization`` goes through ``DspPredecessor``, which refuses any
+    non-finite number — so no fitted candidate can carry a NaN or an infinity.
+
+    Pinned because a reader downstream leans on it (#2357). The sweep reduces
+    this mapping to one figure with ``worst_headroom_cost_db``, whose own
+    ``isfinite`` guard is belt-and-braces exactly as long as THIS refusal
+    holds: relax it and that guard becomes the only thing standing between a
+    NaN and the Fc selector's saturation penalty, which clamps a NaN to 0.0 and
+    charges nothing.
+    """
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(MeasuredCrossoverCandidateError) as caught:
+            _candidate(linearization={"woofer": {"headroom_cost_db": bad}})
+        assert "non-finite" in str(caught.value)
+
+    # …the same shape with a finite cost is accepted, so the refusals above are
+    # about the VALUE rather than about the mapping's shape.
+    accepted = _candidate(linearization={"woofer": {"headroom_cost_db": 2.0}})
+    assert accepted.linearization["woofer"]["headroom_cost_db"] == 2.0
+
+
 def test_linearization_participates_in_the_fingerprint():
     preset = _preset()
     base = _candidate(preset=preset, linearization={})
