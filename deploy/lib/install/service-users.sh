@@ -185,10 +185,15 @@ create_jasper_service_users() {
             usermod -aG jts-ring pi 2>/dev/null || true
         fi
         # U3/P6c-i — jasper-web's wizard-spawned aplay children will create
-        # the correction lane's ring once P6c-ii arms it. The useradd -G
-        # above is skipped when the user already exists (every pre-P6c-i
-        # box), so the upgrade path needs this idempotent add — same shape
-        # as the jasper-secrets/jasper-intsecrets upgrade blocks. The other
+        # the correction lane's ring once P6c-ii arms it. The RUNTIME grant
+        # comes from the unit's SupplementaryGroups= (systemd adds the
+        # group to the process directly; the group need only exist). This
+        # passwd record serves the non-systemd consumers — `sudo -u
+        # jasper-web` probes, operator shells — and this file's own
+        # convention that -G lists match each unit's SupplementaryGroups=.
+        # The useradd -G above is skipped when the user already exists
+        # (every pre-P6c-i box), hence this idempotent add — same shape as
+        # the jasper-secrets/jasper-intsecrets upgrade blocks. The other
         # correction-lane writer identities (jasper-correction-web, the
         # streambox variant, operator CLIs) run as root and write the 2775
         # root-owned directory regardless — the P6b root exemption; their

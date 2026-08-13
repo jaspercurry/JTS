@@ -280,9 +280,11 @@ def _play_and_assess_probe() -> list[CheckResult]:
     # No euid gate here, by decision (P6c-i): the doctor's documented
     # contract is a root run (`jasper-doctor --help`: "Run as root."; the
     # non-root jasper-control gets root fidelity via the oneshot --out
-    # path), its CheckResult vocabulary has no skip status, and no doctor
-    # check anywhere gates on euid — preconditions in this module fail
-    # LOUDLY as CheckResults instead (renderers-idle, loopback-lane,
+    # path), skipping is expressed as ok + a skipped detail per the doctor
+    # convention (the one shipped deviation — a novel "skip" status that
+    # render() failed — was fixed in #2397), and no doctor check anywhere
+    # gates on euid — preconditions in this module fail LOUDLY as
+    # CheckResults instead (renderers-idle, loopback-lane,
     # isolation-window above). An unprivileged run therefore fails this
     # probe at device open — today on /dev/snd (root:audio), post-P6c-ii
     # on the ring lane — and the guidance below names the fix.

@@ -559,11 +559,19 @@ def test_the_installer_adds_the_renderer_user_to_the_ring_group():
 
 
 def test_the_installer_adds_jasper_web_to_the_ring_group():
-    """jasper-web's jts-ring membership needs BOTH delivery paths (P6c-i):
-    the useradd -G covers a fresh box, and — because useradd is skipped when
-    the user already exists — a guarded usermod covers every box installed
-    before P6c-i. Same shape as the `pi` membership above and the
-    jasper-secrets upgrade blocks."""
+    """The installer keeps jasper-web's NSS record consistent with its unit.
+
+    The RUNTIME grant does not depend on this: systemd's
+    `SupplementaryGroups=` adds the group to the spawned process directly
+    (the group need only exist, not list the user in passwd/NSS). What the
+    passwd record serves is the narrower, real set of NON-systemd
+    consumers — `sudo -u jasper-web` probes and operator shells — plus
+    service-users.sh's own stated convention that the -G lists match each
+    unit's `SupplementaryGroups=`. Both delivery paths of that consistency
+    are pinned: the useradd -G (fresh boxes) and — because useradd is
+    skipped when the user already exists — the guarded usermod (every box
+    installed before P6c-i), same shape as the `pi` membership above and
+    the jasper-secrets upgrade blocks."""
     users = SERVICE_USERS.read_text()
     useradd_lines = [
         ln for ln in users.splitlines()
