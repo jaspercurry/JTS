@@ -699,6 +699,12 @@ def delete_stale_ring(label: str, *, conf_d: str | None = None) -> str | None:
     (magic-less, which the writer reclaims itself), or COHERENT is left
     untouched.
 
+    The COHERENT early-return means a DISARMED lane's geometry-matching ring
+    lingers in tmpfs. Benign, and deliberate: ~16.5 KB, cleared by reboot,
+    and a re-arm at the same geometry re-attaches with read_seq resynced by
+    the attach protocol — no stale slot replays. A geometry CHANGE across
+    the disarm/re-arm is exactly what the comparator above does catch.
+
     Returns a human-readable reason when it deleted something, else ``None``.
     """
     verdict = stale_ring_verdict(label, conf_d=conf_d)

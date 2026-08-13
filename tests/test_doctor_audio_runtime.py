@@ -2314,7 +2314,13 @@ def test_armed_on_demand_lane_resting_state_is_healthy(monkeypatch):
     reads — the same "not a fault" class as a paused renderer. The
     never-fed WARN diagnoses a DAEMON renderer that failed to reopen its
     ring after an arm; applying it to an on-demand lane would put a
-    standing false warning on every armed box."""
+    standing false warning on every armed box.
+
+    The detail must also CARRY the carve-out's stated residual: resting
+    and broken-at-open are byte-identical to this check, so the healthy
+    line must hint at the unproven writer path rather than implying it
+    was verified (an operator reading "ok" as "the lane works" would be
+    over-reading — the hint is what keeps the reading honest)."""
     import jasper.renderer_lanes as rl
 
     monkeypatch.setattr(rl, "read_armed_labels", lambda *a, **kw: ("correction",))
@@ -2327,6 +2333,8 @@ def test_armed_on_demand_lane_resting_state_is_healthy(monkeypatch):
     assert result.status == "ok"
     assert "on-demand" in result.detail
     assert "no measurement played yet" in result.detail
+    assert "a writer that cannot open looks identical here" in result.detail
+    assert "run a measurement to confirm" in result.detail
 
 
 def test_armed_daemon_lane_never_fed_still_warns(monkeypatch):

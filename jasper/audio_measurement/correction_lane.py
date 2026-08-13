@@ -235,6 +235,18 @@ def correction_play_device() -> str:
     rendered map and the arm CLI's report use. One derivation, three
     consumers, zero drift surface.
 
+    Mid-flip semantics, stated: an IN-FLIGHT spawn keeps the device it
+    opened — the argv is baked at spawn and a flip cannot reach a running
+    process. A measurement spanning an arm/disarm flip is therefore LOST,
+    never mis-rated and never loud: in the arm direction the old spawn's
+    aloop audio goes nowhere fan-in is reading; in the disarm direction
+    the readerless ring free-runs and drops frames (bounded and
+    non-blocking by the ring contract; the writer flock releases on
+    process exit). Flips are operator-initiated (`jasper-audio-config
+    renderer-lanes`, which prints the fan-in restart instruction), and the
+    correction pipeline's own capture-quality checks reject the
+    truncated/absent capture such a spanned measurement produces.
+
     ``renderer_lanes`` is imported lazily: at import time this module stays
     feather-light for the socket-activated wizards (placement promise
     above); at call time the lane machinery is stdlib-only.

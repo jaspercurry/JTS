@@ -132,7 +132,14 @@ _Static_assert(ATOMIC_LLONG_LOCK_FREE == 2,
 //     the first nonzero exit rather than retrying, so a writer killed inside
 //     this window surfaces as one cleanly-failed session, never a respawn
 //     loop; every other spawn is human-paced, orders of magnitude slower
-//     than the window.
+//     than the window. Stop-on-first-nonzero does NOT cover the one mid-flip
+//     residual: a spawn that opens a ring fan-in has just stopped reading (a
+//     disarm racing a running loop) SUCCEEDS — aplay exits 0 into the
+//     free-running ring — so that loop iteration records silence AS DATA
+//     rather than an error. Bounded and accepted: flips are
+//     operator-initiated (the arm CLI prints the fan-in restart
+//     instruction), and the correction pipeline's capture-quality checks
+//     reject the truncated/absent capture the spanned iteration produces.
 // Pinned by test_writer_lock_survives_a_sigkilled_incumbent (the window itself)
 // and by tests/test_renderer_ring_lanes.py (each renderer's RestartSec against
 // this constant).
