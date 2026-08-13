@@ -8482,9 +8482,25 @@ class CrossoverV2Session:
         5b-ii), which brackets the durable write rather than driving it. Every
         act stays here: building the record, the ``record_model_error`` seam
         call with the guard that decides whether to make it, its ``except``
-        arm, both of its log lines, the identity conflict it can report, the
+        arms, all of its log lines, the identity conflict it can report, the
         decision payload the household reads, and the history append. "How many
         times can that write fire" is still answered by reading this method.
+
+        **Exactly-once survives a failed write, and that is why the seam call
+        catches broadly** (#2386). The rung that stops a second write is the
+        ``ATTEMPT_ALREADY_RECORDED`` answer above, and it can only see a repeat
+        once the attempt is in ``_attempt_history`` — which this method appends
+        at its END. So a store exception that ESCAPES the seam call skips that
+        append, and the next capture of the same applied candidate is assessed
+        as new and asks the seam again. The guard therefore contains every
+        ``Exception``, not an enumeration of the classes today's binding
+        happens to raise: the seam is a Protocol any host may implement, so the
+        property has to hold against the interface rather than against one
+        implementation of it. It does NOT rely on
+        :mod:`~jasper.active_speaker.model_error_store` de-duplicating by
+        observation identity — that store stays the independent owner of
+        prediction/realization error, and leaning on its dedup to keep this
+        method's own guard honest is exactly the coupling #2291 forbids.
         """
 
         identity = _grading.assess_attempt_identity(
@@ -8561,6 +8577,42 @@ class CrossoverV2Session:
                     logger,
                     "correction.crossover_v2_model_error_write_failed",
                     level=logging.WARNING,
+                    session_id=self.session_id,
+                    speaker_id=self._speaker_id,
+                    attempt_id=record.attempt_id,
+                    exc_info=True,
+                )
+            except Exception:  # noqa: BLE001 - the fall-through below is the point
+                # Any OTHER store failure, contained for the SAME ruling the arm
+                # above states — and containing it is what makes the write
+                # exactly-once (#2386). An escape does two things, not one: it
+                # reverses a VERIFY the measurement gate accepted, and it skips
+                # the ``_attempt_history`` append at the end of this method, so
+                # the next capture of the same applied candidate is assessed as
+                # ``ATTEMPT_NEW`` and asks the seam a SECOND time.
+                #
+                # The append is the property, and it must run even though this
+                # write may have failed: a raising seam says nothing about
+                # whether the durable record landed, so the honest thing to
+                # record is that this identity was ASKED. That is already the
+                # shipped outcome for the classes above — a contained failure
+                # banks the attempt ungraded-by-the-store rather than dropping
+                # it — and this arm extends it to the classes the tuple does not
+                # name, rather than inventing a second policy for them.
+                #
+                # NOT ``BaseException``: ``KeyboardInterrupt``/``SystemExit``
+                # must keep propagating, and a dying process persists nothing
+                # this method appends anyway.
+                #
+                # Its own event at ERROR, because the arm above means "the store
+                # had an outage" and this one means "the seam raised something
+                # nobody enumerated" — one is operational and the other is a
+                # defect, and filing them under one name would cost the
+                # distinction on the surface that has to act.
+                log_event(
+                    logger,
+                    "correction.crossover_v2_model_error_write_unexpected",
+                    level=logging.ERROR,
                     session_id=self.session_id,
                     speaker_id=self._speaker_id,
                     attempt_id=record.attempt_id,

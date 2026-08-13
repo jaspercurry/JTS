@@ -31,7 +31,7 @@ the write and stated twice — once here and once at the conductor's call site:
   loop does with a record the write has already been asked about.
 
 Nothing in between is this module's.  The seam call, the guard that decides
-whether to make it, its ``except`` arm, both of its log lines, and the identity
+whether to make it, its ``except`` arms, all of its log lines, and the identity
 conflict it can report all stay on the conductor, unchanged and in one place, so
 "how many times can this write fire" is answered by reading one method rather
 than by tracing a callable through a module boundary.  That is the same reason
