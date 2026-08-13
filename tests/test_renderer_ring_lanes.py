@@ -21,6 +21,7 @@ wrong:
 
 from __future__ import annotations
 
+import argparse
 import pathlib
 import re
 from pathlib import Path
@@ -1292,10 +1293,73 @@ def test_the_ring_liveness_window_is_enumerated_for_every_writer():
     that list is one nobody checked — which is how bluealsa-aplay reached P6b
     as the third writer with its cadence unknown to the repo."""
     header = (REPO / "c" / "jts-ring-ioplug" / "jts_ring_shm.h").read_text()
-    window_note = header[header.index("JTS_RING_WRITER_LIVENESS_TIMEOUT_NS") - 3000 :]
+    # Match the ENUMERATION ENTRY's shape — `//   - <unit>  RestartSec=<n>` —
+    # not a bare substring. A substring test passes on any incidental mention
+    # (the drop-in's own PATH contains the unit name), which made the first
+    # version of this test survive deleting the entry it exists to require.
+    entries = dict(
+        re.findall(r"^//\s+-\s+(\S+)\s+RestartSec=(\d+)", header, re.M)
+    )
     for lane in rl.RENDERER_LANES:
-        assert lane.unit in window_note, (
-            f"{lane.unit} writes a ring but is not enumerated beside the "
-            "liveness constant it must clear"
+        assert lane.unit in entries, (
+            f"{lane.unit} writes a ring but has no `- {lane.unit} RestartSec=N` "
+            "entry beside the liveness constant it must clear"
         )
-    assert "jasper-camilla" in window_note, "the Ring B writer dropped out"
+    assert "jasper-camilla" in entries, "the Ring B writer dropped out"
+    # And each enumerated value must match what the unit really declares, or
+    # the enumeration is decoration.
+    for lane in rl.RENDERER_LANES:
+        declared = re.search(r"^RestartSec=(\d+)", _unit_text(lane), re.M)
+        assert declared, lane.unit
+        assert entries[lane.unit] == declared.group(1), (
+            f"the header says {lane.unit} restarts in {entries[lane.unit]}s but "
+            f"the unit declares {declared.group(1)}s"
+        )
+
+
+def test_the_arm_asks_the_group_predicate_even_for_a_root_renderer(
+    tmp_path, monkeypatch, capsys
+):
+    """The arm must CALL `renderer_user_in_ring_group`, not short-circuit past it.
+
+    P6a's caller wrote `rl.renderer_user_in_ring_group(user) if user else None`,
+    so a renderer with no `User=` (root — which bluealsa-aplay is) never reached
+    the predicate: the root-is-capable branch was dead from production and the
+    arm saw an indistinguishable "unknown". Restoring that short-circuit must
+    fail here.
+
+    This is a behavioural guard, not a source grep: it records the actual calls.
+    """
+    from jasper.cli import audio_config as ac
+
+    calls: list[object] = []
+
+    def recording(user, group=rl.RING_GROUP):
+        calls.append(user)
+        return True
+
+    monkeypatch.setattr(rl, "renderer_user_in_ring_group", recording)
+    monkeypatch.setattr(ac, "_renderer_unit_user", lambda unit: None)  # root
+    # Imported inside the function, so patch it at its source module.
+    import jasper.ring_assets as ring_assets
+
+    monkeypatch.setattr(
+        ring_assets, "ring_asset_presence",
+        lambda: type("P", (), {"all_present": True, "missing": lambda self: ()})(),
+    )
+    monkeypatch.setattr(rl, "RENDERER_LANES_CONF_D", str(tmp_path / "conf"))
+    (tmp_path / "conf").write_text("")
+
+    args = argparse.Namespace(
+        arm=["bluealsa"], disarm=[], set=None,
+        path=str(tmp_path / "lanes.env"),
+        input_buffer_frames=4096, period_frames=256,
+    )
+    rc = ac._cmd_renderer_lanes(args)
+    assert rc == 0, capsys.readouterr().err
+
+    assert calls == [None], (
+        "the arm must ask the predicate exactly once, with the root renderer's "
+        f"None; got {calls!r}. An empty list means the caller short-circuited "
+        "and the root branch is dead again"
+    )

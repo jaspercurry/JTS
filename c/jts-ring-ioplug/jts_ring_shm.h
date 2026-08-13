@@ -118,10 +118,11 @@ _Static_assert(ATOMIC_LLONG_LOCK_FREE == 2,
 // the one non-self-healing shape here. Every ring writer's cadence, so the set
 // is checkable rather than assumed:
 //   - librespot.service            RestartSec=5  — clears it comfortably
-//   - bluealsa-aplay.service       RestartSec=5  — set in the JTS drop-in
-//     (deploy/systemd/bluealsa-aplay.service.d/jts-output.conf), because the
-//     PACKAGED unit's cadence is not visible to this repo; the drop-in
-//     overrides it, so the packaged value cannot bite
+//   - bluealsa-aplay.service       RestartSec=5  — in the JTS drop-in
+//     deploy/systemd/bluealsa-aplay.service.d/jts-restart.conf, which has
+//     owned it since before this lane wrote a ring (chosen for OOM/device
+//     churn; it satisfies the ring constraint too). The drop-in overrides
+//     whatever the packaged unit sets, so that value cannot bite
 //   - jasper-camilla               RestartSec=2  — sits ON the boundary for
 //     Ring B, worth knowing before anyone shortens it
 // Pinned by test_writer_lock_survives_a_sigkilled_incumbent (the window itself)
