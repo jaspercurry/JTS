@@ -46,15 +46,21 @@ change what the STORE banks.  Nothing here reads, derives, or reinterprets the
 banked quantity: :func:`grade_attempt_outcome` never sees it, and
 :func:`assess_attempt_identity` decides an *identity*, not a number.
 
-**No household vocabulary lives here** — the rule :mod:`.coordinator` states.
-The two ladders answer with *kinds*; the flow owns ``REASON_REGISTRY``,
-``ATTEMPT_REASON_NO_FLOOR`` (which is flow-defined), and the construction of the
-decision payload the household reads.  The kernel's own vocabulary
-(``LoopDecision``, ``AttemptBudget``, ``STOP_EVIDENCE``,
-``REASON_ATTEMPT_NOT_COMPARABLE``) stays with the flow too, for the same reason
-:mod:`.capture_dispatch` left ``PhaseVerdict`` there: a ladder that answers with
-a kind never touches the carrier, so this module needs no import of
-:mod:`~jasper.active_speaker.attempts_loop` at all — and does not have one.
+**No household copy lives here** — the rule :mod:`.coordinator` states.  The two
+ladders answer with *kinds*; :mod:`.vocabulary` owns ``REASON_REGISTRY`` and the
+sentences it binds, and the flow still constructs the decision payload the
+household reads.  The kernel's own vocabulary (``LoopDecision``,
+``AttemptBudget``, ``STOP_EVIDENCE``, ``REASON_ATTEMPT_NOT_COMPARABLE``) stays
+with the flow, because a ladder that answers with a kind never touches the
+carrier — so this module needs no import of
+:mod:`~jasper.active_speaker.attempts_loop` at all, and does not have one.
+
+Two values below are the exception that proves the rule, moved here by #2291
+Phase 5c-ii because this is the module that *decides* with them:
+:data:`ATTEMPT_REASON_NO_FLOOR` is a grading **status**, not a sentence — it has
+no ``REASON_REGISTRY`` entry and no copy — and
+:data:`PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB` is a policy threshold.  Neither
+is household-facing text.
 
 Dependency direction, as for every module here: no ``jasper.web`` import and
 nothing from :mod:`jasper.active_speaker.crossover_v2_flow`.
@@ -68,6 +74,8 @@ from typing import Callable, Iterable
 __all__ = [
     "ATTEMPT_ALREADY_RECORDED",
     "ATTEMPT_NEW",
+    "ATTEMPT_REASON_NO_FLOOR",
+    "PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB",
     "GRADE_DECIDE_NEXT",
     "GRADE_KINDS",
     "GRADE_NOT_COMPARABLE",
@@ -77,6 +85,47 @@ __all__ = [
     "assess_attempt_identity",
     "grade_attempt_outcome",
 ]
+
+
+# --------------------------------------------------------------------------- #
+# the two values this module decides with (#2291 Phase 5c-ii)
+# --------------------------------------------------------------------------- #
+
+# A grading status, deliberately not a synthetic kernel decision. The kernel
+# requires a real FloorStats and the store returns ``None`` until an offline
+# repeat study adopts one, so the honest live result is ungraded — no invented
+# floor and no improvement claim.
+ATTEMPT_REASON_NO_FLOOR = "ungraded_no_floor"
+
+# How much the correction must improve ITS OWN two-branch model before a
+# spec-failing prediction is allowed onto the speaker (linearization-integrity
+# PR-L4 item 2). Both numbers are the pooled spec residual
+# (`flat_spec.spec_convergence_residual`) of the RAW pre-fit and the LINEARIZED
+# predicted sum, graded through the identical evaluator, in dB.
+#
+# The gate only bites when the prediction ALREADY fails the spec — a prediction
+# that meets it needs no improvement argument, and gating an in-spec result on
+# "how much did it improve" would refuse the flattest speakers hardest. So the
+# question this threshold answers is narrow: *we can already see this will not
+# reach spec — is it at least clearly moving the right way?*
+#
+# 0.5 dB, and the derivation changed with the frame (PR-L4 review B1). While
+# this compared the model against the measured in-room cloud, the threshold had
+# to absorb the whole cross-frame gap and was set at `SPEC_BANDS[0]`'s 1.5 dB
+# for that reason — which, as the review demonstrated, made the verdict a
+# function of the ROOM rather than the correction. Now that both terms are the
+# same instrument (same branches, same grid, same evaluator, differing ONLY by
+# the emitted filters) the comparison carries no measurement noise at all, so
+# the threshold is a product-policy floor instead of a noise margin.
+#
+# 0.5 dB is that floor because it is this model's own measured tracking error:
+# `crossover_v2.intervention.plan_linearization` records the complex-correction
+# model tracking the real
+# VERIFY summation to ~0.5 dB on JTS3 (the zero-phase model it replaced
+# mistracked by ~2.0 dB). An improvement smaller than the gap between what we
+# model and what the hardware realizes is not an improvement we can honestly
+# claim, so it does not earn an apply.
+PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB = 0.5
 
 
 # --------------------------------------------------------------------------- #

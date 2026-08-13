@@ -21,10 +21,11 @@ analysis for a deferred fit, publishing CHECK evidence across the seam, raising
 ``PhaseVerdict`` the phone reads.  A pure ladder asked the same question twice
 answers the same way, which is what makes a replayed capture safe to re-screen.
 
-**No household vocabulary lives here.**  A refusal leaves as a *kind*; the flow
-maps it through ``SCREEN_KIND_REASONS`` and renders the sentence from
-``REASON_REGISTRY``.  That is the same boundary :mod:`.spatial` draws, and the
-reason this module can exist at all — see the note on the vocabulary below.
+**No household vocabulary lives here.**  A refusal leaves as a *kind*;
+:mod:`.vocabulary` maps it through ``SCREEN_KIND_REASONS`` and renders the
+sentence from ``REASON_REGISTRY``.  That is the same boundary :mod:`.spatial`
+draws, and the reason this module can exist at all — see the note on the
+vocabulary below.
 
 Three deliberate shapes, because each looks like something this module should
 have done differently:
@@ -50,16 +51,13 @@ have done differently:
   thing this ladder decides about a capture, and a reader who finds only the
   refusals here would conclude MEASURE has no other judgement to make.
 
-**On the household vocabulary, and why it did not have to move.**
-:mod:`.admission` recorded that the settle path could not leave without
-"relocating the household vocabulary or inventing ports whose only purpose is
-to dodge a type import".  That is true of moving a method *whole* — it returns
-``PhaseVerdict``, which binds ``REASON_REGISTRY``, ``reason_message`` and
-``TRANSIENT_AUTO_RETRY_CODES`` through ``to_relay_dict``.  It is not true of
-the decision/act split this package actually uses: a ladder that answers with a
-kind never touches the carrier, and the conductor that owns the carrier builds
-it.  So the vocabulary stays where its consumers are and this organ still
-leaves.  The full reasoning, and what was scoped out with it, is on the PR.
+**On the household vocabulary.**  This note used to argue that the vocabulary
+did not have to move.  #2291 Phase 5c-ii moved it, to :mod:`.vocabulary` — on a
+fact that changed (the conductor is dissolving and its spine lands in this
+package, which cannot import the flow), not on that argument having been wrong.
+The reasoning lives in that module's docstring and is not restated here.  What
+is unchanged is the boundary above: a ladder still answers with a kind and still
+never touches the carrier.
 
 Dependency direction, as for every module here: no ``jasper.web`` import and
 nothing from :mod:`jasper.active_speaker.crossover_v2_flow`.
@@ -67,9 +65,11 @@ nothing from :mod:`jasper.active_speaker.crossover_v2_flow`.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
+from jasper.audio_measurement.program import KIND_SWEEP
 from jasper.audio_measurement.program_analysis import INTEGRITY_CHECK_SWEEP_HEARD
 
 from .spatial import (
@@ -92,6 +92,8 @@ __all__ = [
     "SCREEN_LOW_ALIGNMENT_CONFIDENCE",
     "SCREEN_NOISY_ROOM_LINEARITY",
     "SCREEN_SNR_FLOOR",
+    "SWEEP_LOCATE_CONFIDENCE_FLOOR",
+    "SWEEP_SCHEDULE_RESIDUAL_CEILING_MS",
     "CheckScreens",
     "MeasureScreen",
     "MeasureScreens",
@@ -416,3 +418,296 @@ def verify_integrity_screens(
     if analysis.linearity_ok is False:
         return VerifyIntegrityScreen(SCREEN_LINEARITY_FAILED)
     return None
+
+
+# --------------------------------------------------------------------------- #
+# the capture-integrity predicates, and the two MEASURE thresholds two of
+# them read (#2291 Phase 5c-ii)
+#
+# Private on purpose, and re-exported from the flow under these exact
+# spellings: the conductor calls them by name today, and the spine that
+# survives it lands in this package. The precedent is ``fc_sweep``'s
+# ``_fc_rejection`` / ``_FC_GRID_EPS_HZ``.
+# --------------------------------------------------------------------------- #
+
+# Measurement-honesty gate G2 (2026-07-22): an ``event=outputd.xrun`` playback
+# glitch on 2026-07-22 hardware shifted a MEASURE capture's three sweeps
+# −25…−28 ms off their SCHEDULED slot with per-segment locate confidence
+# 0.07-0.12 (the measured clean corpus's WORST capture ran ≤1.5 ms residual
+# at ≥0.6926 confidence) while ``glitch_detected`` stayed False — the
+# repeat-pair drift check (``_estimate_drift``) is structurally blind to a
+# uniform whole-capture shift (its own residual guard demeans per role, so
+# it only catches a WITHIN-driver desync), and ``_stimulus_locate_ok`` passed
+# on the max() confidence across every located stimulus, so one good segment
+# masked three bad sweeps (that max() is per-ROLE since #1838's D8, which
+# narrows but does not close the hole — a role's own pilots can still be the
+# segment that clears it, which is why this per-sweep floor exists). Both
+# thresholds carry wide margin on both sides of the two clusters above.
+# PROVISIONAL pending W6 bench validation.
+#
+# The two are read by DIFFERENT gates since #1838's D3: the residual ceiling
+# by ``_sweep_schedule_ok`` (a glitch — silent auto-retry), the confidence
+# floor by ``_sweep_locate_confidence_ok`` (too quiet — no retry).
+#
+# Both have a deliberate twin one layer down —
+# ``program_analysis.SWEEP_SCHEDULE_RESIDUAL_CEILING_MS`` /
+# ``SWEEP_LOCATE_CONFIDENCE_FLOOR`` — which apply the SAME two judgments to
+# VERIFY's single ``KIND_SUMMED_SWEEP`` (issue #1971), a segment kind neither
+# gate here has ever filtered for. ``program_analysis`` cannot import them
+# from this module without inverting the dependency, so they are duplicated
+# and pinned by tests/test_measurement_integrity_floor_contracts.py: a
+# deliberate move of either number must update BOTH copies and that test.
+SWEEP_SCHEDULE_RESIDUAL_CEILING_MS = 5.0
+SWEEP_LOCATE_CONFIDENCE_FLOOR = 0.3
+
+
+def _sweep_locate_confidence_ok(analysis: ProgramAnalysis) -> bool:
+    """False when a MEASURE sweep was only weakly located — i.e. too quiet.
+
+    Split out of :func:`_sweep_schedule_ok` by D3 (issue #1838). The two
+    halves of that gate answer different questions and deserve different
+    verdicts:
+
+    * a sweep whose RESIDUAL is out of bounds landed off its scheduled slot —
+      a timeline splice, a genuine capture glitch, retry;
+    * a sweep the locator could barely find at all is not a splice. It is a
+      capture too quiet to hear, and the fix is the level or the mic, not a
+      retry of the same level.
+
+    In session cap_-Us10xORVNlFa_dgi-sP7g the sweeps located at 0.0298
+    against this 0.3 floor, the mis-located sweeps then produced a 1018-sample
+    residual, and the residual tripped ``glitch_detected`` — so the household
+    was told the capture glitched and the flow silently re-armed the same
+    unwinnable level. Low SNR CAUSES the glitch signal; ordering this check
+    ahead of it is what makes the reported cause the real one.
+
+    Same ``KIND_SWEEP`` domain as :func:`_sweep_schedule_ok`: the leading
+    pilot pair's short, quiet windows locate coarsely by design and would
+    manufacture spurious fires here.
+
+    That domain is MEASURE-only, and deliberately stays so. VERIFY's sweep is
+    ``KIND_SUMMED_SWEEP``, and the same judgment is made for it one layer down
+    by ``program_analysis._verify_capture_integrity`` (issue #1971) — where
+    the capture's own record can also say which MEASURE-era checks could not
+    run there at all.
+    """
+    return all(
+        loc.confidence >= SWEEP_LOCATE_CONFIDENCE_FLOOR
+        for loc in analysis.locations
+        if loc.kind == KIND_SWEEP
+    )
+
+
+def _sweep_schedule_ok(analysis: ProgramAnalysis, sample_rate_hz: int) -> bool:
+    """False when a MEASURE sweep landed off its scheduled slot
+    (measurement-honesty gate G2, 2026-07-22 — the xrun detector; see
+    :data:`SWEEP_SCHEDULE_RESIDUAL_CEILING_MS` for the evidence).
+
+    Since D3 (issue #1838) this is the RESIDUAL half of G2 only. The
+    locate-confidence half moved to :func:`_sweep_locate_confidence_ok`,
+    which runs earlier and answers "too quiet" instead of "glitched" — see
+    that function for why the two must not share a verdict.
+
+    ``sample_rate_hz`` is deliberately the CALLER's own MEASURE program rate,
+    not something read off ``analysis`` itself:
+    ``analyze_program_capture`` HARD-REFUSES a capture whose sample rate
+    disagrees with the program's own (``capture rate != program rate``,
+    ``jasper.audio_measurement.program_analysis``), and the relay capture
+    spec fixes every phone upload at ``REQUIRED_SAMPLE_RATE_HZ`` (48 kHz,
+    ``jasper.capture_relay.spec``) — so no resampling ever runs between the
+    phone's WAV and this analysis, and ``SegmentLocation.residual_samples``
+    is always expressed in exactly that domain (the conductor's own composed
+    program's ``sample_rate_hz``).
+
+    Filtered to ``KIND_SWEEP`` only — mirrors ``_estimate_drift``'s exclusion
+    of the leading pilot pair from residual/drift logic (their short/quiet
+    windows locate more coarsely and would manufacture spurious fires here).
+    VERIFY's ``KIND_SUMMED_SWEEP`` is out of this domain on purpose; see
+    :func:`_sweep_locate_confidence_ok` for where its twin lives (#1971).
+    No sweeps at all (nothing to judge) passes — the pre-existing
+    ``_stimulus_locate_ok`` check, which runs earlier in ``_measure_verdict``'s
+    ladder, already covers "nothing usable in this capture".
+    """
+    sweeps = [loc for loc in analysis.locations if loc.kind == KIND_SWEEP]
+    if not sweeps:
+        return True
+    for loc in sweeps:
+        residual_ms = abs(loc.residual_samples) / sample_rate_hz * 1000.0
+        if residual_ms > SWEEP_SCHEDULE_RESIDUAL_CEILING_MS:
+            return False
+    return True
+
+
+def _sweep_schedule_diag_fields(
+    analysis: ProgramAnalysis, sample_rate_hz: int,
+) -> tuple[float | None, float | None]:
+    """``(sweep_residual_ms_worst, sweep_locate_confidence_min)`` — diagnostic
+    only, over the SAME ``KIND_SWEEP`` domain ``_sweep_schedule_ok`` and
+    ``_sweep_locate_confidence_ok`` gate on (one figure each, since #1838's
+    D3 split them), but never itself gates a verdict. ``sweep_residual_ms_worst`` is the
+    SIGNED residual (not its magnitude) of whichever sweep has the largest
+    absolute residual, so a reviewer sees which direction the schedule broke,
+    not just how far. ``(None, None)`` when there are no sweeps to judge —
+    mirrors ``_sweep_schedule_ok``'s own "nothing to judge" stance.
+    """
+    sweeps = [loc for loc in analysis.locations if loc.kind == KIND_SWEEP]
+    if not sweeps:
+        return None, None
+    worst = max(sweeps, key=lambda loc: abs(loc.residual_samples))
+    residual_ms_worst = worst.residual_samples / sample_rate_hz * 1000.0
+    confidence_min = min(loc.confidence for loc in sweeps)
+    return residual_ms_worst, confidence_min
+
+
+def _gate_window_ms(response: Any) -> float | None:
+    if response is None:
+        return None
+    window = response.gating.get("window_ms") if response.gating else None
+    return float(window) if isinstance(window, (int, float)) else None
+
+
+def _gate_floor_source(response: Any) -> str | None:
+    """WHY ``_gate_window_ms`` is what it is — travels beside it everywhere.
+
+    ``gating.FLOOR_MEASURED`` = a reflection onset was found and the window
+    stops at it; ``gating.FLOOR_SEARCH_BOUND`` = the search reached
+    ``gating.SEARCH_T_MAX_MS`` without finding one and the window was CAPPED
+    there. Both print as the same ``gate_window_ms`` number, and the whole
+    2026-07-30 corpus was the second state while every consumer read it as
+    the first (issue #1966). ``None`` is an ungateable capture, never a
+    guess. See ``program_analysis._gate_floor_source_of``, which does the
+    same job for the retained-capture sidecar.
+    """
+    if response is None:
+        return None
+    source = response.gating.get("floor_source") if response.gating else None
+    return str(source) if isinstance(source, str) else None
+
+
+def _gate_disclosure(response: Any) -> str | None:
+    """``_gate_floor_source`` and its floors, rendered as one sentence.
+
+    Rendered, never composed here: the copy has a single writer,
+    ``jasper.audio_measurement.gate_disclosure.describe_gate``, so the
+    per-position evidence file and the retained-capture sidecar cannot
+    describe the same gate two different ways.
+
+    Imported inside the function, matching how this module reaches its
+    other cross-package helpers — it deliberately does not import
+    :mod:`~jasper.audio_measurement.gating` at module scope either, and
+    reads a gating block purely as data.
+    """
+    if response is None or not getattr(response, "gating", None):
+        return None
+    from jasper.audio_measurement import gate_disclosure
+
+    return gate_disclosure.describe_gate(response.gating)
+
+
+def _gate_record(response: Any) -> dict[str, Any] | None:
+    """The gate reduced to the two facts a household SCREEN needs, or ``None``.
+
+    ``{"disclosure": <the sentence>, "reflection_measured": <bool>}``. Both are
+    :mod:`~jasper.audio_measurement.gate_disclosure`'s own derivations, taken
+    here at compose time — one is :func:`_gate_disclosure`'s sentence, the
+    other is
+    :attr:`~jasper.audio_measurement.gate_disclosure.GateDisclosure.gated_anything`,
+    the single owner of "may this record claim reflections were removed".
+    Neither is re-derived downstream.
+
+    **A reduction, not the block.** What travels to the wizard's durable state
+    is these two derived facts rather than the gating fragment itself, so the
+    state file does not take a dependency on
+    :mod:`~jasper.audio_measurement.gating`'s schema — that schema is versioned
+    and moves (it went 1 -> 2 in R9), and a screen re-deriving copy from it
+    would be a second place the two epistemic states could be collapsed back
+    into one. A response with no gating block yields ``None``: absent stays
+    absent, and no screen invents a gate that was never applied.
+    """
+    disclosure = _gate_disclosure(response)
+    if disclosure is None:
+        return None
+    from jasper.audio_measurement import gate_disclosure
+
+    return {
+        "disclosure": disclosure,
+        "reflection_measured": gate_disclosure.build_gate_disclosure(
+            response.gating
+        ).gated_anything,
+    }
+
+
+def _pilot_by_role(analysis: ProgramAnalysis, role: str) -> Any | None:
+    for pilot in analysis.pilots:
+        if pilot.role == role:
+            return pilot
+    return None
+
+
+def _pilot_transfer_by_role(analysis: ProgramAnalysis) -> dict[str, float]:
+    """Per-role pilot transfer: captured hi level minus the programmed hi gain.
+
+    Measurement-honesty gate G3's raw material (2026-07-22): VERIFY replays
+    the identical program through the identical applied graph on every
+    attempt, so this transfer should not move between attempts either — see
+    :data:`VERIFY_PILOT_TRANSFER_STEP_CEILING_DB`. Excludes any pilot whose
+    ``programmed_hi_gain_db`` is unset (a legacy program built without
+    ``leading_pilot_gains_db`` never threads it, per
+    ``program_analysis.PilotObservation``'s docstring) — nothing to compare
+    that pilot against.
+
+    ``level_hi_dbfs`` safety note: ``PilotObservation``'s own docstring warns
+    it "must never feed an ABSOLUTE-level consumer" (ambient subtraction
+    shifts it by however much ambient power was removed). This use is safe
+    for TWO independent reasons.
+
+    (1) It is a RELATIVE cross-ATTEMPT comparison (this attempt's transfer
+    minus the FIRST attempt's), never a true absolute-level read.
+
+    (2) The ambient-difference confound the older version of this note
+    deferred is now REAL but bounded far below the gate. Until issue #1810
+    (2026-07-28) a VERIFY pilot pair had no ambient window at all, so
+    subtraction was a literal no-op here; it now has a ~1 s pre-pilot window
+    and subtraction is live. The bound: ``_verify_verdict`` refuses any
+    attempt whose ``pilot_snr_ok`` is False BEFORE reaching the G3 block, so
+    every attempt that gets here cleared ``PILOT_MIN_SNR_DB`` (≈12.4 dB) on
+    the QUIET pilot — and the HI pilot sits a further
+    ``PILOT_LEVEL_DELTA_DB`` (10 dB) above it, i.e. ≥22.4 dB in-band SNR. At
+    that SNR the subtraction moves ``level_hi_dbfs`` by at most
+    ``10·log10(1 − 10**−2.24)`` ≈ **0.025 dB**, so two admissible attempts can
+    differ by at most ~0.05 dB from this term alone — an order of magnitude
+    under :data:`VERIFY_PILOT_TRANSFER_STEP_CEILING_DB` (0.35 dB). Lowering
+    that ceiling toward ~0.1 dB, or raising ``PILOT_AMBIENT_WINDOW_S``'s trust
+    without the SNR gate in front of it, is what would put this back in play.
+    """
+    return {
+        pilot.role: pilot.level_hi_dbfs - pilot.programmed_hi_gain_db
+        for pilot in analysis.pilots
+        if pilot.programmed_hi_gain_db is not None
+    }
+
+
+def _pilot_diag_fields(pilot: Any | None) -> dict[str, float | None]:
+    """One pilot's linearity/SNR/channel-map diagnostics, ``None``-safe."""
+    if pilot is None:
+        return {
+            "snr_db": None,
+            "captured_delta_db": None,
+            "programmed_delta_db": None,
+            "channel_map_target_rise_db": None,
+            "channel_map_cross_rise_db": None,
+        }
+    snr_db = pilot.snr_db
+    target_rise = pilot.channel_map_target_rise_db
+    cross_rise = pilot.channel_map_cross_rise_db
+    return {
+        "snr_db": round(snr_db, 2) if math.isfinite(snr_db) else None,
+        "captured_delta_db": round(float(pilot.captured_delta_db), 3),
+        "programmed_delta_db": round(float(pilot.programmed_delta_db), 3),
+        "channel_map_target_rise_db": (
+            round(target_rise, 3) if target_rise is not None else None
+        ),
+        "channel_map_cross_rise_db": (
+            round(cross_rise, 3) if cross_rise is not None else None
+        ),
+    }
