@@ -6123,21 +6123,26 @@ class CrossoverV2Session:
                 verdict.reflection_measured,
             )
             # SETTLE HERE, not at the next begin (owner ruling #2086 item 3).
-            # If this rejection spent the slot's last extra, the position is
-            # decided now — dropped and the group advanced, or the honest end
-            # named — so the household is never shown a retry screen whose
-            # button only leads to a pre-play refusal.
+            # If this rejection closed the slot — its last extra spent, or a
+            # condition no further take can clear — the position is decided now:
+            # dropped and the group advanced, or the honest end named. So the
+            # household is never shown a retry screen whose button only leads to
+            # a pre-play refusal.
             #
             # UNLESS the verdict already ended the set on its own finding
             # (#1873's deterministic mismatch is the one that can). The settle
             # would then describe the same ending twice and keep the weaker
-            # account: ``_terminal_spent_verdict`` replaces the reason with the
-            # exhaustion sentence, whose "still could not get a clean read"
-            # is simply false about captures that were clean and agreed. Same
-            # call ``_settled_group_verdict`` already makes for a close-time
-            # product gate — publish the specific finding, not the meter's
-            # summary of it. Inert for every path that predates this: the only
-            # other writers of ``terminal`` are reached FROM this method.
+            # account. BOTH of its rungs would: ``_terminal_spent_verdict``
+            # replaces the reason with the exhaustion sentence, whose "still
+            # could not get a clean read" is simply false about captures that
+            # were clean and agreed; and the condition rung — whose codes
+            # #1873's own finding joins — overwrites the verdict's
+            # ``terminal_outcome`` with ``condition_not_retriable``, losing the
+            # specific token the page and the journal were given. Same call
+            # ``_settled_group_verdict`` already makes for a close-time product
+            # gate — publish the specific finding, not the settle's summary of
+            # it. Inert for every path that predates this: the only other
+            # writers of ``terminal`` are reached FROM this method.
             if verdict.payload.get("terminal") is not True:
                 verdict = self._resolve_spent_slot(phase, index, slot, verdict)
         if verdict.accepted:
@@ -6205,11 +6210,11 @@ class CrossoverV2Session:
     def _resolve_spent_slot(
         self, phase: str, index: int, slot: str, verdict: PhaseVerdict
     ) -> PhaseVerdict:
-        """Act on a position whose extras are gone — attribute, then degrade.
+        """Act on a rejection the next begin would refuse — attribute, then degrade.
 
-        The ladder — which outcomes exist, in which order, and why a retained
-        earlier take has to be asked about before the floor is counted —
-        belongs to
+        The ladder — which outcomes exist, in which order, why the condition is
+        asked about before the meter, and why a retained earlier take has to be
+        asked about before the floor is counted — belongs to
         :func:`~jasper.active_speaker.crossover_v2.admission.settle_spent_slot`
         and its group half. What stays here is what each outcome CAUSES:
         rendering the diagnosis the household reads, the journal line, the
@@ -6219,21 +6224,23 @@ class CrossoverV2Session:
         The ladder's two halves bracket the lock exactly, because its group
         rungs read facts that are only true while it is held.
 
-        A group phase never reaches a terminal outcome with anything left to
-        measure, which is why the 2026-08-03 shape — a pre-play refusal at a
-        cloud position while the screen read "step 6, one last time" — is
-        unreachable from ordinary retry exhaustion.
+        A group phase never reaches a terminal outcome from EXHAUSTION with
+        anything left to measure, which is why the 2026-08-03 shape — a pre-play
+        refusal at a cloud position while the screen read "step 6, one last
+        time" — is unreachable from ordinary retries. The condition rung does
+        end a phase outright, positions left or not, and that is its point: it
+        fires only for codes the registry marks unclearable, and continuing a
+        group past one would be continuing past a fault the flow just named.
         """
         ledger = self._slot_attempts.get(slot)
         kind = _admission.settle_spent_slot(
             ledger=ledger,
             is_group=lambda: self._journey.plan.is_group(phase),
+            code=verdict.code,
+            non_retriable=NON_RETRIABLE_CODES,
         )
         if kind == _admission.SETTLE_RETRY_REMAINS:
             return verdict
-        # Past the first rung the meter exists — the ladder answers
-        # ``SETTLE_RETRY_REMAINS`` for a slot with no ledger — which is what
-        # lets the terminal builder below index ``_slot_attempts`` directly.
         observed = verdict.code or self._last_reason.get(slot) or ""
         diagnosis = ""
         if observed in REASON_REGISTRY:
@@ -6243,6 +6250,27 @@ class CrossoverV2Session:
                 pilot_heard=verdict.pilot_heard,
                 reflection_measured=verdict.reflection_measured,
             )
+        if kind == _admission.SETTLE_CONDITION_NOT_RETRIABLE:
+            # The condition rung — nothing was spent, so nothing here reads the
+            # meter, and the copy stays the code's OWN sentence. It already
+            # names the one action that helps, and the exhaustion sentence
+            # ("JTS measured this spot N times") would be false about a
+            # position that was rejected on its first take.
+            self._log_condition_settled(phase, index, observed, kind, diagnosis)
+            return replace(
+                verdict,
+                payload={
+                    **verdict.payload,
+                    # Same runner/page contract the spent terminals use:
+                    # publish this capture_result, then finish rather than wait
+                    # for a next begin ``authorize_begin`` will refuse.
+                    "terminal": True,
+                    "terminal_outcome": kind,
+                },
+            )
+        # Past this rung the meter is empty — the ladder answers
+        # ``SETTLE_RETRY_REMAINS`` for a slot with no ledger — which is what
+        # lets the terminal builder below index ``_slot_attempts`` directly.
         if kind != _admission.SETTLE_GROUP_CLOSE_REQUIRED:
             # One arm per :data:`admission.SETTLE_KINDS` member, and this is
             # both ``SETTLE_PHASE_CANNOT_PROCEED``'s arm and the LOUD fallback
@@ -6432,6 +6460,23 @@ class CrossoverV2Session:
             pilot_heard=pilot_heard,
             reflection_measured=reflection_measured,
             extra_allowed=MAX_EXTRA_ATTEMPTS_PER_POSITION,
+        )
+
+    def _log_condition_settled(
+        self, phase: str, index: int, observed: str, outcome: str, diagnosis: str,
+    ) -> None:
+        """The journal line for a slot closed by its CONDITION, not its meter.
+
+        Its own event rather than ``_log_slot_spent``: that line is named
+        ``position_attempts_spent`` and carries ``extra_allowed``, and a
+        rejection settled on the first take spent nothing — a support read that
+        found it there would count a session's exhausted positions wrong.
+        """
+        log_event(
+            logger, "correction.crossover_v2_position_not_retriable",
+            level=logging.WARNING,
+            session_id=self.session_id, phase=phase, index=index,
+            observed=observed, outcome=outcome, diagnosis=diagnosis,
         )
 
     def _note_accepted(self, phase: str, index: int) -> None:
@@ -7340,10 +7385,13 @@ class CrossoverV2Session:
             refusal = self._delta_probe_refusal(self._run_delta_probe())
             if refusal is not None:
                 # No round grading on a refusal. The probe already rolled back
-                # and named itself with the more specific code, and a group can
-                # be retaken — so grading here would burn the fire-once guard
-                # on evidence that may yet be replaced, exactly as it would on
-                # a rejected VERIFY (see ``_consume_verify``). The receipt is
+                # and named itself with the more specific code, and every code
+                # it can name is non-retriable — so the settle rung ends the
+                # session on THIS verdict (#2086's condition rung) and there is
+                # no better-evidenced ending coming that this one would have
+                # pre-empted. A session that ends on a terminal rejection
+                # writes no round receipt, which is the honest record: its
+                # post-apply evidence never completed. The receipt is
                 # write-once, so "grade the first ending" is not a shape this
                 # can safely take twice.
                 return PhaseVerdict(
@@ -8526,13 +8574,14 @@ class CrossoverV2Session:
         * Full — the end of :meth:`_close_cloud_group` for
           ``PHASE_CLOUD_VERIFY``, when the spatial arm has landed too.
 
-        **Both triggers require an ACCEPTED capture.** VERIFY and a position
-        group each carry a retry budget, so a rejected one does not end the
-        session; grading it would burn this guard on evidence the household
-        then replaced, and the receipt — which is write-once — would describe a
-        capture the round did not end on. A session that ends on a terminal
-        rejection therefore writes no round receipt, which is the honest
-        record: its post-apply evidence never completed.
+        **Both triggers require an ACCEPTED capture**, and a rejection reaches
+        one of two ends. A RETRIABLE one does not end the session — VERIFY and a
+        position group each still have takes to offer — so grading it would burn
+        this guard on evidence the household then replaced, and the receipt,
+        which is write-once, would describe a capture the round did not end on.
+        A rejection no take can clear ends the session on that verdict instead
+        (#2086's condition rung), and then no round receipt is written at all,
+        which is the honest record: its post-apply evidence never completed.
 
         The fire-once guard is here rather than in the coordinator because it
         is a fact about THIS SESSION rather than about the round: only the

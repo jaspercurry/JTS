@@ -376,6 +376,10 @@ def test_the_declared_settle_kinds_are_the_ones_the_ladder_can_return():
         ),
         admission.settle_spent_slot(ledger=_spent(), is_group=lambda: False),
         admission.settle_spent_slot(ledger=_spent(), is_group=lambda: True),
+        admission.settle_spent_slot(
+            ledger=admission.SlotAttempts(admitted=1), is_group=lambda: False,
+            code="wiring", non_retriable=frozenset({"wiring"}),
+        ),
         admission.settle_group_position(
             index=2, retained={2}, floor=3, unwalked_count=lambda: 0,
         ),
@@ -657,6 +661,164 @@ def test_the_settle_kinds_are_the_journal_and_payload_words_the_phone_reads():
     assert admission.SETTLE_BELOW_POSITION_FLOOR == "below_position_floor"
     assert admission.SETTLE_KEPT_EARLIER_TAKE == "kept_earlier_take"
     assert admission.SETTLE_POSITION_UNRESOLVED == "position_unresolved"
+    assert admission.SETTLE_CONDITION_NOT_RETRIABLE == "condition_not_retriable"
+
+
+# --------------------------------------------------------------------------- #
+# the condition rung — a rejection the next begin would refuse (#2086)
+# --------------------------------------------------------------------------- #
+
+
+def test_a_non_retriable_rejection_settles_however_many_extras_remain():
+    """The ladder's first rung, and the precedence that makes it first.
+
+    A slot with every extra unspent is still settled when the rejection names a
+    condition no further take can clear, because ``assess_begin`` would refuse
+    that take — so the meter and the gate must not disagree about whether a
+    retry exists. Demoting this rung below the meter reddens the first two rows;
+    dropping it reddens all three.
+    """
+    fresh = admission.SlotAttempts(admitted=1)
+    non_retriable = frozenset({"wiring"})
+
+    assert admission.settle_spent_slot(
+        ledger=fresh, is_group=lambda: False,
+        code="wiring", non_retriable=non_retriable,
+    ) == admission.SETTLE_CONDITION_NOT_RETRIABLE
+    # No meter at all — the first take of a position — settles the same way.
+    assert admission.settle_spent_slot(
+        ledger=None, is_group=lambda: False,
+        code="wiring", non_retriable=non_retriable,
+    ) == admission.SETTLE_CONDITION_NOT_RETRIABLE
+    # And it OUTRANKS a spent meter, exactly as it does at the begin gate: the
+    # household reads the condition, never "JTS measured this spot 4 times".
+    assert admission.settle_spent_slot(
+        ledger=_spent(), is_group=lambda: True,
+        code="wiring", non_retriable=non_retriable,
+    ) == admission.SETTLE_CONDITION_NOT_RETRIABLE
+
+    # A retriable code with extras left is untouched — the rung is about the
+    # condition, not about rejections in general.
+    assert admission.settle_spent_slot(
+        ledger=fresh, is_group=lambda: False,
+        code="quiet_room", non_retriable=non_retriable,
+    ) == admission.SETTLE_RETRY_REMAINS
+    # …and so are the stated defaults, which is what lets the meter rungs be
+    # asked in isolation.
+    assert admission.settle_spent_slot(
+        ledger=fresh, is_group=lambda: False,
+    ) == admission.SETTLE_RETRY_REMAINS
+    assert admission.settle_spent_slot(
+        ledger=fresh, is_group=lambda: False, code="wiring",
+    ) == admission.SETTLE_RETRY_REMAINS
+
+
+def test_the_condition_rung_does_not_ask_the_journey():
+    """``is_group`` stays a call-count port on the new rung too.
+
+    A settled condition ends the phase whatever the phase's shape is, so the
+    journey plan is not consulted — the same read the ladder already declines to
+    make while a slot has retries left.
+    """
+    asked: list[str] = []
+
+    assert admission.settle_spent_slot(
+        ledger=_spent(),
+        is_group=lambda: asked.append("plan") or True,
+        code="wiring", non_retriable=frozenset({"wiring"}),
+    ) == admission.SETTLE_CONDITION_NOT_RETRIABLE
+    assert asked == [], "the journey was asked about a slot the condition closed"
+
+
+@pytest.mark.parametrize("code", sorted(flow.NON_RETRIABLE_CODES))
+def test_a_non_retriable_capture_verdict_rides_out_terminal(code):
+    """Every non-retriable condition ends the phase AT THE VERDICT (#2086).
+
+    The measured defect: a rejection carrying one of these codes reached the
+    phone as an ordinary retryable verdict, so the page rendered a "Try again"
+    button — and the begin behind it raised ``CaptureBeginRefused`` before any
+    audio played, ending the session. Reproduced on ``correction_model_error``
+    at a post-apply close and on ``channel_map_mismatch`` at CHECK, both with
+    ``attempts.left: 3`` printed beside the doomed button.
+
+    The whole family is driven rather than the two reproduced rows: the
+    registry decides membership, so a code that becomes non-retriable later
+    inherits the guard instead of needing one.
+    """
+    c = _cloud_conductor(FakeSeams())
+    index = CLOUD_MEASURE_INDEXES[0]
+    slot = c._slot_of_index(index)
+    # A FRESH meter: the planned take, nothing spent. This is the state the
+    # exhaustion ladder answers ``SETTLE_RETRY_REMAINS`` for.
+    c._slot_attempts[slot] = flow.SlotAttempts(admitted=1)
+
+    settled = c._resolve_spent_slot(
+        PHASE_CLOUD_MEASURE, index, slot, flow.PhaseVerdict(False, code=code),
+    )
+
+    assert settled.payload["terminal"] is True
+    assert settled.payload["terminal_outcome"] == (
+        admission.SETTLE_CONDITION_NOT_RETRIABLE
+    )
+    # The code's OWN sentence, not the exhaustion sentence — nothing was spent,
+    # so "JTS measured this spot N times" would be a false claim about a
+    # position that was rejected on its first take.
+    assert settled.code == code
+    assert "JTS measured this spot" not in settled.to_relay_dict()["reason"]
+    assert settled.to_relay_dict()["reason"] == flow.reason_message(
+        code, flow.REASON_REGISTRY[code],
+    )
+    # Nothing was charged and no position was dropped: the condition closed the
+    # slot, the meter did not.
+    assert c._slot_attempts[slot].extras_used == 0
+    assert index not in c._group_unresolved[PHASE_CLOUD_MEASURE]
+
+
+def test_the_flow_states_the_condition_inputs_the_ladder_needs():
+    """``code``/``non_retriable`` default to "nothing observed", so a caller
+    that stops stating them silently reverts the ladder to meter-only — the
+    exact defect the rung fixes, and invisible to a pure-function test.
+
+    So the WIRING is asserted, not just the ladder: the flow must hand over this
+    capture's own code and the registry's own projection.
+    """
+    c = _cloud_conductor(FakeSeams())
+    index = CLOUD_MEASURE_INDEXES[0]
+    slot = c._slot_of_index(index)
+    c._slot_attempts[slot] = flow.SlotAttempts(admitted=1)
+    seen: list[dict] = []
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            flow._admission, "settle_spent_slot",
+            lambda **kw: seen.append(kw) or admission.SETTLE_RETRY_REMAINS,
+        )
+        c._resolve_spent_slot(
+            PHASE_CLOUD_MEASURE, index, slot,
+            flow.PhaseVerdict(False, code=flow.REASON_CHANNEL_MAP_MISMATCH),
+        )
+
+    assert seen[0]["code"] == flow.REASON_CHANNEL_MAP_MISMATCH
+    assert seen[0]["non_retriable"] is flow.NON_RETRIABLE_CODES
+
+
+def test_a_retriable_rejection_on_a_fresh_slot_still_offers_the_retry():
+    """The other direction, so the rung above cannot pass by ending everything.
+
+    A settle ladder that answered ``condition_not_retriable`` for every rejected
+    capture would satisfy every assertion in the test above while destroying the
+    bounded-retry affordance the same ruling installed.
+    """
+    c = _cloud_conductor(FakeSeams())
+    index = CLOUD_MEASURE_INDEXES[0]
+    slot = c._slot_of_index(index)
+    c._slot_attempts[slot] = flow.SlotAttempts(admitted=1)
+    verdict = flow.PhaseVerdict(False, code=flow.REASON_LOCATE_FAILED)
+
+    settled = c._resolve_spent_slot(PHASE_CLOUD_MEASURE, index, slot, verdict)
+
+    assert settled is verdict
+    assert "terminal" not in settled.payload
 
 
 def test_a_zero_attempt_ledger_gets_a_free_first_attempt():
