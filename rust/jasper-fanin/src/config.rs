@@ -151,10 +151,19 @@ pub const STATIC_CUSHION_JITTER_MARGIN_FRAMES: u32 = 32;
 #[derive(Debug, Clone)]
 pub struct Config {
     /// ALSA PCM name (or `hw:Card,Dev,Sub`) for the summed output.
-    /// The daemon writes mixed audio here. CamillaDSP dsnoops on the
-    /// corresponding capture side of this substream pair and is its only
-    /// reader. (The AEC bridge read it until U4/P7-1 and jasper-aec-tune
-    /// until U4/P7-2; both take outputd's UDP speaker monitor now.)
+    ///
+    /// WRITTEN by the `Coupling::Loopback` output arm and nothing else, and
+    /// READ by CamillaDSP alone — which dsnoops the corresponding capture side
+    /// of this substream pair. (The AEC bridge read it until U4/P7-1 and
+    /// jasper-aec-tune until U4/P7-2; both take outputd's UDP speaker monitor
+    /// now.)
+    ///
+    /// A `shm_ring` box parses this field and never opens it: U4/P7-4 dropped
+    /// the lossy aloop mirror the ring arm used to write alongside Ring A, so
+    /// nothing feeds `hw:Loopback,0,7` there — and after P7-2, nothing reads it
+    /// there either. The field still ships because the coupling is a runtime
+    /// choice — the same binary must be able to take the loopback arm — and
+    /// STATUS still echoes the configured value.
     pub output_pcm: String,
 
     /// OPTIONAL second output PCM for the **music-only** (pre-TTS) stream

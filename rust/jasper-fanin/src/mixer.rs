@@ -83,7 +83,10 @@ pub use ring_capture::RingLaneObservability;
 pub const CHANNELS: u32 = 2;
 
 /// PCM sample format for this daemon's snd-aloop lanes — the per-renderer
-/// capture inputs and the summed program write to `hw:Loopback,0,7`.
+/// capture inputs, and the summed program write to `hw:Loopback,0,7` on a
+/// `loopback`-coupled box. A `shm_ring` box does not use this format for its
+/// program at all: it publishes the ring's own wire (`ring_wire_format`) and,
+/// since U4/P7-4, writes no aloop lane.
 ///
 /// THE WRITER'S HALF OF A THREE-PLACE FACT, and until U2 PR-3 the only one of
 /// the three with no test at all. `pcm.jasper_capture`'s dsnoop slave and the
@@ -661,27 +664,24 @@ fn auto_trim_decision(
 /// fan-in work loop in its mode; only one is ever active.
 enum Output {
     Alsa(PCM),
-    /// The SPSC SHM ring writer plus its lossy aloop MIRROR PCM. The blocking
-    /// ring publish (bounded, on a full-ring-with-live-reader) is the pacer; the
-    /// mirror is a `write_music_only`-shaped non-blocking side-tap so the AEC
-    /// fallback dsnoop and any aloop diagnostics stay live. `RingOutput` owns the
-    /// per-step slot fan-out and the reader-absent self-pacing. Boxed so this rare
-    /// (flag-gated) variant does not bloat every `Output` (clippy
-    /// `large_enum_variant`) — one alloc at construction, deref-transparent after.
+    /// The SPSC SHM ring writer. The blocking ring publish (bounded, on a
+    /// full-ring-with-live-reader) is the pacer. `RingOutput` owns the per-step
+    /// slot fan-out and the reader-absent self-pacing. This arm opens NO ALSA
+    /// PCM: the ring is the whole output (U4/P7-4 dropped the lossy aloop mirror
+    /// that used to shadow it, so on a ring-coupled box nothing writes
+    /// `hw:Loopback,0,7` at all). Boxed so this variant does not bloat every
+    /// `Output` (clippy `large_enum_variant`) — one alloc at construction,
+    /// deref-transparent after.
     Ring(Box<RingOutput>),
 }
 
 /// The Ring A output: the SPSC ring writer, its shared observability counters,
-/// the lossy aloop mirror PCM (never the pacer), and the derived self-pacing
-/// period (used only when the reader is absent — one period's sleep per dropped
-/// publish so a readerless ring does not hot-spin the loop).
+/// and the derived self-pacing period (used only when the reader is absent —
+/// one period's sleep per dropped publish so a readerless ring does not
+/// hot-spin the loop).
 struct RingOutput {
     writer: RingWriter,
     counters: RingCounters,
-    /// The lossy aloop mirror (non-blocking `hw:Loopback,0,7`). `None` if the
-    /// mirror PCM could not be opened — the ring still runs (the mirror is a
-    /// diagnostic side-tap, never load-bearing for the primary path).
-    mirror: Option<PCM>,
     /// One period in nanoseconds (period_frames / 48000). The reader-absent
     /// self-pacing sleep, precomputed so the hot loop never divides.
     self_pace_period_ns: u64,
@@ -689,18 +689,6 @@ struct RingOutput {
     /// `write_ring_period` feeds it one [`RingStallInput`] per period and logs any
     /// returned [`RingStallEvent`]; steady state emits nothing.
     stall: RingStallTracker,
-    /// TEST-ONLY tap on the mirror feed. The production mirror is an ALSA
-    /// [`PCM`], which a hardware-free test cannot construct — so before this
-    /// existed, EVERY test ran with `mirror: None` and the mirror-feeding code
-    /// was unreachable from the suite. That is how the mirror bit-identity
-    /// "contract" test came to assert only on buffers the test itself filled.
-    ///
-    /// [`feed_mirror`] appends its payload here, at the SAME one call site that
-    /// drives the real mirror, so a test observes exactly the bytes production
-    /// hands the side-tap. Absent in release builds (`#[cfg(test)]`), so the
-    /// shipping struct and the hot loop are unchanged.
-    #[cfg(test)]
-    mirror_capture: Option<std::sync::Mutex<Vec<i16>>>,
 }
 
 impl RingOutput {
@@ -1087,7 +1075,7 @@ pub struct CouplingObservability {
 }
 
 /// The live SPSC ring counters the mixer step updates each period (from the
-/// writer's [`jasper_ring::WriterMetrics`] + the mirror side-tap). Cloned into
+/// writer's [`jasper_ring::WriterMetrics`]). Cloned into
 /// [`RingObservability`] for STATUS so the endpoint reads the same atomics the
 /// work loop writes. Distinct from `WriterMetrics` (a value snapshot): these are
 /// the shared atomics.
@@ -1103,8 +1091,6 @@ struct RingCounters {
     /// Dead/absent-reader free-run drops (`DroppedNoReader`) — the normal
     /// CamillaDSP-reload transient.
     drop_no_reader: Arc<AtomicU64>,
-    mirror_frames: Arc<AtomicU64>,
-    mirror_drops: Arc<AtomicU64>,
     occupancy: Arc<AtomicU64>,
     /// A ring stall episode (full + reader heartbeat-live + `read_seq` frozen
     /// past the grace, OR a >1 s no-reader hold) is CURRENTLY in progress.
@@ -1121,8 +1107,6 @@ impl RingCounters {
             full_waits: Arc::new(AtomicU64::new(0)),
             stuck_reader_drops: Arc::new(AtomicU64::new(0)),
             drop_no_reader: Arc::new(AtomicU64::new(0)),
-            mirror_frames: Arc::new(AtomicU64::new(0)),
-            mirror_drops: Arc::new(AtomicU64::new(0)),
             occupancy: Arc::new(AtomicU64::new(0)),
             stall_active: Arc::new(AtomicBool::new(false)),
             last_stall_ms: Arc::new(AtomicU64::new(0)),
@@ -1133,13 +1117,10 @@ impl RingCounters {
 /// The shared ring counters (cloned Arcs) plus the observed wire geometry, for
 /// the STATUS endpoint's `ring` block: `{path, slots, wire_format, channels,
 /// occupancy, published, full_waits, stuck_reader_drops, drop_no_reader,
-/// stall_active, last_stall_ms, mirror_frames, mirror_drops}`.
+/// stall_active, last_stall_ms}`.
 /// The stuck-reader vs no-reader drop counts are UN-FOLDED (issue #1524) so a
 /// heartbeat-live wedge is distinguishable from a benign no-reader reload;
 /// `stall_active` / `last_stall_ms` surface a live/recent stall episode.
-/// `mirror_frames` / `mirror_drops` are the lossy aloop side-tap's written-frame
-/// and drop counts (parity with the music-only tap's `music_frames_written` /
-/// drops).
 ///
 /// `wire_format` / `channels` are plain values, not atomics: they come off the
 /// header the writer attached against, which is immutable for the ring file's
@@ -1160,8 +1141,6 @@ pub struct RingObservability {
     pub drop_no_reader: Arc<AtomicU64>,
     pub stall_active: Arc<AtomicBool>,
     pub last_stall_ms: Arc<AtomicU64>,
-    pub mirror_frames: Arc<AtomicU64>,
-    pub mirror_drops: Arc<AtomicU64>,
 }
 
 /// Render a ring header `sample_format` id as the wire vocabulary token
@@ -1744,27 +1723,15 @@ impl Mixer {
                     .with_context(|| {
                         format!("opening fan-in→camilla SHM ring {}", config.ring_path)
                     })?;
-                // The lossy aloop MIRROR keeps the AEC-fallback dsnoop + aloop
-                // diagnostics live. BEST-EFFORT (non-blocking open): a failure
-                // to open it must NOT take down the ring — the mirror is a
-                // diagnostic side-tap, never the pacer.
-                let mirror = match open_music_output(&config.output_pcm, config) {
-                    Ok(pcm) => {
-                        info!(
-                            "event=fanin.ring.mirror_opened pcm={} (lossy aloop mirror)",
-                            config.output_pcm,
-                        );
-                        Some(pcm)
-                    }
-                    Err(e) => {
-                        warn!(
-                            "event=fanin.ring.mirror_open_failed pcm={} detail={:#} — \
-                             continuing WITHOUT the aloop mirror (ring path unaffected)",
-                            config.output_pcm, e,
-                        );
-                        None
-                    }
-                };
+                // NOTHING else is opened here. This arm used to also open
+                // `config.output_pcm` as a lossy aloop MIRROR, shadowing every
+                // published period onto `hw:Loopback,0,7` so the dsnoop taps
+                // stayed live on a ring-coupled box. U4/P7-4 dropped it once
+                // those taps moved off the dsnoop: the ring IS the program path
+                // here, and a second writer of a lane nobody reads is a hop that
+                // costs a period's work and an ALSA handle to keep a fiction
+                // alive. `config.output_pcm` survives for the `Coupling::Loopback`
+                // arm above, which is the only remaining opener.
                 let counters = RingCounters::new();
                 let self_pace_period_ns =
                     (config.period_frames as u64) * 1_000_000_000 / (config.sample_rate as u64);
@@ -1797,20 +1764,13 @@ impl Mixer {
                     drop_no_reader: Arc::clone(&counters.drop_no_reader),
                     stall_active: Arc::clone(&counters.stall_active),
                     last_stall_ms: Arc::clone(&counters.last_stall_ms),
-                    mirror_frames: Arc::clone(&counters.mirror_frames),
-                    mirror_drops: Arc::clone(&counters.mirror_drops),
                 };
                 (
                     Output::Ring(Box::new(RingOutput {
                         writer,
                         counters,
-                        mirror,
                         self_pace_period_ns,
                         stall: RingStallTracker::new(),
-                        // Production never taps the mirror feed; only the
-                        // bit-identity contract test sets this.
-                        #[cfg(test)]
-                        mirror_capture: None,
                     })),
                     CouplingObservability {
                         transport: "shm_ring",
@@ -2340,7 +2300,8 @@ impl Mixer {
         //      reader-absent self-paces (one period's sleep per dropped publish)
         //      so a readerless ring never hot-spins. The mixed sum_buf (post-duck,
         //      post-TTS) is what enters — TTS/duck ride along with zero special
-        //      handling. The lossy aloop mirror is written (never the pacer).
+        //      handling. The ring publish is this arm's ONLY write: no ALSA PCM
+        //      is opened or fed on a ring-coupled box (U4/P7-4).
         match &mut self.output {
             Output::Alsa(pcm) => {
                 write_output(
@@ -2360,11 +2321,10 @@ impl Mixer {
                 // happens per lane, in `mix_into`'s Wide arm, which is the site
                 // a scale bug would be introduced at. All that is left here is
                 // the i64→i32 saturation and the explicit little-endian order.
-                // `output_buf` above is untouched, so the mirror's bytes are the
-                // same on both wires. The ring's own attached header is the ONE
-                // predicate here — the same `wire_is_wide()` that decides which
-                // payload `write_ring_period` publishes — so the fill and the
-                // publish cannot disagree about the wire.
+                // The ring's own attached header is the ONE predicate here — the
+                // same `wire_is_wide()` that decides which payload
+                // `write_ring_period` publishes — so the fill and the publish
+                // cannot disagree about the wire.
                 if ring.wire_is_wide() {
                     fill_wide_ring_payload(&self.sum_buf, &mut self.ring_wide_payload);
                 }
@@ -2760,42 +2720,10 @@ impl Mixer {
     }
 }
 
-/// Feed the lossy aloop mirror one period. THE single mirror-feed site.
-///
-/// `write_music_only`-shaped: avail-checked and drop-on-full, so it can never
-/// block the loop (blocking here would re-couple the ring path to the aloop
-/// timer — the hop this transport removes).
-///
-/// The `buf: &[i16]` signature is load-bearing, not incidental: it is why the
-/// mirror CANNOT be fed the S32LE ring payload. That payload is `&[u8]` and
-/// there is no conversion at this call site, so "the mirror got the wide bytes"
-/// is a compile error rather than a test's problem. The remaining questions —
-/// is the mirror fed at all, and with WHICH i16 buffer — are what
-/// [`mirror_payload_is_byte_identical_across_ring_wire_formats`] drives through
-/// the `mirror_capture` tap.
-fn feed_mirror(ring: &RingOutput, buf: &[i16]) {
-    #[cfg(test)]
-    if let Some(capture) = ring.mirror_capture.as_ref() {
-        capture
-            .lock()
-            .expect("mirror capture mutex poisoned")
-            .extend_from_slice(buf);
-    }
-    if let Some(mirror) = ring.mirror.as_ref() {
-        write_music_only(
-            mirror,
-            buf,
-            &ring.counters.mirror_frames,
-            &ring.counters.mirror_drops,
-        );
-    }
-}
-
 /// Publish one mixer period into the SPSC SHM ring as `period_frames / 128`
-/// slots, then mirror the same period to the lossy aloop side-tap. Returns the
-/// number of frames that actually ENTERED the ring this period (published slots
-/// × `RING_SLOT_FRAMES`) so the caller counts only real throughput — a
-/// fully-dropped period returns 0.
+/// slots. Returns the number of frames that actually ENTERED the ring this
+/// period (published slots × `RING_SLOT_FRAMES`) so the caller counts only real
+/// throughput — a fully-dropped period returns 0.
 ///
 /// **Pacing (the Ring A contract).** Each `RingWriter::publish` BLOCKS (bounded:
 /// 32 ticks × the clamped `min(period/4, 2 ms)` sleep — with the pinned 128-frame
@@ -2821,24 +2749,16 @@ fn feed_mirror(ring: &RingOutput, buf: &[i16]) {
 /// (steady state and normal sub-threshold reloads emit nothing), and un-folds the
 /// stuck-reader vs no-reader drop counters into `/state.shm_ring`.
 ///
-/// The mirror is a `write_music_only`-shaped non-blocking side-tap: it is
-/// avail-checked and drop-on-full, so it can NEVER back-pressure the loop (that
-/// would re-couple to the aloop timer and silently reintroduce the hop being
-/// removed). It exists only to keep the AEC-fallback dsnoop + aloop diagnostics
-/// live.
+/// **Which payload the ring gets.** The ring publishes `output_buf` on an S16LE
+/// wire and `wide_payload` on an S32LE one, chosen from the ring's OWN attached
+/// header — never a parallel flag, so the bytes published cannot disagree with
+/// the header the reader validated against. Exactly one of the two arguments is
+/// read per call; the other is the wire that was not taken.
 ///
-/// **Which payload the ring gets, and what the mirror gets.** The ring publishes
-/// `output_buf` on an S16LE wire and `wide_payload` on an S32LE one, chosen from
-/// the ring's own attached header. The MIRROR is handed `output_buf` in both
-/// cases and is never given the wide payload, which is what makes the mirror's
-/// bytes independent of the ring's wire.
-///
-/// Three separate things hold that up, and it is worth being exact about which
-/// does what: [`feed_mirror`]'s `&[i16]` parameter makes "fed the wide payload"
-/// a COMPILE error; the mirror feed is called UNCONDITIONALLY here, outside the
-/// per-wire branch; and
-/// `mirror_payload_is_byte_identical_across_ring_wire_formats` drives this
-/// function on both wires and compares the bytes the mirror actually received.
+/// This function writes NOTHING else. Until U4/P7-4 it also fed a lossy aloop
+/// mirror `output_buf` on both wires, which is why `output_buf` was handed in
+/// even on the wide wire that does not publish it; that side-tap is gone, so the
+/// ring publish is the whole of this function's output.
 fn write_ring_period(
     ring: &mut RingOutput,
     output_buf: &[i16],
@@ -2930,9 +2850,6 @@ fn write_ring_period(
     ring.counters
         .last_stall_ms
         .store(ring.stall.last_stall_ms(), Ordering::Relaxed);
-
-    // Lossy aloop mirror (never the pacer).
-    feed_mirror(ring, output_buf);
 
     // Reader-absent self-pacing: if ANY slot free-run-dropped this period, sleep
     // one period so a readerless ring settles to ~48 kHz instead of hot-spinning
@@ -3243,8 +3160,8 @@ fn ramp_program_duck(
     current
 }
 
-/// Clamp the sum back to i16 for an S16 consumer — the aloop output, the aloop
-/// mirror, the assistant content meter, and the multi-room music-only tap.
+/// Clamp the sum back to i16 for an S16 consumer — the aloop output, the narrow
+/// ring wire, the assistant content meter, and the multi-room music-only tap.
 /// Pulled out for unit testability.
 ///
 /// `Narrow` is a bare clamp, exactly as it always was: the sum is already in the
@@ -5635,8 +5552,9 @@ mod tests {
 
     // Ring A output path. These construct a real SPSC ring (via jasper_ring)
     // under the OS temp dir and drive `write_ring_period` directly, so they run
-    // on any host that can build the crate (CI Linux). `mirror: None` keeps ALSA
-    // out of the test — the ring publish + reader roundtrip is the contract.
+    // on any host that can build the crate (CI Linux). `RingOutput` holds no
+    // ALSA handle at all since U4/P7-4, so the ring publish + reader roundtrip
+    // is the whole contract — there is nothing else for a test to stub out.
 
     use jasper_ring::{RingReader, SlotRead, SAMPLE_FORMAT_S16LE};
     use std::sync::atomic::AtomicU64 as TestAtomicU64;
@@ -5680,34 +5598,12 @@ mod tests {
         let ring = RingOutput {
             writer,
             counters,
-            mirror: None,
             // One 256-frame period at 48k, in ns — used only on the reader-absent
             // self-pace path (avoided in these live-reader tests).
             self_pace_period_ns: 256 * 1_000_000_000 / 48_000,
             stall: RingStallTracker::new(),
-            mirror_capture: None,
         };
         (ring, path)
-    }
-
-    /// Arm the test-only mirror tap. Until this is called a `RingOutput` has
-    /// `mirror_capture: None` and behaves exactly as production does with no
-    /// mirror PCM — so only the tests that assert on the mirror pay for it.
-    ///
-    /// The production mirror is an ALSA `PCM` no hardware-free test can build,
-    /// so this tap is the only way to observe WHICH bytes reach the mirror feed.
-    fn arm_mirror_capture(ring: &mut RingOutput) {
-        ring.mirror_capture = Some(std::sync::Mutex::new(Vec::new()));
-    }
-
-    /// Everything the mirror feed has received on this ring since it was armed.
-    fn captured_mirror(ring: &RingOutput) -> Vec<i16> {
-        ring.mirror_capture
-            .as_ref()
-            .expect("mirror capture must be armed before it is read")
-            .lock()
-            .expect("mirror capture mutex poisoned")
-            .clone()
     }
 
     /// The narrow ring publishes `output_buf`, so the wide payload argument is
@@ -5971,141 +5867,6 @@ mod tests {
         assert_eq!(round_tripped, narrow);
     }
 
-    /// The MANDATORY mirror contract (ring-v2 design §7): for identical input,
-    /// the bytes the lossy aloop mirror is handed are byte-identical whether the
-    /// ring path ran wide or narrow.
-    ///
-    /// Driven through the REAL `write_ring_period` on two real rings — one
-    /// S16LE, one S32LE — with the `mirror_capture` tap armed, so the assertions
-    /// are about bytes production actually handed the mirror feed. The previous
-    /// version of this test called `saturate_to_i16` / `fill_wide_ring_payload`
-    /// itself and compared its own buffers; it never entered `write_ring_period`
-    /// at all, so it passed with the mirror feed deleted outright.
-    ///
-    /// What this catches, stated exactly:
-    ///   - **Mirror feed skipped** — dropping the `feed_mirror` call in
-    ///     `write_ring_period`, or moving it inside the narrow branch, empties
-    ///     the capture on one or both wires.
-    ///   - **Wrong i16 buffer fed** — the captured bytes must equal an
-    ///     INDEPENDENTLY computed `saturate_to_i16(sum)`, not merely match each
-    ///     other, so feeding a stale or differently-clamped buffer fails even
-    ///     though both wires would still agree.
-    ///   - **Fed the wide payload** — not simulated, and deliberately so:
-    ///     `feed_mirror` takes `&[i16]` and the wide payload is `&[u8]`, so the
-    ///     type system rejects it at compile time. That is a stronger guard than
-    ///     a test, and there is no way to construct the mutant to prove it.
-    ///
-    /// What it does NOT cover: `step()`'s ordering — the
-    /// `saturate_to_i16(&self.sum_buf, &mut self.output_buf)` that FILLS
-    /// `output_buf` sits above the transport match, shared with the ALSA path,
-    /// so a "skipped narrow saturate on the wide wire" mutant cannot be written
-    /// without first moving that call into the ring branch. `step()` has no
-    /// hardware-free test at all (it needs live ALSA inputs), so that ordering
-    /// is pinned as a source contract instead:
-    /// `tests/test_fanin_coupling_rust_contract.py`'s
-    /// `test_step_fills_output_buf_once_above_the_transport_dispatch`.
-    #[test]
-    fn mirror_payload_is_byte_identical_across_ring_wire_formats() {
-        let period_frames = 256u32; // 2 slots of 128 frames
-        let total = (period_frames as usize) * (CHANNELS as usize);
-        let sum = representative_sum(total);
-
-        // The payload BOTH wires must hand the mirror, computed here
-        // independently of anything the production path does with it.
-        let mut expected_mirror = vec![0i16; total];
-        saturate_to_i16(&sum, &mut expected_mirror, ProgramWidth::Narrow);
-
-        // Narrow wire: step() passes output_buf and an empty wide payload.
-        let mut narrow_output_buf = vec![0i16; total];
-        saturate_to_i16(&sum, &mut narrow_output_buf, ProgramWidth::Narrow);
-        let (mut narrow_ring, narrow_path) = tmp_ring_output(8, "mirror_narrow");
-        arm_mirror_capture(&mut narrow_ring);
-        let mut narrow_reader =
-            RingReader::create_or_attach(&narrow_path, ring_geometry(8)).unwrap();
-        let mut narrow_slot = vec![0i16; (RING_SLOT_FRAMES as usize) * (CHANNELS as usize)];
-        assert_eq!(
-            narrow_reader.try_consume_slot(&mut narrow_slot),
-            SlotRead::Empty,
-            "priming the reader heartbeat"
-        );
-        write_ring_period(
-            &mut narrow_ring,
-            &narrow_output_buf,
-            NO_WIDE_PAYLOAD,
-            period_frames,
-        );
-
-        // Wide wire: the ring's own header selects the wide payload; the same
-        // output_buf still rides the mirror argument.
-        let mut wide_output_buf = vec![0i16; total];
-        saturate_to_i16(&sum, &mut wide_output_buf, ProgramWidth::Narrow);
-        let mut wide_payload = vec![0u8; total * WIDE_BYTES_PER_SAMPLE];
-        fill_wide_ring_payload(&sum, &mut wide_payload);
-        let (mut wide_ring, wide_path) =
-            tmp_ring_output_with_wire(8, "mirror_wide", RingWireFormat::S32Le);
-        assert!(
-            wide_ring.wire_is_wide(),
-            "this ring must take the wide path"
-        );
-        arm_mirror_capture(&mut wide_ring);
-        let mut wide_reader = RingReader::create_or_attach(
-            &wide_path,
-            ring_geometry_with_wire(8, RingWireFormat::S32Le),
-        )
-        .unwrap();
-        let mut wide_slot =
-            vec![0u8; (RING_SLOT_FRAMES as usize) * (CHANNELS as usize) * WIDE_BYTES_PER_SAMPLE];
-        assert_eq!(
-            wide_reader.try_consume_slot_bytes(&mut wide_slot),
-            SlotRead::Empty,
-            "priming the reader heartbeat"
-        );
-        write_ring_period(
-            &mut wide_ring,
-            &wide_output_buf,
-            &wide_payload,
-            period_frames,
-        );
-
-        let narrow_mirror = captured_mirror(&narrow_ring);
-        let wide_mirror = captured_mirror(&wide_ring);
-
-        // A capture that stayed empty means the mirror was never fed — the
-        // failure the previous version of this test could not see.
-        assert_eq!(
-            narrow_mirror.len(),
-            total,
-            "the narrow wire must feed the mirror exactly one period"
-        );
-        assert_eq!(
-            wide_mirror.len(),
-            total,
-            "the wide wire must feed the mirror exactly one period"
-        );
-        // THE contract: identical input, identical mirror bytes on both wires.
-        assert_eq!(
-            wide_mirror, narrow_mirror,
-            "the mirror's payload must not depend on the ring's wire format"
-        );
-        // And they are the RIGHT bytes, not merely equal to each other.
-        assert_eq!(
-            narrow_mirror, expected_mirror,
-            "the mirror must receive the saturated narrow payload"
-        );
-
-        // The wide payload is genuinely different bytes on the wire — proof the
-        // two wires really did diverge in the ring path while agreeing at the
-        // mirror (otherwise the equality above is trivially satisfied).
-        assert_ne!(
-            &wide_payload[..],
-            &vec![0u8; wide_payload.len()][..],
-            "the wide payload must actually be filled"
-        );
-
-        cleanup_ring(&narrow_path);
-        cleanup_ring(&wide_path);
-    }
-
     /// End-to-end through the real ring: the SAME mix sum published onto an
     /// S32LE ring and an S16LE ring, read back by a real `RingReader`, and the
     /// wide slots must be exactly the narrow slots left-justified. This is the
@@ -6158,8 +5919,8 @@ mod tests {
         }
         assert_eq!(narrow_read, output_buf);
 
-        // Wide ring: the ring's OWN header selects the wide payload; the same
-        // output_buf is still what the mirror argument carries.
+        // Wide ring: the ring's OWN header selects the wide payload. `output_buf`
+        // is still passed (it is the narrow wire's payload) and must go unread.
         let (mut wide_ring, wide_path) =
             tmp_ring_output_with_wire(8, "wire_wide", RingWireFormat::S32Le);
         assert!(wide_ring.wire_is_wide());
