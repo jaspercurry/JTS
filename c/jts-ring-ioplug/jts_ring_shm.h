@@ -237,6 +237,13 @@ typedef struct {
     // returns -EBUSY before writer_take_mapping. So a live writer with -1 here
     // is a ring running WITHOUT fd-scoped exclusivity, not merely one that has
     // not taken it yet.
+    //
+    // RELEASE ORDERING (F-8): jts_ring_writer_close releases this AFTER its
+    // `if (!w || !w->base) return;` guard, so a struct with a held fd but no
+    // mapping would leak the lock. That state is unreachable today — the fd is
+    // only ever stored by writer_take_mapping, which sets base in the same
+    // breath — and it is stated here so nobody makes it reachable by storing
+    // the fd earlier without moving the release ahead of the guard.
     int writer_lock_fd;
 } jts_ring_writer_t;
 
