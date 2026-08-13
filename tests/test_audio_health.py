@@ -285,6 +285,191 @@ _ROUTE_DISCONNECTED = (
 )
 
 
+def _plan_for(coupling: str, outputd_env: dict[str, str] | None = None):
+    """A plan stub carrying BOTH coupling faces the real ``AudioRuntimePlan`` has.
+
+    ``transport_topology`` is built by the production resolver rather than
+    written as a literal, so the SHAPE name a test exercises is whatever the
+    shipped code actually derives for that coupling + outputd marker pair —
+    which is the whole point of #2376, where the shape name and the coupling
+    token stopped being interchangeable.
+    """
+    from types import SimpleNamespace
+
+    from jasper.audio_runtime_plan import transport_topology_for_coupling
+    from jasper.fanin_coupling import COUPLING_ENV_VAR
+
+    def setting(key: str):
+        if key != COUPLING_ENV_VAR:
+            raise KeyError(key)
+        return SimpleNamespace(key=key, value=coupling)
+
+    return SimpleNamespace(
+        transport_topology=transport_topology_for_coupling(
+            coupling, outputd_env=dict(outputd_env or {})
+        ),
+        setting=setting,
+    )
+
+
+def _armed_active_outputd_env(**overrides: str) -> dict[str, str]:
+    """``outputd.env`` for a box armed on the ACTIVE ring — the jts3 shape.
+
+    Keys come from the constants (they are the drift axis); the wire format is
+    resolved rather than spelled, so the premise stays coherent by construction
+    instead of shearing the moment the shipped ring wire changes.
+    """
+    from jasper.fanin_coupling import (
+        DEFAULT_OUTPUTD_ACTIVE_RING_PATH,
+        OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
+        OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR,
+        OUTPUTD_RING_PATH_ENV_VAR,
+        resolve_ring_wire,
+    )
+
+    env = {
+        OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR: "1",
+        OUTPUTD_CONTENT_BRIDGE_ENV_VAR: "shm_ring",
+        OUTPUTD_RING_PATH_ENV_VAR: DEFAULT_OUTPUTD_ACTIVE_RING_PATH,
+        "JASPER_OUTPUTD_CONTENT_FORMAT": resolve_ring_wire().sample_format,
+    }
+    env.update(overrides)
+    return env
+
+
+def _armed_active_camilla_devices() -> dict[str, str]:
+    from jasper.fanin_coupling import (
+        RING_ACTIVE_PLAYBACK_DEVICE,
+        RING_CAPTURE_DEVICE,
+    )
+
+    return {
+        "capture_device": RING_CAPTURE_DEVICE,
+        "playback_device": RING_ACTIVE_PLAYBACK_DEVICE,
+    }
+
+
+def _armed_active_transport_read(monkeypatch, tmp_path, **env_overrides):
+    """Run ``_read_transport_state`` against the armed-ACTIVE-ring premise."""
+    from jasper import audio_runtime_plan
+
+    outputd_env = _armed_active_outputd_env(**env_overrides)
+    env_file = tmp_path / "outputd.env"
+    env_file.write_text(
+        "".join(f"{key}={value}\n" for key, value in outputd_env.items()),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "jasper.audio_runtime_plan.DEFAULT_OUTPUTD_ENV_PATH", str(env_file)
+    )
+    monkeypatch.setattr(
+        "jasper.audio_runtime_plan.output_endpoint_evidence_from_statefiles",
+        lambda *paths: audio_runtime_plan.OutputEndpointEvidence(
+            devices=_armed_active_camilla_devices()
+        ),
+    )
+    # outputd's live STATUS is unreachable in-test; a ring-coupled outputd opens
+    # no ALSA content PCM anyway, so there is no live value to prefer here.
+    monkeypatch.setattr(audio_health, "_read_local_status", lambda *a, **k: None)
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "absent.json"))
+    return audio_health._read_transport_state(_plan_for("shm_ring", outputd_env))
+
+
+def test_armed_active_ring_is_not_reported_as_parked(monkeypatch, tmp_path) -> None:
+    """#2376: an armed roleful box must not be told its audio cannot reach the drivers.
+
+    Observed on jts3 while audio was demonstrably playing: ``/state.audio_health``
+    said "parked" with "transport plan is loopback but
+    JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring" while the SAME ``/state`` reported
+    ``coupling.persisted=shm_ring``, ``live_transport=shm_ring``, both rings
+    armed. The health model passed ``plan.transport_topology.name`` where
+    ``transport_coherence_report`` wants a coupling TOKEN; on this box that name
+    is ``shm_ring_active``, which is not a coupling, so ``resolve_coupling``
+    fail-SAFED it to ``loopback`` and the detector then compared a ring-armed
+    outputd against a loopback plan it had invented.
+    """
+    from jasper.audio_runtime_plan import TRANSPORT_SHM_RING_ACTIVE
+    from jasper.fanin_coupling import VALID_COUPLINGS
+
+    # The premise that made the substitution lossy: the shape name this box
+    # resolves to is NOT a coupling token, so it cannot stand in for one.
+    assert TRANSPORT_SHM_RING_ACTIVE not in VALID_COUPLINGS
+    plan = _plan_for("shm_ring", _armed_active_outputd_env())
+    assert plan.transport_topology.name == TRANSPORT_SHM_RING_ACTIVE
+
+    state = _armed_active_transport_read(monkeypatch, tmp_path)
+
+    assert state["coherence_errors"] == []
+    health = _compose(transport=state)
+    assert health["signal_path"]["headline"] != _PARKED_HEADLINE
+    assert health["overall"]["headline"] != _PARKED_HEADLINE
+
+
+def test_armed_active_ring_still_reports_a_real_contradiction(
+    monkeypatch, tmp_path
+) -> None:
+    """The armed-active fix routes to the right arm; it does not mute the detector.
+
+    Positive control for the test above. The crossed-ring-path error can ONLY be
+    raised inside the ``shm_ring_active`` arm, so seeing it proves the coherence
+    report reached that arm — where the pre-fix code silently took the loopback
+    arm instead — and that a genuinely half-flipped armed box is still caught.
+    """
+    from jasper.audio_runtime_plan import TRANSPORT_SHM_RING_ACTIVE
+    from jasper.fanin_coupling import (
+        DEFAULT_OUTPUTD_RING_PATH,
+        OUTPUTD_RING_PATH_ENV_VAR,
+    )
+
+    state = _armed_active_transport_read(
+        monkeypatch,
+        tmp_path,
+        **{OUTPUTD_RING_PATH_ENV_VAR: DEFAULT_OUTPUTD_RING_PATH},
+    )
+
+    assert len(state["coherence_errors"]) == 1
+    error = state["coherence_errors"][0]
+    assert f"transport plan is {TRANSPORT_SHM_RING_ACTIVE}" in error
+    assert DEFAULT_OUTPUTD_RING_PATH in error
+    # ...and it is the household-facing parked verdict, because this one really
+    # does mean audio cannot reach the drivers.
+    health = _compose(transport=state)
+    assert health["signal_path"]["headline"] == _PARKED_HEADLINE
+
+
+def test_audio_health_reads_the_coupling_doctor_reads(monkeypatch, tmp_path) -> None:
+    """One fact, one resolution: the two surfaces cannot disagree by construction.
+
+    ``_read_transport_state``'s docstring promises it "reads the evidence doctor
+    reads, so the dashboard and ``jasper-doctor`` cannot disagree about whether
+    the post-DSP route is connected". Doctor's ``_validate_outputd_coupling``
+    feeds the report ``read_persisted_coupling()``; this pins that the health
+    model feeds it a value that resolves identically, rather than a transport
+    SHAPE name that only happens to alias a coupling for two of three shapes.
+    """
+    from jasper.fanin.coupling_reconcile import read_persisted_coupling
+    from jasper.fanin_coupling import COUPLING_ENV_VAR, VALID_COUPLINGS
+
+    fanin_env = tmp_path / "fanin.env"
+    fanin_env.write_text(f"{COUPLING_ENV_VAR}=shm_ring\n", encoding="utf-8")
+    doctor_coupling = read_persisted_coupling(fanin_env)
+
+    seen: dict[str, object] = {}
+    real_transport_state = audio_health._transport_state
+
+    def spy(**kwargs):
+        seen.update(kwargs)
+        return real_transport_state(**kwargs)
+
+    monkeypatch.setattr(audio_health, "_transport_state", spy)
+    _armed_active_transport_read(monkeypatch, tmp_path)
+
+    # Not "some coupling-ish string": the exact token doctor resolves, and one
+    # the coupling resolver recognizes — a transport SHAPE name passes neither.
+    assert seen["coupling"] == doctor_coupling
+    assert seen["coupling"] in VALID_COUPLINGS
+
+
 def _no_lane_active_two_way():
     """Roleful active 2-way saved against a DAC with no active outputd lane.
 
@@ -432,8 +617,6 @@ def test_parked_graph_keeps_the_speaker_reported_as_parked(
     deliberately, permanently silent — trading one false "Audio is ready" for
     another.
     """
-    from types import SimpleNamespace
-
     from jasper import audio_runtime_plan
     from jasper.active_speaker.runtime_contract import build_parked_muted_graph
 
@@ -468,9 +651,8 @@ def test_parked_graph_keeps_the_speaker_reported_as_parked(
 
     save_output_topology(topology, path=topology_path)
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
-    plan = SimpleNamespace(transport_topology=SimpleNamespace(name="loopback"))
 
-    state = audio_health._read_transport_state(plan)
+    state = audio_health._read_transport_state(_plan_for("loopback"))
 
     assert state["coherence_errors"]
     assert "parked graph" in state["coherence_errors"][0]
@@ -499,15 +681,13 @@ def test_a_degraded_transport_read_cannot_poison_later_reads(monkeypatch) -> Non
     list, so a single append by any consumer would make every later degraded
     read report the box as parked for the lifetime of jasper-control.
     """
-    from types import SimpleNamespace
-
     from jasper import audio_runtime_plan
 
     monkeypatch.setattr(
         "jasper.audio_runtime_plan.output_endpoint_evidence_from_statefiles",
         lambda *paths: audio_runtime_plan.OutputEndpointEvidence(devices=None),
     )
-    plan = SimpleNamespace(transport_topology=SimpleNamespace(name="loopback"))
+    plan = _plan_for("loopback")
 
     first = audio_health._read_transport_state(plan)
     first["coherence_errors"].append("poisoned")
