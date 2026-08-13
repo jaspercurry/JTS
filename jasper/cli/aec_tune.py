@@ -78,7 +78,7 @@ from types import FrameType
 
 import numpy as np
 
-from jasper.audio_measurement.correction_lane import CORRECTION_SUBSTREAM
+from jasper.audio_measurement.correction_lane import popen_correction_play
 from jasper.mics import xvf3800
 
 logger = logging.getLogger("jasper.aec_tune")
@@ -733,14 +733,14 @@ def main() -> int:
                 _camilla_set_volume(test_volume)
                 play_proc: subprocess.Popen | None = None
                 try:
-                    play_proc = subprocess.Popen(
-                        [
-                            "aplay",
-                            "-q",
-                            "-D",
-                            CORRECTION_SUBSTREAM,
-                            str(noise_wav),
-                        ],
+                    # stdout/stderr None: keep aplay's stderr on the
+                    # operator's terminal, as the pre-helper inline
+                    # Popen did (this is a root operator CLI).
+                    play_proc = popen_correction_play(
+                        noise_wav,
+                        stdout=None,
+                        stderr=None,
+                        quiet_before_device=True,
                     )
                     time.sleep(0.3)
                     capture_ok = _capture_simultaneous(

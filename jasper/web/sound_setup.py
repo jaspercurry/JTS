@@ -86,9 +86,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping
 
-from jasper.audio_measurement.correction_lane import (
-    CORRECTION_SUBSTREAM as VOLUME_FLOOR_TONE_ALSA_DEVICE,
-)
+from jasper.audio_measurement.correction_lane import popen_correction_play
 from jasper.audio_hardware.dac import INNOMAKER_HIFI_AMP_PRO_ID, by_id as dac_by_id
 from jasper.audio_hardware.usb_port_role import (
     DEFAULT_I2S_HAT_INTENT_PATH,
@@ -1055,11 +1053,9 @@ class _LoopingVolumeFloorTone:
         wav_path: str | Path,
         *,
         on_finish: Callable[[Any, str], None] | None = None,
-        alsa_device: str = VOLUME_FLOOR_TONE_ALSA_DEVICE,
         max_duration_s: float = VOLUME_FLOOR_TONE_MAX_DURATION_S,
     ) -> None:
         self._wav_path = Path(wav_path)
-        self._alsa_device = alsa_device
         self._max_duration_s = max_duration_s
         self._on_finish = on_finish
         self._stop = threading.Event()
@@ -1110,14 +1106,8 @@ class _LoopingVolumeFloorTone:
                     self._set_error("volume floor tone safety timeout")
                     break
                 try:
-                    proc = subprocess.Popen(
-                        [
-                            "aplay",
-                            "-D",
-                            self._alsa_device,
-                            "-q",
-                            str(self._wav_path),
-                        ],
+                    proc = popen_correction_play(
+                        self._wav_path,
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
                     )
@@ -3123,8 +3113,8 @@ async def _active_speaker_play_commission_tone(
                     )
                 _stop_commission_tone_locked(reason="replace")
 
-            proc = subprocess.Popen(
-                ["aplay", "-D", COMMISSION_TONE_ALSA_DEVICE, "-q", str(wav_path)],
+            proc = popen_correction_play(
+                wav_path,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
@@ -3494,8 +3484,8 @@ async def _active_speaker_play_summed_commission_tone(
                         reason="watchdog_timeout",
                     )
                     break
-                started_proc = subprocess.Popen(
-                    ["aplay", "-D", COMMISSION_TONE_ALSA_DEVICE, "-q", str(wav_path)],
+                started_proc = popen_correction_play(
+                    wav_path,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )

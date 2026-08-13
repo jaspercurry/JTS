@@ -83,6 +83,7 @@ from jasper.active_speaker.startup_load import (
 from jasper.active_speaker.topology_tone import build_summed_topology_tone_plan
 from jasper.audio_measurement.correction_lane import (
     CORRECTION_SUBSTREAM as COMMISSION_TONE_ALSA_DEVICE,
+    popen_correction_play,
 )
 from jasper.camilla import CamillaUnavailable
 from jasper.camilla_config_contract import DEFAULT_VOLUME_LIMIT_DB
@@ -949,8 +950,8 @@ async def play_commission_tone(
                     )
                 _stop_commission_tone_locked(reason="replace")
 
-            proc = subprocess.Popen(
-                ["aplay", "-D", COMMISSION_TONE_ALSA_DEVICE, "-q", str(wav_path)],
+            proc = popen_correction_play(
+                wav_path,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
