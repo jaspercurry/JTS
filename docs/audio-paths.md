@@ -88,12 +88,12 @@ AirPlay latency rendering no longer carries a bridge term at all.
 Each renderer has its own snd-aloop lane, and room-correction/test
 playback has a dedicated `correction_substream` lane. `jasper-fanin`
 sums those lanes; on ring-coupled boxes it writes Ring A for CamillaDSP
-and keeps a lossy lane-7 mirror so `pcm.jasper_capture` remains an
-explicit pre-DSP view until the snd-aloop cleanup phases remove it.
-With the last diagnostic reader retired (U4/P7-2) that mirror has no
-in-tree consumer on a ring box, and P7-4 removes it.
+and **nothing else**. The lossy lane-7 mirror it used to write alongside
+the ring lost its last in-tree reader at U4/P7-2 and was dropped at
+U4/P7-4, so on a ring-coupled box `hw:Loopback,0,7` has neither a writer
+nor a reader.
 (Its `pcm.jasper_ref` alias is shipped alongside but has no reader —
-see below.) On loopback fallback boxes,
+see below.) On loopback fallback boxes, lane 7 is the program path:
 CamillaDSP still captures `pcm.jasper_capture` directly. Production AEC
 consumes outputd's post-Camilla speaker monitor. This replaced the
 short-lived renderer-side dmix (`jasper_renderer_mix`) after AirPlay
@@ -759,7 +759,9 @@ survives only as a shipped definition until P9-B deletes the aloop
 PCMs: a plug wrapper over
 `pcm.jasper_capture`, which is a dsnoop on the summed fan-in output
 `hw:Loopback,1,7` before CamillaDSP processing and read only by
-CamillaDSP. So:
+CamillaDSP — which reaches it only under `loopback` coupling, the one
+place the lane still has a producer. Since U4/P7-4 a ring-coupled box
+does not write it at all, and since U4/P7-2 nothing reads it there. So:
 
 - Production AEC now consumes outputd's 48 kHz stereo speaker monitor over
   UDP. That reference includes renderer/content, TTS/cues, fan-in

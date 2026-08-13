@@ -37,7 +37,9 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #     Bluetooth, and USB-in no longer contend for the same playback PCM.
 #   - jasper-fanin reads those per-renderer capture substreams, sums
 #     them sample-wise, and writes the single "summed music" stream to
-#     substream 7.
+#     substream 7 — but ONLY under `loopback` coupling. A `shm_ring` box
+#     writes Ring A instead and leaves substream 7 with no writer at all
+#     (U4/P7-4 dropped the lane-7 mirror).
 #   - CamillaDSP reads that summed stream via `pcm.jasper_capture` and
 #     is its only reader. `pcm.jasper_ref`, the plug-wrapped alias, has
 #     no reader left at all (U4/P7-1 then P7-3) and is shipped only
@@ -116,9 +118,15 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 # S16_LE and publishes the summed output at the same shape. A renderer's
 # native rate cannot lock another renderer or the AEC/Camilla reference.
 #
-# Who opens this tap — one live reader, plus one alias nobody opens:
+# Who opens this tap — one live reader, plus one alias nobody opens.
+# NOTE FIRST: since U4/P7-4 this tap has a PRODUCER only under `loopback`
+# coupling. On a `shm_ring` box fan-in writes Ring A and nothing writes
+# substream 7 — and nothing reads it there either, since U4/P7-2 moved
+# the last RAW consumer off it:
 #   - CamillaDSP opens `plug:jasper_capture` (note the `plug:`) in the
-#     outputd config. plug keeps the consumer tolerant of
+#     outputd config — on a `loopback` box. A `shm_ring` box's graph is
+#     emitted with the ring capture device instead, so it never reaches
+#     this tap. plug keeps the consumer tolerant of
 #     operator mistakes, but the intended fan-in output shape is fixed
 #     at 48 kHz S16_LE.
 #   - `jasper_ref` (defined below), the plug-wrapped alias, is opened by
