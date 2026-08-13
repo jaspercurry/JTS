@@ -5,7 +5,7 @@
 """Pure analysis of a crossover excitation-program capture.
 
 ``analyze_program_capture(program, samples, sample_rate) → ProgramAnalysis`` is
-the single, deterministic, fixture-testable half of the conductor model (design
+the single, deterministic, fixture-testable half of the session model (design
 §5.6): every quantity — segment locations, per-segment integrity, in-capture
 clock drift, per-driver gated responses, tweeter-vs-woofer alignment, and the
 crossover candidate + predicted sum — derives from the ``(program, capture)``
@@ -101,7 +101,7 @@ logger = logging.getLogger(__name__)
 # delay, far tighter than the global first-stimulus search.
 SEGMENT_SEARCH_S = 0.030
 # Capture bound (kernel contract: defense at the FFT, 1 GB Pi — mirrors
-# deconv.cap_capture_length's rationale). A legitimate conductor capture is the
+# deconv.cap_capture_length's rationale). A legitimate session capture is the
 # program plus a small phone-start lead; this margin bounds the global offset
 # the locator can see. A stuck recording is truncated to
 # program duration + this margin before any full-rate FFT runs.
@@ -735,7 +735,7 @@ class MeasurementPriors:
     solve aims for. ``predicted_sum`` is the MEASURE-predicted summed magnitude
     ``(freqs_hz, magnitude_db)`` VERIFY compares against — built from the RAW
     measured branches by this module's own ``_build_candidate``, but the v2
-    conductor OVERRIDES it with a LINEARIZED-branch prediction whenever Layer-1a
+    session OVERRIDES it with a LINEARIZED-branch prediction whenever Layer-1a
     linearization was fitted (#1668 PR-D VERIFY-prediction coherence fix; see
     ``jasper.active_speaker.crossover_v2.intervention.plan_linearization``)
     — the emitted graph carries the correction filters, so the persisted
@@ -753,7 +753,7 @@ class MeasurementPriors:
 
     ``alignment_delay_bounds_us`` is the unsigned, declaration-derived
     applied-delay magnitude range the flatness refinement may search. The
-    conductor derives it from the crossover region's ``delay_range_ms``; the
+    session derives it from the crossover region's ``delay_range_ms``; the
     drift-corrected physical peak gap orients and centers one ±half-period
     signed lobe inside it. GCC remains the confidence/polarity seed and the
     fallback estimate. ``None`` keeps GCC as the applied-delay estimate.
@@ -764,7 +764,7 @@ class MeasurementPriors:
     ``jasper.web.correction_crossover_v2.bind_production_analyze`` via
     ``jasper.audio_measurement.calibration.mic_tier_for_model``. ``None``
     (every construction site that predates this field, and CHECK/VERIFY
-    priors, which never set it) means "no tier known" — the v2 conductor's
+    priors, which never set it) means "no tier known" — the v2 session's
     Layer-1a linearization gate treats that as ineligible, never a guess.
     """
 
@@ -904,7 +904,7 @@ class DriftEstimate:
     disagreement (see ``_estimate_drift``'s docstring) — one of the three
     glitch inputs, threaded through here (not just logged transiently at
     ``program_analysis.glitch``) so a caller building a durable diagnostic
-    record (e.g. the crossover v2 conductor's per-capture diag event) has it
+    record (e.g. the crossover v2 session's per-capture diag event) has it
     on BOTH a passing and a failing capture, not only the WARN-level line a
     glitch fires. Defaults to ``0.0`` for legacy construction sites that
     predate this field.
@@ -1154,7 +1154,7 @@ class PilotObservation:
 
     ``programmed_hi_gain_db`` is the HI segment's own declared ``gain_db``
     (the digital gain the program composer scheduled it at) — published
-    here so a caller downstream of this analysis (the v2 conductor's VERIFY
+    here so a caller downstream of this analysis (the v2 session's VERIFY
     inter-attempt pilot-level consistency gate, measurement-honesty gate G3,
     2026-07-22) can compute ``level_hi_dbfs - programmed_hi_gain_db`` (the
     capture chain's own transfer) WITHOUT binding back to the
@@ -1290,7 +1290,7 @@ class ProgramAnalysis:
     ambient_report: dict[str, Any] | None = None
     # Pure passthrough of MeasurementPriors.mic_tier (#1668 PR-C) — set only
     # by _analyze_measure (see that function's return statement); CHECK and
-    # VERIFY analyses never set it (the v2 conductor's Layer-1a fit only
+    # VERIFY analyses never set it (the v2 session's Layer-1a fit only
     # ever reads it off a MEASURE analysis). See MeasurementPriors.mic_tier's
     # docstring for the trust-tier vocabulary and "None means unknown, never
     # a guess" contract.
@@ -1307,7 +1307,7 @@ class ProgramAnalysis:
     # ``None`` when there are no pilots (same "no evidence" convention as
     # ``linearity_ok``). False means at least one pilot's quiet-side in-band
     # SNR was too low to trust the ambient-subtracted linearity estimate —
-    # the conductor routes this to `REASON_SNR_FLOOR` (CHECK) or
+    # the session routes this to `REASON_SNR_FLOOR` (CHECK) or
     # `REASON_PILOT_LEVEL_COLLAPSE` (MEASURE / cloud / VERIFY), never to
     # `REASON_AGC_BEHAVIORAL_FAIL`. Live on every phase since issue #1810.
     pilot_snr_ok: bool | None = None
@@ -1352,7 +1352,7 @@ class ProgramAnalysis:
     # MEASURE-predicted summed magnitude ``(freqs_hz, magnitude_db)`` — the two
     # measured branches at the candidate's COMMITTED trim AND committed delay
     # (rung P3 / R10b; ``_build_candidate``'s ``predicted_applied``). The v2
-    # conductor hands this to the VERIFY analysis as
+    # session hands this to the VERIFY analysis as
     # ``MeasurementPriors.predicted_sum`` so VERIFY's PASS is |measured −
     # predicted| ≤ ±1.5 dB (design §5.2), not merely the summed ripple.
     #
@@ -2395,7 +2395,7 @@ def _verify_capture_integrity(
 
     The gate-window comparability substitute the P0 bench also used by hand is
     deliberately NOT here. It compares this capture's gate against the
-    PREDICTION's, and only the conductor holds the MEASURE window — so it
+    PREDICTION's, and only the session holds the MEASURE window — so it
     stays where it already lives (``crossover_v2_flow._verify_verdict``'s
     inconclusive rule) rather than being restated as a second owner.
 
@@ -2416,7 +2416,7 @@ def _verify_capture_integrity(
       correctly, since a uniformly shifted capture is not corrupt.
     * Anything at all on a LEGACY pilot-less VERIFY program, where the summed
       sweep IS the global-offset anchor and its residual is therefore
-      structurally ~0. Every conductor-composed VERIFY program carries the
+      structurally ~0. Every session-composed VERIFY program carries the
       leading pilot pair (``crossover_v2.programs.SessionExcitation``'s
       ``verify_program`` always
       passes ``leading_pilot_gains_db``), so the anchor is a pilot and the
@@ -3087,7 +3087,7 @@ def predicted_branch_sum(
     applied delay would count the measured peak gap twice (the reverted fix-2
     failure mode).
 
-    Public (#1668 PR-D VERIFY-prediction coherence fix): the v2 conductor
+    Public (#1668 PR-D VERIFY-prediction coherence fix): the v2 session
     rebuilds its persisted VERIFY prediction from the LINEARIZED branch pair
     when Layer-1a linearization was fitted
     (``jasper.active_speaker.crossover_v2.intervention``'s ``plan_linearization``) —
@@ -3263,11 +3263,11 @@ def solve_branch_trims(
     exactly the independent reference needed to tell a 0.5 dB estimator
     residual from a real acoustic difference.
 
-    Public: kept module-public as the level match's SSOT — the v2 conductor
+    Public: kept module-public as the level match's SSOT — the v2 session
     documents its own anchored give-back seed against this function
     (`jasper.active_speaker.crossover_v2_flow`, "why not the old
     solve_branch_trims seed") and the contract tests import it. Its sibling
-    :func:`overlap_band_hz` is public because the conductor CALLS it.
+    :func:`overlap_band_hz` is public because the session CALLS it.
     """
     (w_lo, w_hi), (t_lo, t_hi) = branch_level_bands_hz(
         fc_hz, woofer_span_hz=woofer_span_hz, tweeter_span_hz=tweeter_span_hz,
@@ -3626,7 +3626,7 @@ def _pilot_ambient_samples(
 
     Located by SCHEDULE offset (like `_ambient_from_capture`), not by
     correlation — it is silence, so there is nothing to correlate. That makes
-    it exact for a live capture (the conductor plays the program it composed)
+    it exact for a live capture (the session plays the program it composed)
     and meaningless for a CROSS-ERA replay of an archived capture, where the
     window lands on whatever the older schedule had at that position. The
     replay failure direction is the safe one: a too-loud "ambient" reads as
@@ -4185,7 +4185,7 @@ def _solve_role_gain(
       (``crossover_v2_flow.CrossoverV2Session._compose_measure_program``
       puts them on the woofer today): it is a floor, so applying it more
       widely can only keep a level closer to today's, and it stays correct if
-      the composer ever moves the pair. The conductor's clip retry
+      the composer ever moves the pair. The session's clip retry
       (``_rearm_measure_after_transient``) subtracts a further
       ``CLIP_RETRY_BACKOFF_DB`` (3 dB) from whatever this returns, which
       ``MEASURE_SNR_SOLVE_MARGIN_DB`` absorbs with room to spare — and a
@@ -4451,7 +4451,7 @@ def analyze_program_capture(
         )
     capture = np.asarray(samples, dtype=np.float64).ravel()
     # Bound the capture BEFORE any full-rate FFT (kernel contract: defense at
-    # the FFT, 1 GB Pi). A legitimate conductor capture is the program plus a
+    # the FFT, 1 GB Pi). A legitimate session capture is the program plus a
     # small phone-start lead; a stuck recording is truncated to the program
     # duration plus CAPTURE_BOUND_MARGIN_S. A program that genuinely starts
     # beyond the margin fails downstream location checks loudly instead of
@@ -5416,7 +5416,7 @@ def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
     recomputed. Per-driver/per-pilot fields key off each entry's OWN ``role``
     string (whatever the program declared — "woofer"/"tweeter" in production)
     rather than a hardcoded label, since this runs at the analyze seam, before
-    the v2 conductor's role mapping exists.
+    the v2 session's role mapping exists.
 
     Deliberately duck-typed (``analysis: Any``) and defensive throughout: this
     is called from a best-effort retention path that must never raise even if

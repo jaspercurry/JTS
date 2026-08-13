@@ -16,8 +16,8 @@ ceiling everywhere. Pure computation: numpy plus
 designer, extended here — backward-compatibly — to accept a per-bin cut
 ceiling). No I/O, no CamillaDSP emission — this module answers "what filters
 would flatten this driver," nothing more. Wiring the result into the v2
-conductor's candidate and the eventual APPLY emission stage are separate
-concerns (the conductor wiring is this same PR; APPLY emission is later).
+session's candidate and emitting it at APPLY are separate concerns, owned
+elsewhere.
 
 See docs/active-speaker-tuning-layers-design.md "Layer 1a concretely" for
 the adopted design this module implements (fit domain, adaptive band trim,
@@ -423,8 +423,8 @@ class FitVocabulary:
     and this vocabulary once, on the summed chain. Neither shape is spelled
     anywhere in this module.
 
-    ``allow_boost`` is the evidence gate. The conductor grants it only for a
-    session that will actually run the delta probe, so an unverified boost
+    ``allow_boost`` is the evidence gate. The v2 session grants it only when
+    the commission will actually run the delta probe, so an unverified boost
     claim cannot reach a driver — which is the whole condition under which the
     engineering spec's boost mode was allowed to exist at all.
     """
@@ -1040,7 +1040,7 @@ def worst_headroom_cost_db(linearization_mapping: Mapping[str, Any]) -> float:
     skipped rather than raising. Returns 0.0 when nothing was boosted or
     nothing was fitted.
 
-    Defined here, once, because BOTH the conductor's own candidate payload and
+    Defined here, once, because BOTH the session's own candidate payload and
     the web layer's browser-visible ``_candidate_summary`` disclose this
     number, and two reducers for one household-facing figure is exactly the
     drift this ladder exists to remove.
@@ -1419,7 +1419,7 @@ def core_level_band_hz(
     """The span :func:`driver_core_level_db` ACTUALLY reads its median over,
     for the same arguments — ``None`` when it would return ``None``.
 
-    Exists so a caller that discloses the band (the conductor's refusal
+    Exists so a caller that discloses the band (the session's refusal
     journal) discloses the realized one rather than the bound it asked for.
     Those differ exactly when the bound is refused by
     :func:`_core_level_mask`'s width floor, which is precisely the case a
@@ -2538,7 +2538,7 @@ def fit_driver_linearization(
 
     ``level_frame`` is the session's :class:`SharedLevelFrame`; when supplied,
     this driver's :attr:`~LinearizationFit.level_frame_offset_db` reports how
-    far it must move to reach that shared frame, which the conductor folds
+    far it must move to reach that shared frame, which the session folds
     into the anchored trim. The frame does NOT change what this function
     flattens toward — a driver is flattened to its own passband, which is what
     flattening means — it changes where that flattened passband is placed

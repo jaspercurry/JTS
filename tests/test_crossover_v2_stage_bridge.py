@@ -469,7 +469,7 @@ def _seed_applied_stage_1_state() -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
-# 1. what SURVIVES — the four verify_priors keys
+# 1. what SURVIVES — the seven verify_priors keys
 # --------------------------------------------------------------------------- #
 
 
@@ -526,8 +526,11 @@ def test_the_simple_verify_priors_reach_the_stage_2_conductor(monkeypatch):
 
     **This covers four of the write side's seven keys**, and the name no longer
     carries the count because the count has drifted twice: ``commanded_delta``
-    and ``entry_baseline`` earned their own read-side pins in sections 2 and 3
-    below, and ``proposal_fingerprint`` (#2392) is read back through the real
+    earned its own read-side pin in section 2 below, ``entry_baseline``'s lives
+    in ``tests/test_crossover_v2_entry_baseline.py`` (section 5,
+    ``test_the_baseline_crosses_the_bridge_with_its_values_intact``) beside the
+    rest of that field's contract — section 3 here is the rollback seam — and
+    ``proposal_fingerprint`` (#2392) is read back through the real
     ``prepare_v2_verify`` in
     ``tests/test_crossover_v2_round_wiring.py::test_the_receipt_names_the_proposal_that_was_made``,
     where the receipt it feeds can be asserted in the same breath. A number in

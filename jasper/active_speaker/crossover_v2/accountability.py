@@ -16,7 +16,7 @@ is a module rather than a method, and it is the completion of the #2291
 "return accountability as data" principle that Phase 2b started one layer
 down.  :func:`assess_accountability` computes which refusal fires, what gets
 said, and what gets banked, and hands all three back as an
-:class:`AccountabilityDecision`.  The conductor owns every irreversible half:
+:class:`AccountabilityDecision`.  The session owns every irreversible half:
 the logger and the ``session_id``, the ``CaptureBeginRefused`` construction
 that stamps ``_last_failure_code``, and the stash the host later persists.
 A pure gate can be asked the same question twice and answer the same way,
@@ -120,7 +120,7 @@ class GateRecord:
     reason it is not safe there: every value is computed inside
     :func:`assess_accountability` from scalars, except ``core_level_db``,
     whose one shared structure the caller is documented never to mutate — and
-    the caller is the conductor's own journal delegate, which only reads.
+    the caller is the session's own journal delegate, which only reads.
     """
 
     event: str
@@ -144,7 +144,7 @@ class AccountabilityDecision:
     which is a different session state than the one that happened.
 
     ``journal`` is in emission order.  A caller that writes the stash first and
-    then iterates produces the same journal, and the same conductor state, as
+    then iterates produces the same journal, and the same session state, as
     the method this replaced — the one ordering claim worth pinning rather than
     arguing, which
     ``test_crossover_v2_accountability`` does from both refusal arms.
@@ -210,7 +210,7 @@ def level_frame_finding_record(
     # band is exactly the finite span each median was computed on.
     #
     # **The union is an OUTER hull, and it spans a gap neither median
-    # read** — on the conductor fixture the woofer's core stops at 1255.8
+    # read** — on the session fixture the woofer's core stops at 1255.8
     # Hz and the tweeter's starts at 2020.0, so 1255.8-2020.0 Hz is inside
     # the finding's band and inside no measurement. That is the right shape
     # rather than a rounding of it: this finding is about the RELATIONSHIP
@@ -335,7 +335,7 @@ def assess_accountability(
     # ``giveback + system − core`` (the cancellation is derived in
     # ``anchor_base_db``'s own comment). So the committed inter-driver
     # placement is set by the CORE-MEDIAN frame — the disputed estimator —
-    # not by the trim solve. On the conductor fixture: committed −0.674,
+    # not by the trim solve. On the session fixture: committed −0.674,
     # which is the core-median value to 4 dp; anchoring on the trim solve's
     # placement instead would give +2.535; the two differ by 3.209, exactly
     # the banked disagreement, which is not a coincidence but the identity

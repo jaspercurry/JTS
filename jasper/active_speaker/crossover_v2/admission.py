@@ -14,7 +14,7 @@ pooled across everyone who can ask for one.
 **This module DECIDES; it does not act** — the split :mod:`.accountability`
 established, for the same reason.  :func:`assess_begin` answers "may this begin
 start, and who pays for it" and hands back a :class:`BeginDecision`.  The
-conductor owns every irreversible half: the ``CaptureBeginRefused`` /
+session owns every irreversible half: the ``CaptureBeginRefused`` /
 ``CaptureBeginDeferred`` it raises, the ``_last_failure_*`` fields that raise
 stamps, the ``_armed_*`` capture identity, the journal line, and the two ledger
 mutations (:meth:`SlotAttempts.spend` and the ``admitted`` increment).  A pure
@@ -45,8 +45,8 @@ should own:
 the host whether the auto-apply failed, and that question is only asked on the
 hold branch.  A value resolved at call time would ask it on every begin — a
 seam call the shipped flow does not make — so :func:`assess_begin` takes a
-callable and invokes it exactly where the conductor did.  Its ``OSError`` /
-``RuntimeError`` / ``ValueError`` guard stays with the conductor, whose seam it
+callable and invokes it exactly where the session does.  Its ``OSError`` /
+``RuntimeError`` / ``ValueError`` guard stays with the session, whose seam it
 is.
 
 **The settle path's decision half lives here too** (#2291 Phase 5b), in
@@ -55,7 +55,7 @@ first version recorded that it could not leave — true of moving
 ``_resolve_spent_slot`` *whole*, since it returns a ``PhaseVerdict``
 and performs the group close under ``_close_lock``, and false of the
 decision/act split the package actually uses: a ladder that answers with a
-*kind* never touches the carrier.  What stayed with the conductor is every act
+*kind* never touches the carrier.  What stayed with the session is every act
 — rendering the diagnosis, the journal line, the ``_group_unresolved``
 attribution, the group close, and building the verdict.  See those two
 functions for why the ladder is split in two at exactly the lock boundary.
@@ -103,7 +103,7 @@ __all__ = [
 #
 # One prompted position gets its PLANNED capture plus at most this many EXTRA
 # attempts, POOLED across everyone who can ask for one: the household's "Try
-# again" and voluntary retakes, and the conductor's own geometry retakes. In the
+# again" and voluntary retakes, and the session's own geometry retakes. In the
 # owner's words: *"We need a finite bound: do up to three more measurements to
 # see if we can get a read. If we still can't, attribute it to X."*
 #
@@ -145,7 +145,7 @@ class AttemptOverspendError(RuntimeError):
 
     Module-local for the reason :class:`~.programs.NoProgramForPhaseError` is:
     the flow's ``CrossoverV2FlowError`` is the vocabulary every caller already
-    handles, and a pure ledger has no business knowing it. The conductor
+    handles, and a pure ledger has no business knowing it. The session
     translates at the one call site.
     """
 
@@ -187,7 +187,7 @@ class SlotAttempts:
     """One prompted position's attempt ledger (owner ruling #2086).
 
     The single meter for a slot. ``admitted`` counts every attempt the
-    conductor let start — the first is the PLANNED capture and is free; each
+    session let start — the first is the PLANNED capture and is free; each
     one after it spends an extra against
     :data:`MAX_EXTRA_ATTEMPTS_PER_POSITION`, attributed to whoever asked.
 
@@ -201,7 +201,7 @@ class SlotAttempts:
 
     Mutable on purpose (the frozen ``PhaseVerdict`` in :mod:`.vocabulary` is a
     value;
-    this is per-session state the conductor advances).
+    this is per-session state the session advances).
     """
 
     admitted: int = 0
@@ -257,7 +257,7 @@ class BeginDecision:
 
     ``code`` is an opaque reason token on every refusal — the flow renders the
     sentence the household reads from its own registry. ``spends_extra`` and
-    ``initiator`` are meaningful only on :data:`ADMIT`, and the conductor
+    ``initiator`` are meaningful only on :data:`ADMIT`, and the session
     performs the charge; deciding who pays and taking the payment are the two
     halves this module keeps apart.
     """
@@ -273,7 +273,7 @@ def extra_initiator(last_reason: str | None, *, geometry_locked_code: str) -> st
 
     Read off the rejection that kept the plan alive at this slot, because
     that is the only place the distinction is visible: a geometry rung is
-    the conductor demanding a wider take of a capture that was otherwise
+    the session demanding a wider take of a capture that was otherwise
     fine, and it travels the ordinary begin path with ``retake=false``
     (see ``GEOMETRY_RETRY_POSITIONS`` — rejecting is the only lever
     that keeps a fixed-length plan on the same index). Everything else —
@@ -316,11 +316,11 @@ def spent_slot_outcome(
     unresolved: Container[int],
     retained: Container[int],
 ) -> str:
-    """The state after an exhausted slot, derived from conductor state.
+    """The state after an exhausted slot, derived from session state.
 
     The three facts arrive stated: whether the phase is a position group, and
     — for a group — whether this index was left out or is still represented by
-    an earlier take. The conductor reads them off ``_group_unresolved`` and
+    an earlier take. The session reads them off ``_group_unresolved`` and
     ``_retained_group_indexes``, which remain its own.
     """
     if is_group:
@@ -344,7 +344,7 @@ def pilot_heard_for(
     """The pilot evidence recorded WITH ``code``, else ``None`` (#2085).
 
     ``paired`` is the ``(code, pilot_heard, reflection_measured)`` triple the
-    conductor holds for the capture position being described — or, for the
+    session holds for the capture position being described — or, for the
     global form the persisted terminal state uses, the triple assembled from
     its ``_last_failure_*`` pair. Both forms re-check the code because the
     failure being described is not always the failure last consumed: the flow's
@@ -380,13 +380,13 @@ def assess_begin(
 ) -> BeginDecision:
     """Admit (or defer / refuse) one phone ``begin_capture`` (§5.7).
 
-    ``verify_hold`` is the conductor's "this is VERIFY and no apply has been
+    ``verify_hold`` is the session's "this is VERIFY and no apply has been
     observed" — VERIFY is soft-held until one is. **Since the two-stage split
     (work order D10) no shipped session reaches that hold**: stage 1 has no
-    VERIFY index at all, and stage 2's conductor is constructed
+    VERIFY index at all, and stage 2's session is constructed
     ``applied=True``, so the flag is false before either the deferral or the
     ``apply_failed`` refusal below. The machinery is retained rather than
-    deleted — no new design may depend on it, and a conductor built without a
+    deleted — no new design may depend on it, and a session built without a
     prior apply still gets the honest hold. If the auto-apply hit a TERMINAL
     failure (``apply_failure_code`` names a reason), the hold is refused
     outright rather than held toward a dishonest relay_timeout — the household

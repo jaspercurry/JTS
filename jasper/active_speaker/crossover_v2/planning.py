@@ -16,7 +16,7 @@ and the assembly of the emitted
 **One corner, and it is the candidate's.**  :func:`plan_for_candidate` derives
 the crossover corner from the sections the candidate is realized with and reads
 no session Fc — the 2026-08-10 defect made unrepresentable rather than merely
-fixed.  Nothing here can reach a conductor field, so there is no second corner
+fixed.  Nothing here can reach a session field, so there is no second corner
 in scope to read even by accident.
 
 **Ports, not patches.**  The two seams that are *behaviour the host owns* — the
@@ -29,7 +29,7 @@ binds on production instead of addressing a name production no longer routes
 through (issue #2354).
 :func:`ineligible_reason` is the counter-case and follows :mod:`.fc_sweep`'s own
 rule: nothing substitutes it, so :func:`build_candidate` calls it directly and
-the conductor's delegate calls the same function — one derivation either way.
+the session's delegate calls the same function — one derivation either way.
 
 ``exclusion_evidence`` is a port for the second reason that module names: it is
 read AFTER the plan has run, and its answer must describe the group's CURRENT
@@ -50,7 +50,7 @@ states the identical exception for its own seams.
 
 Dependency direction, as for every module here: no ``jasper.web`` import and
 nothing from :mod:`jasper.active_speaker.crossover_v2_flow`.  Two consequences
-are visible in the signatures below.  The conductor keeps the preconditions
+are visible in the signatures below.  The session keeps the preconditions
 whose refusal vocabulary is its own — a declared protection map on an uncomposed
 capture, and an analysis carrying no candidate, which raises
 ``CrossoverV2FlowError`` — because those are facts about the *session*, not
@@ -132,6 +132,13 @@ EVENT_FIT_FAILED_JOURNAL_DROPPED = (
 #: (ruff BLE, and the repository's frozen broad-except budget). ``OSError``
 #: is in the set for the same reason it is in theirs: the port is a logging
 #: delegate, and a handler with nowhere to write raises exactly that.
+#:
+#: Its sibling answers the same lint question the other way, deliberately: the
+#: model-error seam call in ``crossover_v2_flow`` catches every ``Exception``
+#: behind an explicit BLE001 suppression, because what it protects is a second
+#: DURABLE record in the DoD-protected store rather than an in-memory plan
+#: carrying a ``journal_dropped`` disclosure. Different property, different
+#: catch width.
 _JOURNAL_ERRORS = (
     ArithmeticError,
     AttributeError,
@@ -439,7 +446,7 @@ def plan_for_candidate(
     for a swept corner, ``preset``'s own crossover regions for the configured
     one — and
     :class:`~jasper.active_speaker.crossover_v2.contracts.CandidateAcousticContext`
-    derives the corner FROM them. The conductor's ``_fc_hz`` is not read, and
+    derives the corner FROM them. The session's ``_fc_hz`` is not read, and
     there is no second corner in scope for the planner to read either — this
     module cannot reach one: that is the 2026-08-10 defect made
     unrepresentable rather than merely fixed.
@@ -688,7 +695,7 @@ def build_candidate(
         # MeasuredCrossoverCandidate.linearization_outcome's own
         # docstring for why this module never re-derives it. Since #2291
         # Phase 2b the verdict is this build's own returned state rather
-        # than a conductor field, so the candidate and the state beside it
+        # than a session field, so the candidate and the state beside it
         # cannot describe different builds.
         linearization_outcome=state.outcome,
     ), state

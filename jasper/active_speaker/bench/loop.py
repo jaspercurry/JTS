@@ -368,7 +368,7 @@ def _claimed_delta_db(
 
     Built from the fit's own records through
     :func:`~jasper.active_speaker.linearization_fit.complex_correction_response`
-    — the same evaluator the conductor's prediction, the emitter's headroom
+    — the same evaluator the session's prediction, the emitter's headroom
     charge, and the runtime contract's proof all share — so the claim graded
     here is the claim the rest of the flow made, not a restatement of it.
 

@@ -84,7 +84,7 @@ _ECHO_FIELDS: tuple[str, ...] = (
     "resolution_us",
 )
 
-#: Per-position scalars carried from the conductor's own retained metadata —
+#: Per-position scalars carried from the session's own retained metadata —
 #: the gate actually used and the ripple, both of which §6 names and both of
 #: which the pipeline already had.
 _RECORD_FIELDS: tuple[str, ...] = (
@@ -249,7 +249,7 @@ def position_evidence_block(
 
     Args:
       combined: the ``spatial_combine.CombinedResponse`` the group produced.
-      position_records: the conductor's own retained per-position metadata,
+      position_records: the session's own retained per-position metadata,
         joined by ``position_id``. Supplies the gate, the ripple, the
         accepted attempt, and the capture hash — values the combiner never
         sees because they are properties of the capture, not of the combine.

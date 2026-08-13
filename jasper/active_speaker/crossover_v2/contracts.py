@@ -237,7 +237,7 @@ class ResponseCurve:
 
     @classmethod
     def from_pair(cls, pair: Any, *, field_name: str) -> "ResponseCurve | None":
-        """Normalize the conductor's ``(freqs, db)`` pair; ``None`` passes through."""
+        """Normalize the session's ``(freqs, db)`` pair; ``None`` passes through."""
 
         if pair is None:
             return None

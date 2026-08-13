@@ -31,7 +31,7 @@ and the ladder in the same place.
 and the behavioural difference between this module and the methods it replaced.
 The conductor's screens called module-level predicates
 (``_stimulus_locate_ok`` and friends) that also serve MEASURE and VERIFY, whose
-verdicts stay on the conductor; rather than give those predicates a second
+verdicts stay on the session; rather than give those predicates a second
 owner, the caller EVALUATES them and states the results in a
 :class:`CaptureScreens`.  The predicates are total and side-effect-free, so
 stating them eagerly is exact — see :class:`CaptureScreens` for the one
@@ -390,10 +390,10 @@ def entry_baseline_screens(
       claim.
     * the G3 pilot-transfer step — **dropped**.  G3 asks whether the recording
       chain moved BETWEEN two replays of the identical program within one
-      conductor's lifetime, and it exists to protect the tracking comparison it
+      session's lifetime, and it exists to protect the tracking comparison it
       immediately precedes.  There is no tracking comparison here, and stage 1
       runs exactly one summed capture, so the gate could only ever record a
-      reference that stage 2's own fresh conductor is forbidden to inherit
+      reference that stage 2's own fresh session is forbidden to inherit
       (#1927).
     * the tracking-max tolerance comparison — **dropped**, structurally:
       :func:`~.priors.entry_baseline_priors` withholds ``predicted_sum``, so
@@ -573,7 +573,7 @@ def cloud_position_record(
     silently depend on operator retention being wired.
 
     ``take_id`` is minted HERE rather than only at the storage seam, so the
-    conductor's own evidence and the bundle's sidecar path name the same take.
+    session's own evidence and the bundle's sidecar path name the same take.
     A geometry retake reuses the position id, so the id alone does not identify
     a take (attribution plan §6's "accepted-attempt ↔ position mapping").
 

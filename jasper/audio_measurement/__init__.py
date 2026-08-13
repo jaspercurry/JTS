@@ -13,13 +13,13 @@ DSP math is unchanged.
 Modules:
   - :mod:`~jasper.audio_measurement.sweep` — synchronized swept-sine (ESS)
     generation + WAV I/O.
-  - :mod:`~jasper.audio_measurement.program` — the crossover conductor's
+  - :mod:`~jasper.audio_measurement.program` — the crossover session's
     excitation-program model (pure-data schedule dataclasses), the CHECK /
     MEASURE / VERIFY composers, and deterministic PCM rendering / WAV writing.
   - :mod:`~jasper.audio_measurement.program_analysis` — the pure
     ``(program, capture) → ProgramAnalysis`` analysis (locate + integrity +
     clock-drift + per-driver response + GCC-PHAT alignment + candidate) for the
-    conductor flow.
+    session flow.
   - :mod:`~jasper.audio_measurement.deconv` — regularized FFT deconvolution
     (impulse-response extraction) + magnitude response.
   - :mod:`~jasper.audio_measurement.gating` — impulse-response gating (first-

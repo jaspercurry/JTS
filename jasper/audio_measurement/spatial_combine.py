@@ -123,10 +123,12 @@ Pure computation: numpy plus
 :func:`~jasper.audio_measurement.analysis.smooth_fractional_octave`. No
 I/O, no logging, no globals, no randomness, no product policy — and, per
 the house precedent set by
-:mod:`jasper.active_speaker.linearization_envelope` (#1668 PR-B), **zero
-production callers by design**. Wiring the combiner into the conductor's
-position-group choreography is plan stage S1; the spec bands and gauges
-that consume the exclusion mask are stage S2.
+:mod:`jasper.active_speaker.linearization_envelope` (#1668 PR-B), **no
+production callers when it shipped**. Both wirings have since landed: the v2
+session's position-group choreography calls :func:`combine_positions`
+(:mod:`jasper.active_speaker.crossover_v2_flow`), and the spec bands and gauges
+consume the exclusion mask through
+:mod:`jasper.active_speaker.flat_spec` / :mod:`~jasper.active_speaker.linearization_envelope`.
 """
 from __future__ import annotations
 
@@ -859,8 +861,8 @@ class PositionCapture:
     """One gated sweep captured at one mic position in the cloud.
 
     Args:
-      position_id: caller's label for the position (a conductor
-        position-group id, in the eventual S1 flow). Carried through to
+      position_id: caller's label for the position (the v2 session's
+        position-group id). Carried through to
         :attr:`CombinedResponse.position_ids` so a flagged or outlying
         position can be named back to the user.
       freqs_hz: **linear**-spaced frequency grid, e.g. ``np.fft.rfftfreq``.
@@ -1523,7 +1525,7 @@ def decimate_curve_to_analysis_grid(
     """The 1-D public face of :func:`_decimate_to_analysis_grid`.
 
     Same rule, same owner, one caller shape apart: the combiner decimates a
-    STACK of positions, and a caller holding a single curve (the v2 conductor's
+    STACK of positions, and a caller holding a single curve (the v2 session's
     predicted branch sum, on its way to be spec-graded) needs the identical
     block-average so its curve is smoothed and evaluated at the same grid
     density as the measured one it will be compared against. Exported for the

@@ -428,7 +428,7 @@ _POST_ROUTES = frozenset({
     "/crossover/relay-cancel",
     "/crossover/reset",
     "/crossover/recover-volume",
-    # v2 conductor flow (Wave 5a) — the only crossover-measurement flow since
+    # v2 session flow (Wave 5a) — the only crossover-measurement flow since
     # W5b retired the legacy per-driver flow and the JASPER_CROSSOVER_FLOW
     # selector.
     "/crossover/v2/session",
@@ -6861,7 +6861,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             """POST /crossover/* — secure active-crossover measurement."""
 
             if path in {"/crossover/v2/session", "/crossover/v2/verify"}:
-                # v2 conductor sessions (Wave 5a). ValueError covers both the
+                # v2 commission sessions (Wave 5a). ValueError covers both the
                 # host's typed CrossoverV2Refused (a subclass) and shared
                 # precondition refusals — same contract as relay-capture.
                 try:
@@ -6992,7 +6992,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 if path == "/crossover/recover-volume":
                     from jasper.camilla import CamillaUnavailable
 
-                    # W6.1 E2: when the v2 conductor owns the unresolved (or
+                    # W6.1 E2: when the v2 session owns the unresolved (or
                     # crash-hydrated active) session volume, route to its plan's
                     # recover_unresolved — the legacy lease holds no unresolved
                     # state for a v2 session, so it 409'd

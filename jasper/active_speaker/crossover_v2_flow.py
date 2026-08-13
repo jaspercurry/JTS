@@ -8727,6 +8727,13 @@ class CrossoverV2Session:
                 # must keep propagating, and a dying process persists nothing
                 # this method appends anyway.
                 #
+                # Its sibling answers the same lint question the other way,
+                # deliberately: ``crossover_v2.planning._JOURNAL_ERRORS``
+                # ENUMERATES eight classes instead of catching broadly, because
+                # what it protects is an in-memory plan carrying a
+                # ``journal_dropped`` disclosure rather than a second durable
+                # record. Different property, different catch width.
+                #
                 # Its own event at ERROR, because the arm above means "the store
                 # had an outage" and this one means "the seam raised something
                 # nobody enumerated" — one is operational and the other is a
@@ -10391,11 +10398,16 @@ def session_wall_clock_ceiling_s(capture_plan: Any) -> float:
 
     Since the two-stage split (work order D2) each STAGE arms its own ceiling
     from its own plan, and this function is unchanged — it reads whatever plan
-    it is handed. Full: stage 1 (10 entries) 1800 + 7*120 = 2640 s, stage 2
-    (6) 1800 + 3*120 = 2160 s. Express: stage 1 (6) 2160 s, stage 2 (1) the
-    plain 1800 s baseline. **The split lowers the worst case from 3360 s to
-    2640 s and gives each stage its own fresh relay TTL; it does not make
-    either stage fit inside that 900 s TTL, and this docstring must not be
+    it is handed. The per-stage entry counts are
+    :func:`tier_display_info`'s ``stage1_captures`` / ``stage2_captures``, and
+    the ceiling for any one of those plans is this function applied to it —
+    derive them there rather than restating numbers here, where a plan change
+    cannot reach them. (An earlier revision of this docstring attributed
+    ``build_v2_capture_plan()``'s BARE-DEFAULTS scenario — 10 entries, 2640 s —
+    to the shipped Full tier's stage 1, which is a different and smaller plan.
+    Two valid scenarios; only one of them is what ships.) **The split gives each
+    stage its own fresh relay TTL and lowers the worst case, but it does not
+    make either stage fit inside that 900 s TTL, and this docstring must not be
     read as claiming it does.** At the 19-entry maximum the unclamped value
     would be 3720 s and the plan's hard cap binds at 3600 s.
     """
@@ -10463,16 +10475,20 @@ def tier_display_info() -> dict[str, dict[str, int]]:
     different plausible topologies (varying woofer/tweeter bands and
     ``fc_hz`` — see ``tests/test_crossover_v2_conductor.py``'s
     ``test_tier_display_info_minutes_hold_across_plausible_topologies``),
-    Full displays 11 minutes and Express displays 6 minutes in every case
-    checked, with Express the tighter margin (on the order of 10-15 s of
-    headroom before the next minute boundary, at this representative pair —
-    the number that would need re-deriving if a future change genuinely
-    widened the plausible band space). Express's figure moved from 5 to 6 with
-    the two-stage split, and the reason is the split's own arithmetic rather
-    than a longer session: the journey is now TWO plans and each ceils to a
-    whole minute separately, which is the deliberately conservative choice
-    recorded below. ``capture_target`` needs no audio program at all — it is
-    pure arithmetic on the resolved :class:`V2PlanShape`.
+    each tier displays the SAME whole minutes in every case checked. The figure
+    itself is this function's output; do not write it down elsewhere, and note
+    that the test pins the sweep against ``tier_display_info()`` itself, so it
+    cannot catch a docstring that quotes a stale figure — an earlier revision of
+    this one did exactly that. The invariant is empirical rather than
+    structural: the binding margin is the TIGHTEST per-stage headroom before the
+    next minute boundary (the two stages ceil separately), and across that sweep
+    it is a fraction of the 60 s quantum — which is what would need re-deriving
+    if a future change genuinely widened the plausible band space. The
+    two-stage split moved the displayed figures by its own arithmetic rather
+    than by a longer session: the journey is TWO plans and each ceils to a whole
+    minute separately, which is the deliberately conservative choice recorded
+    below. ``capture_target`` needs no audio program at all — it is pure
+    arithmetic on the resolved :class:`V2PlanShape`.
 
     **Memoized (N1 fix, adversarial review of PR #1780).** The representative
     inputs are fixed module constants, so the result never changes within a
@@ -10515,9 +10531,9 @@ def _tier_display_info_cached() -> dict[str, dict[str, int]]:
         shape = resolve_plan_shape(tier)
         # BOTH stages (two-stage commission D2). ``capture_target`` has always
         # been the whole journey's count, and after the split the duration has
-        # to be the whole journey's too or the chooser quotes a Full tier's 16
-        # measurements against stage 1's minutes alone. Two ceils rather than
-        # one is deliberately conservative: this is a DISPLAY number and the
+        # to be the whole journey's too or the chooser quotes the Full tier's
+        # whole-journey count against stage 1's minutes alone. Two ceils rather
+        # than one is deliberately conservative: this is a DISPLAY number and the
         # household really does pay two per-session set-ups.
         #
         # T4 owns the stage-aware WORDING this derivation makes possible ("N

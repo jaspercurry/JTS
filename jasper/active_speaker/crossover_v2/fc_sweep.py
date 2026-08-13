@@ -24,12 +24,12 @@ per-candidate evaluation and build, the analyzer, the candidate set, the wall
 budget, and the selector kernel — are injected as callables
 (:func:`sweep_candidates`'s ``evaluate`` / ``candidate_set_of`` / ``budget_s_of``,
 :func:`evaluate_candidate`'s ``analyze`` / ``build``, and :func:`adjudicate`'s
-``select``) rather than imported here, so the conductor's own attribute stays
+``select``) rather than imported here, so the session's own attribute stays
 the dispatch point.  That keeps a class-level substitution of
 ``CrossoverV2Session._evaluate_fc_candidate`` — or of the flow module's
 ``select_fc`` — binding on production instead of silently addressing a name
 production no longer routes through (issue #2354).  A seam nothing substitutes
-is called directly, and the conductor's delegate calls the same function, so
+is called directly, and the session's delegate calls the same function, so
 there is exactly one derivation either way.
 
 The two ``_of`` suffixes are not decoration: ``candidate_set`` and the module's
@@ -659,7 +659,7 @@ def evaluate_candidate(
         level_frame_finding=built.level_frame_finding,
         # THIS candidate's realized inter-driver level, which the sweep can
         # carry since the cutover (#2307 gate note N6): the verdict is a
-        # value on the build's own state rather than a conductor field the
+        # value on the build's own state rather than a session field the
         # sweep restores, so a selected alternative corner's proposal now
         # records its OWN evidence instead of an absence.
         realized_branch_level=built.linearization.realized_branch_level,
@@ -708,7 +708,7 @@ def sweep_candidates(
     differs is an escape OUTSIDE the caught set (``MemoryError`` and friends):
     the partial list is then lost rather than stashed. That is named rather
     than hidden, and the thing that makes it unobservable is **the host's
-    teardown, not the conductor** — ``correction_crossover_v2``'s catch-all
+    teardown, not the session** — ``correction_crossover_v2``'s catch-all
     cleanup arm posts a terminal host event and PURGES the relay session on any
     such escape, so no later reader of ``_fc_evaluations`` exists to see the
     difference. Saying "the capture fails, so nobody reads it" would credit the

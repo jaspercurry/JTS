@@ -40,7 +40,7 @@ REFERENCE_AXIS_DRIVER_PLACEMENT_POLICY_ID = "driver_reference_axis_v1"
 #
 # Not added to ``SUMMED_CAPTURE_GEOMETRY_BY_POLICY``: that map exists for the
 # LEGACY summed-alignment evidence path (``crossover_contract``'s
-# ``latest_summed_validations``), which the v2 conductor does not feed — it
+# ``latest_summed_validations``), which the v2 session does not feed — it
 # writes no ``placement_proof`` at all. Adding it there would claim a
 # geometry for evidence this policy never produces.
 CLOUD_WALK_PLACEMENT_POLICY_ID = "summed_guided_cloud_v1"

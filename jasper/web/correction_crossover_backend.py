@@ -2688,7 +2688,7 @@ def status_payload() -> dict[str, Any]:
         current_context_id=current_context_id
     )
     payload["applied_profile"] = load_applied_baseline_profile_state()
-    # v2 conductor state (Wave 5a). Fail-soft: an unreadable v2 state must
+    # v2 session state (Wave 5a). Fail-soft: an unreadable v2 state must
     # never take down the whole status surface.
     try:
         from .correction_crossover_v2 import crossover_v2_status_block

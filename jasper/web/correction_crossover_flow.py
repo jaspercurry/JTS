@@ -206,7 +206,7 @@ def handle_reset(
             "error": str(exc),
         }, HTTPStatus.CONFLICT
 
-    # Reset the durable v2 conductor JOURNEY too (W6.10 fold-in). Without this,
+    # Reset the durable v2 session JOURNEY too (W6.10 fold-in). Without this,
     # Start-over left the stale v2 candidate/verify/failure in place, so the v2
     # envelope re-rendered "Ready to start again" with stale verify-fail actions
     # and no start button instead of the clean microphone_check start screen

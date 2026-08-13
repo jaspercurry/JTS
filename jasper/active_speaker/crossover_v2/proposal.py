@@ -165,14 +165,24 @@ def build_intervention_proposal(
     satisfy the contract.  Callers inside the live commit seam should use
     :func:`plan_intervention_proposal`, which converts that into a refusal.
 
-    The parameters are the values the commit seam actually holds.  The
-    proposal's remaining fields — ``predicted_response_before``,
-    ``predicted_spec_before``, ``predicted_spec_after`` — are left at their
-    contract defaults rather than filled with a near-enough substitute:
+    The parameters are the values the commit seam actually holds.  FIVE of the
+    proposal's fields are left at their contract defaults rather than filled
+    with a near-enough substitute, because
     :class:`InterventionProposal`'s own docstring says a field that cannot be
-    stated is empty *honestly*, and the two spec reports differ between the two
-    commit sites (the walk installs its report out-of-band) so quoting one here
-    would make the proposal's identity depend on which route committed it.
+    stated is empty *honestly*:
+
+    * ``predicted_response_before``, ``predicted_spec_before`` and
+      ``predicted_spec_after`` — the two spec reports differ between the two
+      commit sites (the walk installs its report out-of-band), so quoting one
+      here would make the proposal's identity depend on which route committed
+      it.
+    * ``anchored_trim_db`` and ``alternative_trim_db`` — the contract's own
+      placeholders, ``None`` until a phase returns them as data (their field
+      docstrings say so).  The call below is the only
+      ``InterventionProposal(...)`` in ``jasper/`` and passes neither keyword,
+      so no shipped proposal carries them.  ``tests/test_crossover_v2_contracts``
+      does pass both, constructing the dataclass directly to pin what they
+      contribute to the fingerprint — a contract test, not a shipped proposal.
     """
 
     if candidate is None:

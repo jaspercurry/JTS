@@ -22,7 +22,7 @@ pose's dropped composition maps (§4.2 composes per candidate, offline).  Every
 one of those is a sentence that must survive refactoring, which is exactly what
 having one owner is for.
 
-**Inputs are stated, never reached for.**  Where the conductor's methods read
+**Inputs are stated, never reached for.**  Where the session's methods read
 accumulated session evidence off ``self`` — CHECK's ambient report, the composed
 MEASURE program, the stashed predicted sum — these take them as arguments.  That
 is the whole behavioural difference between this module and the methods it
