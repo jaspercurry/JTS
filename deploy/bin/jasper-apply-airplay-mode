@@ -424,6 +424,15 @@ fi
 # back to shairport_substream, the shipped snd-aloop lane. Reading the
 # RESOLVED value (never the armed set) keeps the armed→device rule stated
 # once, in jasper/renderer_lanes.py.
+#
+# Known precedence divergence, accepted: env_file_value takes the FIRST
+# matching assignment (awk `print; exit`), while the map's Python reader
+# (jasper.renderer_lanes._env_file_value) and systemd's EnvironmentFile=
+# both take the LAST. Unreachable through the supported path — the map's
+# single writer (render_renderer_lanes_env) emits each key exactly once —
+# so only a hand-edited duplicate line could split the readers, and the
+# doctor's "shairport-sync.conf: output_device" coherence check names the
+# resulting armed-vs-rendered disagreement rather than leaving it silent.
 renderer_device="$(env_file_value "$RENDERER_LANES_FILE" JASPER_SHAIRPORT_DEVICE || true)"
 if [[ -z "$renderer_device" ]]; then
     renderer_device="shairport_substream"
