@@ -64,8 +64,8 @@ Read it for the layers; read this for the workstream order.
 > **Ruled 2026-08-13 (#2067).** An earlier revision of this section tabled a
 > competing four-layer order with bass response first. The design doc's
 > order won: shipped code refuses both room correction and bass extension
-> until the speaker layer's baseline is applied. Nothing here restates the
-> layers.
+> until the speaker layer's baseline is applied. Nothing in this note
+> restates the layers.
 
 ## Read the three "P" namespaces before you read anything else
 
@@ -809,7 +809,8 @@ generated in R8; R12 confirms the rest), and the round-13 Monday-E2E brief.
 > remain Monday-gated; #1973, the corpus-pin trio, #1948, and the nit
 > ledgers move to ordinary backlog — named cuts, not omissions. The
 > authoritative brief is `captures/NEXT-SESSION-PROMPT-round-12.md`,
-> which also carries the owner's re-affirmed four-layer vision lens and
+> which also carries the owner's re-affirmed four-layer vision lens
+> (later reconciled to the design doc's five-layer order, #2067) and
 > the two-stop-kernels rule (if the room lane ever wants floor-aware
 > stopping, it reuses the attempts kernel with its own floor stats —
 > never a third kernel).
@@ -1821,11 +1822,12 @@ A **second 2026-08-02 pass (the post-campaign
 docs-drift repair)** re-verified, and is warranted by the date below, exactly
 these sections:
 
-- **the charter** — including the newly-written four-layer vision, its ordering
-  rule, and the two-stop-kernels rule (both kernel paths opened and confirmed
-  to exist; the bass-position difference against
+- **the charter** — including its layer-placement section, ordering rule, and
+  two-stop-kernels rule (both kernel paths opened and confirmed to exist; the
+  bass-position difference against
   [`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md)
-  is flagged for the owner, deliberately not resolved);
+  was flagged for the owner and ruled 2026-08-13 — the design doc's order
+  won, see #2067);
 - **the ratification callout** and the **Status paragraph of every rung
   P1–P4** — each rung's merged/unbuilt claim re-derived from `main`'s merge
   history, and P4's "no live writer" claim re-derived by grepping every caller
