@@ -686,8 +686,8 @@ def _write_round_receipt(
         receipt_fingerprint=receipt.fingerprint,
         adoption=evaluation.adoption.outcome.value,
         # Which regime wrote this receipt, in the journal as well as in the
-        # artifact (#2392) — the journal is where a session that has not yet
-        # fetched the bundle looks first.
+        # artifact (#2392) — the journal is where a session looks before it
+        # fetches the bundle.
         proposal_fingerprint_kind=receipt.proposal_fingerprint_kind,
     )
     return identity
