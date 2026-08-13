@@ -1125,7 +1125,7 @@ of JSON under
 [`tests/fixtures/crossover_v2_incident_20260810/`](../tests/fixtures/crossover_v2_incident_20260810/),
 and
 [`tests/test_crossover_v2_incident_replay.py`](../tests/test_crossover_v2_incident_replay.py)
-drives `CrossoverV2Conductor._build_candidate` with it, using the exact keyword
+drives `CrossoverV2Session._build_candidate` with it, using the exact keyword
 pair `_evaluate_fc_candidate` passes for a non-configured corner. It stops
 there deliberately: the caller `_build_measure_candidate` adds a
 linearized-vs-raw predicted-spec gate that passed on the incident, is

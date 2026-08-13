@@ -31,7 +31,7 @@ dispatch branches in :mod:`jasper.web.correction_setup`) and the pure conductor
 
 Session binding (§5.6): the durable state is keyed to the relay session id. A
 new ``/v2/session`` POST hydrates through
-:meth:`CrossoverV2Conductor.hydrate`, which invalidates CHECK/MEASURE evidence
+:meth:`CrossoverV2Session.hydrate`, which invalidates CHECK/MEASURE evidence
 for a different session; ``/v2/verify`` re-arms VERIFY only (a 1-entry plan)
 from the persisted post-apply state, per §5.2's re-verify action.
 
@@ -782,7 +782,7 @@ def _apply_failure_gate() -> str:
     """The conductor's ``apply_failed`` seam: reads a durable apply failure
     code (empty when none), persisted through the SAME
     ``persist_conductor_state`` path every other capture failure uses — see
-    ``jasper.active_speaker.crossover_v2_flow.CrossoverV2Conductor.authorize_begin``,
+    ``jasper.active_speaker.crossover_v2_flow.CrossoverV2Session.authorize_begin``,
     which refuses the deferred VERIFY hold outright once this names a code
     rather than holding it toward a dishonest relay_timeout. Retained with
     that hold and, like it, unreached by any shipped session since the
@@ -3573,7 +3573,7 @@ def bind_production_analyze(
     ``{"applied": False}`` annotation.
 
     ``phase`` (required, keyword-only, issue #1855) is the conductor's own
-    flow phase — ``crossover_v2_flow.CrossoverV2Conductor.consume_capture``
+    flow phase — ``crossover_v2_flow.CrossoverV2Session.consume_capture``
     always passes it. It is NOT the same value as ``program.phase``: every
     cloud position plays the verify-shaped summed sweep, so
     ``program.phase == "verify"`` even during
@@ -4395,7 +4395,7 @@ def bind_cloud_publisher(
     silently matched — the per-group content (mask/registry/spec/geometry)
     is exactly what was asked for either way.
 
-    Fail-soft at the CALLER (``CrossoverV2Conductor._run_cloud_pipeline``):
+    Fail-soft at the CALLER (``CrossoverV2Session._run_cloud_pipeline``):
     like :func:`bind_position_retention`, this function does not swallow
     failures itself — a full disk or a write-once conflict must surface as
     an exception here so the conductor's own boundary can log and continue
@@ -5624,7 +5624,7 @@ class V2ConductorContext:
     # Per-role declared driver technology class (#1665 component entry), fed
     # to the conductor's Layer-1a linearization fit
     # (linearization_envelope.compose_envelope's class_prior_limit term —
-    # see crossover_v2_flow.CrossoverV2Conductor's own driver_class_by_role
+    # see crossover_v2_flow.CrossoverV2Session's own driver_class_by_role
     # ctor param, landed by #1668 PR-C ahead of this resolver populating it).
     # A role absent here fits under the conservative "unknown" class default.
     driver_class_by_role: dict[str, str] = field(default_factory=dict)
@@ -5651,7 +5651,7 @@ class V2ConductorContext:
     # Flat-linearization plan PR-4: the tweeter's confirmed
     # ``measurement_band_hz`` — the contract-derived echo/null analysis band
     # replacing DEFAULT_ECHO_BAND_HZ's flat constant at the cloud-group
-    # pipeline's call site (crossover_v2_flow.CrossoverV2Conductor's own
+    # pipeline's call site (crossover_v2_flow.CrossoverV2Session's own
     # tweeter_measurement_band_hz ctor param). ``None`` degrades to that
     # module default, never a refused session — a declared-metadata gap here
     # is not a reason to block a measurement the household is entitled to run.
@@ -6441,7 +6441,7 @@ def prepare_v2_session(
     Gates (fail-closed, before any relay registration): the volume-recovery
     gate (``needs_recovery`` — the W2 ruling) and the conductor-context
     resolution. Hydration (S1d): the durable state is
-    hydrated through :meth:`CrossoverV2Conductor.hydrate` with the NEW relay
+    hydrated through :meth:`CrossoverV2Session.hydrate` with the NEW relay
     session id — a prior session's CHECK/MEASURE evidence is invalidated per
     §5.6 (and logged); the fresh session starts at CHECK.
 
@@ -6459,7 +6459,7 @@ def prepare_v2_session(
         STAGE1_INCLUDES_CLOUD_MEASURE,
         STAGE1_INCLUDES_ENTRY_BASELINE,
         STAGE1_INCLUDES_LATERAL,
-        CrossoverV2Conductor,
+        CrossoverV2Session,
         CrossoverV2FlowError,
         V2ConductorSnapshot,
         attempt_history_from_state,
@@ -6610,7 +6610,7 @@ def prepare_v2_session(
             ),
             verify_capture_target=plan_shape.verify_capture_target,
         )
-        conductor = CrossoverV2Conductor.hydrate(
+        conductor = CrossoverV2Session.hydrate(
             prior_snapshot,
             session_id=relay_session_id,
             source_preset=context.preset,
@@ -6750,7 +6750,7 @@ def prepare_v2_verify(
     from jasper.active_speaker.crossover_v2_flow import (
         PHASE_CHECK,
         PHASE_MEASURE,
-        CrossoverV2Conductor,
+        CrossoverV2Session,
         attempt_history_from_state,
         build_v2_verify_index_phase_map,
         build_v2_verify_session_spec,
@@ -6821,7 +6821,7 @@ def prepare_v2_verify(
     # SAY it reset the reference, and by how much. Absent (a state written
     # before this key, or a session that never reached a usable VERIFY pilot)
     # simply leaves the disclosure silent. Shape validation lives in
-    # ``CrossoverV2Conductor.__init__`` so the "values plus a date, or
+    # ``CrossoverV2Session.__init__`` so the "values plus a date, or
     # nothing" rule has one owner.
     pilot_transfer_prior = pilot_transfer_prior_from_state(state)
     acknowledgement_binding = secrets.token_urlsafe(24)
@@ -6889,7 +6889,7 @@ def prepare_v2_verify(
                 entry_baseline=entry_baseline is not None,
             ),
         )
-        conductor = CrossoverV2Conductor(
+        conductor = CrossoverV2Session(
             session_id=relay_session_id,
             source_preset=context.preset,
             roles_bands=context.roles_bands,

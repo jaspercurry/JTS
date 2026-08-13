@@ -26,7 +26,7 @@ budget, and the selector kernel — are injected as callables
 :func:`evaluate_candidate`'s ``analyze`` / ``build``, and :func:`adjudicate`'s
 ``select``) rather than imported here, so the conductor's own attribute stays
 the dispatch point.  That keeps a class-level substitution of
-``CrossoverV2Conductor._evaluate_fc_candidate`` — or of the flow module's
+``CrossoverV2Session._evaluate_fc_candidate`` — or of the flow module's
 ``select_fc`` — binding on production instead of silently addressing a name
 production no longer routes through (issue #2354).  A seam nothing substitutes
 is called directly, and the conductor's delegate calls the same function, so

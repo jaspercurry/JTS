@@ -104,7 +104,7 @@ from jasper.active_speaker.crossover_v2.intervention import (
 )
 from jasper.active_speaker.crossover_v2_flow import (
     LINEARIZATION_TRIM_SANITY_MARGIN_DB,
-    CrossoverV2Conductor,
+    CrossoverV2Session,
     V2FlowSeams,
 )
 from jasper.active_speaker.linearization_fit import LinearizationFilter, LinearizationFit
@@ -121,6 +121,7 @@ from jasper.audio_measurement.program_analysis import (
     SegmentLocation,
     predicted_branch_sum,
 )
+from tests.crossover_v2_fixtures import _candidate_sections
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "crossover_v2_incident_20260810"
 ROLES = ("woofer", "tweeter")
@@ -318,7 +319,7 @@ def _analysis(program_id: str) -> ProgramAnalysis:
     )
 
 
-def _conductor() -> CrossoverV2Conductor:
+def _conductor() -> CrossoverV2Session:
     """A conductor at the incident's CONFIGURED corner, with inert seams.
 
     Nothing here plays, captures, applies or publishes: the replay drives one
@@ -332,7 +333,7 @@ def _conductor() -> CrossoverV2Conductor:
         apply_complete=lambda: False,
         apply_failed=lambda: "",
     )
-    return CrossoverV2Conductor(
+    return CrossoverV2Session(
         session_id=SESSION_ID,
         source_preset=_session_preset(),
         roles_bands=_roles_bands(),
@@ -446,7 +447,7 @@ def _run_replay(
     monkeypatch.setattr(iv, "solve_ripple_optimal_trim", fake_ripple)
     monkeypatch.setattr(iv, "fit_driver_linearization", fake_fit)
 
-    replay.candidate_sections = conductor._fc_candidate_sections(candidate_fc_hz)
+    replay.candidate_sections = _candidate_sections(conductor, candidate_fc_hz)
     # What the fit would have been bounded to had it read the SESSION's own
     # preset — the same derivation ``_plan_linearization`` uses on the
     # configured path, so an R17 regression is a difference this replay sees.

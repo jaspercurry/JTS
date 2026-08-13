@@ -77,7 +77,7 @@ def _excitation(caps: dict[str, float]) -> SessionExcitation:
 
 
 def _conductor(caps: dict[str, float]):
-    return flow.CrossoverV2Conductor(
+    return flow.CrossoverV2Session(
         session_id=SESSION,
         source_preset=_preset(),
         roles_bands=_roles(),
@@ -266,7 +266,7 @@ def test_an_unplanned_phase_refuses():
 def test_the_conductor_translates_the_refusal_into_its_own_error():
     """Callers above the conductor handle ``CrossoverV2FlowError``; the pure
     selector has no business knowing that type."""
-    c = flow.CrossoverV2Conductor(
+    c = flow.CrossoverV2Session(
         session_id=SESSION,
         source_preset=_preset(),
         roles_bands=_roles(),

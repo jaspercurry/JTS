@@ -12,7 +12,7 @@ legs before it are still the conductor's.
 **Why the tail first.**  It is the leg whose collaborators are already pure:
 :mod:`.round_evidence` grades, :mod:`.verification` decides, and
 :mod:`.contracts` carries.  What was left on
-:class:`~jasper.active_speaker.crossover_v2_flow.CrossoverV2Conductor` was the
+:class:`~jasper.active_speaker.crossover_v2_flow.CrossoverV2Session` was the
 *sequencing* between them plus five seam calls — nine methods and four scratch
 fields whose only reader was each other.  Sequencing is exactly what a
 coordinator is, so it moved here whole rather than being split across a class

@@ -33,6 +33,7 @@ from jasper.active_speaker.crossover_v2.contracts import (
 )
 from tests.crossover_v2_fixtures import (
     FakeSeams,
+    _candidate_sections,
     _conductor,
     _eligible_measure_analysis,
     _run_phase,
@@ -80,7 +81,7 @@ def test_the_request_takes_its_corner_from_the_candidates_sections():
         c._plan_linearization(analysis, analysis.candidate, None)
         c._plan_linearization(
             analysis, analysis.candidate, None,
-            candidate_sections=c._fc_candidate_sections(swept_fc_hz),
+            candidate_sections=_candidate_sections(c, swept_fc_hz),
         )
 
     assert seen == [c._fc_hz, swept_fc_hz]
@@ -247,7 +248,7 @@ def test_a_journal_consumer_that_raises_is_disclosed_not_swallowed(caplog):
         raise OSError("simulated closed log stream")
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(flow.CrossoverV2Conductor, "_journal_linearization", hostile)
+        mp.setattr(flow.CrossoverV2Session, "_journal_linearization", hostile)
         plan = c._plan_linearization(analysis, analysis.candidate, None)
 
     assert plan.role_attenuations_db, "the plan must still be complete"
@@ -330,7 +331,7 @@ def test_sections_naming_two_corners_degrade_to_trims_only(caplog):
     """
     caplog.set_level("WARNING", logger=_DIAG_LOGGER)
     c, analysis = _walked_to_measure()
-    split = c._fc_candidate_sections(1750.0)
+    split = _candidate_sections(c, 1750.0)
     split["tweeter"] = tuple(
         replace(section, fc_hz=1648.7) for section in split["tweeter"]
     )
@@ -374,7 +375,7 @@ def test_the_fit_failure_line_is_said_through_the_host_and_keeps_its_traceback(
     still carries the failure's stack.
 
     * **``session_id``** can only be on the line if it came through
-      ``CrossoverV2Conductor._journal_linearization`` — a pure module has no
+      ``CrossoverV2Session._journal_linearization`` — a pure module has no
       session identity to add. An organ that logged the degrade itself would
       produce a line that reads almost the same and names no session.
     * **``exc_info``** is why the build hands over a
@@ -457,7 +458,7 @@ def test_a_raising_journal_costs_a_log_line_not_the_candidate(caplog, port_error
         raise port_error("simulated closed log stream")
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(flow.CrossoverV2Conductor, "_journal_linearization", hostile)
+        mp.setattr(flow.CrossoverV2Session, "_journal_linearization", hostile)
         candidate, state = c._build_candidate(
             analysis, None, candidate_sections=empty, source_preset=c._preset,
         )

@@ -917,7 +917,7 @@ def complex_correction_response(
     the zero-phase magnitude model mistracked the summation by ~2.0 dB (WORSE
     than the ~1.7 dB of a no-correction model), where this complex model tracks
     it to ~0.5 dB. So the conductor's linearized-branch model
-    (:func:`jasper.active_speaker.crossover_v2_flow.CrossoverV2Conductor.
+    (:func:`jasper.active_speaker.crossover_v2_flow.CrossoverV2Session.
     intervention.plan_linearization` — the trim re-solve, the ripple-optimal scan, and the
     persisted VERIFY prediction) multiplies each branch by THIS, not a
     magnitude scale. There is no zero-phase branch-correction path.

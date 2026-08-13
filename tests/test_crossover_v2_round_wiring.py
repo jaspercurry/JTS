@@ -330,7 +330,7 @@ def _bare_conductor() -> Any:
         CAPS, FC_HZ, SESSION, SESSION_VOLUME_DB, FakeSeams, _preset, _roles,
     )
 
-    return flow.CrossoverV2Conductor(
+    return flow.CrossoverV2Session(
         session_id=SESSION,
         source_preset=_preset(),
         roles_bands=_roles(),
@@ -1875,7 +1875,7 @@ def test_a_delta_probe_refusal_at_the_cloud_close_burns_no_round(
     assert _consume_verify(conductor, _post_apply_analysis(conductor)).accepted
 
     monkeypatch.setattr(
-        flow.CrossoverV2Conductor, "_delta_probe_refusal",
+        flow.CrossoverV2Session, "_delta_probe_refusal",
         lambda self, _probe: flow.REASON_CORRECTION_MODEL_ERROR,
     )
 

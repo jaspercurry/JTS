@@ -38,6 +38,9 @@ from jasper.active_speaker.fc_selector import (
 from tests.crossover_v2_fixtures import (
     FC_HZ,
     FakeSeams,
+    _branch_operators,
+    _candidate_priors,
+    _candidate_sections,
     _conductor,
     _eligible_measure_analysis,
     _preset,
@@ -156,8 +159,8 @@ def test_candidate_priors_move_three_fc_fields_and_carry_the_other_two():
     _run_phase(c, 1, 1)
     _run_phase(c, 2, 1)
     base = c._measure_priors()
-    sections = c._fc_candidate_sections(1750.0)
-    candidate = c._fc_candidate_priors(1750.0, sections)
+    sections = _candidate_sections(c, 1750.0)
+    candidate = _candidate_priors(c, 1750.0, sections)
 
     assert candidate.crossover_fc_hz == 1750.0 != base.crossover_fc_hz
     freqs = np.array([1000.0, 1750.0, 4000.0])
@@ -184,7 +187,7 @@ def test_a_candidates_sections_move_only_the_corner():
     """R17 adjudicates WHERE to cross, never what shape to cross with."""
     c = _selector_conductor(FakeSeams())
     configured = flow.sections_by_role(_preset().crossover_regions)
-    moved = c._fc_candidate_sections(1750.0)
+    moved = _candidate_sections(c, 1750.0)
     assert set(moved) == set(configured)
     for role, sections in moved.items():
         assert [(s.order, s.highpass) for s in sections] == [
@@ -207,7 +210,7 @@ def test_the_fit_targets_each_candidates_own_branch_not_the_configured_one():
     fakes = _eligible_seams()
     c = _selector_conductor(fakes)
     seen: list[dict[str, tuple[CrossoverSection, ...]] | None] = []
-    original = flow.CrossoverV2Conductor._plan_linearization
+    original = flow.CrossoverV2Session._plan_linearization
 
     def spy(self, analysis, cand, cloud=None, *, candidate_sections=None):
         seen.append(candidate_sections)
@@ -216,7 +219,7 @@ def test_the_fit_targets_each_candidates_own_branch_not_the_configured_one():
         )
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(flow.CrossoverV2Conductor, "_plan_linearization", spy)
+        mp.setattr(flow.CrossoverV2Session, "_plan_linearization", spy)
         _run_phase(c, 1, 1)
         _run_phase(c, 2, 1)
 
@@ -229,24 +232,25 @@ def test_the_fit_targets_each_candidates_own_branch_not_the_configured_one():
 
 
 def _operators(c, *, fc_hz=1750.0, polarity="normal", trims=None, delay_us=0.0):
-    """``_fc_branch_operators`` over a hand-built alignment, so each factor can
+    """``_branch_operators`` over a hand-built alignment, so each factor can
     be moved on its own. The analysis stand-in carries only ``alignment`` —
-    which is all this method reads from it."""
+    which is all this function reads from it."""
     alignment = SimpleNamespace(
         polarity_sign=1 if polarity == "normal" else -1,
         anchor_delay_us=0.0, delay_us=delay_us, status=flow.ALIGNMENT_OK,
     )
-    return c._fc_branch_operators(
+    return _branch_operators(
+        c,
         flow.lateral_evidence_grid_hz(),
         SimpleNamespace(alignment=alignment),
-        c._fc_candidate_sections(fc_hz),
+        _candidate_sections(c, fc_hz),
         {},
         trims if trims is not None else {"woofer": 0.0, "tweeter": 0.0},
     )
 
 
 def test_the_branch_operator_carries_polarity_trim_and_the_candidates_corner():
-    """``_fc_branch_operators`` is what turns a pose's NEUTRAL measurement into
+    """``_branch_operators`` is what turns a pose's NEUTRAL measurement into
     this candidate's model, so a wrong factor there makes the whole lateral
     robustness term noise while every other test stays green.
 
@@ -320,11 +324,11 @@ def test_an_ineligible_session_refuses_candidates_without_calling_the_fit():
     fakes = FakeSeams()  # the DEFAULT measure fixture: no mic tier, no repeats
     c = _selector_conductor(fakes)
     calls: list[object] = []
-    original = flow.CrossoverV2Conductor._plan_linearization
+    original = flow.CrossoverV2Session._plan_linearization
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(
-            flow.CrossoverV2Conductor, "_plan_linearization",
+            flow.CrossoverV2Session, "_plan_linearization",
             lambda self, *a, **k: (calls.append(1), original(self, *a, **k))[1],
         )
         _run_phase(c, 1, 1)
@@ -360,7 +364,7 @@ def test_the_anchors_published_candidate_is_unchanged_by_the_sweep():
         with pytest.MonkeyPatch.context() as mp:
             if not sweep:
                 mp.setattr(
-                    flow.CrossoverV2Conductor, "_sweep_fc_candidates",
+                    flow.CrossoverV2Session, "_sweep_fc_candidates",
                     lambda self, *a, **k: None,
                 )
             _run_phase(c, 1, 1)
@@ -398,7 +402,7 @@ def test_a_candidates_prediction_never_becomes_the_anchors_when_its_fit_fails():
     """
     fakes = _eligible_seams()
     c = _selector_conductor(fakes)
-    original = flow.CrossoverV2Conductor._plan_linearization
+    original = flow.CrossoverV2Session._plan_linearization
     swept: list = []
 
     def anchor_fit_fails(self, analysis, cand, cloud=None, *, candidate_sections=None):
@@ -413,7 +417,7 @@ def test_a_candidates_prediction_never_becomes_the_anchors_when_its_fit_fails():
         return plan
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(flow.CrossoverV2Conductor, "_plan_linearization", anchor_fit_fails)
+        mp.setattr(flow.CrossoverV2Session, "_plan_linearization", anchor_fit_fails)
         _run_phase(c, 1, 1)
         _run_phase(c, 2, 1)
         assert swept and swept[-1] is not None, "the sweep must have fitted first"
@@ -503,7 +507,7 @@ def test_each_evaluation_retains_its_own_predicted_spec_report():
     _run_phase(c, 1, 1)
 
     written: list[tuple[float, object]] = []
-    original = flow.CrossoverV2Conductor._build_measure_candidate
+    original = flow.CrossoverV2Session._build_measure_candidate
 
     def spy(self, analysis, cloud, *, candidate_sections=None, source_preset=None):
         built = original(
@@ -524,7 +528,7 @@ def test_each_evaluation_retains_its_own_predicted_spec_report():
     with pytest.MonkeyPatch.context() as mp:
         # The MEASURE consume alone: the sweep's builds happen here, the
         # anchor's own happens later at the walk's close.
-        mp.setattr(flow.CrossoverV2Conductor, "_build_measure_candidate", spy)
+        mp.setattr(flow.CrossoverV2Session, "_build_measure_candidate", spy)
         _run_phase(c, 2, 1)
 
     by_fc = {round(fc, 3): report for fc, report in written if fc is not None}
@@ -589,7 +593,7 @@ def test_each_evaluation_retains_its_own_realized_level_verdict():
     _run_phase(c, 1, 1)
 
     plans: list = []
-    original = flow.CrossoverV2Conductor._plan_linearization
+    original = flow.CrossoverV2Session._plan_linearization
 
     def spy(self, *args, **kwargs):
         plan = original(self, *args, **kwargs)
@@ -599,7 +603,7 @@ def test_each_evaluation_retains_its_own_realized_level_verdict():
     with pytest.MonkeyPatch.context() as mp:
         # Collected during the MEASURE consume alone, which is where the sweep
         # runs — the anchor's own build happens later, at the walk's close.
-        mp.setattr(flow.CrossoverV2Conductor, "_plan_linearization", spy)
+        mp.setattr(flow.CrossoverV2Session, "_plan_linearization", spy)
         _run_phase(c, 2, 1)
 
     by_fc = {round(plan.fc_hz, 3): plan for plan in plans}
@@ -705,7 +709,7 @@ def test_the_sweep_retains_no_analysis_sized_object():
 def test_a_failed_later_fc_cannot_reuse_or_publish_the_prior_fitted_prediction():
     fakes = _eligible_seams()
     c = _selector_conductor(fakes)
-    original = flow.CrossoverV2Conductor._plan_linearization
+    original = flow.CrossoverV2Session._plan_linearization
     calls = 0
 
     def fail_after_first(self, analysis, cand, cloud=None, *, candidate_sections=None):
@@ -718,7 +722,7 @@ def test_a_failed_later_fc_cannot_reuse_or_publish_the_prior_fitted_prediction()
         )
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(flow.CrossoverV2Conductor, "_plan_linearization", fail_after_first)
+        mp.setattr(flow.CrossoverV2Session, "_plan_linearization", fail_after_first)
         _run_phase(c, 1, 1)
         _run_phase(c, 2, 1)
         assert c._fc_evaluations[0].refusal is None
@@ -749,7 +753,7 @@ def test_a_failing_sweep_never_costs_the_household_an_accepted_measure():
         c = _selector_conductor(fakes)
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(
-                flow.CrossoverV2Conductor, broken,
+                flow.CrossoverV2Session, broken,
                 lambda self: (_ for _ in ()).throw(ValueError("forced")),
             )
             _run_phase(c, 1, 1)
@@ -878,7 +882,7 @@ def test_zero_budget_attempts_configured_then_discloses_every_skip():
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(
-            flow.CrossoverV2Conductor, "_fc_evaluation_budget_s",
+            flow.CrossoverV2Session, "_fc_evaluation_budget_s",
             lambda self: 0.0,
         )
         _run_phase(c, 2, 1)
@@ -929,7 +933,7 @@ def test_budget_exhaustion_never_skips_the_configured_baseline(caplog):
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(c, "_fc_candidate_set", lambda: candidates)
         mp.setattr(c, "_fc_evaluation_budget_s", lambda: 2.0)
-        mp.setattr(flow.CrossoverV2Conductor, "_evaluate_fc_candidate", evaluate)
+        mp.setattr(flow.CrossoverV2Session, "_evaluate_fc_candidate", evaluate)
         mp.setattr(flow.time, "monotonic", lambda: next(clock))
         c._sweep_fc_candidates(object(), object(), object())
 
@@ -1143,7 +1147,7 @@ def test_an_alternative_winner_publishes_its_exact_candidate_and_preset():
 # read it: **a strangler phase's goldens must anchor on the DECLARED source of
 # truth, never on the method under test — self-referential pins are blind to
 # uniform drift.** Earned: the first cut of the re-cornering test below compared
-# ``_fc_candidate_sections(fc)`` against ``_fc_candidate_sections(FC_HZ)``, and a
+# ``_candidate_sections(fc)`` against ``_candidate_sections(FC_HZ)``, and a
 # uniform ``order += 2`` applied to every section passed it (measured: 6 passed
 # with that anchor, 6 failed with the declared one). A port that changed the
 # whole family the same way — which is what a port does — would have shipped.
@@ -1228,14 +1232,14 @@ def test_only_the_corner_moves_when_a_candidate_is_re_cornered(fc_hz):
     changes).
     """
     c = _selector_conductor(FakeSeams(), bands=WIDENED_BANDS)
-    # The DECLARED sections, not ``_fc_candidate_sections(FC_HZ)``. Anchoring on
+    # The DECLARED sections, not ``_candidate_sections(FC_HZ)``. Anchoring on
     # the method under test makes this blind to any UNIFORM change to the
     # re-cornering — a ``+2`` applied to every section's order compares equal to
     # itself and passes. That is precisely the 5a-v port failure mode this golden
     # exists to catch, so the anchor is the preset.
     configured = flow.sections_by_role(_preset().crossover_regions)
 
-    sections = c._fc_candidate_sections(fc_hz)
+    sections = _candidate_sections(c, fc_hz)
 
     assert set(sections) == set(configured)
     for role, at_corner in sections.items():
@@ -1246,7 +1250,7 @@ def test_only_the_corner_moves_when_a_candidate_is_re_cornered(fc_hz):
             (s.order, s.highpass) for s in configured[role]
         ]
 
-    priors = c._fc_candidate_priors(fc_hz, sections)
+    priors = _candidate_priors(c, fc_hz, sections)
     assert priors.crossover_fc_hz == fc_hz
     lo, hi = priors.candidate_required_band_hz_by_role["woofer"]
     assert lo == 0.0

@@ -633,7 +633,7 @@ class LinearizationRequest:
         with no crossover region is a defect upstream**, which is why
         :func:`plan_linearization` names it in the journal rather than passing
         over it silently — the same disposition, and the same event, the
-        retired ``CrossoverV2Conductor._branch_crossover_sections`` gave the
+        retired ``CrossoverV2Session._branch_crossover_sections`` gave the
         condition. That method was legacy's seventh reader of the session
         corner — the planner has none, which is this module's central
         invariant — and #2291 Phase 2b deleted it with the rest of the

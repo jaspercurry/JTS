@@ -2,12 +2,32 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The v2 crossover conductor — phase orchestration (Wave 5a).
+"""The v2 crossover measurement session — state, seams, and the host's adapter.
+
+**What this module is (#2291 Phase 5c-iv).** It owns ONE object,
+:class:`CrossoverV2Session`, which holds a measurement session's mutable state,
+the injected side-effect seams, the locks, and the irreversible acts (publish,
+apply, commit) — and adapts all of it to the one caller that drives it,
+:mod:`jasper.web.correction_crossover_v2`. **The decisions are not here.** Every
+verdict rule, admission policy, prior, program composition, fit, sweep, spatial
+close, and grade lives in :mod:`jasper.active_speaker.crossover_v2` — one module
+per organ, each pure and separately testable. This module reads its session
+state, calls those organs, and records what came back.
+
+That split is the whole point of the Phase-5 migration, and it has a direction:
+**this module imports the package; the package never imports this module** (or
+the web host). ``test_no_domain_module_imports_the_host_or_the_legacy_flow``
+holds that line. When a decision starts being made here, it belongs in an organ;
+when session state or a seam starts being read there, it belongs here.
+
+The predecessor class ``CrossoverV2Conductor`` was deleted in Phase 5c-iv. It
+was a conductor in the sense of *making* the decisions; those left one at a
+time over Phase 5, and what remained was a session owner, so it is named one.
 
 ``docs/crossover-measurement-productization-design.md`` §5 replaces the legacy
-per-driver distributed transaction with a **conductor**: the Pi compiles one
+per-driver distributed transaction with this shape: the Pi compiles one
 excitation program per phase, plays it as one continuous stream, and analyzes
-``(program, capture) → analysis`` as a pure function. This module owns the
+``(program, capture) → analysis`` as a pure function. The session owns the
 phase state machine that drives the relay session — 16 captures at the FULL
 tier's shipped defaults (7 on the express tier, ``TIER_EXPRESS``), since the
 spatial cloud replaced the original three:
@@ -30,7 +50,7 @@ this class still defaults to) has nothing to wait for and still builds at
 MEASURE, with the same accept, the same payload keys and the same apply timing
 it had before the move — its ``candidate.json`` does gain an always-empty
 ``exclusion_evidence`` key, which leaves the fingerprint unchanged.
-See :meth:`CrossoverV2Conductor._measure_verdict`.
+See :meth:`CrossoverV2Session._measure_verdict`.
 
 **Owner ruling (2026-07-20): no human mid-flow Apply gate.** A hardware
 session proved the prior REVIEW/APPLY human tap a dead end — phone-only
@@ -38,7 +58,7 @@ users cannot bounce to a second browser tab, and "apply this?" is
 unanswerable the moment after measuring (the household has no basis to
 judge). A trusted candidate (all quality gates pass, including
 :data:`ALIGNMENT_CONFIDENCE_TRUST_FLOOR`, promoted here from a review-screen
-nudge to a hard gate) is applied by the conductor itself; an untrusted one is
+nudge to a hard gate) is applied by the session itself; an untrusted one is
 rejected with guidance to re-measure, never a question. See
 [docs/HANDOFF-crossover-measurement-v2.md](../../docs/HANDOFF-crossover-measurement-v2.md)
 gotcha #18.
@@ -52,9 +72,9 @@ fake seams, and lets Wave 6 bind the real CamillaController-backed playback, the
 ``analyze_program_capture`` call, the verified-WAV source, and the
 ``commissioning_service`` publish/apply chain without touching this logic.
 
-The conductor exposes the three ``run_capture_plan`` callbacks
+The session exposes the three ``run_capture_plan`` callbacks
 (:meth:`authorize_begin`, :meth:`on_armed`, :meth:`consume_capture`) plus the
-lifecycle hooks the flow needs (:meth:`note_apply_complete`,
+lifecycle hooks the host needs (:meth:`note_apply_complete`,
 :meth:`snapshot`/:meth:`hydrate` for phase persistence + session binding). One
 journey spans TWO relay sessions since the two-stage split (work order D1/D2,
 issue #1806), each a heterogeneous ``CapturePlan``: **stage 1** is check /
@@ -70,8 +90,9 @@ and stage 2 is constructed already-applied.
 
 **Failure taxonomy (§5.10).** Terminal verdicts are internal reason codes, not
 screens: :data:`REASON_REGISTRY` maps each code to one of the four screen
-templates, its owning phase, and its retry budget. The conductor decides the
-code + accepted verdict; the envelope (:mod:`jasper.active_speaker.crossover_envelope_v2`)
+templates, its owning phase, and its retry budget. The session records the
+code + accepted verdict its organs decided; the envelope
+(:mod:`jasper.active_speaker.crossover_envelope_v2`)
 renders the template. A woofer-repeat level disagreement REUSES
 ``drift_baselines_disagree`` — never a new user-facing code (§5.2).
 """
@@ -246,7 +267,6 @@ ATTEMPT_INTEGRITY_UNAVAILABLE = "capture_integrity_unavailable"
 # constructed with no explicit ``index_phase_map``; the shipped session builds
 # its map through ``build_v2_cloud_index_phase_map``.
 _INDEX_PHASE = {1: PHASE_CHECK, 2: PHASE_MEASURE, 3: PHASE_VERIFY}
-_PHASE_INDEX = {phase: index for index, phase in _INDEX_PHASE.items()}
 CAPTURE_PLAN_TARGET = 3
 
 # This flow's own capture retry budget: the total admission attempts a v2
@@ -2505,12 +2525,12 @@ class V2FlowSeams:
     # same reason ``retain_position`` is: every pre-PR-4 construction site
     # (and every conductor unit test) stays valid, and ``None`` means the
     # group's result is computed and readable via
-    # :meth:`CrossoverV2Conductor.group_cloud_result` but not published as a
+    # :meth:`CrossoverV2Session.group_cloud_result` but not published as a
     # bundle artifact.
     publish_cloud: Callable[[str, Mapping[str, Any]], None] | None = None
     # #1866 frame-gate ruling: the banked level-frame disagreement, called at
     # most once per session with the flow's evidence record, from
-    # :meth:`CrossoverV2Conductor._commit_measure_candidate` — AFTER
+    # :meth:`CrossoverV2Session._commit_measure_candidate` — AFTER
     # ``publish_candidate``, so the artifact the finding cites already exists.
     # Optional exactly like the two seams above: a conductor with no evidence
     # store still banks the number in its journal and still PROCEEDS, it just
@@ -2579,7 +2599,7 @@ class V2FlowSeams:
 class V2ConductorSnapshot:
     """Durable phase state, bound to the relay session (§5.6).
 
-    Persisted under the session's commissioning run; :meth:`CrossoverV2Conductor.hydrate`
+    Persisted under the session's commissioning run; :meth:`CrossoverV2Session.hydrate`
     keeps the accepted phases only when the current session matches — a new
     session invalidates CHECK/MEASURE evidence (mic position is unverifiable
     across sessions).
@@ -2803,7 +2823,7 @@ class _CloudPosition:
     # ``echo_band_hz`` / ``signal_band_hz`` kwargs, echoed here rather than
     # threaded as a separate call-site argument. Carrying them on the position
     # (every position in one group shares the same conductor-derived values —
-    # see ``CrossoverV2Conductor.__init__``) is what lets
+    # see ``CrossoverV2Session.__init__``) is what lets
     # :func:`combine_cloud_positions` derive the right bands from
     # ``positions`` alone, with no caller (``_close_cloud_group``'s single
     # combine, ``cloud_geometry_verdict``'s convenience wrapper) needing to
@@ -2833,7 +2853,7 @@ class LateralPoseCurve:
 
     ``complex_tf`` holds ``M = plant * P`` — polarity-free, with NO
     configured-crossover composition applied (see
-    ``CrossoverV2Conductor._lateral_priors``). §4.2's
+    ``CrossoverV2Session._lateral_priors``). §4.2's
     ``S_c = sign_c * M * C_c / P`` is the consumer's step, once per candidate.
 
     Values are SAMPLED at the nearest native bin, never interpolated or
@@ -2978,7 +2998,7 @@ def combine_cloud_positions(positions: Sequence[_CloudPosition]) -> Any:
     Returns a :class:`~jasper.audio_measurement.spatial_combine.CombinedResponse`,
     or ``None`` when the group cannot be combined (no positions, or a malformed
     one). Called exactly ONCE per group-close event, from
-    :meth:`CrossoverV2Conductor._close_cloud_group`: PR-3b reads one field off
+    :meth:`CrossoverV2Session._close_cloud_group`: PR-3b reads one field off
     the result (``geometry``, via :func:`_geometry_verdict_from_combined`);
     PR-4's pipeline (:func:`assemble_cloud_group_result`) reads the rest of
     the SAME object. Never a second combine — see S3 review finding
@@ -3035,7 +3055,7 @@ def _geometry_verdict_from_combined(
     """The geometry-verdict dict from an ALREADY-COMBINED result.
 
     Split out of :func:`cloud_geometry_verdict` (S3 review finding,
-    2026-07-26) so :meth:`CrossoverV2Conductor._close_cloud_group` can
+    2026-07-26) so :meth:`CrossoverV2Session._close_cloud_group` can
     combine a group's positions exactly ONCE and derive both the retry-gating
     verdict and the honest-instrument pipeline from that ONE object, rather
     than each deriving its own combine. A plain JSON-native dict, because the
@@ -3069,7 +3089,7 @@ def cloud_geometry_verdict(positions: Sequence[_CloudPosition]) -> dict[str, Any
     :func:`_geometry_verdict_from_combined` for callers that only have
     ``positions`` (the corpus acceptance test; any future direct caller) —
     the conductor itself does NOT call this (see
-    :meth:`CrossoverV2Conductor._close_cloud_group`'s own single combine).
+    :meth:`CrossoverV2Session._close_cloud_group`'s own single combine).
 
     **Reason-string divergence, documented not silently left (N4 review
     finding, 2026-07-27).** An empty ``positions`` short-circuits HERE with
@@ -4367,12 +4387,12 @@ def _commanded_delta(raw_predicted_sum: Any, predicted_sum: Any) -> Any:
 
 
 # --------------------------------------------------------------------------- #
-# the conductor
+# the session
 # --------------------------------------------------------------------------- #
 
 
-class CrossoverV2Conductor:
-    """The v2 phase state machine driving one relay capture session.
+class CrossoverV2Session:
+    """One measurement session: its state, its seams, and its host contract.
 
     Construct with the session identity, the declared drivers, the crossover Fc,
     the safety caps + session volume, and the injected :class:`V2FlowSeams`.
@@ -4380,11 +4400,22 @@ class CrossoverV2Conductor:
     to :func:`jasper.capture_relay.session.run_capture_plan`; call
     :meth:`note_apply_complete` once an apply lands (the deferred VERIFY then
     arms) — an optional synchronous shortcut for a caller that already holds
-    this conductor; the seam-based ``apply_complete``/``apply_failed`` checks
+    this session; the seam-based ``apply_complete``/``apply_failed`` checks
     in :meth:`authorize_begin` are the durable path and work even without this
     call. Since the two-stage split (D10) no shipped session reaches that hold,
     so neither is on the critical path. :meth:`snapshot` / :meth:`hydrate`
     carry phase persistence.
+
+    **What belongs on this class, and what does not.** Three things do: the
+    session's own mutable state (the ``self._…`` fields ``__init__`` declares);
+    the reads of that state which the web host needs, as the properties and
+    accessors below — that is the adapter half of the job, and it is why a
+    one-line ``return self._x`` here is a contract rather than scaffolding; and
+    the acts that cannot be undone or repeated (playing, publishing, applying,
+    committing, journalling), each behind a seam. What does not belong is any
+    RULE: which reason code a bad capture earns, whether an attempt is
+    admitted, what a fit should propose, when a group has heard enough. Those
+    are the organs' — see the module docstring for the direction that keeps.
     """
 
     def __init__(
@@ -5009,11 +5040,6 @@ class CrossoverV2Conductor:
     def _check_priors(self) -> MeasurementPriors:
         return _priors.check_priors(fc_hz=self._fc_hz)
 
-    def _configured_crossover_transfers(
-        self,
-    ) -> tuple[dict[str, Any] | None, dict[str, int]]:
-        return _priors.configured_crossover_transfers(self._preset)
-
     def _measure_priors(self) -> MeasurementPriors:
         return _priors.measure_priors(
             fc_hz=self._fc_hz,
@@ -5601,8 +5627,8 @@ class CrossoverV2Conductor:
         *,
         session_id: str,
         **kwargs: Any,
-    ) -> "CrossoverV2Conductor":
-        """Rebuild a conductor, applying the §5.6 session-binding rule.
+    ) -> "CrossoverV2Session":
+        """Rebuild a session, applying the §5.6 session-binding rule.
 
         Same session ⇒ resume, keeping the accepted phases + gain plan (skips
         accepted phases). A different or absent session ⇒ fresh start at CHECK
@@ -6671,37 +6697,15 @@ class CrossoverV2Conductor:
     # and :mod:`~jasper.active_speaker.crossover_v2.priors`, which own R17's
     # decisions — which corners are proposable, what each one does to the
     # sections and the priors, and what a candidate's model is. What is left
-    # here is this conductor's own reading of its session state, plus the ports
-    # that keep a substituted conductor attribute binding on production (#2354).
-
-    def _fc_candidate_sections(
-        self, fc_hz: float,
-    ) -> dict[str, tuple[CrossoverSection, ...]]:
-        return _fc.candidate_sections(
-            getattr(self._preset, "crossover_regions", ()) or (), fc_hz,
-        )
-
-    def _fc_candidate_priors(
-        self, fc_hz: float, sections: Mapping[str, tuple[CrossoverSection, ...]],
-    ) -> MeasurementPriors:
-        return _priors.candidate_priors(self._measure_priors(), fc_hz, sections)
-
-    def _fc_branch_operators(
-        self,
-        freqs: np.ndarray,
-        analysis: Any,
-        sections: Mapping[str, tuple[CrossoverSection, ...]],
-        linearization: Mapping[str, Any],
-        trims: Mapping[str, float],
-    ) -> dict[str, np.ndarray]:
-        return _fc.branch_operators(
-            freqs, analysis, sections, linearization, trims,
-            preset=self._preset,
-            tweeter_role=self._tweeter.role,
-            protection_sections_by_role=(
-                self._measurement_protection_sections_by_role
-            ),
-        )
+    # here is this session's own reading of its session state, plus the ports
+    # that keep a substituted session attribute binding on production (#2354).
+    #
+    # Three siblings that used to sit here — ``_fc_candidate_sections``,
+    # ``_fc_candidate_priors``, ``_fc_branch_operators`` — were deleted in
+    # #2291 phase 5c-iv: the sweep organ binds those arguments itself, so the
+    # methods had no production caller and no port, and only test convenience
+    # kept them alive. The equivalent bindings live beside the tests that want
+    # them, in ``tests/crossover_v2_fixtures.py``.
 
     def _evaluate_fc_candidate(
         self, fc_hz: float, anchor: Any, program: Any, result: Any,
@@ -9971,13 +9975,6 @@ def build_v2_capture_plan(
     )
 
 
-def _index_of_phase(index_phase: Mapping[int, str], phase: str) -> int:
-    for index, value in sorted(index_phase.items()):
-        if value == phase:
-            return index
-    raise CrossoverV2FlowError(f"cloud index map has no {phase} entry")
-
-
 def build_v2_verify_capture_plan(
     fc_hz: float, *, plan_shape: V2PlanShape | None = None,
 ) -> Any:
@@ -10674,7 +10671,7 @@ async def abandon_measurement_volume(
 
 
 __all__ = [
-    "CrossoverV2Conductor",
+    "CrossoverV2Session",
     "CrossoverV2FlowError",
     # Re-exported, not used here, since #2291 Phase 5a-vii moved VERIFY's
     # integrity ladder to :mod:`.crossover_v2.capture_dispatch` (the entry

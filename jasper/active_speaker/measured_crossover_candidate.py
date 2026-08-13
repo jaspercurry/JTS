@@ -95,7 +95,7 @@ _MAX_ATTENUATION_DB = -60.0
 
 _POLARITY_VALUES = frozenset({POLARITY_KEEP, POLARITY_INVERT})
 
-# Gauge fix (2026-07-24): the exact set crossover_v2_flow.CrossoverV2Conductor
+# Gauge fix (2026-07-24): the exact set crossover_v2_flow.CrossoverV2Session
 # stamps onto this field, from the ``_LinearizationState`` its candidate build
 # returned (#2291 Phase 2b; it was a ``_last_*`` conductor field before that) —
 # "" means "linearization was never evaluated this

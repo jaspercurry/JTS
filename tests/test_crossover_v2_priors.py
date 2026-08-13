@@ -205,8 +205,8 @@ def test_the_required_band_covers_both_declarations_without_widening():
 def test_both_priors_paths_ask_the_owner_rather_than_re_spelling_it():
     """The session corner and a swept corner answer from one formula.
 
-    ``measure_priors`` is the configured-corner caller and the flow's
-    ``_fc_candidate_priors`` is the swept-corner one.  This pins the first
+    ``measure_priors`` is the configured-corner caller and
+    ``candidate_priors`` is the swept-corner one.  This pins the first
     against the owner directly; the second is pinned at six corners by
     ``test_crossover_v2_fc_selector_wiring``'s ``REQUIRED_BAND_WOOFER_HI_HZ``
     golden, which is literal and therefore not self-referential.
@@ -309,7 +309,7 @@ def _wired_conductor(**kwargs):
         CAPS, SESSION, SESSION_VOLUME_DB, FakeSeams, _roles,
     )
 
-    return flow.CrossoverV2Conductor(
+    return flow.CrossoverV2Session(
         session_id=SESSION, source_preset=PRESET, roles_bands=_roles(),
         fc_hz=FC_HZ, driver_caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB,
         seams=FakeSeams().seams(), driver_spacing_m=0.15, **kwargs,
@@ -402,7 +402,7 @@ def shadowed_methods(source: str) -> dict[str, list[str]]:
 #: as the real pair was, and separated by an unrelated method — every property
 #: a naive predicate could be blind to.
 SHADOW_PROBE = '''\
-class CrossoverV2Conductor:
+class CrossoverV2Session:
     def _check_priors(self):
         return _priors.check_priors(fc_hz=self._fc_hz)
 
@@ -467,7 +467,7 @@ def test_the_guard_finds_the_defect_it_exists_for():
     parser.
     """
     assert shadowed_methods(SHADOW_PROBE) == {
-        "CrossoverV2Conductor": ["_check_priors"]
+        "CrossoverV2Session": ["_check_priors"]
     }
 
 

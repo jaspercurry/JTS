@@ -26,6 +26,7 @@ from typing import Any
 import numpy as np
 
 from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.crossover_v2 import fc_sweep as _fc
 from jasper.active_speaker.crossover_v2 import intervention as iv
 from jasper.active_speaker.crossover_v2.round_evidence import (
     EntryBaseline,
@@ -40,7 +41,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     PHASE_MEASURE,
     PHASE_VERIFY,
     SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
-    CrossoverV2Conductor,
+    CrossoverV2Session,
     V2FlowSeams,
     build_v2_cloud_index_phase_map,
     build_v2_verify_index_phase_map,
@@ -425,7 +426,7 @@ _ENTRY_BASELINE_RESIDUAL_DB = 4.321
 _POST_APPLY_RESIDUAL_DB = 2.691
 
 
-def _fixture_entry_baseline(conductor: CrossoverV2Conductor) -> EntryBaseline:
+def _fixture_entry_baseline(conductor: CrossoverV2Session) -> EntryBaseline:
     """The pre-apply capture #2291 Phase 3c grades every round against.
 
     **Why a conductor fixture carries one at all.** Since Phase 3c, stage 1
@@ -465,11 +466,11 @@ def _fixture_entry_baseline(conductor: CrossoverV2Conductor) -> EntryBaseline:
     )
 
 
-def _conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Conductor:
+def _conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Session:
     seams = kwargs.pop("seams", fakes.seams())
     source_preset = kwargs.pop("source_preset", _preset())
     supplied_baseline = "measure_entry_baseline" in kwargs
-    conductor = CrossoverV2Conductor(
+    conductor = CrossoverV2Session(
         session_id=SESSION,
         source_preset=source_preset,
         roles_bands=_roles(),
@@ -502,7 +503,7 @@ def _attempt_floor() -> FloorStats:
     )
 
 
-def _verify_only_conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Conductor:
+def _verify_only_conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Session:
     return _conductor(
         fakes,
         index_phase_map={1: PHASE_VERIFY},
@@ -532,6 +533,48 @@ def _configured_sections(conductor, role: str) -> tuple:
     ).get(role, ())
 
 
+def _candidate_sections(conductor, fc_hz: float) -> dict:
+    """This session's preset sections, re-cornered at ``fc_hz``.
+
+    Same shape and same reason as :func:`_configured_sections` above: the
+    session carried ``_fc_candidate_sections`` until #2291 Phase 5c-iv, where
+    it was deleted because the sweep organ binds this argument itself — the
+    method had no production caller and was not one of the substitutable ports
+    (#2354), so only test convenience kept it on the class. The binding it did
+    is one line and belongs beside the tests that want it.
+    """
+    return _fc.candidate_sections(
+        getattr(conductor._preset, "crossover_regions", ()) or (), fc_hz,
+    )
+
+
+def _candidate_priors(conductor, fc_hz: float, sections):
+    """MEASURE's priors re-cornered for one swept candidate.
+
+    Retired from the session with :func:`_candidate_sections` (#2291 Phase
+    5c-iv) for the same reason; ``_measure_priors`` is still the session's own.
+    """
+    from jasper.active_speaker.crossover_v2 import priors as _pr
+
+    return _pr.candidate_priors(conductor._measure_priors(), fc_hz, sections)
+
+
+def _branch_operators(conductor, freqs, analysis, sections, linearization, trims):
+    """The per-branch operators for a hand-built alignment.
+
+    Retired from the session with :func:`_candidate_sections` (#2291 Phase
+    5c-iv); the sweep organ passes these same three session values itself.
+    """
+    return _fc.branch_operators(
+        freqs, analysis, sections, linearization, trims,
+        preset=conductor._preset,
+        tweeter_role=conductor._tweeter.role,
+        protection_sections_by_role=(
+            conductor._measurement_protection_sections_by_role
+        ),
+    )
+
+
 def _plan_spy(mp) -> list:
     """Capture every ``LinearizationPlan`` a walk produces, in order.
 
@@ -543,14 +586,14 @@ def _plan_spy(mp) -> list:
     whose build produced it.
     """
     plans: list = []
-    original = flow.CrossoverV2Conductor._plan_linearization
+    original = flow.CrossoverV2Session._plan_linearization
 
     def spy(self, *args, **kwargs):
         plan = original(self, *args, **kwargs)
         plans.append(plan)
         return plan
 
-    mp.setattr(flow.CrossoverV2Conductor, "_plan_linearization", spy)
+    mp.setattr(flow.CrossoverV2Session, "_plan_linearization", spy)
     return plans
 
 
@@ -608,7 +651,7 @@ def _verify_to_apply(fakes):
 
 def _rearm_conductor(fakes, **kwargs):
     """A verify-only re-arm's conductor — ``prepare_v2_verify``'s shape."""
-    return CrossoverV2Conductor(
+    return CrossoverV2Session(
         session_id="verify_rearm_session",
         source_preset=_preset(),
         roles_bands=_roles(),
@@ -682,7 +725,7 @@ SHORT_VERIFY_CLOUD_INDEXES = tuple(
 )
 
 
-def _cloud_conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Conductor:
+def _cloud_conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Session:
     kwargs.setdefault("index_phase_map", CLOUD_MAP)
     # What ``prepare_v2_session`` declares: this measuring session has no
     # VERIFY entry of its own, and the correction it proposes is verified by
@@ -1112,7 +1155,7 @@ def _profiled_conductor(*, woofer_peak: float, tweeter_peak: float):
         RoleBand("woofer", 0, FrequencyBand(500.0, 1600.0)),
         RoleBand("tweeter", 1, FrequencyBand(1600.0, 10000.0)),
     ]
-    c = CrossoverV2Conductor(
+    c = CrossoverV2Session(
         session_id=SESSION,
         source_preset=_preset(),
         roles_bands=roles,
@@ -1471,14 +1514,14 @@ def _eligible_measure_analysis(
     )
 
 
-def _one_sided_conductor(fakes: FakeSeams) -> CrossoverV2Conductor:
+def _one_sided_conductor(fakes: FakeSeams) -> CrossoverV2Session:
     """A conductor whose TWEETER sweep starts AT Fc — JTS3's real geometry.
 
     ``overlap_band_hz`` then clamps the shared band to ``[Fc, 2*Fc]``, the
     one-sided shape PR-L3 is about. Built inline rather than through
     ``_conductor`` because the role bands are the whole point of the fixture.
     """
-    return CrossoverV2Conductor(
+    return CrossoverV2Session(
         session_id=SESSION,
         source_preset=_preset(),
         roles_bands=[

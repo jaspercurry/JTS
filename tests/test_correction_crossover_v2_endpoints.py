@@ -65,7 +65,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     REASON_REGISTRY,
     TIER_EXPRESS,
     TIER_FULL,
-    CrossoverV2Conductor,
+    CrossoverV2Session,
     V2FlowSeams,
     build_v2_cloud_index_phase_map,
     build_v2_session_spec,
@@ -249,7 +249,7 @@ def _wav(attempt: int) -> bytes:
 def _conductor(backend, session, phone, *, published, phases_seen=None,
                analyses=None, index_phase_map=None, tier="",
                retained=None, on_play=None,
-               **conductor_kwargs) -> CrossoverV2Conductor:
+               **conductor_kwargs) -> CrossoverV2Session:
     """A real conductor whose fake play uploads the phone blob (the acoustic
     seam) and whose fake analyze returns canned per-phase analyses.
 
@@ -286,7 +286,7 @@ def _conductor(backend, session, phone, *, published, phases_seen=None,
         }[program.phase]
         return factory(program)
 
-    return CrossoverV2Conductor(
+    return CrossoverV2Session(
         session_id=session.session_id,
         source_preset=_preset(),
         roles_bands=_roles(),
@@ -1238,7 +1238,7 @@ def test_the_review_hold_machinery_is_retained_but_no_longer_on_the_path():
     """
     from jasper.active_speaker.crossover_v2_flow import (
         VERIFY_ANCHOR_HOLD_MESSAGE,
-        CrossoverV2Conductor,
+        CrossoverV2Session,
     )
     from jasper.capture_relay.session import (
         REVIEW_HOLD_BUDGET_S,
@@ -1259,7 +1259,7 @@ def test_the_review_hold_machinery_is_retained_but_no_longer_on_the_path():
 
     # …and a conductor built WITHOUT a prior apply still gets the honest hold,
     # with the household-facing sentence, exactly as before.
-    unapplied = CrossoverV2Conductor(
+    unapplied = CrossoverV2Session(
         session_id=session.session_id,
         source_preset=_preset(),
         roles_bands=_roles(),
@@ -2068,7 +2068,7 @@ def test_verify_rearm_preserves_candidate_identity_and_cloud_block(monkeypatch):
     # The real production seam: prepare_v2_verify's _open mints a fresh
     # conductor bound to a NEW relay session id and immediately persists it
     # ("Keep the durable candidate/applied facts; rebind the session id.").
-    conductor = CrossoverV2Conductor(
+    conductor = CrossoverV2Session(
         session_id="cap_rearm_session",
         source_preset=_preset(),
         roles_bands=_roles(),
@@ -2161,7 +2161,7 @@ def test_a_session_with_its_own_group_phase_overwrites_stale_prior_cloud():
     # PHASE_CLOUD_MEASURE instead of PHASE_VERIFY, so this session's
     # session_phases DOES overlap GROUP_PHASES. It has not walked far enough
     # to close that group yet.
-    conductor = CrossoverV2Conductor(
+    conductor = CrossoverV2Session(
         session_id="cap_fresh_session",
         source_preset=_preset(),
         roles_bands=_roles(),
@@ -2208,7 +2208,7 @@ def _seeded_session_with_a_banked_finding(copy: str) -> None:
 
 
 def _rearm_conductor(session_id: str, *, index_phase_map: dict) -> Any:
-    return CrossoverV2Conductor(
+    return CrossoverV2Session(
         session_id=session_id,
         source_preset=_preset(),
         roles_bands=_roles(),
@@ -3434,7 +3434,7 @@ def test_verify_rearm_session_runs_exactly_one_capture():
 
     freqs = np.linspace(100.0, 20000.0, 64)
     base = _conductor(backend, session, phone, published=published)
-    conductor = CrossoverV2Conductor(
+    conductor = CrossoverV2Session(
         session_id=session.session_id,
         source_preset=_preset(),
         roles_bands=_roles(),
@@ -3486,7 +3486,7 @@ def test_verify_rearm_persists_a_dated_pilot_transfer_reference():
             "verify": lambda program: _verify_analysis(program, pilot_hi_dbfs=-20.0),
         },
     )
-    conductor = CrossoverV2Conductor(
+    conductor = CrossoverV2Session(
         session_id=session.session_id,
         source_preset=_preset(),
         roles_bands=_roles(),
@@ -3521,7 +3521,7 @@ def _rearm_conductor_for_persist(session_id: str, index_phase_map: dict, **kwarg
     """A conductor of ``prepare_v2_verify``'s shape, seams stubbed — the same
     construction ``test_verify_rearm_does_not_blank_the_persisted_cloud_block``
     uses to exercise the REAL ``persist_conductor_state``."""
-    return CrossoverV2Conductor(
+    return CrossoverV2Session(
         session_id=session_id,
         source_preset=_preset(),
         roles_bands=_roles(),
@@ -3805,7 +3805,7 @@ def test_the_prediction_verdict_survives_a_verify_rearm_persist():
     stored = v2host.load_v2_state()["verify_priors"]["predicted_spec"]
     assert stored is not None
 
-    rearmed = CrossoverV2Conductor(
+    rearmed = CrossoverV2Session(
         session_id="cap_rearm",
         source_preset=_preset(),
         roles_bands=_roles(),
@@ -5191,7 +5191,7 @@ def test_capture_retention_labels_from_flow_phase_not_program_identity(
     tmp_path, monkeypatch, caplog,
 ):
     """Issue #1855 (the byte-identity trap): every cloud position plays
-    ``self._verify_program`` — see ``CrossoverV2Conductor.program_for_phase``'s
+    ``self._verify_program`` — see ``CrossoverV2Session.program_for_phase``'s
     ``SUMMED_SWEEP_PHASES`` branch — so the SAME program object/bytes is
     retained during VERIFY, CLOUD_MEASURE, and CLOUD_VERIFY alike, and
     ``program.phase`` is always "verify" for all three. Before the fix,
@@ -9150,7 +9150,7 @@ def test_second_apply_pre_apply_profile_survives_the_deferred_verify_rearm(
     session id and immediately calls ``persist_conductor_state`` to "rebind"
     it — see its own call site) wiped the just-stashed pointer before a
     household could ever reach the verify_fail Undo screen. This test
-    reproduces that exact rebind call (a real ``CrossoverV2Conductor``, not a
+    reproduces that exact rebind call (a real ``CrossoverV2Session``, not a
     mock) between each apply and the next, and pins that the stash survives
     it."""
     from jasper.active_speaker.baseline_profile import (
@@ -9158,7 +9158,7 @@ def test_second_apply_pre_apply_profile_survives_the_deferred_verify_rearm(
     )
     from jasper.active_speaker.crossover_v2_flow import (
         PHASE_VERIFY,
-        CrossoverV2Conductor,
+        CrossoverV2Session,
         V2FlowSeams,
     )
 
@@ -9174,7 +9174,7 @@ def test_second_apply_pre_apply_profile_survives_the_deferred_verify_rearm(
         immediately persist it ("Keep the durable candidate/applied facts;
         rebind the session id.") — the real production seam this regression
         traces to, not a synthetic stand-in."""
-        conductor = CrossoverV2Conductor(
+        conductor = CrossoverV2Session(
             session_id=verify_session_id,
             source_preset=preset,
             roles_bands=_roles(),

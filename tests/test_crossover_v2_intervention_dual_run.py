@@ -6,7 +6,7 @@
 
 **What this module was, and what it is now.** Phase 2a ran the pure planner in
 :mod:`jasper.active_speaker.crossover_v2.intervention` side by side with the
-legacy ``CrossoverV2Conductor._fit_linearization`` it reimplements, and
+legacy ``CrossoverV2Session._fit_linearization`` it reimplements, and
 classified every difference into the two changes #2291 sanctions — candidate-Fc
 consistency, and the honest trim fallback. That comparison did its job: it
 proved bit-identical output at the candidate's own corner, and it is why the
@@ -64,6 +64,7 @@ from jasper.active_speaker.crossover_v2.contracts import (
 from jasper.audio_measurement.program_analysis import (
     REALIZED_LEVEL_MATCH_TOLERANCE_DB,
 )
+from tests.crossover_v2_fixtures import _candidate_sections
 from tests.test_crossover_v2_incident_replay import (
     ANCHORED_DB,
     CANDIDATE_FIT,
@@ -84,9 +85,9 @@ INCIDENT_SCAN_DELTA_DB = float(COMMITTED_DB["tweeter"]) - float(
 
 
 def _sections_at(fc_hz: float) -> dict[str, tuple[Any, ...]]:
-    """The session preset's sections, re-cornered — ``_fc_candidate_sections``."""
+    """The session preset's sections, re-cornered — ``_candidate_sections``."""
 
-    return _conductor()._fc_candidate_sections(fc_hz)
+    return _candidate_sections(_conductor(), fc_hz)
 
 
 # --------------------------------------------------------------------------- #
@@ -670,7 +671,7 @@ def test_a_role_with_no_crossover_section_is_named_in_the_journal(monkeypatch, s
     corner — which is the point: legacy named the session's.
 
     Both shapes are exercised because production only produces one of them:
-    ``_fc_candidate_sections`` OMITS a role with no region rather than mapping
+    ``_candidate_sections`` OMITS a role with no region rather than mapping
     it to ``()``. Legacy's ``sections_by_role(...).get(role, ())`` collapses the
     two, and ``sections_for`` must collapse them the same way — otherwise the
     disclosure would fire in tests and not in the field.

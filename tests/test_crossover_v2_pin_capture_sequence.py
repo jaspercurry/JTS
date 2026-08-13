@@ -36,7 +36,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     STAGE1_INCLUDES_CLOUD_MEASURE,
     STAGE1_INCLUDES_ENTRY_BASELINE,
     STAGE1_INCLUDES_LATERAL,
-    CrossoverV2Conductor,
+    CrossoverV2Session,
     build_v2_cloud_index_phase_map,
     build_v2_session_spec,
 )
@@ -139,8 +139,8 @@ def test_both_builders_default_the_walk_off_which_is_why_a_dropped_thread_is_sil
 # --- gap 2: the retry ledger does not survive a conductor rebuild ------------
 
 
-def _hydrated(snapshot, session_id: str, fakes: FakeSeams) -> CrossoverV2Conductor:
-    return CrossoverV2Conductor.hydrate(
+def _hydrated(snapshot, session_id: str, fakes: FakeSeams) -> CrossoverV2Session:
+    return CrossoverV2Session.hydrate(
         snapshot,
         session_id=session_id,
         source_preset=_preset(),

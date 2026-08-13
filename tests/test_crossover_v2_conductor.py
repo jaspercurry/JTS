@@ -129,7 +129,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     TRANSIENT_AUTO_RETRY_CODES,
     VERIFY_ANCHOR_HOLD_MESSAGE,
     VERIFY_PILOT_TRANSFER_STEP_CEILING_DB,
-    CrossoverV2Conductor,
+    CrossoverV2Session,
     CrossoverV2FlowError,
     V2PlanShape,
     _analysis_json,
@@ -2466,7 +2466,7 @@ def test_no_constructor_argument_can_seed_the_g3_comparator():
     """The #1927 negative, engineered rather than checked: there is no longer
     an argument through which a previous session's numbers can become this
     session's baseline. The prior travels ONLY as dated history."""
-    params = inspect.signature(CrossoverV2Conductor.__init__).parameters
+    params = inspect.signature(CrossoverV2Session.__init__).parameters
     assert "verify_pilot_transfer_baseline" not in params
     assert "verify_pilot_transfer_prior" in params
     fakes = FakeSeams()
@@ -2544,7 +2544,7 @@ def test_resume_within_session_skips_accepted_phases():
     snap = c.snapshot()
     assert snap.accepted_phases == (PHASE_CHECK,)
 
-    resumed = CrossoverV2Conductor.hydrate(
+    resumed = CrossoverV2Session.hydrate(
         snap,
         session_id=SESSION,
         source_preset=_preset(),
@@ -2568,7 +2568,7 @@ def test_new_session_invalidates_check_and_measure_evidence():
     snap = c.snapshot()
     assert PHASE_MEASURE in snap.accepted_phases
 
-    fresh = CrossoverV2Conductor.hydrate(
+    fresh = CrossoverV2Session.hydrate(
         snap,
         session_id="cap_other_session",
         source_preset=_preset(),
@@ -3921,7 +3921,7 @@ def test_retain_position_seam_gets_every_accepted_position_with_its_prompt():
         fakes.seams(),
         retain_position=lambda pid, result, meta: retained.append((pid, dict(meta))),
     )
-    c = CrossoverV2Conductor(
+    c = CrossoverV2Session(
         session_id=SESSION, source_preset=_preset(), roles_bands=_roles(),
         fc_hz=FC_HZ, driver_caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB,
         seams=seams, index_phase_map=CLOUD_MAP,
@@ -3959,7 +3959,7 @@ def test_a_retake_records_the_prompt_it_was_actually_given(monkeypatch):
     was explicitly told to abandon."""
     retained: list = []
     fakes = FakeSeams()
-    c = CrossoverV2Conductor(
+    c = CrossoverV2Session(
         session_id=SESSION, source_preset=_preset(), roles_bands=_roles(),
         fc_hz=FC_HZ, driver_caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB,
         seams=replace(
@@ -4009,7 +4009,7 @@ def test_retain_position_failure_never_fails_the_capture(caplog):
         raise OSError("no space left on device")
 
     fakes = FakeSeams()
-    c = CrossoverV2Conductor(
+    c = CrossoverV2Session(
         session_id=SESSION, source_preset=_preset(), roles_bands=_roles(),
         fc_hz=FC_HZ, driver_caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB,
         seams=replace(fakes.seams(), retain_position=boom),
@@ -4064,7 +4064,7 @@ def test_cloud_session_phases_and_resume_within_the_same_session():
     assert PHASE_CLOUD_MEASURE in snap.accepted_phases
     assert snap.session_phases == c.session_phases
 
-    resumed = CrossoverV2Conductor.hydrate(
+    resumed = CrossoverV2Session.hydrate(
         snap, session_id=SESSION, source_preset=_preset(), roles_bands=_roles(),
         fc_hz=FC_HZ, driver_caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB,
         seams=fakes.seams(), index_phase_map=CLOUD_MAP,
@@ -4083,7 +4083,7 @@ def test_a_new_relay_session_invalidates_the_whole_cloud():
     attempt = _walk(c, (1, 2), 1)
     _walk(c, CLOUD_MEASURE_INDEXES, attempt)
 
-    fresh = CrossoverV2Conductor.hydrate(
+    fresh = CrossoverV2Session.hydrate(
         c.snapshot(), session_id="cap_a_different_session",
         source_preset=_preset(), roles_bands=_roles(), fc_hz=FC_HZ,
         driver_caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB,
@@ -4690,7 +4690,7 @@ def test_a_materially_different_reclose_refreshes_the_pipeline_but_not_the_publi
     fakes.measure = lambda program: _eligible_measure_analysis(program)
     fakes.verify = _comb_cloud_analysis_factory()
     published: list[tuple[str, dict]] = []
-    c = CrossoverV2Conductor(
+    c = CrossoverV2Session(
         session_id=SESSION, source_preset=_preset(), roles_bands=_roles(),
         fc_hz=FC_HZ, driver_caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB,
         seams=replace(
@@ -6001,7 +6001,7 @@ def test_jts3_derived_hf_ceiling_drives_production_conductor_composition():
         RoleBand("woofer", 0, FrequencyBand(500.0, 1600.0)),
         RoleBand("tweeter", 1, FrequencyBand(1600.0, 10000.0)),
     ]
-    c = CrossoverV2Conductor(
+    c = CrossoverV2Session(
         session_id=SESSION,
         source_preset=_preset(),
         roles_bands=roles,
@@ -8474,7 +8474,7 @@ def test_verify_rearm_measure_predicted_sum_era_round_trip():
     freqs = np.linspace(100.0, 20000.0, 64)
     old_era_prediction = (freqs, np.full(64, -3.0))
     fakes = FakeSeams()
-    c = CrossoverV2Conductor(
+    c = CrossoverV2Session(
         session_id="era_rearm_session",
         source_preset=_preset(),
         roles_bands=_roles(),
@@ -10130,7 +10130,7 @@ def test_a_banked_finding_never_costs_the_session_it_was_banked_for(caplog):
     _tilted_woofer_fixture(
         unbound, tilt_db_per_oct=_LEVEL_FRAME_FINDING_TILT_DB_PER_OCT
     )
-    c = CrossoverV2Conductor(
+    c = CrossoverV2Session(
         session_id=SESSION, source_preset=_preset(), roles_bands=_roles(),
         fc_hz=FC_HZ, driver_caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB,
         seams=replace(unbound.seams(), publish_findings=None),
@@ -10153,7 +10153,7 @@ def test_a_banked_finding_never_costs_the_session_it_was_banked_for(caplog):
         raise RuntimeError("write-once conflict")
 
     base = fakes.seams()
-    exploding = CrossoverV2Conductor(
+    exploding = CrossoverV2Session(
         session_id=SESSION, source_preset=_preset(), roles_bands=_roles(),
         fc_hz=FC_HZ, driver_caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB,
         seams=replace(base, publish_findings=_explode),
@@ -10506,7 +10506,7 @@ def test_every_retained_position_carries_its_gate_provenance_as_a_sentence():
 
     retained: list = []
     fakes = FakeSeams()
-    c = CrossoverV2Conductor(
+    c = CrossoverV2Session(
         session_id=SESSION, source_preset=_preset(), roles_bands=_roles(),
         fc_hz=FC_HZ, driver_caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB,
         seams=replace(
@@ -10860,7 +10860,7 @@ def test_per_filter_boost_verdicts_are_disclosed_by_the_conductor(caplog):
     caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(
-            flow.CrossoverV2Conductor, "_boost_excluded_bands_hz",
+            flow.CrossoverV2Session, "_boost_excluded_bands_hz",
             lambda self, combined, result: ((350.0, 450.0),),
         )
         c = _cloud_conductor(fakes)
@@ -10895,7 +10895,7 @@ def test_the_fit_vocabulary_actually_carries_the_cloud_s_boost_exclusions():
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(iv, "fit_driver_linearization", _spy)
         mp.setattr(
-            flow.CrossoverV2Conductor, "_boost_excluded_bands_hz",
+            flow.CrossoverV2Session, "_boost_excluded_bands_hz",
             lambda self, combined, result: ((1500.0, 1900.0),),
         )
         c = _cloud_conductor(fakes)
@@ -11042,7 +11042,7 @@ def test_the_delta_probe_still_refuses_first_so_its_rollback_is_never_displaced(
     )
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(
-            flow.CrossoverV2Conductor, "_delta_probe_refusal",
+            flow.CrossoverV2Session, "_delta_probe_refusal",
             lambda self, verdict: REASON_CORRECTION_MODEL_ERROR,
         )
         verdict = _run_phase(c, 3, 3)

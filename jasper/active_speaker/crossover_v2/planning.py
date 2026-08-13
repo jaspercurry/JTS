@@ -23,7 +23,7 @@ in scope to read even by accident.
 per-candidate linearization plan and the cloud exclusion evidence — are injected
 into :func:`build_candidate` as callables rather than called through a sibling
 here, so a class- or instance-level substitution of
-``CrossoverV2Conductor._plan_linearization`` (nine such sites across two suites
+``CrossoverV2Session._plan_linearization`` (nine such sites across two suites
 — six on the class, three on an instance) or ``_exclusion_evidence_json`` still
 binds on production instead of addressing a name production no longer routes
 through (issue #2354).

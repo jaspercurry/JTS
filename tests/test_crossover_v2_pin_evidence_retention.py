@@ -121,7 +121,7 @@ def test_the_lateral_walk_keeps_its_own_retention_and_never_enters_a_cloud_group
     indexes like the two clouds — but its captures are per-driver MEASURE
     replays, not summed sweeps, so they are retained on their own
     ``lateral_poses`` list and never in ``_group_positions``. The flow says
-    why in ``CrossoverV2Conductor.__init__``: putting the two in one list
+    why in ``CrossoverV2Session.__init__``: putting the two in one list
     "would give the combiner an input it cannot combine."
 
     Nothing asserts that today, in either direction. The trap is symmetrical:
