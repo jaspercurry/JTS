@@ -336,3 +336,116 @@ def test_a_successful_plan_says_what_it_proposed(caplog):
     ]
     assert len(created) == 1
     assert f"proposal_fingerprint={proposal.fingerprint}" in created[0]
+
+
+# --------------------------------------------------------------------------- #
+# 4. the commit seam — the promise the docstring makes, pinned
+# --------------------------------------------------------------------------- #
+
+
+def _session():
+    """The smallest real session, with recorder seams."""
+    from jasper.active_speaker import crossover_v2_flow as flow
+    from tests.crossover_v2_fixtures import (
+        CAPS,
+        SESSION,
+        SESSION_VOLUME_DB,
+        FakeSeams,
+    )
+    from tests.crossover_v2_fixtures import FC_HZ as SESSION_FC_HZ
+    from tests.crossover_v2_fixtures import _preset as _session_preset
+    from tests.crossover_v2_fixtures import _roles
+
+    seams = FakeSeams()
+    session = flow.CrossoverV2Session(
+        session_id=SESSION,
+        source_preset=_session_preset(),
+        roles_bands=_roles(),
+        fc_hz=SESSION_FC_HZ,
+        driver_caps_dbfs=CAPS,
+        session_volume_db=SESSION_VOLUME_DB,
+        seams=seams.seams(),
+        driver_spacing_m=0.15,
+    )
+    return session, seams
+
+
+def test_the_commit_seam_stashes_the_proposal_and_its_durable_identity():
+    """What the seam has to leave behind for the receipt to find it.
+
+    The session-scoped payload and the durable fingerprint are separate on
+    purpose: the fingerprint is what crosses ``verify_priors`` to the stage
+    that writes the receipt, and it must be the one the proposal really had.
+    """
+    session, seams = _session()
+    candidate = _candidate(linearization_outcome="fitted")
+
+    session.commit_intervention_proposal(
+        candidate,
+        predicted_sum=None,
+        commanded_delta=None,
+        level_frame_finding=None,
+        realized_branch_level={"difference_db": -1.6},
+    )
+
+    proposal = session.last_intervention_proposal
+    assert isinstance(proposal, InterventionProposal)
+    assert session.measure_proposal_fingerprint == proposal.fingerprint
+    assert proposal.realized_branch_level["difference_db"] == pytest.approx(-1.6)
+    assert proposal.candidate_fingerprint == candidate.fingerprint
+    # It is the PROPOSAL's identity, not the candidate's, or the receipt would
+    # be back where it started.
+    assert session.measure_proposal_fingerprint != candidate.fingerprint
+    assert seams.published_candidates == [candidate]
+
+
+def test_an_unassemblable_candidate_costs_the_round_its_proposal_not_its_commit():
+    """"Assembly cannot fail this commit" — the docstring's promise, tested.
+
+    The seam runs on the relay thread for a candidate the household has already
+    confirmed, and ``publish_candidate`` is irreversible. A contract violation
+    while gathering forensics must not be the thing that stops a measurement
+    that would otherwise have succeeded.
+
+    ``_NoSections`` raises ``NoCrossoverSectionsError`` — a ``ValueError``, and
+    so is every other assembly failure worth surviving: ``json_fingerprint``'s
+    ``EvidenceIdentityError`` and the whole ``CrossoverV2ContractError`` family
+    both subclass it, which is why the refusal arm's exception tuple really does
+    cover the realistic set rather than one example of it.
+    """
+    session, seams = _session()
+    candidate = _NoSections()
+
+    session.commit_intervention_proposal(
+        candidate,
+        predicted_sum=None,
+        commanded_delta=None,
+        level_frame_finding=None,
+    )
+
+    # The commit completed, whole.
+    assert seams.published_candidates == [candidate]
+    assert session._candidate is candidate
+    # The proposal did not, and the session says so rather than inventing one.
+    assert isinstance(session.last_intervention_proposal, PlanRefusal)
+    assert session.last_intervention_proposal.reason == "no_crossover_sections"
+    assert session.measure_proposal_fingerprint == "", (
+        "an empty identity is what routes the receipt to its candidate arm"
+    )
+
+
+def test_every_assembly_failure_worth_surviving_is_in_the_refusal_arms_tuple():
+    """The tuple is narrow (ruff BLE, the frozen broad-except budget), so the
+    claim that it is WIDE ENOUGH has to be checked rather than assumed.
+
+    Both error families a real assembly can raise are ``ValueError`` subclasses,
+    and ``ValueError`` is in the tuple. A future error type outside it would
+    escape into the commit path, which this catches.
+    """
+    from jasper.audio_measurement.evidence_identity import EvidenceIdentityError
+
+    from jasper.active_speaker.crossover_v2.proposal import _ASSEMBLY_ERRORS
+
+    for error in (CrossoverV2ContractError, NoCrossoverSectionsError,
+                  CandidateFcDisagreementError, EvidenceIdentityError):
+        assert issubclass(error, _ASSEMBLY_ERRORS), error.__name__
