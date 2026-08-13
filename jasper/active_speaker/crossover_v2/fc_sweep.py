@@ -641,6 +641,13 @@ def evaluate_candidate(
         # not depending on which role iterates first, and a NaN that reaches
         # the selector is clamped by ``max(0.0, ...)`` to 0.0, which spends the
         # saturation penalty rather than charging it.
+        #
+        # That divergence is not reachable from here TODAY, and the unification
+        # is stated as a single-owner rule rather than a bug fix: a candidate
+        # cannot carry a non-finite cost at all, because both the state freeze
+        # and the fingerprint freeze refuse one. Which is the point — if that
+        # ever relaxes, the reducer's ``isfinite`` guard is what stands between
+        # a NaN and the selector, and it should be THIS reducer's.
         headroom_cost_db=worst_headroom_cost_db(linearization),
         candidate=candidate.to_dict(),
         predicted_sum=(np.asarray(built.predicted_sum[0]).copy(),

@@ -722,12 +722,13 @@ def _evaluation_with_linearization(linearization):
     """``fc_sweep.evaluate_candidate`` over stand-in ports.
 
     Direct on the organ rather than through a conductor, for the reason
-    ``_sweep_ports`` gives one section down and for one more that is specific
-    to this subject: a candidate the fit engine actually builds CANNOT carry a
-    non-finite cost (the test below pins that), so a fixture that goes through
-    a real build cannot present the reducer with the input it is being asked
-    about. ``build`` is an injected port precisely so the value it returns can
-    be chosen here.
+    ``_sweep_ports`` gives and for one more that is specific to this subject: a
+    candidate the fit engine actually builds CANNOT carry a non-finite cost
+    (pinned by ``test_a_candidate_refuses_to_carry_a_non_finite_fit_cost`` in
+    ``tests/test_active_speaker_measured_crossover_candidate.py``), so a fixture
+    that goes through a real build cannot present the reducer with the input it
+    is being asked about. ``build`` is an injected port precisely so the value
+    it returns can be chosen here.
 
     ``fc_hz`` is the configured corner, which is the arm that reuses the anchor
     rather than re-analyzing — so ``analyze`` and ``measure_priors`` must not
