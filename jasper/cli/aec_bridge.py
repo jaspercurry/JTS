@@ -3146,13 +3146,14 @@ def main() -> int:
         "on" if corpus_xvf_raw0_webrtc_enabled else "off",
         "on" if corpus_xvf_raw0_dtln_enabled else "off",
     )
-    if production_chip_aec_enabled:
-        if not os.environ.get("JASPER_OUTPUTD_CHIP_REF_PCM", "").strip():
-            logger.error(
-                "JASPER_AEC_CHIP_AEC_ENABLED=1 requires "
-                "JASPER_OUTPUTD_CHIP_REF_PCM so outputd feeds XVF USB-IN",
-            )
-            return 1
+    if production_chip_aec_enabled and not os.environ.get(
+        "JASPER_OUTPUTD_CHIP_REF_PCM", ""
+    ).strip():
+        logger.error(
+            "JASPER_AEC_CHIP_AEC_ENABLED=1 requires "
+            "JASPER_OUTPUTD_CHIP_REF_PCM so outputd feeds XVF USB-IN",
+        )
+        return 1
     if corpus_usb_dtln_enabled and not corpus_usb_enabled:
         logger.warning(
             "JASPER_AEC_CORPUS_USB_DTLN_ENABLED=1 is ignored unless "
