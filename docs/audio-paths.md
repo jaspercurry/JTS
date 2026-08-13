@@ -586,7 +586,13 @@ ssh pi@jts.local 'sudo journalctl -u jasper-voice | grep "drain wait"'
 ## Operational notes
 
 **Test the music chain** (volume-controlled): `aplay -D correction_substream file.wav`.
-Goes through CamillaDSP, so `main_volume` applies.
+Goes through CamillaDSP, so `main_volume` applies. On a box whose
+`correction` renderer-ingress lane is armed onto its SHM ring (U3/P6c —
+`jasper-audio-config renderer-lanes` reports it; the fleet default is
+unarmed), fan-in reads the ring instead of this alias, so use
+`aplay -D correction_ring_lane file.wav` there — the product's own
+measurement spawns pick the right one automatically
+(`jasper.audio_measurement.correction_lane.correction_play_device`).
 
 **Test the TTS chain**: use `jasper-voice`/cue playback or the canonical
 local TTS socket, `/run/jasper-fanin/tts.sock`. (The `jasper_out`
