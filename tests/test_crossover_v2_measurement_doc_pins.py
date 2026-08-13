@@ -101,6 +101,13 @@ _RECIPE_RE = re.compile(r"event=([\w\\.]+)\(([\w|]+)\)")
 
 def _extract_recipe_event_names(doc_text: str) -> set[str]:
     """Every full event name named by a live-spine `grep -E` recipe."""
+    # A missing marker makes str.partition() return the WHOLE text as
+    # "spine" with no error -- silently re-including the appendix instead
+    # of failing loudly on a heading rename.
+    assert _APPENDIX_MARKER in doc_text, (
+        "appendix heading not found -- did it get renamed? the live-spine/"
+        "appendix split below would silently scan the whole doc instead"
+    )
     spine, _, _ = doc_text.partition(_APPENDIX_MARKER)
     names: set[str] = set()
     for prefix, alternatives in _RECIPE_RE.findall(spine):
@@ -194,6 +201,16 @@ def logged_event_names(root: Path = _JASPER_ROOT) -> frozenset[str]:
     (`correction.crossover_v2_calibration_resolve_failed` etc) are said from
     `jasper/web/correction_crossover_v2.py`, outside that package, so a
     narrower scope would have missed them.
+
+    The `emit` matcher is by BARE NAME, not by verifying the call resolves
+    to `intervention.py`'s specific closure, so the returned set is a
+    superset of the true crossover_v2 vocabulary by construction -- it also
+    picks up unrelated `emit(...)` calls elsewhere in `jasper/` (e.g.
+    `jasper/voice/trace.py`'s `emit(kind, payload)`). Harmless for every
+    caller here: each only asserts a name IS in the set (recipe names must
+    be a subset) or IS NOT (the fabricated-name/decoy controls), and a wider
+    set can only make the first kind of assertion easier to satisfy, never
+    the second.
     """
     names: set[str] = set()
     for path in sorted(root.rglob("*.py")):
@@ -285,3 +302,27 @@ def test_a_fabricated_event_name_does_not_resolve():
     # either -- guards against a resolver that's accidentally doing prefix
     # or fuzzy matching instead of exact string resolution.
     assert "correction.crossover_v2_realzed_level_match" not in found
+
+
+def test_resolver_rejects_names_a_string_presence_scan_would_accept(tmp_path):
+    """Discriminates the campaign's most-recurred defect class.
+
+    Every test above exercises a REAL, correctly-emitted event name, so a
+    resolver reduced to "does this literal appear anywhere in the corpus"
+    would pass all of them too -- that shape is what broke both #2291
+    Phase 5c-v rebuilt sweeps, and a third time in a gate harness. A reason
+    code, a dict field, and an ordinary function argument can all carry a
+    string that LOOKS like an event name without it ever being logged;
+    only a name that reaches one of the four call shapes should resolve.
+    """
+    (tmp_path / "decoy.py").write_text(
+        'from jasper.log_event import log_event\n'
+        'REASON_CODE = "correction.crossover_v2_looks_like_an_event"\n'
+        '_RESULT = {"code": "correction.crossover_v2_also_looks_like_one"}\n'
+        'str("correction.crossover_v2_mentioned_but_not_logged")\n'
+        'log_event(logger, "correction.crossover_v2_the_real_one")\n',
+        encoding="utf-8",
+    )
+    assert logged_event_names(root=tmp_path) == {
+        "correction.crossover_v2_the_real_one"
+    }

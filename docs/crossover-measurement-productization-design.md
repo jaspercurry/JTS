@@ -191,22 +191,23 @@ adds phase — the high-credibility view for a crossover product).
 > sequence.
 
 
-> **Amendment (flat-linearization PR-3b, 2026-07-26).** The
-> one-mic-position premise below — and with it "one mic position" in §1's
-> redesign-lever paragraph, the "one phone tap" per-phase bullets, the
-> "~2–3 minutes / ~3 phone taps" user-cost line, and the "only the first
-> capture of a session requires a tap" claim — described the flow until the
-> spatial cloud replaced it. The session now walks a guided cloud of 16
-> captures at the Full tier's shipped defaults (or 7 on the Express tier —
-> flow-simplification PR-U1/PR-U3 — the household's explicit choice on the
-> wizard's tier chooser) around ONE MARK: the mark is still ~1 m
-> on the listening axis and the parallax budget below still governs it,
-> but the mic moves between captures and each prompted position takes its
-> own tap. The reasoning preserved here is why v2 collapsed the
-> *interaction topology*, which is intact; the capture and tap counts are
-> superseded. Current operational truth:
+> **Amendment (flat-linearization PR-3b, 2026-07-26; re-verified
+> 2026-08-13).** The one-mic-position premise below — and with it "one
+> mic position" in §1's redesign-lever paragraph, the "one phone tap"
+> per-phase bullets, the "~2–3 minutes / ~3 phone taps" user-cost line,
+> and the "only the first capture of a session requires a tap" claim —
+> described the flow until the spatial cloud replaced it. The session now
+> walks a guided cloud around ONE MARK: the mark is still ~1 m on the
+> listening axis and the parallax budget below still governs it, but the
+> mic moves between captures and each prompted position takes its own
+> tap. The reasoning preserved here is why v2 collapsed the *interaction
+> topology*, which is intact; the capture and tap counts are superseded a
+> second time by the two-stage commission split (#2400) — this
+> amendment's own flow-simplification PR-U1/PR-U3 figures (16 captures at
+> Full, 7 at Express) share the same fate, so neither generation of the
+> numbers is restated here. Current operational truth:
 > [`HANDOFF-crossover-measurement-v2.md`](HANDOFF-crossover-measurement-v2.md)
-> "Position groups"; why the cloud is necessary at all:
+> "The capture flow" / "What it is"; why the cloud is necessary at all:
 > [`flat-linearization-plan.md`](flat-linearization-plan.md) fundamental 1.
 
 One mic position for the whole session: **~1 m on the listening axis**

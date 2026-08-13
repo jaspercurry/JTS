@@ -5713,10 +5713,17 @@ def test_session_wall_clock_ceiling_scales_with_the_plan_and_is_capped():
 
     shipped = build_v2_capture_plan(_roles(), FC_HZ)
     # RE-DERIVED (work order D2): each STAGE arms its own ceiling from its own
-    # plan. Stage 1 is 10 captures ⇒ 1800 + (10 - 3) * 120 = 2640 s, down from
-    # the single session's 3360 s. Neither number fits inside the 900 s relay
-    # TTL and this test must not be read as claiming otherwise; what the split
-    # buys is a lower worst case and a fresh TTL per stage.
+    # plan. This call takes no include_* args, so it exercises the FUNCTION's
+    # own bare defaults (cloud_measure on, lateral/entry_baseline off) --
+    # NOT the shipped Full tier's own stage 1, which runs the opposite flags
+    # (STAGE1_INCLUDES_LATERAL/_ENTRY_BASELINE) for 9 captures and 2,520 s
+    # (see HANDOFF-crossover-measurement-v2.md "The capture flow" / "What it
+    # is" -- tier_display_info() is the derivation of record for that number).
+    # The bare-defaults scenario below is 10 captures ⇒ 1800 + (10-3)*120 =
+    # 2640 s. Neither this scenario's number nor the shipped one fits inside
+    # the 900 s relay TTL and this test must not be read as claiming
+    # otherwise; what the split buys is a lower worst case and a fresh TTL
+    # per stage.
     assert session_wall_clock_ceiling_s(shipped) == 2640.0
     assert session_wall_clock_ceiling_s(
         build_v2_verify_capture_plan(FC_HZ, plan_shape=resolve_plan_shape())
