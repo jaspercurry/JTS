@@ -2247,3 +2247,42 @@ def test_check_fanin_ring_stall_ok_when_status_unreachable(monkeypatch):
     r = doctor.check_fanin_ring_stall()
     assert r.status == "ok"
     assert "jasper-fanin service" in r.detail
+
+
+# ---- renderer ring lanes: the unarmed fleet default is healthy ----------
+
+
+def test_unarmed_renderer_lanes_report_ok(monkeypatch):
+    """An unarmed box (the fleet default) is healthy, not failing.
+
+    The doctor's status vocabulary is ok|warn|fail (CheckResult.status),
+    and render() maps anything else to a red X through its else-branch.
+    The first ship of this check returned a novel "skip" for the unarmed
+    branch, which made EVERY unarmed box render a failure and exit 1
+    (AGENTS.md: "Returns 0 if all critical checks pass"). Unarmed/
+    unconfigured-is-ok is the established doctor convention —
+    check_chip_reference (this same domain), Spotify auth, the capture
+    relay, and Google integrations all return ok + a skipped-style detail.
+    """
+    import jasper.renderer_lanes as rl
+
+    monkeypatch.setattr(rl, "read_armed_labels", lambda *a, **kw: ())
+    result = doctor.audio_runtime.check_renderer_ring_lanes()
+    assert result.status == "ok"
+    assert "no renderer lane armed" in result.detail
+    assert "fleet default" in result.detail
+
+
+def test_unarmed_renderer_lanes_exit_zero_through_render(monkeypatch, capsys):
+    """The fleet-wide repro, inverted into a guard: drive the unarmed
+    result through the doctor's REAL render/exit path and require exit 0.
+    A status outside the vocabulary reaches render()'s else-branch and
+    becomes exit 1 — exactly how the "skip" ship failed — so this pin
+    breaks on the defect CLASS, not just today's literal."""
+    import jasper.renderer_lanes as rl
+
+    monkeypatch.setattr(rl, "read_armed_labels", lambda *a, **kw: ())
+    result = doctor.audio_runtime.check_renderer_ring_lanes()
+    exit_code = doctor.render([result])
+    capsys.readouterr()  # swallow render()'s printed report
+    assert exit_code == 0
