@@ -557,7 +557,10 @@ create a second retention system.
   literals — see [HANDOFF-correction.md](HANDOFF-correction.md));
   `correction_lane.py` owns the `correction_substream` ALSA lane name that
   correction sweeps and commissioning captures share (previously five distinct
-  names across eleven files); and `excitation.py` owns
+  names across eleven files) — and, since P6c-0 (#2285), the `aplay` argv
+  builder + thin spawn wrappers every inline lane-play site routes through
+  (guarded by `tests/test_correction_lane_play.py`; the module docstring is
+  the design reference); and `excitation.py` owns
   `AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS` (−12 dBFS), so the level stage and
   the measurement stage cannot disagree about the source peak.
   **The three are not guarded to the same strength, and the difference
