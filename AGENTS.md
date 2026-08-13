@@ -171,7 +171,15 @@ worked example of getting this wrong and repairing it.
   `--device` in librespot.service, `output_device` in
   shairport-sync.conf, `--pcm` in bluealsa-aplay's drop-in), the
   new name MUST be openable via `sudo -u $USER aplay -D $DEVICE
-  -c 2 -r 48000 -f S16_LE -d 0.1 /dev/zero`. This catches the
+  -c 2 -r 48000 -f S16_LE -d 0.1 /dev/zero`.
+  Since U3/P6, the migrated renderers spell that flag as a
+  `${JASPER_<RENDERER>_DEVICE}` indirection whose in-unit default is
+  the shipped snd-aloop name, so `$DEVICE` above is whatever
+  `/var/lib/jasper/renderer_lanes.env` resolves it to — the doctor
+  resolves it the same way before probing. `$USER` is likewise the
+  unit's real `User=`, which is **not** always non-root:
+  bluealsa-aplay runs as root and therefore needs no `jts-ring`
+  membership, while librespot (`pi`) does. This catches the
   PR #214 bug class: a user-space ALSA PCM defined only in a
   root-readable `~/.asoundrc` fails to resolve under non-root
   renderer users (shairport-sync, pi). System-wide PCM defs go

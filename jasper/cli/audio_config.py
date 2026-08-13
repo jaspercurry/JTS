@@ -292,9 +292,14 @@ def _cmd_renderer_lanes(args: argparse.Namespace) -> int:
                 assets_present=presence.all_present,
                 missing_assets=presence.missing(),
                 lane_conf_present=lane_conf,
-                user_in_ring_group=(
-                    rl.renderer_user_in_ring_group(user) if user else None
-                ),
+                # UNCONDITIONAL on purpose. The old `if user else None`
+                # short-circuit meant a renderer with no `User=` (root) never
+                # reached the predicate at all, so the predicate's own
+                # root-is-capable branch was dead from production and the arm
+                # saw an indistinguishable "unknown". Same arm outcome either
+                # way — `None` never refused and `True` never refuses — but the
+                # value is now honest about WHY it does not refuse.
+                user_in_ring_group=rl.renderer_user_in_ring_group(user),
                 input_buffer_frames=eff_buffer,
                 period_frames=eff_period,
             )
@@ -349,6 +354,25 @@ def _renderer_unit_user(unit: str) -> str | None:
     Deliberately parses the unit rather than asking systemd: the arm can be run
     on a box whose renderer is stopped, and `systemctl show -p User` on an
     inactive unit is less reliable than the file that defines it.
+
+    **`None` collapses three genuinely different cases**, and the caller must
+    treat it as "assume root" rather than "no user":
+
+    1. the main unit exists and sets no ``User=`` — systemd's default IS root,
+       so `None` is the right answer and root is what runs;
+    2. no unit file was found at either search path — the packaged unit may live
+       somewhere this parse does not look;
+    3. the ``User=`` is set somewhere a FILE parse cannot see — a drop-in under
+       ``<unit>.d/``, or ``DynamicUser=``. This is not hypothetical here: JTS
+       configures ``bluealsa-aplay.service`` through exactly such a drop-in, so
+       a future ``User=`` added there would be invisible to this function.
+
+    Only case 1 is a real answer; 2 and 3 are ignorance wearing the same value.
+    The drop-in-aware net is the doctor's runtime `systemctl show -p User`
+    (``jasper.cli.doctor.renderers._systemd_user_for``), which resolves the full
+    unit + drop-in merge and is what the PR #214 probe actually runs as. If this
+    function's answer ever has to be trusted rather than merely advisory, use
+    that instead.
     """
     for base in ("/etc/systemd/system", "/usr/lib/systemd/system"):
         try:

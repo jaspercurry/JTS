@@ -921,9 +921,11 @@ def test_ring_lane_ebusy_owner_is_read_from_the_ring_header(monkeypatch, tmp_pat
     from jasper import renderer_lanes as rl
     from jasper.cli.doctor import renderers as rdoc
 
-    monkeypatch.setattr(
-        rdoc, "_FANIN_RING_RENDERER_DEVICES", {"librespot_ring_lane": "spotify"}
-    )
+    # No monkeypatch of the device map: it is DERIVED from RENDERER_LANES now,
+    # so the real registry is the right input and each new lane is covered here
+    # for free. (P6a hand-listed it, which meant a second lane would silently
+    # miss the EBUSY-owner path and fail a healthy box.)
+    assert rdoc._ring_renderer_devices()["librespot_ring_lane"] == "spotify"
     monkeypatch.setattr(rl, "ring_writer_pid", lambda label: 4242)
 
     cgroup = tmp_path / "cgroup"

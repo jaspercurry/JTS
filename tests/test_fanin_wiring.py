@@ -102,7 +102,12 @@ def test_renderer_units_use_private_lanes():
         REPO / "deploy" / "systemd" / "bluealsa-aplay.service.d"
         / "jts-output.conf"
     ).read_text()
-    assert "--pcm=bluealsa_substream" in bluealsa
+    # Since U3/P6b the device is an indirection so a per-box ring flip is one
+    # env write rather than a unit edit — but the in-unit DEFAULT is still the
+    # private aloop lane, which is what this test is about: a box with no lane
+    # map writes bluealsa_substream, byte-identically to before.
+    assert "--pcm=${JASPER_BLUEALSA_DEVICE}" in bluealsa
+    assert 'Environment="JASPER_BLUEALSA_DEVICE=bluealsa_substream"' in bluealsa
     assert "audio_topology.env" not in bluealsa
     assert "jasper_renderer_in" not in bluealsa
 

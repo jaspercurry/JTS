@@ -167,6 +167,20 @@ RENDERER_LANES: tuple[RendererLane, ...] = (
         aloop_device="librespot_substream",
         ring_device="librespot_ring_lane",
     ),
+    RendererLane(
+        # The label is `bluealsa`, NOT `bluetooth`. fan-in's
+        # `JASPER_FANIN_INPUT_RENDERERS` owns the lane vocabulary and spells this
+        # lane `bluealsa`; a mismatch is refused at config by fan-in's own
+        # armed-label guard, so the two cannot silently disagree. (`bluetooth` is
+        # the SOURCE name — `Source.BLUETOOTH`, `/sources/` — which is a
+        # different vocabulary from the fan-in lane set.)
+        label="bluealsa",
+        renderer="bluealsa-aplay",
+        unit="bluealsa-aplay.service",
+        device_key="JASPER_BLUEALSA_DEVICE",
+        aloop_device="bluealsa_substream",
+        ring_device="bluealsa_ring_lane",
+    ),
 )
 
 #: Labels that can be armed, in declaration order.
@@ -382,14 +396,39 @@ def render_renderer_lanes_env(
     return RenderOutcome(armed=armed, changed=True, path=path)
 
 
-def renderer_user_in_ring_group(unit_user: str, group: str = RING_GROUP) -> bool | None:
-    """Whether ``unit_user`` is a member of the ring directory's group.
+def renderer_user_in_ring_group(
+    unit_user: str | None, group: str = RING_GROUP
+) -> bool | None:
+    """Whether ``unit_user`` can write the ring directory via ``group``.
 
     ``None`` when the question cannot be answered on this host (no such user or
     group — a dev laptop, or a box where the installer has not run). The caller
     treats `None` as "unknown, do not refuse": refusing on an unanswerable
     question would make the arm impossible to run anywhere but a live Pi.
+
+    **ROOT (and an absent ``User=``, which systemd means as root) is always
+    capable, and must answer True rather than False.** Root bypasses the group
+    check entirely — a 2775 root-owned directory is writable by uid 0 whatever
+    the group says.
+
+    **Reachability, stated honestly.** Before P6b this function answered
+    ``False`` for the literal ``"root"``, and it is tempting to call that a
+    fleet-breaker. It was not, and the difference matters. The only production
+    caller (``jasper.cli.audio_config``) short-circuited on a falsy user and
+    passed ``None``, which :func:`arm_refusal_reason` never refuses on — it
+    refuses only on ``is False``. And no registered lane's unit spells
+    ``User=root``: ``bluealsa-aplay`` sets no ``User=`` at all, so the literal
+    was never produced. So the bluealsa arm would have PASSED under P6a. This is
+    hardening and future-proofing — a unit that ever *does* spell ``User=root``,
+    or any caller that stops short-circuiting — not a caught outage.
+
+    The caller no longer short-circuits (that was Nit-A1 of the P6b round), so
+    the ``None`` branch here is now live from production and the value it
+    returns is honest about why it does not refuse, rather than collapsing
+    "root, definitely capable" into the same ``None`` as "could not tell".
     """
+    if unit_user is None or unit_user == "root" or unit_user == "0":
+        return True
     try:
         import grp
         import pwd
@@ -405,6 +444,9 @@ def renderer_user_in_ring_group(unit_user: str, group: str = RING_GROUP) -> bool
         pw = pwd.getpwnam(unit_user)
     except KeyError:
         return None
+    # uid 0 under another name is still root.
+    if pw.pw_uid == 0:
+        return True
     # A primary-group match counts too: gr_mem lists only SUPPLEMENTARY members.
     return pw.pw_gid == entry.gr_gid
 
