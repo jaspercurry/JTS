@@ -38,16 +38,22 @@ apply transaction can activate without durably promoting (#1666).
 
 ## The five layers
 
-One DSP graph, composed in fixed order. Each layer is its own artifact with
-its own owner, measurement instrument, and re-run cadence. One fact, one
-owner — shape never hides inside a level knob, level never hides inside a
-shape.
+**The order below is the commissioning order — what must be measured and
+applied before what.** Each layer is its own artifact with its own owner,
+measurement instrument, and re-run cadence. One fact, one owner — shape
+never hides inside a level knob, level never hides inside a shape. All five
+compose into one CamillaDSP graph, but the *signal* order inside that graph
+is different — room and preference ride the stereo bus ahead of the split
+mixer, so they are emitted before everything numbered 1a–2. Do not read
+these numbers as filter order; the graph shape is in
+[HANDOFF-active-speaker-dsp.md](HANDOFF-active-speaker-dsp.md)'s "Layer
+Boundary".
 
 | # | Layer | Job | Instrument | Re-runs when |
 |---|---|---|---|---|
 | 1a | **Driver linearization** | each driver flat *within its own band* on the design axis (CD-horn compensation, baffle step, breakup) | gated/quasi-anechoic sweep at the listening axis (already captured to 18 kHz every MEASURE); optional near-field supplement for the woofer below the gate validity floor | hardware changes (driver, horn, pad) |
 | 1b | **Crossover integration** | drivers sum correctly: crossover filters, **scalar** trim per driver, relative delay, polarity | same gated session as 1a | hardware/geometry changes |
-| 2 | **Bass** | extension/sub integration below the gated validity floor | in-room, ungated (the bass-ext program) | hardware/placement |
+| 2 | **Bass** | extension/sub integration below the gated validity floor | near-field (extension); in-room, ungated (sub integration) | hardware/placement |
 | 3 | **Room correction** | what the room does: modal peaks below the transition (~300–500 Hz here), at most a gentle broadband tilt above | in-room at the listening position | placement/room changes |
 | 4 | **Preference** | declared taste on top of honest-flat | the household's ears | whenever |
 
