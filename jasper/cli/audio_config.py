@@ -286,7 +286,16 @@ def _cmd_renderer_lanes(args: argparse.Namespace) -> int:
         print(f"geometry {eff_buffer}/{eff_period} ({provenance})")
         for label in newly_armed:
             lane = rl.lane_by_label(label)
-            user = _renderer_unit_user(lane.unit) if lane else None
+            # A unitless lane (correction — ephemeral aplay writers) has no
+            # unit file to parse; the row itself names the one NON-root
+            # writer identity to preflight (its root identities pass the
+            # group predicate trivially).
+            if lane is None:
+                user = None
+            elif lane.unit is None:
+                user = lane.arm_preflight_user
+            else:
+                user = _renderer_unit_user(lane.unit)
             refusal = rl.arm_refusal_reason(
                 label,
                 assets_present=presence.all_present,
@@ -341,8 +350,15 @@ def _cmd_renderer_lanes(args: argparse.Namespace) -> int:
     print(f"armed {','.join(outcome.armed)}")
     print(f"previous {','.join(current)}")
     print(f"path {outcome.path}")
+    # Unitless lanes (correction) contribute no unit here — their writers
+    # are ephemeral spawns that read the map fresh per spawn, so the flip
+    # needs only jasper-fanin's restart on that side.
     restart = " ".join(
-        sorted({lane.unit for lane in rl.RENDERER_LANES if lane.label in set(desired) ^ set(current)})
+        sorted({
+            lane.unit
+            for lane in rl.RENDERER_LANES
+            if lane.label in set(desired) ^ set(current) and lane.unit is not None
+        })
     )
     print(f"restart_required jasper-fanin.service {restart}".rstrip())
     return 0

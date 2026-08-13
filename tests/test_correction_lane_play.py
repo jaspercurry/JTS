@@ -56,10 +56,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+from jasper import renderer_lanes as rl
 from jasper.audio_measurement.correction_lane import (
     CORRECTION_PLAY_UMASK,
     CORRECTION_SUBSTREAM,
     correction_play_argv,
+    correction_play_device,
     exec_correction_play,
     popen_correction_play,
     run_correction_play,
@@ -67,6 +71,21 @@ from jasper.audio_measurement.correction_lane import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 JASPER_ROOT = REPO_ROOT / "jasper"
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_lane_map(monkeypatch, tmp_path):
+    """Every test here starts in the fleet-default transport state.
+
+    The device is lane-map-aware since P6c-ii, and the map path is the
+    PRODUCTION file — a test run on a box whose operator armed the lane
+    would otherwise flip every unarmed golden. Point the reader at a
+    per-test path (no file = nothing armed); tests that arm write their
+    own map there.
+    """
+    monkeypatch.setattr(
+        rl, "RENDERER_LANES_ENV", str(tmp_path / "renderer_lanes.env")
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +117,32 @@ def test_builder_produces_the_one_true_argv() -> None:
 def test_builder_stringifies_path_objects() -> None:
     """Sites passed str(Path) inline; the builder owns that conversion now."""
     assert correction_play_argv(Path("/tmp/x.wav"))[-1] == "/tmp/x.wav"
+
+
+def test_device_follows_the_lane_map(tmp_path) -> None:
+    """The P6c-ii flip, end to end through a real map file: unarmed (the
+    fleet default — no map) resolves the aloop alias; an armed map resolves
+    the ring plug PCM, on the very next call in the same process (nothing
+    caches — the writers are ephemeral, so a restart cannot deliver an
+    arm); disarming flips back. The argv builder rides the same answer.
+
+    Devices are asserted through the registry row, which is where both
+    names are declared (aloop_device imports the lane-name SSOT;
+    ring_device is cross-pinned against the conf.d by the lane tests).
+    """
+    lane = rl.lane_by_label("correction")
+    assert lane is not None
+    map_path = Path(rl.RENDERER_LANES_ENV)  # per-test path via the fixture
+
+    assert correction_play_device() == lane.aloop_device == CORRECTION_SUBSTREAM
+    assert correction_play_argv("/tmp/x.wav")[2] == lane.aloop_device
+
+    map_path.write_text(rl.render_env_text((lane.label,)))
+    assert correction_play_device() == lane.ring_device
+    assert correction_play_argv("/tmp/x.wav")[2] == lane.ring_device
+
+    map_path.write_text(rl.render_env_text(()))
+    assert correction_play_device() == lane.aloop_device
 
 
 def test_lane_umask_constant_is_group_write() -> None:

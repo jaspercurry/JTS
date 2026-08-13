@@ -132,12 +132,14 @@ Group=jasper
 # lets the wizards write/read HA + Spotify credentials and token caches.
 # `audio` (active-speaker commissioning correction_substream tone),
 # `bluetooth` (BlueZ Alias), `systemd-journal` (journalctl -k).
-# U3/P6c-i — `jts-ring` (write access to /dev/shm/jts-ring, so the aplay
+# U3/P6c — `jts-ring` (write access to /dev/shm/jts-ring, so the aplay
 # children the wizards spawn via jasper.audio_measurement.correction_lane
-# can create the correction lane's SHM ring once P6c-ii arms it; the ring
+# can create the correction lane's SHM ring while this box has that lane
+# armed (`jasper-audio-config renderer-lanes --arm correction`); the ring
 # FILE's mode comes from the helper's per-spawn umask, so this unit needs
-# no UMask= line for it). Inert until that lane exists — membership grants
-# directory write, it does not point anything at a ring.
+# no UMask= line for it). On an unarmed box — the fleet default — spawns
+# stay on the correction_substream aloop alias and the membership grants
+# only directory write, pointing nothing at a ring.
 # docs/HANDOFF-privilege-separation.md.
 SupplementaryGroups=audio bluetooth systemd-journal jasper-secrets jasper-intsecrets jts-ring
 CapabilityBoundingSet=

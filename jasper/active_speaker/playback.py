@@ -88,6 +88,15 @@ APLAY_TIMEOUT_PAD_SEC = 1.0
 # the way a raw ALSA `hw` device refuses with EBUSY, so a stray tone would be
 # admitted, not rejected — and on the ACTIVE ring it would land post-crossover,
 # where a full-range tone reaches a compression driver.
+#
+# RENDERER-lane rings (jts_ring_lane_* / *_ring_lane, incl. the correction
+# lane's — U3/P6) are deliberately NOT fenced, by the same takeover logic in
+# reverse: their ioplug writer side takes the P6a writer flock, so a stray
+# second writer gets a clean bounded-wait EBUSY — the refusal the epoch-
+# takeover rings lack. The env-chosen test PCM here is operator intent and
+# does NOT silently follow the lane map: an operator who arms the correction
+# lane and wants lab tones on the ring re-points JASPER_AUDIO_LAB_TEST_PCM
+# themselves; one pointed at a busy armed lane fails loudly with EBUSY.
 FORBIDDEN_TEST_PCM_TOKENS = (
     DEFAULT_PLAYBACK_DEVICE,
     ACTIVE_OUTPUTD_PLAYBACK_DEVICE,

@@ -23,6 +23,7 @@ import yaml
 
 import jasper.active_speaker.startup_load as startup_load_mod
 import jasper.web.sound_setup as sound_setup
+from jasper.audio_measurement.correction_lane import CORRECTION_SUBSTREAM
 from jasper.active_speaker import (
     ActiveSpeakerPreset,
     load_commission_load_state,
@@ -1138,7 +1139,9 @@ def test_summed_test_audio_path_loads_plays_rolls_back_and_records(
     assert payload["calibration_level"]["test_signal"][
         "requested_level_dbfs"
     ] == -40.0
-    assert playback["audio_device"]["pcm"] == sound_setup.COMMISSION_TONE_ALSA_DEVICE
+    # The payload reports the lane transport the spawn resolved (P6c-ii);
+    # this test box has no lane map, so that is the fleet-default aloop alias.
+    assert playback["audio_device"]["pcm"] == CORRECTION_SUBSTREAM
     assert playback["commissioning_load"]["load"]["status"] == "loaded"
     assert playback["commissioning_load"]["load"]["target"]["role"] == "summed"
     assert playback["rollback"]["rollback"]["status"] == "rolled_back"
@@ -1156,7 +1159,9 @@ def test_summed_test_audio_path_loads_plays_rolls_back_and_records(
     assert [proc.args for proc in processes] == [[
         "aplay",
         "-D",
-        sound_setup.COMMISSION_TONE_ALSA_DEVICE,
+        # The spawn resolves the lane transport per call (P6c-ii); no lane
+        # map on this test box means the fleet-default aloop alias.
+        CORRECTION_SUBSTREAM,
         "-q",
         str(wav_path),
     ]]

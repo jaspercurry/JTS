@@ -82,6 +82,7 @@ import os
 from dataclasses import dataclass
 
 from jasper.atomic_io import atomic_write_text
+from jasper.audio_measurement.correction_lane import CORRECTION_SUBSTREAM
 from jasper.log_event import log_event
 
 _LOG = logging.getLogger(__name__)
@@ -136,9 +137,18 @@ class RendererLane:
     label: str
     #: Human name of the renderer that writes this lane, for messages.
     renderer: str
-    #: The systemd unit whose ``ExecStart`` reads :attr:`device_key`.
-    unit: str
-    #: The env key the renderer unit substitutes into ``--device``.
+    #: The systemd unit whose ``ExecStart`` reads :attr:`device_key` — or
+    #: ``None`` for a lane whose writers are EPHEMERAL spawns with no unit
+    #: (the ``correction`` lane: wizard/CLI ``aplay`` children via
+    #: :mod:`jasper.audio_measurement.correction_lane`, which resolves the
+    #: device per spawn through ``correction_play_device()`` instead of a
+    #: unit env key). A unitless lane needs no renderer restart on arm —
+    #: only jasper-fanin's.
+    unit: str | None
+    #: The env key rendered into the lane map. For a unit-ful lane the unit's
+    #: ``ExecStart`` substitutes it; for a unitless lane the line is the
+    #: map's own record of the resolved device (the spawn path derives the
+    #: same value through ``device_for`` at call time and reads no env key).
     device_key: str
     #: The ALSA PCM name the renderer writes on an UNARMED box — the shipped
     #: snd-aloop path, which stays defined until P9 because it is the
@@ -148,6 +158,14 @@ class RendererLane:
     #: wrapper over this lane's ``jts_ring`` PCM, so the renderer's native rate
     #: still converts through ``defaults.pcm.rate_converter``.
     ring_device: str
+    #: Unitless lanes only: the NON-root writer identity whose ``jts-ring``
+    #: membership the arm preflights (``renderer_user_in_ring_group``). A
+    #: unit-ful lane leaves this ``None`` — its user is parsed from the unit
+    #: file. The correction lane's other writer identities
+    #: (jasper-correction-web, the streambox variant, operator CLIs) are
+    #: root and pass the predicate trivially, so preflighting the one
+    #: non-root identity is the complete check.
+    arm_preflight_user: str | None = None
 
 
 #: Every lane this mechanism knows about — one row per MIGRATED renderer.
@@ -180,6 +198,26 @@ RENDERER_LANES: tuple[RendererLane, ...] = (
         device_key="JASPER_BLUEALSA_DEVICE",
         aloop_device="bluealsa_substream",
         ring_device="bluealsa_ring_lane",
+    ),
+    RendererLane(
+        # The correction/commissioning measurement lane — U3/P6c-ii, and the
+        # first UNITLESS lane: its writers are ephemeral `aplay` spawns from
+        # four process identities (jasper-web wizards, the root
+        # jasper-correction-web, the root streambox variant, root operator
+        # CLIs), all routed through
+        # jasper.audio_measurement.correction_lane's helpers, whose
+        # `correction_play_device()` resolves THIS row's device_for() at
+        # every spawn. No unit reads the device_key line; it stays in the
+        # rendered map as the file's own record of the resolved device.
+        # `aloop_device` imports the lane-name SSOT rather than respelling
+        # the literal (tests/test_correction_substream_ssot.py's guard).
+        label="correction",
+        renderer="correction-lane ephemeral aplay (wizards, correction web, CLIs)",
+        unit=None,
+        device_key="JASPER_CORRECTION_DEVICE",
+        aloop_device=CORRECTION_SUBSTREAM,
+        ring_device="correction_ring_lane",
+        arm_preflight_user="jasper-web",
     ),
 )
 
@@ -503,7 +541,8 @@ def arm_refusal_reason(
         )
     if user_in_ring_group is False:
         lane = lane_by_label(label)
-        unit = lane.unit if lane else "the renderer"
+        # A unitless lane names its writers instead of a unit.
+        unit = (lane.unit or lane.renderer) if lane else "the renderer"
         return (
             f"{unit}'s runtime user is not in group {RING_GROUP!r} — its ioplug "
             f"could not create the ring under {RING_SHM_DIR} (mode 2775). "

@@ -873,11 +873,14 @@ def test_correction_compatibility_surface_preserves_types_and_defaults() -> None
     assert correction_playback.PlaybackError is playback.PlaybackError
     assert correction_playback.PlaybackFailureCode is playback.PlaybackFailureCode
     assert issubclass(correction_playback.TonePlayer, playback.TonePlayer)
+    # None is the transport-reader sentinel since P6c-ii: the lane device
+    # stopped being a def-time constant (a frozen default would ignore an
+    # arm); play_sweep resolves correction_play_device() per call.
     assert (
         inspect.signature(correction_playback.play_sweep)
         .parameters["alsa_device"]
         .default
-        == "correction_substream"
+        is None
     )
     assert inspect.signature(correction_playback._ensure_tone_wav).parameters[
         "cache_dir"
