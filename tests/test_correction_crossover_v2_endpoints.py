@@ -87,7 +87,7 @@ from jasper.capture_relay.session import (
 from jasper.web import correction_crossover_v2 as v2host
 
 from tests.test_capture_relay_plan import FakePlanRelayBackend, PhonePlanDriver
-from tests.test_crossover_v2_conductor import (
+from tests.crossover_v2_fixtures import (
     CAPS,
     FC_HZ,
     SESSION_VOLUME_DB,
@@ -3745,7 +3745,7 @@ def _closed_cloud_conductor():
     """A real conductor walked to its cloud-measure close, so it carries a
     candidate, a full-resolution ``measure_predicted_sum``, and the spec report
     its accountability veto graded that sum with."""
-    from tests.test_crossover_v2_conductor import (
+    from tests.crossover_v2_fixtures import (
         FakeSeams,
         _cloud_conductor,
         _eligible_measure_analysis,
@@ -4065,7 +4065,7 @@ def test_a_refused_correction_still_reaches_the_wire_with_its_verdict(caplog):
     Fixture is the shipped refusal case: a comb far denser than the 8-filter
     budget, in both drivers so the shared level frame has nothing to fix.
     """
-    from tests.test_crossover_v2_conductor import (
+    from tests.crossover_v2_fixtures import (
         _LINEARIZABLE_FREQS_HZ,
         FakeSeams,
         _cloud_conductor,
@@ -9162,7 +9162,7 @@ def test_second_apply_pre_apply_profile_survives_the_deferred_verify_rearm(
         V2FlowSeams,
     )
 
-    from tests.test_crossover_v2_conductor import CAPS, FC_HZ, SESSION_VOLUME_DB, _roles
+    from tests.crossover_v2_fixtures import CAPS, FC_HZ, SESSION_VOLUME_DB, _roles
 
     topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
     config_path = tmp_path / "active_speaker_baseline.yml"

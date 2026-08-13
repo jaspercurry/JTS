@@ -83,7 +83,7 @@ from jasper.audio_measurement.spatial_combine import combine_positions
 # `test_interference_nulls` grades the null registry with. Imported rather than
 # copied so the suite has one construction of each, not two that agree by
 # inspection — and so a change to either builder reaches these scenarios.
-from tests.test_crossover_v2_conductor import FakeSeams, _cloud_conductor
+from tests.crossover_v2_fixtures import FakeSeams, _cloud_conductor
 from tests.test_interference_nulls import _cloud, _notched_cloud, _tau_us
 
 # 15 samples at 48 kHz. Chosen because its comb (odd multiples of 1/2tau)

@@ -375,7 +375,7 @@ def test_configured_path_matches_legacy_through_analyzer_and_fitter(
         dataclasses.asdict(dataclasses.replace(neutral, configured_path_composed=False)),
         dataclasses.asdict(legacy),
     )
-    from tests.test_crossover_v2_conductor import FakeSeams, _conductor
+    from tests.crossover_v2_fixtures import FakeSeams, _conductor
     fitted = []
     for analysis in (neutral, legacy):
         conductor = _conductor(FakeSeams())

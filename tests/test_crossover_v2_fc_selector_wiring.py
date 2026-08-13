@@ -35,7 +35,7 @@ from jasper.active_speaker.fc_selector import (
     EVAL_REFUSED_BUDGET,
     EVAL_REFUSED_UNFITTABLE,
 )
-from tests.test_crossover_v2_conductor import (
+from tests.crossover_v2_fixtures import (
     FC_HZ,
     FakeSeams,
     _conductor,

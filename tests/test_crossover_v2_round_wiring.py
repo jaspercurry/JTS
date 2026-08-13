@@ -93,7 +93,7 @@ from jasper.web import correction_crossover_v2 as v2host
 # emits for one summed VERIFY sweep. Imported rather than re-implemented so
 # there is one definition of "what a VERIFY capture looks like" — the same
 # reason ``tests/test_crossover_v2_entry_baseline.py`` imports them.
-from tests.test_crossover_v2_conductor import (
+from tests.crossover_v2_fixtures import (
     _in_room_summed_db,
     _verify_analysis,
 )
@@ -144,7 +144,7 @@ def _install_entry_baseline(conductor: Any, *, scale: float) -> EntryBaseline:
     """
     measured = measured_response_from_analysis(
         _verify_analysis(
-            conductor._verify_program, summed_db=_in_room_summed_db() * scale,
+            conductor.program_for_phase(flow.PHASE_VERIFY), summed_db=_in_room_summed_db() * scale,
         ),
         reference_mark=REFERENCE_MARK_DESIGN_AXIS,
     )
@@ -203,7 +203,7 @@ def _post_apply_analysis(conductor: Any, *, scale: float = 1.0, max_db: float = 
     ``VERIFY_TOLERANCE_DB`` is an accepted capture with a MATCHED realization.
     """
     return _verify_analysis(
-        conductor._verify_program,
+        conductor.program_for_phase(flow.PHASE_VERIFY),
         max_db=max_db,
         summed_db=_in_room_summed_db() * scale,
     )
@@ -326,7 +326,7 @@ def _bare_conductor() -> Any:
     ``_round_refusal_for`` is a pure translation from a coordinator kind to a
     household code — giving it a prepared stage would test the harness.
     """
-    from tests.test_crossover_v2_conductor import (
+    from tests.crossover_v2_fixtures import (
         CAPS, FC_HZ, SESSION, SESSION_VOLUME_DB, FakeSeams, _preset, _roles,
     )
 

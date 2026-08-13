@@ -43,7 +43,7 @@ from jasper.active_speaker.crossover_v2.programs import (
     program_for_phase,
 )
 
-from tests.test_crossover_v2_conductor import (
+from tests.crossover_v2_fixtures import (
     CAPS,
     FC_HZ,
     SESSION,
@@ -117,9 +117,9 @@ def test_the_conductor_composes_through_the_same_owner():
     """
     c = _conductor(CAPS)
 
-    assert c._check_program.program_id == GOLDEN_DEEP_CAP["check"]
-    assert c._measure_program.program_id == GOLDEN_DEEP_CAP["measure"]
-    assert c._verify_program.program_id == GOLDEN_DEEP_CAP["verify"]
+    assert c.program_for_phase(flow.PHASE_CHECK).program_id == GOLDEN_DEEP_CAP["check"]
+    assert c.program_for_phase(flow.PHASE_MEASURE).program_id == GOLDEN_DEEP_CAP["measure"]
+    assert c.program_for_phase(flow.PHASE_VERIFY).program_id == GOLDEN_DEEP_CAP["verify"]
 
 
 def test_the_summed_sweep_is_clamped_to_the_most_restrictive_cap():

@@ -42,7 +42,7 @@ from jasper.active_speaker.crossover_v2_flow import (
 )
 from jasper.web import correction_crossover_v2 as v2host
 
-from tests.test_crossover_v2_conductor import (
+from tests.crossover_v2_fixtures import (
     CAPS,
     FC_HZ,
     SESSION,

@@ -60,7 +60,7 @@ from jasper.audio_measurement.program_analysis import (
 )
 from jasper.web import correction_crossover_v2 as v2host
 
-from tests.test_crossover_v2_conductor import (
+from tests.crossover_v2_fixtures import (
     FC_HZ,
     FakeSeams,
     _capture,

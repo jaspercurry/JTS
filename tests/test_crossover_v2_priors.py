@@ -25,7 +25,7 @@ from jasper.active_speaker.branch_chain import radiating_band_hz, sections_by_ro
 from jasper.active_speaker.crossover_v2 import priors
 from jasper.audio_measurement.program_analysis import overlap_band_hz
 
-from tests.test_crossover_v2_conductor import FC_HZ, _preset
+from tests.crossover_v2_fixtures import FC_HZ, _preset
 
 PRESET = _preset()
 PROTECTION = sections_by_role(PRESET.crossover_regions)
@@ -236,7 +236,7 @@ def test_the_sweep_bounds_come_off_the_composed_program():
     scoring band by a number nothing was excited at.
     """
     from jasper.active_speaker.crossover_v2.programs import SessionExcitation
-    from tests.test_crossover_v2_conductor import CAPS, SESSION_VOLUME_DB, _roles
+    from tests.crossover_v2_fixtures import CAPS, SESSION_VOLUME_DB, _roles
 
     program = SessionExcitation(
         roles=tuple(_roles()), caps_dbfs=CAPS,
@@ -305,7 +305,7 @@ def test_the_flow_re_export_resolves_to_the_one_definition():
 
 def _wired_conductor(**kwargs):
     from jasper.active_speaker import crossover_v2_flow as flow
-    from tests.test_crossover_v2_conductor import (
+    from tests.crossover_v2_fixtures import (
         CAPS, SESSION, SESSION_VOLUME_DB, FakeSeams, _roles,
     )
 

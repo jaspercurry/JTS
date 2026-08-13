@@ -30,7 +30,7 @@ import math
 import re
 import time
 import types
-from dataclasses import dataclass, field, replace
+from dataclasses import replace
 from typing import Any
 
 import numpy as np
@@ -44,7 +44,6 @@ from jasper.active_speaker.crossover_v2.intervention import (
 )
 from jasper.active_speaker.crossover_v2.round_evidence import (
     MEASURED_BENEFIT_MARGIN_DB,
-    EntryBaseline,
     measured_response_from_analysis,
 )
 from jasper.active_speaker.attempts_loop import (
@@ -56,7 +55,6 @@ from jasper.active_speaker.attempts_loop import (
     STOP_EVIDENCE,
     AttemptIntegrity,
     AttemptRecord,
-    FloorStats,
     decide_next,
 )
 from jasper.active_speaker.delta_probe import (
@@ -133,7 +131,6 @@ from jasper.active_speaker.crossover_v2_flow import (
     VERIFY_PILOT_TRANSFER_STEP_CEILING_DB,
     CrossoverV2Conductor,
     CrossoverV2FlowError,
-    V2FlowSeams,
     V2PlanShape,
     _analysis_json,
     _program_duration_ms,
@@ -149,7 +146,6 @@ from jasper.active_speaker.crossover_v2_flow import (
     build_v2_cloud_index_phase_map,
     build_v2_session_spec,
     build_v2_verify_capture_plan,
-    build_v2_verify_index_phase_map,
     build_v2_verify_session_spec,
     cloud_capture_target,
     cloud_plan_max_attempts,
@@ -183,12 +179,9 @@ from jasper.audio_measurement.program_analysis import (
     CaptureIntegrity,
     CrossoverCandidate,
     DriftEstimate,
-    DriverResponse,
     GainPlan,
     IntegrityCheck,
-    PilotObservation,
     ProgramAnalysis,
-    RoleGainSolve,
     SegmentLocation,
     _verify_capture_integrity,
     overlap_band_hz,
@@ -203,503 +196,9 @@ from jasper.active_speaker.flat_spec import (
 from jasper.capture_relay.session import (
     CaptureBeginDeferred,
     CaptureBeginRefused,
-    CaptureResult,
 )
 
 from tests.test_active_speaker_profile import _two_way_preset
-
-SESSION = "cap_test_session_1"
-FC_HZ = 1600.0
-SESSION_VOLUME_DB = -20.0
-CAPS = {"woofer": 0.0, "tweeter": -65.0}
-
-
-def _roles() -> list[RoleBand]:
-    return [
-        RoleBand("woofer", 0, FrequencyBand(150.0, 6000.0)),
-        RoleBand("tweeter", 1, FrequencyBand(300.0, 20000.0)),
-    ]
-
-
-def _preset() -> ActiveSpeakerPreset:
-    return ActiveSpeakerPreset.from_mapping(_two_way_preset())
-
-
-# --- fake analyses -------------------------------------------------------------
-
-
-def _loc(segment_id: str, kind: str = "sweep", *, confidence: float = 0.9,
-         clipped: bool = False, residual_samples: float = 0.0) -> SegmentLocation:
-    return SegmentLocation(
-        segment_id=segment_id, kind=kind, role=None,
-        scheduled_start=0, located_start=0, residual_samples=residual_samples,
-        confidence=confidence, peak_dbfs=-12.0, clipped=clipped,
-    )
-
-
-_SUMMED_FREQS_HZ = np.linspace(100.0, 20000.0, 64)
-
-
-def _in_room_summed_db() -> np.ndarray:
-    """A modest, physically plausible in-room summed magnitude.
-
-    **Why this is not ``np.zeros``** (PR-L4). The cloud positions play this
-    curve, so it becomes the group's spatially-combined "how flat is the
-    speaker" measurement — and a perfectly flat 8-position in-room spatial
-    power mean does not exist. A zero curve made the measured pre-apply spec
-    residual exactly 0.00 dB, which is not a demanding fixture but an
-    impossible one, and PR-L4 item 2's gate (predicted post-apply vs measured
-    pre-apply) reads exactly that number. Any assertion about "did the
-    correction improve on what we measured" is meaningless against a
-    measurement that claims perfection.
-
-    A broadband tilt plus one wide dip, landing at ~2.7 dB of pooled spec
-    residual — the regime the 2026-07-27 JTS3 session actually measured
-    (3.15-3.76 dB pooled across its ten positions). Note what the PRE-APPLY
-    cloud is measuring: an UNCORRECTED speaker in a room, which is supposed to
-    look like this. Deliberately smooth — the honesty screen and the null gate
-    are exercised by their own fixtures, and a combed curve here would couple
-    these wiring tests to those detectors.
-    """
-    octaves = np.log2(_SUMMED_FREQS_HZ / 1000.0)
-    return -2.0 * octaves - 3.0 * np.exp(-0.5 * (octaves / 0.8) ** 2)
-
-
-# The measured pre-apply pooled spec residual each room scale in
-# ``test_prediction_gate_verdict_does_not_depend_on_the_room`` produces. Quoted
-# so that test can prove the room ACTUALLY moved between its cases — a
-# room-independence claim is worthless if the fixture room never varied. Under
-# the pre-B1 gate these three scales spanned refuse / pass / pass; they must now
-# all reach the same verdict.
-_ROOM_SCALE_EXPECTED_RMS_DB = {0.4: 1.011, 1.0: 2.691, 2.5: 8.566}
-
-
-def _driver_response(
-    role: str, window_ms: float, *, summed_db: np.ndarray | None = None,
-    floor_source: str | None = None,
-) -> DriverResponse:
-    if summed_db is not None:
-        magnitude_db = np.asarray(summed_db, dtype=float)
-    else:
-        magnitude_db = _in_room_summed_db() if role == "summed" else np.zeros(64)
-    return DriverResponse(
-        role=role, freqs_hz=_SUMMED_FREQS_HZ, magnitude_db=magnitude_db,
-        complex_tf=(10.0 ** (magnitude_db / 20.0)).astype(complex),
-        # ``floor_source`` is WHY the window is that long (issue #1966) —
-        # optional here because most fixtures only care that a window exists,
-        # and a block without it reads as "unknown" exactly like a schema-1
-        # record does.
-        gating={
-            "applied": True, "window_ms": window_ms,
-            **({"floor_source": floor_source} if floor_source else {}),
-        },
-        snr=None, validity_floor_hz=None,
-    )
-
-
-_LINEARIZABLE_FREQS_HZ = np.linspace(100.0, 20000.0, 2048)
-_FIXTURE_FC_HZ = 1600.0
-
-
-def _linearizable_response(
-    role: str, magnitude_db: np.ndarray, *,
-    n_repeats: int = 2, validity_floor_hz: float = 140.0,
-) -> DriverResponse:
-    """A finer-grained DriverResponse (2048 bins, vs _driver_response's
-    coarse 64) carrying real repeat_responses — Layer-1a linearization
-    (#1668 PR-C) needs enough frequency resolution for a synthetic bump to
-    survive resampling onto DEFAULT_ENVELOPE_GRID_HZ and enough occurrences
-    to clear the paired-N gate."""
-
-    def make() -> DriverResponse:
-        return DriverResponse(
-            role=role, freqs_hz=_LINEARIZABLE_FREQS_HZ, magnitude_db=magnitude_db,
-            complex_tf=(10.0 ** (magnitude_db / 20.0)).astype(complex),
-            gating={"applied": True, "window_ms": 8.0},
-            snr=None, validity_floor_hz=validity_floor_hz,
-        )
-
-    repeats = tuple(make() for _ in range(n_repeats))
-    return DriverResponse(
-        role=role, freqs_hz=_LINEARIZABLE_FREQS_HZ, magnitude_db=magnitude_db,
-        complex_tf=(10.0 ** (magnitude_db / 20.0)).astype(complex),
-        gating={"applied": True, "window_ms": 8.0},
-        snr=None, validity_floor_hz=validity_floor_hz,
-        repeat_responses=repeats,
-    )
-
-
-def _check_analysis(
-    program, *, linearity=True, channel_map=True, snr_floor_ok=True,
-    locate_confidence=0.9, pilot_snr_ok=None,
-) -> ProgramAnalysis:
-    return ProgramAnalysis(
-        phase="check",
-        program_id=program.program_id,
-        locations=(
-            _loc("pilot_woofer_hi", "pilot", confidence=locate_confidence),
-        ),
-        ambient_report={"bands": [{"level_dbfs": -70.0}]},
-        linearity_ok=linearity,
-        channel_map_ok=channel_map,
-        pilot_snr_ok=pilot_snr_ok,
-        gain_plan=GainPlan(
-            gain_db={"woofer": -11.0, "tweeter": -13.0},
-            predicted_peak_dbfs=-11.0,
-            snr_floor_ok=snr_floor_ok,
-        ),
-    )
-
-
-def _alignment(
-    *, delay_us=150.0, status=ALIGNMENT_OK, polarity="normal", confidence=0.8,
-    anchor_delay_us=None,
-) -> AlignmentEstimate:
-    """The fixture alignment. ``anchor_delay_us`` defaults to ``None`` — the
-    shape every pre-R10b test was written against, in which the summed model's
-    residual delay is 0.0 and the prediction is byte-identical to the
-    independently-aligned sum. Pass it to exercise the committed-delay model.
-    """
-    return AlignmentEstimate(
-        delay_us=delay_us, raw_delay_us=delay_us, parallax_us=11.0,
-        polarity=polarity, polarity_sign=1 if polarity == "normal" else -1,
-        polarity_agrees_with_sum=True, confidence=confidence, status=status,
-        anchor_delay_us=anchor_delay_us,
-    )
-
-
-def _measure_analysis(
-    program, *, glitch=False, clipped=False, linearity=True,
-    alignment=None, locate_confidence=0.9, gate_ms=8.0,
-    predicted_ripple_db=0.8, sweep_locations=None, pilot_snr_ok=None,
-) -> ProgramAnalysis:
-    freqs = np.linspace(100.0, 20000.0, 64)
-    locations = (
-        sweep_locations if sweep_locations is not None else (
-            _loc("sweep_w", confidence=locate_confidence, clipped=clipped),
-            _loc("sweep_t", confidence=locate_confidence),
-            _loc("sweep_w_rep", confidence=locate_confidence),
-        )
-    )
-    return ProgramAnalysis(
-        phase="measure",
-        program_id=program.program_id,
-        locations=locations,
-        drift=DriftEstimate(
-            epsilon_ppm=30.0, baselines_ppm={"woofer_repeat": 30.0},
-            max_residual_samples=0.2, glitch_detected=glitch,
-        ),
-        driver_responses=(
-            _driver_response("woofer", gate_ms),
-            _driver_response("tweeter", gate_ms + 1.0),
-        ),
-        alignment=alignment if alignment is not None else _alignment(),
-        candidate=CrossoverCandidate(
-            trim_db={"woofer": -3.1, "tweeter": 0.0},
-            polarity="normal", delay_us=150.0,
-            predicted_ripple_db=predicted_ripple_db, confidence=0.8,
-        ),
-        linearity_ok=linearity,
-        pilot_snr_ok=pilot_snr_ok,
-        predicted_sum=(freqs, np.zeros(64)),
-        glitch_detected=glitch,
-    )
-
-
-def _verify_pilot(hi_dbfs: float, *, programmed_hi_gain_db: float = -20.0) -> PilotObservation:
-    """A VERIFY leading-pilot observation — role ``summed`` (VERIFY_PILOT_ROLE),
-    the only role a v2 VERIFY program ever carries."""
-    return PilotObservation(
-        role="summed", level_lo_dbfs=hi_dbfs - 10.0, level_hi_dbfs=hi_dbfs,
-        programmed_delta_db=10.0, captured_delta_db=10.0,
-        linearity_ok=True, channel_map_ok=True,
-        programmed_hi_gain_db=programmed_hi_gain_db,
-    )
-
-
-_INTEGRITY_FROM_LOCATIONS = object()
-
-
-def _verify_analysis(
-    program, *, max_db=0.9, gate_ms=8.5, linearity=True, locate_confidence=0.9,
-    pilot_hi_dbfs=None, programmed_hi_gain_db=-20.0, summed_db=None,
-    pilot_snr_ok=None, floor_source=None, residual_samples=0.0,
-    n_graded_bins=120,
-    integrity=_INTEGRITY_FROM_LOCATIONS,
-    verify_absolute=None,
-) -> ProgramAnalysis:
-    locations = (
-        _loc(
-            "sweep_verify", "summed_sweep",
-            confidence=locate_confidence, residual_samples=residual_samples,
-        ),
-    )
-    if integrity is _INTEGRITY_FROM_LOCATIONS:
-        # Derived by PRODUCTION code from this fixture's own locations (#1971),
-        # not hand-built: a hand-built record would let the conductor's gate be
-        # tested against a shape the analyzer never produces. Pass
-        # ``integrity=None`` for the pre-#1971 analysis shape.
-        integrity = _verify_capture_integrity(
-            program, program.sample_rate_hz, locations,
-        )
-    return ProgramAnalysis(
-        phase="verify",
-        program_id=program.program_id,
-        locations=locations,
-        capture_integrity=integrity,
-        glitch_detected=bool(integrity is not None and integrity.glitched),
-        summed_response=_driver_response(
-            "summed", gate_ms, summed_db=summed_db, floor_source=floor_source,
-        ),
-        summed_ripple_db=1.1,
-        # W6.7 ruling 1: the conductor gates on the notch-excluded max, not the
-        # raw ``max_db`` — this fake keeps them equal (a fake with no notch to
-        # exclude), so the ``max_db`` parameter still controls the gate.
-        verify_tracking={
-            "rms_db": 0.4,
-            "max_db": max_db,
-            "max_db_notch_excluded": max_db,
-            "frame": {"n_bins": n_graded_bins},
-        },
-        # R18 (#1868): ``None`` is the honest default for a fixture that
-        # supplies no crossover-region evidence — the kernel records that as
-        # not-evaluated, which never gates. Tests that exercise the claim pass
-        # a record explicitly.
-        verify_absolute=verify_absolute,
-        linearity_ok=linearity,
-        pilot_snr_ok=pilot_snr_ok,
-        pilots=(
-            (_verify_pilot(pilot_hi_dbfs, programmed_hi_gain_db=programmed_hi_gain_db),)
-            if pilot_hi_dbfs is not None else ()
-        ),
-    )
-
-
-# --- fake seams -----------------------------------------------------------------
-
-
-@dataclass
-class FakeSeams:
-    """Recorder seams; per-phase analysis factories are swappable mid-test."""
-
-    check: Any = _check_analysis
-    measure: Any = _measure_analysis
-    verify: Any = _verify_analysis
-    played: list = field(default_factory=list)
-    analyzed: list = field(default_factory=list)
-    published_checks: list = field(default_factory=list)
-    published_candidates: list = field(default_factory=list)
-    apply_done: bool = False
-    # Simulates the host's auto-apply background thread hitting a TERMINAL
-    # failure (owner ruling, 2026-07-20) — empty string while pending/never
-    # attempted, a REASON_REGISTRY code once the auto-apply gives up.
-    apply_failed_code: str = ""
-    # PR-L5: the delta probe's automatic-rollback seam. ``None`` (the default)
-    # is the honest "no binding" case the conductor must still refuse under.
-    rollback: Any = None
-    # #1866: every level-frame finding the conductor banks, in order. Bound by
-    # default (unlike ``rollback``) because "no findings seam" is the degraded
-    # case here, not the normal one — a test that wants it unbound passes
-    # ``publish_findings=None`` through ``dataclasses.replace``.
-    banked_findings: list = field(default_factory=list)
-    # #2291/#2318: does the APPLIED graph boost? Bound by default and FALSE,
-    # because these fixtures grade rounds whose subject is something else and
-    # the seam's unbound answer is deliberately "boosted" — an intervention
-    # nobody can inspect comes off. Leaving it unbound here would route every
-    # indeterminate round through the fail-closed restore and make each of
-    # these tests assert that rule instead of its own. A test that wants the
-    # rule ITSELF sets this True (or passes ``applied_boosts=None`` through
-    # ``dataclasses.replace`` for the unbound case).
-    applied_boosts: bool = False
-
-    def seams(self) -> V2FlowSeams:
-        def analyze(program, result, priors, geometry, *, phase=None):
-            # ``phase`` is the conductor's OWN flow phase (issue #1855) —
-            # recorded separately from ``program.phase`` since the two
-            # diverge for cloud positions (every cloud position plays the
-            # verify-shaped summed sweep, so ``program.phase`` is always
-            # "verify" there; see test_cloud_positions_play_the_summed_
-            # program_and_get_no_tracking_prior).
-            self.analyzed.append((phase, program.phase, result, priors, geometry))
-            factory = {
-                "check": self.check, "measure": self.measure, "verify": self.verify,
-            }[program.phase]
-            return factory(program)
-
-        return V2FlowSeams(
-            play=lambda phase, program: self.played.append((phase, program)),
-            analyze=analyze,
-            publish_check=lambda plan, ambient: self.published_checks.append(plan),
-            publish_candidate=self.published_candidates.append,
-            apply_complete=lambda: self.apply_done,
-            apply_failed=lambda: self.apply_failed_code,
-            rollback=self.rollback,
-            applied_boosts=lambda: self.applied_boosts,
-            publish_findings=self.banked_findings.append,
-        )
-
-
-#: The entry baseline's pooled spec residual, in dB, and the post-apply
-#: fixture's. Quoted from the shipped reducer rather than asserted by eye, for
-#: the reason ``_ROOM_SCALE_EXPECTED_RMS_DB`` above is quoted: a "the before was
-#: worse" fixture is worthless if nobody checked which way worse runs. Higher is
-#: worse (measured through ``spec_convergence_residual``), so 4.32 → 2.69 is a
-#: 1.63 dB win — over three times #2291's 0.5 dB claim margin.
-_ENTRY_BASELINE_SCALE = 1.5
-_ENTRY_BASELINE_RESIDUAL_DB = 4.321
-_POST_APPLY_RESIDUAL_DB = 2.691
-
-
-def _fixture_entry_baseline(conductor: CrossoverV2Conductor) -> EntryBaseline:
-    """The pre-apply capture #2291 Phase 3c grades every round against.
-
-    **Why a conductor fixture carries one at all.** Since Phase 3c, stage 1
-    always captures an entry baseline immediately before the household applies,
-    so a stage-2 conductor without one is no longer a state production can
-    reach. A fixture that omitted it graded every round
-    ``entry_baseline_unavailable`` — an INDETERMINATE benefit — and the adoption
-    table fails that closed for a boosted candidate, so the round replaced the
-    verdict under test with a refusal about the missing baseline rather than
-    about anything the test was asking.
-
-    Built the way ``_retain_entry_baseline`` builds it: this session's OWN
-    ``_verify_program`` reduced through the shipped reducer, so ``program_id``,
-    grid, and mask agree with the post-apply side by construction instead of by
-    resemblance — a lookalike program would grade ``incomparable_program`` and a
-    lookalike mark ``incomparable_reference_mark``. The curve is the fixture's
-    in-room sum at ``_ENTRY_BASELINE_SCALE`` times the deviation: a speaker that
-    measurably improved, which is what makes the round grade a real benefit.
-
-    The program only exists once the conductor is constructed (``__init__``
-    composes it), so this cannot ride the ``measure_entry_baseline`` constructor
-    argument without duplicating ``SessionExcitation.verify_program`` — and a duplicate
-    is exactly the lookalike the comparability check exists to catch. It writes
-    the attribute production writes instead.
-    """
-    measured = measured_response_from_analysis(
-        _verify_analysis(
-            conductor._verify_program,
-            summed_db=_in_room_summed_db() * _ENTRY_BASELINE_SCALE,
-        ),
-        reference_mark=flow.REFERENCE_MARK_DESIGN_AXIS,
-    )
-    return EntryBaseline.from_measurement(
-        measured,
-        graph_fingerprint="fixture_entry_graph",
-        captured_at="2026-08-10T00:00:00Z",
-    )
-
-
-def _conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Conductor:
-    seams = kwargs.pop("seams", fakes.seams())
-    source_preset = kwargs.pop("source_preset", _preset())
-    supplied_baseline = "measure_entry_baseline" in kwargs
-    conductor = CrossoverV2Conductor(
-        session_id=SESSION,
-        source_preset=source_preset,
-        roles_bands=_roles(),
-        fc_hz=FC_HZ,
-        driver_caps_dbfs=CAPS,
-        session_volume_db=SESSION_VOLUME_DB,
-        seams=seams,
-        driver_spacing_m=0.15,
-        **kwargs,
-    )
-    # A session that walks ``PHASE_ENTRY_BASELINE`` is stage ONE: it captures
-    # its own "before", so starting it with one pre-banked would hide the very
-    # thing those tests measure (``tests/test_crossover_v2_entry_baseline.py``
-    # imports this helper). Every other session is a stage 2, which production
-    # only ever reaches carrying a baseline stage 1 already took.
-    if not supplied_baseline and (
-        flow.PHASE_ENTRY_BASELINE not in conductor.session_phases
-    ):
-        conductor._measure_entry_baseline = _fixture_entry_baseline(conductor)
-    return conductor
-
-
-def _attempt_floor() -> FloorStats:
-    return FloorStats.from_repeat_study(
-        metric=flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
-        median_db=0.05,
-        p95_db=0.1,
-        source="test repeat study",
-        measured_at="2026-08-03",
-    )
-
-
-def _verify_only_conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Conductor:
-    return _conductor(
-        fakes,
-        index_phase_map={1: PHASE_VERIFY},
-        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
-        applied=True,
-        attempt_floor=_attempt_floor(),
-        **kwargs,
-    )
-
-
-def _capture() -> CaptureResult:
-    return CaptureResult(wav=b"fake-wav")
-
-
-def _configured_sections(conductor, role: str) -> tuple:
-    """The sections this session's own preset gives ``role``.
-
-    The conductor derived this itself until #2291 Phase 2b (as
-    ``_branch_crossover_sections``); the planner now builds its candidate
-    context from the same shared ``sections_by_role``, so a test comparing
-    against "what the session's preset says" asks that function directly.
-    """
-    from jasper.active_speaker.branch_chain import sections_by_role
-
-    return sections_by_role(
-        getattr(conductor._preset, "crossover_regions", ()) or ()
-    ).get(role, ())
-
-
-def _plan_spy(mp) -> list:
-    """Capture every ``LinearizationPlan`` a walk produces, in order.
-
-    Since #2291 Phase 2b the planner returns its level frame, its realized-level
-    verdict and its linearized prediction as values on one plan, rather than
-    stashing them on the conductor as ``_last_*`` fields. A test that used to
-    read those fields after the walk observes the plan on its way past instead —
-    which is also stricter, since a plan belongs unambiguously to the candidate
-    whose build produced it.
-    """
-    plans: list = []
-    original = flow.CrossoverV2Conductor._plan_linearization
-
-    def spy(self, *args, **kwargs):
-        plan = original(self, *args, **kwargs)
-        plans.append(plan)
-        return plan
-
-    mp.setattr(flow.CrossoverV2Conductor, "_plan_linearization", spy)
-    return plans
-
-
-def _run_phase(conductor, index, attempt) -> dict:
-    # Mirrors the production host's own authorize wrapper
-    # (``correction_crossover_v2.build_v2_run_and_consume``): admission, and
-    # ONLY admission. It used to call ``confirm_cloud_measure_group(index)``
-    # first, because the household's confirmation was inferred from a begin
-    # past the cloud group; since the two-stage split (work order D1) the
-    # confirmation is its own explicit signal and rides no begin at all.
-    conductor.authorize_begin(index, attempt)
-    conductor.on_armed()
-    return conductor.consume_capture(index, attempt, _capture())
-
-
-def _confirm_cloud(conductor) -> dict:
-    """The confirm seam's own payload — ``{candidate_fingerprint,
-    headroom_cost_db}``.
-
-    The explicit close the host calls on the phone's set-completion signal. One
-    shot by construction (``self._candidate`` is the guard), so a second call
-    returns ``None`` rather than re-fitting.
-    """
-    return conductor.confirm_cloud_measure_group() or {}
 
 
 # --- the shared fixture's own premise ------------------------------------------
@@ -726,7 +225,7 @@ def test_the_fixture_entry_baseline_is_measurably_worse_than_the_post_apply_one(
     assert baseline is not None
 
     post = measured_response_from_analysis(
-        _verify_analysis(conductor._verify_program),
+        _verify_analysis(conductor.program_for_phase(PHASE_VERIFY)),
         reference_mark=flow.REFERENCE_MARK_DESIGN_AXIS,
     )
     # Comparable by construction, or the benefit verdict is about the fixture
@@ -2123,21 +1622,6 @@ def test_cloud_position_low_pilot_snr_routes_to_level_collapse_not_agc():
     assert verdict["code"] == "pilot_level_collapse"
 
 
-def _snr_pilot(role: str, snr_db: float) -> PilotObservation:
-    return PilotObservation(
-        role=role, level_lo_dbfs=-40.0, level_hi_dbfs=-30.0,
-        programmed_delta_db=10.0, captured_delta_db=10.0,
-        linearity_ok=True, channel_map_ok=True,
-        snr_valid=math.isfinite(snr_db) or snr_db > 0, snr_db=snr_db,
-    )
-
-
-def _snr_analysis(*pilots: PilotObservation) -> ProgramAnalysis:
-    return ProgramAnalysis(
-        phase="measure", program_id="p", locations=(), pilots=pilots,
-    )
-
-
 @pytest.mark.parametrize("snrs,expected", [
     # The row the review caught: one pilot buried (-inf, "never exceeded the
     # ambient"), one clean. Dropping -inf as non-finite logged the CLEAN
@@ -2274,20 +1758,6 @@ def test_verify_evidence_carried_on_tolerance_verdict_reset_on_early_return():
 # tracking verdict grades was intact: ``glitch_detected`` came from
 # ``_estimate_drift`` (MEASURE-only), and the two flow gates that DO catch a
 # splice filter ``KIND_SWEEP`` while VERIFY's sweep is ``KIND_SUMMED_SWEEP``.
-
-
-def _spliced_verify(program, **kwargs):
-    """A VERIFY analysis whose summed sweep landed a splice off its slot."""
-    off_slot = SWEEP_SCHEDULE_RESIDUAL_CEILING_MS * 1e-3 * program.sample_rate_hz * 3
-    return _verify_analysis(program, residual_samples=off_slot, **kwargs)
-
-
-def _verify_to_apply(fakes):
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
-    return c
 
 
 def test_verify_splice_refuses_before_the_tracking_grade():
@@ -2869,26 +2339,6 @@ def test_verify_pilot_level_shift_baseline_does_not_rebaseline():
     assert verdict3["code"] == "verify_level_shift"
 
 
-def _rearm_conductor(fakes, **kwargs):
-    """A verify-only re-arm's conductor — ``prepare_v2_verify``'s shape."""
-    return CrossoverV2Conductor(
-        session_id="verify_rearm_session",
-        source_preset=_preset(),
-        roles_bands=_roles(),
-        fc_hz=FC_HZ,
-        driver_caps_dbfs=CAPS,
-        session_volume_db=SESSION_VOLUME_DB,
-        seams=fakes.seams(),
-        driver_spacing_m=0.15,
-        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
-        applied=True,
-        gain_plan_db={"woofer": -11.0, "tweeter": -13.0},
-        index_phase_map={1: PHASE_VERIFY},
-        measure_gate_window_ms=8.0,
-        **kwargs,
-    )
-
-
 def test_verify_pilot_reference_is_session_scoped_not_inherited():
     """#1927: a prior session's reference is HISTORY, never the comparator.
 
@@ -3135,21 +2585,6 @@ def test_new_session_invalidates_check_and_measure_evidence():
 # --- session volume lifecycle (§5.5) ----------------------------------------------
 
 
-class _FakeVolumePlan:
-    def __init__(self, needs_recovery: bool = False) -> None:
-        self.needs_recovery = needs_recovery
-        self.opened: list = []
-        self.abandoned: list = []
-
-    async def open(self, volume_db, set_cb, get_cb):
-        self.opened.append(volume_db)
-        return "opened"
-
-    async def abandon(self, set_cb, get_cb):
-        self.abandoned.append(True)
-        return "exact_restored"
-
-
 def test_open_measurement_volume_refuses_needs_recovery():
     """The recovery gate keys on needs_recovery, NOT unresolved alone (W2 gate)."""
     plan = _FakeVolumePlan(needs_recovery=True)
@@ -3198,51 +2633,6 @@ def test_session_death_abandons_volume():
 # dispatch (keyed on the PROGRAM's phase) returns `_verify_analysis` for them
 # with no new factory — the same reason `program_analysis` needed no new
 # dispatch branch.
-
-
-# Stage 1 (measure) and stage 2 (verify) are separate SESSIONS since the
-# two-stage split (work order D1/D2), so they are separate maps and separate
-# conductors — there is no single index space spanning the whole journey any
-# more.
-CLOUD_MAP = build_v2_cloud_index_phase_map()
-CLOUD_MEASURE_INDEXES = tuple(
-    i for i, p in sorted(CLOUD_MAP.items()) if p == PHASE_CLOUD_MEASURE
-)
-STAGE2_SHAPE = resolve_plan_shape()
-STAGE2_MAP = build_v2_verify_index_phase_map(plan_shape=STAGE2_SHAPE)
-VERIFY_INDEX = next(i for i, p in STAGE2_MAP.items() if p == PHASE_VERIFY)
-CLOUD_VERIFY_INDEXES = tuple(
-    i for i, p in sorted(STAGE2_MAP.items()) if p == PHASE_CLOUD_VERIFY
-)
-# A deliberately SHORT verify group — the anchor plus ONE prompted position.
-# Not a shipped plan shape (the tiers ship M=1 or M=6), but the conductor takes
-# its index map as a constructor argument, and this is the compact way to reach
-# the position floor: give that one position up and the group has no curve left
-# and nothing unwalked to recover with. Building it from the same vocabulary the
-# production map builder emits, so it cannot drift into a shape the conductor
-# would never see.
-SHORT_VERIFY_MAP = {1: PHASE_VERIFY, 2: PHASE_CLOUD_VERIFY}
-SHORT_VERIFY_CLOUD_INDEXES = tuple(
-    i for i, p in sorted(SHORT_VERIFY_MAP.items()) if p == PHASE_CLOUD_VERIFY
-)
-
-
-def _cloud_conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Conductor:
-    kwargs.setdefault("index_phase_map", CLOUD_MAP)
-    # What ``prepare_v2_session`` declares: this measuring session has no
-    # VERIFY entry of its own, and the correction it proposes is verified by
-    # stage 2 (work order D2). Without it the fit would be refused boost, which
-    # is the shape of the regression the declaration exists to prevent.
-    kwargs.setdefault("post_apply_verifies", True)
-    return _conductor(fakes, **kwargs)
-
-
-def _walk(conductor, indexes, start_attempt: int) -> int:
-    attempt = start_attempt
-    for index in indexes:
-        _run_phase(conductor, index, attempt)
-        attempt += 1
-    return attempt
 
 
 def test_cloud_measure_group_closes_only_after_its_last_position():
@@ -3304,87 +2694,6 @@ def test_cloud_measure_group_closes_only_after_its_last_position():
 # captures. These walk the REAL conductor for both halves of that: WHEN the
 # candidate appears, and WHAT reaches the envelope when it does.
 
-_COMB_N_FFT = 8192
-_COMB_RATE = 48_000
-
-
-def _comb_summed_response(seed: int, *, r: float = 0.37, delay_samples: int = 15):
-    """A two-path summed response — the shape a position-invariant
-    interference comb has, and the ONE shape the power-vs-median screen
-    structurally cannot catch on its own (plan "S0 executed" § e.1).
-
-    Built as a real rfft-grid transfer function because
-    ``cloud_position_capture`` derives the IR the echo detector reads by
-    inverting exactly this array; the coarse 64-bin ``_driver_response`` above
-    cannot carry an invertible one.
-    """
-    freqs = np.fft.rfftfreq(_COMB_N_FFT, 1.0 / _COMB_RATE)
-    rng = np.random.default_rng(seed)
-    tf = 1.0 + r * np.exp(-2j * np.pi * freqs * (delay_samples / _COMB_RATE))
-    tf = tf + rng.normal(0.0, 1e-6, tf.shape)
-    # The comb rides a ROOM, not a flat 0 dB reference (PR-L4) — a real
-    # position measures the speaker's own in-room shape with the interference
-    # comb on top of it, and the pre-apply cloud's spec residual is read off
-    # exactly that product. See `_in_room_summed_db` for why a flat base is not
-    # a demanding fixture but an impossible one. Zero-phase magnitude shaping,
-    # so the two-path ladder the echo detector reads is untouched.
-    tf = tf * 10.0 ** (
-        np.interp(freqs, _SUMMED_FREQS_HZ, _in_room_summed_db()) / 20.0
-    )
-    return DriverResponse(
-        role="summed", freqs_hz=freqs,
-        magnitude_db=20.0 * np.log10(np.maximum(np.abs(tf), 1e-12)),
-        complex_tf=tf.astype(complex),
-        gating={"applied": True, "window_ms": 8.0},
-        snr=None, validity_floor_hz=140.0,
-    )
-
-
-def _comb_cloud_analysis_factory():
-    """A ``verify``-program analysis factory whose every capture carries the
-    same comb — one per call, so a group of them is position-INVARIANT."""
-    counter = {"n": 0}
-
-    def factory(program) -> ProgramAnalysis:
-        counter["n"] += 1
-        return ProgramAnalysis(
-            phase="verify",
-            program_id=program.program_id,
-            locations=(_loc("sweep_verify", "summed_sweep", confidence=0.9),),
-            summed_response=_comb_summed_response(4000 + counter["n"]),
-            summed_ripple_db=1.1,
-            verify_tracking={
-                "rms_db": 0.4, "max_db": 0.9, "max_db_notch_excluded": 0.9,
-            },
-            linearity_ok=True,
-        )
-
-    return factory
-
-
-def _walk_measure_cloud_to_close(c, *, start_attempt: int = 1) -> dict:
-    """CHECK → MEASURE → every pre-apply cloud position → the CONFIRM.
-
-    Returns the closing verdict MERGED with the confirm's own payload, which is
-    where ``candidate_fingerprint``/``auto_apply`` live since
-    flow-simplification §2.6 moved the fit off the final position's acceptance
-    and onto the household's confirmation past it.
-
-    A position-invariant cloud legitimately trips PR-3b's geometry-locked
-    retake (that is the point of the verdict), so the last index is re-walked
-    until it is accepted — bounded by ``GEOMETRY_RETRY_POSITIONS``' own budget
-    rather than looping forever.
-    """
-    attempt = _walk(c, (1, 2), start_attempt)
-    attempt = _walk(c, CLOUD_MEASURE_INDEXES[:-1], attempt)
-    last = CLOUD_MEASURE_INDEXES[-1]
-    for _ in range(GEOMETRY_RETRY_POSITIONS + 1):
-        verdict = _run_phase(c, last, attempt)
-        attempt += 1
-        if verdict["accepted"]:
-            return {**verdict, **_confirm_cloud(c)}
-    raise AssertionError("the cloud-measure group never closed")
-
 
 def test_the_candidate_is_built_at_the_cloud_group_close_not_at_measure():
     """The timing move, at the conductor's own surface.
@@ -3441,42 +2750,6 @@ def test_the_candidate_is_built_at_the_cloud_group_close_not_at_measure():
 
 
 # --- the eager fit (owner UX direction, 2026-07-30) ------------------------------
-
-
-def _walk_measure_cloud_to_accept(c, *, start_attempt: int = 1) -> int:
-    """CHECK → MEASURE → the whole pre-apply cloud, stopping at the ACCEPT.
-
-    The HELD WINDOW itself — walked, unconfirmed, the phone still offering
-    Retake — which is where the eager fit lives and which
-    ``_walk_measure_cloud_to_close`` walks straight past. Returns the next
-    unused attempt number, so a caller can drive a voluntary retake of the
-    final position from exactly where the household would.
-    """
-    attempt = _walk(c, (1, 2), start_attempt)
-    attempt = _walk(c, CLOUD_MEASURE_INDEXES[:-1], attempt)
-    last = CLOUD_MEASURE_INDEXES[-1]
-    for _ in range(GEOMETRY_RETRY_POSITIONS + 1):
-        verdict = _run_phase(c, last, attempt)
-        attempt += 1
-        if verdict["accepted"]:
-            assert verdict["awaiting_confirm"] is True
-            return attempt
-    raise AssertionError("the cloud-measure group never closed")
-
-
-def _count_builds(c) -> list:
-    """Record every FIT this conductor runs, so a test can tell a commit from
-    a re-fit. The eager rider's whole claim is about which of the two the
-    household's confirmation pays for."""
-    builds: list = []
-    real_build = c._build_candidate
-
-    def _counting_build(analysis, cloud):
-        builds.append(1)
-        return real_build(analysis, cloud)
-
-    c._build_candidate = _counting_build
-    return builds
 
 
 def test_a_speculative_candidate_does_not_release_the_held_set():
@@ -3806,56 +3079,6 @@ def test_the_clouds_honesty_verdict_reaches_the_fit_envelope():
     assert evidence["gated_spec_curve"]["freqs_hz"], "the curve must be non-empty"
 
     _assert_room_layer_can_read_the_evidence(c.candidate, pipeline)
-
-
-def _assert_room_layer_can_read_the_evidence(candidate, pipeline, tmp_root=None):
-    """End-to-end: a REAL produced candidate resolves through the room seam.
-
-    The seam's own unit tests drive synthetic payloads; this is the one place
-    that proves the producer in ``crossover_v2_flow`` and the reader in
-    ``jasper.correction.applied_speaker_evidence`` agree on key names and
-    shapes across a live conductor run (issue #1787, plan RC1 / D2).
-    """
-    import json
-    import tempfile
-    from pathlib import Path
-    from unittest.mock import patch
-
-    from jasper.correction.applied_speaker_evidence import (
-        AppliedSpeakerEvidence,
-        resolve_applied_speaker_evidence,
-    )
-
-    with tempfile.TemporaryDirectory() as raw_root:
-        root = Path(tmp_root or raw_root)
-        artifact = (
-            root / "bundle" / "evidence" / "v1" / "artifacts"
-            / "crossover_v2" / "session" / "candidate.json"
-        )
-        artifact.parent.mkdir(parents=True, exist_ok=True)
-        artifact.write_text(json.dumps(candidate.to_dict()), encoding="utf-8")
-
-        applied = {
-            # Non-empty linearization marks this as an ACOUSTIC commission —
-            # the seam's discriminator against electrical-only profiles, and
-            # true here since this candidate came from a real cloud fit.
-            "linearization": dict(candidate.linearization),
-            "source": {"measured_candidate_fingerprint": candidate.fingerprint},
-        }
-        target = (
-            "jasper.active_speaker.baseline_profile."
-            "load_applied_baseline_profile_state"
-        )
-        with patch(target, return_value=applied):
-            result = resolve_applied_speaker_evidence(
-                state_path=root / "state.json", sessions_dir=root
-            )
-
-    assert isinstance(result, AppliedSpeakerEvidence), result
-    assert result.candidate_fingerprint == candidate.fingerprint
-    assert result.validity_floor_hz == pipeline["validity_floor_hz"]
-    assert list(result.gated_spec_freqs_hz) == pipeline["curve"]["freqs_hz"]
-    assert result.has_gated_curve is True
 
 
 def test_severing_the_cloud_wiring_changes_the_fit(monkeypatch):
@@ -4213,38 +3436,6 @@ def test_cloud_position_qc_rejects_a_capture_with_no_usable_summed_response():
     verdict = _run_phase(c, index, attempt)
     assert verdict["accepted"] is False
     assert c.group_positions(PHASE_CLOUD_MEASURE) == ()
-
-
-def _lock(monkeypatch, *, thin: bool = False):
-    """Force the group-end geometry verdict.
-
-    ``_geometry_verdict_from_combined`` is a pure function of an already-
-    combined result; manufacturing a genuinely position-invariant echo across
-    a synthetic cloud is ``spatial_combine``'s own test territory (and is
-    covered there). What this file owns is the CONDUCTOR's response to a
-    verdict, so the verdict is injected.
-
-    Patches ``_geometry_verdict_from_combined`` rather than
-    ``cloud_geometry_verdict`` (S3 review finding, 2026-07-26:
-    ``_close_cloud_group`` combines each group's positions exactly ONCE and
-    derives its retry-gating verdict from that single ``combined`` object via
-    ``_geometry_verdict_from_combined`` — it no longer calls
-    ``cloud_geometry_verdict`` at all, which stays a positions-only
-    convenience wrapper for other callers, e.g. the corpus acceptance test).
-    The real (unmocked) ``combine_cloud_positions`` still runs underneath —
-    this lambda ignores its ``combined`` argument entirely, so whatever the
-    fake seams' synthetic captures actually combine to is irrelevant to the
-    injected verdict.
-    """
-    import jasper.active_speaker.crossover_v2_flow as flow
-
-    monkeypatch.setattr(
-        flow, "_geometry_verdict_from_combined",
-        lambda combined, n_positions: {
-            "locked": True, "reason": "geometry_locked", "thin_evidence": thin,
-            "n_positions": n_positions, "median_tau_us": 320.0,
-        },
-    )
 
 
 def test_geometry_locked_group_asks_for_wider_retakes_then_proceeds(monkeypatch):
@@ -6196,7 +5387,7 @@ def test_conductor_composed_programs_include_courtesy_tone_by_default():
     fakes = FakeSeams()
     c = _conductor(fakes)
     check_tone_ids = {
-        s.segment_id for s in c._check_program.segments if s.kind == KIND_COURTESY_TONE
+        s.segment_id for s in c.program_for_phase(PHASE_CHECK).segments if s.kind == KIND_COURTESY_TONE
     }
     assert check_tone_ids == {"courtesy_tone_ch0", "courtesy_tone_ch1"}
 
@@ -6207,7 +5398,7 @@ def test_conductor_composed_programs_include_courtesy_tone_by_default():
     assert measure_tone_ids == {"courtesy_tone_ch0", "courtesy_tone_ch1"}
 
     verify_tone_ids = {
-        s.segment_id for s in c._verify_program.segments if s.kind == KIND_COURTESY_TONE
+        s.segment_id for s in c.program_for_phase(PHASE_VERIFY).segments if s.kind == KIND_COURTESY_TONE
     }
     assert verify_tone_ids == {"courtesy_tone_ch0"}  # VERIFY is mono
 
@@ -6311,12 +5502,6 @@ def test_bind_program_playback_seams_uses_inline_setconfig(tmp_path):
     # from a mismatch, so hardware triage can tell the two apart.
     with pytest.raises(ProgramPlaybackError, match="normalization failed"):
         asyncio.run(seams["load_program_graph"]("!!not-yaml\n"))
-
-
-def _dummy_program():
-    from jasper.audio_measurement.program import build_check_program
-
-    return build_check_program(_roles(), ambient_s=0.5, pilot_duration_s=0.3)
 
 
 def test_v2_session_spec_is_a_valid_protocol_3_crossover_spec():
@@ -6474,191 +5659,6 @@ def test_session_wall_clock_ceiling_scales_with_the_plan_and_is_capped():
     )
 
 
-# Golden wire bytes for the two shipped v2 capture plans, canonicalized exactly
-# the way `PiCaptureSession.capture_spec_json` serializes the enclosing spec
-# (`json.dumps(..., separators=(",", ":"))`), so these really are the bytes the
-# phone receives — not a proxy for them.
-#
-# WHAT MUST NEVER CHANGE THEM: raising the relay's transport ceiling
-# (`capture_relay.spec.MAX_CAPTURE_PLAN_ATTEMPTS`). That is the original point
-# of this pin — the capacity raise from 8 to 32 had to be invisible to the
-# shipped flows, and a value-level assertion alone would not have caught a
-# serialization change that came along with it.
-#
-# WHAT LEGITIMATELY CHANGES THEM: editing a `screen` title/body/auto-advance,
-# changing the plan's capture target or attempt budget, altering
-# `CapturePlan.to_dict`'s schema, or shifting any composed program's length
-# (prelude/pilot durations, `CAPTURE_ENTRY_MARGIN_MS`) — every one of those
-# changes what a household's phone is told to do, so a failure here is a prompt
-# to confirm the change was intended, not a nuisance.
-#
-# TO UPDATE: run the assertion, read the actual digest out of the failure
-# message, and paste it here in the same commit as the intended change.
-#
-# UPDATED 2026-07-26 (flat-linearization PR-3b): the "3-entry" main-session
-# entry became the CLOUD plan — the intended product change, not drift. The
-# measurement is now the spatial cloud (plan fundamental 1), so the main
-# session emits CHECK + MEASURE + N−1 prompted pre-apply positions + VERIFY
-# + M−1 prompted post-apply positions. The re-verify re-arm plan is UNCHANGED
-# and its digest is byte-for-byte the pre-PR-3b one: it re-runs the
-# single-position tracking verdict, and evidence cannot cross relay sessions
-# anyway (§5.6), so a cloud there could never join the original one.
-#
-# RE-DERIVED 2026-07-26 (round-1 review): N 8 → 9 (adjudication 3a — the
-# delivered curve must rest on 8 summed sweeps, which is N−1, so the floor is
-# met in CURVES not positions) took the plan 15 → 16 entries, and the entry
-# titles gained the "— hold still" suffix that disambiguates them from the
-# phone's own capture counter (nit N1). Both are intended copy/shape changes.
-#
-# UPDATED 2026-07-27 (flow-simplification PR-U1): the screen GRAMMAR changed on
-# every entry of both shipped plans — each now carries the one server-derived
-# counter (`progress`), the instruction as `title`, and the supporting clause
-# as `body` (§2.1); the VERIFY entry additionally gained the
-# `confirm_title`/`confirm_body` keys the post-apply tap renders (§2.2), and
-# the 1-entry re-verify leads with the "you do NOT need to redo the walk"
-# sentence (§2.4). All intended copy changes. Program DURATIONS deliberately
-# did NOT move at THAT revision: the §2.5 courtesy-tone fix reordered where
-# the prelude is spliced without changing its length, so every `duration_ms`
-# was byte-identical to the pre-fix plan — a useful independent check that the
-# pacing change was a reorder and not a lengthening. (The 2026-07-28 revision
-# below is the first one that does lengthen them, and says so.)
-#
-# ADDED 2026-07-27: a third `"express"` pin. The express tier is a second
-# SHIPPED plan shape (N=5, M=1 — flow-simplification §1.1), so it earns the
-# same protection the full plan has: a change to its copy, counts, or the
-# M=1 done-screen placement must be an intended edit, not drift.
-#
-# RE-DERIVED 2026-07-28 (issues #1810 / #1812): this time the DURATIONS did
-# move, and only they — the pre-pilot ambient window adds exactly 1000 ms to
-# every program that carries a leading pilot pair. Measured on this fixture:
-# check 22819 ms (unchanged — CHECK's own 12 s ambient window already served
-# the guard), measure 39385 → 40385, verify and all 14 cloud entries
-# 16207 → 17207. Copy, counts, screen keys and byte LENGTH are all identical
-# (3897 / 2107 / 324 bytes before and after), because the digit counts of the
-# changed numbers did not change — which is precisely why these pins are
-# hashes and not lengths.
-#
-# RE-DERIVED 2026-07-28 (issue #1823): MEASURE's entry — index 1 of both the
-# cloud and express plans — flipped from `auto_advance: countdown` to `tap`,
-# dropping the countdown-only `countdown_s`/`cancelable` keys with it, and its
-# `body` now names what the tap is consenting to. Net +32 bytes on each plan:
-# the removed countdown keys are smaller than the added sentence. That sentence
-# was rewritten TWICE before landing, which is the useful part of the story —
-# #1825/#1829 landed mid-review and made a flat "louder" false in a quiet room
-# (hence the "can be the loudest" hedge), and a plain-language ruling then
-# replaced "at the level the fit needs" with wording that says what the level
-# is FOR. Both are household-visible copy, so both moved these digests; the
-# pins are re-derived against the tree they ship on, never copied forward. The
-# 1-entry re-verify plan has no MEASURE entry and its digest is byte-for-byte
-# unchanged, which is the check that this edit touched only what it meant to.
-#
-# RE-DERIVED 2026-07-29 (issue #1806, PR-T3 — the two-stage split). This is the
-# largest movement these pins have ever taken, because the SHAPE moved rather
-# than the copy: one 16-entry session became a 10-entry measuring session and a
-# separate 6-entry post-apply one (work order D1/D2). The keys are renamed to
-# say which stage each is, and two NEW shipped shapes earn pins of their own —
-# stage 2 is a shipped plan now, not a hypothetical.
-#
-#   cloud     → stage1-full    16 entries, 3929 B → 10 entries, 2301 B
-#                              (target 16 → 10, max_attempts 23 → 17)
-#   express   → stage1-express  7 entries, 2139 B →  6 entries, 1531 B
-#                              (target 7 → 6, max_attempts 14 → 13)
-#   (new)       stage2-full     6 entries, 1612 B  (target 6, max_attempts 13)
-#   (new)       stage2-express  1 entry,    609 B  (target 1, max_attempts 8)
-#
-# Every attempt budget is the same derivation as before —
-# ``target + GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE`` — applied to
-# each stage's own target rather than to the sum of both.
-#
-# What moved BESIDES the entry count, deliberately, and nothing else did:
-#   * every ``progress`` counter, because "Measurement N of T" is per-session
-#     and T is now 10 (or 6, or 6, or 1) rather than 16;
-#   * the done copy moved off stage 1 entirely and onto stage 2's last entry —
-#     the ``M = 1`` placement rule moved WITH the post-apply group it is about;
-#   * stage 2's anchor carries a truthful pre-arm instruction plus §2.2's
-#     unchanged ``confirm_title``/``confirm_body``, where the single-session
-#     VERIFY entry carried the apply-hold copy and ``auto_advance: on_apply``.
-#     There is no apply inside either session to hold for.
-# Program DURATIONS did not move: the same three composed programs at the same
-# lengths, redistributed across two plans.
-#
-# **The 1-entry recovery re-verify is byte-for-byte unchanged — 324 B and the
-# same digest it has carried since 2026-07-28.** That is the load-bearing check
-# in this revision: work order D2 keeps that form exactly as it is, and an
-# identical digest is the proof that generalizing its builder over a plan shape
-# left its own output untouched.
-# RE-DERIVED 2026-07-30 (issue #1806, PR-T4 — the phone's honesty layer). COPY
-# ONLY: every target, attempt budget, entry count, screen key, and program
-# duration is byte-identical to the PR-T3 revision above. What moved is the
-# prompted-position copy and CHECK's, per work order D7/D8:
-#
-#   * the position prompts became numeric ABSOLUTE poses in inches AND
-#     centimetres, generated from each row's own ``offset_cm`` ("Move the
-#     microphone 16 in (40 cm) to the LEFT of the mark, at mark height.") —
-#     longer sentences than "A forearm's length LEFT of the mark", which is
-#     where nearly all of the added bytes are;
-#   * CHECK's entry stopped asking for quiet before the window that
-#     deliberately measures an un-hushed room and gained a ``noise_note`` for
-#     the phone's own pre-arm floor window (#1835);
-#   * the actor became "the microphone" rather than "the phone".
-#
-#   stage1-full     2301 B → 2918 B  (+617; 8 prompted positions + CHECK)
-#   stage1-express  1531 B → 1945 B  (+414; 4 prompted positions + CHECK)
-#   stage2-full     1612 B → 1939 B  (+327; 5 prompted positions, no CHECK)
-#   stage2-express   609 B →  609 B  (UNCHANGED — one anchor, no prompted move)
-#   1-entry          324 B →  324 B  (UNCHANGED)
-#
-# The two unchanged digests are the load-bearing check in this revision: both
-# are plans with no prompted position and no CHECK entry, so an identical
-# digest is the proof that a prompt-copy rewrite reached exactly the entries it
-# was about. Byte lengths grew and are pinned alongside the hashes because this
-# copy sits inside the relay's 4 KiB per-screen cap — see
-# ``test_cloud_plan_stays_inside_the_relay_spec_byte_budgets`` for the margin.
-#
-# RE-DERIVED 2026-07-30 (issue #1941 stage 2, R4 — the vocabulary sweep). COPY
-# ONLY, and a single string of it: the 1-entry recovery re-verify's ``body``
-# became "Put the microphone back on the mark and hold it still." The PR-T4
-# revision above finished the sweep in the PROMPTED-position copy; this one
-# reaches the last screen in this file that still called the instrument a phone.
-#
-#   stage1-full     2918 B → 2918 B  (UNCHANGED)
-#   stage1-express  1945 B → 1945 B  (UNCHANGED)
-#   stage2-full     1939 B → 1939 B  (UNCHANGED)
-#   stage2-express   609 B →  609 B  (UNCHANGED)
-#   1-entry          324 B →  329 B  (+5 — exactly len("microphone") - len("phone"))
-#
-# FOUR unchanged digests are the load-bearing check in this revision, and the
-# +5 is the whole diff: a noun swap that reached one screen and nothing else.
-# No target, attempt budget, entry count, screen key, or program duration moved.
-_GOLDEN_V2_PLAN_BYTES = {
-    "stage1-full": (
-        2918,
-        "b2c34282a518658d908acda6de53e69e777938c9480c415ed4e4649832e65949",
-    ),
-    "stage1-express": (
-        1945,
-        "259c69948dc954b28a408335419336f312f9045aa9307820999f19db6a2b4ff7",
-    ),
-    # Moved by #1964: Full's done_body no longer pre-commits "Verified and
-    # applied." before the first tone plays.
-    "stage2-full": (
-        1942,
-        "575ae0cb9e0a43a9f24492c43bc1e6192740164f96d9e9b7eb639d1bba629446",
-    ),
-    # Moved by #1964's fix round: Express's upgrade-path phrase drops the
-    # withdrawn "verified-everywhere" overclaim for the B2 wording jts.local
-    # already ships.
-    "stage2-express": (
-        630,
-        "a5f499d6c1219460a377ee4cd083a45fc86aa93dff3d446bc2c1c4c58955f07b",
-    ),
-    "1-entry": (
-        329,
-        "5289e8602bfe37469abd91cc12dff53387b512c358a616dd7e2df20d79b0fccb",
-    ),
-}
-
-
 def test_shipped_v2_plans_serialize_to_byte_identical_wire_payloads():
     """Every shipped plan's wire bytes are pinned; only an intended edit moves
     them."""
@@ -6732,37 +5732,84 @@ from jasper.audio_measurement.program import (  # noqa: E402
     BASE_STIMULUS_PEAK_DBFS,
 )
 
-
-def _profiled_conductor(*, woofer_peak: float, tweeter_peak: float):
-    """A conductor whose caps come from a REAL confirmed safety profile, plus the
-    (topology, profile, targets, session_volume) that admission needs."""
-    from jasper.active_speaker.session_volume_plan import (
-        session_measurement_volume_db,
-    )
-
-    from tests.test_active_speaker_program_admission import _profile_and_targets
-
-    topology, profile, targets = _profile_and_targets(
-        woofer_peak=woofer_peak, tweeter_peak=tweeter_peak
-    )
-    sv = session_measurement_volume_db(profile, targets.values())
-    caps = {"woofer": float(woofer_peak), "tweeter": float(tweeter_peak)}
-    # Bands within the profile's permitted [500, 20000] excitation band.
-    roles = [
-        RoleBand("woofer", 0, FrequencyBand(500.0, 1600.0)),
-        RoleBand("tweeter", 1, FrequencyBand(1600.0, 10000.0)),
-    ]
-    c = CrossoverV2Conductor(
-        session_id=SESSION,
-        source_preset=_preset(),
-        roles_bands=roles,
-        fc_hz=FC_HZ,
-        driver_caps_dbfs=caps,
-        session_volume_db=sv,
-        seams=FakeSeams().seams(),
-        driver_spacing_m=0.15,
-    )
-    return c, topology, profile, targets, sv
+from tests.crossover_v2_fixtures import (
+    CAPS,
+    CLOUD_MAP,
+    CLOUD_MEASURE_INDEXES,
+    CLOUD_VERIFY_INDEXES,
+    FC_HZ,
+    FakeSeams,
+    SESSION,
+    SESSION_VOLUME_DB,
+    SHORT_VERIFY_CLOUD_INDEXES,
+    SHORT_VERIFY_MAP,
+    STAGE2_MAP,
+    VERIFY_INDEX,
+    _BLIND_SPAN_RESULT,
+    _DIAG_LOGGER,
+    _ENTRY_BASELINE_RESIDUAL_DB,
+    _FIXTURE_FC_HZ,
+    _FIXTURE_RAW_TRIM_DB,
+    _FakeVolumePlan,
+    _GOLDEN_V2_PLAN_BYTES,
+    _LEVEL_FRAME_FINDING_TILT_DB_PER_OCT,
+    _LINEARIZABLE_FREQS_HZ,
+    _POST_APPLY_RESIDUAL_DB,
+    _ROOM_SCALE_EXPECTED_RMS_DB,
+    _SUMMED_FREQS_HZ,
+    _absolute,
+    _alignment,
+    _assert_room_layer_can_read_the_evidence,
+    _attempt_floor,
+    _boost_vocabulary_spy,
+    _capture,
+    _check_analysis,
+    _check_analysis_with_solves,
+    _cloud_conductor,
+    _comb_cloud_analysis_factory,
+    _comb_summed_response,
+    _conductor,
+    _configured_sections,
+    _confirm_cloud,
+    _count_builds,
+    _driver_response_diag,
+    _dummy_program,
+    _eligible_measure_analysis,
+    _emitted_boosts,
+    _fixture_branch_db,
+    _fixture_raw_predicted_sum,
+    _gate_residuals,
+    _healthy_crossed_over_pair,
+    _in_room_summed_db,
+    _loc,
+    _lock,
+    _measure_analysis,
+    _moving_notch_cloud,
+    _one_sided_conductor,
+    _pilot_obs,
+    _plan_spy,
+    _preset,
+    _probed_conductor,
+    _profiled_conductor,
+    _rearm_conductor,
+    _resp_with_repeats,
+    _roles,
+    _run_phase,
+    _snr_analysis,
+    _snr_pilot,
+    _solve_fixture_raw_trim,
+    _spliced_verify,
+    _tilted_woofer_fixture,
+    _tracking_curve,
+    _tracking_with_frame,
+    _verify_analysis,
+    _verify_only_conductor,
+    _verify_to_apply,
+    _vocabularies_seen,
+    _walk,
+    _walk_measure_cloud_to_accept,
+    _walk_measure_cloud_to_close,
+)
 
 
 @pytest.mark.parametrize(
@@ -6797,7 +5844,7 @@ def test_composed_programs_admit_at_shaped_caps(woofer_peak, tweeter_peak):
             role_targets=targets, session_volume_db=sv,
         )
 
-    adm_check = _admit(c._check_program)
+    adm_check = _admit(c.program_for_phase(PHASE_CHECK))
     assert adm_check.allowed, adm_check.refusals
 
     _run_phase(c, 1, 1)  # CHECK solve → MEASURE composed
@@ -6806,9 +5853,9 @@ def test_composed_programs_admit_at_shaped_caps(woofer_peak, tweeter_peak):
 
     # VERIFY has no admission path by design; its clamp is the only guard.
     with pytest.raises(ProgramAdmissionError):
-        _admit(c._verify_program)
+        _admit(c.program_for_phase(PHASE_VERIFY))
     binding_cap = min(woofer_peak, tweeter_peak)
-    for seg in c._verify_program.stimulus_segments():
+    for seg in c.program_for_phase(PHASE_VERIFY).stimulus_segments():
         assert seg.effective_peak_dbfs <= binding_cap + 1e-9
 
 
@@ -6819,7 +5866,7 @@ def test_check_pilot_pairs_preserve_delta_and_degrade_honestly():
     c, _topology, _profile, _targets, sv = _profiled_conductor(
         woofer_peak=-8.0, tweeter_peak=-65.0
     )
-    check = c._check_program
+    check = c.program_for_phase(PHASE_CHECK)
 
     # Woofer: cap (-8) leaves headroom, so the pair rides the reference base and
     # keeps the full 10 dB delta.
@@ -6846,7 +5893,7 @@ def test_verify_pilot_pair_preserves_delta_after_clamp():
     c, _topology, _profile, _targets, sv = _profiled_conductor(
         woofer_peak=-8.0, tweeter_peak=-65.0
     )
-    verify = c._verify_program
+    verify = c.program_for_phase(PHASE_VERIFY)
     v_hi = verify.segment("pilot_summed_hi")
     v_lo = verify.segment("pilot_summed_lo")
     assert v_hi.gain_db - v_lo.gain_db == pytest.approx(PILOT_LEVEL_DELTA_DB)
@@ -6892,9 +5939,9 @@ def test_verify_wav_rendered_sample_peak_respects_min_cap(tmp_path):
         woofer_peak=-8.0, tweeter_peak=-65.0
     )
     wav = tmp_path / "verify_program.wav"
-    write_program_wav(wav, c._verify_program)
+    write_program_wav(wav, c.program_for_phase(PHASE_VERIFY))
     rate, data = wavfile.read(str(wav))
-    assert rate == c._verify_program.sample_rate_hz
+    assert rate == c.program_for_phase(PHASE_VERIFY).sample_rate_hz
     peak = float(np.max(np.abs(data.astype(np.float64) / 32767.0)))
     assert peak > 0.0  # the clamped program still carries signal
     peak_dbfs = 20.0 * _math.log10(peak)
@@ -6966,12 +6013,12 @@ def test_jts3_derived_hf_ceiling_drives_production_conductor_composition():
     )
     # Probe (b): the composed CHECK tweeter hi pilot rides the DERIVED cap
     # (back_off margin under -35), not the legacy -65.01 the gate measured.
-    t_hi = c._check_program.segment("pilot_tweeter_hi")
+    t_hi = c.program_for_phase(PHASE_CHECK).segment("pilot_tweeter_hi")
     assert t_hi.effective_peak_dbfs == pytest.approx(-35.0 - GAIN_CAP_BACKOFF_DB)
     # And the play-time gate (same declared mapping, as bind_production_play
     # now threads it) admits what the conductor composed.
     adm = admit_excitation_program(
-        c._check_program, topology=topology, safety_profile=profile,
+        c.program_for_phase(PHASE_CHECK), topology=topology, safety_profile=profile,
         role_targets=targets, session_volume_db=sv,
         declared_sensitivities=declared,
     )
@@ -6981,7 +6028,7 @@ def test_jts3_derived_hf_ceiling_drives_production_conductor_composition():
     # Without the declared mapping (the pre-fix admission view) the SAME
     # composed program is refused — the incoherence the threading closes.
     stale = admit_excitation_program(
-        c._check_program, topology=topology, safety_profile=profile,
+        c.program_for_phase(PHASE_CHECK), topology=topology, safety_profile=profile,
         role_targets=targets, session_volume_db=sv,
     )
     assert not stale.allowed
@@ -6994,52 +6041,6 @@ def test_jts3_derived_hf_ceiling_drives_production_conductor_composition():
 # change a failed hardware run left no numbers to look at (only a partial
 # ``program_analysis.glitch`` line existed, and only for a glitch MEASURE).
 # These tests pin the event names + key fields on accept AND reject.
-
-_DIAG_LOGGER = "jasper.active_speaker.crossover_v2_flow"
-
-
-def _pilot_obs(
-    role: str, *,
-    snr_db: float = 20.0,
-    captured_delta_db: float = 10.0,
-    programmed_delta_db: float = 10.0,
-    target_rise_db: float | None = 18.0,
-    cross_rise_db: float | None = 1.0,
-    snr_valid: bool = True,
-    linearity_ok: bool = True,
-    channel_map_ok: bool = True,
-) -> PilotObservation:
-    return PilotObservation(
-        role=role, level_lo_dbfs=-40.0, level_hi_dbfs=-30.0,
-        programmed_delta_db=programmed_delta_db, captured_delta_db=captured_delta_db,
-        linearity_ok=linearity_ok, channel_map_ok=channel_map_ok, snr_valid=snr_valid,
-        snr_db=snr_db,
-        channel_map_target_rise_db=target_rise_db,
-        channel_map_cross_rise_db=cross_rise_db,
-    )
-
-
-def _driver_response_diag(
-    role: str, *, window_ms: float = 8.0, floor_hz: float | None = None,
-    snr_db: float | None = None, snr_verdict: str | None = None,
-    floor_source: str = gating.FLOOR_MEASURED,
-) -> DriverResponse:
-    freqs = np.linspace(100.0, 20000.0, 64)
-    snr = (
-        {"worst_relevant": {"estimated_snr_db": snr_db, "verdict": snr_verdict}}
-        if snr_db is not None else None
-    )
-    return DriverResponse(
-        role=role, freqs_hz=freqs, magnitude_db=np.zeros(64),
-        complex_tf=np.ones(64, dtype=complex),
-        # ``floor_source`` defaults to the "gate found a reflection" state and
-        # is overridden per test — the two states print the same
-        # ``window_ms`` and mean opposite things (#1966).
-        gating={
-            "applied": True, "window_ms": window_ms, "floor_source": floor_source,
-        },
-        snr=snr, validity_floor_hz=floor_hz,
-    )
 
 
 def test_diag_logging_bug_cannot_crash_or_flip_the_verdict(caplog, monkeypatch):
@@ -7112,35 +6113,6 @@ def test_check_diag_logs_full_numbers_on_accept(caplog):
     assert "woofer_programmed_delta_db=10.0" in caplog.text
     assert "woofer_channel_map_target_rise_db=18.0" in caplog.text
     assert "tweeter_channel_map_cross_rise_db=2.0" in caplog.text
-
-
-def _check_analysis_with_solves(program, *, snr_floor_ok=True, pilot_snr_ok=True):
-    """A CHECK analysis whose gain plan carries #1825 per-role solves."""
-    return ProgramAnalysis(
-        phase="check", program_id=program.program_id,
-        locations=(_loc("pilot_woofer_hi", "pilot"),),
-        ambient_report={"bands": [{"level_dbfs": -70.0}]},
-        pilots=(_pilot_obs("woofer"), _pilot_obs("tweeter")),
-        linearity_ok=True, channel_map_ok=True, pilot_snr_ok=pilot_snr_ok,
-        gain_plan=GainPlan(
-            gain_db={"woofer": -19.0, "tweeter": -31.0},
-            predicted_peak_dbfs=-19.0, snr_floor_ok=snr_floor_ok,
-            role_solves={
-                "woofer": RoleGainSolve(
-                    role="woofer", gain_db=-19.0, flat_target_gain_db=-11.0,
-                    bound_by="room_snr", band_hz=(150.0, 2000.0),
-                    ambient_dbfs=-60.0, required_snr_db=41.0,
-                    required_capture_dbfs=-19.0,
-                ),
-                "tweeter": RoleGainSolve(
-                    role="tweeter", gain_db=-31.0, flat_target_gain_db=-13.0,
-                    bound_by="room_snr", band_hz=(1500.0, 20000.0),
-                    ambient_dbfs=-72.0, required_snr_db=41.0,
-                    required_capture_dbfs=-31.0,
-                ),
-            },
-        ),
-    )
 
 
 def test_check_priors_carry_fc_for_the_measure_level_solve():
@@ -7348,7 +6320,7 @@ def test_measure_diag_logs_full_numbers_on_accept(caplog):
     assert "woofer_snr_verdict=ok" in caplog.text
     assert "tweeter_snr_db=8.0" in caplog.text
     assert "tweeter_snr_verdict=insufficient" in caplog.text
-    evidence = _analysis_json(fakes.measure(c._measure_program))
+    evidence = _analysis_json(fakes.measure(c.program_for_phase(PHASE_MEASURE)))
     assert evidence["alignment_confidence_source"] == "gcc_phat_seed"
     assert evidence["alignment_seed_delay_us"] == 120.0
     assert evidence["alignment_seed_ripple_db"] == 4.56
@@ -7671,26 +6643,6 @@ def test_verify_diag_pilot_transfer_step_does_not_leak_across_an_early_return(ca
 # fit -> apply-in-linear-domain -> re-solve-trim -> sanity-backstop chain).
 
 
-def _resp_with_repeats(role: str, n_repeats: int) -> DriverResponse:
-    freqs = np.linspace(150.0, 20000.0, 256)
-    mag = np.zeros_like(freqs)
-
-    def make() -> DriverResponse:
-        return DriverResponse(
-            role=role, freqs_hz=freqs, magnitude_db=mag,
-            complex_tf=np.ones_like(freqs, dtype=complex),
-            gating={}, snr=None, validity_floor_hz=140.0,
-        )
-
-    repeats = tuple(make() for _ in range(n_repeats))
-    return DriverResponse(
-        role=role, freqs_hz=freqs, magnitude_db=mag,
-        complex_tf=np.ones_like(freqs, dtype=complex),
-        gating={}, snr=None, validity_floor_hz=140.0,
-        repeat_responses=repeats,
-    )
-
-
 def test_compose_sigma_db_none_when_own_under_paired_threshold():
     own = _resp_with_repeats("woofer", 1)  # 2 total occurrences, < 3
     sibling = _resp_with_repeats("tweeter", 4)  # 5 total, plenty
@@ -7769,256 +6721,6 @@ def test_sigma_tolerable_db_matches_linearization_envelopes_own_table():
 
 
 # --- conductor integration reorder ------------------------------------------
-
-
-def _fixture_branch_db() -> tuple[np.ndarray, np.ndarray]:
-    """The eligible fixture's two branch magnitude curves.
-
-    Split out from ``_eligible_measure_analysis`` so ``_FIXTURE_RAW_TRIM_DB``
-    below can be SOLVED from the same curves the fixture hands the conductor
-    (see that constant for why a hand-written trim stopped being acceptable).
-
-    **Each branch carries its own crossover (R10a, #1817).** These curves stand
-    in for a per-driver MEASUREMENT, and a real one is captured through the
-    graph the speaker is running — so the woofer's low-pass and the tweeter's
-    high-pass belong in them. Verified on the banked 2026-07-30 bench session
-    rather than assumed (``captures/r10a-objective-20260801/premise_probe.py``):
-    against its own passband median the real JTS3 woofer measures **-3.22 dB at
-    0.79*Fc, -7.32 dB at Fc and -32.62 dB at 2*Fc**, and the real tweeter
-    **-38.81 dB at 0.79*Fc**, both tracking their committed LR4 sections (and
-    falling faster still, since the driver's natural rolloff adds to the
-    electrical one).
-
-    Before R10a they did NOT, and it did not show: a flat target and a
-    crossover-free curve are self-consistent, so the fixture modelled an
-    impossible speaker without contradicting anything. The crossover-shaped
-    target is what makes the omission observable — a fit graded against the
-    shape of a crossover its own measurement never went through would be asked
-    to CUT its passband edges into existence. Two tests in this file
-    (``test_..._one_set_of_crossover_sections``'s neighbours at the
-    ``crossover_response_db`` call sites below) had already adopted the
-    faithful shape locally; this makes it the fixture's own.
-    """
-    from jasper.active_speaker.branch_chain import (
-        CrossoverSection, crossover_response_db,
-    )
-
-    freqs = _LINEARIZABLE_FREQS_HZ
-    # A mild, monotonic -1.5 dB/octave tilt around Fc (capped at +/-6 dB
-    # at the band extremes) -- NOT a perfectly flat 0 dB reference.
-    # #1667's ripple-optimal trim solve needs the woofer branch to carry
-    # SOME of its own frequency-dependent shape: against a perfectly
-    # flat woofer, attenuating the tweeter toward silence is always
-    # "more flat" (there is nothing on the woofer side to trade off
-    # against), so the search has no genuine interior minimum and walks
-    # to its own scan-window edge -- which the sanity guard then
-    # (correctly) distrusts and rejects. A mild tilt is enough for a
-    # real interior optimum to exist while leaving the tweeter-bump
-    # linearity checks below unaffected (the fit and its own filters are
-    # sibling-independent; verified offline).
-    woofer_db = np.clip(-1.5 * np.log2(np.maximum(freqs, 1.0) / 1600.0), -6.0, 6.0)
-    # …plus a -6 dB dip at 400 Hz, INSIDE the woofer's own radiating band
-    # (#1809). Without it this fixture cannot exercise the lift vocabulary at
-    # all any more, and the reason is the defect #1809 filed: the tilt's only
-    # deficit is its falling tail, which lives ABOVE the 1600 Hz crossover,
-    # where the woofer has handed off. Every boost this fixture used to emit
-    # was a stopband boost — a miniature of the 2026-07-28 JTS3 profile, where
-    # +11.6155 dB at 2747 Hz sat 750 Hz into the woofer's own LR4 stopband. A
-    # real in-band dip is what a driver the fit should lift actually looks
-    # like, and it lands the fixture's own boost at +4.25 dB / 399 Hz, beside
-    # that profile's real +4.8807 dB / 377.4 Hz. It moves the solved raw trim
-    # by 0.002 dB, so nothing else in this file shifts under it.
-    woofer_db = woofer_db - 6.0 * np.exp(
-        -0.5 * ((np.log2(freqs / 400.0) / 0.3) ** 2)
-    )
-    # A bump inside the [800, 3200] Hz overlap band (Fc=1600) — validated
-    # offline (PR-C sanity pass) to survive envelope/fit and move the
-    # re-solved trim measurably vs the raw candidate.
-    #
-    # **+3 dB at 2400 Hz since R10a; it was +6 dB at 1500 Hz.** Both numbers
-    # moved for the same reason — the fixture became faithful above — and both
-    # were measured rather than guessed
-    # (``captures/r10a-objective-20260801/fixture_sweep.txt``):
-    #
-    # * 1500 -> 2400 Hz, because the bump has to sit in the tweeter's OWN
-    #   radiating band (LR4 high-passed at 1600 Hz, so 1997 Hz up) to be a
-    #   driver defect at all. At 1500 Hz the branch's own crossover is ~7 dB
-    #   down, so a faithful fixture attenuates the bump before it reaches the
-    #   sum and the fit is asked to correct something the graph already
-    #   removed. 2400 Hz keeps it inside the overlap band the trim scans.
-    # * 6 -> 3 dB, because a bump that big in the tweeter's own passband
-    #   drives the ripple-optimal trim to -3.9 dB, which puts the shared level
-    #   frame 4.361 dB apart — past its frozen 3.0 dB tolerance, so the gate
-    #   (correctly) refuses before any of this file's other assertions run.
-    #   The sweep is monotonic and unambiguous: at 2400 Hz the disagreement is
-    #   2.643 dB at +3, 3.275 at +4, 3.760 at +5, 4.361 at +6. +3 dB is a
-    #   realistic driver defect that still moves the trim measurably
-    #   (-2.267 dB) and still lands the fixture's boost at +3.72 dB / 399 Hz.
-    tweeter_db = 3.0 * np.exp(-0.5 * ((np.log2(freqs / 2400.0) / 0.25) ** 2))
-    # …each behind its own committed section, so the curve the fixture hands
-    # the conductor is the one a measurement would have produced.
-    woofer_db = woofer_db + crossover_response_db(
-        freqs, (CrossoverSection(fc_hz=_FIXTURE_FC_HZ, order=4, highpass=False),),
-    )
-    tweeter_db = tweeter_db + crossover_response_db(
-        freqs, (CrossoverSection(fc_hz=_FIXTURE_FC_HZ, order=4, highpass=True),),
-    )
-    return woofer_db, tweeter_db
-
-
-def _solve_fixture_raw_trim(
-    woofer_db: np.ndarray | None = None, tweeter_db: np.ndarray | None = None,
-) -> dict[str, float]:
-    """The raw trim a pair of branch curves actually call for.
-
-    **Why this is solved and not written down** (PR-L4). The fixture carried a
-    hand-written ``{"woofer": 0.0, "tweeter": -2.211}`` chosen to exercise the
-    ripple scan, but its two branches are near-equal-sensitivity synthetics
-    that call for about -0.7 dB. Nothing noticed, because until PR-L4 nothing
-    in the chain ever compared the two branches' realized levels — which is
-    precisely the hole PR-L4 item 1 exists to close, reproduced inside the test
-    fixture that was meant to model the thing. A production MEASURE analysis
-    derives ``candidate.trim_db`` from its own branches via
-    ``solve_branch_trims``, so this fixture now does the same and cannot drift
-    from its own physics again.
-
-    **Why it takes optional curves instead of only reading the default pair**
-    (#1938). ``_eligible_measure_analysis`` reuses this exact solve for
-    whichever ``woofer_db``/``tweeter_db`` a call is actually using, default or
-    custom. Defaulting a custom-curve call's trim to a constant solved from the
-    DEFAULT curves (below) hands the conductor one speaker's branches and
-    another speaker's trim — the identical incoherence this function was
-    written to remove for the default curves in PR-L4, reintroduced through
-    the custom-curve parameters (#1938). Arguments default to
-    :func:`_fixture_branch_db`'s pair, so ``_FIXTURE_RAW_TRIM_DB`` below is
-    unaffected by this generalization.
-
-    **Why the woofer trim is returned too, not hardcoded to 0.0** (#1938
-    gate follow-up). Before this generalization, the woofer trim was always
-    ``0.0`` by construction: the one fixed pair this function ever solved had
-    a quieter woofer, so ``solve_branch_trims``'s "attenuate the louder
-    branch" rule always left the woofer untouched. That stopped being true
-    the moment this function started solving ARBITRARY curve pairs — a pair
-    whose woofer is louder in its own band needs a nonzero woofer trim, and
-    hardcoding it to 0.0 silently drops that attenuation. Returning both
-    solved values is the same fix this function exists for, applied to
-    itself.
-    """
-    freqs = _LINEARIZABLE_FREQS_HZ
-    if woofer_db is None or tweeter_db is None:
-        default_woofer_db, default_tweeter_db = _fixture_branch_db()
-        woofer_db = default_woofer_db if woofer_db is None else woofer_db
-        tweeter_db = default_tweeter_db if tweeter_db is None else tweeter_db
-    trim_w, trim_t, _lw, _lt = solve_branch_trims(
-        freqs,
-        (10.0 ** (np.asarray(woofer_db) / 20.0)).astype(complex),
-        (10.0 ** (np.asarray(tweeter_db) / 20.0)).astype(complex),
-        _FIXTURE_FC_HZ,
-    )
-    return {"woofer": round(float(trim_w), 3), "tweeter": round(float(trim_t), 3)}
-
-
-_FIXTURE_RAW_TRIM_DB = _solve_fixture_raw_trim()
-
-
-def _fixture_raw_predicted_sum(
-    *, woofer_db=None, tweeter_db=None, trim_db=None,
-) -> tuple[np.ndarray, np.ndarray]:
-    """The RAW pre-fit two-branch sum of the eligible fixture's own branches.
-
-    PR-L4 review B1: item 2's gate grades this against the LINEARIZED
-    prediction through the same evaluator, so the baseline has to be the
-    fixture's real uncorrected sum. It used to be a hardcoded flat zero curve,
-    which claimed the uncorrected speaker was already perfect and made every
-    correction score as a regression — the same "a fixture field nobody derived
-    from the fixture" shape as the hand-written raw trim above.
-
-    #1938 gate follow-up: an omitted ``trim_db`` is derived from THESE curves
-    (default or custom), never from ``_FIXTURE_RAW_TRIM_DB`` — the same
-    default-curves-constant trap ``_eligible_measure_analysis`` had, closed
-    here too even though every current caller already passes matching
-    curves/trim together (no caller today hits this branch with an
-    incoherent pair — this is closing the trap-door, not fixing an observed
-    incoherence).
-    """
-    if woofer_db is None or tweeter_db is None:
-        default_woofer_db, default_tweeter_db = _fixture_branch_db()
-        woofer_db = default_woofer_db if woofer_db is None else woofer_db
-        tweeter_db = default_tweeter_db if tweeter_db is None else tweeter_db
-    if trim_db is None:
-        trim_db = _solve_fixture_raw_trim(woofer_db, tweeter_db)
-    summed = predicted_branch_sum(
-        (10.0 ** (np.asarray(woofer_db) / 20.0)).astype(complex),
-        (10.0 ** (np.asarray(tweeter_db) / 20.0)).astype(complex),
-        float(trim_db.get("woofer", 0.0)), float(trim_db.get("tweeter", 0.0)), 1,
-    )
-    return (
-        _LINEARIZABLE_FREQS_HZ,
-        20.0 * np.log10(np.maximum(np.abs(summed), 1e-12)),
-    )
-
-
-def _eligible_measure_analysis(
-    program, *, mic_tier="reference", woofer_repeats=2, tweeter_repeats=2,
-    woofer_db=None, tweeter_db=None, trim_db=None, trim_band_average_db=None,
-) -> ProgramAnalysis:
-    default_woofer_db, default_tweeter_db = _fixture_branch_db()
-    if woofer_db is None:
-        woofer_db = default_woofer_db
-    if tweeter_db is None:
-        tweeter_db = default_tweeter_db
-    if trim_db is None:
-        # #1938: derive the trim from THESE branches (default or custom) —
-        # never default to a constant solved from a DIFFERENT pair. A caller
-        # that hands the conductor custom woofer_db/tweeter_db but inherits
-        # _FIXTURE_RAW_TRIM_DB (solved from the DEFAULT curves) hands it one
-        # speaker's branches and another speaker's trim — the exact defect
-        # _solve_fixture_raw_trim's docstring documents for the default curves,
-        # closed here for every curve pair. A caller that deliberately wants an
-        # incoherent pair passes trim_db= explicitly (the level gates' own
-        # branch-forcers, e.g.
-        # test_the_level_frame_refusal_names_the_levels_and_bands_it_read).
-        trim_db = _solve_fixture_raw_trim(woofer_db, tweeter_db)
-    if trim_band_average_db is None:
-        # Production always sets it (`_build_candidate`), and it COINCIDES with
-        # the applied trim whenever the ripple polish did not move it. Splitting
-        # the two is what a test does to exercise PR-L5's level-frame gate,
-        # which reads the level-match result rather than the polished trim.
-        trim_band_average_db = dict(trim_db)
-    return ProgramAnalysis(
-        phase="measure",
-        program_id=program.program_id,
-        locations=(
-            _loc("sweep_w"), _loc("sweep_t"), _loc("sweep_w_rep"), _loc("sweep_t_rep"),
-        ),
-        drift=DriftEstimate(
-            epsilon_ppm=5.0, baselines_ppm={"woofer_repeat": 5.0},
-            max_residual_samples=0.1, glitch_detected=False,
-        ),
-        mic_tier=mic_tier,
-        driver_responses=(
-            _linearizable_response("woofer", woofer_db, n_repeats=woofer_repeats),
-            _linearizable_response("tweeter", tweeter_db, n_repeats=tweeter_repeats),
-        ),
-        alignment=_alignment(),
-        candidate=CrossoverCandidate(
-            trim_db=trim_db, polarity="normal", delay_us=150.0,
-            predicted_ripple_db=0.8, confidence=0.8,
-            trim_band_average_db=trim_band_average_db,
-        ),
-        linearity_ok=True,
-        # The RAW pre-fit two-branch sum of THIS fixture's own branches at THIS
-        # fixture's own trim — not a flat zero curve (PR-L4 review B1). Item 2's
-        # gate grades this against the LINEARIZED prediction through the same
-        # evaluator, so a hardcoded-flat baseline claimed the uncorrected
-        # speaker was already perfect and made every correction look like a
-        # regression. Same incoherence class as the hand-written trim above:
-        # a fixture field that was never derived from the fixture.
-        predicted_sum=_fixture_raw_predicted_sum(
-            woofer_db=woofer_db, tweeter_db=tweeter_db, trim_db=trim_db,
-        ),
-        glitch_detected=False,
-    )
 
 
 @pytest.mark.parametrize("woofer_level_db,tweeter_level_db,expected_trim", [
@@ -8278,28 +6980,6 @@ def test_fit_linearization_wires_ripple_optimal_seeded_by_anchored_giveback(
     # the raw trim.
     assert committed_t == pytest.approx(expected_anchored["tweeter"])
     assert resolved_trim_t == pytest.approx(expected_anchored["tweeter"])
-
-
-def _one_sided_conductor(fakes: FakeSeams) -> CrossoverV2Conductor:
-    """A conductor whose TWEETER sweep starts AT Fc — JTS3's real geometry.
-
-    ``overlap_band_hz`` then clamps the shared band to ``[Fc, 2*Fc]``, the
-    one-sided shape PR-L3 is about. Built inline rather than through
-    ``_conductor`` because the role bands are the whole point of the fixture.
-    """
-    return CrossoverV2Conductor(
-        session_id=SESSION,
-        source_preset=_preset(),
-        roles_bands=[
-            RoleBand("woofer", 0, FrequencyBand(150.0, 6000.0)),
-            RoleBand("tweeter", 1, FrequencyBand(FC_HZ, 20000.0)),
-        ],
-        fc_hz=FC_HZ,
-        driver_caps_dbfs=CAPS,
-        session_volume_db=SESSION_VOLUME_DB,
-        seams=fakes.seams(),
-        driver_spacing_m=0.15,
-    )
 
 
 def test_linearized_ripple_polish_is_skipped_on_a_one_sided_band(caplog, monkeypatch):
@@ -8981,19 +7661,6 @@ def test_predicted_spec_report_is_unknown_never_a_pass_on_bad_input():
     assert spec_report_for_predicted_sum(None) is None
     assert spec_report_for_predicted_sum((np.array([]), np.array([]))) is None
     assert spec_report_for_predicted_sum(("not", "arrays")) is None
-
-
-def _gate_residuals(conductor) -> tuple[float, float]:
-    """``(before_rms_db, after_rms_db)`` — item 2's two terms, recomputed from
-    the conductor's own predictions through the SAME evaluator the gate used."""
-    before = spec_report_for_predicted_sum(
-        _fixture_raw_predicted_sum()
-    )
-    after = spec_report_for_predicted_sum(conductor.measure_predicted_sum)
-    return (
-        spec_convergence_residual(before).rms_db,
-        spec_convergence_residual(after).rms_db,
-    )
 
 
 def test_prediction_gate_allows_a_materially_better_correction():
@@ -9841,33 +8508,6 @@ def test_verify_rearm_measure_predicted_sum_era_round_trip():
 # --------------------------------------------------------------------------- #
 
 
-def _probed_conductor(fakes: FakeSeams, *, rollback=None):
-    """A conductor walked to the point where VERIFY is the next capture.
-
-    Uses the ELIGIBLE measure fixture because a probe needs something to have
-    been commanded: an ineligible session emits no linearization filters, so
-    relative to the raw crossover it commands nothing this probe can grade
-    (pinned by ``test_the_commanded_delta_is_none_for_a_trims_only_candidate``).
-    """
-    fakes.rollback = rollback
-    fakes.measure = lambda program: _eligible_measure_analysis(program)
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
-    return c
-
-
-def _tracking_curve(c, error_db):
-    """VERIFY's smoothed ``(freqs, measured, predicted)`` triple, on the grid
-    the session's own commanded delta lives on, with ``error_db`` (a callable
-    of frequency, or a scalar) as measured−predicted."""
-    freqs = np.asarray(c.measure_commanded_delta[0], dtype=float)
-    predicted = np.asarray(c.measure_predicted_sum[1], dtype=float)
-    error = error_db(freqs) if callable(error_db) else np.full_like(freqs, error_db)
-    return freqs, predicted + error, predicted
-
-
 def test_delta_probe_verifies_the_correction_and_accepts_a_matching_one():
     """The happy path: the speaker did what the filters commanded, so the
     probe records a MATCHED map and the session is untouched."""
@@ -10089,16 +8729,6 @@ def test_delta_probe_runs_only_after_tracking_has_passed():
     assert c.delta_probe is None
 
 
-def _boost_vocabulary_spy(seen: list[bool]):
-    real_fit = iv.fit_driver_linearization
-
-    def _spy(resp, envelope, **kwargs):
-        seen.append(kwargs["vocabulary"].allow_boost)
-        return real_fit(resp, envelope, **kwargs)
-
-    return _spy
-
-
 def test_boost_is_granted_only_to_a_journey_that_will_verify():
     """Boost permission is EVIDENCE-gated on the post-apply sweep.
 
@@ -10186,31 +8816,6 @@ def test_boost_is_refused_when_the_cloud_verdict_never_reached_the_envelope():
     )
     # …and the absence is already disclosed, not silent.
     assert c.candidate.exclusion_evidence == {}
-
-
-def _vocabularies_seen(seen: list):
-    """Spy recording the WHOLE ``FitVocabulary``, not just ``allow_boost``.
-
-    ``_boost_vocabulary_spy`` answers "was boost permitted"; the ruling also
-    makes a claim about what the permission came WITH (an empty exclusion set,
-    because there is no spatial evidence to compose), so that needs the object.
-    """
-    real_fit = iv.fit_driver_linearization
-
-    def _spy(resp, envelope, **kwargs):
-        seen.append(kwargs["vocabulary"])
-        return real_fit(resp, envelope, **kwargs)
-
-    return _spy
-
-
-def _emitted_boosts(candidate) -> list[dict]:
-    return [
-        f
-        for fit in candidate.linearization.values()
-        for f in fit["filters"]
-        if f["gain"] > 0.0
-    ]
 
 
 def test_boost_is_granted_on_the_driver_only_path_that_plans_no_cloud():
@@ -10845,80 +9450,6 @@ def test_a_role_with_no_crossover_region_is_credited_nothing():
     assert sections_by_role(()) == {}
 
 
-def _healthy_crossed_over_pair(dip_db: float = 7.0):
-    """Two HEALTHY drivers, each measured THROUGH its own side of a matched
-    LR4 pair at the fixture's Fc, each with one benign in-band dip.
-
-    "Healthy" is the load-bearing word and it is true by construction: the two
-    branches are the SAME flat driver behind mirrored halves of one crossover,
-    so they sit at the same level and a level gate has nothing to find. The
-    dips (400 Hz on the woofer, 6 kHz on the tweeter) are inside each driver's
-    own radiating band, so whatever the fit does about them is driver work
-    rather than crossover work.
-
-    **The depth no longer selects an outcome, and the sweep that says so is
-    below (R10a, #1817).** It used to: the depth was tuned so the two arms
-    straddled item 2's 0.5 dB improvement floor, 7 dB being the value that
-    maximised the smaller margin (pre 0.132 dB below the floor, post 0.091 dB
-    above it). That straddle is gone. Re-swept against the shaped target,
-    reading ``event=correction.crossover_v2_prediction_gate`` (floor 0.5 dB;
-    ``pre`` is the pre-#1929 arm, ``post`` the shipped one):
-
-        depth dB        3        5        7        9       11       15
-        pre  improve  -0.044   +0.023   +0.036   +0.045   +0.062   +0.106
-        post improve  -0.011   +0.024   +0.035   +0.046   +0.062   +0.105
-        pre  frame     7.886    6.916    6.156    5.509    5.566    6.389
-        post frame     0.947    0.973    0.988    1.058    0.919    0.951
-
-    Both arms are refused at every depth, and the two arms' improvements never
-    differ by more than 0.001 dB. The cause is #1809's own doctrine rather than
-    a fixture that needs more amplitude: **a cut-only fit cannot fill a dip.**
-    Under the old flat target the fit generated large spurious cuts instead —
-    the tweeter drew about 9 dB of broadband cut, because a level mask spanning
-    the crossover dragged its ``target_level_db`` to −9.80 dB for a driver whose
-    passband is ~0 dB — and those cuts moved the predicted sum enough to clear
-    the floor. With the shaped target the tweeter draws ZERO filters and the
-    woofer's residual halves (3.4308 → 1.7063 dB rms), so what is left to grade
-    is a speaker a cut-only correction genuinely cannot improve. Flipping the
-    sign does not restore the straddle either: at +5/+7/+9/+11 dB bumps BOTH
-    arms complete.
-
-    7 dB is retained because nothing selects a depth any more, and moving it
-    would churn the two frame numbers the caller pins for no gain. What still
-    binds at 7 dB, and is what the caller reads: the pre-#1929 frame is over
-    the 3.0 dB tolerance while its realized check passes (so #1866's
-    finding-and-proceed path is the one exercised, not the hard refusal), and
-    the shipped frame is well under it.
-
-    The declared sweep spans (``_roles()``: woofer 150-6000, tweeter
-    300-20000) both cross the 1600 Hz Fc, which is the #1929 premise and the
-    ordinary case for a real declaration — the woofer radiates only below
-    1282 Hz and the tweeter only above 1996 Hz.
-    """
-    from jasper.active_speaker.branch_chain import (
-        CrossoverSection, crossover_response_db,
-    )
-
-    freqs = _LINEARIZABLE_FREQS_HZ
-
-    def dip(center_hz: float) -> np.ndarray:
-        return -dip_db * np.exp(-0.5 * ((np.log2(freqs / center_hz) / 0.3) ** 2))
-
-    lowpass = (CrossoverSection(fc_hz=_FIXTURE_FC_HZ, order=4, highpass=False),)
-    highpass = (CrossoverSection(fc_hz=_FIXTURE_FC_HZ, order=4, highpass=True),)
-    woofer_db = crossover_response_db(freqs, lowpass) + dip(400.0)
-    tweeter_db = crossover_response_db(freqs, highpass) + dip(6000.0)
-    trim_w, trim_t, _lw, _lt = solve_branch_trims(
-        freqs,
-        (10.0 ** (woofer_db / 20.0)).astype(complex),
-        (10.0 ** (tweeter_db / 20.0)).astype(complex),
-        _FIXTURE_FC_HZ,
-    )
-    return woofer_db, tweeter_db, {
-        "woofer": round(float(trim_w), 3), "tweeter": round(float(trim_t), 3),
-    }
-
-
 def test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused(caplog):
     """**#1929, end to end.** A speaker with nothing wrong with it must not be
     refused because its drivers were swept over spans that reach past Fc.
@@ -11290,61 +9821,6 @@ def test_the_level_frame_refusal_names_the_levels_and_bands_it_read(caplog):
         disclosed = cores[role]
         assert disclosed["band_hz"] != disclosed["radiating_band_hz"]
         assert disclosed["band_hz"][0] >= disclosed["radiating_band_hz"][0]
-
-
-# --------------------------------------------------------------------------- #
-# #1866: the frame gate's finding+proceed path (owner ruling, 2026-07-30)
-# --------------------------------------------------------------------------- #
-#
-# The synthetic stand-in for the 2026-07-30 field session. That session is
-# laptop-side and gitignored — 3.2307 dB frame under #1929's banded estimator,
-# realized −0.247 dB matched, predicted on-axis residual 3.106 → 1.333 dB, all
-# recorded on #1870 — so it is CITED and never replayed. What is replayed is a
-# fixture with the same SHAPE: an extra −1.6 dB/octave of woofer passband tilt,
-# an ordinary driver in baffle-step territory, which lands the frame at
-# 3.894 dB against the 3.0 tolerance while the realized-level instrument reads
-# −0.978 dB and passes. Both numbers are asserted below, so a change that moves
-# either has to argue with these tests.
-#
-# The tilt is the fixture's physical premise and has never moved; these two
-# numbers are its CONSEQUENCE and have, twice:
-#
-#  * 3.276 → 3.209 (#1938 gate follow-up) — _solve_fixture_raw_trim's
-#    hardcoded-woofer-0.0 return was fixed, and at this tilt the woofer is the
-#    louder branch, so the coherent trim attenuates it by 0.067 dB. See
-#    _tilted_woofer_fixture's docstring.
-#  * 3.209 → 3.894 (R10a, #1817) — _fixture_branch_db became faithful, so the
-#    curves this fixture tilts now carry each branch's own crossover, as a real
-#    per-driver measurement does. Both of the frame's estimators read the
-#    MEASUREMENT, so a truer measurement moves them; neither reads the fit's
-#    target, and the value is 3.894 with the shaped target and with a flat one
-#    alike (measured both ways).
-_LEVEL_FRAME_FINDING_TILT_DB_PER_OCT = -1.6
-
-
-def _tilted_woofer_fixture(fakes: FakeSeams, *, tilt_db_per_oct: float) -> None:
-    """Point ``fakes`` at the eligible fixture with extra woofer tilt.
-
-    The trim is SOLVED from the tilted branches rather than written down, for
-    the reason ``_solve_fixture_raw_trim`` gives: a hand-picked trim is a
-    fixture field nobody derived from the fixture, and this test is about the
-    relationship between two estimators of exactly that number.
-    """
-    freqs = _LINEARIZABLE_FREQS_HZ
-    base_woofer_db, tweeter_db = _fixture_branch_db()
-    woofer_db = base_woofer_db + tilt_db_per_oct * np.log2(
-        np.maximum(freqs, 1.0) / _FIXTURE_FC_HZ
-    )
-    # #1938 gate follow-up (SF-1): this used to hand-roll the same
-    # hardcoded-woofer-0.0 solve _solve_fixture_raw_trim had, which was a
-    # silent no-op at production tilt (-1.6 dB/oct) — that tilt makes the
-    # WOOFER the louder branch (level_w 1.4467 > level_t 1.3797), so the true
-    # trim is {"woofer": -0.067, "tweeter": 0.0}, not {"woofer": 0.0, ...}.
-    # Reusing the now-general helper instead of a second hand-rolled copy.
-    trim_db = _solve_fixture_raw_trim(woofer_db, tweeter_db)
-    fakes.measure = lambda program: _eligible_measure_analysis(
-        program, woofer_db=woofer_db, tweeter_db=tweeter_db, trim_db=trim_db,
-    )
 
 
 def test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds(
@@ -12132,24 +10608,6 @@ def test_verify_pass_states_the_band_it_graded():
     assert c.verify_graded_band_hz == [2000.0, 4000.0]
 
 
-def _tracking_with_frame(**frame_overrides):
-    frame = {
-        "offset_db": -0.75,
-        "tilt_db_per_octave": -0.79,
-        "pivot_hz": 2828.4,
-        "n_bins": 400,
-        "band_hz": [2000.0, 4000.0],
-        "raw": {"rms_db": 0.4, "max_db": 0.9},
-        "tilt_removed": {"rms_db": 0.18, "max_db": 0.31},
-    }
-    frame.update(frame_overrides)
-    return {
-        "rms_db": 0.4, "max_db": 0.9, "max_db_notch_excluded": 0.9,
-        "tracking_band_hz": [2000.0, 4000.0],
-        "frame": frame,
-    }
-
-
 def test_a_passing_verify_still_discloses_the_frame_it_compared_across():
     """Rung P1 — "Verified." must say how much of the agreement was frame.
 
@@ -12265,34 +10723,6 @@ def test_a_verify_that_graded_nothing_claims_no_band():
 # --------------------------------------------------------------------------- #
 # #1967 — the boost gate's evidence claim, made substantive
 # --------------------------------------------------------------------------- #
-
-
-def _moving_notch_cloud(notch_hz: list[float]):
-    """A real ``CombinedResponse`` whose positions each carry one narrow notch
-    at their own frequency — so the cross-position check has something to
-    disagree about, below the registry's 4 kHz floor."""
-    from jasper.audio_measurement.spatial_combine import (
-        PositionCapture,
-        combine_positions,
-    )
-
-    freqs = np.fft.rfftfreq(4096, 1.0 / 48_000)
-    log_f = np.log2(np.maximum(freqs, 1.0))
-    baseline = 1.5 * np.sin(2.0 * np.pi * log_f / 1.7)
-    return combine_positions([
-        PositionCapture(
-            position_id=f"p{k:02d}", freqs_hz=freqs,
-            magnitude_db=baseline
-            - 18.0 * np.exp(-0.5 * ((log_f - np.log2(f0)) / 0.06) ** 2),
-            sample_rate=48_000, ir=None,
-        )
-        for k, f0 in enumerate(notch_hz)
-    ])
-
-
-_BLIND_SPAN_RESULT = {"validity_floor_hz": 1200.0, "null_registry": {
-    "classification": "insufficient_evidence", "reason": "no_corroborating_arrivals",
-}}
 
 
 def test_boost_exclusions_come_from_the_blind_span_below_the_registry_floor(caplog):
@@ -12482,18 +10912,6 @@ def test_the_fit_vocabulary_actually_carries_the_cloud_s_boost_exclusions():
 # measurement is restated as a fixture value. The journal-verified fact they DO
 # reproduce is the graded band: ``tracking_band_lo_hz=2000.0`` on a box whose
 # tweeter is swept from Fc.
-
-
-def _absolute(max_db, *, band=(1000.0, 4000.0), worst_db=None, worst_hz=1700.0):
-    """A kernel ``verify_absolute`` record, in the shape the analyzer emits."""
-    return {
-        "band_hz": [band[0], band[1]],
-        "rms_db": max_db / 2.0,
-        "max_db": max_db,
-        "worst_db": -max_db if worst_db is None else worst_db,
-        "worst_hz": worst_hz,
-        "n_bins": 16384,
-    }
 
 
 def test_absolute_miss_remains_independent_when_integration_passes():

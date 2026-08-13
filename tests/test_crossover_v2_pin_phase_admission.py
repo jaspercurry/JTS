@@ -78,7 +78,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     build_v2_cloud_index_phase_map,
 )
 
-from tests.test_crossover_v2_conductor import (
+from tests.crossover_v2_fixtures import (
     CLOUD_MEASURE_INDEXES,
     FakeSeams,
     _cloud_conductor,

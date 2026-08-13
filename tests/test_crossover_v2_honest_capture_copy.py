@@ -51,7 +51,7 @@ from jasper.active_speaker.crossover_v2_flow import (
 from jasper.web import correction_crossover_v2 as v2host
 from jasper.capture_relay.session import CaptureBeginRefused
 from tests.test_crossover_envelope_v2 import _status
-from tests.test_crossover_v2_conductor import (
+from tests.crossover_v2_fixtures import (
     FakeSeams,
     _check_analysis,
     _conductor,
