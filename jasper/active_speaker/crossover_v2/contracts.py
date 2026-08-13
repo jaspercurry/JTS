@@ -438,15 +438,18 @@ class TrimStrategy(str, Enum):
     the string does not record which pair won the realized-level grading.  It
     states that evidence gap rather than guessing a precise member.
 
-    Its former sibling ``COMMITTED_PAIR_UNRECORDED_AFTER_SANITY_DRIFT`` was
-    deleted by #2392, which is the issue #2291 Phase 5c-iii left the question
-    to.  The drift case turned out NOT to need an unrecorded member:
+    It had a second, drift-qualified sibling until #2392 — the issue #2291
+    Phase 5c-iii left the question to — and that member is deleted rather than
+    restored, because the drift case turned out not to need one:
     :attr:`~.intervention.TrimDecision.outcome` is ``"trim_rejected"`` if and
     only if :attr:`~.intervention.TrimDecision.beyond_sanity_margin`, and
     :func:`~.intervention.decide_trim` commits the anchor on exactly that
     branch, so the string determines
     :attr:`ANCHORED_COMMITTED_AFTER_SANITY_DRIFT` precisely.  An "unrecorded"
-    name for a fact the artifact records would have understated the evidence.
+    name for a fact the artifact does record would understate the evidence.
+    ``test_the_unrecorded_drift_member_is_gone_and_referenced_nowhere`` keeps
+    the name itself out of the tree, which is why it is described here rather
+    than spelled.
     """
 
     NOT_FITTED = "not_fitted"

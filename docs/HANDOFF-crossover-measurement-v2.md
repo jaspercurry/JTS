@@ -236,6 +236,7 @@ the module, not a second copy here.
 | [`crossover_v2/capture_dispatch.py`](../jasper/active_speaker/crossover_v2/capture_dispatch.py) | Which screens an anchor capture must clear, and in what order, for the three sit-still phases (CHECK, MEASURE, VERIFY). |
 | [`crossover_v2/intervention.py`](../jasper/active_speaker/crossover_v2/intervention.py) | The deterministic prescription planner as pure functions — assembly around existing DSP primitives, never a second fitter. |
 | [`crossover_v2/accountability.py`](../jasper/active_speaker/crossover_v2/accountability.py) | Whether a built candidate may be PROPOSED at all — three assertions, most-specific first. |
+| [`crossover_v2/proposal.py`](../jasper/active_speaker/crossover_v2/proposal.py) | One committed candidate gathered into the fingerprinted `InterventionProposal` the round receipt names. Computes nothing; refuses rather than raising. |
 | [`crossover_v2/verification.py`](../jasper/active_speaker/crossover_v2/verification.py) | The four independent verification verdicts and adoption as data. |
 | [`crossover_v2/round_evidence.py`](../jasper/active_speaker/crossover_v2/round_evidence.py) | The two measurements one round compares, and the margin that makes a difference a change. |
 | [`crossover_v2/coordinator.py`](../jasper/active_speaker/crossover_v2/coordinator.py) | The round's tail: grade, act on the adoption table, restore, bank the receipt. |
@@ -497,8 +498,11 @@ corrected a plausible belief with a measurement:
 - **The Phase-1 planner facade was write-only in production.** Its result
   reached no production reader, and the round receipt's
   `proposal_fingerprint` came from elsewhere. It was deleted rather than
-  documented; wiring a real proposal fingerprint into the receipt is
-  [#2392](https://github.com/jaspercurry/JTS/issues/2392).
+  documented, and the wiring landed separately in
+  [#2392](https://github.com/jaspercurry/JTS/issues/2392) — a lean
+  `crossover_v2/proposal.py` assembler called from the commit seam, whose
+  fingerprint the receipt now names. What that field identifies, and how a
+  banked receipt says which regime wrote it, is in "The receipt" below.
 
 What #2291 did **not** close: the hardware run. The definition-of-done's
 Pi-side budget line and its live-speaker items need a real speaker, phone,
@@ -1845,6 +1849,25 @@ one graded post-apply session is one round, and a recovery re-verify writes its
 own rather than amending this one. Its identity lands in `state.round_receipt`
 so the next round resolves it without scanning bundles. Writing is fail-soft: a
 receipt that could not be written is a WARN, never a lost verdict.
+
+**What `proposal_fingerprint` identifies, and how to tell (#2392).** Since
+#2392 the field carries `InterventionProposal.fingerprint` — the proposal the
+round *made* — rather than the candidate that happened to be committed. The
+proposal is assembled at the one commit seam
+(`crossover_v2/proposal.py:plan_intervention_proposal`) and its fingerprint
+crosses to the grading stage through `verify_priors.proposal_fingerprint`,
+because the stage that writes the receipt builds a fresh session and holds no
+candidate. **Old and new receipts are not distinguishable by value** — both a
+candidate fingerprint and a proposal fingerprint are 64-hex SHA-256 from
+`json_fingerprint` — so the receipt says which, in
+`proposal_fingerprint_kind`, and the three states are total: **key absent** =
+written before #2392, therefore a candidate; `candidate` = written after, but
+the session had no proposal (a pre-#2392 stage 1, or a refused assembly);
+`intervention_proposal` = the proposal's own. The applied candidate stays on
+the record either way, at `evidence_identities.candidate_fingerprint`. The
+closed vocabulary is `contracts.PROPOSAL_FINGERPRINT_KINDS`, and the marker is
+inside the receipt's digest, so a banked receipt cannot be relabelled without
+its fingerprint moving.
 
 **Journal:** `event=correction.crossover_v2_round_graded` carries all four
 verdicts WITH their evidence (the *why*, which the statuses alone cannot say),
