@@ -1152,3 +1152,70 @@ def test_every_lane_declares_its_ring_and_plug_blocks_in_the_confd(label):
     assert f'pcm "{rl.ring_conf_pcm_name(label)}"' in block.group(1), (
         f"{label}'s plug wrapper does not point at its own ring"
     )
+
+
+# --- Root renderers, and the derived device map (U3 / P6b) -----------------
+#
+# Both of these were found GREEN by the P6b mutation harness — the fix and the
+# generalization each shipped without a guard, which is exactly the shape a
+# mutation pass exists to catch.
+
+
+@pytest.mark.parametrize("root_spelling", ["root", "0", None])
+def test_a_root_renderer_is_capable_without_group_membership(root_spelling):
+    """Root writes the 2775 ring directory regardless of `jts-ring`.
+
+    This is not a nicety. `bluealsa-aplay` runs as root (its packaged unit sets
+    no `User=`, nor does the JTS drop-in), and before P6b this function answered
+    **False** for it — which would have REFUSED every arm of that lane on every
+    box, for a permission it already had. `None` is included because that is
+    what systemd reports for a unit with no `User=`, and it means root.
+    """
+    assert rl.renderer_user_in_ring_group(root_spelling) is True
+
+
+def test_a_root_renderer_is_not_refused_by_the_arm_preflight():
+    """The end-to-end consequence of the above: the preflight must pass."""
+    assert (
+        rl.arm_refusal_reason(
+            "bluealsa",
+            assets_present=True,
+            lane_conf_present=True,
+            user_in_ring_group=rl.renderer_user_in_ring_group(None),
+            input_buffer_frames=4096,
+            period_frames=256,
+        )
+        is None
+    )
+
+
+def test_a_nonroot_user_outside_the_group_is_still_refused():
+    """The floor for the test above — the group check must not become a
+    rubber stamp that returns True for everyone."""
+    assert rl.renderer_user_in_ring_group("nobody-not-a-real-user-xyz") in (
+        False,
+        None,
+    ), "a non-root user must not be reported capable merely because root is"
+
+
+def test_the_doctor_ring_device_map_covers_every_registered_lane():
+    """The EBUSY-owner map must be DERIVED, not hand-listed.
+
+    P6a hand-listed `{"librespot_ring_lane": "spotify"}`. A lane added to the
+    registry but forgotten there still probes, still hits EBUSY when its
+    renderer is playing, and then fails `check_renderer_device_resolvable` with
+    "not a known fan-in ring lane" — a red doctor on a healthy box, from a
+    missing dict entry. This fails if the map ever regresses to a literal.
+    """
+    from jasper.cli.doctor import renderers as rdoc
+
+    mapping = rdoc._ring_renderer_devices()
+    assert mapping == {
+        lane.ring_device: lane.label for lane in rl.RENDERER_LANES
+    }
+    for lane in rl.RENDERER_LANES:
+        assert mapping.get(lane.ring_device) == lane.label, (
+            f"{lane.label}'s ring device is missing from the doctor's map; its "
+            "EBUSY-owner path would report 'not a known fan-in ring lane'"
+        )
+    assert len(mapping) == len(rl.RENDERER_LANES)
