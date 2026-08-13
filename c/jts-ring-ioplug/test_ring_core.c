@@ -153,8 +153,14 @@ static void cleanup_owned_test_locks(void) {
             }
         }
         if (!is_lock) continue;
+        // Same truncation rule as compose_path below, and the same reason: this
+        // string is unlinked. `d_name` is unbounded from the compiler's view
+        // (up to NAME_MAX), so gcc flags the composition; a short buffer here
+        // would also be a real hazard, not just a warning.
         char path[512];
-        snprintf(path, sizeof(path), "%s/%s", g_owned_dir, entry->d_name);
+        int n = snprintf(path, sizeof(path), "%s/%s", g_owned_dir,
+                         entry->d_name);
+        if (n < 0 || (size_t)n >= sizeof(path)) continue;
         (void)unlink(path);
     }
     closedir(dir);
@@ -166,13 +172,34 @@ static void remember_test_path(const char *path) {
     g_test_path_count++;
 }
 
+// Compose `<base><suffix>` into `out`, or return 0 if it would not fit.
+//
+// TRUNCATION MUST NOT UNLINK. This is a correctness rule before it is a warning
+// fix: a truncated path is a DIFFERENT path, and these composed strings are fed
+// straight to unlink(2). Silently shortening `/tmp/…/foo.ring.writer.lock` could
+// name some other file entirely and delete it. Skipping instead leaks one lock
+// file in a case that cannot occur with the fixed-size test paths this file
+// builds — the safe direction by a wide margin.
+//
+// Matches acquire_writer_lock's own idiom in jts_ring_shm.c (check the snprintf
+// return against the buffer, treat >= size as failure). Also silences gcc's
+// -Wformat-truncation, which fires here and not under clang: the suffix is a
+// `const char *` the compiler cannot bound, so it assumes up to 65535 bytes.
+static int compose_path(char *out, size_t out_size, const char *base,
+                        const char *suffix) {
+    int n = snprintf(out, out_size, "%s%s", base, suffix);
+    return n >= 0 && (size_t)n < out_size;
+}
+
 static void cleanup_all_test_paths(void) {
     for (size_t i = 0; i < g_test_path_count; i++) {
         (void)unlink(g_test_paths[i]);
         for (size_t j = 0; j < K_RING_LOCK_SUFFIX_COUNT; j++) {
-            char lock_path[512];
-            snprintf(lock_path, sizeof(lock_path), "%s%s", g_test_paths[i],
-                     k_ring_lock_suffixes[j]);
+            char lock_path[600];
+            if (!compose_path(lock_path, sizeof(lock_path), g_test_paths[i],
+                              k_ring_lock_suffixes[j])) {
+                continue;
+            }
             (void)unlink(lock_path);
         }
     }
