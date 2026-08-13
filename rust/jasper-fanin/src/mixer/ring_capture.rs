@@ -653,10 +653,23 @@ mod tests {
     /// unbounded-work failure the Pi budget forbids.
     #[test]
     fn an_unattachable_ring_renders_silence_and_retries_at_a_bounded_rate() {
-        // A path under a directory that does not exist can never be created, so
-        // this exercises the permanently-unavailable case rather than racing a
-        // real file into existence.
-        let path = "/nonexistent-jts-ring-dir/lane-spotify.ring";
+        // An unattachable path that is unattachable for EVERY privilege level:
+        // the parent is a regular FILE, so `ensure_parent_dir`'s `mkdir` fails
+        // EEXIST — measured, `ErrorKind::AlreadyExists` / errno 17 — and root
+        // gets the same.
+        //
+        // The obvious choice — a path under a directory that does not exist —
+        // is NOT deterministic here. `attach_or_create` calls `ensure_parent_dir`
+        // FIRST, so that case's failure is whatever CREATING the directory
+        // returns: ENOENT where the parent is writable, EACCES on CI's non-root
+        // runner (which is what turned this test red on its first-ever Linux
+        // run), and SUCCESS as root — which would attach and invert every
+        // assertion below. Parent-is-a-file removes the privilege dependency.
+        let blocker = ring_path("notdir-blocker");
+        cleanup(&blocker);
+        std::fs::write(&blocker, b"not a directory").unwrap();
+        let owned_path = format!("{blocker}/lane-spotify.ring");
+        let path = owned_path.as_str();
         let mut input = ring_lane(path);
         assert!(
             is_detached(&input),
@@ -687,15 +700,28 @@ mod tests {
             0,
             "no attach ever succeeded"
         );
+        // EEXIST is neither "absent" nor "geometry", so it classifies
+        // `refused` — the token whose remedy points at the environment
+        // (permissions / directory shape), which is the right advice here.
+        //
+        // Note this test pins the token for THIS errno only. The full
+        // reason MAPPING is pinned on synthetic errors by
+        // `attach_failures_classify_onto_the_remedy_they_need`, which is where a
+        // mapping belongs; what THIS test owns is the behaviour — silence, no
+        // spin, and never falsely attached.
         assert_eq!(
             obs.detach_reason_str(),
-            RingDetachReason::Unavailable.as_str(),
+            RingDetachReason::Refused.as_str(),
+            "a parent-is-a-file path fails ENOTDIR, which is a refusal to map \
+             rather than an absent ring"
         );
         assert_eq!(
             input.frames_read.load(Ordering::Relaxed),
             0,
             "a detached lane must not claim frames it never read"
         );
+
+        cleanup(&blocker);
     }
 
     /// The steady path: a live writer's slots are consumed one per period, byte
@@ -857,7 +883,16 @@ mod tests {
         // Start detached by pointing at an uncreatable path, then swap the
         // observability path to a creatable one — the same transition a real box
         // makes when its ring directory or renderer arrives.
-        let mut input = ring_lane("/nonexistent-jts-ring-dir/lane-spotify.ring");
+        //
+        // Parent-is-a-file (EEXIST) rather than parent-does-not-exist, for the
+        // same privilege-independence reason as
+        // `an_unattachable_ring_renders_silence_and_retries_at_a_bounded_rate`:
+        // a missing directory is creatable by root, which would attach here and
+        // make the test assert nothing.
+        let blocker = ring_path("selfheal-blocker");
+        cleanup(&blocker);
+        std::fs::write(&blocker, b"not a directory").unwrap();
+        let mut input = ring_lane(&format!("{blocker}/lane-spotify.ring"));
         assert!(is_detached(&input));
         let healed = RingLaneObservability::new(path.clone(), test_geometry());
         healed
@@ -891,6 +926,7 @@ mod tests {
             "a self-healed lane must actually carry audio, not merely report attached"
         );
 
+        cleanup(&blocker);
         cleanup(&path);
     }
 
@@ -973,31 +1009,41 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         let _ = std::fs::remove_file(format!("{path}.open.lock"));
         let mut fresh = TestRingWriter::create_or_attach(&path, test_geometry()).unwrap();
-        assert!(fresh.try_publish_slot(&vec![0x0B0B_i16; samples]));
 
-        // Drive periods. The probe fires on the slow cadence, so this needs the
-        // full window plus the re-latch period — which is the point: the lane
-        // must recover on its own, without an operator and without a restart.
-        let mut recovered = None;
+        // Drive periods until the orphan probe fires and the lane re-latches.
+        // The probe runs on the slow cadence, so this needs the full window plus
+        // the re-latch period — which is the point: the lane recovers on its own,
+        // with no operator and no restart.
+        let obs = input.ring_obs.as_ref().unwrap().clone();
+        let mut relatched = false;
         for _ in 0..(RING_REATTACH_RETRY_PERIODS + 4) {
-            let frames = read_ring_and_render(&mut input, TEST_PERIOD as usize);
-            if frames > 0 && input.read_buf[0] == 0x0B0B {
-                recovered = Some(frames);
+            read_ring_and_render(&mut input, TEST_PERIOD as usize);
+            if obs.attaches.load(Ordering::Relaxed) >= 2 {
+                relatched = true;
                 break;
             }
         }
-        assert_eq!(
-            recovered,
-            Some(TEST_PERIOD as usize),
-            "the lane must re-latch onto the LIVE file and carry its audio; \
-             holding the orphaned mapping would read silence forever while \
-             reporting attached"
-        );
-        let obs = input.ring_obs.as_ref().unwrap();
-        assert!(obs.attached.load(Ordering::Relaxed));
         assert!(
-            obs.attaches.load(Ordering::Relaxed) >= 2,
-            "a re-latch is a second attach, and must be visible as one"
+            relatched,
+            "the lane must notice the replaced inode and re-latch; holding the \
+             orphaned mapping would read silence forever while reporting attached"
+        );
+        assert!(obs.attached.load(Ordering::Relaxed));
+
+        // Publish AFTER the re-latch, not before. A fresh attach resyncs
+        // `read_seq = write_seq` (stale slots are worthless to a pacer), so a
+        // slot published before the re-latch is deliberately dropped by it —
+        // asserting on that slot would test the reader's resync, not the
+        // re-latch. What matters is that the re-latched lane carries LIVE audio.
+        assert!(fresh.try_publish_slot(&vec![0x0B0B_i16; samples]));
+        let frames = read_ring_and_render(&mut input, TEST_PERIOD as usize);
+        assert_eq!(
+            frames, TEST_PERIOD as usize,
+            "the re-latched lane must carry audio from the LIVE file"
+        );
+        assert_eq!(
+            input.read_buf[0], 0x0B0B,
+            "and it must be the new file's audio, not the orphaned mapping's"
         );
 
         cleanup(&path);
