@@ -837,6 +837,7 @@ def _receipt_kwargs(evaluation, baseline, **overrides):
         entry_graph_fingerprint="entry-graph",
         rollback_anchor={"candidate_fingerprint": "anchor-fp"},
         proposal_fingerprint="proposal-fp",
+        proposal_fingerprint_kind="intervention_proposal",
         applied_graph_fingerprint="applied-fp",
         post_measurement={"program_id": "prog-a"},
         restore_result=None,
@@ -884,6 +885,10 @@ def test_the_receipt_fingerprint_moves_when_a_committed_value_moves():
         ("round_id", "cap_round_2"),
         ("entry_graph_fingerprint", "other-graph"),
         ("proposal_fingerprint", "other-proposal"),
+        # #2392: the SAME digest under the other regime is a different receipt.
+        # Without this row the marker could ride outside the fingerprint and a
+        # banked receipt could be relabelled without its digest noticing.
+        ("proposal_fingerprint_kind", "candidate"),
         ("applied_graph_fingerprint", "other-applied"),
         ("rollback_anchor", {"candidate_fingerprint": "other-anchor"}),
         ("post_measurement", {"program_id": "prog-b"}),

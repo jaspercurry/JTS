@@ -56,6 +56,7 @@ from __future__ import annotations
 
 from .contracts import (
     PLAN_REFUSAL_REASONS,
+    PROPOSAL_FINGERPRINT_KINDS,
     AdoptionDecision,
     AdoptionOutcome,
     BenefitStatus,
@@ -74,6 +75,7 @@ from .contracts import (
 
 __all__ = [
     "PLAN_REFUSAL_REASONS",
+    "PROPOSAL_FINGERPRINT_KINDS",
     "AdoptionDecision",
     "AdoptionOutcome",
     "BenefitStatus",

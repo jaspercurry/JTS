@@ -19,6 +19,7 @@ import pytest
 from jasper.active_speaker.branch_chain import CrossoverSection
 from jasper.active_speaker.crossover_v2 import (
     PLAN_REFUSAL_REASONS,
+    PROPOSAL_FINGERPRINT_KINDS,
     AdoptionDecision,
     AdoptionOutcome,
     BenefitStatus,
@@ -480,12 +481,60 @@ def _receipt(**overrides) -> RoundReceipt:
         "round_id": "round-1",
         "entry_graph_fingerprint": "c" * 64,
         "proposal_fingerprint": "d" * 64,
+        "proposal_fingerprint_kind": "intervention_proposal",
         "verification": _verification(),
         "adoption": AdoptionDecision(outcome=AdoptionOutcome.KEEP),
         "created_at": "2026-08-10T00:00:00Z",
     }
     kwargs.update(overrides)
     return RoundReceipt(**kwargs)  # type: ignore[arg-type]
+
+
+def test_a_receipt_must_say_what_its_proposal_fingerprint_identifies():
+    """#2392's migration story, enforced where it can still be caught.
+
+    ``proposal_fingerprint`` fed on a candidate identity before #2392 and on
+    :attr:`InterventionProposal.fingerprint` after it, and the two are the same
+    shape — a 64-hex SHA-256 — so nothing about the value distinguishes them.
+    The receipt therefore has to SAY which, from a closed set, and a receipt
+    that cannot must not be constructible: it is a write-once artifact, so this
+    constructor is the last place a mislabel is still cheap.
+    """
+    for kind in sorted(PROPOSAL_FINGERPRINT_KINDS):
+        assert _receipt(proposal_fingerprint_kind=kind).proposal_fingerprint_kind == kind
+    with pytest.raises(CrossoverV2ContractError, match="proposal fingerprint kind"):
+        _receipt(proposal_fingerprint_kind="proposal")
+    with pytest.raises(CrossoverV2ContractError, match="proposal_fingerprint_kind"):
+        _receipt(proposal_fingerprint_kind="  ")
+
+
+def test_the_kind_reaches_the_payload_and_moves_the_receipt_fingerprint():
+    """Two receipts identical but for the regime that wrote them differ.
+
+    The whole point of the marker is that a later reader can tell them apart;
+    if it rode outside the digest, a receipt could be relabelled after the fact
+    without its fingerprint noticing.
+    """
+    proposal = _receipt(proposal_fingerprint_kind="intervention_proposal")
+    candidate = _receipt(proposal_fingerprint_kind="candidate")
+    assert proposal.to_dict()["proposal_fingerprint_kind"] == "intervention_proposal"
+    assert candidate.to_dict()["proposal_fingerprint_kind"] == "candidate"
+    assert proposal.fingerprint != candidate.fingerprint
+
+
+def test_the_receipt_payload_covers_every_constructor_field():
+    """A field added to :class:`RoundReceipt` without reaching the digest.
+
+    The sibling guard :func:`test_the_parametrized_mutation_set_covers_every_
+    constructor_field` does this for :class:`InterventionProposal`; the receipt
+    had none, which is how #2392's new field could have been added as a value
+    the fingerprint did not cover. ``self`` is not a field; ``fingerprint`` is
+    the digest itself and is added by ``to_dict`` rather than ``_core``.
+    """
+    import inspect
+
+    declared = set(inspect.signature(RoundReceipt.__init__).parameters) - {"self"}
+    assert declared <= set(_receipt().to_dict())
 
 
 def test_a_receipt_binds_its_round_and_fingerprints():
