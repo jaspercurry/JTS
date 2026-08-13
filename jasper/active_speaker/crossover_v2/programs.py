@@ -7,7 +7,7 @@
 Phase 5's second vertical, and the *first* leg of the issue's sequence: before
 anything can be captured, something has to be played.  Three questions had no
 owner of their own and were answered from six places on
-:class:`~jasper.active_speaker.crossover_v2_flow.CrossoverV2Conductor`:
+:class:`~jasper.active_speaker.crossover_v2_flow.CrossoverV2Session`:
 
 * **How loud may a driver be driven?**  :func:`back_off_gain` — the one clamp
   that folds a per-driver digital gain through the session volume and holds it

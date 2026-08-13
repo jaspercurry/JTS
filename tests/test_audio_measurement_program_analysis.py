@@ -678,7 +678,7 @@ def _checkpoint_priors(fc_hz, protection):
         crossover_fc_hz=fc_hz,
         # An INDEPENDENT reproduction of the union whose one owner is
         # ``crossover_v2.priors.candidate_required_band_hz`` (it lived on
-        # ``CrossoverV2Conductor._measure_priors`` when this helper was
+        # ``CrossoverV2Session._measure_priors`` when this helper was
         # written, and this citation followed it there and then to
         # ``priors.measure_priors``). Deliberately not a call to that owner:
         # this is the KERNEL's own statement of the bins it expects to be

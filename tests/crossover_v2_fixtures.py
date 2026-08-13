@@ -40,7 +40,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     PHASE_MEASURE,
     PHASE_VERIFY,
     SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
-    CrossoverV2Conductor,
+    CrossoverV2Session,
     V2FlowSeams,
     build_v2_cloud_index_phase_map,
     build_v2_verify_index_phase_map,
@@ -425,7 +425,7 @@ _ENTRY_BASELINE_RESIDUAL_DB = 4.321
 _POST_APPLY_RESIDUAL_DB = 2.691
 
 
-def _fixture_entry_baseline(conductor: CrossoverV2Conductor) -> EntryBaseline:
+def _fixture_entry_baseline(conductor: CrossoverV2Session) -> EntryBaseline:
     """The pre-apply capture #2291 Phase 3c grades every round against.
 
     **Why a conductor fixture carries one at all.** Since Phase 3c, stage 1
@@ -465,11 +465,11 @@ def _fixture_entry_baseline(conductor: CrossoverV2Conductor) -> EntryBaseline:
     )
 
 
-def _conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Conductor:
+def _conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Session:
     seams = kwargs.pop("seams", fakes.seams())
     source_preset = kwargs.pop("source_preset", _preset())
     supplied_baseline = "measure_entry_baseline" in kwargs
-    conductor = CrossoverV2Conductor(
+    conductor = CrossoverV2Session(
         session_id=SESSION,
         source_preset=source_preset,
         roles_bands=_roles(),
@@ -502,7 +502,7 @@ def _attempt_floor() -> FloorStats:
     )
 
 
-def _verify_only_conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Conductor:
+def _verify_only_conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Session:
     return _conductor(
         fakes,
         index_phase_map={1: PHASE_VERIFY},
@@ -543,14 +543,14 @@ def _plan_spy(mp) -> list:
     whose build produced it.
     """
     plans: list = []
-    original = flow.CrossoverV2Conductor._plan_linearization
+    original = flow.CrossoverV2Session._plan_linearization
 
     def spy(self, *args, **kwargs):
         plan = original(self, *args, **kwargs)
         plans.append(plan)
         return plan
 
-    mp.setattr(flow.CrossoverV2Conductor, "_plan_linearization", spy)
+    mp.setattr(flow.CrossoverV2Session, "_plan_linearization", spy)
     return plans
 
 
@@ -608,7 +608,7 @@ def _verify_to_apply(fakes):
 
 def _rearm_conductor(fakes, **kwargs):
     """A verify-only re-arm's conductor — ``prepare_v2_verify``'s shape."""
-    return CrossoverV2Conductor(
+    return CrossoverV2Session(
         session_id="verify_rearm_session",
         source_preset=_preset(),
         roles_bands=_roles(),
@@ -682,7 +682,7 @@ SHORT_VERIFY_CLOUD_INDEXES = tuple(
 )
 
 
-def _cloud_conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Conductor:
+def _cloud_conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Session:
     kwargs.setdefault("index_phase_map", CLOUD_MAP)
     # What ``prepare_v2_session`` declares: this measuring session has no
     # VERIFY entry of its own, and the correction it proposes is verified by
@@ -1112,7 +1112,7 @@ def _profiled_conductor(*, woofer_peak: float, tweeter_peak: float):
         RoleBand("woofer", 0, FrequencyBand(500.0, 1600.0)),
         RoleBand("tweeter", 1, FrequencyBand(1600.0, 10000.0)),
     ]
-    c = CrossoverV2Conductor(
+    c = CrossoverV2Session(
         session_id=SESSION,
         source_preset=_preset(),
         roles_bands=roles,
@@ -1471,14 +1471,14 @@ def _eligible_measure_analysis(
     )
 
 
-def _one_sided_conductor(fakes: FakeSeams) -> CrossoverV2Conductor:
+def _one_sided_conductor(fakes: FakeSeams) -> CrossoverV2Session:
     """A conductor whose TWEETER sweep starts AT Fc — JTS3's real geometry.
 
     ``overlap_band_hz`` then clamps the shared band to ``[Fc, 2*Fc]``, the
     one-sided shape PR-L3 is about. Built inline rather than through
     ``_conductor`` because the role bands are the whole point of the fixture.
     """
-    return CrossoverV2Conductor(
+    return CrossoverV2Session(
         session_id=SESSION,
         source_preset=_preset(),
         roles_bands=[

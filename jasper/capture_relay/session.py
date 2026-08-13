@@ -2248,7 +2248,7 @@ def _poll_capture_plan(
                         # retained, every time. The one thing that is a
                         # per-phase singleton is the durable EVIDENCE ARTIFACT
                         # write — see the ``publish_cloud`` guard inside
-                        # :meth:`CrossoverV2Conductor._run_cloud_pipeline`,
+                        # :meth:`CrossoverV2Session._run_cloud_pipeline`,
                         # keyed by ``self._group_cloud_published`` and marked
                         # only on a SUCCESSFUL write. The write-once evidence
                         # store refuses a write only when its bytes DIFFER from

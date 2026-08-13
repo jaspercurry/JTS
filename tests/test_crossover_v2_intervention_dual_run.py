@@ -6,7 +6,7 @@
 
 **What this module was, and what it is now.** Phase 2a ran the pure planner in
 :mod:`jasper.active_speaker.crossover_v2.intervention` side by side with the
-legacy ``CrossoverV2Conductor._fit_linearization`` it reimplements, and
+legacy ``CrossoverV2Session._fit_linearization`` it reimplements, and
 classified every difference into the two changes #2291 sanctions — candidate-Fc
 consistency, and the honest trim fallback. That comparison did its job: it
 proved bit-identical output at the candidate's own corner, and it is why the

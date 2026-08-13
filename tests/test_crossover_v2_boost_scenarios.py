@@ -16,7 +16,7 @@ known BEFORE the flow runs, and the gate's decision can be graded rather than
 merely observed.
 
 **Where they assert.** At the conductor's decision layer — what
-:meth:`~jasper.active_speaker.crossover_v2_flow.CrossoverV2Conductor._boost_excluded_bands_hz`
+:meth:`~jasper.active_speaker.crossover_v2_flow.CrossoverV2Session._boost_excluded_bands_hz`
 offers, what :func:`~jasper.active_speaker.crossover_v2_flow.assemble_cloud_group_result`
 merges, what :func:`~jasper.active_speaker.linearization_fit._boost_exclusion_verdicts`
 does with the result. #2075's own tests already pin the unit mechanics of the

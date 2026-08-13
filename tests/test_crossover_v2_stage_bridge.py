@@ -104,7 +104,7 @@ from jasper.web import correction_crossover_v2 as v2host
 def _flow_seams(conductor: Any) -> Any:
     """The conductor's injected ``V2FlowSeams``.
 
-    ``CrossoverV2Conductor`` exposes no ``seams`` property — the seams are its
+    ``CrossoverV2Session`` exposes no ``seams`` property — the seams are its
     private I/O boundary — but WHICH seams a preparer binds is exactly the
     stage-1-vs-stage-2 capability difference this module is about.
     """

@@ -30,7 +30,7 @@ this class still defaults to) has nothing to wait for and still builds at
 MEASURE, with the same accept, the same payload keys and the same apply timing
 it had before the move — its ``candidate.json`` does gain an always-empty
 ``exclusion_evidence`` key, which leaves the fingerprint unchanged.
-See :meth:`CrossoverV2Conductor._measure_verdict`.
+See :meth:`CrossoverV2Session._measure_verdict`.
 
 **Owner ruling (2026-07-20): no human mid-flow Apply gate.** A hardware
 session proved the prior REVIEW/APPLY human tap a dead end — phone-only
@@ -2505,12 +2505,12 @@ class V2FlowSeams:
     # same reason ``retain_position`` is: every pre-PR-4 construction site
     # (and every conductor unit test) stays valid, and ``None`` means the
     # group's result is computed and readable via
-    # :meth:`CrossoverV2Conductor.group_cloud_result` but not published as a
+    # :meth:`CrossoverV2Session.group_cloud_result` but not published as a
     # bundle artifact.
     publish_cloud: Callable[[str, Mapping[str, Any]], None] | None = None
     # #1866 frame-gate ruling: the banked level-frame disagreement, called at
     # most once per session with the flow's evidence record, from
-    # :meth:`CrossoverV2Conductor._commit_measure_candidate` — AFTER
+    # :meth:`CrossoverV2Session._commit_measure_candidate` — AFTER
     # ``publish_candidate``, so the artifact the finding cites already exists.
     # Optional exactly like the two seams above: a conductor with no evidence
     # store still banks the number in its journal and still PROCEEDS, it just
@@ -2579,7 +2579,7 @@ class V2FlowSeams:
 class V2ConductorSnapshot:
     """Durable phase state, bound to the relay session (§5.6).
 
-    Persisted under the session's commissioning run; :meth:`CrossoverV2Conductor.hydrate`
+    Persisted under the session's commissioning run; :meth:`CrossoverV2Session.hydrate`
     keeps the accepted phases only when the current session matches — a new
     session invalidates CHECK/MEASURE evidence (mic position is unverifiable
     across sessions).
@@ -2803,7 +2803,7 @@ class _CloudPosition:
     # ``echo_band_hz`` / ``signal_band_hz`` kwargs, echoed here rather than
     # threaded as a separate call-site argument. Carrying them on the position
     # (every position in one group shares the same conductor-derived values —
-    # see ``CrossoverV2Conductor.__init__``) is what lets
+    # see ``CrossoverV2Session.__init__``) is what lets
     # :func:`combine_cloud_positions` derive the right bands from
     # ``positions`` alone, with no caller (``_close_cloud_group``'s single
     # combine, ``cloud_geometry_verdict``'s convenience wrapper) needing to
@@ -2833,7 +2833,7 @@ class LateralPoseCurve:
 
     ``complex_tf`` holds ``M = plant * P`` — polarity-free, with NO
     configured-crossover composition applied (see
-    ``CrossoverV2Conductor._lateral_priors``). §4.2's
+    ``CrossoverV2Session._lateral_priors``). §4.2's
     ``S_c = sign_c * M * C_c / P`` is the consumer's step, once per candidate.
 
     Values are SAMPLED at the nearest native bin, never interpolated or
@@ -2978,7 +2978,7 @@ def combine_cloud_positions(positions: Sequence[_CloudPosition]) -> Any:
     Returns a :class:`~jasper.audio_measurement.spatial_combine.CombinedResponse`,
     or ``None`` when the group cannot be combined (no positions, or a malformed
     one). Called exactly ONCE per group-close event, from
-    :meth:`CrossoverV2Conductor._close_cloud_group`: PR-3b reads one field off
+    :meth:`CrossoverV2Session._close_cloud_group`: PR-3b reads one field off
     the result (``geometry``, via :func:`_geometry_verdict_from_combined`);
     PR-4's pipeline (:func:`assemble_cloud_group_result`) reads the rest of
     the SAME object. Never a second combine — see S3 review finding
@@ -3035,7 +3035,7 @@ def _geometry_verdict_from_combined(
     """The geometry-verdict dict from an ALREADY-COMBINED result.
 
     Split out of :func:`cloud_geometry_verdict` (S3 review finding,
-    2026-07-26) so :meth:`CrossoverV2Conductor._close_cloud_group` can
+    2026-07-26) so :meth:`CrossoverV2Session._close_cloud_group` can
     combine a group's positions exactly ONCE and derive both the retry-gating
     verdict and the honest-instrument pipeline from that ONE object, rather
     than each deriving its own combine. A plain JSON-native dict, because the
@@ -3069,7 +3069,7 @@ def cloud_geometry_verdict(positions: Sequence[_CloudPosition]) -> dict[str, Any
     :func:`_geometry_verdict_from_combined` for callers that only have
     ``positions`` (the corpus acceptance test; any future direct caller) —
     the conductor itself does NOT call this (see
-    :meth:`CrossoverV2Conductor._close_cloud_group`'s own single combine).
+    :meth:`CrossoverV2Session._close_cloud_group`'s own single combine).
 
     **Reason-string divergence, documented not silently left (N4 review
     finding, 2026-07-27).** An empty ``positions`` short-circuits HERE with
@@ -4371,7 +4371,7 @@ def _commanded_delta(raw_predicted_sum: Any, predicted_sum: Any) -> Any:
 # --------------------------------------------------------------------------- #
 
 
-class CrossoverV2Conductor:
+class CrossoverV2Session:
     """The v2 phase state machine driving one relay capture session.
 
     Construct with the session identity, the declared drivers, the crossover Fc,
@@ -5601,7 +5601,7 @@ class CrossoverV2Conductor:
         *,
         session_id: str,
         **kwargs: Any,
-    ) -> "CrossoverV2Conductor":
+    ) -> "CrossoverV2Session":
         """Rebuild a conductor, applying the §5.6 session-binding rule.
 
         Same session ⇒ resume, keeping the accepted phases + gain plan (skips
@@ -10674,7 +10674,7 @@ async def abandon_measurement_volume(
 
 
 __all__ = [
-    "CrossoverV2Conductor",
+    "CrossoverV2Session",
     "CrossoverV2FlowError",
     # Re-exported, not used here, since #2291 Phase 5a-vii moved VERIFY's
     # integrity ladder to :mod:`.crossover_v2.capture_dispatch` (the entry

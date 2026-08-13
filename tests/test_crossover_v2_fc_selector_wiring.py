@@ -207,7 +207,7 @@ def test_the_fit_targets_each_candidates_own_branch_not_the_configured_one():
     fakes = _eligible_seams()
     c = _selector_conductor(fakes)
     seen: list[dict[str, tuple[CrossoverSection, ...]] | None] = []
-    original = flow.CrossoverV2Conductor._plan_linearization
+    original = flow.CrossoverV2Session._plan_linearization
 
     def spy(self, analysis, cand, cloud=None, *, candidate_sections=None):
         seen.append(candidate_sections)
@@ -216,7 +216,7 @@ def test_the_fit_targets_each_candidates_own_branch_not_the_configured_one():
         )
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(flow.CrossoverV2Conductor, "_plan_linearization", spy)
+        mp.setattr(flow.CrossoverV2Session, "_plan_linearization", spy)
         _run_phase(c, 1, 1)
         _run_phase(c, 2, 1)
 
@@ -320,11 +320,11 @@ def test_an_ineligible_session_refuses_candidates_without_calling_the_fit():
     fakes = FakeSeams()  # the DEFAULT measure fixture: no mic tier, no repeats
     c = _selector_conductor(fakes)
     calls: list[object] = []
-    original = flow.CrossoverV2Conductor._plan_linearization
+    original = flow.CrossoverV2Session._plan_linearization
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(
-            flow.CrossoverV2Conductor, "_plan_linearization",
+            flow.CrossoverV2Session, "_plan_linearization",
             lambda self, *a, **k: (calls.append(1), original(self, *a, **k))[1],
         )
         _run_phase(c, 1, 1)
@@ -360,7 +360,7 @@ def test_the_anchors_published_candidate_is_unchanged_by_the_sweep():
         with pytest.MonkeyPatch.context() as mp:
             if not sweep:
                 mp.setattr(
-                    flow.CrossoverV2Conductor, "_sweep_fc_candidates",
+                    flow.CrossoverV2Session, "_sweep_fc_candidates",
                     lambda self, *a, **k: None,
                 )
             _run_phase(c, 1, 1)
@@ -398,7 +398,7 @@ def test_a_candidates_prediction_never_becomes_the_anchors_when_its_fit_fails():
     """
     fakes = _eligible_seams()
     c = _selector_conductor(fakes)
-    original = flow.CrossoverV2Conductor._plan_linearization
+    original = flow.CrossoverV2Session._plan_linearization
     swept: list = []
 
     def anchor_fit_fails(self, analysis, cand, cloud=None, *, candidate_sections=None):
@@ -413,7 +413,7 @@ def test_a_candidates_prediction_never_becomes_the_anchors_when_its_fit_fails():
         return plan
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(flow.CrossoverV2Conductor, "_plan_linearization", anchor_fit_fails)
+        mp.setattr(flow.CrossoverV2Session, "_plan_linearization", anchor_fit_fails)
         _run_phase(c, 1, 1)
         _run_phase(c, 2, 1)
         assert swept and swept[-1] is not None, "the sweep must have fitted first"
@@ -503,7 +503,7 @@ def test_each_evaluation_retains_its_own_predicted_spec_report():
     _run_phase(c, 1, 1)
 
     written: list[tuple[float, object]] = []
-    original = flow.CrossoverV2Conductor._build_measure_candidate
+    original = flow.CrossoverV2Session._build_measure_candidate
 
     def spy(self, analysis, cloud, *, candidate_sections=None, source_preset=None):
         built = original(
@@ -524,7 +524,7 @@ def test_each_evaluation_retains_its_own_predicted_spec_report():
     with pytest.MonkeyPatch.context() as mp:
         # The MEASURE consume alone: the sweep's builds happen here, the
         # anchor's own happens later at the walk's close.
-        mp.setattr(flow.CrossoverV2Conductor, "_build_measure_candidate", spy)
+        mp.setattr(flow.CrossoverV2Session, "_build_measure_candidate", spy)
         _run_phase(c, 2, 1)
 
     by_fc = {round(fc, 3): report for fc, report in written if fc is not None}
@@ -589,7 +589,7 @@ def test_each_evaluation_retains_its_own_realized_level_verdict():
     _run_phase(c, 1, 1)
 
     plans: list = []
-    original = flow.CrossoverV2Conductor._plan_linearization
+    original = flow.CrossoverV2Session._plan_linearization
 
     def spy(self, *args, **kwargs):
         plan = original(self, *args, **kwargs)
@@ -599,7 +599,7 @@ def test_each_evaluation_retains_its_own_realized_level_verdict():
     with pytest.MonkeyPatch.context() as mp:
         # Collected during the MEASURE consume alone, which is where the sweep
         # runs — the anchor's own build happens later, at the walk's close.
-        mp.setattr(flow.CrossoverV2Conductor, "_plan_linearization", spy)
+        mp.setattr(flow.CrossoverV2Session, "_plan_linearization", spy)
         _run_phase(c, 2, 1)
 
     by_fc = {round(plan.fc_hz, 3): plan for plan in plans}
@@ -705,7 +705,7 @@ def test_the_sweep_retains_no_analysis_sized_object():
 def test_a_failed_later_fc_cannot_reuse_or_publish_the_prior_fitted_prediction():
     fakes = _eligible_seams()
     c = _selector_conductor(fakes)
-    original = flow.CrossoverV2Conductor._plan_linearization
+    original = flow.CrossoverV2Session._plan_linearization
     calls = 0
 
     def fail_after_first(self, analysis, cand, cloud=None, *, candidate_sections=None):
@@ -718,7 +718,7 @@ def test_a_failed_later_fc_cannot_reuse_or_publish_the_prior_fitted_prediction()
         )
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(flow.CrossoverV2Conductor, "_plan_linearization", fail_after_first)
+        mp.setattr(flow.CrossoverV2Session, "_plan_linearization", fail_after_first)
         _run_phase(c, 1, 1)
         _run_phase(c, 2, 1)
         assert c._fc_evaluations[0].refusal is None
@@ -749,7 +749,7 @@ def test_a_failing_sweep_never_costs_the_household_an_accepted_measure():
         c = _selector_conductor(fakes)
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(
-                flow.CrossoverV2Conductor, broken,
+                flow.CrossoverV2Session, broken,
                 lambda self: (_ for _ in ()).throw(ValueError("forced")),
             )
             _run_phase(c, 1, 1)
@@ -878,7 +878,7 @@ def test_zero_budget_attempts_configured_then_discloses_every_skip():
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(
-            flow.CrossoverV2Conductor, "_fc_evaluation_budget_s",
+            flow.CrossoverV2Session, "_fc_evaluation_budget_s",
             lambda self: 0.0,
         )
         _run_phase(c, 2, 1)
@@ -929,7 +929,7 @@ def test_budget_exhaustion_never_skips_the_configured_baseline(caplog):
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(c, "_fc_candidate_set", lambda: candidates)
         mp.setattr(c, "_fc_evaluation_budget_s", lambda: 2.0)
-        mp.setattr(flow.CrossoverV2Conductor, "_evaluate_fc_candidate", evaluate)
+        mp.setattr(flow.CrossoverV2Session, "_evaluate_fc_candidate", evaluate)
         mp.setattr(flow.time, "monotonic", lambda: next(clock))
         c._sweep_fc_candidates(object(), object(), object())
 

@@ -510,7 +510,7 @@ def test_linearization_outcome_tampering_trips_the_tamper_check():
 
 def test_linearization_outcome_rejects_unrecognized_value():
     """Validated defensively (unlike the free-string "linearization" filter
-    payload): the single writer (CrossoverV2Conductor) only ever stamps one
+    payload): the single writer (CrossoverV2Session) only ever stamps one
     of six literal values, so a typo there should fail loudly at
     construction rather than silently persist garbage a UI would have to
     guess how to render."""

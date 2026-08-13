@@ -1050,7 +1050,7 @@ def _screen_refusal_code(kind: str) -> str:
 
     A kind arriving here unmapped is a wiring defect — a new ladder step shipped
     without a sentence — and answering it with another kind's copy is the shape
-    :meth:`CrossoverV2Conductor._round_refusal_for` already refuses. It still
+    :meth:`CrossoverV2Session._round_refusal_for` already refuses. It still
     returns rather than raising, under the most conservative code available: the
     capture was screened and something was wrong with it, and losing that
     refusal to a mapping gap would be worse than naming it imprecisely for one

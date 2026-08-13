@@ -8,7 +8,7 @@ Phase 4's extraction.  Two facts had no owner of their own and were therefore
 kept in two places that were free to disagree:
 
 * **Where the round is.**  The phase walk lived as six correlated fields on
-  :class:`~jasper.active_speaker.crossover_v2_flow.CrossoverV2Conductor`
+  :class:`~jasper.active_speaker.crossover_v2_flow.CrossoverV2Session`
   (the index map, the ordered phases, the group index spans, the accepted
   phases, the accepted indexes inside an open group, and the applied flag),
   mutated in place by the capture-consuming methods around them.
@@ -420,7 +420,7 @@ class V2StageCapabilities:
 #: frame finding is banked only by the MEASURE candidate's own gate (#1866);
 #: stage 2 builds no MEASURE candidate, so binding it there would ship a seam
 #: nothing can reach. Requires nothing: it is the first stage, and it hydrates
-#: its own prior snapshot through ``CrossoverV2Conductor.hydrate``.
+#: its own prior snapshot through ``CrossoverV2Session.hydrate``.
 STAGE_MEASURE_CAPABILITIES = V2StageCapabilities(
     stage="measure",
     provides=frozenset({CAPABILITY_FINDINGS}),

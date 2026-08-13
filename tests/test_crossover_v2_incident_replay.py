@@ -104,7 +104,7 @@ from jasper.active_speaker.crossover_v2.intervention import (
 )
 from jasper.active_speaker.crossover_v2_flow import (
     LINEARIZATION_TRIM_SANITY_MARGIN_DB,
-    CrossoverV2Conductor,
+    CrossoverV2Session,
     V2FlowSeams,
 )
 from jasper.active_speaker.linearization_fit import LinearizationFilter, LinearizationFit
@@ -318,7 +318,7 @@ def _analysis(program_id: str) -> ProgramAnalysis:
     )
 
 
-def _conductor() -> CrossoverV2Conductor:
+def _conductor() -> CrossoverV2Session:
     """A conductor at the incident's CONFIGURED corner, with inert seams.
 
     Nothing here plays, captures, applies or publishes: the replay drives one
@@ -332,7 +332,7 @@ def _conductor() -> CrossoverV2Conductor:
         apply_complete=lambda: False,
         apply_failed=lambda: "",
     )
-    return CrossoverV2Conductor(
+    return CrossoverV2Session(
         session_id=SESSION_ID,
         source_preset=_session_preset(),
         roles_bands=_roles_bands(),

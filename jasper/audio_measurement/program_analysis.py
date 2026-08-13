@@ -4170,7 +4170,7 @@ def _solve_role_gain(
       pilots along would trade a loud measurement for a failing one, so the
       pilot floor is part of "the SNR the fit needs". Applied to every role
       rather than only the role that actually carries the leading pilots
-      (``crossover_v2_flow.CrossoverV2Conductor._compose_measure_program``
+      (``crossover_v2_flow.CrossoverV2Session._compose_measure_program``
       puts them on the woofer today): it is a floor, so applying it more
       widely can only keep a level closer to today's, and it stays correct if
       the composer ever moves the pair. The conductor's clip retry
