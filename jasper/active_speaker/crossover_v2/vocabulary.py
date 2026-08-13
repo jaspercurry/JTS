@@ -4,8 +4,10 @@
 
 """What the household is told when a round refuses, and the verdict that says it.
 
-The nineteenth sibling, and the first here that owns household-facing **copy**
-rather than a decision.  Everything else in this package answers with a *kind*
+The first sibling here that owns household-facing **copy** rather than a
+decision.  (Deliberately not numbered: the ordinals the older siblings carry
+are counted on different bases and have already drifted apart.)  Everything
+else in this package answers with a *kind*
 and hands it on; this module owns the other half of that split — the codes
 (``REASON_*``), the remediation shapes (``TEMPLATE_*``), the
 :class:`ReasonSpec`/:class:`RetryableReasonCopy` carriers, the
@@ -38,7 +40,8 @@ module's.
 
 Dependency direction, as for every module here: no ``jasper.web`` import and
 nothing from :mod:`jasper.active_speaker.crossover_v2_flow`.  The flow
-re-exports every name below under its historical spelling, so this move changed
+re-exports the whole vocabulary below under its historical spellings (all of it
+except this module's own ``logger``), so this move changed
 no importer anywhere.
 """
 
