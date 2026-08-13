@@ -150,7 +150,7 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #       CamillaDSP; distributed-active Slice 3). Mutually exclusive by hardware
 #       mode — an active follower's outputd is Composite (lane 5), never opens
 #       lane 6; snd_aloop caps at 8 pairs so no dedicated extra pair exists.
-#   7 — fan-in daemon's summed output → CamillaDSP / AEC fallback
+#   7 — fan-in daemon's summed output → CamillaDSP / pre-DSP diagnostics
 #
 # Each alias is a `plug:` wrapper so the renderer's native rate/format
 # gets converted to the substream's 48 kHz S16_LE via the configured
