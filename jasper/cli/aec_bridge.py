@@ -34,7 +34,6 @@ is channel 0/1 — see HANDOFF-xvf3800.md §3.
 Topology:
 
     outputd UDP final-speaker monitor (48k stereo speaker reference)
-       or explicit fallback pcm.jasper_capture (48k stereo, host clock)
        │  reference signal (what the speaker is being asked to play)
        ▼
     [downsample 48→16k, L+R summed to mono, HPF at 125 Hz]         16k mono ref
