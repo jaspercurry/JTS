@@ -167,6 +167,20 @@ RENDERER_LANES: tuple[RendererLane, ...] = (
         aloop_device="librespot_substream",
         ring_device="librespot_ring_lane",
     ),
+    RendererLane(
+        # The label is `bluealsa`, NOT `bluetooth`. fan-in's
+        # `JASPER_FANIN_INPUT_RENDERERS` owns the lane vocabulary and spells this
+        # lane `bluealsa`; a mismatch is refused at config by fan-in's own
+        # armed-label guard, so the two cannot silently disagree. (`bluetooth` is
+        # the SOURCE name — `Source.BLUETOOTH`, `/sources/` — which is a
+        # different vocabulary from the fan-in lane set.)
+        label="bluealsa",
+        renderer="bluealsa-aplay",
+        unit="bluealsa-aplay.service",
+        device_key="JASPER_BLUEALSA_DEVICE",
+        aloop_device="bluealsa_substream",
+        ring_device="bluealsa_ring_lane",
+    ),
 )
 
 #: Labels that can be armed, in declaration order.
@@ -382,14 +396,29 @@ def render_renderer_lanes_env(
     return RenderOutcome(armed=armed, changed=True, path=path)
 
 
-def renderer_user_in_ring_group(unit_user: str, group: str = RING_GROUP) -> bool | None:
-    """Whether ``unit_user`` is a member of the ring directory's group.
+def renderer_user_in_ring_group(
+    unit_user: str | None, group: str = RING_GROUP
+) -> bool | None:
+    """Whether ``unit_user`` can write the ring directory via ``group``.
 
     ``None`` when the question cannot be answered on this host (no such user or
     group — a dev laptop, or a box where the installer has not run). The caller
     treats `None` as "unknown, do not refuse": refusing on an unanswerable
     question would make the arm impossible to run anywhere but a live Pi.
+
+    **ROOT (and an absent ``User=``, which systemd means as root) is always
+    capable, and must answer True rather than False.** Root bypasses the group
+    check entirely — a 2775 root-owned directory is writable by uid 0 whatever
+    the group says. Getting this wrong is not cosmetic: `bluealsa-aplay` runs as
+    root (its packaged unit sets no ``User=``, and neither does the JTS
+    drop-in), so a membership test that answered False for it would have
+    REFUSED every arm of that lane on every box, for a permission it already
+    has. That is the P6b lane, and it is why this is a `str | None` now — the
+    caller gets `None` from a unit with no ``User=`` and must not have to
+    special-case it.
     """
+    if unit_user is None or unit_user == "root" or unit_user == "0":
+        return True
     try:
         import grp
         import pwd
@@ -405,6 +434,9 @@ def renderer_user_in_ring_group(unit_user: str, group: str = RING_GROUP) -> bool
         pw = pwd.getpwnam(unit_user)
     except KeyError:
         return None
+    # uid 0 under another name is still root.
+    if pw.pw_uid == 0:
+        return True
     # A primary-group match counts too: gr_mem lists only SUPPLEMENTARY members.
     return pw.pw_gid == entry.gr_gid
 

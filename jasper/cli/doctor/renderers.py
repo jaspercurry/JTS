@@ -963,14 +963,24 @@ def _alsa_busy(detail: str) -> bool:
         or "errno 16" in detail
     )
 
-# The renderer-ingress RING lane devices (U3 / P6): the `plug:` PCM a migrated
-# renderer writes, mapped to the fan-in lane LABEL whose ring it carries. Like
-# the aloop lanes above these are single-writer, but the exclusivity is enforced
-# by the ioplug's writer guard rather than by snd-aloop, and the owner pid lives
-# in the ring HEADER rather than in /proc/asound.
-_FANIN_RING_RENDERER_DEVICES = {
-    "librespot_ring_lane": "spotify",
-}
+def _ring_renderer_devices() -> dict[str, str]:
+    """Ring-lane PCM name -> the fan-in lane LABEL whose ring it carries.
+
+    DERIVED from `jasper.renderer_lanes.RENDERER_LANES`, not hand-listed. Like
+    the aloop lanes above these are single-writer, but the exclusivity is
+    enforced by the ioplug's writer guard rather than by snd-aloop, and the
+    owner pid lives in the ring HEADER rather than in /proc/asound.
+
+    P6a shipped this as a literal `{"librespot_ring_lane": "spotify"}`, which
+    was correct for one lane and a silent trap for the second: a lane added to
+    the registry but forgotten here still probes, still hits EBUSY when its
+    renderer is playing, and then fails `check_renderer_device_resolvable` with
+    "not a known fan-in ring lane" — a red doctor on a healthy box, from a
+    missing dict entry. Deriving it means P6c/P6d add nothing here.
+    """
+    from jasper.renderer_lanes import RENDERER_LANES
+
+    return {lane.ring_device: lane.label for lane in RENDERER_LANES}
 
 
 def _ring_lane_busy_owner_matches(device: str, unit: str) -> tuple[bool, str]:
@@ -986,7 +996,7 @@ def _ring_lane_busy_owner_matches(device: str, unit: str) -> tuple[bool, str]:
     ring" from "some stray process is writing frames into the mix", which is the
     same distinction the aloop path already refuses to skip.
     """
-    label = _FANIN_RING_RENDERER_DEVICES.get(device)
+    label = _ring_renderer_devices().get(device)
     if label is None:
         return False, "not a known fan-in ring lane"
     from jasper.renderer_lanes import ring_writer_pid
@@ -1015,7 +1025,7 @@ def _fanin_lane_busy_owner_matches(device: str, unit: str) -> tuple[bool, str]:
     Ring lanes take the sibling path above (`_ring_lane_busy_owner_matches`),
     which reads the same fact out of the ring header.
     """
-    if device in _FANIN_RING_RENDERER_DEVICES:
+    if device in _ring_renderer_devices():
         return _ring_lane_busy_owner_matches(device, unit)
     substream = _FANIN_PRIVATE_RENDERER_DEVICES.get(device)
     if substream is None:
@@ -1109,7 +1119,7 @@ def check_renderer_device_resolvable() -> CheckResult:
         elif (
             (
                 resolved_device in _FANIN_PRIVATE_RENDERER_DEVICES
-                or resolved_device in _FANIN_RING_RENDERER_DEVICES
+                or resolved_device in _ring_renderer_devices()
             )
             and _alsa_busy(detail)
         ):

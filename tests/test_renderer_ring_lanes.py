@@ -118,10 +118,17 @@ def test_the_render_round_trips_through_its_own_reader(tmp_path):
     path = str(tmp_path / "lanes.env")
     rl.render_renderer_lanes_env(("spotify",), path=path)
     assert rl.read_armed_labels(path) == ("spotify",)
-    assert rl.fanin_env_expectations(path) == {
-        rl.FANIN_RING_LANES_KEY: "spotify",
-        "JASPER_LIBRESPOT_DEVICE": "librespot_ring_lane",
-    }
+    # Derived from the registry so a new lane extends this rather than breaking
+    # it: the armed lane gets its ring device, every other lane its aloop one.
+    expected = {rl.FANIN_RING_LANES_KEY: "spotify"}
+    for lane in rl.RENDERER_LANES:
+        expected[lane.device_key] = (
+            lane.ring_device if lane.label == "spotify" else lane.aloop_device
+        )
+    assert rl.fanin_env_expectations(path) == expected
+    # And the un-armed lanes really are named — an omitted key would leave a
+    # previously-armed device in place on the next read.
+    assert len(expected) == 1 + len(rl.RENDERER_LANES)
 
 
 def test_the_render_is_write_on_change(tmp_path):
@@ -261,47 +268,97 @@ def test_the_confd_ring_slave_is_plug_wrapped_at_the_lane_wire():
 # --- Unit wiring ----------------------------------------------------------
 
 
-def test_the_renderer_unit_reads_its_device_from_the_lane_map():
-    unit = LIBRESPOT_UNIT.read_text()
-    lane = rl.lane_by_label("spotify")
-    assert lane is not None
-    assert f"--device ${{{lane.device_key}}}" in unit.replace("\\\n", " ")
-    assert f'Environment="{lane.device_key}={lane.aloop_device}"' in unit, (
-        "the in-unit DEFAULT must be the shipped snd-aloop device, so a box with "
-        "no lane map behaves byte-identically"
-    )
+def _unit_text(lane) -> str:
+    """The installed unit (or drop-in) text for a lane's renderer.
+
+    A lane's renderer is configured either by its own unit or by a drop-in over
+    a packaged one; both are `deploy/systemd/...` sources, and every test below
+    walks RENDERER_LANES rather than naming a single renderer — which is the
+    whole point, since P6a's "every ring-writing renderer unit" test read only
+    librespot's.
+    """
+    direct = REPO / "deploy" / "systemd" / lane.unit
+    if direct.exists():
+        return direct.read_text()
+    dropin_dir = REPO / "deploy" / "systemd" / f"{lane.unit}.d"
+    assert dropin_dir.is_dir(), f"no unit or drop-in dir for {lane.unit}"
+    texts = [p.read_text() for p in sorted(dropin_dir.glob("*.conf"))]
+    assert texts, f"no drop-in .conf for {lane.unit}"
+    return "\n".join(texts)
+
+
+def test_every_renderer_unit_reads_its_device_from_the_lane_map():
+    for lane in rl.RENDERER_LANES:
+        unit = _unit_text(lane).replace("\\\n", " ")
+        # librespot spells it --device, bluealsa-aplay --pcm; what matters is
+        # that the value is the indirection, not which flag carries it.
+        assert f"${{{lane.device_key}}}" in unit, (
+            f"{lane.renderer} must read its device from {lane.device_key}"
+        )
+        assert f'Environment="{lane.device_key}={lane.aloop_device}"' in unit, (
+            f"{lane.renderer}'s in-unit DEFAULT must be the shipped snd-aloop "
+            "device, so a box with no lane map behaves byte-identically"
+        )
 
 
 def test_both_ends_load_the_same_lane_map_file_last():
-    """One file, both ends. The renderer must load it AFTER its Environment=
-    default or the default would win and the arm would silently do nothing."""
-    for unit_path in (LIBRESPOT_UNIT, FANIN_UNIT):
-        text = unit_path.read_text()
-        assert f"EnvironmentFile=-{rl.RENDERER_LANES_ENV}" in text, unit_path.name
+    """One file, both ends — for EVERY migrated lane, not just the first.
 
-    unit = LIBRESPOT_UNIT.read_text()
-    lane = rl.lane_by_label("spotify")
-    assert lane is not None
-    default_at = unit.index(f'Environment="{lane.device_key}=')
-    envfile_at = unit.index(f"EnvironmentFile=-{rl.RENDERER_LANES_ENV}")
-    assert envfile_at > default_at, (
-        "systemd applies a later EnvironmentFile= over an earlier Environment=; "
-        "the lane map must come last or an arm cannot take effect"
-    )
+    The ordering half is the load-bearing one and it is per-unit: systemd
+    applies a later `EnvironmentFile=` over an earlier `Environment=`, so a
+    renderer that loads the map BEFORE its own default would keep the default
+    and the arm would silently do nothing. That is invisible except as "the
+    lane never moved", which is exactly the failure this pins.
+    """
+    assert f"EnvironmentFile=-{rl.RENDERER_LANES_ENV}" in FANIN_UNIT.read_text()
+    for lane in rl.RENDERER_LANES:
+        unit = _unit_text(lane)
+        assert f"EnvironmentFile=-{rl.RENDERER_LANES_ENV}" in unit, lane.unit
+        default_at = unit.index(f'Environment="{lane.device_key}=')
+        envfile_at = unit.index(f"EnvironmentFile=-{rl.RENDERER_LANES_ENV}")
+        assert envfile_at > default_at, (
+            f"{lane.unit}: the lane map must load AFTER the Environment= "
+            "default, or an arm cannot take effect"
+        )
 
 
-def test_every_ring_writing_renderer_unit_sets_the_group_and_umask():
-    """Both are prerequisites and neither is sufficient alone.
+def test_every_ring_writing_renderer_unit_sets_the_umask():
+    """UMask is required on EVERY ring-writing renderer, whatever its user.
 
     The directory's setgid bit fixes a new ring file's GROUP; only the umask
     fixes its MODE. The ioplug creates the ring `0660 & ~umask`, so under
-    systemd's default 0022 it would land 0640 — group-readable, NOT
-    group-writable — and fan-in would take EACCES stamping read_seq into a ring
-    the renderer created.
+    systemd's default 0022 it lands 0640 — group-readable, NOT group-writable.
+    That bites a non-root reader even when the WRITER is root, which is why this
+    is required of the root renderers too and not only the group-based ones.
     """
-    unit = LIBRESPOT_UNIT.read_text()
-    assert re.search(r"^SupplementaryGroups=.*\bjts-ring\b", unit, re.M)
-    assert re.search(r"^UMask=0007$", unit, re.M)
+    for lane in rl.RENDERER_LANES:
+        unit = _unit_text(lane)
+        assert re.search(r"^UMask=0007$", unit, re.M), (
+            f"{lane.unit} writes a ring and must set UMask=0007"
+        )
+
+
+def test_non_root_ring_writers_join_the_ring_group():
+    """Group membership is required only where the renderer is NOT root.
+
+    Root writes a 2775 root-owned directory regardless, so demanding
+    `SupplementaryGroups=jts-ring` of a root renderer would be cargo-culted
+    ceremony. This asserts the real rule: a unit that declares a non-root
+    `User=` must join the group; one that declares none (systemd's root) need
+    not, and must not be failed for it.
+    """
+    for lane in rl.RENDERER_LANES:
+        unit = _unit_text(lane)
+        user = re.search(r"^User=(\S+)", unit, re.M)
+        in_group = bool(
+            re.search(r"^SupplementaryGroups=.*\bjts-ring\b", unit, re.M)
+        )
+        if user is None or user.group(1) == "root":
+            continue  # root: capable without the group
+        assert in_group, (
+            f"{lane.unit} runs as {user.group(1)!r} (non-root) and must be in "
+            f"{rl.RING_GROUP!r} to create its ring"
+        )
 
 
 def test_the_ring_directory_group_matches_what_the_installer_creates():
@@ -331,10 +388,16 @@ def test_the_ring_directory_group_matches_what_the_installer_creates():
         "creates it; systemd-tmpfiles would fail and the directory would keep "
         "its old ownership"
     )
-    unit = LIBRESPOT_UNIT.read_text()
-    assert re.search(rf"^SupplementaryGroups=.*\b{re.escape(group)}\b", unit, re.M), (
-        f"the renderer must be in {group!r} to write its ring"
-    )
+    # At least one migrated renderer must actually use the group, or creating it
+    # is dead ceremony. (Root renderers legitimately do not — see
+    # `test_non_root_ring_writers_join_the_ring_group`.)
+    users = [
+        _unit_text(lane) for lane in rl.RENDERER_LANES
+    ]
+    assert any(
+        re.search(rf"^SupplementaryGroups=.*\b{re.escape(group)}\b", u, re.M)
+        for u in users
+    ), f"no migrated renderer joins {group!r} — the group would be unused"
 
 
 def test_the_installer_adds_the_renderer_user_to_the_ring_group():
@@ -973,3 +1036,119 @@ def test_the_written_map_round_trips_a_clean_label(tmp_path):
     path = str(tmp_path / "lanes.env")
     rl.render_renderer_lanes_env(("spotify",), path=path)
     assert rl.read_armed_labels(path) == ("spotify",)
+
+
+# --- Label-agnostic arming (U3 / P6b) -------------------------------------
+#
+# The registry is supposed to make a new lane one tuple entry. These prove that
+# claim mechanically for EVERY registered lane, rather than trusting that the
+# next one behaves like the first.
+
+
+@pytest.mark.parametrize("label", rl.MIGRATABLE_LABELS)
+def test_any_registered_lane_arms_and_disarms_through_the_same_path(label, tmp_path):
+    """`--arm <label>` works for every registered lane with no per-lane code.
+
+    P6a's arming tests all named "spotify", so nothing proved the mechanism was
+    label-agnostic — a second lane could have needed a special case and no test
+    would have said so.
+    """
+    lane = rl.lane_by_label(label)
+    assert lane is not None
+    path = str(tmp_path / "lanes.env")
+
+    outcome = rl.render_renderer_lanes_env((label,), path=path)
+    assert outcome.changed and outcome.armed == (label,)
+    assert rl.read_armed_labels(path) == (label,)
+
+    env = rl.fanin_env_expectations(path)
+    assert env[rl.FANIN_RING_LANES_KEY] == label
+    assert env[lane.device_key] == lane.ring_device, (
+        f"arming {label!r} must point {lane.renderer} at its ring device"
+    )
+    # Every OTHER lane stays on its aloop device — arming one lane must not
+    # move another.
+    for other in rl.RENDERER_LANES:
+        if other.label != label:
+            assert env[other.device_key] == other.aloop_device, (
+                f"arming {label!r} moved {other.label!r} too"
+            )
+
+    rl.render_renderer_lanes_env((), path=path)
+    env = rl.fanin_env_expectations(path)
+    assert rl.read_armed_labels(path) == ()
+    assert env[lane.device_key] == lane.aloop_device, (
+        f"disarming {label!r} must return {lane.renderer} to its aloop device"
+    )
+
+
+def test_arming_every_lane_at_once_is_coherent(tmp_path):
+    """The armed set is a SET, not a single lane. All-armed must name every ring
+    device and drop none — the shape a fully-migrated box will run at P6d."""
+    path = str(tmp_path / "lanes.env")
+    rl.render_renderer_lanes_env(rl.MIGRATABLE_LABELS, path=path)
+    assert rl.read_armed_labels(path) == rl.MIGRATABLE_LABELS
+    env = rl.fanin_env_expectations(path)
+    assert env[rl.FANIN_RING_LANES_KEY] == ",".join(rl.MIGRATABLE_LABELS)
+    for lane in rl.RENDERER_LANES:
+        assert env[lane.device_key] == lane.ring_device
+
+
+@pytest.mark.parametrize("label", rl.MIGRATABLE_LABELS)
+def test_every_lane_has_a_distinct_ring_path_device_and_key(label):
+    """No two lanes may share a ring file, a PCM name, or an env key.
+
+    A collision would be silent and catastrophic: two renderers writing one ring
+    is two writers on an SPSC transport, and two lanes sharing an env key means
+    arming one arms both.
+    """
+    lane = rl.lane_by_label(label)
+    assert lane is not None
+    others = [x for x in rl.RENDERER_LANES if x.label != label]
+    assert rl.renderer_ring_path(label) not in {
+        rl.renderer_ring_path(o.label) for o in others
+    }
+    assert lane.ring_device not in {o.ring_device for o in others}
+    assert lane.aloop_device not in {o.aloop_device for o in others}
+    assert lane.device_key not in {o.device_key for o in others}
+    assert lane.unit not in {o.unit for o in others}
+
+
+@pytest.mark.parametrize("label", rl.MIGRATABLE_LABELS)
+def test_every_registered_label_is_a_real_fanin_lane(label):
+    """A label fan-in does not know is refused at config (ConfigClassError →
+    park). Catching it here is the difference between a failed test and a
+    speaker that will not start."""
+    rs = FANIN_CONFIG_RS.read_text()
+    m = re.search(
+        r'"JASPER_FANIN_INPUT_RENDERERS",\s*&\[(.*?)\]', rs, re.S
+    )
+    assert m, "fan-in's input_renderers default moved"
+    fanin_labels = re.findall(r'"([a-z0-9_]+)"', m.group(1))
+    assert label in fanin_labels, (
+        f"lane label {label!r} is not one of fan-in's lanes {fanin_labels}; "
+        "fan-in would refuse the arm with a config-class park"
+    )
+
+
+@pytest.mark.parametrize("label", rl.MIGRATABLE_LABELS)
+def test_every_lane_declares_its_ring_and_plug_blocks_in_the_confd(label):
+    """Both conf.d blocks, for every lane — the ring PCM and the plug wrapper
+    the renderer's device actually names."""
+    lane = rl.lane_by_label(label)
+    assert lane is not None
+    conf = LANES_CONF.read_text()
+    assert re.search(
+        rf"^pcm\.{re.escape(rl.ring_conf_pcm_name(label))}\s*\{{", conf, re.M
+    ), f"{label}: no jts_ring block"
+    assert re.search(rf"^pcm\.{re.escape(lane.ring_device)}\s*\{{", conf, re.M), (
+        f"{label}: no plug block for {lane.ring_device}"
+    )
+    # The plug's slave must be THIS lane's ring, not another's.
+    block = re.search(
+        rf"pcm\.{re.escape(lane.ring_device)}\s*\{{(.*?)\n\}}", conf, re.S
+    )
+    assert block
+    assert f'pcm "{rl.ring_conf_pcm_name(label)}"' in block.group(1), (
+        f"{label}'s plug wrapper does not point at its own ring"
+    )

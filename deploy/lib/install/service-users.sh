@@ -178,7 +178,7 @@ create_jasper_service_users() {
             usermod -aG jts-ring pi 2>/dev/null || true
         fi
     fi
-    echo "  Service users ready: jasper-voice, jasper-mux, jasper-input, jasper-usbmic, jasper-control, jasper-web, jasper-recon (group: jasper; secrets: jasper-secrets = voice+web; intsecrets: jasper-intsecrets = voice+control+mux+web; ring writers: jts-ring = pi)"
+    echo "  Service users ready: jasper-voice, jasper-mux, jasper-input, jasper-usbmic, jasper-control, jasper-web, jasper-recon (group: jasper; secrets: jasper-secrets = voice+web; intsecrets: jasper-intsecrets = voice+control+mux+web; ring writers: jts-ring = pi; bluealsa-aplay writes rings as root)"
 
     # The /var/lib/jasper directory itself is widened to root:jasper 0770 by the
     # group-aware ensure_state_dir() (env-migrations.sh), which runs on every
