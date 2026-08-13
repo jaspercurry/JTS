@@ -205,8 +205,8 @@ def test_the_required_band_covers_both_declarations_without_widening():
 def test_both_priors_paths_ask_the_owner_rather_than_re_spelling_it():
     """The session corner and a swept corner answer from one formula.
 
-    ``measure_priors`` is the configured-corner caller and the flow's
-    ``_fc_candidate_priors`` is the swept-corner one.  This pins the first
+    ``measure_priors`` is the configured-corner caller and
+    ``candidate_priors`` is the swept-corner one.  This pins the first
     against the owner directly; the second is pinned at six corners by
     ``test_crossover_v2_fc_selector_wiring``'s ``REQUIRED_BAND_WOOFER_HI_HZ``
     golden, which is literal and therefore not self-referential.
