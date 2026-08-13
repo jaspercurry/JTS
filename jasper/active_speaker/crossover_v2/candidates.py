@@ -4,7 +4,7 @@
 
 """What one candidate build produced, as values (#2291 Phase 5a-v).
 
-The fourth sibling of :mod:`.programs`, :mod:`.priors` and :mod:`.spatial`.
+A sibling of :mod:`.programs`, :mod:`.priors` and :mod:`.spatial`.
 Those three answer what a phase plays, what the analyzer is told, and what a
 capture-consuming phase decides.  This one answers the question that comes
 after all of them: **a build ran — what did it produce, and how does that

@@ -4,9 +4,10 @@
 
 """What the household is told when a round refuses, and the verdict that says it.
 
-The first sibling here that owns household-facing **copy** rather than a
-decision.  (Deliberately not numbered: the ordinals the older siblings carry
-are counted on different bases and have already drifted apart.)  Everything
+The one sibling here that owns household-facing **copy** rather than a
+decision.  (Deliberately not numbered — and since #2291 Phase 5c-v no sibling
+is: the ordinals they used to carry were counted on different bases and had
+drifted apart.  See this package's ``__init__`` for the rule.)  Everything
 else in this package answers with a *kind*
 and hands it on; this module owns the other half of that split — the codes
 (``REASON_*``), the remediation shapes (``TEMPLATE_*``), the
@@ -15,16 +16,28 @@ and hands it on; this module owns the other half of that split — the codes
 the selectors that pick between two sentences for one code, and
 :class:`PhaseVerdict`, the value a capture-consuming phase returns.
 
-**Why it is here, stated plainly, because a sibling's docstring used to say the
-opposite.**  #2291 Phase 5a-vii ruled that the vocabulary did *not* have to
-move, and that ruling was correct for what it was about: an *organ* answers with
-a kind, so no organ needed the carrier.  Phase 5c changed the fact it rested on.
-The conductor is dissolving, its surviving spine lands in this package, and the
-spine's whole job is building :class:`PhaseVerdict`s —
-while ``test_no_domain_module_imports_the_host_or_the_legacy_flow`` forbids any
-module here importing the flow.  Spine-in-package therefore forces
-vocabulary-in-package.  That is a re-litigation on changed facts, not a reversal
-of a wrong call.
+**Why it is here.**  #2291 Phase 5a-vii ruled that the vocabulary did *not*
+have to move, and that ruling was correct for what it was about: an *organ*
+answers with a kind, so no organ needed the carrier.  Phase 5c-ii moved it
+anyway, on the argument that the surviving spine would land in this package
+and would need it.  **That argument did not survive.**  Phase 5c-iv dissolved
+the conductor IN PLACE: the spine is
+:class:`~jasper.active_speaker.crossover_v2_flow.CrossoverV2Session`, still in
+the flow file, so nothing about the spine forces anything about this module.
+
+What actually holds it here is smaller and true: this module binds the
+package's OWN refusal kinds to household copy, and it binds ALL of them.
+:data:`SCREEN_KIND_REASONS` is keyed by
+:data:`~.capture_dispatch.CAPTURE_SCREEN_KINDS` — the union of
+:data:`~.spatial.SCREEN_KINDS` (the walked phases' rungs) and
+:data:`~.capture_dispatch.ANCHOR_SCREEN_KINDS` (the sit-still phases'),
+two disjoint package-owned sets — and covers it exactly, checked in
+``tests/test_crossover_v2_spatial.py`` along with the rule that every code
+it names is in :data:`REASON_REGISTRY`.  So a new rung in EITHER owner
+cannot ship without a household sentence, and the binding sits beside the
+kinds it binds.  The flow then imports this module, which is the legal
+direction (``test_no_domain_module_imports_the_host_or_the_legacy_flow``
+forbids only the reverse).  Legal and coherent; not forced.
 
 **This settles only where the vocabulary *can* live.**  Where it *belongs* is
 deliberately still open: the largest single consumer is

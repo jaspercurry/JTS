@@ -720,7 +720,7 @@ def material_improvement_db() -> float:
     floor for model-graded metrics, and two import sites for one constant is
     how two constants start.
 
-    :data:`~jasper.active_speaker.crossover_v2_flow.PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB`
+    :data:`~jasper.active_speaker.crossover_v2.attempt_grading.PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB`
     is 0.5 dB because that is the gap between what the correction model
     predicts and what the hardware realizes on JTS3 — an improvement smaller
     than the model's own error is not one that can be honestly claimed. The

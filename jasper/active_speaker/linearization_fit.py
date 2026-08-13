@@ -302,10 +302,11 @@ _HF_AGREEMENT_TIER_SPLIT_HZ: float = 10_000.0
 
 # Minimum sweep occurrences (primary + repeats) the agreement gate needs to
 # evaluate reproducibility — the N>=3-total "paired gate" (sigma-seeding
-# report finding 5). LOCKSTEP with the flow layer's
-# ``crossover_v2_flow.LINEARIZATION_MIN_PAIRED_OCCURRENCES`` (3); kept as a
-# local constant rather than imported because the flow imports THIS module
-# (a fit->flow import would be a cycle), mirroring this module's other
+# report finding 5). LOCKSTEP with the planner's
+# ``crossover_v2.intervention.LINEARIZATION_MIN_PAIRED_OCCURRENCES`` (3); kept
+# as a local constant rather than imported because that module imports THIS
+# one (`intervention` does `from ..linearization_fit import ...`, so the
+# reverse import would be a cycle), mirroring this module's other
 # lockstep-duplicate constants. Below this the gate returns
 # "insufficient_repeats".
 _HF_MIN_OCCURRENCES: int = 3
@@ -916,9 +917,9 @@ def complex_correction_response(
     entirely. Measured on JTS3 (issue #1667): against the same VERIFY capture,
     the zero-phase magnitude model mistracked the summation by ~2.0 dB (WORSE
     than the ~1.7 dB of a no-correction model), where this complex model tracks
-    it to ~0.5 dB. So the conductor's linearized-branch model
-    (:func:`jasper.active_speaker.crossover_v2_flow.CrossoverV2Session.
-    intervention.plan_linearization` — the trim re-solve, the ripple-optimal scan, and the
+    it to ~0.5 dB. So the planner's linearized-branch model
+    (:func:`jasper.active_speaker.crossover_v2.intervention.plan_linearization`
+    — the trim re-solve, the ripple-optimal scan, and the
     persisted VERIFY prediction) multiplies each branch by THIS, not a
     magnitude scale. There is no zero-phase branch-correction path.
 
@@ -1670,7 +1671,7 @@ def _hf_repeat_spread_ok(
     onto the grid exactly as the primary is. Fewer than
     :data:`_HF_MIN_OCCURRENCES` total occurrences is no reproducibility
     evidence (the N>=3-total "paired gate," sigma-seeding report finding 5,
-    consistent with ``crossover_v2_flow.LINEARIZATION_MIN_PAIRED_OCCURRENCES``)
+    consistent with ``crossover_v2.intervention.LINEARIZATION_MIN_PAIRED_OCCURRENCES``)
     → suppressed. Otherwise the spread must stay under
     :data:`HF_AGREEMENT_LIMIT_LOW_DB` below
     :data:`_HF_AGREEMENT_TIER_SPLIT_HZ` and

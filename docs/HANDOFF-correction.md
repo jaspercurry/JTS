@@ -50,13 +50,16 @@ never redirected.
 
 ## Status
 
-- ✅ **Crossover measurement is now the v2 conductor flow (default flipped
-  2026-07-19).** The `/sound/crossover/` measurement + tuning flow is
-  the conductor flow (CHECK → MEASURE → the pre-apply position group →
-  automatic APPLYING → VERIFY → the post-apply position group): a guided
-  spatial cloud, 16 captures at the Full tier's shipped defaults or 7 on
-  the Express tier (flow-simplification PR-U1, both first-class in the
-  wizard's tier chooser), around one mark. Its canonical operational
+- ✅ **Crossover measurement is now the v2 commission session (default
+  flipped 2026-07-19).** The `/sound/crossover/` measurement + tuning flow
+  is a guided spatial cloud around one mark, walked in two stages with the
+  household's explicit Apply between them (CHECK → MEASURE → the lateral
+  walk → the entry baseline → the household applies → VERIFY → the
+  post-apply position group). At the shipped defaults Full is 15 captures
+  (9 then 6) and Express is 10 (the same 9, then 1) — they differ in stage
+  2 only, and `crossover_v2_flow.tier_display_info()` derives both, so read
+  it rather than a number written down here (flow-simplification PR-U1,
+  both tiers first-class in the wizard's tier chooser). Its canonical operational
   truth — how to run it, the file
   map, invariants, failure taxonomy, session-state paths, and the W6 bug
   catalog — lives in

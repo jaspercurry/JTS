@@ -28,10 +28,12 @@ collapsed expert disclosure, Undo prominent.
 
 The v2-specific state the backend threads onto the status lives under
 ``status["crossover_v2"]`` (phase / failure / verify / candidate /
-apply_blocked / needs_recovery / applied); this module never re-derives it — the conductor
-(:mod:`jasper.active_speaker.crossover_v2_flow`) owns those decisions and their
-reason codes, and this module maps a reason code to its template copy through
-the shared :data:`~jasper.active_speaker.crossover_v2_flow.REASON_REGISTRY`.
+apply_blocked / needs_recovery / applied); this module never re-derives it —
+:class:`~jasper.active_speaker.crossover_v2_flow.CrossoverV2Session` owns
+those decisions, the reason codes are
+:mod:`jasper.active_speaker.crossover_v2.vocabulary`'s, and this module maps
+a reason code to its template copy through the shared
+:data:`~jasper.active_speaker.crossover_v2.vocabulary.REASON_REGISTRY`.
 """
 
 from __future__ import annotations
@@ -1961,7 +1963,7 @@ def _tier_action(
         # quoted ONE number of measurements against ONE duration, which stopped
         # being a session the moment stage 1 and stage 2 became separate ones:
         # a household choosing a tier is choosing both, with its own decision in
-        # between, and a chooser that hid the interlude would sell a 16-capture
+        # between, and a chooser that hid the interlude would sell a 15-capture
         # Full as one uninterrupted sitting. Every number here is still derived
         # from the plans themselves (``tier_display_info``), never written down.
         "description": (
@@ -2625,7 +2627,8 @@ def _reason_message(
     literal — the same one-fix-two-surfaces gap this whole change closes.
 
     This reads the record; it does not decide. WHICH sentence a fact produces
-    belongs to :func:`~jasper.active_speaker.crossover_v2_flow.reason_message`,
+    belongs to
+    :func:`~jasper.active_speaker.crossover_v2.vocabulary.reason_message`,
     which the relay verdict and the budget refusal also call — so all three
     surfaces stay one voice. Both facts are extracted unconditionally: they
     are dictionary reads, and branching here on which code needs which fact

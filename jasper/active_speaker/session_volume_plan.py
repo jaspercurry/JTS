@@ -304,7 +304,7 @@ class SessionVolumePlan:
         """Re-arm the ceiling the NEXT :meth:`open` will stamp into state.
 
         The ceiling is a property of the measurement about to run, not of the
-        process: a full-tier 16-capture crossover cloud legitimately takes longer than
+        process: a full-tier 15-capture crossover commission legitimately takes longer than
         the 3-entry flow this default was sized for, and the caller that built
         the plan is the only one that knows which. Setting it before ``open``
         keeps the durable state self-describing — ``stale_active`` and the

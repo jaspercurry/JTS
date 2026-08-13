@@ -32,7 +32,7 @@ reports is lifted from a shipped primitive:
   :func:`~jasper.active_speaker.flat_spec.spec_convergence_residual` over
   :func:`~jasper.active_speaker.flat_spec.evaluate_flat_spec` — the same
   pooled spec residual the pre-apply prediction gate already grades
-  model-vs-model (``crossover_v2_flow.PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB``,
+  model-vs-model (:data:`.attempt_grading.PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB`,
   0.5 dB); this is that comparison's *measured* twin, before-vs-after on the
   real speaker rather than model-vs-model;
 * the spec verdict reads :attr:`~jasper.active_speaker.flat_spec.FlatSpecReport.overall_passed`

@@ -4,11 +4,11 @@
 
 """Whether a VERIFY capture is a new tuning attempt, and how it grades (5b-ii).
 
-The eighteenth sibling, and the second meter in the package.  :mod:`.admission`
+The other meter in the package.  :mod:`.admission`
 owns *one position's* attempt ledger — the bounded-retry meter in front of a
 capture, counted in extras and spent within a session.  This one owns the
 **tuning-attempt** ledger the S3 loop keeps *across* sessions: the history a
-recovered conductor hydrates, the budget
+recovered session hydrates, the budget
 :func:`~jasper.active_speaker.attempts_loop.decide_next` grades against, and the
 question a post-apply VERIFY asks of both — *is this capture a new attempt at
 all, and may the loop grade it?*

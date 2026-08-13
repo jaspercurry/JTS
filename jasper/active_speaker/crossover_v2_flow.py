@@ -28,13 +28,16 @@ time over Phase 5, and what remained was a session owner, so it is named one.
 per-driver distributed transaction with this shape: the Pi compiles one
 excitation program per phase, plays it as one continuous stream, and analyzes
 ``(program, capture) → analysis`` as a pure function. The session owns the
-phase state machine that drives the relay session — 16 captures at the FULL
-tier's shipped defaults (7 on the express tier, ``TIER_EXPRESS``), since the
-spatial cloud replaced the original three:
+phase state machine that drives the relay session. At the shipped defaults a
+FULL-tier commission is 15 captures (9 in stage 1, then 6) and an express one
+is 10 (the same 9, then 1, ``TIER_EXPRESS``) — the tiers differ in stage 2
+only. :func:`tier_display_info` derives both from the plans themselves and is
+what the household-facing chooser reads; do not restate the numbers where a
+plan change cannot reach them. The spatial cloud replaced the original three:
 
-    CHECK → gain solve → MEASURE → the pre-apply position group → fit +
-      candidate → APPLYING (auto) → VERIFY → the post-apply position group
-      → done
+    CHECK → gain solve → MEASURE → the lateral walk → the entry baseline
+      → fit + candidate → [the household reviews, then POSTs the apply]
+      → VERIFY → the post-apply position group → done
 
 **Owner decision (2026-07-27): the fit is the last thing before the apply.**
 The candidate used to be built the moment MEASURE was accepted, which put it
@@ -52,16 +55,14 @@ it had before the move — its ``candidate.json`` does gain an always-empty
 ``exclusion_evidence`` key, which leaves the fingerprint unchanged.
 See :meth:`CrossoverV2Session._measure_verdict`.
 
-**Owner ruling (2026-07-20): no human mid-flow Apply gate.** A hardware
-session proved the prior REVIEW/APPLY human tap a dead end — phone-only
-users cannot bounce to a second browser tab, and "apply this?" is
-unanswerable the moment after measuring (the household has no basis to
-judge). A trusted candidate (all quality gates pass, including
-:data:`ALIGNMENT_CONFIDENCE_TRUST_FLOOR`, promoted here from a review-screen
-nudge to a hard gate) is applied by the session itself; an untrusted one is
-rejected with guidance to re-measure, never a question. See
-[docs/HANDOFF-crossover-measurement-v2.md](../../docs/HANDOFF-crossover-measurement-v2.md)
-gotcha #18.
+**Owner ruling (2026-07-20), SUPERSEDED — kept for archaeology, not as
+behaviour.** It ruled out a human mid-flow Apply gate and had the session
+apply a trusted candidate itself. Two-stage T3 (commit ``61ba33ff1``,
+#1806 / #1906) replaced that: the apply left the session entirely and is now
+the household's explicit POST from the review screen, so nothing here applies
+anything. Read that commit for what replaced it rather than this paragraph.
+What did NOT change is :data:`ALIGNMENT_CONFIDENCE_TRUST_FLOOR`, still a hard
+gate on the candidate rather than a review-screen nudge.
 
 It is deliberately I/O-free: every side effect (playback, analysis, evidence
 publish, apply-gate observation) crosses an INJECTED seam
@@ -263,7 +264,7 @@ ATTEMPT_INTEGRITY_UNAVAILABLE = "capture_integrity_unavailable"
 
 # Capture-plan index → phase. APPLYING is a control-page phase (no capture)
 # that sits between MEASURE-accepted and VERIFY-armed, so it has no index.
-# This is the pre-cloud 3-entry layout, kept as the fallback for a conductor
+# This is the pre-cloud 3-entry layout, kept as the fallback for a session
 # constructed with no explicit ``index_phase_map``; the shipped session builds
 # its map through ``build_v2_cloud_index_phase_map``.
 _INDEX_PHASE = {1: PHASE_CHECK, 2: PHASE_MEASURE, 3: PHASE_VERIFY}
@@ -998,7 +999,7 @@ class V2PlanShape:
     with independent defaults and passed counts to neither: two functions that
     MUST agree, agreeing only by luck. Resolving once and threading the result
     closes that desync hazard by construction — the plan the phone is handed
-    and the index→phase map the conductor walks are derived from the same
+    and the index→phase map the session walks are derived from the same
     object or they are not built at all.
     """
 
@@ -1211,7 +1212,7 @@ def _shape_from_kwargs(
 # ``monkeypatch.setattr(flow, "fc_candidate_set", …)`` — rebinds this module's
 # name and NOTHING else: production reaches the declaration half through
 # ``_fc``/``crossover_v2.fc_sweep``, so the patch would be vacuous while
-# looking applied. Patch the owning module, or inject through the conductor's
+# looking applied. Patch the owning module, or inject through the session's
 # ports (``_fc_candidate_set`` and friends), which is what the sweep takes them
 # as precisely so a substitution still binds (#2354).
 # --------------------------------------------------------------------------- #
@@ -1468,7 +1469,7 @@ def build_v2_cloud_index_phase_map(
     include_lateral: bool = False,
     include_entry_baseline: bool = False,
 ) -> dict[int, str]:
-    """Capture-plan index → conductor phase for a STAGE-1 (measure) session.
+    """Capture-plan index → session phase for a STAGE-1 (measure) session.
 
     The relay drives 1-based indexes where ``index == accepted_count + 1``
     (``capture_relay.session._poll_capture_plan``), so this map is also the
@@ -1502,7 +1503,7 @@ def build_v2_cloud_index_phase_map(
 
     Single source of truth: ``build_v2_capture_plan`` builds its entries from
     this same function, so an entry's prompt can never address a different
-    phase than the conductor believes it is running.
+    phase than the session believes it is running.
     """
     shape = _shape_from_kwargs(
         plan_shape,
@@ -1530,7 +1531,7 @@ def build_v2_verify_index_phase_map(
     *,
     plan_shape: V2PlanShape | None = None,
 ) -> dict[int, str]:
-    """Capture-plan index → conductor phase for a STAGE-2 (verify) session.
+    """Capture-plan index → session phase for a STAGE-2 (verify) session.
 
     ::
 
@@ -1563,8 +1564,9 @@ def build_v2_verify_index_phase_map(
 # clusters below into the package siblings that already own their decisions.
 #
 # Why the vocabulary had to move, when 5a-vii ruled it did not: that ruling was
-# about ORGANS, and an organ answers with a kind. Phase 5c dissolves the
-# conductor, and the spine that survives it lands in the package — whose whole
+# about ORGANS, and an organ answers with a kind. Phase 5c dissolved
+# ``CrossoverV2Conductor``, and the spine that survived it lands in the
+# package — whose whole
 # job is building ``PhaseVerdict``s, while
 # ``test_no_domain_module_imports_the_host_or_the_legacy_flow`` forbids any
 # module there importing this one. Spine-in-package forces
@@ -1737,7 +1739,7 @@ def verify_absolute_tolerance_db(band_hz: Sequence[float]) -> float | None:
 # The prescribed on-axis mic distance the parallax correction assumes (§5.2).
 MEASUREMENT_DISTANCE_M = 1.0
 # Below this GCC-seed/capture confidence (see ``AlignmentEstimate.confidence``
-# and ``confidence_source`` in ``program_analysis.py``), the conductor refuses
+# and ``confidence_source`` in ``program_analysis.py``), the session refuses
 # to auto-apply and rejects
 # MEASURE with ``REASON_LOW_ALIGNMENT_CONFIDENCE`` instead of building a
 # candidate (owner ruling, 2026-07-20). Formerly
@@ -1828,7 +1830,7 @@ COURTESY_PRELUDE_ENABLED = _programs.COURTESY_PRELUDE_ENABLED
 
 
 class CrossoverV2FlowError(RuntimeError):
-    """The v2 conductor could not form a safe phase transition."""
+    """The v2 session could not form a safe phase transition."""
 
 
 # --------------------------------------------------------------------------- #
@@ -1905,7 +1907,7 @@ def alignment_delay_plausible(
     :data:`ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS`. Declaration-driven —
     reads the SAME ``delay_range_ms`` the crossover region already carries as
     a search bound (:class:`jasper.active_speaker.profile.CrossoverRegion`),
-    never a hardcoded delay literal. The v2 conductor is scoped to a single
+    never a hardcoded delay literal. The v2 session is scoped to a single
     2-way crossover region (``crossover_regions[0]``), matching every other
     single-region read in this module (e.g. ``resolve_conductor_context``).
     """
@@ -2379,8 +2381,10 @@ def _worst_pilot_snr_db(analysis: ProgramAnalysis) -> float | None:
 # rather than defined twice. The σ tolerable-value table went with them and is
 # NOT re-exported — its last reader here was `_compose_sigma_db` itself, so a
 # re-export would have been an import nothing resolved; it is
-# `intervention.SIGMA_TOLERABLE_DB`. This conductor still owns eligibility
-# (mic tier + paired repeat count) and the accountability gate. See
+# `intervention.SIGMA_TOLERABLE_DB`. The eligibility gate (mic tier + paired
+# repeat count) moved to `planning.py` and the accountability decision to
+# `accountability.assess_accountability`; this module calls them and owns the
+# irreversible half. See
 # docs/active-speaker-tuning-layers-design.md "Layer 1a concretely".
 
 # How far the two measured level estimates may disagree before the session is
@@ -2411,7 +2415,7 @@ def _worst_pilot_snr_db(analysis: ProgramAnalysis) -> float | None:
 # What the tolerance still does NOT buy is a small residual. A pair that is
 # identical by construction still reads 0.910 dB, and the number climbs with
 # ordinary driver shape at roughly 1.33 dB per dB/octave of woofer passband
-# tilt (measured on the conductor fixture: 0.910 flat, 2.251 at -1 dB/oct,
+# tilt (measured on the session fixture: 0.910 flat, 2.251 at -1 dB/oct,
 # 3.574 at -2, 4.883 at -3), so a -2 dB/oct woofer — an unremarkable driver —
 # refuses while the realized-level instrument reads 1.41 dB and passes.
 #
@@ -2446,12 +2450,12 @@ class AnalyzeCapture(Protocol):
 
     The second argument is the relay CaptureResult (wav + phone-reported
     device + setup — the production binding resolves the mic calibration
-    from it; fakes may pass raw bytes). ``geometry`` is the conductor's
+    from it; fakes may pass raw bytes). ``geometry`` is the session's
     declared MeasurementGeometry so the parallax correction actually reaches
     analyze_program_capture — a seam that dropped it would silently analyze
     with zero spacing.
 
-    ``phase`` is REQUIRED and keyword-only: the CONDUCTOR's own flow phase
+    ``phase`` is REQUIRED and keyword-only: the SESSION's own flow phase
     (issue #1855) — NOT ``program.phase``. The two are different
     vocabularies: every cloud position plays ``self._verify_program`` (see
     ``program_for_phase``), so ``program.phase`` is always "verify" for
@@ -2489,7 +2493,7 @@ ApplyGate = Callable[[], bool]
 # instead of holding forever toward a dishonest relay_timeout.
 ApplyFailureGate = Callable[[], str]
 class RecordModelError(Protocol):
-    """Banks one model-predicted/realized pair outside the conductor."""
+    """Banks one model-predicted/realized pair outside the session."""
 
     def __call__(
         self,
@@ -2505,7 +2509,7 @@ class RecordModelError(Protocol):
 
 @dataclass(frozen=True)
 class V2FlowSeams:
-    """The conductor's injected I/O boundary (all side effects)."""
+    """The session's injected I/O boundary (all side effects)."""
 
     play: PlayProgram
     analyze: AnalyzeCapture
@@ -2515,15 +2519,15 @@ class V2FlowSeams:
     apply_failed: ApplyFailureGate
     # Position-group evidence retention (PR-3b), called once per ACCEPTED cloud
     # capture with ``(position_id, capture_result, metadata)``. Optional so
-    # every pre-cloud construction site (and every conductor unit test) stays
+    # every pre-cloud construction site (and every session unit test) stays
     # valid; ``None`` means the group runs with no durable per-position
-    # artifact, which is the correct behaviour for a conductor with no evidence
+    # artifact, which is the correct behaviour for a session with no evidence
     # store rather than a reason to fail a capture.
     retain_position: Callable[[str, Any, Mapping[str, Any]], None] | None = None
     # PR-4: the cloud honesty-pipeline bundle publisher, called once per
     # CLOSED group with ``(phase, cloud_group_result_dict)``. Optional for the
     # same reason ``retain_position`` is: every pre-PR-4 construction site
-    # (and every conductor unit test) stays valid, and ``None`` means the
+    # (and every session unit test) stays valid, and ``None`` means the
     # group's result is computed and readable via
     # :meth:`CrossoverV2Session.group_cloud_result` but not published as a
     # bundle artifact.
@@ -2532,15 +2536,15 @@ class V2FlowSeams:
     # most once per session with the flow's evidence record, from
     # :meth:`CrossoverV2Session._commit_measure_candidate` — AFTER
     # ``publish_candidate``, so the artifact the finding cites already exists.
-    # Optional exactly like the two seams above: a conductor with no evidence
+    # Optional exactly like the two seams above: a session with no evidence
     # store still banks the number in its journal and still PROCEEDS, it just
     # writes no durable finding. That degraded mode is the ordinary state of
-    # every conductor unit test and is not a reason to refuse a session.
+    # every session unit test and is not a reason to refuse a run.
     publish_findings: Callable[[Mapping[str, Any]], None] | None = None
     # PR-L5: undo the applied correction, called with the delta-probe reason
     # code when the post-apply map does not match. Returns True when the
     # previous profile was restored. Optional like the two seams above — a
-    # conductor with no rollback binding still CLASSIFIES and refuses (the
+    # session with no rollback binding still CLASSIFIES and refuses (the
     # household sees the verdict and the Undo button the failure screen
     # already offers), it just cannot press the button itself. That degraded
     # mode is disclosed on the verdict's own event, never silent.
@@ -2549,13 +2553,13 @@ class V2FlowSeams:
     # part of the correction's shape — the pre-split headroom the applied graph
     # charges for its own boost. Read at probe time (like ``apply_complete`` /
     # ``apply_failed``, off durable state) rather than passed at construction,
-    # because the apply happens on a background thread AFTER this conductor is
+    # because the apply happens on a background thread AFTER this session is
     # built. Optional: ``None`` means "nothing known", which
     # ``classify_delta_probe`` treats honestly — the whole shift stays visible
     # as ``residual_offset_db`` instead of being silently claimed as accounted.
     applied_offset_db: Callable[[], float] | None = None
     # S3 attempts loop: called once for each newly accepted applied-candidate
-    # VERIFY. Optional so a conductor without a durable host still grades its
+    # VERIFY. Optional so a session without a durable host still grades its
     # in-memory attempt and every pre-wiring construction site remains valid.
     record_model_error: RecordModelError | None = None
     # #2291: which DSP graph the entry baseline was measured through, read at
@@ -2579,7 +2583,7 @@ class V2FlowSeams:
     # direction is the safe one here.
     rollback_available: Callable[[], bool] | None = None
     # #2291/#2318: does the APPLIED graph put energy in? Read from the host at
-    # grading time, because the grading conductor cannot answer it from its own
+    # grading time, because the grading session cannot answer it from its own
     # state — stage 2 never holds a candidate (see
     # :func:`~jasper.active_speaker.crossover_v2.coordinator.applied_boosts`
     # for the bug this closes). Optional, and its absence answers "boosted": an
@@ -2619,7 +2623,7 @@ class V2ConductorSnapshot:
     session_phases: tuple[str, ...] = ()
     # WHICH INSTRUMENT produced this session (:data:`TIER_FULL` /
     # :data:`TIER_EXPRESS`). Empty string means UNKNOWN — state written before
-    # tiers existed, or a conductor constructed without one — and readers must
+    # tiers existed, or a session constructed without one — and readers must
     # render it as unknown rather than assuming full, the same
     # unknown-vs-default discipline ``echo_band_provenance`` carries (issue
     # #1763): the two tiers make materially different claims (§1.3), so
@@ -2661,12 +2665,12 @@ class V2ConductorSnapshot:
 
 
 def attempt_history_from_state(raw: Any) -> tuple[AttemptRecord, ...]:
-    """Restore the conductor-owned attempt history from durable journey state.
+    """Restore the session-owned attempt history from durable journey state.
 
     Invalid rows are dropped as unavailable history, never partially trusted.
     The floor is intentionally absent from this shape: it has one owner in
     :mod:`jasper.active_speaker.model_error_store` and is read afresh by the
-    host when it constructs the conductor.
+    host when it constructs the session.
     """
 
     loop = raw.get("attempts_loop") if isinstance(raw, Mapping) else None
@@ -2822,7 +2826,7 @@ class _CloudPosition:
     # combined/searched with — spatial_combine.combine_positions's own
     # ``echo_band_hz`` / ``signal_band_hz`` kwargs, echoed here rather than
     # threaded as a separate call-site argument. Carrying them on the position
-    # (every position in one group shares the same conductor-derived values —
+    # (every position in one group shares the same session-derived values —
     # see ``CrossoverV2Session.__init__``) is what lets
     # :func:`combine_cloud_positions` derive the right bands from
     # ``positions`` alone, with no caller (``_close_cloud_group``'s single
@@ -3026,7 +3030,7 @@ def combine_cloud_positions(positions: Sequence[_CloudPosition]) -> Any:
 
     if not positions:
         return None
-    # Every position in one group carries the SAME conductor-derived bands
+    # Every position in one group carries the SAME session-derived bands
     # (set once at construction — see ``_CloudPosition``'s docstring), so
     # reading them off the first position is reading the group's own bands,
     # not an arbitrary one. ``None`` (a position built before PR-4, or by a
@@ -3088,7 +3092,7 @@ def cloud_geometry_verdict(positions: Sequence[_CloudPosition]) -> dict[str, Any
     A convenience wrapper around :func:`combine_cloud_positions` +
     :func:`_geometry_verdict_from_combined` for callers that only have
     ``positions`` (the corpus acceptance test; any future direct caller) —
-    the conductor itself does NOT call this (see
+    the session itself does NOT call this (see
     :meth:`CrossoverV2Session._close_cloud_group`'s own single combine).
 
     **Reason-string divergence, documented not silently left (N4 review
@@ -3098,7 +3102,7 @@ def cloud_geometry_verdict(positions: Sequence[_CloudPosition]) -> dict[str, Any
     ``combined=None`` and ``n_positions=0`` (e.g. because
     ``combine_cloud_positions([])`` was called some other way) reports
     ``reason="combine_failed"`` for the exact same "there were zero
-    positions" fact. Unreachable through the conductor today (a group only
+    positions" fact. Unreachable through the session today (a group only
     closes with at least its just-captured position already retained), but
     the two functions disagree on naming WHICH degraded path a caller hit —
     the entire point of a ``reason`` field — so this wrapper owns disclosing
@@ -3189,7 +3193,7 @@ def _composed_swept_band_hz(roles: Sequence[RoleBand]) -> tuple[float, float]:
     No existing function composes across roles (each ``RoleBand.band`` is one
     driver's own excitation-ceiling band, from
     ``excitation_safety_plan.resolve_driver_excitation_ceilings``); this is
-    that composition, added here because it is conductor-owned wiring policy
+    that composition, added here because it is session-owned wiring policy
     (which roles participate in the passband), not a pure-DSP concern that
     belongs in ``spatial_combine`` or ``program.py``.
     """
@@ -3444,7 +3448,7 @@ def _null_registry_to_dict(report: Any) -> dict[str, Any]:
 
     PR-1 shipped no ``to_dict`` (the module docstring's own words: "zero
     production callers by design until the plan's PR-4 wires it into the
-    conductor's cloud-group analysis") -- this is that wiring layer's owned
+    session's cloud-group analysis") -- this is that wiring layer's owned
     serialization, mirroring ``FlatSpecReport.to_dict``'s shape so the two
     persisted reports read consistently.
     """
@@ -4038,7 +4042,7 @@ def assemble_cloud_group_result(
     into it, and the difference is exactly the asterisk issue #1763 exists to
     make visible. :meth:`_CloudEchoBand.disclosure` supplies the block (its
     ``source`` / ``hf_regime_clamped`` / ``derived_lo_hz`` / ``floor_hz``);
-    the conductor passes it alongside the band it came from. ``None`` when a
+    the session passes it alongside the band it came from. ``None`` when a
     caller did not state one — "not stated", never "not clamped", the same
     unknown-vs-zero rule ``validity_floor_hz`` follows below.
 
@@ -4190,7 +4194,7 @@ def assemble_cloud_group_result(
         # ``overall_passed`` and each band's ``evaluable``/``passed``, which
         # ``to_dict`` flattens away, and the round's spec verdict must be the
         # SAME report this function already built — re-evaluating it from
-        # ``combined`` in the conductor would be a second owner of the merged
+        # ``combined`` in the session would be a second owner of the merged
         # honesty mask, which is exactly what this function exists to prevent.
         # A sink rather than a second return value because every other caller
         # (and every test) reads the dict, and widening the return type would
@@ -4459,7 +4463,7 @@ class CrossoverV2Session:
     ) -> None:
         roles = tuple(roles_bands)
         if len(roles) != 2:
-            raise CrossoverV2FlowError("the v2 conductor is a 2-way flow")
+            raise CrossoverV2FlowError("the v2 session is a 2-way flow")
         self.session_id = str(session_id)
         self.sound_design_revision = sound_design_revision
         # Which INSTRUMENT this session is running. Empty = unknown (a caller
@@ -4501,7 +4505,7 @@ class CrossoverV2Session:
             }
         # S3's lifecycle state. Attempts belong to the commissioning journey,
         # not to this relay session (stage 2 always mints a new one). The
-        # conductor owns the bounded history; the injected floor/store writer
+        # session owns the bounded history; the injected floor/store writer
         # keep persistence outside it and the decision kernel pure.
         self._attempt_history = list(attempt_history)[
             -AttemptBudget().hard_cap_attempts:
@@ -4573,12 +4577,12 @@ class CrossoverV2Session:
         #
         # **In-memory only — deliberately neither a constructor argument nor
         # part of the snapshot**, unlike ``_gain_plan_db`` beside it. The
-        # ordinary path is one conductor per run consuming CHECK then
-        # MEASURE, so the field is simply there. A conductor REHYDRATED past
+        # ordinary path is one session per run consuming CHECK then
+        # MEASURE, so the field is simply there. A session REHYDRATED past
         # an accepted CHECK (same session id, gain plan restored — the shape
         # that can compose a MEASURE program without re-running CHECK) has no
         # ambient of its own, and MEASURE's SNR verdict is then honestly
-        # ABSENT rather than graded against a floor this conductor never
+        # ABSENT rather than graded against a floor this session never
         # measured. That is the deliberate trade: an ambient report is a claim
         # about this room at this mic position, and §5.6's binding rule
         # invalidates CHECK/MEASURE evidence across sessions for exactly that
@@ -4692,7 +4696,7 @@ class CrossoverV2Session:
         # ONE meter per slot (:class:`SlotAttempts`, owner ruling #2086). It
         # replaced a pair — a cumulative attempt count measured against
         # ``ReasonSpec.retry_budget``, plus a per-slot geometry-rejection
-        # DISCOUNT that existed only to keep the conductor's own retakes from
+        # DISCOUNT that existed only to keep the session's own retakes from
         # eating the household's budget. Under one pooled bound the discount has
         # nothing to discount from: a geometry rung spends an extra like any
         # other, it is just booked to the speaker rather than the household.
@@ -4726,7 +4730,7 @@ class CrossoverV2Session:
         # tuple and held here in its serialized (``FlatSpecReport.to_dict``)
         # form. Carried alongside ``_measure_predicted_sum`` by the same route
         # and for the same reason a verify-only re-arm rehydrates that curve:
-        # the re-arm builds a fresh conductor which never runs a fit, so
+        # the re-arm builds a fresh session which never runs a fit, so
         # without this the first "Try again" would persist the curve with its
         # verdict silently dropped (the ``cloud`` B1 bug shape).
         #
@@ -4741,7 +4745,7 @@ class CrossoverV2Session:
         # PR-L5: what the applied correction COMMANDS on the summed response
         # (``_commanded_delta``). Carried alongside ``_measure_predicted_sum``
         # for the same reason and by the same route — the delta probe runs at
-        # VERIFY, which a re-arm session reaches with a fresh conductor.
+        # VERIFY, which a re-arm reaches with a freshly constructed session.
         self._measure_commanded_delta: Any = measure_commanded_delta
         # #2291's "before" measurement. WRITTEN by stage 1, whose
         # ``PHASE_ENTRY_BASELINE`` capture reduces it (``_consume_entry_baseline``);
@@ -4829,7 +4833,7 @@ class CrossoverV2Session:
         # retake, or one already committed.
         self._speculative_close: _SpeculativeClose | None = None
         # Serializes the group-close critical section against the eager fit,
-        # which is the ONE piece of this conductor that runs off the relay
+        # which is the ONE piece of this session that runs off the relay
         # thread. Three entry points take it — ``_cloud_verdict``'s retain +
         # close, ``run_speculative_group_close``, and
         # ``confirm_cloud_measure_group`` — and none nests inside another, so a
@@ -4916,7 +4920,7 @@ class CrossoverV2Session:
         # apply-seam refusal, a delta-probe rollback).
         self._last_failure_pilot_heard: bool | None = None
         # G3 (measurement-honesty gate, 2026-07-22) — SESSION-SCOPED since
-        # #1927. The FIRST usable VERIFY attempt of THIS conductor's own
+        # #1927. The FIRST usable VERIFY attempt of THIS session's own
         # lifetime records its per-role pilot transfer here, and every LATER
         # attempt of the same session is compared against it. Nothing else
         # ever writes this field: a prior session's numbers have no path into
@@ -5034,7 +5038,7 @@ class CrossoverV2Session:
     #
     # Thin argument lists over :mod:`jasper.active_speaker.crossover_v2.priors`,
     # which owns every one of the WITHHOLDING decisions their docstrings used to
-    # carry. What is left here is this conductor's own reading of its session
+    # carry. What is left here is this object's own reading of its session
     # state — which is exactly the part that could not move.
 
     def _check_priors(self) -> MeasurementPriors:
@@ -5386,7 +5390,7 @@ class CrossoverV2Session:
         line would spend a household's attention on a non-event.
 
         Copied on the way out, like every other dict-valued property on this
-        class, so a caller cannot reach back into the conductor's state.
+        class, so a caller cannot reach back into the session's state.
         """
         reservation = self._measure_ripple_reservation
         return dict(reservation) if reservation else None
@@ -5682,10 +5686,10 @@ class CrossoverV2Session:
 
         **Since the two-stage split (work order D10) no shipped session reaches
         the VERIFY hold**: stage 1 has no VERIFY index at all, and stage 2's
-        conductor is constructed ``applied=True``, so ``_apply_observed``
+        session is constructed ``applied=True``, so ``_apply_observed``
         short-circuits before either the deferral or the ``apply_failed``
         refusal. The machinery is retained rather than deleted — no new design
-        may depend on it, and a conductor built without a prior apply still
+        may depend on it, and a session built without a prior apply still
         gets the honest hold.
         """
         phase = self._phase_of_index(index)
@@ -5699,7 +5703,7 @@ class CrossoverV2Session:
             """The apply seam's TERMINAL reason, or ``""`` — guarded here.
 
             A local rather than an argument because the guard belongs to the
-            seam, and the seam is the conductor's: an apply binding that raises
+            seam, and the seam is the session's: an apply binding that raises
             must read as "no named failure" and fall through to the honest
             hold, never take down the begin. Asked only on the hold branch, so
             an ordinary begin still makes no seam call.
@@ -5827,7 +5831,7 @@ class CrossoverV2Session:
         )
 
     def _spent_slot_outcome(self, phase: str, index: int) -> str:
-        """The state after an exhausted slot, derived from conductor state.
+        """The state after an exhausted slot, derived from session state.
 
         The three facts the sentence turns on are read here — the phase's
         group-ness, the positions this session gave up on, and the ones still
@@ -5859,7 +5863,7 @@ class CrossoverV2Session:
         """The composed program this session plays for ``phase``.
 
         Public because it is the only honest way to ask "what will this
-        conductor play", which the host's duration budgeting, the identity
+        session play", which the host's duration budgeting, the identity
         invariant, and every test that synthesises a capture all need. The
         answer is BY IDENTITY — see
         :func:`jasper.active_speaker.crossover_v2.programs.program_for_phase`,
@@ -5897,7 +5901,7 @@ class CrossoverV2Session:
         )
         # The whole CaptureResult crosses the seam (not just wav bytes): the
         # production analyze binding resolves the mic calibration from the
-        # phone-reported setup/device, and the conductor's declared geometry
+        # phone-reported setup/device, and the session's declared geometry
         # rides along so the parallax correction reaches the analysis.
         # ``phase=phase`` (issue #1855): the flow's OWN phase, threaded
         # explicitly because ``program.phase`` is not a reliable stand-in —
@@ -5912,7 +5916,7 @@ class CrossoverV2Session:
             verdict = self._consume_measure(analysis)
             # R17's candidate sweep, HERE and nowhere later: ``result`` is the
             # raw capture, and it is alive only inside this call. What the
-            # conductor retains past it are derived ``DriverResponse``s, which
+            # session retains past it are derived ``DriverResponse``s, which
             # §4.2's conditioning policy refuses to un-compose. Only on an
             # accepted MEASURE that a walk will follow — a rejected capture has
             # no evidence to adjudicate from, and a session with no walk has no
@@ -6697,8 +6701,8 @@ class CrossoverV2Session:
     # and :mod:`~jasper.active_speaker.crossover_v2.priors`, which own R17's
     # decisions — which corners are proposable, what each one does to the
     # sections and the priors, and what a candidate's model is. What is left
-    # here is this session's own reading of its session state, plus the ports
-    # that keep a substituted session attribute binding on production (#2354).
+    # here is this object's own reading of its session state, plus the ports
+    # that keep a substituted attribute binding on production (#2354).
     #
     # Three siblings that used to sit here — ``_fc_candidate_sections``,
     # ``_fc_candidate_priors``, ``_fc_branch_operators`` — were deleted in
@@ -7097,7 +7101,7 @@ class CrossoverV2Session:
         # which is deliberately NOT wrapped — unwinds before the phase is
         # marked accepted. The resulting state is honest but worth naming:
         # ``event=correction.crossover_v2_cloud_group_complete`` is in the
-        # journal, the group's geometry verdict is on the conductor, and the
+        # journal, the group's geometry verdict is on the session, and the
         # phase is NOT in ``accepted_phases`` — so nothing durable claims a
         # completed group, and the host maps the raise to a terminal
         # ``internal_error`` screen. The claim this wrap makes is therefore
@@ -7262,7 +7266,7 @@ class CrossoverV2Session:
         the call site, so the host's trigger stays one line.
 
         **Runs OFF the relay thread** (the host starts it on a background
-        thread) and is the only part of this conductor that does. It takes
+        thread) and is the only part of this session that does. It takes
         ``_close_lock`` for the whole fit, which is what keeps that honest: a
         retake's ``_close_cloud_group`` and the household's
         ``confirm_cloud_measure_group`` both take the same lock, so the three
@@ -7437,7 +7441,7 @@ class CrossoverV2Session:
         disclosed, not silent (see :func:`_cloud_fit_evidence`).
 
         Reaching this with ``_measure_analysis`` already ``None`` means MEASURE
-        was accepted by a DIFFERENT conductor instance — the same-session
+        was accepted by a DIFFERENT session instance — the same-session
         ``hydrate`` branch, which carries ``accepted_phases`` but no analysis.
         (The tail of this method releases the analysis, but that release
         happens strictly AFTER this check and only once per group, so it can
@@ -7484,7 +7488,7 @@ class CrossoverV2Session:
         # retake (§2.6) is only admitted while the confirm has not happened,
         # so it re-closes the group and re-stashes the combine without ever
         # reaching here twice. Left in place on a raise — that session is
-        # already failing, and the conductor is about to be discarded.
+        # already failing, and the session is about to be discarded.
         self._measure_analysis = None
         return payload
 
@@ -7525,7 +7529,7 @@ class CrossoverV2Session:
 
         **Split into build + commit** by the eager-fit rider (2026-07-30), so
         the expensive half can run before the household confirms while the
-        half that MUTATES this conductor waits for them. This method is the
+        half that MUTATES this session waits for them. This method is the
         two called back to back and is what every pre-rider caller still gets.
         """
         return self._commit_measure_candidate(
@@ -7549,7 +7553,7 @@ class CrossoverV2Session:
         written to ``self._candidate`` (the fire-once guard), the
         ``publish_candidate`` seam does not fire (no evidence is written), and
         the retained MEASURE analysis is not released. So a build that a retake
-        moots can simply be dropped, leaving the conductor exactly as it was.
+        moots can simply be dropped, leaving the session exactly as it was.
 
         The accountability gate DOES run here, and deliberately: it is part of
         producing a candidate, not part of proposing one. It raises
@@ -7558,7 +7562,7 @@ class CrossoverV2Session:
         :meth:`run_speculative_group_close` for why that costs a failing
         session one extra fit and buys an unchanged failure path.
 
-        **It writes no conductor state at all** since #2291 Phase 2b. The fit's
+        **It writes no session state at all** since #2291 Phase 2b. The fit's
         by-products — the outcome string, the linearized VERIFY prior, the
         level-frame evidence and the realized-level verdict — used to land on
         ``self`` as seven ``_last_*`` fields; they now ride the returned
@@ -7622,7 +7626,7 @@ class CrossoverV2Session:
         Phase 2 has a single place to hollow rather than two near-duplicate
         inline blocks that had already drifted.
 
-        **What this seam covers, exactly:** the three conductor state writes
+        **What this seam covers, exactly:** the three session state writes
         that were byte-identical at both sites (``_candidate``,
         ``_measure_predicted_sum``, ``_measure_commanded_delta``) and the two
         irreversible seam fires (``publish_candidate`` then
@@ -7633,12 +7637,12 @@ class CrossoverV2Session:
         disclosure.  Both still differ between the two sites — the walk installs
         the spec report out-of-band, from the decision
         :meth:`_assert_accountable` replays (#2291 Phase 5a-v made it a value on
-        that decision rather than a second conductor method), while the
+        that decision rather than a second session method), while the
         selection installs it here; and the two log lines carry different
         fields.  Folding either in would be a behavior change, which no phase
         of this migration has sanctioned; they stay at their call sites.
 
-        Ordering is preserved rather than merely similar: every conductor
+        Ordering is preserved rather than merely similar: every session
         attribute write still completes before ``publish_candidate``, the first
         observable side effect, so a re-entrant reader sees exactly what it saw
         before.
@@ -7719,7 +7723,7 @@ class CrossoverV2Session:
             # emitted eight captures before the fit now runs and would report
             # "" forever (the retired-field treatment PR-5 gave the per-capture
             # ``flatness_*`` fields, for the same reason). Read off the
-            # candidate rather than a conductor field since #2291 Phase 2b:
+            # candidate rather than a session field since #2291 Phase 2b:
             # the build stamped it there, so the disclosure and the artifact
             # quote one value instead of two that agreed by timing.
             linearization=candidate.linearization_outcome,
@@ -7811,7 +7815,7 @@ class CrossoverV2Session:
 
     def _refuse(self, code: str) -> "CaptureBeginRefused":
         """Build the refusal for ``code``, with that code's household copy, and
-        record it as this conductor's failure code.
+        record it as this session's failure code.
 
         One construction point so a refusal can never ship a bare code where a
         household expects a sentence (:data:`REASON_REGISTRY` is the §5.10 SSOT
@@ -8271,9 +8275,9 @@ class CrossoverV2Session:
     # --- #2291: the round, graded and acted on -------------------------------
 
     def _round_ports(self) -> "RoundPorts":
-        """Narrow this conductor's seams down to the five a round may call.
+        """Narrow this session's seams down to the five a round may call.
 
-        The coordinator is handed capabilities rather than the conductor, so
+        The coordinator is handed capabilities rather than the session, so
         what it can reach is its argument type: it cannot play a program or
         publish a candidate, because :class:`RoundPorts` has no name for those.
         """
@@ -8308,12 +8312,12 @@ class CrossoverV2Session:
 
         The fire-once guard is here rather than in the coordinator because it
         is a fact about THIS SESSION rather than about the round: only the
-        conductor knows a second trigger is the same session's.
+        this object knows a second trigger is its own.
 
         Everything after it belongs to
         :func:`~jasper.active_speaker.crossover_v2.coordinator.run_round`,
         which grades, acts, and banks; this stamps the results onto the
-        conductor's own state and maps the coordinator's refusal KIND to the
+        session's own state and maps the coordinator's refusal KIND to the
         :data:`REASON_REGISTRY` code whose copy the household reads. The
         vocabulary stays here because the registry does.
         """
@@ -8681,7 +8685,7 @@ class CrossoverV2Session:
         (``locate_failed`` / ``pilot_level_collapse`` / ``agc_behavioral_fail``,
         none of which reach here) overwrote the gate while leaving the PREVIOUS
         attempt's outcome and code standing. The adversarial gate on PR #1994
-        reproduced the consequence on the real conductor: an attempt-1
+        reproduced the consequence on the real session: an attempt-1
         "inconclusive" whose window was capped at the ceiling, followed by an
         attempt-2 locate failure whose capture DID find a reflection, made the
         done screen say "a reflection reached the microphone sooner…" about a
@@ -8717,7 +8721,7 @@ class CrossoverV2Session:
         # ``self`` here. It is computed before the early returns because the
         # gate-comparability refusal below needs it (that is the verdict whose
         # copy used to assert a reflection nobody had looked for, issue
-        # #1974), but it only becomes conductor state through
+        # #1974), but it only becomes session state through
         # ``_set_verify_outcome``, alongside the outcome and code it belongs
         # to. See that method for the desync this ordering prevents.
         #
@@ -8773,7 +8777,7 @@ class CrossoverV2Session:
         # leading pilot pair's transfer (captured level minus programmed
         # gain) should not move between attempts either — see
         # VERIFY_PILOT_TRANSFER_STEP_CEILING_DB for the evidence. The FIRST
-        # usable attempt of this conductor's own lifetime (never pilots
+        # usable attempt of this session's own lifetime (never pilots
         # absent, never a legacy program missing ``programmed_hi_gain_db``)
         # only records the reference; it never rejects on this attempt.
         #
@@ -8984,7 +8988,7 @@ class CrossoverV2Session:
 
         # realized − commanded == measured − predicted (the raw-branch
         # prediction cancels), so the realized curve is reconstructed from the
-        # three quantities this conductor actually holds.
+        # three quantities this session actually holds.
         realized_db = (measured_s - predicted_s) + commanded_db
         floor_hz = self._verify_validity_floor_hz
         band_hz = (
@@ -9045,7 +9049,7 @@ class CrossoverV2Session:
         by the time the household reads the copy ("the previous sound has been
         put back") it is already true.
 
-        A conductor with no ``rollback`` seam still refuses — the verdict is
+        A session with no ``rollback`` seam still refuses — the verdict is
         real whether or not this process can act on it, and the failure screen
         already offers Undo — but it refuses under
         :data:`REASON_CORRECTION_ROLLBACK_FAILED`, whose copy says the
@@ -9091,7 +9095,7 @@ class CrossoverV2Session:
     #
     # One ``log_event`` per consumed capture, on the accepted path AND every
     # rejection — pure observability, read-only against ``analysis``/the
-    # conductor's own state. None of these calls choose a verdict or a retry;
+    # session's own state. None of these calls choose a verdict or a retry;
     # they run AFTER the verdict already exists.
 
     def _safe_log_diag(
@@ -9337,7 +9341,7 @@ class CrossoverV2Session:
         # close rather than once per capture.)
         # Measurement-honesty gate G3's own diagnostics: the current
         # attempt's raw pilot transfer (re-derived fresh, read-only — never
-        # the mutated conductor state) and the step vs baseline
+        # the mutated session state) and the step vs baseline
         # ``_verify_verdict`` already computed and stashed transiently.
         pilot_transfer_db = _pilot_transfer_by_role(analysis).get(VERIFY_PILOT_ROLE)
         # Frame discipline (rung P1): the journal line an operator greps for
@@ -9487,7 +9491,7 @@ class CrossoverV2Session:
         bound attributes rather than reached for inside the organ, so a
         substituted one still binds on production (#2354) — nine substitution
         sites across two suites reach the first of them — six substituting the
-        class attribute, three substituting it on a conductor instance.
+        class attribute, three substituting it on a session instance.
         """
         if (self._measurement_protection_sections_by_role is not None
                 and not analysis.configured_path_composed):
@@ -9552,7 +9556,7 @@ class CrossoverV2Session:
         """HARD GATE for the Layer-1a fit path, as a named reason or ``None`` —
         see :func:`~jasper.active_speaker.crossover_v2.planning.ineligible_reason`.
 
-        Kept as a conductor attribute because the Fc sweep already passes it as
+        Kept as a session attribute because the Fc sweep already passes it as
         a port (:meth:`_evaluate_fc_candidate`'s ``ineligible_reason=``). The
         build calls the module function directly, per the sibling rule that a
         seam nothing substitutes is called directly — both routes resolve to the
@@ -9773,7 +9777,7 @@ def build_v2_capture_plan(
     roles = tuple(roles_bands)
     # courtesy_prelude=COURTESY_PRELUDE_ENABLED on every composed program below
     # (issue #1677): this is the phone's DURATION BUDGET, so it must agree with
-    # what the conductor actually plays — ``crossover_v2.programs``'s
+    # what the session actually plays — ``crossover_v2.programs``'s
     # ``SessionExcitation`` composers — or the phone stops recording before the
     # real (prelude-lengthened) program ends.
     check = build_check_program(roles, courtesy_prelude=COURTESY_PRELUDE_ENABLED)
@@ -10191,7 +10195,7 @@ def session_wall_clock_ceiling_s(capture_plan: Any) -> float:
     """The walked-away volume ceiling for one plan, scaled by its length.
 
     ``session_volume_plan.DEFAULT_WALL_CLOCK_CEILING_S`` (1800 s ≈ 2× the relay
-    TTL) was sized for the 3-entry flow. A 16-capture cloud is a genuinely
+    TTL) was sized for the 3-entry flow. A 15-capture commission is a genuinely
     longer session — the operator walks the mic to a new spot, reads a prompt,
     and taps, once per position — so a fixed 1800 s would force-drain the
     measurement volume mid-cloud and turn a good session into a
@@ -10573,7 +10577,7 @@ def bind_program_playback_seams(
         return await verified_program_aplay(bundle_dir, artifact, timeout_s=timeout_s)
 
     async def _readmit() -> Any:
-        # ``declared_sensitivities`` MUST match what the conductor composed
+        # ``declared_sensitivities`` MUST match what the session composed
         # against: readmission re-resolves every cap, so a program composed at
         # the W6.5-derived HF ceiling would be refused here at the legacy one
         # if the mapping were dropped on this side.
@@ -10614,7 +10618,7 @@ def derive_session_volume_db(
 
     Thin pass-through to
     :func:`jasper.active_speaker.session_volume_plan.session_measurement_volume_db`
-    so the conductor and its callers reach the one derivation path (least-
+    so the session and its callers reach the one derivation path (least-
     sensitive driver reaches the reference level; more-sensitive drivers
     attenuate down digitally). Kept here so the flow imports one module.
     ``declared_sensitivities`` rides through so the caps feeding ``max(caps)``
