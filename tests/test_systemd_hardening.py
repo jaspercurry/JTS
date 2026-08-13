@@ -345,6 +345,8 @@ DROPPED = {
     # grant), `systemd-journal` (journalctl -k Wi-Fi diagnostics), and, since 4a,
     # `jasper-secrets` (the wizards write + render the secret files). No
     # CAP_NET_ADMIN — NL80211 scan-repair routes through a root helper.
+    # U3/P6c-i adds `jts-ring` (/dev/shm/jts-ring write for the wizard-spawned
+    # correction-lane aplay children; inert until P6c-ii arms the lane).
     "jasper-web": (
         "jasper-web",
         {
@@ -353,6 +355,7 @@ DROPPED = {
             "systemd-journal",
             "jasper-secrets",
             "jasper-intsecrets",
+            "jts-ring",
         },
     ),
 }

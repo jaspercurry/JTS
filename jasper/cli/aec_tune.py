@@ -740,7 +740,6 @@ def main() -> int:
                         noise_wav,
                         stdout=None,
                         stderr=None,
-                        quiet_before_device=True,
                     )
                     time.sleep(0.3)
                     capture_ok = _capture_simultaneous(

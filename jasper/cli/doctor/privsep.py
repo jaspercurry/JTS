@@ -142,6 +142,10 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             "systemd-journal",
             "jasper-secrets",
             "jasper-intsecrets",
+            # U3/P6c-i: /dev/shm/jts-ring write access for the wizard-spawned
+            # correction-lane aplay children (inert until P6c-ii arms the
+            # lane; the ring-file mode rides the spawn helper's umask).
+            "jts-ring",
         ),
         paths=(
             # EQ editor + the #900 sound config family.

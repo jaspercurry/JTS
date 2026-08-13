@@ -284,7 +284,7 @@ def test_commission_continuous_tone_reuses_running_process(monkeypatch, tmp_path
     )
     processes: list[_FakeToneProcess] = []
 
-    def _fake_popen(args, stdout=None, stderr=None):
+    def _fake_popen(args, **_kwargs):
         proc = _FakeToneProcess(list(args))
         processes.append(proc)
         return proc
@@ -350,7 +350,7 @@ def test_commission_continuous_tone_uses_planner_frequency_for_tweeter(
     monkeypatch.setattr(
         sound_setup.subprocess,
         "Popen",
-        lambda args, stdout=None, stderr=None: _FakeToneProcess(list(args)),
+        lambda args, **_kwargs: _FakeToneProcess(list(args)),
     )
     try:
         result = asyncio.run(

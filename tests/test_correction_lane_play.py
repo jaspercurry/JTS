@@ -2,30 +2,40 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Contract: one owner for the correction-lane ``aplay`` spawn (P6c-0).
+"""Contract: one owner for the correction-lane ``aplay`` spawn (P6c-0/P6c-i).
 
-``jasper.audio_measurement.correction_lane`` owns building (and, for the
-direct-spawn sites, running) the ``aplay`` command line that plays a WAV
-onto the correction lane — the same consolidation
-``tests/test_correction_substream_ssot.py`` enforces for the lane *name*,
-applied to the lane *spawn*. Before P6c-0 ten call sites across six files
-each assembled their own inline argv; the P6c lane migration (campaign
-#2285, U3 arc) would have meant ten synchronized edits.
+``jasper.audio_measurement.correction_lane`` owns building and running the
+``aplay`` command line that plays a WAV onto the correction lane — the same
+consolidation ``tests/test_correction_substream_ssot.py`` enforces for the
+lane *name*, applied to the lane *spawn*. Before P6c-0 ten call sites
+across six files each assembled their own inline argv; the P6c lane
+migration (campaign #2285, U3 arc) would have meant ten synchronized edits.
+P6c-i retired P6c-0's per-site argv-order knob (one true argv now) and made
+every wrapper spawn under ``CORRECTION_PLAY_UMASK`` — the ring-file mode
+policy that becomes load-bearing when P6c-ii arms the lane.
 
-Three groups of checks:
+Four groups of checks:
 
-  1. **Golden argv/kwargs.** P6c-0 is a pure refactor: for every migrated
-     site shape, the helper must produce exactly the argv and subprocess
-     kwargs the site spelled inline on ``origin/main`` @ ``bb55691a1``.
-     Each golden cites the pre-refactor site(s) it was derived from.
-  2. **The conventions guard.** No file under ``jasper/`` outside a small,
+  1. **Golden argv/kwargs.** For every site shape, the helper must produce
+     exactly the argv and subprocess kwargs that site's callers rely on:
+     the P6c-0 shapes were derived from ``origin/main`` @ ``bb55691a1``'s
+     inline spawns, and P6c-i's two deliberate deltas on top are the
+     normalized flag order and the added ``umask`` (each golden names
+     what it pins).
+  2. **The umask mechanism.** Real spawns prove ``umask=`` reaches the
+     child and governs file creation for BOTH stdlib APIs the wrappers
+     call — including that it overrides a more-restrictive inherited
+     umask, which is what lets jasper-correction-web keep its tight
+     unit-level ``UMask=0077``. The goldens pin that the wrappers pass the
+     constant; these pin that passing it works.
+  3. **The conventions guard.** No file under ``jasper/`` outside a small,
      count-pinned allowlist may contain an ``aplay``/``-D`` spawn shape —
      this is what fails when someone adds an eleventh inline site instead
      of calling the helper. Scope is ``jasper/`` only: the five
      stdlib-only lab probe scripts under ``scripts/`` spell the command by
      design (see correction_lane.py's "Scope of the drift guard" docstring
      section — same exemption, same reason).
-  3. **The guard proves itself.** Synthetic offender shapes are detected;
+  4. **The guard proves itself.** Synthetic offender shapes are detected;
      prose, listing probes (``aplay -l``/``-L``), helper-built argv, and
      ``-D``-without-``aplay`` lists are not.
 
@@ -34,19 +44,25 @@ site, not adversarial evasion): a variable binary (``[self.aplay_binary,
 ...]`` — jasper.active_speaker.playback's audio-lab backend, which has its
 own FORBIDDEN_TEST_PCM_TOKENS fence), argv assembled by concatenation
 (``["aplay"] + rest``), and ``shell=True`` command strings. None exist in
-``jasper/`` today for the correction lane.
+``jasper/`` for the correction lane as of P6c-i — verified by sweep and by
+the P6c-0 gate's independent re-derivation, NOT self-enforcing (those
+shapes are exactly what the scan cannot see).
 """
 from __future__ import annotations
 
 import ast
+import stat
 import subprocess
+import sys
 from pathlib import Path
 
 from jasper.audio_measurement.correction_lane import (
+    CORRECTION_PLAY_UMASK,
     CORRECTION_SUBSTREAM,
     correction_play_argv,
     exec_correction_play,
     popen_correction_play,
+    run_correction_play,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -54,45 +70,29 @@ JASPER_ROOT = REPO_ROOT / "jasper"
 
 
 # ---------------------------------------------------------------------------
-# Check 1 — golden argv/kwargs, derived from origin/main @ bb55691a1.
+# Check 1 — golden argv/kwargs. P6c-0 shapes derived from origin/main @
+# bb55691a1; P6c-i's two deliberate deltas are the normalized flag order
+# (P6c-0's per-site knob retired) and the umask on every spawn.
 # ---------------------------------------------------------------------------
 
 
-def test_builder_web_family_order_matches_pre_refactor_sites() -> None:
-    """``aplay -D <lane> -q <wav>`` — the web/wizard family order.
+def test_builder_produces_the_one_true_argv() -> None:
+    """``aplay -D <lane> -q <wav>`` — every caller, one order (P6c-i).
 
-    Derived from the inline argv at (origin/main @ bb55691a1):
-      * jasper/web/sound_setup.py       _LoopingVolumeFloorTone._run
-      * jasper/web/sound_setup.py       _commission_tone_start (Popen)
-      * jasper/web/sound_setup.py       summed-test loop (Popen)
-      * jasper/active_speaker/web_commissioning.py  commission tone (Popen)
-      * jasper/web/sync_flow.py         _start_playback (create_subprocess_exec)
-      * jasper/web/balance_flow.py      _start_playback (create_subprocess_exec)
-    All six spelled ["aplay", "-D", <lane alias>, "-q", str(wav)].
+    P6c-0 preserved two historical orders behind ``quiet_before_device``
+    (web family ``-D … -q``, root-CLI family ``-q -D``; identical to
+    ``aplay``). P6c-i retired the knob onto the web-family order — the
+    normalization the P6c-0 gate banked — so the builder takes no order
+    argument at all: a reintroduced per-site order knob fails here.
     """
     assert correction_play_argv("/tmp/marker.wav") == [
         "aplay", "-D", CORRECTION_SUBSTREAM, "-q", "/tmp/marker.wav",
     ]
-    # Default order is the web-family order (and matches
-    # jasper.audio_measurement.playback's own spawns).
-    assert correction_play_argv("/tmp/marker.wav") == correction_play_argv(
-        "/tmp/marker.wav", quiet_before_device=False
-    )
+    import inspect
 
-
-def test_builder_cli_family_order_matches_pre_refactor_sites() -> None:
-    """``aplay -q -D <lane> <wav>`` — the root-CLI family order.
-
-    Derived from the inline argv at (origin/main @ bb55691a1):
-      * jasper/cli/aec_commission.py       _Session._capture  (timeout=5)
-      * jasper/cli/aec_commission.py       _Session.adapt     (timeout=120)
-      * jasper/cli/doctor/aec_probe.py     _play_and_assess_probe
-      * jasper/cli/aec_tune.py             inject-noise Popen
-    All four spelled ("aplay", "-q", "-D", CORRECTION_SUBSTREAM, str(wav)).
-    """
-    assert correction_play_argv("/tmp/sine.wav", quiet_before_device=True) == [
-        "aplay", "-q", "-D", CORRECTION_SUBSTREAM, "/tmp/sine.wav",
-    ]
+    assert list(inspect.signature(correction_play_argv).parameters) == [
+        "wav_path"
+    ], "the argv builder takes exactly one parameter since P6c-i"
 
 
 def test_builder_stringifies_path_objects() -> None:
@@ -100,13 +100,21 @@ def test_builder_stringifies_path_objects() -> None:
     assert correction_play_argv(Path("/tmp/x.wav"))[-1] == "/tmp/x.wav"
 
 
-def test_popen_wizard_shape_matches_pre_refactor_sites(monkeypatch) -> None:
-    """Popen(argv, stdout=DEVNULL, stderr=DEVNULL) — the wizard Popen shape.
+def test_lane_umask_constant_is_group_write() -> None:
+    """0o007 = owner+group rwx preserved, other cleared: a ring created
+    0o660 stays writable by the non-creating end (fan-in or the writer),
+    which both write the shared header. The constant's comment in
+    correction_lane.py carries the full story; this pins the value the
+    goldens below show every wrapper passing."""
+    assert CORRECTION_PLAY_UMASK == 0o007
 
-    Derived from (origin/main @ bb55691a1) jasper/web/sound_setup.py's
-    three Popen sites and jasper/active_speaker/web_commissioning.py's
-    commission-tone Popen: positional argv, stdout=subprocess.DEVNULL,
-    stderr=subprocess.DEVNULL, no other kwargs.
+
+def test_popen_wizard_shape(monkeypatch) -> None:
+    """Popen(argv, stdout=DEVNULL, stderr=DEVNULL, umask) — the wizard shape.
+
+    Argv + stdio derived from (origin/main @ bb55691a1) sound_setup's three
+    Popen sites and web_commissioning's commission-tone Popen; ``umask`` is
+    P6c-i's deliberate addition to the spawn kwargs.
     """
     captured: dict[str, object] = {}
     sentinel = object()
@@ -127,19 +135,18 @@ def test_popen_wizard_shape_matches_pre_refactor_sites(monkeypatch) -> None:
     assert captured["kwargs"] == {
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
+        "umask": CORRECTION_PLAY_UMASK,
     }
 
 
-def test_popen_operator_cli_shape_matches_pre_refactor_site(monkeypatch) -> None:
-    """Popen(argv) with inherited stdio — jasper/cli/aec_tune.py's shape.
+def test_popen_operator_cli_shape(monkeypatch) -> None:
+    """Popen(argv, stdout=None, stderr=None, umask) — jasper/cli/aec_tune.py.
 
-    The pre-refactor site (origin/main @ bb55691a1) passed ONLY the argv:
-    ``subprocess.Popen(["aplay", "-q", "-D", CORRECTION_SUBSTREAM,
-    str(noise_wav)])``. The helper passes ``stdout=None, stderr=None``
-    explicitly — ``None`` is ``subprocess.Popen``'s documented default for
-    both (inherit the parent's stdio), so the spawn semantics are
-    identical; the kwargs are asserted here so a future edit that starts
-    redirecting the operator CLI's aplay stderr fails this golden.
+    ``None`` stdio is Popen's documented default (inherit — aplay's stderr
+    stays on the operator's terminal); asserted so a future edit that
+    starts redirecting it fails this golden. Argv order is the P6c-i
+    normalized one — the pre-P6c-i site spelled ``-q`` first, a
+    semantically identical order this golden deliberately no longer pins.
     """
     captured: dict[str, object] = {}
 
@@ -149,22 +156,24 @@ def test_popen_operator_cli_shape_matches_pre_refactor_site(monkeypatch) -> None
         return object()
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
-    popen_correction_play(
-        "/tmp/noise.wav", stdout=None, stderr=None, quiet_before_device=True
-    )
+    popen_correction_play("/tmp/noise.wav", stdout=None, stderr=None)
     assert captured["args"] == (
-        ["aplay", "-q", "-D", CORRECTION_SUBSTREAM, "/tmp/noise.wav"],
+        ["aplay", "-D", CORRECTION_SUBSTREAM, "-q", "/tmp/noise.wav"],
     )
-    assert captured["kwargs"] == {"stdout": None, "stderr": None}
+    assert captured["kwargs"] == {
+        "stdout": None,
+        "stderr": None,
+        "umask": CORRECTION_PLAY_UMASK,
+    }
 
 
-async def test_exec_walkthrough_shape_matches_pre_refactor_sites(monkeypatch) -> None:
-    """create_subprocess_exec("aplay", "-D", <lane>, "-q", wav, DEVNULL×2).
+async def test_exec_walkthrough_shape(monkeypatch) -> None:
+    """create_subprocess_exec("aplay", …, DEVNULL×2, umask) — the async shape.
 
-    Derived from (origin/main @ bb55691a1) the identical
-    ``_start_playback`` helpers in jasper/web/sync_flow.py and
-    jasper/web/balance_flow.py: program+args as separate positionals,
-    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL.
+    Argv + stdio derived from (origin/main @ bb55691a1) the identical
+    ``_start_playback`` helpers in sync_flow and balance_flow: program+args
+    as separate positionals, both stdio DEVNULL; ``umask`` is P6c-i's
+    addition, forwarded through asyncio to the underlying Popen.
     """
     import asyncio
 
@@ -190,6 +199,41 @@ async def test_exec_walkthrough_shape_matches_pre_refactor_sites(monkeypatch) ->
     assert captured["kwargs"] == {
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
+        "umask": CORRECTION_PLAY_UMASK,
+    }
+
+
+def test_run_cli_shape(monkeypatch) -> None:
+    """run(argv, capture_output=True, text=True, timeout, umask) — the
+    blocking root-CLI shape (P6c-i).
+
+    Derived from the module-local ``_run`` wrappers the two CLI sites used
+    through P6c-0 — aec_commission's ``subprocess.run(list(command),
+    capture_output=True, text=True, timeout=timeout)`` and doctor
+    ``_shared._run``'s identical call — which the helper reproduces
+    byte-for-byte plus the umask, so each site's error policy keeps reading
+    the same CompletedProcess fields. ``timeout`` is required: no caller
+    gets an unbounded default.
+    """
+    captured: dict[str, object] = {}
+    sentinel = object()
+
+    def fake_run(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return sentinel
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    result = run_correction_play("/tmp/sine.wav", timeout=6.5)
+    assert result is sentinel
+    assert captured["args"] == (
+        ["aplay", "-D", CORRECTION_SUBSTREAM, "-q", "/tmp/sine.wav"],
+    )
+    assert captured["kwargs"] == {
+        "capture_output": True,
+        "text": True,
+        "timeout": 6.5,
+        "umask": CORRECTION_PLAY_UMASK,
     }
 
 
@@ -206,7 +250,11 @@ def test_popen_forwards_stdout_and_stderr_independently(monkeypatch) -> None:
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
     popen_correction_play("/tmp/x.wav", stdout=subprocess.DEVNULL, stderr=None)
-    assert captured["kwargs"] == {"stdout": subprocess.DEVNULL, "stderr": None}
+    assert captured["kwargs"] == {
+        "stdout": subprocess.DEVNULL,
+        "stderr": None,
+        "umask": CORRECTION_PLAY_UMASK,
+    }
 
 
 async def test_exec_forwards_stdout_and_stderr_independently(monkeypatch) -> None:
@@ -221,7 +269,73 @@ async def test_exec_forwards_stdout_and_stderr_independently(monkeypatch) -> Non
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
     await exec_correction_play("/tmp/x.wav", stdout=None, stderr=subprocess.DEVNULL)
-    assert captured["kwargs"] == {"stdout": None, "stderr": subprocess.DEVNULL}
+    assert captured["kwargs"] == {
+        "stdout": None,
+        "stderr": subprocess.DEVNULL,
+        "umask": CORRECTION_PLAY_UMASK,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Check 2 — the umask mechanism: real spawns, real files, real modes.
+# The goldens above pin that every wrapper PASSES the constant; these pin
+# that passing it WORKS — through both stdlib APIs the wrappers call — and
+# that it overrides a more-restrictive inherited umask (the
+# jasper-correction-web UMask=0077 case, where the unit stays tight and only
+# the spawned player is loosened).
+# ---------------------------------------------------------------------------
+
+_CHILD_CREATES_FILE = (
+    "import sys, os; os.close(os.open(sys.argv[1], "
+    "os.O_CREAT | os.O_WRONLY, 0o666))"
+)
+
+
+def _mode(path: Path) -> int:
+    return stat.S_IMODE(path.stat().st_mode)
+
+
+def test_popen_umask_governs_child_file_creation(tmp_path) -> None:
+    """subprocess.Popen(umask=…) sets the CHILD's umask: a 0o666 open lands
+    0o660 under 0o007 (group bit KEPT even though this pytest process's own
+    umask is almost certainly 0o022, proving the override) and 0o600 under
+    0o077 (proving the parameter is live in both directions, i.e. the
+    tight-unit case cannot leak INTO the spawn either)."""
+    loose = tmp_path / "loose.bin"
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _CHILD_CREATES_FILE, str(loose)],
+        umask=0o007,
+    )
+    assert proc.wait(timeout=30) == 0
+    assert _mode(loose) == 0o660
+
+    tight = tmp_path / "tight.bin"
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _CHILD_CREATES_FILE, str(tight)],
+        umask=0o077,
+    )
+    assert proc.wait(timeout=30) == 0
+    assert _mode(tight) == 0o600
+
+
+async def test_asyncio_forwards_umask_to_the_child(tmp_path) -> None:
+    """asyncio.create_subprocess_exec forwards unknown keywords to the
+    underlying Popen — the fact exec_correction_play's docstring claims.
+    Proven with a real spawn rather than trusted from the stdlib source:
+    a wrong claim here would silently strip the lane's umask from every
+    walkthrough spawn."""
+    import asyncio
+
+    out = tmp_path / "async.bin"
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        _CHILD_CREATES_FILE,
+        str(out),
+        umask=0o007,
+    )
+    assert await asyncio.wait_for(proc.wait(), timeout=30) == 0
+    assert _mode(out) == 0o660
 
 
 # ---------------------------------------------------------------------------
@@ -232,8 +346,9 @@ async def test_exec_forwards_stdout_and_stderr_independently(monkeypatch) -> Non
 # spawn added to an allowlisted file trips the guard too. Every entry has a
 # reason; adding one requires the same.
 _ALLOWED_APLAY_SPAWN_SITES = {
-    # The owner: correction_play_argv's two order branches.
-    "jasper/audio_measurement/correction_lane.py": 2,
+    # The owner: correction_play_argv's single argv display (P6c-i retired
+    # the second order branch along with the quiet_before_device knob).
+    "jasper/audio_measurement/correction_lane.py": 1,
     # The heavier shared machinery (play_wav's one-shot spawn + TonePlayer's
     # continuous-tone spawn). Its alsa_device is a required caller parameter
     # — the policy-free neutral leaf, pinned by
