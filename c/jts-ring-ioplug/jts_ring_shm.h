@@ -114,9 +114,19 @@ _Static_assert(ATOMIC_LLONG_LOCK_FREE == 2,
 //
 // So a ring-writing renderer's RestartSec must still exceed this window, or a
 // fast respawn races its own predecessor's frozen heartbeat into an avoidable
-// -EBUSY. librespot's RestartSec=5 clears it comfortably; jasper-camilla's
-// RestartSec=2 sits ON the boundary for Ring B, which is worth knowing before
-// anyone shortens it. Pinned by test_writer_lock_survives_a_sigkilled_incumbent.
+// -EBUSY — and if its start limit is tight, that loop PARKS the unit, which is
+// the one non-self-healing shape here. Every ring writer's cadence, so the set
+// is checkable rather than assumed:
+//   - librespot.service            RestartSec=5  — clears it comfortably
+//   - bluealsa-aplay.service       RestartSec=5  — set in the JTS drop-in
+//     (deploy/systemd/bluealsa-aplay.service.d/jts-output.conf), because the
+//     PACKAGED unit's cadence is not visible to this repo; the drop-in
+//     overrides it, so the packaged value cannot bite
+//   - jasper-camilla               RestartSec=2  — sits ON the boundary for
+//     Ring B, worth knowing before anyone shortens it
+// Pinned by test_writer_lock_survives_a_sigkilled_incumbent (the window itself)
+// and by tests/test_renderer_ring_lanes.py (each renderer's RestartSec against
+// this constant).
 //
 // One consequence worth naming: the two can legitimately disagree. A paused
 // renderer reports `writer_alive:false` while still holding the ring, and that

@@ -409,13 +409,23 @@ def renderer_user_in_ring_group(
     **ROOT (and an absent ``User=``, which systemd means as root) is always
     capable, and must answer True rather than False.** Root bypasses the group
     check entirely — a 2775 root-owned directory is writable by uid 0 whatever
-    the group says. Getting this wrong is not cosmetic: `bluealsa-aplay` runs as
-    root (its packaged unit sets no ``User=``, and neither does the JTS
-    drop-in), so a membership test that answered False for it would have
-    REFUSED every arm of that lane on every box, for a permission it already
-    has. That is the P6b lane, and it is why this is a `str | None` now — the
-    caller gets `None` from a unit with no ``User=`` and must not have to
-    special-case it.
+    the group says.
+
+    **Reachability, stated honestly.** Before P6b this function answered
+    ``False`` for the literal ``"root"``, and it is tempting to call that a
+    fleet-breaker. It was not, and the difference matters. The only production
+    caller (``jasper.cli.audio_config``) short-circuited on a falsy user and
+    passed ``None``, which :func:`arm_refusal_reason` never refuses on — it
+    refuses only on ``is False``. And no registered lane's unit spells
+    ``User=root``: ``bluealsa-aplay`` sets no ``User=`` at all, so the literal
+    was never produced. So the bluealsa arm would have PASSED under P6a. This is
+    hardening and future-proofing — a unit that ever *does* spell ``User=root``,
+    or any caller that stops short-circuiting — not a caught outage.
+
+    The caller no longer short-circuits (that was Nit-A1 of the P6b round), so
+    the ``None`` branch here is now live from production and the value it
+    returns is honest about why it does not refuse, rather than collapsing
+    "root, definitely capable" into the same ``None`` as "could not tell".
     """
     if unit_user is None or unit_user == "root" or unit_user == "0":
         return True

@@ -1219,3 +1219,83 @@ def test_the_doctor_ring_device_map_covers_every_registered_lane():
             "EBUSY-owner path would report 'not a known fan-in ring lane'"
         )
     assert len(mapping) == len(rl.RENDERER_LANES)
+
+
+# --- Restart cadence vs the ring's liveness window (U3 / P6b, SF-B) --------
+
+
+def _ring_liveness_window_sec() -> float:
+    """The secondary guard's window, read from the C constant that owns it."""
+    header = (REPO / "c" / "jts-ring-ioplug" / "jts_ring_shm.h").read_text()
+    m = re.search(r"#define JTS_RING_WRITER_LIVENESS_TIMEOUT_NS (\d+)ull", header)
+    assert m, "the ring's writer-liveness constant moved or changed shape"
+    return int(m.group(1)) / 1_000_000_000.0
+
+
+@pytest.mark.parametrize("label", rl.MIGRATABLE_LABELS)
+def test_every_ring_writing_renderer_restarts_slower_than_the_liveness_window(label):
+    """A ring writer's RestartSec MUST exceed the writer-liveness window.
+
+    A SIGKILLed writer's flock drops with its fd, but it leaves `writer_pid`
+    stamped and its heartbeat frozen-fresh, so the secondary guard refuses a new
+    writer for up to that window. A renderer that respawns faster races its own
+    predecessor into an avoidable -EBUSY, fails, and respawns again — and with a
+    tight start limit that loop PARKS the unit, which is the source dead until
+    an operator intervenes. It is the one non-self-healing shape in this design.
+
+    Pinned cross-file, same shape as the doctor-probe pin: the value lives in a
+    systemd unit and the bound lives in a C header, and neither may move alone.
+    """
+    lane = rl.lane_by_label(label)
+    assert lane is not None
+    unit = _unit_text(lane)
+    m = re.search(r"^RestartSec=(\d+(?:\.\d+)?)", unit, re.M)
+    assert m, (
+        f"{lane.unit} writes a ring but declares no RestartSec. The PACKAGED "
+        "unit's cadence is not visible to this repo, so it must be overridden "
+        "here rather than assumed"
+    )
+    restart_sec = float(m.group(1))
+    window = _ring_liveness_window_sec()
+    assert restart_sec > window, (
+        f"{lane.unit} restarts in {restart_sec}s but a killed ring writer stays "
+        f"refused for up to {window}s — a faster respawn races its own "
+        "predecessor into EBUSY and can trip the start limit"
+    )
+
+
+@pytest.mark.parametrize("label", rl.MIGRATABLE_LABELS)
+def test_every_ring_writing_renderer_tolerates_a_burst_of_refusals(label):
+    """The start limit must not park the unit over a run of legitimate EBUSYs.
+
+    RestartSec alone is not enough: systemd's default limit (5 starts in 10 s)
+    is what turns a transient refusal loop into a parked unit. Each ring writer
+    declares a window generous enough that a burst cannot reach it.
+    """
+    lane = rl.lane_by_label(label)
+    assert lane is not None
+    unit = _unit_text(lane)
+    burst = re.search(r"^StartLimitBurst=(\d+)", unit, re.M)
+    interval = re.search(r"^StartLimitIntervalSec=(\d+)", unit, re.M)
+    assert burst and interval, (
+        f"{lane.unit} writes a ring and must declare its own start limit; "
+        "systemd's default 5-in-10s parks the unit on an EBUSY burst"
+    )
+    assert int(burst.group(1)) > 5, (
+        f"{lane.unit}'s StartLimitBurst={burst.group(1)} is no better than "
+        "systemd's default"
+    )
+
+
+def test_the_ring_liveness_window_is_enumerated_for_every_writer():
+    """The C header enumerates each ring writer's cadence. A writer missing from
+    that list is one nobody checked — which is how bluealsa-aplay reached P6b
+    as the third writer with its cadence unknown to the repo."""
+    header = (REPO / "c" / "jts-ring-ioplug" / "jts_ring_shm.h").read_text()
+    window_note = header[header.index("JTS_RING_WRITER_LIVENESS_TIMEOUT_NS") - 3000 :]
+    for lane in rl.RENDERER_LANES:
+        assert lane.unit in window_note, (
+            f"{lane.unit} writes a ring but is not enumerated beside the "
+            "liveness constant it must clear"
+        )
+    assert "jasper-camilla" in window_note, "the Ring B writer dropped out"
