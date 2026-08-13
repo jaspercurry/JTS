@@ -63,6 +63,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     REASON_CORRECTION_MODEL_ERROR,
     REASON_LOCATE_FAILED,
     REASON_REGISTRY,
+    REASON_VERIFY_DETERMINISTIC_MISMATCH,
     TIER_EXPRESS,
     TIER_FULL,
     CrossoverV2Session,
@@ -1618,6 +1619,66 @@ def test_a_spent_final_slot_close_refusal_ends_the_real_runner_immediately():
     assert terminal["attempts"]["left"] == 0
     assert "unresolved" not in terminal
     assert "could hear the speaker" not in terminal["reason"]
+
+
+def test_a_repeated_verify_mismatch_ends_the_real_runner_instead_of_looping():
+    """#1873 through the REAL relay runner: the loop the owner's session sat in
+    cannot happen any more.
+
+    Two VERIFY attempts land 0.16 dB apart — 3.66 then 3.82 dB, the 2026-07-29
+    numbers, inside the instrument's own 0.2 dB claim floor — so the second is a
+    deterministic mismatch rather than a second bad take. The runner must
+    publish that verdict and RETURN: no third begin, no ``capture_set_exhausted``,
+    and no waiting for a next begin whose only answer is a refusal.
+
+    That is the TTL half of the field report. Before this, every rejection was
+    retriable, the phone offered "Try again", and the household spent the relay
+    session's remaining life on captures that could not come out differently.
+    Now the session ends on the verdict rather than on the clock — and it ends
+    holding a persisted verdict the wizard can act on, which is where Undo and
+    Re-measure actually live.
+    """
+    shape = resolve_plan_shape()
+    spec = build_v2_verify_session_spec(
+        FC_HZ, acknowledgement_binding=_BINDING, plan_shape=shape,
+    )
+    backend = FakePlanRelayBackend()
+    client, session, phone = _mint_v2_session(backend, spec)
+    graded: list[float] = []
+
+    def verify_analysis(program):
+        index, _attempt = phone.begun
+        assert index == 1, "the session must end at the VERIFY entry"
+        # The third value exists only so a third capture would be visible in
+        # ``graded`` rather than silently reusing the second's number.
+        deviation = (3.66, 3.82, 99.0)[min(len(graded), 2)]
+        graded.append(deviation)
+        return _verify_analysis(program, max_db=deviation)
+
+    conductor = _stage2_conductor(
+        backend, session, phone, analyses={"verify": verify_analysis},
+    )
+    _run(_build_runner(conductor, VolumeRecorder()), client, session)
+
+    # Exactly two captures ran — the loop stopped where the evidence did.
+    assert graded == [3.66, 3.82]
+    phases = backend.phases(session.session_id)
+    assert phases[-1] == "capture_result"
+    assert "capture_set_complete" not in phases
+    assert "capture_set_exhausted" not in phases
+
+    terminal = backend.host_events[session.session_id][-1]
+    assert terminal["accepted"] is False
+    assert terminal["code"] == REASON_VERIFY_DETERMINISTIC_MISMATCH
+    assert terminal["template"] == "verify_fail"
+    assert terminal["terminal"] is True
+    # The household reads the finding, not a claim about the measurement.
+    assert "another try lands in the same place" in terminal["reason"]
+    assert "clean read" not in terminal["reason"]
+
+    state = v2host.load_v2_state()
+    assert state["verify"]["outcome"] == "fail"
+    assert state["verify"]["code"] == REASON_VERIFY_DETERMINISTIC_MISMATCH
 
 
 def test_position_retention_survives_a_retake_through_the_real_evidence_store(

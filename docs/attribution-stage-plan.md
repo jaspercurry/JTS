@@ -953,6 +953,12 @@ ship; the later owner inherits the record and may extend it.
   entry after a dead session). That layer is structural work the two-stage
   ladder's PR-T3 largely dissolves; what WO-5 carries from #1873 is the
   discriminator and its copy, not the relay-session plumbing.
+  (**Landed ahead of WO-5** — the discriminator and its copy shipped on their
+  own in the #1873 lane: `VERIFY_REPEAT_FLOOR_DB` in
+  [`crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py), the
+  `verify_deterministic_mismatch` reason code, and a terminal verdict that ends
+  the capture session rather than offering a retry. WO-5 inherits it rather
+  than building it; its own remaining scope is #1868 / #1857, unchanged.)
   **Precondition:** #1858 — the persisted `predicted_sum` prior is
   stride-decimated without pre-smoothing and is aliased below ~500 Hz. WO-5
   reads that prior. Either #1858 lands first, or WO-5 states in-PR which
