@@ -280,6 +280,7 @@ def _read_transport_state(plan: Any) -> dict[str, Any]:
         output_endpoint_evidence_from_statefiles,
     )
     from ..env_load import read_env_file_state
+    from ..fanin_coupling import COUPLING_ENV_VAR
     from ..output_topology import load_output_topology
 
     evidence = output_endpoint_evidence_from_statefiles(
@@ -304,9 +305,20 @@ def _read_transport_state(plan: Any) -> dict[str, Any]:
         # cannot read as a disconnect.
         outputd_env["JASPER_OUTPUTD_CONTENT_PCM"] = live_pcm
     return _transport_state(
-        # The plan's transport topology name IS the resolved coupling, so this
-        # does not re-resolve coupling policy locally.
-        coupling=plan.transport_topology.name,
+        # The plan's own resolved COUPLING, never its transport topology NAME.
+        # `transport_coherence_report` takes a coupling TOKEN and re-derives the
+        # shape itself (from that token plus outputd's endpoint marker), so a
+        # shape name handed in here goes through `resolve_coupling`, whose
+        # deliberate fail-SAFE maps everything outside {loopback, shm_ring} to
+        # loopback. Two of the three shape names alias their coupling token
+        # (TRANSPORT_LOOPBACK, TRANSPORT_SHM_RING), so the substitution looked
+        # right until the third arrived: on an armed roleful box the shape is
+        # `shm_ring_active`, which silently resolved to loopback and told a
+        # demonstrably-playing speaker it was parked (#2376) while `/state`'s own
+        # coupling surface reported the ring armed and live. This reads the fact
+        # doctor reads — the persisted coupling — resolved once, by the same plan
+        # that produced `plan.transport_topology`.
+        coupling=str(plan.setting(COUPLING_ENV_VAR).value),
         outputd_env=outputd_env,
         camilla_devices=evidence.devices,
         topology=load_output_topology(),

@@ -325,9 +325,13 @@ it is never presented as healthy idle. A broken post-DSP transport — CamillaDS
 and outputd on different loopback lanes, so nothing reaches the drivers however
 healthy each daemon looks — is read on the slow cadence from the same
 `transport_coherence_report` detector `jasper-doctor` uses, on the same evidence
-(both statefiles, plus outputd's live capture PCM), and reported as a parked
-signal path rather than "Audio is ready". Only that detector's `errors` reach
-the parked wording. Its `notes` — coherent-but-transient states, today just the
+(both statefiles, outputd's live capture PCM, and the persisted coupling), and
+reported as a parked signal path rather than "Audio is ready". The coupling is
+part of that evidence list because the detector takes a coupling TOKEN and
+derives the transport shape from it: handing it a transport SHAPE name instead
+read an armed ring box as loopback and called a playing speaker parked (#2376).
+Only that detector's `errors` reach the parked wording.
+Its `notes` — coherent-but-transient states, today just the
 ACTIVE-ring arm waypoint — are published as `coherence_notes` for whoever reads
 `/state` and deliberately do NOT trip the household card: it is a rung of an
 operator-only ladder the household cannot act on, so `jasper-doctor` is the loud
