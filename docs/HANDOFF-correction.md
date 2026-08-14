@@ -201,11 +201,19 @@ never redirected.
   [#1656](https://github.com/jaspercurry/JTS/issues/1656) is the product side,
   not this binding: the saved-mic UI still cannot change or enter a serial,
   calibration identity is still bound by model family rather than physical
-  device, and Dayton cal ingestion by serial is unbuilt. Separately, the
-  upload/verify handlers scope their level-match gates to
-  `capture_transport == "local"`, so a same-origin desktop client can reach
-  analysis without one ([#2041](https://github.com/jaspercurry/JTS/issues/2041));
-  the phone-relay flows above are unaffected.
+  device, and Dayton cal ingestion by serial is unbuilt. Separately,
+  `/upload-noise` used to scope its level-match gate to `capture_transport ==
+  "local"` only, so a same-origin desktop client could drive a relay-transport
+  session through it and reach analysis with no level match at all — fixed by
+  refusing the endpoint outright for non-local sessions, the same
+  `!= "local"` refusal `/autolevel/start` and `/local-capture/setup` already
+  gave it ([#2041](https://github.com/jaspercurry/JTS/issues/2041)); relay
+  capture, every position including the first, only ever goes through
+  `/relay/capture`, which owns its own level-match volume reassertion. The
+  phone-relay flows above were never affected. `/verify` and
+  `/repeat-position` remain fully ungated (no transport check, no
+  level-match check, unlike `/relay/verify`) — tracked as the widened
+  [#2455](https://github.com/jaspercurry/JTS/issues/2455).
 - 🧱 **v2 crossover captures now reach the SAME household-mic hint (W6.12,
   2026-07-19).** Every v2 crossover capture logged
   `crossover_v2_uncalibrated_capture` even with a resolvable stored mic

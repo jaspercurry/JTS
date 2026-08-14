@@ -2710,6 +2710,61 @@ def test_local_noise_upload_requires_completed_level_lock_before_body(
     assert handler.rfile.tell() == 0
 
 
+def test_relay_noise_upload_is_rejected_before_body_read(monkeypatch):
+    """Issue #2041: /upload-noise is the local-browser capture path — it
+    schedules the sweep through `_schedule_measurement_sweep`, which never
+    reasserts a locked measurement volume (it just trusts the whole-session
+    park left behind by AutolevelController, a local-only object). A relay
+    session's level match instead restores household listening volume the
+    moment it locks and only reasserts around its own `/relay/capture`
+    sweep, so relay must never be allowed through this endpoint at all —
+    checking "is the relay level match locked" here would not be enough,
+    since the sweep would still play at the wrong volume. Before this fix,
+    a relay-transport session hit no gate at all and could ride this
+    endpoint straight through to analysis with no level match of any kind.
+    """
+    from jasper.correction.session import SessionState
+
+    handler = SimpleNamespace(
+        headers={"Content-Length": "4"},
+        rfile=io.BytesIO(b"WAVE"),
+    )
+    sess = SimpleNamespace(
+        capture_transport="relay",
+        state=SessionState.NEEDS_NOISE_CAPTURE,
+    )
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+
+    with pytest.raises(correction_setup.RequestConflict, match="local-only"):
+        correction_setup._handle_upload_noise(handler)
+
+    assert handler.rfile.tell() == 0
+
+
+def test_local_noise_upload_gate_unchanged_alongside_relay_refusal(monkeypatch):
+    """Regression pair for the #2041 fix: restructuring the transport check
+    into an early return must not change what a *local* session sees — it
+    still reaches the pre-existing bind-setup conflict (not the new relay
+    refusal, and not a silent pass-through)."""
+    from jasper.correction.session import SessionState
+
+    handler = SimpleNamespace(
+        headers={"Content-Length": "4"},
+        rfile=io.BytesIO(b"WAVE"),
+    )
+    sess = SimpleNamespace(
+        capture_transport="local",
+        local_capture_setup_bound=False,
+        state=SessionState.NEEDS_NOISE_CAPTURE,
+    )
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+
+    with pytest.raises(correction_setup.RequestConflict, match="bind the local"):
+        correction_setup._handle_upload_noise(handler)
+
+    assert handler.rfile.tell() == 0
+
+
 def test_local_noise_upload_rearms_watchdog_on_async_loop_before_body(
     tmp_path,
     monkeypatch,
