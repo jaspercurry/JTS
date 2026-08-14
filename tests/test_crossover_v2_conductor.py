@@ -353,6 +353,7 @@ def test_changed_recovery_verify_cannot_split_store_and_journey_truth(
             attempt_id="candidate-base",
             metric=flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
             provenance=PROVENANCE_REALIZED,
+            sitting_id=SESSION,
             integrity=AttemptIntegrity(comparable=True),
             grade_db=1.4,
             n_graded_bins=120,
@@ -361,6 +362,7 @@ def test_changed_recovery_verify_cannot_split_store_and_journey_truth(
             attempt_id="candidate-previous",
             metric=flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
             provenance=PROVENANCE_REALIZED,
+            sitting_id=SESSION,
             integrity=AttemptIntegrity(comparable=True),
             grade_db=1.0,
             n_graded_bins=120,
@@ -584,6 +586,7 @@ def test_live_seam_refuses_improvement_when_verify_denominator_shrinks():
             attempt_id="candidate-previous",
             metric=flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
             provenance=PROVENANCE_REALIZED,
+            sitting_id=SESSION,
             integrity=AttemptIntegrity(comparable=True),
             grade_db=1.0,
             n_graded_bins=400,
@@ -616,6 +619,7 @@ def test_live_seam_preserves_immediate_predecessor_basis():
             attempt_id="candidate-early",
             metric=flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
             provenance=PROVENANCE_REALIZED,
+            sitting_id=SESSION,
             integrity=AttemptIntegrity(comparable=True),
             grade_db=9.0,
         ),
@@ -623,6 +627,7 @@ def test_live_seam_preserves_immediate_predecessor_basis():
             attempt_id="candidate-previous",
             metric=flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
             provenance=PROVENANCE_REALIZED,
+            sitting_id=SESSION,
             integrity=AttemptIntegrity(comparable=True),
             grade_db=1.0,
         ),
@@ -644,6 +649,118 @@ def test_live_seam_preserves_immediate_predecessor_basis():
         "candidate-previous", "candidate-latest",
     ]
     assert decision["improvement_db"] == pytest.approx(0.4)
+
+
+def test_live_seam_refuses_a_claim_against_a_previous_measurement_journey():
+    """Issue #2081, at the seam the household actually reaches.
+
+    "Start over" preserves ``attempts_loop`` on purpose, so the second tune's
+    VERIFY is graded against the first tune's — but the microphone was put
+    down, re-placed and re-aimed in between, and the claim floor was measured
+    with it bolted down (``captures/repeat-floor-20260731``). The predecessor
+    below carries the session that measured it; this VERIFY carries its own.
+    Before the fix the conductor answered ``improvement_above_floor`` with
+    ``improvement_db 0.4`` and no record of the gap; the only thing that
+    differs from the test above is which sitting the predecessor names.
+    """
+    history = (
+        AttemptRecord(
+            attempt_id="candidate-previous",
+            metric=flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+            provenance=PROVENANCE_REALIZED,
+            # A DIFFERENT relay session — the first tune's, not this one's.
+            sitting_id="first_tune_verify_session",
+            integrity=AttemptIntegrity(comparable=True),
+            grade_db=1.0,
+        ),
+    )
+    fakes = FakeSeams()
+    fakes.verify = lambda program: _verify_analysis(program, max_db=0.6)
+    c = _verify_only_conductor(
+        fakes,
+        attempt_history=history,
+        tuning_attempt_id="candidate-latest",
+    )
+
+    verdict = _run_phase(c, 1, 1)
+
+    # The VERIFY itself still passes — this is a claim refusal, not a capture
+    # rejection, and the household's speaker is not told its measurement failed.
+    assert verdict["accepted"] is True
+    decision = c.last_attempt_decision
+    assert decision["decision"] == STOP_EVIDENCE
+    assert decision["reason"] == "sitting_mismatch"
+    assert decision["basis_attempt_ids"] == [
+        "candidate-previous", "candidate-latest",
+    ]
+    # No unlicensed number survives to a renderer.
+    assert decision["improvement_db"] is None
+    assert decision["magnitude_db"] is None
+    # The attempt is still BANKED — refusing the claim must not cost the
+    # household the record, or the next tune has no predecessor either.
+    assert [item.attempt_id for item in c.attempt_history] == [
+        "candidate-previous", "candidate-latest",
+    ]
+
+
+def test_live_seam_stamps_this_session_as_the_new_attempts_sitting():
+    """The stamp is the session that captured the sweep, not a constant."""
+    fakes = FakeSeams()
+    fakes.verify = lambda program: _verify_analysis(program, max_db=0.6)
+    c = _verify_only_conductor(fakes, tuning_attempt_id="candidate-latest")
+
+    assert _run_phase(c, 1, 1)["accepted"] is True
+
+    banked = c.attempt_history[-1]
+    assert banked.attempt_id == "candidate-latest"
+    assert banked.sitting_id == c.session_id
+    assert banked.sitting_id  # never the empty "unrecorded" value
+
+
+def test_the_banked_sitting_survives_the_durable_state_round_trip():
+    """A stamp the persistence layer drops is a stamp that never fired.
+
+    The whole #2081 hazard lives across a restart — the predecessor is read
+    back out of the state file "Start over" preserved — so the field has to
+    make the round trip, not just exist in memory.
+    """
+    record = AttemptRecord(
+        attempt_id="candidate-a",
+        metric=flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+        provenance=PROVENANCE_REALIZED,
+        sitting_id="the_session_that_measured_it",
+        integrity=AttemptIntegrity(comparable=True),
+        grade_db=1.0,
+    )
+    assert record.to_dict()["sitting_id"] == "the_session_that_measured_it"
+
+    restored = flow.attempt_history_from_state(
+        {"attempts_loop": {"history": [record.to_dict()]}}
+    )
+    assert [item.sitting_id for item in restored] == [
+        "the_session_that_measured_it",
+    ]
+
+
+def test_a_pre_2081_persisted_row_restores_as_unrecorded_not_as_a_match():
+    """Every shipped speaker's history looks like this on the upgrade deploy.
+
+    Two such rows must not compare equal as one sitting — the restore has to
+    hand the kernel the value it refuses on, which is what makes the upgrade
+    stop claiming rather than claim something it cannot support.
+    """
+    legacy_row = {
+        "attempt_id": "candidate-old",
+        "metric": flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+        "provenance": PROVENANCE_REALIZED,
+        "integrity": {"comparable": True, "reasons": []},
+        "grade_db": 4.0,
+    }
+    restored = flow.attempt_history_from_state(
+        {"attempts_loop": {"history": [legacy_row]}}
+    )
+    assert len(restored) == 1
+    assert restored[0].sitting_id == ""
 
 
 # --- happy path -----------------------------------------------------------------

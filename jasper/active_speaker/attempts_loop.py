@@ -48,6 +48,16 @@ bolted in place on 2026-07-31 and written up in
 3. **A change smaller than the instrument's own floor is not a change** —
    :attr:`FloorStats.claim_floor_db`.
 
+4. **A floor licenses only the separation it was measured across** —
+   :attr:`FloorStats.scope`. The 2026-07-31 study is a *within-sitting* number:
+   the mic was bolted in place and the repeats were ~21 s apart, so it bounds
+   how far the instrument wanders while nothing moves. It says nothing about a
+   pair separated by a microphone being put down and picked up again — the same
+   README calls the remove/replace/re-aim arm unmeasured, and the panel's bound
+   on it (3.2 dB) is an order of magnitude above the floor itself. So
+   :func:`decide_next` refuses to grade a pair the floor's own scope does not
+   cover (issue #2081), rather than reporting a claim the study never licensed.
+
 The kernel grades a *magnitude* against that floor and, separately, asks
 whether the change was an improvement. Both questions have to be answerable
 before the loop may claim anything, and when either cannot be answered the
@@ -102,6 +112,20 @@ FLOOR_BASES: frozenset[str] = frozenset({
     FLOOR_BASIS_MEASURED, FLOOR_BASIS_POLICY,
 })
 
+#: The floor was derived across a separation no wider than ONE measurement
+#: sitting — one continuous microphone placement — so it licenses only a pair
+#: measured in the same sitting. This is what the 2026-07-31 study measured
+#: (mic bolted in place, repeats ~21 s apart) and is the fail-closed value.
+FLOOR_SCOPE_WITHIN_SITTING = "within_sitting"
+#: The floor's derivation does not depend on the pair sharing a sitting —
+#: either a re-placement study measured it that way, or the number is a policy
+#: bar about something no microphone sits between.
+FLOOR_SCOPE_ACROSS_SITTINGS = "across_sittings"
+
+FLOOR_SCOPES: frozenset[str] = frozenset({
+    FLOOR_SCOPE_WITHIN_SITTING, FLOOR_SCOPE_ACROSS_SITTINGS,
+})
+
 # Reasons. Free-form strings would drift between the kernel, the replay driver
 # and the report; naming them here keeps one spelling per fact.
 REASON_AWAITING_FIRST_ATTEMPT = "awaiting_first_attempt"
@@ -110,6 +134,8 @@ REASON_ATTEMPT_NOT_COMPARABLE = "attempt_not_comparable"
 REASON_PREDECESSOR_NOT_COMPARABLE = "predecessor_not_comparable"
 REASON_FLOOR_METRIC_MISMATCH = "floor_metric_mismatch"
 REASON_PROVENANCE_MISMATCH = "provenance_mismatch"
+REASON_SITTING_MISMATCH = "sitting_mismatch"
+REASON_SITTING_UNRECORDED = "sitting_unrecorded"
 REASON_NO_DEVIATION_AVAILABLE = "no_deviation_available"
 REASON_DIRECTION_UNKNOWN_ABOVE_FLOOR = "direction_unknown_above_floor"
 REASON_GRADED_BINS_SHRANK = "graded_bins_shrank"
@@ -224,6 +250,15 @@ class FloorStats:
       source: free-text provenance — which study, which shipped constant.
       measured_at: when, as free text (an ISO date for a study, ``""`` when the
         basis is a policy bar and there is no measurement to date).
+      scope: which *separation* this floor was derived across —
+        :data:`FLOOR_SCOPE_WITHIN_SITTING` or
+        :data:`FLOOR_SCOPE_ACROSS_SITTINGS`. Orthogonal to :attr:`basis`, and
+        the reason it is a second field rather than folded into the first: a
+        measured floor and a policy bar can each cover either separation, so
+        collapsing them would let "we measured this" imply "…across a mic
+        re-placement", which is exactly the inference issue #2081 was filed
+        about. The default is the fail-closed one: a floor that does not say
+        which separation it covers licenses the narrow comparison only.
     """
 
     metric: str
@@ -233,12 +268,15 @@ class FloorStats:
     median_db: float | None = None
     p95_db: float | None = None
     measured_at: str = ""
+    scope: str = FLOOR_SCOPE_WITHIN_SITTING
 
     def __post_init__(self) -> None:
         if not self.metric:
             raise ValueError("FloorStats.metric must be a non-empty name")
         if self.basis not in FLOOR_BASES:
             raise ValueError(f"unknown floor basis {self.basis!r}")
+        if self.scope not in FLOOR_SCOPES:
+            raise ValueError(f"unknown floor scope {self.scope!r}")
         if not (self.claim_floor_db > 0.0):
             raise ValueError("claim_floor_db must be positive")
         if not self.source:
@@ -253,12 +291,21 @@ class FloorStats:
         p95_db: float,
         source: str,
         measured_at: str,
+        scope: str = FLOOR_SCOPE_WITHIN_SITTING,
     ) -> "FloorStats":
         """A floor measured by repeating one unchanged measurement.
 
         ``claim_floor_db`` is computed as
         ``CLAIM_FLOOR_P95_MULTIPLE * p95_db`` — see that constant for why the
         multiple is 2 and why no decimal is transcribed here.
+
+        ``scope`` defaults to :data:`FLOOR_SCOPE_WITHIN_SITTING` because that
+        is what "repeat one unchanged measurement" describes, and the only such
+        study banked (``captures/repeat-floor-20260731``) held the mic fixed.
+        A study that DOES re-place the microphone between repeats passes
+        :data:`FLOOR_SCOPE_ACROSS_SITTINGS` and the wider comparison is
+        licensed with no kernel edit — which is the reason this is a parameter
+        rather than a constant this constructor hardcodes.
         """
 
         if not (p95_db > 0.0):
@@ -271,11 +318,12 @@ class FloorStats:
             median_db=float(median_db),
             p95_db=float(p95_db),
             measured_at=measured_at,
+            scope=scope,
         )
 
     @classmethod
     def from_policy_bar(
-        cls, *, metric: str, claim_floor_db: float, source: str,
+        cls, *, metric: str, claim_floor_db: float, source: str, scope: str,
     ) -> "FloorStats":
         """A shipped threshold standing in where no repeat study exists.
 
@@ -283,6 +331,13 @@ class FloorStats:
         :attr:`p95_db` stay ``None`` rather than being back-solved from the
         bar, because inventing a p95 to fit a threshold would turn a policy
         choice into a fake measurement.
+
+        ``scope`` is **required and has no default**, unlike
+        :meth:`from_repeat_study`'s. A repeat study's separation is a fact
+        about how it was run, so it can be inferred from the construction; a
+        declared bar has no such fact behind it, and picking either default for
+        it would be the module inventing the one thing the caller is the only
+        one who knows. Making it answer is the point.
         """
 
         return cls(
@@ -290,7 +345,22 @@ class FloorStats:
             claim_floor_db=float(claim_floor_db),
             basis=FLOOR_BASIS_POLICY,
             source=source,
+            scope=scope,
         )
+
+    def licenses_sitting_pair(self, previous: str, latest: str) -> bool:
+        """May a pair measured in these two sittings be graded against me?
+
+        ``""`` is UNKNOWN, never a match, and that asymmetry is the whole
+        guard: two unrecorded sittings compare equal as strings, so an
+        ``==`` here would read a pair that cannot say where it came from as a
+        pair that came from one place. State written before issue #2081 rides
+        in with two blanks, which is precisely the case that must not pass.
+        """
+
+        if self.scope == FLOOR_SCOPE_ACROSS_SITTINGS:
+            return True
+        return bool(previous) and previous == latest
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -301,6 +371,7 @@ class FloorStats:
             "median_db": self.median_db,
             "p95_db": self.p95_db,
             "measured_at": self.measured_at,
+            "scope": self.scope,
         }
 
 
@@ -352,6 +423,14 @@ class AttemptRecord:
         :data:`PROVENANCE_REALIZED`. Comparing across the two is refused —
         a predicted grade and a measured one are different instruments, and
         the household wire requires deltas labelled model-vs-model.
+      sitting_id: WHICH continuous microphone sitting produced this grade —
+        opaque to the kernel, which only ever asks two of them whether they
+        are the same string. ``""`` means unrecorded, and is treated as
+        "not the same sitting" rather than as a match; see
+        :meth:`FloorStats.licenses_sitting_pair`. Its sibling ``attempt_id``
+        answers a different question and cannot stand in for it: two attempts
+        necessarily carry two ids, so id inequality says nothing about whether
+        the microphone moved between them.
       integrity: the shipped gate's comparability verdict.
       repeats_used: how many repeats this attempt averaged. Disclosed against
         :data:`MAX_USEFUL_REPEAT_AVERAGES`.
@@ -379,6 +458,7 @@ class AttemptRecord:
     metric: str
     provenance: str
     integrity: AttemptIntegrity
+    sitting_id: str = ""
     repeats_used: int = 1
     grade_db: float | None = None
     deviation_from_predecessor_db: float | None = None
@@ -410,6 +490,7 @@ class AttemptRecord:
             "attempt_id": self.attempt_id,
             "metric": self.metric,
             "provenance": self.provenance,
+            "sitting_id": self.sitting_id,
             "integrity": self.integrity.to_dict(),
             "repeats_used": self.repeats_used,
             "grade_db": self.grade_db,
@@ -510,6 +591,11 @@ def decide_next(
     re-opens exactly the drift question rule 1 closed, and there is no banked
     gap-of-two deviation to calibrate what that costs.
 
+    The pair must also fall inside the floor's own :attr:`FloorStats.scope` —
+    rule 4. A within-sitting floor grades a within-sitting pair and nothing
+    else, and "we do not know which sittings these came from" is refused on the
+    same terms as "we know, and they differ".
+
     Order of judgement, and why: evidence first (a number that cannot be
     trusted must never reach a threshold), then the floor (a change too small
     to resolve is the most useful thing to say, so it outranks the budget),
@@ -609,6 +695,35 @@ def decide_next(
             REASON_PROVENANCE_MISMATCH,
             basis_attempt_ids=pair,
             notes=(previous.provenance, latest.provenance),
+        )
+
+    if not floor.licenses_sitting_pair(previous.sitting_id, latest.sitting_id):
+        # Rule 4. Sits with the provenance refusal above and ahead of every
+        # number below for the same reason that one does: both ask whether
+        # these two grades may be subtracted AT ALL, and a magnitude computed
+        # first would only be a threshold-shaped way of saying yes. The
+        # distinction between the two reasons is operational, not cosmetic —
+        # on the deploy that lands #2081 every persisted history carries no
+        # sitting at all, and reading that as "the household moved the mic"
+        # would send a maintainer looking for a household that did nothing
+        # wrong. Such a speaker answers UNRECORDED until both attempts in its
+        # pair were captured after the upgrade, and MISMATCH from then on;
+        # neither is a claim, and the difference is which one a reader should
+        # act on.
+        return _decision(
+            STOP_EVIDENCE,
+            (
+                REASON_SITTING_MISMATCH
+                if previous.sitting_id and latest.sitting_id
+                else REASON_SITTING_UNRECORDED
+            ),
+            basis_attempt_ids=pair,
+            provenance=latest.provenance,
+            notes=(
+                f"floor scope {floor.scope}",
+                f"previous sitting {previous.sitting_id or 'unrecorded'}",
+                f"latest sitting {latest.sitting_id or 'unrecorded'}",
+            ),
         )
 
     magnitude_db, improvement_db = _magnitude_and_improvement(previous, latest)

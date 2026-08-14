@@ -1421,8 +1421,10 @@ def test_the_model_error_store_banks_the_tracking_number_not_the_ledger_grade(
 
     real_record_from_verify = flow.attempt_record_from_verify
 
-    def _record_with_a_different_grade(analysis, *, attempt_id):
-        record = real_record_from_verify(analysis, attempt_id=attempt_id)
+    def _record_with_a_different_grade(analysis, *, attempt_id, sitting_id):
+        record = real_record_from_verify(
+            analysis, attempt_id=attempt_id, sitting_id=sitting_id,
+        )
         return dataclasses.replace(record, grade_db=99.0)
 
     monkeypatch.setattr(

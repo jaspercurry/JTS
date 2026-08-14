@@ -48,7 +48,12 @@ from typing import Any, Mapping
 from jasper.atomic_io import advisory_file_lock, atomic_write_json
 from jasper.log_event import log_event
 
-from .attempts_loop import FLOOR_BASES, FloorStats
+from .attempts_loop import (
+    FLOOR_BASES,
+    FLOOR_SCOPE_WITHIN_SITTING,
+    FLOOR_SCOPES,
+    FloorStats,
+)
 
 SCHEMA_VERSION = 1
 MODEL_ERROR_STATE_KIND = "jts_active_speaker_model_error"
@@ -126,7 +131,19 @@ def _normalise_floor(raw: Any) -> dict[str, Any] | None:
         return None
     if basis not in FLOOR_BASES:
         return None
-    return dict(raw)
+    # ``scope`` (issue #2081) is validated here for the same reason ``basis``
+    # is: :func:`_floor_from_state` below constructs a ``FloorStats``, whose
+    # ``__post_init__`` raises on an unrecognised value, and this function is
+    # what keeps that construction total. An ABSENT key is not an error — every
+    # floor written before #2081 came from the fixed-mic study, so the
+    # fail-closed default is the truth about them rather than a guess — but a
+    # scope that is present and unreadable drops the whole floor, because a
+    # threshold nobody can say what it licenses is worse than no threshold: the
+    # loop's alternative is refusing to grade, which claims nothing.
+    scope = raw.get("scope", FLOOR_SCOPE_WITHIN_SITTING)
+    if scope not in FLOOR_SCOPES:
+        return None
+    return {**raw, "scope": scope}
 
 
 def _normalise_state(raw: Any, path: Path) -> dict[str, Any]:
@@ -204,6 +221,10 @@ def adopt_floor(
         path=str(resolved),
         metric=floor.metric,
         basis=floor.basis,
+        # #2081: WHICH comparisons this floor licenses decides whether the loop
+        # may claim anything at all, so the adoption line says it rather than
+        # leaving a reader to infer it from ``basis``.
+        scope=floor.scope,
         claim_floor_db=round(floor.claim_floor_db, 5),
     )
     return state
@@ -221,6 +242,9 @@ def _floor_from_state(state: Mapping[str, Any]) -> FloorStats | None:
         median_db=_optional_float(raw.get("median_db")),
         p95_db=_optional_float(raw.get("p95_db")),
         measured_at=str(raw.get("measured_at") or ""),
+        # Total by construction: ``_normalise_floor`` above defaulted an absent
+        # key and dropped an unreadable one, so this read cannot raise.
+        scope=str(raw["scope"]),
     )
 
 

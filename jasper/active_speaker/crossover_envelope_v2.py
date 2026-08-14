@@ -68,6 +68,8 @@ from .attempts_loop import (
     REASON_PREDECESSOR_NOT_COMPARABLE,
     REASON_PROVENANCE_MISMATCH,
     REASON_REGRESSION_FROM_PREDECESSOR,
+    REASON_SITTING_MISMATCH,
+    REASON_SITTING_UNRECORDED,
 )
 from .crossover_v2_flow import (
     ATTEMPT_REASON_NO_FLOOR,
@@ -1742,6 +1744,28 @@ def _attempt_evidence_sentence(decision: Mapping[str, Any]) -> str:
     return "Stopped because the latest attempt could not be compared reliably."
 
 
+def _attempt_sitting_sentence(decision: Mapping[str, Any]) -> str:
+    """The #2081 refusal, in household terms: the microphone moved.
+
+    Says what happened and that nothing is wrong, because it is the ordinary
+    outcome of tuning twice — the microphone was set down between the two
+    measurements, and the loop will not call the difference an improvement when
+    part of it could be the new microphone position.
+
+    Two vocabulary rules bind this sentence, and the second one caught a first
+    draft of it. It is free of ENGINE words ("floor", "scope", "sitting") per
+    the household-copy rule — those and the numbers ride in the decision's
+    notes for a support read. And the actor is **the microphone, never "the
+    phone"** (#1941 R4, guarded by ``tests/test_measurement_vocabulary.py``):
+    the instrument a household holds is whatever browser reaches the relay, and
+    the 2026-07-30 bench held a UMIK-2 while the wizard talked about a phone.
+    """
+    return (
+        "The previous result was measured with the microphone in a different "
+        "position, so this attempt is recorded without comparing the two."
+    )
+
+
 def _attempt_regression_sentence(decision: Mapping[str, Any]) -> str:
     improvement = _finite(decision.get("improvement_db"))
     provenance = _attempt_provenance(decision)
@@ -1787,6 +1811,14 @@ _ATTEMPT_SENTENCE_BY_REASON = {
     REASON_PREDECESSOR_NOT_COMPARABLE: _attempt_evidence_sentence,
     REASON_FLOOR_METRIC_MISMATCH: _attempt_evidence_sentence,
     REASON_PROVENANCE_MISMATCH: _attempt_evidence_sentence,
+    # #2081's two refusals answer differently on purpose. A MISMATCH is a fact
+    # about the household's own two measurements and has a sentence that says
+    # so; an UNRECORDED sitting is a speaker that upgraded mid-journey and
+    # cannot say where its older attempt was measured, which is the generic
+    # "could not be compared reliably" and must not be dressed up as knowledge
+    # about a phone that may never have moved.
+    REASON_SITTING_MISMATCH: _attempt_sitting_sentence,
+    REASON_SITTING_UNRECORDED: _attempt_evidence_sentence,
     REASON_NO_DEVIATION_AVAILABLE: _attempt_evidence_sentence,
     REASON_DIRECTION_UNKNOWN_ABOVE_FLOOR: _attempt_evidence_sentence,
     REASON_GRADED_BINS_SHRANK: _attempt_evidence_sentence,

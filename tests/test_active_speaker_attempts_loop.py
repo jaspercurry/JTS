@@ -24,6 +24,9 @@ from jasper.active_speaker.attempts_loop import (
     DECISIONS,
     FLOOR_BASIS_MEASURED,
     FLOOR_BASIS_POLICY,
+    FLOOR_SCOPE_ACROSS_SITTINGS,
+    FLOOR_SCOPE_WITHIN_SITTING,
+    FLOOR_SCOPES,
     MAX_USEFUL_REPEAT_AVERAGES,
     PROVENANCE_MODEL_GRADED,
     PROVENANCE_REALIZED,
@@ -41,6 +44,8 @@ from jasper.active_speaker.attempts_loop import (
     REASON_PREDECESSOR_NOT_COMPARABLE,
     REASON_PROVENANCE_MISMATCH,
     REASON_REGRESSION_FROM_PREDECESSOR,
+    REASON_SITTING_MISMATCH,
+    REASON_SITTING_UNRECORDED,
     STOP_BUDGET,
     STOP_CONVERGED,
     STOP_EVIDENCE,
@@ -72,9 +77,25 @@ BANKED_P95_DB = 0.08508
 BANKED_MEDIAN_DB = 0.05183
 
 
-def _floor(claim_floor_db: float = 0.17016, metric: str = METRIC) -> FloorStats:
+#: Every attempt in this file is measured in one sitting unless a test is
+#: about sittings. That default matches the SHIPPED floor, which is
+#: within-sitting (#2081) — so the rest of the suite exercises the production
+#: scope rather than a permissive one no speaker has adopted, and the sitting
+#: rule's own tests below are the only place the value varies.
+SITTING = "sitting-1"
+
+
+def _floor(
+    claim_floor_db: float = 0.17016,
+    metric: str = METRIC,
+    *,
+    scope: str = FLOOR_SCOPE_WITHIN_SITTING,
+) -> FloorStats:
     return FloorStats.from_policy_bar(
-        metric=metric, claim_floor_db=claim_floor_db, source="unit test",
+        metric=metric,
+        claim_floor_db=claim_floor_db,
+        source="unit test",
+        scope=scope,
     )
 
 
@@ -85,12 +106,14 @@ def _attempt(
     comparable: bool = True,
     reasons: tuple[str, ...] = (),
     provenance: str = PROVENANCE_REALIZED,
+    sitting_id: str = SITTING,
     **kwargs: object,
 ) -> AttemptRecord:
     return AttemptRecord(
         attempt_id=attempt_id,
         metric=metric,
         provenance=provenance,
+        sitting_id=sitting_id,
         integrity=AttemptIntegrity(comparable=comparable, reasons=reasons),
         **kwargs,  # type: ignore[arg-type]
     )
@@ -137,6 +160,7 @@ def test_a_larger_measured_p95_moves_the_floor_with_it():
 def test_policy_bar_floor_refuses_to_invent_a_measurement():
     floor = FloorStats.from_policy_bar(
         metric="anything", claim_floor_db=0.5, source="a shipped constant",
+        scope=FLOOR_SCOPE_ACROSS_SITTINGS,
     )
     assert floor.basis == FLOOR_BASIS_POLICY
     # A back-solved p95 would turn a policy choice into a fake measurement.
@@ -150,12 +174,26 @@ def test_floor_construction_refuses_nonsense():
             metric=METRIC, median_db=0.0, p95_db=0.0, source="s", measured_at="",
         )
     with pytest.raises(ValueError):
-        FloorStats.from_policy_bar(metric="", claim_floor_db=0.5, source="s")
+        FloorStats.from_policy_bar(
+            metric="", claim_floor_db=0.5, source="s",
+            scope=FLOOR_SCOPE_WITHIN_SITTING,
+        )
     with pytest.raises(ValueError):
-        FloorStats.from_policy_bar(metric="m", claim_floor_db=0.5, source="")
+        FloorStats.from_policy_bar(
+            metric="m", claim_floor_db=0.5, source="",
+            scope=FLOOR_SCOPE_WITHIN_SITTING,
+        )
     with pytest.raises(ValueError):
         FloorStats(
             metric="m", claim_floor_db=0.5, basis="made_up", source="s",
+        )
+    # #2081: an unrecognised scope is refused for the same reason an
+    # unrecognised basis is — a floor nobody can say what it licenses would
+    # reach ``licenses_sitting_pair``'s permissive arm by falling through.
+    with pytest.raises(ValueError):
+        FloorStats(
+            metric="m", claim_floor_db=0.5, basis=FLOOR_BASIS_POLICY,
+            source="s", scope="whenever",
         )
 
 
@@ -300,6 +338,217 @@ def test_stop_evidence_when_provenance_is_mixed():
     assert decision.decision == STOP_EVIDENCE
     assert decision.reason == REASON_PROVENANCE_MISMATCH
     assert set(decision.notes) == {PROVENANCE_MODEL_GRADED, PROVENANCE_REALIZED}
+
+
+# --------------------------------------------------------------------------
+# Constraint 4 — a floor licenses only the separation it was measured across
+# (issue #2081)
+# --------------------------------------------------------------------------
+
+
+def test_a_within_sitting_floor_refuses_a_pair_from_two_sittings():
+    """The #2081 repro, exactly: two applied candidates, one re-placed mic.
+
+    Before the fix this returned ``continue / improvement_above_floor`` with
+    ``improvement_db 0.4`` — a claim 2.35x the floor, made across a separation
+    the study never measured, and with nothing in the record able to show that
+    it had. The numbers below are the ones from the issue's own reproduction.
+    """
+
+    floor = FloorStats.from_repeat_study(
+        metric=METRIC,
+        median_db=BANKED_MEDIAN_DB,
+        p95_db=BANKED_P95_DB,
+        source="captures/repeat-floor-20260731 — mic bolted in place",
+        measured_at="2026-07-31",
+    )
+    assert floor.scope == FLOOR_SCOPE_WITHIN_SITTING
+
+    pair = [
+        _attempt("candidate-OLD", grade_db=4.0, sitting_id="sitting-first-tune"),
+        _attempt("candidate-NEW", grade_db=3.6, sitting_id="sitting-second-tune"),
+    ]
+    # The change is comfortably above the floor, so nothing but the sitting
+    # rule can be what stops this.
+    assert abs(4.0 - 3.6) > floor.claim_floor_db
+
+    decision = decide_next(pair, floor)
+    assert decision.decision == STOP_EVIDENCE
+    assert decision.reason == REASON_SITTING_MISMATCH
+    # Refused BEFORE any number was computed: an unlicensed comparison must not
+    # leave a magnitude or an improvement lying around for a renderer to speak.
+    assert decision.magnitude_db is None
+    assert decision.improvement_db is None
+    assert decision.improved is None
+    # The basis and the reason both survive, so a support read can see which
+    # two attempts were refused and why.
+    assert decision.basis_attempt_ids == ("candidate-OLD", "candidate-NEW")
+    assert f"floor scope {FLOOR_SCOPE_WITHIN_SITTING}" in decision.notes
+    assert "previous sitting sitting-first-tune" in decision.notes
+    assert "latest sitting sitting-second-tune" in decision.notes
+
+
+def test_the_same_pair_is_graded_when_the_two_attempts_share_a_sitting():
+    """The other half of the mutation: only the sitting changes the verdict."""
+
+    floor = FloorStats.from_repeat_study(
+        metric=METRIC, median_db=BANKED_MEDIAN_DB, p95_db=BANKED_P95_DB,
+        source="captures/repeat-floor-20260731", measured_at="2026-07-31",
+    )
+    decision = decide_next(
+        [
+            _attempt("candidate-OLD", grade_db=4.0, sitting_id="one-sitting"),
+            _attempt("candidate-NEW", grade_db=3.6, sitting_id="one-sitting"),
+        ],
+        floor,
+    )
+    assert decision.decision == CONTINUE
+    assert decision.reason == REASON_IMPROVEMENT_ABOVE_FLOOR
+    assert decision.improvement_db == pytest.approx(0.4)
+
+
+def test_two_unrecorded_sittings_are_refused_rather_than_read_as_one():
+    """``"" == ""`` is the trap: state written before #2081 carries two blanks.
+
+    Every persisted attempt history on a shipped speaker looks like this on the
+    deploy that lands the fix, so the permissive reading is not hypothetical —
+    it is what the first upgraded speaker would have done.
+    """
+
+    decision = decide_next(
+        [
+            _attempt("candidate-OLD", grade_db=4.0, sitting_id=""),
+            _attempt("candidate-NEW", grade_db=3.6, sitting_id=""),
+        ],
+        _floor(),
+    )
+    assert decision.decision == STOP_EVIDENCE
+    # Its OWN reason, not the mismatch one: nothing here says the mic moved.
+    assert decision.reason == REASON_SITTING_UNRECORDED
+    assert "previous sitting unrecorded" in decision.notes
+    assert "latest sitting unrecorded" in decision.notes
+
+
+def test_one_unrecorded_sitting_is_refused_as_unrecorded_not_as_a_mismatch():
+    decision = decide_next(
+        [
+            _attempt("candidate-OLD", grade_db=4.0, sitting_id=""),
+            _attempt("candidate-NEW", grade_db=3.6, sitting_id="known"),
+        ],
+        _floor(),
+    )
+    assert decision.reason == REASON_SITTING_UNRECORDED
+
+
+def test_an_across_sittings_floor_grades_a_cross_sitting_pair():
+    """The scope is the knob, and it is the floor's — not the kernel's.
+
+    A future re-placement study, or a policy bar about something no microphone
+    sits between, licenses the wider comparison by SAYING so. Nothing in
+    ``decide_next`` needs editing for that, which is the whole reason the
+    licence lives on ``FloorStats``.
+    """
+
+    decision = decide_next(
+        [
+            _attempt("candidate-OLD", grade_db=4.0, sitting_id="first"),
+            _attempt("candidate-NEW", grade_db=3.6, sitting_id="second"),
+        ],
+        _floor(scope=FLOOR_SCOPE_ACROSS_SITTINGS),
+    )
+    assert decision.decision == CONTINUE
+    assert decision.reason == REASON_IMPROVEMENT_ABOVE_FLOOR
+    assert decision.improvement_db == pytest.approx(0.4)
+
+
+def test_an_across_sittings_floor_grades_even_unrecorded_sittings():
+    """It licenses the comparison regardless, so it never asks."""
+
+    decision = decide_next(
+        [
+            _attempt("candidate-OLD", grade_db=4.0, sitting_id=""),
+            _attempt("candidate-NEW", grade_db=3.6, sitting_id=""),
+        ],
+        _floor(scope=FLOOR_SCOPE_ACROSS_SITTINGS),
+    )
+    assert decision.reason == REASON_IMPROVEMENT_ABOVE_FLOOR
+
+
+def test_the_sitting_refusal_outranks_the_floor_comparison():
+    """Order pin: a SUB-floor cross-sitting change is refused, not "too small".
+
+    Reporting ``below_claim_floor`` here would be the same unlicensed claim
+    inverted — "the instrument says nothing changed" is still a statement about
+    a pair the instrument was never characterised on.
+    """
+
+    decision = decide_next(
+        [
+            _attempt("candidate-OLD", grade_db=4.0, sitting_id="first"),
+            _attempt("candidate-NEW", grade_db=3.99, sitting_id="second"),
+        ],
+        _floor(),
+    )
+    assert abs(4.0 - 3.99) < _floor().claim_floor_db
+    assert decision.reason == REASON_SITTING_MISMATCH
+    assert decision.decision == STOP_EVIDENCE
+
+
+def test_a_first_attempt_needs_no_sitting_because_it_compares_nothing():
+    """One attempt is a baseline, not a pair — the rule has nothing to guard."""
+
+    decision = decide_next([_attempt("only", grade_db=4.0, sitting_id="")], _floor())
+    assert decision.decision == CONTINUE
+    assert decision.reason == REASON_BASELINE_ESTABLISHED
+
+
+def test_a_sitting_id_is_never_confused_with_an_attempt_id():
+    """Two attempts always differ by id; that says nothing about the mic.
+
+    Pinned because ``attempt_id`` is the obvious field to reach for when
+    someone later wonders whether the sitting one is redundant.
+    """
+
+    same_sitting = decide_next(
+        [
+            _attempt("wildly-different-id-1", grade_db=4.0, sitting_id="s"),
+            _attempt("wildly-different-id-2", grade_db=3.6, sitting_id="s"),
+        ],
+        _floor(),
+    )
+    assert same_sitting.reason == REASON_IMPROVEMENT_ABOVE_FLOOR
+
+
+def test_every_floor_scope_is_declared_and_the_default_is_the_narrow_one():
+    assert FLOOR_SCOPES == {FLOOR_SCOPE_WITHIN_SITTING, FLOOR_SCOPE_ACROSS_SITTINGS}
+    # Fail-closed: a floor that never says which separation it covers licenses
+    # the narrow comparison only.
+    bare = FloorStats(
+        metric=METRIC, claim_floor_db=0.5, basis=FLOOR_BASIS_POLICY, source="s",
+    )
+    assert bare.scope == FLOOR_SCOPE_WITHIN_SITTING
+    assert bare.to_dict()["scope"] == FLOOR_SCOPE_WITHIN_SITTING
+    # And a repeat study is a within-sitting measurement unless it says it
+    # re-placed the mic.
+    study = FloorStats.from_repeat_study(
+        metric=METRIC, median_db=0.05, p95_db=0.085, source="s",
+        measured_at="2026-07-31",
+    )
+    assert study.scope == FLOOR_SCOPE_WITHIN_SITTING
+    assert FloorStats.from_repeat_study(
+        metric=METRIC, median_db=0.05, p95_db=0.085, source="s",
+        measured_at="2026-07-31", scope=FLOOR_SCOPE_ACROSS_SITTINGS,
+    ).scope == FLOOR_SCOPE_ACROSS_SITTINGS
+
+
+def test_a_policy_bar_must_say_what_it_licenses():
+    """No default, because there is no fact behind a declared bar to infer one
+    from — see ``from_policy_bar``'s own note."""
+
+    with pytest.raises(TypeError):
+        FloorStats.from_policy_bar(  # type: ignore[call-arg]
+            metric=METRIC, claim_floor_db=0.5, source="s",
+        )
 
 
 def test_stop_evidence_when_an_above_floor_change_has_no_known_direction():
