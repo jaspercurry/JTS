@@ -217,13 +217,22 @@ mic-to-speaker distance the session already measures, optionally plus a
 one-question nearest-surface prompt. Detections far outside that window are
 flagged suspect and feed the masking and corroboration machinery as a
 physics-based plausibility term. **Disclose, never block.** Field
-precedent, per `09-gate-placement-prior-art-verdict.md`: VituixCAD ships
-the calculator (it asks for three entered distances), Audio Precision
+precedent leads with Klippel ISC, the one shipping tool that computes the
+gate for you: it derives Time Window Length automatically from two entered
+distances — `In Situ Meas. Distance` (speaker-to-mic) and
+`1st Reflection – Distance to Wall` — behind a Tukey α = 0.5 window, which
+`10-pro-tool-gating-survey.md` calls the ARTA AN4 hand-calculation
+productized. The rest of the field stops at handing you the arithmetic:
+VituixCAD ships a calculator (three entered distances), Audio Precision
 publishes the formula `T = (2dR − d)/c` with a stated typical 5–6 ms, and
-ARTA/CLIO state expected bands. Whether the distance prior extends the
-existing `suspect_near_search_start` annotation (gating-v2 D2's cheap
-suspicion guard, likewise non-gating) or lands as a sibling flag is the
-first implementation decision, deliberately left to the PR that builds it.
+ARTA/CLIO state expected bands
+(`09-gate-placement-prior-art-verdict.md`). Not one of them inspects the
+impulse response — every one trusts a tape measure, which is exactly the
+disclose-not-block posture this item wants. Whether the distance prior
+extends the existing `suspect_near_search_start` annotation (gating-v2
+D2's cheap suspicion guard, likewise non-gating) or lands as a sibling
+flag is the first implementation decision, deliberately left to the PR
+that builds it.
 Scope note: the owner ruling banned *assumed* room dimensions; measured
 and user-entered distances are the permitted class, and are what the field
 actually uses.
