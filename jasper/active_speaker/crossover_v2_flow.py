@@ -544,6 +544,14 @@ class CloudPositionPrompt:
     detail: str = ""
     offset_cm: float = 0.0
     role: str = POSITION_ROLE_ONAX
+    #: Which side of the design axis a LATERAL row sits on: ``-1`` LEFT,
+    #: ``+1`` RIGHT, ``0`` for an at-mark or vertical row. Machine-readable
+    #: because :func:`position_angle_deg` has to SIGN the bearing, and the only
+    #: other statement of the side is the word "LEFT"/"RIGHT" inside
+    #: ``headline`` — reading a bearing out of rendered copy is exactly the
+    #: drift this table's derived ``wide`` property exists to avoid. Set by
+    #: :func:`_pose` from the row's own ``side`` bearing, never by hand.
+    lateral_sign: int = 0
 
     @property
     def wide(self) -> bool:
@@ -564,6 +572,13 @@ class CloudPositionPrompt:
         headline slot alone.
         """
         return f"{self.headline} {self.detail}".strip() if self.detail else self.headline
+
+
+# The sign convention for a horizontal bearing, in ONE place: negative is LEFT
+# of the design axis, positive is RIGHT, as seen from the microphone looking at
+# the speaker — the same viewpoint the prompt copy is written from, so a row
+# that SAYS "LEFT" cannot be signed RIGHT.
+_LATERAL_SIGNS = {"LEFT": -1, "RIGHT": 1}
 
 
 def _pose(
@@ -609,6 +624,10 @@ def _pose(
         detail=detail,
         offset_cm=offset_cm,
         role=role,
+        # Derived from the row's OWN bearing word, so the sign and the sentence
+        # cannot disagree. A vertical row supplies ``updown`` instead and keeps
+        # the neutral 0 — it has no horizontal bearing to sign.
+        lateral_sign=_LATERAL_SIGNS.get(str(bearing.get("side") or ""), 0),
     )
 
 
@@ -750,6 +769,90 @@ if len(LATERAL_POSE_PROMPTS) != 2 * len(_LATERAL_POSE_OFFSETS_CM) + 2:
         f"each of {_LATERAL_POSE_OFFSETS_CM} cm, bracketed by the two at-mark "
         f"poses, got {len(LATERAL_POSE_PROMPTS)} poses"
     )
+
+# --- remote tier: the same walk, stated as ANGLES (external positioner) ------ #
+#
+# The mark distance the CHECK screen asks for ("about 1 m in front of the
+# speaker"). It is the reference length that turns this flow's lateral OFFSETS
+# into the BEARINGS a positioner can act on, so it lives beside them rather than
+# only inside that sentence.
+MARK_DISTANCE_M = 1.0
+
+
+def position_angle_deg(prompt: CloudPositionPrompt) -> int:
+    """The signed horizontal bearing of one lateral pose, in WHOLE degrees.
+
+    DERIVED from ``offset_cm`` and :data:`MARK_DISTANCE_M`, never tabulated: the
+    remote tier walks the very same poses the hand-walked tiers do, so an edit
+    to the offsets must move the angles with them instead of leaving a second,
+    silently-stale table of numbers.
+
+    **The convention, stated exactly, because a positioner acts on it.** The
+    angle is the bearing from the speaker to the pose's stated LATERAL OFFSET,
+    measured in the mark's own plane — ``atan(offset / mark distance)`` — with
+    :data:`_LATERAL_SIGNS`' sign, so ``-7`` is 7° to the LEFT of the design
+    axis. At the shipped offsets that is ±7° (12 cm) and ±22° (40 cm).
+
+    Whole degrees, because that is the resolution the number is honest at: the
+    offsets it comes from are tape-measure distances to a mark placed "about"
+    1 m out, and a tenth of a degree here would claim a precision the placement
+    never had. A positioner swinging at a constant radius is equidistant BY
+    CONSTRUCTION — the property ``_WIDE_LATERAL_DETAIL`` asks a walking human to
+    approximate — so it lands on the wide poses' intended arc rather than on the
+    chord a hand-walked session settles for.
+
+    Refuses a vertical row rather than returning ``0``: :data:`POSITION_ROLE_XOVR`
+    has no horizontal bearing at all, and a silent zero would aim a positioner at
+    the mark while the plan believed it had sampled the crossover axis.
+    """
+    if prompt.role == POSITION_ROLE_XOVR:
+        raise CrossoverV2FlowError(
+            "a vertical position has no horizontal bearing: an external "
+            "positioner cannot raise or lower the microphone, so an "
+            f"externally positioned walk must contain no {POSITION_ROLE_XOVR} "
+            "pose (see remote_cloud_verify_positions)"
+        )
+    if float(prompt.offset_cm) != 0.0 and prompt.lateral_sign == 0:
+        # An off-axis pose that never declared WHICH side it is on. Without this
+        # the sign multiplies out and the pose reads back as 0° — "already on
+        # the design axis" — so a driver would be told to stay put for a capture
+        # the plan believes is off-axis, and the evidence would record an offset
+        # the microphone never had. Every table row gets its sign from
+        # :func:`_pose`; a row that bypassed it is a construction bug, and
+        # silence here is exactly the mis-attribution the gate exists to stop.
+        raise CrossoverV2FlowError(
+            f"a lateral position {float(prompt.offset_cm):g} cm off the mark "
+            "declares no side, so it has no signed bearing — build it through "
+            "_pose (or set lateral_sign) rather than letting it read as 0°"
+        )
+    radians = math.atan2(float(prompt.offset_cm) / 100.0, MARK_DISTANCE_M)
+    return int(round(prompt.lateral_sign * math.degrees(radians)))
+
+
+def remote_position_prompt(prompt: CloudPositionPrompt) -> CloudPositionPrompt:
+    """One hand-walked pose, restated as the ANGLE a positioner turns to.
+
+    Same pose, same ``offset_cm``, same :data:`POSITION_ROLES` role — only the
+    copy changes, so everything downstream that reads a position's role or
+    distance (the wide-offset rule, the evidence sidecar, attribution) keeps
+    reading exactly what Full's walk records. That is the whole point of
+    deriving this instead of writing a parallel table: the remote tier is a
+    different OPERATOR, not a different measurement.
+    """
+    degrees_ = position_angle_deg(prompt)
+    if degrees_ == 0:
+        headline = "Leave the microphone on the design axis (0°)."
+        detail = f"On the mark, {MARK_DISTANCE_M:g} m out, pointed at the speaker."
+    else:
+        side = "LEFT" if degrees_ < 0 else "RIGHT"
+        headline = (
+            f"Turn the microphone to {degrees_:+d}° "
+            f"({abs(degrees_)}° {side} of the design axis)."
+        )
+        detail = (
+            f"Keep it {MARK_DISTANCE_M:g} m from the speaker and pointed at it."
+        )
+    return replace(prompt, headline=headline, detail=detail)
 
 # What the household reads during the apply hold, and the same entry's fallback
 # screen body. It carries a REPOSITION instruction because the pre-apply cloud
@@ -959,13 +1062,25 @@ def _walk_shape(reach: float, *, post_apply: bool = False) -> str:
 # commission tiers (flow-simplification §1)
 # --------------------------------------------------------------------------- #
 
-# The two named plan SHAPES a household can consent to. A tier is not a
+# The named plan SHAPES a session can be opened with. A tier is not a
 # loosened floor — it is a distinct, validated (N, M) pair with its own rules,
 # so ``MIN_CLOUD_MEASURE_POSITIONS`` (the FULL tier's validated floor) never
 # moves to accommodate express.
 TIER_FULL = "full"
 TIER_EXPRESS = "express"
-TIERS = (TIER_FULL, TIER_EXPRESS)
+# The EXTERNALLY DRIVEN tier (experimental). Full's stage-1 shape, walked by a
+# mic positioner an external driver moves over HTTP instead of by a household
+# moving a stand by hand — so it is the one tier whose entries auto-begin
+# (:data:`AUTO_ADVANCE_COUNTDOWN`) behind a per-entry POSITION GATE, and the one
+# whose positions are stated as ANGLES rather than as tape-measure offsets.
+#
+# **Not a household choice.** ``_tier_choice_actions`` offers exactly Full and
+# Express; remote is reached only by POSTing ``{"tier": "remote"}`` to
+# ``/correction/crossover/v2/session``, because consenting to it means owning a
+# positioner the chooser cannot see. It is in :data:`TIERS` so
+# ``normalize_tier`` admits that POST — never so a chooser can render it.
+TIER_REMOTE = "remote"
+TIERS = (TIER_FULL, TIER_EXPRESS, TIER_REMOTE)
 DEFAULT_TIER = TIER_FULL
 
 # Express's post-apply group: VERIFY's design-axis anchor and nothing else. An
@@ -988,6 +1103,84 @@ def express_cloud_measure_positions() -> int:
     guarantee.
     """
     return _min_positions_for_two_wide_offsets()
+
+
+def _vertical_prompt_indexes() -> list[int]:
+    """Where the vertical poses sit in :data:`CLOUD_POSITION_PROMPTS`."""
+    return [
+        i for i, prompt in enumerate(CLOUD_POSITION_PROMPTS)
+        if prompt.role == POSITION_ROLE_XOVR
+    ]
+
+
+def remote_cloud_measure_positions() -> int:
+    """Remote's PRE-APPLY group size — Full's N, and the trip-wire that guards it.
+
+    Remote takes Full's ``N`` because its stage 1 IS Full's stage 1. That is
+    only safe because the shipped stage 1 walks the LATERAL poses, which are
+    lateral by construction: :data:`STAGE1_INCLUDES_CLOUD_MEASURE` is ``False``,
+    so the ``[:N - 1]`` prefix of :data:`CLOUD_POSITION_PROMPTS` — which at
+    ``N = 9`` DOES contain vertical rows — is never walked.
+
+    Flipping that flag back on would ask an external positioner for a pose it
+    cannot reach. Today that surfaces as :func:`position_angle_deg` raising
+    while the plan is built, which is loud but names the symptom rather than the
+    cause, so this states the assumption where it can be read: the guard below
+    refuses at the point the two facts stop agreeing, exactly as
+    :func:`remote_cloud_verify_positions`' guard does for the verify walk.
+    """
+    positions = DEFAULT_CLOUD_MEASURE_POSITIONS
+    verticals = _vertical_prompt_indexes()
+    if STAGE1_INCLUDES_CLOUD_MEASURE and verticals and verticals[0] < positions - 1:
+        raise CrossoverV2FlowError(
+            "the remote tier cannot walk a pre-apply cloud of "
+            f"{positions} positions: prompt {verticals[0]} is a "
+            f"{POSITION_ROLE_XOVR} pose and an external positioner cannot "
+            "raise or lower the microphone. Give remote its own N (the "
+            "vertical-free prefix, as remote_cloud_verify_positions derives) "
+            "before turning STAGE1_INCLUDES_CLOUD_MEASURE on."
+        )
+    return positions
+
+
+def remote_cloud_verify_positions() -> int:
+    """Remote's post-apply group size — DERIVED as "Full's walk, minus vertical".
+
+    An external positioner swings the microphone around the speaker on ONE
+    axis; it cannot raise or lower the capsule. So remote walks the longest
+    prefix of :data:`CLOUD_POSITION_PROMPTS` that asks for no
+    :data:`POSITION_ROLE_XOVR` move — one past the last purely-lateral prompt —
+    and the group it cannot sample is disclosed rather than silently missing
+    (:data:`REMOTE_VERTICAL_DISCLOSURE`).
+
+    Derived rather than written down for the same reason
+    :func:`express_cloud_measure_positions` is: reordering the table must move
+    this number with it instead of silently shipping a walk whose prefix now
+    contains a vertical move the positioner cannot make.
+    """
+    verticals = _vertical_prompt_indexes()
+    # A group of size ``g`` walks prompts ``[:g - 1]``, so the largest
+    # vertical-free group is one past the first vertical's index.
+    positions = (verticals[0] + 1) if verticals else DEFAULT_CLOUD_VERIFY_POSITIONS
+    if positions < MIN_CLOUD_VERIFY_POSITIONS:
+        raise CrossoverV2FlowError(
+            "the remote tier's vertical-free verify walk is "
+            f"{positions} positions, below the validated floor of "
+            f"{MIN_CLOUD_VERIFY_POSITIONS} — CLOUD_POSITION_PROMPTS must keep "
+            "both wide lateral moves ahead of its first vertical one"
+        )
+    return min(positions, DEFAULT_CLOUD_VERIFY_POSITIONS)
+
+
+# What a remote session states about the axis its positioner cannot reach.
+# ONE sentence, disclosed once per session (never a block): the walk really did
+# sample less than Full's, and a consumer that reads a remote group's roles
+# finds no ``xovr`` member — the honest reading is "unsampled", not "flat".
+REMOTE_VERTICAL_DISCLOSURE = (
+    "Measured on the horizontal axis only — a remote positioner cannot raise "
+    "or lower the microphone, so the vertical spot Full measures was not "
+    "sampled this time."
+)
 
 
 @dataclass(frozen=True)
@@ -1079,6 +1272,44 @@ class V2PlanShape:
         """
         return self.cloud_verify_positions > 1
 
+    @property
+    def externally_positioned(self) -> bool:
+        """Whether an EXTERNAL DRIVER moves the microphone between captures — see
+        :func:`tier_is_externally_positioned`, which this delegates to so the
+        live conductor (which holds a tier string, not a resolved shape) and the
+        plan builders answer the question from ONE definition.
+
+        The one predicate the two shape-dependent behaviours read, so "which
+        tier is machine-driven?" is answered in a single place rather than by
+        a ``tier == TIER_REMOTE`` comparison scattered across the plan
+        builders and the session host:
+
+        * every entry auto-begins (:func:`_entry_advance`), because there is no
+          hand to tap; and
+        * every entry's begin is held behind a POSITION GATE until the driver
+          says the microphone has reached the angle, because a countdown alone
+          would fire into an arm still in motion — the same reason the
+          hand-walked tiers make each prompted pose a tap.
+
+        The two are a PAIR. Auto-advance without the gate is the bug it would
+        replace the tap with; the gate without auto-advance is a session that
+        waits for a tap nobody is there to give.
+        """
+        return tier_is_externally_positioned(self.tier)
+
+
+def tier_is_externally_positioned(tier: Any) -> bool:
+    """Whether ``tier`` names a tier an EXTERNAL DRIVER positions.
+
+    Deliberately LENIENT where :func:`normalize_tier` is strict: this is asked
+    by surfaces that hold whatever tier string a durable state file carried —
+    including ``""`` (a session written before tiers existed) and words from a
+    later build — and none of those may take down a group close. An unknown tier
+    is simply "not externally positioned", which is the safe answer: it keeps
+    the hand-walked behaviour every such session already had.
+    """
+    return str(tier or "").strip().lower() == TIER_REMOTE
+
 
 def normalize_tier(tier: Any) -> str:
     """Allowlist a household-supplied tier id; empty/absent means FULL.
@@ -1099,6 +1330,22 @@ def normalize_tier(tier: Any) -> str:
     return name
 
 
+# The tiers that are ONE named (N, M) pair rather than a configurable range.
+# Values are callables so each pair stays DERIVED at call time from the prompt
+# table it mirrors — a table edit moves the shapes, it does not strand them.
+#
+# Remote takes FULL's pre-apply N (its stage 1 is Full's stage 1, walked by a
+# positioner instead of by hand) and its own vertical-free M.
+_FIXED_SHAPE_TIERS: dict[str, Callable[[], tuple[int, int]]] = {
+    TIER_EXPRESS: lambda: (
+        express_cloud_measure_positions(), EXPRESS_CLOUD_VERIFY_POSITIONS,
+    ),
+    TIER_REMOTE: lambda: (
+        remote_cloud_measure_positions(), remote_cloud_verify_positions(),
+    ),
+}
+
+
 def resolve_plan_shape(
     tier: Any = None,
     *,
@@ -1107,24 +1354,23 @@ def resolve_plan_shape(
 ) -> V2PlanShape:
     """Resolve (and validate) one plan shape from a tier and optional counts.
 
-    Express admits EXACTLY (:func:`express_cloud_measure_positions`,
-    :data:`EXPRESS_CLOUD_VERIFY_POSITIONS`) — it is a named shape, not a
-    configurable range, so an explicit count that disagrees is a caller bug
-    rather than a preference. Full keeps the shipped ranges
+    Express and remote each admit EXACTLY one (N, M) pair
+    (:data:`_FIXED_SHAPE_TIERS`) — they are named shapes, not configurable
+    ranges, so an explicit count that disagrees is a caller bug rather than a
+    preference. Full keeps the shipped ranges
     (``MIN_CLOUD_MEASURE_POSITIONS..MAX_CLOUD_MEASURE_POSITIONS``,
     ``M >= MIN_CLOUD_VERIFY_POSITIONS``).
     """
     name = normalize_tier(tier)
-    if name == TIER_EXPRESS:
-        n = express_cloud_measure_positions()
-        m = EXPRESS_CLOUD_VERIFY_POSITIONS
+    if name in _FIXED_SHAPE_TIERS:
+        n, m = _FIXED_SHAPE_TIERS[name]()
         for label, wanted, got in (
             ("cloud_measure_positions", n, cloud_measure_positions),
             ("cloud_verify_positions", m, cloud_verify_positions),
         ):
             if got is not None and int(got) != wanted:
                 raise CrossoverV2FlowError(
-                    f"the express tier is a fixed shape: {label} must be "
+                    f"the {name} tier is a fixed shape: {label} must be "
                     f"{wanted}, got {int(got)}"
                 )
         # Still routed through the shared table-length check below, so a
@@ -1618,6 +1864,9 @@ from jasper.active_speaker.crossover_v2.vocabulary import (
     REASON_PROGRAM_PROFILE_NOT_CONFIRMED as REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
     REASON_PROGRAM_UNPLAYABLE as REASON_PROGRAM_UNPLAYABLE,
     REASON_PROTECTION_NOT_SEPARABLE as REASON_PROTECTION_NOT_SEPARABLE,
+    REASON_GEOMETRY_RETAKE_UNREACHABLE as REASON_GEOMETRY_RETAKE_UNREACHABLE,
+    REASON_POSITION_HOLD_EXPIRED as REASON_POSITION_HOLD_EXPIRED,
+    REASON_POSITION_TARGET_MISSING as REASON_POSITION_TARGET_MISSING,
     REASON_PROTECTION_SWEEP_TOO_LOW as REASON_PROTECTION_SWEEP_TOO_LOW,
     REASON_REGISTRY as REASON_REGISTRY,
     REASON_RELAY_TIMEOUT as REASON_RELAY_TIMEOUT,
@@ -7310,6 +7559,36 @@ class CrossoverV2Session:
             group_already_closed=phase in self._group_geometry,
             have_take_to_replace=position is not None,
         )
+        if retake is not None and tier_is_externally_positioned(self._tier):
+            # REFUSE rather than prompt for a move this operator cannot make
+            # (owner ruling: refuse, don't mislead). Both rungs of
+            # ``CLOUD_GEOMETRY_RETRY_PROMPTS`` are out of an external
+            # positioner's reach — rung 1 is 75 cm off the mark, past every
+            # pose in the walk, and rung 2 adds a move ABOVE mark height, the
+            # exact axis this tier excludes by construction.
+            #
+            # Prompting anyway did three dishonest things at once: it asked a
+            # driver for a pose it cannot reach, it recorded the un-made pose's
+            # 75 cm offset as the position's durable evidence, and the position
+            # gate published the PREVIOUS entry's stale angle as the target. The
+            # retry budget is deliberately NOT spent and no take is dropped —
+            # nothing here is a retry, so the group keeps the evidence it
+            # legitimately has for whatever the session does with it next.
+            log_event(
+                logger,
+                "correction.crossover_v2_geometry_retake_unreachable",
+                level=logging.WARNING,
+                session_id=self.session_id,
+                phase=phase,
+                tier=self._tier,
+                median_tau_us=verdict.get("median_tau_us"),
+                clustered_fraction=verdict.get("clustered_fraction"),
+            )
+            return PhaseVerdict(
+                False,
+                REASON_GEOMETRY_RETAKE_UNREACHABLE,
+                payload={"geometry": dict(verdict)},
+            )
         if retake is not None:
             # Narrowed by ``have_take_to_replace`` above: a retake is returned
             # only when there is a take at this index to drop.
@@ -10229,14 +10508,93 @@ def capture_progress_label(index: int, capture_target: int) -> str:
     return f"Measurement {int(index)} of {int(capture_target)}"
 
 
+def _positioned_prompt(
+    prompt: CloudPositionPrompt, shape: V2PlanShape | None,
+) -> CloudPositionPrompt:
+    """One pose's prompt, in the vocabulary the shape's OPERATOR acts on.
+
+    A hand-walked shape keeps the tape-measure copy verbatim (byte-identical);
+    an externally positioned one restates the SAME pose as its angle. Only the
+    sentence differs — ``offset_cm`` and ``role`` are untouched, so the durable
+    evidence a remote session records stays comparable with a hand-walked one's.
+    """
+    if shape is not None and shape.externally_positioned:
+        return remote_position_prompt(prompt)
+    return prompt
+
+
+def _entry_advance(shape: V2PlanShape | None) -> dict[str, str]:
+    """The §5.2 auto-advance fields one plan entry carries, from its SHAPE.
+
+    Hand-walked tiers get :data:`AUTO_ADVANCE_TAP` and no countdown key —
+    BYTE-IDENTICAL to what every entry emitted when the policy was a literal at
+    each site, which is what ``_GOLDEN_V2_PLAN_BYTES`` pins. An externally
+    positioned shape (:attr:`V2PlanShape.externally_positioned`) gets the
+    countdown instead, because no hand is there to tap; its per-entry begin is
+    then held by the position gate until the driver reports the angle reached,
+    so the countdown only ever runs out into a capture the gate has released.
+
+    ``shape is None`` is the recovery re-verify, which has no tier and keeps the
+    tap.
+
+    ``countdown_s`` is a STRING because ``CapturePlanEntry.screen`` is a
+    ``str -> str`` map on the wire; the page does ``Number(screen.countdown_s)``.
+    """
+    if shape is not None and shape.externally_positioned:
+        return {
+            "auto_advance": AUTO_ADVANCE_COUNTDOWN,
+            "countdown_s": str(AUTO_ADVANCE_COUNTDOWN_S),
+        }
+    return {"auto_advance": AUTO_ADVANCE_TAP}
+
+
+#: The per-entry screen keys that state a remote entry's TARGET POSITION in
+#: machine terms. ``screen`` is an opaque ``str -> str`` bag the page ignores
+#: unknown keys in (the same seam ``auto_advance`` / ``noise_note`` /
+#: ``confirm_title`` already ride), so this is not a protocol change.
+#:
+#: Emitted ONLY by an externally positioned shape. They exist because the
+#: position gate has to name the angle it is waiting for, and the alternative —
+#: re-deriving it from the entry's index against a second copy of the plan's
+#: index arithmetic — is two sources of truth for one number. The PLAN is the
+#: source; the gate and the envelope read it back off the entry the runner
+#: already hands them.
+POSITION_DEG_KEY = "position_deg"
+POSITION_ROLE_KEY = "position_role"
+
+
+def _entry_policy(
+    shape: V2PlanShape | None, prompt: CloudPositionPrompt | None = None,
+) -> dict[str, str]:
+    """One entry's non-copy ``screen`` fields: advance policy + target position.
+
+    ``prompt is None`` means an entry with no prompted pose of its own — CHECK,
+    MEASURE, the entry baseline, and stage 2's anchor — every one of which is a
+    0° design-axis capture, so that is what it declares. Gating those too is
+    deliberate: a remote session's driver has to put the arm back on the axis
+    for them exactly as it moved it away, and a gate that trusted "it is
+    probably still there" would measure whatever the last pose left behind.
+    """
+    policy = _entry_advance(shape)
+    if shape is None or not shape.externally_positioned:
+        return policy
+    degrees = position_angle_deg(prompt) if prompt is not None else 0
+    role = prompt.role if prompt is not None else POSITION_ROLE_ONAX
+    return {
+        **policy,
+        POSITION_DEG_KEY: str(degrees),
+        POSITION_ROLE_KEY: role,
+    }
+
+
 def _cloud_entry_screen(
-    *, progress: str, title: str, body: str, auto_advance: str,
+    *, progress: str, title: str, body: str, policy: Mapping[str, str],
 ) -> dict[str, str]:
     return {
         "progress": progress,
         "title": title,
         "body": body,
-        "auto_advance": auto_advance,
+        **policy,
     }
 
 
@@ -10326,6 +10684,11 @@ def build_v2_capture_plan(
     target = len(index_phase)
     verify_ms = _program_duration_ms(verify) + CAPTURE_ENTRY_MARGIN_MS
     measure_ms = _program_duration_ms(measure) + CAPTURE_ENTRY_MARGIN_MS
+    # One policy for every entry of this plan, from the shape (§5.2). The FIRST
+    # entry's value is inert either way — the page starts round 1 from the
+    # spec's own begin button, and only ever reads the policy of the entry AFTER
+    # an accepted capture — so a uniform value is both simplest and safe.
+    advance = _entry_policy(shape)
     entries: list[Any] = [
         CapturePlanEntry(
             index=0,
@@ -10363,7 +10726,7 @@ def build_v2_capture_plan(
                     "Listening to the room as it normally is — carry on as "
                     "you were."
                 ),
-                "auto_advance": AUTO_ADVANCE_TAP,
+                **advance,
             },
         ),
         CapturePlanEntry(
@@ -10383,10 +10746,19 @@ def build_v2_capture_plan(
                 # with no chance to say "not yet". Same-spot auto-advance was
                 # the right instinct — no movement is needed — but it read as
                 # the speaker taking a liberty. One tap, with copy that says
-                # what is coming, buys the consent back. The countdown
-                # vocabulary stays in the plan grammar (AUTO_ADVANCE_COUNTDOWN,
-                # AUTO_ADVANCE_COUNTDOWN_S, and the page's renderPlanCountdown)
-                # for a future same-spot transition that earns it.
+                # what is coming, buys the consent back. That ruling is
+                # about a HOUSEHOLD's consent, so it binds the hand-walked
+                # tiers only: an externally positioned shape has no hand to
+                # take a liberty with, and its entries auto-advance through
+                # the same countdown vocabulary (AUTO_ADVANCE_COUNTDOWN,
+                # AUTO_ADVANCE_COUNTDOWN_S, and the page's
+                # renderPlanCountdown) behind the position gate. The remote
+                # tier is that path's first shipped consumer — the comment
+                # beside renderPlanCountdown in capture-page/js/main.js still
+                # says nothing reaches it, and is stale as of this tier; it is
+                # left for the next deliberate page publish rather than
+                # forcing a republish (and a cache-invalidation stamp bump)
+                # for a comment.
                 #
                 # Household language, not ours (coordinator ruling, 2026-07-28):
                 # the tail says what the level is FOR, not which internal stage
@@ -10397,7 +10769,7 @@ def build_v2_capture_plan(
                     "each driver alone at the level it needs to hear each one "
                     "clearly."
                 ),
-                "auto_advance": AUTO_ADVANCE_TAP,
+                **advance,
             },
         ),
     ]
@@ -10408,7 +10780,7 @@ def build_v2_capture_plan(
         i for i, p in sorted(index_phase.items()) if p == PHASE_LATERAL
     ]
     for offset, capture_index in enumerate(lateral_indexes):
-        prompt = LATERAL_POSE_PROMPTS[offset]
+        prompt = _positioned_prompt(LATERAL_POSE_PROMPTS[offset], shape)
         entries.append(
             CapturePlanEntry(
                 index=capture_index - 1,
@@ -10418,7 +10790,7 @@ def build_v2_capture_plan(
                     progress=capture_progress_label(capture_index, target),
                     title=prompt.headline,
                     body=prompt.detail,
-                    auto_advance=AUTO_ADVANCE_TAP,
+                    policy=_entry_policy(shape, prompt),
                 ),
             )
         )
@@ -10428,7 +10800,7 @@ def build_v2_capture_plan(
         i for i, p in sorted(index_phase.items()) if p == PHASE_CLOUD_MEASURE
     ]
     for offset, capture_index in enumerate(cloud_measure_indexes):
-        prompt = CLOUD_POSITION_PROMPTS[offset]
+        prompt = _positioned_prompt(CLOUD_POSITION_PROMPTS[offset], shape)
         entries.append(
             CapturePlanEntry(
                 index=capture_index - 1,
@@ -10438,7 +10810,7 @@ def build_v2_capture_plan(
                     progress=capture_progress_label(capture_index, target),
                     title=prompt.headline,
                     body=prompt.detail,
-                    auto_advance=AUTO_ADVANCE_TAP,
+                    policy=_entry_policy(shape, prompt),
                 ),
             )
         )
@@ -10458,7 +10830,13 @@ def build_v2_capture_plan(
                 duration_ms=verify_ms,
                 screen=_cloud_entry_screen(
                     progress=capture_progress_label(capture_index, target),
-                    title="Back to the mark — one last measurement before tuning.",
+                    title=(
+                        "Back to the design axis (0°) — one last measurement "
+                        "before tuning."
+                        if shape.externally_positioned
+                        else "Back to the mark — one last measurement before "
+                        "tuning."
+                    ),
                     # Says WHAT it buys, in the household's terms: this is the
                     # recording the speaker is compared against afterwards, so
                     # "it got better" becomes something measured rather than
@@ -10469,7 +10847,7 @@ def build_v2_capture_plan(
                         "This records how the speaker sounds right now, so JTS "
                         "can tell you whether the tuning actually improved it."
                     ),
-                    auto_advance=AUTO_ADVANCE_TAP,
+                    policy=advance,
                 ),
             )
         )
@@ -10540,7 +10918,8 @@ def build_v2_verify_capture_plan(
                 "progress": capture_progress_label(1, 1),
                 "title": REVERIFY_NO_REWALK_HEADLINE,
                 "body": "Put the microphone back on the mark and hold it still.",
-                "auto_advance": AUTO_ADVANCE_TAP,
+                # No shape, so no tier: the recovery re-arm keeps the tap.
+                **_entry_advance(None),
             },
         )
         return CapturePlan(
@@ -10604,17 +10983,42 @@ def build_v2_verify_capture_plan(
             "manage this one on the speaker page."
         ),
     }
+    advance = _entry_policy(plan_shape)
+    externally_positioned = (
+        plan_shape is not None and plan_shape.externally_positioned
+    )
     anchor_screen: dict[str, str] = {
         "progress": capture_progress_label(1, target),
-        "title": "Back at the mark — one sweep to check the result.",
-        "body": "Same spot, same height, pointed at the speaker.",
-        "auto_advance": AUTO_ADVANCE_TAP,
+        "title": (
+            "Back on the design axis (0°) — one sweep to check the result."
+            if externally_positioned
+            else "Back at the mark — one sweep to check the result."
+        ),
+        "body": (
+            f"{MARK_DISTANCE_M:g} m out, pointed at the speaker."
+            if externally_positioned
+            else "Same spot, same height, pointed at the speaker."
+        ),
+        **advance,
+    }
+    if not externally_positioned:
         # §2.2's confirm-then-tone tap, on stage 2's own begin (D10). Same two
         # strings the single-session plan carried, so the grammar the household
         # learned in stage 1 is the grammar stage 2 opens with.
-        "confirm_title": "Back on the mark, holding still?",
-        "confirm_body": "Same spot, same height, pointed at the speaker.",
-    }
+        #
+        # OMITTED for an externally positioned shape, and the omission is
+        # load-bearing rather than cosmetic: ``entryConfirmsBeforeArming``
+        # (capture-page/js/main.js) treats a present ``confirm_title`` as "hold
+        # the tone until somebody taps", so carrying it into an unattended
+        # session would park the anchor on a confirm screen with no hand to
+        # answer it and burn the runner's ``awaiting_arm`` budget. The promise
+        # the tap makes — the microphone is where the plan says before the tone
+        # plays — is the POSITION GATE's promise here, made by the driver that
+        # actually moved it.
+        anchor_screen.update({
+            "confirm_title": "Back on the mark, holding still?",
+            "confirm_body": "Same spot, same height, pointed at the speaker.",
+        })
     if not plan_shape.has_cloud_verify_group:
         anchor_screen.update(done_screen)
     entries: list[Any] = [
@@ -10629,12 +11033,12 @@ def build_v2_verify_capture_plan(
         i for i, p in sorted(index_phase.items()) if p == PHASE_CLOUD_VERIFY
     ]
     for offset, capture_index in enumerate(cloud_verify_indexes):
-        prompt = CLOUD_POSITION_PROMPTS[offset]
+        prompt = _positioned_prompt(CLOUD_POSITION_PROMPTS[offset], plan_shape)
         screen = _cloud_entry_screen(
             progress=capture_progress_label(capture_index, target),
             title=prompt.headline,
             body=prompt.detail,
-            auto_advance=AUTO_ADVANCE_TAP,
+            policy=_entry_policy(plan_shape, prompt),
         )
         if offset == len(cloud_verify_indexes) - 1:
             screen.update(done_screen)
@@ -11303,6 +11707,9 @@ __all__ = [
     "REASON_APPLY_FAILED",
     "REASON_USER_STOPPED",
     "REASON_REVIEW_HOLD_TIMEOUT",
+    "REASON_POSITION_HOLD_EXPIRED",
+    "REASON_GEOMETRY_RETAKE_UNREACHABLE",
+    "REASON_POSITION_TARGET_MISSING",
     "REASON_DRIVER_LEVELS_DISAGREE",
     "REASON_CORRECTION_NOT_AN_IMPROVEMENT",
     "LINEARIZATION_TRIM_SANITY_MARGIN_DB",

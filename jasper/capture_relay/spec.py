@@ -1661,12 +1661,21 @@ def build_sync_marker_spec(
     ).validate()
 
 
-# Household-facing names for the two commission tiers. The ids themselves
-# (``crossover_v2_flow.TIER_FULL`` / ``TIER_EXPRESS``) are the flow's
-# vocabulary; this is the only place they become copy, and an id with no entry
-# here contributes no line rather than leaking a raw slug onto a consent
+# Household-facing names for the commission tiers. The ids themselves
+# (``crossover_v2_flow.TIER_FULL`` / ``TIER_EXPRESS`` / ``TIER_REMOTE``) are the
+# flow's vocabulary; this is the only place they become copy, and an id with no
+# entry here contributes no line rather than leaking a raw slug onto a consent
 # screen.
-_GUIDED_TIER_LABELS = {"full": "Full measurement", "express": "Quick tune"}
+#
+# String literals rather than the flow's constants because
+# ``jasper.capture_relay`` must not import ``jasper.active_speaker`` — the
+# layering boundary this package keeps. Kept in step with
+# ``crossover_envelope_v2._TIER_LABELS`` by test.
+_GUIDED_TIER_LABELS = {
+    "full": "Full measurement",
+    "express": "Quick tune",
+    "remote": "Remote automated",
+}
 
 
 def _guided_tier_step(

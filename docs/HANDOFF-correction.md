@@ -1970,7 +1970,7 @@ GET  /crossover/envelope     commissioning screen envelope (dumb frontend):
                              {schema_version, screen, active, steps,
                              verdict_text, nudges, next_action, progress, relay,
                              candidate_review, prediction, busy, findings};
-                             schema v12
+                             schema v13
                              (CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION — this
                              route dispatches to the v2 envelope, which is
                              the only flow since W5b). `prediction` is the
@@ -2125,6 +2125,14 @@ POST /crossover/v2/restore   v2 conductor: the verify_fail "Undo" — reload the
                              pre-candidate applied profile handle_v2_apply
                              stashed at apply time and clear the durable v2
                              applied/candidate/failure state
+POST /crossover/v2/position-ready
+                             v2 conductor, REMOTE tier only: an external mic
+                             positioner's driver reporting the microphone has
+                             reached the angle `relay.position_pending` named,
+                             which releases the held begin. `{"index": N}` is
+                             checked against what is actually pending, so a
+                             retry that crossed a capture starting is refused
+                             (409) rather than releasing the NEXT position
 HTTPS fallback              non-/correction/ paths 302 + no-store back to HTTP
 ```
 

@@ -130,7 +130,7 @@ def _step_statuses(env: dict) -> dict[str, str]:
 
 def test_schema_8_and_v2_step_tuple():
     env = build_crossover_envelope_v2(_status(phase="check"))
-    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 12
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 13
     assert env["flow"] == "v2"
     assert tuple(step["id"] for step in env["steps"]) == V2_STEP_IDS
 
@@ -145,7 +145,7 @@ def test_legacy_env_still_serves_v2_envelope(monkeypatch):
 
     monkeypatch.setenv("JASPER_CROSSOVER_FLOW", "legacy")
     env = build_crossover_envelope(_status(phase="check"))
-    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 12
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 13
     assert env["flow"] == "v2"
 
 
@@ -1165,7 +1165,7 @@ def test_the_envelope_schema_version_moved_with_the_candidate_review_shape():
     env = build_crossover_envelope_v2(_status(
         phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(),
     ))
-    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 12
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 13
     assert "headroom_cost" in env["candidate_review"]
 
 
@@ -2735,7 +2735,7 @@ def test_applied_false_with_verify_phase_does_not_force_verify_fail():
 ])
 def test_every_registry_code_renders_without_error(code, template):
     env = build_crossover_envelope_v2(_status(phase="measure", failure={"code": code}))
-    assert env["schema_version"] == 12
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION
     assert env["screen"]
     assert env["verdict_text"]
 
@@ -3741,7 +3741,7 @@ def test_the_review_screen_moved_the_schema_version():
     unredeployed page ignores the new keys rather than refusing the envelope,
     the same property the 8 → 9 bump had."""
     env = build_crossover_envelope_v2(_review_status())
-    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 12
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 13
     assert "prediction" in env
     assert env["busy"] is False  # present on every screen, true on one
     # Present on EVERY screen, populated on two — the key's absence would make

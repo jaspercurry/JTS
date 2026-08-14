@@ -155,6 +155,12 @@ _loop_thread: threading.Thread | None = None
 # _session_lock (same single-session scope).
 _relay_capture: dict[str, Any] | None = None
 _relay_stop_request: Callable[[], None] | None = None
+# The active session's position gate (the remote commission tier), or None.
+# Same lifecycle as ``_relay_stop_request``: set when the slot is claimed,
+# dropped the moment the slot leaves an in-flight status — which is what stops a
+# finished session from still advertising a position it is waiting for, and
+# stops a late driver POST from releasing a gate nobody is holding.
+_relay_position_gate: Any | None = None
 _RELAY_STOPPABLE_STATUSES = frozenset({"starting", "awaiting_phone"})
 _RELAY_IN_FLIGHT_STATUSES = _RELAY_STOPPABLE_STATUSES | {
     "finishing",
@@ -435,6 +441,9 @@ _POST_ROUTES = frozenset({
     "/crossover/v2/verify",
     "/crossover/v2/apply",
     "/crossover/v2/restore",
+    # The remote commission tier's position release — an EXTERNAL driver's
+    # report that it has moved the microphone to the angle the envelope named.
+    "/crossover/v2/position-ready",
     "/balance/start",
     "/balance/ramp",
     "/balance/meter",
@@ -453,11 +462,12 @@ _POST_ROUTES = frozenset({
 
 
 def _set_relay_capture(value: dict[str, Any] | None) -> None:
-    global _relay_capture, _relay_stop_request
+    global _relay_capture, _relay_stop_request, _relay_position_gate
     with _session_lock:
         _relay_capture = value
         if value is None or value.get("status") not in _RELAY_IN_FLIGHT_STATUSES:
             _relay_stop_request = None
+            _relay_position_gate = None
 
 
 def _get_relay_capture() -> dict[str, Any] | None:
@@ -475,7 +485,30 @@ def _get_relay_capture_for(*kind_prefixes: str) -> dict[str, Any] | None:
     if relay is None:
         return None
     kind = str(relay.get("kind") or "")
-    return relay if any(kind.startswith(prefix) for prefix in kind_prefixes) else None
+    if not any(kind.startswith(prefix) for prefix in kind_prefixes):
+        return None
+    # The remote tier's live position hold, merged in here rather than pushed
+    # into the slot by the gate: the gate owns the fact and this is a read, so
+    # there is one writer and no window in which the slot advertises a hold the
+    # gate has already released.
+    #
+    # THREE guards keep a hold from outliving its session, and none of them is
+    # the envelope: ``_set_relay_capture`` drops ``_relay_position_gate`` as
+    # soon as the slot leaves an in-flight status; the in-flight test below
+    # re-checks that on every read; and the gate clears its own ``_pending`` on
+    # both exits from a hold. A finished session therefore reports no hold even
+    # if its gate object is still referenced somewhere.
+    with _session_lock:
+        gate = _relay_position_gate
+    if gate is not None and relay.get("status") in _RELAY_IN_FLIGHT_STATUSES:
+        try:
+            pending = gate.pending()
+        except (OSError, RuntimeError, ValueError):
+            logger.warning("could not read the position gate", exc_info=True)
+            pending = None
+        if pending:
+            relay["position_pending"] = pending
+    return relay
 
 
 def _active_relay_phase() -> str | None:
@@ -491,13 +524,14 @@ def _begin_relay_capture(
     kind_label: str,
     *,
     request_stop: Callable[[], None] | None = None,
+    position_gate: Any | None = None,
 ) -> bool:
     """Atomically claim the single relay-capture slot. Returns False if one is
     already in flight (so a double-tap can't spawn two relay sessions + a file
     race for one position — mirrors /autolevel's "already in progress" guard).
     The slot is released by `_set_relay_capture(None)` on a failed open, or by the
     background runner setting `complete`/`failed`."""
-    global _relay_capture, _relay_stop_request
+    global _relay_capture, _relay_stop_request, _relay_position_gate
     with _session_lock:
         if (
             _relay_capture
@@ -506,6 +540,7 @@ def _begin_relay_capture(
             return False
         _relay_capture = {"status": "starting", "kind": kind_label}
         _relay_stop_request = request_stop
+        _relay_position_gate = position_gate
         return True
 
 
@@ -629,6 +664,9 @@ class RelayCaptureKind:
     open: Callable[[RelayClient, str, str, str], "RelayCapture"]
     run_and_consume: Callable[[RelayClient, PiCaptureSession], Awaitable[None]]
     request_stop: Callable[[], None] | None = None
+    #: The remote commission tier's position gate, or None. Only the crossover
+    #: v2 kinds ever set it; every other flow leaves it unset and is untouched.
+    position_gate: Any | None = None
 
 
 def _request_local_return_url(
@@ -811,7 +849,11 @@ def _run_relay_capture(
     from jasper.capture_relay.client import RelayClient
     from jasper.capture_relay.health import relay_registration_token_from_env
 
-    if not _begin_relay_capture(kind.label, request_stop=kind.request_stop):
+    if not _begin_relay_capture(
+        kind.label,
+        request_stop=kind.request_stop,
+        position_gate=kind.position_gate,
+    ):
         raise ValueError("a phone-mic relay capture is already in progress")
     capture_origin = correction_adapter.capture_origin_from_env()
     spawned = False
@@ -5898,6 +5940,45 @@ def _handle_crossover_relay_cancel() -> dict[str, Any]:
     return {"relay": relay}
 
 
+def _handle_crossover_v2_position_ready(
+    handler: BaseHTTPRequestHandler,
+) -> dict[str, Any]:
+    """POST /crossover/v2/position-ready — the remote tier's position release.
+
+    The external driver read ``relay.position_pending`` off the envelope, moved
+    its positioner to the stated angle, waited its own settle time, and is now
+    saying so. Releasing admits the held ``begin_capture`` the capture page has
+    been re-posting, and the capture starts.
+
+    ``index`` is REQUIRED and checked against what is actually pending: a driver
+    retrying this POST after its capture already started must not release the
+    NEXT position, which is the one way an untargeted release could quietly
+    measure a pose the microphone never reached. A retry that still names the
+    pending index is idempotent.
+    """
+    raw = _read_json_body(handler)
+    if "index" not in raw:
+        raise BadRequest("index is required")
+    raw_index = raw["index"]
+    # A REAL integer, not merely something ``int()`` accepts. ``int(1.5)`` is 1
+    # and ``int(True)`` is 1, so a lenient parse would silently coerce a
+    # malformed index into a VALID one and release a position the driver never
+    # named — the same class of harm the pending-index check exists to prevent,
+    # arriving through the parser instead. One wire shape per meaning, the rule
+    # ``parse_begin_capture`` already holds this protocol to.
+    if isinstance(raw_index, bool) or not isinstance(raw_index, int):
+        raise BadRequest("index must be an integer")
+    index = int(raw_index)
+    with _session_lock:
+        gate = _relay_position_gate
+    if gate is None:
+        raise ValueError(
+            "no remote measurement is waiting for the microphone right now"
+        )
+    released = gate.release(index)
+    return {"ok": True, "released": released}
+
+
 def _handle_crossover_v2_relay(
     handler: BaseHTTPRequestHandler,
     *,
@@ -5944,6 +6025,7 @@ def _handle_crossover_v2_relay(
         open=prepared.open,
         run_and_consume=prepared.run_and_consume,
         request_stop=prepared.request_stop,
+        position_gate=prepared.position_gate,
     )
     return {
         "relay": _run_relay_capture(
@@ -6941,6 +7023,42 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         {"ok": False, "error": _relay_failure_message(e)},
                         status=500,
                     )
+                return
+
+            if path == "/crossover/v2/position-ready":
+                # A release that names the wrong (or no) pending capture is a
+                # CONFLICT, not a malformed request: the driver's view of the
+                # session is simply stale, which is the ordinary outcome of a
+                # retry that crossed a capture starting. Same ValueError→409
+                # shape /crossover/v2/restore uses for a refused transition.
+                try:
+                    self._send_json(_handle_crossover_v2_position_ready(self))
+                except BadRequest as e:
+                    # A malformed body is a 400, and BadRequest subclasses
+                    # ValueError — so it has to be claimed BEFORE the 409 arm
+                    # below, which would otherwise report a parse failure as a
+                    # stale-release conflict.
+                    #
+                    # It must also be ANSWERED here, not re-raised: this arm
+                    # sits above ``_dispatch_crossover``'s own
+                    # ``except BadRequest`` (that one guards the later routes
+                    # inside its own ``try``), and ``do_POST`` calls this
+                    # dispatcher bare — so a re-raise escapes into
+                    # ``socketserver.BaseServer.handle_error``, which logs a
+                    # traceback and drops the connection with NO response at
+                    # all. The driver sees a closed socket instead of the
+                    # reason its body was rejected. Same
+                    # ``_send_client_error`` (400) the /sync/relay-capture arm
+                    # uses for the identical shape.
+                    self._send_client_error(str(e))
+                except ValueError as e:
+                    self._send_json(
+                        {"ok": False, "error": str(e)},
+                        status=HTTPStatus.CONFLICT,
+                    )
+                except (OSError, RuntimeError, TypeError) as e:
+                    logger.exception("%s failed", path)
+                    self._send_json({"ok": False, "error": str(e)}, status=500)
                 return
 
             if path == "/crossover/v2/apply":

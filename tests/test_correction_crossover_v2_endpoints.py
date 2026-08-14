@@ -766,6 +766,158 @@ def test_an_express_session_runs_end_to_end_through_the_real_runner():
     assert stage2.entries[-1].screen["done_title"] == "Your speaker is tuned"
 
 
+def test_a_remote_session_holds_every_capture_until_its_driver_reports_position():
+    """The remote tier's WIRING, through the real ``run_capture_plan``.
+
+    Everything else about this tier is pinned as pure values in
+    ``tests/test_crossover_v2_remote_tier.py``; what only a real run can show is
+    that the gate is actually consulted — that a begin the driver has not
+    released is held rather than admitted, that the hold is the NON-TERMINAL
+    ``capture_deferred`` the capture page already handles (the phone re-posts
+    the identical begin and the attempt budget is not spent), and that the
+    session walks its whole plan once a driver answers each hold in turn.
+
+    The ``on_deferred`` hook IS the external driver here: it stands in for the
+    program that reads ``relay.position_pending``, moves its positioner to the
+    stated angle, and POSTs ``/crossover/v2/position-ready``.
+    """
+    from jasper.active_speaker.crossover_v2_flow import (
+        POSITION_DEG_KEY,
+        STAGE1_INCLUDES_CLOUD_MEASURE,
+        STAGE1_INCLUDES_ENTRY_BASELINE,
+        STAGE1_INCLUDES_LATERAL,
+        TIER_REMOTE,
+    )
+    from jasper.web.correction_crossover_v2 import PositionGate
+
+    shape = resolve_plan_shape(TIER_REMOTE)
+    # The SHIPPED stage-1 composition, exactly as ``prepare_v2_session`` builds
+    # it — the lateral walk plus the entry baseline, no pre-apply cloud.
+    stage_flags = dict(
+        include_cloud_measure=STAGE1_INCLUDES_CLOUD_MEASURE,
+        include_lateral=STAGE1_INCLUDES_LATERAL,
+        include_entry_baseline=STAGE1_INCLUDES_ENTRY_BASELINE,
+    )
+    spec = build_v2_session_spec(
+        _roles(), FC_HZ, acknowledgement_binding=_BINDING, plan_shape=shape,
+        **stage_flags,
+    )
+    plan = spec.capture_plan
+    assert plan.capture_target == 9
+    wanted = [int(e.screen[POSITION_DEG_KEY]) for e in plan.entries]
+
+    gate = PositionGate()
+    asked: list[int] = []
+
+    def drive(phone):
+        """Read what is pending, "move" there, then release it."""
+        pending = gate.pending()
+        assert pending is not None, "a deferred begin must publish its target"
+        assert pending["index"] == phone.begun[0]
+        asked.append(pending["degrees"])
+        gate.release(pending["index"])
+
+    backend = FakePlanRelayBackend()
+    client, session, phone = _mint_v2_session(backend, spec, on_deferred=drive)
+    published: list = []
+    conductor = _conductor(
+        backend, session, phone, published=published, tier=TIER_REMOTE,
+        index_phase_map=build_v2_cloud_index_phase_map(
+            plan_shape=shape, **stage_flags,
+        ),
+    )
+    _run(
+        _build_runner(conductor, VolumeRecorder(), position_gate=gate),
+        client, session,
+    )
+
+    # Every capture was held exactly once, and the angles the driver was asked
+    # for are the plan's own — in plan order.
+    assert phone.deferrals_seen == plan.capture_target
+    assert asked == wanted
+    # A hold spends no attempt. The final begin is capture N on attempt N, so
+    # nine captures cost exactly nine attempts despite nine deferrals in front
+    # of them — a refusal would have ended the session and a spent budget would
+    # have pushed the attempt number past the index.
+    assert phone.begun == (plan.capture_target, plan.capture_target)
+    assert v2host.crossover_v2_status_block()["tier"] == TIER_REMOTE
+    # Nothing is left waiting once the walk is done.
+    assert gate.pending() is None
+
+
+def test_a_position_hold_that_expires_is_named_not_blamed_on_the_transport():
+    """A gate refusal must persist and publish as ITSELF.
+
+    The gate is consulted AHEAD of the conductor, so `last_failure_code` is
+    never set on this path — the teardown arm's `or REASON_RELAY_TIMEOUT`
+    fallback therefore told the household "the measurement link timed out"
+    about a transport that never failed, and the terminal host event overwrote
+    the runner's honest `capture_refused` in the last-write-wins slot.
+
+    Both halves are pinned here: what lands on disk, and what the phone is left
+    holding.
+    """
+    from jasper.active_speaker.crossover_v2_flow import (
+        REASON_POSITION_HOLD_EXPIRED,
+        REASON_RELAY_TIMEOUT,
+        STAGE1_INCLUDES_CLOUD_MEASURE,
+        STAGE1_INCLUDES_ENTRY_BASELINE,
+        STAGE1_INCLUDES_LATERAL,
+        TIER_REMOTE,
+    )
+    from jasper.web.correction_crossover_v2 import (
+        REMOTE_POSITION_HOLD_BUDGET_S,
+        PositionGate,
+    )
+
+    shape = resolve_plan_shape(TIER_REMOTE)
+    stage_flags = dict(
+        include_cloud_measure=STAGE1_INCLUDES_CLOUD_MEASURE,
+        include_lateral=STAGE1_INCLUDES_LATERAL,
+        include_entry_baseline=STAGE1_INCLUDES_ENTRY_BASELINE,
+    )
+    spec = build_v2_session_spec(
+        _roles(), FC_HZ, acknowledgement_binding=_BINDING, plan_shape=shape,
+        **stage_flags,
+    )
+    # A driver that never answers: the hook advances the gate's clock instead
+    # of releasing, so the FIRST hold outlives its budget.
+    now = {"t": 0.0}
+    gate = PositionGate(clock=lambda: now["t"])
+
+    def never_answers(_phone):
+        now["t"] += REMOTE_POSITION_HOLD_BUDGET_S + 1.0
+
+    backend = FakePlanRelayBackend()
+    client, session, phone = _mint_v2_session(
+        backend, spec, on_deferred=never_answers,
+    )
+    published: list = []
+    conductor = _conductor(
+        backend, session, phone, published=published, tier=TIER_REMOTE,
+        index_phase_map=build_v2_cloud_index_phase_map(
+            plan_shape=shape, **stage_flags,
+        ),
+    )
+    with pytest.raises(CaptureBeginRefused):
+        _run(
+            _build_runner(conductor, VolumeRecorder(), position_gate=gate),
+            client, session,
+        )
+
+    state = v2host.load_v2_state()
+    assert _persisted_failure(state) == {"code": REASON_POSITION_HOLD_EXPIRED}
+    assert _persisted_failure(state) != {"code": REASON_RELAY_TIMEOUT}
+    # The phone is left holding the runner's own index-bearing refusal, NOT a
+    # terminal event written over the top of it.
+    last = backend.host_events[session.session_id][-1]
+    assert last["phase"] == "capture_refused"
+    assert last["code"] == REASON_POSITION_HOLD_EXPIRED
+    assert last["index"] == 1
+    # …and the copy the household reads is the named one, from the registry.
+    assert "positioner" in REASON_REGISTRY[REASON_POSITION_HOLD_EXPIRED].message
+
+
 def test_abandoning_an_express_session_before_the_confirm_leaves_the_dsp_alone(
     monkeypatch,
 ):
