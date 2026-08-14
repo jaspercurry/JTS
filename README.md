@@ -1083,6 +1083,16 @@ reference. Currently:
   update. The appendix is the completed 2026-07-12 layered-pipeline
   campaign: H1 carries into the Room hardware track; the rest is rationale and
   archaeology, not current behavior.
+- [`audio-commissioning-roadmap.md`](docs/audio-commissioning-roadmap.md)
+  — **Working roadmap (owner-ratified 2026-08-14)** for the audio
+  commissioning program: the ethos rulings (tinker-first/never-nanny,
+  rollback reserved for measured regression, probabilistic posture with
+  80/20 execution, substrate-over-intervention investment), the pre-run
+  wave before the next hardware session, the measurement-integrity wave
+  built on the gating-v2 ladder with its skipped items and reasons, the
+  intervention roadmap, and the decisions pending ratification. Sequence
+  and rationale only — definitions and campaign state stay with the docs
+  it links.
 - [`HANDOFF-bass-extension-plan.md`](docs/HANDOFF-bass-extension-plan.md) —
   **Planning brief / execution plan of record** for Bass Extension:
   commissioned, volume-scheduled low-frequency alignment (Linkwitz-Transform
