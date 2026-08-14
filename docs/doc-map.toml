@@ -38,6 +38,13 @@ session_artifacts = [
   # HANDOFF-multiroom.md / HANDOFF-distributed-active.md / dumb-endpoint-bringup.md
   # (see docs/doc-map.toml's multiroom-grouping subsystem). Tracked by #1852.
   "docs/multiroom-pairing-reliability-plan.md",
+  # Live working roadmap (sequence + rationale) for the audio commissioning
+  # program. Deliberately not a scan target: it defers every definition and
+  # every state claim to its owning docs (gating-v2-plan.md,
+  # room-correction-regime-plan.md, HANDOFF-correction-revision-plan.md,
+  # HANDOFF-crossover-measurement-v2.md), so routing a code change here
+  # instead of to those would invert the single-source-of-truth rule.
+  "docs/audio-commissioning-roadmap.md",
 ]
 # Prior-art research artifacts: long-lived studies kept as reference (each
 # tagged `Status: research` in-doc), not canonical operational scan targets.
