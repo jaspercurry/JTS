@@ -27,6 +27,8 @@ POWER_FLAG_NAMES = (
     "throttled",
     "soft_temperature_limit",
 )
+MEASUREMENT_MIN_DEGREES = -45.0
+MEASUREMENT_MAX_DEGREES = 45.0
 THROTTLED_RE = re.compile(r"\s*throttled=(0x[0-9a-fA-F]+)\s*")
 EXPERIMENT_ROOT = Path(__file__).resolve().parent
 VENDOR_ROOT = EXPERIMENT_ROOT / "vendor"
@@ -169,6 +171,20 @@ def _positive_degrees(value: str) -> float:
     return degrees
 
 
+def _measurement_position(value: str) -> float:
+    try:
+        degrees = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("position must be a number") from exc
+    if not math.isfinite(degrees):
+        raise argparse.ArgumentTypeError("position must be finite")
+    if not MEASUREMENT_MIN_DEGREES <= degrees <= MEASUREMENT_MAX_DEGREES:
+        raise argparse.ArgumentTypeError(
+            "position must be between -45 and +45 degrees"
+        )
+    return degrees
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Manual JTS USB turntable experiment")
     parser.add_argument("--port", help="serial path; default uses bundled discovery")
@@ -189,6 +205,21 @@ def build_parser() -> argparse.ArgumentParser:
     right.add_argument("degrees", type=_positive_degrees)
     commands.add_parser("set-zero", help="mark the current position as zero")
     commands.add_parser("home", help="return to the saved zero position")
+    position = commands.add_parser(
+        "position",
+        help="home, then move to a guarded signed measurement angle",
+    )
+    position.add_argument("degrees", type=_measurement_position)
+    position.add_argument(
+        "--confirm-rig-clear",
+        action="store_true",
+        help="confirm the arm's full travel path is physically clear",
+    )
+    position.add_argument(
+        "--confirm-zero-valid",
+        action="store_true",
+        help="confirm saved zero is on-axis and valid since the latest power-on",
+    )
     commands.add_parser("stop", help="send the vendor stop request")
     return parser
 
@@ -223,6 +254,24 @@ def run(
         )
         return 0 if ok else 1
 
+    if args.command == "position" and not (
+        args.confirm_rig_clear and args.confirm_zero_valid
+    ):
+        missing = []
+        if not args.confirm_rig_clear:
+            missing.append("--confirm-rig-clear")
+        if not args.confirm_zero_valid:
+            missing.append("--confirm-zero-valid")
+        _emit(
+            {
+                "ok": False,
+                "error": "position requires " + " and ".join(missing),
+                "target_degrees": args.degrees,
+            },
+            compact=args.json,
+        )
+        return 1
+
     resolved_api = api or load_upstream_api()
     if args.command == "detect":
         devices = resolved_api.discover_devices()
@@ -230,7 +279,7 @@ def run(
         return 0 if devices else 1
 
     power_status: PowerStatus | None = None
-    if args.command in {"left", "right", "home"}:
+    if args.command in {"left", "right", "home", "position"}:
         power_status = read_power_status(run_command)
         if not power_status.safe_for_motion and not args.allow_power_risk:
             _emit(
@@ -260,6 +309,32 @@ def run(
         elif args.command == "home":
             result = controller.return_to_zero()
             ok = _operation_succeeded(result)
+        elif args.command == "position":
+            home_result = controller.return_to_zero()
+            if not _operation_succeeded(home_result):
+                payload = {
+                    "ok": False,
+                    "target_degrees": args.degrees,
+                    "home_result": home_result,
+                    "error": "home did not complete; target move was not attempted",
+                }
+                if power_status is not None:
+                    payload["power"] = _power_payload(
+                        power_status, args.allow_power_risk
+                    )
+                _emit(payload, compact=args.json)
+                return 1
+
+            move_result = None
+            if args.degrees != 0:
+                direction = "cw" if args.degrees < 0 else "ccw"
+                move_result = controller.turn_relative(direction, abs(args.degrees))
+            ok = move_result is None or _operation_succeeded(move_result)
+            result = {
+                "target_degrees": args.degrees,
+                "home": home_result,
+                "move": move_result,
+            }
         elif args.command == "stop":
             result = controller.stop()
             ok = _operation_succeeded(result)

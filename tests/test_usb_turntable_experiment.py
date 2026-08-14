@@ -230,14 +230,137 @@ def test_vendor_labels_map_to_upstream_directions(
     assert ("turn_relative", direction, 12.5) in controller.calls
 
 
-@pytest.mark.parametrize("command", ["left", "right", "home"])
+@pytest.mark.parametrize(
+    ("target", "expected_move"),
+    [
+        ("-45", ("turn_relative", "cw", 45.0)),
+        ("-10", ("turn_relative", "cw", 10.0)),
+        ("0", None),
+        ("10", ("turn_relative", "ccw", 10.0)),
+        ("45", ("turn_relative", "ccw", 45.0)),
+    ],
+)
+def test_guarded_position_homes_then_moves_in_one_open(
+    turntable,
+    capsys,
+    target: str,
+    expected_move,
+) -> None:
+    api, factory, controller = fake_api(turntable)
+
+    assert turntable.main(
+        [
+            "--json",
+            "position",
+            target,
+            "--confirm-rig-clear",
+            "--confirm-zero-valid",
+        ],
+        api=api,
+        run_command=healthy_power,
+    ) == 0
+
+    output = parse_output(capsys)
+    assert output["ok"] is True
+    assert output["result"]["target_degrees"] == float(target)
+    assert factory.open_calls == [{"port": None}]
+    expected_calls = [("return_to_zero",)]
+    if expected_move is not None:
+        expected_calls.append(expected_move)
+    assert controller.calls == expected_calls
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["position", "10"],
+        ["position", "10", "--confirm-rig-clear"],
+        ["position", "10", "--confirm-zero-valid"],
+    ],
+)
+def test_guarded_position_requires_both_confirmations_before_open(
+    turntable,
+    capsys,
+    argv,
+) -> None:
+    api, factory, _controller = fake_api(turntable)
+
+    def unexpected_power_probe(*args, **kwargs):
+        raise AssertionError("missing confirmations must fail before power preflight")
+
+    assert turntable.main(
+        ["--json", *argv], api=api, run_command=unexpected_power_probe
+    ) == 1
+    assert parse_output(capsys)["ok"] is False
+    assert factory.open_calls == []
+
+
+def test_guarded_position_requires_completed_home_before_relative_move(
+    turntable,
+    capsys,
+) -> None:
+    api, factory, controller = fake_api(turntable)
+    controller.operation_result = SimpleNamespace(
+        acknowledged=True,
+        completed=False,
+    )
+
+    assert turntable.main(
+        [
+            "--json",
+            "position",
+            "20",
+            "--confirm-rig-clear",
+            "--confirm-zero-valid",
+        ],
+        api=api,
+        run_command=healthy_power,
+    ) == 1
+
+    output = parse_output(capsys)
+    assert output["ok"] is False
+    assert "not attempted" in output["error"]
+    assert factory.open_calls == [{"port": None}]
+    assert controller.calls == [("return_to_zero",)]
+
+
+def test_guarded_position_requires_completed_target_move(turntable, capsys) -> None:
+    api, _factory, controller = fake_api(turntable)
+
+    def incomplete_move(direction: str, degrees: float):
+        controller.calls.append(("turn_relative", direction, degrees))
+        return SimpleNamespace(acknowledged=True, completed=False)
+
+    controller.turn_relative = incomplete_move
+
+    assert turntable.main(
+        [
+            "--json",
+            "position",
+            "20",
+            "--confirm-rig-clear",
+            "--confirm-zero-valid",
+        ],
+        api=api,
+        run_command=healthy_power,
+    ) == 1
+    assert parse_output(capsys)["ok"] is False
+    assert controller.calls == [
+        ("return_to_zero",),
+        ("turn_relative", "ccw", 20.0),
+    ]
+
+
+@pytest.mark.parametrize("command", ["left", "right", "home", "position"])
 def test_motion_is_blocked_before_open_when_power_is_unsafe(
     turntable,
     capsys,
     command: str,
 ) -> None:
     api, factory, _controller = fake_api(turntable)
-    argv = ["--json", command, *( ["10"] if command != "home" else [])]
+    argv = ["--json", command, *(["10"] if command != "home" else [])]
+    if command == "position":
+        argv.extend(["--confirm-rig-clear", "--confirm-zero-valid"])
 
     assert turntable.main(
         argv,
@@ -294,6 +417,26 @@ def test_incomplete_operation_is_not_success(turntable, capsys) -> None:
     assert parse_output(capsys)["ok"] is False
 
 
+@pytest.mark.parametrize("degrees", ["-45.1", "45.1", "nan", "inf", "-inf"])
+def test_guarded_position_rejects_out_of_range_before_open(
+    turntable,
+    degrees: str,
+) -> None:
+    api, factory, _controller = fake_api(turntable)
+    with pytest.raises(SystemExit) as exc_info:
+        turntable.main(
+            [
+                "position",
+                degrees,
+                "--confirm-rig-clear",
+                "--confirm-zero-valid",
+            ],
+            api=api,
+        )
+    assert exc_info.value.code == 2
+    assert factory.open_calls == []
+
+
 @pytest.mark.parametrize("degrees", ["0", "-1", "nan", "inf"])
 def test_relative_turn_rejects_invalid_degrees(turntable, degrees: str) -> None:
     with pytest.raises(SystemExit) as exc_info:
@@ -308,6 +451,9 @@ def test_docs_keep_manual_safety_and_provenance_boundaries() -> None:
     assert "not a physical emergency stop" in readme
     assert "hardware power cutoff" in readme
     assert "does not cancel or stop platform motion" in readme
+    assert "`-45` to `+45` degree envelope" in readme
+    assert "always finish by commanding position `0`" in readme
+    assert "Zero persistence across a controller power cycle is unverified" in readme
     assert "development-time provenance" in vendor_readme
     assert "does not authenticate files at runtime" in vendor_readme
 

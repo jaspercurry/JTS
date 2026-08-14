@@ -79,6 +79,37 @@ python3 jts_turntable.py --allow-power-risk left 10
 
 Resolve the power problem instead whenever possible.
 
+## Guarded measurement positions
+
+The microphone rig's saved zero is the acoustic on-axis home. For automated
+measurements, use signed absolute positions: negative is left and positive is
+right. Each invocation runs the Pi power preflight, opens the controller once,
+returns fully to home, and only then makes one relative move to the requested
+angle. It refuses targets outside the inclusive `-45` to `+45` degree envelope.
+
+Both confirmations are required on every invocation so an unattended caller
+cannot silently assume the physical setup is safe:
+
+```sh
+python3 jts_turntable.py position -20 \
+  --confirm-rig-clear --confirm-zero-valid
+python3 jts_turntable.py position 0 \
+  --confirm-rig-clear --confirm-zero-valid
+```
+
+`--confirm-rig-clear` means the arm's full path is physically clear.
+`--confirm-zero-valid` means an operator has confirmed that the controller's
+saved zero is still the acoustic on-axis position since its latest power-on.
+Zero persistence across a controller power cycle is unverified, so reconfirm
+home before using this flag after every power cycle.
+
+The observed hard-left limit is approximately `-52` degrees from home; never
+target it. The exact hard-right limit is unknown and unnecessary. Automated
+measurement motion stays within `-45` to `+45` degrees. A useful smoke-test
+sweep is `0, -10, -20, 0, +10, +20, 0`. Start a measurement only after the
+position command reports `ok: true`, and always finish by commanding position
+`0`.
+
 ## Results and safety boundary
 
 Output is structured JSON; `--json` selects the compact form. `probe` succeeds
