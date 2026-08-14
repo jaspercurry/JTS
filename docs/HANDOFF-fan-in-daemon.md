@@ -878,11 +878,12 @@ HANDOFF-multiroom.md Increment 5 PR-2 and
 shipped as an optional SECOND output PCM carrying the program post-duck but
 pre-TTS (the multi-room "music-only tap"), with its own `music_output` STATUS
 block. Nothing ever set the env var and nothing ever read the second PCM, so
-the producer half was inert for its whole life. The shipped bonded dataplane
-gets the same voice/music split a different way — while bonded, the grouping
-reconciler routes the leader's assistant TTS to `jasper-outputd`, which leaves
-fan-in's ONE output music-only by construction. fan-in therefore has exactly
-one program output again. Rationale and rebuild guidance:
+the producer half was inert for its whole life and removing it changes no
+behaviour. The shipped bonded dataplane gets its voice/music split a different
+way — on a passive bonded pair the grouping reconciler routes the leader's
+assistant TTS to `jasper-outputd`, which leaves fan-in's one output carrying
+no assistant. fan-in therefore has exactly one program output again.
+Rationale, the per-role detail, and rebuild guidance:
 [`docs/HANDOFF-multiroom.md`](HANDOFF-multiroom.md) §0 (Increment 1).
 
 **Period sizing**: 256 frames at 48 kHz = ~5.3 ms wakeup cadence,

@@ -347,12 +347,14 @@ fan-in's optional second, pre-TTS "music-only" output PCM (multi-room
 Increment 1). Its READ path was live (`Config::from_env`, `Mixer::new`'s open,
 the per-period `write_music_only`, the `music_output` STATUS block) and **no
 writer anywhere set the env var** — not `install.sh`, not a unit, not the
-grouping reconciler, not a wizard — for the ~2 months it shipped. The shipped
-bonded dataplane reaches the same voice/music split by a different route
-(Increment 5 PR-2 moves the leader's TTS to `jasper-outputd`, which leaves
-fan-in's ONE output music-only while bonded), so this was a second spelling of a
-guarantee the live path already provides once — the single-source-of-truth
-value, applied to a capability rather than to a value. Rebuild deliberately
+grouping reconciler, not a wizard — for the ~2 months it shipped, so removing it
+changes the behaviour of no role. Nor was it load-bearing for the split it was
+built for: on the passive bonded pair, Increment 5 PR-2 routes the leader's TTS
+to `jasper-outputd`, which leaves fan-in's one output carrying no assistant, and
+the roles that deliberately keep TTS in fan-in (active endpoint, non-parked sub)
+never used this tap either. A second spelling of a guarantee the live path
+already provides once — the single-source-of-truth value, applied to a
+capability rather than to a value. Rebuild deliberately
 against the then-current topology if multi-room v2 wants a fan-in tap; do not
 revive this one. Full removed-code record and rebuild guidance:
 [HANDOFF-multiroom.md](HANDOFF-multiroom.md) §0 (Increment 1).

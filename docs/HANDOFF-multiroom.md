@@ -287,17 +287,23 @@ Increment 6 (per-follower calibration). What exists:
   and **pre-TTS**, plus a `music_output` STATUS block. **Nothing ever set the
   env var and nothing ever read the second PCM or its STATUS block** — no
   installer, unit, reconciler, or wizard wrote it in the ~2 months it shipped —
-  so the read path was live and the producer half was inert. The shipped bonded
-  dataplane reached the same guarantee by a different route: Increment 5 PR-2
-  moves the leader's assistant TTS to `jasper-outputd`
-  (`grouping-voice.env`, `jasper.multiroom.tts_route`), which makes fan-in's
-  ONE primary output already music-only while bonded, and Increment 5 PR-1's
-  producer is the leader's **CamillaDSP** feeding the snapserver pipe — not a
-  second fan-in PCM. So inv-3 (followers never hear the leader's TTS) holds
-  without this tap, and the tap was a second way to spell a thing the
-  shipped path already spells once. **If multi-room v2 wants a pre-TTS fan-in
-  tap, rebuild it deliberately** against the then-current topology rather than
-  reviving this one; the PR above is the full removed-code record.
+  so the read path was live and the producer half was inert. **Because it was
+  never on, removing it changes the behaviour of no role.** Nor was it what
+  any role's TTS separation rested on: on the **passive bonded pair** — the
+  shape the snapserver round-trip is built for, and the one the LEADER diagram
+  in §2 shows — Increment 5 PR-2 routes the leader's assistant TTS to
+  `jasper-outputd` (`grouping-voice.env`;
+  `tts_route.expected_grouping_tts_route`'s `passive_member` arm), so fan-in's
+  ONE output carries no assistant while bonded, and Increment 5 PR-1's producer
+  is the leader's **CamillaDSP** feeding the snapserver pipe, not a second
+  fan-in PCM. The roles that deliberately keep TTS in fan-in — the
+  `active_endpoint` arm (its TTS must stay upstream of the local
+  crossover/protection graph; see
+  [HANDOFF-distributed-active.md](HANDOFF-distributed-active.md)) and the
+  non-parked `sub` arm — never had this tap either. So it solved nothing for
+  anyone. **If multi-room v2 wants a pre-TTS fan-in tap, rebuild it
+  deliberately** against the then-current topology rather than reviving this
+  one; the PR above is the full removed-code record.
 - **systemd units** (`deploy/systemd/jasper-{snapserver,snapclient,
   grouping-reconcile}.service`) — disabled by default, in
   `jts-audio.slice` (`MemorySwapMax=0` inherited), no CPU caps,
@@ -2069,8 +2075,9 @@ front-run the complexity nor forget where it belongs.
    addressed from, NOT house-wide (the Sonos/Alexa default; room music keeps
    playing elsewhere). This is now a *requirement*, not a maybe — it is the
    entire reason inv-2 needs a music/voice split at all (followers get music
-   with the leader's TTS held back). The shipped realization is Increment 5
-   PR-2's TTS route to outputd, not the deleted fanin second PCM; see §0. Had
+   with the leader's TTS held back). On the passive bonded pair the shipped
+   realization is Increment 5 PR-2's TTS route to outputd, not the deleted
+   fan-in second PCM; see §0. Had
    whole-house announcements been wanted instead, the leader would just stream
    its full mix and the TTS-separation work would vanish — so this decision is
    load-bearing for the inv-2 build. Time-synced whole-house announcements
