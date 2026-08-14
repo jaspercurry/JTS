@@ -4,6 +4,7 @@
 
 """Hardware-free coverage for the manual USB-turntable experiment."""
 
+import argparse
 import ast
 import hashlib
 import importlib.util
@@ -53,6 +54,9 @@ class FakeController:
         self.calls: list[tuple[object, ...]] = []
         self.probe_result = SimpleNamespace(connected=True, firmware="1.2.3")
         self.operation_result = SimpleNamespace(acknowledged=True, completed=True)
+        self.offset_result = SimpleNamespace(
+            acknowledged=True, degrees=0.0, frames=("OA=0.0\N{DEGREE SIGN}",)
+        )
 
     def __enter__(self):
         return self
@@ -71,6 +75,10 @@ class FakeController:
     def set_zero(self):
         self.calls.append(("set_zero",))
         return self.operation_result
+
+    def offset_angle(self):
+        self.calls.append(("offset_angle",))
+        return self.offset_result
 
     def return_to_zero(self):
         self.calls.append(("return_to_zero",))
@@ -478,13 +486,16 @@ def test_power_override_allows_motion_when_status_is_unknown(turntable, capsys) 
 
 
 @pytest.mark.parametrize(
-    ("command", "expected_call"),
-    [("set-zero", "set_zero"), ("stop", "stop")],
+    ("argv", "expected_call"),
+    [
+        (["set-zero", "--confirm-redefine-zero"], "set_zero"),
+        (["stop"], "stop"),
+    ],
 )
 def test_non_motion_commands_skip_power_preflight(
     turntable,
     capsys,
-    command: str,
+    argv: list[str],
     expected_call: str,
 ) -> None:
     api, _factory, controller = fake_api(turntable)
@@ -493,10 +504,74 @@ def test_non_motion_commands_skip_power_preflight(
         raise AssertionError("non-motion command must not run power preflight")
 
     assert turntable.main(
-        ["--json", command], api=api, run_command=unexpected_power_probe
+        ["--json", *argv], api=api, run_command=unexpected_power_probe
     ) == 0
     parse_output(capsys)
     assert (expected_call,) in controller.calls
+
+
+def test_set_zero_without_confirm_flag_is_rejected_before_open(turntable) -> None:
+    api, factory, _controller = fake_api(turntable)
+
+    def unexpected_power_probe(*args, **kwargs):
+        raise AssertionError("missing confirmation must fail before power preflight")
+
+    with pytest.raises(SystemExit) as exc_info:
+        turntable.main(
+            ["--json", "set-zero"], api=api, run_command=unexpected_power_probe
+        )
+    assert exc_info.value.code == 2
+    assert factory.open_calls == []
+
+
+def test_set_zero_direct_run_call_is_guarded_without_argparse(turntable) -> None:
+    """A bare ``run()`` call (bypassing argparse) is guarded too, not just the CLI."""
+    api, factory, _controller = fake_api(turntable)
+    namespace = argparse.Namespace(
+        command="set-zero", json=True, port=None, allow_power_risk=False
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        turntable.run(namespace, api=api)
+    assert exc_info.value.code == 2
+    assert factory.open_calls == []
+
+
+def test_set_zero_with_confirm_flag_redefines_zero(turntable, capsys) -> None:
+    api, factory, controller = fake_api(turntable)
+
+    def unexpected_power_probe(*args, **kwargs):
+        raise AssertionError("set-zero must not run the power preflight")
+
+    assert turntable.main(
+        ["--json", "set-zero", "--confirm-redefine-zero"],
+        api=api,
+        run_command=unexpected_power_probe,
+    ) == 0
+    assert parse_output(capsys)["ok"] is True
+    assert factory.open_calls == [{"port": None}]
+    assert controller.calls == [("set_zero",)]
+
+
+def test_offset_reads_without_motion_or_power_preflight(turntable, capsys) -> None:
+    api, factory, controller = fake_api(turntable)
+    controller.offset_result = SimpleNamespace(
+        acknowledged=True, degrees=0.5, frames=("OA=0.5\N{DEGREE SIGN}",)
+    )
+
+    def unexpected_power_probe(*args, **kwargs):
+        raise AssertionError("offset must not run the power preflight")
+
+    assert turntable.main(
+        ["--json", "offset"], api=api, run_command=unexpected_power_probe
+    ) == 0
+
+    output = parse_output(capsys)
+    assert output["ok"] is True
+    assert output["result"]["offset_degrees"] == 0.5
+    assert output["result"]["frames"] == ["OA=0.5\N{DEGREE SIGN}"]
+    assert factory.open_calls == [{"port": None}]
+    assert controller.calls == [("offset_angle",)]
 
 
 def test_incomplete_operation_is_not_success(turntable, capsys) -> None:
@@ -555,6 +630,9 @@ def test_docs_keep_manual_safety_and_provenance_boundaries() -> None:
     assert "turntable_autostop.stopped" in readme
     assert "moving the cable to another USB port disables automatic stop" in readme
     assert "without receiving STOP or any motion command" in readme
+    assert "destroys the saved acoustic-axis zero" in readme
+    assert "FORBIDDEN in automated measurement" in readme
+    assert "never sends a motion command" in readme
     assert "development-time provenance" in vendor_readme
     assert "does not authenticate files at runtime" in vendor_readme
 

@@ -209,8 +209,23 @@ def build_parser() -> argparse.ArgumentParser:
     left.add_argument("degrees", type=_positive_degrees)
     right = commands.add_parser("right", help="vendor Right (counterclockwise)")
     right.add_argument("degrees", type=_positive_degrees)
-    commands.add_parser("set-zero", help="mark the current position as zero")
+    set_zero = commands.add_parser(
+        "set-zero",
+        help="destructively redefine the saved acoustic-axis zero (requires confirmation)",
+    )
+    set_zero.add_argument(
+        "--confirm-redefine-zero",
+        action="store_true",
+        help=(
+            "confirm this permanently redefines the saved acoustic-axis zero; "
+            "required because set-zero cannot be undone"
+        ),
+    )
     commands.add_parser("home", help="return to the saved zero position")
+    commands.add_parser(
+        "offset",
+        help="query the signed offset from saved zero; sends no motion command",
+    )
     position = commands.add_parser(
         "position",
         help="home, then move to a guarded signed measurement angle",
@@ -358,6 +373,14 @@ def run(
         )
         return 0 if ok else 1
 
+    if args.command == "set-zero" and not getattr(args, "confirm_redefine_zero", False):
+        print(
+            "set-zero requires --confirm-redefine-zero: it permanently redefines "
+            "the turntable's saved acoustic-axis zero and cannot be undone",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
     if args.command == "position" and not (
         args.confirm_rig_clear and args.confirm_zero_valid
     ):
@@ -415,6 +438,13 @@ def run(
         elif args.command == "home":
             result = controller.return_to_zero()
             ok = _operation_succeeded(result)
+        elif args.command == "offset":
+            offset_result = controller.offset_angle()
+            ok = bool(offset_result.acknowledged)
+            result = {
+                "offset_degrees": float(offset_result.degrees),
+                "frames": list(offset_result.frames),
+            }
         elif args.command == "position":
             home_result = controller.return_to_zero()
             if not _operation_succeeded(home_result):
