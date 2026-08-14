@@ -639,6 +639,20 @@ HIFIBERRY_DAC8X_STUDIO = DacProfile(
     # The reverse (base hardware classified as Studio) never parks: S16_LE
     # is universally supported, so it opens fine and silently declines the
     # crackle fix, with no error and no signal that it happened.
+    #
+    # NO latency_floor is declared, so this profile ships the conservative
+    # global CamillaDSP/outputd default rather than a measured one — an absence
+    # stated out loud because it is load-bearing in three places. It is the
+    # standing floorless case the no-floor doctor branch and the floorless-DAC
+    # contract tests are written against (they assert it HERE rather than assume
+    # it, so declaring a floor for this profile fails those guards instead of
+    # quietly making their expectations unreachable — which is exactly what
+    # happened twice: to `HIFIBERRY_DAC8X` in R7a, and to
+    # `INNOMAKER_HIFI_AMP_PRO` when jts4's measured floor landed). It also means
+    # the conf.d ring period is left untouched on this box, so shm_ring is
+    # reachable here only through the operator env seam
+    # (`JASPER_OUTPUTD_PERIOD_FRAMES` in `/etc/jasper/jasper.env`), never from a
+    # declared floor. Measuring one on this silicon is open per-board work.
 )
 
 INNOMAKER_HIFI_AMP_PRO = DacProfile(
@@ -732,6 +746,17 @@ INNOMAKER_HIFI_AMP_PRO = DacProfile(
     # jasper.fanin_coupling), which apply_capture_precedence merges LAST over
     # whatever this floor resolved. So the declared pair governs the LOOPBACK
     # lane only — the fallback jts4 lands on if the ring disarms.
+    #
+    # TIGHTENS NOTHING IS NOT CHANGES NOTHING, and the difference is disclosed
+    # rather than left in the word. The target_level move (2048 -> 4096) BUYS
+    # cushion by SPENDING latency: at 48 kHz the resampler's steady-state fill
+    # goes 42.7 ms -> 85.3 ms, so a box on the loopback fallback carries about
+    # 42.7 ms more buffering than a floorless one. That is the trade, taken
+    # deliberately on a lane that is a fallback rather than the running path, and
+    # on the slowest board in the fleet. It does NOT reach the two places it
+    # would matter most: the ring lane runs 128/128 regardless
+    # (RING_CAMILLA_* wins there), and the chip-AEC reference tap is downstream
+    # of this stage, so no alignment artifact moves with it.
     #
     # Because it tightens nothing, this half needs no soak to be safe to ship.
     # What still needs one is any FUTURE TIGHTENING of it: moving chunksize below

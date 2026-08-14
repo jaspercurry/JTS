@@ -398,9 +398,28 @@ def _restart_outputd(reason: str) -> tuple[bool, str]:
 # bound itself, so 15 s left approximately zero margin on the slowest board in
 # the fleet — and a timeout there is not a delayed nicety, it is a refused arm
 # plus a re-converge (see :func:`_arm_ring`). 60 s is four times the observed
-# duration and still well under the broker's own ``_EXEC_TIMEOUT_CEILING_SEC``
-# of 120 s, which would clamp anything larger; the client waits
-# ``_CLIENT_SOCKET_MARGIN_SEC`` past it.
+# duration.
+#
+# THE BUDGET THIS SPENDS IS THE CALLER UNIT'S, not the broker's. The broker's
+# ``_EXEC_TIMEOUT_CEILING_SEC`` (120 s) only CLAMPS a larger request; it sets no
+# value and 60 s is nowhere near it. The binding limit is
+# ``TimeoutStartSec=120`` on the ``Type=oneshot``
+# ``deploy/systemd/jasper-fanin-coupling-auto.service``, and the timeout branch
+# can overrun it: a converge that times out (60 s), then the ordered recovery
+# (~20 s), then the best-effort re-converge (up to another 60 s) is ~140 s.
+#
+# That overrun is bounded and non-corrupting, which is why the value stands
+# rather than being trimmed to fit. Recovery — the part that returns audio — has
+# already landed by ~80 s, well inside the budget. What systemd's SIGTERM at
+# 120 s can cut is only the trailing re-converge, whose failure this code
+# already treats as best-effort; the resulting end state is exactly the REFUSAL
+# branch's (box on loopback, ``JASPER_OUTPUTD_CONTENT_FORMAT`` possibly still
+# naming the ring wire until the next udev/boot/deploy hardware-reconcile event
+# converges it). Reaching it needs a compound-rare condition — the converge must
+# time out rather than fail, on a box slow enough to exceed a bound already 4x
+# its measured pass. Trimming 60 s to fit the worst case would instead make the
+# ordinary first arm time out on the slowest board, which is the failure this
+# constant exists to prevent.
 _HARDWARE_RECONCILE_TIMEOUT_SEC = 15.0
 _ARM_CONTENT_FORMAT_CONVERGE_TIMEOUT_SEC = 60.0
 
@@ -3111,9 +3130,17 @@ def _fail_ring_arm(
     stage from accidentally omitting recovery or reporting different progress
     flags while each caller still owns its domain-specific event name and detail.
 
-    ``reconverge_content_format`` is passed by exactly the stages that run AFTER
-    :func:`_arm_ring` converged ``JASPER_OUTPUTD_CONTENT_FORMAT`` to the ring
-    wire, and it kicks that key's single writer once more. Recovery has just
+    ``reconverge_content_format`` is passed by the stages that can leave
+    ``JASPER_OUTPUTD_CONTENT_FORMAT`` naming the RING wire on a box being sent
+    back to loopback, and it kicks that key's single writer once more. That is
+    four callers, of two kinds: the three ordered spine steps (outputd, fan-in,
+    CamillaDSP), which run after the converge confirmably LANDED; and the
+    converge's own TIMEOUT branch, which passes it precisely because the
+    converge did NOT confirmably land — a timed-out oneshot may still be
+    running, holding the pre-rollback coupling it read on entry, and can write
+    the ring wire after the rollback. The converge's REFUSAL branch is the one
+    failure that does NOT pass it: nothing is in flight there, so the rollback's
+    write is the last one. See :func:`kick_timed_out`. Recovery has just
     written ``loopback`` back into fanin.env, so the same oneshot re-derives the
     LOOPBACK lane's width from it — without this, a box recovered to loopback
     would keep asking for the ring's narrow S16_LE while CamillaDSP emits the
@@ -3871,13 +3898,22 @@ def _recover_to_loopback(
     succeeded.
 
     Unlike :func:`_disarm`, this takes no ``kick_hardware_reconcile`` and so
-    never kicks ``jasper-audio-hardware-reconcile`` — including on the one
+    never kicks ``jasper-audio-hardware-reconcile`` itself — including on the one
     route here that can be leaving a LIVE shm_ring bridge (the CONFIRM path's
     ring self-heal escalating to :func:`_arm_ring`, which then fails its own
     preflight). Intentional: a box already mid-failure-recovery gets the
     larger fail-safe cushion and less daemon churn instead of another
     oneshot; the content-buffer floor re-emit just waits for the next
     udev/boot/deploy event on this path, same as before #1251.
+
+    ON THE ARM PATH THAT IS NOW USUALLY MOOT, because a caller kicks it just
+    after this returns. :func:`_fail_ring_arm`'s ``reconverge_content_format``
+    starts the SAME oneshot to settle the content-lane WIDTH, and that pass
+    re-emits the content-BUFFER floor in the same run — so on those four
+    branches the wait above does not happen at all. It still describes this
+    function's own behaviour, and it still holds on the routes that call this
+    directly (the two CONFIRM-path recoveries) and whenever that best-effort
+    re-converge does not land.
 
     When the camilla step FAILS, the CamillaDSP statefile is re-seeded directly
     (:func:`_reseed_loopback_statefile`) so recovery converges even with no

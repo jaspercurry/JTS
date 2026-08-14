@@ -754,8 +754,10 @@ def test_innomaker_unmeasured_camilla_half_tightens_nothing() -> None:
     is therefore only safe while it tightens nothing relative to the shipped
     global default:
 
-      - chunksize EQUAL to DEFAULT_CHUNKSIZE — the emitted value on that lane is
-        byte-identical to what the board runs today;
+      - chunksize EQUAL to DEFAULT_CHUNKSIZE — so a floorless box and this one
+        emit the same value on that lane. The EQUALITY is the property, not the
+        literal: if the global default moves, this must move with it, which is
+        why the assertion below reads the constant rather than a number;
       - target_level GREATER OR EQUAL to DEFAULT_TARGET_LEVEL — more resampler
         cushion, never less.
 

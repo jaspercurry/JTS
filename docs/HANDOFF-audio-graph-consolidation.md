@@ -517,9 +517,12 @@ another DAC8x: `HIFIBERRY_DAC8X` now carries the declaration
 (`jasper/audio_hardware/dac.py`), so any such box picks the floor up by
 deploying. The ordering binds again for a profile that has no floor of its
 own. One of those still matters to this campaign: `HIFIBERRY_DAC8X_STUDIO`, the
-DAC8x-family member, whose entry in that same registry says in code that it
-ships the conservative global default instead. It needs its own declaration and
-its own soak before the ordering is discharged for it.
+DAC8x-family member, whose entry in that same registry now says in code that it
+declares no floor and ships the conservative global default instead — an
+absence stated explicitly rather than left to be inferred from a missing field,
+because the floorless-DAC contract tests and the no-floor doctor branch are all
+written against that profile. It needs its own declaration and its own soak
+before the ordering is discharged for it.
 
 `INNOMAKER_HIFI_AMP_PRO` — the profile jts4 and jts5 both run — **now carries a
 declaration** (2026-08-14, from jts4's own measurement), so it is no longer one
