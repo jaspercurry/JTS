@@ -17,8 +17,11 @@ numbers into the one scalar the plan's S3 closed loop converges on, and
 holds no threshold or loop policy of its own. :func:`spec_flatness_gauge`
 is a third reading of the same kind — the household-facing "how flat is
 it" figures, every one of them lifted from the report rather than
-recomputed (plan PR-5, the spec-curve SSOT). This module shipped as a
-pure, uncalled evaluator, mirroring
+recomputed (plan PR-5, the spec-curve SSOT). :func:`spec_band_tilt` is a
+fourth, and the only one whose answer no reference-frame choice can move:
+the largest level step between two graded bands, which is what a household
+reading a worst-band pointer was actually asking (issue #1857).
+This module shipped as a pure, uncalled evaluator, mirroring
 :mod:`jasper.active_speaker.linearization_envelope`'s shape (a pure module
 with zero production callers at the time it shipped -- and one now, which is
 the whole arc of the pattern: ships pure and uncalled, gets wired later, and
@@ -146,6 +149,41 @@ class BandResult:
       evaluable: whether any non-excluded bin survived to be measured.
       passed: ``abs(max_deviation_db) <= tolerance_db``, or ``None`` when
         the band is unevaluable.
+      level_deviation_db: the band's OWN power-mean level (over the same
+        non-excluded bins) minus :attr:`FlatSpecReport.reference_db` -- how
+        far the whole band sits from the shared frame, with no reference to
+        what happens inside it. See :func:`spec_band_tilt` for why this is
+        split out (issue #1857). ``None`` when the band is unevaluable, or
+        on a report built before this field existed.
+      max_ripple_db: the **signed** worst deviation of a non-excluded bin
+        from **the band's own level**, not from
+        :attr:`FlatSpecReport.reference_db`. This is the half of
+        ``max_deviation_db`` that is *inside* the band, and it is
+        **invariant to the reference frame entirely**: change
+        :data:`REFERENCE_BAND_HZ` to anything and this number does not
+        move. ``None`` when unevaluable / absent.
+      max_ripple_hz: the frequency of that worst-ripple bin. Deliberately
+        NOT assumed equal to ``max_deviation_hz``: the bin furthest from
+        the shared frame and the bin furthest from the band's own level are
+        the same only when the band's level offset is zero. ``None`` when
+        unevaluable / absent.
+
+    **The split, and the identity that makes it exact.** For every
+    non-excluded bin ``i`` in the band::
+
+        deviation_i = curve_i - reference_db
+                    = (curve_i - band_level) + (band_level - reference_db)
+                    = ripple_i               + level_deviation_db
+
+    so a band's distance from the frame is exactly "where the whole band
+    sits" plus "what the curve does inside it" -- one term that a *different*
+    band's level can move (the frame is pooled across bands) and one that it
+    structurally cannot. Note the identity is PER BIN: ``max_deviation_db``
+    and ``max_ripple_db`` are taken at bins chosen by different criteria, so
+    they do not add. What always holds is
+    ``abs(max_deviation_db) >= abs(level_deviation_db)`` -- a power mean lies
+    between its inputs' min and max, so some bin always has ripple of each
+    sign.
     """
 
     f_lo_hz: float
@@ -158,6 +196,15 @@ class BandResult:
     n_excluded: int
     evaluable: bool
     passed: bool | None
+    # Defaulted, unlike every field above, for the same reason
+    # `spec_convergence_residual` guards a state `evaluate_flat_spec` cannot
+    # produce: a report can be hand-built or rehydrated from persistence
+    # written before this split existed. `None` there is honest ("this
+    # report does not carry the split"), and `spec_band_tilt` treats it as
+    # such rather than fabricating a level.
+    level_deviation_db: float | None = None
+    max_ripple_db: float | None = None
+    max_ripple_hz: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -171,6 +218,11 @@ class BandResult:
             "n_excluded": self.n_excluded,
             "evaluable": self.evaluable,
             "passed": self.passed,
+            # The #1857 attribution split. Disclosure only -- `passed` above
+            # is unchanged by their presence and is not computed from them.
+            "level_deviation_db": self.level_deviation_db,
+            "max_ripple_db": self.max_ripple_db,
+            "max_ripple_hz": self.max_ripple_hz,
         }
 
 
@@ -276,6 +328,16 @@ def evaluate_flat_spec(
     bin (with ``max_deviation_hz`` naming that bin), ``rms_deviation_db`` is
     the RMS deviation, and ``passed`` is
     ``abs(max_deviation_db) <= tolerance_db``.
+
+    Each band additionally carries the **attribution split** (issue #1857):
+    ``level_deviation_db`` (where the whole band sits relative to the shared
+    frame) and ``max_ripple_db``/``max_ripple_hz`` (what the curve does
+    relative to *that band's own* level, which no reference choice can
+    move). Disclosure only -- see :class:`BandResult` for the per-bin
+    identity and :func:`spec_band_tilt` for the frame-free reading built on
+    them. **No verdict reads them**: ``passed`` and ``overall_passed`` are
+    computed exactly as they were before the split existed, pinned against a
+    frozen pre-change corpus by ``tests/test_flat_spec_attribution.py``.
 
     A band with **zero non-excluded bins** -- no coverage on the axis, or
     every bin interference-flagged -- is reported as ``evaluable=False``
@@ -394,6 +456,13 @@ def evaluate_flat_spec(
         worst = int(band_indices[np.argmax(np.abs(band_deviation_db))])
         max_deviation_db = float(deviation_db[worst])
         rms_deviation_db = float(np.sqrt(np.mean(np.square(band_deviation_db))))
+        # The #1857 attribution split -- the band's own level, and what the
+        # curve does relative to THAT rather than to the pooled frame. Same
+        # `_power_mean_db` as the reference, so there is one averaging
+        # convention in this module, not two. Nothing below feeds `passed`.
+        band_level_db = _power_mean_db(spec_smoothed_db[band_indices])
+        band_ripple_db = spec_smoothed_db[band_indices] - band_level_db
+        worst_ripple = int(band_indices[np.argmax(np.abs(band_ripple_db))])
         band_results.append(
             BandResult(
                 f_lo_hz=float(f_lo_hz),
@@ -406,6 +475,9 @@ def evaluate_flat_spec(
                 n_excluded=n_excluded,
                 evaluable=True,
                 passed=bool(abs(max_deviation_db) <= tolerance_db),
+                level_deviation_db=float(band_level_db - reference_db),
+                max_ripple_db=float(spec_smoothed_db[worst_ripple] - band_level_db),
+                max_ripple_hz=float(freqs_hz[worst_ripple]),
             )
         )
 
@@ -539,6 +611,162 @@ def spec_convergence_residual(report: FlatSpecReport) -> ConvergenceResidual:
 
 
 @dataclass(frozen=True)
+class BandTilt:
+    """How far the graded bands' own levels sit from EACH OTHER (issue #1857).
+
+    The one figure on this report that **no reference-frame choice can
+    move**, and that is the whole point of it.
+
+    :attr:`FlatSpecReport.reference_db` is a power mean pooled over
+    :data:`REFERENCE_BAND_HZ`, so a band that is uniformly off drags the
+    shared zero toward itself and inflates *every other* band's deviation.
+    On the 2026-07-29 corpus session that is not a rounding concern: a
+    tweeter sitting ~5 dB dark across its own passband pulled the frame
+    ~3 dB down, a woofer flat to +/-0.1 dB read "+4.84 dB @ 1339.6 Hz", the
+    gauge named the woofer as the worst band, and a household acting on it
+    would have EQ'd the wrong driver. Reproduced synthetically on an rfft
+    bin axis with a 5 dB dark tweeter: the woofer's *own* ripple is
+    +/-0.10 dB, yet the shipped headline reads "+3.36 dB @ 257.8 Hz in
+    250-2000 Hz" and that band FAILS its +/-1.5 dB tolerance while both
+    genuinely-dark bands PASS theirs.
+
+    A **step between two band levels** cannot suffer that, by construction:
+    each level is stated as :attr:`BandResult.level_deviation_db`, so the
+    shared reference appears in both terms and cancels in the subtraction.
+    Re-anchor the spec on the woofer passband, on the full range, or on
+    anything else, and ``step_db`` does not move -- which is precisely what
+    makes it safe to ship while WHICH anchor the spec should use is still
+    an open owner decision (#1857's Q-E,
+    ``docs/attribution-stage-plan.md`` section 9). This class does not pick
+    a side; it states the relationship both sides agree on.
+
+    The cancellation is exact in arithmetic and not quite exact in floating
+    point -- ``(L_a - ref) - (L_b - ref)`` rounds differently from
+    ``L_a - L_b``. Measured, not assumed: across the 15-shape corpus in
+    ``tests/test_flat_spec_attribution.py`` and five candidate reference
+    bands (250-2000, 250-8000, 2000-8000, 250-16000, 300-6000 Hz) the worst
+    spread in ``step_db`` is **8.882e-16 dB**, two ULPs at a 5 dB step.
+    :attr:`BandResult.max_ripple_db` is the stronger case and is
+    bit-identical across all five, because it never touches the reference
+    at all.
+
+    **It is not a verdict and holds no threshold.** Nothing here is compared
+    against a tolerance, nothing here feeds :attr:`BandResult.passed` or
+    :attr:`FlatSpecReport.overall_passed`, and adding it moved no graded
+    number (pinned by ``tests/test_flat_spec_attribution.py``'s frozen
+    pre-change corpus). It answers "which bands disagree, and by how much",
+    which is the question a household reading a worst-band pointer was
+    already trying to answer.
+
+    Args:
+      step_db: the largest absolute level difference between any two
+        evaluable bands, as a **non-negative magnitude** -- the direction is
+        carried by the two band fields rather than by a sign, because
+        "4.98 dB" plus "which one is higher" is unambiguous where a signed
+        step needs a convention the reader has to remember. ``None`` when
+        fewer than two bands carry a level.
+      high_band_hz: ``(f_lo_hz, f_hi_hz)`` of the higher-sitting band of
+        that pair. ``None`` when unevaluable.
+      low_band_hz: ``(f_lo_hz, f_hi_hz)`` of the lower-sitting one. ``None``
+        when unevaluable. When ``step_db`` is exactly ``0.0`` the two bands
+        are level and the high/low labels carry no information -- read the
+        number first.
+      n_bands: how many bands carried a level to compare. With three graded
+        bands this is normally 3; an unevaluable band, or a report from
+        before the split existed, lowers it. Rides along for the same reason
+        :class:`ConvergenceResidual` carries its counts: a step chosen among
+        two bands is a weaker statement than one chosen among three, and
+        that must be visible in the same record as the number.
+      evaluable: ``n_bands >= 2``. ``False`` means there is no step, not a
+        step of zero -- one band cannot tilt against itself.
+    """
+
+    step_db: float | None
+    high_band_hz: tuple[float, float] | None
+    low_band_hz: tuple[float, float] | None
+    n_bands: int
+    evaluable: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "step_db": self.step_db,
+            "high_band_hz": (
+                list(self.high_band_hz) if self.high_band_hz is not None else None
+            ),
+            "low_band_hz": (
+                list(self.low_band_hz) if self.low_band_hz is not None else None
+            ),
+            "n_bands": self.n_bands,
+            "evaluable": self.evaluable,
+        }
+
+
+#: The "no step is knowable" :class:`BandTilt` -- a null object, not a
+#: fabricated reading. Only :class:`SpecFlatness` uses it, as the default for
+#: a gauge built by hand or rehydrated from before the tilt existed;
+#: :func:`spec_band_tilt` builds its own unevaluable result with the real
+#: ``n_bands`` it counted.
+NO_BAND_TILT = BandTilt(
+    step_db=None, high_band_hz=None, low_band_hz=None, n_bands=0, evaluable=False,
+)
+
+
+def spec_band_tilt(report: FlatSpecReport) -> BandTilt:
+    """The largest level step between two of ``report``'s graded bands --
+    issue #1857's frame-free attribution reading.
+
+    **Derived from the report, not recomputed from the curve**, the same
+    rule and the same reason as :func:`spec_convergence_residual` and
+    :func:`spec_flatness_gauge`: band membership, the exclusion mask's
+    effect, and each band's own level are answered exactly once, by
+    :func:`evaluate_flat_spec`.
+
+    The pair is chosen by largest absolute difference of
+    :attr:`BandResult.level_deviation_db`; ties go to the lowest pair in
+    :data:`SPEC_BANDS` order, matching :func:`spec_flatness_gauge`'s own tie
+    rule so the two reductions never disagree about which band came first.
+    (:func:`max` returns the FIRST maximal element, and the pairs are built
+    in band order, so that rule is the builtin's own — not a comparison
+    written here that could drift from the gauge's.)
+
+    Bands that are unevaluable, or that carry no ``level_deviation_db`` (a
+    hand-built or older-persistence report -- see :class:`BandResult`), are
+    skipped rather than defaulted to zero: a band with no measured level has
+    no level, and inventing 0 dB for it would manufacture the exact kind of
+    false step this function exists to expose.
+    """
+    levelled = [
+        (band, band.level_deviation_db)
+        for band in report.bands
+        if band.evaluable and band.level_deviation_db is not None
+    ]
+    if len(levelled) < 2:
+        return BandTilt(
+            step_db=None,
+            high_band_hz=None,
+            low_band_hz=None,
+            n_bands=len(levelled),
+            evaluable=False,
+        )
+    pairs: list[tuple[float, BandResult, BandResult]] = []
+    for index, (band_a, level_a) in enumerate(levelled):
+        for band_b, level_b in levelled[index + 1:]:
+            high, low = (band_a, band_b) if level_a >= level_b else (band_b, band_a)
+            pairs.append((abs(level_a - level_b), high, low))
+    # `len(levelled) >= 2` above guarantees at least one pair, so this cannot
+    # be an empty max() -- and building the list means no sentinel to seed and
+    # no unreachable None branch for a reader to reason about.
+    step_db, high_band, low_band = max(pairs, key=lambda pair: pair[0])
+    return BandTilt(
+        step_db=step_db,
+        high_band_hz=(high_band.f_lo_hz, high_band.f_hi_hz),
+        low_band_hz=(low_band.f_lo_hz, low_band.f_hi_hz),
+        n_bands=len(levelled),
+        evaluable=True,
+    )
+
+
+@dataclass(frozen=True)
 class SpecFlatness:
     """The household-facing "how flat is the speaker" figures for one report.
 
@@ -569,7 +797,13 @@ class SpecFlatness:
         in — which tolerance row the number is being judged against.
         ``None`` when unevaluable. **Not the frame the deviation is measured
         FROM** — that is ``reference_band_hz``, and conflating the two is
-        the mistake issue #1857 was filed about.
+        the mistake issue #1857 was filed about. **Nor is it "the band to
+        fix"**: this band is the one furthest from the shared frame, and a
+        band that is uniformly off drags that frame toward itself, so the
+        band NAMED here can be a flat one made to look proud by a different
+        band's deficit. ``tilt`` below is the reading that cannot do that,
+        and a surface rendering this pointer should render that one beside
+        it.
       reference_band_hz: ``(f_lo_hz, f_hi_hz)`` of :data:`REFERENCE_BAND_HZ`
         — the span whose power mean over non-excluded bins IS the zero that
         every ``max_db`` here is stated against (:func:`evaluate_flat_spec`
@@ -585,6 +819,20 @@ class SpecFlatness:
         WOULD have been used is knowable even when no band could be graded,
         and a reader comparing two sessions needs it either way.
       tolerance_db: that band's tolerance. ``None`` when unevaluable.
+      max_band_level_deviation_db: that same band's
+        :attr:`BandResult.level_deviation_db` — how much of ``max_db`` is
+        just "where this whole band sits relative to the pooled frame"
+        rather than anything happening at ``max_hz``. ``None`` when
+        unevaluable, or when the report predates the split.
+      max_band_ripple_db: that same band's
+        :attr:`BandResult.max_ripple_db` — the worst the curve gets
+        *inside* the band, measured from the band's own level, which no
+        reference choice can move. The two together are what disarm the
+        pointer at the point of use: on the #1857 shape ``max_db`` reads
+        ``+3.36 dB @ 703 Hz`` while these read ``+3.26 dB`` and
+        ``−0.10 dB`` — i.e. the band is flat to a tenth of a dB and merely
+        sits high, so there is no 703 Hz peak to EQ. ``None`` when
+        unevaluable, or when the report predates the split.
       rms_db: :attr:`ConvergenceResidual.rms_db` — RMS deviation pooled
         over every non-excluded spec-band bin. ``None`` when unevaluable.
       n_bins: how many bins the RMS was computed from.
@@ -605,6 +853,16 @@ class SpecFlatness:
         for a spectrum it could not fully measure" rule), so
         ``passed=False, evaluable=False`` means "could not be measured",
         not "failed".
+      tilt: :func:`spec_band_tilt` of the same report — the largest level
+        step between two graded bands, and which of them sits higher. The
+        ONE figure here that no reference-frame choice can move, and the
+        answer to the question ``max_db``/``max_band_hz`` cannot answer:
+        *which* bands disagree. A pointer alone made a household read a
+        flat woofer as the defect (#1857); this is what stops that, and a
+        surface rendering the pointer should render this beside it.
+        Defaults to :data:`NO_BAND_TILT` (unevaluable — no step known, not
+        a step of zero) for a gauge built by hand or rehydrated from
+        persistence written before the tilt existed.
     """
 
     max_db: float | None
@@ -617,6 +875,9 @@ class SpecFlatness:
     evaluable: bool
     passed: bool
     reference_band_hz: tuple[float, float] = REFERENCE_BAND_HZ
+    tilt: BandTilt = NO_BAND_TILT
+    max_band_level_deviation_db: float | None = None
+    max_band_ripple_db: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -630,11 +891,21 @@ class SpecFlatness:
             # beside the pointer rather than being left implicit.
             "reference_band_hz": list(self.reference_band_hz),
             "tolerance_db": self.tolerance_db,
+            # The pointed-at band's own attribution split (issue #1857) —
+            # how much of ``max_db`` is the band's level rather than
+            # anything at ``max_hz``. See the fields' docstrings.
+            "max_band_level_deviation_db": self.max_band_level_deviation_db,
+            "max_band_ripple_db": self.max_band_ripple_db,
             "rms_db": self.rms_db,
             "n_bins": self.n_bins,
             "n_excluded": self.n_excluded,
             "evaluable": self.evaluable,
             "passed": self.passed,
+            # The frame-free half of the same disclosure (issue #1857): the
+            # pointer above says how far the worst band sits from a pooled
+            # zero; this says how far the bands sit from each other, which
+            # no anchor choice can move.
+            "tilt": self.tilt.to_dict(),
         }
 
 
@@ -656,8 +927,21 @@ def spec_flatness_gauge(report: FlatSpecReport) -> SpecFlatness:
     relative to its own tolerance": the rendered claim is "this is how far
     from flat the speaker measured", a dB reading, and re-ranking bands by
     tolerance headroom would silently answer a different question.
+
+    **Which band that picks is frame-dependent, and deliberately left so.**
+    The reference is a mean pooled across bands, so a uniformly-off band
+    drags it and this walk can name a flat band as the worst one — issue
+    #1857, reproduced. Re-ranking here would not fix that, it would only
+    move the same anchor question somewhere less visible; WHICH anchor the
+    spec should use is an open owner decision (#1857's Q-E,
+    ``docs/attribution-stage-plan.md`` section 9) and picking one would
+    move graded verdicts, which this function must never do. What this
+    function does instead is carry :func:`spec_band_tilt` beside the
+    pointer, so the frame-free reading travels with the frame-dependent one
+    and a reader is never handed the pointer alone.
     """
     residual = spec_convergence_residual(report)
+    tilt = spec_band_tilt(report)
     worst: BandResult | None = None
     worst_magnitude_db = -1.0
     for band in report.bands:
@@ -679,6 +963,7 @@ def spec_flatness_gauge(report: FlatSpecReport) -> SpecFlatness:
             n_excluded=residual.n_excluded,
             evaluable=False,
             passed=report.overall_passed,
+            tilt=tilt,
         )
     return SpecFlatness(
         max_db=worst.max_deviation_db,
@@ -690,4 +975,7 @@ def spec_flatness_gauge(report: FlatSpecReport) -> SpecFlatness:
         n_excluded=residual.n_excluded,
         evaluable=True,
         passed=report.overall_passed,
+        tilt=tilt,
+        max_band_level_deviation_db=worst.level_deviation_db,
+        max_band_ripple_db=worst.max_ripple_db,
     )

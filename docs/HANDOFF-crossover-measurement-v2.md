@@ -1699,6 +1699,25 @@ The tolerances are the spec table's own per-band values
 (`flat_spec.SPEC_BANDS`) rather than one provisional constant. Contract test:
 [`tests/test_flat_spec_ssot.py`](../tests/test_flat_spec_ssot.py).
 
+**The worst-band pointer is frame-dependent, and travels with a reading that
+is not** (issue #1857). Every graded number above is a distance from
+`reference_db`, a power mean pooled across `REFERENCE_BAND_HZ`, so a band
+that is uniformly off drags that zero and inflates the others — on the
+2026-07-29 corpus session a woofer flat to ±0.1 dB read `+4.84 dB @
+1339.6 Hz` and got named as the worst band while the ~5 dB dark tweeter's own
+bands passed. WHICH anchor the frame should use is an open owner decision
+(Q-E, [`docs/attribution-stage-plan.md`](attribution-stage-plan.md) §9) and
+re-anchoring would move verdicts, so it has not been re-anchored. What ships
+instead is an attribution split that no anchor choice can move:
+`BandResult.level_deviation_db` (where the whole band sits) and
+`max_ripple_db`/`max_ripple_hz` (what the curve does relative to *that band's
+own* level), reduced by `flat_spec.spec_band_tilt` into the largest level
+step between two graded bands. It rides `SpecFlatness.tilt` plus
+`max_band_level_deviation_db`/`max_band_ripple_db`, renders under the pointer
+via `crossover_envelope_v2._attribution_lines`, and logs as `flatness_tilt`.
+No verdict moved: pinned shape-for-shape against pre-change numbers by
+[`tests/test_flat_spec_attribution.py`](../tests/test_flat_spec_attribution.py).
+
 **No longer report-only** (linearization-integrity PR-L4). It still does not
 gate `_verify_verdict`'s accepted/code logic — that stays a tracking judgement
 — but the spec verdict now has three consumers that act on it:
@@ -3109,7 +3128,17 @@ journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(c
   uniformly-off band can drag the shared reference toward itself and make an
   unrelated band's ordinary ripple read as the larger deviation, so a reader
   of this line is no longer limited to the single band the pointer flagged —
-  see `crossover_v2_flow._per_band_flatness_log_field`'s docstring), `flatness_rms_db`,
+  see `crossover_v2_flow._per_band_flatness_log_field`'s docstring),
+  `flatness_tilt` (issue #1857 — the one figure on this line the FRAME
+  CANNOT MOVE: the largest level step between two graded bands, as
+  `<step>dB:<lo>-<hi>Hz><lo>-<hi>Hz` with the higher-sitting band first. Every
+  other flatness field here is a distance from the pooled reference, so a
+  uniformly-off band drags them all; the reference cancels in a
+  band-to-band subtraction, so this token reads the same under whichever
+  anchor Q-E eventually picks. `""` when the gauge carried no tilt — an
+  older persisted block, or fewer than two bands with a measured level. See
+  `crossover_v2_flow._flatness_tilt_log_field` and
+  `flat_spec.spec_band_tilt`), `flatness_rms_db`,
   `spec_n_excluded`, `validity_floor_hz`. Emitted from `_run_cloud_pipeline`,
   and since the flat-linearization plan's PR-5 it is the ONLY place a
   flatness number is logged (see "Flatness" above).
