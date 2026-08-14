@@ -43,6 +43,7 @@ from .camilla_yaml import (
     emit_active_speaker_commissioning_config,
 )
 from .crossover_preview import CROSSOVER_PREVIEW_KIND
+from .driver_protection import declared_protection_highpass_floor_hz
 from .environment import classify_camilla_config_text
 from .graph_evidence import (
     all_commission_mutes_engaged as _all_commission_mutes_engaged,
@@ -68,6 +69,10 @@ from .playback_route import (
     ACTIVE_PLAYBACK_DEVICE_ENV,
     active_playback_route_capability,
     resolve_active_playback_device,
+)
+from .test_signal_plan import (
+    declared_protection_floor_hz,
+    strictest_crossover_highpass_hz,
 )
 from .tone_plan import load_active_speaker_preset
 
@@ -252,6 +257,11 @@ def _driver_spec_from_preview(role: str, raw: Any) -> DriverSpec:
         manufacturer=manufacturer or "Operator research",
         model=model,
         sensitivity_db=sensitivity_db,
+        # #2491: the preview driver payload already carries the confirmed
+        # ``required_protection_filters``. This is the ONE point that reads it
+        # into the preset, so the emitted graph and every verifier of that
+        # graph clamp the derived tweeter protection to the same declared floor.
+        protection_highpass_floor_hz=declared_protection_highpass_floor_hz(driver),
     )
 
 
@@ -1543,6 +1553,15 @@ def stage_protected_startup_config(
             "limiter_clip_limit_db": STARTUP_LIMITER_CLIP_LIMIT_DB,
             "tweeter_protective_highpass_hz": (
                 _protective_hp_hz(preset) if preset else None
+            ),
+            # #2491: the two facts the startup-load gate compares. Published by
+            # the producer of the graph rather than re-derived by the gate, so
+            # the refusal is about the config that was actually staged.
+            "tweeter_crossover_highpass_hz": (
+                strictest_crossover_highpass_hz(preset, "tweeter") if preset else None
+            ),
+            "tweeter_protection_floor_hz": (
+                declared_protection_floor_hz(preset, "tweeter") if preset else None
             ),
             "validation": validation,
         },

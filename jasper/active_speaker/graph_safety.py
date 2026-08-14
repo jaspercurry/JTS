@@ -520,7 +520,12 @@ def protection_requirement_present(
 # SCOPE: L0 proves high-pass PRESENCE + a safe corner FLOOR only. It does NOT
 # validate that a preset's *designed* crossover Fc is appropriate for its
 # specific driver (a DE250 vs a soft-dome tweeter want different corners) — that
-# is preset-validation's job and a deliberate follow-up, not built here.
+# is not built here. The per-driver half of it now lives on the protected
+# startup-load gate instead: ``path_safety``'s ``tweeter_protection_floor_honoured``
+# check refuses a staged crossover below the tweeter's own declared
+# ``required_protection_filters`` high-pass (issue #2491). This absolute 400 Hz
+# corner stays as the graph-level backstop that applies even to a driver that
+# declared no floor.
 TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ = 400.0
 
 

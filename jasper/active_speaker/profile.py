@@ -170,6 +170,13 @@ class DriverSpec:
     sensitivity_db: float | None = None
     rated_power_w: float | None = None
     expected_nearfield_response: str | None = None
+    # The driver's own confirmed protective high-pass floor, carried on the
+    # preset so the graph EMITTER (camilla_yaml) and the graph VERIFIER
+    # (graph_evidence) read one object and cannot derive different protection
+    # for the same speaker. ``None`` means no floor was declared: the derived
+    # protection is then unclamped, exactly as before this field existed.
+    # Owner of the value: driver_protection.declared_protection_highpass_floor_hz.
+    protection_highpass_floor_hz: float | None = None
 
     @classmethod
     def from_mapping(cls, role: str, raw: Any) -> "DriverSpec":
@@ -190,6 +197,10 @@ class DriverSpec:
             expected_nearfield_response=_optional_text(
                 raw.get("expected_nearfield_response")
             ),
+            protection_highpass_floor_hz=_optional_float(
+                raw.get("protection_highpass_floor_hz"),
+                f"{role}.protection_highpass_floor_hz",
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -203,6 +214,7 @@ class DriverSpec:
             "sensitivity_db",
             "rated_power_w",
             "expected_nearfield_response",
+            "protection_highpass_floor_hz",
         ):
             value = getattr(self, key)
             if value is not None:

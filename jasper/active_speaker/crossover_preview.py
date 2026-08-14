@@ -22,6 +22,11 @@ from typing import Any, Mapping
 from jasper.atomic_io import atomic_write_text
 from jasper.output_topology import OutputTopology, OutputTopologyError
 from ._common import ACTIVE_CROSSOVER_ROLE_PAIRS, issue as _issue
+from .driver_protection import (
+    declared_protection_highpass_floor_hz,
+    format_protection_hz,
+    protection_highpass_floor_satisfied,
+)
 
 SCHEMA_VERSION = 1
 CROSSOVER_PREVIEW_KIND = "jts_active_speaker_crossover_preview"
@@ -347,6 +352,35 @@ def _build_crossover(
         # Fail closed: never carry an at/below-do-not-test crossover into filter
         # intent or downstream staging. Drop the frequency so no filters emit.
         proposed_frequency = None
+    # #2491 disclosure. Preview is the household's confirm-and-commit surface,
+    # and it was silent about a candidate crossing below the upper driver's own
+    # confirmed protective high-pass floor. Preview stays advisory — the hard
+    # refusal for this condition lives on the load gate (path_safety) — but a
+    # blocker_count of 0 on a design the next gate must refuse is a dishonest
+    # green, so the conflict is named here at confirm time. Scoped to the
+    # tweeter: that is the role whose derived protective high-pass is clamped
+    # to this same floor and the role the load gate refuses on.
+    protection_floor = (
+        declared_protection_highpass_floor_hz(upper_driver)
+        if upper_role == "tweeter"
+        else None
+    )
+    if proposed_frequency is not None and not protection_highpass_floor_satisfied(
+        highpass_hz=proposed_frequency,
+        floor_hz=protection_floor,
+    ):
+        issues.append(
+            _issue(
+                "warning",
+                "crossover_below_declared_protection_floor",
+                (
+                    f"{upper_role} declares a protective high-pass floor of "
+                    f"{format_protection_hz(protection_floor)}; crossing at "
+                    f"{format_protection_hz(proposed_frequency)} sits below it "
+                    "and the protected startup load will refuse this design"
+                ),
+            )
+        )
     ceiling = _range_ceiling(lower_driver)
     if proposed_frequency is not None and ceiling is not None and proposed_frequency > ceiling:
         issues.append(
@@ -453,6 +487,9 @@ def _build_crossover(
     if delay_target_role is not None:
         out["delay_target_role"] = delay_target_role
     out["do_not_test_below_hz"] = round(do_not_test, 2) if do_not_test is not None else None
+    out["declared_protection_floor_hz"] = (
+        round(protection_floor, 2) if protection_floor is not None else None
+    )
     out["filters"] = filters
     out["issues"] = issues
     return out

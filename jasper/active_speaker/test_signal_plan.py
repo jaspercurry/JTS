@@ -110,22 +110,69 @@ def driver_ambient_duration_s(role: str) -> float:
     return driver_sweep_duration_s(role) + AMBIENT_DURATION_MARGIN_S
 
 
+def strictest_crossover_highpass_hz(
+    preset: ActiveSpeakerPreset,
+    role: str,
+) -> float | None:
+    """The strictest (highest) crossover corner that high-passes ``role``.
+
+    One derivation of "the crossover corner this driver is protected at", so
+    the protective-high-pass clamp below, the staged metadata that publishes
+    it, and the path-safety gate that refuses a below-floor candidate all
+    compare the same number.
+    """
+
+    role_id = str(role or "").strip().lower()
+    fc_values = [
+        region.fc_hz
+        for region in preset.crossover_regions
+        if region.upper_driver == role_id
+    ]
+    return max(fc_values) if fc_values else None
+
+
+def declared_protection_floor_hz(
+    preset: ActiveSpeakerPreset,
+    role: str,
+) -> float | None:
+    """The confirmed declared protection floor ``role``'s driver carries.
+
+    A thin read of the preset-carried value; the floor itself is owned and
+    parsed by ``driver_protection.declared_protection_highpass_floor_hz`` at
+    the one point the preset is compiled (``staging._driver_spec_from_preview``).
+    """
+
+    spec = preset.drivers.get(str(role or "").strip().lower())
+    return _finite_positive(getattr(spec, "protection_highpass_floor_hz", None))
+
+
 def protective_tweeter_highpass_frequency_hz(
     preset: ActiveSpeakerPreset,
     role: str,
 ) -> float | None:
-    """Return the extra commissioning tweeter high-pass emitted in CamillaDSP."""
+    """Return the extra commissioning tweeter high-pass emitted in CamillaDSP.
 
-    if str(role or "").strip().lower() != "tweeter":
+    Defense in depth in series with the crossover high-pass, so it is derived
+    at a multiple of the crossover corner — but it is CLAMPED UP to the
+    driver's own declared protection floor. Without that clamp the protection
+    tracks the crossover downwards: a candidate crossing 1.3 octaves below a
+    5000 Hz declared floor produced a 4000 Hz "protective" high-pass, i.e. the
+    guard followed the very error it exists to catch (issue #2491, observed on
+    jts.local 2026-08-14). The clamp only ever raises the corner, and only when
+    a floor is declared; an undeclared driver keeps the unclamped multiple.
+    """
+
+    role_id = str(role or "").strip().lower()
+    if role_id != "tweeter":
         return None
-    fc_values = [
-        region.fc_hz
-        for region in preset.crossover_regions
-        if region.upper_driver == "tweeter"
-    ]
-    if not fc_values:
+    strictest_fc = strictest_crossover_highpass_hz(preset, role_id)
+    if strictest_fc is None:
         return None
-    return max(fc_values) * PROTECTIVE_TWEETER_HP_MULTIPLIER
+    derived = strictest_fc * PROTECTIVE_TWEETER_HP_MULTIPLIER
+    floor = declared_protection_floor_hz(preset, role_id)
+    if floor is None:
+        return derived
+    return max(floor, derived)
 
 
 def _finite_positive(value: Any) -> float | None:
@@ -293,7 +340,8 @@ def driver_test_signal_plan_from_edges(
         source=protective_edge_source,
         reason=(
             "extra tweeter commissioning high-pass emitted in the Camilla graph "
-            f"at {PROTECTIVE_TWEETER_HP_MULTIPLIER:g}x the strictest tweeter crossover"
+            f"at the higher of the driver's declared protection floor and "
+            f"{PROTECTIVE_TWEETER_HP_MULTIPLIER:g}x the strictest tweeter crossover"
         ),
         direction="highpass",
     )

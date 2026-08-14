@@ -133,10 +133,13 @@ that guard today's emitter; it may not weaken HF protection in order to obtain
 an unshaped response.
 
 No shipped filter qualifies as `P` today. The existing bring-up protective
-tweeter high-pass is derived from the configured Fc — `2.0x` the strictest
-tweeter crossover corner, in `protective_tweeter_highpass_frequency_hz`
-([`jasper/active_speaker/test_signal_plan.py`](../jasper/active_speaker/test_signal_plan.py))
-— so it encodes the selector candidate this section forbids. R15 derives the
+tweeter high-pass is `max(the driver's declared protective high-pass floor,
+2.0x the strictest tweeter crossover corner)`, in
+`protective_tweeter_highpass_frequency_hz`
+([`jasper/active_speaker/test_signal_plan.py`](../jasper/active_speaker/test_signal_plan.py)).
+The clamp landed with issue #2491, so the corner is Fc-derived only while the
+declared floor does not bind — and Fc-derived is exactly the selector candidate
+this section forbids, which still disqualifies it as `P`. R15 derives the
 measurement-protection transfer fresh from the declared hard excitation bands
 instead. Where that corner lands interacts with §4.2's ±12 dB conditioning bound
 near the overlap band's lower edge, where a low `abs(P)` inflates `abs(C_c/P)`

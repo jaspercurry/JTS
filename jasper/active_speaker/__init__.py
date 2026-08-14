@@ -92,8 +92,10 @@ from .driver_protection import (
     DRIVER_PROTECTION_KIND,
     DRIVER_PROTECTION_POLICY_VERSION,
     auto_level_decision,
+    declared_protection_highpass_floor_hz,
     driver_protection_payload,
     driver_protection_profile,
+    protection_highpass_floor_satisfied,
 )
 from .tone_plan import (
     DEFAULT_PRESET_RESOURCE,
@@ -102,9 +104,11 @@ from .tone_plan import (
 )
 from .test_signal_plan import (
     DRIVER_TEST_SIGNAL_PLAN_KIND,
+    declared_protection_floor_hz,
     driver_test_signal_plan,
     driver_test_signal_plan_from_edges,
     protective_tweeter_highpass_frequency_hz,
+    strictest_crossover_highpass_hz,
 )
 from .playback import (
     AplayTonePlaybackBackend,
@@ -379,6 +383,8 @@ __all__ = [
     "auto_level_decision",
     "baseline_config_path",
     "baseline_profile_state_path",
+    "declared_protection_floor_hz",
+    "declared_protection_highpass_floor_hz",
     "driver_protection_payload",
     "driver_protection_profile",
     "driver_test_signal_plan",
@@ -418,8 +424,10 @@ __all__ = [
     "driver_commission_audible_evidence",
     "prepare_driver_commissioning_config",
     "prepare_summed_commissioning_config",
+    "protection_highpass_floor_satisfied",
     "protective_tweeter_highpass_frequency_hz",
     "running_commission_evidence",
+    "strictest_crossover_highpass_hz",
     "enabled_audio_backend",
     "emit_active_speaker_baseline_config",
     "emit_active_speaker_driver_domain_config",

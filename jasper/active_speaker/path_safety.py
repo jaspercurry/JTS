@@ -25,8 +25,12 @@ from typing import Any
 from jasper.atomic_io import atomic_write_json
 from jasper.output_topology import OutputTopology, channel_identity_report
 
-from ._common import issue as _issue
+from ._common import finite_float as _finite_float, issue as _issue
 from .calibration_level import MAX_TEST_LEVEL_DBFS
+from .driver_protection import (
+    format_protection_hz,
+    protection_highpass_floor_satisfied,
+)
 from .profile import ActiveSpeakerConfigError
 
 SCHEMA_VERSION = 1
@@ -126,10 +130,12 @@ REQUIRED_PATHS: tuple[PathSafetyRequirement, ...] = (
             "active_outputs_muted",
             "protected_by_active_baseline",
             "no_raw_fullrange",
+            "tweeter_protection_floor_honoured",
         ),
         why=(
             "Daemon start, config reload, and crash recovery must not "
-            "produce unprotected output."
+            "produce unprotected output, and the staged crossover must not "
+            "cross below the tweeter's own declared protection floor."
         ),
     ),
 )
@@ -551,6 +557,87 @@ def _no_raw_fullrange_by_candidate(staged_config: dict[str, Any]) -> bool:
     )
 
 
+FLOOR_FACT_KEYS = (
+    "tweeter_protection_floor_hz",
+    "tweeter_crossover_highpass_hz",
+)
+
+
+def _tweeter_protection_floor_verdict(
+    staged_config: dict[str, Any],
+) -> tuple[bool, dict[str, str] | None]:
+    """Whether the staged crossover honours the tweeter's declared floor.
+
+    Returns ``(honoured, blocker_issue_or_None)``. The two compared facts are
+    published by the producer of the staged graph (``staging``) rather than
+    re-derived here, so this gate refuses the config that was actually staged.
+
+    **One rule: refuse unless both facts are present.** ``staging`` writes both
+    keys on every staged config, including as ``None`` when the driver declares
+    no floor — so *key absence* is not "declared nothing", it is a staged
+    metadata file this check cannot read, and the only such file is one written
+    before this check existed. Those persist: ``staging.SCHEMA_VERSION`` is
+    unbumped (deliberately — bumping it would invalidate every honest staged
+    artifact fleet-wide for no additional safety), ``load_staged_startup_config``
+    applies no version or freshness test, the startup-load evidence binding
+    hashes the staged YAML rather than this metadata, no deploy step clears it,
+    ``load-startup-config`` never re-stages, and ``commission-load``
+    short-circuits staging when the staged config is already running. **Nothing
+    forces a re-stage**, so reading an unreadable file as "no floor" would hand
+    exactly the #2491 config a green load gate. It fails closed instead, loudly
+    and by name, and one re-stage clears it.
+
+    Present-and-``None`` is the honest undeclared case and stays honoured: the
+    operator declared no floor, so there is nothing to refuse and nothing to
+    invent. A ``config`` block that is missing or not a mapping is unreadable
+    for the same reason and refuses on the same rule.
+    """
+
+    config = staged_config.get("config")
+    if not isinstance(config, dict) or any(
+        key not in config for key in FLOOR_FACT_KEYS
+    ):
+        return False, _issue(
+            "blocker",
+            "staged_tweeter_protection_floor_unverifiable",
+            (
+                "staged config metadata does not record the tweeter protection "
+                "floor or the staged crossover corner, so the staged graph "
+                "cannot be proven to honour the tweeter's declared protective "
+                "high-pass floor (this is what a metadata file written before "
+                "that check existed looks like); stage the protected startup "
+                "config again"
+            ),
+        )
+    floor_hz = _finite_float(config.get("tweeter_protection_floor_hz"))
+    crossover_hz = _finite_float(config.get("tweeter_crossover_highpass_hz"))
+    if protection_highpass_floor_satisfied(
+        highpass_hz=crossover_hz,
+        floor_hz=floor_hz,
+    ):
+        return True, None
+    floor = format_protection_hz(floor_hz)
+    if crossover_hz is None:
+        message = (
+            "the staged config records no tweeter crossover corner, so it "
+            "cannot be proven to honour the tweeter's own declared protective "
+            f"high-pass floor of {floor}; stage the protected startup config "
+            "again"
+        )
+    else:
+        message = (
+            f"staged tweeter crossover is {format_protection_hz(crossover_hz)}, "
+            "below the tweeter's own declared protective high-pass floor of "
+            f"{floor}; raise the crossover to at least {floor} (or correct the "
+            "driver's declared required_protection_filters) and stage again"
+        )
+    return False, _issue(
+        "blocker",
+        "tweeter_crossover_below_declared_protection_floor",
+        message,
+    )
+
+
 def _current_config_summary(current_config_path: str | Path | None) -> dict[str, Any]:
     summary: dict[str, Any] = {
         "path": str(current_config_path) if current_config_path else None,
@@ -716,6 +803,10 @@ def build_startup_load_path_safety_evidence(
     bypass_disabled = candidate_ready
     active_outputs_muted = candidate_ready and _startup_muted_by_candidate(staged)
     no_raw_fullrange = candidate_ready and _no_raw_fullrange_by_candidate(staged)
+    # #2491. Deliberately NOT AND-ed with ``candidate_ready``: this verdict is
+    # about the staged crossover's own arithmetic, so it stays independently
+    # observable and cannot be masked by (or mask) the readiness checks.
+    floor_honoured, floor_issue = _tweeter_protection_floor_verdict(staged)
 
     paths = {
         "music_renderers": {
@@ -770,9 +861,22 @@ def build_startup_load_path_safety_evidence(
             "active_outputs_muted": active_outputs_muted,
             "protected_by_active_baseline": protected_by_candidate,
             "no_raw_fullrange": no_raw_fullrange,
+            "tweeter_protection_floor_honoured": floor_honoured,
             "notes": (
                 "staged candidate starts muted and protected before any "
                 "startup-load attempt"
+            ),
+            # Per-check explanation for the evaluator's blocker row, so the
+            # refusal names the driver, the corner, the floor, and the remedy
+            # instead of a bare "<check> is not verified".
+            **(
+                {
+                    "check_messages": {
+                        "tweeter_protection_floor_honoured": floor_issue["message"]
+                    }
+                }
+                if floor_issue is not None
+                else {}
             ),
         },
     }
@@ -823,6 +927,8 @@ def build_startup_load_path_safety_evidence(
             "calibration_level_guard_missing",
             "active-speaker calibration level guard was not readable",
         ))
+    if floor_issue is not None:
+        observed_issues.append(floor_issue)
     return {
         "artifact_schema_version": SCHEMA_VERSION,
         "kind": PATH_SAFETY_EVIDENCE_KIND,
@@ -856,6 +962,16 @@ def build_startup_load_path_safety_evidence(
             "authorize tones or normal playback."
         ),
     }
+
+
+def _check_message(evidence: dict[str, Any], check: str) -> str | None:
+    """A builder-supplied explanation for one failed check, if it carried one."""
+
+    messages = evidence.get("check_messages")
+    if not isinstance(messages, dict):
+        return None
+    message = messages.get(check)
+    return message.strip() if isinstance(message, str) and message.strip() else None
 
 
 def _bool_check(value: Any, path_id: str, check: str) -> bool:
@@ -919,7 +1035,13 @@ def evaluate_path_safety_evidence(raw: Any) -> dict[str, Any]:
                     "severity": "blocker",
                     "path_id": requirement.id,
                     "code": f"{check}_not_verified",
-                    "message": f"{requirement.label}: {check} is not verified",
+                    # A builder may attach a per-check explanation; without one
+                    # the generic sentence is unchanged. This is what lets a
+                    # refusal name the actual numbers and the remedy rather
+                    # than leaving the operator to guess what failed.
+                    "message": _check_message(evidence, check) or (
+                        f"{requirement.label}: {check} is not verified"
+                    ),
                 })
         path_results.append({
             "id": requirement.id,

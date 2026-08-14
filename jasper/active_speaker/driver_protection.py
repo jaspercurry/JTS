@@ -12,6 +12,7 @@ does not play audio, write CamillaDSP state, or persist level changes.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -207,15 +208,92 @@ def _band_highpass_hz(band_limit: Any) -> float | None:
     return _finite_float(band_limit.get("highpass_hz"))
 
 
+def declared_protection_highpass_floor_hz(driver: Any) -> float | None:
+    """The declared protective high-pass floor carried by one driver payload.
+
+    Reads exactly one thing: the strictest ``kind="highpass"`` ``cutoff_hz`` in
+    this payload's own ``required_protection_filters``. It does **not** prove
+    the value was confirmed, and callers must not read it as such. On the
+    staging path the payload comes from ``crossover_preview``'s role-keyed
+    research + manual-settings merge, which can carry a research-only value
+    that no confirmation gate has seen.
+
+    Confirmation is validated elsewhere and stays there:
+    ``driver_safety._target_issues`` refuses a *visible* declaration below this
+    module's ``min_highpass_hz`` code policy (``<role>:highpass_below_code_policy``),
+    and ``build_driver_safety_profile`` raises rather than confirm a profile
+    carrying that issue. So a confirmed declaration is at or above policy — but
+    that is a property of the confirmed profile, not of this read.
+
+    An unvalidated floor arriving here can only ever *tighten*: the derived
+    protection clamp is ``max(floor, multiplier x fc)``, so a floor can raise
+    the protective corner and never lower it, and the load gate can only refuse
+    more than it did before. That is why this reader stays permissive about
+    provenance while the clamp and the gate stay monotone.
+
+    ``None`` means *no floor is declared* — never a guessed default. Consumers
+    must treat that as "unchanged behaviour", not as "floor of zero" and not as
+    an invitation to substitute the class-default policy floor: inventing a
+    floor where the operator declared none is exactly the nanny behaviour the
+    2026-08-14 never-nanny ruling excludes.
+    """
+
+    if not isinstance(driver, Mapping):
+        return None
+    filters = driver.get("required_protection_filters")
+    if not isinstance(filters, list):
+        return None
+    floors: list[float] = []
+    for item in filters:
+        if not isinstance(item, Mapping):
+            continue
+        if str(item.get("kind") or "").strip().lower() != "highpass":
+            continue
+        cutoff = _finite_float(item.get("cutoff_hz"))
+        if cutoff is not None and cutoff > 0:
+            floors.append(cutoff)
+    return max(floors) if floors else None
+
+
+def protection_highpass_floor_satisfied(
+    *,
+    highpass_hz: float | None,
+    floor_hz: float | None,
+) -> bool:
+    """Whether a high-pass corner honours a declared protection floor.
+
+    The single comparison rule every protection-floor consumer shares (the
+    derived-protection clamp, the crossover-preview disclosure, and the
+    path-safety load gate), so the three surfaces cannot drift apart on the
+    boundary case. An absent floor is satisfied; an absent high-pass against a
+    real floor is not.
+    """
+
+    if floor_hz is None:
+        return True
+    return highpass_hz is not None and highpass_hz >= floor_hz
+
+
+def format_protection_hz(value: float) -> str:
+    """Render one protection-floor frequency for an operator-facing message.
+
+    Shared by the crossover-preview disclosure and the path-safety refusal so a
+    non-integer declared floor cannot render as two different numbers on the
+    two surfaces a household compares.
+    """
+
+    return f"{float(value):g} Hz"
+
+
 def _highpass_satisfied(
     *,
     profile: DriverProtectionProfile,
     band_limit: Any,
 ) -> bool:
-    if profile.min_highpass_hz is None:
-        return True
-    highpass = _band_highpass_hz(band_limit)
-    return highpass is not None and highpass >= profile.min_highpass_hz
+    return protection_highpass_floor_satisfied(
+        highpass_hz=_band_highpass_hz(band_limit),
+        floor_hz=profile.min_highpass_hz,
+    )
 
 
 def driver_protection_payload(
