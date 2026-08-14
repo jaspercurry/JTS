@@ -56,12 +56,20 @@ python3 jts_turntable.py --port /dev/serial/by-id/<controller> probe
 ```
 
 `offset` queries the controller's signed offset from its saved zero and never
-sends a motion command. Use it as the no-motion preflight for automated
-measurements: after any power event (reboot, USB replug, power loss), run
-`offset` and confirm it reports approximately zero before trusting
-`--confirm-zero-valid` on a `position` call. A nonzero reading means the saved
-zero has drifted or was never reconfirmed after the power event — stop and
-re-zero by hand with `set-zero --confirm-redefine-zero` rather than guessing.
+sends a motion command. It only reports whether the arm is at the
+controller's believed zero — never whether that belief is still the acoustic
+axis. The vendor controller's own `return_to_zero` uses this same
+`offset == 0` check purely to skip a redundant move, not as a correctness
+check, and it is not one here either: `offset` can never substitute for the
+physical check `--confirm-zero-valid` records. Use it only as a same-session
+drift screen — a nonzero reading with no intervening power event means
+something moved and is worth investigating before continuing. Right after a
+power event it is actively misleading: if the controller's position counter
+does not survive power loss, it can silently adopt whatever position the arm
+is currently sitting in as its new zero, so `offset` reads `0.00` even though
+the arm may be off the real acoustic axis — a full sweep would then measure
+the wrong axis with no error at all. Only a human looking at the rig can
+confirm zero is still correct after a power event.
 
 Detection, probing, and the offset query do not run the Pi power gate.
 
@@ -86,8 +94,13 @@ afterward. `--confirm-redefine-zero` is required — omitting it refuses before
 opening the controller (exit `2`, mirroring an invalid-argument failure, not a
 normal `ok: false` result). `set-zero` is FORBIDDEN in automated measurement
 flows; an automated caller that suspects zero has drifted should stop and page
-an operator, never redefine zero itself. Use `offset` (below) to check zero
-validity first, with no risk of motion.
+an operator, never redefine zero itself. The co-installed vendored CLI
+(`python3 -m usb_turntable set-zero`, alias `zero`) performs the same
+destructive write with no confirmation gate at all — install stages the whole
+vendored package onto the Pi alongside this wrapper, and automated flows must
+never invoke it as a workaround. Use `offset` (above) as a drift screen before
+a session, but see "Detect and probe" above for why it cannot confirm zero is
+still valid on its own.
 
 `left`, `right`, and `home` first run the bounded `vcgencmd get_throttled`
 preflight. Active under-voltage, frequency capping, throttling, thermal limiting,
@@ -157,8 +170,9 @@ python3 jts_turntable.py position 0 \
 `--confirm-zero-valid` means an operator has confirmed that the controller's
 saved zero is still the acoustic on-axis position since its latest power-on.
 Zero persistence across a controller power cycle is unverified, so reconfirm
-home before using this flag after every power cycle. Run `offset` first to
-ground that reconfirmation in a reading rather than a guess.
+home before using this flag after every power cycle — a `0.00` reading from
+`offset` is not sufficient evidence on its own; see "Detect and probe" above
+for why.
 
 The observed hard-left limit is approximately `-52` degrees from home; never
 target it. The exact hard-right limit is unknown and unnecessary. Automated
@@ -169,10 +183,12 @@ position command reports `ok: true`, and always finish by commanding position
 
 ## Results and safety boundary
 
-Output is structured JSON; `--json` selects the compact form. `probe` succeeds
-only when the upstream result says it is connected. Other operations succeed
-only when the upstream result is both acknowledged and completed. The wrapper
-exits `0` for success, `1` for a device, power, controller, or incomplete-result
+Output is structured JSON; `--json` selects the compact form. `probe`
+succeeds only when the upstream result says it is connected; `offset`
+succeeds only when the upstream result is acknowledged (it has no completion
+phase — it never moves anything). Every other operation succeeds only when
+the upstream result is both acknowledged and completed. The wrapper exits `0`
+for success, `1` for a device, power, controller, or incomplete-result
 failure, and `2` for invalid arguments.
 
 The bundled controller owns bounded startup synchronization, heartbeat recovery,

@@ -11,6 +11,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -55,7 +56,7 @@ class FakeController:
         self.probe_result = SimpleNamespace(connected=True, firmware="1.2.3")
         self.operation_result = SimpleNamespace(acknowledged=True, completed=True)
         self.offset_result = SimpleNamespace(
-            acknowledged=True, degrees=0.0, frames=("OA=0.0\N{DEGREE SIGN}",)
+            acknowledged=True, degrees=Decimal("0.0"), frames=("OA=0.0\N{DEGREE SIGN}",)
         )
 
     def __enter__(self):
@@ -510,7 +511,9 @@ def test_non_motion_commands_skip_power_preflight(
     assert (expected_call,) in controller.calls
 
 
-def test_set_zero_without_confirm_flag_is_rejected_before_open(turntable) -> None:
+def test_set_zero_without_confirm_flag_is_rejected_before_open(
+    turntable, capsys
+) -> None:
     api, factory, _controller = fake_api(turntable)
 
     def unexpected_power_probe(*args, **kwargs):
@@ -522,9 +525,15 @@ def test_set_zero_without_confirm_flag_is_rejected_before_open(turntable) -> Non
         )
     assert exc_info.value.code == 2
     assert factory.open_calls == []
+    # No parseable "soft failure" on stdout: an automated caller that only
+    # checks stdout for {"ok": false} must not be able to mistake this
+    # destructive-write refusal for an ordinary operational failure.
+    assert capsys.readouterr().out == ""
 
 
-def test_set_zero_direct_run_call_is_guarded_without_argparse(turntable) -> None:
+def test_set_zero_direct_run_call_is_guarded_without_argparse(
+    turntable, capsys
+) -> None:
     """A bare ``run()`` call (bypassing argparse) is guarded too, not just the CLI."""
     api, factory, _controller = fake_api(turntable)
     namespace = argparse.Namespace(
@@ -535,6 +544,7 @@ def test_set_zero_direct_run_call_is_guarded_without_argparse(turntable) -> None
         turntable.run(namespace, api=api)
     assert exc_info.value.code == 2
     assert factory.open_calls == []
+    assert capsys.readouterr().out == ""
 
 
 def test_set_zero_with_confirm_flag_redefines_zero(turntable, capsys) -> None:
@@ -556,7 +566,7 @@ def test_set_zero_with_confirm_flag_redefines_zero(turntable, capsys) -> None:
 def test_offset_reads_without_motion_or_power_preflight(turntable, capsys) -> None:
     api, factory, controller = fake_api(turntable)
     controller.offset_result = SimpleNamespace(
-        acknowledged=True, degrees=0.5, frames=("OA=0.5\N{DEGREE SIGN}",)
+        acknowledged=True, degrees=Decimal("0.5"), frames=("OA=0.5\N{DEGREE SIGN}",)
     )
 
     def unexpected_power_probe(*args, **kwargs):
@@ -633,6 +643,9 @@ def test_docs_keep_manual_safety_and_provenance_boundaries() -> None:
     assert "destroys the saved acoustic-axis zero" in readme
     assert "FORBIDDEN in automated measurement" in readme
     assert "never sends a motion command" in readme
+    assert "`--confirm-redefine-zero` is required" in readme
+    assert "never whether that belief is still the acoustic axis" in readme
+    assert "python3 -m usb_turntable set-zero" in readme
     assert "development-time provenance" in vendor_readme
     assert "does not authenticate files at runtime" in vendor_readme
 
