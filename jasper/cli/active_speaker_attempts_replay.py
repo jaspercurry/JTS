@@ -51,6 +51,7 @@ from typing import Any, Mapping, Sequence
 
 from jasper.active_speaker.attempts_loop import (
     CONTINUE,
+    FLOOR_SCOPE_ACROSS_SITTINGS,
     PROVENANCE_MODEL_GRADED,
     PROVENANCE_REALIZED,
     AttemptBudget,
@@ -73,6 +74,12 @@ SCHEMA_VERSION = 1
 METRIC_VERIFY_MAX_NOTCH_EXCLUDED = "max_db_notch_excluded"
 #: One driver's linearization fit residual, RMS over its own fit band.
 METRIC_LINEARIZATION_RESIDUAL_RMS = "linearization_residual_rms_db"
+
+#: The repeat bank is a single uninterrupted sitting — one applied profile,
+#: re-measured with the microphone bolted in place — so every attempt replayed
+#: out of it carries one sitting id (#2081). Its value is opaque; only the fact
+#: that all the records share it is load-bearing.
+_REPEAT_BANK_SITTING_ID = "repeat-floor-20260731"
 
 
 class ReplayError(Exception):
@@ -325,6 +332,12 @@ def build_repeat_floor_run(bank: Path, *, budget: AttemptBudget) -> Run:
             # hardware, graded through the shipped comparator. Nothing here is
             # a prediction.
             provenance=PROVENANCE_REALIZED,
+            # ONE sitting for the whole bank, and the same fact the floor is
+            # derived from: these repeats were taken back-to-back with the mic
+            # bolted in place. So the within-sitting floor licenses every pair
+            # here, which is exactly the comparison it was measured for — this
+            # replay is the one corpus in the repo where that is true (#2081).
+            sitting_id=_REPEAT_BANK_SITTING_ID,
             integrity=AttemptIntegrity(
                 comparable=bool(verdict.get("accepted")),
                 reasons=tuple(str(item) for item in reasons)
@@ -496,6 +509,15 @@ def build_session_runs(
             "hardware realizes on JTS3. No repeat study has measured a floor "
             "for this metric."
         ),
+        # ACROSS sittings, and stated rather than defaulted (#2081). The bar
+        # bounds the MODEL's own tracking error, not an instrument's wander
+        # between two captures, so nothing about it is scoped to a microphone
+        # placement — which is just as well, since these attempts are recorded
+        # commissioning sessions and are cross-sitting by construction. The
+        # confound this replay already discloses is a build difference, not a
+        # mic one; grading these against a fixed-mic repeat floor is what
+        # would be dishonest, and that floor is not what this is.
+        scope=FLOOR_SCOPE_ACROSS_SITTINGS,
     )
 
     runs: list[Run] = []
@@ -511,6 +533,12 @@ def build_session_runs(
                 attempt_id=session["session_id"],
                 metric=METRIC_LINEARIZATION_RESIDUAL_RMS,
                 provenance=PROVENANCE_MODEL_GRADED,
+                # Recorded honestly even though this run's floor is
+                # across-sittings and will not read it: one commissioning
+                # session is one sitting, and a record that knows where it came
+                # from stays gradeable if a narrower floor is ever adopted for
+                # this metric (#2081).
+                sitting_id=session["session_id"],
                 integrity=_session_integrity(candidate, fit, band, bands),
                 repeats_used=_int_or(fit, "n_repeats", 1),
                 grade_db=_float_or_none(fit, "residual_rms_db"),

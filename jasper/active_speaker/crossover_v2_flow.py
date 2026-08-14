@@ -2718,6 +2718,15 @@ class V2ConductorSnapshot:
     # apply→VERIFY necessarily runs under a fresh relay session, so these
     # records survive :meth:`hydrate`'s session rebind while CHECK/MEASURE
     # evidence above correctly does not.
+    #
+    # SURVIVING is not the same as being COMPARABLE, and #2081 is the gap
+    # between the two: these records also survive ``reset_v2_journey_state``,
+    # which preserves them deliberately so a second tune has a predecessor to
+    # grade against — but the mic was re-placed in between, and the claim floor
+    # was measured with it bolted down. So each record now carries the sitting
+    # that produced it, and the kernel refuses the pair rather than reporting
+    # an improvement no study licenses. The history still rides across; what
+    # changed is that the loop can now tell it did.
     attempt_history: tuple[AttemptRecord, ...] = ()
     last_attempt_decision: Mapping[str, Any] | None = None
 
@@ -2764,6 +2773,11 @@ def attempt_history_from_state(raw: Any) -> tuple[AttemptRecord, ...]:
                 attempt_id=str(row.get("attempt_id") or ""),
                 metric=str(row.get("metric") or ""),
                 provenance=str(row.get("provenance") or ""),
+                # #2081. Absent on every row written before it, and ``""`` is
+                # exactly what the kernel refuses on — so an upgraded speaker
+                # stops claiming improvement against its pre-upgrade attempt
+                # instead of claiming one whose sitting nothing recorded.
+                sitting_id=str(row.get("sitting_id") or ""),
                 integrity=AttemptIntegrity(
                     comparable=integrity.get("comparable") is True,
                     reasons=tuple(
@@ -2819,7 +2833,7 @@ def _attempt_optional_positive_int(value: Any) -> int | None:
 
 
 def attempt_record_from_verify(
-    analysis: ProgramAnalysis, *, attempt_id: str,
+    analysis: ProgramAnalysis, *, attempt_id: str, sitting_id: str,
 ) -> AttemptRecord:
     """Map one VERIFY analysis into the pure kernel's realized record (#2033).
 
@@ -2828,6 +2842,21 @@ def attempt_record_from_verify(
     not make an otherwise clean capture incomparable. Any evaluated failure
     does, and carries both the failed and not-evaluated check names so the
     kernel's STOP_EVIDENCE record never loses what the analyzer knew.
+
+    ``sitting_id`` is the relay session that captured this sweep, and it is a
+    **required** argument rather than a defaulted one because the default that
+    would be available here — ``""`` — is the value the kernel reads as
+    "unrecorded" and refuses on (#2081). A caller that forgets is then a caller
+    whose speaker silently stops claiming improvement, which is the failure
+    this signature makes impossible to reach by omission.
+
+    Why the relay session is the right proxy for one continuous microphone
+    sitting: the household holds the phone for the whole of a session's
+    captures, and a new session means it was put down and picked up. That is
+    already the reason :meth:`CrossoverV2Session.hydrate` invalidates CHECK and
+    MEASURE evidence across a rebind — "mic position is unverifiable across
+    sessions" — so this reuses that established boundary rather than inventing
+    a second one.
     """
 
     integrity = analysis.capture_integrity
@@ -2848,6 +2877,7 @@ def attempt_record_from_verify(
         attempt_id=str(attempt_id),
         metric=ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
         provenance=PROVENANCE_REALIZED,
+        sitting_id=str(sitting_id),
         integrity=attempt_integrity,
         grade_db=_attempt_optional_float(
             tracking.get(ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED)
@@ -8829,7 +8859,13 @@ class CrossoverV2Session:
             return
         attempt_id = identity.attempt_id
 
-        record = attempt_record_from_verify(analysis, attempt_id=attempt_id)
+        record = attempt_record_from_verify(
+            analysis,
+            attempt_id=attempt_id,
+            # The session that captured THIS sweep — see #2081 and the
+            # constructor's own note on why a relay session is the sitting.
+            sitting_id=self.session_id,
+        )
         writer = self._seams.record_model_error
         # The model-error store banks PREDICTION error, and its number is the
         # tracking deviation — read straight off the analysis rather than off

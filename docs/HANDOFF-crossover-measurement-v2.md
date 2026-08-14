@@ -688,6 +688,24 @@ evidence remains session-scoped as before. This is rung P4's live seam; see the
 [correction revision spine](HANDOFF-correction-revision-plan.md#rung-p4--wire-the-learning-loop)
 for program context.
 
+That history survives further than the rebind, and stating only the rebind
+understated it: `reset_v2_journey_state` — "Start over", the household's route
+to a second tune — deliberately preserves `attempts_loop` so the next VERIFY
+has a predecessor to be graded against. Since a new tune re-runs CHECK and
+MEASURE, the phone was put down and re-placed in between, while the claim floor
+was measured with the mic bolted in place and repeats ~21 s apart
+(`captures/repeat-floor-20260731`). So each `AttemptRecord` carries the relay
+session that captured it as its `sitting_id`, and `FloorStats.scope`
+(`within_sitting` / `across_sittings`) says which comparisons that floor
+licenses. A within-sitting floor — the only kind measured — makes `decide_next`
+answer `stop_evidence / sitting_mismatch` on a cross-sitting pair rather than
+reporting an improvement no study supports; an unrecorded sitting (any state
+written before this landed) answers `sitting_unrecorded` and is refused on the
+same terms, never read as a match. The done screen names the microphone (never
+"the phone" -- #1941 R4) as having been in a different position; the attempt is
+still banked, so the next tune is unaffected.
+Issue #2081.
+
 The conductor performs no persistence itself. Its injected writer calls
 `model_error_store.record_model_error` once for an accepted VERIFY, before
 banking the journey projection,

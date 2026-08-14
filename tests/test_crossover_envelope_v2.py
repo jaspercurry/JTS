@@ -29,6 +29,7 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.attempts_loop import (
+    FLOOR_SCOPE_ACROSS_SITTINGS,
     PROVENANCE_MODEL_GRADED,
     PROVENANCE_REALIZED,
     AttemptIntegrity,
@@ -36,6 +37,12 @@ from jasper.active_speaker.attempts_loop import (
     FloorStats,
     decide_next,
 )
+
+#: These sentence tests are about the RENDERER, so their pairs share a sitting
+#: — otherwise the kernel refuses before a floor or improvement sentence can be
+#: reached at all (#2081), and the test would pass for the wrong reason. The
+#: cross-sitting sentence has its own test below.
+SITTING = "sitting-1"
 from jasper.active_speaker.crossover_envelope_v2 import (
     CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION,
     RIPPLE_RESERVATION_COPY,
@@ -539,6 +546,7 @@ def test_done_renders_the_floor_stop_sentence_from_kernel_output():
             attempt_id="candidate-a",
             metric=ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
             provenance=PROVENANCE_REALIZED,
+            sitting_id=SITTING,
             integrity=AttemptIntegrity(comparable=True),
             grade_db=1.0,
         ),
@@ -546,6 +554,7 @@ def test_done_renders_the_floor_stop_sentence_from_kernel_output():
             attempt_id="candidate-b",
             metric=ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
             provenance=PROVENANCE_REALIZED,
+            sitting_id=SITTING,
             integrity=AttemptIntegrity(comparable=True),
             grade_db=0.91,
         ),
@@ -577,6 +586,7 @@ def test_done_describes_tracking_fidelity_without_claiming_crossover_quality():
                 attempt_id="candidate-a",
                 metric=ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
                 provenance=PROVENANCE_REALIZED,
+                sitting_id=SITTING,
                 integrity=AttemptIntegrity(comparable=True),
                 grade_db=1.0,
             ),
@@ -584,6 +594,7 @@ def test_done_describes_tracking_fidelity_without_claiming_crossover_quality():
                 attempt_id="candidate-b",
                 metric=ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
                 provenance=PROVENANCE_REALIZED,
+                sitting_id=SITTING,
                 integrity=AttemptIntegrity(comparable=True),
                 grade_db=0.6,
             ),
@@ -602,12 +613,81 @@ def test_done_describes_tracking_fidelity_without_claiming_crossover_quality():
     assert "Improved the crossover" not in env["verdict_text"]
 
 
+def test_done_explains_a_cross_sitting_refusal_without_engine_vocabulary():
+    """#2081's household sentence, rendered from the kernel's own refusal.
+
+    The unlicensed alternative is one line above in this file: with a shared
+    sitting the same two grades render "tracked its prediction 0.4 dB more
+    closely". Here the phone moved, so the screen says that instead of a number
+    it cannot support — and says it in household terms, with "floor", "scope"
+    and "sitting" left in the decision's notes where support can read them.
+    """
+    floor = FloorStats.from_repeat_study(
+        metric=ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+        median_db=0.04,
+        p95_db=0.1,
+        source="test fixed-mic repeat study",
+        measured_at="2026-08-03",
+    )
+    decision = decide_next(
+        [
+            AttemptRecord(
+                attempt_id="candidate-a",
+                metric=ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+                provenance=PROVENANCE_REALIZED,
+                sitting_id="first-tune",
+                integrity=AttemptIntegrity(comparable=True),
+                grade_db=1.0,
+            ),
+            AttemptRecord(
+                attempt_id="candidate-b",
+                metric=ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+                provenance=PROVENANCE_REALIZED,
+                sitting_id="second-tune",
+                integrity=AttemptIntegrity(comparable=True),
+                grade_db=0.6,
+            ),
+        ],
+        floor,
+    )
+
+    env = build_crossover_envelope_v2(_done_status(
+        attempts_loop={"last_decision": decision.to_dict()},
+    ))
+
+    assert env["verdict_text"].endswith(
+        "The previous result was measured with the microphone in a different "
+        "position, so this attempt is recorded without comparing the two."
+    )
+    # The claim the same numbers would have produced within one sitting.
+    assert "0.4 dB more closely" not in env["verdict_text"]
+    for engine_word in ("floor", "scope", "sitting", "provenance"):
+        assert engine_word not in env["verdict_text"].lower()
+
+
+def test_done_does_not_blame_the_mic_when_the_sitting_is_merely_unrecorded():
+    """An upgraded speaker knows nothing about where its old attempt was
+    measured, and must not tell the household their microphone moved (#2081)."""
+    env = build_crossover_envelope_v2(_done_status(
+        attempts_loop={"last_decision": {
+            "decision": "stop_evidence",
+            "reason": "sitting_unrecorded",
+            "basis_attempt_ids": ["candidate-a", "candidate-b"],
+        }},
+    ))
+    assert env["verdict_text"].endswith(
+        "Stopped because the latest attempt could not be compared reliably."
+    )
+    assert "different position" not in env["verdict_text"]
+
+
 def test_first_attempt_sentence_formats_the_kernel_provenance():
     metric = "linearization_residual_rms_db"
     floor = FloorStats.from_policy_bar(
         metric=metric,
         claim_floor_db=0.5,
         source="test policy bar",
+        scope=FLOOR_SCOPE_ACROSS_SITTINGS,
     )
     decision = decide_next(
         [AttemptRecord(

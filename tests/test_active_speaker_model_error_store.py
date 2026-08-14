@@ -18,6 +18,8 @@ from jasper.active_speaker import model_error_store as store
 from jasper.active_speaker.attempts_loop import (
     FLOOR_BASIS_MEASURED,
     FLOOR_BASIS_POLICY,
+    FLOOR_SCOPE_ACROSS_SITTINGS,
+    FLOOR_SCOPE_WITHIN_SITTING,
     FloorStats,
 )
 from jasper.active_speaker.model_error_store import (
@@ -83,6 +85,55 @@ def test_floor_round_trips_through_the_store(tmp_path):
     assert restored.p95_db == pytest.approx(0.08508)
     assert restored.measured_at == "2026-07-31"
     assert restored.source == "captures/repeat-floor-20260731"
+    # #2081: WHICH comparisons the floor licenses rides with the number. A
+    # scope lost in persistence would silently re-widen an adopted narrow floor
+    # on the next boot, which is the failure this store exists to prevent.
+    assert restored.scope == FLOOR_SCOPE_WITHIN_SITTING
+
+
+def test_a_floor_adopted_across_sittings_does_not_narrow_on_reload(tmp_path):
+    path = tmp_path / "store.json"
+    adopt_floor(
+        FloorStats.from_repeat_study(
+            metric=METRIC, median_db=0.05183, p95_db=0.08508,
+            source="a study that re-placed the mic between repeats",
+            measured_at="2026-08-14", scope=FLOOR_SCOPE_ACROSS_SITTINGS,
+        ),
+        path=path,
+    )
+    restored = stored_floor(path)
+    assert restored is not None
+    assert restored.scope == FLOOR_SCOPE_ACROSS_SITTINGS
+
+
+def test_a_floor_written_before_2081_reloads_as_the_narrow_scope(tmp_path):
+    """No stored floor predating #2081 has a scope key, and every one of them
+    came from the fixed-mic study — so defaulting to the narrow value is the
+    truth about them, not a guess, and it is also the fail-closed direction."""
+    path = tmp_path / "store.json"
+    adopt_floor(_floor(), path=path)
+    raw = json.loads(path.read_text())
+    del raw["floor"]["scope"]
+    path.write_text(json.dumps(raw))
+
+    restored = stored_floor(path)
+    assert restored is not None
+    assert restored.scope == FLOOR_SCOPE_WITHIN_SITTING
+
+
+def test_a_floor_whose_scope_is_unreadable_is_dropped_rather_than_guessed(
+    tmp_path,
+):
+    """Same ruling the basis check already makes: a floor nobody can say what
+    it licenses is worse than no floor, because the alternative to a floor is
+    refusing to grade — which claims nothing."""
+    path = tmp_path / "store.json"
+    adopt_floor(_floor(), path=path)
+    raw = json.loads(path.read_text())
+    raw["floor"]["scope"] = "whenever_you_like"
+    path.write_text(json.dumps(raw))
+
+    assert stored_floor(path) is None
 
 
 def test_a_policy_bar_floor_round_trips_without_growing_a_fake_p95(tmp_path):
@@ -92,6 +143,7 @@ def test_a_policy_bar_floor_round_trips_without_growing_a_fake_p95(tmp_path):
             metric="linearization_residual_rms_db",
             claim_floor_db=0.5,
             source="a shipped constant",
+            scope=FLOOR_SCOPE_ACROSS_SITTINGS,
         ),
         path=path,
     )
@@ -108,6 +160,7 @@ def test_adopting_a_floor_replaces_rather_than_merges(tmp_path):
     adopt_floor(
         FloorStats.from_policy_bar(
             metric="other_metric", claim_floor_db=0.5, source="policy",
+            scope=FLOOR_SCOPE_ACROSS_SITTINGS,
         ),
         path=path,
     )
