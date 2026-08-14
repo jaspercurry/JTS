@@ -1,8 +1,9 @@
 # USB turntable control on JTS3
 
-This is a manual, opt-in experiment for controlling the USB turntable from
-JTS3. It has no installer hook, systemd unit, voice tool, or production daemon.
-Run it only from a JTS checkout when you intend to move the platform.
+This is an experimental controller for the USB turntable on JTS3. Positioning
+remains manual and opt-in: there is no voice tool, measurement scheduler, or
+permanent polling daemon. The sole automatic behavior is a bounded one-shot
+stop request when the turntable's USB serial adapter appears.
 
 JTS owns the operator-facing labels and Raspberry Pi power preflight in
 [`jts_turntable.py`](jts_turntable.py). The bundled upstream `usb_turntable`
@@ -12,7 +13,9 @@ details in JTS.
 
 ## Setup
 
-Use the Pi-side checkout, normally `/home/pi/jts`, rather than `/opt/jasper`:
+Use the Pi-side checkout, normally `/home/pi/jts`, for manual commands. The
+installer separately stages the same experiment under `/opt/jasper` for the
+hot-plug one-shot:
 
 ```sh
 cd /home/pi/jts/experiments/usb-turntable
@@ -78,6 +81,70 @@ python3 jts_turntable.py --allow-power-risk left 10
 ```
 
 Resolve the power problem instead whenever possible.
+
+## Hot-plug stop
+
+A full JTS install stages
+`99-jasper-turntable-autostop.rules` and the hardened
+`jasper-turntable-autostop@.service` template. When a CH340 tty with USB ID
+`1a86:7523` appears, udev passes that event's exact `/dev/ttyUSB…` path to one
+systemd job. The rule also requires JTS3's confirmed dedicated physical USB
+path, `platform-xhci-hcd.1-usb-0:2:1.0`; moving the cable to another USB port
+disables automatic stop. The helper opens only that path, verifies product
+`MT320RUBL40ProV3` in the same controller session, and sends the vendor stop
+request. A different CH340 product necessarily receives the non-motion
+connection, firmware, and product identity queries, then is logged and ignored
+without receiving STOP or any motion command.
+
+The helper exits immediately after an acknowledged and completed stop. While
+the tty or controller is still settling, it makes at most four attempts with
+1.5 seconds between failed attempts; systemd also caps the entire job at 40
+seconds. There is no timer or resident process. If the USB device disappears,
+the device-bound job is stopped; reconnecting it creates a new one-shot job.
+
+Inspect its structured journal events with:
+
+```sh
+journalctl -u 'jasper-turntable-autostop@*.service' --no-pager
+```
+
+Success has `"event": "turntable_autostop.stopped"` in its JSON record. Retry,
+exhaustion, invalid-device, and non-turntable CH340 outcomes use the stable
+`turntable_autostop.retry`, `.exhausted`, `.rejected`, and `.ignored` event
+names. USB IDs alone are not identity because `1a86:7523` is generic; the
+same-session product probe adds a short delay but prevents an unrelated CH340
+device from receiving the stop command.
+
+## Guarded measurement positions
+
+The microphone rig's saved zero is the acoustic on-axis home. For automated
+measurements, use signed absolute positions: negative is left and positive is
+right. Each invocation runs the Pi power preflight, opens the controller once,
+returns fully to home, and only then makes one relative move to the requested
+angle. It refuses targets outside the inclusive `-45` to `+45` degree envelope.
+
+Both confirmations are required on every invocation so an unattended caller
+cannot silently assume the physical setup is safe:
+
+```sh
+python3 jts_turntable.py position -20 \
+  --confirm-rig-clear --confirm-zero-valid
+python3 jts_turntable.py position 0 \
+  --confirm-rig-clear --confirm-zero-valid
+```
+
+`--confirm-rig-clear` means the arm's full path is physically clear.
+`--confirm-zero-valid` means an operator has confirmed that the controller's
+saved zero is still the acoustic on-axis position since its latest power-on.
+Zero persistence across a controller power cycle is unverified, so reconfirm
+home before using this flag after every power cycle.
+
+The observed hard-left limit is approximately `-52` degrees from home; never
+target it. The exact hard-right limit is unknown and unnecessary. Automated
+measurement motion stays within `-45` to `+45` degrees. A useful smoke-test
+sweep is `0, -10, -20, 0, +10, +20, 0`. Start a measurement only after the
+position command reports `ok: true`, and always finish by commanding position
+`0`.
 
 ## Results and safety boundary
 

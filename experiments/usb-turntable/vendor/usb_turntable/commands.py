@@ -20,6 +20,7 @@ _COMMANDS = {
     "connection": CommandSpec("CT"),
     "product": CommandSpec("GETPN", "PN="),
     "firmware": CommandSpec("GETFWV", "FWV="),
+    "offset_angle": CommandSpec("GETOFFSETANGLE"),
     "turn_relative": CommandSpec("TURNSINGLE", motion=True),
     "turn_relative_legacy": CommandSpec("TRUNSINGLE", motion=True),
     "set_zero": CommandSpec("SETZERO"),

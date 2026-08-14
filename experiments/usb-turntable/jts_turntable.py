@@ -15,6 +15,7 @@ import math
 import re
 import subprocess
 import sys
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,7 +28,14 @@ POWER_FLAG_NAMES = (
     "throttled",
     "soft_temperature_limit",
 )
+MEASUREMENT_MIN_DEGREES = -45.0
+MEASUREMENT_MAX_DEGREES = 45.0
+AUTOSTOP_ATTEMPTS = 4
+AUTOSTOP_RETRY_SECONDS = 1.5
+AUTOSTOP_PRODUCT = "MT320RUBL40ProV3"
+AUTOSTOP_IO_TIMEOUT = 1.5
 THROTTLED_RE = re.compile(r"\s*throttled=(0x[0-9a-fA-F]+)\s*")
+AUTOSTOP_PORT_RE = re.compile(r"/dev/ttyUSB\d+")
 EXPERIMENT_ROOT = Path(__file__).resolve().parent
 VENDOR_ROOT = EXPERIMENT_ROOT / "vendor"
 
@@ -169,6 +177,20 @@ def _positive_degrees(value: str) -> float:
     return degrees
 
 
+def _measurement_position(value: str) -> float:
+    try:
+        degrees = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("position must be a number") from exc
+    if not math.isfinite(degrees):
+        raise argparse.ArgumentTypeError("position must be finite")
+    if not MEASUREMENT_MIN_DEGREES <= degrees <= MEASUREMENT_MAX_DEGREES:
+        raise argparse.ArgumentTypeError(
+            "position must be between -45 and +45 degrees"
+        )
+    return degrees
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Manual JTS USB turntable experiment")
     parser.add_argument("--port", help="serial path; default uses bundled discovery")
@@ -189,6 +211,25 @@ def build_parser() -> argparse.ArgumentParser:
     right.add_argument("degrees", type=_positive_degrees)
     commands.add_parser("set-zero", help="mark the current position as zero")
     commands.add_parser("home", help="return to the saved zero position")
+    position = commands.add_parser(
+        "position",
+        help="home, then move to a guarded signed measurement angle",
+    )
+    position.add_argument("degrees", type=_measurement_position)
+    position.add_argument(
+        "--confirm-rig-clear",
+        action="store_true",
+        help="confirm the arm's full travel path is physically clear",
+    )
+    position.add_argument(
+        "--confirm-zero-valid",
+        action="store_true",
+        help="confirm saved zero is on-axis and valid since the latest power-on",
+    )
+    commands.add_parser(
+        "hotplug-stop",
+        help=argparse.SUPPRESS,
+    )
     commands.add_parser("stop", help="send the vendor stop request")
     return parser
 
@@ -208,11 +249,105 @@ def _power_payload(status: PowerStatus, override: bool) -> dict[str, Any]:
     }
 
 
+def _emit_autostop(
+    args: argparse.Namespace,
+    event: str,
+    *,
+    ok: bool,
+    **detail: Any,
+) -> None:
+    _emit(
+        {
+            "ok": ok,
+            "event": f"turntable_autostop.{event}",
+            "device": args.port,
+            **detail,
+        },
+        compact=args.json,
+    )
+
+
+def _run_hotplug_stop(
+    args: argparse.Namespace,
+    api: TurntableApi,
+    sleep: Callable[[float], None],
+) -> int:
+    """Probe and stop one exact hot-plug tty with a small retry budget."""
+
+    if args.port is None or AUTOSTOP_PORT_RE.fullmatch(args.port) is None:
+        _emit_autostop(
+            args,
+            "rejected",
+            ok=False,
+            error="hotplug-stop requires an exact /dev/ttyUSB<number> port",
+        )
+        return 1
+
+    last_error = "not attempted"
+    for attempt in range(1, AUTOSTOP_ATTEMPTS + 1):
+        try:
+            with api.controller.open(
+                port=args.port,
+                response_timeout=AUTOSTOP_IO_TIMEOUT,
+                startup_timeout=AUTOSTOP_IO_TIMEOUT,
+            ) as controller:
+                probe = controller.probe()
+                product = getattr(probe, "product", None)
+                if getattr(probe, "connected", False) and product == AUTOSTOP_PRODUCT:
+                    result = controller.stop()
+                    if _operation_succeeded(result):
+                        _emit_autostop(
+                            args,
+                            "stopped",
+                            ok=True,
+                            attempt=attempt,
+                            product=product,
+                            result=result,
+                        )
+                        return 0
+                    last_error = "stop was not acknowledged and completed"
+                elif product is not None and product != AUTOSTOP_PRODUCT:
+                    _emit_autostop(
+                        args,
+                        "ignored",
+                        ok=True,
+                        attempt=attempt,
+                        product=product,
+                        expected_product=AUTOSTOP_PRODUCT,
+                    )
+                    return 0
+                else:
+                    last_error = "turntable identity probe did not complete"
+        except Exception as exc:  # noqa: BLE001 - bounded hardware boundary
+            last_error = f"{type(exc).__name__}: {exc}"
+
+        if attempt < AUTOSTOP_ATTEMPTS:
+            _emit_autostop(
+                args,
+                "retry",
+                ok=False,
+                attempt=attempt,
+                error=last_error,
+                retry_seconds=AUTOSTOP_RETRY_SECONDS,
+            )
+            sleep(AUTOSTOP_RETRY_SECONDS)
+
+    _emit_autostop(
+        args,
+        "exhausted",
+        ok=False,
+        attempts=AUTOSTOP_ATTEMPTS,
+        error=last_error,
+    )
+    return 1
+
+
 def run(
     args: argparse.Namespace,
     *,
     api: TurntableApi | None = None,
     run_command: Callable[..., Any] = subprocess.run,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> int:
     if args.command == "power":
         status = read_power_status(run_command)
@@ -223,14 +358,34 @@ def run(
         )
         return 0 if ok else 1
 
+    if args.command == "position" and not (
+        args.confirm_rig_clear and args.confirm_zero_valid
+    ):
+        missing = []
+        if not args.confirm_rig_clear:
+            missing.append("--confirm-rig-clear")
+        if not args.confirm_zero_valid:
+            missing.append("--confirm-zero-valid")
+        _emit(
+            {
+                "ok": False,
+                "error": "position requires " + " and ".join(missing),
+                "target_degrees": args.degrees,
+            },
+            compact=args.json,
+        )
+        return 1
+
     resolved_api = api or load_upstream_api()
+    if args.command == "hotplug-stop":
+        return _run_hotplug_stop(args, resolved_api, sleep)
     if args.command == "detect":
         devices = resolved_api.discover_devices()
         _emit({"ok": bool(devices), "devices": devices}, compact=args.json)
         return 0 if devices else 1
 
     power_status: PowerStatus | None = None
-    if args.command in {"left", "right", "home"}:
+    if args.command in {"left", "right", "home", "position"}:
         power_status = read_power_status(run_command)
         if not power_status.safe_for_motion and not args.allow_power_risk:
             _emit(
@@ -260,6 +415,32 @@ def run(
         elif args.command == "home":
             result = controller.return_to_zero()
             ok = _operation_succeeded(result)
+        elif args.command == "position":
+            home_result = controller.return_to_zero()
+            if not _operation_succeeded(home_result):
+                payload = {
+                    "ok": False,
+                    "target_degrees": args.degrees,
+                    "home_result": home_result,
+                    "error": "home did not complete; target move was not attempted",
+                }
+                if power_status is not None:
+                    payload["power"] = _power_payload(
+                        power_status, args.allow_power_risk
+                    )
+                _emit(payload, compact=args.json)
+                return 1
+
+            move_result = None
+            if args.degrees != 0:
+                direction = "cw" if args.degrees < 0 else "ccw"
+                move_result = controller.turn_relative(direction, abs(args.degrees))
+            ok = move_result is None or _operation_succeeded(move_result)
+            result = {
+                "target_degrees": args.degrees,
+                "home": home_result,
+                "move": move_result,
+            }
         elif args.command == "stop":
             result = controller.stop()
             ok = _operation_succeeded(result)
@@ -278,10 +459,11 @@ def main(
     *,
     api: TurntableApi | None = None,
     run_command: Callable[..., Any] = subprocess.run,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> int:
     args = build_parser().parse_args(argv)
     try:
-        return run(args, api=api, run_command=run_command)
+        return run(args, api=api, run_command=run_command, sleep=sleep)
     except Exception as exc:  # noqa: BLE001 - manual CLI reports boundary failures
         _emit(
             {"ok": False, "error": str(exc), "error_type": type(exc).__name__},

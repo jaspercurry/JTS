@@ -1307,12 +1307,17 @@ repeatability, and product-stack startup/reload safety remain unproven.
 [`experiments/usb-turntable/jts_turntable.py`](../experiments/usb-turntable/jts_turntable.py)
 is the manual JTS3 adapter for the reusable `usb_turntable` controller package.
 It provides USB detection, an identity/firmware probe, left/right relative
-movement, zero/home, and the vendor stop request. JTS owns only the Raspberry Pi
-power preflight and those operator-facing names; the upstream package owns USB
-discovery, serial framing, response parsing, and command completion.
+movement, zero/home, the vendor stop request, and guarded absolute measurement
+positions. The latter always homes first and is bounded to `-45` through `+45`
+degrees from the acoustic on-axis zero. JTS owns only the Raspberry Pi power
+preflight, the measurement-rig guard, and those operator-facing names; the
+upstream package owns USB discovery, serial framing, response parsing, and
+command completion.
 
-The experiment is opt-in and checkout-local: it has no installer hook, systemd
-unit, voice tool, or production daemon. Read its
+Positioning is opt-in and has no voice tool, measurement scheduler, or permanent
+daemon. A full install adds only a bounded udev-triggered stop one-shot for the
+known CH340-attached turntable; it verifies product identity before issuing the
+stop and exits on success or after four attempts. Read the experiment's
 [`README.md`](../experiments/usb-turntable/README.md) before use. Hardware-free
 adapter and preflight coverage lives in
 [`tests/test_usb_turntable_experiment.py`](../tests/test_usb_turntable_experiment.py).

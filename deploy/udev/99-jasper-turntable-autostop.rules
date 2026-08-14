@@ -1,0 +1,5 @@
+# Experimental USB turntable: stop it once when its CH340 serial tty appears.
+# The USB IDs are generic; the systemd helper verifies the turntable's exact
+# product identity before sending STOP. %k carries this event's exact tty name.
+
+ACTION=="add", SUBSYSTEM=="tty", KERNEL=="ttyUSB*", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", ENV{ID_PATH}=="platform-xhci-hcd.1-usb-0:2:1.0", TAG+="systemd", ENV{SYSTEMD_WANTS}+="jasper-turntable-autostop@%k.service"

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import asdict, dataclass
+from decimal import Decimal
 from typing import Literal
 
 from .commands import COMMANDS, direction_code, format_degrees
@@ -29,6 +30,8 @@ class OperationResult:
     completed: bool
     pause_seen: bool
     frames: tuple[str, ...]
+    no_op: bool = False
+    offset_degrees: float | None = None
 
     def to_dict(self) -> dict[str, object]:
         value = asdict(self)
@@ -46,6 +49,20 @@ class ProbeResult:
 
     def to_dict(self) -> dict[str, object]:
         value = asdict(self)
+        value["frames"] = list(self.frames)
+        return value
+
+
+@dataclass(frozen=True)
+class OffsetAngleResult:
+    command: str
+    acknowledged: bool
+    degrees: Decimal
+    frames: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        value = asdict(self)
+        value["degrees"] = float(self.degrees)
         value["frames"] = list(self.frames)
         return value
 
@@ -116,7 +133,12 @@ class TurntableController:
         self.close()
 
     @staticmethod
-    def _operation(name: str, result: ExchangeResult) -> OperationResult:
+    def _operation(
+        name: str,
+        result: ExchangeResult,
+        *,
+        offset_degrees: float | None = None,
+    ) -> OperationResult:
         return OperationResult(
             operation=name,
             command=result.command,
@@ -124,6 +146,7 @@ class TurntableController:
             completed=result.completed,
             pause_seen=result.pause_seen,
             frames=result.frames,
+            offset_degrees=offset_degrees,
         )
 
     def probe(self) -> ProbeResult:
@@ -164,7 +187,34 @@ class TurntableController:
     def set_zero(self) -> OperationResult:
         return self._operation("set_zero", self.session.execute(COMMANDS["set_zero"]))
 
+    def offset_angle(self) -> OffsetAngleResult:
+        result = self.session.execute_offset_angle(COMMANDS["offset_angle"])
+        return OffsetAngleResult(
+            command=result.command,
+            acknowledged=result.acknowledged,
+            degrees=result.degrees,
+            frames=result.frames,
+        )
+
     def return_to_zero(self) -> OperationResult:
+        if self._firmware_version() >= (2, 3, 2):
+            offset = self.offset_angle()
+            if offset.degrees == Decimal(0):
+                return OperationResult(
+                    operation="return_to_zero",
+                    command=offset.command,
+                    acknowledged=offset.acknowledged,
+                    completed=True,
+                    pause_seen=False,
+                    frames=offset.frames,
+                    no_op=True,
+                    offset_degrees=float(offset.degrees),
+                )
+            return self._operation(
+                "return_to_zero",
+                self.session.execute_motion(COMMANDS["return_to_zero"]),
+                offset_degrees=float(offset.degrees),
+            )
         return self._operation(
             "return_to_zero",
             self.session.execute_motion(COMMANDS["return_to_zero"]),

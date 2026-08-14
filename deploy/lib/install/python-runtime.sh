@@ -249,6 +249,11 @@ install_jasper() {
         "${REPO_DIR}/jasper" "${REPO_DIR}/jasper_aec3" \
         "${REPO_DIR}/pyproject.toml" \
         "${INSTALL_DIR}/"
+    install -d -m 0755 "${INSTALL_DIR}/experiments"
+    rsync -a --delete \
+        --exclude='__pycache__' --exclude='*.pyc' \
+        "${REPO_DIR}/experiments/usb-turntable" \
+        "${INSTALL_DIR}/experiments/"
     retire_esp32_accessory_files
 
     if [[ ! -d "${INSTALL_DIR}/.venv" ]]; then

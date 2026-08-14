@@ -20,6 +20,10 @@ ROOT = Path(__file__).resolve().parents[1]
 EXPERIMENT = ROOT / "experiments" / "usb-turntable"
 SCRIPT = EXPERIMENT / "jts_turntable.py"
 VENDOR = EXPERIMENT / "vendor"
+AUTOSTOP_RULE = ROOT / "deploy" / "udev" / "99-jasper-turntable-autostop.rules"
+AUTOSTOP_UNIT = (
+    ROOT / "deploy" / "systemd" / "jasper-turntable-autostop@.service"
+)
 
 
 def load_script():
@@ -101,14 +105,18 @@ def parse_output(capsys) -> dict:
     return json.loads(capsys.readouterr().out)
 
 
+def parse_json_lines(capsys) -> list[dict]:
+    return [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+
+
 def test_vendored_snapshot_provenance_is_current() -> None:
     manifest = json.loads((VENDOR / "UPSTREAM.json").read_text())
     assert manifest == {
         "repository": "https://github.com/jaspercurry/USB-Turntable",
-        "commit": "64a37c31161ffc02b9467c26d4fa06d7fb8b3334",
+        "commit": "1fc3bd72094f7ed919e8d95a000bb7c7eefd9a8e",
         "version": "0.1.0",
         "aggregate_sha256": (
-            "ae0660b4f67eb31ec56ae4a10d681ae347b5abfeb9ca516b67821a08304ab7aa"
+            "800a4af7103ecf43707e23c9f69d07e32b068bd7973b2420f80a86522c37eb35"
         ),
         "license": "Apache-2.0",
     }
@@ -230,14 +238,221 @@ def test_vendor_labels_map_to_upstream_directions(
     assert ("turn_relative", direction, 12.5) in controller.calls
 
 
-@pytest.mark.parametrize("command", ["left", "right", "home"])
+@pytest.mark.parametrize(
+    ("target", "expected_move"),
+    [
+        ("-45", ("turn_relative", "cw", 45.0)),
+        ("-10", ("turn_relative", "cw", 10.0)),
+        ("0", None),
+        ("10", ("turn_relative", "ccw", 10.0)),
+        ("45", ("turn_relative", "ccw", 45.0)),
+    ],
+)
+def test_guarded_position_homes_then_moves_in_one_open(
+    turntable,
+    capsys,
+    target: str,
+    expected_move,
+) -> None:
+    api, factory, controller = fake_api(turntable)
+
+    assert turntable.main(
+        [
+            "--json",
+            "position",
+            target,
+            "--confirm-rig-clear",
+            "--confirm-zero-valid",
+        ],
+        api=api,
+        run_command=healthy_power,
+    ) == 0
+
+    output = parse_output(capsys)
+    assert output["ok"] is True
+    assert output["result"]["target_degrees"] == float(target)
+    assert factory.open_calls == [{"port": None}]
+    expected_calls = [("return_to_zero",)]
+    if expected_move is not None:
+        expected_calls.append(expected_move)
+    assert controller.calls == expected_calls
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["position", "10"],
+        ["position", "10", "--confirm-rig-clear"],
+        ["position", "10", "--confirm-zero-valid"],
+    ],
+)
+def test_guarded_position_requires_both_confirmations_before_open(
+    turntable,
+    capsys,
+    argv,
+) -> None:
+    api, factory, _controller = fake_api(turntable)
+
+    def unexpected_power_probe(*args, **kwargs):
+        raise AssertionError("missing confirmations must fail before power preflight")
+
+    assert turntable.main(
+        ["--json", *argv], api=api, run_command=unexpected_power_probe
+    ) == 1
+    assert parse_output(capsys)["ok"] is False
+    assert factory.open_calls == []
+
+
+def test_guarded_position_requires_completed_home_before_relative_move(
+    turntable,
+    capsys,
+) -> None:
+    api, factory, controller = fake_api(turntable)
+    controller.operation_result = SimpleNamespace(
+        acknowledged=True,
+        completed=False,
+    )
+
+    assert turntable.main(
+        [
+            "--json",
+            "position",
+            "20",
+            "--confirm-rig-clear",
+            "--confirm-zero-valid",
+        ],
+        api=api,
+        run_command=healthy_power,
+    ) == 1
+
+    output = parse_output(capsys)
+    assert output["ok"] is False
+    assert "not attempted" in output["error"]
+    assert factory.open_calls == [{"port": None}]
+    assert controller.calls == [("return_to_zero",)]
+
+
+def test_guarded_position_requires_completed_target_move(turntable, capsys) -> None:
+    api, _factory, controller = fake_api(turntable)
+
+    def incomplete_move(direction: str, degrees: float):
+        controller.calls.append(("turn_relative", direction, degrees))
+        return SimpleNamespace(acknowledged=True, completed=False)
+
+    controller.turn_relative = incomplete_move
+
+    assert turntable.main(
+        [
+            "--json",
+            "position",
+            "20",
+            "--confirm-rig-clear",
+            "--confirm-zero-valid",
+        ],
+        api=api,
+        run_command=healthy_power,
+    ) == 1
+    assert parse_output(capsys)["ok"] is False
+    assert controller.calls == [
+        ("return_to_zero",),
+        ("turn_relative", "ccw", 20.0),
+    ]
+
+
+def test_hotplug_stop_exits_after_first_completed_stop(turntable, capsys) -> None:
+    api, factory, controller = fake_api(turntable)
+    controller.probe_result.product = turntable.AUTOSTOP_PRODUCT
+
+    def unexpected_sleep(_seconds: float) -> None:
+        raise AssertionError("successful stop must not retry")
+
+    assert turntable.main(
+        [
+            "--json",
+            "--port",
+            "/dev/ttyUSB7",
+            "hotplug-stop",
+        ],
+        api=api,
+        sleep=unexpected_sleep,
+    ) == 0
+
+    output = parse_output(capsys)
+    assert output["event"] == "turntable_autostop.stopped"
+    assert output["attempt"] == 1
+    assert controller.calls == [("probe",), ("stop",)]
+    assert factory.open_calls == [
+        {
+            "port": "/dev/ttyUSB7",
+            "response_timeout": turntable.AUTOSTOP_IO_TIMEOUT,
+            "startup_timeout": turntable.AUTOSTOP_IO_TIMEOUT,
+        }
+    ]
+
+
+def test_hotplug_stop_retry_budget_is_bounded(turntable, capsys) -> None:
+    api, factory, controller = fake_api(turntable)
+    controller.probe_result.product = turntable.AUTOSTOP_PRODUCT
+    controller.operation_result.completed = False
+    sleeps = []
+
+    assert turntable.main(
+        ["--json", "--port", "/dev/ttyUSB0", "hotplug-stop"],
+        api=api,
+        sleep=sleeps.append,
+    ) == 1
+
+    output = parse_json_lines(capsys)
+    assert [record["event"] for record in output] == [
+        "turntable_autostop.retry",
+        "turntable_autostop.retry",
+        "turntable_autostop.retry",
+        "turntable_autostop.exhausted",
+    ]
+    assert output[-1]["attempts"] == turntable.AUTOSTOP_ATTEMPTS
+    assert sleeps == [turntable.AUTOSTOP_RETRY_SECONDS] * 3
+    assert len(factory.open_calls) == turntable.AUTOSTOP_ATTEMPTS
+
+
+def test_hotplug_stop_ignores_other_ch340_product(turntable, capsys) -> None:
+    api, factory, controller = fake_api(turntable)
+    controller.probe_result.product = "unrelated-device"
+    sleeps = []
+
+    assert turntable.main(
+        ["--json", "--port", "/dev/ttyUSB2", "hotplug-stop"],
+        api=api,
+        sleep=sleeps.append,
+    ) == 0
+
+    assert parse_output(capsys)["event"] == "turntable_autostop.ignored"
+    assert controller.calls == [("probe",)]
+    assert len(factory.open_calls) == 1
+    assert sleeps == []
+
+
+def test_hotplug_stop_rejects_non_event_port_before_open(turntable, capsys) -> None:
+    api, factory, _controller = fake_api(turntable)
+
+    assert turntable.main(
+        ["--json", "--port", "/dev/serial/by-id/not-the-event-tty", "hotplug-stop"],
+        api=api,
+    ) == 1
+
+    assert parse_output(capsys)["event"] == "turntable_autostop.rejected"
+    assert factory.open_calls == []
+
+
+@pytest.mark.parametrize("command", ["left", "right", "home", "position"])
 def test_motion_is_blocked_before_open_when_power_is_unsafe(
     turntable,
     capsys,
     command: str,
 ) -> None:
     api, factory, _controller = fake_api(turntable)
-    argv = ["--json", command, *( ["10"] if command != "home" else [])]
+    argv = ["--json", command, *(["10"] if command != "home" else [])]
+    if command == "position":
+        argv.extend(["--confirm-rig-clear", "--confirm-zero-valid"])
 
     assert turntable.main(
         argv,
@@ -294,6 +509,31 @@ def test_incomplete_operation_is_not_success(turntable, capsys) -> None:
     assert parse_output(capsys)["ok"] is False
 
 
+@pytest.mark.parametrize("degrees", ["-45.1", "45.1", "nan", "inf", "-inf"])
+def test_guarded_position_rejects_out_of_range_before_open(
+    turntable,
+    degrees: str,
+) -> None:
+    api, factory, _controller = fake_api(turntable)
+
+    def unexpected_power_probe(*args, **kwargs):
+        raise AssertionError("invalid target must fail before power preflight")
+
+    with pytest.raises(SystemExit) as exc_info:
+        turntable.main(
+            [
+                "position",
+                degrees,
+                "--confirm-rig-clear",
+                "--confirm-zero-valid",
+            ],
+            api=api,
+            run_command=unexpected_power_probe,
+        )
+    assert exc_info.value.code == 2
+    assert factory.open_calls == []
+
+
 @pytest.mark.parametrize("degrees", ["0", "-1", "nan", "inf"])
 def test_relative_turn_rejects_invalid_degrees(turntable, degrees: str) -> None:
     with pytest.raises(SystemExit) as exc_info:
@@ -308,12 +548,24 @@ def test_docs_keep_manual_safety_and_provenance_boundaries() -> None:
     assert "not a physical emergency stop" in readme
     assert "hardware power cutoff" in readme
     assert "does not cancel or stop platform motion" in readme
+    assert "`-45` to `+45` degree envelope" in readme
+    assert "always finish by commanding position `0`" in readme
+    assert "Zero persistence across a controller power cycle is unverified" in readme
+    assert "There is no timer or resident process" in readme
+    assert "turntable_autostop.stopped" in readme
+    assert "moving the cable to another USB port disables automatic stop" in readme
+    assert "without receiving STOP or any motion command" in readme
     assert "development-time provenance" in vendor_readme
     assert "does not authenticate files at runtime" in vendor_readme
 
 
-def test_turntable_experiment_is_absent_from_product_surfaces() -> None:
-    markers = ("usb-turntable", "usb_turntable", "jts_turntable")
+def test_turntable_product_surface_is_only_the_hotplug_stop_hook() -> None:
+    markers = (
+        "usb-turntable",
+        "usb_turntable",
+        "jts_turntable",
+        "turntable-autostop",
+    )
     files = [ROOT / "pyproject.toml"]
     for root in (ROOT / "deploy", ROOT / "jasper"):
         files.extend(path for path in root.rglob("*") if path.is_file())
@@ -322,7 +574,47 @@ def test_turntable_experiment_is_absent_from_product_surfaces() -> None:
         searchable = path.relative_to(ROOT).as_posix() + path.read_text(errors="ignore")
         return any(marker in searchable for marker in markers)
 
-    assert not [path.relative_to(ROOT) for path in files if has_marker(path)]
+    matches = {path.relative_to(ROOT).as_posix() for path in files if has_marker(path)}
+    assert matches == {
+        "deploy/lib/install/python-runtime.sh",
+        "deploy/lib/install/systemd-units.sh",
+        "deploy/systemd/jasper-turntable-autostop@.service",
+        "deploy/udev/99-jasper-turntable-autostop.rules",
+    }
+
+
+def test_hotplug_stop_udev_systemd_and_install_wiring() -> None:
+    rule = AUTOSTOP_RULE.read_text()
+    unit = AUTOSTOP_UNIT.read_text()
+    units_install = (ROOT / "deploy/lib/install/systemd-units.sh").read_text()
+    runtime_install = (ROOT / "deploy/lib/install/python-runtime.sh").read_text()
+
+    assert 'ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523"' in rule
+    assert 'ENV{ID_PATH}=="platform-xhci-hcd.1-usb-0:2:1.0"' in rule
+    assert 'KERNEL=="ttyUSB*"' in rule
+    assert 'SYSTEMD_WANTS}+="jasper-turntable-autostop@%k.service"' in rule
+    assert "BindsTo=dev-%i.device" in unit
+    assert "ConditionPathExists=/dev/%I" in unit
+    assert "ExecStart=/usr/bin/python3 /opt/jasper/experiments/usb-turntable/" in unit
+    assert "--port /dev/%I --json hotplug-stop" in unit
+    assert "/bin/sh" not in unit
+    assert "TimeoutStartSec=40s" in unit
+    assert "DeviceAllow=/dev/%I rw" in unit
+    assert "jasper-turntable-autostop@.service" in units_install
+    assert "99-jasper-turntable-autostop.rules" in units_install
+    assert '"${REPO_DIR}/experiments/usb-turntable"' in runtime_install
+
+    streambox_units = units_install.split(
+        "install_streambox_systemd_units() {", 1
+    )[1].split("\n}\n\ninstall_systemd_units()", 1)[0]
+    assert "turntable-autostop" not in streambox_units
+
+    full_runtime = runtime_install.split("install_jasper() {", 1)[1].split(
+        "\n}\n\ninstall_streambox_jasper()", 1
+    )[0]
+    streambox_runtime = runtime_install.split("install_streambox_jasper() {", 1)[1]
+    assert "experiments/usb-turntable" in full_runtime
+    assert "experiments/usb-turntable" not in streambox_runtime
 
 
 def test_jts_adapter_contains_no_serial_protocol() -> None:
