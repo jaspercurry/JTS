@@ -11,7 +11,7 @@
 # remain separate ecosystems below.
 #
 # Why every ecosystem is grouped: without `groups`, Dependabot raises one PR
-# per dependency per directory. The cargo entries below share the same crates
+# per dependency per directory. The cargo crates share the same dependencies
 # (alsa, serde, serde_json, anyhow, libc), so a single weekly cycle fanned out
 # into 8+ near-identical Rust PRs — and each entry is allowed 5 open PRs, so
 # many can land within seconds of each other. That happened on 2026-07-21
@@ -22,18 +22,12 @@
 #
 # Grouping REDUCES the burst rather than removing it. A full-lane PR peaks at
 # 6 concurrent jobs (shell + the 3-version pytest matrix + js + rust). One
-# grouped PR per group means today's six entries can raise at most 7 a week
-# (uv's two groups, github-actions, and one per cargo directory) — ~42 jobs
+# grouped PR per group means today's three entries can raise at most 4 a week
+# (uv's two groups, github-actions, and the single cargo group) — ~24 jobs
 # against the 20-job ceiling. The durable win is a handful of PRs a week to
 # review instead of ~16, and a shorter queue tail. The cost is that a broken
 # bump reddens its whole group's PR (exclude that one package, or ask
 # Dependabot to split, when it happens).
-#
-# The two extra cargo directories (jasper-host-clock, jasper-dual-dac-lab)
-# raise that weekly ceiling from 5 PRs to 7. That cost is accepted
-# deliberately: both crates link `alsa`, and while they were unwatched their
-# pinned version drifted away from the daemons' (issue #2266) with nothing
-# raising a PR to notice.
 #
 # `groups` deliberately omits `applies-to`, which defaults to
 # "version-updates", so SECURITY updates are structurally ungrouped and are
@@ -89,54 +83,41 @@ updates:
         patterns:
           - "*"
 
-  # Every crate directory that links libasound gets its own entry. They pin
-  # the same shared crates, so each is grouped separately: Dependabot groups
-  # cannot span `updates` entries, and one PR per crate keeps a red Cargo.lock
-  # scoped to the crate that broke. The four must stay on one `alsa` version —
-  # tests/test_build_and_ci_contracts.py fails if a bump lands in one crate
-  # and not the rest.
+  # ONE entry spanning every crate that links libasound, because those four
+  # must hold the SAME `alsa` version and a bump therefore has to be atomic.
+  # `directories` (plural) is what makes it so: Dependabot groups cannot span
+  # `updates` entries, so one entry per crate would raise one PR per crate,
+  # each rewriting a single manifest. tests/test_build_and_ci_contracts.py
+  # requires the four to agree, so each of those PRs would fail that guard on
+  # its own and NONE would be mergeable — the bump would deadlock.
+  #
+  # That is not hypothetical. Commit adf15a2cc (PR #1725, 2026-08-08) is a
+  # dependabot PR that rewrote `rust/jasper-outputd/Cargo.toml` alone, taking
+  # outputd to alsa 0.12.1 and leaving fan-in on 0.11 and the lab runner on
+  # 0.9 — the exact drift issue #2266 had to repair by hand.
+  #
+  # The acknowledged trade: one PR covering four directories means a single
+  # crate's broken build reddens the whole PR, where an entry per crate would
+  # have kept a red Cargo.lock scoped to the crate that broke. Build isolation
+  # loses to atomicity here — a scoped red PR is a nicer failure than a
+  # four-way deadlock, and the usual escape (exclude the offending package, or
+  # ask Dependabot to split) still applies.
+  #
+  # jasper-host-clock links libasound behind an optional `alsa` feature that
+  # jasper-fanin enables unconditionally, so its pin reaches the production
+  # binary. jasper-dual-dac-lab is lab-only and install.sh never builds it, so
+  # CI's `cargo test --locked` step is its sole rot gate. Both were unwatched
+  # before #2266, which is why nothing raised a PR as they fell behind.
   - package-ecosystem: "cargo"
-    directory: "/rust/jasper-fanin"
+    directories:
+      - "/rust/jasper-fanin"
+      - "/rust/jasper-outputd"
+      - "/rust/jasper-host-clock"
+      - "/rust/jasper-dual-dac-lab"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
     groups:
-      jasper-fanin-crates:
-        patterns:
-          - "*"
-
-  - package-ecosystem: "cargo"
-    directory: "/rust/jasper-outputd"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 5
-    groups:
-      jasper-outputd-crates:
-        patterns:
-          - "*"
-
-  # jasper-host-clock links libasound behind its optional `alsa` feature,
-  # which jasper-fanin enables unconditionally — so its pin reaches the
-  # production binary even though the library crate itself is feature-gated.
-  - package-ecosystem: "cargo"
-    directory: "/rust/jasper-host-clock"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 5
-    groups:
-      jasper-host-clock-crates:
-        patterns:
-          - "*"
-
-  # jasper-dual-dac-lab is lab-only and install.sh never builds it, so CI's
-  # `cargo test --locked` step is its sole rot gate. Left unwatched it aged
-  # three minor versions behind the daemons on `alsa`.
-  - package-ecosystem: "cargo"
-    directory: "/rust/jasper-dual-dac-lab"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 5
-    groups:
-      jasper-dual-dac-lab-crates:
+      rust-alsa-crates:
         patterns:
           - "*"

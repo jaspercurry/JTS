@@ -174,6 +174,24 @@ def test_alsa_linking_crates_share_one_version() -> None:
     )
 
 
+def _cargo_entry_directories() -> list[set[str]]:
+    """The directory set each cargo `updates` entry covers, one set per entry.
+
+    Dependabot accepts either `directory` (a single path) or `directories` (a
+    list). Read both, so the guards below cannot be defeated by switching form.
+    """
+
+    covered: list[set[str]] = []
+    for entry in _dependabot()["updates"]:
+        if entry["package-ecosystem"] != "cargo":
+            continue
+        directories = set(entry.get("directories") or ())
+        if "directory" in entry:
+            directories.add(entry["directory"])
+        covered.append(directories)
+    return covered
+
+
 def test_dependabot_watches_every_alsa_linking_crate() -> None:
     """An unwatched crate directory ages with nothing raising a PR.
 
@@ -182,16 +200,39 @@ def test_dependabot_watches_every_alsa_linking_crate() -> None:
     two never got a bump PR and nobody noticed them falling behind.
     """
 
-    watched = {
-        entry["directory"]
-        for entry in _dependabot()["updates"]
-        if entry["package-ecosystem"] == "cargo"
-    }
+    watched = set().union(*_cargo_entry_directories())
     unwatched = sorted(set(_alsa_linking_crates()) - watched)
 
     assert not unwatched, (
         "alsa-linking crate directories with no cargo entry in "
         f".github/dependabot.yml: {unwatched}"
+    )
+
+
+def test_dependabot_bumps_the_alsa_crates_atomically() -> None:
+    """All four must be covered by ONE cargo entry, via `directories`.
+
+    Coverage alone is not enough, and the two guards are load-bearing together.
+    Dependabot groups cannot span `updates` entries, so an entry per crate
+    raises a PR per crate, each rewriting one manifest —
+    test_alsa_linking_crates_share_one_version then fails every one of them
+    individually and the bump deadlocks with nothing mergeable.
+
+    Not hypothetical: commit adf15a2cc (PR #1725) is a dependabot PR that
+    rewrote jasper-outputd's manifest alone and created the very drift #2266
+    had to repair. Splitting this entry back up would re-arm that.
+    """
+
+    entries = _cargo_entry_directories()
+    alsa_crates = set(_alsa_linking_crates())
+    owning = [covered for covered in entries if covered & alsa_crates]
+
+    assert len(owning) == 1, (
+        "the alsa-linking crates must share ONE cargo updates entry so a bump "
+        f"is atomic; found {len(owning)} entries covering them: {owning}"
+    )
+    assert alsa_crates <= owning[0], (
+        f"cargo entry misses alsa-linking crates: {sorted(alsa_crates - owning[0])}"
     )
 
 
