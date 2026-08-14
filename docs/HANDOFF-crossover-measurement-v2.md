@@ -346,6 +346,19 @@ the module, not a second copy here.
     normalizing superset — so both sides come back through the same
     deserialization path. Normalization failure and mismatch stay distinct
     refusals.
+13. **Stage 1's graph names BOTH ends of the box's transport.** CHECK and
+    MEASURE are the only phases that emit their own graph — the four
+    `SUMMED_SWEEP_PHASES` play into the already-active production graph — and
+    that emit derives its whole `devices:` block from the resolved playback
+    endpoint in one call (`active_emit_devices` in
+    [`camilla_yaml.py`](../jasper/active_speaker/camilla_yaml.py)), capture lane
+    and wire format and latency geometry together. It matters because a
+    ring-armed speaker's playback endpoint is not its snd-aloop one: naming only
+    the sink would sweep into the ring while CamillaDSP captured a lane nobody
+    feeds — silence with every daemon healthy (issue #2450). Which transports
+    exist and how a box gets armed are **not** this document's to state; the
+    authority is
+    [`HANDOFF-audio-graph-consolidation.md`](HANDOFF-audio-graph-consolidation.md).
 
 ## Debugging — where to look first
 
