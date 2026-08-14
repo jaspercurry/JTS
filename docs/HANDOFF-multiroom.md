@@ -281,7 +281,7 @@ Increment 6 (per-follower calibration). What exists:
   (`rate_adjust=false`) and the channel-split live weave (§2/§4).
 - **`jasper-fanin` music-only output (Increment 1) — DELETED 2026-08-14 by owner
   ruling** ([#2285](https://github.com/jaspercurry/JTS/issues/2285) deletion arc;
-  PR [#PRNUM](https://github.com/jaspercurry/JTS/pull/PRNUM)). It shipped as
+  PR [#2483](https://github.com/jaspercurry/JTS/pull/2483)). It shipped as
   `JASPER_FANIN_MUSIC_OUTPUT_PCM` (off by default): when set, `mixer.rs`
   `step()` wrote a SECOND ALSA output per period carrying the program post-duck
   and **pre-TTS**, plus a `music_output` STATUS block. **Nothing ever set the

@@ -342,7 +342,7 @@ half nothing ever wired is removed outright rather than left dormant "in case
 v2 wants it". Dormant capability is not free — it is parsed, published, tested,
 documented, and swept on every prose pass, and it reads to the next session as a
 seam that exists. First application, ruled the same day: **`JASPER_FANIN_MUSIC_OUTPUT_PCM`
-is DELETED** (PR [#PRNUM](https://github.com/jaspercurry/JTS/pull/PRNUM)) —
+is DELETED** (PR [#2483](https://github.com/jaspercurry/JTS/pull/2483)) —
 fan-in's optional second, pre-TTS "music-only" output PCM (multi-room
 Increment 1). Its READ path was live (`Config::from_env`, `Mixer::new`'s open,
 the per-period `write_music_only`, the `music_output` STATUS block) and **no
