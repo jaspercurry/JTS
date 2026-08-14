@@ -735,14 +735,53 @@ def test_innomaker_declares_the_jts4_measured_floor() -> None:
     # is measured on that board: period 128 / dac_buffer 256 — the pair both
     # other declaring profiles use — took 1 DAC xrun in 5 minutes here, and 512
     # took zero in 5 minutes plus zero in a 3-minute run through the armed ring.
-    # The CAMILLA pair is NOT measured here: it is Apple's/DAC8x's starting
-    # point, and this test pins the DECLARATION so a later real measurement has
-    # to change it deliberately rather than drift onto it.
+    # The CAMILLA pair is NOT measured here: it is the non-tightening expressible
+    # pair (see the next test, which is what actually guards that property).
     assert INNOMAKER_HIFI_AMP_PRO.latency_floor == LatencyFloor(
-        camilla_chunksize=256,
-        camilla_target_level=1536,
+        camilla_chunksize=1024,
+        camilla_target_level=4096,
         outputd_period_frames=128,
         outputd_dac_buffer_frames=512,
+    )
+
+
+def test_innomaker_unmeasured_camilla_half_tightens_nothing() -> None:
+    """The safety argument that lets an UNMEASURED half ship without a soak.
+
+    The dataclass has no optional half, so the measured outputd floor cannot be
+    declared without also declaring a CamillaDSP pair — and on this board that
+    pair governs the loopback FALLBACK lane, which no run here has measured. It
+    is therefore only safe while it tightens nothing relative to the shipped
+    global default:
+
+      - chunksize EQUAL to DEFAULT_CHUNKSIZE — the emitted value on that lane is
+        byte-identical to what the board runs today;
+      - target_level GREATER OR EQUAL to DEFAULT_TARGET_LEVEL — more resampler
+        cushion, never less.
+
+    Both directions are asserted because the first candidate, Apple's/DAC8x's
+    (256, 1536), violated BOTH: a 4x tighter cadence and a smaller absolute
+    target. An equality check on chunksize alone would have passed a pair that
+    still shrank the buffer.
+
+    Tightening either axis on this silicon is a real change that needs a
+    loopback-lane soak on this board first; this test is what makes that
+    deliberate instead of a one-character drift.
+    """
+    from jasper.camilla_config_contract import (
+        DEFAULT_CHUNKSIZE,
+        DEFAULT_TARGET_LEVEL,
+    )
+
+    floor = INNOMAKER_HIFI_AMP_PRO.latency_floor
+    assert floor is not None
+    assert floor.camilla_chunksize == DEFAULT_CHUNKSIZE, (
+        "the unmeasured camilla half must not move the loopback lane's chunk "
+        "cadence off the shipped default without a soak on this board"
+    )
+    assert floor.camilla_target_level >= DEFAULT_TARGET_LEVEL, (
+        "the unmeasured camilla half must not shrink the loopback lane's "
+        "resampler cushion below the shipped default"
     )
 
 

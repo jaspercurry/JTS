@@ -702,26 +702,45 @@ INNOMAKER_HIFI_AMP_PRO = DacProfile(
     # The 128-frame PERIOD is what makes shm_ring reachable at all (it must equal
     # fan-in's compile-time RING_SLOT_FRAMES, which is 128).
     #
-    # UNMEASURED on this board: the CamillaDSP pair. It is Apple's/DAC8x's
-    # (256, 1536) STARTING POINT, transferred, not a result here — and stated as
-    # such rather than left to read as measured. Two facts bound the risk. First,
-    # the pair is INERT on the path this board actually runs: a shm_ring-coupled
-    # box takes its CamillaDSP geometry from RING_CAMILLA_CHUNKSIZE /
-    # RING_CAMILLA_TARGET_LEVEL (128/128, jasper.fanin_coupling), which
-    # apply_capture_precedence merges LAST over whatever this floor resolved, so
-    # the declared pair governs the LOOPBACK lane only. Second, the dataclass has
-    # no optional half — declaring the measured outputd floor REQUIRES supplying a
-    # CamillaDSP pair, and the shipped global default (1024, 2048) is not even
-    # expressible here (2048 < 4 x 1024 fails the pair invariant). So the honest
-    # exposure is named rather than avoidable: an InnoMaker box that falls BACK to
-    # loopback now runs 256/1536 instead of the global default, on a pair no run
-    # on this silicon has confirmed. What would falsify it is a loopback-lane soak
-    # on this board showing CamillaDSP xruns or clipped samples the global default
-    # did not; until someone runs one, this is a transfer with a cushion (6x, not
-    # the validator's 4x minimum), matching what both measured profiles chose.
+    # UNMEASURED on this board: the CamillaDSP pair. It is chosen as the
+    # NON-TIGHTENING expressible pair, not transferred from the profiles that
+    # measured theirs, and the choice is a safety argument rather than a result.
+    #
+    # The dataclass has no optional half, so declaring the measured outputd floor
+    # requires supplying SOME CamillaDSP pair, and the shipped global default
+    # (1024, 2048) is not itself expressible (2048 < 4 x 1024 fails the pair
+    # invariant). That constrains the choice; it does not force one — (1024, 4096)
+    # and (512, 2048) both satisfy every invariant. Of those, (1024, 4096) is the
+    # only one that TIGHTENS nothing:
+    #   - chunksize EQUALS camilla_config_contract.DEFAULT_CHUNKSIZE, so a
+    #     floorless box and this one emit the same value on the loopback lane
+    #     (the floor becomes the fallback only when no operator env is set, and
+    #     it resolves to the same number the global default would have). The
+    #     EQUALITY is the property, not the literal 1024 — if the global default
+    #     ever moves, this must move with it, which
+    #     test_innomaker_unmeasured_camilla_half_tightens_nothing enforces;
+    #   - target_level 4096 moves UP from DEFAULT_TARGET_LEVEL's 2048, which is
+    #     the LOOSER direction — more resampler cushion, never less.
+    # Apple's/DAC8x's (256, 1536) was the first candidate and is rejected here: it
+    # is a 4x TIGHTER DSP cadence than the shipped default AND a SMALLER absolute
+    # target than 2048, so declaring it would have quietly tightened both axes on
+    # the one lane nobody has measured on this board — a Zero 2 W whose own
+    # outputd measurement above says it needs MORE slack, not less.
+    #
+    # Where it applies at all: a shm_ring-coupled box takes its CamillaDSP
+    # geometry from RING_CAMILLA_CHUNKSIZE / RING_CAMILLA_TARGET_LEVEL (128/128,
+    # jasper.fanin_coupling), which apply_capture_precedence merges LAST over
+    # whatever this floor resolved. So the declared pair governs the LOOPBACK
+    # lane only — the fallback jts4 lands on if the ring disarms.
+    #
+    # Because it tightens nothing, this half needs no soak to be safe to ship.
+    # What still needs one is any FUTURE TIGHTENING of it: moving chunksize below
+    # 1024 on this silicon is the change that requires a loopback-lane soak on
+    # this board showing no CamillaDSP xruns or clipped samples the shipped
+    # default did not produce.
     latency_floor=LatencyFloor(
-        camilla_chunksize=256,
-        camilla_target_level=1536,
+        camilla_chunksize=1024,
+        camilla_target_level=4096,
         outputd_period_frames=128,
         outputd_dac_buffer_frames=512,
     ),
