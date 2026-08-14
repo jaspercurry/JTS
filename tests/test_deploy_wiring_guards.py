@@ -223,7 +223,8 @@ def test_udev_systemd_wants_units_are_shipped():
     missing = []
     for rules in sorted(_DEPLOY.glob("udev/*.rules")):
         for unit in _WANTS_RE.findall(rules.read_text()):
-            if not (_DEPLOY / "systemd" / unit).is_file():
+            shipped_name = unit.replace("@%k.service", "@.service")
+            if not (_DEPLOY / "systemd" / shipped_name).is_file():
                 missing.append(f"{rules.relative_to(_REPO)} -> {unit}")
     assert not missing, (
         "udev rules request units that don't ship in deploy/systemd/: "

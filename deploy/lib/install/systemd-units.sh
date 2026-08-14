@@ -1588,6 +1588,11 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-dongle-recover.service" \
         "${SYSTEMD_DIR}/jasper-dongle-recover.service"
+    # Experimental microphone-rig guard: a CH340 tty hot-plug starts one
+    # bounded identity-check-and-stop attempt. It is never enabled or polled.
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-turntable-autostop@.service" \
+        "${SYSTEMD_DIR}/jasper-turntable-autostop@.service"
     # Pin the Apple dongle's analog Headphone control to 100% at every
     # boot — the dynamic volume control happens in CamillaDSP (or the
     # source's own slider) and the dongle should never be limiting us.
@@ -1642,6 +1647,9 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/udev/99-jasper-audio-hardware-reconcile.rules" \
         /etc/udev/rules.d/99-jasper-audio-hardware-reconcile.rules
+    install -m 0644 \
+        "${REPO_DIR}/deploy/udev/99-jasper-turntable-autostop.rules" \
+        /etc/udev/rules.d/99-jasper-turntable-autostop.rules
     reload_audio_recovery_udev_rules_for_install
 
     # We own the full systemd units for each renderer + nqptp + the

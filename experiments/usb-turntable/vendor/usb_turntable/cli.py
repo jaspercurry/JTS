@@ -31,6 +31,7 @@ def make_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="action", required=True)
     commands.add_parser("devices", aliases=["ports"], help="list candidate serial devices")
     commands.add_parser("probe", help="query connection, firmware, and product; never moves")
+    commands.add_parser("offset", help="query the device's signed offset from logical zero")
     turn = commands.add_parser("turn", aliases=["move"], help="turn by a relative angle")
     turn.add_argument("degrees", type=float)
     turn.add_argument("--direction", "-d", required=True, choices=("cw", "ccw"))
@@ -83,6 +84,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             ) as controller:
                 if args.action == "probe":
                     result = controller.probe()
+                elif args.action == "offset":
+                    result = controller.offset_angle()
                 elif args.action in ("turn", "move"):
                     result = controller.turn_relative(args.direction, args.degrees)
                 elif args.action in ("set-zero", "zero"):

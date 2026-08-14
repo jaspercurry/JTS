@@ -8,6 +8,7 @@ import math
 import re
 import time
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Callable, Protocol
 
 from .commands import CommandSpec, build_command
@@ -35,6 +36,30 @@ SETTLE_SECONDS = 0.300
 NORMAL_HEARTBEAT = "#"
 REMOTE_LOS_HEARTBEAT = "###"
 STARTUP_TIMEOUT_FRAME = b"CR+ERR=31;"
+OFFSET_ANGLE_PREFIX = b"OffsetAngle= "
+OFFSET_ANGLE_DEGREE_MARKER = b"\xa1\xe3"
+OFFSET_ANGLE_CRLF = b"\r\n"
+OFFSET_ANGLE_MAX_INTEGER_DIGITS = 3
+OFFSET_ANGLE_MAX_FRACTION_DIGITS = 2
+OFFSET_ANGLE_NUMBER_PATTERN = (
+    rf"([+-]\d{{1,{OFFSET_ANGLE_MAX_INTEGER_DIGITS}}}"
+    rf"\.\d{{1,{OFFSET_ANGLE_MAX_FRACTION_DIGITS}}})"
+).encode("ascii")
+OFFSET_ANGLE_PATTERN = re.compile(
+    re.escape(OFFSET_ANGLE_PREFIX)
+    + OFFSET_ANGLE_NUMBER_PATTERN
+    + re.escape(OFFSET_ANGLE_DEGREE_MARKER)
+    + re.escape(OFFSET_ANGLE_CRLF)
+)
+OFFSET_ANGLE_MAX_LINE_BYTES = (
+    len(OFFSET_ANGLE_PREFIX)
+    + 1
+    + OFFSET_ANGLE_MAX_INTEGER_DIGITS
+    + 1
+    + OFFSET_ANGLE_MAX_FRACTION_DIGITS
+    + len(OFFSET_ANGLE_DEGREE_MARKER)
+    + len(OFFSET_ANGLE_CRLF)
+)
 
 
 class Transport(Protocol):
@@ -51,12 +76,34 @@ class ExchangeResult:
     pause_seen: bool
 
 
+@dataclass(frozen=True)
+class OffsetAngleExchangeResult:
+    command: str
+    frames: tuple[str, ...]
+    acknowledged: bool
+    degrees: Decimal
+
+
 class FrameParser:
     """Parse semicolon frames while separating the vendor heartbeat bytes."""
 
     def __init__(self) -> None:
         self.buffer = bytearray()
         self._heartbeat_run = 0
+        self._offset_angle_buffer: bytearray | None = None
+
+    def expect_offset_angle_line(self) -> None:
+        """Enable the one bounded non-semicolon response shape for one query."""
+        if self.buffer or self._heartbeat_run or self._offset_angle_buffer is not None:
+            raise ProtocolError("protocol parser was not empty before offset-angle query")
+        self._offset_angle_buffer = bytearray()
+
+    def cancel_unstarted_offset_angle_line(self) -> bool:
+        """Cancel only an armed query for which no value byte ever arrived."""
+        if self._offset_angle_buffer is None or self._offset_angle_buffer:
+            return False
+        self._offset_angle_buffer = None
+        return True
 
     def feed(self, payload: bytes) -> tuple[list[str], list[str]]:
         frames: list[str] = []
@@ -75,6 +122,27 @@ class FrameParser:
                 index += 1
                 continue
             heartbeats.extend(self.finalize_heartbeat_run())
+            if self._offset_angle_buffer is not None:
+                if not self._offset_angle_buffer and payload[index] == ord("C"):
+                    # A CR+ERR response still uses the ordinary semicolon grammar.
+                    self._offset_angle_buffer = None
+                else:
+                    self._offset_angle_buffer.append(payload[index])
+                    if len(self._offset_angle_buffer) > OFFSET_ANGLE_MAX_LINE_BYTES:
+                        raise ProtocolError("offset-angle value line exceeded its bounded grammar")
+                    if payload[index] == ord("\n"):
+                        match = OFFSET_ANGLE_PATTERN.fullmatch(self._offset_angle_buffer)
+                        if match is None:
+                            raise ProtocolError(
+                                "offset-angle value did not match the exact vendor line grammar"
+                            )
+                        numeric = match.group(1).decode("ascii")
+                        frames.append(
+                            f"{OFFSET_ANGLE_PREFIX.decode('ascii')}{numeric}\N{DEGREE SIGN}"
+                        )
+                        self._offset_angle_buffer = None
+                    index += 1
+                    continue
             if payload[index] in (0, 10, 13):
                 raise ProtocolError(f"forbidden control byte 0x{payload[index]:02x} in protocol stream")
             if payload[index] == ord(";"):
@@ -106,8 +174,16 @@ class FrameParser:
     @property
     def pending(self) -> str:
         heartbeat = NORMAL_HEARTBEAT * self._heartbeat_run
+        if self._offset_angle_buffer is None:
+            offset = ""
+        elif self._offset_angle_buffer:
+            offset = bytes(self._offset_angle_buffer).decode(
+                "ascii", errors="backslashreplace"
+            )
+        else:
+            offset = "<awaiting exact offset-angle value>"
         frame = bytes(self.buffer).decode("ascii", errors="backslashreplace")
-        return heartbeat + frame
+        return heartbeat + offset + frame
 
 
 class _StartupStreamParser:
@@ -473,6 +549,55 @@ class ProtocolSession:
             raise CommunicationTimeout(f"no exact CR+OK for {command} within {self.response_timeout:.1f}s")
         self._finish_command(command)
         return ExchangeResult(command, tuple(frames), True, True, False)
+
+    def execute_offset_angle(self, spec: CommandSpec) -> OffsetAngleExchangeResult:
+        if spec.wire_name != "GETOFFSETANGLE" or spec.motion:
+            raise ValueError("execute_offset_angle requires the GETOFFSETANGLE CommandSpec")
+        if not self.synchronized:
+            raise ProtocolError("session must be synchronized before sending a command")
+        command = build_command(spec)
+        self._prepare_command()
+        self.parser.expect_offset_angle_line()
+        self.transport.write(self._encode(command))
+        self._last_command_at = self.monotonic()
+        deadline = self.monotonic() + self.response_timeout
+        frames: list[str] = []
+        degrees: Decimal | None = None
+        acknowledged = False
+        value_prefix = OFFSET_ANGLE_PREFIX.decode("ascii")
+        while self.monotonic() < deadline and not acknowledged:
+            new_frames = self._read_runtime(min(0.1, deadline - self.monotonic()))
+            for frame in new_frames:
+                frames.append(frame)
+                self._reject_device_error(command, frames)
+                if frame.startswith(value_prefix) and frame.endswith("\N{DEGREE SIGN}"):
+                    if degrees is not None or acknowledged:
+                        raise ProtocolError("invalid or duplicate offset-angle value")
+                    degrees = Decimal(frame[len(value_prefix) : -1])
+                elif frame == "CR+OK":
+                    if acknowledged:
+                        raise ProtocolError(f"duplicate CR+OK for {command}")
+                    if degrees is None:
+                        raise ProtocolError("missing offset-angle value before CR+OK")
+                    acknowledged = True
+                else:
+                    raise ProtocolError(f"unexpected frame for {command}: {frame!r}")
+        if not acknowledged:
+            if not frames and self.parser.cancel_unstarted_offset_angle_line():
+                raise CommunicationTimeout(
+                    f"no offset-angle value for {command} within {self.response_timeout:.1f}s"
+                )
+            if self.parser.pending:
+                raise ProtocolError(
+                    f"offset-angle response did not complete: pending={self.parser.pending!r}"
+                )
+            raise CommunicationTimeout(
+                f"no exact CR+OK for {command} within {self.response_timeout:.1f}s"
+            )
+        if degrees is None:  # pragma: no cover - guarded by the ACK transition
+            raise ProtocolError("offset-angle response did not contain a value")
+        self._finish_command(command)
+        return OffsetAngleExchangeResult(command, tuple(frames), True, degrees)
 
     def execute_motion(self, spec: CommandSpec, *parameters: object) -> ExchangeResult:
         if not spec.motion:

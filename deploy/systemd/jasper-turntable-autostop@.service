@@ -1,0 +1,41 @@
+[Unit]
+Description=Stop the experimental USB turntable on hot-plug (%I)
+Documentation=file:/opt/jasper/experiments/usb-turntable/README.md
+BindsTo=dev-%i.device
+After=dev-%i.device
+ConditionPathExists=/dev/%I
+
+[Service]
+Type=oneshot
+User=pi
+SupplementaryGroups=dialout
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 /opt/jasper/experiments/usb-turntable/jts_turntable.py --port /dev/%I --json hotplug-stop
+TimeoutStartSec=40s
+StandardOutput=journal
+StandardError=journal
+
+CapabilityBoundingSet=
+AmbientCapabilities=
+DevicePolicy=closed
+DeviceAllow=/dev/%I rw
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+RestrictAddressFamilies=AF_UNIX
+RemoveIPC=true
+UMask=0077
+MemoryMax=64M

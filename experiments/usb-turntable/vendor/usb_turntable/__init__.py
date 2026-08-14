@@ -2,7 +2,7 @@
 
 # SPDX-License-Identifier: Apache-2.0
 
-from .controller import OperationResult, ProbeResult, TurntableController
+from .controller import OffsetAngleResult, OperationResult, ProbeResult, TurntableController
 from .discovery import discover_devices
 from .errors import (
     CommandRejected,
@@ -20,6 +20,7 @@ __all__ = [
     "CommandRejected",
     "CommunicationTimeout",
     "CompletionTimeout",
+    "OffsetAngleResult",
     "OperationResult",
     "PortDiscoveryError",
     "ProbeResult",

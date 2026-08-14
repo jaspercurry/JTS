@@ -1,8 +1,9 @@
 # USB turntable control on JTS3
 
-This is a manual, opt-in experiment for controlling the USB turntable from
-JTS3. It has no installer hook, systemd unit, voice tool, or production daemon.
-Run it only from a JTS checkout when you intend to move the platform.
+This is an experimental controller for the USB turntable on JTS3. Positioning
+remains manual and opt-in: there is no voice tool, measurement scheduler, or
+permanent polling daemon. The sole automatic behavior is a bounded one-shot
+stop request when the turntable's USB serial adapter appears.
 
 JTS owns the operator-facing labels and Raspberry Pi power preflight in
 [`jts_turntable.py`](jts_turntable.py). The bundled upstream `usb_turntable`
@@ -12,7 +13,9 @@ details in JTS.
 
 ## Setup
 
-Use the Pi-side checkout, normally `/home/pi/jts`, rather than `/opt/jasper`:
+Use the Pi-side checkout, normally `/home/pi/jts`, for manual commands. The
+installer separately stages the same experiment under `/opt/jasper` for the
+hot-plug one-shot:
 
 ```sh
 cd /home/pi/jts/experiments/usb-turntable
@@ -78,6 +81,36 @@ python3 jts_turntable.py --allow-power-risk left 10
 ```
 
 Resolve the power problem instead whenever possible.
+
+## Hot-plug stop
+
+A full JTS install stages
+`99-jasper-turntable-autostop.rules` and the hardened
+`jasper-turntable-autostop@.service` template. When a CH340 tty with USB ID
+`1a86:7523` appears, udev passes that event's exact `/dev/ttyUSB…` path to one
+systemd job. The helper opens only that path, verifies product
+`MT320RUBL40ProV3` in the same controller session, and sends the vendor stop
+request. A different CH340 product is logged and ignored without receiving a
+command.
+
+The helper exits immediately after an acknowledged and completed stop. While
+the tty or controller is still settling, it makes at most four attempts with
+1.5 seconds between failed attempts; systemd also caps the entire job at 40
+seconds. There is no timer or resident process. If the USB device disappears,
+the device-bound job is stopped; reconnecting it creates a new one-shot job.
+
+Inspect its structured journal events with:
+
+```sh
+journalctl -u 'jasper-turntable-autostop@*.service' --no-pager
+```
+
+Success has `"event": "turntable_autostop.stopped"` in its JSON record. Retry,
+exhaustion, invalid-device, and non-turntable CH340 outcomes use the stable
+`turntable_autostop.retry`, `.exhausted`, `.rejected`, and `.ignored` event
+names. USB IDs alone are not identity because `1a86:7523` is generic; the
+same-session product probe adds a short delay but prevents an unrelated CH340
+device from receiving the stop command.
 
 ## Guarded measurement positions
 
