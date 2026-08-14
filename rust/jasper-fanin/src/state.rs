@@ -1164,10 +1164,13 @@ impl StateServer {
         // is a heartbeat-live-but-frozen reader (bounded-wait give-ups + sticky
         // demotions), `drop_no_reader` a dead/absent reader (normal reload
         // transient). `stall_active` / `last_stall_ms` surface a live/recent stall
-        // episode. `mirror_frames` / `mirror_drops` are the lossy aloop side-tap's
-        // written-frame and drop counts (never load-bearing; parity with
-        // music_output's frames_written/drops). Only present under shm_ring —
-        // byte-identical observability to today under loopback.
+        // episode. Only present under shm_ring — byte-identical observability to
+        // today under loopback.
+        //
+        // There are no `mirror_frames` / `mirror_drops` here: U4/P7-4 removed the
+        // lossy aloop side-tap they counted, and a pair of counters pinned at 0
+        // forever reads as "the mirror is writing nothing" rather than "there is
+        // no mirror". The absent key is the honest signal.
         //
         // `wire_format` / `channels` are the OBSERVED header tuple — read back
         // from the geometry the writer attached against, not echoed from
@@ -1212,18 +1215,6 @@ impl StateServer {
                 buf,
                 "last_stall_ms",
                 ring.last_stall_ms.load(Ordering::Relaxed),
-            );
-            buf.push(',');
-            push_kv_u64(
-                buf,
-                "mirror_frames",
-                ring.mirror_frames.load(Ordering::Relaxed),
-            );
-            buf.push(',');
-            push_kv_u64(
-                buf,
-                "mirror_drops",
-                ring.mirror_drops.load(Ordering::Relaxed),
             );
             buf.push('}');
         }
@@ -1630,8 +1621,6 @@ mod tests {
                 drop_no_reader: Arc::new(AtomicU64::new(3)),
                 stall_active: Arc::new(AtomicBool::new(true)),
                 last_stall_ms: Arc::new(AtomicU64::new(1500)),
-                mirror_frames: Arc::new(AtomicU64::new(7654)),
-                mirror_drops: Arc::new(AtomicU64::new(2)),
             }),
         };
         server
@@ -1884,14 +1873,6 @@ mod tests {
         assert!(j.contains(r#""occupancy":6"#), "missing occupancy: {j}");
         assert!(j.contains(r#""published":12345"#), "missing published: {j}");
         assert!(j.contains(r#""full_waits":9"#), "missing full_waits: {j}");
-        assert!(
-            j.contains(r#""mirror_frames":7654"#),
-            "missing mirror_frames: {j}"
-        );
-        assert!(
-            j.contains(r#""mirror_drops":2"#),
-            "missing mirror_drops: {j}"
-        );
         // Un-folded drop counters (issue #1524): parse the ring object and assert
         // the folded `drops` key is GONE while the split stuck-vs-no-reader keys
         // and the stall fields are present. (A whole-document substring check
@@ -1906,6 +1887,15 @@ mod tests {
             ring.get("drops").is_none(),
             "the folded `drops` key must be un-folded away: {ring}"
         );
+        // U4/P7-4 removed the lossy aloop mirror. Its counters must not come
+        // back as fields pinned at 0 — an absent key says "no mirror", a zero
+        // says "a mirror that wrote nothing", and only one of those is true.
+        for gone in ["mirror_frames", "mirror_drops"] {
+            assert!(
+                ring.get(gone).is_none(),
+                "the ring block must not carry `{gone}` — the aloop mirror is gone: {ring}"
+            );
+        }
         assert_eq!(ring["stuck_reader_drops"], 4, "stuck_reader_drops: {ring}");
         assert_eq!(ring["drop_no_reader"], 3, "drop_no_reader: {ring}");
         assert_eq!(ring["stall_active"], true, "stall_active: {ring}");

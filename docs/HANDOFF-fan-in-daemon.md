@@ -162,13 +162,19 @@ Renderers (each on its own snd-aloop substream pair):
 jasper-fanin (the new Rust daemon):
   reads from           ← hw:Loopback,1,0..4 (via per-substream dsnoop or direct hw)
   sums sample-wise
-  writes to            → hw:Loopback,0,7
+  writes to            → hw:Loopback,0,7   [coupling=loopback]
+                       → Ring A            [coupling=shm_ring, and NOTHING else —
+                                            U4/P7-4 dropped the lane-7 mirror]
 
-The "summed music" substream:
+The "summed music" substream — a loopback-coupled box's program path.
+On a shm_ring box it has neither a writer nor a reader:
   CamillaDSP captures  ← pcm.jasper_capture → dsnoop on hw:Loopback,1,7
+                         (shm_ring boxes capture jts_ring_capture instead)
   (no reader)          ← pcm.jasper_ref     → plug alias, unread since U4/P7-3
   All AEC reference    ← outputd UDP speaker monitor after CamillaDSP/outputd
-    (bridge, U4/P7-1; jasper-aec-tune, U4/P7-2)
+    (bridge, U4/P7-1; jasper-aec-tune, U4/P7-2 — that second move re-pointed
+     the tap's last RAW reader, and only then did P7-4 drop the ring box's
+     writer)
 
 CamillaDSP → outputd_content_playback → jasper-outputd → Apple USB-C dongle
 ```

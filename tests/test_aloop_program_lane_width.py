@@ -6,9 +6,11 @@
 
 The lane: ``jasper-fanin`` writes its summed program to ``hw:Loopback,0,7`` and
 ``pcm.jasper_capture`` dsnoops ``hw:Loopback,1,7``. On a ``loopback``-coupled
-box that lane IS the program path into CamillaDSP; on a ``shm_ring`` box the
-same write is the deliberately lossy aloop MIRROR that keeps the surviving
-dsnoop consumer alive (``Mixer::new``'s ``open_music_output``).
+box that lane IS the program path into CamillaDSP. On a ``shm_ring`` box it has
+neither a writer nor a reader: U4/P7-2 moved the last reader off the tap and
+U4/P7-4 dropped the lossy aloop MIRROR that used to shadow the ring onto it. So
+the width below is a ``loopback``-box fact now — and the declarers still have to
+agree, because ``loopback`` is still a supported coupling.
 
 **It is narrow, and three separate places say so without any of them knowing
 about the others.** Before this file, ``mixer::FORMAT`` — the writer, and the
@@ -49,8 +51,8 @@ have to move the realtime pacer's own write and teach the asound.conf render
 path a per-box format it does not carry today. It no longer has to fix a raw
 dsnoop open: ``jasper/cli/aec_tune.py`` was the one reader that could not
 absorb a format move, and P7-2 moved it off the tap. Ownership of the hop sits
-with P7 (re-point the dsnoop consumers, drop the mirror) and P9 (remove
-snd-aloop), not with U2.
+with P7 (re-point the dsnoop consumers, drop the mirror — both halves landed,
+at P7-2 and P7-4) and P9 (remove snd-aloop), not with U2.
 """
 
 from __future__ import annotations

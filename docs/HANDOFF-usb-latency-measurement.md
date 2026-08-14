@@ -512,21 +512,17 @@ they're queued:
   proven wrong during the USB-drop root-cause investigation — the drop was a
   consumer-overflow bug, not clock drift, so a rate-matcher would not have
   fixed it. Re-chasing it re-litigates a closed diagnosis.
-- **Deleting the lane-7 aloop mirror** to "finish" the aloop removal. It
-  earns its keep: `RingOutput.mirror` (`rust/jasper-fanin/src/mixer.rs`) is a
-  non-blocking diagnostic side-tap on `hw:Loopback,0,7` — `Option<PCM>`,
-  never the pacer, the ring runs without it — feeding the AEC fallback
-  dsnoop and aloop diagnostics. Removing it saves zero latency and breaks
-  the software-AEC fallback reference path.
-
-  **This entry's premise has since been retired.** The AEC fallback it
-  protects is gone — the bridge's ALSA reference at U4/P7-1, the aloop-tap
-  diagnostics at U4/P7-3, and `jasper-aec-tune` at U4/P7-2 — so no AEC
-  consumer reads this mirror. The deletion is no longer an out-of-scope
-  temptation but planned work, U4/P7-4, tracked in
-  [#2437](https://github.com/jaspercurry/JTS/issues/2437); the latency
-  reasoning above (removing it saves zero latency) still holds and is the
-  only part of this entry that survives.
+- ~~**Deleting the lane-7 aloop mirror** to "finish" the aloop removal.~~
+  **SUPERSEDED — the mirror was deleted in U4/P7-4.** This entry rejected the
+  deletion because the mirror fed "the AEC fallback dsnoop and aloop
+  diagnostics". That whole reader set has since been retired — the AEC
+  bridge's ALSA reference at U4/P7-1, the aloop-tap diagnostics at U4/P7-3,
+  and `jasper-aec-tune` at U4/P7-2 — so the premise went away rather than the
+  reasoning being wrong. What this entry got right and still stands:
+  **removing it saves zero latency.** It was never a latency item and this
+  review should not be cited as motivation for it — the deletion is the
+  consolidation arc's, on consumers-then-producer grounds. See
+  `docs/HANDOFF-audio-graph-consolidation.md`'s P7 row.
 - **PipeWire / topology re-architecture** of the AEC or reference path.
   Standing constraint (AGENTS.md: swap the engine, not the topology; full
   rationale in `docs/HANDOFF-aec.md`). Nothing in this review produced

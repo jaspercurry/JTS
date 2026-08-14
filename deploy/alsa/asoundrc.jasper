@@ -37,7 +37,9 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #     Bluetooth, and USB-in no longer contend for the same playback PCM.
 #   - jasper-fanin reads those per-renderer capture substreams, sums
 #     them sample-wise, and writes the single "summed music" stream to
-#     substream 7.
+#     substream 7 — but ONLY under `loopback` coupling. A `shm_ring` box
+#     writes Ring A instead and leaves substream 7 with no writer at all
+#     (U4/P7-4 dropped the lane-7 mirror).
 #   - CamillaDSP reads that summed stream via `pcm.jasper_capture` and
 #     is its only reader. `pcm.jasper_ref`, the plug-wrapped alias, has
 #     no reader left at all (U4/P7-1 then P7-3) and is shipped only
@@ -116,11 +118,19 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 # S16_LE and publishes the summed output at the same shape. A renderer's
 # native rate cannot lock another renderer or the AEC/Camilla reference.
 #
-# Who opens this tap — one live reader, plus one alias nobody opens:
+# Who opens this tap — one live reader, plus one alias nobody opens.
+# NOTE FIRST: since U4/P7-4 this tap has a PRODUCER only under `loopback`
+# coupling. On a `shm_ring` box fan-in writes Ring A and nothing writes
+# substream 7 — and nothing reads it there either, because U4/P7-2
+# re-pointed the last RAW consumer off it before P7-4 removed the writer:
 #   - CamillaDSP opens `plug:jasper_capture` (note the `plug:`) in the
-#     outputd config. plug keeps the consumer tolerant of
+#     outputd config — on a `loopback` box. A `shm_ring` box's graph is
+#     emitted with the ring capture device instead, so it never reaches
+#     this tap. plug keeps the consumer tolerant of
 #     operator mistakes, but the intended fan-in output shape is fixed
 #     at 48 kHz S16_LE.
+#   - jasper-aec-tune USED to open `jasper_capture` for a bounded
+#     capture; since U4/P7-2 its reference is outputd's UDP monitor.
 #   - `jasper_ref` (defined below), the plug-wrapped alias, is opened by
 #     nothing: U4/P7-1 retired the AEC bridge's ALSA fallback and P7-3
 #     retired the timing probe's `--jasper-capture-pcm`, which were its
@@ -133,9 +143,10 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 # one ticket's worth of deletion ordering, not for a consumer.
 #
 # We never want camilla to read a raw `hw:Loopback,1,N` capture
-# directly — that would deny dsnoop the slave, so any future second
-# reader (and an operator's ad-hoc `arecord -D jasper_capture`) would
-# fail with `unable to open slave`. In particular,
+# directly — that would deny dsnoop the slave, and any second reader of
+# the tap would fail to open with `unable to open slave`. (jasper-aec-tune
+# was that second reader until U4/P7-2; the rule outlives it, because
+# dsnoop is what keeps the tap shareable at all.) In particular,
 # `hw:Loopback,1,0` is now a private fan-in input lane; the summed
 # music reference is `pcm.jasper_capture` on substream 7.
 

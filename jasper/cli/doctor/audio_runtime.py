@@ -625,10 +625,7 @@ def check_fanin_service() -> CheckResult:
     # The fan-in STATUS echoes its live coupling transport (state.rs
     # push_kv_str("transport", ...)): "loopback" (default) or "shm_ring" (Ring A —
     # with a "ring" observability block). Expect the STATUS to match the persisted
-    # intent so a coupling that failed to restart onto the box is caught. shm_ring
-    # keeps a lossy aloop MIRROR on lane 7, so output.pcm still reports
-    # hw:Loopback,0,7 (checked below, unchanged); only the transport string and the
-    # ring block differ from loopback.
+    # intent so a coupling that failed to restart onto the box is caught.
     expected_transport = {
         COUPLING_SHM_RING: "shm_ring",
     }.get(coupling, "loopback")
@@ -654,8 +651,13 @@ def check_fanin_service() -> CheckResult:
             )
 
     output_pcm = output.get("pcm")
-    # Both loopback and shm_ring (via its lane-7 aloop mirror) report
-    # hw:Loopback,0,7 as output.pcm.
+    # output.pcm is a CONFIG echo (state.rs pushes self.output_pcm), not proof a
+    # PCM was opened. On a loopback-coupled box it is the real output device. On
+    # shm_ring it is vestigial: U4/P7-4 dropped the lane-7 aloop mirror, so fan-in
+    # opens no ALSA playback PCM at all there — the value is still reported
+    # because the Coupling::Loopback arm still needs it, and checking it keeps the
+    # loopback box honest. If a later phase stops configuring output_pcm on a ring
+    # box, this equality is what will fail first; scope it per-coupling then.
     if output_pcm != _FANIN_EXPECTED_OUTPUT_PCM:
         return CheckResult(
             "jasper-fanin service",

@@ -1,10 +1,13 @@
 # jasper-fanin
 
 Per-renderer snd-aloop substream fan-in for JTS. Reads N capture-side
-substreams (one per music renderer), sums them sample-wise, writes one
-summed-music stream that CamillaDSP dsnoops on. (The AEC bridge read
-that stream too until U4/P7-1; it now takes outputd's UDP speaker
-monitor as its only reference.)
+substreams (one per music renderer), sums them sample-wise, and writes
+one summed-music stream for CamillaDSP. Where that stream goes depends
+on the box's coupling: `loopback` writes the `hw:Loopback,0,7` substream
+CamillaDSP dsnoops on; `shm_ring` writes Ring A and opens no ALSA output
+at all (U4/P7-4 dropped the lane-7 mirror it used to write alongside the
+ring). (The AEC bridge read the aloop stream too until U4/P7-1; it now
+takes outputd's UDP speaker monitor as its only reference.)
 
 See [`docs/HANDOFF-fan-in-daemon.md`](../../docs/HANDOFF-fan-in-daemon.md)
 for the architecture, the resilience + observability contract, and the

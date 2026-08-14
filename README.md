@@ -76,10 +76,10 @@ Phone (AirPlay / Spotify Connect / BT)
                               │ sums active renderer/test lanes + TTS
                               │ applies program duck before TTS mix
                               ▼
-                       hw:Loopback,0,7
-                              │
-                              ▼ (loop)
-                       pcm.jasper_capture
+                       hw:Loopback,0,7        ← coupling=loopback
+                              │                 (a coupling=shm_ring box writes
+                              ▼ (loop)           Ring A here instead, and writes
+                       pcm.jasper_capture        no snd-aloop lane at all)
                               │
                               ▼
                     jasper-camilla (CamillaDSP, port 1234)

@@ -214,24 +214,105 @@ def test_shm_ring_status_block_emitted_by_rust_state():
         "published",
         "full_waits",
         "drops",
-        "mirror_frames",
-        "mirror_drops",
     ):
         assert f'"{field}"' in text, f"ring block missing {field!r} key"
 
 
-def test_shm_ring_mixer_publishes_slots_and_keeps_mirror():
-    # The mixer's Output::Ring arm publishes period_frames/128 slots and keeps
-    # the lossy aloop mirror (write_music_only-shaped, never the pacer).
+def _rust_code_only(text: str) -> str:
+    """`text` with whole-line `//` and `///` comments dropped.
+
+    Every negative assertion in this module is about CODE. A retired thing is
+    normally retired together with a comment saying it was retired and why —
+    so a bare `"mirror" not in text` fails on the very sentence documenting the
+    removal, and the natural "fix" is to delete the explanation. Strip the prose
+    instead and let the assertion mean what it says.
+
+    WHOLE-LINE ONLY, deliberately. A trailing comment (`let n = 1; // output_pcm`)
+    survives the strip and will trip the negative assertions below. That is the
+    conservative direction — a naive `//`-to-end-of-line cut would eat the `//`
+    inside a string literal or a URL and quietly shrink what the guard inspects —
+    but the failure message has to say so, or the next reader sees an assertion
+    blaming code for something a comment did.
+    """
+    return "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith("//")
+    )
+
+
+def _shm_ring_construction_arm(text: str) -> str:
+    """`Mixer::new`'s `Coupling::ShmRing` construction arm, comments stripped.
+
+    SCOPED ON PURPOSE, and comment-stripped on purpose. The assertions below are
+    negative — "this arm opens nothing" — and a negative assertion over the whole
+    file would be satisfied by the `Coupling::Loopback` arm's legitimate
+    `open_output`, while one over the raw arm text would be defeated by the
+    arm's own comment explaining what U4/P7-4 removed. Both failure shapes read
+    as covered and guard nothing, so the slice is bounded and the prose is cut.
+    """
+    opener = "Coupling::ShmRing => {"
+    assert opener in text, "the mixer must still have a ShmRing output arm"
+    body, sep, _ = text[text.index(opener) :].partition("\n        };\n")
+    # Containment: the slice must stop at the transport `match`'s own terminator.
+    assert sep, "could not find the end of the transport match"
+    assert "RingWriter::create_or_attach" in body and "Output::Ring(Box::new(" in body, (
+        "the slice does not look like the ShmRing construction arm"
+    )
+    return _rust_code_only(body)
+
+
+def test_shm_ring_mixer_publishes_slots_and_opens_no_aloop_pcm():
+    """The ring arm publishes 128-frame slots — and opens NO ALSA PCM (U4/P7-4).
+
+    Until P7-4 this arm ALSO opened `config.output_pcm` as a lossy aloop mirror,
+    so a ring-coupled box kept feeding `hw:Loopback,0,7` for the dsnoop taps.
+    Those readers are gone (P7-1, P7-2, P7-3) and the mirror went last, in that
+    order: on a ring box the ring is the whole output. Re-adding any playback open here
+    silently restores a second writer of a lane nobody reads — and, worse, one
+    that would make the aloop tap look alive to the next consumer that reaches
+    for it.
+    """
     text = _mixer_rs_text()
     assert "Output::Ring" in text
     assert "RingWriter" in text
     assert ".publish(" in text
-    # The mirror uses the same write_music_only side-tap shape as the multiroom
-    # tap, so it can never back-pressure the loop.
-    assert "write_music_only(" in text
     # The 128-frame slot is pinned via the shared RING_SLOT_FRAMES constant.
     assert "RING_SLOT_FRAMES" in text
+
+    ring_arm = _shm_ring_construction_arm(text)
+    for opener in ("open_output(", "open_music_output(", "PCM::new("):
+        assert opener not in ring_arm, (
+            f"the ShmRing arm must open no ALSA PCM — found {opener!r}. The aloop "
+            "mirror was removed in U4/P7-4; the ring is the whole output here. "
+            "(If that hit is inside a TRAILING comment, the strip only drops "
+            "whole-line comments — move it onto its own line.)"
+        )
+    assert "output_pcm" not in ring_arm, (
+        "the ShmRing arm must not reach for config.output_pcm — that field "
+        "belongs to the Coupling::Loopback arm now. (If that hit is inside a "
+        "TRAILING comment, the strip only drops whole-line comments — move it "
+        "onto its own line.)"
+    )
+
+    # POSITIVE CONTROL: the same slicing + stripping applied to the arm that DOES
+    # open a PCM must find it. Without this, a slicer that silently returned ""
+    # would make every assertion above pass.
+    loopback_arm = _rust_code_only(
+        text[
+            text.index("Coupling::Loopback => {") : text.index("Coupling::ShmRing => {")
+        ]
+    )
+    assert "open_output(" in loopback_arm and "config.output_pcm" in loopback_arm, (
+        "the loopback arm must still open config.output_pcm — if this fails, the "
+        "negative assertions above are not proving anything"
+    )
+
+
+# NOTE — the retired `mirror_frames` / `mirror_drops` keys are deliberately NOT
+# re-pinned here as a source grep. `state.rs`'s
+# `snapshot_json_shm_ring_reports_ring_observability` asserts their absence on
+# the PARSED ring object, which is strictly stronger than reading the emitter's
+# text, and nothing on the Python side ever consumed them (no doctor, dashboard,
+# or /state reader). One fact, one owner.
 
 
 def test_step_fills_output_buf_once_above_the_transport_dispatch():
@@ -239,20 +320,24 @@ def test_step_fills_output_buf_once_above_the_transport_dispatch():
 
     The mutant this catches: moving (or duplicating)
     `saturate_to_i16(&self.sum_buf, &mut self.output_buf, self.program_width)` into the
-    `Output::Alsa` arm. `output_buf` is what the `Output::Ring` arm hands
-    `write_ring_period` for the lossy aloop mirror — and on the WIDE wire it is
-    the mirror's ONLY consumer, since the ring slot itself is filled from
-    `sum_buf` by `fill_wide_ring_payload`. A saturate that ran only on the ALSA
-    path would leave the ring transport publishing a stale (or, on the first
-    period, all-zero) `output_buf` to the mirror while the ring slot stayed
-    correct, so multi-room followers and the mirror capture would go silent with
-    the primary output unaffected.
+    `Output::Alsa` arm. `output_buf` is ALSO the NARROW ring wire's published
+    payload — `write_ring_period` publishes it slot by slot whenever the ring's
+    attached header is S16LE. A saturate that ran only on the ALSA path would
+    leave a narrow ring-coupled box publishing a stale (or, on the first period,
+    all-zero) buffer into Ring A, with CamillaDSP reading it and every counter
+    healthy. That is the whole fleet's narrow boxes going silent-or-stuttering
+    from a mutant with no error path.
+
+    Before U4/P7-4 this test's subject was the aloop mirror, which took
+    `output_buf` on BOTH wires; the mirror is gone, so the wide wire no longer
+    reads `output_buf` at all and the narrow wire is the reason the ordering
+    still matters.
 
     This is pinned in Python because `step()` has no hardware-free Rust test at
-    all: it reads live ALSA inputs. The in-crate mirror bit-identity test
-    (`mirror_payload_is_byte_identical_across_ring_wire_formats`) enters at
-    `write_ring_period`, one call BELOW the ordering asserted here, so it cannot
-    see which transport filled the buffer it is handed.
+    all: it reads live ALSA inputs. The in-crate ring tests
+    (`wide_ring_slots_carry_the_left_justified_narrow_slots`) enter at
+    `write_ring_period`, one call BELOW the ordering asserted here, so they
+    cannot see which transport filled the buffer they are handed.
     """
     text = _mixer_rs_text()
 
@@ -277,8 +362,8 @@ def test_step_fills_output_buf_once_above_the_transport_dispatch():
     assert body.count(dispatch) == 1, "step() must dispatch on the transport once"
     assert body.index(saturate) < body.index(dispatch), (
         "the saturate that fills output_buf must sit ABOVE the transport match, "
-        "shared by both arms — inside Output::Alsa it would leave the Ring arm "
-        "mirroring a stale output_buf"
+        "shared by both arms — inside Output::Alsa it would leave a narrow "
+        "ring-coupled box publishing a stale output_buf into Ring A"
     )
 
 
