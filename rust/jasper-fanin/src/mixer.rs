@@ -85,13 +85,17 @@ pub const CHANNELS: u32 = 2;
 /// PCM sample format for this daemon's snd-aloop lanes — the per-renderer
 /// capture inputs and the summed program write to `hw:Loopback,0,7`.
 ///
-/// THE WRITER'S HALF OF A FOUR-PLACE FACT, and until U2 PR-3 the only one of
-/// the four with no test at all. `pcm.jasper_capture`'s dsnoop slave, the
-/// doctor's `check_fanin_asound_wiring` pin, and `jasper/cli/aec_tune.py`'s
-/// RAW dsnoop open must all name this same format — dsnoop does not convert,
-/// unlike the `plug:` wrapper every other consumer reaches this lane through.
+/// THE WRITER'S HALF OF A THREE-PLACE FACT, and until U2 PR-3 the only one of
+/// the three with no test at all. `pcm.jasper_capture`'s dsnoop slave and the
+/// doctor's `check_fanin_asound_wiring` pin must name this same format.
 /// `tests/test_aloop_program_lane_width.py` pins the set, so moving this is a
-/// same-commit change to all four rather than a daemon-local edit.
+/// same-commit change to all three rather than a daemon-local edit.
+///
+/// It was a FOUR-place fact until U4/P7-2. `jasper/cli/aec_tune.py` opened the
+/// dsnoop RAW, and a raw open does not convert — it was the one reader that
+/// could not absorb a widening. It reads outputd's UDP speaker monitor now, so
+/// the only surviving consumer, CamillaDSP, reaches this lane through the
+/// `plug:` wrapper and is format-tolerant by construction.
 ///
 /// Narrow here is a JTS DECLARATION, not an snd-aloop limit — the **post-DSP
 /// content lane role** runs `S32_LE` on every box, on a substream pair

@@ -466,8 +466,7 @@ def check_fanin_asound_wiring() -> CheckResult:
             label,
             "fail",
             "pcm.jasper_capture missing — CamillaDSP has no capture "
-            "device on a loopback-coupled box, and jasper-aec-tune "
-            "loses its pre-DSP tap.",
+            "device on a loopback-coupled box.",
         )
     if 'pcm "hw:Loopback,1,7"' not in capture:
         detail = (

@@ -90,6 +90,8 @@ playback has a dedicated `correction_substream` lane. `jasper-fanin`
 sums those lanes; on ring-coupled boxes it writes Ring A for CamillaDSP
 and keeps a lossy lane-7 mirror so `pcm.jasper_capture` remains an
 explicit pre-DSP view until the snd-aloop cleanup phases remove it.
+With the last diagnostic reader retired (U4/P7-2) that mirror has no
+in-tree consumer on a ring box, and P7-4 removes it.
 (Its `pcm.jasper_ref` alias is shipped alongside but has no reader —
 see below.) On loopback fallback boxes,
 CamillaDSP still captures `pcm.jasper_capture` directly. Production AEC
@@ -756,8 +758,8 @@ reader at all — U4/P7-3 retired the timing probe's
 survives only as a shipped definition until P9-B deletes the aloop
 PCMs: a plug wrapper over
 `pcm.jasper_capture`, which is a dsnoop on the summed fan-in output
-`hw:Loopback,1,7` before CamillaDSP processing and still read by
-CamillaDSP and `jasper-aec-tune`. So:
+`hw:Loopback,1,7` before CamillaDSP processing and read only by
+CamillaDSP. So:
 
 - Production AEC now consumes outputd's 48 kHz stereo speaker monitor over
   UDP. That reference includes renderer/content, TTS/cues, fan-in
@@ -768,8 +770,10 @@ CamillaDSP and `jasper-aec-tune`. So:
   pre-DSP `pcm.jasper_ref` path is no longer selectable — see
   [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md).
 - A 25 dB ducking step is a transient the AEC's adaptive filter has
-  to re-converge through. Acceptable today; if it becomes a problem,
-  move the dsnoop tap downstream of CamillaDSP.
+  to re-converge through. The old remedy — move the tap downstream of
+  CamillaDSP — is already in place: every AEC reference now comes from
+  outputd's post-DSP speaker monitor, so the duck is inside the
+  reference rather than divergent from it.
 - Chip-AEC addition: production chip-AEC mode and the wake-corpus
   chip-AEC comparison profile also ask outputd to publish the same final
   speaker monitor as an XVF USB-IN reference. The UDP tap stays at

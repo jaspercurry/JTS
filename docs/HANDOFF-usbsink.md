@@ -312,8 +312,8 @@ operation assumes the splitter-backed path.
 - Zero RAM cost when disabled (no kernel modules loaded, no daemon
   running, no ALSA card present)
 - AEC works transparently (USB audio enters fan-in's `usbsink` lane via
-  direct capture; `jasper-fanin` sums it into the summed music stream that
-  `pcm.jasper_capture` exposes as the music reference)
+  direct capture; `jasper-fanin` sums it into the program, which reaches AEC
+  through jasper-outputd's final speaker monitor like every other source)
 
 **Out of scope (explicit non-goals)**
 - The optional JTS-mic → host direction is a separate product relay, not part
@@ -1986,10 +1986,10 @@ in `BRINGUP.md`:
 
 ### AEC test
 
-USB audio enters `usbsink_substream`; `jasper-fanin` sums it into
-substream 7, and `pcm.jasper_capture` exposes that summed music stream
-as the AEC reference. So AEC sees USB audio in the reference signal
-automatically. Verify:
+USB audio enters fan-in's `usbsink` lane; `jasper-fanin` sums it into the
+program, which reaches AEC through jasper-outputd's final speaker monitor
+— the same reference every other source arrives on. So AEC sees USB audio
+in the reference signal automatically. Verify:
 
 1. Mac plays music loud (75 dB at speaker)
 2. Wake word triggered → AEC kicks in

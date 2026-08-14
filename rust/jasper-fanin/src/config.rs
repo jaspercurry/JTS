@@ -152,9 +152,9 @@ pub const STATIC_CUSHION_JITTER_MARGIN_FRAMES: u32 = 32;
 pub struct Config {
     /// ALSA PCM name (or `hw:Card,Dev,Sub`) for the summed output.
     /// The daemon writes mixed audio here. CamillaDSP dsnoops on the
-    /// corresponding capture side of this substream pair, as does
-    /// jasper-aec-tune. (The AEC bridge read it too until U4/P7-1;
-    /// its reference is now outputd's UDP speaker monitor.)
+    /// corresponding capture side of this substream pair and is its only
+    /// reader. (The AEC bridge read it until U4/P7-1 and jasper-aec-tune
+    /// until U4/P7-2; both take outputd's UDP speaker monitor now.)
     pub output_pcm: String,
 
     /// OPTIONAL second output PCM for the **music-only** (pre-TTS) stream
