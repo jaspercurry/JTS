@@ -137,14 +137,19 @@ def _write_dual_apple_observation(
     )
 
 
-def _topology(*, groups: list[dict], routing: dict | None = None) -> OutputTopology:
+def _topology(
+    *,
+    groups: list[dict],
+    routing: dict | None = None,
+    hardware: dict | None = None,
+) -> OutputTopology:
     raw = {
         "artifact_schema_version": 1,
         "kind": OUTPUT_TOPOLOGY_KIND,
         "topology_id": "living_room",
         "name": "Living room",
         "status": "draft",
-        "hardware": _base_hardware(),
+        "hardware": hardware or _base_hardware(),
         "speaker_groups": groups,
         "routing": routing or {},
     }
@@ -647,6 +652,155 @@ def test_clock_domain_report_requires_unique_pinned_dual_apple_child_serials() -
     assert "dual_apple_child_serials_not_unique" in {
         issue["code"] for issue in report["issues"]
     }
+
+
+def _verified_channel(role: str, index: int) -> dict:
+    """A channel with every non-cross-child gate already satisfied.
+
+    Lets the cross-child tests below assert on that ONE verdict without the
+    identity/protection warnings and blockers standing in for it.
+    """
+
+    channel = {
+        "role": role,
+        "physical_output_index": index,
+        "identity_verified": True,
+        "startup_muted": True,
+    }
+    if role == "tweeter":
+        channel["protection_required"] = True
+        channel["protection_status"] = "present"
+    return channel
+
+
+def _two_way_group(group_id: str, kind: str, label: str, woofer: int, tweeter: int) -> dict:
+    return {
+        "id": group_id,
+        "label": label,
+        "kind": kind,
+        "mode": "active_2_way",
+        "channels": [
+            _verified_channel("woofer", woofer),
+            _verified_channel("tweeter", tweeter),
+        ],
+    }
+
+
+def test_cross_child_speaker_group_is_named_and_disclosed_not_blocked() -> None:
+    """A crossover straddling two child DACs is disclosed, never refused.
+
+    Fidelity concern, not hearing safety: both dongles drive, so per the
+    never-nanny ruling the topology still reaches ``verified`` and the save is
+    not refused. The verdict names the group and the children as DATA so a
+    caller does not have to parse the message.
+    """
+
+    topology = _topology(
+        hardware=_dual_apple_hardware(),
+        # Woofer on the left dongle (outputs 1-2), tweeter on the right one
+        # (outputs 3-4): one speaker, two uncorrected clocks.
+        groups=[_two_way_group("mono", "mono", "Mono", woofer=0, tweeter=2)],
+        routing={"mono_group_id": "mono"},
+    )
+
+    evaluation = topology.evaluation()
+    verdicts = [
+        issue for issue in evaluation["warnings"]
+        if issue["code"] == output_topology_mod.CROSS_CHILD_GROUP_CODE
+    ]
+
+    assert len(verdicts) == 1
+    verdict = verdicts[0]
+    assert verdict["severity"] == "warning"
+    assert verdict["group_id"] == "mono"
+    assert verdict["group_label"] == "Mono"
+    assert verdict["child_ids"] == ["left_dac", "right_dac"]
+    assert "one DAC" in verdict["message"]
+    # Disclose + recommend, never block.
+    assert evaluation["blockers"] == []
+    assert evaluation["status"] == "verified"
+    # The standalone reader returns the same verdicts the evaluation carries,
+    # so a later consumer never re-derives the child boundary.
+    assert output_topology_mod.cross_child_group_verdicts(topology) == verdicts
+
+
+def test_one_child_dac_per_speaker_has_no_cross_child_verdict() -> None:
+    """The supported dual-Apple shape: each speaker's crossover inside one DAC."""
+
+    topology = _topology(
+        hardware=_dual_apple_hardware(),
+        groups=[
+            _two_way_group("left", "left", "Left", woofer=0, tweeter=1),
+            _two_way_group("right", "right", "Right", woofer=2, tweeter=3),
+        ],
+        routing={"main_left_group_id": "left", "main_right_group_id": "right"},
+    )
+
+    evaluation = topology.evaluation()
+
+    assert output_topology_mod.cross_child_group_verdicts(topology) == []
+    assert output_topology_mod.CROSS_CHILD_GROUP_CODE not in {
+        issue["code"] for issue in evaluation["warnings"]
+    }
+    assert evaluation["status"] == "verified"
+
+
+def test_subwoofer_group_inside_one_child_has_no_cross_child_verdict() -> None:
+    """A sub owning one lane of one child is not a cross-child crossover."""
+
+    topology = _topology(
+        hardware=_dual_apple_hardware(),
+        groups=[
+            _two_way_group("left", "left", "Left", woofer=0, tweeter=1),
+            {
+                "id": "sub",
+                "label": "Subwoofer",
+                "kind": "subwoofer",
+                "mode": "subwoofer",
+                "channels": [_verified_channel("subwoofer", 2)],
+            },
+        ],
+        routing={"main_left_group_id": "left", "subwoofer_group_ids": ["sub"]},
+    )
+
+    assert output_topology_mod.cross_child_group_verdicts(topology) == []
+    assert output_topology_mod.CROSS_CHILD_GROUP_CODE not in {
+        issue["code"] for issue in topology.evaluation()["warnings"]
+    }
+
+
+def test_single_child_hardware_never_reports_a_cross_child_verdict() -> None:
+    """No child devices, or only one, means there is no boundary to cross.
+
+    A plain DAC8x lists no children at all; the one-child case pins the
+    boundary of the predicate so a future single-child composite cannot start
+    reporting a split against itself.
+    """
+
+    dac8x = _topology(
+        groups=[_two_way_group("mono", "mono", "Mono", woofer=0, tweeter=4)],
+        routing={"mono_group_id": "mono"},
+    )
+    assert dac8x.hardware.child_devices == ()
+    assert output_topology_mod.cross_child_group_verdicts(dac8x) == []
+    assert dac8x.evaluation()["status"] == "verified"
+
+    single_child_hardware = _base_hardware()
+    single_child_hardware["child_devices"] = [
+        {
+            "child_id": "only_dac",
+            "device_id": HIFIBERRY_DAC8X_STUDIO_DEVICE_ID,
+            "device_label": "HiFiBerry DAC8x",
+            "physical_output_indexes": [0, 1, 2, 3, 4, 5, 6, 7],
+        }
+    ]
+    single_child = _topology(
+        hardware=single_child_hardware,
+        groups=[_two_way_group("mono", "mono", "Mono", woofer=0, tweeter=4)],
+        routing={"mono_group_id": "mono"},
+    )
+    assert len(single_child.hardware.child_devices) == 1
+    assert output_topology_mod.cross_child_group_verdicts(single_child) == []
 
 
 def test_clock_domain_report_flags_unknown_output_clocking() -> None:

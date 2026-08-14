@@ -143,6 +143,14 @@ OUTPUT_STATES = {"unused", "assigned", "verified", "blocked"}
 # unchanged.
 PAIRING_INTENTS = {"solo", "will_be_follower", "has_follower"}
 DEFAULT_PAIRING_INTENT = "solo"
+
+# The stable code for "one speaker's drivers are split across two child DACs of
+# a composite output device". Named here rather than spelled inline where the
+# verdict is built, because it is shared vocabulary: the /sound/ wizard keys its
+# disclosure notice off this exact string. See ``cross_child_group_verdicts``.
+CROSS_CHILD_GROUP_CODE = "speaker_group_spans_child_devices"
+
+
 class OutputTopologyError(ValueError):
     """Raised when output topology JSON has an unsupported shape."""
 
@@ -172,11 +180,14 @@ def _safe_id_fragment(value: str) -> str:
 
 
 def default_clock_domain_id(device_id: str, card_id: str | None = None) -> str:
-    """Return the current single-device clock-domain id.
+    """Return the default clock-domain id for an output device.
 
-    JTS does not yet aggregate multiple output DACs. This id records the
-    current assumption explicitly so future multi-device work has a contract
-    to replace rather than reverse-engineer from labels.
+    One coherent device is keyed on its ALSA card, or on its device id when no
+    card is known. The measured dual-Apple pair is the one composite that gets
+    a profile-keyed id instead, because its two children share no single card.
+    Generic multi-DAC ALSA aggregation remains unsupported:
+    ``clock_domain_report`` reports ``multi_device_aggregate_supported`` false
+    on every path.
     """
 
     device_id = normalize_output_device_id(device_id)
@@ -922,11 +933,77 @@ def new_topology_draft(
     )
 
 
+def cross_child_group_verdicts(topology: OutputTopology) -> list[dict[str, Any]]:
+    """Return one verdict per speaker group whose drivers span two child DACs.
+
+    A composite output device (``hardware.child_devices``) is two or more
+    physically separate DACs driven from one process. Their clocks are NOT
+    corrected against each other: the composite clock contract is
+    ``measured_sync_required``, and ``PairedCompositeSink`` detects divergence
+    and fails closed rather than resampling it away. So a speaker group whose
+    woofer sits on one child and whose tweeter sits on another puts that
+    uncorrected seam INSIDE a crossover, where inter-driver drift walks the
+    crossover null. The supported shape is one child DAC per speaker, with each
+    speaker's crossover kept inside a single child
+    (``docs/dual-apple-dac-lab.md``).
+
+    This is a FIDELITY verdict, not a hearing-safety one: every lane still
+    drives, nothing is at risk of damage, and the household may have a reason.
+    So it is reported at ``warning`` severity — it never joins ``blockers`` and
+    therefore never refuses the save or moves the topology to ``blocked``.
+
+    Entries are data, not prose: the group and the children are named as their
+    own fields so a caller can render or re-check them without parsing
+    ``message``. ``child_ids`` is sorted so it is comparable regardless of the
+    order the group happens to list its channels in.
+    """
+
+    children = topology.hardware.child_devices
+    if len(children) < 2:
+        return []
+    # Safe as a flat map: OutputHardware.validate() already refuses a physical
+    # output claimed by more than one child.
+    owner_by_index: dict[int, str] = {
+        index: child.child_id
+        for child in children
+        for index in child.physical_output_indexes
+    }
+    verdicts: list[dict[str, Any]] = []
+    for group in topology.speaker_groups:
+        owners: set[str] = set()
+        for channel in group.channels:
+            index = channel.physical_output_index
+            if index is None:
+                continue
+            owner = owner_by_index.get(index)
+            # An index no child claims is a DIFFERENT defect (the composite's
+            # own output-map check owns it). Skipping it here keeps this
+            # verdict about the child boundary and nothing else.
+            if owner is not None:
+                owners.add(owner)
+        if len(owners) < 2:
+            continue
+        child_ids = sorted(owners)
+        verdicts.append({
+            "severity": "warning",
+            "code": CROSS_CHILD_GROUP_CODE,
+            "message": (
+                f"{group.label} is split across DACs {', '.join(child_ids)}; "
+                "keep every driver of one speaker on one DAC so its crossover "
+                "does not straddle two uncorrected clocks"
+            ),
+            "group_id": group.id,
+            "group_label": group.label,
+            "child_ids": child_ids,
+        })
+    return verdicts
+
+
 def evaluate_output_topology(topology: OutputTopology) -> dict[str, Any]:
     """Return deterministic safety/validity evidence for a topology."""
 
     blockers: list[dict[str, str]] = []
-    warnings: list[dict[str, str]] = []
+    warnings: list[dict[str, Any]] = []
     assigned: dict[int, tuple[str, str]] = {}
 
     if not topology.speaker_groups:
@@ -1049,6 +1126,8 @@ def evaluate_output_topology(topology: OutputTopology) -> dict[str, Any]:
                             f"{group.label} tweeter protection must be marked present",
                         )
                     )
+
+    warnings.extend(cross_child_group_verdicts(topology))
 
     group_ids = {group.id for group in topology.speaker_groups}
     if topology.routing.main_left_group_id and topology.routing.main_left_group_id not in group_ids:

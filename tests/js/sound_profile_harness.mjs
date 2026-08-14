@@ -7426,6 +7426,83 @@ async function testDesignConflictPreservesUnsavedSafetyEdits() {
   return { designConflictPreservesUnsavedSafetyEdits: true };
 }
 
+// A speaker whose drivers land on two child DACs of a composite output device.
+// output_topology.cross_child_group_verdicts names this as a WARNING and the
+// save is accepted, so the ONLY thing that tells the household is this notice —
+// if it stops rendering, the disclosure silently disappears while every gate
+// still reports green. Both halves matter: it must appear when the backend
+// sends the verdict, and it must stay away when it does not.
+async function testCrossChildSpeakerGroupIsDisclosedInTheMapStep() {
+  const crossChildTopology = () => {
+    const topology = activeStereoTwoWayTopologyPayload();
+    // One cabinet, one driver per dongle: woofer on child A, tweeter on child B.
+    topology.speaker_groups = [topology.speaker_groups[0]];
+    topology.speaker_groups[0].channels[1].physical_output_index = 2;
+    topology.routing = {
+      mono_group_id: null,
+      main_left_group_id: "left",
+      main_right_group_id: null,
+      subwoofer_group_ids: [],
+    };
+    topology.hardware.child_devices = [
+      { child_id: "left_dac", physical_output_indexes: [0, 1] },
+      { child_id: "right_dac", physical_output_indexes: [2, 3] },
+    ];
+    return topology;
+  };
+
+  const withVerdict = crossChildTopology();
+  withVerdict.evaluation = {
+    status: "valid",
+    warnings: [{
+      severity: "warning",
+      code: "speaker_group_spans_child_devices",
+      message: "Left cabinet is split across DACs left_dac, right_dac; keep " +
+        "every driver of one speaker on one DAC so its crossover does not " +
+        "straddle two uncorrected clocks",
+      group_id: "left",
+      group_label: "Left cabinet",
+      child_ids: ["left_dac", "right_dac"],
+    }],
+  };
+  let harness = setupHarness(baseFetch({
+    "./output-topology": () => Promise.resolve(response(withVerdict)),
+  }));
+  await loadAndSetActiveState(harness);
+  const disclosed = outputStepBodyHtml(
+    harness.elements.get("view-body").innerHTML, "map"
+  );
+  if (!disclosed || !disclosed.includes("One speaker is split across two DACs")) {
+    fail("cross-child verdict should be disclosed in the Confirm outputs step",
+      { disclosed });
+  }
+  if (!disclosed.includes("Left cabinet is split across DACs left_dac")) {
+    fail("cross-child notice should name the group and the child DACs",
+      { disclosed });
+  }
+  // Disclose, never block: the save control stays live.
+  if (disclosed.includes("status-pill--blocked")) {
+    fail("cross-child disclosure must not present as a blocked layout",
+      { disclosed });
+  }
+
+  const clean = crossChildTopology();
+  clean.evaluation = { status: "valid", warnings: [] };
+  harness = setupHarness(baseFetch({
+    "./output-topology": () => Promise.resolve(response(clean)),
+  }));
+  await loadAndSetActiveState(harness);
+  const quiet = outputStepBodyHtml(
+    harness.elements.get("view-body").innerHTML, "map"
+  );
+  if (!quiet) fail("control render should still produce a map step", { quiet });
+  if (quiet.includes("One speaker is split across two DACs")) {
+    fail("cross-child notice must not render without the backend verdict",
+      { quiet });
+  }
+  return { crossChildSpeakerGroupIsDisclosedInTheMapStep: true };
+}
+
 const results = [];
 // Dead-end: a layout is drafted but no spare physical output exists for a LOCAL
 // subwoofer (the single-output Apple-dongle case). The card must keep the
@@ -7777,5 +7854,6 @@ results.push(await testIncompleteFromABandRelationshipNamesTheRelationship());
 results.push(await testConfirmSafetyDeepLinkOpensTheComponentStep());
 results.push(await testCombinedTestCardAgreesWithItsDisabledButton());
 results.push(await testFailedCombinedTestBannerCarriesTheRemedy());
+results.push(await testCrossChildSpeakerGroupIsDisclosedInTheMapStep());
 
 console.log(JSON.stringify(Object.assign({ results }, liveTabResult)));
