@@ -697,6 +697,26 @@ What exists:
   `/state` surface alive without opening ALSA, and stops `jasper-voice` plus
   any stale outputd instance so final-output ALSA ownership cannot keep running
   against removed hardware or burn the outputd reboot escalation budget.
+- **The park is not skippable by an earlier refusal.** Before any of the above
+  runs, the reconciler resolves outputd's capture half for each Camilla
+  playback lane; when that step cannot answer it logs
+  `outputd_endpoint_contract_failed` and exits 66 *ahead of* the env write and
+  the ALSA render. That fallback preserves the running env, which is harmless
+  only while the preserved env describes hardware the pass still sees. One
+  shape it does not: `JASPER_OUTPUTD_BACKEND=alsa` at
+  `JASPER_OUTPUTD_DAC_PCM=outputd_dac` while the same pass renders that alias
+  as `type null`. The null device accepts every write instantly and no fan-in
+  coupling paces the content side either, so outputd's loop has no clock and
+  spins until `LimitRTTIME` SIGKILLs it — three per burst, then
+  `StartLimitAction=reboot` (issue #2489, observed live 2026-08-14: three
+  consecutive reboots absorbed by the bootloop guard). The fallback therefore
+  flips that one key to `fake` first and logs
+  `outputd_env_clockless_park … action=park_backend_fake`; every other
+  preserved shape — a healthy `alsa` env, an armed composite whose DAC edge is
+  its two child PCMs, an already-`fake` env — is left byte-unchanged. Exactly
+  one key moves, because the preserved env is known to start and writing more
+  (clearing the active-lane pair under an armed shm-ring content bridge) would
+  trip outputd's own allowlist and park it at exit 78 instead.
 - Apple-only analog mixer services: `jasper-dac-init.service` and
   `jasper-headphone-monitor.service` exist to pin/watch the Apple USB-C
   dongle `Headphone` control. The audio-hardware reconciler enables

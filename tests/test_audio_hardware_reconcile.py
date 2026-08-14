@@ -1160,23 +1160,13 @@ def test_reconcile_dual_apple_pins_pcm_order_from_saved_topology(
     assert "order_source=saved_topology" in result.stderr
 
 
-def test_reconcile_dual_apple_defers_runtime_until_active_graph_is_loaded(
-    tmp_path: Path,
-):
-    sys_class, proc_asound = _fake_sys_output_card(
-        tmp_path,
-        card_index=1,
-        card_id="B",
-        usb_path="1-1",
-        serial="right",
-    )
-    _fake_sys_output_card(
-        tmp_path,
-        card_index=2,
-        card_id="A",
-        usb_path="1-2",
-        serial="left",
-    )
+def _dual_apple_topology(tmp_path: Path) -> Path:
+    """Write the saved output topology that pins the composite's child order.
+
+    Without it ``apply_observed_composite_policy`` parks at
+    ``park_unstable_child_order`` before it ever reaches the active-graph gate,
+    so any test that needs the gate to run has to stage this first.
+    """
     topology_path = tmp_path / "output_topology.json"
     topology_path.write_text(
         json.dumps({
@@ -1213,6 +1203,27 @@ def test_reconcile_dual_apple_defers_runtime_until_active_graph_is_loaded(
         }),
         encoding="utf-8",
     )
+    return topology_path
+
+
+def test_reconcile_dual_apple_defers_runtime_until_active_graph_is_loaded(
+    tmp_path: Path,
+):
+    sys_class, proc_asound = _fake_sys_output_card(
+        tmp_path,
+        card_index=1,
+        card_id="B",
+        usb_path="1-1",
+        serial="right",
+    )
+    _fake_sys_output_card(
+        tmp_path,
+        card_index=2,
+        card_id="A",
+        usb_path="1-2",
+        serial="left",
+    )
+    topology_path = _dual_apple_topology(tmp_path)
 
     result = _run_reconcile(
         tmp_path,
@@ -1248,6 +1259,318 @@ def test_reconcile_dual_apple_defers_runtime_until_active_graph_is_loaded(
     assert _render_log(tmp_path) == "render\n"
     commands = _systemctl_log(tmp_path)
     assert "--no-block stop jasper-voice.service jasper-outputd.service" in commands
+
+
+# --- the preserve_runtime_env fallback (issue #2489) --------------------------
+#
+# The endpoint-contract step resolves outputd's capture half by shelling out to
+# `jasper.cli.audio_config outputd-capture-device`. When that step fails the
+# reconciler exits 66 before writing any outputd env, which leaves outputd
+# running whatever the file already said. On jts.local (2026-08-14) what it
+# already said was the REAL ALSA backend at `outputd_dac` while the composite
+# had parked that alias to `type null` — an output loop with no clock on either
+# side, which spun to SIGKILL three times per burst and rode
+# StartLimitAction=reboot through three reboots.
+#
+# The shim below reproduces the failing step and nothing else: every other
+# Python call in the run (hardware observation, the active-graph gate, env
+# validation) still reaches the real interpreter.
+
+_CLOCKLESS_PRESERVED_ENV = (
+    "JASPER_OUTPUTD_BACKEND=alsa\n"
+    "JASPER_OUTPUTD_SINK=single_alsa\n"
+    "JASPER_OUTPUTD_DAC_PCM=outputd_dac\n"
+    "JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture\n"
+)
+
+
+def _python_shim(tmp_path: Path, name: str, guard: str) -> dict[str, str]:
+    """Delegate to the real interpreter except where ``guard`` says otherwise.
+
+    ``guard`` is bash run before the delegation; it exits non-zero to inject a
+    failure into one specific Python call the reconciler makes.
+    """
+    shim = tmp_path / name
+    shim.write_text(
+        "#!/usr/bin/env bash\n"
+        f"{guard}\n"
+        'exec "$JASPER_TEST_REAL_PYTHON" "$@"\n',
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+    return {
+        "JASPER_OUTPUT_HARDWARE_PYTHON": str(shim),
+        "JASPER_TEST_REAL_PYTHON": sys.executable,
+    }
+
+
+def _endpoint_contract_fails(tmp_path: Path) -> dict[str, str]:
+    return _python_shim(
+        tmp_path,
+        "python-endpoint-contract-fails",
+        'for arg in "$@"; do\n'
+        '    if [[ "$arg" == "outputd-capture-device" ]]; then\n'
+        '        echo "injected outputd-capture-device failure" >&2\n'
+        "        exit 1\n"
+        "    fi\n"
+        "done",
+    )
+
+
+def _dual_apple_cards(tmp_path: Path) -> dict[str, str]:
+    sys_class, proc_asound = _fake_sys_output_card(
+        tmp_path, card_index=1, card_id="A", usb_path="1-1", serial="left",
+    )
+    _fake_sys_output_card(
+        tmp_path, card_index=2, card_id="A_1", usb_path="1-2", serial="right",
+    )
+    return {
+        "JASPER_SYS_CLASS_SOUND": str(sys_class),
+        "JASPER_PROC_ASOUND": str(proc_asound),
+    }
+
+
+def _assert_contract_really_failed(result: subprocess.CompletedProcess[str]) -> None:
+    """Positive control: the injected failure reached the path under test.
+
+    Without this an assertion about the fallback could pass on a run that never
+    took the fallback at all.
+    """
+    assert result.returncode == 66, result.stderr
+    assert (
+        "event=audio_hardware_reconcile.outputd_endpoint_contract_failed"
+        in result.stderr
+    ), result.stderr
+
+
+def test_contract_failure_parks_backend_fake_against_a_null_dac(tmp_path: Path):
+    """alsa at a null-parked `outputd_dac` is the clockless pair — park it."""
+    result = _run_reconcile(
+        tmp_path,
+        DUAL_APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_outputd_env=_CLOCKLESS_PRESERVED_ENV,
+        extra_env={
+            **_dual_apple_cards(tmp_path),
+            **_endpoint_contract_fails(tmp_path),
+        },
+    )
+
+    _assert_contract_really_failed(result)
+    assert "action=park_backend_fake" in result.stderr
+    assert (
+        "event=audio_hardware_reconcile.outputd_env_clockless_park" in result.stderr
+    )
+    # EXACTLY one key moves. The preserved env is known to parse and start, so
+    # every other key in it is already coherent; writing more would be actively
+    # worse (clearing the active-lane pair under an armed shm-ring content
+    # bridge trips outputd's own allowlist and parks it at exit 78).
+    assert (tmp_path / "outputd.env").read_text(
+        encoding="utf-8"
+    ) == _CLOCKLESS_PRESERVED_ENV.replace(
+        "JASPER_OUTPUTD_BACKEND=alsa", "JASPER_OUTPUTD_BACKEND=fake"
+    )
+
+
+def test_contract_failure_parks_when_the_env_does_not_state_the_backend(
+    tmp_path: Path,
+):
+    """An unstated key is not "no value" — the daemon still runs one.
+
+    With no outputd.env at all, jasper-outputd.service supplies
+    JASPER_OUTPUTD_BACKEND=alsa and JASPER_OUTPUTD_DAC_PCM=outputd_dac from its
+    Environment= lines and outputd defaults JASPER_OUTPUTD_SINK to single_alsa
+    — the same clockless pair, reached by omission.
+    """
+    result = _run_reconcile(
+        tmp_path,
+        DUAL_APPLE_LISTING,
+        "--reason",
+        "test",
+        extra_env={
+            **_dual_apple_cards(tmp_path),
+            **_endpoint_contract_fails(tmp_path),
+        },
+    )
+
+    _assert_contract_really_failed(result)
+    assert "action=park_backend_fake" in result.stderr
+    assert "JASPER_OUTPUTD_BACKEND=fake" in (
+        tmp_path / "outputd.env"
+    ).read_text(encoding="utf-8")
+
+
+def test_contract_failure_preserves_when_the_pass_never_observed_the_hardware(
+    tmp_path: Path,
+):
+    """A pass with no observation knows less than the one that wrote the env.
+
+    A broken interpreter fails the hardware observation and the endpoint
+    contract together, and it re-renders no asound either — so the env and the
+    ALSA conf on disk stay the coherent pair they already were. Parking here
+    would silence a healthy recognized DAC on the next outputd start.
+    """
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_outputd_env=_CLOCKLESS_PRESERVED_ENV,
+        extra_env=_python_shim(
+            tmp_path,
+            "python-observation-and-contract-fail",
+            'for arg in "$@"; do\n'
+            '    if [[ "$arg" == "outputd-capture-device" || "$arg" == "jasper.output_hardware" ]]; then\n'
+            "        exit 1\n"
+            "    fi\n"
+            "done",
+        ),
+    )
+
+    _assert_contract_really_failed(result)
+    # Positive control: the observation really did fail, so OBSERVED_OUTPUT_VALID
+    # is the conjunct under test rather than the recognized-DAC one.
+    assert "event=audio_hardware_reconcile.state_written_failed" in result.stderr
+    assert "action=preserve_runtime_env" in result.stderr
+    assert "outputd_env_clockless_park" not in result.stderr
+    assert (tmp_path / "outputd.env").read_text(
+        encoding="utf-8"
+    ) == _CLOCKLESS_PRESERVED_ENV
+
+
+def test_contract_failure_preserves_a_healthy_alsa_env(tmp_path: Path):
+    """A recognized single DAC renders `outputd_dac` as real hardware.
+
+    That env has a clock — the DAC's own write backpressure — so preserving it
+    is still the right fallback and the file must come out byte-identical.
+    """
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_outputd_env=_CLOCKLESS_PRESERVED_ENV,
+        extra_env=_endpoint_contract_fails(tmp_path),
+    )
+
+    _assert_contract_really_failed(result)
+    assert "action=preserve_runtime_env" in result.stderr
+    assert "outputd_env_clockless_park" not in result.stderr
+    assert (tmp_path / "outputd.env").read_text(
+        encoding="utf-8"
+    ) == _CLOCKLESS_PRESERVED_ENV
+
+
+def test_contract_failure_leaves_an_already_parked_env_untouched(tmp_path: Path):
+    """No churn: a fake backend cannot spin, so there is nothing to repair."""
+    already_parked = _CLOCKLESS_PRESERVED_ENV.replace(
+        "JASPER_OUTPUTD_BACKEND=alsa", "JASPER_OUTPUTD_BACKEND=fake"
+    )
+    result = _run_reconcile(
+        tmp_path,
+        DUAL_APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_outputd_env=already_parked,
+        extra_env={
+            **_dual_apple_cards(tmp_path),
+            **_endpoint_contract_fails(tmp_path),
+        },
+    )
+
+    _assert_contract_really_failed(result)
+    assert "action=preserve_runtime_env" in result.stderr
+    assert "outputd_env_clockless_park" not in result.stderr
+    assert (tmp_path / "outputd.env").read_text(
+        encoding="utf-8"
+    ) == already_parked
+
+
+# `jasper_asound_outputd_dac_parked` is true for an ARMED composite too — it
+# never opens `outputd_dac` — so the render predicate alone cannot decide this;
+# the env has to say the DAC edge IS that alias. Each conjunct is listed with
+# the shape it alone keeps out of the park, because a case that trips two
+# conjuncts at once leaves each of them individually unpinned.
+@pytest.mark.parametrize(
+    "pinned_conjunct, preserved_env",
+    [
+        pytest.param(
+            "sink",
+            # outputd runs Composite and opens DUAL_DAC_A/B; DAC_PCM is unread,
+            # so a null `outputd_dac` cannot reach the output loop.
+            "JASPER_OUTPUTD_BACKEND=alsa\n"
+            "JASPER_OUTPUTD_SINK=dual_apple\n"
+            "JASPER_OUTPUTD_DAC_PCM=outputd_dac\n"
+            "JASPER_OUTPUTD_DUAL_DAC_A_PCM=hw:CARD=A,DEV=0\n"
+            "JASPER_OUTPUTD_DUAL_DAC_B_PCM=hw:CARD=A_1,DEV=0\n",
+            id="composite-sink-does-not-open-the-alias",
+        ),
+        pytest.param(
+            "dac_pcm",
+            # An operator override (test_reconcile_operator_env_override_
+            # survives_reconciler) can point the single-ALSA edge somewhere
+            # else; that device has its own backpressure and its own clock.
+            "JASPER_OUTPUTD_BACKEND=alsa\n"
+            "JASPER_OUTPUTD_SINK=single_alsa\n"
+            "JASPER_OUTPUTD_DAC_PCM=hw:CARD=A,DEV=0\n",
+            id="overridden-dac-pcm-is-not-the-alias",
+        ),
+    ],
+)
+def test_contract_failure_preserves_an_env_that_never_opens_the_alias(
+    tmp_path: Path, pinned_conjunct: str, preserved_env: str,
+):
+    result = _run_reconcile(
+        tmp_path,
+        DUAL_APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_outputd_env=preserved_env,
+        extra_env={
+            **_dual_apple_cards(tmp_path),
+            **_endpoint_contract_fails(tmp_path),
+        },
+    )
+
+    _assert_contract_really_failed(result)
+    assert "action=preserve_runtime_env" in result.stderr, pinned_conjunct
+    assert "outputd_env_clockless_park" not in result.stderr
+    assert (tmp_path / "outputd.env").read_text(
+        encoding="utf-8"
+    ) == preserved_env
+
+
+def test_dual_apple_park_names_a_silent_active_graph_probe(tmp_path: Path):
+    """`active_graph_status` prints a reason on every path it declines on.
+
+    So an empty capture is not an unknown reason — it is the probe producing no
+    output at all. The park line has to say which of the two it saw.
+    """
+    result = _run_reconcile(
+        tmp_path,
+        DUAL_APPLE_LISTING,
+        "--reason",
+        "test",
+        extra_env={
+            **_dual_apple_cards(tmp_path),
+            "JASPER_OUTPUT_TOPOLOGY_PATH": str(_dual_apple_topology(tmp_path)),
+            # The active-graph gate is the one call that carries this variable.
+            **_python_shim(
+                tmp_path,
+                "python-active-graph-dies-silently",
+                'if [[ -n "${JASPER_ACTIVE_GRAPH_CAP_CHANNELS:-}" ]]; then\n'
+                "    exit 1\n"
+                "fi",
+            ),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        "action=park_until_active_graph reason=active_graph_probe_no_output"
+        in result.stderr
+    ), result.stderr
 
 
 def test_reconcile_dac8x_role_disables_apple_helpers(tmp_path: Path):

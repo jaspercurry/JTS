@@ -736,6 +736,11 @@ running the configuration it was running a second ago. It used to park
 assistant down cleanly and silently, and recovery needed a hand-run
 `systemctl start jasper-aec-reconcile`.
 
+That scoping is exact: it is the *staged-candidate* refusal (exit 78). The
+reconciler's other preserve — the endpoint-contract refusal at exit 66 —
+does move one key first, because one preserved shape spins rather than
+idles. See `docs/HANDOFF-speaker-output-reference.md` (issue #2489).
+
 **What holds the pair coherent.** outputd enforces a biconditional at
 startup: the active ring file may be read only by an armed active
 endpoint, and an armed active endpoint may read only that file. The two
