@@ -423,6 +423,10 @@ def test_guarded_position_rejects_out_of_range_before_open(
     degrees: str,
 ) -> None:
     api, factory, _controller = fake_api(turntable)
+
+    def unexpected_power_probe(*args, **kwargs):
+        raise AssertionError("invalid target must fail before power preflight")
+
     with pytest.raises(SystemExit) as exc_info:
         turntable.main(
             [
@@ -432,6 +436,7 @@ def test_guarded_position_rejects_out_of_range_before_open(
                 "--confirm-zero-valid",
             ],
             api=api,
+            run_command=unexpected_power_probe,
         )
     assert exc_info.value.code == 2
     assert factory.open_calls == []
