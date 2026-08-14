@@ -2362,8 +2362,9 @@ def test_a_second_retake_press_during_a_retake_is_not_told_the_plan_moved_on():
     capture in flight is itself a retake of this same slot, nothing has moved
     on — a redo of this very spot is running — and saying otherwise would put
     a lie on the household's screen on a run day, which is the disease #2090
-    is about rather than a cure for it. Drop the ``not current_retake`` term
-    at the in-progress refusal site and this flips to `retake_too_late`.
+    is about rather than a cure for it. Drop ``next_begin_seen`` from
+    ``lost_the_retake_race`` and this flips to ``retake_too_late``
+    (mutation M5).
     """
     backend = FakePlanRelayBackend()
     _client, session, _phone = _mint_plan_session(backend, driver=False, max_attempts=6)

@@ -628,7 +628,8 @@ def test_a_late_retake_reads_the_same_whichever_side_answers_it():
     )
     assert match, "the page must still carry a RETAKE_TOO_LATE_MESSAGE constant"
     assert match.group(1) == session.RETAKE_TOO_LATE_MESSAGE
-    # …and the Pi's refusal code is the one the page's comment names.
+    # …and the Pi's refusal code is the one the page batch will make the
+    # page's comments name (#2458).
     assert session.BEGIN_REFUSED_RETAKE_TOO_LATE == "retake_too_late"
 
 
