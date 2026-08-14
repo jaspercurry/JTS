@@ -501,8 +501,16 @@ def _trigger_topology_reconcile() -> dict[str, Any]:
     active mode only when a legal active graph is already the live CamillaDSP
     config. Convergence is real, not inert — on a box running a commissioned
     active graph, an edit that invalidates it flips the gate back to passive
-    and bounces outputd, so output parks (loudly, behind the parked banner)
-    until the layout is re-commissioned or reverted.
+    and bounces outputd, so output parks until the layout is re-commissioned
+    or reverted.
+
+    The household can see that state, on the Status dashboard rather than
+    here: ``_parked_signal`` in ``jasper/control/audio_health.py`` is the sole
+    writer of the parked sentence, and the dashboard renders it through
+    ``outputAlert`` (the Audio card that appears at the top of ``/system/``
+    only while the signal path is broken) and through the current-stream card
+    on ``/system/audio/``. This page carries no parked banner of its own — an
+    earlier version of this docstring claimed one that never existed (#2381).
 
     Unlike the reset command this does NOT wait for the oneshot: the reset is a
     one-shot operator action, while ``/sound/setup/`` saves a draft at every

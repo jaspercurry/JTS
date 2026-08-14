@@ -464,6 +464,17 @@ once, so polling does not reset controls, disclosure state, or text selection.
 **System** contains the host/operator view:
 
 - Status line (sampler health)
+- **Audio** — an alert card that exists only while
+  `audio_health.overall.status` is `issue`, i.e. while the signal path cannot
+  carry audio at all (a parked graph, a stopped DSP, a dead final-output
+  stage). It sits above the metric tiles because a speaker that cannot play
+  outranks every number below it, and it renders before the metrics warm-up
+  gate because it comes from a different sampler. The browser decides only
+  *whether* to show it: the sentence has one writer (`_parked_signal` /
+  `_stopped_dsp_signal` in `jasper/control/audio_health.py`), and `warn` /
+  `unknown` deliberately stay off the front page. Before #2381 the System view
+  had no audio surface at all, so a structurally-silent speaker looked exactly
+  like an idle healthy one.
 - 6 metric tiles: Memory, Load, CPU, Temp, Fan (if present), Disk —
   sparklines where history is useful. Memory also shows root cgroup-v2
   total / anon / file / kernel / other buckets when the controller is
@@ -494,7 +505,11 @@ once, so polling does not reset controls, disclosure state, or text selection.
 - a current-stream diagnostic card with the active source plus only the media,
   processing, output, latency, signal, and reliability facts the runtime can
   support honestly. Missing facts disappear; configured maxima and shared-path
-  sample rates are not presented as observed source bitrate or bit depth;
+  sample rates are not presented as observed source bitrate or bit depth. With
+  no active source the card is empty — but "No active stream" is reserved for a
+  speaker that is genuinely idle-and-fine: when `overall.status` is `issue` or
+  `unknown` the card carries that verdict's own headline and detail instead
+  (#2381);
 - an optional current-issue card with impact, observed evidence, likely area,
   recurrence, and elapsed time. Healthy playback does not get a redundant
   "playing" status card;

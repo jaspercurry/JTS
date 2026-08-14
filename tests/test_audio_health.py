@@ -540,6 +540,34 @@ def test_transport_coherence_error_is_not_disguised_as_audio_is_ready() -> None:
     assert health["overall"]["headline"] != "Audio is ready"
 
 
+def test_parked_status_is_the_value_the_dashboard_alerts_on() -> None:
+    """The household's parked surface is keyed to this status string.
+
+    #2381: the System view's Audio card (``outputAlert`` in
+    ``deploy/assets/system-status/js/audio-sections.js``) is the household's
+    only front-page signal that the speaker cannot play, and it shows itself
+    when ``overall.status`` equals one exact literal. Renaming that status here
+    would not break a single Python test while silently blanking that card, so
+    the two halves of the coupling are asserted together.
+    """
+    from pathlib import Path
+
+    health = _compose(transport={
+        "coherence_errors": [_ROUTE_DISCONNECTED],
+        "capability_gap": None,
+    })
+    assert health["overall"]["status"] == "issue"
+
+    module = (
+        Path(__file__).resolve().parents[1]
+        / "deploy" / "assets" / "system-status" / "js" / "audio-sections.js"
+    ).read_text()
+    assert 'const OUTPUT_ALERT_STATUS = "issue";' in module, (
+        "the dashboard's audio alert no longer keys off the status "
+        "compose_audio_health emits for a parked speaker"
+    )
+
+
 def test_parked_detail_names_the_dac_that_cannot_drive_an_active_layout() -> None:
     """The capability cause is named in household language with the fix path."""
     health = _compose(transport={
