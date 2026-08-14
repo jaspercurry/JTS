@@ -704,11 +704,14 @@ def _pair_provenance(
     # (test_packaged_outputd_buffer_defaults_are_mutually_coherent) — so there is
     # always a named source here, and no "this is a build defect" branch to carry
     # at runtime.
-    if any(store_entry(key, frames, layer) for key, frames, layer in halves):
+    stored = [key for key, frames, layer in halves if store_entry(key, frames, layer)]
+    if stored:
+        # Name the actual key(s), not a `<key>` placeholder the operator has to
+        # translate — the remediation should be runnable as printed.
+        clear = " && ".join(f"jasper-audio-config overrides-clear {key}" for key in stored)
         return (
             f"{detail}; clearing the {labels[OUTPUTD_ENV_LAYER]} line alone is undone by "
-            "the next reconcile — clear the override with "
-            "`jasper-audio-config overrides-clear <key>`"
+            f"the next reconcile — clear the override with `{clear}`"
         )
     return (
         f"{detail}; correct or remove the losing line in the file named above — "

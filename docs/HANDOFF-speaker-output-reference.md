@@ -704,8 +704,8 @@ What exists:
   the ALSA render. That fallback preserves the running env, which is harmless
   only while the preserved env describes hardware the pass still sees. One
   shape it does not: `JASPER_OUTPUTD_BACKEND=alsa` at
-  `JASPER_OUTPUTD_DAC_PCM=outputd_dac` while the same pass renders that alias
-  as `type null`. The null device accepts every write instantly and no fan-in
+  `JASPER_OUTPUTD_DAC_PCM=outputd_dac` while the ALSA artifact **already on
+  disk** renders that alias as `type null`. The null device accepts every write instantly and no fan-in
   coupling paces the content side either, so outputd's loop has no clock and
   spins until `LimitRTTIME` SIGKILLs it — three per burst, then
   `StartLimitAction=reboot` (issue #2489, observed live 2026-08-14: three
@@ -719,11 +719,18 @@ What exists:
   trip outputd's own allowlist and park it at exit 78 instead.
   The park is additionally gated on the pass having **observed** the hardware
   at all: a pass whose observation failed knows strictly less than the pass
-  that wrote that env, and it re-renders no ALSA template either, so the two
-  artifacts on disk stay the coherent pair they already were and preserving is
-  the better bet. That is what keeps a broken interpreter — which fails the
-  observation and the endpoint contract together — from parking a healthy
-  recognized DAC.
+  that wrote that env, so preserving is the better bet. That is what keeps a
+  broken interpreter — which fails the observation and the endpoint contract
+  together — from parking a healthy recognized DAC.
+  **Every conjunct reads an artifact rather than re-deriving one**, and that
+  distinction is load-bearing: this exit returns ~87 lines *ahead of*
+  `render_asound_if_needed`, so the pass renders no ALSA and the alias outputd
+  opens is whatever an EARLIER pass left. Asking what this pass *would* render
+  answered a question nobody had asked — on a recognized → unrecognized
+  transition it reported "null" while the live template still said `type hw
+  card A`, which parks a box whose DAC is still playing on a detail string that
+  is false. The guard greps the rendered template's `pcm.outputd_dac` block
+  instead, and an absent or unreadable template declines rather than assumes.
 - Apple-only analog mixer services: `jasper-dac-init.service` and
   `jasper-headphone-monitor.service` exist to pin/watch the Apple USB-C
   dongle `Headphone` control. The audio-hardware reconciler enables

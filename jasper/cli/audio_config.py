@@ -418,15 +418,28 @@ def _cmd_validate_outputd_env(args: argparse.Namespace) -> int:
     # The store matters because the latency-floor pass COPIES its values into
     # outputd.env, so a line that looks operator-written may be one that comes
     # straight back after every reconcile.
+    #
+    # READ PATH AND REPORTED LABEL ARE SEPARATE. The reconciler validates a
+    # STAGED CANDIDATE (`mktemp` under /var/lib/jasper, removed on EXIT), so the
+    # path this command reads is a temp file that no longer exists by the time an
+    # operator reads the journal. Reporting it named a deleted file as the origin
+    # — the wrong-attribution failure this provenance exists to prevent — so the
+    # reconciler passes the REAL destination as --outputd-label and that is what
+    # the message names.
     overrides = load_runtime_overrides(
         args.overrides,
         allowed_keys=AUDIO_RUNTIME_OVERRIDE_KEYS,
     )
+    # A malformed or unreadable store degrades attribution — the refusal would
+    # silently stop naming an origin it cannot parse. Say so rather than let the
+    # message get quietly less useful.
+    for warning in overrides.warnings:
+        print(warning)
     detail = outputd_env_buffer_pair_error(
         base_env=base.values,
         outputd_env=outputd.values,
         base_label=base.path,
-        outputd_label=outputd.path,
+        outputd_label=args.outputd_label or outputd.path,
         override_entries={entry.key: entry for entry in overrides.entries},
         override_label=args.overrides,
     )
@@ -648,6 +661,10 @@ def build_parser() -> argparse.ArgumentParser:
     validate_outputd.add_argument("--base-env", default=DEFAULT_BASE_ENV_PATH)
     validate_outputd.add_argument("--outputd-env", default=DEFAULT_OUTPUTD_ENV_PATH)
     validate_outputd.add_argument("--fanin-env", default=DEFAULT_FANIN_ENV_PATH)
+    # The path to NAME in refusals when it differs from the path to READ. The
+    # reconciler validates a staged candidate under a temp name that is deleted
+    # on exit; unset means the two are the same file.
+    validate_outputd.add_argument("--outputd-label", default="")
     # Same default as outputd-floor-actions: the store is read whether or not a
     # caller names it, because the floor pass writes store values into
     # outputd.env and this refusal has to be able to say so.

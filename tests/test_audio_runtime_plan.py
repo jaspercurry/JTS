@@ -638,7 +638,10 @@ def test_buffer_pair_refusal_quotes_the_override_store_that_wrote_the_line():
     assert (
         "reason=latency-tuning-outputd-content-buffer-1536-verified-floor" in detail
     )
-    assert "overrides-clear" in detail
+    # The remediation must be runnable AS PRINTED — the actual key, never a
+    # `<key>` placeholder the operator has to translate.
+    assert f"jasper-audio-config overrides-clear {OUTPUTD_CONTENT_BUFFER_KEY}" in detail
+    assert "<key>" not in detail
 
 
 @pytest.mark.parametrize(
