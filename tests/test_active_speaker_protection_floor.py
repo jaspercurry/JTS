@@ -21,6 +21,13 @@ staged candidate whose protective high-pass is ALREADY clamped, and the
 never-nanny boundary (an undeclared floor, and a non-tweeter role) is pinned in
 both directions.
 
+A fourth family pins the gate's fail-closed rule. Staged metadata written
+before this check existed carries neither compared fact and nothing in the
+system forces a re-stage, so reading such a file as "no floor declared" handed
+the #2491 config a green load gate — reproduced through the real handler by two
+independent review lenses. Absence of the keys therefore refuses; an honest
+undeclared driver, which staging writes as present-and-``None``, still passes.
+
 The two real-box fixtures in ``tests/fixtures/active_speaker_protection_floor_20260814/``
 are verbatim design drafts captured from jts.local's first sanctioned composite
 arm (2026-08-14, issue #2491's closing comment): the 2000 Hz draft that armed
@@ -46,6 +53,7 @@ from jasper.active_speaker.driver_protection import (
     protection_highpass_floor_satisfied,
 )
 from jasper.active_speaker.path_safety import (
+    FLOOR_FACT_KEYS,
     _tweeter_protection_floor_verdict,
     build_startup_load_path_safety_evidence,
     evaluate_path_safety_evidence,
@@ -182,6 +190,69 @@ def _floor_blockers(report: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _strip_floor_facts(tmp_path: Path) -> dict[str, Any]:
+    """Rewrite the staged metadata as a pre-PR build would have written it.
+
+    Byte-faithful, and re-derivable::
+
+        git show 9d5a9597d:jasper/active_speaker/staging.py \\
+          | grep -n 'tweeter_protection_floor_hz\\|tweeter_crossover_highpass_hz'
+
+    returns nothing at this branch's merge base — the pre-PR emitter wrote only
+    ``tweeter_protective_highpass_hz``. Nothing else in the metadata, and
+    nothing at all in the staged YAML, is touched. This is the exact artifact
+    both review lenses used to prove that nothing forces a re-stage.
+    """
+
+    metadata_path = tmp_path / "active_staged.json"
+    staged = json.loads(metadata_path.read_text(encoding="utf-8"))
+    for key in FLOOR_FACT_KEYS:
+        staged["config"].pop(key, None)
+    metadata_path.write_text(json.dumps(staged), encoding="utf-8")
+    assert all(key not in staged["config"] for key in FLOOR_FACT_KEYS)
+    return staged
+
+
+def _endpoint_report(
+    tmp_path: Path,
+    topology: OutputTopology,
+    monkeypatch,
+) -> dict[str, Any]:
+    """Drive the real ``check-path-safety`` coroutine over persisted state."""
+
+    from jasper.output_topology import save_output_topology
+    from jasper.web.sound_setup import _active_speaker_check_path_safety_payload
+
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(topology, topology_path)
+    rollback = tmp_path / "rollback.yml"
+    rollback.write_text(
+        (tmp_path / "active_staged.yml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
+        str(tmp_path / "active_staged.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_PATH_SAFETY_EVIDENCE",
+        str(tmp_path / "path_safety.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE",
+        str(tmp_path / "startup_load.json"),
+    )
+
+    class _Camilla:
+        async def get_config_file_path(self, *, best_effort: bool = False) -> str:
+            return str(rollback)
+
+    return asyncio.run(
+        _active_speaker_check_path_safety_payload(camilla_factory=_Camilla)
+    )
+
+
 # --- (a) the clamp: a below-floor candidate is raised TO the floor -----------
 
 
@@ -240,6 +311,9 @@ def test_undeclared_floor_keeps_the_unclamped_multiple(tmp_path: Path) -> None:
     staged = _stage(tmp_path, topology, preview)
     report = _report(topology, staged, tmp_path)
 
+    # Present-and-null, not absent: this is what distinguishes an honest
+    # undeclared driver from a staged file the floor check cannot read.
+    assert all(key in staged["config"] for key in FLOOR_FACT_KEYS)
     assert staged["config"]["tweeter_protection_floor_hz"] is None
     assert _floor_blockers(report) == []
     assert report["status"] == "pass"
@@ -357,6 +431,185 @@ def test_path_safety_passes_an_at_floor_staged_candidate(tmp_path: Path) -> None
     assert report["status"] == "pass"
     assert report["ok_to_load_active_config"] is True
     assert _floor_blockers(report) == []
+
+
+# --- pre-PR staged metadata: unreadable means refuse, not "no floor" --------
+
+
+def test_staging_always_writes_both_floor_facts_so_absence_discriminates(
+    tmp_path: Path,
+) -> None:
+    """The premise the whole fail-closed rule rests on.
+
+    A declared driver and an undeclared one BOTH get both keys written; the
+    undeclared one gets an explicit ``None``. So *key absent* can only mean
+    "written by a build that predates this check", never "declared nothing".
+    """
+
+    topology = mono_output_topology()
+
+    declared = _stage(tmp_path / "a", topology, _preview(
+        topology, fc_hz=5000, tweeter_floor_hz=5000,
+    ))
+    undeclared = _stage(tmp_path / "b", topology, _preview(
+        topology, fc_hz=2000, tweeter_floor_hz=None,
+    ))
+
+    for staged in (declared, undeclared):
+        assert all(key in staged["config"] for key in FLOOR_FACT_KEYS)
+    assert declared["config"]["tweeter_protection_floor_hz"] == 5000.0
+    assert undeclared["config"]["tweeter_protection_floor_hz"] is None
+    assert undeclared["config"]["tweeter_crossover_highpass_hz"] == 2000.0
+
+
+def test_pre_pr_staged_metadata_is_refused_through_the_real_endpoint(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """The review lenses' exact repro: nothing forces a re-stage.
+
+    Both lenses staged the below-floor design, deleted only the two keys this
+    change added (a byte-faithful pre-PR artifact — the staged YAML still
+    carries the 2000 Hz crossover), and got ``status=pass`` /
+    ``ok_to_load_active_config=true`` / ``load_gate=ready`` back out of the real
+    handler. Nothing re-stages on their behalf: SCHEMA_VERSION is unbumped, the
+    loader applies no freshness test, the evidence binding hashes the YAML, no
+    deploy step clears the file, and neither load route stages.
+    """
+
+    topology = mono_output_topology()
+    _stage(tmp_path, topology, _preview(topology, fc_hz=2000, tweeter_floor_hz=5000))
+    legacy = _strip_floor_facts(tmp_path)
+
+    # The staged graph is untouched and still carries the below-floor design.
+    assert "freq: 2000.0000" in (tmp_path / "active_staged.yml").read_text(
+        encoding="utf-8"
+    )
+    assert legacy["status"] == "staged"
+
+    payload = _endpoint_report(tmp_path, topology, monkeypatch)
+    report = payload["report"]
+
+    assert report["status"] == "blocked"
+    assert report["ok_to_load_active_config"] is False
+    assert report["load_gate"] == "requirements_blocked"
+    blockers = _floor_blockers(report)
+    assert len(blockers) == 1
+    assert "stage the protected startup config again" in blockers[0]["message"]
+    assert any(
+        issue["code"] == "staged_tweeter_protection_floor_unverifiable"
+        for issue in payload["evidence"]["observed_issues"]
+    )
+    assert payload["startup_load"]["preflight"]["load_allowed"] is False
+
+
+def test_pre_pr_staged_metadata_is_refused_even_for_an_honest_candidate(
+    tmp_path: Path,
+) -> None:
+    """The rule is "refuse unless provable", not "refuse below-floor".
+
+    An at-floor design staged by a pre-PR build is equally unprovable, so it is
+    equally refused. That is deliberate: the check cannot tell the two apart
+    from the artifact, and guessing in the permissive direction is what the
+    review lenses proved unsafe.
+    """
+
+    topology = mono_output_topology()
+    _stage(tmp_path, topology, _preview(topology, fc_hz=5000, tweeter_floor_hz=5000))
+    legacy = _strip_floor_facts(tmp_path)
+    report = _report(topology, legacy, tmp_path)
+
+    assert report["ok_to_load_active_config"] is False
+    assert len(_floor_blockers(report)) == 1
+
+
+def test_a_re_stage_clears_the_pre_pr_refusal(tmp_path: Path) -> None:
+    """The named remedy actually works — one re-stage, no other operator step."""
+
+    topology = mono_output_topology()
+    preview = _preview(topology, fc_hz=5000, tweeter_floor_hz=5000)
+    _stage(tmp_path, topology, preview)
+    legacy = _strip_floor_facts(tmp_path)
+    assert _report(topology, legacy, tmp_path)["ok_to_load_active_config"] is False
+
+    restaged = _stage(tmp_path, topology, preview)
+    report = _report(topology, restaged, tmp_path)
+
+    assert all(key in restaged["config"] for key in FLOOR_FACT_KEYS)
+    assert report["status"] == "pass"
+    assert report["ok_to_load_active_config"] is True
+    assert _floor_blockers(report) == []
+
+
+def test_an_unreadable_staged_config_block_is_refused() -> None:
+    """One coherent rule: refuse unless both facts are present in a mapping."""
+
+    unreadable: tuple[dict[str, Any], ...] = (
+        {},
+        {"config": None},
+        {"config": "active_staged.yml"},
+        {"config": []},
+        {"config": 5},
+        {"config": {}},
+        {"config": {"tweeter_protection_floor_hz": 5000.0}},
+        {"config": {"tweeter_crossover_highpass_hz": 5000.0}},
+    )
+    for staged in unreadable:
+        honoured, issue = _tweeter_protection_floor_verdict(staged)
+        assert honoured is False, staged
+        assert issue is not None and issue["code"] == (
+            "staged_tweeter_protection_floor_unverifiable"
+        ), staged
+
+    # Both present, floor honestly null -> the pin-(f) undeclared case passes.
+    honoured, issue = _tweeter_protection_floor_verdict({
+        "config": {
+            "tweeter_protection_floor_hz": None,
+            "tweeter_crossover_highpass_hz": 2000.0,
+        }
+    })
+    assert honoured is True
+    assert issue is None
+
+
+def test_missing_crossover_corner_against_a_real_floor_is_refused() -> None:
+    """A present-but-null corner under a real floor fails closed and reads well."""
+
+    honoured, issue = _tweeter_protection_floor_verdict({
+        "config": {
+            "tweeter_protection_floor_hz": 5000.0,
+            "tweeter_crossover_highpass_hz": None,
+        }
+    })
+
+    assert honoured is False
+    assert issue is not None
+    assert issue["code"] == "tweeter_crossover_below_declared_protection_floor"
+    assert "records no tweeter crossover corner" in issue["message"]
+    assert "5000 Hz" in issue["message"]
+
+
+def test_both_surfaces_render_a_non_integer_floor_identically() -> None:
+    """The preview disclosure and the gate refusal share one Hz formatter."""
+
+    topology = mono_output_topology()
+    preview = _preview(topology, fc_hz=2000, tweeter_floor_hz=5500.5)
+    crossover = preview["groups"][0]["crossovers"][0]
+    disclosure = next(
+        issue
+        for issue in crossover["issues"]
+        if issue["code"] == "crossover_below_declared_protection_floor"
+    )
+    _honoured, refusal = _tweeter_protection_floor_verdict({
+        "config": {
+            "tweeter_protection_floor_hz": 5500.5,
+            "tweeter_crossover_highpass_hz": 2000.0,
+        }
+    })
+
+    assert refusal is not None
+    assert "5500.5 Hz" in disclosure["message"]
+    assert "5500.5 Hz" in refusal["message"]
 
 
 # --- (g) never-nanny boundary: nothing grows where protection is not owed ----

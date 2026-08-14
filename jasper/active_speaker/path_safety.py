@@ -27,7 +27,10 @@ from jasper.output_topology import OutputTopology, channel_identity_report
 
 from ._common import finite_float as _finite_float, issue as _issue
 from .calibration_level import MAX_TEST_LEVEL_DBFS
-from .driver_protection import protection_highpass_floor_satisfied
+from .driver_protection import (
+    format_protection_hz,
+    protection_highpass_floor_satisfied,
+)
 from .profile import ActiveSpeakerConfigError
 
 SCHEMA_VERSION = 1
@@ -554,6 +557,12 @@ def _no_raw_fullrange_by_candidate(staged_config: dict[str, Any]) -> bool:
     )
 
 
+FLOOR_FACT_KEYS = (
+    "tweeter_protection_floor_hz",
+    "tweeter_crossover_highpass_hz",
+)
+
+
 def _tweeter_protection_floor_verdict(
     staged_config: dict[str, Any],
 ) -> tuple[bool, dict[str, str] | None]:
@@ -563,16 +572,43 @@ def _tweeter_protection_floor_verdict(
     published by the producer of the staged graph (``staging``) rather than
     re-derived here, so this gate refuses the config that was actually staged.
 
-    A staged candidate whose tweeter declares NO protection floor is honoured
-    (``True``): the operator declared no floor, so there is nothing to refuse
-    and nothing to invent. That is also what a staged metadata file written
-    before this gate existed reports — a stale file carries no floor, and
-    re-staging (already required before a load) republishes both facts.
+    **One rule: refuse unless both facts are present.** ``staging`` writes both
+    keys on every staged config, including as ``None`` when the driver declares
+    no floor — so *key absence* is not "declared nothing", it is a staged
+    metadata file this check cannot read, and the only such file is one written
+    before this check existed. Those persist: ``staging.SCHEMA_VERSION`` is
+    unbumped (deliberately — bumping it would invalidate every honest staged
+    artifact fleet-wide for no additional safety), ``load_staged_startup_config``
+    applies no version or freshness test, the startup-load evidence binding
+    hashes the staged YAML rather than this metadata, no deploy step clears it,
+    ``load-startup-config`` never re-stages, and ``commission-load``
+    short-circuits staging when the staged config is already running. **Nothing
+    forces a re-stage**, so reading an unreadable file as "no floor" would hand
+    exactly the #2491 config a green load gate. It fails closed instead, loudly
+    and by name, and one re-stage clears it.
+
+    Present-and-``None`` is the honest undeclared case and stays honoured: the
+    operator declared no floor, so there is nothing to refuse and nothing to
+    invent. A ``config`` block that is missing or not a mapping is unreadable
+    for the same reason and refuses on the same rule.
     """
 
     config = staged_config.get("config")
-    if not isinstance(config, dict):
-        return True, None
+    if not isinstance(config, dict) or any(
+        key not in config for key in FLOOR_FACT_KEYS
+    ):
+        return False, _issue(
+            "blocker",
+            "staged_tweeter_protection_floor_unverifiable",
+            (
+                "staged config metadata does not record the tweeter protection "
+                "floor or the staged crossover corner, so the staged graph "
+                "cannot be proven to honour the tweeter's declared protective "
+                "high-pass floor (this is what a metadata file written before "
+                "that check existed looks like); stage the protected startup "
+                "config again"
+            ),
+        )
     floor_hz = _finite_float(config.get("tweeter_protection_floor_hz"))
     crossover_hz = _finite_float(config.get("tweeter_crossover_highpass_hz"))
     if protection_highpass_floor_satisfied(
@@ -580,18 +616,25 @@ def _tweeter_protection_floor_verdict(
         floor_hz=floor_hz,
     ):
         return True, None
-    crossed = (
-        f"{crossover_hz:g} Hz" if crossover_hz is not None else "no crossover corner"
-    )
+    floor = format_protection_hz(floor_hz)
+    if crossover_hz is None:
+        message = (
+            "the staged config records no tweeter crossover corner, so it "
+            "cannot be proven to honour the tweeter's own declared protective "
+            f"high-pass floor of {floor}; stage the protected startup config "
+            "again"
+        )
+    else:
+        message = (
+            f"staged tweeter crossover is {format_protection_hz(crossover_hz)}, "
+            "below the tweeter's own declared protective high-pass floor of "
+            f"{floor}; raise the crossover to at least {floor} (or correct the "
+            "driver's declared required_protection_filters) and stage again"
+        )
     return False, _issue(
         "blocker",
         "tweeter_crossover_below_declared_protection_floor",
-        (
-            f"staged tweeter crossover is {crossed}, below the tweeter's own "
-            f"declared protective high-pass floor of {floor_hz:g} Hz; raise the "
-            f"crossover to at least {floor_hz:g} Hz (or correct the driver's "
-            "declared required_protection_filters) and stage again"
-        ),
+        message,
     )
 
 

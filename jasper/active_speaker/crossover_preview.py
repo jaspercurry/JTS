@@ -24,6 +24,7 @@ from jasper.output_topology import OutputTopology, OutputTopologyError
 from ._common import ACTIVE_CROSSOVER_ROLE_PAIRS, issue as _issue
 from .driver_protection import (
     declared_protection_highpass_floor_hz,
+    format_protection_hz,
     protection_highpass_floor_satisfied,
 )
 
@@ -374,9 +375,9 @@ def _build_crossover(
                 "crossover_below_declared_protection_floor",
                 (
                     f"{upper_role} declares a protective high-pass floor of "
-                    f"{round(protection_floor)} Hz; crossing at "
-                    f"{round(proposed_frequency)} Hz sits below it and the "
-                    "protected startup load will refuse this design"
+                    f"{format_protection_hz(protection_floor)}; crossing at "
+                    f"{format_protection_hz(proposed_frequency)} sits below it "
+                    "and the protected startup load will refuse this design"
                 ),
             )
         )

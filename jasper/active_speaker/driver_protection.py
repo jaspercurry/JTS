@@ -209,14 +209,27 @@ def _band_highpass_hz(band_limit: Any) -> float | None:
 
 
 def declared_protection_highpass_floor_hz(driver: Any) -> float | None:
-    """The confirmed declared protective high-pass floor for one driver payload.
+    """The declared protective high-pass floor carried by one driver payload.
 
-    Reads the driver's own ``required_protection_filters`` — the declaration
-    the operator confirmed and that ``driver_safety._target_issues`` already
-    refuses to accept below this module's ``min_highpass_hz`` code policy
-    (reason ``<role>:highpass_below_code_policy``). A confirmed declaration is
-    therefore at or above policy by construction, which is why this is the one
-    floor a consumer needs to read and why no consumer restates a floor value.
+    Reads exactly one thing: the strictest ``kind="highpass"`` ``cutoff_hz`` in
+    this payload's own ``required_protection_filters``. It does **not** prove
+    the value was confirmed, and callers must not read it as such. On the
+    staging path the payload comes from ``crossover_preview``'s role-keyed
+    research + manual-settings merge, which can carry a research-only value
+    that no confirmation gate has seen.
+
+    Confirmation is validated elsewhere and stays there:
+    ``driver_safety._target_issues`` refuses a *visible* declaration below this
+    module's ``min_highpass_hz`` code policy (``<role>:highpass_below_code_policy``),
+    and ``build_driver_safety_profile`` raises rather than confirm a profile
+    carrying that issue. So a confirmed declaration is at or above policy — but
+    that is a property of the confirmed profile, not of this read.
+
+    An unvalidated floor arriving here can only ever *tighten*: the derived
+    protection clamp is ``max(floor, multiplier x fc)``, so a floor can raise
+    the protective corner and never lower it, and the load gate can only refuse
+    more than it did before. That is why this reader stays permissive about
+    provenance while the clamp and the gate stay monotone.
 
     ``None`` means *no floor is declared* — never a guessed default. Consumers
     must treat that as "unchanged behaviour", not as "floor of zero" and not as
@@ -259,6 +272,17 @@ def protection_highpass_floor_satisfied(
     if floor_hz is None:
         return True
     return highpass_hz is not None and highpass_hz >= floor_hz
+
+
+def format_protection_hz(value: float) -> str:
+    """Render one protection-floor frequency for an operator-facing message.
+
+    Shared by the crossover-preview disclosure and the path-safety refusal so a
+    non-integer declared floor cannot render as two different numbers on the
+    two surfaces a household compares.
+    """
+
+    return f"{float(value):g} Hz"
 
 
 def _highpass_satisfied(
