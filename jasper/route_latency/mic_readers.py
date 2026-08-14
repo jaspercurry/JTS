@@ -169,10 +169,13 @@ class UdpMicReader:
 class AlsaMicReader:
     """Fallback mic source: a dedicated measurement mic over ALSA.
 
-    Lazy-imports ``alsaaudio`` (mirrors ``jasper.cli.aec_bridge``'s
-    ``_ref_thread`` pattern) so importing this module never requires ALSA
-    to be installed — only actually opening a device does, which is fine
-    since this reader is only constructed on the fallback path.
+    Lazy-imports ``alsaaudio`` inside ``__init__`` so importing this
+    module never requires ALSA to be installed — only actually opening a
+    device does, which is fine since this reader is only constructed on
+    the fallback path. (The pattern used to cite jasper-aec-bridge's ALSA
+    reference capture loop; U4/P7-1 retired that loop and the bridge's
+    ``alsaaudio`` dependency with it — the reason it is right here is
+    unchanged, so only the citation went.)
     """
 
     def __init__(

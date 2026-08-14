@@ -23,7 +23,10 @@ import wave
 from contextlib import contextmanager
 from typing import Iterator
 
-from ...audio_measurement.correction_lane import run_correction_play
+from ...audio_measurement.correction_lane import (
+    correction_play_device,
+    run_correction_play,
+)
 from ...control import client as control
 from ...correction.coordinator import MeasurementWindowError, measurement_window
 from ._shared import CheckResult, _loopback_playback_active, _run
@@ -306,9 +309,12 @@ def _play_and_assess_probe() -> list[CheckResult]:
         results.append(CheckResult(
             "probe — aplay sine", "fail",
             f"aplay failed: {play.stderr.strip() or f'rc={play.returncode}'}. "
-            "If 'Unknown PCM', re-run install.sh so /etc/asound.conf defines "
-            "correction_substream; if 'invalid argument', check "
-            "/proc/asound/Loopback exists; if 'Permission denied', run the "
+            f"The correction lane resolves to {correction_play_device()!r} on "
+            "this box (renderer-lane map). If 'Unknown PCM', re-run "
+            "install.sh so the deployed ALSA config defines it; if 'invalid "
+            "argument', check the backing transport exists "
+            "(/proc/asound/Loopback unarmed, /dev/shm/jts-ring when the "
+            "correction lane is armed); if 'Permission denied', run the "
             "doctor as root (its documented contract) — an unprivileged run "
             "cannot open the playback lane.",
         ))
@@ -316,7 +322,7 @@ def _play_and_assess_probe() -> list[CheckResult]:
     results.append(CheckResult(
         "probe — aplay sine", "ok",
         f"{_PROBE_SINE_DURATION_S:.0f} s of {frequency} Hz sine to "
-        "correction_substream",
+        f"{correction_play_device()}",
     ))
 
     time.sleep(6.0)

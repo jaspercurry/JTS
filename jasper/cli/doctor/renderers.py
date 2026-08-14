@@ -593,11 +593,15 @@ def check_shairport_sync_loopback_plughw() -> CheckResult:
     A stale `jasper_renderer_in` value means shairport is still pointed at
     the retired renderer-side dmix path. Legacy `plughw:Loopback,0,0` and
     raw `hw:Loopback,0,0` are both stale now; the raw form is additionally
-    broken because it bypasses ALSA's plug layer.
+    broken because it bypasses ALSA's plug layer. All three legacy
+    remediations name the device the lane map resolves for THIS box —
+    the ring PCM when the lane is armed, the aloop lane when it is not —
+    rather than a hardcoded `shairport_substream`, which would send an
+    armed box's operator to the wrong target.
 
     Check runs against the DEPLOYED file (not the repo) so it catches
     both kinds of drift: branch not yet merged, and manual on-Pi edits."""
-    from jasper.renderer_lanes import lane_by_label, read_armed_labels
+    from jasper.renderer_lanes import device_for, lane_by_label, read_armed_labels
 
     label = "shairport-sync.conf: output_device"
     p = Path("/etc/shairport-sync.conf")
@@ -661,17 +665,20 @@ def check_shairport_sync_loopback_plughw() -> CheckResult:
             label, "ok",
             f"{lane.aloop_device} (fan-in private AirPlay lane)",
         )
+    # One spelling of the armed→device rule, shared with the arm CLI and the
+    # rendered map (jasper.renderer_lanes.device_for) rather than restated.
+    expected_device = device_for(lane, armed)
     if "jasper_renderer_in" in line:
         return CheckResult(
             label, "fail",
             "jasper_renderer_in — stale retired dmix path. Re-run "
-            "deploy/install.sh so shairport renders to shairport_substream.",
+            f"deploy/install.sh so shairport renders to {expected_device}.",
         )
     if 'plughw:Loopback' in line:
         return CheckResult(
             label, "warn",
             "plughw:Loopback,0,0 — stale pre-fan-in wiring. Redeploy "
-            "to render shairport_substream, AirPlay's private fan-in lane.",
+            f"to render {expected_device}.",
         )
     if '"hw:Loopback' in line or "'hw:Loopback" in line:
         return CheckResult(
@@ -680,8 +687,9 @@ def check_shairport_sync_loopback_plughw() -> CheckResult:
             "will be silently rejected because Loopback is locked at "
             "48 kHz and shairport requests 44.1 kHz. Symptom: iPhone / "
             "Mac sees the speaker in the picker but can't establish a session. "
-            "Fix: redeploy via `bash scripts/deploy-to-pi.sh`. Source "
-            "of truth: deploy/shairport-sync.conf.template.",
+            f"Fix: redeploy via `bash scripts/deploy-to-pi.sh` (this box "
+            f"renders {expected_device}). Source of truth: "
+            "deploy/shairport-sync.conf.template.",
         )
     return CheckResult(
         label, "warn",

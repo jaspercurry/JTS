@@ -419,10 +419,13 @@ def _loopback_playback_active() -> bool:
     single word `closed`. The presence of any non-closed sub means a
     renderer (shairport / librespot / bluealsa) is producing right now.
 
-    In fan-in topology, substream 7 is jasper-fanin's summed output and
-    may be open even when every renderer is idle. Count only input
-    lanes 0..4 for "music active" so AEC output health does not
-    confuse the daemon's own output with a renderer source.
+    Substream 7 is jasper-fanin's summed output and may be open even
+    when every renderer is idle — under `loopback` coupling, the one
+    place fan-in still writes the lane since U4/P7-4 dropped the ring
+    arm's aloop mirror. Count only input lanes 0..4 for "music active"
+    so AEC output health does not confuse the daemon's own output with
+    a renderer source. The skip stays unconditional because it has to
+    hold on the coupling where the lane does have a writer.
 
     Used to gate the AEC bridge FAIL: ref-silent windows are only
     diagnostic of a broken reference chain when music IS being routed
@@ -430,12 +433,18 @@ def _loopback_playback_active() -> bool:
     the expected state and mic-loud bursts are most likely room voice
     or ambient noise.
 
-    Note the blind spot before using this as "the speaker is silent":
-    it observes only the loopback renderer lanes. USB Audio Input is
-    DIRECT-captured by jasper-fanin from hw:UAC2Gadget and opens no
-    playback lane here, so False means "no loopback renderer", not
-    "nothing is playing". A caller that needs true output silence
-    must consult fan-in's DIRECT lane as well.
+    Note the blind spots before using this as "the speaker is silent":
+    it observes only the snd-aloop renderer lanes, and two live sources
+    open none of them —
+
+    * USB Audio Input, DIRECT-captured by jasper-fanin from
+      hw:UAC2Gadget, which opens no playback lane here;
+    * any renderer lane ARMED for ring ingress (U3/P6), which writes a
+      per-renderer SHM ring instead of its aloop substream.
+
+    So False means "no snd-aloop renderer lane is open", NOT "nothing
+    is playing". A caller that needs true output silence must consult
+    fan-in's DIRECT lane and the armed lane set as well.
     """
     import glob
     for status_path in glob.glob("/proc/asound/Loopback/pcm0p/sub*/status"):

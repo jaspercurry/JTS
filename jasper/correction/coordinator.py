@@ -37,10 +37,12 @@ What does NOT get paused:
     correction we generate then acts on the same chain we measured.
   - jasper-mux (the renderer arbiter). It remains alive and reasserts the
     diagnostic gate while the window is open.
-  - jasper-aec-bridge (if enabled). It taps the music chain via
-    dsnoop and the sweep going through the chain temporarily drives
-    the AEC reference. The bridge re-converges in ~200 ms after the
-    sweep ends; disabling+re-enabling the bridge would take longer.
+  - jasper-aec-bridge (if enabled). Its reference is jasper-outputd's
+    UDP speaker monitor — U4/P7-1 retired the ALSA dsnoop tap — which
+    sits downstream of CamillaDSP, so the sweep going through the chain
+    temporarily drives the AEC reference. The bridge re-converges in
+    ~200 ms after the sweep ends; disabling+re-enabling the bridge
+    would take longer.
 
 Robustness:
   - Music daemons keep running and fan-in keeps draining their private lanes;
