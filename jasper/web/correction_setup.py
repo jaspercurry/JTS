@@ -3999,7 +3999,7 @@ def _handle_upload_noise(
     handler: BaseHTTPRequestHandler,
 ) -> dict[str, Any]:
     """POST /upload-noise: persist pre-sweep silence, then play sweep."""
-    from jasper.correction.session import SessionState
+    from jasper.correction.session import AutolevelStatus, SessionState
 
     sess = _get_or_create_session()
     if sess is None:
@@ -4008,23 +4008,42 @@ def _handle_upload_noise(
         raise RuntimeError(
             f"cannot accept noise capture from state {sess.state.value}"
         )
-    if (
-        getattr(sess, "capture_transport", "local") == "local"
-        and not bool(getattr(sess, "local_capture_setup_bound", False))
-    ):
+    if getattr(sess, "capture_transport", "local") != "local":
+        # Mirrors the refusal /autolevel/start and /local-capture/setup
+        # already give a non-local session (both `!= "local"` ->
+        # RequestConflict). This endpoint is the local-browser capture
+        # path: it plays the sweep via _schedule_measurement_sweep, which
+        # never reasserts a locked measurement volume — it just trusts
+        # that AutolevelController's lock left CamillaDSP's volume where
+        # the ramp parked it, true for the whole local session. A relay
+        # level match instead restores household listening volume the
+        # moment it locks (MeasurementSession.run_level_match) and only
+        # reasserts the locked level around its own /relay/capture sweep
+        # (ensure_level_match_volume). So even a relay session with a
+        # genuinely locked level check would measure at the wrong volume
+        # here — checking "is it locked" is not enough. Relay capture,
+        # first position included, goes only through /relay/capture,
+        # which owns that reassertion; the envelope never offers this
+        # endpoint to a relay session (jasper/correction/envelope.py
+        # gates its "/upload-noise" branch on capture_transport !=
+        # "relay"). Without this refusal a same-origin client could
+        # still POST here directly and reach analysis with no level
+        # match at all (issue #2041).
+        raise RequestConflict(
+            "room noise upload is local-only; this session captures "
+            "through the relay flow instead"
+        )
+    if not bool(getattr(sess, "local_capture_setup_bound", False)):
         raise RequestConflict(
             "bind the local microphone setup before uploading room noise"
         )
-    if getattr(sess, "capture_transport", "local") == "local":
-        from jasper.correction.session import AutolevelStatus
-
-        if (
-            sess.autolevel.status != AutolevelStatus.LOCKED
-            or bool(getattr(sess, "autolevel_run_in_progress", False))
-        ):
-            raise RequestConflict(
-                "complete and lock the measurement level check before measuring"
-            )
+    if (
+        sess.autolevel.status != AutolevelStatus.LOCKED
+        or bool(getattr(sess, "autolevel_run_in_progress", False))
+    ):
+        raise RequestConflict(
+            "complete and lock the measurement level check before measuring"
+        )
 
     _run_async(sess.resume_capture_timeout_on_loop(), timeout=2.0)
     body = _read_wav_body(handler)
