@@ -67,9 +67,11 @@ class FrameParser:
                 if self.buffer:
                     raise ProtocolError("heartbeat byte appeared inside a protocol frame")
                 self._heartbeat_run += 1
-                if self._heartbeat_run > 3:
-                    run = b"#" * self._heartbeat_run
-                    raise ProtocolError(f"malformed heartbeat bytes: {run!r}")
+                if self._heartbeat_run == len(REMOTE_LOS_HEARTBEAT):
+                    # Match the vendor receiver: consume complete LOS triples
+                    # before treating a one- or two-byte remainder as normal.
+                    heartbeats.append(REMOTE_LOS_HEARTBEAT)
+                    self._heartbeat_run = 0
                 index += 1
                 continue
             heartbeats.extend(self.finalize_heartbeat_run())
@@ -95,12 +97,7 @@ class FrameParser:
         count, self._heartbeat_run = self._heartbeat_run, 0
         if count == 0:
             return []
-        if count in (1, 2):
-            return [NORMAL_HEARTBEAT] * count
-        if count == 3:
-            return [REMOTE_LOS_HEARTBEAT]
-        run = b"#" * count
-        raise ProtocolError(f"malformed heartbeat bytes: {run!r}")
+        return [NORMAL_HEARTBEAT] * count
 
     @property
     def heartbeat_pending(self) -> bool:

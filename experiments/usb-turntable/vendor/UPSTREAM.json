@@ -1,7 +1,7 @@
 {
   "repository": "https://github.com/jaspercurry/USB-Turntable",
-  "commit": "64a37c31161ffc02b9467c26d4fa06d7fb8b3334",
+  "commit": "a157761ec58889f819892ac059e7959787706250",
   "version": "0.1.0",
-  "aggregate_sha256": "ae0660b4f67eb31ec56ae4a10d681ae347b5abfeb9ca516b67821a08304ab7aa",
+  "aggregate_sha256": "8c8d2cbf097ba24fc3bebf469a8f9db4d60659c0c2865344d6d1b8769161f5de",
   "license": "Apache-2.0"
 }
