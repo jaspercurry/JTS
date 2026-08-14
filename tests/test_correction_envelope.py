@@ -1562,6 +1562,72 @@ def test_surface_verdict_headline():
     assert env["next_action"] == {"label": "Measure again", "endpoint": "/start"}
 
 
+def test_quality_gated_surface_headline_is_not_the_wash_copy():
+    """#2058 B1 pin. acceptance.gate_on_acoustic_quality only ever downgrades
+    a real ACCEPT, so a quality-gated surface is never a small/wash change
+    — here a 2.71 dB RMS improvement, 5x the improvement floor, matching the
+    field scenario this bug was found from. The plain "surface" copy ("the
+    change was too small to be sure") would be a FALSE reason; the envelope
+    must pick the dedicated quality-gated headline instead, and must NOT
+    fold in _headline()'s numbers — those numbers come from
+    session.verify_before_after, the SAME distrusted verify capture the
+    gate declined to trust, so printing them would contradict the sentence
+    declining to trust them.
+
+    Deleting the quality_gated branch in envelope._verdict_text, or letting
+    acceptance.gate_on_acoustic_quality stop setting quality_gated, must
+    fail this test."""
+    sess = _FakeSession(SessionState.VERIFIED)
+    sess.acceptance = _acceptance(
+        "surface",
+        confirmed=False,
+        verify_index=1,
+        overall_rms_delta_db=2.71,
+        quality_gated=True,
+        reasons=[
+            "overall RMS error dropped 2.71 dB (>= 0.5 dB) with no band "
+            "regressed",
+            "downgraded from accept — verify capture's acoustic quality "
+            "warned (verify capture estimated_snr_db=-15.1 < 20 dB)",
+        ],
+    )
+    sess.verify_before_after = _verify_before_after()
+    env = envelope.build_envelope(sess)
+    assert env["verdict_text"] == (
+        "Applied — but the check-measurement was too noisy to trust. "
+        "Re-measure to confirm, or listen and decide."
+    )
+    assert "too small to be sure" not in env["verdict_text"]
+    # No _headline() numbers folded in (the pending-confirm test above pins
+    # the opposite — numbers DO fold in — for the ordinary case).
+    assert "±" not in env["verdict_text"]
+    assert "6" not in env["verdict_text"] and "2" not in env["verdict_text"]
+    # The disclosed reason still rides the relayed verdict block (even
+    # though today's shipped client renders only verdict_text, not reasons
+    # — see the section banner above) — the machine-readable trail is not
+    # lost, only kept out of the headline sentence.
+    assert env["verdict"]["quality_gated"] is True
+    assert any(
+        "acoustic quality" in reason for reason in env["verdict"]["reasons"]
+    )
+
+
+def test_plain_surface_wash_unaffected_by_quality_gated_branch():
+    """No-op control for the pin above: an ordinary wash surface (no
+    quality_gated key at all — every pre-#2058-SF6 acceptance dict, and
+    every non-downgraded surface verdict) must keep the original "too small
+    to be sure" copy with its numeric fold, unchanged."""
+    sess = _FakeSession(SessionState.VERIFIED)
+    sess.acceptance = _acceptance(
+        "surface", confirmed=False, verify_index=1, overall_rms_delta_db=0.1,
+    )
+    assert "quality_gated" not in sess.acceptance
+    sess.verify_before_after = _verify_before_after()
+    env = envelope.build_envelope(sess)
+    assert "too small to be sure" in env["verdict_text"]
+    assert "±" in env["verdict_text"]
+
+
 # --------------------------------------------------------------------------
 # Crossover-region distinction (revision plan §3.3 / P5). The envelope reads
 # strategy.design_correction's `crossover_region` annotation off the session's

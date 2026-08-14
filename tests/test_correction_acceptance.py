@@ -457,14 +457,17 @@ def test_no_points_in_band_surfaces():
 
 # --------------------------------------------------------------------------
 # gate_on_acoustic_quality — refuse a silent accept beside a quality warning
-# (#2058, the room twin of #1813/#1838; mirrors PR #1845's D2 pattern on the
+# (#2058, the room twin of #1813/#1838; mirrors #1845's D2 pattern on the
 # crossover measurement line — "a floor-bound solve is a refusal, not a
 # level"). See test_correction_session.py's
 # test_verify_accept_downgrades_to_surface_when_verify_snr_warned /
+# test_verify_accept_downgrades_to_surface_when_verify_snr_unavailable /
 # test_verify_accept_survives_ok_verify_snr for the session-integration
-# regression pair through the real verify path; these are the pure-function
-# unit tests for the gate evaluate_acceptance() cannot itself apply (it only
-# ever sees curves, never capture quality).
+# regression trio through the real verify path (SF2: the "warned" signal
+# covers both a measured-low SNR and an unestimable one — see
+# jasper.correction.session._verify_snr_quality_warning); these are the
+# pure-function unit tests for the gate evaluate_acceptance() cannot itself
+# apply (it only ever sees curves, never capture quality).
 # --------------------------------------------------------------------------
 
 
@@ -492,14 +495,18 @@ def test_gate_downgrades_accept_when_quality_warned():
         quality_reason="estimated_snr_db=-15.1 < 20 dB",
     )
     assert gated.verdict is Verdict.SURFACE
-    # Disclosure, not replacement (the D2 pattern): the evaluator's own
+    assert gated.quality_gated is True
+    assert r.quality_gated is False  # the un-gated evaluator output
+    assert gated.to_dict()["quality_gated"] is True
+    # Disclosure, not replacement (#1845's D2 pattern): the evaluator's own
     # reason(s) survive unchanged...
     assert gated.reasons[: len(r.reasons)] == r.reasons
     # ...with exactly one new reason appended, carrying the caller's detail.
     assert len(gated.reasons) == len(r.reasons) + 1
     assert "estimated_snr_db=-15.1 < 20 dB" in gated.reasons[-1]
     assert "accept" in gated.reasons[-1]  # names what it downgraded FROM
-    # Only verdict and reasons change; every other field is preserved.
+    # Only verdict, quality_gated, and reasons change; every other field is
+    # preserved.
     assert gated.overall_before_rms_db == r.overall_before_rms_db
     assert gated.overall_after_rms_db == r.overall_after_rms_db
     assert gated.overall_rms_delta_db == r.overall_rms_delta_db
@@ -522,6 +529,7 @@ def test_gate_no_op_when_quality_not_warned():
     gated = acceptance.gate_on_acoustic_quality(r, quality_warned=False)
     assert gated == r
     assert gated.verdict is Verdict.ACCEPT
+    assert gated.quality_gated is False
 
 
 def test_gate_downgrade_message_is_sane_with_default_empty_reason():

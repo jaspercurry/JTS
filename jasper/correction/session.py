@@ -135,6 +135,56 @@ def _band_levels_dbfs(samples: np.ndarray, sample_rate: int) -> list[dict[str, A
     return acoustic_quality.band_levels_dbfs(samples, sample_rate)
 
 
+def _verify_snr_quality_warning(
+    estimated_snr_db: float | None,
+) -> tuple[bool, str]:
+    """Whether a verify capture's own SNR should gate its accept verdict.
+
+    (#2058 SF2.) Deliberately mirrors
+    :func:`acoustic_quality.build_acoustic_quality_report`'s own
+    ``snr_level in {"low", "unavailable"}`` grouping — its
+    ``recommended_action`` already treats a MISSING SNR estimate ("captures
+    are present but no measured noise floor was recorded") with the same
+    "remeasure or capture a noise floor before stronger advice" urgency as a
+    measured-low one, not as merely informational. Gating both here mirrors
+    that existing judgment rather than inventing a new one.
+
+    Checked for mass-downgrade risk before shipping: ``None`` is a genuine
+    capture-time degradation in production, not the default.
+    ``noise_floor_db`` (or the per-capture ``noise_report``, which also
+    satisfies this) is populated by multiple real production paths ahead of
+    any verify capture — the household's normal per-position noise-capture
+    step (``on_noise_capture_uploaded``), the client-supplied autolevel
+    value, and the relay-ingestion path in ``jasper.web.correction_setup``
+    all set it — so ``None`` reaching here means every one of those
+    genuinely didn't run for this session, not the common case.
+
+    ``estimated_snr_db`` is the verify capture's own
+    ``verify_quality["estimated_snr_db"]`` — ``None`` when no noise-floor
+    evidence was available for this specific capture. The 20 dB boundary is
+    :data:`acoustic_quality.SNR_WARN_DB` — the SAME constant
+    ``acoustic_quality._capture_summary`` compares against for its own
+    "low" tier, single-sourced rather than restated (a second literal here
+    would let this gate and the quality report's own verdict silently drift
+    apart under a future retune). At the boundary itself this does not warn
+    (``<``, not ``<=``), matching that same comparison.
+
+    Returns ``(quality_warned, reason)``; ``reason`` is ``""`` when not
+    warned.
+    """
+    if estimated_snr_db is None:
+        return True, (
+            "verify capture's SNR could not be estimated "
+            "(no noise floor recorded)"
+        )
+    if estimated_snr_db < acoustic_quality.SNR_WARN_DB:
+        return True, (
+            f"verify capture estimated_snr_db={estimated_snr_db:.1f} "
+            f"< {acoustic_quality.SNR_WARN_DB:.0f} dB"
+        )
+    return False, ""
+
+
 class SessionState(Enum):
     IDLE = "idle"
     NEEDS_NOISE_CAPTURE = "needs_noise_capture"
@@ -1173,18 +1223,24 @@ class MeasurementSession:
             band_snr = self._capture_band_snr(captured_wav_path, noise_report)
             if band_snr:
                 out["band_snr"] = band_snr
-            if estimated_snr_db < 20.0:
+            # #2058 SF6: SNR_WARN_DB, not a restated literal — this is the
+            # same threshold acoustic_quality._capture_summary compares
+            # against for its own "low" tier, and _verify_snr_quality_warning
+            # above compares the verify capture's SNR against it too. A
+            # second literal "20.0" here would let this issue and either of
+            # those comparisons silently drift apart under a future retune.
+            if estimated_snr_db < acoustic_quality.SNR_WARN_DB:
                 issues = list(out.get("issues") or [])
                 issues.append({
                     "code": "capture_snr_low",
                     "severity": "warn",
                     "message": (
-                        "capture is less than 20 dB above the measured "
-                        "pre-sweep noise floor"
+                        f"capture is less than {acoustic_quality.SNR_WARN_DB:.0f} "
+                        "dB above the measured pre-sweep noise floor"
                     ),
                     "details": {
                         "estimated_snr_db": round(estimated_snr_db, 2),
-                        "threshold_db": 20.0,
+                        "threshold_db": acoustic_quality.SNR_WARN_DB,
                     },
                 })
                 out["issues"] = issues
@@ -1267,9 +1323,11 @@ class MeasurementSession:
         It also owns the acoustic-quality gate (#2058): after the pure
         evaluator returns, :func:`acceptance.gate_on_acoustic_quality`
         downgrades an ``accept`` to ``surface`` when this verify capture's own
-        SNR was low (``self.verify_quality``, populated by the caller before
-        this method runs). The evaluator itself cannot do this; it only ever
-        sees curves, never capture quality.
+        SNR was low or could not be estimated at all (see
+        :func:`_verify_snr_quality_warning`; ``self.verify_quality`` is
+        populated by the caller before this method runs). The evaluator
+        itself cannot do this; it only ever sees curves, never capture
+        quality.
 
         Fail-soft: recoverable computation errors return ``None`` (the verdict
         is simply absent) so the acceptance verdict can never break the verify
@@ -1328,38 +1386,38 @@ class MeasurementSession:
             # issue, and jasper.audio_measurement.quality's "mic_uncalibrated"
             # is one such issue on nearly every session that skips a
             # measurement-mic calibration upload. A shared, uncalibrated
-            # mic's systematic response error cancels exactly in this
-            # verdict's before/after dB delta (both curves carry the same
-            # offset), so it is not evidence the verdict should distrust —
-            # gating on it would silently downgrade most real sessions'
-            # accepts to surface for a reason unrelated to whether THIS
-            # verify capture's evidence was trustworthy. SNR is different: a
-            # noisy capture's noise floor does NOT cancel between before and
-            # verify (it is capture-local), so it directly bears on whether
-            # the extracted curve shape can be trusted. SNR_WARN_DB is the
-            # same threshold acoustic_quality._capture_summary uses for its
-            # own "low" tier (the one tier its recommended_action treats as
-            # "remeasure or capture a noise floor" — "medium" is documented
-            # as "usable").
+            # mic's systematic response error does not cancel EXACTLY out of
+            # this verdict's before/after RMS delta (an additive coloration
+            # does not vanish from an RMS computed over the whole curve) —
+            # the weaker claim that actually holds is that the SAME mic
+            # measured both curves in one consistent frame, so the verdict's
+            # DIRECTION (better / worse / a wash) is robust to a shared,
+            # roughly-constant coloration even though an absolute reading
+            # would not be. That is enough to trust the direction, not
+            # evidence the verdict should distrust — gating on it would
+            # silently downgrade most real sessions' accepts to surface for
+            # a reason unrelated to whether THIS verify capture's evidence
+            # was trustworthy. SNR is different: a noisy capture's noise
+            # floor does NOT cancel between before and verify (it is
+            # capture-local, not shared), so it directly bears on whether
+            # the extracted curve shape itself can be trusted.
             verify_snr_db = (
                 self.verify_quality.get("estimated_snr_db")
                 if isinstance(self.verify_quality, dict)
                 else None
             )
-            quality_warned = (
+            if not (
                 isinstance(verify_snr_db, (int, float))
                 and not isinstance(verify_snr_db, bool)
-                and verify_snr_db < acoustic_quality.SNR_WARN_DB
+            ):
+                verify_snr_db = None
+            quality_warned, quality_reason = _verify_snr_quality_warning(
+                verify_snr_db,
             )
             result = acceptance.gate_on_acoustic_quality(
                 result,
                 quality_warned=quality_warned,
-                quality_reason=(
-                    f"verify capture estimated_snr_db={verify_snr_db:.1f} "
-                    f"< {acoustic_quality.SNR_WARN_DB:.0f} dB"
-                    if quality_warned
-                    else ""
-                ),
+                quality_reason=quality_reason,
             )
             # Record this verify's clear-regression state so the NEXT verify
             # can judge concordance. STRICT ADJACENCY: a clean verify clears

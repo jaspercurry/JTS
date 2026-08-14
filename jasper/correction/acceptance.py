@@ -55,10 +55,10 @@ The four verdicts
 -----------------
 ``accept``
     The measured error-to-target dropped and no band regressed clearly. The
-    correction stays — unless the verify capture's own SNR was low:
-    :func:`gate_on_acoustic_quality` downgrades that case to ``surface``
-    rather than let a quality-compromised capture read as a confident win
-    (#2058).
+    correction stays — unless the verify capture's own SNR was low or could
+    not be estimated at all: :func:`gate_on_acoustic_quality` downgrades
+    that case to ``surface`` rather than let a quality-compromised capture
+    read as a confident win (#2058).
 ``surface``
     Ambiguous — the numbers sit inside the noise floor, or improvement and a
     borderline regression cancel out. We show the honest before/after and let
@@ -237,6 +237,12 @@ class AcceptanceResult:
     that drove it. ``confirmed`` is True only for the terminal ``REVERT``
     (a second concordant clear regression). ``basis`` records whether the
     matched position-1 curve or the spatial-average fallback was used.
+    ``quality_gated`` is True only when :func:`gate_on_acoustic_quality`
+    downgraded an ``accept`` here (#2058) — the machine-readable twin of the
+    text reason appended to ``reasons``, so a caller (the envelope) can pick
+    different copy for "this measured a real change we don't trust" versus a
+    genuine wash without parsing prose. ``False`` for every verdict this
+    module's own pure evaluator produces directly.
     """
 
     verdict: Verdict
@@ -251,6 +257,7 @@ class AcceptanceResult:
     basis: str
     confirmed: bool = False
     verify_index: int = 1
+    quality_gated: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -259,6 +266,7 @@ class AcceptanceResult:
             "confirmed": self.confirmed,
             "verify_index": self.verify_index,
             "basis": self.basis,
+            "quality_gated": self.quality_gated,
             "overall_before_rms_db": round(self.overall_before_rms_db, 2),
             "overall_after_rms_db": round(self.overall_after_rms_db, 2),
             "overall_rms_delta_db": round(self.overall_rms_delta_db, 2),
@@ -584,15 +592,22 @@ def gate_on_acoustic_quality(
 
     This function does not decide WHAT counts as a quality warning — the
     caller does, by passing ``quality_warned``. The session caller uses the
-    verify capture's own SNR specifically (not the whole-session
+    verify capture's own SNR specifically (low OR unestimable — see
+    ``MeasurementSession._evaluate_acceptance``), not the whole-session
     ``acoustic_quality`` summary, which also carries calibration/setup
-    caveats that cancel out of a before/after comparison and would false-
-    positive on nearly every session — see the call site in
-    ``MeasurementSession._evaluate_acceptance`` for the reasoning). This
-    module stays curve-and-verdict-only either way: it never imports
+    caveats. Those do not cancel *exactly* out of the before/after
+    comparison in the strict sense (an additive mic-response error does not
+    literally vanish from an RMS delta computed over the whole curve) — the
+    weaker claim that actually holds is that the SAME mic in the SAME frame
+    measured both curves, so the verdict *direction* (better / worse / a
+    wash) is robust to a shared, roughly-constant coloration; that is enough
+    to trust the direction, not enough to trust an absolute reading. Gating
+    on the aggregate would false-positive on nearly every session (see the
+    call site for the measured evidence). This module stays curve-and-
+    verdict-only either way: it never imports
     :mod:`jasper.correction.acoustic_quality` itself.
 
-    Mirrors PR #1845's D2 pattern on the crossover measurement line ("a
+    Mirrors #1845's D2 pattern on the crossover measurement line ("a
     floor-bound solve is a refusal, not a level"): a positive-looking result
     built on evidence the system already knows is questionable must not read
     as a confident win. Refuse the accept (downgrade to the existing
@@ -600,7 +615,11 @@ def gate_on_acoustic_quality(
     the honest before/after and let the household decide"), and disclose the
     rejected reading by appending, never replacing, ``reasons`` — the "the
     rejected evidence retained on the disclosure so a reviewer can see what
-    the [evidence] claimed" half of the same pattern.
+    the [evidence] claimed" half of the same pattern. ``quality_gated=True``
+    on the returned result additionally lets a renderer (the envelope) pick
+    dedicated copy for this case rather than the generic ``surface`` wash
+    copy, which would otherwise misdescribe a real, possibly large,
+    measured change as merely "too small to be sure."
 
     Only ``accept`` is gated. ``surface`` is already the honest "not sure"
     state; ``revert`` / ``revert_pending_confirm`` are already the
@@ -621,6 +640,7 @@ def gate_on_acoustic_quality(
         reason = f"{reason} ({quality_reason})"
     return replace(
         result,
+        quality_gated=True,
         verdict=Verdict.SURFACE,
         reasons=(*result.reasons, reason),
     )
