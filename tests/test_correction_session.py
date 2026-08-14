@@ -1789,6 +1789,110 @@ async def test_acceptance_verdict_lands_in_result_json(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_verify_accept_downgrades_to_surface_when_verify_snr_warned(
+    tmp_path: Path,
+):
+    """#2058 — the room twin of #1813/#1838. Before this fix, a session could
+    record ``verdict: accept`` on the household's screen from a verify
+    capture whose own acoustic quality was untrustworthy, because
+    ``session.acceptance`` (curve math only) and ``session.acoustic_quality``
+    (capture quality) were computed independently with nothing ever
+    comparing them — confirmed on the pre-fix code with these exact
+    parameters: same curves, same 2.71 dB RMS improvement, ``verdict:
+    accept`` regardless of the verify capture's SNR.
+
+    This is one half of the regression pair: SAME measurement and verify
+    curves as the companion no-op-control test below (same room mode, same
+    correction, same near-flat verify) — the ONLY difference is the verify
+    capture's own SNR, forced low via ``noise_floor_db``. If the verdict
+    still read ``accept`` here, the gate would not be wired up; if the
+    companion test's ``accept`` also flipped to ``surface``, the gate would
+    be over-triggering (the mic_uncalibrated false-positive this fix
+    deliberately avoids — see the comment at the gate's call site).
+
+    Mirrors #1845's D2 pattern on the crossover measurement line ("a
+    floor-bound solve is a refusal, not a level") — refuse the confident
+    reading, disclose why. No crossover-line file
+    (jasper/active_speaker/crossover_v2_flow.py,
+    jasper/audio_measurement/program_analysis.py) is touched by this fix;
+    see test_audio_measurement_program_analysis.py for that line's own,
+    unmodified regression coverage of D2.
+    """
+    sess = _make_session(tmp_path)
+
+    async def fake_camilla(path: str) -> bool:
+        return True
+
+    await _measure_one_position(sess, room_gain_db=10.0)
+    await sess.apply(fake_camilla)
+    # A noise floor this close to the verify capture's own level forces a
+    # deeply negative estimated SNR (well under acceptance.SNR_WARN_DB),
+    # regardless of the synthetic capture's exact RMS — see
+    # jasper.correction.acoustic_quality.dbfs: no real (non-full-scale)
+    # capture can have positive rms_dbfs, so 0.0 dBFS "noise" always wins.
+    sess.noise_floor_db = 0.0
+    await _run_verify(sess, verify_room_gain_db=0.0)
+
+    assert sess.state == SessionState.VERIFIED
+    # Positive control: confirm the fixture actually landed in the "low SNR"
+    # regime the gate is supposed to catch, not some other degraded state.
+    assert sess.verify_quality["estimated_snr_db"] < 20.0
+    assert sess.acoustic_quality["summary"]["snr_level"] == "low"
+
+    assert sess.acceptance["verdict"] == "surface"
+    # Disclosure, not replacement (the D2 pattern): the curve-based reason
+    # the pure evaluator computed is still present...
+    assert any(
+        "overall RMS error dropped" in reason
+        for reason in sess.acceptance["reasons"]
+    )
+    # ...alongside the new, quality-specific reason.
+    assert any(
+        "acoustic quality" in reason and "estimated_snr_db" in reason
+        for reason in sess.acceptance["reasons"]
+    )
+    assert sess.acceptance_verdict == "surface"
+
+
+@pytest.mark.asyncio
+async def test_verify_accept_survives_ok_verify_snr(tmp_path: Path):
+    """No-op control for the test above: the same measurement and verify
+    parameters (same room mode, same correction, same near-flat verify —
+    the deterministic synthesis produces the same 2.71 dB RMS improvement
+    seen in the test above), but WITHOUT forcing a bad verify SNR. The
+    verdict must stay ``accept``
+    — proving the #2058 gate is scoped to a genuine SNR problem and does not
+    over-trigger on session state the two tests otherwise share (notably,
+    neither session has a mic calibration, which independently makes
+    ``session.acoustic_quality["summary"]["level"] == "warn"`` in BOTH
+    tests via the unrelated ``mic_uncalibrated`` issue — see the comment at
+    the gate's call site in ``_evaluate_acceptance`` for why gating on that
+    aggregate field, instead of the verify capture's own SNR specifically,
+    would have made this test fail too).
+    """
+    sess = _make_session(tmp_path)
+
+    async def fake_camilla(path: str) -> bool:
+        return True
+
+    await _measure_one_position(sess, room_gain_db=10.0)
+    await sess.apply(fake_camilla)
+    await _run_verify(sess, verify_room_gain_db=0.0)
+
+    assert sess.state == SessionState.VERIFIED
+    # The whole-session acoustic_quality summary IS "warn" here too
+    # (mic_uncalibrated) — pinning that this shared, unrelated fact is not
+    # what the gate reacts to.
+    assert sess.acoustic_quality["summary"]["level"] == "warn"
+    assert sess.verify_quality.get("estimated_snr_db") is None
+
+    assert sess.acceptance["verdict"] == "accept"
+    assert not any(
+        "acoustic quality" in reason for reason in sess.acceptance["reasons"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_multi_position_verify_judges_against_position1_not_average(
     tmp_path: Path,
 ):

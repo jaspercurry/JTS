@@ -55,7 +55,10 @@ The four verdicts
 -----------------
 ``accept``
     The measured error-to-target dropped and no band regressed clearly. The
-    correction stays.
+    correction stays — unless the verify capture's own SNR was low:
+    :func:`gate_on_acoustic_quality` downgrades that case to ``surface``
+    rather than let a quality-compromised capture read as a confident win
+    (#2058).
 ``surface``
     Ambiguous — the numbers sit inside the noise floor, or improvement and a
     borderline regression cancel out. We show the honest before/after and let
@@ -82,7 +85,7 @@ middle) — see ``tests/test_correction_acceptance.py``.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any
 
@@ -559,4 +562,65 @@ def evaluate_acceptance(
         basis=basis,
         confirmed=False,
         verify_index=verify_index,
+    )
+
+
+def gate_on_acoustic_quality(
+    result: AcceptanceResult,
+    *,
+    quality_warned: bool,
+    quality_reason: str = "",
+) -> AcceptanceResult:
+    """Refuse a silent ``accept`` beside a warned verify-capture quality.
+
+    (#2058, the room twin of #1813/#1838.) ``evaluate_acceptance`` above is
+    pure curve math — it has no way to know whether the verify capture it was
+    handed was itself trustworthy. Before this gate, a session could record
+    ``verdict: accept`` — "Confirmed improved — the room measured better." on
+    the household's screen — from a verify capture whose own
+    :mod:`jasper.correction.acoustic_quality` evidence said otherwise,
+    because the two were computed independently and nothing ever compared
+    them.
+
+    This function does not decide WHAT counts as a quality warning — the
+    caller does, by passing ``quality_warned``. The session caller uses the
+    verify capture's own SNR specifically (not the whole-session
+    ``acoustic_quality`` summary, which also carries calibration/setup
+    caveats that cancel out of a before/after comparison and would false-
+    positive on nearly every session — see the call site in
+    ``MeasurementSession._evaluate_acceptance`` for the reasoning). This
+    module stays curve-and-verdict-only either way: it never imports
+    :mod:`jasper.correction.acoustic_quality` itself.
+
+    Mirrors PR #1845's D2 pattern on the crossover measurement line ("a
+    floor-bound solve is a refusal, not a level"): a positive-looking result
+    built on evidence the system already knows is questionable must not read
+    as a confident win. Refuse the accept (downgrade to the existing
+    ``surface`` bucket — "the numbers sit inside the noise floor... we show
+    the honest before/after and let the household decide"), and disclose the
+    rejected reading by appending, never replacing, ``reasons`` — the "the
+    rejected evidence retained on the disclosure so a reviewer can see what
+    the [evidence] claimed" half of the same pattern.
+
+    Only ``accept`` is gated. ``surface`` is already the honest "not sure"
+    state; ``revert`` / ``revert_pending_confirm`` are already the
+    conservative, disclosed path (and already logged at WARNING). Gating
+    those too would be scope creep past the observed defect, which is
+    specifically a silent, confident ``accept`` beside a quality warning —
+    scope-to-observed-path, not a symmetric rewrite of every verdict.
+
+    Pure, like the rest of this module: a frozen dataclass in, a frozen
+    dataclass out (via :func:`dataclasses.replace`), no I/O, no session
+    state — callable standalone in a test with a hand-built
+    :class:`AcceptanceResult` and no session object at all.
+    """
+    if result.verdict is not Verdict.ACCEPT or not quality_warned:
+        return result
+    reason = "downgraded from accept — verify capture's acoustic quality warned"
+    if quality_reason:
+        reason = f"{reason} ({quality_reason})"
+    return replace(
+        result,
+        verdict=Verdict.SURFACE,
+        reasons=(*result.reasons, reason),
     )

@@ -676,8 +676,17 @@ never redirected.
   takes the pre-correction curve (position-1 matched basis, spatial-average
   fallback), the re-measured verify curve, and the shared target, and returns
   a typed verdict `{accept | surface | revert_pending_confirm | revert}` +
-  per-band table + reasons. It NEVER writes CamillaDSP; the session acts. The
-  statistical rules (revision plan §4 P4, born of a red-team that killed the
+  per-band table + reasons. It NEVER writes CamillaDSP; the session acts. A
+  second, equally pure gate atop it —
+  `acceptance.gate_on_acoustic_quality` — downgrades an `accept` to
+  `surface` when the verify capture's own SNR was low, appending (never
+  replacing) a disclosed reason; the curve-only evaluator above can never
+  see capture quality itself. Deliberately gated on the verify capture's own
+  SNR, not the whole-session `acoustic_quality` summary — that aggregate
+  reads "warn" on nearly every session via the unrelated `mic_uncalibrated`
+  issue, whose systematic error cancels exactly in a before/after
+  comparison (#2058, the room twin of closed #1813). The statistical rules
+  (revision plan §4 P4, born of a red-team that killed the
   naive per-band rule — the "before" is an N-position average, the verify is
   one position, and 4–6 dB seat-to-seat std is normal per `spatial.py`):
   (1) aggregate to **1/3-octave smoothed bands** before any per-band verdict

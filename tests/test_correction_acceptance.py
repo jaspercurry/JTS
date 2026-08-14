@@ -29,6 +29,7 @@ import pytest
 
 from jasper.correction import acceptance
 from jasper.correction.acceptance import (
+    AcceptanceResult,
     AcceptanceThresholds,
     Verdict,
     evaluate_acceptance,
@@ -452,6 +453,144 @@ def test_no_points_in_band_surfaces():
         target_db=np.zeros_like(f),
     )
     assert r.verdict is Verdict.SURFACE
+
+
+# --------------------------------------------------------------------------
+# gate_on_acoustic_quality — refuse a silent accept beside a quality warning
+# (#2058, the room twin of #1813/#1838; mirrors PR #1845's D2 pattern on the
+# crossover measurement line — "a floor-bound solve is a refusal, not a
+# level"). See test_correction_session.py's
+# test_verify_accept_downgrades_to_surface_when_verify_snr_warned /
+# test_verify_accept_survives_ok_verify_snr for the session-integration
+# regression pair through the real verify path; these are the pure-function
+# unit tests for the gate evaluate_acceptance() cannot itself apply (it only
+# ever sees curves, never capture quality).
+# --------------------------------------------------------------------------
+
+
+def _accepted_result() -> AcceptanceResult:
+    """A real ACCEPT, built through the real evaluator (same ground-truth
+    scenario as test_genuinely_improved_room_is_accepted) rather than
+    hand-constructed, so the gate is exercised against a genuine
+    AcceptanceResult with real bands/reasons/aggregate numbers."""
+    f = _log_freqs()
+    target = _flat_target(f)
+    before = _bell(f, 60.0, 3.0, 8.0)
+    verify = np.zeros_like(f)
+    r = evaluate_acceptance(
+        freqs=f, before_db=before, verify_db=verify, target_db=target,
+    )
+    assert r.verdict is Verdict.ACCEPT  # sanity: this fixture is ACCEPT
+    return r
+
+
+def test_gate_downgrades_accept_when_quality_warned():
+    r = _accepted_result()
+    gated = acceptance.gate_on_acoustic_quality(
+        r,
+        quality_warned=True,
+        quality_reason="estimated_snr_db=-15.1 < 20 dB",
+    )
+    assert gated.verdict is Verdict.SURFACE
+    # Disclosure, not replacement (the D2 pattern): the evaluator's own
+    # reason(s) survive unchanged...
+    assert gated.reasons[: len(r.reasons)] == r.reasons
+    # ...with exactly one new reason appended, carrying the caller's detail.
+    assert len(gated.reasons) == len(r.reasons) + 1
+    assert "estimated_snr_db=-15.1 < 20 dB" in gated.reasons[-1]
+    assert "accept" in gated.reasons[-1]  # names what it downgraded FROM
+    # Only verdict and reasons change; every other field is preserved.
+    assert gated.overall_before_rms_db == r.overall_before_rms_db
+    assert gated.overall_after_rms_db == r.overall_after_rms_db
+    assert gated.overall_rms_delta_db == r.overall_rms_delta_db
+    assert gated.regressed_band_count == r.regressed_band_count
+    assert gated.worst_band_delta_db == r.worst_band_delta_db
+    assert gated.worst_band_center_hz == r.worst_band_center_hz
+    assert gated.bands == r.bands
+    assert gated.basis == r.basis
+    assert gated.verify_index == r.verify_index
+    assert gated.confirmed == r.confirmed
+
+
+def test_gate_no_op_when_quality_not_warned():
+    """No-op control: an ACCEPT with quality_warned=False must come back
+    byte-identical (dataclass equality) — the gate must never touch a clean
+    accept. Pairs with the downgrade test above: same starting result,
+    the only variable is the boolean, proving the boolean — not some
+    incidental side effect — is what drives the outcome."""
+    r = _accepted_result()
+    gated = acceptance.gate_on_acoustic_quality(r, quality_warned=False)
+    assert gated == r
+    assert gated.verdict is Verdict.ACCEPT
+
+
+def test_gate_downgrade_message_is_sane_with_default_empty_reason():
+    """quality_reason defaults to "" — the downgrade still fires (only
+    quality_warned gates it), with a non-empty message and no stray empty
+    parenthetical."""
+    r = _accepted_result()
+    gated = acceptance.gate_on_acoustic_quality(r, quality_warned=True)
+    assert gated.verdict is Verdict.SURFACE
+    assert gated.reasons[-1]
+    assert "()" not in gated.reasons[-1]
+
+
+def test_gate_does_not_touch_surface():
+    """Scope pin (scope-to-observed-path): surface is already the honest
+    "not sure" bucket. #2058 is specifically a silent, CONFIDENT accept
+    beside a quality warning — gating surface too would be scope creep past
+    the observed defect, not a fix for it."""
+    f = _log_freqs()
+    target = _flat_target(f)
+    before = _bell(f, 60.0, 3.0, 8.0)
+    verify = before + 0.2  # the existing wash/surface fixture
+
+    r = evaluate_acceptance(freqs=f, before_db=before, verify_db=verify, target_db=target)
+    assert r.verdict is Verdict.SURFACE  # sanity
+
+    gated = acceptance.gate_on_acoustic_quality(
+        r, quality_warned=True, quality_reason="irrelevant",
+    )
+    assert gated == r  # completely untouched, including reasons
+
+
+def test_gate_does_not_touch_revert_pending_confirm():
+    """Scope pin: revert_pending_confirm is already the conservative,
+    disclosed path (and already logged at WARNING) — untouched by the
+    quality gate."""
+    f = _log_freqs()
+    target = _flat_target(f)
+    before = _bell(f, 60.0, 3.0, 8.0)
+    verify = before + _bell(f, 120.0, 3.0, 12.0)  # the existing regression fixture
+
+    r = evaluate_acceptance(freqs=f, before_db=before, verify_db=verify, target_db=target)
+    assert r.verdict is Verdict.REVERT_PENDING_CONFIRM  # sanity
+
+    gated = acceptance.gate_on_acoustic_quality(
+        r, quality_warned=True, quality_reason="irrelevant",
+    )
+    assert gated == r
+
+
+def test_gate_does_not_touch_confirmed_revert():
+    """Scope pin: a CONFIRMED revert (the auto-rollback trigger) is
+    untouched by the quality gate — same reasoning as the pending-confirm
+    case above."""
+    f = _log_freqs()
+    target = _flat_target(f)
+    before = _bell(f, 60.0, 3.0, 8.0)
+    verify = before + _bell(f, 120.0, 3.0, 12.0)
+
+    r = evaluate_acceptance(
+        freqs=f, before_db=before, verify_db=verify, target_db=target,
+        verify_index=2, prior_clear_regression=True,
+    )
+    assert r.verdict is Verdict.REVERT and r.confirmed  # sanity
+
+    gated = acceptance.gate_on_acoustic_quality(
+        r, quality_warned=True, quality_reason="irrelevant",
+    )
+    assert gated == r
 
 
 # --------------------------------------------------------------------------

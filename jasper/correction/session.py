@@ -1264,6 +1264,13 @@ class MeasurementSession:
         flag — the household was promised "measure once more to be sure", and
         that promise holds for every regression.
 
+        It also owns the acoustic-quality gate (#2058): after the pure
+        evaluator returns, :func:`acceptance.gate_on_acoustic_quality`
+        downgrades an ``accept`` to ``surface`` when this verify capture's own
+        SNR was low (``self.verify_quality``, populated by the caller before
+        this method runs). The evaluator itself cannot do this; it only ever
+        sees curves, never capture quality.
+
         Fail-soft: recoverable computation errors return ``None`` (the verdict
         is simply absent) so the acceptance verdict can never break the verify
         analysis path. The catch is the named ``RECOVERABLE_ERRORS`` family
@@ -1307,6 +1314,52 @@ class MeasurementSession:
                 basis=basis,
                 verify_index=self._verify_count,
                 prior_clear_regression=self._prior_clear_regression,
+            )
+            # #2058: refuse a silent accept beside a warned verify-capture
+            # acoustic quality — mirrors #1845's D2 refusal pattern on the
+            # crossover measurement line ("a floor-bound solve is a refusal,
+            # not a level"). self.verify_quality was populated just above
+            # this method's call site (on_verify_capture_uploaded), before
+            # the verdict, specifically so this is available here.
+            #
+            # Deliberately NOT self.acoustic_quality["summary"]["level"]: that
+            # aggregate is "warn" on the SAME session whenever ANY capture
+            # (including a measurement position) carries ANY warn-severity
+            # issue, and jasper.audio_measurement.quality's "mic_uncalibrated"
+            # is one such issue on nearly every session that skips a
+            # measurement-mic calibration upload. A shared, uncalibrated
+            # mic's systematic response error cancels exactly in this
+            # verdict's before/after dB delta (both curves carry the same
+            # offset), so it is not evidence the verdict should distrust —
+            # gating on it would silently downgrade most real sessions'
+            # accepts to surface for a reason unrelated to whether THIS
+            # verify capture's evidence was trustworthy. SNR is different: a
+            # noisy capture's noise floor does NOT cancel between before and
+            # verify (it is capture-local), so it directly bears on whether
+            # the extracted curve shape can be trusted. SNR_WARN_DB is the
+            # same threshold acoustic_quality._capture_summary uses for its
+            # own "low" tier (the one tier its recommended_action treats as
+            # "remeasure or capture a noise floor" — "medium" is documented
+            # as "usable").
+            verify_snr_db = (
+                self.verify_quality.get("estimated_snr_db")
+                if isinstance(self.verify_quality, dict)
+                else None
+            )
+            quality_warned = (
+                isinstance(verify_snr_db, (int, float))
+                and not isinstance(verify_snr_db, bool)
+                and verify_snr_db < acoustic_quality.SNR_WARN_DB
+            )
+            result = acceptance.gate_on_acoustic_quality(
+                result,
+                quality_warned=quality_warned,
+                quality_reason=(
+                    f"verify capture estimated_snr_db={verify_snr_db:.1f} "
+                    f"< {acoustic_quality.SNR_WARN_DB:.0f} dB"
+                    if quality_warned
+                    else ""
+                ),
             )
             # Record this verify's clear-regression state so the NEXT verify
             # can judge concordance. STRICT ADJACENCY: a clean verify clears
@@ -2233,6 +2286,28 @@ class MeasurementSession:
         self.verify_before_after = self._compute_verify_before_after(
             log_freqs, log_mag, target_db,
         )
+
+        # Quality BEFORE verdict (#2058): the acceptance verdict below
+        # consults this verify capture's own quality via self.verify_quality
+        # (and self.acoustic_quality is refreshed here too, for the bundle
+        # artifact and the /upload-noise-style API surfaces), so both must
+        # be populated first. Computing the verdict before the quality
+        # report even existed is exactly how a session used to record
+        # verdict:accept beside a warned acoustic_quality with nothing ever
+        # comparing the two.
+        self.verify_quality = self._quality_report_dict(
+            capture_quality,
+            capture_kind="verify",
+            captured_wav_path=captured_wav_path,
+            direct_arrival=direct_arrival,
+            replay_artifacts=replay_artifact_info,
+        )
+        self._refresh_acoustic_quality()
+        try:
+            self._write_acoustic_quality_json()
+        except Exception:  # noqa: BLE001
+            logger.exception("bundle acoustic_quality.json write failed")
+
         # P4: the deterministic accept/surface/revert verdict. Computed here
         # (pure — no CamillaDSP) and recorded on the session, in result.json
         # (below), and in the envelope. When the verdict is a CONFIRMED
@@ -2264,18 +2339,6 @@ class MeasurementSession:
                     else logging.INFO
                 ),
             )
-        self.verify_quality = self._quality_report_dict(
-            capture_quality,
-            capture_kind="verify",
-            captured_wav_path=captured_wav_path,
-            direct_arrival=direct_arrival,
-            replay_artifacts=replay_artifact_info,
-        )
-        self._refresh_acoustic_quality()
-        try:
-            self._write_acoustic_quality_json()
-        except Exception:  # noqa: BLE001
-            logger.exception("bundle acoustic_quality.json write failed")
 
         try:
             self._write_result_json()
