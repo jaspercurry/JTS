@@ -671,9 +671,9 @@ SOLO (today, unchanged):
   renderers → fanin (music + TTS) → CamillaDSP (correct) → outputd → DAC
 
 LEADER (stereo pair):
-  renderers → fanin (MUSIC ONLY by construction — while bonded the leader's TTS
-                     is routed to outputd, so fanin's ONE output carries no
-                     assistant; Increment 5 PR-2)
+  renderers → fanin (MUSIC ONLY by construction — on this PASSIVE pair the
+                     leader's TTS is routed to outputd while bonded, so fanin's
+                     ONE output carries no assistant; Increment 5 PR-2)
             → CamillaDSP   (bake per-channel: L=leader-seat, R=follower-seat;
                             volume_limit:0.0 clamp; ONE instance)
             → pipe (FIFO)  → snapserver  (ONE stereo stream; Snapcast owns rate)
