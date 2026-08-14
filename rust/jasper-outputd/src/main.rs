@@ -24,8 +24,8 @@ use std::time::{Duration, Instant};
 use alsa::pcm::{State, PCM};
 use anyhow::{Context, Result};
 use jasper_outputd::alsa_backend::{
-    open_playback_pcm, AlsaBackend, ContentRead, FinalSinkStartupConfigError, IoCounters,
-    NegotiatedPcm, PairedCompositeSink,
+    open_playback_pcm, prime_periods, AlsaBackend, ContentRead, FinalSinkStartupConfigError,
+    IoCounters, NegotiatedPcm, PairedCompositeSink,
 };
 use jasper_outputd::config::{BackendMode, Config, SinkMode};
 use jasper_outputd::core::{OutputCore, PeriodReport};
@@ -849,13 +849,6 @@ fn apply_linear_gain(samples: &mut [ProgramSample], gain: f64) {
             .clamp(ProgramSample::MIN as f64, ProgramSample::MAX as f64)
             as ProgramSample;
     }
-}
-
-fn prime_periods(buffer_frames: u32, period_frames: u32) -> u32 {
-    if period_frames == 0 {
-        return 1;
-    }
-    ((buffer_frames / period_frames).saturating_sub(1)).max(1)
 }
 
 fn notify_ready(config: &Config) -> Result<()> {
@@ -2384,15 +2377,6 @@ mod tests {
         apply_linear_gain(&mut samples, 0.5);
         assert_eq!(samples[0], (ProgramSample::MAX as f64 * 0.5).round() as i32);
         assert_eq!(samples[1], (ProgramSample::MIN as f64 * 0.5).round() as i32);
-    }
-
-    #[test]
-    fn prime_periods_leave_one_period_of_buffer_headroom() {
-        assert_eq!(prime_periods(3072, 1024), 2);
-        assert_eq!(prime_periods(4096, 1024), 3);
-        assert_eq!(prime_periods(1024, 1024), 1);
-        assert_eq!(prime_periods(0, 1024), 1);
-        assert_eq!(prime_periods(3072, 0), 1);
     }
 
     #[test]

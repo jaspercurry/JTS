@@ -521,6 +521,367 @@ def test_outputd_dual_apple_sink_is_fail_closed_and_final_sink_only():
     assert "delay divergence" in alsa_rs
 
 
+# ---------------------------------------------------------------------------
+# jaspercurry/JTS#2255 — the composite's bounded, linked-group xrun recovery.
+#
+# These are STATIC checks because `PairedCompositeSink` cannot be constructed
+# without two live ALSA PCMs. The Rust unit tests cover the pure decisions
+# (`xrun_policy`, `baseline_relatch_decision`, `delay_delta_check`,
+# `composite_ring_arm_link_ok`, `prime_periods`); these pin the WIRING between
+# them, which is what a plausible-looking rewrite would silently break.
+# ---------------------------------------------------------------------------
+
+
+# The pre-#2255 child write, verbatim from the tree at 254c99a1f. It is the
+# positive control for every slicer below: an assertion that does not FAIL
+# against this text is not actually inspecting anything.
+PRE_2255_CHILD_WRITE = '''
+fn write_dac_fail_closed<S: Copy>(
+    io: &IO<'_, S>,
+    pcm_name: &str,
+    samples: &[S],
+    xrun_count: &mut u64,
+) -> Result<()> {
+    let frames_total = samples.len() / (CHANNELS as usize);
+    let mut frames_done = 0usize;
+    while frames_done < frames_total {
+        let offset = frames_done * (CHANNELS as usize);
+        match io.writei(&samples[offset..]) {
+            Ok(0) => {
+                anyhow::bail!("outputd dual Apple DAC {pcm_name} writei returned 0 frames");
+            }
+            Ok(n) => frames_done += n,
+            Err(e) => {
+                let errno = e.errno();
+                if errno == libc::EPIPE || errno == libc::ESTRPIPE {
+                    *xrun_count += 1;
+                    anyhow::bail!(
+                        "outputd dual Apple DAC {pcm_name} aborted on xrun/suspend errno={errno}"
+                    );
+                }
+                return Err(e).context(format!("writing outputd dual Apple DAC {pcm_name}"));
+            }
+        }
+    }
+    Ok(())
+}
+'''
+
+
+def _epipe_arm(child_write_body: str) -> str:
+    """The brace-matched `if errno == libc::EPIPE …` block of a child write.
+
+    `_rust_fn_body` is a brace-matched BLOCK extractor whose `signature`
+    argument is just the anchor it searches for, so it slices an `if` block as
+    happily as a `fn` body. Used that way here rather than copied, so both the
+    scan and the string-literal blanking that makes it brace-safe stay in one
+    place.
+    """
+    return _rust_fn_body(child_write_body, None, "if errno == libc::EPIPE")
+
+
+def _composite_child_write(alsa_rs: str) -> str:
+    return _rust_fn_body(alsa_rs, None, "fn write_dac_fail_closed<")
+
+
+def test_composite_child_xrun_recovers_the_group_instead_of_bailing_on_the_first_one():
+    """#2255: the composite child write recovers a bounded number of times.
+
+    Before this, an `EPIPE` from either child incremented a counter and bailed
+    — a runtime error, so exit 1, so `Restart=on-failure`, so
+    `StartLimitBurst=5`, so `StartLimitAction=reboot`. A USB dongle burp
+    rebooted the speaker. It did this live on jts.local on 2026-08-14, three
+    boots deep, until the bootloop guard parked the box.
+    """
+    alsa_rs = (REPO / "rust" / "jasper-outputd" / "src" / "alsa_backend.rs").read_text()
+    arm = _non_comment_rust(_epipe_arm(_composite_child_write(alsa_rs)))
+
+    # It recovers, through the SHARED budget rather than a second copy of one.
+    assert "try_recover(" in arm
+    assert "xrun_policy(" in arm
+    # The recovery is the GROUP's, and the caller is told so — the re-prime,
+    # the group start and the bounded re-latch are all owed after this returns.
+    assert "ChildWriteOutcome::GroupRecovered" in arm
+    # Per-child attribution on the shared event vocabulary, and `linked=` on it
+    # — design §2(e) names that key, and it is the ONLY thing on the line that
+    # distinguishes a recovered xrun from a refused one, since both outcomes
+    # share the single event line.
+    assert "event=outputd.xrun source={}" in arm
+    assert "linked={}" in arm
+    assert "child.linked" in arm.split("eprintln!", 1)[1].split(");", 1)[0], (
+        "`linked=` must be fed from the child's actual link state, not a literal"
+    )
+
+    # Every remaining bail on this path is guarded: the unlinked refusal and
+    # the exhausted budget, and nothing else. Checked by counting rather than
+    # by reading, because "I looked and it seemed fine" is how the first one
+    # got there.
+    assert arm.count("anyhow::bail!") == 2
+    assert "if !child.linked {" in arm
+    unlinked = _rust_fn_body(arm, None, "if !child.linked")
+    assert "anyhow::bail!" in unlinked
+    assert "try_recover(" not in unlinked, (
+        "an unlinked pair must NOT be recovered: there is no atomic group "
+        "restart to re-establish A/B alignment with, so its post-recovery skew "
+        "is unbounded and unverifiable"
+    )
+
+
+def test_the_composite_xrun_slicer_catches_the_pre_change_bail():
+    """The tripwire for the test above: prove it inspects a real EPIPE arm.
+
+    Run the same slicer and the same assertions against the pre-#2255 text.
+    Every one of them must FAIL there — otherwise the test above is green for
+    reasons that have nothing to do with the code.
+    """
+    arm = _non_comment_rust(_epipe_arm(PRE_2255_CHILD_WRITE))
+    # A real arm, positively identified.
+    assert "*xrun_count += 1;" in arm
+    assert "aborted on xrun/suspend" in arm
+    # And every clause of the live assertion is absent from it.
+    assert "try_recover(" not in arm
+    assert "xrun_policy(" not in arm
+    assert "ChildWriteOutcome::GroupRecovered" not in arm
+    assert "if !child.linked {" not in arm
+    # The bare bail the live test forbids is exactly what the pre-change arm
+    # has: one, unguarded.
+    assert arm.count("anyhow::bail!") == 1
+
+
+def test_both_outputd_write_paths_share_one_recovery_budget():
+    """#2255: `xrun_policy` is THE budget, for the single sink and the composite.
+
+    Two copies of "> 3" is how the two paths drifted in the first place — one
+    grew a bounded recovery and the other never did. A shared pure function is
+    what makes "the composite's budget" and "the single sink's budget" the same
+    sentence.
+    """
+    alsa_rs = (REPO / "rust" / "jasper-outputd" / "src" / "alsa_backend.rs").read_text()
+    single = _non_comment_rust(_rust_fn_body(alsa_rs, None, "fn write_dac_frames<"))
+    composite = _non_comment_rust(_composite_child_write(alsa_rs))
+
+    # Both consult the shared policy…
+    assert single.count("xrun_policy(") == 2, single
+    assert composite.count("xrun_policy(") == 2, composite
+    # …and neither re-derives the comparison locally, which is the shape that
+    # would let them drift apart again.
+    assert "> MAX_RECOVERIES_PER_PERIOD" not in single
+    assert "> MAX_RECOVERIES_PER_PERIOD" not in composite
+    # Exactly one definition of it exists.
+    assert alsa_rs.count("fn xrun_policy(") == 1
+
+    # `Ok(0)` rides the same budget on BOTH paths now. A zero-frame return is
+    # not an xrun — it moves no stream position and needs no group action — but
+    # leaving the composite's a hard bail kept it on the reboot ladder.
+    assert "Ok(0)" in composite
+    ok_zero = _rust_fn_body(composite, None, "Ok(0) =>")
+    assert "xrun_policy(" in ok_zero
+    assert "try_recover(" not in ok_zero
+
+
+def test_the_composite_recovery_budget_is_per_period_not_per_attempt():
+    """#2255: the budget must be declared OUTSIDE the retry loop.
+
+    Moving `let mut recoveries = 0u32;` inside `loop {` re-zeroes it on every
+    pass, so a child that xruns forever recovers forever — an unbounded loop on
+    outputd's SCHED_FIFO playout thread, which is the #2489 cascade shape
+    (`LimitRTTIME` kills at ~1 s, `Restart=on-failure` walks
+    `StartLimitBurst=5`, `StartLimitAction=reboot`). Every other assertion in
+    this file stays green under that one-line move, which is why the
+    declaration's POSITION is pinned rather than its presence.
+    """
+    alsa_rs = (REPO / "rust" / "jasper-outputd" / "src" / "alsa_backend.rs").read_text()
+    body = _non_comment_rust(
+        _rust_fn_body(alsa_rs, "impl PairedCompositeSink", "pub fn write_dual_period(")
+    )
+    assert body.count("let mut recoveries = 0u32;") == 1, (
+        "exactly one per-period budget declaration; a second would reset it mid-period"
+    )
+    assert body.index("let mut recoveries = 0u32;") < body.index("loop {"), (
+        "the recovery budget must be declared BEFORE the retry loop — declared "
+        "inside it, it re-zeroes every pass and the recovery becomes unbounded"
+    )
+
+
+def test_composite_reprime_primes_below_the_start_threshold_then_starts_the_group():
+    """#2255: the re-prime must not auto-start the group before both children fill.
+
+    `manual_start` sets `start_threshold = buffer_frames`. Writing a full buffer
+    to child A therefore STARTS the linked group right there — before child B
+    has been primed at all — baking in up to a full period (128 frames ≈
+    2.667 ms at 48 kHz) of permanent A/B skew. On an active 2-way that offset
+    IS the woofer/tweeter time alignment.
+
+    So the order is load-bearing and asserted by position, not by presence:
+    prime to `prime_periods` depth through the SAME interleaved child write the
+    run loop uses, and only THEN start the group explicitly.
+    """
+    alsa_rs = (REPO / "rust" / "jasper-outputd" / "src" / "alsa_backend.rs").read_text()
+    body = _non_comment_rust(
+        _rust_fn_body(alsa_rs, "impl PairedCompositeSink", "fn reprime_after_group_recovery(")
+    )
+
+    depth_at = body.index("prime_periods(")
+    silence_at = body.index("fill_silence()")
+    write_at = body.index("write_children(")
+    start_at = body.index("start_dacs()")
+    relatch_at = body.index("relatch_delay_baseline(")
+
+    assert depth_at < write_at, "the prime depth must be computed before priming"
+    assert silence_at < write_at, "the re-prime's payload is silence"
+    assert write_at < start_at, (
+        "the group start must come AFTER both children are primed — a start "
+        "before B is filled is the skew this whole path exists to prevent"
+    )
+    assert start_at < relatch_at, (
+        "the baseline may only be re-latched after the group has restarted; "
+        "re-latching against a stopped pair blesses an offset that means nothing"
+    )
+
+    # The interleave is the shared child write, not a private per-child loop —
+    # two separate loops is exactly how "prime A fully, then prime B" creeps
+    # back in.
+    assert "io_i16()" not in body and "io_i32()" not in body
+
+    # An xrun DURING the re-prime fails closed rather than recursing. A
+    # prepared, un-started stream has no playback position to underrun from, so
+    # an EPIPE here means the pair is not in the state the recovery just put it
+    # in — and a second recovery layered on an unexplained one blesses a state
+    # nobody has verified. Turning this into a warn-and-continue leaves every
+    # other assertion green, so the bail is pinned inside its own arm.
+    reprime_xrun = _rust_fn_body(
+        body, None, "if self.write_children(recoveries)? == ChildWriteOutcome::GroupRecovered"
+    )
+    assert "anyhow::bail!" in reprime_xrun
+    assert "status=xrun_during_reprime" in reprime_xrun
+    assert "reprime_alignment_failures += 1" in reprime_xrun
+
+    # And the prime depth is the shipped startup number, from the shipped
+    # function, not a locally re-derived one.
+    main_rs = (REPO / "rust" / "jasper-outputd" / "src" / "main.rs").read_text()
+    assert "prime_periods(" in main_rs
+    assert alsa_rs.count("pub fn prime_periods(") == 1
+    assert "fn prime_periods(" not in main_rs
+
+
+def test_composite_baseline_relatch_is_bounded_by_magnitude_not_by_count():
+    """#2255: the re-latch bound is how far the pair MOVED, never how often.
+
+    `snd_pcm_recover` resets a child's stream position, so the baseline has to
+    be re-latched or the next steady-state check bails with a scarier
+    diagnosis. But blessing an arbitrary post-fault offset launders exactly the
+    fault the divergence guard exists to see, and a count threshold cannot see
+    that harm: it is unbounded at count = 1.
+    """
+    alsa_rs = (REPO / "rust" / "jasper-outputd" / "src" / "alsa_backend.rs").read_text()
+    decision = _non_comment_rust(_rust_fn_body(alsa_rs, None, "fn baseline_relatch_decision("))
+    # One constant, one meaning: the SAME tolerance the steady-state guard uses.
+    assert "max_delta_frames" in decision
+    assert ".abs() <= max_delta_frames" in decision
+    # The counters exist, but as observables.
+    relatch = _non_comment_rust(
+        _rust_fn_body(alsa_rs, "impl PairedCompositeSink", "fn relatch_delay_baseline(")
+    )
+    assert "baseline_relatch_decision(" in relatch
+    assert "delay_baseline_relatches += 1" in relatch
+    assert "reprime_alignment_failures += 1" in relatch
+    # The refusal fails closed rather than re-latching anyway.
+    refuse = _rust_fn_body(relatch, None, "BaselineRelatch::Refuse =>")
+    assert "anyhow::bail!" in refuse
+    assert "self.delay_delta_baseline = Some(" not in _non_comment_rust(refuse)
+    # The magnitude bound is enforced in the daemon (fail-closed safety); the
+    # COUNT threshold is the doctor's, so no count comparison lives here.
+    assert "delay_baseline_relatches >" not in _non_comment_rust(alsa_rs)
+
+
+def test_a_composite_may_not_arm_the_ring_with_an_unlinked_child_pair():
+    """#2255: `link=ok` is an arm-time precondition for the SHM ring.
+
+    The composite's recovery model is built on `snd_pcm_link` — group prepare,
+    group re-prime, one atomic group start. An unlinked pair has none of that,
+    so an armed unlinked composite is a box whose recovery model does not hold.
+    It keeps the loopback transport instead.
+
+    Arm-time only, deliberately: this is NOT a flip of the global
+    `JASPER_OUTPUTD_DUAL_REQUIRE_LINK` default, so an aloop composite behaves
+    exactly as it did.
+    """
+    alsa_rs = (REPO / "rust" / "jasper-outputd" / "src" / "alsa_backend.rs").read_text()
+    new_body = _non_comment_rust(
+        _rust_fn_body(alsa_rs, "impl PairedCompositeSink", "pub fn new(")
+    )
+    assert "composite_ring_arm_link_ok(skip_content_pcm, linked)" in new_body
+    # The refusal is park-class (EX_CONFIG 78), not the restart ladder: whether
+    # two devices link is a property of the devices, so every restart answers
+    # the same and the ladder only spends the box's start budget on its way to
+    # `StartLimitAction=reboot`.
+    refusal = _rust_fn_body(
+        new_body, None, "if !composite_ring_arm_link_ok(skip_content_pcm, linked)"
+    )
+    assert "final_sink_startup(" in refusal
+    assert "event=outputd.dual_apple.ring_arm_refused" in refusal
+    # And the gate is asked BEFORE the sink is handed back.
+    assert new_body.index("composite_ring_arm_link_ok(") < new_body.index("Ok(Self {")
+    # The global default is untouched.
+    config_rs = (REPO / "rust" / "jasper-outputd" / "src" / "config.rs").read_text()
+    assert 'env_bool("JASPER_OUTPUTD_DUAL_REQUIRE_LINK", false)' in config_rs
+
+
+def test_composite_child_xruns_are_attributed_per_child_in_state():
+    """#2255: which dongle burped is the diagnostic; the recovery is the group's.
+
+    Sink-level `dac_xrun_count` stays exactly what it was (the doctor's
+    existing consumer). The per-child counts and the group's recovery
+    bookkeeping ride the ALREADY-conditional `dual_apple` block, so a
+    single-DAC box's `/state` does not change by a byte.
+    """
+    alsa_rs = (REPO / "rust" / "jasper-outputd" / "src" / "alsa_backend.rs").read_text()
+    state_rs = (REPO / "rust" / "jasper-outputd" / "src" / "state.rs").read_text()
+
+    for source in ("dual_dac_a", "dual_dac_b"):
+        assert f'source: "{source}"' in alsa_rs
+
+    # One group recovery per recovered xrun, not two: on a linked pair
+    # `snd_pcm_recover` prepares both children, so per-child recovery counters
+    # would state a fact that is not true.
+    assert "group_recoveries" in alsa_rs
+    assert "dac_a_recoveries" not in alsa_rs
+    assert "dac_b_recoveries" not in alsa_rs
+
+    dual_block = state_rs.split('push_kv_str_opt(&mut buf, "dac_a_pcm"', 1)[1].split(
+        "buf.push_str(r#\"\"mix\":{\"#)", 1
+    )[0]
+    for key in (
+        "dac_a_xruns",
+        "dac_b_xruns",
+        "group_recoveries",
+        "delay_baseline_relatches",
+        "reprime_alignment_failures",
+    ):
+        assert f'"{key}"' in dual_block, f"{key} missing from the /state dual_apple block"
+
+    # Each counter must be plumbed from its OWN field, at both hops. The Rust
+    # `/state` test builds a `CompositeStatus` literal and never calls either
+    # hop, so a transposed pair (`dac_a_xruns: self.dac_b_xrun_count`, or the
+    # mirror of it in `mark_dual_apple_status`) reports the wrong dongle's
+    # xruns with every test green. Found by mutating exactly those lines.
+    status = _rust_fn_body(alsa_rs, "impl PairedCompositeSink", "pub fn dual_status(")
+    marker = _rust_fn_body(state_rs, None, "pub fn mark_dual_apple_status(")
+    for key, field in (
+        ("dac_a_xruns", "dac_a_xrun_count"),
+        ("dac_b_xruns", "dac_b_xrun_count"),
+        ("group_recoveries", "group_recoveries"),
+        ("delay_baseline_relatches", "delay_baseline_relatches"),
+        ("reprime_alignment_failures", "reprime_alignment_failures"),
+    ):
+        assert f"{key}: self.{field}," in status, (
+            f"CompositeStatus.{key} is not fed from PairedCompositeSink.{field}"
+        )
+        assert f"self.dual_{key}\n            .store(status.{key}," in marker, (
+            f"OutputdState.dual_{key} is not stored from CompositeStatus.{key}"
+        )
+
+
 def test_outputd_composite_children_take_the_declared_edge_width():
     """Both composite children request the registry-declared edge format, prove
     it by readback, and STATUS reports what they negotiated.
@@ -1020,7 +1381,13 @@ def test_outputd_ready_is_after_alsa_output_is_primed_and_started():
     assert "notify_ready(config)?" not in main_fn
     assert sink_open < primed < started < ready
     assert "swp.set_start_threshold(negotiated.buffer_frames as i64)" in backend_rs
-    assert "fn prime_periods(buffer_frames: u32, period_frames: u32) -> u32" in main_rs
+    # `prime_periods` moved from here to `alsa_backend.rs` with #2255: the
+    # composite's post-recovery re-prime has to reach the SAME depth the startup
+    # prime reaches, and a second copy of that arithmetic is a second chance to
+    # get the auto-start threshold wrong. `main.rs` imports it.
+    assert "fn prime_periods(buffer_frames: u32, period_frames: u32) -> u32" in backend_rs
+    assert "fn prime_periods(" not in main_rs
+    assert "prime_periods," in main_rs.split("use jasper_outputd::alsa_backend::{", 1)[1]
     assert '"outputd.alsa.primed"' in main_rs
 
 
@@ -1122,6 +1489,12 @@ PERIOD_HOT_FUNCTIONS = [
     # The composite runs on the same SCHED_FIFO playout thread as the single
     # sink, so it inherits the same reboot-class consequence.
     ("alsa_backend.rs", "impl PairedCompositeSink", "pub fn write_dual_period("),
+    # The composite's actual per-period write body, split out of
+    # `write_dual_period` when the linked-group xrun recovery landed (#2255) so
+    # the post-recovery re-prime could reuse the SAME A-then-B interleave. The
+    # guard follows the code it was guarding: without this entry the split would
+    # have quietly moved the whole write body out from under the scan above.
+    ("alsa_backend.rs", "impl PairedCompositeSink", "fn write_children("),
     ("alsa_backend.rs", None, "fn deinterleave_4ch_to_dual_stereo<"),
     # The packed-24 edge's conversion. Added with the S24_3LE write path: it is
     # the one edge whose staging is BYTES (`samples.len() * 3`), which is exactly

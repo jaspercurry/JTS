@@ -192,6 +192,14 @@ pub struct OutputdState {
     dual_delay_delta_baseline_frames: AtomicI64,
     dual_delay_delta_error_frames: AtomicI64,
     dual_max_delay_delta_frames: AtomicI64,
+    /// Per-child xrun attribution and the group's recovery bookkeeping, from
+    /// `CompositeStatus`. Rendered only inside the already-conditional
+    /// `dual_apple` block, so a single-DAC box's snapshot is unchanged.
+    dual_dac_a_xruns: AtomicU64,
+    dual_dac_b_xruns: AtomicU64,
+    dual_group_recoveries: AtomicU64,
+    dual_delay_baseline_relatches: AtomicU64,
+    dual_reprime_alignment_failures: AtomicU64,
     chip_ref_pcm: Option<String>,
     chip_ref_diagnostic_tee_path: Option<String>,
     reference_udp_target: Option<String>,
@@ -399,6 +407,11 @@ impl OutputdState {
             dual_delay_delta_baseline_frames: AtomicI64::new(pack_optional_i64(None)),
             dual_delay_delta_error_frames: AtomicI64::new(pack_optional_i64(None)),
             dual_max_delay_delta_frames: AtomicI64::new(config.dual_max_delay_delta_frames),
+            dual_dac_a_xruns: AtomicU64::new(0),
+            dual_dac_b_xruns: AtomicU64::new(0),
+            dual_group_recoveries: AtomicU64::new(0),
+            dual_delay_baseline_relatches: AtomicU64::new(0),
+            dual_reprime_alignment_failures: AtomicU64::new(0),
             chip_ref_pcm: config.chip_ref_pcm.clone(),
             chip_ref_diagnostic_tee_path: config.chip_ref_tee_path.clone(),
             reference_udp_target: config.reference_udp_target.clone(),
@@ -618,6 +631,16 @@ impl OutputdState {
         );
         self.dual_max_delay_delta_frames
             .store(status.max_delay_delta_frames, Ordering::Relaxed);
+        self.dual_dac_a_xruns
+            .store(status.dac_a_xruns, Ordering::Relaxed);
+        self.dual_dac_b_xruns
+            .store(status.dac_b_xruns, Ordering::Relaxed);
+        self.dual_group_recoveries
+            .store(status.group_recoveries, Ordering::Relaxed);
+        self.dual_delay_baseline_relatches
+            .store(status.delay_baseline_relatches, Ordering::Relaxed);
+        self.dual_reprime_alignment_failures
+            .store(status.reprime_alignment_failures, Ordering::Relaxed);
     }
 
     pub fn mark_dac_delay(&self, delay_frames: u64) {
@@ -1399,6 +1422,36 @@ impl OutputdState {
                 &mut buf,
                 "max_delay_delta_frames",
                 self.dual_max_delay_delta_frames.load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "dac_a_xruns",
+                self.dual_dac_a_xruns.load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "dac_b_xruns",
+                self.dual_dac_b_xruns.load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "group_recoveries",
+                self.dual_group_recoveries.load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "delay_baseline_relatches",
+                self.dual_delay_baseline_relatches.load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "reprime_alignment_failures",
+                self.dual_reprime_alignment_failures.load(Ordering::Relaxed),
             );
             buf.push('}');
             buf.push(',');
@@ -2698,6 +2751,11 @@ mod tests {
             delay_delta_baseline_frames: Some(5),
             delay_delta_error_frames: Some(2),
             max_delay_delta_frames: 2,
+            dac_a_xruns: 31,
+            dac_b_xruns: 17,
+            group_recoveries: 43,
+            delay_baseline_relatches: 29,
+            reprime_alignment_failures: 11,
         });
 
         let j = state.snapshot_json();
@@ -2711,8 +2769,39 @@ mod tests {
             r#""delay_delta_baseline_frames":5"#,
             r#""delay_delta_error_frames":2"#,
             r#""max_delay_delta_frames":2"#,
+            // The #2255 recovery bookkeeping. Pairwise-distinct values, and
+            // none of them a small integer that another field in this snapshot
+            // also happens to hold: a wire-up that stored the same source into
+            // two keys, or read the wrong atomic, has to show up as a wrong
+            // NUMBER rather than coincide with a right one.
+            r#""dac_a_xruns":31"#,
+            r#""dac_b_xruns":17"#,
+            r#""group_recoveries":43"#,
+            r#""delay_baseline_relatches":29"#,
+            r#""reprime_alignment_failures":11"#,
         ] {
             assert!(j.contains(needle), "missing {needle} in {j}");
+        }
+    }
+
+    #[test]
+    fn dual_apple_recovery_counters_are_absent_from_a_single_dac_snapshot() {
+        // The recovery bookkeeping rides the already-conditional `dual_apple`
+        // block, so a single-DAC box's snapshot must not grow a byte of it.
+        // Asserted rather than assumed: the block is conditional, and a key
+        // pushed one `}` too late would land in every box's `/state`.
+        let state = OutputdState::new(&test_config());
+        let j = state.snapshot_json();
+        let _ = parse_snapshot_json(&j);
+        for needle in [
+            "dual_apple",
+            "dac_a_xruns",
+            "dac_b_xruns",
+            "group_recoveries",
+            "delay_baseline_relatches",
+            "reprime_alignment_failures",
+        ] {
+            assert!(!j.contains(needle), "unexpected {needle} in {j}");
         }
     }
 
