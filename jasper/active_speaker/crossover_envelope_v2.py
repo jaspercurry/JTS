@@ -143,9 +143,16 @@ logger = logging.getLogger(__name__)
 # Bumped 12 → 13: the ``relay`` block gained ``position_pending`` — what an
 # externally driven (``TIER_REMOTE``) session is waiting for before it will
 # admit its next capture: ``{index, attempt, degrees, role, action}``. Present
-# ONLY while such a session is holding, absent everywhere else, and nulled with
-# the rest of the relay block on every terminal screen — so it cannot outlive
-# the session holding it. Additive: no key removed or re-typed, and the
+# ONLY while such a session is holding, and absent everywhere else.
+#
+# It cannot outlive the session holding it, and the guards that make that true
+# live on the WRITE side rather than here: ``correction_setup``'s
+# ``_set_relay_capture`` drops the gate reference the moment the relay slot
+# leaves an in-flight status, and the gate itself clears ``_pending`` on BOTH
+# exits from a hold (released, or refused as expired). Two screens additionally
+# pass ``advertise_relay=False``, which blanks the whole block — that is a
+# narrower belt-and-braces, not the mechanism. Additive: no key removed or
+# re-typed, and the
 # crossover wizard's module reads ``tap_link``/``status`` off that block and
 # ignores the rest, so an unredeployed page is unaffected. The version is
 # bumped because the EXTERNAL DRIVER this key exists for is a separate program

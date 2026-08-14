@@ -876,10 +876,12 @@ apply from the screen, because T3 is what makes the screen's Apply real.
   PR that CHANGES a session's time budget resolves what remains first, or
   states explicitly that it did not touch it (PR-T4 did not — it published
   the value and changed no budget).
-- **`renderPlanCountdown` is dead.** #1823 made MEASURE a tap, and the
-  source says no shipped plan reaches the countdown; a test pins it.
-  Do not "fix" the stale-countdown symptom there — it is already
-  closed, and the live countdown is the in-sweep ambient timer.
+- **`renderPlanCountdown` was dead when this was written; it is not any
+  more.** #1823 made MEASURE a tap, and at the time no shipped plan reached
+  the countdown. The REMOTE commission tier is its first shipped consumer:
+  its entries auto-advance because an external positioner, not a hand, moves
+  the microphone between them. The stale-countdown symptom named here is
+  still closed — do not "fix" it — but the "dead" claim no longer holds.
 - **Page before Pi.** The capture page lives at `capture-page/` in the
   repo root (not under `deploy/assets/`), ships via its own build, and
   deploys before the Pi so a new page never meets an old conductor.

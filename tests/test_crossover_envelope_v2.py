@@ -2735,7 +2735,7 @@ def test_applied_false_with_verify_phase_does_not_force_verify_fail():
 ])
 def test_every_registry_code_renders_without_error(code, template):
     env = build_crossover_envelope_v2(_status(phase="measure", failure={"code": code}))
-    assert env["schema_version"] == 13
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION
     assert env["screen"]
     assert env["verdict_text"]
 

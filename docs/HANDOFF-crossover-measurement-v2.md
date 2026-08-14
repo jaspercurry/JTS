@@ -214,28 +214,66 @@ parks with no affordance and re-posts the identical begin every 1.5 s, the
 attempt budget is not spent, and the session does not end. Gating is per
 `(index, attempt)`, so a retake re-gates.
 
+**Session start takes THREE human gestures at the capture device, not one.**
+The tier automates the WALK, not the opening of a session. Someone has to open
+`relay.tap_link` in a browser and then:
+
+1. grant the microphone (a `getUserMedia` permission prompt — a browser gesture
+   requirement, not something the plan can waive);
+2. tick the placement acknowledgement the spec binds
+   (`acknowledgement_binding`); and
+3. tap **Start**, which posts the first `begin_capture`.
+
+Only after that does the tier run hands-off. Plan for a person at the capture
+device for the first ~30 seconds of every remote session.
+
 **The driver contract**, in the order a run uses it:
 
 1. `POST /correction/crossover/v2/session` with `{"tier": "remote"}` (CSRF as
-   usual). Open the capture page from `relay.tap_link` once and grant the mic.
+   usual). A human performs the three gestures above at the capture device.
 2. Poll `GET /correction/crossover/envelope` and POST the `next_action` specs
    as the wizard would.
 3. When `relay.position_pending` is present, it names the target:
    `{index, attempt, degrees, role, action}`. Move the positioner to
    `degrees` (negative = left of the design axis), wait your own settle time.
 4. POST `position_pending.action` — `/correction/crossover/v2/position-ready`
-   with `{"index": …}`. The index is checked against what is actually pending,
-   so a retry that crossed a capture starting is refused (409) rather than
-   releasing the *next* position. The held begin is then admitted.
+   with `{"index": …}`. `index` must be a JSON integer (a malformed body is a
+   400) and is checked against what is actually pending, so a retry that
+   crossed a capture starting is refused (409) rather than releasing the *next*
+   position. The held begin is then admitted.
 5. Repeat. Analysis, apply, verify and restore are unchanged.
 
+**A REJECTED capture ends an unattended run — watch for it.** When a capture is
+rejected (clipped, too quiet, locate failed, …) the capture page renders a
+human **"Try again"** affordance and nothing auto-fires it: `auto_advance`
+governs the transition after an *accepted* capture only. A remote session with
+nobody at the device therefore stops there and eventually dies on the runner's
+inactivity budget. **The driver should detect the stall from the envelope
+rather than wait it out** — a `relay` block that stays in flight while
+`position_pending` is absent and no new capture is accepted is the signature —
+and report it for a human. There is no auto-retry path today; whether to add
+one is deferred to [issue #2506](https://github.com/jaspercurry/JTS/issues/2506)
+until real runs show how often it matters.
+
+**A geometry-locked group refuses rather than prompting.** If the pre-apply
+group's echo estimates cluster, the hand-walked tiers ask for a wider retake —
+75 cm out, and on the second rung 75 cm out *and above* mark height. An
+external positioner can serve neither, so a remote session ends with
+`geometry_retake_unreachable` and recommends running a Full measurement by
+hand. It never asks for a pose the positioner cannot reach.
+
 An unanswered hold does not wait forever: `REMOTE_POSITION_HOLD_BUDGET_S`
-(600 s) refuses it, because a dead driver would otherwise pin the measurement
-volume, the paused voice, and the relay slot indefinitely. The hold rides the
-relay block, which every terminal screen nulls, so it cannot outlive its
-session. Observability: `event=correction.crossover_v2_remote_session_open`,
+(600 s) refuses it as `position_hold_expired`, because a dead driver would
+otherwise pin the measurement volume, the paused voice, and the relay slot
+indefinitely. Note this is a **per-hold** bound and not the operative total —
+the session's own wall-clock ceiling (`session_wall_clock_ceiling_s`, 2520 s
+for stage 1 and 2040 s for stage 2 at the shipped shape) covers the whole walk,
+so a merely-slow driver ends on that ceiling first. The hold cannot outlive its
+session: the relay slot drops the gate as soon as it leaves an in-flight
+status, and the gate clears its own pending state on both exits.
+Observability: `event=correction.crossover_v2_remote_session_open`,
 `…_position_pending` (with `degrees`), `…_position_released`,
-`…_position_hold_expired`.
+`…_position_hold_expired`, `…_geometry_retake_unreachable`.
 
 **What it cannot say.** A remote walk samples one axis, so its post-apply group
 carries no `xovr` role at all. The done screen discloses that once
@@ -4336,8 +4374,11 @@ on any fact in them.
 them and verified by test: the capture counts are pinned to
 `tier_display_info()` by `test_doc_tier_capture_counts_match_tier_display_info`,
 and the behavioural claims (the derived walk, the angles, the gate, the dropped
-confirm tap, the disclosure) are pinned by
-`tests/test_crossover_v2_remote_tier.py`. **The date below is deliberately NOT
+confirm tap, the disclosure, the geometry-retake refusal) are pinned by
+`tests/test_crossover_v2_remote_tier.py`. The three-gesture start and the
+rejected-capture stall were re-derived from `capture-page/js/main.js`
+(`applyDefaultCalibrationHintSilently` / `entryConfirmsBeforeArming` /
+`advanceAfterAccepted`) during the adversarial review of PR #2505. **The date below is deliberately NOT
 bumped**: that addendum re-verified only what it added, not the rest of the
 spine, and moving the date would claim a sweep that did not happen.
 

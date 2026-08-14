@@ -255,6 +255,30 @@ REASON_USER_STOPPED = "user_stopped"
 # forward. RETAINED but unreached since the two-stage split (D10): no shipped
 # session holds for an apply any more.
 REASON_REVIEW_HOLD_TIMEOUT = "review_hold_timeout"
+# The EXTERNALLY POSITIONED tier's two gate refusals (``TIER_REMOTE``). Named
+# reasons rather than a fall-through to ``relay_timeout`` because the position
+# gate is consulted AHEAD of the conductor — nothing sets ``last_failure_code``
+# on this path, so an unnamed gate refusal persisted as "the measurement link
+# timed out", which is a claim about the transport that no transport made.
+#
+#   position_hold_expired  — no driver reported the microphone in place before
+#                            REMOTE_POSITION_HOLD_BUDGET_S. The session is over;
+#                            a fresh one is the only way forward.
+#   position_target_missing— a plan entry carried no target angle, so the gate
+#                            refused rather than measure an unknown position.
+#                            A build-shape disagreement, not an operator error.
+#
+# Both TEMPLATE_SESSION_RESTART, for the same reason the review hold is: no
+# retry at this position can help once the session has been torn down.
+REASON_POSITION_HOLD_EXPIRED = "position_hold_expired"
+REASON_POSITION_TARGET_MISSING = "position_target_missing"
+# The geometry-locked retake asks for a pose PAST the walk — 75 cm out, and on
+# its second rung 75 cm out AND above mark height. An external positioner swings
+# on one horizontal axis at a fixed radius, so it can serve neither rung. Rather
+# than prompt for a move that cannot be made (and then record the un-made pose
+# as though it had been), an externally positioned session refuses here and
+# recommends the hand-walked instrument that CAN do it.
+REASON_GEOMETRY_RETAKE_UNREACHABLE = "geometry_retake_unreachable"
 # Position-group choreography (flat-linearization PR-3b): the pre-apply cloud
 # closed with `spatial_combine.assess_geometry` reporting `locked` — every
 # position's echo estimate landed on the same tau, so the nulls are not moving
@@ -947,6 +971,25 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "Applying the measured crossover took too long, so the measurement "
         "timed out before it could finish. Start over from this page to "
         "measure again — the quick microphone check runs first.",
+    ),
+    REASON_POSITION_HOLD_EXPIRED: ReasonSpec(
+        REASON_POSITION_HOLD_EXPIRED, TEMPLATE_SESSION_RESTART, 0, "",
+        "Nothing reported the microphone reaching its next position, so the "
+        "measurement stopped waiting. Start over from this page once the "
+        "positioner is answering again.",
+    ),
+    REASON_POSITION_TARGET_MISSING: ReasonSpec(
+        REASON_POSITION_TARGET_MISSING, TEMPLATE_SESSION_RESTART, 0, "",
+        "This measurement did not say where the microphone should be, so it "
+        "stopped rather than record an unknown position. Start over from this "
+        "page.",
+    ),
+    REASON_GEOMETRY_RETAKE_UNREACHABLE: ReasonSpec(
+        REASON_GEOMETRY_RETAKE_UNREACHABLE, TEMPLATE_SESSION_RESTART, 0, "",
+        "The room needs the microphone measured from a wider spot, and from "
+        "above the mark, than a remote positioner can reach. Run a Full "
+        "measurement and walk those spots by hand to finish tuning this "
+        "speaker.",
     ),
     REASON_CLOUD_GEOMETRY_LOCKED: _retriable_reason(
         REASON_CLOUD_GEOMETRY_LOCKED, TEMPLATE_FIX_AND_RETRY,

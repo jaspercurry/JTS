@@ -490,9 +490,14 @@ def _get_relay_capture_for(*kind_prefixes: str) -> dict[str, Any] | None:
     # The remote tier's live position hold, merged in here rather than pushed
     # into the slot by the gate: the gate owns the fact and this is a read, so
     # there is one writer and no window in which the slot advertises a hold the
-    # gate has already released. It rides the existing ``relay`` block — which
-    # the envelope copies through verbatim and NULLS on every terminal screen —
-    # so a hold cannot outlive the session that is holding it.
+    # gate has already released.
+    #
+    # THREE guards keep a hold from outliving its session, and none of them is
+    # the envelope: ``_set_relay_capture`` drops ``_relay_position_gate`` as
+    # soon as the slot leaves an in-flight status; the in-flight test below
+    # re-checks that on every read; and the gate clears its own ``_pending`` on
+    # both exits from a hold. A finished session therefore reports no hold even
+    # if its gate object is still referenced somewhere.
     with _session_lock:
         gate = _relay_position_gate
     if gate is not None and relay.get("status") in _RELAY_IN_FLIGHT_STATUSES:
@@ -5954,10 +5959,16 @@ def _handle_crossover_v2_position_ready(
     raw = _read_json_body(handler)
     if "index" not in raw:
         raise BadRequest("index is required")
-    try:
-        index = int(raw["index"])
-    except (TypeError, ValueError):
-        raise BadRequest("index must be an integer") from None
+    raw_index = raw["index"]
+    # A REAL integer, not merely something ``int()`` accepts. ``int(1.5)`` is 1
+    # and ``int(True)`` is 1, so a lenient parse would silently coerce a
+    # malformed index into a VALID one and release a position the driver never
+    # named — the same class of harm the pending-index check exists to prevent,
+    # arriving through the parser instead. One wire shape per meaning, the rule
+    # ``parse_begin_capture`` already holds this protocol to.
+    if isinstance(raw_index, bool) or not isinstance(raw_index, int):
+        raise BadRequest("index must be an integer")
+    index = int(raw_index)
     with _session_lock:
         gate = _relay_position_gate
     if gate is None:
@@ -7022,11 +7033,24 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 # shape /crossover/v2/restore uses for a refused transition.
                 try:
                     self._send_json(_handle_crossover_v2_position_ready(self))
-                except BadRequest:
+                except BadRequest as e:
                     # A malformed body is a 400, and BadRequest subclasses
-                    # ValueError — so it has to leave before the 409 arm below
-                    # can claim it. The dispatcher's own handler owns the 400.
-                    raise
+                    # ValueError — so it has to be claimed BEFORE the 409 arm
+                    # below, which would otherwise report a parse failure as a
+                    # stale-release conflict.
+                    #
+                    # It must also be ANSWERED here, not re-raised: this arm
+                    # sits above ``_dispatch_crossover``'s own
+                    # ``except BadRequest`` (that one guards the later routes
+                    # inside its own ``try``), and ``do_POST`` calls this
+                    # dispatcher bare — so a re-raise escapes into
+                    # ``socketserver.BaseServer.handle_error``, which logs a
+                    # traceback and drops the connection with NO response at
+                    # all. The driver sees a closed socket instead of the
+                    # reason its body was rejected. Same
+                    # ``_send_client_error`` (400) the /sync/relay-capture arm
+                    # uses for the identical shape.
+                    self._send_client_error(str(e))
                 except ValueError as e:
                     self._send_json(
                         {"ok": False, "error": str(e)},

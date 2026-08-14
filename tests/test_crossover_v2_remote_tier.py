@@ -22,7 +22,12 @@ separate concerns:
 from __future__ import annotations
 
 import io
+import json
 import re
+import secrets
+import threading
+import urllib.error
+import urllib.request
 from contextlib import contextmanager
 from types import SimpleNamespace
 
@@ -37,6 +42,9 @@ from jasper.active_speaker.crossover_envelope_v2 import (
 )
 from jasper.active_speaker.crossover_v2_flow import (
     AUTO_ADVANCE_COUNTDOWN,
+    PHASE_CLOUD_MEASURE,
+    REASON_GEOMETRY_RETAKE_UNREACHABLE,
+    REASON_REGISTRY,
     AUTO_ADVANCE_COUNTDOWN_S,
     AUTO_ADVANCE_TAP,
     POSITION_DEG_KEY,
@@ -55,6 +63,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     resolve_plan_shape,
 )
 from jasper.capture_relay.session import CaptureBeginDeferred, CaptureBeginRefused
+from jasper.web._common import CSRF_COOKIE_NAME
 from jasper.capture_relay.spec import MAX_CAPTURE_PLAN_ATTEMPTS
 from jasper.web.correction_crossover_v2 import (
     POSITION_HOLD_CODE,
@@ -65,7 +74,15 @@ from jasper.web.correction_crossover_v2 import (
     PositionGate,
 )
 
-from tests.crossover_v2_fixtures import FC_HZ
+from tests.crossover_v2_fixtures import (
+    CLOUD_MEASURE_INDEXES,
+    FC_HZ,
+    FakeSeams,
+    _cloud_conductor,
+    _lock,
+    _run_phase,
+    _walk,
+)
 
 HAND_WALKED = (TIER_FULL, TIER_EXPRESS)
 
@@ -147,6 +164,20 @@ def test_remotes_verify_walk_is_derived_as_fulls_minus_the_vertical():
     assert positions >= flow.MIN_CLOUD_VERIFY_POSITIONS
 
 
+def test_remotes_stage_1_n_states_the_assumption_that_makes_it_safe(monkeypatch):
+    """N4. Remote takes Full's N only because the shipped stage 1 walks the
+    LATERAL poses; the ``[:N - 1]`` prefix of the cloud table contains vertical
+    rows at that N. Flipping the flag back on must trip a NAMED refusal that
+    says what to do, not an incidental raise from the angle helper."""
+    assert flow.remote_cloud_measure_positions() == flow.DEFAULT_CLOUD_MEASURE_POSITIONS
+    monkeypatch.setattr(flow, "STAGE1_INCLUDES_CLOUD_MEASURE", True)
+    with pytest.raises(CrossoverV2FlowError, match="cannot walk a pre-apply cloud"):
+        flow.remote_cloud_measure_positions()
+    # The refusal names the fix, not just the symptom.
+    with pytest.raises(CrossoverV2FlowError, match="remote_cloud_verify_positions"):
+        resolve_plan_shape(TIER_REMOTE)
+
+
 # --------------------------------------------------------------------------- #
 # the angles
 # --------------------------------------------------------------------------- #
@@ -174,6 +205,25 @@ def test_the_angle_is_derived_from_the_offset_and_signed_by_the_bearing():
             )
         )
         assert abs(degrees) == expected
+
+
+def test_an_unsigned_lateral_pose_is_refused_as_loudly_as_a_vertical_one():
+    """S4b. The geometry-locked retake builds its pose by hand
+    (``_prompt_shown_for``), so it carries an offset and NO side. Before this
+    guard that read back as 0° — "already on the design axis" — so a driver
+    would have been told to stay put for a capture the plan believed was 75 cm
+    off-axis, and the evidence would have recorded an offset the microphone
+    never had."""
+    unsigned = flow.CloudPositionPrompt(
+        headline="Same measurement, wider spot.",
+        offset_cm=flow.GEOMETRY_RETRY_OFFSET_CM,
+        role=POSITION_ROLE_OFFAX,
+    )
+    assert unsigned.lateral_sign == 0
+    with pytest.raises(CrossoverV2FlowError, match="declares no side"):
+        position_angle_deg(unsigned)
+    # An at-mark pose is unsigned too, and that one is genuinely 0°.
+    assert position_angle_deg(flow.LATERAL_MARK_PROMPT) == 0
 
 
 def test_a_vertical_pose_has_no_bearing_and_says_so():
@@ -459,6 +509,71 @@ def test_the_flow_states_the_vertical_gap_in_one_place():
     assert "vertical" in flow.REMOTE_VERTICAL_DISCLOSURE.lower()
 
 
+def test_a_geometry_locked_remote_group_refuses_instead_of_prompting(monkeypatch):
+    """S4a. Both retake rungs are out of an external positioner's reach — rung 1
+    is 75 cm off the mark, past every pose in the walk, and rung 2 adds a move
+    ABOVE mark height, the axis this tier excludes by construction. Prompting
+    anyway asked for a move that cannot be made and then recorded it as though
+    it had been.
+
+    The branch is phase-agnostic, so it is exercised here through the cloud
+    group the shared fixtures already drive.
+    """
+    fakes = FakeSeams()
+    remote = _cloud_conductor(fakes, tier=TIER_REMOTE)
+    attempt = _walk(remote, (1, 2), 1)
+    attempt = _walk(remote, CLOUD_MEASURE_INDEXES[:-1], attempt)
+    last = CLOUD_MEASURE_INDEXES[-1]
+    _lock(monkeypatch)
+
+    verdict = _run_phase(remote, last, attempt)
+    assert verdict["accepted"] is False
+    assert verdict["code"] == REASON_GEOMETRY_RETAKE_UNREACHABLE
+    # It REFUSES — it does not hand back a prompt for a pose nobody can reach.
+    assert not verdict.get("prompt")
+    # …and it recommends the instrument that can, without blocking anything.
+    message = REASON_REGISTRY[REASON_GEOMETRY_RETAKE_UNREACHABLE].message
+    assert "Full measurement" in message
+    assert "by hand" in message
+    # Nothing was spent and nothing was dropped: this is not a retry.
+    assert last in {
+        int(pid.rsplit("_", 1)[1])
+        for pid in remote.group_positions(PHASE_CLOUD_MEASURE)
+    }
+
+
+def test_a_hand_walked_group_still_gets_its_wider_retake_prompt(monkeypatch):
+    """The other half of S4a: the refusal is scoped to externally positioned
+    sessions, and a household that CAN walk to 75 cm is still asked to."""
+    fakes = FakeSeams()
+    walked = _cloud_conductor(fakes, tier=TIER_FULL)
+    attempt = _walk(walked, (1, 2), 1)
+    attempt = _walk(walked, CLOUD_MEASURE_INDEXES[:-1], attempt)
+    last = CLOUD_MEASURE_INDEXES[-1]
+    _lock(monkeypatch)
+
+    verdict = _run_phase(walked, last, attempt)
+    assert verdict["accepted"] is False
+    assert verdict["code"] == flow.REASON_CLOUD_GEOMETRY_LOCKED
+    assert verdict["prompt"] == flow.CLOUD_GEOMETRY_RETRY_PROMPTS[0]
+
+
+def test_one_predicate_answers_who_positions_the_microphone():
+    """The conductor holds a tier STRING and the plan builders hold a resolved
+    shape; both must answer this the same way, and a durable state file's stale
+    or absent tier must answer "hand-walked" rather than raising."""
+    assert flow.tier_is_externally_positioned(TIER_REMOTE)
+    assert flow.tier_is_externally_positioned("  Remote ")
+    for benign in ("", None, TIER_FULL, TIER_EXPRESS, "a-tier-from-a-later-build"):
+        assert flow.tier_is_externally_positioned(benign) is False
+    # The shape's property is the same answer, not a second one.
+    for tier in flow.TIERS:
+        assert (
+            resolve_plan_shape(tier).externally_positioned
+            is flow.tier_is_externally_positioned(tier)
+        )
+
+
 # --------------------------------------------------------------------------- #
 # the driver's transport
 # --------------------------------------------------------------------------- #
@@ -537,25 +652,113 @@ def test_the_release_route_admits_the_pending_capture():
         gate.gate(4, 4, _entry(7))  # admitted — no raise
 
 
-def test_the_release_route_demands_an_index_it_can_check():
-    """An untargeted release is the hazard; a missing or unparseable index is a
-    400, and a mismatched one is refused rather than applied to whatever is
-    pending."""
-    from jasper.web.correction_setup import BadRequest
+@contextmanager
+def _serving():
+    """The REAL wizard server on a loopback port, plus a valid CSRF pair.
 
+    Route-level rather than handler-level on purpose. A handler-level
+    ``pytest.raises(BadRequest)`` pins what the *function* does and says nothing
+    about what the *client* receives — and the two disagreed: the re-raise
+    escaped ``do_POST`` into ``socketserver``'s error handler, which logs a
+    traceback and drops the connection with no response at all. Only a real
+    request over a real socket can tell "raised a 400-shaped error" apart from
+    "answered 400".
+    """
+    from jasper.web import correction_setup
+
+    server = correction_setup.make_server(("127.0.0.1", 0), hostname="jts.local")
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    token = secrets.token_urlsafe(32)
+
+    def post(path: str, body: bytes) -> tuple[int, bytes]:
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}{path}",
+            data=body,
+            method="POST",
+            headers={
+                "Host": "jts.local",
+                "Content-Type": "application/json",
+                "X-CSRF-Token": token,
+                "Cookie": f"{CSRF_COOKIE_NAME}={token}",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                return response.status, response.read()
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read()
+
+    try:
+        yield post
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+# Every body a driver can get wrong, and the status each must ANSWER with.
+# `{not json` is the parse failure; the rest are shape failures this route
+# owns. None of them may reach the client as a dropped connection.
+MALFORMED_BODIES = [
+    b"{not json",
+    b"{}",
+    b'{"index": "abc"}',
+    b'{"index": null}',
+    b'{"index": 1.5}',
+    b'{"index": true}',
+    b"[]",
+]
+
+
+@pytest.mark.parametrize("body", MALFORMED_BODIES)
+def test_the_release_route_answers_400_on_a_malformed_body(body):
+    """B1. Every one of these used to close the socket with no response."""
+    gate = PositionGate()
+    with _live_remote_slot(gate):
+        with pytest.raises(CaptureBeginDeferred):
+            gate.gate(4, 4, _entry(7))
+        with _serving() as post:
+            status, payload = post("/crossover/v2/position-ready", body)
+        assert status == 400, payload
+        assert json.loads(payload)  # a JSON error body, not an empty close
+        # …and the hold survived every refusal.
+        with pytest.raises(CaptureBeginDeferred):
+            gate.gate(4, 4, _entry(7))
+
+
+def test_the_release_route_answers_409_on_a_stale_index():
+    """The retry-crossed-a-capture case, over the wire: a CONFLICT with a
+    readable reason, never a 400 and never a dropped connection."""
+    gate = PositionGate()
+    with _live_remote_slot(gate):
+        with pytest.raises(CaptureBeginDeferred):
+            gate.gate(4, 4, _entry(7))
+        with _serving() as post:
+            status, payload = post(
+                "/crossover/v2/position-ready", b'{"index": 9}',
+            )
+            assert status == 409, payload
+            assert b"waiting" in payload
+            # The good release still answers 200 on the same server.
+            ok_status, ok_payload = post(
+                "/crossover/v2/position-ready", b'{"index": 4}',
+            )
+        assert ok_status == 200, ok_payload
+        assert json.loads(ok_payload)["ok"] is True
+        gate.gate(4, 4, _entry(7))  # admitted — no raise
+
+
+def test_the_release_route_demands_an_index_it_can_check():
+    """An untargeted release is the hazard: a mismatched index is refused
+    rather than applied to whatever happens to be pending."""
     gate = PositionGate()
     with _live_remote_slot(gate) as setup:
         with pytest.raises(CaptureBeginDeferred):
             gate.gate(4, 4, _entry(7))
-        with pytest.raises(BadRequest, match="index is required"):
-            setup._handle_crossover_v2_position_ready(_json_handler("{}"))
-        with pytest.raises(BadRequest, match="index must be an integer"):
-            setup._handle_crossover_v2_position_ready(
-                _json_handler('{"index": "left"}')
-            )
         with pytest.raises(ValueError, match="measurement 4 is waiting, not 9"):
             setup._handle_crossover_v2_position_ready(_json_handler('{"index": 9}'))
-        # Still held after all three refusals.
         with pytest.raises(CaptureBeginDeferred):
             gate.gate(4, 4, _entry(7))
 

@@ -82,6 +82,14 @@ from jasper.active_speaker.crossover_v2.journey import (
     available_stage_priors,
     open_stage,
 )
+# The position gate's two TERMINAL codes, at module level because the constants
+# they name are module level. A pure-organ leaf like ``journey`` above, so this
+# adds no cycle and no import cost worth deferring — every other flow symbol in
+# this module stays lazily imported inside its own function, as before.
+from jasper.active_speaker.crossover_v2.vocabulary import (
+    REASON_POSITION_HOLD_EXPIRED,
+    REASON_POSITION_TARGET_MISSING,
+)
 from jasper.log_event import log_event
 
 if TYPE_CHECKING:
@@ -5555,16 +5563,39 @@ def build_v2_run_and_consume(
             await _abandon_best_effort()
             await _purge_best_effort()
             raise
-        except CaptureBeginRefused:
+        except CaptureBeginRefused as refusal:
             # The conductor's own budget refusal — its failure code is already
             # in _last_reason. Publish that exact named verdict before cleanup.
-            code = conductor.last_failure_code or REASON_RELAY_TIMEOUT
+            #
+            # The POSITION GATE refuses from the same seam but AHEAD of the
+            # conductor, so it leaves `last_failure_code` unset: without the
+            # middle term a gate refusal fell through to REASON_RELAY_TIMEOUT
+            # and told the household "the measurement link timed out" about a
+            # transport that never failed. The refusal carries its own code;
+            # trust it only when the registry knows it, so an unregistered code
+            # from some future raiser degrades to the old fallback rather than
+            # reaching a screen with no copy.
+            gate_code = str(getattr(refusal, "code", "") or "")
+            if gate_code not in REASON_REGISTRY:
+                gate_code = ""
+            code = conductor.last_failure_code or gate_code or REASON_RELAY_TIMEOUT
             _persist_terminal_failure(conductor, code)
             # Only where the relay published nothing itself: on the
             # authorize_begin path it already posted `capture_refused` for the
             # REFUSED index, and this slot is last-write-wins (panel SF1). On
             # the consume path nothing precedes it and the phone waits forever.
-            if not conductor.relay_published_refusal:
+            #
+            # A gate refusal is an authorize_begin refusal too — `run_capture_plan`
+            # posts `capture_refused` with the gate's own code and message before
+            # re-raising — but nothing sets the conductor's flag for it, because
+            # the conductor never saw it. Re-posting here would overwrite that
+            # honest, index-bearing event with a terminal one in the same
+            # last-write-wins slot.
+            already_published = (
+                conductor.relay_published_refusal
+                or gate_code in POSITION_GATE_TERMINAL_CODES
+            )
+            if not already_published:
                 await _post_terminal_failure_host_event(code)
             await _abandon_best_effort()
             await asyncio.sleep(TERMINAL_FAILURE_PURGE_GRACE_S)
@@ -6286,13 +6317,40 @@ def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
 #: swing an arm, plus whatever settle the driver takes, plus room for a driver
 #: that is retrying its own transport. It is an order of magnitude past the
 #: move and an order of magnitude short of "nobody is coming".
+#:
+#: **This is a PER-HOLD bound, and it is not the operative total.** The session's
+#: own wall-clock ceiling
+#: (:func:`~jasper.active_speaker.crossover_v2_flow.session_wall_clock_ceiling_s`,
+#: derived per plan — 2520 s for remote's stage 1 and 2040 s for its stage 2 at
+#: the shipped shape) covers the WHOLE walk, so a run spending anywhere near
+#: this budget on several holds ends on that ceiling long before any individual
+#: hold expires: four full holds already exceed stage 1's ceiling. A driver that
+#: stalls once is caught here by name; a driver that is merely slow at every
+#: position is caught there, and reads as a session timeout rather than as a
+#: position hold. Recorded rather than reconciled — whether the per-hold budget
+#: should instead be derived from the ceiling and the capture count is deferred
+#: to https://github.com/jaspercurry/JTS/issues/2506.
 REMOTE_POSITION_HOLD_BUDGET_S = 600.0
 
 #: Machine reasons the gate answers a begin with. Stable strings: a driver
 #: branches on these, and the phone renders the message beside them.
+#:
+#: The two TERMINAL ones are the registry's own codes, aliased rather than
+#: re-spelled: they are persisted as this session's failure and rendered to a
+#: household through ``REASON_REGISTRY``, so a second literal here would be a
+#: second definition of the same verdict. ``POSITION_HOLD_CODE`` has no registry
+#: entry on purpose — a deferral is not a terminal verdict and never reaches a
+#: failure screen.
 POSITION_HOLD_CODE = "awaiting_position"
-POSITION_HOLD_EXPIRED_CODE = "position_hold_expired"
-POSITION_TARGET_MISSING_CODE = "position_target_missing"
+POSITION_HOLD_EXPIRED_CODE = REASON_POSITION_HOLD_EXPIRED
+POSITION_TARGET_MISSING_CODE = REASON_POSITION_TARGET_MISSING
+
+#: The gate's terminal codes, as a set — what the teardown arm below tests a
+#: refusal against to know the runner already published an honest
+#: ``capture_refused`` for it.
+POSITION_GATE_TERMINAL_CODES = frozenset(
+    {REASON_POSITION_HOLD_EXPIRED, REASON_POSITION_TARGET_MISSING}
+)
 
 #: The endpoint an external driver POSTs to report the microphone in place.
 POSITION_READY_ENDPOINT = "/correction/crossover/v2/position-ready"
