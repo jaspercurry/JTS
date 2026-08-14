@@ -581,8 +581,10 @@ def topology_sink_is_composite(topology: OutputTopology) -> bool:
     shipped-default box (DEFECT 2 in ``topology_supports_shm_ring``).
 
     Two callers need this same distinction for different reasons, so it is named
-    once here rather than spelled twice: ``topology_supports_shm_ring`` (a
-    stereo ring cannot drive a 4-ch composite sink) and
+    once here rather than spelled twice: ``topology_supports_shm_ring`` (the
+    STEREO ring carries a full-range stereo program, which a 4-ch composite is
+    not — a ROLEFUL composite's post-crossover program rides the ACTIVE ring
+    instead, see :func:`active_ring_channels_for_topology`) and
     ``flat_graph_output_mapping_is_indexed`` (outputd fans the stereo program
     across child DACs, so Camilla channel *i* is not physical output *i*).
     """
@@ -623,9 +625,17 @@ def ring_channels_for_topology(topology: OutputTopology) -> int | None:
       PCM, its own file and its own width, answered by
       :func:`active_ring_channels_for_topology` and gated by outputd's endpoint
       marker. So the answer here is "no Ring B", not "a wider Ring B";
-    - composite sinks (dual-Apple — TWO+ ``hardware.child_devices``): the ring
-      ioplug is a single coherent device, not the 4-ch composite the two
-      child DACs need. The exclusion is
+    - composite sinks (dual-Apple — TWO+ ``hardware.child_devices``). **The
+      reason is WIDTH and program, not the transport.** Ring B carries the
+      full-range STEREO program; a composite drives four physical outputs across
+      two child DACs, which is not a stereo program, so there is no Ring B for
+      it — the same "no Ring B, not a wider Ring B" answer the roleful bullet
+      above gives. What is NOT the reason, since P8b item 1b: that the ring
+      ioplug cannot serve a composite. It can — the ring is the CamillaDSP →
+      outputd hop and the composite split lives downstream of it, so a ROLEFUL
+      composite's post-crossover program rides the ACTIVE ring, answered by
+      :func:`active_ring_channels_for_topology`. A PASSIVE stereo composite
+      resolves neither ring and stays on loopback. The exclusion is
       keyed on ``len(child_devices) >= 2`` — a *plurality* of child DACs, each its
       own USB clock domain (``dac.py``'s only ``kind="composite"`` profile is the
       dual-Apple 4-ch, ``child_profile_ids=(apple, apple)``). A *single* child
@@ -682,13 +692,45 @@ def active_ring_channels_for_topology(topology: OutputTopology) -> int | None:
     capability. jts3's DAC8x declares an 8-channel active-lane capability while
     its commissioned graph drives 2; the ring is built to what is driven.
 
+    **A COMPOSITE (multi-child) ROLEFUL SINK IS ANSWERED HERE, NOT REFUSED**
+    (P8b item 1b). It is the one shape this function ever excluded for a reason
+    that did not survive re-derivation. The old exclusion said "the ring ioplug
+    is a single coherent device spanning one clock domain, which a multi-child
+    composite is not" — but the ring is the **CamillaDSP → outputd** hop, and the
+    composite split lives entirely DOWNSTREAM of it, inside outputd, which reads
+    one interleaved period and calls ``deinterleave_4ch_to_dual_stereo``. The
+    ring never sees a child. The transport it replaces — the raw snd-aloop
+    lane — is equally one device on one clock domain and carries this exact
+    composite in production today. The exclusion was right as a ring-v2 SCOPE
+    call and wrong as a physics claim.
+
+    What the composite arm does NOT do is relax anything: it deletes the early
+    refusal and lets the duplicate / contiguity / accept-set guards below run
+    unchanged. On a real saved dual-Apple ``active_2_way`` those guards see flat
+    contiguous indices ``0..3`` and answer **4** — because
+    ``speaker_groups[].channels[].physical_output_index`` and
+    ``hardware.child_devices[].physical_output_indexes`` are ONE flat index
+    space, not child-relative: ``OutputTopology._validate_references`` bounds the
+    channel index by ``hardware.physical_output_count`` (4 for this profile),
+    ``topology_hardware_from_state`` assigns child ordinal *i* the pair
+    ``[2i, 2i+1]``, ``_dual_apple_clock_issues`` BLOCKS any composite whose child
+    indexes are not ``range(4)`` exactly once, and
+    :func:`jasper.output_topology.cross_child_group_verdicts` looks a channel's
+    index up directly in the child-owned map. So no child-ordinal composition is
+    needed here; had the indices been child-relative the duplicate guard would
+    have fired (two outputs both claiming 0) and this would return ``None`` with
+    a named refusal rather than stamp a wrong width.
+
+    Ring B stays excluded for a composite — see
+    :func:`ring_channels_for_topology`. One field per ring end.
+
     ``None`` — no active ring — for:
 
     - any topology that does not require a roleful graph (plain stereo, mono,
-      unconfigured). Those boxes have Ring B and no active ring at all;
-    - a composite sink (2+ ``hardware.child_devices``): the ring ioplug is a
-      single coherent device spanning one clock domain, which a multi-child
-      composite is not — the same exclusion Ring B carries, for the same reason;
+      unconfigured). Those boxes have Ring B and no active ring at all. A
+      composite is not special-cased out of this: a PASSIVE stereo composite
+      requires no roleful graph, so it gets no active ring here and no Ring B
+      there — it stays on the loopback coupling, exactly as before;
     - a roleful topology whose assignments do not resolve to a coherent
       contiguous output width (an output with no assigned physical index, or a
       declared roleful set the ring layout's ``2..=8`` accept-set cannot carry).
@@ -697,10 +739,6 @@ def active_ring_channels_for_topology(topology: OutputTopology) -> int | None:
     """
     contract = classify_output_contract(topology)
     if not contract.requires_roleful_graph:
-        return None
-    # Composite (multi-child) sinks span >1 clock domain — not the single
-    # coherent device the ring ioplug drives. Same exclusion as Ring B's.
-    if topology_sink_is_composite(topology):
         return None
     indices = {
         int(item.physical_output_index)
@@ -4678,11 +4716,15 @@ def safe_graph_for_current_topology(
         # Gate the ring path on the FULL topology-ring-eligibility predicate
         # (topology_supports_shm_ring), not just `not requires_roleful_graph`: the
         # predicate additionally excludes composite (dual-Apple child_devices) and
-        # explicit-mono topologies, which are NOT ring-legal (a stereo ring cannot
-        # drive a 4-ch composite sink — that is P8's ring-v2). Without this, a
-        # composite box carrying a stale coupling=shm_ring would seed a stereo-ring
-        # flat config it cannot play. This is the promised "seeder consults the
-        # predicate" consultation.
+        # explicit-mono topologies, which the STEREO ring cannot carry — a 4-ch
+        # composite is not a full-range stereo program. (A ROLEFUL composite is
+        # not reachable in this branch at all: it requires a roleful graph and is
+        # seeded from the driver-domain emitters. Its post-crossover program
+        # rides the ACTIVE ring since P8b item 1b — a different transport, gated
+        # by active_ring_channels_for_topology, never by this predicate.)
+        # Without this, a PASSIVE composite box carrying a stale
+        # coupling=shm_ring would seed a stereo-ring flat config it cannot play.
+        # This is the promised "seeder consults the predicate" consultation.
         from jasper.fanin_coupling import COUPLING_SHM_RING, resolve_coupling
 
         if resolve_coupling(coupling) == COUPLING_SHM_RING and (

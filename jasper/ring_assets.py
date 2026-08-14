@@ -1020,6 +1020,24 @@ _RING_OFF_CHANNELS = 12  # u32
 _RING_OFF_SAMPLE_FORMAT = 16  # u32
 _RING_OFF_PERIOD_FRAMES = 20  # u32
 _RING_OFF_N_SLOTS = 24  # u32
+# The two RUNTIME liveness fields, both little-endian u64 CLOCK_MONOTONIC
+# nanoseconds (layout.rs OFF_WRITER_HEARTBEAT_NS / OFF_READER_HEARTBEAT_NS).
+# Unlike the six geometry fields above these change every period, so they answer
+# "is this ring moving", not "what shape is it". They cost no extra I/O — the
+# reader below already pulls all 128 header bytes.
+_RING_OFF_WRITER_HEARTBEAT_NS = 64  # u64
+_RING_OFF_READER_HEARTBEAT_NS = 80  # u64
+
+# The staleness window a heartbeat may fall behind before its stamper counts as
+# gone. NOT a number chosen here: it is the C ioplug's own
+# ``JTS_RING_WRITER_LIVENESS_TIMEOUT_NS`` (``jts_ring_shm.h``), the exact
+# threshold ``reader_is_live`` applies to ``reader_heartbeat_ns`` when it decides
+# whether to demote a reader and free-run. Spelling the same number means the
+# alarm and the mechanism it reports agree BY CONSTRUCTION rather than by
+# coincidence — an observer with its own threshold would eventually disagree with
+# the writer about who is alive. Pinned against the C header by
+# ``tests/test_ring_stall_alarm.py``.
+RING_LIVENESS_TIMEOUT_NS = 2_000_000_000
 
 # The ``sample_format`` header field's wire values (layout.rs
 # SAMPLE_FORMAT_S16LE / SAMPLE_FORMAT_S32LE, mirrored by the C header's
@@ -1061,6 +1079,13 @@ class RingHeader:
     sample_format: int = 0
     period_frames: int = 0
     n_slots: int = 0
+    # RUNTIME, not geometry: CLOCK_MONOTONIC ns, 0 when never stamped. The
+    # writer stamps its own every publish/wait tick; the reader stamps its own
+    # every DAC period, filled or not. Compared against ``time.monotonic_ns()``
+    # by :func:`ring_stall_verdict` — same clock, same box, so freshness is a
+    # single-sample read and needs no sampling window.
+    writer_heartbeat_ns: int = 0
+    reader_heartbeat_ns: int = 0
 
     @property
     def sample_format_name(self) -> str:
@@ -1108,6 +1133,154 @@ def read_ring_header(path: str) -> RingHeader:
         sample_format=struct.unpack_from("<I", head, _RING_OFF_SAMPLE_FORMAT)[0],
         period_frames=struct.unpack_from("<I", head, _RING_OFF_PERIOD_FRAMES)[0],
         n_slots=struct.unpack_from("<I", head, _RING_OFF_N_SLOTS)[0],
+        writer_heartbeat_ns=struct.unpack_from(
+            "<Q", head, _RING_OFF_WRITER_HEARTBEAT_NS
+        )[0],
+        reader_heartbeat_ns=struct.unpack_from(
+            "<Q", head, _RING_OFF_READER_HEARTBEAT_NS
+        )[0],
+    )
+
+
+@dataclass(frozen=True)
+class RingStallVerdict:
+    """Is this ring being WRITTEN but not READ? The independent-observer alarm.
+
+    A ring-local frozen dataclass, matching :class:`RingHeaderCoherence` and the
+    other verdicts in this module rather than the ``severity``/``code`` dict
+    shape ``jasper.output_topology`` uses. Those are TOPOLOGY-evaluation
+    warnings: they ride ``evaluate_output_topology``'s ``warnings`` list, which
+    ``OutputTopology.to_dict`` embeds and three persisted fingerprints hash
+    (issue #2500). A stall is RUNTIME state that changes second to second —
+    putting it in that list would make a topology's fingerprint vary with
+    whether a daemon happened to be wedged when it was read.
+
+    ``present`` is False when there is no coherent ring file to judge, or when
+    the ring exists but nothing has stamped a writer heartbeat yet (an armed but
+    idle ring). ``stalled`` is only meaningful when ``present``.
+
+    WHAT IT DETECTS. The C ioplug (CamillaDSP's side of the ACTIVE ring) demotes
+    a reader whose heartbeat has gone stale and then FREE-RUNS, dropping the
+    oldest slot per publish so the ring stays bounded. Audio is being lost, and
+    nobody reports it: the ioplug's ``published_slots`` / ``drop_no_reader`` /
+    ``full_waits`` are process-local ``jts_ring_writer_t`` fields printed at
+    close, not shared-header fields, and outputd — the reader — is exactly the
+    process that is wedged, so its own STATUS is the least trustworthy witness.
+    Hence a THIRD observer that is blocked in neither end.
+
+    WHY THE READER'S HEARTBEAT AND NOT ``read_seq``. At demotion the writer
+    advances ``read_seq`` on the absent reader's behalf, deliberately, so
+    ``occupancy = write_seq - read_seq`` stays honest and ALSA's ``avail`` does
+    not stick at 0 (``jts_ring_shm.c``, the ``atomic_store_explicit(&h->read_seq,
+    rseq + 1, …)`` guarded by ``if (!reader_is_live(…))``; the Rust writer's
+    ``free_run_drop_oldest`` does the same). A "``read_seq`` is flat" clause
+    therefore holds only inside the pre-demotion grace and **goes false exactly
+    when the drops begin** — an alarm that switches itself off at the onset of
+    the fault it exists to catch. ``reader_heartbeat_ns`` has no such inversion:
+    only a reader actually running its loop stamps it, it stays stale through and
+    after demotion, and it is *the same fact* ``reader_is_live`` uses to decide
+    to demote. Attach resync (``read_seq = write_seq``) is a third way the
+    sequence numbers lie; the heartbeat is unaffected by that too.
+
+    RESIDUAL, stated rather than hidden: there is still no live DROP COUNT for
+    this ring. The header has room (``reserved[92..128]``, 36 bytes) and adding
+    one is a scope call P8b declines, not a wall. This verdict says "the reader
+    is gone while the writer runs", which is the condition under which drops
+    occur, not a count of them.
+    """
+
+    present: bool
+    stalled: bool = False
+    writer_age_ns: int | None = None
+    reader_age_ns: int | None = None
+    detail: str = ""
+
+
+def ring_stall_verdict(
+    path: str,
+    *,
+    now_ns: int | None = None,
+    timeout_ns: int = RING_LIVENESS_TIMEOUT_NS,
+) -> RingStallVerdict:
+    """Judge one ring file: writer heartbeat FRESH while reader heartbeat STALE.
+
+    Single-sample, no sleep. Both heartbeats and ``time.monotonic_ns()`` are
+    CLOCK_MONOTONIC on the same box (``jts_ring_monotonic_ns`` in C,
+    ``monotonic_ns`` in ``jasper-ring``, ``clock_gettime(CLOCK_MONOTONIC)`` in
+    CPython), so "advancing over a window" and "fresh right now" are the same
+    predicate — and freshness needs one read where advancement would need two
+    plus a window the caller could get wrong.
+
+    Ages are saturating, mirroring the C ``reader_is_live`` comment verbatim in
+    intent: a heartbeat stamped AFTER this observer sampled ``now_ns`` would make
+    the subtraction underflow and read as enormously stale, spuriously alarming
+    on a perfectly live ring. A future heartbeat clamps to age 0.
+
+    ``present=False`` (never an alarm) for: an absent / torn / foreign / wrong
+    version file; and a ring whose WRITER heartbeat is 0 or itself stale. That
+    last one is the load-bearing negative: a ring nobody is writing is idle, not
+    stalled, and alarming on it would fire on every unarmed box in the fleet.
+    The alarm is specifically "audio is flowing IN and not OUT".
+    """
+    import time
+
+    header = read_ring_header(path)
+    if not header.valid:
+        return RingStallVerdict(present=False, detail="no coherent ring header")
+    if now_ns is None:
+        now_ns = time.monotonic_ns()
+
+    def _age(stamp: int) -> int | None:
+        if stamp == 0:
+            return None
+        return now_ns - stamp if now_ns > stamp else 0
+
+    writer_age = _age(header.writer_heartbeat_ns)
+    reader_age = _age(header.reader_heartbeat_ns)
+    if writer_age is None:
+        return RingStallVerdict(
+            present=False, detail="ring has never been written (no writer heartbeat)"
+        )
+    if writer_age >= timeout_ns:
+        return RingStallVerdict(
+            present=False,
+            writer_age_ns=writer_age,
+            reader_age_ns=reader_age,
+            detail=(
+                f"writer heartbeat is itself stale ({writer_age / 1e6:.0f} ms) — "
+                "an idle or stopped ring, not a stall"
+            ),
+        )
+    # The writer is live. Now the reader half.
+    if reader_age is not None and reader_age < timeout_ns:
+        return RingStallVerdict(
+            present=True,
+            stalled=False,
+            writer_age_ns=writer_age,
+            reader_age_ns=reader_age,
+            detail=(
+                f"both ends live (writer {writer_age / 1e6:.0f} ms, reader "
+                f"{reader_age / 1e6:.0f} ms behind)"
+            ),
+        )
+    reader_desc = (
+        "never stamped a heartbeat"
+        if reader_age is None
+        else f"{reader_age / 1e6:.0f} ms behind"
+    )
+    return RingStallVerdict(
+        present=True,
+        stalled=True,
+        writer_age_ns=writer_age,
+        reader_age_ns=reader_age,
+        detail=(
+            f"the writer is live ({writer_age / 1e6:.0f} ms behind) but the "
+            f"reader {reader_desc}, past the {timeout_ns / 1e6:.0f} ms liveness "
+            "window the ioplug itself uses — it has demoted the reader and is "
+            "free-running, dropping the oldest slot per publish. Audio is being "
+            "lost. Check the reader daemon (jasper-outputd for the content "
+            "rings) and its journal"
+        ),
     )
 
 

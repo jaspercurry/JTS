@@ -552,7 +552,12 @@ decision, out of this campaign's scope.
 stands unchanged, including its no-cross-daemon-format-negotiation-ever
 contract; ring `VERSION` stays 1 (value-space widening on existing
 fields, not a layout change); `MAX_RING_CHANNELS = 8`, mono excluded
-(policy, not layout), composite excluded (moves to P8b);
+(policy, not layout), composite excluded from the STEREO ring by program
+shape and — since P8b item 1 — ARMABLE on the ACTIVE ring at 4 channels,
+though no composite box is armed: item 2's linked-group recovery
+has LANDED (#2255, closed via #2496), so the remaining gate is an
+operator-driven arm plus item 6's measured buffering check —
+enabled, not armed;
 `MAX_SLOT_BYTES` stays 64 KiB (round 2 proposed tightening to 8 KiB;
 round 3's resilience lens overruled it — 32 KiB is #2147's legitimate
 future case); `resolve_ring_wire` stays equality-only, never ranking;
@@ -893,11 +898,17 @@ Owned elsewhere; listed so no arc can claim to be done without them.
    rest: an *armed* roleful box now carries its post-crossover program
    content on the active ring (outputd's second `shm_ring` branch) — at two
    channels, which is all any ring has carried — but an unarmed roleful box
-   still rides aloop lane 5, composite output has no ring at all until P8b,
-   and bonded followers still write `hw:Loopback,0,6`. So P9 stays
-   HARD-GATED on P8 on **both** halves: the capabilities P8b still owes
-   (composite rings, bonded round-trip ingress) *and* the per-box arrival
-   every remaining box has yet to make.
+   still rides aloop lane 5, and bonded followers still write
+   `hw:Loopback,0,6`. Composite output is ARMABLE on the active ring since
+   P8b item 1 (a roleful composite resolves a 4-channel active width, the
+   conf.d renders it, and outputd admits it) but **no composite box is
+   armed**. Item 2's linked-group recovery has LANDED (#2255, closed via
+   #2496), so what remains is not a code gate: arming is an operator-driven
+   ladder gated on item 6's measured buffering-regime check on the real box,
+   and every composite in the fleet is on its aloop lane today. So P9 stays HARD-GATED on P8 on
+   **both** halves: the capabilities P8b still owes (composite ring *arming*,
+   bonded round-trip ingress) *and* the per-box arrival every remaining box
+   has yet to make.
 3. **A ring box silently narrows, or a wide box arms a narrow ring.**
    `ring_edge_width_ready` plus the reconciler's per-coupling emission
    are the belt; `check_camilla_playback_format` is the braces. Ring v2

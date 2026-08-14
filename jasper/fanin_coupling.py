@@ -449,7 +449,12 @@ def resolve_ring_wire(topology: Any = None) -> RingWire:
       declaration, because that is genuinely what the conf.d on that box says
       and what an open-probe of it must ask for. Whether such a box may ARM is
       not this function's question — ``topology_supports_shm_ring`` and the arm
-      preflights own that, and they refuse it.
+      preflights own that. **They do not simply refuse it**: a box with no Ring
+      B may still arm the ACTIVE ring, which is a different transport with its
+      own width (``ring_active_channels`` below). ``ring_topology_ready``'s
+      ACTIVE arm admits a ROLEFUL topology — jts3's DAC8x today, and since P8b
+      item 1b a roleful composite — once its endpoint is staged. What genuinely
+      cannot arm either ring is an explicit mono, or a PASSIVE composite.
     - ``period_frames`` — :data:`RING_SLOT_FRAMES`, fan-in's compile-time slot
       size. Reading it through the resolver is what gives issue #2147 a seam:
       making the slot floor-derived becomes "this axis stops being a constant"

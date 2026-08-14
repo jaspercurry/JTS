@@ -654,6 +654,11 @@ OBSERVED_OUTPUT_PAYLOAD=""
 DUAL_APPLE_DAC_A_PCM=""
 DUAL_APPLE_DAC_B_PCM=""
 DUAL_APPLE_ORDER_SOURCE=""
+# The endpoint device `active_graph_status` reports for an accepted composite
+# graph — the SECOND field of its payload, which this branch used to discard.
+# Empty means "no endpoint field", which set_outputd_active_lane_pair reads as
+# NO ring marker (fail closed by positive equality). P8b item 1f.
+DUAL_APPLE_ACTIVE_ENDPOINT_DEVICE=""
 
 detect_roles() {
     APPLE_DONGLE_CARD="$(find_card 'usb-c to 3.5mm')"
@@ -721,8 +726,14 @@ for child in mapping.child_devices:
     DUAL_APPLE_DAC_B_PCM="$(printf '%s\n' "$parsed" | sed -n '3p')"
     local graph_status
     # The dual-Apple composite caps at 4 (two stereo children); the composite
-    # sink is rigidly 4-channel in outputd regardless, so the dual branch only
-    # needs the gate's pass/fail, not the returned width.
+    # sink is rigidly 4-channel in outputd regardless, so the dual branch needs
+    # the gate's pass/fail and its ENDPOINT DEVICE, but not the returned width.
+    #
+    # THE ENDPOINT FIELD USED TO BE DISCARDED (P8b item 1f). While a composite
+    # could not ride the ACTIVE ring there was nothing to do with it; now that it
+    # can, throwing the second field away is what would keep every composite
+    # unarmable no matter what the Python preflights admit — the marker
+    # `active_ring_endpoint_proof` demands is derived from exactly this device.
     if ! graph_status="$(active_graph_status 4)"; then
         OUTPUT_DAC_ID="dual_apple_usb_c_dac_4ch"
         OUTPUT_DAC_CARD=""
@@ -731,6 +742,7 @@ for child in mapping.child_devices:
         APPLE_DONGLE_SERVICE_CARD="auto"
         DUAL_APPLE_DAC_A_PCM=""
         DUAL_APPLE_DAC_B_PCM=""
+        DUAL_APPLE_ACTIVE_ENDPOINT_DEVICE=""
         # active_graph_status prints a reason on EVERY path it declines on, so
         # an empty capture here is not an unknown reason — it is the probe
         # producing no output at all (the interpreter died before printing:
@@ -745,8 +757,16 @@ for child in mapping.child_devices:
     OUTPUT_DAC_RECOGNIZED=1
     APPLE_DONGLE_PRESENT=1
     APPLE_DONGLE_SERVICE_CARD="auto"
+    # Second field of the accepted payload ("<width> <endpoint_device>"), parsed
+    # exactly as the single-DAC branch parses it: a payload with no space at all
+    # has no device field, so treat it as ABSENT rather than as a device named
+    # after the width.
+    DUAL_APPLE_ACTIVE_ENDPOINT_DEVICE="${graph_status#* }"
+    if [[ "$DUAL_APPLE_ACTIVE_ENDPOINT_DEVICE" == "$graph_status" ]]; then
+        DUAL_APPLE_ACTIVE_ENDPOINT_DEVICE=""
+    fi
     log_event "dual_apple_detected" \
-        "status=ready action=outputd_dual_sink order_source=${DUAL_APPLE_ORDER_SOURCE} dac_a_pcm=$(jasper_asound_log_token "$DUAL_APPLE_DAC_A_PCM") dac_b_pcm=$(jasper_asound_log_token "$DUAL_APPLE_DAC_B_PCM")"
+        "status=ready action=outputd_dual_sink order_source=${DUAL_APPLE_ORDER_SOURCE} dac_a_pcm=$(jasper_asound_log_token "$DUAL_APPLE_DAC_A_PCM") dac_b_pcm=$(jasper_asound_log_token "$DUAL_APPLE_DAC_B_PCM") active_endpoint=${DUAL_APPLE_ACTIVE_ENDPOINT_DEVICE:-none}"
 }
 
 # Active-graph cutover gate. DRIVE WHAT WE USE, not the DAC's full channel count.
@@ -1264,7 +1284,7 @@ render_flat_cutover_if_needed() {
 # that shears on any of those axes fails the ioplug attach the same way.
 render_ring_conf_if_needed() {
     local actions key value result="" period="" previous="" reason="" conf=""
-    local sample_format="" channels_a="" channels_b="" topology=""
+    local sample_format="" channels_a="" channels_b="" channels_active="" topology=""
     if [[ "$OUTPUT_DAC_RECOGNIZED" != "1" ]]; then
         log_event "ring_conf" "result=skipped reason=dac_unrecognized"
         return 0
@@ -1293,13 +1313,27 @@ render_ring_conf_if_needed() {
             sample_format) sample_format="$value" ;;
             ring_a_channels) channels_a="$value" ;;
             ring_b_channels) channels_b="$value" ;;
+            # The ACTIVE ring block's RENDERED width — the value that landed in
+            # the conf.d, not a claim that an active ring exists. render_ring_conf_wire
+            # coerces a None active width to RING_CONF_DEFAULT_CHANNELS, so a
+            # plain stereo box journals ring_active_channels=2 while having no
+            # active ring at all; the number always matches the file, which is
+            # what makes it useful for diagnosing an attach.
+            #
+            # The renderer has always printed it; this whitelist had no arm for
+            # it, and the case above drops an unmatched key SILENTLY (see the
+            # comment on this function), so the one number a roleful/composite
+            # box's render is actually about was the one number event=ring_conf
+            # never carried. Pre-existing gap, load-bearing since P8b item 1d
+            # made the active width per-box.
+            ring_active_channels) channels_active="$value" ;;
             topology) topology="$value" ;;
             reason) reason="$value" ;;
             conf) conf="$value" ;;
         esac
     done <<<"$actions"
     log_event "ring_conf" \
-        "result=${result:-unknown} output_dac_id=${OUTPUT_DAC_ID} period_frames=${period:-none} previous_period_frames=${previous:-none} sample_format=${sample_format:-none} ring_a_channels=${channels_a:-none} ring_b_channels=${channels_b:-none} topology=${topology:-none} reason=${reason:-none} ring_conf=$(jasper_asound_log_token "$conf")"
+        "result=${result:-unknown} output_dac_id=${OUTPUT_DAC_ID} period_frames=${period:-none} previous_period_frames=${previous:-none} sample_format=${sample_format:-none} ring_a_channels=${channels_a:-none} ring_b_channels=${channels_b:-none} ring_active_channels=${channels_active:-none} topology=${topology:-none} reason=${reason:-none} ring_conf=$(jasper_asound_log_token "$conf")"
 }
 
 gate_role_services() {
@@ -1482,11 +1516,25 @@ apply_audio_runtime_env() {
         # single-sink width knob so a stale value from a prior active single
         # DAC cannot reach outputd (which rejects != 4 on the composite sink).
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_ACTIVE_CHANNELS" "" && changed=1
-        # The 4-ch composite sink is already fenced off the stereo-only TTS
-        # mixer / content bridge by its width (content_channels=4 != 2); clear the
-        # active-lane PAIR so toggling here from a prior active single DAC
-        # cannot leave a stale =1 on either key.
-        set_outputd_active_lane_pair "" "" && changed=1
+        # The 4-ch composite sink is still fenced off the stereo-only TTS mixer
+        # and dac_content lane by its width (content_channels=4 != 2) — outputd's
+        # `is_full_range_stereo_lr_sink` was NOT widened in P8b item 1.
+        #
+        # What DID change: the composite may now be an ACTIVE-ring endpoint, so
+        # the pair is STAGED when — and only when — the accepted graph names the
+        # ring device. Deliberately narrower than the single-DAC branch, which
+        # sets lane=1 for any accepted active graph: an ALOOP composite keeps the
+        # unconditional clear it has today, byte for byte. `active_lane` is inert
+        # on a composite at runtime (every guard that reads it already excludes
+        # this sink on width or sink_mode), so writing =1 there would change no
+        # behaviour — but it WOULD churn outputd.env and /state on boxes this
+        # campaign has no business touching. Scope the new write to the path the
+        # change is for; leave the other one alone.
+        if [[ "$DUAL_APPLE_ACTIVE_ENDPOINT_DEVICE" == "$RING_ACTIVE_OUTPUTD_PLAYBACK_DEVICE" ]]; then
+            set_outputd_active_lane_pair "1" "$DUAL_APPLE_ACTIVE_ENDPOINT_DEVICE" && changed=1
+        else
+            set_outputd_active_lane_pair "" "" && changed=1
+        fi
         log_event "runtime_env" \
             "mode=dual_apple content_format=${content_format:-unset} dac_format=${dac_format:-unset} outputd_env=${OUTPUTD_ENV_FILE} changed=${changed}"
     elif [[ "$OUTPUT_DAC_RECOGNIZED" == "1" ]]; then

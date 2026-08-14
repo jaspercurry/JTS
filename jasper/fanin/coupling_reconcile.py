@@ -2473,6 +2473,94 @@ def active_ring_endpoint_proof() -> tuple[bool, str]:
     )
 
 
+def composite_ring_wire_ready(topology: Any) -> tuple[bool, str]:
+    """May THIS composite sink ride the ACTIVE ring at the wire the box declares?
+
+    **Only at the WIDE wire (P8b item 1e).** Named and tested on its own so the
+    rule is greppable, but wired into exactly ONE call site —
+    :func:`ring_topology_ready`'s ACTIVE arm — because both arming paths (the
+    unattended ``--auto`` pass and the operator arm) reach the ring through that
+    one gate. A separate entry in ``default_ring_gates`` would have had to be
+    threaded into ``_arm_ring``'s hand-written gate sequence as well, and a rule
+    wired into one of two paths reads as covered while half of it is not.
+
+    THE REGRESSION THIS REFUSES, which is invisible on every other axis. The
+    CamillaDSP→outputd content hop takes its format from
+    :func:`jasper.fanin_coupling.content_lane_format_for_coupling`: under
+    ``loopback`` that is ``DEFAULT_PLAYBACK_FORMAT`` (**S32_LE**), under
+    ``shm_ring`` it is ``resolve_ring_wire().sample_format`` — which defaults to
+    the NARROW ``S16_LE`` unless the box declares otherwise. So moving a
+    composite from its aloop lane onto the ring, changing nothing else, would
+    narrow the POST-crossover per-driver program from 32 to 16 bits. That is the
+    exact quantization class the wide-output-path program exists to remove,
+    arriving through a transport change nobody would look at for it.
+
+    ``ring_edge_width_ready`` cannot catch it: that gate proves every declaring
+    end states the SAME wire, and a narrow composite arm is perfectly
+    self-consistent — every end says ``S16_LE`` and it passes. Coherence is not
+    width. This is the only gate that asks whether the width itself is a
+    regression, and it asks it for the composite alone, because the composite is
+    the only sink whose ring arm is a fresh decision this campaign is making.
+
+    THE SCOPE OF THE CLAIM, stated honestly because the obvious objection is a
+    fair one. This is about the CamillaDSP→outputd HOP, not the DAC edge. The
+    composite's own ``final_edge_format`` is ``S16_LE`` today — the paired sink
+    has no packed-24 child write path (#2257) — so a reader may reasonably ask
+    what a 32-bit hop buys when the edge is 16 anyway. The answer is the
+    invariant, not a measured delta: the wide-output-path program's rule is that
+    the post-crossover hop carries the i32 program spine's width and quantizes
+    ONCE, at the edge, where the DAC's own format decides it. A 16-bit hop
+    quantizes early and then again after outputd's per-driver gain, trim and
+    protection have scaled it — and it silently pre-empts #2257, which exists to
+    widen that edge. No audible-harm figure is claimed here; none has been
+    measured on a composite.
+
+    NOT a policy override of the operator's declaration: the wire stays the
+    box's own ``JASPER_FANIN_RING_WIRE_FORMAT`` (one writer, one source of
+    truth). This refuses the unsafe COMBINATION and names the remedy, rather
+    than silently rewriting the operator's file.
+
+    Non-composite topologies pass untouched — jts3's roleful DAC8x arm and every
+    stereo-ring box keep the wire they have today.
+    """
+    from jasper.active_speaker.runtime_contract import topology_sink_is_composite
+    from jasper.fanin_coupling import (
+        RING_WIRE_FORMAT_ENV_VAR,
+        RING_WIRE_FORMAT_WIDE,
+        read_declared_ring_wire_format,
+    )
+
+    if topology is None or not topology_sink_is_composite(topology):
+        return True, "not a composite sink; the wide-wire rule does not apply"
+    try:
+        declared = read_declared_ring_wire_format()
+    except ValueError as exc:
+        # A wire token neither language recognizes. fan-in parks at exit 78 on
+        # the same value, so refusing here is the same verdict, earlier.
+        return False, (
+            f"this box declares an unusable ring wire ({exc}), so the composite "
+            "wide-wire rule cannot be proved — fix the token, then re-arm"
+        )
+    if declared != RING_WIRE_FORMAT_WIDE:
+        return False, (
+            f"a composite sink may ride the ACTIVE ring only at the WIDE wire, "
+            f"but this box declares {RING_WIRE_FORMAT_ENV_VAR}={declared}. Its "
+            f"aloop lane carries the post-crossover per-driver program at "
+            f"S32_LE, so arming the ring narrow would quantize every driver's "
+            f"signal from 32 to 16 bits — a width REGRESSION disguised as a "
+            f"transport change, which the every-end wire gate cannot see "
+            f"(a narrow arm is perfectly self-consistent). Set "
+            f"{RING_WIRE_FORMAT_ENV_VAR}={RING_WIRE_FORMAT_WIDE} in "
+            f"/var/lib/jasper/fanin.env and re-run "
+            f"jasper-audio-hardware-reconcile so every end re-renders, then "
+            f"re-arm. Keeping the coupling on loopback."
+        )
+    return True, (
+        f"composite sink declares the wide ring wire ({RING_WIRE_FORMAT_WIDE}), "
+        "so the arm does not narrow the per-driver program"
+    )
+
+
 def ring_topology_ready(*, strict_unreadable: bool = False) -> tuple[bool, str]:
     """The shm_ring PREFLIGHT gate for topology eligibility.
 
@@ -2486,8 +2574,12 @@ def ring_topology_ready(*, strict_unreadable: bool = False) -> tuple[bool, str]:
       instead of failing later at outputd's Rust full-range-stereo rejection (a
       confusing daemon-level rollback);
     - **the ACTIVE arm** — a ROLEFUL topology is admitted iff it resolves an
-      active-ring width AND :func:`active_ring_endpoint_proof` holds. Composite
-      and explicit-mono still resolve no active width, so they stay refused.
+      active-ring width AND :func:`active_ring_endpoint_proof` holds. Since P8b
+      item 1b a ROLEFUL COMPOSITE resolves a width (4) and reaches this arm, so
+      it carries one extra condition the single-sink shapes do not:
+      :func:`composite_ring_wire_ready`, the wide-wire rule. Explicit-mono still
+      resolves no active width, and a PASSIVE composite is not roleful at all,
+      so both stay refused.
 
     **Why an arm here and NOT a widening of ``topology_supports_shm_ring``.**
     Making that predicate true for roleful is the forbidden one-liner: it has two
@@ -2538,6 +2630,15 @@ def ring_topology_ready(*, strict_unreadable: bool = False) -> tuple[bool, str]:
     if topology_supports_shm_ring(topology):
         return True, "topology is ring-eligible (stereo/unconfigured single sink)"
     if active_ring_channels_for_topology(topology) is not None:
+        # A composite sink additionally has to clear the WIDE-wire rule (P8b
+        # item 1e). Asked BEFORE the endpoint proof because it is a property of
+        # the box's own declaration rather than of what the reconciler has
+        # staged, so its remedy ("declare the wide wire") is actionable whether
+        # or not the endpoint is up — and reporting the staging defect first
+        # would send an operator to fix the wrong thing twice.
+        wire_ok, wire_detail = composite_ring_wire_ready(topology)
+        if not wire_ok:
+            return False, wire_detail
         proved, detail = active_ring_endpoint_proof()
         if proved:
             return True, f"topology is ACTIVE-ring eligible (roleful); {detail}"
@@ -2546,11 +2647,13 @@ def ring_topology_ready(*, strict_unreadable: bool = False) -> tuple[bool, str]:
             f"staged: {detail}"
         )
     # Neither ring fits. Reaching HERE on a roleful box means it resolved no
-    # ACTIVE-ring width either — a composite (dual-Apple 4-ch, >1 clock domain),
-    # an explicit mono, or a roleful topology whose driven width is
-    # indeterminate; a roleful box that DOES resolve one was answered by the
-    # active arm above, admitted or refused on its endpoint proof. For these
-    # shapes loopback is the right coupling and the household knows the setup.
+    # ACTIVE-ring width either — an explicit mono, or a roleful topology whose
+    # driven width is indeterminate; a roleful box that DOES resolve one was
+    # answered by the active arm above, admitted or refused on its wide-wire
+    # rule and endpoint proof. A composite reaches here only when it is
+    # PASSIVE (not roleful, so no active ring) — a roleful composite resolves 4
+    # since P8b item 1b. For these shapes loopback is the right coupling and
+    # the household knows the setup.
     # A shipped-default plain stereo
     # single-sink box (one Apple dongle / one registered DAC) is NOT refused here:
     # ``topology_supports_shm_ring`` reports it eligible above (its lone
@@ -2565,10 +2668,11 @@ def ring_topology_ready(*, strict_unreadable: bool = False) -> tuple[bool, str]:
     # -> ring-eligible). Name it here so the operator has an actionable next step
     # instead of an opaque refusal.
     return False, (
-        "saved output topology is not ring-eligible (shm_ring is a full-range "
-        "stereo single-sink coupling; roleful/protected/subwoofer topologies "
-        "need a per-driver crossover the ring cannot carry, composite dual-DAC "
-        "is excluded pending P8b (composite ring + bonded ingress), and "
+        "saved output topology is not ring-eligible (the STEREO shm_ring is a "
+        "full-range single-sink coupling; roleful/protected/subwoofer "
+        "topologies need a per-driver crossover it cannot carry — those ride "
+        "the ACTIVE ring instead, which this box did not qualify for either; a "
+        "PASSIVE composite dual-DAC is neither, so it has no ring at all; and "
         "explicit-mono is excluded by policy, not a ring-v2 timing gap). "
         "Keeping the coupling on loopback. If this box is actually a plain stereo "
         "single-sink speaker carrying a stale roleful/subwoofer topology, run "

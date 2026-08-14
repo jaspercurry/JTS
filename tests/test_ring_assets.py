@@ -382,6 +382,11 @@ def test_ring_header_offsets_match_rust_layout():
     assert ring_assets._RING_OFF_PERIOD_FRAMES == 20
     assert "pub const OFF_N_SLOTS: usize = 24;" in layout
     assert ring_assets._RING_OFF_N_SLOTS == 24
+    # The two u64 RUNTIME liveness fields the stall alarm reads (P8b item 1).
+    assert "pub const OFF_WRITER_HEARTBEAT_NS: usize = 64;" in layout
+    assert ring_assets._RING_OFF_WRITER_HEARTBEAT_NS == 64
+    assert "pub const OFF_READER_HEARTBEAT_NS: usize = 80;" in layout
+    assert ring_assets._RING_OFF_READER_HEARTBEAT_NS == 80
 
 
 def test_ring_sample_format_ids_match_rust_layout():

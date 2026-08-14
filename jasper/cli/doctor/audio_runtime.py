@@ -1997,6 +1997,74 @@ def check_ring_ioplug_provenance() -> CheckResult:
     )
 
 
+@doctor_check(order=51.56, group="audio")
+def check_ring_reader_stall() -> CheckResult:
+    """A ring being WRITTEN but not READ, judged from the SHARED HEADER.
+
+    THE INDEPENDENT OBSERVER, and that is the whole point. Its sibling
+    ``check_fanin_ring_stall`` (order 51.55) asks fan-in's STATUS socket — the
+    WRITER reporting on itself, which works for Ring A because fan-in owns that
+    ring's writer in Rust and keeps the counters. The ACTIVE ring has no such
+    witness: its writer is CamillaDSP through the **C ioplug**, whose
+    ``published_slots`` / ``drop_no_reader`` / ``full_waits`` are process-local
+    ``jts_ring_writer_t`` fields printed at close, not shared-header fields, so
+    no reader can see them; and its reader is outputd, which during exactly this
+    fault is blocked in ``writei`` and is not even sampling occupancy. The doctor
+    is blocked in neither end, so it reads the header directly.
+
+    THE CONJUNCTION, and why it is this one: ``writer_heartbeat_ns`` FRESH while
+    ``reader_heartbeat_ns`` is STALE. Not ``read_seq``-flat — the writer advances
+    ``read_seq`` on the absent reader's behalf at demotion, so a ``read_seq``
+    clause goes false exactly when the drops begin. See
+    :class:`jasper.ring_assets.RingStallVerdict` for the full derivation.
+
+    Judges all THREE rings, because the fault is a property of a ring file rather
+    than of a coupling, and reports per-ring so an operator knows which daemon to
+    look at. Absent / idle rings are silent: ``present=False`` covers the unarmed
+    fleet, where none of these files exists at all.
+
+    Returns:
+      - ok when no ring is stalled (including every unarmed box, where there is
+        nothing to judge)
+      - warn naming each stalled ring, its two heartbeat ages, and the reader
+        daemon to check. WARN not FAIL: the ring self-recovers the instant the
+        reader resumes, and the household's remedy is the same either way.
+    """
+    from jasper.ring_assets import (
+        RING_A_PROGRAM_FILE,
+        RING_ACTIVE_CONTENT_FILE,
+        RING_B_CONTENT_FILE,
+        ring_stall_verdict,
+    )
+
+    name = "ring reader stall"
+    rings = (
+        ("Ring A (fan-in -> CamillaDSP)", RING_A_PROGRAM_FILE),
+        ("Ring B (CamillaDSP -> outputd)", RING_B_CONTENT_FILE),
+        ("ACTIVE ring (CamillaDSP -> outputd)", RING_ACTIVE_CONTENT_FILE),
+    )
+    stalled: list[str] = []
+    judged: list[str] = []
+    for label, path in rings:
+        verdict = ring_stall_verdict(path)
+        if not verdict.present:
+            continue
+        judged.append(label)
+        if verdict.stalled:
+            stalled.append(f"{label}: {verdict.detail}")
+    if stalled:
+        return CheckResult(name, "warn", "; ".join(stalled))
+    if not judged:
+        return CheckResult(
+            name,
+            "ok",
+            "no ring is being written (no armed ring on this box, or all idle)",
+        )
+    return CheckResult(
+        name, "ok", f"reader keeping up on {len(judged)} live ring(s): {', '.join(judged)}"
+    )
+
+
 @doctor_check(order=51.9, group="audio")
 def check_ring_geometry_coherence() -> CheckResult:
     """Verify the Ring-A geometry agrees across env, conf.d, and on-disk (defect A).
