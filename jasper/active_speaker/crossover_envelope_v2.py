@@ -787,6 +787,94 @@ def _verify_expert_details(
     return lines
 
 
+def _band_edges(value: Any) -> tuple[float, float] | None:
+    """``(lo_hz, hi_hz)`` from a persisted two-element band pair, or ``None``.
+
+    One spelling for the several band pairs a ``flatness`` block carries
+    (``max_band_hz``, ``reference_band_hz``, and the tilt's own two), so a
+    block written by an older build degrades the same way everywhere: the
+    line that needed the pair is simply not rendered, rather than half-
+    rendered around a ``None``.
+    """
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        return None
+    lo, hi = _finite(value[0]), _finite(value[1])
+    return None if lo is None or hi is None else (lo, hi)
+
+
+# Below this the printed step ("0.00 dB") no longer supports a direction, so
+# the "X sits above Y" clause is dropped rather than asserting an ordering
+# the rendered precision cannot show.
+_TILT_DIRECTION_FLOOR_DB = 0.005
+
+
+def _attribution_lines(
+    flatness: Mapping[str, Any], band_lo: float | None, band_hi: float | None,
+) -> list[str]:
+    """The two lines that stop the worst-band pointer from being read as
+    "here is the peak to EQ" (issue #1857).
+
+    The pointer is a distance from a reference pooled ACROSS bands, so a
+    band that is uniformly off drags the shared zero toward itself and
+    inflates every other band's number. The corpus session that filed the
+    issue read ``+4.84 dB @ 1339.6 Hz`` against a woofer that was flat to
+    +/-0.1 dB, because a ~5 dB dark tweeter had already pulled the frame
+    ~3 dB down; a household acting on that pointer would have EQ'd the wrong
+    driver. Reproduced synthetically on an rfft bin axis with a 5 dB dark
+    tweeter, where the shipped pointer reads ``+3.36 dB @ 703 Hz`` and the
+    250-2000 Hz band FAILS while both genuinely-dark bands PASS.
+
+    Line one splits the pointer's own number: how much of it is *where the
+    whole band sits* versus *what the curve does inside the band*
+    (:attr:`~jasper.active_speaker.flat_spec.SpecFlatness.max_band_level_deviation_db`
+    and ``max_band_ripple_db``, both lifted from the report). Line two is the
+    band-to-band step
+    (:func:`~jasper.active_speaker.flat_spec.spec_band_tilt`), the one
+    reading here that **no reference-frame choice can move** — which is what
+    makes it safe to render while WHICH anchor the spec should use is still
+    an open owner decision (#1857's Q-E, ``docs/attribution-stage-plan.md``
+    section 9).
+
+    **Disclosure only — decides nothing.** Every figure is copied from the
+    same :class:`~jasper.active_speaker.flat_spec.FlatSpecReport` the pointer
+    reads, no band's ``passed`` or the overall verdict moves, and the
+    reference frame is untouched. A block written by an older build carries
+    none of these keys and renders neither line, rather than a line built
+    around a missing half.
+    """
+    lines: list[str] = []
+    level_db = _finite(flatness.get("max_band_level_deviation_db"))
+    ripple_db = _finite(flatness.get("max_band_ripple_db"))
+    if level_db is not None and ripple_db is not None:
+        where = (
+            f"the whole {band_lo:.0f}–{band_hi:.0f} Hz band"
+            if band_lo is not None and band_hi is not None
+            else "the whole band"
+        )
+        lines.append(
+            f"of that, {level_db:+.2f} dB is where {where} sits; its own worst "
+            f"excursion from that level is {ripple_db:+.2f} dB"
+        )
+    tilt = flatness.get("tilt")
+    tilt = tilt if isinstance(tilt, Mapping) else {}
+    step_db = _finite(tilt.get("step_db"))
+    high = _band_edges(tilt.get("high_band_hz"))
+    low = _band_edges(tilt.get("low_band_hz"))
+    if tilt.get("evaluable") is True and step_db is not None:
+        direction = (
+            f": {high[0]:.0f}–{high[1]:.0f} Hz sits above "
+            f"{low[0]:.0f}–{low[1]:.0f} Hz"
+            if high is not None and low is not None
+            and step_db >= _TILT_DIRECTION_FLOOR_DB
+            else ""
+        )
+        lines.append(
+            f"band levels differ by {step_db:.2f} dB, a reading no reference "
+            f"choice moves{direction}"
+        )
+    return lines
+
+
 def _flatness_lines_from_block(flatness: Mapping[str, Any]) -> list[str]:
     """The numeric flatness lines shared by both branches of the expert
     disclosure — max/avg deviation plus the excluded-bin count. Extracted (B1
@@ -806,21 +894,26 @@ def _flatness_lines_from_block(flatness: Mapping[str, Any]) -> list[str]:
     corrections. A block without the key (written by an older build) keeps
     the previous unqualified wording rather than naming a frame this code
     would only be guessing at.
+
+    **And it says how much of the number is the frame** (issue #1857, second
+    half). Naming the reference band told a reader WHICH zero the pointer is
+    stated against; it still left them to guess whether "+3.36 dB at 703 Hz"
+    means there is a 3 dB peak at 703 Hz to EQ down. Usually there is not:
+    on the corpus shape that filed the issue the pointed-at band is flat to
+    a tenth of a dB and simply SITS 3.26 dB above a frame a dark tweeter
+    pulled down. :func:`_attribution_lines` renders that split, plus the
+    band-to-band step that no reference choice can move, immediately under
+    the pointer — so the sentence a household acts on cannot be the pointer
+    alone.
     """
     lines: list[str] = []
     max_db = _finite(flatness.get("max_db"))
     max_hz = _finite(flatness.get("max_hz"))
     tolerance_db = _finite(flatness.get("tolerance_db"))
-    band = flatness.get("max_band_hz")
-    band_lo = _finite(band[0]) if isinstance(band, (list, tuple)) and band else None
-    band_hi = (
-        _finite(band[1]) if isinstance(band, (list, tuple)) and len(band) == 2 else None
-    )
-    ref = flatness.get("reference_band_hz")
-    ref_lo = _finite(ref[0]) if isinstance(ref, (list, tuple)) and ref else None
-    ref_hi = (
-        _finite(ref[1]) if isinstance(ref, (list, tuple)) and len(ref) == 2 else None
-    )
+    band = _band_edges(flatness.get("max_band_hz"))
+    band_lo, band_hi = band if band is not None else (None, None)
+    ref = _band_edges(flatness.get("reference_band_hz"))
+    ref_lo, ref_hi = ref if ref is not None else (None, None)
     if max_db is not None:
         where = f" at {max_hz:.0f} Hz" if max_hz is not None else ""
         against = (
@@ -834,6 +927,7 @@ def _flatness_lines_from_block(flatness: Mapping[str, Any]) -> list[str]:
             else "the spec reference"
         )
         lines.append(f"flatness {max_db:+.2f} dB from {frame}{where}{against}")
+        lines.extend(_attribution_lines(flatness, band_lo, band_hi))
     rms_db = _finite(flatness.get("rms_db"))
     if rms_db is not None:
         lines.append(f"flatness average error {rms_db:.2f} dB across the spec bands")

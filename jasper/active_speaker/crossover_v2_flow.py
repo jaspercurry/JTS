@@ -2112,6 +2112,49 @@ def _per_band_flatness_log_field(bands: Any) -> str:
     return ";".join(parts)
 
 
+def _flatness_tilt_log_field(flatness: Any) -> str:
+    """The band-to-band level step as one logfmt token — issue #1857's
+    frame-free reading, beside a ``flatness_max_db`` that is not.
+
+    ``flatness_max_db`` and ``flatness_bands`` are both distances from a
+    reference pooled ACROSS bands, so a uniformly-off band drags that zero
+    and inflates the others: on the corpus session this event's own
+    forensics started from, a woofer flat to +/-0.1 dB logged
+    ``+4.84 dB @ 1339.6 Hz`` because a ~5 dB dark tweeter had already pulled
+    the frame down. A step BETWEEN two band levels cannot be moved by the
+    frame -- the reference cancels in the subtraction -- so this token says
+    the same thing under whichever anchor #1857's still-open Q-E eventually
+    picks.
+
+    Shape: ``<step>dB:<lo>-<hi>Hz><lo>-<hi>Hz``, the higher-sitting band
+    first, no space or bracket for logfmt to quote. ``""`` (never a
+    fabricated reading) when the gauge carried no tilt -- an older
+    persisted block, or fewer than two bands with a measured level. Copied
+    from :func:`~jasper.active_speaker.flat_spec.spec_band_tilt`'s own
+    output; nothing here is recomputed and no verdict moves.
+    """
+    if not isinstance(flatness, Mapping):
+        return ""
+    tilt = flatness.get("tilt")
+    if not isinstance(tilt, Mapping) or tilt.get("evaluable") is not True:
+        return ""
+    step_db = tilt.get("step_db")
+    high, low = tilt.get("high_band_hz"), tilt.get("low_band_hz")
+    if (
+        not isinstance(step_db, (int, float)) or isinstance(step_db, bool)
+        or not isinstance(high, (list, tuple)) or len(high) != 2
+        or not isinstance(low, (list, tuple)) or len(low) != 2
+    ):
+        return ""
+    edges = [_band_edge(high, 0), _band_edge(high, 1), _band_edge(low, 0), _band_edge(low, 1)]
+    if any(edge is None for edge in edges):
+        return ""
+    high_lo, high_hi, low_lo, low_hi = edges
+    return (
+        f"{step_db:.2f}dB:{high_lo:.0f}-{high_hi:.0f}Hz>{low_lo:.0f}-{low_hi:.0f}Hz"
+    )
+
+
 def _capture_wav_sha256(result: Any) -> str | None:
     """SHA-256 of a capture's WAV bytes, or ``None`` when there are none.
 
@@ -8321,6 +8364,12 @@ class CrossoverV2Session:
             # deviation, and this is the log line the #1857 corpus session's
             # own forensics started from.
             flatness_bands=_per_band_flatness_log_field(spec.get("bands")),
+            # The one figure above that the frame CANNOT move (issue #1857):
+            # the step between two band levels, in which the shared
+            # reference cancels. Every other flatness field on this line is
+            # a distance from that reference, and a uniformly-off band drags
+            # it. See ``_flatness_tilt_log_field``.
+            flatness_tilt=_flatness_tilt_log_field(flatness),
             flatness_rms_db=flatness.get("rms_db"),
             spec_n_excluded=flatness.get("n_excluded"),
             validity_floor_hz=result.get("validity_floor_hz"),

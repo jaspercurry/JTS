@@ -1171,7 +1171,13 @@ ship; the later owner inherits the record and may extend it.
   passband-weighted, or the current full-range mean with the verdict copy
   naming both the frame and the direction? #1857 states this as an open
   design decision and warns against patching blind. WO-5 implements the
-  ruling; it does not make it.
+  ruling; it does not make it. **Still open** — but the half of #1857 that
+  does not depend on the ruling has landed: `flat_spec.spec_band_tilt` and
+  the per-band level/ripple split state the band-to-band relationship the
+  frame cannot move, and every graded number is pinned unchanged against
+  pre-change values
+  ([`tests/test_flat_spec_attribution.py`](../tests/test_flat_spec_attribution.py)).
+  The ruling still owns the anchor; nothing above pre-empts it.
 - **Q-F: household-copy specificity.** Today household copy stays
   phenomenon-level with no hardware nouns (§3.1), because a single session
   cannot license a device-taxonomy claim. Once P4-class rotation evidence

@@ -447,6 +447,12 @@ def test_to_dict_round_trip_stability_keys_and_types():
             "n_excluded",
             "evaluable",
             "passed",
+            # The #1857 attribution split -- disclosure beside the graded
+            # numbers, never an input to them. See
+            # tests/test_flat_spec_attribution.py.
+            "level_deviation_db",
+            "max_ripple_db",
+            "max_ripple_hz",
         }
         for key in (
             "f_lo_hz",
@@ -455,6 +461,9 @@ def test_to_dict_round_trip_stability_keys_and_types():
             "max_deviation_db",
             "max_deviation_hz",
             "rms_deviation_db",
+            "level_deviation_db",
+            "max_ripple_db",
+            "max_ripple_hz",
         ):
             assert type(band_dict[key]) is float, key
         for key in ("n_bins", "n_excluded"):
