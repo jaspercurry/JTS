@@ -20,12 +20,20 @@ import {
 import {
   vitalsCards, softwareList, haBody, networkList, servicesTable, waitingNote,
 } from "./sections.js";
+import { outputAlert, outputAlertBody } from "./audio-sections.js";
 import { buildDebugCard } from "./debug-card.js";
 import { buildUsbForensicsCard } from "./usb-forensics-card.js";
 import { buildEnhancedAecCard } from "./optional-features-card.js";
 
 export function buildSystemPanel(handlers) {
   const live = livePill();
+
+  // Audio alert: hidden while the signal path is healthy, so it costs the
+  // household nothing until the speaker genuinely cannot play. It sits first
+  // because a silent speaker outranks every metric below it — before this card
+  // a parked box looked exactly like an idle one on this page.
+  const audioAlert = titledCard("Audio");
+  audioAlert.section.hidden = true;
 
   // Data sections: title built once, body re-rendered (when changed) per poll.
   const vitals = h("section.stat-grid");
@@ -99,13 +107,14 @@ export function buildSystemPanel(handlers) {
   const forensics = buildUsbForensicsCard();
 
   const panel = h("main.app-main", { "attr:data-status-view": "system" },
-    live.el, vitals, software.section, ha.section,
+    live.el, audioAlert.section, vitals, software.section, ha.section,
     network.section, actions.section,
     diag.section, forensics.card, debugCard, services,
   );
 
   const refs = {
     staleness: live.label,
+    audioAlertSection: audioAlert.section, audioAlert: audioAlert.body,
     vitals, software: softwareDetails, ha: ha.body,
     network: network.body, svc: svcBody,
     actionsStatus, capabilityNote,
@@ -157,6 +166,16 @@ export function update(refs, snap) {
     refs.staleness.textContent = lastSampled
       ? "Live · sampler " + (stale < 12 ? "OK" : "stale " + Math.round(stale) + "s")
       : "Sampler not running.";
+  }
+
+  // Audio path: independent of the metrics sampler (it comes from the
+  // audio-health sampler), so it renders even while metrics are warming up —
+  // a box that cannot play must not wait on a sparkline to say so.
+  const alert = outputAlert(snap.audio_health);
+  refs.audioAlertSection.hidden = !alert;
+  if (alert) {
+    renderSection(refs, "audioAlert", refs.audioAlert, alert,
+      () => outputAlertBody(alert));
   }
 
   // Metrics-dependent cards: real content once sampling starts, else a

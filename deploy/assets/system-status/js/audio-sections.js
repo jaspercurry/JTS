@@ -32,6 +32,22 @@ const CLOCK_MODE_LABEL = {
   disabled: "Standard buffering",
 };
 
+// The one overall status that means "the signal path cannot carry audio right
+// now" — a parked graph, a stopped DSP, a dead final-output stage. `warn` and
+// `unknown` deliberately do NOT qualify: the speaker is still playing (or the
+// monitor merely can't tell), and a front-page alarm for either would train the
+// household to ignore the one that matters. Kept as a named constant because
+// two surfaces key off it and they must not drift; the sentences themselves
+// have exactly one writer (jasper/control/audio_health.py) and are never
+// composed here.
+const OUTPUT_ALERT_STATUS = "issue";
+
+// The "no stream to describe" states that must NOT render as confident idle.
+// `unknown` is "we could not read activity"; OUTPUT_ALERT_STATUS is "nothing
+// can reach the drivers". Saying "No active stream" for either is the silence
+// this card exists to end.
+const EMPTY_STREAM_OVERALL = [OUTPUT_ALERT_STATUS, "unknown"];
+
 function tone(status) {
   return STATUS_TONE[status] || "idle";
 }
@@ -162,7 +178,7 @@ export function currentStreamBody(health) {
   const stream = currentStream(health);
   if (!stream) {
     const overall = health && health.overall;
-    if (overall && overall.status === "unknown") {
+    if (overall && EMPTY_STREAM_OVERALL.includes(overall.status)) {
       return h("div.stream-empty", null,
         h("p.stream-empty__title", null,
           text(overall.headline) || "Playback activity unavailable"),
@@ -201,6 +217,31 @@ export function currentStreamBody(health) {
       ? h("div.stream-facts", null, groups)
       : h("p.audio-empty", null, "Stream diagnostics are still warming up."),
     session,
+  );
+}
+
+// The System view's audio alert: the household's only front-page signal that
+// the speaker cannot play at all. Returns the alert (also the render memo key)
+// or null while the path is fine, so the caller can hide the whole card rather
+// than showing a permanently-green one nobody reads.
+export function outputAlert(health) {
+  const overall = health && typeof health === "object" ? health.overall : null;
+  if (!overall || overall.status !== OUTPUT_ALERT_STATUS) return null;
+  const headline = text(overall.headline);
+  // No headline means the backend has diagnosed nothing to say; an empty red
+  // card would be worse than none.
+  if (!headline) return null;
+  return { headline, detail: text(overall.detail) };
+}
+
+export function outputAlertBody(alert) {
+  return h("article.current-incident", {
+    style: { "--tone": "var(--status-danger)" },
+  },
+    h("div.current-incident__head", null,
+      h("p.current-incident__title", null, alert.headline),
+      badge("Needs attention", "danger")),
+    alert.detail ? h("p.current-incident__detail", null, alert.detail) : null,
   );
 }
 

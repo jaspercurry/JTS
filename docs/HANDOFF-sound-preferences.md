@@ -493,9 +493,14 @@ best-effort, never failing the save) so the runtime converges toward the newly
 declared intent instead of drifting until the next boot. That convergence is
 real: on a live box running a commissioned active graph, an edit that
 invalidates that graph flips the reconciler's gate from active to passive and
-bounces outputd, so output parks — loudly, behind the parked banner — until the
-layout is re-commissioned or reverted. A brief parked flash during the post-save
-reconcile window is possible and self-clears.
+bounces outputd, so output parks until the layout is re-commissioned or
+reverted. The household sees that on the Status dashboard, not here: the parked
+sentence has one writer (`_parked_signal` in
+[`jasper/control/audio_health.py`](../jasper/control/audio_health.py)) and the
+dashboard renders it as the Audio card at the top of `/system/` and in the
+current-stream card on `/system/audio/`. `/sound/setup/` itself carries no
+parked banner. A brief parked flash during the post-save reconcile window is
+possible and self-clears.
 The same payload carries a clock-domain report that records
 the current single final-output device assumption; aggregating multiple USB DACs
 is explicitly not enabled for product active-crossover playback yet. The

@@ -711,6 +711,41 @@ def test_audio_view_is_normalized_fail_soft_and_progressively_disclosed() -> Non
     assert '.current-incident__meta > [aria-hidden="true"]' in css
 
 
+def test_system_view_surfaces_a_speaker_that_cannot_play() -> None:
+    """A parked speaker must be visible on the page a household opens first.
+
+    #2381: ``/state.audio_health`` carried the sentence ("Speaker is parked —
+    audio cannot reach the drivers") but the System view rendered no audio
+    surface at all, so a structurally-silent box looked exactly like an idle
+    healthy one. The alert card is built hidden, keys off the backend's
+    ``overall.status`` rather than any wording of its own, and sits above the
+    vitals grid because a silent speaker outranks every metric below it.
+    """
+    views = (_MODULE_DIR / "views.js").read_text()
+    audio_sections = (_MODULE_DIR / "audio-sections.js").read_text()
+
+    assert 'import { outputAlert, outputAlertBody } from "./audio-sections.js";' in views
+    assert 'const audioAlert = titledCard("Audio");' in views
+    assert "audioAlert.section.hidden = true;" in views
+    # First card in the panel: after the live pill, ahead of the vitals grid.
+    assert "live.el, audioAlert.section, vitals," in views
+    assert "outputAlert(snap.audio_health)" in views
+    assert "refs.audioAlertSection.hidden = !alert;" in views
+    # The alert comes from the audio-health sampler, not the metrics sampler,
+    # so it must not sit behind the metrics warm-up gate — a box that cannot
+    # play should not wait on a sparkline to say so.
+    assert views.index("outputAlert(snap.audio_health)") < views.index(
+        "if (hasMetrics) {"
+    ), "the audio alert must render before/outside the metrics warm-up gate"
+
+    # One writer for the parked sentence (jasper/control/audio_health.py's
+    # _parked_signal). The browser decides whether to show it, never what it
+    # says — a copy here is a drift site, not a convenience.
+    js = _system_js()
+    assert "cannot reach the drivers" not in js
+    assert 'const OUTPUT_ALERT_STATUS = "issue";' in audio_sections
+
+
 def test_system_mobile_actions_and_tables_are_intentional() -> None:
     js = _system_js()
     css = _SYSTEM_CSS.read_text()

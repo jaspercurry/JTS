@@ -303,11 +303,13 @@ def test_state_resilience_parked_detail_offers_commissioning_on_the_innomaker(
 ) -> None:
     """The other side of the same advice: now that the InnoMaker declares the
     width-2 active lane, "finish crossover preview" is a road WITH an end, so
-    the parked banner must offer it instead of steering the household back to
+    the parked detail must offer it instead of steering the household back to
     passive.
 
-    This is the household-visible half of the flip. The box the #2135 issue was
-    filed from used to be told its DAC "cannot drive an active speaker layout".
+    This is the advice half of the flip. The box the #2135 issue was filed from
+    used to be told its DAC "cannot drive an active speaker layout". (No browser
+    surface reads THIS field; the household meets the parked state through
+    ``audio_health``'s sentence on the Status dashboard — #2381.)
     """
     from jasper.active_speaker.runtime_contract import build_parked_muted_graph
     from tests.test_active_speaker_runtime_contract import _innomaker_active_2way

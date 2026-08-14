@@ -39,6 +39,7 @@ const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const run = new AsyncFunction("h", "badge", "defList", "fmtEpochAgo", `${source}\nreturn {
   currentStreamBody, currentIncidentBody, recentIncidents, issuesBody,
   otherSources, sourcesBody, refreshRelativeTimes,
+  outputAlert, outputAlertBody,
 };`);
 const api = await run(h, badge, defList, fmtEpochAgo);
 
@@ -107,6 +108,58 @@ assert.match(unknownStreamText, /Playback activity unavailable/);
 assert.match(unknownStreamText, /canonical source state/);
 assert.doesNotMatch(unknownStreamText, /No active stream/,
   "missing activity truth never renders as confident idle");
+
+// #2381: a parked speaker emits nothing while every daemon looks healthy. With
+// no source selected there is no stream to describe, and "No active stream"
+// read as idle-and-fine — the household's only two audio surfaces both said
+// nothing was wrong. Both now carry the backend's own parked sentence.
+const PARKED = {
+  status: "issue",
+  headline: "Speaker is parked — audio cannot reach the drivers",
+  detail:
+    "post-DSP route disconnected: Camilla playback=" +
+    "'outputd_active_content_playback' requires outputd capture=" +
+    "'outputd_active_content_capture', got 'outputd_content_capture'. " +
+    "InnoMaker HiFi AMP Pro cannot drive an active speaker layout; choose a " +
+    "passive speaker layout at /sound/setup/",
+  active_source: null,
+};
+const parkedStreamText = strings(api.currentStreamBody({ overall: PARKED })).join(" | ");
+assert.match(parkedStreamText, /Speaker is parked/);
+assert.match(parkedStreamText, /\/sound\/setup\//);
+assert.doesNotMatch(parkedStreamText, /No active stream/,
+  "a speaker that cannot reach its drivers never renders as confident idle");
+
+const parkedAlert = api.outputAlert({ overall: PARKED });
+assert.ok(parkedAlert, "a broken signal path raises the System-view audio alert");
+assert.equal(parkedAlert.headline, PARKED.headline,
+  "the alert carries the backend's sentence verbatim — it composes none of its own");
+const parkedAlertNode = api.outputAlertBody(parkedAlert);
+const parkedAlertText = strings(parkedAlertNode).join(" | ");
+assert.match(parkedAlertText, /Speaker is parked/);
+assert.match(parkedAlertText, /InnoMaker HiFi AMP Pro/);
+assert.match(parkedAlertText, /Needs attention/);
+assert.equal(parkedAlertNode.props.style["--tone"], "var(--status-danger)",
+  "the alert is toned danger, not the warn default of the shared incident block");
+
+// The alert is hidden for every state that is not "the path cannot carry
+// audio". A warn/unknown/idle front-page alarm would train the household to
+// ignore the one that matters, and an ok box must show no card at all.
+for (const status of ["ok", "warn", "idle", "unknown", "recovered", ""]) {
+  assert.equal(api.outputAlert({ overall: { ...PARKED, status } }), null,
+    `overall.status=${status || "(empty)"} must not raise the audio alert`);
+}
+assert.equal(api.outputAlert({}), null, "a snapshot without overall raises nothing");
+assert.equal(api.outputAlert(null), null, "a missing audio_health raises nothing");
+assert.equal(api.outputAlert({ overall: { status: "issue", headline: "  " } }), null,
+  "an issue the backend has no words for renders no empty red card");
+assert.equal(
+  api.outputAlert({
+    ...health,
+    overall: { status: "warn", headline: "Audio is playing", detail: "USB latency increased." },
+  }),
+  null,
+  "a playing speaker with a warn-level incident keeps the front page quiet");
 
 const issueText = strings(api.currentIncidentBody(health)).join(" | ");
 assert.match(issueText, /USB latency increased/);
