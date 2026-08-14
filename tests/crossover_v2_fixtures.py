@@ -52,6 +52,7 @@ from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.audio_measurement import gating
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import RoleBand
+from jasper.audio_measurement.frame_ledger import reconcile_capture_frames
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_OK,
     AlignmentEstimate,
@@ -313,6 +314,11 @@ def _verify_analysis(
         # ``integrity=None`` for the pre-#1971 analysis shape.
         integrity = _verify_capture_integrity(
             program, program.sample_rate_hz, locations,
+            # This fixture builds an analysis from locations alone — there is no
+            # capture and therefore no capture-page report to reconcile, so the
+            # frame-accounting checks (#2094) are not-evaluated here, exactly as
+            # they are for any capture whose page declared no counts.
+            reconcile_capture_frames(None, received_frames=0),
         )
     return ProgramAnalysis(
         phase="verify",
