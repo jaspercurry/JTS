@@ -412,9 +412,23 @@ def _renderer_unit_user(unit: str) -> str | None:
 def _cmd_validate_outputd_env(args: argparse.Namespace) -> int:
     base = read_env_file_state(args.base_env)
     outputd = read_env_file_state(args.outputd_env)
+    # Labels and the override store, not just values: this refusal is what the
+    # audio-hardware reconciler logs as `outputd_env_invalid detail=...`, and
+    # the operator reading it has to know WHICH layer holds the losing line.
+    # The store matters because the latency-floor pass COPIES its values into
+    # outputd.env, so a line that looks operator-written may be one that comes
+    # straight back after every reconcile.
+    overrides = load_runtime_overrides(
+        args.overrides,
+        allowed_keys=AUDIO_RUNTIME_OVERRIDE_KEYS,
+    )
     detail = outputd_env_buffer_pair_error(
         base_env=base.values,
         outputd_env=outputd.values,
+        base_label=base.path,
+        outputd_label=outputd.path,
+        override_entries={entry.key: entry for entry in overrides.entries},
+        override_label=args.overrides,
     )
     if detail is not None:
         print(detail)
@@ -634,6 +648,10 @@ def build_parser() -> argparse.ArgumentParser:
     validate_outputd.add_argument("--base-env", default=DEFAULT_BASE_ENV_PATH)
     validate_outputd.add_argument("--outputd-env", default=DEFAULT_OUTPUTD_ENV_PATH)
     validate_outputd.add_argument("--fanin-env", default=DEFAULT_FANIN_ENV_PATH)
+    # Same default as outputd-floor-actions: the store is read whether or not a
+    # caller names it, because the floor pass writes store values into
+    # outputd.env and this refusal has to be able to say so.
+    validate_outputd.add_argument("--overrides", default=runtime_overrides_path())
     validate_outputd.add_argument(
         "--camilla-statefile", default=DEFAULT_CAMILLA_STATEFILE_PATH
     )

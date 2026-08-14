@@ -17,6 +17,10 @@ from jasper.audio_hardware.dac import (
     INNOMAKER_HIFI_AMP_PRO_ID,
     latency_floor_for,
 )
+from jasper.audio_runtime_overrides import (
+    DEFAULT_AUDIO_RUNTIME_OVERRIDES_PATH,
+    RuntimeOverrideEntry,
+)
 from jasper.audio_runtime_plan import (
     AUDIO_RUNTIME_OVERRIDE_KEYS,
     AUDIO_ROUTE_PROFILE_KEY,
@@ -493,6 +497,277 @@ def test_python_outputd_buffer_contract_matches_rust_validator():
         "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=1024 must be >= "
         "2 x JASPER_OUTPUTD_PERIOD_FRAMES=1024 (minimum ALSA jitter margin)"
     )
+
+
+def test_packaged_outputd_buffer_defaults_are_mutually_coherent():
+    """The packaged defaults must satisfy outputd's own buffer/period rule.
+
+    Two things rest on this. `_pair_provenance` carries no "both halves are
+    packaged defaults" branch because that pair cannot fail; and a floor-less
+    box (`dual_apple_usb_c_dac_4ch` declares no `LatencyFloor`) runs exactly
+    these numbers, so an incoherent pair here would refuse every candidate that
+    box can compute. Issue #2489 was misdiagnosed as this defect — it is worth
+    a test rather than a re-derivation.
+    """
+
+    assert outputd_content_buffer_pair_error(
+        period_frames=DEFAULT_OUTPUTD_PERIOD_FRAMES,
+        content_buffer_frames=DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES,
+    ) is None
+    assert outputd_dac_buffer_pair_error(
+        period_frames=DEFAULT_OUTPUTD_PERIOD_FRAMES,
+        dac_buffer_frames=DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES,
+    ) is None
+    assert latency_floor_for("dual_apple_usb_c_dac_4ch") is None
+    assert outputd_env_buffer_pair_error(base_env={}, outputd_env={}) is None
+
+
+def _override(value: str, *, reason: str = "r", created_at: str = "") -> RuntimeOverrideEntry:
+    return RuntimeOverrideEntry(
+        key=OUTPUTD_CONTENT_BUFFER_KEY,
+        value=value,
+        reason=reason,
+        created_at=created_at,
+    )
+
+
+_BASE_LABEL = "/etc/jasper/jasper.env"
+_OUTPUTD_LABEL = "/var/lib/jasper/outputd.env"
+
+
+def test_buffer_pair_refusal_names_the_layer_that_holds_the_losing_value():
+    """The Rust mirror names the keys; an operator needs the FILE.
+
+    The reconciler unsets a key from outputd.env whenever jasper.env owns it,
+    so a refusal that names only the key sends the reader to the file where the
+    key is absent.
+    """
+
+    operator = outputd_env_buffer_pair_error(
+        base_env={OUTPUTD_CONTENT_BUFFER_KEY: "1536"},
+        outputd_env={},
+        base_label=_BASE_LABEL,
+        outputd_label=_OUTPUTD_LABEL,
+    )
+    assert operator is not None
+    assert f"{OUTPUTD_CONTENT_BUFFER_KEY}=1536 comes from {_BASE_LABEL}" in operator
+    assert f"{OUTPUTD_PERIOD_KEY}=1024 comes from packaged systemd/outputd default" in operator
+
+    generated = outputd_env_buffer_pair_error(
+        base_env={},
+        outputd_env={OUTPUTD_CONTENT_BUFFER_KEY: "1536"},
+        base_label=_BASE_LABEL,
+        outputd_label=_OUTPUTD_LABEL,
+    )
+    assert generated is not None
+    assert f"{OUTPUTD_CONTENT_BUFFER_KEY}=1536 comes from {_OUTPUTD_LABEL}" in generated
+
+    # The DAC-buffer half of the pair gets the same treatment.
+    dac = outputd_env_buffer_pair_error(
+        base_env={OUTPUTD_DAC_BUFFER_KEY: "1024"},
+        outputd_env={},
+        base_label=_BASE_LABEL,
+        outputd_label=_OUTPUTD_LABEL,
+    )
+    assert dac is not None
+    assert f"{OUTPUTD_DAC_BUFFER_KEY}=1024 comes from {_BASE_LABEL}" in dac
+
+
+def test_buffer_pair_refusal_is_the_bare_rust_mirror_without_labels():
+    """Unlabelled callers keep the byte-identical daemon message."""
+
+    assert outputd_env_buffer_pair_error(
+        base_env={},
+        outputd_env={OUTPUTD_CONTENT_BUFFER_KEY: "1536"},
+    ) == (
+        "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES=1536 must be >= "
+        "2 x JASPER_OUTPUTD_PERIOD_FRAMES=1024 (minimum ALSA jitter margin)"
+    )
+    # One label is not enough: a half-labelled provenance would name one layer
+    # and guess the other.
+    assert ";" not in (
+        outputd_env_buffer_pair_error(
+            base_env={},
+            outputd_env={OUTPUTD_CONTENT_BUFFER_KEY: "1536"},
+            outputd_label=_OUTPUTD_LABEL,
+        )
+        or ""
+    )
+
+
+def test_buffer_pair_refusal_quotes_the_override_store_that_wrote_the_line():
+    """jts.local's live #2489 shape: the store, not a hand-edited file.
+
+    The latency-floor pass COPIES a store value into outputd.env, so naming
+    only the file sends an operator to delete a line the next reconcile writes
+    straight back. The store's own created_at/reason are the self-explanation
+    that resolves the case on sight.
+    """
+
+    detail = outputd_env_buffer_pair_error(
+        base_env={},
+        outputd_env={OUTPUTD_CONTENT_BUFFER_KEY: "1536"},
+        base_label=_BASE_LABEL,
+        outputd_label=_OUTPUTD_LABEL,
+        override_entries={
+            OUTPUTD_CONTENT_BUFFER_KEY: _override(
+                "1536",
+                reason="latency-tuning-outputd-content-buffer-1536-verified-floor",
+                created_at="2026-07-02T00:00:00Z",
+            )
+        },
+    )
+    assert detail is not None
+    assert "written there from the override store" in detail
+    assert DEFAULT_AUDIO_RUNTIME_OVERRIDES_PATH in detail
+    assert "created_at=2026-07-02T00:00:00Z" in detail
+    # The store path named must be the one the caller READ, not the production
+    # constant — naming a file that was never consulted is the wrong-origin
+    # failure this provenance exists to prevent.
+    relocated = outputd_env_buffer_pair_error(
+        base_env={},
+        outputd_env={OUTPUTD_CONTENT_BUFFER_KEY: "1536"},
+        base_label=_BASE_LABEL,
+        outputd_label=_OUTPUTD_LABEL,
+        override_entries={OUTPUTD_CONTENT_BUFFER_KEY: _override("1536")},
+        override_label="/run/test/overrides.json",
+    )
+    assert relocated is not None
+    assert "/run/test/overrides.json" in relocated
+    assert DEFAULT_AUDIO_RUNTIME_OVERRIDES_PATH not in relocated
+    assert (
+        "reason=latency-tuning-outputd-content-buffer-1536-verified-floor" in detail
+    )
+    assert "overrides-clear" in detail
+
+
+@pytest.mark.parametrize(
+    "why, base_env, outputd_env, entry",
+    [
+        pytest.param(
+            "the store disagrees with the value on disk",
+            {},
+            {OUTPUTD_CONTENT_BUFFER_KEY: "1536"},
+            _override("2048"),
+            id="store-value-mismatch",
+        ),
+        pytest.param(
+            "jasper.env owns the line, not the store",
+            {OUTPUTD_CONTENT_BUFFER_KEY: "1536"},
+            {},
+            _override("1536"),
+            id="operator-layer-owns-it",
+        ),
+    ],
+)
+def test_buffer_pair_refusal_does_not_misattribute_to_the_override_store(
+    why: str, base_env: dict[str, str], outputd_env: dict[str, str],
+    entry: RuntimeOverrideEntry,
+):
+    """A wrong origin is worse than a missing one — it sends the fix elsewhere."""
+
+    detail = outputd_env_buffer_pair_error(
+        base_env=base_env,
+        outputd_env=outputd_env,
+        base_label=_BASE_LABEL,
+        outputd_label=_OUTPUTD_LABEL,
+        override_entries={OUTPUTD_CONTENT_BUFFER_KEY: entry},
+    )
+    assert detail is not None, why
+    assert "override store" not in detail, why
+    assert "overrides-clear" not in detail, why
+
+
+def test_validate_outputd_env_cli_reads_the_override_store(tmp_path, capsys):
+    """The CLI is the caller the reconciler runs — pin the wiring, not just the API.
+
+    Every provenance assertion above goes through `outputd_env_buffer_pair_error`
+    directly. That leaves the one thing an operator actually sees unpinned: a CLI
+    that stopped passing the store would keep every library test green while the
+    journal line lost the only field that explains the value.
+    """
+
+    base_env = tmp_path / "jasper.env"
+    base_env.write_text("", encoding="utf-8")
+    outputd_env = tmp_path / "outputd.env"
+    outputd_env.write_text(
+        f"{OUTPUTD_CONTENT_BUFFER_KEY}=1536\n", encoding="utf-8"
+    )
+    fanin_env = tmp_path / "fanin.env"
+    fanin_env.write_text("", encoding="utf-8")
+    store = tmp_path / "audio_runtime_overrides.json"
+    store.write_text(
+        json.dumps({
+            "kind": "jts_audio_runtime_overrides",
+            "schema_version": 1,
+            "overrides": {
+                OUTPUTD_CONTENT_BUFFER_KEY: {
+                    "value": "1536",
+                    "created_at": "2026-07-02T00:00:00Z",
+                    "reason": "latency-tuning-outputd-content-buffer-1536-verified-floor",
+                }
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    from jasper.cli.audio_config import main as audio_config_main
+
+    result = audio_config_main([
+        "validate-outputd-env",
+        "--base-env", str(base_env),
+        "--outputd-env", str(outputd_env),
+        "--fanin-env", str(fanin_env),
+        "--overrides", str(store),
+    ])
+
+    assert result == 1
+    printed = capsys.readouterr().out
+    assert "minimum ALSA jitter margin" in printed
+    assert str(store) in printed
+    assert "created_at=2026-07-02T00:00:00Z" in printed
+    assert (
+        "reason=latency-tuning-outputd-content-buffer-1536-verified-floor" in printed
+    )
+
+
+def test_coherence_repair_sees_the_override_and_declines_by_scope():
+    """Ordering fact, pinned: the repair runs AFTER the store wins.
+
+    `_coherent_outputd_content_buffer_setting` wraps the already-resolved
+    setting, so it SEES a lab override — the store is not a structural bypass.
+    It declines because its scope is JTS's own route policy: an operator value
+    wins by design, and the candidate refusal is the correct catch. A refactor
+    that made the repair rewrite a lab override would silently discard operator
+    intent, so the decline is pinned rather than assumed.
+    """
+
+    plan = build_audio_runtime_plan(
+        profile_id="",
+        base_env={},
+        outputd_env={},
+        overrides={OUTPUTD_CONTENT_BUFFER_KEY: "1536"},
+        route_mode="solo",
+    )
+    setting = plan.setting(OUTPUTD_CONTENT_BUFFER_KEY)
+    assert setting.value == 1536
+    assert setting.source_kind == "lab_override"
+    assert plan.setting(OUTPUTD_PERIOD_KEY).value == DEFAULT_OUTPUTD_PERIOD_FRAMES
+    # The repair saw it: it attached the incoherence warning rather than
+    # rewriting the value.
+    assert any("minimum ALSA jitter margin" in w for w in setting.warnings)
+
+    # ...and the floor pass then COPIES that value into outputd.env, which is
+    # how a store value reaches the file the refusal reports.
+    actions = outputd_latency_floor_actions(
+        profile_id="",
+        base_env={},
+        outputd_env={},
+        overrides={OUTPUTD_CONTENT_BUFFER_KEY: "1536"},
+    )
+    assert ("set", OUTPUTD_CONTENT_BUFFER_KEY, "1536") in [
+        (a.action, a.key, a.value) for a in actions
+    ]
 
 
 def test_outputd_latency_floor_actions_unset_when_operator_env_owns_key():

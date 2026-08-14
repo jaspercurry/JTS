@@ -27,6 +27,7 @@ from jasper.audio_hardware.dac import by_id as dac_profile_by_id
 from jasper.audio_hardware.dac import latency_floor_for
 from jasper.audio_runtime_overrides import (
     DEFAULT_AUDIO_RUNTIME_OVERRIDES_PATH,
+    RuntimeOverrideEntry,
     load_runtime_overrides,
     runtime_overrides_path,
 )
@@ -127,6 +128,11 @@ OUTPUTD_MIN_BUFFER_PERIOD_MULTIPLIER = 2
 DEFAULT_OUTPUTD_PERIOD_FRAMES = 1024
 DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES = 4096
 DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES = 3072
+# How the three defaults above are NAMED to an operator: they come from
+# jasper-outputd.service's Environment= lines and outputd's own compile-time
+# defaults, so there is no file to edit for them. One spelling, because it is
+# read back by both the plan's provenance vocabulary and the refusal path's.
+PACKAGED_OUTPUTD_DEFAULT_SOURCE = "packaged systemd/outputd default"
 OUTPUTD_CONTENT_BRIDGE_KEY = "JASPER_OUTPUTD_CONTENT_BRIDGE"
 OUTPUTD_CONTENT_BRIDGE_DIRECT = "direct"
 # The width outputd REQUESTS on its snd-aloop content lane. Reconciler-owned
@@ -616,10 +622,108 @@ def outputd_dac_buffer_pair_error(
     )
 
 
+OUTPUTD_ENV_LAYER = 1
+
+
+def _pair_provenance(
+    *,
+    buffer_key: str,
+    buffer_frames: int,
+    buffer_layer: int | None,
+    period_frames: int,
+    period_layer: int | None,
+    labels: tuple[str, str],
+    override_entries: Mapping[str, RuntimeOverrideEntry],
+    override_label: str,
+) -> str:
+    """Name where each half of a failing buffer/period pair actually came from.
+
+    The Rust-shaped detail names the two KEYS, which is enough for the daemon
+    (it reads one merged environment) and not enough for an operator, who has to
+    edit one of several layers. Naming the layer is what turns the refusal into
+    an action, and it matters most in the two cases that read as a
+    contradiction:
+
+    - the reconciler UNSETS a key from ``outputd.env`` whenever ``jasper.env``
+      owns it, so an operator told only "this key is wrong" looks in the
+      reconciler-owned file, finds the key absent, and is stuck;
+    - a value the LAB OVERRIDE STORE owns is WRITTEN INTO ``outputd.env`` by the
+      latency-floor pass (``outputd_latency_floor_actions`` emits ``set`` when
+      the store holds the key), so deleting that line is futile — the next
+      reconcile writes it straight back. Naming only the file would send an
+      operator into exactly that loop.
+
+    Neither is hypothetical: the second is jts.local's live #2489 state, whose
+    store entry carries its own ``created_at`` and ``reason``. Those are quoted
+    here because they are the self-explanation that resolves the case on sight.
+    """
+
+    def store_entry(key: str, frames: int, layer: int | None) -> RuntimeOverrideEntry | None:
+        """The store entry that EXPLAINS this value, or None.
+
+        Attribution requires the value to match: a store entry that disagrees
+        with what is on disk describes a DIFFERENT value, and claiming it as the
+        origin would be a wrong attribution rather than a missing one.
+        """
+        if layer != OUTPUTD_ENV_LAYER:
+            return None
+        entry = override_entries.get(key)
+        if entry is None or entry.value.strip() != str(frames):
+            return None
+        return entry
+
+    def where(key: str, frames: int, layer: int | None) -> str:
+        if layer is None:
+            return PACKAGED_OUTPUTD_DEFAULT_SOURCE
+        entry = store_entry(key, frames, layer)
+        if entry is None:
+            return labels[layer]
+        fields = ", ".join(
+            f"{name}={value}"
+            for name, value in (("created_at", entry.created_at), ("reason", entry.reason))
+            if value
+        )
+        # The store path the caller ACTUALLY read, never the production
+        # constant: naming a file that was not consulted is the wrong-origin
+        # failure this provenance exists to prevent.
+        origin = (
+            f"{labels[layer]}, written there from the override store {override_label}"
+        )
+        return f"{origin} ({fields})" if fields else origin
+
+    halves = (
+        (buffer_key, buffer_frames, buffer_layer),
+        (OUTPUTD_PERIOD_KEY, period_frames, period_layer),
+    )
+    detail = ", ".join(
+        f"{key}={frames} comes from {where(key, frames, layer)}"
+        for key, frames, layer in halves
+    )
+    # At least one half is always layer-owned, because the packaged defaults are
+    # mutually coherent by contract
+    # (test_packaged_outputd_buffer_defaults_are_mutually_coherent) — so there is
+    # always a named source here, and no "this is a build defect" branch to carry
+    # at runtime.
+    if any(store_entry(key, frames, layer) for key, frames, layer in halves):
+        return (
+            f"{detail}; clearing the {labels[OUTPUTD_ENV_LAYER]} line alone is undone by "
+            "the next reconcile — clear the override with "
+            "`jasper-audio-config overrides-clear <key>`"
+        )
+    return (
+        f"{detail}; correct or remove the losing line in the file named above — "
+        "the reconciler will refuse to write this candidate until the pair is coherent"
+    )
+
+
 def outputd_env_buffer_pair_error(
     *,
     base_env: Mapping[str, str] | None = None,
     outputd_env: Mapping[str, str] | None = None,
+    base_label: str | None = None,
+    outputd_label: str | None = None,
+    override_entries: Mapping[str, RuntimeOverrideEntry] | None = None,
+    override_label: str = DEFAULT_AUDIO_RUNTIME_OVERRIDES_PATH,
 ) -> str | None:
     """Validate effective outputd buffer/period pairs for env-file writers.
 
@@ -627,17 +731,38 @@ def outputd_env_buffer_pair_error(
     ``/etc/jasper/jasper.env``, then the reconciler-owned ``outputd.env``.
     The check order mirrors Rust's outputd config validator so logs name the
     same first failing pair the daemon would reject with EX_CONFIG.
+
+    Pass BOTH ``base_label`` and ``outputd_label`` — the paths the two mappings
+    were read from — to append :func:`_pair_provenance`, which names the layer
+    each half of the failing pair came from. With either omitted the returned
+    string stays the bare Rust mirror, byte for byte, which is what
+    ``test_python_outputd_buffer_contract_matches_rust_validator`` compares
+    against the daemon's own message. Callers that HAVE the paths should always
+    pass them: the mirror alone cannot tell an operator which file to edit.
+
+    ``override_entries`` (the lab override store, keyed by env key) is what lets
+    the provenance distinguish a line an operator wrote in ``outputd.env`` from
+    one the latency-floor pass copied there out of the store. The store is NOT a
+    precedence layer here — outputd never reads it — but it is the ORIGIN of
+    some values that reach ``outputd.env``, and only naming it makes the refusal
+    actionable.
     """
 
     values = [dict(base_env or {}), dict(outputd_env or {})]
-    period_frames, period_error = _effective_outputd_positive_int(
+    labels = (
+        (base_label, outputd_label)
+        if base_label is not None and outputd_label is not None
+        else None
+    )
+    entries = dict(override_entries or {})
+    period_frames, period_error, period_layer = _effective_outputd_positive_int(
         OUTPUTD_PERIOD_KEY,
         default=DEFAULT_OUTPUTD_PERIOD_FRAMES,
         layers=values,
     )
     if period_error is not None:
         return period_error
-    content_buffer_frames, content_error = _effective_outputd_positive_int(
+    content_buffer_frames, content_error, content_layer = _effective_outputd_positive_int(
         OUTPUTD_CONTENT_BUFFER_KEY,
         default=DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES,
         layers=values,
@@ -649,17 +774,40 @@ def outputd_env_buffer_pair_error(
         content_buffer_frames=content_buffer_frames,
     )
     if detail is not None:
-        return detail
-    dac_buffer_frames, dac_error = _effective_outputd_positive_int(
+        if labels is None:
+            return detail
+        return f"{detail}; " + _pair_provenance(
+            buffer_key=OUTPUTD_CONTENT_BUFFER_KEY,
+            buffer_frames=content_buffer_frames,
+            buffer_layer=content_layer,
+            period_frames=period_frames,
+            period_layer=period_layer,
+            labels=labels,
+            override_entries=entries,
+            override_label=override_label,
+        )
+    dac_buffer_frames, dac_error, dac_layer = _effective_outputd_positive_int(
         OUTPUTD_DAC_BUFFER_KEY,
         default=DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES,
         layers=values,
     )
     if dac_error is not None:
         return dac_error
-    return outputd_dac_buffer_pair_error(
+    detail = outputd_dac_buffer_pair_error(
         period_frames=period_frames,
         dac_buffer_frames=dac_buffer_frames,
+    )
+    if detail is None or labels is None:
+        return detail
+    return f"{detail}; " + _pair_provenance(
+        buffer_key=OUTPUTD_DAC_BUFFER_KEY,
+        buffer_frames=dac_buffer_frames,
+        buffer_layer=dac_layer,
+        period_frames=period_frames,
+        period_layer=period_layer,
+        labels=labels,
+        override_entries=entries,
+        override_label=override_label,
     )
 
 
@@ -2224,16 +2372,24 @@ def _effective_outputd_positive_int(
     *,
     default: int,
     layers: Sequence[Mapping[str, str]],
-) -> tuple[int, str | None]:
-    for env in reversed(layers):
-        raw = _raw(env, key)
+) -> tuple[int, str | None, int | None]:
+    """Resolve one integer knob across the env layers, highest-precedence first.
+
+    Third element is the INDEX into ``layers`` that supplied the value, or
+    ``None`` when no layer stated it and the packaged default applies. The
+    caller needs that to tell an operator which file to edit — the value alone
+    cannot, and a refusal that names only the key is what left #2489 pointing
+    at the wrong file.
+    """
+    for index in reversed(range(len(layers))):
+        raw = _raw(layers[index], key)
         if raw is None:
             continue
         value, error = _positive_int(raw)
         if error is not None or value is None:
-            return default, f"{key}={raw!r} is invalid ({error})"
-        return value, None
-    return default, None
+            return default, f"{key}={raw!r} is invalid ({error})", index
+        return value, None, index
+    return default, None, None
 
 
 @dataclass(frozen=True)
@@ -2448,7 +2604,7 @@ def _resolve_outputd_content_buffer_int(
             absent_detail="route has no content-buffer policy",
             override_scope="route",
             packaged_default=DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES,
-            packaged_source="packaged systemd/outputd default",
+            packaged_source=PACKAGED_OUTPUTD_DEFAULT_SOURCE,
         ),
         base_env=base_env,
         override_env=override_env,
@@ -2493,7 +2649,7 @@ def _coherent_outputd_content_buffer_setting(
         else "route_policy"
     )
     source = (
-        "packaged systemd/outputd default"
+        PACKAGED_OUTPUTD_DEFAULT_SOURCE
         if source_kind == "packaged_default"
         else content_buffer_setting.source
     )

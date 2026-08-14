@@ -741,6 +741,26 @@ reconciler's other preserve — the endpoint-contract refusal at exit 66 —
 does move one key first, because one preserved shape spins rather than
 idles. See `docs/HANDOFF-speaker-output-reference.md` (issue #2489).
 
+**The refusal names its source, not just the offending key.** `outputd_env_invalid`
+carries the Rust-shaped pair error — which names the two KEYS, enough for the
+daemon reading one merged environment and not enough for an operator, who has to
+edit one of several layers. It now also names WHERE each half came from:
+`/etc/jasper/jasper.env`, the reconciler-owned `outputd.env`, or the packaged
+systemd/outputd default. Two cases otherwise read as contradictions — the
+reconciler UNSETS a key from `outputd.env` whenever `jasper.env` owns it, so an
+operator sent to `outputd.env` finds the key absent; and a value the lab override
+store owns is COPIED into `outputd.env` by the latency-floor pass, so deleting
+that line is undone by the next reconcile. For the second, the refusal quotes the
+store's own `created_at` and `reason` and points at
+`jasper-audio-config overrides-clear`.
+
+**The override store is not a bypass of the buffer-coherence repair.**
+`_coherent_outputd_content_buffer_setting` wraps the ALREADY-resolved setting, so
+it sees a `lab_override` and declines by SCOPE: it rewrites only JTS's own
+`route_policy` value and never an operator/lab one. Operator-wins is the design;
+the candidate refusal is the correct catch, which is why the repair is not
+widened. Pinned by `test_coherence_repair_sees_the_override_and_declines_by_scope`.
+
 **What holds the pair coherent.** outputd enforces a biconditional at
 startup: the active ring file may be read only by an armed active
 endpoint, and an armed active endpoint may read only that file. The two
