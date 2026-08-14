@@ -286,7 +286,8 @@ def refused_from_flow_error(exc: BaseException) -> "CrossoverV2Refused":
     """Turn a :class:`CrossoverV2FlowError` into a refusal the household reads.
 
     Issue #1833. ``resolve_plan_shape``'s failures are programmer strings
-    ("unknown commission tier 'turbo' (expected one of full, express)",
+    ("unknown commission tier 'turbo' (expected one of full, express,
+    remote)",
     "cloud_measure_positions must be 6..12, got 14"). Two call sites used to
     rewrap them as ``CrossoverV2Refused(str(exc))``, which the wizard's 400 arm
     echoes into the DOM verbatim — the exact leak
@@ -5011,6 +5012,7 @@ def build_v2_run_and_consume(
     volume: V2VolumeHooks,
     stop_event: threading.Event,
     stop_lock: Any,
+    position_gate: "PositionGate | None" = None,
     evidence_refs: Mapping[str, Any] | None = None,
     poll_interval_s: float | None = None,
     timeout_s: float | None = None,
@@ -5155,6 +5157,15 @@ def build_v2_run_and_consume(
             with stop_lock:
                 if stop_event.is_set():
                     raise CaptureStopped("capture stopped")
+            # The remote tier's POSITION GATE, ahead of the conductor and
+            # deliberately so: a hold is not an admission decision, and routing
+            # it through ``authorize_begin`` would spend ledger and stamp
+            # failure state on a capture that has not been refused anything. It
+            # raises ``CaptureBeginDeferred`` past this frame to the runner,
+            # which the conductor therefore never sees. A hand-walked session
+            # has no gate and this line is not reached.
+            if position_gate is not None:
+                position_gate.gate(index, attempt, entry)
             conductor.authorize_begin(index, attempt, entry)
 
         def completion_signal_required() -> bool:
@@ -6255,6 +6266,211 @@ def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
 # --------------------------------------------------------------------------- #
 
 
+# --------------------------------------------------------------------------- #
+# the remote tier's position gate
+# --------------------------------------------------------------------------- #
+
+#: How long ONE position hold waits for its external driver before the session
+#: refuses rather than holding forever.
+#:
+#: A hold is UNBOUNDED as far as the transport is concerned — the capture page
+#: re-posts the same begin every 1.5 s and each re-post rearms the runner's
+#: inactivity deadline (``capture_relay.session.run_capture_plan``) — so nothing
+#: below this module would ever end a hold whose driver died. That is the right
+#: default for the household-facing apply hold it was built for, where a person
+#: is standing there; it is the wrong one here, where the other end is a program
+#: that can crash silently and leave the speaker holding its measurement volume,
+#: its paused voice, and the relay slot indefinitely.
+#:
+#: Ten minutes because the thing being waited on is a machine move: seconds to
+#: swing an arm, plus whatever settle the driver takes, plus room for a driver
+#: that is retrying its own transport. It is an order of magnitude past the
+#: move and an order of magnitude short of "nobody is coming".
+REMOTE_POSITION_HOLD_BUDGET_S = 600.0
+
+#: Machine reasons the gate answers a begin with. Stable strings: a driver
+#: branches on these, and the phone renders the message beside them.
+POSITION_HOLD_CODE = "awaiting_position"
+POSITION_HOLD_EXPIRED_CODE = "position_hold_expired"
+POSITION_TARGET_MISSING_CODE = "position_target_missing"
+
+#: The endpoint an external driver POSTs to report the microphone in place.
+POSITION_READY_ENDPOINT = "/correction/crossover/v2/position-ready"
+
+
+class PositionGate:
+    """Holds each remote capture's begin until a driver reports the angle reached.
+
+    **Why a gate exists at all.** The hand-walked tiers make every prompted pose
+    a TAP: the person who just moved the microphone is the one who says it has
+    arrived, so the tone can never play into an arm still in flight. A remote
+    session has no hand, so its entries auto-begin
+    (:data:`~jasper.active_speaker.crossover_v2_flow.AUTO_ADVANCE_COUNTDOWN`) —
+    and this is what replaces the promise the tap was making. The driver moves
+    the positioner, waits its own settle, and POSTs; only then is the begin
+    admitted.
+
+    **The mechanism is the shipped soft-hold, not a new one.**
+    :class:`~jasper.capture_relay.session.CaptureBeginDeferred` is the
+    purpose-built non-terminal deferral: the Pi answers ``capture_deferred``,
+    the phone parks on a wait screen with no affordance and re-posts the
+    IDENTICAL begin every 1.5 s, the attempt budget is not spent, and the
+    session does not end. Nothing on the capture page changes to support this —
+    which matters, because that page is a separately deployed artifact and a
+    release-order coupling is exactly what this tier must not introduce.
+
+    **Every begin is gated, including the 0° ones.** CHECK, MEASURE, the entry
+    baseline, and stage 2's anchor are design-axis captures; a driver has to put
+    the arm back there as deliberately as it moved away, and a gate that assumed
+    "probably still on axis" would measure whatever the last pose left behind.
+    Gating is per ``(index, attempt)``, so a retake re-gates — the same uniform
+    rule rather than a special case that has to be reasoned about.
+
+    Thread-safe: :meth:`gate` runs on the relay worker thread and
+    :meth:`release` on an HTTP handler thread.
+    """
+
+    def __init__(self, *, clock: Callable[[], float] | None = None) -> None:
+        self._lock = threading.Lock()
+        self._clock = clock or time.monotonic
+        self._pending: dict[str, Any] | None = None
+        self._released: set[tuple[int, int]] = set()
+        self._opened_at: float | None = None
+
+    # -- the relay worker's side ------------------------------------------- #
+
+    def gate(self, index: int, attempt: int, entry: Any) -> None:
+        """Admit this begin, or raise to hold/refuse it.
+
+        Returns cleanly once the driver has released this ``(index, attempt)``;
+        raises :class:`CaptureBeginDeferred` while it has not, and
+        :class:`CaptureBeginRefused` when the hold outlived
+        :data:`REMOTE_POSITION_HOLD_BUDGET_S` or the entry carries no target.
+        """
+        from jasper.active_speaker.crossover_v2_flow import (
+            POSITION_DEG_KEY,
+            POSITION_ROLE_KEY,
+        )
+        from jasper.capture_relay.session import (
+            CaptureBeginDeferred,
+            CaptureBeginRefused,
+        )
+
+        screen = getattr(entry, "screen", None) or {}
+        raw_degrees = screen.get(POSITION_DEG_KEY)
+        if raw_degrees is None:
+            # Fail loud rather than measure an unknown position. A remote plan
+            # emits the key on EVERY entry, so reaching this means the plan and
+            # the gate disagree about the session's shape.
+            with self._lock:
+                self._pending = None
+                self._opened_at = None
+            raise CaptureBeginRefused(
+                POSITION_TARGET_MISSING_CODE,
+                "This measurement did not say where the microphone should be.",
+            )
+        target = int(raw_degrees)
+        role = str(screen.get(POSITION_ROLE_KEY) or "")
+        key = (int(index), int(attempt))
+        now = self._clock()
+        with self._lock:
+            if key in self._released:
+                self._pending = None
+                self._opened_at = None
+                return
+            opened = self._opened_at
+            if opened is None:
+                # A NEW hold: publish what is being waited on and start its clock.
+                self._opened_at = now
+                self._pending = {
+                    "index": int(index),
+                    "attempt": int(attempt),
+                    "degrees": target,
+                    "role": role,
+                    "action": {
+                        "id": "crossover_v2_position_ready",
+                        "label": f"Microphone is at {target:+d}°",
+                        "endpoint": POSITION_READY_ENDPOINT,
+                        "body": {"index": int(index), "degrees": target},
+                    },
+                }
+                log_event(
+                    logger,
+                    "correction.crossover_v2_position_pending",
+                    index=int(index),
+                    attempt=int(attempt),
+                    degrees=target,
+                    role=role,
+                )
+                waited = 0.0
+            else:
+                waited = now - opened
+            if waited > REMOTE_POSITION_HOLD_BUDGET_S:
+                self._pending = None
+                self._opened_at = None
+                log_event(
+                    logger,
+                    "correction.crossover_v2_position_hold_expired",
+                    level=logging.WARNING,
+                    index=int(index),
+                    attempt=int(attempt),
+                    degrees=target,
+                    waited_s=round(waited, 1),
+                )
+                raise CaptureBeginRefused(
+                    POSITION_HOLD_EXPIRED_CODE,
+                    "Nothing reported the microphone in place, so the "
+                    "measurement stopped waiting.",
+                )
+        raise CaptureBeginDeferred(
+            POSITION_HOLD_CODE,
+            f"Waiting for the microphone to reach {target:+d}°.",
+        )
+
+    # -- the driver's side -------------------------------------------------- #
+
+    def pending(self) -> dict[str, Any] | None:
+        """What this session is waiting for, or ``None`` — the envelope's read."""
+        with self._lock:
+            return dict(self._pending) if self._pending else None
+
+    def release(self, index: int | None = None) -> dict[str, Any]:
+        """Report the microphone in place for the pending capture.
+
+        ``index`` is checked against what is actually pending rather than
+        ignored: a driver that retries its POST after the capture already began
+        must NOT release the NEXT position, which is the one hazard an
+        untargeted latch would introduce. A retry that still matches the pending
+        index is idempotent.
+
+        Raises :class:`ValueError` when nothing is pending or the index names a
+        different capture — the caller maps that to a 409.
+        """
+        with self._lock:
+            pending = self._pending
+            if not pending:
+                raise ValueError(
+                    "no measurement is waiting for the microphone right now"
+                )
+            wanted = int(pending["index"])
+            if index is not None and int(index) != wanted:
+                raise ValueError(
+                    f"measurement {wanted} is waiting, not {int(index)}"
+                )
+            self._released.add((wanted, int(pending["attempt"])))
+            released = dict(pending)
+            self._pending = None
+            self._opened_at = None
+        log_event(
+            logger,
+            "correction.crossover_v2_position_released",
+            index=int(released["index"]),
+            attempt=int(released["attempt"]),
+            degrees=int(released["degrees"]),
+        )
+        return released
+
+
 @dataclass(frozen=True)
 class V2PreparedSession:
     """What the correction_setup dispatch needs to host one v2 relay session."""
@@ -6263,6 +6479,11 @@ class V2PreparedSession:
     open: Callable[..., Any]
     run_and_consume: Callable[[Any, Any], Any]
     request_stop: Callable[[], None]
+    #: The remote tier's position gate, or ``None`` for a hand-walked session.
+    #: ``correction_setup`` reads :meth:`PositionGate.pending` into the relay
+    #: block the envelope renders, and routes the driver's POST to
+    #: :meth:`PositionGate.release`.
+    position_gate: PositionGate | None = None
 
 
 def _volume_hooks(camilla_factory: Any, context: V2ConductorContext) -> V2VolumeHooks:
@@ -6617,6 +6838,18 @@ def prepare_v2_session(
     acknowledgement_binding = secrets.token_urlsafe(24)
     stop_event = threading.Event()
     stop_lock = threading.Lock()
+    # The remote tier's position gate — built only for an externally
+    # positioned shape, so a hand-walked session carries no gate at all and
+    # every begin reaches the conductor exactly as it always has.
+    position_gate = PositionGate() if plan_shape.externally_positioned else None
+    if position_gate is not None:
+        log_event(
+            logger,
+            "correction.crossover_v2_remote_session_open",
+            stage=1,
+            tier=plan_shape.tier,
+            captures=plan_shape.measure_capture_target,
+        )
 
     prior_raw = load_v2_state()
     attempt_store = _attempt_loop_store_snapshot()
@@ -6756,6 +6989,7 @@ def prepare_v2_session(
             volume=_volume_hooks(camilla_factory, context),
             stop_event=stop_event,
             stop_lock=stop_lock,
+            position_gate=position_gate,
             evidence_refs=refs,
             playback_started=playback_started,
         )
@@ -6773,6 +7007,7 @@ def prepare_v2_session(
         open=_open,
         run_and_consume=_run,
         request_stop=_request_stop,
+        position_gate=position_gate,
     )
 
 
@@ -6941,6 +7176,22 @@ def prepare_v2_verify(
     acknowledgement_binding = secrets.token_urlsafe(24)
     stop_event = threading.Event()
     stop_lock = threading.Lock()
+    # Same rule as stage 1's, with one extra case: ``_verify_plan_shape``
+    # returns ``None`` for the recovery re-arm, which has no tier and therefore
+    # no gate — it is the one-sweep session a household starts by hand.
+    position_gate = (
+        PositionGate()
+        if plan_shape is not None and plan_shape.externally_positioned
+        else None
+    )
+    if position_gate is not None and plan_shape is not None:
+        log_event(
+            logger,
+            "correction.crossover_v2_remote_session_open",
+            stage=2,
+            tier=plan_shape.tier,
+            captures=plan_shape.verify_capture_target,
+        )
     holder: dict[str, Any] = {}
 
     def _open(client: Any, base: str, capture_origin: str, return_url: str) -> Any:
@@ -7054,6 +7305,7 @@ def prepare_v2_verify(
             volume=_volume_hooks(camilla_factory, context),
             stop_event=stop_event,
             stop_lock=stop_lock,
+            position_gate=position_gate,
             evidence_refs=refs,
             playback_started=playback_started,
         )
@@ -7071,6 +7323,7 @@ def prepare_v2_verify(
         open=_open,
         run_and_consume=_run,
         request_stop=_request_stop,
+        position_gate=position_gate,
     )
 
 

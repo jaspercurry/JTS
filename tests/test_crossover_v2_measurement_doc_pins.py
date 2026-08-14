@@ -8,7 +8,7 @@ Two promises the canonical doc's own prose makes about itself, each pinned
 here because both of #2291 Phase 5c-v's defect rounds were "no test pinned
 the promise":
 
-* **Tier numbers.** "What it is" states `TIER_FULL`/`TIER_EXPRESS`'s capture
+* **Tier numbers.** "What it is" states `TIER_FULL`/`TIER_EXPRESS`/`TIER_REMOTE`'s capture
   counts as prose, right next to its own instruction not to: "Do not restate
   those numbers anywhere a plan change cannot reach them --
   `tier_display_info()` derives them from the plans themselves." So this
@@ -79,6 +79,7 @@ from pathlib import Path
 from jasper.active_speaker.crossover_v2_flow import (
     TIER_EXPRESS,
     TIER_FULL,
+    TIER_REMOTE,
     tier_display_info,
 )
 
@@ -242,6 +243,7 @@ def test_doc_tier_capture_counts_match_tier_display_info():
     """
     info = tier_display_info()
     full, express = info[TIER_FULL], info[TIER_EXPRESS]
+    remote = info[TIER_REMOTE]
     doc = DOC_PATH.read_text(encoding="utf-8")
 
     assert (
@@ -251,6 +253,12 @@ def test_doc_tier_capture_counts_match_tier_display_info():
     assert (
         f"`TIER_EXPRESS` is **{express['capture_target']} — the same "
         f"{express['stage1_captures']}, then {express['stage2_captures']}**"
+    ) in doc
+    # The remote tier's line follows the same derived-numbers rule, so its
+    # prose cannot outlive a change to its shape either.
+    assert (
+        f"It is\n  **{remote['capture_target']} — the same "
+        f"{remote['stage1_captures']}, then {remote['stage2_captures']}**"
     ) in doc
 
 

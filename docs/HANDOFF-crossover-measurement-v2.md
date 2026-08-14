@@ -29,6 +29,14 @@ changed.
   `DEFAULT_TIER` / `tier_display_info`, in
   [`crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py)).
   This doc describes Full unless it says otherwise.
+- **A third tier, `TIER_REMOTE`, is API-only and experimental.** It is
+  **14 — the same 9, then 5**: Full's walk driven by an external mic
+  positioner instead of by hand, so it drops exactly the one pose a
+  positioner cannot reach (the vertical) and states every other pose as an
+  ANGLE. The chooser never offers it — consenting to it means owning a
+  positioner the wizard cannot see — so it is reached only by
+  `POST /correction/crossover/v2/session {"tier": "remote"}`. See
+  "The remote tier" below.
 - **It is the only flow.** The legacy per-driver near-field procedure and its
   `JASPER_CROSSOVER_FLOW` selector are gone; `build_crossover_envelope`
   dispatches straight to `build_crossover_envelope_v2`.
@@ -158,8 +166,8 @@ group and publishes the candidate; until it arrives the final position is
 still retakeable. **Nothing is applied inside this session.**
 
 **Stage 2 — `POST /correction/crossover/v2/verify` with
-`{"stage": "post_apply"}`, 6 captures at Full (1 on Express — this stage
-is the whole difference between the tiers).**
+`{"stage": "post_apply"}`, 6 captures at Full (1 on Express, 5 on Remote —
+this stage is the whole difference between the tiers).**
 
 | index | phase | what it is |
 |---|---|---|
@@ -167,6 +175,73 @@ is the whole difference between the tiers).**
 | 2–6 | `cloud_verify` | 5 prompted post-apply positions |
 
 The same endpoint with no `stage` is the 1-entry recovery re-verify.
+
+### The remote tier — an external driver, not a household
+
+`TIER_REMOTE` is **Full's measurement with a different operator**: a program on
+another machine drives a mic positioner and advances the session over HTTP,
+while the capture browser runs unattended. It is experimental and API-only.
+Product code stays positioner-agnostic — nothing under `jasper/` names any
+particular hardware, and the vocabulary is *remote* / *external positioner* /
+*angle*.
+
+**What differs from Full, and nothing else does.**
+
+| | Full | Remote |
+|---|---|---|
+| stage 1 | 9 captures | the same 9 |
+| stage 2 | 6 captures | 5 — Full's walk minus the vertical pose |
+| per-entry advance | `AUTO_ADVANCE_TAP` | `AUTO_ADVANCE_COUNTDOWN` + `countdown_s` |
+| pose copy | "12 cm to the LEFT of the mark" | "Turn the microphone to −7°" |
+| stage-2 anchor | carries `confirm_title` (a tap) | omits it — the gate makes that promise |
+
+`remote_cloud_verify_positions()` **derives** the 5 rather than stating it: it
+is the longest prefix of `CLOUD_POSITION_PROMPTS` containing no
+`POSITION_ROLE_XOVR` pose, so reordering that table moves the walk instead of
+stranding it. `position_angle_deg()` likewise derives each bearing from the
+pose's own `offset_cm` at `MARK_DISTANCE_M`, signed by the row's LEFT/RIGHT
+word — there is no second table of angles to drift. At the shipped offsets the
+walk is **0°, −7°, +7°, −22°, +22°** (stage 1 opens and closes on 0°). Roles
+still come from the existing `WIDE_OFFSET_MIN_CM` rule, so a remote group's
+durable evidence stays comparable with a hand-walked one's.
+
+**The position gate replaces the tap.** Because entries auto-begin, something
+has to guarantee the tone never plays into an arm still moving. Every begin —
+including the 0° ones — is held until the driver says the microphone has
+arrived. The hold is the **shipped** `CaptureBeginDeferred` soft-hold, so **no
+capture-page change is involved**: the Pi answers `capture_deferred`, the page
+parks with no affordance and re-posts the identical begin every 1.5 s, the
+attempt budget is not spent, and the session does not end. Gating is per
+`(index, attempt)`, so a retake re-gates.
+
+**The driver contract**, in the order a run uses it:
+
+1. `POST /correction/crossover/v2/session` with `{"tier": "remote"}` (CSRF as
+   usual). Open the capture page from `relay.tap_link` once and grant the mic.
+2. Poll `GET /correction/crossover/envelope` and POST the `next_action` specs
+   as the wizard would.
+3. When `relay.position_pending` is present, it names the target:
+   `{index, attempt, degrees, role, action}`. Move the positioner to
+   `degrees` (negative = left of the design axis), wait your own settle time.
+4. POST `position_pending.action` — `/correction/crossover/v2/position-ready`
+   with `{"index": …}`. The index is checked against what is actually pending,
+   so a retry that crossed a capture starting is refused (409) rather than
+   releasing the *next* position. The held begin is then admitted.
+5. Repeat. Analysis, apply, verify and restore are unchanged.
+
+An unanswered hold does not wait forever: `REMOTE_POSITION_HOLD_BUDGET_S`
+(600 s) refuses it, because a dead driver would otherwise pin the measurement
+volume, the paused voice, and the relay slot indefinitely. The hold rides the
+relay block, which every terminal screen nulls, so it cannot outlive its
+session. Observability: `event=correction.crossover_v2_remote_session_open`,
+`…_position_pending` (with `degrees`), `…_position_released`,
+`…_position_hold_expired`.
+
+**What it cannot say.** A remote walk samples one axis, so its post-apply group
+carries no `xovr` role at all. The done screen discloses that once
+(`crossover_v2_remote_horizontal_only`, severity `info`) and recommends a Full
+measurement — it never blocks. Read an absent vertical as *unsampled*, never as
+flat.
 
 **The phase vocabulary is data, in one place.** `PHASE_*`, `CAPTURE_PHASES`
 and `GROUP_PHASES` live in
@@ -4255,5 +4330,15 @@ re-measured: the memory figures under "Boundaries" are quoted from the
 NOT re-verified**; per the documentation paradigm, historical sections are
 deliberately not kept in sync with code, and the date below is not a warranty
 on any fact in them.
+
+**Addendum, 2026-08-14 — the remote tier.** "The remote tier" section and the
+`TIER_REMOTE` bullet in "What it is" were written against the code that shipped
+them and verified by test: the capture counts are pinned to
+`tier_display_info()` by `test_doc_tier_capture_counts_match_tier_display_info`,
+and the behavioural claims (the derived walk, the angles, the gate, the dropped
+confirm tap, the disclosure) are pinned by
+`tests/test_crossover_v2_remote_tier.py`. **The date below is deliberately NOT
+bumped**: that addendum re-verified only what it added, not the rest of the
+spine, and moving the date would claim a sweep that did not happen.
 
 Last verified: 2026-08-13

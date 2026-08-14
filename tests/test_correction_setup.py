@@ -536,6 +536,10 @@ def test_the_v2_dispatch_threads_the_idle_hold_into_the_relay_runner(
             open=lambda *a, **kw: None,
             run_and_consume=lambda *a, **kw: None,
             request_stop=lambda: None,
+            # A hand-walked session carries no position gate; the field is
+            # stated rather than omitted so this stub keeps matching the real
+            # V2PreparedSession the dispatch reads.
+            position_gate=None,
         )
 
     def _fake_run_relay_capture(kind, relay_base, *, return_url, idle_hold):

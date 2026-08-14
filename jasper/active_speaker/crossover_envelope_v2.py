@@ -94,6 +94,7 @@ from .crossover_v2_flow import (
     TEMPLATE_SILENT_AUTO_RETRY,
     TEMPLATE_VERIFY_FAIL,
     TIER_EXPRESS,
+    TIER_REMOTE,
     TIER_FULL,
     reason_message,
     tier_display_info,
@@ -139,7 +140,17 @@ logger = logging.getLogger(__name__)
 # review-only rule one key over. Additive: no key removed or re-typed, and the
 # crossover wizard's module does not gate on this version, so an unredeployed
 # page ignores the key rather than refusing the envelope.
-CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION = 12
+# Bumped 12 → 13: the ``relay`` block gained ``position_pending`` — what an
+# externally driven (``TIER_REMOTE``) session is waiting for before it will
+# admit its next capture: ``{index, attempt, degrees, role, action}``. Present
+# ONLY while such a session is holding, absent everywhere else, and nulled with
+# the rest of the relay block on every terminal screen — so it cannot outlive
+# the session holding it. Additive: no key removed or re-typed, and the
+# crossover wizard's module reads ``tap_link``/``status`` off that block and
+# ignores the rest, so an unredeployed page is unaffected. The version is
+# bumped because the EXTERNAL DRIVER this key exists for is a separate program
+# that needs a stable way to know the contract is present.
+CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION = 13
 
 # The v2 step tuple (§5.9, amended 2026-07-20). The step machinery inside each
 # step is gone; these five are the whole journey.
@@ -1628,9 +1639,33 @@ def _cloud_measure_block(status: Mapping[str, Any]) -> Mapping[str, Any]:
 # repointed: a reader of that key here is exactly the drift §7 forbids.
 
 
+#: The remote tier's ONE disclosure, as a done-screen badge. Info, never warn:
+#: nothing went wrong and there is nothing to fix — the walk simply sampled one
+#: axis, and a household reading "Your speaker is tuned" is owed the shape of
+#: the evidence behind it. Recommends rather than blocks, exactly as express's
+#: degraded-claim line does.
+_REMOTE_VERTICAL_NUDGE = {
+    "code": "crossover_v2_remote_horizontal_only",
+    "severity": "info",
+    "text": (
+        "Checked across the speaker's horizontal axis only. Run a Full "
+        "measurement to include the up-and-down spot as well."
+    ),
+}
+
+
+def _with_remote_disclosure(
+    nudges: list[dict[str, str]], tier: str,
+) -> list[dict[str, str]]:
+    """Append the remote tier's vertical-coverage disclosure, once."""
+    if tier != TIER_REMOTE:
+        return nudges
+    return [*nudges, dict(_REMOTE_VERTICAL_NUDGE)]
+
+
 def _done_nudges(
     verify: Mapping[str, Any], *, spec_passed: bool | None,
-    result_outcome: str = "",
+    result_outcome: str = "", tier: str = "",
 ) -> list[dict[str, str]]:
     """The done screen's badges — one claim per instrument, none overclaiming.
 
@@ -1659,8 +1694,15 @@ def _done_nudges(
     }
     if result_outcome in result_badges:
         severity, text = result_badges[result_outcome]
-        return [{"code": f"crossover_v2_{result_outcome}", "severity": severity, "text": text}]
+        return _with_remote_disclosure(
+            [{"code": f"crossover_v2_{result_outcome}", "severity": severity,
+              "text": text}],
+            tier,
+        )
     if verify.get("outcome") != "pass":
+        # The verify_fail screen, which carries its own copy and delivered no
+        # result to qualify. Nothing to disclose about the shape of evidence
+        # that did not produce a verdict.
         return []
     nudges: list[dict[str, str]] = [
         {
@@ -1675,6 +1717,7 @@ def _done_nudges(
             "text": "Verified.",
         }
     ]
+    nudges = _with_remote_disclosure(nudges, tier)
     probe = _mapping(verify.get("delta_probe"))
     if probe.get("verdict") == VERDICT_LEVEL_MISMATCH:
         nudges.append({
@@ -2033,7 +2076,15 @@ def _setup_ready(status: Mapping[str, Any]) -> bool:
 
 # --- tier chooser (flow-simplification §3) ------------------------------------
 
-_TIER_LABELS = {TIER_FULL: "Full measurement", TIER_EXPRESS: "Quick tune"}
+_TIER_LABELS = {
+    TIER_FULL: "Full measurement",
+    TIER_EXPRESS: "Quick tune",
+    # Present so every tier this build knows has a name, NOT so a chooser
+    # can render one: ``_tier_choice_actions`` offers exactly Full and
+    # Express, because consenting to the remote tier means owning a
+    # positioner the chooser cannot see. It is reached by API only.
+    TIER_REMOTE: "Remote automated",
+}
 _TIER_CLAIMS = {
     # B2 fix (adversarial review of PR #1780): "across the room" overclaimed
     # past what the post-apply cloud actually samples — a handful of prompted
@@ -2047,6 +2098,12 @@ _TIER_CLAIMS = {
     # attached to moved, which is exactly what the split changed.
     TIER_FULL: "re-check the result at several spots around the mark",
     TIER_EXPRESS: "confirm the result at the mark",
+    # Full's claim minus the axis a positioner cannot reach — the same
+    # honesty rule express's line follows.
+    TIER_REMOTE: (
+        "re-check the result at several spots across the speaker's "
+        "horizontal axis"
+    ),
 }
 
 
@@ -3435,6 +3492,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                 _done_nudges(
                     verify, spec_passed=spec_passed,
                     result_outcome=result_outcome,
+                    tier=str(v2.get("tier") or ""),
                 )
                 + _ripple_reservation_nudges(status)
             ),
