@@ -6324,10 +6324,10 @@ def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
 #: derived per plan — 2520 s for remote's stage 1 and 2040 s for its stage 2 at
 #: the shipped shape) covers the WHOLE walk, so a run spending anywhere near
 #: this budget on several holds ends on that ceiling long before any individual
-#: hold expires: four full holds already exceed stage 1's ceiling. A driver that
-#: stalls once is caught here by name; a driver that is merely slow at every
-#: position is caught there, and reads as a session timeout rather than as a
-#: position hold. Recorded rather than reconciled — whether the per-hold budget
+#: hold expires: stage 1's ceiling is only 4.2 holds' worth, so the FIFTH full
+#: hold of a nine-capture walk exceeds it. A driver that stalls once is caught
+#: here by name; a driver that is merely slow at every position is caught
+#: there, and reads as a session timeout rather than as a position hold. Recorded rather than reconciled — whether the per-hold budget
 #: should instead be derived from the ceiling and the capture count is deferred
 #: to https://github.com/jaspercurry/JTS/issues/2506.
 REMOTE_POSITION_HOLD_BUDGET_S = 600.0

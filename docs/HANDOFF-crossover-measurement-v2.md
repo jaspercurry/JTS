@@ -4376,9 +4376,13 @@ them and verified by test: the capture counts are pinned to
 and the behavioural claims (the derived walk, the angles, the gate, the dropped
 confirm tap, the disclosure, the geometry-retake refusal) are pinned by
 `tests/test_crossover_v2_remote_tier.py`. The three-gesture start and the
-rejected-capture stall were re-derived from `capture-page/js/main.js`
-(`applyDefaultCalibrationHintSilently` / `entryConfirmsBeforeArming` /
-`advanceAfterAccepted`) during the adversarial review of PR #2505. **The date below is deliberately NOT
+rejected-capture stall were re-derived during the adversarial review of
+PR #2505 — the acknowledgement gate from `capture-page/js/render.js`
+(`acceptedAcknowledgement`, and the `refs.acknowledgement` block that holds
+every `begin_capture` control disabled until the box is ticked), the Start tap
+from `main.js`'s `onPlanStart`, and the stall from `main.js`'s
+`advanceAfterAccepted`, which routes on the UPCOMING entry's policy only after
+a capture is ACCEPTED. **The date below is deliberately NOT
 bumped**: that addendum re-verified only what it added, not the rest of the
 spine, and moving the date would claim a sweep that did not happen.
 
