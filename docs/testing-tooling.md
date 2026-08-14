@@ -37,6 +37,7 @@
 | Hold a specific field incident still in CI — minimize a gitignored bank to a committed fixture and characterize the defect it produced | [Committed incident replay](#committed-incident-replay) |
 | Grade the boost-permission gate's decision against a defect you injected on purpose (rather than one a room happened to produce) | [`tests/test_crossover_v2_boost_scenarios.py`](../tests/test_crossover_v2_boost_scenarios.py) — synthetic spatial scenarios, the validation ladder's third rung |
 | Validate two Apple USB-C DACs as a lab-only output topology | [Dual Apple DAC lab runner](#dual-apple-dac-lab-runner) |
+| Manually detect, probe, or move the experimental USB turntable on JTS3 | [USB turntable experiment](#usb-turntable-experiment) |
 | Characterize whole-system CPU/memory/journal behavior over time | [System soak artifacts](#system-soak-artifacts) |
 | Measure inter-speaker sync error for multi-room (stereo pair / sub) on WiFi | [Multi-room sync spike (P0)](#multi-room-sync-spike-p0) |
 | Measure the AirPlay latency budget a sender negotiates (free vs. tight regime for bonded-leader lip-sync) | [Pi-side diagnostics](#pi-side-diagnostics) — [`scripts/airplay-latency-probe.sh`](../scripts/airplay-latency-probe.sh) |
@@ -1298,6 +1299,23 @@ stdout JSONL, ALSA/USB descriptors, kernel logs, and capture WAVs. The
 software stability pass and a Scarlett common-clock drift pass for one
 analog channel from each DAC. Right-channel identity, replug/reboot
 repeatability, and product-stack startup/reload safety remain unproven.
+
+---
+
+## USB turntable experiment
+
+[`experiments/usb-turntable/jts_turntable.py`](../experiments/usb-turntable/jts_turntable.py)
+is the manual JTS3 adapter for the reusable `usb_turntable` controller package.
+It provides USB detection, an identity/firmware probe, left/right relative
+movement, zero/home, and the vendor stop request. JTS owns only the Raspberry Pi
+power preflight and those operator-facing names; the upstream package owns USB
+discovery, serial framing, response parsing, and command completion.
+
+The experiment is opt-in and checkout-local: it has no installer hook, systemd
+unit, voice tool, or production daemon. Read its
+[`README.md`](../experiments/usb-turntable/README.md) before use. Hardware-free
+adapter and preflight coverage lives in
+[`tests/test_usb_turntable_experiment.py`](../tests/test_usb_turntable_experiment.py).
 
 ---
 

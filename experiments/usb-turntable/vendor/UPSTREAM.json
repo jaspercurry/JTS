@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "repository": "https://github.com/jaspercurry/USB-Turntable",
+  "commit": "6a72332a0d9a630efcb7f37be66bfbaa5768caeb",
+  "snapshot_note": "Exact Python package snapshot from the reviewed upstream commit merged by USB-Turntable PR #1.",
+  "captured_at": "2026-08-13",
+  "package": "usb_turntable",
+  "package_version": "0.1.0",
+  "python_requires": ">=3.10",
+  "runtime_dependencies": [],
+  "aggregate_algorithm": "sha256 of sorted '<file_sha256>  <relative_path>\\n' lines",
+  "aggregate_sha256": "a16d1674bdbdda564813df669a8ad199cbaef7f36922a703f607d41ce38e4005",
+  "license": {
+    "status": "declared",
+    "spdx": "Apache-2.0"
+  },
+  "license_files": {
+    "LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "NOTICE.md": "ea6d1ba2ee96593c3d1ac952f3de95a1bef64dc8f8cb9b9e19c474a6687f1785"
+  },
+  "files": {
+    "usb_turntable/__init__.py": "4ff925bcdf8fa0f430551ffd9fc934725b787ca95a41fd1d2f72e1313fbf3599",
+    "usb_turntable/__main__.py": "4152fcc4ea0eedf7696970a4e469cfbb68329571f1b461c7c8a3463b51ee51d2",
+    "usb_turntable/cli.py": "bb12b72077d901ecca4e4173dc3da7b8aec51db91b82f106d875fbdd24f6a83f",
+    "usb_turntable/commands.py": "def9d38b540b90d9511a71e967163a697f375ae9a53d7629ec0091033114eae5",
+    "usb_turntable/controller.py": "225c0c0994ce6a96ed0e33bae8fda907ea791fe59790033422bc3c85daf4822f",
+    "usb_turntable/discovery.py": "e26b8d8e352dfc6880c23fe01d5f0373a54d3beb1ca90af94de071904b7c3b7e",
+    "usb_turntable/errors.py": "a25b52e2dfbf56bacbf795c5138111830adff7fce2ac2f7280436add2f0b3184",
+    "usb_turntable/protocol.py": "416e34e0b8ad2445cfb7cd1e10f840b5367c1d870fb993567759ec50bf78c290",
+    "usb_turntable/transport.py": "65a1a51128cc84dcd7d45ca7919bf0b2a2523dc187eb0bd2116f0e729fc02e0e"
+  }
+}

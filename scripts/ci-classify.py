@@ -217,6 +217,7 @@ DOCS_TEST_FILES = (
     "tests/test_script_help_excludes_spdx.py",
     "tests/test_system_supervisor.py",
     "tests/test_tool_failure_contract_doc.py",
+    "tests/test_usb_turntable_experiment.py",
     "tests/test_voice_eval_registry.py",
     "tests/test_wake_review.py",
     "tests/test_waveform_fusion_experiment.py",
