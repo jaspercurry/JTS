@@ -272,9 +272,14 @@ pub struct Config {
     /// 2-channel, so without this marker those features would WRONGLY arm on
     /// it — mixing / channel-picking post-crossover sends full-range audio to
     /// the tweeter (unsafe).
-    /// Wider active sinks (composite, >2ch) are already excluded by their
-    /// channel width, so the reconciler does NOT set this for them. Default
-    /// false (solo/passive) is byte-identical to today.
+    /// Wider active sinks (composite, >2ch) are already excluded from the
+    /// stereo-only FEATURES by their channel width. That is why the reconciler
+    /// historically did not set this for them — but since P8b item 1 it DOES,
+    /// on a composite whose active-ring endpoint it accepts, because this
+    /// marker is also half of the `ring_active_ok` pair. Setting it costs the
+    /// composite nothing on the feature side (width already excluded it) and is
+    /// what lets `from_env` admit the ACTIVE ring. Default false (solo/passive)
+    /// is byte-identical to today.
     pub active_lane: bool,
     /// The reconciler's declaration that the post-DSP endpoint is the ACTIVE
     /// ring (`DEFAULT_ACTIVE_SHM_RING_PATH`) rather than the full-range stereo
@@ -663,11 +668,35 @@ impl Config {
             );
         }
         // The ONE condition under which reading the active ring is legal: a
-        // marked active lane on a single coherent ALSA sink. Composite is
-        // excluded (the ring ioplug is one device on one clock domain), and the
-        // marker alone is not enough — the lane must be armed too.
-        let ring_active_ok =
-            active_lane && ring_active_endpoint && sink_mode == SinkMode::SingleAlsa;
+        // marked active lane on a sink that outputd itself drives — SingleAlsa
+        // or the dual-Apple Composite. The marker alone is not enough; the lane
+        // must be armed too.
+        //
+        // COMPOSITE WAS ADMITTED IN P8b ITEM 1. The old term read
+        // `sink_mode == SinkMode::SingleAlsa`, excluding Composite because "the
+        // ring ioplug is one device on one clock domain." That reason did not
+        // survive re-derivation: the ring is the CamillaDSP -> outputd hop, and
+        // the composite split lives entirely DOWNSTREAM of it, inside this
+        // daemon, which reads ONE interleaved 4-channel period and calls
+        // `deinterleave_4ch_to_dual_stereo`. The ring never sees a child. The
+        // transport it replaces — the raw snd-aloop lane — is equally one device
+        // on one clock domain and carries this exact composite in production
+        // today. The exclusion was right as a ring-v2 SCOPE call and wrong as a
+        // physics claim.
+        //
+        // What still holds a composite off the ring: `link=ok` is an arm-time
+        // precondition (`composite_ring_arm_link_ok` in alsa_backend.rs), and
+        // the household-facing arm is an explicit operator action gated by the
+        // Python preflights. Widening this term ENABLES that arm; it does not
+        // perform one.
+        //
+        // The two stereo-only features below are NOT widened with it and must
+        // not be: `is_full_range_stereo_lr_sink` still requires SingleAlsa with
+        // exactly 2 content channels, so the outputd TTS mixer and the
+        // dac_content ChannelPick lane stay off a composite exactly as before.
+        let ring_active_ok = active_lane
+            && ring_active_endpoint
+            && matches!(sink_mode, SinkMode::SingleAlsa | SinkMode::Composite);
 
         // The shared safety predicate for outputd's stereo-only features: they
         // may arm ONLY on a full-range stereo L/R sink — single-ALSA, exactly
@@ -691,8 +720,9 @@ impl Config {
                  path; on an active-crossover lane it would feed full-range audio that \
                  is then split to the tweeter) — OR an armed ACTIVE-ring endpoint \
                  (JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT with JASPER_OUTPUTD_ACTIVE_LANE on a \
-                 single_alsa sink), whose ring carries the POST-crossover per-driver \
-                 program and therefore is not the stereo path this predicate guards",
+                 single_alsa or dual_apple sink), whose ring carries the POST-crossover \
+                 per-driver program and therefore is not the stereo path this predicate \
+                 guards",
                 content_bridge_mode.as_str()
             );
         }
@@ -722,9 +752,11 @@ impl Config {
         }
 
         // PROTOTYPE SHM ring reader (latency/ring-proto-shm). Some iff the flag
-        // selects it; the full-range-stereo predicate above already rejected
-        // ShmRing on a non-stereo/active/composite sink, and the local-pipe /
-        // dac-content guards (which require Direct) already made shm_ring
+        // selects it; the predicate above already rejected ShmRing on any sink
+        // that is neither a full-range stereo L/R sink nor an armed ACTIVE-ring
+        // endpoint (which since P8b item 1 includes a composite), and the
+        // local-pipe / dac-content guards (which require Direct) already made
+        // shm_ring
         // mutually exclusive with those content sources. The remaining
         // shm-ring-only validation is the slot count.
         let shm_ring = match content_bridge_mode {
@@ -1506,29 +1538,70 @@ mod tests {
         });
     }
 
+    /// The composite env set that differs ONLY in the axis each test varies.
+    fn composite_active_ring_env() -> Vec<(&'static str, Option<&'static str>)> {
+        vec![
+            ("JASPER_OUTPUTD_SINK", Some("dual_apple")),
+            ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
+            ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
+            ("JASPER_OUTPUTD_ACTIVE_LANE", Some("1")),
+            ("JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT", Some("1")),
+            ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("shm_ring")),
+            (
+                "JASPER_OUTPUTD_SHM_RING_PATH",
+                Some(DEFAULT_ACTIVE_SHM_RING_PATH),
+            ),
+        ]
+    }
+
     #[test]
-    fn a_composite_sink_never_reads_the_active_ring() {
-        // `ring_active_ok` carries the single_alsa term because the ring ioplug
-        // is ONE coherent device on ONE clock domain, which a multi-child
-        // composite is not. Without that term the extra door would open here.
-        with_env(
-            &[
-                ("JASPER_OUTPUTD_SINK", Some("dual_apple")),
-                ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
-                ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
-                ("JASPER_OUTPUTD_ACTIVE_LANE", Some("1")),
-                ("JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT", Some("1")),
-                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("shm_ring")),
-                (
-                    "JASPER_OUTPUTD_SHM_RING_PATH",
-                    Some(DEFAULT_ACTIVE_SHM_RING_PATH),
-                ),
-            ],
-            || {
-                let err = Config::from_env().unwrap_err().to_string();
-                assert!(err.contains("full-range stereo"), "{err}");
-            },
-        );
+    fn an_armed_composite_reads_the_active_ring_at_four_channels() {
+        // P8b item 1: `ring_active_ok` admits Composite. It used to carry a
+        // `sink_mode == SingleAlsa` term justified as "the ring ioplug is ONE
+        // coherent device on ONE clock domain, which a multi-child composite is
+        // not" — but the ring is the CamillaDSP -> outputd hop and the composite
+        // split lives downstream of it, inside this daemon. This test is the
+        // INVERSE of the one it replaces.
+        with_env(&composite_active_ring_env(), || {
+            let cfg = Config::from_env().expect("armed composite must accept the active ring");
+            assert_eq!(cfg.sink_mode, SinkMode::Composite);
+            assert_eq!(cfg.content_channels, 4, "the composite ring is 4-channel");
+            assert_eq!(
+                cfg.shm_ring.as_ref().map(|r| r.path.as_str()),
+                Some(DEFAULT_ACTIVE_SHM_RING_PATH),
+                "it must read the ACTIVE ring, never the stereo one"
+            );
+        });
+    }
+
+    #[test]
+    fn an_unarmed_composite_still_never_reads_the_active_ring() {
+        // The marker is not decoration: widening the sink term must not open the
+        // door for a composite whose active lane was never armed. Same env as
+        // above minus ACTIVE_LANE/RING_ACTIVE_ENDPOINT — the allowlist's two
+        // sides now disagree, so it bails.
+        let mut env = composite_active_ring_env();
+        env.retain(|(k, _)| {
+            *k != "JASPER_OUTPUTD_ACTIVE_LANE" && *k != "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT"
+        });
+        with_env(&env, || {
+            let err = Config::from_env().unwrap_err().to_string();
+            assert!(err.contains("active ring path"), "{err}");
+        });
+    }
+
+    #[test]
+    fn an_armed_composite_still_refuses_the_stereo_only_features() {
+        // THE BOUNDARY. Widening `ring_active_ok` must NOT widen
+        // `is_full_range_stereo_lr_sink`: the outputd TTS mixer sits
+        // post-crossover and would send full-range speech to a tweeter.
+        let mut env = composite_active_ring_env();
+        env.push(("JASPER_OUTPUTD_TTS_SOCKET", Some("/run/x.sock")));
+        with_env(&env, || {
+            let err = Config::from_env().unwrap_err().to_string();
+            assert!(err.contains("JASPER_OUTPUTD_TTS_SOCKET"), "{err}");
+            assert!(err.contains("full-range stereo L/R sink"), "{err}");
+        });
     }
 
     #[test]

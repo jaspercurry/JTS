@@ -504,10 +504,19 @@ def test_packaged_outputd_buffer_defaults_are_mutually_coherent():
 
     Two things rest on this. `_pair_provenance` carries no "both halves are
     packaged defaults" branch because that pair cannot fail; and a floor-less
-    box (`dual_apple_usb_c_dac_4ch` declares no `LatencyFloor`) runs exactly
-    these numbers, so an incoherent pair here would refuse every candidate that
-    box can compute. Issue #2489 was misdiagnosed as this defect — it is worth
-    a test rather than a re-derivation.
+    box runs exactly these numbers, so an incoherent pair here would refuse
+    every candidate that box can compute. Issue #2489 was misdiagnosed as this
+    defect — it is worth a test rather than a re-derivation.
+
+    THE FLOOR-LESS EXEMPLAR MOVED (P8b item 1c). This clause used to name
+    `dual_apple_usb_c_dac_4ch`, which declared no `LatencyFloor`. It declares
+    one now — the floor it inherits from its children, without which the ring
+    conf.d never renders — so `hifiberry_dac8x_studio` is the surviving
+    floor-less registered profile and carries the clause instead. The assertion
+    is kept (rather than dropped) because the SUBJECT is unchanged: a profile
+    with no floor still falls back to exactly these packaged numbers, and the
+    test would stop meaning anything if the last floor-less profile quietly
+    gained one.
     """
 
     assert outputd_content_buffer_pair_error(
@@ -518,7 +527,11 @@ def test_packaged_outputd_buffer_defaults_are_mutually_coherent():
         period_frames=DEFAULT_OUTPUTD_PERIOD_FRAMES,
         dac_buffer_frames=DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES,
     ) is None
-    assert latency_floor_for("dual_apple_usb_c_dac_4ch") is None
+    assert latency_floor_for("hifiberry_dac8x_studio") is None
+    # And the composite is deliberately NO LONGER floor-less. Asserted here, at
+    # the test whose premise it was, so a revert of item 1c cannot quietly
+    # restore the old exemplar and leave this docstring lying.
+    assert latency_floor_for("dual_apple_usb_c_dac_4ch") is not None
     assert outputd_env_buffer_pair_error(base_env={}, outputd_env={}) is None
 
 

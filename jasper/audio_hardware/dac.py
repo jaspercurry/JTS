@@ -796,6 +796,50 @@ DUAL_APPLE_USB_C_DAC_4CH = DacProfile(
         "dual Apple dongle profile has a measured-sync contract and needs "
         "calibration before arming production chip AEC"
     ),
+    # THE CHILDREN'S FLOOR, INHERITED VERBATIM. Both children ARE
+    # APPLE_USB_C_DONGLE (``child_profile_ids``), so the empirically-measured
+    # Apple floor is this composite's floor: the same silicon, driven at the
+    # same rate, twice. Declaring a DIFFERENT number here would claim a timing
+    # property no dongle was measured at — pinned by
+    # ``test_composite_floor_equals_its_children``.
+    #
+    # What declaring it BUYS is the conf.d render, not the period. The shipped
+    # ring conf.d is already ``period_frames 128``, so the period axis is a
+    # no-op for this profile. But ``jasper-audio-config render-ring-conf-wire``
+    # renders ONLY from a declared floor — an absent floor short-circuits to
+    # ``result skipped / reason no_declared_floor`` before it ever resolves the
+    # wire (``jasper/cli/audio_config.py::_cmd_render_ring_conf_wire``), so the
+    # ACTIVE block would keep the ioplug's default 2 channels no matter what the
+    # topology resolved. An undeclared floor also sends the reconciler down
+    # ``_fallback_latency_floor_actions``, which UNSETS
+    # ``JASPER_OUTPUTD_PERIOD_FRAMES`` — outputd then falls to
+    # ``DEFAULT_PERIOD_FRAMES`` (1024) and ``ring_geometry_ready`` refuses the
+    # arm with "conf.d period 128 != outputd period 1024".
+    #
+    # ``outputd_period_frames`` is 128 == ``RING_SLOT_FRAMES``, so this composite
+    # clears the ``ring_slot_fixed_128`` refusal without needing issue #2147.
+    # That equality is load-bearing and is pinned WITH ITS REASON by
+    # ``test_composite_floor_period_equals_ring_slot`` so the pin fails if
+    # either number moves.
+    #
+    # THIS CHANGES A LIVE ALOOP COMPOSITE TOO, AND THAT IS NOT COSMETIC. While
+    # this profile was floor-LESS the reconciler took
+    # ``_fallback_latency_floor_actions``, which UNSETS the period/buffer keys,
+    # so a composite ran the PACKAGED defaults: period 1024 / dac_buffer 3072.
+    # Declaring the floor moves it to 128 / 256 — on the aloop lane, before any
+    # ring is armed. The numbers are the children's own measured floor, but
+    # measured on ONE dongle: "period 128 is stable on an Apple dongle" is
+    # evidence, not proof, for TWO of them sharing a bus. The single-dongle
+    # measurement that produced these values also found period 64 / buffer 128
+    # producing bridge xruns, so the margin below 128 is known to be thin.
+    # Item 6's on-box buffering-regime check owns confirming this on real
+    # hardware; it is called out in the PR body rather than assumed away.
+    latency_floor=LatencyFloor(
+        camilla_chunksize=256,
+        camilla_target_level=1536,
+        outputd_period_frames=128,
+        outputd_dac_buffer_frames=256,
+    ),
     # Stays at the S16_LE default while its child profile
     # (APPLE_USB_C_DONGLE, same silicon) declares S24_3LE, and the divergence is
     # a TRANSPORT fact, not a hardware one. outputd's paired composite sink has

@@ -656,8 +656,19 @@ def test_every_active_lane_write_site_writes_the_pair():
         for line in outside.splitlines()
         if re.match(r"^\s*set_outputd_active_lane_pair\b", line)
     ]
-    # Four branches state the lane: composite, active, non-active, parked.
-    assert len(pair_calls) == 4, pair_calls
+    # FIVE branches state the lane. The composite became TWO in P8b item 1f:
+    # it may now be an ACTIVE-ring endpoint, so it stages the pair when the
+    # accepted graph names the ring device and keeps its historical
+    # unconditional clear on every other path (an aloop composite stays byte-
+    # identical). The other three are unchanged: active, non-active, parked.
+    assert len(pair_calls) == 5, pair_calls
+    assert (
+        'set_outputd_active_lane_pair "1" "$DUAL_APPLE_ACTIVE_ENDPOINT_DEVICE"'
+        ' && changed=1' in pair_calls
+    ), (
+        "the composite's ring-staging call is gone — no composite box can be "
+        "armed without it, whatever the Python preflights admit"
+    )
     # The helper writes BOTH keys, and it is the ONLY writer of the marker.
     assert "JASPER_OUTPUTD_ACTIVE_LANE" in helper
     assert OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR in helper
