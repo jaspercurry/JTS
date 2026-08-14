@@ -1578,15 +1578,23 @@ mod tests {
     fn an_unarmed_composite_still_never_reads_the_active_ring() {
         // The marker is not decoration: widening the sink term must not open the
         // door for a composite whose active lane was never armed. Same env as
-        // above minus ACTIVE_LANE/RING_ACTIVE_ENDPOINT — the allowlist's two
-        // sides now disagree, so it bails.
+        // above minus ACTIVE_LANE/RING_ACTIVE_ENDPOINT.
+        //
+        // WHICH guard catches it is worth stating exactly, because it is NOT the
+        // ring-path allowlist. With `ring_active_ok` false and the composite not
+        // a full-range stereo L/R sink, the CONTENT-BRIDGE predicate refuses
+        // first (it runs before the allowlist), so the unarmed composite is
+        // turned away by the same stereo-only guard that has always held it —
+        // the allowlist never gets the chance. Asserting the allowlist's wording
+        // here would pin a guard that does not fire.
         let mut env = composite_active_ring_env();
         env.retain(|(k, _)| {
             *k != "JASPER_OUTPUTD_ACTIVE_LANE" && *k != "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT"
         });
         with_env(&env, || {
             let err = Config::from_env().unwrap_err().to_string();
-            assert!(err.contains("active ring path"), "{err}");
+            assert!(err.contains("JASPER_OUTPUTD_CONTENT_BRIDGE"), "{err}");
+            assert!(err.contains("full-range stereo L/R sink"), "{err}");
         });
     }
 
