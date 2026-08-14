@@ -598,6 +598,161 @@ def test_outputd_composite_children_take_the_declared_edge_width():
     assert "SampleFormat::S32Le" not in dac_format_fn
 
 
+def _composite_content_open_is_guarded(new_body: str) -> bool:
+    """Is `PairedCompositeSink::new`'s content open behind the shared skip?
+
+    Factored out so the guard below and its positive control run the SAME
+    predicate — an assertion that only ever sees green text is an assertion
+    nobody has proved bites.
+    """
+    body = _non_comment_rust(new_body)
+    if "let skip_content_pcm = content_pcm_skipped(config);" not in body:
+        return False
+    # Exactly one content open exists in the constructor at all, so "not in the
+    # skip arm" is the same statement as "in the else arm".
+    if body.count("Direction::Capture") != 1:
+        return False
+    # The decisive check: the skip arm opens NOTHING.
+    then_arm = _rust_fn_body(body, None, "if skip_content_pcm ")
+    if "PCM::new" in then_arm:
+        return False
+    return body.index("if skip_content_pcm {") < body.index("Direction::Capture")
+
+
+def test_outputd_composite_skips_the_content_pcm_on_a_ring_box():
+    """P8b item 1a: the composite sink honours the content-PCM skip its coherent
+    sibling already had, off ONE shared predicate.
+
+    Why this matters, and why it is a gate rather than a tidy-up: under the
+    `shm_ring` content source the run loop reads the ring and never calls
+    `read_content_period`, so a composite that still opened its aloop lane would
+    hold a STARTED, UNREAD capture lane. When the reconciler stops rendering
+    `outputd_active_content_capture`, that open fails — exit 1, `Restart=on-failure`,
+    `StartLimitBurst=5`, and `StartLimitAction=reboot`. A reboot loop, on a
+    condition no restart can clear.
+
+    A static source check for the reason
+    `test_outputd_composite_children_take_the_declared_edge_width` gives: neither
+    `new` can be constructed without live ALSA PCMs. The pure pieces (the /state
+    shape a skipped lane reports) are covered by the Rust unit test
+    `a_skipped_content_lane_reports_one_shape_on_both_sinks`; this pins the wiring
+    between them.
+    """
+    alsa_rs = (REPO / "rust" / "jasper-outputd" / "src" / "alsa_backend.rs").read_text()
+    main_rs = (REPO / "rust" / "jasper-outputd" / "src" / "main.rs").read_text()
+
+    # ONE predicate, defined once and read by both sinks. Counting the CALLS is
+    # the point: a second sink that re-spelled the comparison inline would keep
+    # this file compiling and silently re-open the divergence the shared owner
+    # exists to close.
+    # (The definitions read `(config: &Config)`, so they are not call sites and
+    # do not count here — each count below is exactly the two `new`s.)
+    assert "fn content_pcm_skipped(config: &Config) -> bool {" in alsa_rs
+    assert _non_comment_rust(alsa_rs).count("content_pcm_skipped(config)") == 2, (
+        "expected exactly two call sites — one per sink. If a THIRD legitimate "
+        "reader appears, raise this count; do not re-spell the comparison inline "
+        "(the absence assertion below is the invariant that actually matters)."
+    )
+    # Same for the /state stand-in: one synthetic, both sinks, one vocabulary.
+    assert "fn synthetic_content_negotiated(config: &Config) -> NegotiatedPcm {" in alsa_rs
+    assert _non_comment_rust(alsa_rs).count("synthetic_content_negotiated(config)") == 2
+
+    # THE INVARIANT THE COUNTS ARE ONLY A PROXY FOR: this file names the bridge
+    # enum in exactly two places, and both are the owner's own match arms.
+    # Counting CALLS cannot see a site that re-derives the fact instead of asking
+    # for it, and one such site survived the first cut of this change:
+    # `AlsaBackend::new`'s own `content_source=` argument still compared the enum
+    # inline while the answer sat in scope as a local, so the two sinks derived
+    # the same key two ways. Equal answers then; two answers the moment the
+    # predicate grows an arm.
+    #
+    # Pinned on the BARE TYPE NAME rather than on one spelling of the comparison.
+    # A spelling-specific needle is defeated by every re-derivation that is not
+    # character-identical to the one it was written against — `!=
+    # ContentBridgeMode::Direct`, a `matches!`, or the same `==` with the type
+    # imported rather than path-qualified. The type name survives all of them.
+    assert _non_comment_rust(alsa_rs).count("ContentBridgeMode") == 2, (
+        "the bridge-mode decision belongs to `content_pcm_skipped` alone (whose "
+        "two match arms are the two expected mentions); call it instead of "
+        "re-deriving it"
+    )
+    # And the owner decides by exhaustive match, so a new bridge variant is a
+    # compile error rather than a silent "open the lane".
+    skipped_body = _rust_fn_body(alsa_rs, None, "fn content_pcm_skipped(config: &Config)")
+    assert "match config.content_bridge_mode {" in skipped_body
+    assert "ContentBridgeMode::Direct => false," in skipped_body
+    assert "_ =>" not in skipped_body, "a catch-all arm defeats the point of the match"
+
+    # The composite holds an OPTIONAL content PCM, exactly as its sibling does.
+    composite_struct = alsa_rs.split("pub struct PairedCompositeSink {", 1)[1].split(
+        "\n}", 1
+    )[0]
+    assert "content: Option<PCM>," in composite_struct
+    assert "content_format: Option<SampleFormat>," in composite_struct
+
+    # And the open really is behind the guard.
+    new_body = _rust_fn_body(alsa_rs, "impl PairedCompositeSink", "pub fn new(config: &Config)")
+    assert len(new_body) > 400, f"composite new() body looks truncated: {new_body!r}"
+    assert _composite_content_open_is_guarded(new_body)
+
+    # `/state` sees the composite's own answer, unwrapped. While this arm read
+    # `Some(sink.content_format())`, a skipped composite would have claimed a
+    # negotiated format it never held, and `run_alsa`'s `if let Some(..)` would
+    # have stamped the declaration into STATUS as a readback.
+    content_format_fn = main_rs.split(
+        "fn content_format(&self) -> Option<SampleFormat> {", 1
+    )[1].split("\n    }", 1)[0]
+    assert "Self::Single(sink) => sink.content_format()," in content_format_fn
+    assert "Self::Composite(sink) => sink.content_format()," in content_format_fn
+    assert "Some(sink.content_format())" not in content_format_fn
+
+    # The composite's no-lane refusal is PARK-class (EX_CONFIG 78), not the
+    # ordinary exit-1 that walks this unit's restart ladder into
+    # `StartLimitAction=reboot` — the failure the whole change exists to remove.
+    # Pinned because it is a deliberate asymmetry with the sibling's line, and an
+    # asymmetry recorded only in a comment is one a future "restore symmetry"
+    # edit silently reverses.
+    read_body = _rust_fn_body(
+        alsa_rs, "impl PairedCompositeSink", "pub fn read_content_period("
+    )
+    assert "final_sink_startup(self.content.as_ref().context(" in read_body, (
+        "the composite's absent-lane refusal must park, not exit 1"
+    )
+
+
+def test_the_composite_content_skip_guard_can_actually_fail():
+    """The guard's own tripwire: prove it would bite on the shape it forbids.
+
+    Two poisons, each aimed at a different clause, because a predicate whose
+    first check always short-circuits is a predicate whose real assertion has
+    never run.
+    """
+    alsa_rs = (REPO / "rust" / "jasper-outputd" / "src" / "alsa_backend.rs").read_text()
+    new_body = _rust_fn_body(alsa_rs, "impl PairedCompositeSink", "pub fn new(config: &Config)")
+    assert _composite_content_open_is_guarded(new_body), "control must start green"
+
+    # Poison 1 — the PRE-CHANGE shape: no skip guard at all, so the content open
+    # runs unconditionally. This is the text the change replaced, and the guard
+    # must reject it.
+    unguarded = new_body.replace(
+        "let skip_content_pcm = content_pcm_skipped(config);", ""
+    )
+    assert "content_pcm_skipped(config)" not in _non_comment_rust(unguarded)
+    assert not _composite_content_open_is_guarded(unguarded)
+
+    # Poison 2 — the guard is present but the skip arm opens a PCM anyway: the
+    # regression that would re-create the unread lane while still looking
+    # guarded. `Direction::Playback` keeps the capture count at 1 so this poison
+    # can only be caught by the decisive skip-arm clause, not by the count.
+    smuggled = new_body.replace(
+        "if skip_content_pcm {",
+        "if skip_content_pcm {\n            let _ = PCM::new(&config.content_pcm, Direction::Playback, true);",
+        1,
+    )
+    assert _non_comment_rust(smuggled).count("Direction::Capture") == 1
+    assert not _composite_content_open_is_guarded(smuggled)
+
+
 def test_outputd_single_sink_is_width_parametric_with_mono_reference_fold():
     """The coherent single sink carries width as DATA (a DAC8x rides the same
     path as a 2ch Apple), publishes a stereo reference via a clip-proof 1/N mono

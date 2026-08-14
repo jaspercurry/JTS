@@ -475,6 +475,32 @@ N-channel. P8b — composite ring plus bonded round-trip ingress — moves
 out to later, and still hard-gates P9; jts5 stays on aloop lanes 5/6
 until P8b.
 
+**P8b item 1a — the composite content-PCM skip — LANDED.** The one piece of
+P8b's item 1 that is independent of the rest and safe on its own, so it
+landed alone rather than waiting on the arm-enabling set.
+`PairedCompositeSink::new` opened and `.start()`ed its active content
+capture PCM unconditionally, while its `AlsaBackend` sibling had carried a
+`skip_content_pcm` arm since the ring shipped. Under `shm_ring` the run
+loop reads the ring and never calls `read_content_period`, so a composite
+would have held a **started, unread** aloop capture lane — and once P9-C
+removes `outputd_active_content_capture`, that open fails, exit 1,
+`Restart=on-failure`, `StartLimitBurst=5`, `StartLimitAction=reboot`.
+Without 1a, item 1 does not gate P9-C, which is item 1's entire stated
+purpose. The skip decision and its `/state` stand-in are now **one owner
+each**, read by both sinks (`content_pcm_skipped`,
+`synthetic_content_negotiated` in `rust/jasper-outputd/src/alsa_backend.rs`)
+rather than a comparison spelled once per transport — a second copy is
+exactly what let the two diverge in the first place.
+**This changes no box's behaviour and arms nothing**: `Config::from_env`
+still admits `shm_ring` only on a single-ALSA sink (`ring_active_ok`), so
+no composite reaches the skip arm and the change is inert on the fleet —
+which is exactly what made it safe to land alone, ahead of the set that
+widens that gate. The rest of
+item 1 (1b–1f), item 2's bounded per-child xrun recovery, and item 6 ride
+[#2482](https://github.com/jaspercurry/JTS/issues/2482); the standing rule
+from the design holds — **item 1 makes a composite *armable*, item 2 is what
+makes arming one safe, and nothing may be armed between them.**
+
 **Forced ordering inside jts3: R7a before R7b — discharged 2026-08-11.**
 Both rungs have merged and jts3 is armed, so this is why the order was what
 it was, not a live constraint. jts3 *was* blocked on a missing

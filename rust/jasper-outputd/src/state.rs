@@ -995,8 +995,9 @@ impl OutputdState {
         // Ring B honesty contract (latency/ring-proto-shm): under the shm_ring
         // content source, outputd reads the post-DSP program from an n-slot SHM
         // ping-pong ring, NOT an ALSA capture PCM — so `content.buffer_frames`
-        // above is a synthetic period-sized stand-in (AlsaBackend::new never opens
-        // the content PCM). This sub-block reports the TRUE Ring B capacity that
+        // above is a synthetic period-sized stand-in (neither sink opens a content
+        // PCM under this source — `content_pcm_skipped` is the shared owner of
+        // that decision). This sub-block reports the TRUE Ring B capacity that
         // outputd requires of the writer — n_slots x slot_frames — so the synthetic
         // is clearly labeled and jasper-doctor validates the ring geometry instead
         // of mis-applying the ALSA ">= 2x period" jitter floor (which a bounded
@@ -2746,6 +2747,80 @@ mod tests {
             negotiated.contains(r#""dac":{"pcm":"dual_apple_usb_c_dac_4ch","format":"S16_LE""#),
             "a composite's negotiated child width must win: {negotiated}"
         );
+    }
+
+    #[test]
+    fn a_skipped_content_lane_reports_one_shape_on_both_sinks() {
+        // P8b item 1a. `PairedCompositeSink` gained the content-PCM skip its
+        // `AlsaBackend` sibling already had, and the design's binding constraint
+        // was that the /state `content` block under a skipped lane be the SAME
+        // shape on both transports — one vocabulary, two sinks — rather than a
+        // second shape invented for the composite.
+        //
+        // What a skipped lane means at this layer, on either sink: `source` flips
+        // to shm_ring; `format` falls back to the DECLARATION, because no lane
+        // negotiated anything and `run_alsa` therefore never calls
+        // `set_content_format` (its `if let Some(..)` sees the sink's `None`);
+        // and `buffer_frames` is the period-sized SYNTHETIC, not a jitter buffer,
+        // with the true ring capacity carried beside it in `content.ring`.
+        //
+        // Both states are driven identically here — same synthetic negotiated,
+        // no `set_content_format` on either — so any field where the composite
+        // answered differently would show up as a diff. The `pcm` NAME is the one
+        // field that legitimately differs (each sink names its own lane), so it is
+        // compared explicitly rather than being allowed to hide a shape change.
+        let ring = |base: Config| Config {
+            content_bridge_mode: ContentBridgeMode::ShmRing,
+            shm_ring: Some(crate::config::ShmRingConfig {
+                path: "/dev/shm/jts-ring/active.ring".to_string(),
+                n_slots: 2,
+            }),
+            ..base
+        };
+        let coherent = OutputdState::new(&ring(test_config()));
+        let composite = OutputdState::new(&ring(dual_test_config()));
+        // The stand-in `AlsaBackend::new` and `PairedCompositeSink::new` both
+        // report in place of a lane they did not open: `buffer_frames` ==
+        // `period_frames` (see `synthetic_content_negotiated`, their shared
+        // owner). Neither gets a `set_content_format` call, exactly as `run_alsa`
+        // leaves it when the sink answers `None`.
+        let synthetic = NegotiatedPcm {
+            sample_rate: 48_000,
+            period_frames: 1024,
+            buffer_frames: 1024,
+        };
+        let dac = NegotiatedPcm {
+            sample_rate: 48_000,
+            period_frames: 1024,
+            buffer_frames: 3072,
+        };
+        coherent.set_negotiated(synthetic, dac);
+        composite.set_negotiated(synthetic, dac);
+
+        let mut a = parse_snapshot_json(&coherent.snapshot_json())["content"].clone();
+        let mut b = parse_snapshot_json(&composite.snapshot_json())["content"].clone();
+
+        // Each sink names its own lane, and that is the ONLY field allowed to
+        // differ. Asserted positively first so a shape change cannot slip through
+        // as a missing key.
+        assert_eq!(a["pcm"], "outputd_content_capture");
+        assert_eq!(b["pcm"], "outputd_active_content_capture");
+        a["pcm"] = serde_json::Value::Null;
+        b["pcm"] = serde_json::Value::Null;
+        assert_eq!(
+            a, b,
+            "a skipped content lane must report ONE shape on both sinks"
+        );
+
+        // And the shape is the skipped one, not merely a matching pair of wrong
+        // blocks: the source flips, the format is the declaration, and
+        // buffer_frames is the period-sized synthetic sitting beside the ring's
+        // true capacity.
+        assert_eq!(b["source"], "shm_ring");
+        assert_eq!(b["format"], "S16_LE");
+        assert_eq!(b["period_frames"], 1024);
+        assert_eq!(b["buffer_frames"], 1024);
+        assert_eq!(b["ring"]["capacity_frames"], 2048);
     }
 
     #[test]

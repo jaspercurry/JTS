@@ -2466,8 +2466,8 @@ def _outputd_buffer_health(
     ring_detail = ""
     if ring_mode:
         # Ring B (SHM ping-pong content ring): outputd reads the post-DSP program
-        # from an n-slot SHM ring, NOT an ALSA capture PCM (AlsaBackend::new never
-        # opens the content PCM under shm_ring). content.buffer_frames is therefore
+        # from an n-slot SHM ring, NOT an ALSA capture PCM (neither outputd sink
+        # opens a content PCM under shm_ring). content.buffer_frames is therefore
         # a synthetic period-sized stand-in, so the generic ">= 2x period" ALSA
         # jitter-margin floor does not apply — a bounded n-slot queue is not an ALSA
         # buffer, and every shm_ring box would otherwise structurally fail that floor
