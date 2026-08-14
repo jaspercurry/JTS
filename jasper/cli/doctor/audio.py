@@ -315,8 +315,9 @@ def check_loopback() -> CheckResult:
 
     A `loopback`-coupled box runs its entire program path over this
     card. A ring-coupled box still needs it for every lane the ring has
-    not taken; the pair allocation is stated once, in
-    `deploy/modprobe.d/snd-aloop.conf`. U4/P7-4 removed a WRITER — the
+    not taken; the pair allocation lives canonically in
+    `deploy/modprobe.d/snd-aloop.conf` (and is cross-referenced from
+    `deploy/alsa/asoundrc.jasper`). U4/P7-4 removed a WRITER — the
     ring arm's lane-7 mirror — not the card, so the severity is
     unchanged on either coupling. P9 removes snd-aloop itself, and this
     check goes with it.

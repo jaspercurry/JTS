@@ -1627,6 +1627,72 @@ def test_env_route_still_reaches_the_receiver_identity_fail(
     assert not any(command[0] == "journalctl" for command in calls)
 
 
+def test_stale_env_inside_startup_grace_converges_to_ok(
+    monkeypatch,
+    tmp_path: Path,
+):
+    """The ONE case where opening the gate turns a journal FAIL into an OK.
+
+    A bridge restarted seconds ago, a stale `alsa` env, and a journal
+    window still holding the PREDECESSOR's silent-ref windows: the
+    env-gated path FAILed on those windows, the OR path returns the
+    assessor's <=10 s startup grace OK *before* the journal is read.
+
+    That is convergence, not masking, and this pins it as intended: the
+    grace exists precisely so a previous process's windows cannot indict
+    this one, and an env-says-`outputd_udp` box has always taken this
+    same path. Its sibling below asserts the self-correction.
+    """
+    predecessor_silent_ref = "\n".join(
+        _rms_log_line(ref=0, mic=2_500, aec=2_400, attn_db=-0.4)
+        for _ in range(8)
+    )
+    calls = _install_reference_health_check_fakes(
+        monkeypatch,
+        tmp_path,
+        stats=_reference_input_stats(process_age_sec=3.0),
+        journal=predecessor_silent_ref,
+    )
+    monkeypatch.setenv("JASPER_AEC_REF_SOURCE", "alsa")
+    monkeypatch.setattr(doctor.aec, "_loopback_playback_active", lambda: True)
+
+    result = doctor.aec.check_aec_bridge_output_health()
+
+    assert result.status == "ok"
+    assert "startup grace" in result.detail
+    assert not any(command[0] == "journalctl" for command in calls)
+
+
+def test_the_same_box_past_the_startup_grace_fails(
+    monkeypatch,
+    tmp_path: Path,
+):
+    """The sibling: identical inputs, only `process_age` clears the grace.
+
+    Proves the grace OK above is bounded and self-correcting rather than
+    a permanent downgrade — the same silent-ref journal now reaches the
+    FAIL branch.
+    """
+    predecessor_silent_ref = "\n".join(
+        _rms_log_line(ref=0, mic=2_500, aec=2_400, attn_db=-0.4)
+        for _ in range(8)
+    )
+    calls = _install_reference_health_check_fakes(
+        monkeypatch,
+        tmp_path,
+        stats=_reference_input_stats(process_age_sec=60.0),
+        journal=predecessor_silent_ref,
+    )
+    monkeypatch.setenv("JASPER_AEC_REF_SOURCE", "alsa")
+    monkeypatch.setattr(doctor.aec, "_loopback_playback_active", lambda: True)
+
+    result = doctor.aec.check_aec_bridge_output_health()
+
+    assert result.status == "fail"
+    assert "reference path is delivering silence" in result.detail
+    assert any(command[0] == "journalctl" for command in calls)
+
+
 def test_neither_route_outputd_keeps_the_journal_fallback(
     monkeypatch,
     tmp_path: Path,

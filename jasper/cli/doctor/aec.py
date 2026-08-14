@@ -1071,10 +1071,20 @@ def check_aec_bridge_output_health() -> CheckResult:
     # while the bridge converges — `aec_bridge._resolved_reference_source`).
     # Gating on the env alone sent exactly that box to the music-conditional
     # journal fallback, which returns OK for a dead reference whenever no
-    # snd-aloop renderer lane is open. OR is the fail-closed direction:
-    # enforcing the contract can only add a FAIL, never mask one, and the
-    # env-says-outputd/receiver-says-otherwise case keeps reaching the
-    # assessor's runtime-identity FAIL instead of being skipped.
+    # snd-aloop renderer lane is open. OR is the fail-closed direction, with
+    # one bounded and intended exception: enforcing the contract adds the
+    # assessor's identity / freshness / malformed-contract FAILs that the
+    # env-gated path skipped, and the env-says-outputd/receiver-says-otherwise
+    # case keeps reaching the runtime-identity FAIL instead of being skipped —
+    # but the assessor's <=10 s startup grace returns OK BEFORE the journal is
+    # read, so a bridge restarted seconds ago whose PREDECESSOR's silent-ref
+    # windows are still inside the unit-scoped 90 s journal now reports OK
+    # where the env-gated path reported FAIL. That is convergence, not
+    # masking: it is the same grace an env-says-`outputd_udp` box has always
+    # taken, it is what the grace exists for (a previous process's windows
+    # cannot indict this one), and it self-corrects the moment `process_age`
+    # clears the grace. Pinned as intended by the grace/past-grace pair in
+    # tests/test_doctor_aec.py.
     applied_source = _applied_reference_source(bridge_stats)
     configured_source = (
         "outputd_udp"

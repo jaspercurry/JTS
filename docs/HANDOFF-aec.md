@@ -3,8 +3,11 @@
 This document describes the AEC subsystem in detail: why it exists,
 what we tried, what failed, what shipped, and what's still open. It
 is the canonical source for anyone touching `jasper-aec-bridge`,
-`jasper-aec-init`, the outputd UDP speaker monitor the bridge takes
-its reference from, the bridge↔voice
+`jasper-aec-init`, how the bridge CONSUMES its reference (the outputd
+UDP speaker monitor itself is owned by
+[HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md),
+which says to read it before changing AEC reference routing), the
+bridge↔voice
 UDP transport (see [HANDOFF-resilience.md](HANDOFF-resilience.md)
 for why it's UDP and not a second snd-aloop card), the
 `jasper/xvf/` XMOS control helper, or any of the
@@ -2519,9 +2522,12 @@ sees `hw:N,M` style devices and a few standard aliases (`default`,
 `sysdefault`, `pulse`); custom asoundrc PCMs aren't enumerated. The
 Python `pyalsaaudio` library calls `snd_pcm_open(name)` directly via
 libasound and respects asoundrc, so it was used for the ref capture
-path. The mic capture and AEC output paths use sounddevice/PortAudio
-(existing daemon convention) since they go through plain `hw:N,M`
-devices — that half is unchanged.
+path. The MIC capture path still uses sounddevice/PortAudio (existing
+daemon convention) because it goes through a plain `hw:N,M` device —
+that half is unchanged. The AEC *output* path is not PortAudio either
+and has not been since the resilience-ladder PR 2: it is a
+non-blocking UDP `sendto` to jasper-voice (see `aec_bridge.py`'s "UDP
+output" comment, which records the `RawOutputStream` it replaced).
 
 The bridge runs as root (no `User=` in the systemd unit), matching the
 existing jasper-camilla/jasper-voice daemon posture for realtime audio
@@ -3111,7 +3117,7 @@ build, with reasoning so we don't keep re-litigating:
 - HA Voice PE community forum threads on XU316 AEC behavior
   (closest neighbor; same chip family)
 
-Last verified: 2026-08-13 (scope: the AEC reference-source contract only — that outputd's UDP speaker monitor is the bridge's sole reference, that the retired `JASPER_AEC_REF_SOURCE=alsa` / `pcm.jasper_ref` fallback is gone from the bridge, the reconciler, and doctor's remediation, and that a box still carrying the retired value converges with a warning while an unknown value still fails, rechecked against `jasper/cli/aec_bridge.py`, `deploy/bin/jasper-aec-reconcile`, `jasper/cli/doctor/aec.py`, and `tests/test_aec_ref_source_retirement.py`; the rest of this file was NOT re-verified in this pass. Prior 2026-08-08 pass, scope: the bridge reference-input freshness paragraph, silent-reference source-aware remediation, current bridge-stats schema prose, and lesson #10 only — exact-schema-v4 receiver-side source/endpoint/frame-count/monotonic snapshot/process/last-frame-age telemetry, the 10 s startup grace, 5 s sustained-staleness failure, fail-closed malformed/stale-v4 contract, one-way precedence over journal content/drift assessment, exact-v4 identity precedence over legacy epoch provenance, outputd-STATUS localization-only rule, old/future-schema journal fallback, bridge-stats provenance, and outputd STATUS fields were rechecked against `jasper/cli/aec_bridge.py`, `jasper/cli/doctor/aec.py`, and focused tests; separately, the active-probe idleness gate was rechecked against `jasper/cli/doctor/aec_probe.py` and focused tests; the rest of this file was NOT re-verified in those passes. Prior same-day pass: the K-lifecycle section only — the chip-reference window comes out of outputd's per-write sample ring, with the sliding window, the split-half median-drift bound, the collection-start floor, and boot's MIN_EDGE_MARGIN bound against the commissioned SYS_DELAY rechecked against `jasper/cli/aec_init.py`, `jasper/chip_aec_alignment.py`, and `rust/jasper-outputd/src/state.rs`. Prior 2026-07-30: managed XVF chip-or-park policy, foreground
+Last verified: 2026-08-14 (scope: the `### Why alsaaudio was used for the reference capture` section and this file's opening canonical-ownership paragraph only — that the bridge imports no `alsaaudio` at all, that the reference transport is a bound UDP socket drained on a thread (`_outputd_ref_udp_thread`), that sounddevice/PortAudio survives ONLY on the mic-capture path because the AEC *output* has been a non-blocking UDP `sendto` since the resilience-ladder PR 2, and that the outputd speaker monitor itself is owned by `HANDOFF-speaker-output-reference.md` rather than this file, rechecked against `jasper/cli/aec_bridge.py` and `docs/HANDOFF-speaker-output-reference.md`; U4/P7-5 gate SF-2/N4. The rest of this file was NOT re-verified in this pass — in particular the `## Bridge ref starvation bug — fixed (2026-05-19)` section's `_ref_thread` references are dated archaeology and were read, not re-derived. Prior 2026-08-13 pass, scope: the AEC reference-source contract only — that outputd's UDP speaker monitor is the bridge's sole reference, that the retired `JASPER_AEC_REF_SOURCE=alsa` / `pcm.jasper_ref` fallback is gone from the bridge, the reconciler, and doctor's remediation, and that a box still carrying the retired value converges with a warning while an unknown value still fails, rechecked against `jasper/cli/aec_bridge.py`, `deploy/bin/jasper-aec-reconcile`, `jasper/cli/doctor/aec.py`, and `tests/test_aec_ref_source_retirement.py`; the rest of this file was NOT re-verified in this pass. Prior 2026-08-08 pass, scope: the bridge reference-input freshness paragraph, silent-reference source-aware remediation, current bridge-stats schema prose, and lesson #10 only — exact-schema-v4 receiver-side source/endpoint/frame-count/monotonic snapshot/process/last-frame-age telemetry, the 10 s startup grace, 5 s sustained-staleness failure, fail-closed malformed/stale-v4 contract, one-way precedence over journal content/drift assessment, exact-v4 identity precedence over legacy epoch provenance, outputd-STATUS localization-only rule, old/future-schema journal fallback, bridge-stats provenance, and outputd STATUS fields were rechecked against `jasper/cli/aec_bridge.py`, `jasper/cli/doctor/aec.py`, and focused tests; separately, the active-probe idleness gate was rechecked against `jasper/cli/doctor/aec_probe.py` and focused tests; the rest of this file was NOT re-verified in those passes. Prior same-day pass: the K-lifecycle section only — the chip-reference window comes out of outputd's per-write sample ring, with the sliding window, the split-half median-drift bound, the collection-start floor, and boot's MIN_EDGE_MARGIN bound against the commissioned SYS_DELAY rechecked against `jasper/cli/aec_init.py`, `jasper/chip_aec_alignment.py`, and `rust/jasper-outputd/src/state.rs`. Prior 2026-07-30: managed XVF chip-or-park policy, foreground
 SYS_DELAY-only commissioning, strict identity-plus-K artifact, silent
 K-minus-live-queue lifecycle, native 16 kHz/stereo/S16_LE/128/256 writer
 boundary, and reconciler/status ownership rechecked against implementation and

@@ -404,11 +404,14 @@ def check_fanin_asound_wiring() -> CheckResult:
 
     It is not an AEC check. Since U4/P7-1 the AEC bridge's reference is
     jasper-outputd's UDP speaker monitor, and since U4/P7-2 so is
-    jasper-aec-tune's; neither opens this tap. Every assertion below is
-    file-level drift detection against `deploy/alsa/asoundrc.jasper`,
-    which is why it holds on a ring-coupled box too — there the shipped
-    definitions survive with no writer and no reader until P9-B deletes
-    them.
+    jasper-aec-tune's; neither opens this tap. Every ALSA-graph
+    assertion below is file-level drift detection against
+    `deploy/alsa/asoundrc.jasper`, which is why they hold on a
+    ring-coupled box too — there the shipped definitions survive with
+    no writer and no reader until P9-B deletes them. The one assertion
+    that is not about the graph is the trailing `audio_topology.env`
+    probe, which warns about a leftover from the retired dmix/fanin
+    switcher.
     """
     label = "fan-in ALSA wiring"
     path = Path("/etc/asound.conf")
