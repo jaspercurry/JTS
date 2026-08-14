@@ -697,6 +697,40 @@ What exists:
   `/state` surface alive without opening ALSA, and stops `jasper-voice` plus
   any stale outputd instance so final-output ALSA ownership cannot keep running
   against removed hardware or burn the outputd reboot escalation budget.
+- **The park is not skippable by an earlier refusal.** Before any of the above
+  runs, the reconciler resolves outputd's capture half for each Camilla
+  playback lane; when that step cannot answer it logs
+  `outputd_endpoint_contract_failed` and exits 66 *ahead of* the env write and
+  the ALSA render. That fallback preserves the running env, which is harmless
+  only while the preserved env describes hardware the pass still sees. One
+  shape it does not: `JASPER_OUTPUTD_BACKEND=alsa` at
+  `JASPER_OUTPUTD_DAC_PCM=outputd_dac` while the ALSA artifact **already on
+  disk** renders that alias as `type null`. The null device accepts every write instantly and no fan-in
+  coupling paces the content side either, so outputd's loop has no clock and
+  spins until `LimitRTTIME` SIGKILLs it — three per burst, then
+  `StartLimitAction=reboot` (issue #2489, observed live 2026-08-14: three
+  consecutive reboots absorbed by the bootloop guard). The fallback therefore
+  flips that one key to `fake` first and logs
+  `outputd_env_clockless_park … action=park_backend_fake`; every other
+  preserved shape — a healthy `alsa` env, an armed composite whose DAC edge is
+  its two child PCMs, an already-`fake` env — is left byte-unchanged. Exactly
+  one key moves, because the preserved env is known to start and writing more
+  (clearing the active-lane pair under an armed shm-ring content bridge) would
+  trip outputd's own allowlist and park it at exit 78 instead.
+  The park is additionally gated on the pass having **observed** the hardware
+  at all: a pass whose observation failed knows strictly less than the pass
+  that wrote that env, so preserving is the better bet. That is what keeps a
+  broken interpreter — which fails the observation and the endpoint contract
+  together — from parking a healthy recognized DAC.
+  **Every conjunct reads an artifact rather than re-deriving one**, and that
+  distinction is load-bearing: this exit returns ~87 lines *ahead of*
+  `render_asound_if_needed`, so the pass renders no ALSA and the alias outputd
+  opens is whatever an EARLIER pass left. Asking what this pass *would* render
+  answered a question nobody had asked — on a recognized → unrecognized
+  transition it reported "null" while the live template still said `type hw
+  card A`, which parks a box whose DAC is still playing on a detail string that
+  is false. The guard greps the rendered template's `pcm.outputd_dac` block
+  instead, and an absent or unreadable template declines rather than assumes.
 - Apple-only analog mixer services: `jasper-dac-init.service` and
   `jasper-headphone-monitor.service` exist to pin/watch the Apple USB-C
   dongle `Headphone` control. The audio-hardware reconciler enables

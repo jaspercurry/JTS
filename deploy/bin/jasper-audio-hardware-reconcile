@@ -411,6 +411,7 @@ validate_outputd_env_stage() {
             validate-outputd-env \
             --base-env "$ENV_FILE" \
             --outputd-env "$OUTPUTD_ENV_STAGE_FILE" \
+            --outputd-label "$OUTPUTD_ENV_FILE" \
             --fanin-env "$FANIN_ENV_FILE" \
             --camilla-statefile "$CAMILLA_STATEFILE" \
             --camilla2-statefile "$CAMILLA2_STATEFILE" \
@@ -442,6 +443,160 @@ validate_outputd_env_stage() {
 resolve_outputd_capture_device() {
     "$OUTPUT_HARDWARE_PYTHON" -m jasper.cli.audio_config \
         outputd-capture-device --playback-device "$1"
+}
+
+# Is $2 stated at all in env file $1? An env file states a key by naming it,
+# even to the empty string — which is NOT the same as omitting it, and the two
+# resolve differently below.
+env_file_states_key() {
+    [[ -f "$1" ]] && grep -qE "^[[:space:]]*${2}[[:space:]]*=" "$1"
+}
+
+# The value outputd RUNS for one of its env keys.
+#
+# $1 = key, $2 = the value that applies when NO env file states it. Two things
+# this has to get right, because a guard that reasons about what the daemon will
+# actually open is only as true as its resolution:
+#
+# BOTH LAYERS. jasper-outputd.service chains EnvironmentFile=/etc/jasper/jasper.env
+# then EnvironmentFile=-/var/lib/jasper/outputd.env, later wins. jasper.env is the
+# DOCUMENTED operator layer and the reconciler's own convention is that an
+# operator key there wins by having the generated key DROPPED from outputd.env
+# (jasper_env_file_unset; pinned by
+# test_reconcile_operator_env_override_survives_reconciler) — precisely the state
+# an outputd.env-only read cannot see. Reading one layer made the guard blind to
+# every operator override.
+#
+# UNSET vs EMPTY. outputd's env_str (rust/jasper-env/src/lib.rs) is
+# `std::env::var(name).unwrap_or_else(|_| default)` — it falls back only when the
+# variable is UNSET. A stated-but-empty JASPER_OUTPUTD_BACKEND= is therefore the
+# empty string to outputd, which fails its config parse rather than meaning
+# `alsa`. Resolving empty to the default would let this guard claim a backend the
+# daemon will never run, so a stated key keeps its stated value and only an
+# unstated one takes the default.
+outputd_env_effective() {
+    local key="$1" fallback="$2" file
+    # Reverse precedence order: last file that states the key wins, matching the
+    # unit's EnvironmentFile chain.
+    for file in "$OUTPUTD_ENV_FILE" "$ENV_FILE"; do
+        if env_file_states_key "$file" "$key"; then
+            printf '%s' "$(env_file_value_from "$file" "$key")"
+            return 0
+        fi
+    done
+    printf '%s' "$fallback"
+}
+
+# Does the ALSA artifact ON DISK render `pcm.outputd_dac` as the null device?
+#
+# Reads the rendered artifact rather than re-deriving what this pass WOULD
+# render, because on the endpoint-contract path this pass renders NOTHING: the
+# exit is ~87 lines ahead of render_asound_if_needed, so the alias outputd
+# actually opens is whatever an EARLIER pass left. Asking
+# jasper_asound_outputd_dac_parked here answered a question nobody had asked —
+# on a recognized -> unrecognized transition it reported "null" while the live
+# artifact still said `type hw card A`, which would park a box whose DAC was
+# still playing, on a detail string that was simply false.
+#
+# $ASOUND_TEMPLATE is the reconciler's own output and the SOURCE of this block:
+# jasper-render-asound-conf copies it verbatim into asound.conf, substituting
+# only __RATE_CONVERTER__. Fail closed — an absent or unreadable template is not
+# evidence of a null alias, so it declines rather than assuming.
+asound_artifact_parks_outputd_dac() {
+    [[ -f "$ASOUND_TEMPLATE" ]] || return 1
+    awk '
+        /^[[:space:]]*pcm\.outputd_dac[[:space:]]*\{/ { depth = 1; next }
+        depth && /\{/ { depth++ }
+        depth && /^[[:space:]]*type[[:space:]]+null[[:space:]]*$/ { found = 1 }
+        depth && /\}/ { depth--; if (depth <= 0) exit found ? 0 : 1 }
+        END { exit found ? 0 : 1 }
+    ' "$ASOUND_TEMPLATE"
+}
+
+# Turn a preserve_runtime_env fallback into the do-no-harm park when the env it
+# would preserve is the CLOCKLESS PAIR.
+#
+# preserve_runtime_env means "this pass could not derive an answer, so change
+# nothing", and that is only harmless while the env already on disk describes
+# hardware this pass still sees. In one shape it does not: the preserved env
+# opens the REAL ALSA backend at the single-ALSA DAC edge (`outputd_dac`) while
+# the ALSA artifact on disk renders that same alias as `type null`. The null
+# device accepts every write instantly, so nothing paces outputd's output loop
+# from the DAC side — and nothing paces it from the content side either,
+# whichever fan-in coupling is live (a shm ring never blocks, and an unfed
+# loopback capture does not pace either). With no clock anywhere the RT loop
+# spins flat out until LimitRTTIME SIGKILLs it, ~1 s per start; three per burst,
+# then StartLimitAction=reboot. Observed live on jts.local 2026-08-14 (issue
+# #2489): three consecutive reboots, absorbed by the bootloop guard.
+#
+# EVERY conjunct reads an artifact rather than re-deriving one. That is the whole
+# discipline here: this pass writes no env and renders no ALSA before it exits,
+# so the only truthful evidence about what outputd will open is what is already
+# on disk. `asound_artifact_parks_outputd_dac` reads the rendered template; the
+# env conjuncts read both env layers. Note the alias is also parked for an ARMED
+# composite, which is why the env conjuncts matter: a composite runs
+# SINK=dual_apple against its two child PCMs and never opens this alias.
+#
+# Exactly ONE key moves. The preserved env is known to parse and start (outputd
+# logged `event=outputd.ready backend=alsa` before each kill), so every other
+# key in it is already coherent; flipping the one key that governs whether ALSA
+# is opened at all turns the same env into a paced idle (`run_fake` sleeps one
+# period per iteration). Writing MORE would be actively worse — clearing the
+# active-lane pair while a shm-ring content bridge is still armed trips
+# outputd's own active-ring allowlist and parks it at exit 78.
+#
+# Written straight to the live file, not through the staged candidate: the
+# stage's validator needs Python, and a Python that cannot answer is one of the
+# ways the endpoint contract fails in the first place. Bash-only by design.
+#
+# Gated on OBSERVED_OUTPUT_VALID, which is what makes this pass's verdict
+# authoritative enough to overrule the env on disk. A pass that could not
+# observe the hardware at all knows strictly less than the pass that wrote that
+# env, and it re-renders no asound either — so the two artifacts on disk stay
+# the coherent pair they were, and preserving is genuinely the better bet.
+# Without this conjunct a broken interpreter (which fails the observation and
+# the endpoint contract together) would park a healthy recognized DAC at the
+# next outputd start. #2489's box had the opposite shape: the observation
+# SUCCEEDED and identified the composite, which is exactly why its verdict
+# contradicted the preserved env.
+#
+# Returns 0 when it parked, 1 when the preserved env is left exactly as found.
+park_preserved_env_if_clockless() {
+    if [[ "$OBSERVED_OUTPUT_VALID" != "1" ]]; then
+        return 1
+    fi
+    if [[ "$(outputd_env_effective JASPER_OUTPUTD_BACKEND alsa)" != "alsa" ]]; then
+        return 1
+    fi
+    if [[ "$(outputd_env_effective JASPER_OUTPUTD_SINK single_alsa)" != "single_alsa" ]]; then
+        return 1
+    fi
+    if [[ "$(outputd_env_effective JASPER_OUTPUTD_DAC_PCM outputd_dac)" != "outputd_dac" ]]; then
+        return 1
+    fi
+    if ! asound_artifact_parks_outputd_dac; then
+        return 1
+    fi
+    set_env_file_var "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_BACKEND" "fake"
+    log_event "outputd_env_clockless_park" \
+        "outputd_env=${OUTPUTD_ENV_FILE} backend=alsa->fake dac_pcm=outputd_dac" \
+        "asound_template=$(jasper_asound_log_token "$ASOUND_TEMPLATE")" \
+        "output_dac_id=$(jasper_asound_log_token "$OUTPUT_DAC_ID")" \
+        "output_dac_recognized=${OUTPUT_DAC_RECOGNIZED}" \
+        "detail=preserved_env_opened_alsa_at_a_null_parked_dac"
+    return 0
+}
+
+# The endpoint contract could not resolve outputd's capture half for $1. Land in
+# a state that idles rather than one that spins, then fail loudly.
+outputd_endpoint_contract_failed_exit() {
+    local action="preserve_runtime_env"
+    if park_preserved_env_if_clockless; then
+        action="park_backend_fake"
+    fi
+    log_event "outputd_endpoint_contract_failed" \
+        "playback_device=$1 action=${action}"
+    exit 66
 }
 
 commit_outputd_env_stage() {
@@ -576,8 +731,13 @@ for child in mapping.child_devices:
         APPLE_DONGLE_SERVICE_CARD="auto"
         DUAL_APPLE_DAC_A_PCM=""
         DUAL_APPLE_DAC_B_PCM=""
+        # active_graph_status prints a reason on EVERY path it declines on, so
+        # an empty capture here is not an unknown reason — it is the probe
+        # producing no output at all (the interpreter died before printing:
+        # a kill, an OOM, a crash below its own except). Name that, rather
+        # than the un-derived `unknown` an operator can do nothing with.
         log_event "dual_apple_detected" \
-            "status=ready action=park_until_active_graph reason=${graph_status:-unknown}"
+            "status=ready action=park_until_active_graph reason=${graph_status:-active_graph_probe_no_output}"
         return
     fi
     OUTPUT_DAC_ID="dual_apple_usb_c_dac_4ch"
@@ -1465,16 +1625,12 @@ apply_observed_composite_policy
 if ! DEFAULT_OUTPUTD_CAPTURE_DEVICE="$(
     resolve_outputd_capture_device "$DEFAULT_OUTPUTD_PLAYBACK_DEVICE"
 )" || [[ -z "$DEFAULT_OUTPUTD_CAPTURE_DEVICE" ]]; then
-    log_event "outputd_endpoint_contract_failed" \
-        "playback_device=${DEFAULT_OUTPUTD_PLAYBACK_DEVICE} action=preserve_runtime_env"
-    exit 66
+    outputd_endpoint_contract_failed_exit "$DEFAULT_OUTPUTD_PLAYBACK_DEVICE"
 fi
 if ! ACTIVE_OUTPUTD_CAPTURE_DEVICE="$(
     resolve_outputd_capture_device "$ACTIVE_OUTPUTD_PLAYBACK_DEVICE"
 )" || [[ -z "$ACTIVE_OUTPUTD_CAPTURE_DEVICE" ]]; then
-    log_event "outputd_endpoint_contract_failed" \
-        "playback_device=${ACTIVE_OUTPUTD_PLAYBACK_DEVICE} action=preserve_runtime_env"
-    exit 66
+    outputd_endpoint_contract_failed_exit "$ACTIVE_OUTPUTD_PLAYBACK_DEVICE"
 fi
 
 env_changed=0
