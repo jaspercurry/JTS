@@ -470,11 +470,12 @@ once, so polling does not reset controls, disclosure state, or text selection.
   stage). It sits above the metric tiles because a speaker that cannot play
   outranks every number below it, and it renders before the metrics warm-up
   gate because it comes from a different sampler. The browser decides only
-  *whether* to show it: the sentence has one writer (`_parked_signal` /
-  `_stopped_dsp_signal` in `jasper/control/audio_health.py`), and `warn` /
-  `unknown` deliberately stay off the front page. Before #2381 the System view
-  had no audio surface at all, so a structurally-silent speaker looked exactly
-  like an idle healthy one.
+  *whether* to show it, never what it says: each sentence has exactly one
+  writer, and the writers are `_parked_signal`, `_stopped_dsp_signal`, and
+  `_signal_path`'s seven issue shapes — all in
+  `jasper/control/audio_health.py`. `warn` / `unknown` deliberately stay off
+  the front page. Before #2381 the System view had no audio surface at all, so
+  a structurally-silent speaker looked exactly like an idle healthy one.
 - 6 metric tiles: Memory, Load, CPU, Temp, Fan (if present), Disk —
   sparklines where history is useful. Memory also shows root cgroup-v2
   total / anon / file / kernel / other buckets when the controller is
