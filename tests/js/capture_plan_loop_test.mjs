@@ -330,6 +330,15 @@ function makeRecorder() {
       recorder.stops += 1;
       return new Float32Array(4800); // 100ms of silence @ 48kHz
     },
+    // The real recorder's #2094 counters, matching the array stop() returns:
+    // 4800 frames is 37.5 render quanta, so the fixture rounds to whole blocks
+    // the way a real recording does.
+    captureStats() {
+      return {
+        frames: 4800, blocks: 38, block_gaps: 0,
+        block_gap_frames: 0, silent_blocks: 0,
+      };
+    },
     async close() {
       recorder.closes += 1;
     },
@@ -769,6 +778,14 @@ async function testFullAcceptedRoundTripEndsAllDone() {
     assert.ok(report.noise_floor, "…and its noise floor");
     // A clean round reports a clean take: watched, and nothing lost.
     assert.equal(report.capture_integrity.focus_lost, false);
+    // #2094: the page's half of the host's end-to-end frame ledger rides the
+    // same report. `encoded_frames` must be the length of the array this round
+    // actually encoded — if the runner stops passing it, the host's ledger
+    // silently degrades to not-evaluated and checks nothing, which is the very
+    // state the ledger exists to end.
+    assert.equal(report.capture_integrity.frames, 4800);
+    assert.equal(report.capture_integrity.encoded_frames, 4800);
+    assert.equal(report.capture_integrity.block_gap_frames, 0);
   }
   assert.deepEqual(blobPuts.map((b) => b.captureIndex), [0, 1, 2]);
   // ORDERING IS THE GUARANTEE (#2151): the report is posted BEFORE the blob, so

@@ -72,6 +72,7 @@ from jasper.audio_measurement import analysis as analysis_mod
 from jasper.audio_measurement import calibration as calibration_mod
 from jasper.audio_measurement import deconv, gate_disclosure, gating, snr_policy
 from jasper.audio_measurement.frame_fit import FrameComparison, fit_frame
+from jasper.audio_measurement.frame_ledger import FrameLedger, reconcile_capture_frames
 from jasper.audio_measurement.program import (
     AMBIENT_SEGMENT_ID,
     KIND_PILOT,
@@ -262,6 +263,21 @@ INTEGRITY_PASS = "pass"
 INTEGRITY_FAIL = "fail"
 INTEGRITY_NOT_EVALUATED = "not_evaluated"
 
+# The two frame-accounting checks (issue #2094), asked BEFORE anything about
+# the signal because they are more fundamental than it: a capture that is
+# missing frames is not a worse measurement of the speaker, it is a
+# measurement of something that was never recorded. They read
+# :class:`~jasper.audio_measurement.frame_ledger.FrameLedger`, whose module
+# docstring owns the per-hop exactness argument.
+#
+# Two checks rather than one because the two losses are independently
+# evaluable and independently caused: an older capture page reports render
+# continuity but declares no counts, and — the 2026-08-03 shape — a skipped
+# render quantum leaves every count agreeing with every other while the
+# recording is short. Collapsing them would force one answer to stand for two
+# questions, which is the defect ``IntegrityCheck`` exists to prevent.
+INTEGRITY_CHECK_RENDER_GAP = "capture_render_gap"
+INTEGRITY_CHECK_FRAME_LEDGER = "frame_ledger"
 # The checks a single summed sweep CAN answer. These are the substitutes the
 # 2026-07-31 P0 repeat-floor bench had to assemble by hand
 # (captures/repeat-floor-20260731/README.md) because no shipped gate covered
@@ -289,6 +305,10 @@ _INTEGRITY_STEP_NEEDS_MORE_SWEEPS = (
 )
 _INTEGRITY_NO_SUMMED_SWEEP = "no summed sweep located in this capture"
 _INTEGRITY_NO_STIMULUS = "no stimulus segment located in this capture"
+_INTEGRITY_NO_RENDER_REPORT = (
+    "the capture page reported no render-block counters"
+)
+_INTEGRITY_NO_FRAME_COUNT = "the capture page declared no frame count"
 _INTEGRITY_SWEEP_NOT_HEARD = (
     "the summed sweep was not confidently located, so its schedule residual "
     "is not evidence"
@@ -1380,6 +1400,17 @@ class ProgramAnalysis:
     # ``None`` on CHECK/MEASURE and on analyses built before this field
     # existed: "no evidence", never "clean" — see :class:`CaptureIntegrity`.
     capture_integrity: CaptureIntegrity | None = None
+    # End-to-end frame accounting for the capture that produced this analysis
+    # (issue #2094). Set on EVERY phase by ``analyze_program_capture``, unlike
+    # ``capture_integrity`` above: hop B's ±128-frame loss was found in a
+    # MEASURE session, and a record that only existed on VERIFY would have been
+    # absent exactly where the defect was. Only VERIFY turns it into graded
+    # ``CaptureIntegrity`` checks, because MEASURE's ``glitch_detected`` has a
+    # single owner (``DriftEstimate``) and a second writer would break the
+    # one-bit-projection invariant that field's comment states.
+    # ``None`` only on analyses built directly rather than through
+    # ``analyze_program_capture`` (test doubles, replay fixtures).
+    frame_ledger: FrameLedger | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -2362,10 +2393,77 @@ def _estimate_drift(
 # --------------------------------------------------------------------------- #
 
 
+def _frame_accounting_checks(ledger: FrameLedger) -> list[IntegrityCheck]:
+    """The two frame-accounting checks, most fundamental first (issue #2094).
+
+    ``capture_render_gap`` asks whether the browser's audio render graph handed
+    the recorder every quantum it should have; ``frame_ledger`` asks whether
+    every frame the page says it recorded reached this host. See
+    :mod:`jasper.audio_measurement.frame_ledger` for why those are two questions
+    and which hops each one can and cannot see.
+
+    **A page that reported nothing leaves both unevaluated, not failed.** The
+    single-capture runner posts no report and older page builds declare no
+    counts; failing them would refuse captures for the age of the phone's
+    bundle, which is not a fact about the recording. That is the same rule the
+    repeat-only checks below already follow, and
+    ``verification.evaluate_capture_validity`` treats a not-evaluated record as
+    usable.
+    """
+    checks: list[IntegrityCheck] = []
+    if not ledger.render_gap_evaluated:
+        checks.append(IntegrityCheck(
+            INTEGRITY_CHECK_RENDER_GAP, INTEGRITY_NOT_EVALUATED,
+            _INTEGRITY_NO_RENDER_REPORT,
+        ))
+    else:
+        checks.append(IntegrityCheck(
+            INTEGRITY_CHECK_RENDER_GAP,
+            INTEGRITY_FAIL if ledger.render_gap_frames else INTEGRITY_PASS,
+        ))
+    if not ledger.balance_evaluated:
+        checks.append(IntegrityCheck(
+            INTEGRITY_CHECK_FRAME_LEDGER, INTEGRITY_NOT_EVALUATED,
+            _INTEGRITY_NO_FRAME_COUNT,
+        ))
+    else:
+        checks.append(IntegrityCheck(
+            INTEGRITY_CHECK_FRAME_LEDGER,
+            INTEGRITY_PASS if ledger.balanced else INTEGRITY_FAIL,
+        ))
+    return checks
+
+
+def _log_frame_ledger(program: ExcitationProgram, ledger: FrameLedger) -> None:
+    """One structured line per analyzed capture — the self-report itself.
+
+    Emitted on every phase and on a CLEAN capture too, at INFO, because the
+    corpus this issue asks for is an event STREAM: "no loss was reported for
+    this capture" and "no capture was analysed" are different facts, and only a
+    line on the clean path tells them apart. A capture that is short is the same
+    line at WARNING, which is what a journal grep for the loss will find.
+    """
+    lost = ledger.lost_at
+    log_event(
+        logger,
+        "program_analysis.frame_ledger",
+        level=logging.WARNING if lost else logging.INFO,
+        phase=program.phase,
+        program_id=program.program_id,
+        received_frames=ledger.received_frames,
+        declared_frames=ledger.declared_frames,
+        encoded_frames=ledger.encoded_frames,
+        render_gaps=ledger.render_gaps,
+        render_gap_frames=ledger.render_gap_frames,
+        lost_at=",".join(lost),
+    )
+
+
 def _verify_capture_integrity(
     program: ExcitationProgram,
     sample_rate: int,
     locations: Sequence[SegmentLocation],
+    frame_ledger: FrameLedger,
 ) -> CaptureIntegrity:
     """Capture-integrity evidence for a ONE-summed-sweep program (issue #1971).
 
@@ -2377,6 +2475,11 @@ def _verify_capture_integrity(
 
     What runs, in routing order:
 
+    0. **frame accounting** (issue #2094, :func:`_frame_accounting_checks`) —
+       ahead of every signal question, because the checks below all ask how good
+       a measurement of the speaker this recording is, and these ask whether the
+       recording is all there. A capture missing a render quantum can locate its
+       sweep perfectly and still be a splice.
     1. **heard** — the summed sweep's own locate confidence against
        :data:`SWEEP_LOCATE_CONFIDENCE_FLOOR`. First because a sweep the
        correlator could barely find lands in the wrong place and then
@@ -2411,7 +2514,10 @@ def _verify_capture_integrity(
       sweep's located START, so an insertion partway through corrupts the
       deconvolution while leaving the start where it belongs. MEASURE's G2 has
       the identical bound; this is the shape ``_locate_discontinuity`` exists
-      to name, and it needs more sweeps than a VERIFY program has.
+      to name, and it needs more sweeps than a VERIFY program has. Check (0)
+      closes the half of this class the BROWSER can see — a render quantum the
+      audio graph never delivered — and closes none of the rest: a splice
+      upstream of the worklet still reaches (2) with contiguous frames.
     * A splice BEFORE the first stimulus, which the global offset absorbs —
       correctly, since a uniformly shifted capture is not corrupt.
     * Anything at all on a LEGACY pilot-less VERIFY program, where the summed
@@ -2434,7 +2540,7 @@ def _verify_capture_integrity(
         worst = max(sweeps, key=lambda loc: abs(loc.residual_samples))
         residual_ms_worst = float(worst.residual_samples) / sample_rate * 1000.0
 
-    checks: list[IntegrityCheck] = []
+    checks: list[IntegrityCheck] = _frame_accounting_checks(frame_ledger)
     if confidence_min is None or residual_ms_worst is None:
         checks.append(IntegrityCheck(
             INTEGRITY_CHECK_SWEEP_HEARD, INTEGRITY_NOT_EVALUATED,
@@ -4443,13 +4549,37 @@ def analyze_program_capture(
     calibration: "CalibrationCurve | None" = None,
     geometry: MeasurementGeometry | None = None,
     priors: MeasurementPriors | None = None,
+    capture_report: Mapping[str, Any] | None = None,
 ) -> ProgramAnalysis:
-    """Analyze a program capture into a :class:`ProgramAnalysis` (design §5.6)."""
+    """Analyze a program capture into a :class:`ProgramAnalysis` (design §5.6).
+
+    ``capture_report`` is the capture page's own per-take account of the
+    recording — ``CaptureResult.capture_integrity``, threaded in by the
+    production analyze seam. It is reconciled against the frames actually handed
+    to this function, and the resulting :class:`~.frame_ledger.FrameLedger`
+    rides every returned analysis. ``None`` (the default, and every caller that
+    has no phone report) leaves the ledger's page-side counts unreported, which
+    grades as not-evaluated rather than as loss.
+
+    **The received count is taken from ``samples`` as handed in**, which is the
+    decoded WAV for every production caller: the rate check above forbids the
+    one transform that could make it something else, since a resampled capture
+    can only reach here by also claiming the program's rate. If a future caller
+    ever does resample upstream, the ledger reports the disagreement rather than
+    hiding it — an unaccounted length change on the capture path is exactly what
+    this record exists to name.
+    """
     if sample_rate != program.sample_rate_hz:
         raise ValueError(
             f"capture rate {sample_rate} != program rate {program.sample_rate_hz}"
         )
     capture = np.asarray(samples, dtype=np.float64).ravel()
+    # BEFORE the truncation below, which is a legitimate transform and must
+    # never read as loss (frame_ledger's hop G).
+    frame_ledger = reconcile_capture_frames(
+        capture_report, received_frames=int(capture.size),
+    )
+    _log_frame_ledger(program, frame_ledger)
     # Bound the capture BEFORE any full-rate FFT (kernel contract: defense at
     # the FFT, 1 GB Pi). A legitimate session capture is the program plus a
     # small phone-start lead; a stuck recording is truncated to the program
@@ -4471,18 +4601,26 @@ def analyze_program_capture(
     locations = _locate_segments(program, capture, sample_rate, global_offset, stimuli)
 
     if program.phase == PHASE_CHECK:
-        return _analyze_check(program, capture, sample_rate, global_offset, locations, priors)
-    if program.phase == PHASE_MEASURE:
-        return _analyze_measure(
+        analysis = _analyze_check(
+            program, capture, sample_rate, global_offset, locations, priors,
+        )
+    elif program.phase == PHASE_MEASURE:
+        analysis = _analyze_measure(
             program, capture, sample_rate, global_offset, locations,
             calibration, geometry, priors,
         )
-    if program.phase == PHASE_VERIFY:
-        return _analyze_verify(
+    elif program.phase == PHASE_VERIFY:
+        analysis = _analyze_verify(
             program, capture, sample_rate, global_offset, locations,
-            calibration, priors,
+            calibration, priors, frame_ledger,
         )
-    raise ValueError(f"unknown phase: {program.phase!r}")
+    else:
+        raise ValueError(f"unknown phase: {program.phase!r}")
+    # Attached HERE rather than inside each phase analyzer so there is one
+    # assignment site for one fact — the same discipline ``glitch_detected``
+    # follows — and so a phase that grows its own analyzer later cannot ship
+    # without it.
+    return replace(analysis, frame_ledger=frame_ledger)
 
 
 def _analyze_check(
@@ -5127,7 +5265,7 @@ def _verify_absolute_result(
 
 def _analyze_verify(
     program, capture, sample_rate, global_offset, locations,
-    calibration, priors,
+    calibration, priors, frame_ledger,
 ) -> ProgramAnalysis:
     fc_hz = float(priors.crossover_fc_hz) if priors.crossover_fc_hz else None
     seg = program.segment("sweep_verify")
@@ -5337,7 +5475,9 @@ def _analyze_verify(
     # analysis — the tracking comparison above is exactly the thing a spliced
     # or clipped recording invalidates, and until this existed nothing on this
     # path ever looked.
-    integrity = _verify_capture_integrity(program, sample_rate, locations)
+    integrity = _verify_capture_integrity(
+        program, sample_rate, locations, frame_ledger,
+    )
     return ProgramAnalysis(
         phase=program.phase,
         program_id=program.program_id,
@@ -5554,6 +5694,19 @@ def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
         out["integrity_clipped_segments"] = ",".join(
             getattr(integrity, "clipped_segments", ()) or ()
         )
+
+    # End-to-end frame accounting (#2094), flat like every other block. Present
+    # on EVERY phase, unlike the integrity block above, so a MEASURE clip in the
+    # forensic ring is self-describing about frame loss too. A retained clip
+    # carrying no ``frames_*`` field at all is one taken before this existed.
+    ledger = getattr(analysis, "frame_ledger", None)
+    if ledger is not None:
+        out["frames_received"] = ledger.received_frames
+        out["frames_declared"] = ledger.declared_frames
+        out["frames_encoded"] = ledger.encoded_frames
+        out["frames_render_gaps"] = ledger.render_gaps
+        out["frames_render_gap_frames"] = ledger.render_gap_frames
+        out["frames_lost_at"] = ",".join(ledger.lost_at)
 
     summed_response = getattr(analysis, "summed_response", None)
     if summed_response is not None:

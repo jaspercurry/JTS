@@ -5135,10 +5135,14 @@ def _mono_wav_bytes(n: int = 4800) -> bytes:
 
 
 class _FakeResult:
-    def __init__(self, setup=None, device=None) -> None:
+    def __init__(self, setup=None, device=None, capture_integrity=None) -> None:
         self.wav = _mono_wav_bytes()
         self.setup = setup
         self.device = device
+        # The phone's own per-take report (#2151), which #2094 reconciles
+        # against the frames this host decodes. `None` is what every capture
+        # from an older page bundle carries.
+        self.capture_integrity = capture_integrity
 
 
 def test_production_analyze_threads_geometry_and_resolved_calibration(monkeypatch):
@@ -5153,7 +5157,8 @@ def test_production_analyze_threads_geometry_and_resolved_calibration(monkeypatc
 
     seen: dict[str, Any] = {}
 
-    def spy(program, samples, rate, *, calibration=None, geometry=None, priors=None):
+    def spy(program, samples, rate, *, calibration=None, geometry=None,
+            priors=None, capture_report=None):
         seen.update(calibration=calibration, geometry=geometry, rate=rate)
         return "analysis"
 
@@ -5195,6 +5200,110 @@ def test_production_analyze_threads_geometry_and_resolved_calibration(monkeypatc
     }
 
 
+def test_production_analyze_threads_the_pages_frame_report(monkeypatch):
+    """#2094: this seam is the ONLY place both halves of the frame ledger exist.
+
+    The page's account arrives on the relay's authenticated event channel and
+    the received count comes out of the WAV this function just decoded, so if
+    the report does not cross here it never gets compared to anything — which
+    is precisely the state the 2026-08-03 forensics found.
+    """
+    from jasper.audio_measurement import program_analysis as pa_mod
+    from jasper.audio_measurement.program import build_verify_program
+    from jasper.audio_measurement.program_analysis import (
+        MeasurementGeometry,
+        MeasurementPriors,
+    )
+
+    seen: dict[str, Any] = {}
+
+    def spy(program, samples, rate, *, calibration=None, geometry=None,
+            priors=None, capture_report=None):
+        seen.update(capture_report=capture_report, frames=len(samples))
+        return "analysis"
+
+    monkeypatch.setattr(pa_mod, "analyze_program_capture", spy)
+
+    report = {"frames": 4, "encoded_frames": 4, "block_gaps": 0,
+              "block_gap_frames": 0}
+    analyze = v2host.bind_production_analyze(
+        resolve_calibration=lambda setup, device: None, meta={},
+    )
+    analyze(
+        build_verify_program(FC_HZ, sweep_s=0.5),
+        _FakeResult(capture_integrity=report),
+        MeasurementPriors(crossover_fc_hz=FC_HZ), MeasurementGeometry(),
+        phase="verify",
+    )
+    assert seen["capture_report"] is report
+
+    # And a capture with no report crosses as None, never as an empty dict —
+    # "the page said nothing" and "the page said zero" are different facts.
+    analyze(
+        build_verify_program(FC_HZ, sweep_s=0.5),
+        _FakeResult(),
+        MeasurementPriors(crossover_fc_hz=FC_HZ), MeasurementGeometry(),
+        phase="verify",
+    )
+    assert seen["capture_report"] is None
+    # And the array it counts is the DECODED capture — 4800 frames, not the
+    # 9644 bytes of the 16-bit WAV those frames arrived in.
+    assert seen["frames"] == 4800
+
+
+def test_retained_sidecar_carries_the_frame_ledger(monkeypatch, tmp_path):
+    """#2094: the reconciliation rides the forensic clip that motivated it.
+
+    The page's raw report already landed here (#2151); what was missing was the
+    host's own count beside it and the verdict on the pair. The reconciliation
+    arithmetic is `tests/test_capture_frame_ledger.py`'s subject; this pins that
+    whatever the analysis concluded reaches the retained sidecar.
+    """
+    from jasper.audio_measurement import program_analysis as pa_mod
+    from jasper.audio_measurement.frame_ledger import reconcile_capture_frames
+    from jasper.audio_measurement.program import build_verify_program
+    from jasper.audio_measurement.program_analysis import (
+        MeasurementGeometry,
+        MeasurementPriors,
+        ProgramAnalysis,
+    )
+
+    dump_dir = tmp_path / "xover-capture-dump"
+    dump_dir.mkdir()
+    (dump_dir / v2host.XOVER_CAPTURE_DUMP_ENABLED_MARKER).touch()
+    monkeypatch.setattr(v2host, "XOVER_CAPTURE_DUMP_DIR", dump_dir)
+
+    # The page claims one render quantum more than the 4800-frame fixture WAV
+    # actually carries — a discrepancy nothing can find without comparing.
+    report = {"frames": 4928, "encoded_frames": 4928,
+              "block_gaps": 0, "block_gap_frames": 0}
+    monkeypatch.setattr(pa_mod, "analyze_program_capture", lambda *a, **k: ProgramAnalysis(
+        phase="verify", program_id="prog-1", locations=(),
+        frame_ledger=reconcile_capture_frames(report, received_frames=4800),
+    ))
+
+    analyze = v2host.bind_production_analyze(
+        resolve_calibration=lambda setup, device: None, meta={},
+    )
+    analyze(
+        build_verify_program(FC_HZ, sweep_s=0.5),
+        _FakeResult(capture_integrity=report),
+        MeasurementPriors(crossover_fc_hz=FC_HZ), MeasurementGeometry(),
+        phase="verify",
+    )
+
+    sidecar = json.loads(sorted(dump_dir.glob("*.json"))[0].read_text())
+    assert sidecar["capture_integrity"] == report
+    assert sidecar["frame_ledger"] == {
+        "received_frames": 4800,
+        "declared_frames": 4928,
+        "encoded_frames": 4928,
+        "render_gaps": 0,
+        "render_gap_frames": 0,
+        "lost_at": ["encoder->host"],
+    }
+
+
 def test_production_analyze_annotates_uncalibrated_when_none_resolves(monkeypatch, caplog):
     import logging as _logging
 
@@ -5207,7 +5316,8 @@ def test_production_analyze_annotates_uncalibrated_when_none_resolves(monkeypatc
 
     seen: dict[str, Any] = {}
 
-    def spy(program, samples, rate, *, calibration=None, geometry=None, priors=None):
+    def spy(program, samples, rate, *, calibration=None, geometry=None,
+            priors=None, capture_report=None):
         seen.update(calibration=calibration)
         return "analysis"
 
@@ -5249,7 +5359,8 @@ def test_production_analyze_threads_mic_tier_from_resolved_calibration(monkeypat
 
     seen: dict[str, Any] = {}
 
-    def spy(program, samples, rate, *, calibration=None, geometry=None, priors=None):
+    def spy(program, samples, rate, *, calibration=None, geometry=None,
+            priors=None, capture_report=None):
         seen["priors"] = priors
         return "analysis"
 
@@ -5292,7 +5403,8 @@ def test_production_analyze_mic_tier_defaults_to_phone_when_no_calibration_resol
 
     seen: dict[str, Any] = {}
 
-    def spy(program, samples, rate, *, calibration=None, geometry=None, priors=None):
+    def spy(program, samples, rate, *, calibration=None, geometry=None,
+            priors=None, capture_report=None):
         seen["priors"] = priors
         return "analysis"
 
@@ -5324,7 +5436,8 @@ def test_production_analyze_mic_tier_handles_a_bare_calibration_curve_record(mon
 
     seen: dict[str, Any] = {}
 
-    def spy(program, samples, rate, *, calibration=None, geometry=None, priors=None):
+    def spy(program, samples, rate, *, calibration=None, geometry=None,
+            priors=None, capture_report=None):
         seen["priors"] = priors
         return "analysis"
 
@@ -5992,7 +6105,8 @@ def test_plan_flow_stored_calibration_lands_in_the_analyze_call_and_evidence(
 
     seen: dict[str, Any] = {}
 
-    def spy(program, samples, rate, *, calibration=None, geometry=None, priors=None):
+    def spy(program, samples, rate, *, calibration=None, geometry=None,
+            priors=None, capture_report=None):
         seen["calibration"] = calibration
         return "analysis"
 
@@ -6052,7 +6166,8 @@ def test_plan_flow_stored_calibration_refuses_on_device_mismatch(
 
     seen: dict[str, Any] = {}
 
-    def spy(program, samples, rate, *, calibration=None, geometry=None, priors=None):
+    def spy(program, samples, rate, *, calibration=None, geometry=None,
+            priors=None, capture_report=None):
         seen["calibration"] = calibration
         return "analysis"
 

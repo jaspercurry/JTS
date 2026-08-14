@@ -249,6 +249,15 @@ export async function createMonoRecorder(options = {}) {
     // continuous", never "the recording is clean". Paired with the page's focus
     // log it still separates the two: a splice with focus lost and no render gap
     // places the fault upstream of the worklet.
+    //
+    // `frames` (issue #2094) is the left edge of the host's end-to-end frame
+    // ledger: how many frames are in the array this worklet is transferring. It
+    // is read off the assembled buffer rather than accumulated separately, so
+    // it cannot drift from the thing it describes. Note it is NOT short when a
+    // render quantum was skipped — the missing frames were never handed to
+    // anyone, so every count downstream agrees while the recording is short.
+    // That is exactly why `block_gap_frames` is reported beside it and not
+    // folded into it.
     const workletSrc =
       'class JtsMonoRecorder extends AudioWorkletProcessor {' +
         'constructor(){super();this.recording=false;this.buf=[];' +
@@ -266,7 +275,7 @@ export async function createMonoRecorder(options = {}) {
               '}' +
               'this.buf=[];' +
               'this.port.postMessage({type:"capture",buffer:out.buffer,stats:{' +
-                'blocks:this.blocks,block_gaps:this.gaps,' +
+                'frames:total,blocks:this.blocks,block_gaps:this.gaps,' +
                 'block_gap_frames:this.gapFrames,silent_blocks:this.silent' +
               '}},[out.buffer]);' +
             '}};}' +

@@ -129,7 +129,20 @@ export function createIntegrityWatch({ win, doc, now, onLoss } = {}) {
 // stall but NOT a resync inside the browser's upstream microphone FIFO. When
 // `focus_lost` is true and `block_gaps` is 0, that asymmetry is itself the
 // finding — it places the discontinuity upstream of the worklet.
-export function summarizeCaptureIntegrity({ watch = null, stats = null } = {}) {
+//
+// `encodedFrames` (issue #2094) is the number of frames this page is about to
+// hand the WAV encoder — `samples.length` at the call site. It is the page's
+// half of an END-TO-END frame ledger the host closes against its own count of
+// the decoded capture, so a future loss reports itself with the losing hop
+// named instead of being found by WAV forensics weeks later. It is passed in
+// rather than read off `stats` on purpose: `stats.frames` is what the WORKLET
+// assembled and this is what SURVIVED the transfer to the page, and a ledger
+// whose two ends came from the same measurement would check nothing.
+export function summarizeCaptureIntegrity({
+  watch = null,
+  stats = null,
+  encodedFrames = null,
+} = {}) {
   const summary = {};
   if (watch) {
     summary.focus_lost = Boolean(watch.lost);
@@ -137,10 +150,13 @@ export function summarizeCaptureIntegrity({ watch = null, stats = null } = {}) {
     summary.focus_events = watch.events();
   }
   if (stats && typeof stats === "object") {
-    for (const key of ["blocks", "block_gaps", "block_gap_frames", "silent_blocks"]) {
+    for (const key of [
+      "frames", "blocks", "block_gaps", "block_gap_frames", "silent_blocks",
+    ]) {
       if (Number.isFinite(stats[key])) summary[key] = stats[key];
     }
   }
+  if (Number.isFinite(encodedFrames)) summary.encoded_frames = encodedFrames;
   return summary;
 }
 

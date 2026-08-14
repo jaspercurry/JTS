@@ -167,10 +167,13 @@ from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.audio_measurement import gating
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import KIND_COURTESY_TONE, RoleBand
+from jasper.audio_measurement.frame_ledger import reconcile_capture_frames
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
     ALIGNMENT_OK,
     INTEGRITY_CHECK_CLIPPED_RUN,
+    INTEGRITY_CHECK_FRAME_LEDGER,
+    INTEGRITY_CHECK_RENDER_GAP,
     INTEGRITY_CHECK_REPEAT_EPSILON,
     INTEGRITY_CHECK_SWEEP_HEARD,
     INTEGRITY_CHECK_SWEEP_SCHEDULE,
@@ -2194,6 +2197,10 @@ def test_verify_clip_refuses_as_a_capture_glitch():
         program,
         integrity=_verify_capture_integrity(
             program, program.sample_rate_hz, (clipped,),
+            # No capture here, so no capture-page report to reconcile: the
+            # frame-accounting checks (#2094) stay not-evaluated and this test
+            # keeps asking only about the clip.
+            reconcile_capture_frames(None, received_frames=0),
         ),
     )
     verdict = _run_phase(c, 3, 3)
@@ -2254,7 +2261,15 @@ def test_verify_diag_discloses_integrity_on_pass_and_on_refusal(caplog):
     c = _verify_to_apply(fakes)
     _run_phase(c, 3, 3)
     assert "integrity=ok" in caplog.text
-    assert f"integrity_not_evaluated={INTEGRITY_CHECK_REPEAT_EPSILON}" in caplog.text
+    # MEMBERSHIP, not position: #2094 put two frame-accounting checks ahead of
+    # the repeat-only ones, and the fact under test is that every unevaluated
+    # check is disclosed by name — never which name comes first.
+    not_evaluated = re.search(
+        r"integrity_not_evaluated=(\S*)", caplog.text
+    ).group(1).split(",")
+    assert INTEGRITY_CHECK_REPEAT_EPSILON in not_evaluated
+    assert INTEGRITY_CHECK_RENDER_GAP in not_evaluated
+    assert INTEGRITY_CHECK_FRAME_LEDGER in not_evaluated
     assert "integrity_locate_confidence_min=0.9" in caplog.text
     assert "integrity_residual_ms_worst=0.0" in caplog.text
 
