@@ -2120,6 +2120,41 @@ def test_state_cloud_block_is_the_compact_projection_of_the_durable_pipeline():
     assert verify["validity_floor_hz"] is None
 
 
+def test_state_cloud_reference_db_survives_an_unbounded_json_integer():
+    """#2245: JSON integers are unbounded and ``json`` round-trips one
+    happily (a hand-edited or hostile durable state file), but ``float()``
+    on one that large RAISES ``OverflowError`` rather than returning
+    ``inf`` — on the wizard's poll path, where an escaping conversion is a
+    500 on a plain page load. The same hazard
+    :func:`_household_findings_status` already guards (the ``10 ** 400``
+    case in ``test_an_unusable_clock_becomes_none_and_never_takes_the_row_with_it``
+    below); ``_finite`` — read here through ``spec.reference_db``, the
+    exact path PR #2242's review found it unreachable-but-real on — now
+    catches it too.
+    """
+    v2host.save_v2_state({
+        "session_id": "cap_overflow",
+        "cloud": {
+            PHASE_CLOUD_MEASURE: {
+                "geometry": {"locked": True, "reason": "geometry_locked", "thin_evidence": False},
+                "positions": [],
+                "pipeline": {
+                    "available": True,
+                    "merged_excluded_bands_hz": [],
+                    "spec": {
+                        "overall_passed": True,
+                        "reference_db": 10 ** 400,
+                        "bands": [],
+                    },
+                },
+            },
+        },
+    })
+
+    measure = v2host.crossover_v2_status_block()["cloud"][PHASE_CLOUD_MEASURE]
+    assert measure["reference_db"] is None
+
+
 def test_state_cloud_block_reports_locked_guidance_even_when_pipeline_never_ran():
     """SF-1 review finding (2026-07-27): a locked group's "spread the mic
     further" guidance must survive an unrelated downstream pipeline failure,
