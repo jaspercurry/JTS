@@ -31,7 +31,7 @@
 // `addFrame` directly with Float32 chunks. dBFS is computed exactly like the
 // Pi's `quality._dbfs` via the shared `rmsToDbfs`.
 
-import { rmsToDbfs, delayMs } from "./measurement-audio.js?v=20260805-1";
+import { rmsToDbfs, delayMs } from "./measurement-audio.js?v=20260814-1";
 
 // Level-event schema version — MUST match
 // jasper.audio_measurement.ramp.LEVEL_EVENT_SCHEMA_VERSION. Bump both together.

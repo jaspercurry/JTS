@@ -216,7 +216,7 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         # deployed page still advertises [1, 2, 3], so this page build must
         # publish AFTER the Pis stop emitting 1 and 2, not before.
         "supported_capture_protocol_versions": [3],
-        "capture_page_build": "20260808.2",
+        "capture_page_build": "20260814.1",
     }
     # The ?v= query is the page's ONLY cache-invalidation mechanism, and the
     # Pi's build gate checks the stamp's FORMAT, not its value — so a phone
@@ -224,10 +224,16 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
     # version.json without bumping this is therefore a shipping hazard, not a
     # cosmetic mismatch: that is what this pairing exists to catch, and what it
     # caught for the flat-linearization PR-3b page fix.
-    assert "main.js?v=20260808-2" in index_html
+    assert "main.js?v=20260814-1" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260802-1"' in main_js
-    assert 'from "./measurement-audio.js?v=20260805-1"' in main_js
+    # Bumped with #2094: the recorder worklet now reports the frame count the
+    # host's end-to-end ledger compares against. A warm-cache phone holding the
+    # old module would declare no count, which grades as not-evaluated — the
+    # ledger would look like it shipped while checking nothing.
+    assert 'from "./measurement-audio.js?v=20260814-1"' in main_js
+    # Same bump, same reason, for the module that puts those counts on the wire.
+    assert 'from "./capture-integrity.js?v=20260814-1"' in main_js
     # Bumped with #1941 R4: constraints.js's realized-constraint describe()
     # feeds household copy, so a warm-cache browser holding the old module
     # would keep attributing the browser's own track settings to the
@@ -253,28 +259,66 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
     # level-events.js on the current stamp; level-events.js's own content
     # changed, so every place that imports IT (here, and ambient-stats.js)
     # bumps too, or a warm-cache phone would keep the stale import forever.
-    assert 'from "./level-events.js?v=20260802-1"' in main_js
-    assert 'from "./ambient-stats.js?v=20260802-1"' in main_js
+    # Both bumped again with #2094 by the same cascade: each imports
+    # measurement-audio.js, so each one's own content moved when that stamp did.
+    assert 'from "./level-events.js?v=20260814-1"' in main_js
+    assert 'from "./ambient-stats.js?v=20260814-1"' in main_js
     assert 'cp "${HERE}/version.json" "${DIST}/version.json"' in build_sh
+
+
+def _published_capture_page_js() -> list[tuple[str, Path]]:
+    """Every JS file ``build.sh`` publishes, keyed by the name it ships as.
+
+    ``capture-page/js/*.js`` plus the ONE module the build copies in from the
+    Pi's shared assets (``cp "${SHARED}" "${DIST}/js/"``). That copied module
+    was outside this digest until #2094, which is a hole in the guard's own
+    promise: a change confined to ``measurement-audio.js`` — the recorder, and
+    the source of the frame counters the host's ledger now grades — would ship
+    to phones with every cache stamp stale and nothing failing. It is published
+    bytes like any other file in the bundle, so it is digested like any other.
+    """
+    files = {p.name: p for p in (_REPO / "capture-page/js").glob("*.js")}
+    shared = _REPO / "deploy/assets/shared/js/measurement-audio.js"
+    assert shared.name not in files, (
+        f"{shared.name} is copied into the bundle by build.sh; a second copy "
+        "under capture-page/js/ is a fork of the single source of truth"
+    )
+    files[shared.name] = shared
+    return sorted(files.items())
 
 
 def _capture_page_js_digest() -> str:
     """A stable digest over every published capture-page JS module."""
     digest = hashlib.sha256()
-    for path in sorted((_REPO / "capture-page/js").glob("*.js")):
-        digest.update(path.name.encode("utf-8"))
+    for name, path in _published_capture_page_js():
+        digest.update(name.encode("utf-8"))
         digest.update(b"\0")
         digest.update(path.read_bytes())
         digest.update(b"\0")
     return digest.hexdigest()
 
 
+def test_the_digest_covers_the_shared_module_the_build_copies_in():
+    """The bundle is not the same set of files as ``capture-page/js/``.
+
+    Pins the #2094 widening above so a later simplification back to a plain
+    glob restores the hole rather than looking like tidying.
+    """
+    published = dict(_published_capture_page_js())
+    assert "measurement-audio.js" in published
+    assert published["measurement-audio.js"] == (
+        _REPO / "deploy/assets/shared/js/measurement-audio.js"
+    )
+    build_sh = (_REPO / "capture-page/build.sh").read_text(encoding="utf-8")
+    assert 'cp "${SHARED}" "${DIST}/js/measurement-audio.js"' in build_sh
+
+
 # The published state of capture-page/js/**, paired with the build stamp it
 # ships under. See the test below for why a digest rather than a rule.
 _CAPTURE_PAGE_JS_DIGEST = (
-    "fa134f36fa9dd878dc3e8ffa9addfcd66749092dbf7de5b644658f751a6f3723"
+    "c8c4a3a3f8d0c7481881afdc0d0cf675c4b7b0d1b9e8b6b66c8559f3c1d3bd24"
 )
-_CAPTURE_PAGE_JS_DIGEST_BUILD = "20260808.2"
+_CAPTURE_PAGE_JS_DIGEST_BUILD = "20260814.1"
 
 
 def test_capture_page_js_cannot_change_without_a_deliberate_build_stamp_decision():
@@ -911,7 +955,7 @@ def test_capture_page_level_ramp_uses_meter_protocol_without_wav_upload():
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
 
     assert (
-        'import { runLevelRampProtocol } from "./level-events.js?v=20260802-1"'
+        'import { runLevelRampProtocol } from "./level-events.js?v=20260814-1"'
         in main_js
     )
     assert 'spec.kind === "level_ramp"' in main_js

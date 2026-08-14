@@ -204,6 +204,55 @@ function testSummaryCarriesFocusEvidence() {
   ok();
 }
 
+// #2094: the page's half of the end-to-end frame ledger. `frames` is what the
+// worklet assembled, `encoded_frames` is what survived the transfer to this
+// page and is about to be encoded; the host closes the chain against its own
+// count of the decoded capture.
+function testSummaryCarriesTheFrameLedgersPageEnd() {
+  const summary = summarizeCaptureIntegrity({
+    stats: {
+      frames: 480000, blocks: 3750, block_gaps: 0,
+      block_gap_frames: 0, silent_blocks: 0,
+    },
+    encodedFrames: 480000,
+  });
+  assert.equal(summary.frames, 480000);
+  assert.equal(summary.encoded_frames, 480000);
+  ok();
+}
+
+// The two ends of the transfer are reported SEPARATELY on purpose: a ledger
+// whose left and right edge came from the same measurement checks nothing, so
+// a page that loses samples between the worklet and the encoder must be able
+// to say two different numbers.
+function testTheTwoTransferEndsAreIndependent() {
+  const summary = summarizeCaptureIntegrity({
+    stats: { frames: 480000, blocks: 3750, block_gaps: 0, block_gap_frames: 0 },
+    encodedFrames: 479872,
+  });
+  assert.equal(summary.frames, 480000);
+  assert.equal(summary.encoded_frames, 479872);
+  ok();
+}
+
+// Same fail-soft rule as every other counter: not measured is an ABSENT key.
+// An older recorder reports no `frames`, and a caller that passes no
+// `encodedFrames` must not have a zero invented for it — the host reads a
+// missing count as "not reported" and a zero as "this capture was empty".
+function testFrameCountsAreOmittedWhenNotMeasured() {
+  const oldRecorder = summarizeCaptureIntegrity({
+    stats: { blocks: 3750, block_gaps: 0, block_gap_frames: 0, silent_blocks: 0 },
+  });
+  assert.equal("frames" in oldRecorder, false);
+  assert.equal("encoded_frames" in oldRecorder, false);
+
+  for (const bad of [null, undefined, NaN, "480000", Infinity]) {
+    const summary = summarizeCaptureIntegrity({ stats: null, encodedFrames: bad });
+    assert.equal("encoded_frames" in summary, false);
+  }
+  ok();
+}
+
 // The two household-facing strings name no browser, platform, or vendor, and
 // say what will happen rather than only what went wrong.
 function testCopyIsPlainAndProviderAgnostic() {
@@ -226,6 +275,9 @@ await runTestFunctions(
     testMissingHostsDegrade,
     testSummaryOmitsWhatItDidNotMeasure,
     testSummaryCarriesFocusEvidence,
+    testSummaryCarriesTheFrameLedgersPageEnd,
+    testTheTwoTransferEndsAreIndependent,
+    testFrameCountsAreOmittedWhenNotMeasured,
     testCopyIsPlainAndProviderAgnostic,
   ],
   () => passed,

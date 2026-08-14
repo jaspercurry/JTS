@@ -23,6 +23,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import shutil
+import subprocess
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -39,6 +43,10 @@ from jasper.audio_measurement.frame_ledger import (
     LOST_AT_RENDER_GRAPH,
     LOST_AT_WORKLET_TO_ENCODER,
     LOST_AT_WORKLET_TO_HOST,
+    REPORT_KEY_ENCODED_FRAMES,
+    REPORT_KEY_FRAMES,
+    REPORT_KEY_RENDER_GAP_FRAMES,
+    REPORT_KEY_RENDER_GAPS,
     FrameLedger,
     reconcile_capture_frames,
 )
@@ -66,6 +74,7 @@ GLOBAL_OFFSET = 3_000
 #: The Web Audio render quantum, and the exact size of the 2026-08-03 losses.
 RENDER_QUANTUM = 128
 _ANALYSIS_LOGGER = "jasper.audio_measurement.program_analysis"
+_REPO = Path(__file__).resolve().parents[1]
 
 
 # --------------------------------------------------------------------------- #
@@ -509,6 +518,99 @@ def test_the_retained_sidecar_summary_carries_the_ledger_flat():
     assert summary["frames_render_gaps"] == 1
     assert summary["frames_render_gap_frames"] == RENDER_QUANTUM
     assert summary["frames_lost_at"] == LOST_AT_RENDER_GRAPH
+
+
+# --------------------------------------------------------------------------- #
+# the wire contract, which spans two independent releases
+# --------------------------------------------------------------------------- #
+
+
+def _emitted_page_reports() -> dict:
+    """Run the capture PAGE's real summarizer and return what it puts on the wire.
+
+    Mirrors ``tests/test_capture_relay_crypto.py``'s use of
+    ``capture_crypto_emit.mjs``: the two ends are separate releases, so the
+    contract is checked by running both, never by restating one side's key
+    spellings in the other side's test.
+    """
+    node = shutil.which("node")
+    if node is None:
+        if os.environ.get("CI"):
+            pytest.fail(
+                "node is not on PATH in CI — this is the only automated check "
+                "that the capture page still sends the counters this host reads"
+            )
+        pytest.skip("node not on PATH")
+    proc = subprocess.run(
+        [node, str(_REPO / "tests/js/capture_frame_report_emit.mjs")],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+def test_the_host_reads_the_counts_the_page_actually_sends():
+    """THE WIRE CONTRACT, checked by running both ends.
+
+    A key the host reads and the page never sends is a check that silently never
+    evaluates — the exact "nobody looked" failure #2094 exists to remove,
+    reintroduced one release later and just as quiet. Nothing below names a key:
+    the page's own summarizer produced these objects.
+    """
+    emitted = _emitted_page_reports()
+
+    clean = reconcile_capture_frames(
+        emitted["clean"], received_frames=emitted["clean"][REPORT_KEY_ENCODED_FRAMES],
+    )
+    assert clean.lost_at == ()
+    # Every count the host grades was actually populated from the page's object,
+    # so a renamed key fails here rather than degrading to not-evaluated.
+    assert clean.declared_frames is not None
+    assert clean.encoded_frames is not None
+    assert clean.render_gaps is not None
+    assert clean.render_gap_frames is not None
+
+    gap = emitted["render_gap"]
+    lossy = reconcile_capture_frames(
+        gap, received_frames=gap[REPORT_KEY_ENCODED_FRAMES],
+    )
+    assert lossy.lost_at == (LOST_AT_RENDER_GRAPH,)
+    assert lossy.render_gap_frames == emitted["quantum"]
+    # The page's counts still agree with each other — the frames the render
+    # graph skipped were never handed to anyone. This is the asymmetry a
+    # counts-only ledger would have missed, proven end to end.
+    assert lossy.balanced is True
+
+    unreported = reconcile_capture_frames(emitted["unreported"], received_frames=1)
+    assert unreported.render_gap_evaluated is False
+    assert unreported.balance_evaluated is False
+    assert unreported.lost_at == ()
+
+
+def test_the_page_and_host_agree_on_every_count_key():
+    """The keys the host reads are exactly the counts the page emits — no host
+    key that the page never sends, and no page count the host ignores."""
+    emitted = _emitted_page_reports()
+    host_reads = {
+        REPORT_KEY_FRAMES, REPORT_KEY_ENCODED_FRAMES,
+        REPORT_KEY_RENDER_GAPS, REPORT_KEY_RENDER_GAP_FRAMES,
+    }
+    assert host_reads <= set(emitted["clean"])
+
+
+def test_the_worklets_frame_count_is_the_buffer_it_transfers():
+    """``frames`` is read off the assembled buffer, never accumulated beside it.
+
+    A separate counter can drift from the array it claims to describe, and a
+    ledger whose left edge is wrong reports loss that did not happen — worse
+    than no ledger. ``total`` is the same expression that SIZES the transferred
+    buffer, so the two cannot disagree.
+    """
+    src = (_REPO / "deploy/assets/shared/js/measurement-audio.js").read_text(
+        encoding="utf-8"
+    )
+    assert "'var out=new Float32Array(total);var pos=0;'" in src
+    assert "'frames:total,blocks:this.blocks,block_gaps:this.gaps,'" in src
 
 
 def test_the_measure_sidecar_summary_carries_it_too():

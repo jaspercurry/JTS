@@ -205,6 +205,15 @@ function in
 | is the after better than the before? | `evaluate_benefit` |
 | does it meet the flat spec? | `evaluate_spec` |
 
+`evaluate_capture_validity` grades `ProgramAnalysis.capture_integrity`, whose
+first two checks are frame accounting (#2094): the browser's own report of
+render-graph continuity, and whether every frame the capture page says it
+recorded reached this host. Both are `not_evaluated` when the page reported no
+counts, which the shipped comparability rule still treats as usable — the record
+is `not_evaluated`, never a pass. See
+[`jasper/audio_measurement/frame_ledger.py`](../jasper/audio_measurement/frame_ledger.py)
+for the per-hop exactness argument, including the one hop no counter can close.
+
 `verification_result` bundles them and `decide_adoption` combines their
 **statuses** — never their internals — through a table it does not get to
 reinterpret. That split exists because a realization answer once stood in for

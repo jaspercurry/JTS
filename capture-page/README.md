@@ -48,7 +48,7 @@ sanitizes it again before rendering a plain navigation link to the local Pi page
 | `js/fragment.js` | Parse `#s=&u=&k=&a=` (key/spec MAC never leave the fragment) | `capture_fragment_test.mjs` |
 | `js/constraints.js` | Realized-constraints verify/degrade per the spec's per-kind policy | `capture_constraints_test.mjs` |
 | `js/wakelock.js` | Screen Wake Lock + `visibilitychange` abort | `capture_wakelock_test.mjs` |
-| `js/capture-integrity.js` | Per-take focus/visibility log + block-accounting summary (#2151) | `capture_integrity_test.mjs`, `capture_plan_loop_test.mjs` |
+| `js/capture-integrity.js` | Per-take focus/visibility log + block-accounting summary (#2151) + the page end of the host's end-to-end frame ledger (#2094) | `capture_integrity_test.mjs`, `capture_plan_loop_test.mjs`, `capture_frame_report_emit.mjs` |
 | `js/level-events.js` | Batched phone-side mic-level events for the level-match ramp | `capture_level_events_test.mjs` |
 | `js/ambient-stats.js` | Per-octave-band ambient-noise stats for a driver sweep's quiet window (Wave 2) | `capture_ambient_stats_test.mjs`, `test_capture_page_ambient_stats_bridge.py` |
 | `js/config.js` | `RELAY_BASE` (one relay origin for the fleet) | — |
@@ -220,6 +220,17 @@ by the strict test above:
   stays `None`, and the sidecar simply has no `capture_integrity` key. That is
   not a degraded fallback, it is exactly what every sidecar written before this
   build looks like.
+
+Build `20260814.1` extends that same field with two more counts (#2094):
+`frames` (what the recorder worklet assembled) and `encoded_frames` (what this
+page hands the WAV encoder). The Pi closes an end-to-end frame ledger against
+its own count of the decoded capture, so a lost render quantum reports itself at
+capture time with the losing hop named instead of turning up in WAV forensics
+weeks later. Both directions stay safe for the same reason as above — an older
+Pi ignores unknown keys, and an older page simply declares no counts, which the
+Pi grades as `not_evaluated` and never as loss. `tests/js/capture_frame_report_emit.mjs`
+runs this page's real summarizer and hands the result to the Pi's real
+reconciler, so a rename on either side fails rather than degrading quietly.
 
 The one thing that is NOT optional in either direction: the field must ride a
 repeat of the WHOLE armed payload, never a partial event. The relay's

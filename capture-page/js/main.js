@@ -35,8 +35,8 @@ import {
   summarizeCaptureIntegrity,
   INTEGRITY_LOST_FOCUS_MESSAGE,
   INTEGRITY_LOST_FOCUS_NOTE,
-} from "./capture-integrity.js?v=20260805-1";
-import { runLevelRampProtocol } from "./level-events.js?v=20260802-1";
+} from "./capture-integrity.js?v=20260814-1";
+import { runLevelRampProtocol } from "./level-events.js?v=20260814-1";
 import { inferCalibrationModel } from "./calibration-model.js?v=20260712-1";
 import {
   assertCaptureProtocolCompatible,
@@ -54,8 +54,8 @@ import {
   delayMs,
   float32ToWavBlob,
   rmsToDbfs,
-} from "./measurement-audio.js?v=20260805-1";
-import { buildAmbientStatsEvent } from "./ambient-stats.js?v=20260802-1";
+} from "./measurement-audio.js?v=20260814-1";
+import { buildAmbientStatsEvent } from "./ambient-stats.js?v=20260814-1";
 
 const PAGE_VERSION_URL = new URL("../version.json", import.meta.url);
 
