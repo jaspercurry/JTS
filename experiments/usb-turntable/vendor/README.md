@@ -1,33 +1,22 @@
-# Vendored `usb_turntable` snapshot
+# Bundled `usb_turntable` package
 
-This directory is an exact source snapshot of the reusable `usb_turntable`
-package from the
-[`jaspercurry/USB-Turntable`](https://github.com/jaspercurry/USB-Turntable)
-repository. JTS vendors it because JTS3 cannot install from a private Git URL
-without credentials. JTS must not maintain an independent copy of the device
-protocol.
+This directory carries the reusable controller from
+[`jaspercurry/USB-Turntable`](https://github.com/jaspercurry/USB-Turntable) so
+the manual JTS3 experiment works offline. JTS does not maintain a separate copy
+of the device protocol.
 
-[`UPSTREAM.json`](UPSTREAM.json) records the upstream merged commit, package
-version, exact file set, every file's SHA-256, and the aggregate digest. The JTS
-adapter hard-codes the canonical manifest's raw SHA-256 before trusting any of
-those fields, then rejects every unlisted package artifact before import. A
-source-plus-manifest rewrite therefore fails closed unless the adapter's trust
-root is deliberately updated. Update this tree only by replacing it from the
-upstream package, regenerating the manifest, and updating that trust root.
+[`UPSTREAM.json`](UPSTREAM.json) records the reviewed upstream commit, package
+version, source aggregate, and license. The JTS test suite recomputes that
+aggregate as a development-time provenance check. The manual wrapper simply
+loads this bundled package; it does not authenticate files at runtime or claim
+to defend against a hostile local checkout. Review normal Git changes when
+updating the snapshot.
 
-This snapshot includes the upstream bounded heartbeat-link recovery merged by
-USB-Turntable PR #2: exact `###` link-loss reports are answered with `#`, command
-traffic waits for a normal heartbeat, and malformed or timed-out recovery fails
-explicitly. Fresh-open recovery is bounded by the adapter's
-`--startup-timeout`; runtime pre-command and post-settle recovery is bounded by
-`--response-timeout`.
+The package requires Python 3.10 or newer and has no third-party runtime
+dependencies. It owns discovery, serial transport, protocol parsing, heartbeat
+recovery, operation completion, and timeout defaults.
 
-The package uses only the Python standard library and requires Python 3.10 or
-newer.
-
-## License and redistribution boundary
-
-The upstream Python controller is licensed under Apache-2.0. Its exact
-[`LICENSE`](LICENSE) and [`NOTICE.md`](NOTICE.md) are included here. The notice
-also records that the upstream repository's third-party vendor reference
-materials are outside that grant; those materials are not included in JTS.
+The controller is licensed under Apache-2.0. Its exact [`LICENSE`](LICENSE) and
+[`NOTICE.md`](NOTICE.md) are included here. The notice explains that upstream
+vendor reference materials fall outside that grant; those materials are not
+included in JTS.
