@@ -676,8 +676,38 @@ never redirected.
   takes the pre-correction curve (position-1 matched basis, spatial-average
   fallback), the re-measured verify curve, and the shared target, and returns
   a typed verdict `{accept | surface | revert_pending_confirm | revert}` +
-  per-band table + reasons. It NEVER writes CamillaDSP; the session acts. The
-  statistical rules (revision plan §4 P4, born of a red-team that killed the
+  per-band table + reasons. It NEVER writes CamillaDSP; the session acts. A
+  second, equally pure gate atop it —
+  `acceptance.gate_on_acoustic_quality` — downgrades an `accept` to
+  `surface` (and sets `quality_gated=True` on the result) when the verify
+  capture's own SNR was low *or could not be estimated at all*, appending
+  (never replacing) a disclosed reason; the curve-only evaluator above can
+  never see capture quality itself. The two-signal grouping deliberately
+  mirrors `acoustic_quality.build_acoustic_quality_report`'s own
+  `snr_level in {"low", "unavailable"}` treatment — its `recommended_action`
+  already gives a missing estimate the same "remeasure or capture a noise
+  floor" urgency as a measured-low one, not merely informational (verified
+  low mass-downgrade risk: production populates the noise floor ahead of
+  verify through several real paths — the per-position noise-capture step,
+  client-supplied autolevel, and relay ingestion — so "unavailable" is a
+  genuine capture-time gap, not the default). Deliberately gated on the
+  verify capture's own SNR (single-sourced against
+  `acoustic_quality.SNR_WARN_DB`, not a restated literal), not the
+  whole-session `acoustic_quality` summary — that aggregate reads "warn" on
+  nearly every session via the unrelated `mic_uncalibrated` issue. That
+  issue's error does not cancel *exactly* out of a before/after RMS delta
+  (an additive coloration does not literally vanish from an RMS computed
+  over the whole curve); the weaker claim that holds is that the same mic
+  measured both curves in one consistent frame, so the verdict's
+  *direction* is robust to it even though an absolute reading would not be
+  (#2058, the room twin of closed #1813). The downgraded case gets its own
+  household-register headline — "Applied — but the check-measurement was
+  too noisy to trust. Re-measure to confirm, or listen and decide." — never
+  the generic surface wash copy ("too small to be sure"), which would
+  misdescribe what can be a large, real measured change, and never the
+  numeric before/after fold every other row gets (those numbers come from
+  the SAME distrusted verify capture). The statistical rules
+  (revision plan §4 P4, born of a red-team that killed the
   naive per-band rule — the "before" is an N-position average, the verify is
   one position, and 4–6 dB seat-to-seat std is normal per `spatial.py`):
   (1) aggregate to **1/3-octave smoothed bands** before any per-band verdict

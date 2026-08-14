@@ -815,10 +815,24 @@ def _crossover_region_nudge(session: Any) -> dict[str, str] | None:
 # rollback actually ran (session.auto_revert_outcome) — see
 # _revert_result_text. A successful revert lands the session in IDLE, so the
 # honest success copy lives on the IDLE branch of _verdict_text instead.
+#
+# "surface_quality_gated" is a synthetic key, not a real Verdict value — it
+# is never on session.acceptance["verdict"] (which stays the literal string
+# "surface"). _verdict_text looks it up when verdict["quality_gated"] is True
+# (#2058, B1): the plain "surface" copy below ("the change was too small to
+# be sure") is FALSE for this case — acceptance.gate_on_acoustic_quality only
+# ever downgrades a real ACCEPT, so the measured change was large enough to
+# clear the improvement floor; what's untrusted is the EVIDENCE, not the
+# size of the change. It also skips the numeric _headline() append every
+# other row here gets: those numbers come from session.verify_before_after,
+# the SAME distrusted verify capture the gate just declined to trust, so
+# printing them would contradict the sentence declining to trust them.
 _VERDICT_HEADLINE: dict[str, str] = {
     "accept": "Confirmed improved — the room measured better.",
     "surface": "Applied — but the change was too small to be sure. Take a "
     "look and decide.",
+    "surface_quality_gated": "Applied — but the check-measurement was too "
+    "noisy to trust. Re-measure to confirm, or listen and decide.",
     "revert_pending_confirm": "That measured worse. Measure once more to be "
     "sure before we undo it.",
 }
@@ -967,6 +981,14 @@ def _verdict_text(
                 # still running. Success moved the session to IDLE, whose
                 # branch below owns the "we removed it" copy.
                 return _revert_result_text(session)
+            if verdict_value == "surface" and verdict.get("quality_gated") is True:
+                # #2058 B1: the quality-gated surface is NOT the generic
+                # "too small to be sure" wash below — it is a real, possibly
+                # large, measured change whose evidence the gate declined to
+                # trust. Standalone return: no _headline() append, because
+                # that append's numbers come from the SAME distrusted verify
+                # capture (session.verify_before_after).
+                return _VERDICT_HEADLINE["surface_quality_gated"]
             lead = _VERDICT_HEADLINE.get(verdict_value)
             if lead is not None:
                 headline = _headline(session)

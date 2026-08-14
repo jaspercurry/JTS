@@ -55,7 +55,10 @@ The four verdicts
 -----------------
 ``accept``
     The measured error-to-target dropped and no band regressed clearly. The
-    correction stays.
+    correction stays — unless the verify capture's own SNR was low or could
+    not be estimated at all: :func:`gate_on_acoustic_quality` downgrades
+    that case to ``surface`` rather than let a quality-compromised capture
+    read as a confident win (#2058).
 ``surface``
     Ambiguous — the numbers sit inside the noise floor, or improvement and a
     borderline regression cancel out. We show the honest before/after and let
@@ -82,7 +85,7 @@ middle) — see ``tests/test_correction_acceptance.py``.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any
 
@@ -234,6 +237,12 @@ class AcceptanceResult:
     that drove it. ``confirmed`` is True only for the terminal ``REVERT``
     (a second concordant clear regression). ``basis`` records whether the
     matched position-1 curve or the spatial-average fallback was used.
+    ``quality_gated`` is True only when :func:`gate_on_acoustic_quality`
+    downgraded an ``accept`` here (#2058) — the machine-readable twin of the
+    text reason appended to ``reasons``, so a caller (the envelope) can pick
+    different copy for "this measured a real change we don't trust" versus a
+    genuine wash without parsing prose. ``False`` for every verdict this
+    module's own pure evaluator produces directly.
     """
 
     verdict: Verdict
@@ -248,6 +257,7 @@ class AcceptanceResult:
     basis: str
     confirmed: bool = False
     verify_index: int = 1
+    quality_gated: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -256,6 +266,7 @@ class AcceptanceResult:
             "confirmed": self.confirmed,
             "verify_index": self.verify_index,
             "basis": self.basis,
+            "quality_gated": self.quality_gated,
             "overall_before_rms_db": round(self.overall_before_rms_db, 2),
             "overall_after_rms_db": round(self.overall_after_rms_db, 2),
             "overall_rms_delta_db": round(self.overall_rms_delta_db, 2),
@@ -559,4 +570,77 @@ def evaluate_acceptance(
         basis=basis,
         confirmed=False,
         verify_index=verify_index,
+    )
+
+
+def gate_on_acoustic_quality(
+    result: AcceptanceResult,
+    *,
+    quality_warned: bool,
+    quality_reason: str = "",
+) -> AcceptanceResult:
+    """Refuse a silent ``accept`` beside a warned verify-capture quality.
+
+    (#2058, the room twin of #1813/#1838.) ``evaluate_acceptance`` above is
+    pure curve math — it has no way to know whether the verify capture it was
+    handed was itself trustworthy. Before this gate, a session could record
+    ``verdict: accept`` — "Confirmed improved — the room measured better." on
+    the household's screen — from a verify capture whose own
+    :mod:`jasper.correction.acoustic_quality` evidence said otherwise,
+    because the two were computed independently and nothing ever compared
+    them.
+
+    This function does not decide WHAT counts as a quality warning — the
+    caller does, by passing ``quality_warned``. The session caller uses the
+    verify capture's own SNR specifically (low OR unestimable — see
+    ``MeasurementSession._evaluate_acceptance``), not the whole-session
+    ``acoustic_quality`` summary, which also carries calibration/setup
+    caveats. Those do not cancel *exactly* out of the before/after
+    comparison in the strict sense (an additive mic-response error does not
+    literally vanish from an RMS delta computed over the whole curve) — the
+    weaker claim that actually holds is that the SAME mic in the SAME frame
+    measured both curves, so the verdict *direction* (better / worse / a
+    wash) is robust to a shared, roughly-constant coloration; that is enough
+    to trust the direction, not enough to trust an absolute reading. Gating
+    on the aggregate would false-positive on nearly every session (see the
+    call site for the measured evidence). This module stays curve-and-
+    verdict-only either way: it never imports
+    :mod:`jasper.correction.acoustic_quality` itself.
+
+    Mirrors #1845's D2 pattern on the crossover measurement line ("a
+    floor-bound solve is a refusal, not a level"): a positive-looking result
+    built on evidence the system already knows is questionable must not read
+    as a confident win. Refuse the accept (downgrade to the existing
+    ``surface`` bucket — "the numbers sit inside the noise floor... we show
+    the honest before/after and let the household decide"), and disclose the
+    rejected reading by appending, never replacing, ``reasons`` — the "the
+    rejected evidence retained on the disclosure so a reviewer can see what
+    the [evidence] claimed" half of the same pattern. ``quality_gated=True``
+    on the returned result additionally lets a renderer (the envelope) pick
+    dedicated copy for this case rather than the generic ``surface`` wash
+    copy, which would otherwise misdescribe a real, possibly large,
+    measured change as merely "too small to be sure."
+
+    Only ``accept`` is gated. ``surface`` is already the honest "not sure"
+    state; ``revert`` / ``revert_pending_confirm`` are already the
+    conservative, disclosed path (and already logged at WARNING). Gating
+    those too would be scope creep past the observed defect, which is
+    specifically a silent, confident ``accept`` beside a quality warning —
+    scope-to-observed-path, not a symmetric rewrite of every verdict.
+
+    Pure, like the rest of this module: a frozen dataclass in, a frozen
+    dataclass out (via :func:`dataclasses.replace`), no I/O, no session
+    state — callable standalone in a test with a hand-built
+    :class:`AcceptanceResult` and no session object at all.
+    """
+    if result.verdict is not Verdict.ACCEPT or not quality_warned:
+        return result
+    reason = "downgraded from accept — verify capture's acoustic quality warned"
+    if quality_reason:
+        reason = f"{reason} ({quality_reason})"
+    return replace(
+        result,
+        quality_gated=True,
+        verdict=Verdict.SURFACE,
+        reasons=(*result.reasons, reason),
     )
