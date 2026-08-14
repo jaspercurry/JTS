@@ -27,6 +27,13 @@ Every measurement below is stamped with when it was taken. Re-probe before
 acting on one: the first revision of this doc shipped a blocker whose
 premise had been false for four hours.
 
+The prior-art findings cited below come from the 2026-08-14 measurement
+prior-art pass, archived at
+`captures/research-2026-08-14-measurement-prior-art/` (untracked, same
+convention as `captures/detector-certification-20260801`). Those reports
+are sourced hypotheses, not authorities — verify a load-bearing claim
+against its primary source before acting on it.
+
 ---
 
 ## Ethos (owner-ratified 2026-08-14)
@@ -171,8 +178,10 @@ first.
 Post-run. This is the deliberate deeper investment named in the ethos, and
 it is largely the probabilistic posture made concrete — mostly by executing
 the adopted-but-unstarted gating-v2 ladder
-([`gating-v2-plan.md`](gating-v2-plan.md)), with two additions (items 10
-and 11) that are this roadmap's own rather than the plan's.
+([`gating-v2-plan.md`](gating-v2-plan.md)). Three pieces are this
+roadmap's own rather than the plan's: item 7's prominence-margin
+persistence, item 10's distance prior, and item 11's placement
+recommendation.
 
 **7. Persist the accepted gate candidate's prominence margin, and add a
 `detector` provenance field.** (Small.) The prominence vote already
@@ -186,24 +195,19 @@ it. Together they turn a floor from a bare number into a claim carrying its
 own confidence and provenance, which is what every graded consumer below
 needs.
 
-**8. PR-G1 as gating-v2 wrote it.** (Large — an estimator and
-consumer-contract change, not bookkeeping; scope it as such.) D1
-per-position per-bin masking plus `MIN_POS = max(3, ceil(C/2))` where **C
-counts curves entering the combine, not prompted positions** (the plan
-names that trap explicitly — a cloud carries N−1 summed curves for N
-positions), plus INV-2 and D8, plus the consumer-contract rewrite in
-`correction_crossover_v2.py`, plus the mandated re-pin of
-`tests/test_flat_spec_ssot.py`'s incident figures with the re-pin
-procedure block that file lacks. After it lands, no single capture's
-collapsed floor can poison a session — the #1790 aggregation defect at its
-root, and the prerequisite for treating a floor as evidence rather than as
-a veto.
+**8. PR-G1 as gating-v2 wrote it** (D1 masked combine + INV-2 + D8, the
+consumer-contract rewrite, and the `tests/test_flat_spec_ssot.py` re-pin).
+Large — an estimator and consumer-contract change, not bookkeeping; scope
+it as such. Read the ladder entry for the full contents; the one thing
+worth carrying here is the trap it names, because it is easy to get
+backwards: **MIN_POS counts curves entering the combine, not prompted
+positions.** After G1 lands, no single capture's collapsed floor can
+poison a session — the #1790 aggregation defect at its root, and the
+prerequisite for treating a floor as evidence rather than as a veto.
 
-**9. PR-G2 as gating-v2 wrote it.** D2's anomaly→action policy plus INV-3
-and the suspect-near-search-start guard: conductor policy, retake wiring,
-the invariant-family short-circuit, retained-anomalous provenance
-annotation, disclosure copy, `event=` logs. This is the ladder's mandatory
-second rung, not an optional extra — the plan's acceptance bar needs its
+**9. PR-G2 as gating-v2 wrote it** (D2's anomaly→action policy, INV-3, and
+the `suspect_near_search_start` guard). This is the ladder's mandatory
+second rung, not an optional extra: the plan's acceptance bar needs its
 disclosure, and D3's warrant is read off the retake rate observed after G2
 ships.
 
@@ -213,11 +217,16 @@ mic-to-speaker distance the session already measures, optionally plus a
 one-question nearest-surface prompt. Detections far outside that window are
 flagged suspect and feed the masking and corroboration machinery as a
 physics-based plausibility term. **Disclose, never block.** Field
-precedent: Klippel ISC computes its time window from exactly these two
-entered distances, VituixCAD ships the calculator, and AP publishes the
-formula. Scope note: the owner ruling banned *assumed* room dimensions;
-measured and user-entered distances are the permitted class, and are what
-the field actually uses.
+precedent, per `09-gate-placement-prior-art-verdict.md`: VituixCAD ships
+the calculator (it asks for three entered distances), Audio Precision
+publishes the formula `T = (2dR − d)/c` with a stated typical 5–6 ms, and
+ARTA/CLIO state expected bands. Whether the distance prior extends the
+existing `suspect_near_search_start` annotation (gating-v2 D2's cheap
+suspicion guard, likewise non-gating) or lands as a sibling flag is the
+first implementation decision, deliberately left to the PR that builds it.
+Scope note: the owner ruling banned *assumed* room dimensions; measured
+and user-entered distances are the permitted class, and are what the field
+actually uses.
 
 **11. Group-scoped placement recommendation at `Fc/2`, against the
 support-derived floor.** When the group's floor sits above `Fc/2`, the
@@ -237,20 +246,34 @@ so the system carries two ratios rather than three. If ratified, amend
 
 ### Skipped, with reasons
 
-- **D3 detector v2 stays skipped.** A 2026-08-14 prior-art pass found the
-  field ships no automated first-reflection detection at all — six
-  professional tools and twelve consumer products, all using a manual
-  cursor, geometry arithmetic, or spatial diversity instead. Our shipped
-  detector measured `P_D = 0.712` over the frozen criteria region against
-  a pre-registered criterion of `P_D ≥ 0.9` with ToA error ≤ 0.15 ms; that
-  pass's reading is that the timing accuracy sits in the band a
-  48-microphone research array achieves (Remaggi et al. 2017), i.e. near
-  the information limit for one channel. If D3 is ever opened: first split
-  the certified metric by reflection delay (sub-1.5 ms may be ill-posed and
-  the aggregate may hide a ceiling), then prefer template-subtraction of
-  the measured direct sound (subtract-then-pick) over blind pickers; AIC is
-  a refiner only, and matched-filter *detection* raises false positives.
-  Validate any new leg against dEchorate before shipping.
+- **D3 detector v2 stays skipped.** The prior-art pass found the field
+  ships no automated first-reflection detection at all — six professional
+  tools (`10-pro-tool-gating-survey.md`) and twelve consumer products, all
+  using a manual cursor, geometry arithmetic, or spatial diversity instead.
+  Our shipped operating point misses **both halves** of pre-registered
+  criterion C1 (`P_D ≥ 0.9 at P_FA ≤ 0.05` for reflections ≥ −12 dB re
+  direct, delay ≥ 1 ms, SNR ≥ 20 dB — see `criteria.md` in
+  `captures/detector-certification-20260801`): measured `P_D = 0.712`
+  against 0.9, and
+  `P_FA = 0.268` against 0.05. The false-alarm miss is by far the wider of
+  the two — more than 5× the bar, against a detection shortfall of 0.19 —
+  so a D3 that improved timing without moving P_FA would address the
+  smaller gap. C2 (`ToA error ≤ 0.15 ms`) is a separate criterion, not
+  part of C1.
+
+  What keeps D3 closed anyway is the ceiling argument in
+  `09-gate-placement-prior-art-verdict.md`: Remaggi et al. 2017 reach
+  0.14 ms RMSE with a 48-microphone array **in a treated room only**, and
+  0.32 ms with 8.3% gross errors averaged across four real rooms. Comparing
+  their RMSE to our P_D is **not like-for-like** — P_D folds in detection,
+  not just timing — so read it as a direction, not a scoreboard: one
+  browser microphone and one sweep is closer to the practical ceiling than
+  0.712 makes it sound. If D3 is ever opened, `09` carries the ordering
+  (split the certified metric by reflection delay first — sub-1.5 ms may be
+  ill-posed — and validate against dEchorate before shipping) and
+  `12-seismology-onset-picking-transfer.md` carries the method verdict:
+  AIC is a refiner, never a detector, and template-subtraction of the
+  measured direct sound (subtract-then-pick) beats a blind picker.
 - **Corpus replay as a new false-positive-measurement project** — skipped,
   and only that. The false-positive rate is already measured by the
   detector-certification harness (12,750 positive and 6,000 negative
@@ -287,13 +310,11 @@ After the substrate. Each item is a pointer, not a plan.
   must never feed the spatial-variance tiers, which read position count as
   independent evidence — and an AGC empirical check first. If ratified,
   amend the regime plan's D7 in the same change.
-- **The room-layer bandwidth policy**, per the regime plan's adopted D1:
-  Tier A runs 20 Hz to a per-room transition `f_t` clamped to [250, 500]
-  with 350 as the disclosed fallback whenever estimation is uncertain,
-  Tier B runs `f_t` to a 1 kHz hard stop, and above 1 kHz the room layer
-  does nothing. The genuinely open remainder is per-strategy: `assertive`
-  keeps its shipped 500 Hz upper edge, which D1 never adjudicated, and
-  RC3 must decide it explicitly.
+- **The room-layer bandwidth policy** — the regime plan's adopted D1 owns
+  the numbers: Tier A up to a per-room transition, Tier B from there to a
+  hard stop, nothing above it. The genuinely open remainder is
+  per-strategy: `assertive` keeps a shipped upper edge that D1 never
+  adjudicated, and RC3 must decide it explicitly.
 
 **Position roles into the spatial combiner.** The `onax` / `offax` / `xovr`
 roles are recorded at capture time and unread by the combiner. Consuming
