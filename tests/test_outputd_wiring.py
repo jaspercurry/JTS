@@ -657,18 +657,24 @@ def test_outputd_composite_skips_the_content_pcm_on_a_ring_box():
     assert "fn synthetic_content_negotiated(config: &Config) -> NegotiatedPcm {" in alsa_rs
     assert _non_comment_rust(alsa_rs).count("synthetic_content_negotiated(config)") == 2
 
-    # THE INVARIANT THE COUNTS ARE ONLY A PROXY FOR: the raw comparison is spelled
-    # exactly once in this file — inside the owner. Counting calls cannot see a
-    # site that re-derives the fact instead of asking for it, and one such site
-    # survived the first cut of this change: `AlsaBackend::new`'s own
-    # `content_source=` argument still compared the enum inline while the answer
-    # sat in scope as a local, so the two sinks derived the same key two ways.
-    # Equal answers today; two answers the moment the predicate grows an arm.
-    assert _non_comment_rust(alsa_rs).count(
-        "content_bridge_mode == crate::config::ContentBridgeMode::ShmRing"
-    ) == 0, (
-        "the bridge-mode comparison belongs to `content_pcm_skipped` alone; "
-        "call it instead of re-deriving it"
+    # THE INVARIANT THE COUNTS ARE ONLY A PROXY FOR: this file names the bridge
+    # enum in exactly two places, and both are the owner's own match arms.
+    # Counting CALLS cannot see a site that re-derives the fact instead of asking
+    # for it, and one such site survived the first cut of this change:
+    # `AlsaBackend::new`'s own `content_source=` argument still compared the enum
+    # inline while the answer sat in scope as a local, so the two sinks derived
+    # the same key two ways. Equal answers then; two answers the moment the
+    # predicate grows an arm.
+    #
+    # Pinned on the BARE TYPE NAME rather than on one spelling of the comparison.
+    # A spelling-specific needle is defeated by every re-derivation that is not
+    # character-identical to the one it was written against — `!=
+    # ContentBridgeMode::Direct`, a `matches!`, or the same `==` with the type
+    # imported rather than path-qualified. The type name survives all of them.
+    assert _non_comment_rust(alsa_rs).count("ContentBridgeMode") == 2, (
+        "the bridge-mode decision belongs to `content_pcm_skipped` alone (whose "
+        "two match arms are the two expected mentions); call it instead of "
+        "re-deriving it"
     )
     # And the owner decides by exhaustive match, so a new bridge variant is a
     # compile error rather than a silent "open the lane".

@@ -638,6 +638,7 @@ fn final_sink_startup<T>(result: Result<T>) -> Result<T> {
 /// builds `shm_ring` as `Some` iff this mode is selected), which is what makes
 /// the run loop's dispatch total: a skipped sink takes the ring arm and never
 /// reaches `read_content_period` at all.
+///
 /// An exhaustive `match` rather than an `==`, which is what the inline test it
 /// replaced used. A third `ContentBridgeMode` variant must not be able to default
 /// into "open the lane": that answer is only right for a source that actually
