@@ -649,11 +649,33 @@ def test_outputd_composite_skips_the_content_pcm_on_a_ring_box():
     # do not count here — each count below is exactly the two `new`s.)
     assert "fn content_pcm_skipped(config: &Config) -> bool {" in alsa_rs
     assert _non_comment_rust(alsa_rs).count("content_pcm_skipped(config)") == 2, (
-        "expected exactly two call sites — one per sink"
+        "expected exactly two call sites — one per sink. If a THIRD legitimate "
+        "reader appears, raise this count; do not re-spell the comparison inline "
+        "(the absence assertion below is the invariant that actually matters)."
     )
     # Same for the /state stand-in: one synthetic, both sinks, one vocabulary.
     assert "fn synthetic_content_negotiated(config: &Config) -> NegotiatedPcm {" in alsa_rs
     assert _non_comment_rust(alsa_rs).count("synthetic_content_negotiated(config)") == 2
+
+    # THE INVARIANT THE COUNTS ARE ONLY A PROXY FOR: the raw comparison is spelled
+    # exactly once in this file — inside the owner. Counting calls cannot see a
+    # site that re-derives the fact instead of asking for it, and one such site
+    # survived the first cut of this change: `AlsaBackend::new`'s own
+    # `content_source=` argument still compared the enum inline while the answer
+    # sat in scope as a local, so the two sinks derived the same key two ways.
+    # Equal answers today; two answers the moment the predicate grows an arm.
+    assert _non_comment_rust(alsa_rs).count(
+        "content_bridge_mode == crate::config::ContentBridgeMode::ShmRing"
+    ) == 0, (
+        "the bridge-mode comparison belongs to `content_pcm_skipped` alone; "
+        "call it instead of re-deriving it"
+    )
+    # And the owner decides by exhaustive match, so a new bridge variant is a
+    # compile error rather than a silent "open the lane".
+    skipped_body = _rust_fn_body(alsa_rs, None, "fn content_pcm_skipped(config: &Config)")
+    assert "match config.content_bridge_mode {" in skipped_body
+    assert "ContentBridgeMode::Direct => false," in skipped_body
+    assert "_ =>" not in skipped_body, "a catch-all arm defeats the point of the match"
 
     # The composite holds an OPTIONAL content PCM, exactly as its sibling does.
     composite_struct = alsa_rs.split("pub struct PairedCompositeSink {", 1)[1].split(
@@ -677,6 +699,19 @@ def test_outputd_composite_skips_the_content_pcm_on_a_ring_box():
     assert "Self::Single(sink) => sink.content_format()," in content_format_fn
     assert "Self::Composite(sink) => sink.content_format()," in content_format_fn
     assert "Some(sink.content_format())" not in content_format_fn
+
+    # The composite's no-lane refusal is PARK-class (EX_CONFIG 78), not the
+    # ordinary exit-1 that walks this unit's restart ladder into
+    # `StartLimitAction=reboot` — the failure the whole change exists to remove.
+    # Pinned because it is a deliberate asymmetry with the sibling's line, and an
+    # asymmetry recorded only in a comment is one a future "restore symmetry"
+    # edit silently reverses.
+    read_body = _rust_fn_body(
+        alsa_rs, "impl PairedCompositeSink", "pub fn read_content_period("
+    )
+    assert "final_sink_startup(self.content.as_ref().context(" in read_body, (
+        "the composite's absent-lane refusal must park, not exit 1"
+    )
 
 
 def test_the_composite_content_skip_guard_can_actually_fail():

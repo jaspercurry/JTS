@@ -995,8 +995,9 @@ impl OutputdState {
         // Ring B honesty contract (latency/ring-proto-shm): under the shm_ring
         // content source, outputd reads the post-DSP program from an n-slot SHM
         // ping-pong ring, NOT an ALSA capture PCM — so `content.buffer_frames`
-        // above is a synthetic period-sized stand-in (AlsaBackend::new never opens
-        // the content PCM). This sub-block reports the TRUE Ring B capacity that
+        // above is a synthetic period-sized stand-in (neither sink opens a content
+        // PCM under this source — `content_pcm_skipped` is the shared owner of
+        // that decision). This sub-block reports the TRUE Ring B capacity that
         // outputd requires of the writer — n_slots x slot_frames — so the synthetic
         // is clearly labeled and jasper-doctor validates the ring geometry instead
         // of mis-applying the ALSA ">= 2x period" jitter floor (which a bounded

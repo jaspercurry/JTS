@@ -443,8 +443,8 @@ pub struct PairedCompositeSink {
     /// on `Config::from_env`, which admits a ring only on a single-ALSA sink and
     /// so is the reason no composite reaches the skip arm. A sink that opens a
     /// lane its run loop never reads is wrong independently of which
-    /// configurations can currently reach it — and a gate is a far easier thing
-    /// to widen than a transport is to re-audit.
+    /// configurations reach it — and a gate is a far easier thing to widen than
+    /// a transport is to re-audit.
     content: Option<PCM>,
     dac_a: PCM,
     dac_b: PCM,
@@ -638,8 +638,18 @@ fn final_sink_startup<T>(result: Result<T>) -> Result<T> {
 /// builds `shm_ring` as `Some` iff this mode is selected), which is what makes
 /// the run loop's dispatch total: a skipped sink takes the ring arm and never
 /// reaches `read_content_period` at all.
+/// An exhaustive `match` rather than an `==`, which is what the inline test it
+/// replaced used. A third `ContentBridgeMode` variant must not be able to default
+/// into "open the lane": that answer is only right for a source that actually
+/// feeds this PCM, and getting it wrong silently re-creates the started-unread
+/// lane this function exists to prevent. `Config::from_env`'s own bridge match
+/// (`config.rs`) already fails the build on a new variant; this is the same
+/// bargain one layer down.
 fn content_pcm_skipped(config: &Config) -> bool {
-    config.content_bridge_mode == crate::config::ContentBridgeMode::ShmRing
+    match config.content_bridge_mode {
+        crate::config::ContentBridgeMode::ShmRing => true,
+        crate::config::ContentBridgeMode::Direct => false,
+    }
 }
 
 /// The `NegotiatedPcm` reported in place of a content lane that was never opened
@@ -764,11 +774,11 @@ impl AlsaBackend {
         eprintln!(
             "event=outputd.alsa.opened content_pcm={} content_source={} content_format={} dac_pcm={} channels={} sample_rate={} content_period_frames={} content_buffer_frames={} dac_period_frames={} dac_buffer_frames={} format={}",
             config.content_pcm,
-            if config.content_bridge_mode == crate::config::ContentBridgeMode::ShmRing {
-                "shm_ring"
-            } else {
-                "alsa"
-            },
+            // The local, not a re-derivation. This line reports whether the lane
+            // above was opened, so it must read the same answer that decided it —
+            // spelling the comparison a second time here is how the two could
+            // disagree, and on the one line whose job is to say which it was.
+            if skip_content_pcm { "shm_ring" } else { "alsa" },
             config.content_format.as_str(),
             config.dac_pcm,
             config.content_channels,
@@ -1447,16 +1457,27 @@ impl PairedCompositeSink {
         // construction that no longer holds, never a runtime path.
         //
         // PARK-class (`final_sink_startup`, EX_CONFIG 78) rather than the
-        // ordinary exit-1 the coherent lane's equivalent line takes, and the
-        // divergence is deliberate: the coherent lane's refusal is reached only
-        // through `read_content_available`, whose one live caller (the
-        // dac_content drain) swallows it, whereas THIS result propagates out of
-        // the run loop with `?`. The condition is a static property of the struct
-        // — set once in `new`, never mutated — so it would be true on every
-        // period and on every restart alike, exactly the case the marker exists
-        // to park rather than retry. Exiting 1 here would walk the restart ladder
-        // into `StartLimitAction=reboot`, which is the failure this whole change
+        // ordinary exit-1 the coherent lane's equivalent line takes. The
+        // divergence is deliberate, and it is DEFENCE IN DEPTH rather than a
+        // consequence of the two lines differing in reachability — both are
+        // unreachable, for the same reason, and neither is load-bearing today.
+        //
+        // Park is simply the correct direction for this refusal's shape. The
+        // condition is a static property of the struct — set once in `new`, never
+        // mutated — so if it were ever true it would be true on every period and
+        // on every restart alike, exactly the case the marker exists to park
+        // rather than retry. Exiting 1 walks the restart ladder into
+        // `StartLimitAction=reboot`, which is the failure this whole change
         // exists to remove; parking puts it where an operator sees it instead.
+        //
+        // Stated plainly so nobody "restores symmetry" by downgrading this
+        // marker: the sibling's `content.as_ref()` line carries the SAME latent
+        // hazard and has not been changed here. It is reached from two callers,
+        // not one — `AlsaBackend::read_content_period` (which `?`-propagates out
+        // of the run loop exactly as this does) and the dac_content drain (which
+        // swallows) — so "the sibling's is swallowed" would be false. Scoping
+        // this PR to the composite is why it stayed as it was, not evidence that
+        // exit-1 is right for it.
         let content = final_sink_startup(self.content.as_ref().context(
             "outputd active content PCM was not opened (SHM-ring content source); \
              refusing to read a lane this sink does not hold",
