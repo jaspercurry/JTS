@@ -412,20 +412,42 @@ thinks the system is healthy.
   Bluetooth rebooted a Zero 2 W, because every source transaction
   asks the coupling owner to converge and a desired-On USB source
   that could not compose re-armed fan-in on each pass).
-  **The cost, tracked as #2234**: the same call clears `NRestarts`,
-  which is a live flapping signal, not just a latch — doctor's
-  `check_service_runtime_state` warns while it is non-zero,
-  `/system/data.json` carries it (a unit surfaces on that alone),
-  and the dashboard sorts the unit toward the top of its services
-  table on it (after a toggle-driven reset the Restarts column
-  simply reads 0). Only CamillaDSP
+  **The cost — an ACCEPTED decision, ratified 2026-08-14 (#2234)**:
+  the same call clears `NRestarts`, which is a live flapping signal,
+  not just a latch — doctor's `check_service_runtime_state` warns
+  while it is non-zero, `/system/data.json` carries it (a unit
+  surfaces on that alone), and the dashboard sorts the unit toward
+  the top of its services table on it (after a toggle-driven reset
+  the Restarts column simply reads 0). Only CamillaDSP
   has a compensating "not running" detector
   (`audio_health._camilla_stopped`, deliberately CamillaDSP-scoped
   because outputd and voice have legitimate parked states);
   `jasper-fanin` and `jasper-outputd` sit outside it. So a fan-in
   that crash-restarted four times reads `NRestarts=0` after one
   household source toggle: the reboot is prevented, the evidence
-  that it nearly happened is not preserved.
+  that it nearly happened is not preserved. This is not one
+  caller's doing — the reconcilers
+  (`jasper.fanin.coupling_reconcile`, `jasper.multiroom.reconcile`),
+  the recovery helpers (`jasper-audio-hardware-reconcile`,
+  `jasper-camilla-recover`, `jasper-outputd-failure-reconcile`, the
+  udev-driven `jasper-dongle-recover` unit) and every deploy
+  (`deploy/lib/install/systemd-units.sh`, over the core-graph
+  restart targets) all clear it, so the erasure predates and
+  outlives the source-toggle path #2231 added.
+  **Why accepted rather than fixed**: the obvious fix — generalising
+  the `_camilla_stopped` shape to fan-in and outputd — would not
+  restore what was lost. That is a *stoppage* detector ("not running
+  is the fact", per its own docstring), and a daemon that
+  crash-restarts four times and comes back up is `active` at every
+  sample; flapping is exactly the state it cannot see. The fix that
+  would work is a control-owned restart counter that `reset-failed`
+  cannot clear, which is an L-sized build to buy back an
+  early-warning signal, and it does not earn that. What still
+  catches the hard states is unchanged: `check_fanin_service` FAILs
+  on disabled/inactive and on a STATUS probe that cannot be read or
+  does not parse, so a fully-down or wedged fan-in is reported
+  whatever `NRestarts` says. What is given up is only the warning
+  that would have come *before* one of those hard states.
   **Camilla exception
   (2026-06-25, JTS5)**: `jasper-camilla.service` still uses
   `Restart=always` + `StartLimitBurst=5/60`, but start-limit exhaustion
@@ -1428,7 +1450,13 @@ sudo journalctl -fu jasper-dongle-recover
 
 ---
 
-Last verified: 2026-07-15 (`jasper-usbmic` placed in the -300 optional,
+Last verified: 2026-08-14 (T5.1's `reset-failed` / `NRestarts` cost recorded as
+an accepted decision: the `_camilla_stopped` stoppage-vs-flapping distinction
+rechecked against its docstring, the surviving hard-state coverage rechecked
+against `check_fanin_service`, and the set of callers that clear the counter
+re-derived across the reconcilers, the recovery helpers, and the installer.
+Scoped to that block; the rest of this file was not re-verified in this pass.
+Prior 2026-07-15 pass: `jasper-usbmic` placed in the -300 optional,
 restartable OOM class and the complete explicit unit ladder rechecked against
 `jasper._oom_adj`; prior 2026-07-14 pass: shairport Tier-3 final mutation rechecked as
 inactive-capable `restart`, with concurrent Off/role-park safety owned by the
