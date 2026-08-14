@@ -1685,10 +1685,16 @@ def _recorded_emit_kwargs(
 
     monkeypatch.setattr(cy, emitter, recorder)
     # baseline_profile imported the emitter by name at module import, so the
-    # production seam has its own binding to rebind.
+    # production seam has its own binding to rebind. Sites whose import is
+    # function-local — crossover-v2's Stage 1 emit resolves the attribute at
+    # call time — have no second binding, and baseline_profile never imported
+    # their emitter at all. Rebinding what exists is not a weakening: a site
+    # whose binding this MISSES records nothing, and the caller's walk then
+    # reports every field missing rather than passing quietly.
     import jasper.active_speaker.baseline_profile as bp
 
-    monkeypatch.setattr(bp, emitter, recorder)
+    if hasattr(bp, emitter):
+        monkeypatch.setattr(bp, emitter, recorder)
     call_site()
     return seen
 
@@ -1741,6 +1747,164 @@ def _ring_candidate_site(
         )
 
     return call_site
+
+
+def _crossover_v2_program_site(
+    topology,
+    tmp_path,
+    monkeypatch,
+    *,
+    playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+):
+    """Drive ``bind_production_play``'s CHECK/MEASURE emit — issue #2450.
+
+    Stage 1 of the crossover-v2 flow (the isolated per-driver sweeps that BUILD
+    the crossover) is the ONLY phase group that emits its own graph: the four
+    ``SUMMED_SWEEP_PHASES`` play into the box's already-active production graph,
+    where no independently-specified capture lane exists to mismatch. So this
+    site's sink was marker-aware (``resolve_active_playback_device``) while its
+    capture lane, wire format and latency geometry took the emitter's ALSA-lane
+    defaults — playback=ring meeting capture=tap, the fifth instance of the
+    subset-forwarding class and the one that reached the DoD box.
+
+    The REAL production binding, not a re-creation of its call: the whole point
+    is that this graph is what an armed jts3 would load. It is stopped at
+    ``play_program`` — the first thing downstream of the emit, and the one that
+    receives the finished graph — so the returned closure carries the exact text
+    on ``.emitted`` and nothing touches CamillaDSP or ALSA. Seam-binding still
+    runs, because that is production's own path and it makes no device-half
+    decision.
+
+    ``playback_device`` is overridable ONLY so a caller can drive the SAME site
+    at the ALSA active lane as a control; a ring-specific claim proven without
+    one is a claim about the site, not about the ring.
+    """
+    import asyncio
+
+    from jasper.active_speaker import program_playback as playback_mod
+    from jasper.active_speaker.crossover_v2.journey import PHASE_CHECK
+    from jasper.audio_measurement import program as program_mod
+    from jasper.correction import coordinator
+    from jasper.web import correction_crossover_v2 as v2host
+
+    class _StopBeforeTransport(Exception):
+        pass
+
+    class _NoWindow:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    emitted: list[str] = []
+
+    async def _capture_graph(program, *, program_graph_yaml, **kwargs):
+        emitted.append(program_graph_yaml)
+        raise _StopBeforeTransport("graph emitted; stop before the DSP transport")
+
+    monkeypatch.setattr(coordinator, "measurement_window", lambda **kw: _NoWindow())
+    monkeypatch.setattr(playback_mod, "play_program", _capture_graph)
+    monkeypatch.setattr(program_mod, "write_program_wav", lambda path, program: None)
+    v2host.reset_session_measurement_pause_for_tests()
+
+    class _EvidenceStore:
+        bundle_dir = tmp_path / "bundle"
+
+        def identify_artifact(self, rel):
+            return SimpleNamespace(fingerprint="ring-walk")
+
+    play = v2host.bind_production_play(
+        run_async=asyncio.run,
+        camilla_factory=lambda: object(),
+        evidence_store=_EvidenceStore(),
+        relay_session_id="ring_walk",
+        topology=topology,
+        preset=_mono_two_way_preset(),
+        role_channels={"woofer": 0, "tweeter": 1},
+        playback_device=playback_device,
+        safety_profile={},
+        role_targets={},
+        session_volume_db=-20.0,
+    )
+
+    def call_site():
+        with pytest.raises(_StopBeforeTransport):
+            play(PHASE_CHECK, object())
+
+    call_site.emitted = emitted
+    return call_site
+
+
+def _crossover_v2_program_graph(topology, tmp_path, monkeypatch, **kwargs) -> str:
+    """The graph text the crossover-v2 CHECK/MEASURE site really emitted."""
+    site = _crossover_v2_program_site(topology, tmp_path, monkeypatch, **kwargs)
+    site()
+    assert len(site.emitted) == 1, (
+        f"expected exactly one program emit, saw {len(site.emitted)}"
+    )
+    return site.emitted[0]
+
+
+def test_the_crossover_v2_program_graph_follows_the_arm_in_both_directions(
+    tmp_path, monkeypatch
+):
+    """Issue #2450: Stage 1's graph names BOTH ends of the transport it rides.
+
+    The trap this closes is quiet by construction. On an armed box fan-in writes
+    Ring A and stops feeding the snd-aloop tap, so a graph whose sink is the ring
+    while its source is ``plug:jasper_capture`` captures a device nobody writes:
+    the excitation WAV reaches the speaker (``correction_play_device`` is
+    ring-aware) and CamillaDSP passes digital silence, with every daemon healthy
+    and every existing gate satisfied — the capture-channel check compares 2 == 2
+    and the arm's width gate only holds ring-NAMED lanes to the wire.
+
+    BOTH arm states, because either half alone is a weaker claim than it reads
+    as: ring-only would pass for a site that hard-codes the ring lane, and
+    aloop-only would pass for the defect itself.
+    """
+    from tests.active_speaker_fixtures import mono_output_topology
+
+    topology = mono_output_topology()
+    wire = resolve_ring_wire(topology)
+
+    # --- ARMED: playback resolves to the active ring. ----------------------
+    ring_graph = _crossover_v2_program_graph(
+        topology, tmp_path / "ring", monkeypatch
+    )
+    ring = parse_camilla_devices_config(ring_graph)
+    assert ring["playback_device"] == RING_ACTIVE_PLAYBACK_DEVICE
+    assert ring["capture_device"] == RING_CAPTURE_DEVICE
+    # ONE wire for both ends: the three rings share it, and a graph carrying the
+    # box's program-lane default instead is a sheared attach waiting at the arm.
+    assert ring["capture_format"] == wire.sample_format
+    assert ring["playback_format"] == wire.sample_format
+    assert ring["chunksize"] == RING_CAMILLA_CHUNKSIZE
+    assert ring["target_level"] == RING_CAMILLA_TARGET_LEVEL
+    # The queue pair has no parsed field, so it is read off the emitted text —
+    # the same way the sibling ring-geometry pin above reads it.
+    assert "  queuelimit: 1" in ring_graph
+    assert "  enable_rate_adjust: false" in ring_graph
+
+    # --- UNARMED: the SAME site at the ALSA active lane. -------------------
+    # The inertness half. Not merely "capture is the tap": byte-identical to the
+    # emit this site made before it derived anything, so no box that is not armed
+    # can notice the fix at all.
+    aloop_graph = _crossover_v2_program_graph(
+        topology,
+        tmp_path / "aloop",
+        monkeypatch,
+        playback_device=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+    )
+    aloop = parse_camilla_devices_config(aloop_graph)
+    assert aloop["playback_device"] == OUTPUTD_ACTIVE_PLAYBACK_DEVICE
+    assert aloop["capture_device"] == DEFAULT_CAPTURE_DEVICE
+    assert aloop["capture_format"] == DEFAULT_CAPTURE_FORMAT
+    assert aloop_graph == active_camilla_yaml.emit_active_speaker_program_config(
+        _mono_two_way_preset(),
+        role_channels={"woofer": 0, "tweeter": 1},
+        playback_device=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+    )
 
 
 def test_ring_candidate_refuses_a_typod_wire_as_a_typed_config_error(
@@ -1851,6 +2015,16 @@ def test_every_emit_devices_field_reaches_the_emitter(tmp_path, monkeypatch):
         "build_baseline_profile_candidate(driver_domain)": (
             _ring_candidate_site(topology, tmp_path, driver_domain=True),
             "emit_active_speaker_driver_domain_config",
+        ),
+        # Issue #2450 — the fifth instance, and the first outside the
+        # baseline/driver-domain family: crossover-v2's Stage 1 emit. It is in
+        # the walk for the same reason the others are, but it is also why the
+        # walk had to stop being a family: this site lives in ``jasper.web``
+        # and emits a DIFFERENT emitter, so nothing about the four entries
+        # above could have covered it.
+        "bind_production_play(crossover_v2 CHECK/MEASURE)": (
+            _crossover_v2_program_site(topology, tmp_path / "v2", monkeypatch),
+            "emit_active_speaker_program_config",
         ),
     }
     for label, (call_site, emitter) in sites.items():

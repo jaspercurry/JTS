@@ -4813,15 +4813,42 @@ def bind_production_play(
                 )
                 return
             from jasper.active_speaker.camilla_yaml import (
+                active_emit_devices,
                 emit_active_speaker_program_config,
             )
             from jasper.active_speaker.program_playback import play_program
 
+            # BOTH HALVES OF THE DEVICE BLOCK, DERIVED TOGETHER (issue #2450).
+            # ``playback_device`` is already marker-aware — on an armed box
+            # ``resolve_active_playback_device`` answers the ACTIVE RING — but
+            # naming only the sink left the emitter to default its capture lane
+            # to the snd-aloop tap, which under ``shm_ring`` fan-in has stopped
+            # feeding: Stage 1's per-driver sweeps would excite the ring while
+            # CamillaDSP captured a device nobody writes. Digital silence, every
+            # daemon healthy, and no gate to catch it — the capture-channel
+            # check compares 2 == 2 and the arm's width gate only holds
+            # ring-NAMED lanes to the wire. ``active_emit_devices`` is the one
+            # place that answers for a ring PCM, so this site asks it rather
+            # than learning the ring; on every unarmed box it returns today's
+            # literals and this emit is byte-identical.
+            #
+            # EVERY field it derives is forwarded. A subset is the same defect
+            # one level up (#2343/#2359/#2363's family), which is why
+            # ``test_every_emit_devices_field_reaches_the_emitter`` walks
+            # ``dataclasses.fields`` at this site too.
+            devices = active_emit_devices(playback_device, topology=topology)
             program_yaml = emit_active_speaker_program_config(
                 preset,
                 role_channels=dict(role_channels),
                 playback_device=playback_device,
                 protection_sections_by_role=protection_sections_by_role,
+                capture_device=devices.capture_device,
+                capture_format=devices.capture_format,
+                playback_format=devices.playback_format,
+                chunksize=devices.chunksize,
+                target_level=devices.target_level,
+                queuelimit=devices.queuelimit,
+                enable_rate_adjust=devices.enable_rate_adjust,
             )
             seams = bind_program_playback_seams(
                 camilla_factory(),
