@@ -256,6 +256,10 @@ Pi-first.
    deployed Pi still emits**, and bump `capture_page_build` (plus
    `index.html`'s `main.js?v=` stamp, and the `?v=` on any changed module
    import — those stamps are the page's only cache-invalidation mechanism).
+   "Changed module" includes the shared recorder `build.sh` copies in from
+   `deploy/assets/shared/js/measurement-audio.js`: it is published bytes like
+   any other file in the bundle, and `test_capture_page_js.py`'s digest covers
+   it for that reason.
 2. Build and test the page: `bash capture-page/build.sh` and
    `python3 -m pytest -q tests/test_capture_page_js.py`.
 3. Publish `capture-page/dist` to the production Pages project.
