@@ -29,6 +29,7 @@ from pathlib import Path
 import pytest
 
 from jasper.audio_measurement.calibration import SUPPORTED_MODELS
+from jasper.capture_relay import session
 
 _JS_DIR = Path(__file__).resolve().parent / "js"
 _NODE = shutil.which("node")
@@ -602,6 +603,34 @@ def test_capture_page_retake_offer_never_outlives_the_runners_window():
     assert "function beginCapturePayload({ index, attempt, retake = false }) {" in main_js
     assert "return retake ? { index, attempt, retake: true } : { index, attempt };" in main_js
     assert "await runPlanCapture(ctx, { index, attempt: attempt + 1, retake });" in main_js
+
+
+def test_a_late_retake_reads_the_same_whichever_side_answers_it():
+    """The page and the Pi both answer a lost retake race, and must say the
+    same thing (#2090).
+
+    Two answers exist because two things can catch the press. The page's own
+    mirror of the runner's window catches it with no round-trip at all
+    (``RETAKE_TOO_LATE_MESSAGE`` → ``setStatus``); a press that outran that
+    mirror — an older independently-deployed page, or one whose bookkeeping
+    drifted — reaches the Pi, which refuses it as ``retake_too_late`` and posts
+    the reason as the ``error`` string the page renders VERBATIM.
+
+    A household must not be able to tell which one answered, so the sentence
+    has to be byte-identical on both sides. It cannot be imported across the
+    language boundary, so it is pinned here instead — the same drift guard
+    ``AUTO_ADVANCE_ON_APPLY`` gets where it is mirrored into
+    jasper/capture_relay/session.py.
+    """
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+    match = re.search(
+        r"const RETAKE_TOO_LATE_MESSAGE\s*=\s*\n?\s*\"([^\"]+)\";", main_js
+    )
+    assert match, "the page must still carry a RETAKE_TOO_LATE_MESSAGE constant"
+    assert match.group(1) == session.RETAKE_TOO_LATE_MESSAGE
+    # …and the Pi's refusal code is the one the page batch will make the
+    # page's comments name (#2458).
+    assert session.BEGIN_REFUSED_RETAKE_TOO_LATE == "retake_too_late"
 
 
 def test_capture_page_rejected_retake_can_keep_the_earlier_take():

@@ -34,7 +34,9 @@ from jasper.capture_relay import crypto
 from jasper.capture_relay.client import RelayClient, RelayError, RelayResponse
 from jasper.capture_relay.integrity import authenticated_phone_event
 from jasper.capture_relay.session import (
+    BEGIN_REFUSED_RETAKE_TOO_LATE,
     BLOB_PULL_TRANSIENT_GRACE_S,
+    RETAKE_TOO_LATE_MESSAGE,
     STATUS_POLL_TRANSIENT_GRACE_S,
     STATUS_POLL_WARN_BUDGET,
     CaptureActivityProbe,
@@ -2151,6 +2153,13 @@ def test_an_unmarked_begin_for_the_just_accepted_slot_is_still_refused():
     refusal = backend.sessions[session.session_id]["host_event"]
     assert refusal["phase"] == "capture_refused"
     assert refusal["code"] == "begin_out_of_order"
+    # An unmarked begin is never told a retake arrived too late (#2090). Note
+    # this case reaches the refusal with the window still OPEN, so it does not
+    # by itself pin the marker term — the control that does is the
+    # unmarked param of
+    # `test_only_a_marked_retake_of_the_just_accepted_slot_is_named_too_late`,
+    # which posts the same shape once the window has shut.
+    assert refusal["error"] != RETAKE_TOO_LATE_MESSAGE
 
 
 def test_a_retake_is_refused_once_the_next_captures_begin_has_been_seen():
@@ -2216,7 +2225,199 @@ def test_a_retake_is_refused_once_the_next_captures_begin_has_been_seen():
     assert deferrals, "the next entry's begin must actually have been seen"
     refusal = backend.sessions[session.session_id]["host_event"]
     assert refusal["phase"] == "capture_refused"
+    # …and it is refused BY NAME (#2090). The household pressed a control the
+    # page offered; the arithmetic refusal this used to carry
+    # ("expected capture 2 attempt 2") is what the phone renders verbatim.
+    assert refusal["code"] == BEGIN_REFUSED_RETAKE_TOO_LATE
+    assert refusal["error"] == RETAKE_TOO_LATE_MESSAGE
+
+
+@pytest.mark.parametrize(
+    ("late_begin", "expected_code", "expected_error"),
+    [
+        # THE PRESS #2090 IS ABOUT: marked, naming the slot that just completed.
+        pytest.param(
+            {"index": 1, "attempt": 2, "retake": True},
+            BEGIN_REFUSED_RETAKE_TOO_LATE,
+            RETAKE_TOO_LATE_MESSAGE,
+            id="marked-retake-of-the-just-accepted-slot",
+        ),
+        # CONTROL, marker term: the SAME slot and attempt, differing only in
+        # that no marker is sent. An ordinary out-of-order begin — including
+        # one from an OLD page that never sends the key — must keep reading as
+        # one. Drop `wants_retake` from `retakes_the_just_accepted_slot` and
+        # this case is misnamed as a household's press.
+        pytest.param(
+            {"index": 1, "attempt": 2},
+            "begin_out_of_order",
+            "a capture attempt is already in progress",
+            id="control-same-slot-but-unmarked",
+        ),
+        # CONTROL, index term: marked, but naming a slot nobody just measured.
+        # That is a page that has lost the plot, not a mis-timed press. Drop
+        # `index == accepted_count` and this is told "the next measurement
+        # already started" about a spot no one was measuring.
+        pytest.param(
+            {"index": 3, "attempt": 3, "retake": True},
+            "begin_out_of_order",
+            "a capture attempt is already in progress",
+            id="control-marked-but-some-other-slot",
+        ),
+    ],
+)
+def test_only_a_marked_retake_of_the_just_accepted_slot_is_named_too_late(
+    late_begin, expected_code, expected_error, caplog
+):
+    """Issue #2090's race, in the shape the plan actually auto-advances in.
+
+    The household's Retake press and the plan's own forward motion race. Here
+    the forward begin WINS outright — it is admitted and holds the armed
+    capture — so the press lands on a slot that is no longer the armed one.
+
+    It is still refused; admitting it would land evidence on a capture the plan
+    has moved past. What changes is what it is refused WITH. The phone renders
+    a refusal's ``error`` VERBATIM (it does not branch on ``code``), so that
+    string IS the run-day screen; and ``code`` is what a journal is greppable
+    by, which is what #2090 lacked — a session was mined for retakes, none were
+    found, and nothing separated a press that lost the race from a press that
+    never arrived.
+
+    All three cases run the identical script and differ ONLY in the late
+    payload, so each control isolates exactly one term of the predicate. Every
+    one of them reaches the refusal with the window already shut, which is what
+    keeps ``next_begin_seen`` from masking the term under test.
+    """
+    caplog.set_level(logging.INFO, logger="jasper.capture_relay.session")
+    backend = FakePlanRelayBackend()
+    _client, session, _phone = _mint_plan_session(backend, driver=False, max_attempts=6)
+    sent: set[str] = set()
+
+    def script(host, post):
+        phase = host.get("phase")
+        index = host.get("index")
+        if "begin" not in sent:
+            sent.add("begin")
+            post({"begin_capture": {"index": 1, "attempt": 1}})
+        elif phase == "capture_authorized" and index == 1 and "arm" not in sent:
+            sent.add("arm")
+            post({
+                "armed": True,
+                "begin_capture": {"index": 1, "attempt": 1},
+                "acknowledgement": {
+                    "schema_version": 1,
+                    "id": session.spec.acknowledgement.id,
+                    "binding_id": session.spec.acknowledgement.binding_id,
+                    "accepted": True,
+                },
+            })
+        elif phase == "capture_result" and index == 1 and "next" not in sent:
+            # Plan auto-advance: the forward begin for the next position. This
+            # is what shuts the runner's retake window.
+            sent.add("next")
+            post({"begin_capture": {"index": 2, "attempt": 2}})
+        elif phase == "capture_authorized" and index == 2 and "late" not in sent:
+            # …and NOW the press arrives, a whole capture late.
+            sent.add("late")
+            post({"begin_capture": dict(late_begin)})
+
+    authorize, on_armed, consume, authorized, _consumed = _plan_callbacks(
+        backend, session
+    )
+
+    with pytest.raises(CaptureFailed):
+        run_capture_plan(
+            _scripted_begin_client(backend, session, script),
+            session,
+            authorize_begin=authorize,
+            on_armed=on_armed,
+            consume_capture=consume,
+            **_run_kwargs(),
+        )
+
+    assert "late" in sent, "the late begin must actually have been posted"
+    # Refused, never admitted — the forward capture keeps the slot it holds.
+    assert authorized == [(1, 1), (2, 2)]
+    refusal = backend.sessions[session.session_id]["host_event"]
+    assert refusal["phase"] == "capture_refused"
+    assert refusal["code"] == expected_code
+    assert refusal["error"] == expected_error
+    assert (refusal["index"], refusal["attempt"]) == (
+        late_begin["index"],
+        late_begin["attempt"],
+    )
+    # Whatever it was graded as, the journal carries that grade — so a run day
+    # can grep for the lost race rather than infer it from an absence.
+    assert any(
+        f"code={expected_code}" in r.getMessage()
+        and "event=capture_relay.plan_refused" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_a_second_retake_press_during_a_retake_is_not_told_the_plan_moved_on():
+    """MUTATION CONTROL: the named copy must only be said when it is TRUE.
+
+    "The next measurement already started" is the whole content of the named
+    refusal, so it may only answer a press the FORWARD capture beat. When the
+    capture in flight is itself a retake of this same slot, nothing has moved
+    on — a redo of this very spot is running — and saying otherwise would put
+    a lie on the household's screen on a run day, which is the disease #2090
+    is about rather than a cure for it. Drop ``next_begin_seen`` from
+    ``lost_the_retake_race`` and this flips to ``retake_too_late``
+    (mutation M5).
+    """
+    backend = FakePlanRelayBackend()
+    _client, session, _phone = _mint_plan_session(backend, driver=False, max_attempts=6)
+    sent: set[str] = set()
+
+    def script(host, post):
+        phase = host.get("phase")
+        attempt = host.get("attempt")
+        if "begin" not in sent:
+            sent.add("begin")
+            post({"begin_capture": {"index": 1, "attempt": 1}})
+        elif phase == "capture_authorized" and attempt == 1 and "arm" not in sent:
+            sent.add("arm")
+            post({
+                "armed": True,
+                "begin_capture": {"index": 1, "attempt": 1},
+                "acknowledgement": {
+                    "schema_version": 1,
+                    "id": session.spec.acknowledgement.id,
+                    "binding_id": session.spec.acknowledgement.binding_id,
+                    "accepted": True,
+                },
+            })
+        elif phase == "capture_result" and "retake" not in sent:
+            # An admitted voluntary retake of the slot that just completed…
+            sent.add("retake")
+            post({"begin_capture": {"index": 1, "attempt": 2, "retake": True}})
+        elif phase == "capture_authorized" and attempt == 2 and "again" not in sent:
+            # …and a SECOND press while that retake is still the armed capture.
+            sent.add("again")
+            post({"begin_capture": {"index": 1, "attempt": 3, "retake": True}})
+
+    authorize, on_armed, consume, authorized, _consumed = _plan_callbacks(
+        backend, session
+    )
+
+    with pytest.raises(CaptureFailed):
+        run_capture_plan(
+            _scripted_begin_client(backend, session, script),
+            session,
+            authorize_begin=authorize,
+            on_armed=on_armed,
+            consume_capture=consume,
+            **_run_kwargs(),
+        )
+
+    # The first retake really was admitted and in flight when the second landed.
+    assert authorized == [(1, 1), (1, 2)]
+    assert "again" in sent
+    refusal = backend.sessions[session.session_id]["host_event"]
+    assert refusal["phase"] == "capture_refused"
     assert refusal["code"] == "begin_out_of_order"
+    assert refusal["error"] == "a capture attempt is already in progress"
 
 
 @pytest.mark.parametrize(
