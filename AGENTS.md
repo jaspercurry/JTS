@@ -2237,7 +2237,7 @@ working on software AEC, default to engine-internal changes inside
 `jasper_aec3` binding. Do **not** propose PipeWire
 `module-echo-cancel`, replacing snd-aloop with PipeWire fanout,
 dual-USB-sink hardware-AEC retry, or custom XVF firmware — the
-current architecture (outputd/reference fanout or dsnoop tap → selected
+current architecture (outputd/reference fanout → selected
 AEC profile → UDP → voice daemon) is the result of a deliberate
 decision rejecting those paths (rationale in
 [`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md)).

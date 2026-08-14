@@ -395,10 +395,20 @@ def _assistant_gain_fault(loudness: dict[str, object]) -> str | None:
 def check_fanin_asound_wiring() -> CheckResult:
     """Verify the deployed ALSA graph is the fan-in graph.
 
-    This catches the exact split-brain failure that can break AEC:
-    renderers and jasper-fanin are running in fan-in mode, but
-    /etc/asound.conf still points `pcm.jasper_capture` at the old
-    substream 0 instead of the summed fan-in output on substream 7.
+    This catches the exact split-brain failure that silences a
+    `loopback`-coupled box: renderers and jasper-fanin are running in
+    fan-in mode, but /etc/asound.conf still points `pcm.jasper_capture`
+    at the old substream 0 instead of the summed fan-in output on
+    substream 7 — so CamillaDSP captures a private renderer lane, or
+    fails to open one at all, instead of the summed program.
+
+    It is not an AEC check. Since U4/P7-1 the AEC bridge's reference is
+    jasper-outputd's UDP speaker monitor, and since U4/P7-2 so is
+    jasper-aec-tune's; neither opens this tap. Every assertion below is
+    file-level drift detection against `deploy/alsa/asoundrc.jasper`,
+    which is why it holds on a ring-coupled box too — there the shipped
+    definitions survive with no writer and no reader until P9-B deletes
+    them.
     """
     label = "fan-in ALSA wiring"
     path = Path("/etc/asound.conf")

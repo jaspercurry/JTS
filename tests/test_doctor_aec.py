@@ -851,9 +851,11 @@ def test_assess_aec_output_silent_ref_downgrades_when_loopback_closed():
     rather than suspicious, and the mic-loud bursts are most likely
     room voice or ambient noise. Downgrade to OK with the diagnosis so
     a pure-voice session doesn't show as a degraded AEC bridge. The
-    message must also disclose the gate's coverage limit: it sees only
-    the loopback renderer lanes, so a USB Audio Input stream is
-    invisible to it."""
+    message must also disclose the gate's coverage limit in FULL: it sees
+    only the snd-aloop renderer lanes, so BOTH a USB Audio Input stream
+    and any ring-armed renderer lane (U3/P6) are invisible to it. Naming
+    only USB would leave an armed box's operator reading a clean OK with
+    an explanation that does not cover their box."""
     lines = [_rms_log_line(ref=0, mic=2500, aec=2400, attn_db=-0.4) for _ in range(8)]
     r = doctor._assess_aec_bridge_output(
         "\n".join(lines),
@@ -861,7 +863,7 @@ def test_assess_aec_output_silent_ref_downgrades_when_loopback_closed():
     )
     assert r.status == "ok"
     assert "loopback playback is closed" in r.detail
-    assert "USB Audio Input is invisible here" in r.detail
+    assert "USB Audio Input and any ring-armed renderer lane are invisible" in r.detail
     # Counterpart: when music chain IS active, same input still fails —
     # the guard only relaxes the FAIL when we have positive evidence
     # the loopback is idle, not on uncertainty.
@@ -1508,6 +1510,142 @@ def test_check_oversized_json_integer_preserves_fallback_without_traceback(
         stats=oversized,
         journal="",
     )
+    monkeypatch.setattr(doctor.aec, "_loopback_playback_active", lambda: False)
+
+    result = doctor.aec.check_aec_bridge_output_health()
+
+    assert result.status == "ok"
+    assert "no recent RMS windows" in result.detail
+    assert any(command[0] == "journalctl" for command in calls)
+    assert not any(command[0] == "outputd-status" for command in calls)
+
+
+def test_applied_reference_source_reads_the_v4_receiver_not_the_legacy_plan():
+    """The applied source is `reference_input.source`, the v4 receiver field.
+
+    Where the v4 block and the epoch-based `active_capture_plan` disagree,
+    this module's shipped ruling is that v4 wins (see
+    `test_check_fresh_v4_identity_overrides_contradictory_legacy_plan`), so
+    the two are given contradictory values here and v4 must be the answer.
+    """
+    stats = _reference_input_stats()
+    stats["active_capture_plan"]["mic_reference_identity"] = {
+        "ref_source": "alsa",
+    }
+
+    assert doctor.aec._applied_reference_source(stats) == "outputd_udp"
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        pytest.param(lambda s: s.pop("reference_input"), id="block-absent"),
+        pytest.param(
+            lambda s: s.update(reference_input="outputd_udp"),
+            id="block-not-an-object",
+        ),
+        pytest.param(
+            lambda s: s["reference_input"].pop("source"), id="source-absent",
+        ),
+        pytest.param(
+            lambda s: s["reference_input"].update(source="  "),
+            id="source-blank",
+        ),
+        pytest.param(
+            lambda s: s["reference_input"].update(source=4),
+            id="source-not-a-string",
+        ),
+    ],
+)
+def test_applied_reference_source_is_fail_soft(mutate):
+    """Anything unreadable returns None so the caller falls back to env."""
+    stats = _reference_input_stats()
+    mutate(stats)
+
+    assert doctor.aec._applied_reference_source(stats) is None
+
+
+@pytest.mark.parametrize("stats", [None, {}, "not-a-dict", 4])
+def test_applied_reference_source_tolerates_a_missing_snapshot(stats):
+    """No snapshot (or a non-object one) is the rolling-deploy path."""
+    assert doctor.aec._applied_reference_source(stats) is None
+
+
+def test_stale_env_ref_source_still_runs_the_authoritative_check(
+    monkeypatch,
+    tmp_path: Path,
+):
+    """HS-N2: a stale `alsa` env must not skip the v4 freshness assessment.
+
+    A box parked by a pre-P7-1 reconciler keeps `JASPER_AEC_REF_SOURCE=alsa`
+    in /etc/jasper/jasper.env while the bridge converges to `outputd_udp`
+    and publishes that in its snapshot. Gating on the env dropped exactly
+    that box to the music-conditional journal fallback, which returns OK for
+    a dead reference whenever no snd-aloop renderer lane is open.
+    """
+    calls = _install_reference_health_check_fakes(
+        monkeypatch,
+        tmp_path,
+        stats=_reference_input_stats(last_frame_age_ms=8_000),
+        journal="",
+    )
+    monkeypatch.setenv("JASPER_AEC_REF_SOURCE", "alsa")
+    monkeypatch.setattr(doctor.aec, "_loopback_playback_active", lambda: False)
+
+    result = doctor.aec.check_aec_bridge_output_health()
+
+    assert result.status == "fail"
+    assert "receiver is stale" in result.detail
+    assert not any(command[0] == "journalctl" for command in calls)
+    assert sum(command[0] == "outputd-status" for command in calls) == 1
+
+
+def test_env_route_still_reaches_the_receiver_identity_fail(
+    monkeypatch,
+    tmp_path: Path,
+):
+    """The mirror case must keep its loud FAIL rather than being skipped.
+
+    Env says `outputd_udp`, the receiver reports `alsa`. Resolving the route
+    from the snapshot ALONE would close the gate and silently degrade to the
+    journal; the env half of the OR keeps this reaching the assessor's
+    runtime-identity FAIL.
+    """
+    stats = _reference_input_stats()
+    stats["reference_input"]["source"] = "alsa"
+    calls = _install_reference_health_check_fakes(
+        monkeypatch,
+        tmp_path,
+        stats=stats,
+        journal="",
+    )
+
+    result = doctor.aec.check_aec_bridge_output_health()
+
+    assert result.status == "fail"
+    assert "does not match configured outputd UDP input" in result.detail
+    assert not any(command[0] == "journalctl" for command in calls)
+
+
+def test_neither_route_outputd_keeps_the_journal_fallback(
+    monkeypatch,
+    tmp_path: Path,
+):
+    """Both ends off the outputd route → unchanged legacy journal policy.
+
+    This is what stops the OR from becoming "always enforce": a box neither
+    configured for nor running the outputd reference keeps the pre-existing
+    fallback and never pays for an outputd STATUS read.
+    """
+    stats = _reference_input_stats()
+    stats["reference_input"]["source"] = "alsa"
+    calls = _install_reference_health_check_fakes(
+        monkeypatch,
+        tmp_path,
+        stats=stats,
+        journal="",
+    )
+    monkeypatch.setenv("JASPER_AEC_REF_SOURCE", "alsa")
     monkeypatch.setattr(doctor.aec, "_loopback_playback_active", lambda: False)
 
     result = doctor.aec.check_aec_bridge_output_health()

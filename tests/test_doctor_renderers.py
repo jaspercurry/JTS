@@ -7,6 +7,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 
 from jasper.cli import doctor
 
@@ -221,6 +222,7 @@ def test_shairport_check_ring_conf_but_disarmed_warns(monkeypatch, tmp_path):
 
 def test_shairport_check_jasper_renderer_in_fails(monkeypatch, tmp_path):
     """The retired renderer-dmix device is now a hard drift signal."""
+    _patch_lane_map(monkeypatch, tmp_path, None)
     _patch_shairport_conf(
         monkeypatch,
         'alsa = {\n    output_device = "jasper_renderer_in";\n};\n',
@@ -238,6 +240,7 @@ def test_shairport_check_legacy_plughw_warns_with_redeploy_hint(
     """Pre-PR-#214 wiring: output_device still points at the bare
     loopback. Doctor warns and tells the user to redeploy. This is
     the legacy-but-functional path, not a hard failure."""
+    _patch_lane_map(monkeypatch, tmp_path, None)
     _patch_shairport_conf(
         monkeypatch,
         'alsa = {\n    output_device = "plughw:Loopback,0,0";\n};\n',
@@ -253,6 +256,7 @@ def test_shairport_check_raw_hw_loopback_fails(monkeypatch, tmp_path):
     """Raw `hw:Loopback,0,0` bypasses plug entirely. shairport requests
     44.1 kHz and snd-aloop is locked at 48 kHz → silent rejection.
     This is the hard-fail case."""
+    _patch_lane_map(monkeypatch, tmp_path, None)
     _patch_shairport_conf(
         monkeypatch,
         'alsa = {\n    output_device = "hw:Loopback,0,0";\n};\n',
@@ -260,6 +264,49 @@ def test_shairport_check_raw_hw_loopback_fails(monkeypatch, tmp_path):
     )
     r = doctor.check_shairport_sync_loopback_plughw()
     assert r.status == "fail"
+
+
+@pytest.mark.parametrize(
+    "stale_device",
+    ["jasper_renderer_in", "plughw:Loopback,0,0", "hw:Loopback,0,0"],
+)
+@pytest.mark.parametrize(
+    ("armed", "expected_device", "forbidden_device"),
+    [
+        ([], "shairport_substream", "shairport_ring_lane"),
+        (["airplay"], "shairport_ring_lane", "shairport_substream"),
+    ],
+    ids=["unarmed", "armed"],
+)
+def test_shairport_legacy_remediations_name_this_box_s_device(
+    monkeypatch,
+    tmp_path,
+    stale_device,
+    armed,
+    expected_device,
+    forbidden_device,
+):
+    """Every legacy branch must name the device the lane map resolves HERE.
+
+    All three stale values predate the lane map, so they say nothing about
+    whether the airplay lane is armed — the remediation has to consult the
+    map like the coherent branches do. Hardcoding `shairport_substream`
+    (as all three did before U4/P7-5) sends an armed box's operator to a
+    device their box does not render, and a redeploy to that target would
+    not converge anything.
+    """
+    _patch_lane_map(monkeypatch, tmp_path, armed)
+    _patch_shairport_conf(
+        monkeypatch,
+        f'alsa = {{\n    output_device = "{stale_device}";\n}};\n',
+        tmp_path,
+    )
+
+    r = doctor.check_shairport_sync_loopback_plughw()
+
+    assert r.status in {"warn", "fail"}
+    assert expected_device in r.detail
+    assert forbidden_device not in r.detail
 
 
 def test_shairport_check_missing_output_device_warns(monkeypatch, tmp_path):

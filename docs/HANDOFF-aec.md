@@ -3,7 +3,8 @@
 This document describes the AEC subsystem in detail: why it exists,
 what we tried, what failed, what shipped, and what's still open. It
 is the canonical source for anyone touching `jasper-aec-bridge`,
-`jasper-aec-init`, the `pcm.jasper_capture` dsnoop, the bridge↔voice
+`jasper-aec-init`, the outputd UDP speaker monitor the bridge takes
+its reference from, the bridge↔voice
 UDP transport (see [HANDOFF-resilience.md](HANDOFF-resilience.md)
 for why it's UDP and not a second snd-aloop card), the
 `jasper/xvf/` XMOS control helper, or any of the
@@ -2506,17 +2507,21 @@ are now:
   quality on AEC-Challenge benchmarks. Deferred — see "Deep
   tuning landscape" below for staging.
 
-### Why alsaaudio for the reference capture
+### Why alsaaudio was used for the reference capture (retired at U4/P7-1)
 
-The reference signal lives at `pcm.jasper_capture` — a
-custom-named PCM defined in `/etc/asound.conf`. PortAudio's device
-enumeration only sees `hw:N,M` style devices and a few standard
-aliases (`default`, `sysdefault`, `pulse`); custom asoundrc PCMs
-aren't enumerated. The Python `pyalsaaudio` library calls
-`snd_pcm_open(name)` directly via libasound and respects asoundrc,
-so we use it for the ref capture path. The mic capture and AEC
-output paths use sounddevice/PortAudio (existing daemon
-convention) since they go through plain `hw:N,M` devices.
+**Retired.** The bridge's reference is jasper-outputd's UDP speaker
+monitor and the bridge imports no `alsaaudio` at all; this records why
+the ALSA path was built the way it was while it existed.
+
+The reference signal lived at `pcm.jasper_capture` — a custom-named
+PCM defined in `/etc/asound.conf`. PortAudio's device enumeration only
+sees `hw:N,M` style devices and a few standard aliases (`default`,
+`sysdefault`, `pulse`); custom asoundrc PCMs aren't enumerated. The
+Python `pyalsaaudio` library calls `snd_pcm_open(name)` directly via
+libasound and respects asoundrc, so it was used for the ref capture
+path. The mic capture and AEC output paths use sounddevice/PortAudio
+(existing daemon convention) since they go through plain `hw:N,M`
+devices — that half is unchanged.
 
 The bridge runs as root (no `User=` in the systemd unit), matching the
 existing jasper-camilla/jasper-voice daemon posture for realtime audio
@@ -2655,8 +2660,12 @@ it's fine.
 If RAM becomes a constraint, the highest-impact savings are:
 1. Drop scipy (~30 MB). Replace `resample_poly` with a
    pre-computed FIR + numpy.convolve.
-2. Drop sounddevice (~15 MB). The bridge already uses alsaaudio
-   for ref capture; could use it for everything.
+2. Drop sounddevice (~15 MB). Since U4/P7-1 the bridge's reference
+   is a stdlib UDP socket on outputd's speaker monitor and the
+   bridge imports no `alsaaudio` at all, so sounddevice's only
+   remaining job here is mic capture — dropping it means porting
+   that one path (`alsaaudio` is still a project dependency for the
+   USB-mic relay and the probes' direct mic capture).
 3. Rewrite as Rust or C (~80–100 MB, ~1–2 days work). Bridge
    becomes a 10–20 MB process.
 

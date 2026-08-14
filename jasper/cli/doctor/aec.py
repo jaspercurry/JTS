@@ -564,10 +564,12 @@ _AEC_REF_SILENT_THRESHOLD = 50
 
 # Drift warning rate that flags as abnormal. The check reads a 90-second
 # journal window (see "Use a 90-second window, not 5 minutes" below), not
-# 5 minutes. The 2026-05-15 dsnoop rate-lock state produced ~190 drift
-# warnings/min — hundreds in any 90 s slice; healthy ops have ~5 per 90 s
-# from clock skew tolerated by the bridge (see the warn message below,
-# which repeats this baseline for the operator).
+# 5 minutes. Both figures behind this threshold date from the era when the
+# bridge logged the drift signature: the 2026-05-15 dsnoop rate-lock state
+# produced ~190 drift warnings/min — hundreds in any 90 s slice — against
+# ~5 per 90 s in healthy operation. The bridge no longer emits that line at
+# all; see the provenance note at the `drift_count` branch in
+# `_assess_aec_bridge_output`.
 _AEC_DRIFT_WARN_THRESHOLD = 30  # in 90 s
 
 # The bridge rewrites its stats snapshot every 0.5 s. A snapshot older than
@@ -638,6 +640,13 @@ def _assess_aec_reference_input_from_stats(
     malformed or stale declared-v4 snapshot fails closed instead of aging into
     the legacy fallback. The second element lets the caller suppress previous-
     process journal windows during the explicit startup grace.
+
+    ``configured_source`` is the route the CALLER resolved from the env plus
+    the bridge's own published snapshot, not the env value alone (see
+    ``check_aec_bridge_output_health``): those two diverge on a box parked by
+    a pre-P7-1 reconciler, and gating on the env would skip this
+    authoritative freshness check on exactly the box whose configuration is
+    already known to be stale.
     """
 
     if configured_source != "outputd_udp":
@@ -846,13 +855,14 @@ def _assess_aec_bridge_output(
     sessions: when no loopback renderer is writing, the reference is
     correctly silent (there is no program audio to reference) so the
     ref-silent + mic-loud pattern proves nothing about the reference
-    chain. The gate observes only the loopback renderer lanes — USB
-    Audio Input reaches the DAC without opening one — so False means
-    "no loopback renderer", NOT "the speaker is silent". Pass False
-    when a check upstream has verified the loopback playback side is
-    closed; the FAIL branch will then return OK with an explanatory
-    message instead. Default None preserves the old behavior (used by
-    tests that want to exercise the journal parser in isolation).
+    chain. The gate observes only the snd-aloop renderer lanes — USB
+    Audio Input and any ring-armed renderer lane (U3/P6) reach the DAC
+    without opening one — so False means "no snd-aloop renderer lane is
+    open", NOT "the speaker is silent". Pass False when a check upstream
+    has verified the loopback playback side is closed; the FAIL branch
+    will then return OK with an explanatory message instead. Default
+    None preserves the old behavior (used by tests that want to
+    exercise the journal parser in isolation).
     """
     drift_count = 0
     silent_ref_count = 0
@@ -899,7 +909,7 @@ def _assess_aec_bridge_output(
         # currently active (no renderer writing the loopback), a
         # silent ref is expected rather than suspicious. The mic-loud
         # bursts are most likely room voice or ambient noise — though
-        # this gate only sees loopback renderer lanes, so it cannot
+        # this gate only sees snd-aloop renderer lanes, so it cannot
         # prove the speaker was silent. Either way ref-silent proves
         # nothing about the reference chain here.
         if music_chain_active is False:
@@ -907,13 +917,15 @@ def _assess_aec_bridge_output(
                 "AEC bridge output", "ok",
                 f"{silent_ref_count} mic-loud windows have "
                 f"ref<{_AEC_REF_SILENT_THRESHOLD} but loopback playback is "
-                f"closed (no loopback renderer writing music) — mic-loud "
+                f"closed (no snd-aloop renderer lane open) — mic-loud "
                 f"bursts are most likely room voice or ambient noise. This "
-                f"gate sees only the loopback renderer lanes. If the "
-                f"speaker WAS playing — USB Audio Input is invisible "
-                f"here — the silent ref is unexplained; check outputd's "
-                f"reference publisher. Re-run doctor with loopback music "
-                f"playing to exercise the ref path; drift={drift_count}",
+                f"gate sees only the snd-aloop renderer lanes. If the "
+                f"speaker WAS playing — USB Audio Input and any ring-armed "
+                f"renderer lane are invisible here — the silent ref is "
+                f"unexplained; check outputd's reference publisher. The "
+                f"reference itself is outputd's speaker monitor, so program "
+                f"audio on ANY transport exercises the ref path; only this "
+                f"gate is snd-aloop-scoped. drift={drift_count}",
             )
         return CheckResult(
             "AEC bridge output", "fail",
@@ -930,19 +942,32 @@ def _assess_aec_bridge_output(
             ),
         )
 
-    # Failure mode 2 — continuous drift warnings = severe clock skew
-    # between ref and mic capture, or rate mismatch between the loopback
-    # and the bridge's expected REF_RATE.
+    # Failure mode 2 — continuous drift warnings = severe clock skew between
+    # the mic capture and the reference the bridge receives from
+    # jasper-outputd's UDP speaker monitor. U4/P7-1 retired the ALSA
+    # reference, so the bridge opens no snd-aloop PCM and no hw_params file
+    # describes its reference any more.
+    #
+    # Provenance, so a `drift=0` below is not mistaken for evidence: the
+    # bridge stopped emitting the "drained N stale ref frames (drift)" line
+    # in PR #157 (2026-05-19), which replaced drain-newest with in-order
+    # single-frame consumption. Nothing in the tree logs that signature
+    # today, so this branch does not fire and every `drift=N` reported here
+    # is structurally 0. Left in place rather than deleted: the same
+    # signature is also counted by
+    # `jasper.audio_validation._measured_drift_delay_check`, so retiring it
+    # is a decision for the arc owner, not a side effect of a prose re-point.
     if drift_count > _AEC_DRIFT_WARN_THRESHOLD:
         return CheckResult(
             "AEC bridge output", "warn",
-            f"{drift_count} ref-drift warnings in last 90 s "
-            f"(healthy baseline ~5 per 90 s). The ref capture is "
-            f"producing samples faster than the mic capture is "
-            f"consuming them — usually a rate mismatch between the "
-            f"music chain loopback and the bridge's expected REF_RATE. "
-            f"Check /proc/asound/Loopback/pcm0p/sub0/hw_params; "
-            f"AEC effectiveness degrades when drift is severe.",
+            f"{drift_count} ref-drift warnings in last 90 s. The ref "
+            f"capture is producing samples faster than the mic capture is "
+            f"consuming them — a clock skew between jasper-outputd's "
+            f"48 kHz reference publisher and the mic device. Check "
+            f"`reference_outputs` in jasper-outputd's STATUS and "
+            f"`counters.queue_drops.ref` in "
+            f"/run/jasper/aec_bridge_stats.json; AEC effectiveness "
+            f"degrades when drift is severe.",
         )
 
     # No log windows = bridge restarted within the last 90 s OR
@@ -1030,7 +1055,7 @@ def check_aec_bridge_output_health() -> CheckResult:
             "(bridge not running — see AEC bridge service check above)",
         )
 
-    configured_source = os.environ.get(
+    env_source = os.environ.get(
         "JASPER_AEC_REF_SOURCE", "outputd_udp",
     ).strip().lower()
     expected_endpoint = (
@@ -1038,6 +1063,24 @@ def check_aec_bridge_output_health() -> CheckResult:
         f"{os.environ.get('JASPER_AEC_OUTPUTD_REF_UDP_PORT', '9891').strip()}"
     )
     bridge_stats = _read_bridge_stats_snapshot()
+    # Which route this box is on decides whether the authoritative v4
+    # freshness contract gets enforced, and EITHER end saying `outputd_udp` is
+    # enough to demand it: the env states intent, the bridge's own snapshot
+    # states what it applied, and the two legitimately diverge on a box parked
+    # by a pre-P7-1 reconciler (the retired `alsa` spelling survives on disk
+    # while the bridge converges — `aec_bridge._resolved_reference_source`).
+    # Gating on the env alone sent exactly that box to the music-conditional
+    # journal fallback, which returns OK for a dead reference whenever no
+    # snd-aloop renderer lane is open. OR is the fail-closed direction:
+    # enforcing the contract can only add a FAIL, never mask one, and the
+    # env-says-outputd/receiver-says-otherwise case keeps reaching the
+    # assessor's runtime-identity FAIL instead of being skipped.
+    applied_source = _applied_reference_source(bridge_stats)
+    configured_source = (
+        "outputd_udp"
+        if "outputd_udp" in (applied_source, env_source)
+        else env_source
+    )
     now_monotonic = time.monotonic()
 
     stats_assessment: tuple[CheckResult, bool] | None = None
@@ -1141,6 +1184,41 @@ def _read_bridge_stats_snapshot() -> dict | None:
     except (OSError, UnicodeError, ValueError, OverflowError):
         return None
     return stats if isinstance(stats, dict) else None
+
+
+def _applied_reference_source(stats: dict | None) -> str | None:
+    """The reference source the running bridge APPLIED, or None if unreadable.
+
+    The bridge resolves ``JASPER_AEC_REF_SOURCE`` before anything reads it
+    (``aec_bridge._resolved_reference_source``) and publishes the resolved
+    value into its stats snapshot, so this is the box's runtime truth where
+    the env file is only its intent — and a box parked by a pre-P7-1
+    reconciler still carries the retired ``alsa`` spelling in
+    /etc/jasper/jasper.env while the bridge converged to ``outputd_udp``.
+
+    Reads the schema-v4 ``reference_input.source``, NOT
+    ``active_capture_plan.mic_reference_identity.ref_source``. The two are
+    written from the same resolved value, but where they disagree this
+    module's shipped ruling is that the v4 receiver block wins and the
+    epoch-based plan is the legacy fallback (see the ``trusted_reference_
+    identity`` comment in ``check_aec_bridge_output_health``); reading the
+    plan here would have inverted that.
+
+    Fail-soft by design — an absent, malformed, or older snapshot returns
+    None and the caller falls back to the env value, which is what keeps a
+    rolling deploy (or an unwritten /run snapshot) from changing behaviour.
+    No freshness gate here: staleness is the assessor's own contract, which
+    fails closed on a stale declared-v4 snapshot rather than skipping it.
+    """
+    if not isinstance(stats, dict):
+        return None
+    reference_input = stats.get("reference_input")
+    if not isinstance(reference_input, dict):
+        return None
+    source = reference_input.get("source")
+    if not isinstance(source, str) or not source.strip():
+        return None
+    return source
 
 
 def _bridge_reference_provenance(

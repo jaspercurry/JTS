@@ -295,8 +295,7 @@ def check_mic_card_matches_config(cfg: Config) -> CheckResult:
             f"The AEC bridge migrated to UDP in PR 2 and the old "
             f"LoopbackAEC card no longer exists — update "
             f"JASPER_MIC_DEVICE to `udp:9876` (or `Array` for chip-direct). "
-            f"Verify with `aplay -l | grep Loopback` and "
-            f"`systemctl status jasper-aec-bridge`.",
+            f"Verify with `systemctl status jasper-aec-bridge`.",
         ), presence)
     card = _extract_card_name(cfg.mic_device)
     if card is None:
@@ -312,6 +311,16 @@ def check_mic_card_matches_config(cfg: Config) -> CheckResult:
 
 @doctor_check(order=5, group="audio")
 def check_loopback() -> CheckResult:
+    """snd-aloop must be loaded — on both couplings, hence `fail`.
+
+    A `loopback`-coupled box runs its entire program path over this
+    card. A ring-coupled box still needs it for every lane the ring has
+    not taken; the pair allocation is stated once, in
+    `deploy/modprobe.d/snd-aloop.conf`. U4/P7-4 removed a WRITER — the
+    ring arm's lane-7 mirror — not the card, so the severity is
+    unchanged on either coupling. P9 removes snd-aloop itself, and this
+    check goes with it.
+    """
     proc = _run(["aplay", "-L"])
     if "CARD=Loopback" in proc.stdout:
         return CheckResult("snd-aloop", "ok", "CARD=Loopback present")
