@@ -553,6 +553,8 @@ def test_docs_keep_manual_safety_and_provenance_boundaries() -> None:
     assert "Zero persistence across a controller power cycle is unverified" in readme
     assert "There is no timer or resident process" in readme
     assert "turntable_autostop.stopped" in readme
+    assert "moving the cable to another USB port disables automatic stop" in readme
+    assert "without receiving STOP or any motion command" in readme
     assert "development-time provenance" in vendor_readme
     assert "does not authenticate files at runtime" in vendor_readme
 
@@ -588,6 +590,7 @@ def test_hotplug_stop_udev_systemd_and_install_wiring() -> None:
     runtime_install = (ROOT / "deploy/lib/install/python-runtime.sh").read_text()
 
     assert 'ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523"' in rule
+    assert 'ENV{ID_PATH}=="platform-xhci-hcd.1-usb-0:2:1.0"' in rule
     assert 'KERNEL=="ttyUSB*"' in rule
     assert 'SYSTEMD_WANTS}+="jasper-turntable-autostop@%k.service"' in rule
     assert "BindsTo=dev-%i.device" in unit

@@ -88,10 +88,13 @@ A full JTS install stages
 `99-jasper-turntable-autostop.rules` and the hardened
 `jasper-turntable-autostop@.service` template. When a CH340 tty with USB ID
 `1a86:7523` appears, udev passes that event's exact `/dev/ttyUSB…` path to one
-systemd job. The helper opens only that path, verifies product
+systemd job. The rule also requires JTS3's confirmed dedicated physical USB
+path, `platform-xhci-hcd.1-usb-0:2:1.0`; moving the cable to another USB port
+disables automatic stop. The helper opens only that path, verifies product
 `MT320RUBL40ProV3` in the same controller session, and sends the vendor stop
-request. A different CH340 product is logged and ignored without receiving a
-command.
+request. A different CH340 product necessarily receives the non-motion
+connection, firmware, and product identity queries, then is logged and ignored
+without receiving STOP or any motion command.
 
 The helper exits immediately after an acknowledged and completed stop. While
 the tty or controller is still settling, it makes at most four attempts with
