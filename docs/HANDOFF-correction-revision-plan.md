@@ -249,7 +249,10 @@ answer honest-unknown when ambient evidence is absent — deferred from #2042),
 #2054 (cloud-side screens carry no gate disclosure — the half #1994 deferred),
 #2058 (a room-correction session records `verdict:accept` while
 `acoustic_quality` warns — a verdict that hides its own warning is the same
-disclosure failure this rung exists to fix; twin of closed #1813).
+disclosure failure this rung exists to fix; twin of closed #1813;
+addressed by PR #2473 — open, not yet merged — which downgrades the verify
+verdict to `surface` and discloses the reason when the verify capture's
+own SNR was low).
 
 ---
 
