@@ -348,9 +348,6 @@ def test_a_composite_may_not_arm_the_ring_at_the_narrow_wire(monkeypatch):
     from jasper.fanin import coupling_reconcile
 
     monkeypatch.setattr(
-        coupling_reconcile, "load_topology_for_wire", _composite_active_2way
-    )
-    monkeypatch.setattr(
         "jasper.fanin_coupling.read_declared_ring_wire_format", lambda: "S16_LE"
     )
     ok, detail = coupling_reconcile.composite_ring_wire_ready(_composite_active_2way())

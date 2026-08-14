@@ -810,11 +810,15 @@ DUAL_APPLE_USB_C_DAC_4CH = DacProfile(
     # ``result skipped / reason no_declared_floor`` before it ever resolves the
     # wire (``jasper/cli/audio_config.py::_cmd_render_ring_conf_wire``), so the
     # ACTIVE block would keep the ioplug's default 2 channels no matter what the
-    # topology resolved. An undeclared floor also sends the reconciler down
-    # ``_fallback_latency_floor_actions``, which UNSETS
-    # ``JASPER_OUTPUTD_PERIOD_FRAMES`` — outputd then falls to
-    # ``DEFAULT_PERIOD_FRAMES`` (1024) and ``ring_geometry_ready`` refuses the
-    # arm with "conf.d period 128 != outputd period 1024".
+    # topology resolved. An undeclared floor ALSO makes the planner
+    # ``jasper.audio_runtime_plan.outputd_latency_floor_actions`` emit ``unset``
+    # for ``JASPER_OUTPUTD_PERIOD_FRAMES`` (its "no floor, or no recognized
+    # profile, REMOVES stale generated values so the packaged defaults apply"
+    # arm) — outputd then falls to ``DEFAULT_PERIOD_FRAMES`` (1024) and
+    # ``ring_geometry_ready`` refuses the arm with "conf.d period 128 != outputd
+    # period 1024". (NOT ``_fallback_latency_floor_actions`` — that shell
+    # function is the interpreter-unavailable / command-failure fallback and
+    # never fires for a merely floorless profile.)
     #
     # ``outputd_period_frames`` is 128 == ``RING_SLOT_FRAMES``, so this composite
     # clears the ``ring_slot_fixed_128`` refusal without needing issue #2147.
@@ -823,9 +827,10 @@ DUAL_APPLE_USB_C_DAC_4CH = DacProfile(
     # either number moves.
     #
     # THIS CHANGES A LIVE ALOOP COMPOSITE TOO, AND THAT IS NOT COSMETIC. While
-    # this profile was floor-LESS the reconciler took
-    # ``_fallback_latency_floor_actions``, which UNSETS the period/buffer keys,
-    # so a composite ran the PACKAGED defaults: period 1024 / dac_buffer 3072.
+    # this profile was floor-LESS the planner
+    # (``jasper.audio_runtime_plan.outputd_latency_floor_actions``) emitted
+    # ``unset`` for the period/buffer keys, so a composite ran the PACKAGED
+    # defaults: period 1024 / dac_buffer 3072.
     # Declaring the floor moves it to 128 / 256 — on the aloop lane, before any
     # ring is armed. The numbers are the children's own measured floor, but
     # measured on ONE dongle: "period 128 is stable on an Apple dongle" is

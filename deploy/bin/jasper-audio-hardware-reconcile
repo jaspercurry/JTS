@@ -1284,7 +1284,7 @@ render_flat_cutover_if_needed() {
 # that shears on any of those axes fails the ioplug attach the same way.
 render_ring_conf_if_needed() {
     local actions key value result="" period="" previous="" reason="" conf=""
-    local sample_format="" channels_a="" channels_b="" topology=""
+    local sample_format="" channels_a="" channels_b="" channels_active="" topology=""
     if [[ "$OUTPUT_DAC_RECOGNIZED" != "1" ]]; then
         log_event "ring_conf" "result=skipped reason=dac_unrecognized"
         return 0
@@ -1313,13 +1313,20 @@ render_ring_conf_if_needed() {
             sample_format) sample_format="$value" ;;
             ring_a_channels) channels_a="$value" ;;
             ring_b_channels) channels_b="$value" ;;
+            # The ACTIVE ring's rendered width. The renderer has always printed
+            # it; this whitelist had no arm for it, and the case above drops an
+            # unmatched key SILENTLY (see the comment on this function), so the
+            # one number a roleful/composite box's render is actually about was
+            # the one number event=ring_conf never carried. Pre-existing gap,
+            # load-bearing since P8b item 1d made the active width per-box.
+            ring_active_channels) channels_active="$value" ;;
             topology) topology="$value" ;;
             reason) reason="$value" ;;
             conf) conf="$value" ;;
         esac
     done <<<"$actions"
     log_event "ring_conf" \
-        "result=${result:-unknown} output_dac_id=${OUTPUT_DAC_ID} period_frames=${period:-none} previous_period_frames=${previous:-none} sample_format=${sample_format:-none} ring_a_channels=${channels_a:-none} ring_b_channels=${channels_b:-none} topology=${topology:-none} reason=${reason:-none} ring_conf=$(jasper_asound_log_token "$conf")"
+        "result=${result:-unknown} output_dac_id=${OUTPUT_DAC_ID} period_frames=${period:-none} previous_period_frames=${previous:-none} sample_format=${sample_format:-none} ring_a_channels=${channels_a:-none} ring_b_channels=${channels_b:-none} ring_active_channels=${channels_active:-none} topology=${topology:-none} reason=${reason:-none} ring_conf=$(jasper_asound_log_token "$conf")"
 }
 
 gate_role_services() {

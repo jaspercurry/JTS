@@ -692,8 +692,6 @@ def active_ring_channels_for_topology(topology: OutputTopology) -> int | None:
     capability. jts3's DAC8x declares an 8-channel active-lane capability while
     its commissioned graph drives 2; the ring is built to what is driven.
 
-    ``None`` — no active ring — for:
-
     **A COMPOSITE (multi-child) ROLEFUL SINK IS ANSWERED HERE, NOT REFUSED**
     (P8b item 1b). It is the one shape this function ever excluded for a reason
     that did not survive re-derivation. The old exclusion said "the ring ioplug
