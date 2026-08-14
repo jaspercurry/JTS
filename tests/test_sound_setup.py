@@ -28,6 +28,7 @@ from jasper.active_speaker.playback_route import OUTPUTD_ACTIVE_LANE_SOURCE
 from jasper.camilla_config_contract import PeqFilter
 from jasper.dsp_apply import DspApplyState, dsp_write_epoch, record_dsp_apply_state
 from jasper.output_topology import (
+    CROSS_CHILD_GROUP_CODE,
     DUAL_APPLE_ACTIVE_DEVICE_ID,
     OUTPUT_TOPOLOGY_KIND,
     OutputTopology,
@@ -3278,6 +3279,99 @@ def test_sound_output_topology_save_accepts_measured_dual_apple_hardware(
     assert topology["safety"]["sound_tests_allowed"] is False
 
 
+def test_sound_output_topology_save_discloses_a_cross_child_speaker_group(
+    monkeypatch,
+    tmp_path: Path,
+):
+    """POST /output-topology accepts a cross-child layout and says so.
+
+    Issue #2486. One cabinet with its woofer on dongle A and its tweeter on
+    dongle B puts an uncorrected clock seam inside a crossover. That is a
+    fidelity cost, not a hearing-safety one, so per the never-nanny ruling the
+    save is ACCEPTED and the verdict rides back in the response for the wizard
+    to show. This pins both halves: not refused, and not silent.
+    """
+
+    path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_HARDWARE_STATE_PATH",
+        str(tmp_path / "output_hardware.json"),
+    )
+    write_output_hardware_state(
+        classify_output_cards([
+            OutputCardFact(
+                card_id="A",
+                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+                serial="DWH53530FHL2FN3AC",
+                usb_path="usb1/1-2",
+                busnum="1",
+                controller="xhci-hcd.0",
+                endpoint_sync="SYNC",
+            ),
+            OutputCardFact(
+                card_id="A_1",
+                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+                serial="DWH53530FLL2FN3A3",
+                usb_path="usb1/1-1",
+                busnum="1",
+                controller="xhci-hcd.0",
+                endpoint_sync="SYNC",
+            ),
+        ]),
+        path=tmp_path / "output_hardware.json",
+    )
+
+    payload = sound_setup._save_output_topology_payload({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "dual_apple_pair",
+        "name": "Dual Apple cross-child mono",
+        "status": "draft",
+        "hardware": _dual_apple_hardware(),
+        "speaker_groups": [
+            {
+                "id": "mono",
+                "label": "Mono speaker",
+                "kind": "mono",
+                "mode": "active_2_way",
+                "channels": [
+                    {
+                        "role": "woofer",
+                        # Output 1 belongs to the left dongle...
+                        "physical_output_index": 0,
+                        "identity_verified": True,
+                    },
+                    {
+                        "role": "tweeter",
+                        # ...and output 3 belongs to the right one.
+                        "physical_output_index": 2,
+                        "identity_verified": True,
+                        "startup_muted": True,
+                        "protection_required": True,
+                        "protection_status": "present",
+                    },
+                ],
+            },
+        ],
+        "routing": {"mono_group_id": "mono"},
+    })
+
+    topology = payload["output_topology"]
+    verdicts = [
+        issue for issue in topology["evaluation"]["warnings"]
+        if issue["code"] == CROSS_CHILD_GROUP_CODE
+    ]
+
+    assert len(verdicts) == 1
+    assert verdicts[0]["group_id"] == "mono"
+    assert verdicts[0]["child_ids"] == ["left_dac", "right_dac"]
+    # Accepted, not refused: it persisted and it is not blocked.
+    assert path.exists()
+    assert topology["status"] == "verified"
+    assert topology["safety"]["blockers"] == []
+
+
 def test_active_speaker_tone_backend_status_is_explicit_lab_only(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -4678,6 +4772,32 @@ def test_sound_module_renders_first_active_crossover_step_without_scary_copy():
         "tweeterTypeChangeInvalidatesCopiedResearchBinding": True
     } in out["results"]
     assert {"activeSpeakerSetupTogglePersistsAcrossRender": True} in out["results"]
+
+
+def test_sound_module_discloses_a_speaker_split_across_two_child_dacs():
+    """The cross-child verdict is a warning, so the notice IS the disclosure.
+
+    ``evaluate_output_topology`` reports ``speaker_group_spans_child_devices``
+    without blocking the save (never-nanny: the layout drives, the cost is
+    fidelity). Nothing else tells the household, so this render is the whole
+    user-facing half of issue #2486.
+    """
+
+    if _NODE is None:
+        pytest.skip("node not on PATH")
+
+    proc = subprocess.run(
+        [_NODE, str(_SOUND_HARNESS), str(_SOUND_MODULE)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout.strip().splitlines()[-1])
+
+    assert {
+        "crossChildSpeakerGroupIsDisclosedInTheMapStep": True
+    } in out["results"]
 
 
 def test_sound_component_flow_uses_bounded_responsive_grids():

@@ -1,15 +1,18 @@
 # Dual Apple USB-C DAC Lab Runbook
 
-> **Status: lab-derived topology evidence.** This is not a sound-emitting
-> product path yet. The current product path still assumes one coherent
-> physical output device for normal listening, but
-> `jasper.output_topology` can now model this exact measured
-> one-DAC-per-speaker pair as `dual_apple_usb_c_dac_4ch` when
-> exactly two Apple child DACs are observed on the expected same USB
-> controller/bus with four physical outputs total. Stored drift evidence is
-> validation evidence for confidence and doctor/readiness reporting; it is not
-> the only thing that makes the hardware profile exist. Missing or partial live
-> hardware observation blocks the composite clock report.
+> **Status: bench runbook for a shipped output path.** This file is the lab
+> procedure and the measured evidence behind the composite output profile —
+> not the product reference. Sound-emitting product playback ships through
+> `jasper-outputd`'s `PairedCompositeSink`; its design is
+> [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md).
+> `jasper.output_topology` models this measured one-DAC-per-speaker pair as
+> `dual_apple_usb_c_dac_4ch` when exactly two Apple child DACs are observed on
+> the expected same USB controller/bus with four physical outputs total.
+> Stored drift evidence is validation evidence for confidence and
+> doctor/readiness reporting; it is not the only thing that makes the hardware
+> profile exist. Missing or partial live hardware observation blocks the
+> composite clock report. The lab binary described below remains a bench
+> measurement tool and is never the product playback owner.
 
 This runbook validates the best-case experimental topology for two Apple
 USB-C to 3.5 mm adapters on Raspberry Pi 5:
@@ -195,6 +198,13 @@ The first product-facing slice is intentionally non-audible:
 - `clock_domain_report` and the active playback-route capability expose that
   constrained composite clock to topology checks, but neither grants playback
   authority; the protected commission ramp owns per-driver audible tests.
+- One DAC per speaker is disclosed, not enforced. When a saved speaker group's
+  drivers land on two different child DACs, `evaluate_output_topology` reports a
+  `speaker_group_spans_child_devices` warning naming the group and the children
+  (`output_topology.cross_child_group_verdicts`). It is a warning because the
+  layout still drives every lane — the cost is fidelity, an uncorrected clock
+  seam sitting inside a crossover — so JTS says so and lets the household
+  decide.
 
 Sound-emitting product work now uses `jasper-outputd`'s dual direct-sink
 mode: one Rust process opens both pinned DAC PCMs, consumes the protected
@@ -379,4 +389,4 @@ Do not allow sound-emitting JTS paths to consume this topology unless a
 bundle proves the exact serials, physical port map, channel identity, and
 safe startup behavior.
 
-Last verified: 2026-07-12
+Last verified: 2026-08-14

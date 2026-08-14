@@ -3756,7 +3756,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         renderOutputHardwareRefresh() +
       '</div>';
     }
-    var evaluation = outputEvaluation(topology);
     var layoutStatusValue = outputTopology.dirty ? 'draft' : 'layout ready';
     return '<div class="output-layout">' +
       renderOutputStepCard(
@@ -3785,7 +3784,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         'Confirm outputs',
         outputStepHint('map', 'Assign DAC channels, then play each driver quietly.'),
         topology,
-        renderOutputStageCard(topology) +
+        renderCrossChildNoticeCard(topology) +
+          renderOutputStageCard(topology) +
           renderOutputGroupsCard(topology) +
           renderOutputIdentityCard(),
         renderOutputMapStepFooter()
@@ -3959,6 +3959,31 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       'data-act="commission-step" data-identity-audition="true" ' +
       'data-role="' + escapeHtml(role) + '"' +
       (disabled ? ' disabled' : '') + '>Play</button>';
+  }
+  // One speaker's drivers landing on two different child DACs of a composite
+  // output device. The backend names it — output_topology.CROSS_CHILD_GROUP_CODE
+  // / cross_child_group_verdicts — at WARNING severity, never as a blocker: the
+  // layout drives every lane, so the cost is fidelity (an uncorrected clock seam
+  // sitting inside a crossover), not damage. JTS therefore discloses it here and
+  // lets the household decide, rather than refusing the save.
+  var CROSS_CHILD_GROUP_CODE = 'speaker_group_spans_child_devices';
+  function crossChildGroupVerdicts(topology) {
+    var warnings = outputEvaluation(topology).warnings;
+    return (Array.isArray(warnings) ? warnings : []).filter(function(issue) {
+      return issue && issue.code === CROSS_CHILD_GROUP_CODE;
+    });
+  }
+  function renderCrossChildNoticeCard(topology) {
+    var verdicts = crossChildGroupVerdicts(topology);
+    if (!verdicts.length) return '';
+    return '<div class="output-card output-card--hardware">' +
+      '<div class="output-card__head">' +
+        '<div><p class="output-card__title">One speaker is split across two DACs</p>' +
+        '<p class="setting-row__hint">Each USB DAC runs on its own clock and JTS does not correct between them, so a crossover split across two of them drifts. This layout still plays. Move that speaker&rsquo;s drivers onto one DAC when you can.</p></div>' +
+        '<span class="status-pill">check wiring</span>' +
+      '</div>' +
+      renderIssueList(verdicts, 4) +
+    '</div>';
   }
   function renderOutputGroupsCard(topology) {
     var assignments = [];
