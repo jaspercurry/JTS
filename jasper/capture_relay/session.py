@@ -1300,6 +1300,29 @@ class BeginCapture(NamedTuple):
 
 BEGIN_CAPTURE_RETAKE_KEY = "retake"
 
+# A voluntary retake that arrives after its window shut. Not a protocol fault:
+# the page rendered the control, the household pressed it, and the plan moved on
+# in between (issue #2090 — the owner's 2026-08-03 verify). It is refused like
+# any other begin the ordering contract cannot admit — accepting it would land
+# evidence on a slot the plan has already moved past — but under its OWN code
+# and copy, for two reasons the generic ordering refusal cannot serve:
+#
+#   * The phone renders a refusal's ``error`` string VERBATIM (it does not
+#     branch on ``code``), so the alternative is a household reading
+#     "expected capture 2 attempt 2" off a run-day screen.
+#   * ``code`` is what a journal is greppable by. #2090 was diagnosed by mining
+#     a session for ``retake=true`` authorizations, finding none, and being
+#     unable to tell "the press arrived and lost the race" from "the press never
+#     arrived at all". This code makes the first one a positive fact.
+BEGIN_REFUSED_RETAKE_TOO_LATE = "retake_too_late"
+# Deliberately the same sentence the page shows when its OWN mirror of the
+# window catches the press first (``RETAKE_TOO_LATE_MESSAGE`` in
+# capture-page/js/main.js): whichever side answers, the household reads the same
+# thing. Names the state they can see, not the protocol fact behind it.
+RETAKE_TOO_LATE_MESSAGE = (
+    "Too late to redo that spot — the next measurement already started."
+)
+
 
 def parse_begin_capture(
     payload: Any,
@@ -1613,6 +1636,39 @@ def _poll_capture_plan(
                 "could not publish capture-begin refusal", exc_info=True
             )
 
+    def retakes_the_just_accepted_slot(index: int, wants_retake: bool) -> bool:
+        """Whether a begin is a VOLUNTARY retake of the slot that just
+        completed — the one extra shape §2.6 recognises.
+
+        Read off the MARKER rather than inferred from the index alone: an
+        unmarked begin for an already-accepted index is an ordinary
+        out-of-order fault and must keep reading as one, which is what lets an
+        OLD page (one that never sends the key) behave exactly as it always
+        did. Says nothing about whether the retake is still ADMISSIBLE — the
+        window (``next_begin_seen``) is a separate question, and the two
+        callers that ask this while refusing are asking precisely because the
+        window is shut.
+        """
+        return wants_retake and index == accepted_count
+
+    def lost_the_retake_race(index: int, wants_retake: bool) -> bool:
+        """Whether a begin about to be REFUSED is a voluntary retake that lost
+        its race with the plan's own forward motion (issue #2090).
+
+        ``next_begin_seen`` is the whole test, and it is exactly what the named
+        copy asserts — the next measurement has started. It is what makes the
+        sentence true rather than merely plausible:
+
+        * while the in-flight capture is itself a retake of this same slot it
+          is False (a retake never sets it), so a second press is not told the
+          plan moved on when a redo of this very spot is running; and
+        * a marked retake carrying the wrong attempt number is refused with the
+          window still OPEN, so it is not told it arrived too late either.
+
+        Both keep the generic ordering refusal, which is true of them.
+        """
+        return retakes_the_just_accepted_slot(index, wants_retake) and next_begin_seen
+
     def refuse_begin_order(
         index: int, attempt: int, code: str, message: str
     ) -> None:
@@ -1902,12 +1958,17 @@ def _poll_capture_plan(
                     # else: the current capture's context riding a newer
                     # event (e.g. its own armed post) — nothing to do.
                 elif phase != "awaiting_begin":
-                    refuse_begin_order(
-                        index,
-                        attempt,
-                        "begin_out_of_order",
-                        "a capture attempt is already in progress",
+                    # A capture is already authorized. When it is the FORWARD
+                    # one, a retake press here lost its race by a whole capture.
+                    refuse_code, refuse_message = (
+                        (BEGIN_REFUSED_RETAKE_TOO_LATE, RETAKE_TOO_LATE_MESSAGE)
+                        if lost_the_retake_race(index, wants_retake)
+                        else (
+                            "begin_out_of_order",
+                            "a capture attempt is already in progress",
+                        )
                     )
+                    refuse_begin_order(index, attempt, refuse_code, refuse_message)
                 elif pair != (accepted_count + 1, attempts_used + 1) and not (
                     # The ONE additional admitted shape (flow-simplification
                     # §2.6): a VOLUNTARY retake of the capture that just
@@ -1926,15 +1987,21 @@ def _poll_capture_plan(
                     and not next_begin_seen
                     and pair == (accepted_count, attempts_used + 1)
                 ):
-                    refuse_begin_order(
-                        index,
-                        attempt,
-                        "begin_out_of_order",
-                        (
-                            f"expected capture {accepted_count + 1} attempt "
-                            f"{attempts_used + 1}"
-                        ),
+                    # Nothing is in flight here, so a retake that lost its race
+                    # lost it to a begin parked on a DEFERRAL — the v2 apply
+                    # hold the household's "continue" tap starts.
+                    refuse_code, refuse_message = (
+                        (BEGIN_REFUSED_RETAKE_TOO_LATE, RETAKE_TOO_LATE_MESSAGE)
+                        if lost_the_retake_race(index, wants_retake)
+                        else (
+                            "begin_out_of_order",
+                            (
+                                f"expected capture {accepted_count + 1} attempt "
+                                f"{attempts_used + 1}"
+                            ),
+                        )
                     )
+                    refuse_begin_order(index, attempt, refuse_code, refuse_message)
                 else:
                     raise_if_stopped()
                     # A retake never advances ``accepted_count``, so the slot
@@ -1946,8 +2013,10 @@ def _poll_capture_plan(
                     # the two are equivalent here (only the retake branch above
                     # can admit ``index == accepted_count``), but an inference
                     # that is only true because of a condition twenty lines up
-                    # is the kind that stops being true after an edit.
-                    is_retake = wants_retake and index == accepted_count
+                    # is the kind that stops being true after an edit. The same
+                    # predicate the two refusal sites grade a LOST race with, so
+                    # "what counts as a retake" has one definition.
+                    is_retake = retakes_the_just_accepted_slot(index, wants_retake)
                     if not is_retake:
                         next_begin_seen = True
                     entry = plan.entry_for_index(index)
