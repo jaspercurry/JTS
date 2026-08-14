@@ -22,14 +22,23 @@ hop  what happens                                counted by            exact?
 A    mic → the browser's own capture FIFO →      nothing               **no**
      ``MediaStreamAudioSourceNode``
 B    render graph hands quanta to the worklet    ``block_gap_frames``  yes
-C    worklet quanta → one ``Float32Array``       ``frames`` vs         yes
-                                                 ``encoded_frames``
-D    ``float32ToWavBlob`` → 16-bit mono WAV      (no resample)         yes
+C    worklet quanta → one ``Float32Array``,      ``frames`` vs         yes
+     transferred to the page                     ``encoded_frames``
+D    ``float32ToWavBlob`` → 16-bit mono WAV      \\                     yes
 E    AES-256-GCM → relay → Pi → decrypt          ``encoded_frames``    yes
-                                                 vs received
-F    ``scipy.io.wavfile.read`` → samples         (no resample)         yes
+                                                 vs ``received``
+F    ``scipy.io.wavfile.read`` → samples         /                     yes
 G    ``deconv.cap_capture_length`` truncation    NOT COMPARED          n/a
 ===  ==========================================  ====================  ==========
+
+The count comparison at D–F spans all three as ONE bracket, and that is exactly
+as strong as three separate ones would be: none of the three resamples, so a
+frame in must be a frame out. D writes a 44-byte header plus ``frameCount * 2``
+bytes; E is byte-transparent under an AES-GCM tag and a SHA-256 the relay client
+verifies, so a truncated transfer raises rather than arriving short; F reads that
+same frame count back and takes channel 0 of a multichannel file without changing
+it. There is no counter to put between them because there is nothing between them
+that could change a count without failing loudly first.
 
 **Hop A is the one that cannot be closed, and saying so is the point.** A drop or
 resync inside the browser's microphone FIFO delivers an unbroken run of quanta
