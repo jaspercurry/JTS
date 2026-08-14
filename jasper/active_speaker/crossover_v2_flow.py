@@ -1846,11 +1846,25 @@ VERIFY_PILOT_TRANSFER_STEP_CEILING_DB = 0.35
 # this constant HARDCODES the rounded value instead, because a live VERIFY
 # sitting has no such bank to read — it holds two attempts of its own and
 # nothing else, and importing a kernel that needs a study it cannot supply would
-# buy a dependency rather than a number. The 17.5% gap between the two spellings
-# is therefore deliberate and one-directional: 0.2 > 0.17016 makes THIS
-# discriminator strictly harder to fire, which is the same conservative
-# direction the fixed-mic caveat below argues for. If that kernel ever gains a
-# VERIFY-time source for its floor, this constant is what should go.
+# buy a dependency rather than a number.
+#
+# **Which way the 17.5% gap cuts, stated carefully, because the intuition runs
+# backwards.** The discriminator declares determinism when the separation is
+# ``<=`` the floor, so a BIGGER floor is a WIDER agreement window: 0.2 fires
+# marginally MORE readily than the derived 0.17016 would, and against the
+# kernel's own rule it slightly OVER-claims determinism rather than under-
+# claiming it. That is acceptable, but not for the reason the arithmetic
+# suggests — the margin comes from the fixed-mic caveat below, which puts the
+# true same-sitting floor for a hand-held phone at or above 0.2. Measured
+# against reality rather than against the bench number, 0.2 is still the
+# conservative end.
+#
+# So a maintainer must NOT "tighten" this toward 0.17016 believing it moves
+# safe-ward: it moves the other way, narrowing the window until real repeats at
+# a hand-held mic stop being recognised as repeats and the household is handed
+# back the dead retry this whole change removes. If that kernel ever gains a
+# VERIFY-time source for its floor, this constant is what should go — replaced
+# by the computed value, not hand-edited toward it.
 #
 # **It is a fixed-mic floor, and that direction is the safe one.** The same
 # README is explicit that the mic-replacement arm — remove, replace, re-aim — is
