@@ -1224,10 +1224,43 @@ rejected — see the "Stage 2a landed" callout above.)
   non-Running child is a hard fault → mute **all** children, `event=outputd.
   composite.child_lost`, `/state.composite.children[].state`. The reconciler/
   ExecCondition gates a composite on **all** child cards present.
-- **Unified xrun policy:** `write_period` uses bounded per-child `try_recover`
-  (mirror the single path), bailing only on recovery exhaustion or delay
-  divergence — never the dual path's bail-on-first-xrun (which reboot-loops via
-  `StartLimitAction`).
+- **Unified xrun policy (#2255).** One recovery budget, `xrun_policy` in
+  `alsa_backend.rs`, is shared by the coherent single sink's `write_dac_frames`
+  and the composite's child write: three recoveries per period, then bail.
+  `Ok(0)` rides the same budget on both paths. The composite bails on exactly
+  two things — that budget running out, or the pairwise delay-divergence guard
+  tripping — never on the first xrun, which used to exit 1 into
+  `Restart=on-failure` → `StartLimitBurst=5` → `StartLimitAction=reboot`.
+  **The recovery is the LINK GROUP's, not per-child.** `dac_a.link(&dac_b)`
+  makes `snd_pcm_recover` a group prepare, so the composite recovers once, then
+  re-primes BOTH children to `prime_periods()` depth through the same
+  interleaved child write the run loop uses, then calls `start_dacs()` as an
+  explicit group start. The prime depth stays one period below
+  `start_threshold` on purpose: a full-buffer refill would auto-start the group
+  the moment child A filled, before child B was primed, baking in up to a full
+  period (128 frames ≈ 2.667 ms at 48 kHz) of permanent A/B skew — which on an
+  active 2-way IS the woofer/tweeter time alignment. The pairwise baseline is
+  then re-latched under a MAGNITUDE bound (`dual_max_delay_delta_frames`, the
+  same constant the steady-state guard uses); a pair that comes back outside it
+  fails closed instead of blessing the offset. An **unlinked** pair keeps the
+  bail: with no atomic group restart its post-recovery skew is unbounded and
+  unverifiable, which is also why `link=ok` is an arm-time precondition for a
+  composite on the SHM ring (park-class refusal — it keeps the loopback
+  transport). Per-child attribution is `event=outputd.xrun
+  source=dual_dac_a|dual_dac_b`; the re-prime reports
+  `event=outputd.dual_apple.reprime
+  status=ok|alignment_refused|xrun_during_reprime` (the third is an xrun on a
+  pair the recovery had just prepared — fail-closed, never a second nested
+  recovery); and
+  `/state.dual_apple` carries `dac_a_xruns` / `dac_b_xruns` /
+  `group_recoveries` / `delay_baseline_relatches` /
+  `reprime_alignment_failures`. Sink-level `dac_xrun_count` is unchanged.
+  Persistence beyond one period belongs to the restart ladder: a composite that
+  exhausts its budget on every start rides `Restart=on-failure`, where a
+  repeated content-lane open failure instead gets parked out-of-band on its 4th
+  by `jasper-outputd-failure-reconcile`. That helper has one failure class, the
+  content lane's, and its 4-of-5 bound is derived from a startup wait that a
+  runtime xrun does not have.
 - **Width mismatch (CamillaDSP N vs outputd M):** two shapes, two exits.
   When the lane *installs* a width other than the one outputd requested, the
   content readback carries `FinalSinkStartupConfigError` → `EXIT_CONFIG`/78,

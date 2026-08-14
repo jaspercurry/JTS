@@ -21,6 +21,158 @@ use crate::types::{
 
 const MAX_RECOVERIES_PER_PERIOD: u32 = 3;
 
+/// What the write loop does after one recovery attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum XrunAction {
+    /// Stay in the period and write again.
+    Continue,
+    /// The budget is spent — bail, which takes the unit's ordinary exit-1
+    /// restart ladder.
+    GiveUp,
+}
+
+/// **The one recovery budget, shared by the coherent single sink and the
+/// composite.** One function so the two write paths cannot drift into
+/// different answers to "how many times may one period recover?".
+///
+/// The parameter name carries the calling convention, because the off-by-one
+/// it prevents is the whole bug class: the caller has ALREADY attempted the
+/// recovery and ALREADY incremented, so `1` means "one recovery has happened".
+/// A `>` against `MAX_RECOVERIES_PER_PERIOD` therefore permits exactly
+/// `MAX_RECOVERIES_PER_PERIOD` recoveries and no further write past them:
+///
+/// | `recoveries_so_far_including_this_one` | Action |
+/// |---|---|
+/// | 1 | `Continue` |
+/// | 2 | `Continue` |
+/// | 3 | `Continue` |
+/// | 4 | `GiveUp` |
+///
+/// Written check-AFTER-increment rather than check-before, which is what the
+/// single path shipped and what a fresh reading of "budget of 3" would get
+/// wrong in the permissive direction (a fourth `writei` on a device that has
+/// already failed four times).
+fn xrun_policy(recoveries_so_far_including_this_one: u32) -> XrunAction {
+    if recoveries_so_far_including_this_one > MAX_RECOVERIES_PER_PERIOD {
+        XrunAction::GiveUp
+    } else {
+        XrunAction::Continue
+    }
+}
+
+/// How many periods of silence to queue before an explicit `snd_pcm_start`.
+///
+/// `(buffer / period) - 1`, floored at one period: deliberately ONE PERIOD OF
+/// BUFFER HEADROOM below a full buffer, because `manual_start` sets
+/// `start_threshold = buffer_frames`. Filling the buffer would make ALSA START
+/// the stream by itself — and on a linked composite that auto-start fires when
+/// the FIRST child's buffer fills, before the second child has been primed at
+/// all, baking a period of permanent A/B skew into the pair. Priming below the
+/// threshold is what makes the following `snd_pcm_start` the only thing that
+/// starts either child.
+///
+/// Used by BOTH the startup prime (`main.rs`) and the composite's post-recovery
+/// re-prime, from here, so the depth that makes the startup path safe is the
+/// same number the recovery path re-establishes alignment with. Pinned by
+/// `prime_periods_leave_one_period_of_buffer_headroom`.
+pub fn prime_periods(buffer_frames: u32, period_frames: u32) -> u32 {
+    if period_frames == 0 {
+        return 1;
+    }
+    ((buffer_frames / period_frames).saturating_sub(1)).max(1)
+}
+
+/// The steady-state pairwise-divergence arithmetic, lifted out of
+/// [`PairedCompositeSink::check_delay_delta`] so it can be tested without two
+/// live USB DACs.
+///
+/// `error_frames` is the drift AWAY FROM the latched baseline, not the raw A/B
+/// delay difference: a composite's two children sit at some fixed offset from
+/// each other and that offset is the zero. `diverged` is `error > max`, so an
+/// error EXACTLY at the tolerance is accepted — the same inclusive boundary the
+/// post-recovery re-latch uses, because they are the same tolerance with one
+/// meaning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DelayDeltaCheck {
+    error_frames: i64,
+    diverged: bool,
+}
+
+fn delay_delta_check(delta: i64, baseline: i64, max_error_frames: i64) -> DelayDeltaCheck {
+    let error_frames = (delta - baseline).abs();
+    DelayDeltaCheck {
+        error_frames,
+        diverged: error_frames > max_error_frames,
+    }
+}
+
+/// Verdict on re-latching the pairwise delay baseline after a group recovery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BaselineRelatch {
+    /// The re-primed pair landed within tolerance of where it was before the
+    /// fault — bless the new offset as the zero.
+    Accept,
+    /// The re-primed pair is somewhere else. Refuse, and let the sink fail
+    /// closed rather than laundering the fault the divergence guard exists to
+    /// see.
+    Refuse,
+}
+
+/// **The magnitude bound on the re-latch — bounded by how far the pair moved,
+/// never by how many times it moved.**
+///
+/// A count threshold cannot see this harm: at 48 kHz one 128-frame period is
+/// 2.667 ms, and on an active 2-way that offset IS the woofer/tweeter time
+/// alignment. A single bad re-latch bakes it in permanently, so the harm is
+/// unbounded at count = 1.
+///
+/// `max_delta_frames` is `dual_max_delay_delta_frames` — the SAME constant the
+/// steady-state divergence guard enforces, one meaning in both places. Note the
+/// arithmetic that makes it the right number: at the default 48 frames
+/// (~1.0 ms), a full-period skew is ~2.7x the tolerance, i.e. the steady-state
+/// guard would already catch it if the baseline were not re-latched. This bound
+/// is precisely what stops the re-latch from hiding that.
+///
+/// `pre_fault_baseline == None` accepts: the fault arrived before the pair ever
+/// latched a steady-state zero, so there is no prior alignment to violate and
+/// nothing to launder. Refusing there would fail closed on a fact nobody knows.
+fn baseline_relatch_decision(
+    pre_fault_baseline: Option<i64>,
+    post_reprime_delta: i64,
+    max_delta_frames: i64,
+) -> BaselineRelatch {
+    match pre_fault_baseline {
+        None => BaselineRelatch::Accept,
+        Some(pre_fault) => {
+            if (post_reprime_delta - pre_fault).abs() <= max_delta_frames {
+                BaselineRelatch::Accept
+            } else {
+                BaselineRelatch::Refuse
+            }
+        }
+    }
+}
+
+/// May a composite arm the SHM ring with the link state its children gave it?
+///
+/// **`link=ok` is an ARM-TIME precondition, not a runtime one.** The composite's
+/// recovery model rests entirely on `snd_pcm_link`: a group prepare, a group
+/// re-prime and one atomic group start are what re-establish A/B alignment
+/// after an xrun. An unlinked pair has no atomic restart primitive, so its
+/// post-recovery skew is unbounded AND unverifiable — see
+/// [`write_dac_fail_closed`], which keeps the pre-change bail there for exactly
+/// that reason.
+///
+/// So a composite whose children will not link is a box whose recovery model
+/// does not hold, and it must keep the aloop transport until it does. This is
+/// deliberately NOT a flip of the global `JASPER_OUTPUTD_DUAL_REQUIRE_LINK`
+/// default: an unlinked composite on the loopback transport behaves exactly as
+/// it did before this change, because nothing about that box's behaviour
+/// changed. Only ARMING is gated.
+fn composite_ring_arm_link_ok(ring_armed: bool, linked: bool) -> bool {
+    !ring_armed || linked
+}
+
 /// Why a content lane declared `S24_3LE` is refused rather than read.
 ///
 /// One `&'static str` shared by both ingest entry points (the coherent single lane
@@ -181,6 +333,14 @@ pub struct CompositeStatus {
     pub delay_delta_baseline_frames: Option<i64>,
     pub delay_delta_error_frames: Option<i64>,
     pub max_delay_delta_frames: i64,
+    /// Per-child xrun attribution and the group's recovery bookkeeping. Only
+    /// ever rendered inside the already-conditional `dual_apple` block, so a
+    /// single-DAC box's `/state` does not change by a byte.
+    pub dac_a_xruns: u64,
+    pub dac_b_xruns: u64,
+    pub group_recoveries: u64,
+    pub delay_baseline_relatches: u64,
+    pub reprime_alignment_failures: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -456,6 +616,27 @@ pub struct PairedCompositeSink {
     counters: IoCounters,
     fill_log: FillLogGate,
     linked: bool,
+    /// Per-child cumulative xrun counts. The sink-level `dac_xrun_count` in
+    /// `counters` stays exactly what it was (the doctor's existing consumer);
+    /// these two are the attribution that says WHICH dongle is burping, which
+    /// on a two-dongle-on-one-bus box is the difference between "replace a
+    /// cable" and "replace a hub".
+    dac_a_xrun_count: u64,
+    dac_b_xrun_count: u64,
+    /// Cumulative GROUP recoveries. One per recovered xrun, not two: on a
+    /// linked pair `snd_pcm_recover` prepares both children, so a per-child
+    /// recovery counter would state a fact that is not true.
+    group_recoveries: u64,
+    /// How many times the pairwise baseline was re-latched after a recovery —
+    /// an observable, never the bound. The bound is
+    /// [`baseline_relatch_decision`]'s magnitude test.
+    delay_baseline_relatches: u64,
+    /// How many re-latches were REFUSED because the re-primed pair landed
+    /// outside `max_delay_delta_frames` of its pre-fault baseline. This is the
+    /// number that says "this pair is losing alignment on every burp" — each
+    /// one is also a fail-closed stop, so a nonzero value here is always paired
+    /// with a restart.
+    reprime_alignment_failures: u64,
     delay_delta_baseline: Option<i64>,
     last_delay_delta: Option<i64>,
     last_delay_delta_error: Option<i64>,
@@ -587,6 +768,50 @@ impl ChildPeriods {
         match self {
             Self::S16 { .. } => SampleFormat::S16Le,
             Self::S32 { .. } => SampleFormat::S32Le,
+        }
+    }
+
+    /// Split one 4-channel program period into the two child buffers, at
+    /// whichever width this pair negotiated.
+    ///
+    /// The width arm lives here, next to the buffers, so the split and the
+    /// buffers it fills can only ever be the same width — the reason this is an
+    /// enum at all. Re-run on every retry of a period rather than cached,
+    /// because a recovery overwrites these buffers with silence for the
+    /// re-prime.
+    fn deinterleave(&mut self, samples_4ch: &[ProgramSample]) -> Result<()> {
+        match self {
+            Self::S16 { a, b } => deinterleave_4ch_to_dual_stereo(samples_4ch, a, b),
+            Self::S32 { a, b } => deinterleave_4ch_to_dual_stereo(samples_4ch, a, b),
+        }
+    }
+
+    /// How many frames one child period holds — the buffers' own length, not a
+    /// negotiated value read from somewhere else.
+    fn frames(&self) -> usize {
+        let samples = match self {
+            Self::S16 { a, .. } => a.len(),
+            Self::S32 { a, .. } => a.len(),
+        };
+        samples / (CHANNELS as usize)
+    }
+
+    /// Overwrite both child buffers with silence, in place.
+    ///
+    /// The post-recovery re-prime's payload. In place rather than a fresh
+    /// buffer because the re-prime runs on the SCHED_FIFO playout thread, where
+    /// an allocation is a priority-inversion path — and because a re-prime that
+    /// wrote anything but this pair's own buffers could write the wrong width.
+    fn fill_silence(&mut self) {
+        match self {
+            Self::S16 { a, b } => {
+                a.fill(0);
+                b.fill(0);
+            }
+            Self::S32 { a, b } => {
+                a.fill(0);
+                b.fill(0);
+            }
         }
     }
 }
@@ -1297,6 +1522,36 @@ impl PairedCompositeSink {
             }
         }
 
+        // ARM-TIME precondition: a composite may not take the SHM ring unless
+        // its children linked. `skip_content_pcm` IS "this box is ring-armed"
+        // (`content_pcm_skipped` is the one owner of that question), so this is
+        // the transport's own arm gate, asked where the link answer is known.
+        //
+        // Why here and not as a runtime check: the recovery model that makes an
+        // armed composite safe is built on `snd_pcm_link` (group prepare, group
+        // re-prime, one atomic group start). Without it the pair's post-recovery
+        // A/B skew is unbounded and unverifiable, and on an active 2-way that
+        // skew IS the woofer/tweeter time alignment. A refusal with a named
+        // reason beats an armed box whose recovery model does not hold.
+        //
+        // PARK-class (EX_CONFIG 78), like every other refusal in this
+        // constructor: whether two devices will link is a property of the
+        // devices and their drivers, so it answers identically on every restart.
+        // Walking the restart ladder would only spend the box's start budget on
+        // its way to `StartLimitAction=reboot`. Parking puts it where an
+        // operator — and jasper-doctor — can see it, and the box's own remedy is
+        // to keep the aloop transport until the pair links.
+        if !composite_ring_arm_link_ok(skip_content_pcm, linked) {
+            eprintln!("event=outputd.dual_apple.ring_arm_refused reason=link_required");
+            return final_sink_startup(Err(anyhow::anyhow!(
+                "outputd composite sink refuses to arm the SHM ring with an unlinked child pair \
+                 ({dac_a_pcm} + {dac_b_pcm}): snd_pcm_link is what makes the post-xrun group \
+                 re-prime and atomic group start able to re-establish A/B alignment, so an \
+                 unlinked pair has no safe recovery. Keep this box on the loopback transport \
+                 until its children link."
+            )));
+        }
+
         // `content_source=`, `content_format=` and `format=` spelled exactly as
         // the single sink's `event=outputd.alsa.opened` line spells them, so one
         // grep recipe reads both hops on either transport and a half-flipped box
@@ -1334,6 +1589,11 @@ impl PairedCompositeSink {
             counters: IoCounters::default(),
             fill_log: FillLogGate::default(),
             linked,
+            dac_a_xrun_count: 0,
+            dac_b_xrun_count: 0,
+            group_recoveries: 0,
+            delay_baseline_relatches: 0,
+            reprime_alignment_failures: 0,
             delay_delta_baseline: None,
             last_delay_delta: None,
             last_delay_delta_error: None,
@@ -1406,6 +1666,11 @@ impl PairedCompositeSink {
             delay_delta_baseline_frames: self.delay_delta_baseline,
             delay_delta_error_frames: self.last_delay_delta_error,
             max_delay_delta_frames: self.max_delay_delta_frames,
+            dac_a_xruns: self.dac_a_xrun_count,
+            dac_b_xruns: self.dac_b_xrun_count,
+            group_recoveries: self.group_recoveries,
+            delay_baseline_relatches: self.delay_baseline_relatches,
+            reprime_alignment_failures: self.reprime_alignment_failures,
         }
     }
 
@@ -1549,68 +1814,57 @@ impl PairedCompositeSink {
     }
 
     /// Split one 4-channel program period to the two children and write both —
-    /// **the composite's single quantization, at the children's edge.**
+    /// **the composite's single quantization, at the children's edge** — with a
+    /// bounded linked-group recovery around the write.
     ///
-    /// The width arm is chosen by [`ChildPeriods`], which is the children's
-    /// negotiated width: an `S16Le` pair narrows once per sample during the
-    /// split (round-to-nearest, the same primitive the coherent sink's `S16Le`
-    /// edge uses), an `S32Le` pair carries the spine's own samples and converts
-    /// nothing. Every buffer either arm touches was sized at open.
+    /// The split's width arm is chosen by [`ChildPeriods`], which is the
+    /// children's negotiated width: an `S16Le` pair narrows once per sample
+    /// during the split (round-to-nearest, the same primitive the coherent
+    /// sink's `S16Le` edge uses), an `S32Le` pair carries the spine's own
+    /// samples and converts nothing. Every buffer either arm touches was sized
+    /// at open.
     ///
-    /// The `.context(...)` strings are `&'static str` rather than `format!`-ed
-    /// PCM names, exactly as `AlsaBackend::write_dac_period`'s io-handle context
-    /// is: this body is period-hot and
-    /// `test_outputd_period_hot_functions_do_not_allocate` covers it. Both
-    /// children are named literally so the message still says which one failed;
-    /// the PCM aliases are on the open-time `event=outputd.dual_apple.opened`
-    /// line and in STATUS.
+    /// **Every exit from this period is either the write completing or a bail**
+    /// (#2255) — there is no arm that returns `Ok` having silently given up, and
+    /// no arm that retries without spending budget. An xrun is the one fault
+    /// that gets a bounded second chance: the recovery ladder is
+    /// recover → re-prime → group start → re-latch, and it bails at any rung it
+    /// cannot complete (budget exhausted, an unlinked pair, an xrun on the
+    /// just-prepared pair, a group start that does not reach Running, a
+    /// re-latch outside the magnitude bound) as well as on the steady-state
+    /// divergence guard. Every other error — a non-`EPIPE` `writei`, an IO
+    /// handle, a `snd_pcm_delay` read — propagates as it always did.
+    ///
+    /// What it does NOT do is bail on the FIRST xrun, which is what used to
+    /// exit 1 and ride `Restart=on-failure` → `StartLimitBurst=5` →
+    /// `StartLimitAction=reboot` on a USB dongle burp.
+    ///
+    /// **The loop is bounded by the budget, and the budget is declared here,
+    /// outside it, on purpose.** Each recovery spends one unit, and the
+    /// re-prime's own writes spend from the same unit — so a child that xruns
+    /// forever bails after `MAX_RECOVERIES_PER_PERIOD` instead of spinning on
+    /// outputd's SCHED_FIFO playout thread. Moving the declaration inside the
+    /// loop re-zeroes it every pass and makes the recovery unbounded; the
+    /// position is pinned by
+    /// `test_the_composite_recovery_budget_is_per_period_not_per_attempt`.
     pub fn write_dual_period(&mut self, samples_4ch: &[ProgramSample]) -> Result<()> {
-        match &mut self.periods {
-            ChildPeriods::S16 { a, b } => {
-                deinterleave_4ch_to_dual_stereo(samples_4ch, a, b)?;
-                let io_a = self
-                    .dac_a
-                    .io_i16()
-                    .context("getting i16 IO handle for outputd dual Apple DAC A")?;
-                write_dac_fail_closed(
-                    &io_a,
-                    &self.dac_a_pcm,
-                    a,
-                    &mut self.counters.dac_xrun_count,
-                )?;
-                let io_b = self
-                    .dac_b
-                    .io_i16()
-                    .context("getting i16 IO handle for outputd dual Apple DAC B")?;
-                write_dac_fail_closed(
-                    &io_b,
-                    &self.dac_b_pcm,
-                    b,
-                    &mut self.counters.dac_xrun_count,
-                )?;
-            }
-            ChildPeriods::S32 { a, b } => {
-                deinterleave_4ch_to_dual_stereo(samples_4ch, a, b)?;
-                let io_a = self
-                    .dac_a
-                    .io_i32()
-                    .context("getting i32 IO handle for outputd dual Apple DAC A")?;
-                write_dac_fail_closed(
-                    &io_a,
-                    &self.dac_a_pcm,
-                    a,
-                    &mut self.counters.dac_xrun_count,
-                )?;
-                let io_b = self
-                    .dac_b
-                    .io_i32()
-                    .context("getting i32 IO handle for outputd dual Apple DAC B")?;
-                write_dac_fail_closed(
-                    &io_b,
-                    &self.dac_b_pcm,
-                    b,
-                    &mut self.counters.dac_xrun_count,
-                )?;
+        // ONE budget per period, shared by both children and by the re-prime —
+        // the same shape the coherent single sink's per-period `recoveries` has,
+        // through the same `xrun_policy`. A pair that burps four times inside
+        // one period is not recovering, it is failing, and the bail is what puts
+        // that on the restart ladder rather than in an unbounded loop.
+        let mut recoveries = 0u32;
+        loop {
+            self.periods.deinterleave(samples_4ch)?;
+            match self.write_children(&mut recoveries)? {
+                ChildWriteOutcome::Complete => break,
+                // The group was recovered, so BOTH children are prepared and
+                // empty: re-establish alignment, then write this period again
+                // from the top. Writing only "the rest" would be wrong — the
+                // prepare dropped whatever either child had queued.
+                ChildWriteOutcome::GroupRecovered => {
+                    self.reprime_after_group_recovery(&mut recoveries)?
+                }
             }
         }
         self.counters.dac_frames_written += (samples_4ch.len() / 4) as u64;
@@ -1618,6 +1872,243 @@ impl PairedCompositeSink {
             self.check_delay_delta()?;
         }
         Ok(())
+    }
+
+    /// Write the two child period buffers — whatever they hold at this point —
+    /// to A, then B.
+    ///
+    /// The per-period write body, and the reason it is its own function: the
+    /// re-prime needs the identical A-then-B interleave over a silent payload,
+    /// and a second copy of this is exactly where "prime A fully, then prime B"
+    /// would creep back in — which is the skew hazard the whole recovery model
+    /// exists to avoid.
+    ///
+    /// The width arm is chosen by [`ChildPeriods`], which is the children's
+    /// negotiated width. Every buffer either arm touches was sized at open.
+    ///
+    /// The `.context(...)` strings are `&'static str` rather than `format!`-ed
+    /// PCM names, exactly as `AlsaBackend::write_dac_period`'s io-handle context
+    /// is: this body is period-hot and
+    /// `test_outputd_period_hot_functions_do_not_allocate` covers it. Both
+    /// children are named literally so the message still says which one failed;
+    /// the PCM aliases are on the open-time `event=outputd.dual_apple.opened`
+    /// line, in STATUS, and on each child's `event=outputd.xrun` line.
+    fn write_children(&mut self, recoveries: &mut u32) -> Result<ChildWriteOutcome> {
+        let linked = self.linked;
+        match &mut self.periods {
+            ChildPeriods::S16 { a, b } => {
+                let io_a = self
+                    .dac_a
+                    .io_i16()
+                    .context("getting i16 IO handle for outputd dual Apple DAC A")?;
+                if write_dac_fail_closed(
+                    &io_a,
+                    ChildWrite {
+                        pcm: &self.dac_a,
+                        pcm_name: &self.dac_a_pcm,
+                        source: "dual_dac_a",
+                        linked,
+                    },
+                    a,
+                    ChildWriteLedger {
+                        recoveries,
+                        xrun_count: &mut self.counters.dac_xrun_count,
+                        child_xrun_count: &mut self.dac_a_xrun_count,
+                        group_recoveries: &mut self.group_recoveries,
+                    },
+                )? == ChildWriteOutcome::GroupRecovered
+                {
+                    return Ok(ChildWriteOutcome::GroupRecovered);
+                }
+                let io_b = self
+                    .dac_b
+                    .io_i16()
+                    .context("getting i16 IO handle for outputd dual Apple DAC B")?;
+                write_dac_fail_closed(
+                    &io_b,
+                    ChildWrite {
+                        pcm: &self.dac_b,
+                        pcm_name: &self.dac_b_pcm,
+                        source: "dual_dac_b",
+                        linked,
+                    },
+                    b,
+                    ChildWriteLedger {
+                        recoveries,
+                        xrun_count: &mut self.counters.dac_xrun_count,
+                        child_xrun_count: &mut self.dac_b_xrun_count,
+                        group_recoveries: &mut self.group_recoveries,
+                    },
+                )
+            }
+            ChildPeriods::S32 { a, b } => {
+                let io_a = self
+                    .dac_a
+                    .io_i32()
+                    .context("getting i32 IO handle for outputd dual Apple DAC A")?;
+                if write_dac_fail_closed(
+                    &io_a,
+                    ChildWrite {
+                        pcm: &self.dac_a,
+                        pcm_name: &self.dac_a_pcm,
+                        source: "dual_dac_a",
+                        linked,
+                    },
+                    a,
+                    ChildWriteLedger {
+                        recoveries,
+                        xrun_count: &mut self.counters.dac_xrun_count,
+                        child_xrun_count: &mut self.dac_a_xrun_count,
+                        group_recoveries: &mut self.group_recoveries,
+                    },
+                )? == ChildWriteOutcome::GroupRecovered
+                {
+                    return Ok(ChildWriteOutcome::GroupRecovered);
+                }
+                let io_b = self
+                    .dac_b
+                    .io_i32()
+                    .context("getting i32 IO handle for outputd dual Apple DAC B")?;
+                write_dac_fail_closed(
+                    &io_b,
+                    ChildWrite {
+                        pcm: &self.dac_b,
+                        pcm_name: &self.dac_b_pcm,
+                        source: "dual_dac_b",
+                        linked,
+                    },
+                    b,
+                    ChildWriteLedger {
+                        recoveries,
+                        xrun_count: &mut self.counters.dac_xrun_count,
+                        child_xrun_count: &mut self.dac_b_xrun_count,
+                        group_recoveries: &mut self.group_recoveries,
+                    },
+                )
+            }
+        }
+    }
+
+    /// Re-establish A/B alignment after a group recovery: re-prime BOTH children
+    /// to the startup depth, interleaved, then start the group explicitly, then
+    /// re-latch the pairwise baseline under a magnitude bound.
+    ///
+    /// **Why a re-prime and not "resume writing".** `snd_pcm_recover` prepared
+    /// the group and dropped whatever either child had queued, so the pair is at
+    /// a known-empty state — the only state from which alignment can be
+    /// re-established rather than assumed. What must NOT happen is what a
+    /// full-buffer refill would do: `manual_start` sets
+    /// `start_threshold = buffer_frames`, so filling the buffer AUTO-STARTS the
+    /// linked group the moment child A's buffer fills — before child B has been
+    /// primed at all — baking in up to a full period of PERMANENT skew. That is
+    /// the exact hazard the re-prime exists to remove, so it must not be
+    /// re-created by the removal.
+    ///
+    /// Hence the shipped startup path, reused verbatim rather than re-derived:
+    /// prime to [`prime_periods`] depth (one period of buffer headroom,
+    /// deliberately BELOW `start_threshold`, so nothing auto-starts), fill those
+    /// periods through the same A-then-B [`Self::write_children`] the run loop
+    /// uses (so the two children's fill states are equal at the moment of
+    /// start), and only THEN call [`Self::start_dacs`], which on a linked pair
+    /// starts both atomically and already asserts both reach Running.
+    ///
+    /// An xrun DURING the re-prime fails closed rather than recursing. A
+    /// prepared, un-started stream has no playback position to underrun from, so
+    /// an EPIPE here means the pair is not in the state the recovery just put it
+    /// in — and a second recovery layered on an unexplained one would be
+    /// blessing a state nobody has verified. It is also what keeps this bounded:
+    /// one recovery, one re-prime, no nesting.
+    fn reprime_after_group_recovery(&mut self, recoveries: &mut u32) -> Result<()> {
+        let pre_fault_baseline = self.delay_delta_baseline;
+        let depth = prime_periods(
+            self.dac_negotiated.buffer_frames,
+            self.dac_negotiated.period_frames,
+        );
+        self.periods.fill_silence();
+        let period_frames = self.periods.frames() as u64;
+        for _ in 0..depth {
+            if self.write_children(recoveries)? == ChildWriteOutcome::GroupRecovered {
+                self.reprime_alignment_failures += 1;
+                eprintln!("event=outputd.dual_apple.reprime status=xrun_during_reprime");
+                anyhow::bail!(
+                    "outputd dual Apple re-prime hit an xrun on a prepared child pair: \
+                     refusing to layer a second recovery on a group state that has not \
+                     been re-established"
+                );
+            }
+            // These frames really were handed to the children, so they count —
+            // the STARTUP prime's identical silence already does (it goes
+            // through `write_dual_period` from the run loop), and one counter
+            // that means "frames written to the DACs" beats one that means it
+            // except during recovery.
+            self.counters.dac_frames_written += period_frames;
+        }
+        self.start_dacs()
+            .context("starting outputd dual Apple DAC group after xrun recovery")?;
+        self.relatch_delay_baseline(pre_fault_baseline)
+    }
+
+    /// Bless the re-primed pair's A/B offset as the new zero — but only if the
+    /// pair came back to within `max_delay_delta_frames` of where it was.
+    ///
+    /// The re-latch is necessary: `snd_pcm_recover` resets the children's stream
+    /// positions, a real and permanent step. Without it, the very next
+    /// [`Self::check_delay_delta`] would measure the post-recovery offset
+    /// against a pre-recovery baseline and bail — turning "bail on the first
+    /// xrun" into "bail on the first period after the first xrun", with a
+    /// scarier diagnosis (`delay_diverged` instead of `xrun`).
+    ///
+    /// The bound is what keeps the re-latch from laundering the fault: see
+    /// [`baseline_relatch_decision`] for why the bound is a MAGNITUDE and not a
+    /// count.
+    fn relatch_delay_baseline(&mut self, pre_fault_baseline: Option<i64>) -> Result<()> {
+        let delay_a = self
+            .dac_a
+            .delay()
+            .context("reading outputd dual DAC A delay after re-prime")?;
+        let delay_b = self
+            .dac_b
+            .delay()
+            .context("reading outputd dual DAC B delay after re-prime")?;
+        let delta = delay_a - delay_b;
+        match baseline_relatch_decision(pre_fault_baseline, delta, self.max_delay_delta_frames) {
+            BaselineRelatch::Accept => {
+                self.delay_delta_baseline = Some(delta);
+                self.last_delay_delta = Some(delta);
+                self.last_delay_delta_error = Some(0);
+                self.delay_baseline_relatches += 1;
+                eprintln!(
+                    "event=outputd.dual_apple.reprime status=ok baseline_delta_frames={} \
+                     prior_baseline_frames={} relatches={} max_delay_delta_frames={}",
+                    delta,
+                    pre_fault_baseline.unwrap_or(delta),
+                    self.delay_baseline_relatches,
+                    self.max_delay_delta_frames,
+                );
+                Ok(())
+            }
+            BaselineRelatch::Refuse => {
+                self.reprime_alignment_failures += 1;
+                let prior = pre_fault_baseline.unwrap_or(delta);
+                eprintln!(
+                    "event=outputd.dual_apple.reprime status=alignment_refused \
+                     baseline_delta_frames={} prior_baseline_frames={} \
+                     baseline_step_frames={} max_delay_delta_frames={}",
+                    delta,
+                    prior,
+                    (delta - prior).abs(),
+                    self.max_delay_delta_frames,
+                );
+                anyhow::bail!(
+                    "outputd dual Apple re-prime did not restore alignment: baseline moved \
+                     {} frames (from {} to {}), beyond the {}-frame tolerance",
+                    (delta - prior).abs(),
+                    prior,
+                    delta,
+                    self.max_delay_delta_frames
+                );
+            }
+        }
     }
 
     pub fn dac_delay_frames(&self) -> Result<u64> {
@@ -1645,10 +2136,11 @@ impl PairedCompositeSink {
             .context("reading outputd dual DAC B delay")?;
         let delta = delay_a - delay_b;
         let baseline = *self.delay_delta_baseline.get_or_insert(delta);
-        let error = (delta - baseline).abs();
+        let check = delay_delta_check(delta, baseline, self.max_delay_delta_frames);
+        let error = check.error_frames;
         self.last_delay_delta = Some(delta);
         self.last_delay_delta_error = Some(error);
-        if error > self.max_delay_delta_frames {
+        if check.diverged {
             eprintln!(
                 "event=outputd.dual_apple.delay_diverged current_delta_frames={} baseline_frames={} error_frames={} max_error_frames={}",
                 delta,
@@ -2172,7 +2664,7 @@ fn write_dac_frames<S: Copy>(
                 frames_done += n;
                 if n == 0 {
                     recoveries += 1;
-                    if recoveries > MAX_RECOVERIES_PER_PERIOD {
+                    if xrun_policy(recoveries) == XrunAction::GiveUp {
                         anyhow::bail!("outputd DAC writei returned 0 frames repeatedly");
                     }
                 }
@@ -2189,7 +2681,7 @@ fn write_dac_frames<S: Copy>(
                     pcm.try_recover(e, true)
                         .context("recovering outputd DAC xrun")?;
                     recoveries += 1;
-                    if recoveries > MAX_RECOVERIES_PER_PERIOD {
+                    if xrun_policy(recoveries) == XrunAction::GiveUp {
                         anyhow::bail!(
                             "outputd DAC xrun recovery exceeded {} attempts in one period",
                             MAX_RECOVERIES_PER_PERIOD
@@ -2204,63 +2696,160 @@ fn write_dac_frames<S: Copy>(
     Ok(())
 }
 
+/// What one composite child's period write did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChildWriteOutcome {
+    /// The whole period reached the child.
+    Complete,
+    /// An xrun was recovered. On a linked pair `snd_pcm_recover` is a GROUP
+    /// prepare, so BOTH children are now prepared and empty — the caller owes
+    /// the group re-prime, the explicit group start and the bounded baseline
+    /// re-latch before any further program audio is written.
+    GroupRecovered,
+}
+
+/// Everything one composite child write needs to know about the child it is
+/// writing. A struct rather than four more parameters, because clippy's
+/// argument-count lint is the honest signal here: the loop below takes a
+/// buffer, an identity and a ledger, and those are three things.
+struct ChildWrite<'a> {
+    pcm: &'a PCM,
+    pcm_name: &'a str,
+    /// The `source=` token on this child's `event=outputd.xrun` line —
+    /// `dual_dac_a` or `dual_dac_b`. Per-child attribution is the diagnostic
+    /// that says WHICH dongle burped; the recovery it triggers is the group's.
+    source: &'static str,
+    linked: bool,
+}
+
+/// The counters one child write may move. All borrowed separately because they
+/// live in different owners: the recovery budget is per-period and stack-local,
+/// the xrun counts are the sink's, and the group-recovery count is the pair's.
+struct ChildWriteLedger<'a> {
+    /// Per-PERIOD recovery budget, shared with the `Ok(0)` arm exactly as the
+    /// coherent single sink shares it. Reset by the caller once per period.
+    recoveries: &'a mut u32,
+    /// The sink-level cumulative xrun count — the existing doctor consumer,
+    /// unchanged, and what `count=` on the event line reports (same meaning as
+    /// the single path's `count=`).
+    xrun_count: &'a mut u64,
+    /// This child's own cumulative xrun count, reported in `/state` only.
+    child_xrun_count: &'a mut u64,
+    /// Cumulative group recoveries ATTEMPTED. Incremented with the xrun
+    /// counters, before `try_recover`, so the event line can report it — a
+    /// `try_recover` that fails propagates and stops the sink, so the count can
+    /// over-report by at most the one terminal period.
+    group_recoveries: &'a mut u64,
+}
+
 /// One composite CHILD's period write, over whatever sample type its negotiated
 /// edge takes.
 ///
 /// Generic for the same reason `write_dac_frames` is: whatever this function's
 /// xrun policy is, it must not be able to DIFFER between an S16 and an S32
-/// child. The write loop itself is unchanged by the child width — monomorphised
-/// for `i16` its body is instruction-for-instruction the pre-wide-composite
-/// loop; only the IO-handle fetch moved out to the caller.
+/// child. The caller fetches the IO handle (`io_i16`/`io_i32` per its
+/// `ChildPeriods` arm) rather than this function taking the `PCM` and choosing,
+/// which is what makes the width the caller's single decision — and lets the
+/// caller use `&'static str` contexts on the period-hot path.
 ///
-/// **The policy this implements is today's, not a defended one.** It counts the
-/// xrun and bails on the FIRST `EPIPE`/`ESTRPIPE` from either child, with no
-/// `try_recover` and no recovery budget — unlike the coherent sink's
-/// `write_dac_frames`. HANDOFF-speaker-output-reference.md's design-of-record
-/// calls that out as a wart to fix ("Unified xrun policy": bounded per-child
-/// `try_recover` mirroring the single path, bailing only on recovery exhaustion
-/// or delay divergence, because bail-on-first-xrun reboot-loops via
-/// `StartLimitAction`). Changing it is that work's job, not the child-width
-/// change's — this function is generic so the fix lands once for both widths
-/// instead of twice.
+/// **The recovery is the GROUP's, and this function does exactly its own half of
+/// it.** It attributes the xrun to the reporting child, calls `try_recover`
+/// ONCE (on a linked pair that call IS the group prepare — calling it again for
+/// the sibling would double-prepare), spends one unit of the SHARED
+/// [`xrun_policy`] budget, and hands the re-prime/re-start/re-latch back to
+/// [`PairedCompositeSink::write_dual_period`]. It cannot do that half itself:
+/// re-priming means writing to BOTH children interleaved, and this function
+/// holds one.
 ///
-/// The caller fetches the IO handle (`io_i16`/`io_i32` per its `ChildPeriods`
-/// arm) rather than this function taking the `PCM` and choosing, which is what
-/// makes the width the caller's single decision — and lets the caller use
-/// `&'static str` contexts on the period-hot path.
+/// **An UNLINKED pair keeps the pre-change bail, deliberately.** With
+/// `linked=false` there is no atomic group restart to re-establish alignment
+/// with, so a recovered pair's A/B skew is unbounded and unverifiable — a
+/// recovery that cannot be made safe is not a recovery, and the honest answer is
+/// the one this path already gave. That is also why `link=ok` is an arm-time
+/// precondition for the ring (see [`composite_ring_arm_link_ok`]); the unlinked
+/// composite is not made worse than it was, it is simply not given a recovery it
+/// cannot make safe.
+///
+/// `Ok(0)` now rides the same budget the coherent single sink gives it instead
+/// of bailing on the first occurrence: a spurious zero-frame return is not an
+/// xrun, moves no stream position, and needs no group action — leaving it a hard
+/// bail kept it on the restart ladder this whole change exists to get off.
 fn write_dac_fail_closed<S: Copy>(
     io: &IO<'_, S>,
-    pcm_name: &str,
+    child: ChildWrite<'_>,
     samples: &[S],
-    xrun_count: &mut u64,
-) -> Result<()> {
+    ledger: ChildWriteLedger<'_>,
+) -> Result<ChildWriteOutcome> {
     let frames_total = samples.len() / (CHANNELS as usize);
     let mut frames_done = 0usize;
     while frames_done < frames_total {
         let offset = frames_done * (CHANNELS as usize);
         match io.writei(&samples[offset..]) {
             Ok(0) => {
-                anyhow::bail!("outputd dual Apple DAC {pcm_name} writei returned 0 frames");
+                *ledger.recoveries += 1;
+                if xrun_policy(*ledger.recoveries) == XrunAction::GiveUp {
+                    anyhow::bail!(
+                        "outputd dual Apple DAC {} writei returned 0 frames repeatedly",
+                        child.pcm_name
+                    );
+                }
             }
             Ok(n) => frames_done += n,
             Err(e) => {
                 let errno = e.errno();
                 if errno == libc::EPIPE || errno == libc::ESTRPIPE {
-                    *xrun_count += 1;
-                    anyhow::bail!(
-                        "outputd dual Apple DAC {pcm_name} aborted on xrun/suspend errno={errno}"
+                    *ledger.xrun_count += 1;
+                    *ledger.child_xrun_count += 1;
+                    let pending = frames_total - frames_done;
+                    if child.linked {
+                        *ledger.group_recoveries += 1;
+                    }
+                    // ONE event line for both outcomes. `linked=` is what says
+                    // which one this is, so a journal recipe reads the recovered
+                    // and the refused case with the same grep — and the two
+                    // cannot drift into reporting different fields.
+                    eprintln!(
+                        "event=outputd.xrun source={} pcm={} count={} frames_pending={} group_recoveries={} linked={}",
+                        child.source,
+                        child.pcm_name,
+                        *ledger.xrun_count,
+                        pending,
+                        *ledger.group_recoveries,
+                        child.linked
                     );
+                    if !child.linked {
+                        anyhow::bail!(
+                            "outputd dual Apple DAC {} aborted on xrun/suspend errno={errno}: \
+                             the pair is not snd_pcm_link'ed, so no atomic group restart can \
+                             re-establish A/B alignment after a recovery",
+                            child.pcm_name
+                        );
+                    }
+                    child
+                        .pcm
+                        .try_recover(e, true)
+                        .context("recovering outputd dual Apple DAC group xrun")?;
+                    *ledger.recoveries += 1;
+                    if xrun_policy(*ledger.recoveries) == XrunAction::GiveUp {
+                        anyhow::bail!(
+                            "outputd dual Apple DAC group xrun recovery exceeded {} attempts in one period",
+                            MAX_RECOVERIES_PER_PERIOD
+                        );
+                    }
+                    return Ok(ChildWriteOutcome::GroupRecovered);
                 }
-                return Err(e).context(format!("writing outputd dual Apple DAC {pcm_name}"));
+                return Err(e)
+                    .context(format!("writing outputd dual Apple DAC {}", child.pcm_name));
             }
         }
     }
-    Ok(())
+    Ok(ChildWriteOutcome::Complete)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::DEFAULT_DUAL_MAX_DELAY_DELTA_FRAMES;
     use std::cell::Cell;
 
     /// One S16 sample at the program spine's scale.
@@ -3217,5 +3806,239 @@ mod tests {
         assert!(error
             .downcast_ref::<FinalSinkStartupConfigError>()
             .is_some());
+    }
+
+    // ---- #2255: the composite's bounded, linked-group xrun recovery ----
+
+    #[test]
+    fn prime_periods_leave_one_period_of_buffer_headroom() {
+        assert_eq!(prime_periods(3072, 1024), 2);
+        assert_eq!(prime_periods(4096, 1024), 3);
+        assert_eq!(prime_periods(1024, 1024), 1);
+        assert_eq!(prime_periods(0, 1024), 1);
+        assert_eq!(prime_periods(3072, 0), 1);
+    }
+
+    #[test]
+    fn the_prime_depth_always_stays_below_the_auto_start_threshold() {
+        // The property the recovery model rests on, asserted as a property
+        // rather than as three example rows: `manual_start` sets
+        // `start_threshold = buffer_frames`, so a prime that reaches the buffer
+        // AUTO-STARTS the linked group when the FIRST child fills — before the
+        // second is primed. Every geometry with room for two periods must leave
+        // headroom.
+        for buffer in [256u32, 512, 1024, 2048, 3072, 4096, 8192] {
+            for period in [64u32, 128, 256, 512, 1024] {
+                if buffer < 2 * period {
+                    // Degenerate geometry: one period is already the buffer, so
+                    // there is no headroom to leave and the floor of 1 applies.
+                    // outputd rejects these upstream; nothing to assert here.
+                    continue;
+                }
+                let primed = prime_periods(buffer, period) * period;
+                assert!(
+                    primed < buffer,
+                    "prime of {primed} frames reaches start_threshold {buffer} \
+                     (buffer={buffer} period={period}) — the group would auto-start \
+                     before both children are primed"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_recovery_budget_is_increment_then_check_and_allows_exactly_three() {
+        // The table in `xrun_policy`'s doc IS the spec; this is that table.
+        // `1` means "one recovery has already happened", so a `GiveUp` at 4 is
+        // three recoveries followed by no fourth write.
+        assert_eq!(xrun_policy(0), XrunAction::Continue);
+        assert_eq!(xrun_policy(1), XrunAction::Continue);
+        assert_eq!(xrun_policy(2), XrunAction::Continue);
+        assert_eq!(xrun_policy(3), XrunAction::Continue);
+        assert_eq!(xrun_policy(4), XrunAction::GiveUp);
+        assert_eq!(xrun_policy(5), XrunAction::GiveUp);
+        assert_eq!(xrun_policy(u32::MAX), XrunAction::GiveUp);
+        // And the boundary is the shared constant, not a literal that could
+        // drift away from it.
+        assert_eq!(xrun_policy(MAX_RECOVERIES_PER_PERIOD), XrunAction::Continue);
+        assert_eq!(
+            xrun_policy(MAX_RECOVERIES_PER_PERIOD + 1),
+            XrunAction::GiveUp
+        );
+    }
+
+    #[test]
+    fn the_divergence_check_measures_drift_from_the_baseline_not_the_raw_offset() {
+        // A pair sitting at a large but STABLE offset is aligned, not diverged
+        // — the baseline is the zero. This arithmetic had no test at all before
+        // #2255 (only the `/state` wire shape was pinned).
+        let check = delay_delta_check(500, 500, 48);
+        assert_eq!(check.error_frames, 0);
+        assert!(!check.diverged);
+
+        // Sign-independent: the guard is a magnitude.
+        assert_eq!(delay_delta_check(470, 500, 48).error_frames, 30);
+        assert_eq!(delay_delta_check(530, 500, 48).error_frames, 30);
+        assert!(!delay_delta_check(470, 500, 48).diverged);
+        assert!(!delay_delta_check(530, 500, 48).diverged);
+
+        // Negative baselines (child B ahead of child A) behave the same.
+        assert_eq!(delay_delta_check(-500, -530, 48).error_frames, 30);
+        assert!(!delay_delta_check(-500, -530, 48).diverged);
+    }
+
+    #[test]
+    fn the_divergence_boundary_is_inclusive_at_the_tolerance() {
+        // `error > max` bails, so error == max is accepted. Asserted because
+        // the re-latch bound below uses the SAME constant and must agree with
+        // it at the boundary — one tolerance, one meaning.
+        assert!(!delay_delta_check(548, 500, 48).diverged);
+        assert!(delay_delta_check(549, 500, 48).diverged);
+        assert!(!delay_delta_check(452, 500, 48).diverged);
+        assert!(delay_delta_check(451, 500, 48).diverged);
+    }
+
+    #[test]
+    fn a_within_tolerance_reprime_relatches_the_baseline() {
+        // The recovery reset both children's stream positions, so the offset
+        // legitimately steps. Within tolerance the new offset becomes the zero
+        // — without this the very next steady-state check would bail with
+        // `delay_diverged` on the period after the xrun.
+        assert_eq!(
+            baseline_relatch_decision(Some(500), 500, 48),
+            BaselineRelatch::Accept
+        );
+        assert_eq!(
+            baseline_relatch_decision(Some(500), 540, 48),
+            BaselineRelatch::Accept
+        );
+        assert_eq!(
+            baseline_relatch_decision(Some(500), 460, 48),
+            BaselineRelatch::Accept
+        );
+        // Inclusive at the tolerance, exactly as the steady-state guard is.
+        assert_eq!(
+            baseline_relatch_decision(Some(500), 548, 48),
+            BaselineRelatch::Accept
+        );
+        assert_eq!(
+            baseline_relatch_decision(Some(500), 452, 48),
+            BaselineRelatch::Accept
+        );
+    }
+
+    #[test]
+    fn a_full_period_of_baked_in_skew_is_refused_not_relatched() {
+        // THE case the magnitude bound exists for. At 48 kHz one 128-frame
+        // period is 2.667 ms; on an active 2-way that offset IS the
+        // woofer/tweeter time alignment, and a re-latch would bless it
+        // permanently. 128 frames is ~2.7x the 48-frame default tolerance, so
+        // the steady-state guard WOULD have caught it — the bound is what stops
+        // the re-latch from laundering it first.
+        assert_eq!(
+            baseline_relatch_decision(Some(500), 500 + 128, DEFAULT_DUAL_MAX_DELAY_DELTA_FRAMES),
+            BaselineRelatch::Refuse
+        );
+        assert_eq!(
+            baseline_relatch_decision(Some(500), 500 - 128, DEFAULT_DUAL_MAX_DELAY_DELTA_FRAMES),
+            BaselineRelatch::Refuse
+        );
+        // And the first frame past the tolerance, in both directions.
+        assert_eq!(
+            baseline_relatch_decision(Some(500), 549, 48),
+            BaselineRelatch::Refuse
+        );
+        assert_eq!(
+            baseline_relatch_decision(Some(500), 451, 48),
+            BaselineRelatch::Refuse
+        );
+    }
+
+    #[test]
+    fn a_fault_before_the_first_latch_has_no_alignment_to_violate() {
+        // No steady-state zero was ever latched, so there is nothing to launder
+        // and nothing to compare against. Refusing here would fail closed on a
+        // fact nobody knows. Accepts at any magnitude, deliberately.
+        assert_eq!(
+            baseline_relatch_decision(None, 0, 48),
+            BaselineRelatch::Accept
+        );
+        assert_eq!(
+            baseline_relatch_decision(None, 100_000, 48),
+            BaselineRelatch::Accept
+        );
+    }
+
+    #[test]
+    fn a_zero_tolerance_pair_may_only_relatch_at_exactly_its_old_offset() {
+        // `JASPER_OUTPUTD_DUAL_MAX_DELAY_DELTA_FRAMES=0` is a valid setting
+        // (config only refuses negatives). It must mean "no step at all", not
+        // "no bound".
+        assert_eq!(
+            baseline_relatch_decision(Some(7), 7, 0),
+            BaselineRelatch::Accept
+        );
+        assert_eq!(
+            baseline_relatch_decision(Some(7), 8, 0),
+            BaselineRelatch::Refuse
+        );
+    }
+
+    #[test]
+    fn only_a_linked_pair_may_arm_the_ring() {
+        // `link=ok` is an ARM-TIME precondition: the recovery model is built on
+        // `snd_pcm_link`, so a pair that will not link has no safe recovery and
+        // must keep the loopback transport.
+        assert!(composite_ring_arm_link_ok(true, true));
+        assert!(!composite_ring_arm_link_ok(true, false));
+        // Not armed: unchanged behaviour for an aloop composite, linked or
+        // not. This is deliberately NOT a flip of the global
+        // `JASPER_OUTPUTD_DUAL_REQUIRE_LINK` default.
+        assert!(composite_ring_arm_link_ok(false, true));
+        assert!(composite_ring_arm_link_ok(false, false));
+    }
+
+    #[test]
+    fn the_reprime_writes_silence_at_whichever_width_the_children_negotiated() {
+        // The re-prime's payload comes from the children's OWN buffers, so it
+        // cannot be the wrong width — and it is written in place, because the
+        // re-prime runs on the SCHED_FIFO playout thread where an allocation is
+        // a priority-inversion path.
+        let mut s16 = ChildPeriods::new(SampleFormat::S16Le, 2).expect("s16 pair");
+        s16.deinterleave(&[w(1), w(2), w(3), w(4), w(5), w(6), w(7), w(8)])
+            .expect("split");
+        match &s16 {
+            ChildPeriods::S16 { a, b } => {
+                assert_eq!(a.as_slice(), &[1, 2, 5, 6]);
+                assert_eq!(b.as_slice(), &[3, 4, 7, 8]);
+            }
+            ChildPeriods::S32 { .. } => panic!("built S16, got S32"),
+        }
+        s16.fill_silence();
+        match &s16 {
+            ChildPeriods::S16 { a, b } => {
+                assert!(a.iter().all(|s| *s == 0), "child A not silent: {a:?}");
+                assert!(b.iter().all(|s| *s == 0), "child B not silent: {b:?}");
+                // Silence FILLS the period; a shortened buffer would prime a
+                // different depth than `prime_periods` computed.
+                assert_eq!(a.len(), 4);
+                assert_eq!(b.len(), 4);
+            }
+            ChildPeriods::S32 { .. } => panic!("built S16, got S32"),
+        }
+
+        let mut s32 = ChildPeriods::new(SampleFormat::S32Le, 2).expect("s32 pair");
+        s32.deinterleave(&[w(1), w(2), w(3), w(4), w(5), w(6), w(7), w(8)])
+            .expect("split");
+        s32.fill_silence();
+        match &s32 {
+            ChildPeriods::S32 { a, b } => {
+                assert!(a.iter().all(|s| *s == 0), "child A not silent: {a:?}");
+                assert!(b.iter().all(|s| *s == 0), "child B not silent: {b:?}");
+                assert_eq!(a.len(), 4);
+                assert_eq!(b.len(), 4);
+            }
+            ChildPeriods::S16 { .. } => panic!("built S32, got S16"),
+        }
     }
 }
