@@ -47,23 +47,46 @@ here can see it. That hop keeps the analyzer's own splice detectors as its
 backstop, and a splice those find while this ledger balances is itself the
 finding: it places the loss upstream of the audio graph.
 
-**Hop B is where the 2026-08-03 shape lives, and it is exact.** The worklet checks
-that ``currentFrame`` advances by exactly the previous quantum's length, so a
-skipped quantum leaves an arithmetic hole. Note what this does NOT do to the
-count comparison: the skipped frames were never handed to anyone, so ``frames``,
-``encoded_frames`` and the host's received count all agree with each other while
-being short of wall-clock. A ledger that only compared counts would have called
-that capture balanced. It is reported separately for exactly that reason.
+**Hop B is the LEADING CANDIDATE for the 2026-08-03 shape, and is now counted
+exactly.** The worklet checks that ``currentFrame`` advances by exactly the
+previous quantum's length, so a skipped quantum leaves an arithmetic hole. What
+the record does not support is calling hop B the located cause: #2094's issue body
+and the #2083 forensics both say the browser audio graph and the mic's USB link
+"cannot be separated" by signal analysis, and these counters postdate the
+incident, so no capture from that session was ever counted. The unseparated rival
+is hop A — the one hop above that is structurally invisible. That asymmetry is
+usable rather than merely regrettable: a FUTURE capture whose ledger balances,
+whose render gap is zero, and in which the analyzer still finds a splice is
+evidence FOR hop A, because every hop this module can count has just said it lost
+nothing.
+
+Note what a hop-B loss does NOT do to the count comparison: the skipped frames
+were never handed to anyone, so ``frames``, ``encoded_frames`` and the host's
+received count all agree with each other while being short of wall-clock. A ledger
+that only compared counts would have called that capture balanced. It is reported
+separately for exactly that reason.
 
 **Hop G is a legitimate transform and is deliberately outside the ledger.**
 ``analyze_program_capture`` truncates an over-long capture before any full-rate
 FFT. The received count this module grades is taken BEFORE that truncation;
 comparing after it would refuse every capture with a normal recording tail.
 
-**No thresholds.** Any nonzero discrepancy is a fail. A 128-frame hole in a
-1.4-million-frame capture is 0.009% of the recording and destroys phase coherence
-for everything after it — there is no small amount of splice, so there is no
-number to tune and no policy knob to get wrong.
+**No thresholds, and this is STRICTER than the repo's own prior art — stated, not
+silent.** Any nonzero discrepancy is a fail. The researched recommendation
+(``docs/research/2026-05-27-room-correction-research/raw/mobile-browser-audio-reliability.md``,
+"Dropout / glitch detection") is "any dropped frames → WARN; > 1 % → FAIL", and
+that is right for what it grades: a pre-flight PROBE TONE, where a scattered lost
+frame degrades a level/SNR estimate roughly in proportion to how much was lost, so
+a percentage budget buys tolerance cheaply. This instrument grades the measurement
+sweep itself, which is consumed by a deconvolution — a single missing quantum is a
+phase discontinuity that corrupts the impulse response for everything after it,
+and the resulting error has no relation to the fraction of frames lost. A 128-frame
+hole in a 1.4-million-frame capture is 0.009% of the recording and would pass a 1%
+budget while making the crossover derived from it wrong. That is #1765's banked
+lesson exactly: a capture glitch is a SPLICE, never drift, and an epsilon fitted on
+a glitch is an artefact. So there is no small amount of splice, no number to tune,
+and no policy knob to get wrong — at the cost of refusing takes a percentage budget
+would have kept.
 
 This module owns arithmetic and vocabulary only. It never logs, never decides a
 verdict's severity, and holds no pass/fail vocabulary of its own: the caller that
@@ -83,7 +106,6 @@ __all__ = [
     "LOST_AT_RENDER_GRAPH",
     "LOST_AT_WORKLET_TO_ENCODER",
     "LOST_AT_WORKLET_TO_HOST",
-    "REPORT_KEY_BLOCKS",
     "REPORT_KEY_ENCODED_FRAMES",
     "REPORT_KEY_FRAMES",
     "REPORT_KEY_RENDER_GAPS",
@@ -96,11 +118,17 @@ __all__ = [
 #: ``capture-page/js/capture-integrity.js`` builds). Named constants because the
 #: page and the host are separate releases: the wire spelling is a contract, not
 #: an implementation detail, and it should be greppable from both sides.
+#:
+#: This is the READ set, not the whole report. The page also sends ``blocks`` and
+#: ``silent_blocks``; neither is reconciled here — ``blocks`` is ``frames`` over
+#: the render quantum, a redundant restatement rather than an independent count,
+#: and ``silent_blocks`` is already inside ``block_gap_frames`` (see
+#: :attr:`FrameLedger.lost_at`). A constant for a key nothing reads would make
+#: this comment false, so neither has one until something reconciles it.
 REPORT_KEY_FRAMES = "frames"
 REPORT_KEY_ENCODED_FRAMES = "encoded_frames"
 REPORT_KEY_RENDER_GAPS = "block_gaps"
 REPORT_KEY_RENDER_GAP_FRAMES = "block_gap_frames"
-REPORT_KEY_BLOCKS = "blocks"
 
 #: Where the frames went, named so a reader never has to infer the layer from a
 #: number. Hop B's loss is a LAYER (the render graph never delivered them); the
@@ -181,6 +209,15 @@ class FrameLedger:
         that returned one answer would have to choose which truth to hide.
         """
         found: list[str] = []
+        # POOLED, and the name is the coarser of the two things it books. The
+        # worklet's arithmetic hole opens for a skipped render quantum AND for
+        # input starvation (a `process()` call with no input channel leaves the
+        # expected-next frame where it was, so the next real quantum reads as a
+        # gap). Both are frames that never reached the recording, so the verdict
+        # is right either way — but the page reports ONE pooled frame count for
+        # them, so a second location name here would be a distinction this
+        # number cannot support. `silent_blocks` rides the sidecar untouched for
+        # a reader who needs to tell them apart.
         if self.render_gap_frames:
             found.append(LOST_AT_RENDER_GRAPH)
         stages = [
