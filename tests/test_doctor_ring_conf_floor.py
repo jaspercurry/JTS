@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 
 from jasper.audio_hardware.dac import (
-    INNOMAKER_HIFI_AMP_PRO_ID,
+    HIFIBERRY_DAC8X_STUDIO_ID,
     LatencyFloor,
     latency_floor_for,
 )
@@ -39,8 +39,10 @@ SHIPPED_RING_CONF = (
 # than assumed: declaring a floor for this profile must fail THIS line, not
 # silently turn the two no-floor tests into vacuous passes against a branch
 # they no longer reach. (That is exactly what a declared DAC8x floor did to
-# them in R7a, when they were written against `hifiberry_dac8x`.)
-NO_FLOOR_DAC_ID = INNOMAKER_HIFI_AMP_PRO_ID
+# them in R7a, when they were written against `hifiberry_dac8x`; the guard has
+# now caught it a SECOND time, when the InnoMaker HiFi AMP Pro declared jts4's
+# measured floor and this moved to the DAC8x Studio.)
+NO_FLOOR_DAC_ID = HIFIBERRY_DAC8X_STUDIO_ID
 assert latency_floor_for(NO_FLOOR_DAC_ID) is None, (
     f"{NO_FLOOR_DAC_ID} now declares a latency floor; pick another floorless "
     "profile for the no-floor doctor branches"
@@ -193,14 +195,22 @@ def test_check_is_registered_in_the_audio_doctor_group():
 # --- #2294: a floor-blocked box must SAY it cannot ring -----------------------
 
 
-def test_no_floor_detail_names_the_resolved_ring_ineligibility(monkeypatch, tmp_path):
-    """`ok` is right, silence was not (issue #2294).
+def test_no_floor_detail_names_both_routes_to_a_ring(monkeypatch, tmp_path):
+    """`ok` is right, silence was not (issue #2294) — and neither was the old text.
 
-    A DAC with no declared floor leaves outputd on its default period, which can
-    never equal the fixed ring slot, so the arm preflight refuses shm_ring. The
+    A DAC with no declared floor leaves outputd on its PACKAGED default period,
+    which is not the fixed ring slot, so the conf.d has nothing to render. The
     conf.d is correct either way — hence `ok` — but the household's actual
-    question is "why is this box on loopback?", and before this the answer
-    appeared on no surface. The InnoMaker HiFi AMP Pro is the live case.
+    question is "why is this box on loopback?", and before #2294 the answer
+    appeared on no surface.
+
+    The answer it then gave was wrong. It said shm_ring was "unavailable on this
+    box", which is a claim about outputd's RESOLVED period, and this check reads
+    only the DECLARED floor. The two diverge through the operator seam: jts4
+    (InnoMaker HiFi AMP Pro, floorless at the time) armed shm_ring on 2026-08-14
+    with JASPER_OUTPUTD_PERIOD_FRAMES / _DAC_BUFFER_FRAMES hand-set in
+    /etc/jasper/jasper.env. So the detail must name BOTH routes to a ring and
+    claim no impossibility.
     """
     from jasper.audio_runtime_plan import DEFAULT_OUTPUTD_PERIOD_FRAMES
     from jasper.fanin_coupling import RING_SLOT_FRAMES
@@ -212,8 +222,39 @@ def test_no_floor_detail_names_the_resolved_ring_ineligibility(monkeypatch, tmp_
     assert result.status == "ok"
     assert str(DEFAULT_OUTPUTD_PERIOD_FRAMES) in result.detail
     assert str(RING_SLOT_FRAMES) in result.detail
-    assert "shm_ring is unavailable" in result.detail
     assert "#2147" in result.detail
+    # Route 1: the operator seam, named with the file that carries it.
+    assert "JASPER_OUTPUTD_PERIOD_FRAMES" in result.detail
+    assert "/etc/jasper/jasper.env" in result.detail
+    # Route 2: a declared floor.
+    assert "floor" in result.detail
+    # And NO impossibility claim, on a check that cannot see the resolved period.
+    assert "unavailable" not in result.detail
+
+
+def test_a_floor_above_the_slot_does_not_claim_ineligibility(monkeypatch, tmp_path):
+    """The same falsified claim lived in the floor-exceeds-slot branch.
+
+    A DAC declaring, say, a 256-frame floor gets no rendered conf.d either — but
+    an operator JASPER_OUTPUTD_PERIOD_FRAMES still outranks that floor and can
+    bring the resolved period back to the slot, exactly as it did on jts4. So
+    this branch may say the conf.d is not rendered and name the seam; it may not
+    say the ring is unavailable.
+    """
+    from jasper.fanin_coupling import RING_SLOT_FRAMES
+
+    monkeypatch.setattr(
+        audio,
+        "latency_floor_for",
+        lambda _id: _synthetic_floor(2 * RING_SLOT_FRAMES),
+    )
+    _stage(monkeypatch, tmp_path, dac_id="hifiberry_dac8x")
+
+    result = audio.check_ring_conf_floor_render()
+
+    assert result.status == "ok"
+    assert "unavailable" not in result.detail
+    assert "JASPER_OUTPUTD_PERIOD_FRAMES" in result.detail
 
 
 def test_a_matching_floor_does_not_claim_ineligibility(monkeypatch, tmp_path):

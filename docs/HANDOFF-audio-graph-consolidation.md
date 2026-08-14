@@ -516,11 +516,27 @@ panel lenses verified that ordering independently. It does not recur for
 another DAC8x: `HIFIBERRY_DAC8X` now carries the declaration
 (`jasper/audio_hardware/dac.py`), so any such box picks the floor up by
 deploying. The ordering binds again for a profile that has no floor of its
-own, and two of those matter to this campaign: `HIFIBERRY_DAC8X_STUDIO`, the
-DAC8x-family member, and `INNOMAKER_HIFI_AMP_PRO` — the profile jts4 and jts5
-both run, whose entry in that same registry says in code that it ships the
-conservative global default instead. Each needs its own declaration and its
-own soak before the ordering is discharged for it.
+own. One of those still matters to this campaign: `HIFIBERRY_DAC8X_STUDIO`, the
+DAC8x-family member, whose entry in that same registry now says in code that it
+declares no floor and ships the conservative global default instead — an
+absence stated explicitly rather than left to be inferred from a missing field,
+because the floorless-DAC contract tests and the no-floor doctor branch are all
+written against that profile. It needs its own declaration and its own soak
+before the ordering is discharged for it.
+
+`INNOMAKER_HIFI_AMP_PRO` — the profile jts4 and jts5 both run — **now carries a
+declaration** (2026-08-14, from jts4's own measurement), so it is no longer one
+of them. The discharge is only PARTIAL, though, and the residual is the reason
+to state it rather than tick it off: the declaration's **outputd** half is
+measured on that board (period 128 / dac_buffer 512), while its **CamillaDSP**
+half was chosen to TIGHTEN NOTHING against the shipped global default —
+chunksize equal to it, target_level above it — precisely so it could ship
+without a soak. So the ordering above is discharged for the measured half, and
+still binds for any future TIGHTENING of the CamillaDSP half on this silicon:
+moving that chunksize below the shipped default needs a loopback-lane soak on
+this board first, and the registry entry plus
+`test_innomaker_unmeasured_camilla_half_tightens_nothing` are what hold the
+condition open.
 **Correction from the R7 repanel:** jts3 runs `aec-init` in **CORPUS mode** — no
 alignment artifact exists (the 2026-08-08 closeout's corpus-exit was
 undone by open trap

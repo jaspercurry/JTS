@@ -2150,13 +2150,23 @@ def check_ring_conf_floor_render() -> CheckResult:
               independently preflights this and fail-closes to loopback rather
               than arming a mismatched geometry.
 
-    An ``ok`` that means "this box can never ring" SAYS SO (issue #2294). Both
+    An ``ok`` that leaves a box on loopback SAYS WHY (issue #2294). Both
     no-floor and non-matching-floor are ok — the conf.d is right either way —
-    but they also decide ring eligibility, because outputd's period then cannot
-    equal the fixed slot and the arm preflight refuses. Reporting only "nothing
-    to render" left the household's actual question ("why is this box on
-    loopback?") answered nowhere; the InnoMaker HiFi AMP Pro (no declared
-    floor) is the live no-floor case.
+    but they also bear on ring eligibility, so reporting only "nothing to
+    render" left the household's actual question ("why is this box on
+    loopback?") answered nowhere.
+
+    WHAT THOSE BRANCHES MAY AND MAY NOT CLAIM. They read the DECLARED floor,
+    which is not the same fact as outputd's RESOLVED period — the two diverge
+    through the documented operator seam, ``JASPER_OUTPUTD_PERIOD_FRAMES`` in
+    ``/etc/jasper/jasper.env``, which outranks the reconciler's floor-derived
+    value. So a floorless box CAN ring, and one did: jts4 (InnoMaker HiFi AMP
+    Pro, no declared floor at the time) armed shm_ring on 2026-08-14 with the
+    period and DAC buffer hand-set in that file. These branches therefore say
+    what is not RENDERED and name both routes to a ring; they must not say the
+    ring is unavailable, which is a claim about the resolved period they do not
+    read. ``ring geometry`` and the coupling reconciler's own preflight own that
+    axis.
 
     THE FLOOR IS NOT THE ONLY REASON, and R7b changed what this check can say
     about the other one. A ROLEFUL (active-crossover) box is never armed by the
@@ -2181,10 +2191,10 @@ def check_ring_conf_floor_render() -> CheckResult:
     The product boundary: Ring A's slot size is fan-in's COMPILE-TIME
     ``RING_SLOT_FRAMES`` (``rust/jasper-fanin/src/config.rs``, no env
     override), so only a floor that EQUALS it is renderable. A DAC declaring
-    any other floor never gets a rendered conf.d — shm_ring is simply
-    unavailable on it, loopback continues, and the floor's outputd
-    period/buffer geometry still applies through ``outputd.env``. That is a
-    known limit with an owner (issue #2147), so it reports ok, not warn.
+    any other floor never gets a rendered conf.d, loopback continues, and the
+    floor's outputd period/buffer geometry still applies through
+    ``outputd.env``. That is a known limit with an owner (issue #2147), so it
+    reports ok, not warn.
 
     Scope: this compares the conf.d against the DECLARED floor, which is what
     the renderer uses. An operator ``JASPER_OUTPUTD_PERIOD_FRAMES`` override
@@ -2218,13 +2228,16 @@ def check_ring_conf_floor_render() -> CheckResult:
             label,
             "ok",
             f"{dac_id} declares no latency floor — {_JTS_RING_CONF_D} keeps its "
-            "shipped default (no declared floor, nothing to render). With no "
-            f"floor, outputd resolves its default period "
-            f"{DEFAULT_OUTPUTD_PERIOD_FRAMES}, which cannot equal the fixed ring "
-            f"slot {RING_SLOT_FRAMES}, so shm_ring is unavailable on this box "
-            "and loopback coupling is correct — until issue #2147 makes the ring "
-            "slot floor-derived, or this DAC declares a "
-            f"{RING_SLOT_FRAMES}-frame floor." + roleful_note,
+            "shipped default (no declared floor, nothing to render). Absent a "
+            f"floor outputd resolves its packaged default period "
+            f"{DEFAULT_OUTPUTD_PERIOD_FRAMES}, which is not the fixed ring slot "
+            f"{RING_SLOT_FRAMES}, so shm_ring needs one of two things here: "
+            f"JASPER_OUTPUTD_PERIOD_FRAMES={RING_SLOT_FRAMES} (plus a matching "
+            "JASPER_OUTPUTD_DAC_BUFFER_FRAMES) in /etc/jasper/jasper.env, which "
+            f"outranks this default; or a declared {RING_SLOT_FRAMES}-frame "
+            "floor on this DAC, which is the codified form of the same values. "
+            "Until either, loopback coupling is correct. (Issue #2147 would make "
+            "the ring slot floor-derived and retire the question.)" + roleful_note,
         )
     if floor.outputd_period_frames != RING_SLOT_FRAMES:
         return CheckResult(
@@ -2232,10 +2245,13 @@ def check_ring_conf_floor_render() -> CheckResult:
             "ok",
             f"{dac_id} declares outputd period "
             f"{floor.outputd_period_frames} != the fixed ring transport slot "
-            f"{RING_SLOT_FRAMES}, so its conf.d is deliberately not rendered: "
-            "shm_ring is unavailable on this DAC until issue #2147 makes the "
-            "ring slot floor-derived. Loopback coupling continues and still "
-            "receives the floor's outputd period/buffer geometry." + roleful_note,
+            f"{RING_SLOT_FRAMES}, so its conf.d is deliberately not rendered "
+            "until issue #2147 makes the ring slot floor-derived. shm_ring "
+            f"needs outputd's RESOLVED period to be {RING_SLOT_FRAMES}, which "
+            "on this DAC only an operator JASPER_OUTPUTD_PERIOD_FRAMES in "
+            "/etc/jasper/jasper.env can produce; otherwise loopback coupling "
+            "continues and still receives the floor's outputd period/buffer "
+            "geometry." + roleful_note,
         )
     conf_period = ring_assets.ring_conf_period_frames(_JTS_RING_CONF_D)
     if conf_period is None:

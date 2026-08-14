@@ -639,6 +639,20 @@ HIFIBERRY_DAC8X_STUDIO = DacProfile(
     # The reverse (base hardware classified as Studio) never parks: S16_LE
     # is universally supported, so it opens fine and silently declines the
     # crackle fix, with no error and no signal that it happened.
+    #
+    # NO latency_floor is declared, so this profile ships the conservative
+    # global CamillaDSP/outputd default rather than a measured one — an absence
+    # stated out loud because it is load-bearing in three places. It is the
+    # standing floorless case the no-floor doctor branch and the floorless-DAC
+    # contract tests are written against (they assert it HERE rather than assume
+    # it, so declaring a floor for this profile fails those guards instead of
+    # quietly making their expectations unreachable — which is exactly what
+    # happened twice: to `HIFIBERRY_DAC8X` in R7a, and to
+    # `INNOMAKER_HIFI_AMP_PRO` when jts4's measured floor landed). It also means
+    # the conf.d ring period is left untouched on this box, so shm_ring is
+    # reachable here only through the operator env seam
+    # (`JASPER_OUTPUTD_PERIOD_FRAMES` in `/etc/jasper/jasper.env`), never from a
+    # declared floor. Measuring one on this silicon is open per-board work.
 )
 
 INNOMAKER_HIFI_AMP_PRO = DacProfile(
@@ -681,13 +695,80 @@ INNOMAKER_HIFI_AMP_PRO = DacProfile(
     # SELECTABLE at /sound/setup/ and leaves a running box byte-identically
     # passive until it is commissioned.
     #
-    # Remaining per-board work, neither of which gates the lane: measured
-    # latency-floor data (no latency_floor declared, so it ships the
-    # conservative global default), and chip-AEC qualification, which stays
-    # needs_calibration below.
+    # Remaining per-board work, which does not gate the lane: chip-AEC
+    # qualification, which stays needs_calibration below. (The latency floor was
+    # the other item and is now declared — see below.)
     supports_active_outputd_lane=True,
     active_outputd_lane_channels=2,
     final_edge_format="S32_LE",
+    # Hardware evidence, and the two halves have DIFFERENT standing — read the
+    # split before transferring any of it.
+    #
+    # MEASURED (jts4, Pi Zero 2 W + InnoMaker HiFi AMP Pro, 2026-08-14): the
+    # outputd pair. A 440 Hz -20 dBFS tone through the correction lane at period
+    # 128 / dac_buffer 256 — the pair BOTH other declaring profiles use — took 1
+    # DAC xrun in 5 minutes on this board, so 256 is not the floor here. At period
+    # 128 / dac_buffer 512: zero DAC xruns in 5 minutes, and zero again in a
+    # 3-minute run through the armed ring. DAC presentation latency 10.58 ms. The
+    # deeper DAC ring is this board's own result and not a transfer: the Zero 2 W
+    # is a 4x-slower quad-A53 than the Pi 5 the other two profiles were measured
+    # on, and the writer needs more than two periods of slack to stay ahead of it.
+    # The 128-frame PERIOD is what makes shm_ring reachable at all (it must equal
+    # fan-in's compile-time RING_SLOT_FRAMES, which is 128).
+    #
+    # UNMEASURED on this board: the CamillaDSP pair. It is chosen as the
+    # NON-TIGHTENING expressible pair, not transferred from the profiles that
+    # measured theirs, and the choice is a safety argument rather than a result.
+    #
+    # The dataclass has no optional half, so declaring the measured outputd floor
+    # requires supplying SOME CamillaDSP pair, and the shipped global default
+    # (1024, 2048) is not itself expressible (2048 < 4 x 1024 fails the pair
+    # invariant). That constrains the choice; it does not force one — (1024, 4096)
+    # and (512, 2048) both satisfy every invariant. Of those, (1024, 4096) is the
+    # only one that TIGHTENS nothing:
+    #   - chunksize EQUALS camilla_config_contract.DEFAULT_CHUNKSIZE, so a
+    #     floorless box and this one emit the same value on the loopback lane
+    #     (the floor becomes the fallback only when no operator env is set, and
+    #     it resolves to the same number the global default would have). The
+    #     EQUALITY is the property, not the literal 1024 — if the global default
+    #     ever moves, this must move with it, which
+    #     test_innomaker_unmeasured_camilla_half_tightens_nothing enforces;
+    #   - target_level 4096 moves UP from DEFAULT_TARGET_LEVEL's 2048, which is
+    #     the LOOSER direction — more resampler cushion, never less.
+    # Apple's/DAC8x's (256, 1536) was the first candidate and is rejected here: it
+    # is a 4x TIGHTER DSP cadence than the shipped default AND a SMALLER absolute
+    # target than 2048, so declaring it would have quietly tightened both axes on
+    # the one lane nobody has measured on this board — a Zero 2 W whose own
+    # outputd measurement above says it needs MORE slack, not less.
+    #
+    # Where it applies at all: a shm_ring-coupled box takes its CamillaDSP
+    # geometry from RING_CAMILLA_CHUNKSIZE / RING_CAMILLA_TARGET_LEVEL (128/128,
+    # jasper.fanin_coupling), which apply_capture_precedence merges LAST over
+    # whatever this floor resolved. So the declared pair governs the LOOPBACK
+    # lane only — the fallback jts4 lands on if the ring disarms.
+    #
+    # TIGHTENS NOTHING IS NOT CHANGES NOTHING, and the difference is disclosed
+    # rather than left in the word. The target_level move (2048 -> 4096) BUYS
+    # cushion by SPENDING latency: at 48 kHz the resampler's steady-state fill
+    # goes 42.7 ms -> 85.3 ms, so a box on the loopback fallback carries about
+    # 42.7 ms more buffering than a floorless one. That is the trade, taken
+    # deliberately on a lane that is a fallback rather than the running path, and
+    # on the slowest board in the fleet. It does NOT reach the two places it
+    # would matter most: the ring lane runs 128/128 regardless
+    # (RING_CAMILLA_* wins there), and the chip-AEC reference tap is downstream
+    # of this stage, so no alignment artifact moves with it.
+    #
+    # Because it tightens nothing, this half needs no soak to be safe to ship.
+    # What still needs one is any FUTURE TIGHTENING of it: moving chunksize below
+    # 1024 on this silicon is the change that requires a loopback-lane soak on
+    # this board showing no CamillaDSP xruns or clipped samples the shipped
+    # default did not produce.
+    latency_floor=LatencyFloor(
+        camilla_chunksize=1024,
+        camilla_target_level=4096,
+        outputd_period_frames=128,
+        outputd_dac_buffer_frames=512,
+    ),
     chip_aec_detail=(
         "InnoMaker HiFi AMP Pro needs per-profile chip-AEC timing calibration"
     ),

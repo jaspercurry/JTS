@@ -2582,12 +2582,13 @@ def test_reconcile_dac8x_emits_the_soak_validated_floor(tmp_path: Path):
 def test_reconcile_no_floor_drops_stale_floor_keys(tmp_path: Path):
     # A DAC with no declared floor must DROP a stale floor a prior DAC wrote into
     # outputd.env, not leave it as `=''` (which would clobber an operator value)
-    # and not leave the stale numbers. INNOMAKER is the floorless case: pointing
-    # this at a profile that later declares a floor would make the loop below
-    # unreachable rather than failing (what an R7a DAC8x floor did here).
+    # and not leave the stale numbers. DAC8X STUDIO is the floorless case:
+    # pointing this at a profile that later declares a floor would make the loop
+    # below unreachable rather than failing (what an R7a DAC8x floor did here,
+    # and what jts4's measured floor then did to its INNOMAKER replacement).
     result = _run_reconcile(
         tmp_path,
-        INNOMAKER_LISTING,
+        DAC8X_STUDIO_LISTING,
         "--reason",
         "test",
         initial_outputd_env=(
@@ -2911,16 +2912,17 @@ def test_reconcile_leaves_ring_conf_untouched_for_a_floorless_dac(
     tmp_path: Path,
 ):
     # A recognized DAC that declares NO latency floor keeps the shipped conf.d
-    # — no same-content rewrite, no mtime churn. INNOMAKER is the floorless
+    # — no same-content rewrite, no mtime churn. DAC8X STUDIO is the floorless
     # case; a profile that later declares a floor would take the RENDER branch
-    # instead of this skip branch, so the id is part of the assertion.
+    # instead of this skip branch, so the id is part of the assertion (which is
+    # what moved this off INNOMAKER when jts4's measured floor landed).
     conf = _staged_ring_conf(tmp_path)
     before_bytes = conf.read_bytes()
     before_mtime = conf.stat().st_mtime_ns
 
     result = _run_reconcile(
         tmp_path,
-        INNOMAKER_LISTING,
+        DAC8X_STUDIO_LISTING,
         "--reason",
         "test",
         extra_env={"JASPER_RING_CONF_D": str(conf)},
@@ -2929,7 +2931,7 @@ def test_reconcile_leaves_ring_conf_untouched_for_a_floorless_dac(
     assert result.returncode == 0, result.stderr
     assert (
         "event=audio_hardware_reconcile.ring_conf reason=test result=skipped "
-        "output_dac_id=innomaker_hifi_amp_pro period_frames=none "
+        "output_dac_id=hifiberry_dac8x_studio period_frames=none "
         "previous_period_frames=none sample_format=none ring_a_channels=none "
         "ring_b_channels=none topology=none reason=no_declared_floor"
     ) in result.stderr

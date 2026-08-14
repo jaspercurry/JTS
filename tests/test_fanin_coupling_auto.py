@@ -383,6 +383,7 @@ def _auto(
     fanin_ok=True,
     camilla_stop_ok=True,
     camilla_start_ok=True,
+    kick_ok=True,
 ):
     """Run reconcile_auto with recorded daemon ops.
 
@@ -390,7 +391,10 @@ def _auto(
     combo armed unless it opts out — matching the common jts.local case (gadget
     present AND USB audio on). ``camilla_stop``/``camilla_start`` are the coordinated
     combo-restart pause/resume ops (record ``camilla_stop``/``camilla_start`` in
-    ``restarts``) so the RTTIME-SIGKILL coordination can be exercised hardware-free."""
+    ``restarts``) so the RTTIME-SIGKILL coordination can be exercised hardware-free.
+    ``kick_hardware_reconcile`` records ``hardware_reconcile`` — the arm's
+    content-format converge — so its ORDER against ``outputd`` is assertable, and
+    ``kick_ok=False`` exercises the fail-closed refusal."""
     if usb_intent is None:
         usb_intent = gadget
 
@@ -414,6 +418,10 @@ def _auto(
         restarts.append(f"camilla:{coupling}")
         return (camilla_ok, "reconciled" if camilla_ok else "bad")
 
+    def kh():
+        restarts.append("hardware_reconcile")
+        return (kick_ok, "" if kick_ok else "hardware reconcile kick failed")
+
     return cr.reconcile_auto(
         reason="t",
         env_path=fanin,
@@ -425,6 +433,7 @@ def _auto(
         stop_camilla=rsc,
         start_camilla=rstc,
         reconcile_camilla=rc,
+        kick_hardware_reconcile=kh,
         active_leader_check=lambda: leader,
     )
 

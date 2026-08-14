@@ -379,9 +379,6 @@ def test_innomaker_lane_does_not_claim_the_narrower_launch_scopes() -> None:
     assert APPLE_USB_C_DONGLE.supports_active_crossover_commissioning is False
     assert APPLE_USB_C_DONGLE.supports_active_outputd_lane is True
     assert INNOMAKER_HIFI_AMP_PRO.chip_aec_qualification == "needs_calibration"
-    # No measured buffer floor yet => the conservative global default ships.
-    assert INNOMAKER_HIFI_AMP_PRO.latency_floor is None
-    assert dac.latency_floor_for(INNOMAKER_HIFI_AMP_PRO.id) is None
 
 
 def test_dual_apple_profile_is_first_class_composite_four_output_dac() -> None:
@@ -728,8 +725,89 @@ def test_latency_floor_for_round_trips_for_bash() -> None:
 def test_latency_floor_for_is_none_for_undeclared_and_unknown() -> None:
     # A DAC that declares no floor keeps the global default — None is the
     # non-breaking signal the reconciler treats as "use shipped default".
-    assert dac.latency_floor_for(INNOMAKER_HIFI_AMP_PRO_ID) is None
+    # (Named the InnoMaker until it declared jts4's measured floor.)
+    assert dac.latency_floor_for(HIFIBERRY_DAC8X_STUDIO_ID) is None
     assert dac.latency_floor_for("no_such_dac") is None
+
+
+def test_innomaker_declares_the_jts4_measured_floor() -> None:
+    # jts4 (Pi Zero 2 W + InnoMaker HiFi AMP Pro, 2026-08-14). The OUTPUTD pair
+    # is measured on that board: period 128 / dac_buffer 256 — the pair both
+    # other declaring profiles use — took 1 DAC xrun in 5 minutes here, and 512
+    # took zero in 5 minutes plus zero in a 3-minute run through the armed ring.
+    # The CAMILLA pair is NOT measured here: it is the non-tightening expressible
+    # pair (see the next test, which is what actually guards that property).
+    assert INNOMAKER_HIFI_AMP_PRO.latency_floor == LatencyFloor(
+        camilla_chunksize=1024,
+        camilla_target_level=4096,
+        outputd_period_frames=128,
+        outputd_dac_buffer_frames=512,
+    )
+
+
+def test_innomaker_unmeasured_camilla_half_tightens_nothing() -> None:
+    """The safety argument that lets an UNMEASURED half ship without a soak.
+
+    The dataclass has no optional half, so the measured outputd floor cannot be
+    declared without also declaring a CamillaDSP pair — and on this board that
+    pair governs the loopback FALLBACK lane, which no run here has measured. It
+    is therefore only safe while it tightens nothing relative to the shipped
+    global default:
+
+      - chunksize EQUAL to DEFAULT_CHUNKSIZE — so a floorless box and this one
+        emit the same value on that lane. The EQUALITY is the property, not the
+        literal: if the global default moves, this must move with it, which is
+        why the assertion below reads the constant rather than a number;
+      - target_level GREATER OR EQUAL to DEFAULT_TARGET_LEVEL — more resampler
+        cushion, never less.
+
+    Both directions are asserted because the first candidate, Apple's/DAC8x's
+    (256, 1536), violated BOTH: a 4x tighter cadence and a smaller absolute
+    target. An equality check on chunksize alone would have passed a pair that
+    still shrank the buffer.
+
+    Tightening either axis on this silicon is a real change that needs a
+    loopback-lane soak on this board first; this test is what makes that
+    deliberate instead of a one-character drift.
+    """
+    from jasper.camilla_config_contract import (
+        DEFAULT_CHUNKSIZE,
+        DEFAULT_TARGET_LEVEL,
+    )
+
+    floor = INNOMAKER_HIFI_AMP_PRO.latency_floor
+    assert floor is not None
+    assert floor.camilla_chunksize == DEFAULT_CHUNKSIZE, (
+        "the unmeasured camilla half must not move the loopback lane's chunk "
+        "cadence off the shipped default without a soak on this board"
+    )
+    assert floor.camilla_target_level >= DEFAULT_TARGET_LEVEL, (
+        "the unmeasured camilla half must not shrink the loopback lane's "
+        "resampler cushion below the shipped default"
+    )
+
+
+def test_innomaker_floor_period_is_what_makes_the_ring_reachable() -> None:
+    """The 128 is not cosmetic: it is the whole ring-eligibility fact.
+
+    Ring A's slot is fan-in's COMPILE-TIME ``RING_SLOT_FRAMES`` with no env
+    override, and the conf.d renderer refuses any other period, so a declared
+    floor reaches shm_ring only by EQUALLING it. Pinned against the constant
+    rather than the literal 128, so moving one moves this test with it.
+    """
+    from jasper.fanin_coupling import RING_SLOT_FRAMES
+
+    floor = dac.latency_floor_for(INNOMAKER_HIFI_AMP_PRO_ID)
+    assert floor is not None
+    assert floor.outputd_period_frames == RING_SLOT_FRAMES
+    # And the deeper DAC ring this board needed is a real divergence from the
+    # two profiles measured on Pi 5 silicon, not a copy of them.
+    assert floor.outputd_dac_buffer_frames == 512
+    assert APPLE_USB_C_DONGLE.latency_floor is not None
+    assert (
+        floor.outputd_dac_buffer_frames
+        != APPLE_USB_C_DONGLE.latency_floor.outputd_dac_buffer_frames
+    )
 
 
 def test_dac8x_declares_the_soak_validated_floor() -> None:
