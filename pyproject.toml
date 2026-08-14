@@ -30,11 +30,11 @@ streambox = [
     "cryptography>=50.0.0",
     "rapidfuzz>=3.6,<4",
     "dbus-next>=0.2.3",
-    "zeroconf>=0.149,<1.0",
+    "zeroconf>=0.150.0,<1.0",
 ]
 
 full = [
-    "google-genai==2.9.0",
+    "google-genai==2.17.0",
     # OpenAI Realtime SDK — used by jasper.voice.openai_session for
     # the gpt-realtime-2 backend, and (via the OpenAI-compatible WS
     # endpoint) by jasper.voice.grok_session for the xAI Grok Voice
@@ -44,7 +44,7 @@ full = [
     # which we don't use. Pulls in `websockets` as the realtime
     # transport. Skippable at install time only if the active
     # provider is gemini AND the user is sure they'll never switch.
-    "openai>=2.36.0",
+    "openai>=2.53.0",
     # `audioop` was removed from Python 3.13's stdlib (PEP 594). PiOS
     # Trixie ships 3.13, and jasper.voice.openai_session uses
     # audioop.ratecv to upsample 16 kHz mic audio to the 24 kHz that
@@ -73,19 +73,19 @@ full = [
     "scipy>=1.13,<2",
     "spotipy==2.26.0",
     "httpx==0.28.1",
-    "onnxruntime>=1.17",
+    "onnxruntime>=1.28.0",
     # The subway fallback only needs the standard GTFS-Realtime wire
     # schema. nyct-gtfs hard-pins the unsupported protobuf 4.25.3 runtime;
     # use the maintained schema bindings and keep the shared protobuf
     # runtime explicit because ONNX Runtime and the Google client stack
     # consume it too.
-    "gtfs-realtime-bindings==2.1.0",
+    "gtfs-realtime-bindings==2.2.0",
     "protobuf==7.35.1",
     "rapidfuzz>=3.6,<4",
     # XVF3800 control: jasper.xvf.xvf_host talks to the chip's USB
     # vendor-control interface for boot-time profile writes and diagnostics.
     "pyusb>=1.2",
-    "libusb_package>=1.0",
+    "libusb_package>=1.0.30.0",
     # ALSA-native PCM access for jasper-usbmic and the AEC probe scripts —
     # needed because the USB-mic relay wants nonblocking period writes and
     # explicit gadget-ring occupancy control, and the probes capture the XVF
@@ -98,9 +98,9 @@ full = [
     # google-auth-oauthlib drive the per-account OAuth + refresh flow;
     # google-api-python-client is the discovery-based service factory
     # (resource shapes for `calendar` and `gmail`). Pure-Python, tiny.
-    "google-auth>=2.36",
+    "google-auth>=2.56.3",
     "google-auth-oauthlib>=1.2",
-    "google-api-python-client>=2.150",
+    "google-api-python-client>=2.198.0",
     # jasper-input: third-party HID accessory bridge (volume knobs,
     # macro pads, etc.) reads /dev/input/event* via python-evdev and
     # watches for hot-plug via pyudev. Tiny pure-Python deps.
@@ -119,7 +119,7 @@ full = [
     # the dual-stack conflict (pyvisa-py#378). Imported lazily inside
     # jasper.peering.discovery so the package is import-cheap when
     # peering is OFF (the default). ~5-8 MB Pss when active.
-    "zeroconf>=0.149,<1.0",
+    "zeroconf>=0.150.0,<1.0",
     # jasper.capture_relay.crypto: AES-256-GCM decryption of the phone-mic
     # capture blob the Pi pulls from the relay (the page encrypts with
     # WebCrypto; the Pi decrypts here before feeding the existing room/
@@ -166,7 +166,7 @@ openwakeword-onnx = [
     # openWakeWord's declared tflite-runtime dep, which has no Python 3.13 wheel.
     "requests",
     "tqdm",
-    "scikit-learn>=1,<2",
+    "scikit-learn>=1.9.0,<2",
 ]
 
 [project.scripts]
@@ -227,7 +227,7 @@ jasper-wake-review = "jasper.cli.wake_review:main"
 jasper-wake-corpus-web = "jasper.web.wake_corpus_setup:main"
 
 [build-system]
-requires = ["setuptools>=82.0.1"]
+requires = ["setuptools>=84.0.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.uv]
