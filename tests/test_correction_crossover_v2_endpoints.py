@@ -2153,6 +2153,7 @@ def test_state_cloud_reference_db_survives_an_unbounded_json_integer():
 
     measure = v2host.crossover_v2_status_block()["cloud"][PHASE_CLOUD_MEASURE]
     assert measure["reference_db"] is None
+    assert measure["overall_passed"] is True
 
 
 def test_state_cloud_block_reports_locked_guidance_even_when_pipeline_never_ran():

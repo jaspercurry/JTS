@@ -2420,7 +2420,10 @@ def _finite(value: Any) -> float | None:
     reject non-numeric, reject NaN/inf) — N1 (2026-07-24 review follow-up):
     this module and that one stay symmetric about what counts as a
     displayable number, rather than one layer trusting a raw ``float(v)``
-    the other layer would refuse.
+    the other layer would refuse. That symmetry is one-directional until
+    #2470 lands: the ``OverflowError`` guard below is this function's
+    alone, and the twin is exactly the trusting layer this note warns
+    about until it mirrors the guard.
 
     Never raises. An unbounded JSON integer (``10 ** 400``) makes
     ``float()`` raise ``OverflowError`` rather than returning ``inf`` —
