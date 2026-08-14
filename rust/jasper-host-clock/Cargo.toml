@@ -21,7 +21,7 @@ log = "0.4"
 # The real ALSA pitch actuator (`AlsaPitchCtl`) is behind an off-by-default
 # feature so `cargo test` on a macOS host (no libasound) is pure. Fan-in enables
 # it unconditionally.
-alsa = { version = "0.11", optional = true }
+alsa = { version = "0.12", optional = true }
 
 [dev-dependencies]
 # One in-module test asserts the status_fragment() byte shape is valid JSON.

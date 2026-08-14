@@ -2143,8 +2143,8 @@ mod alsa_ctl {
         /// neutralize would do so even with the feature OFF. The name is stable
         /// ABI; matching on it keeps this path aligned with the unit's
         /// name-based `ExecStopPost` belt-and-braces, so both writers target
-        /// the same element the same way. (alsa-0.11.0 exposes no public
-        /// `Ctl`→`ElemInfo` fetch, so an at-open type/count assertion is not
+        /// the same element the same way. (As of alsa 0.12, `Ctl` exposes no
+        /// public `ElemInfo` fetch, so an at-open type/count assertion is not
         /// available at this crate version; the name match plus the hardware
         /// ctl-range clamp in `ppm_to_ctl_value` are the layered defenses, and
         /// a bad name simply surfaces as a fail-soft `elem_write` error.)
