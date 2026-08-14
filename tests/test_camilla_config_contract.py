@@ -294,18 +294,19 @@ def test_generated_sound_config_floorless_dac_uses_global_default(
 ):
     """A profile with no declared floor => the generated config keeps 1024/2048."""
     from jasper.audio_hardware.dac import (
-        INNOMAKER_HIFI_AMP_PRO_ID,
+        HIFIBERRY_DAC8X_STUDIO_ID,
         latency_floor_for,
     )
 
     # Asserted, not assumed: a later floor declaration for this profile must
     # fail HERE rather than silently turning the two assertions below into a
-    # test of the floor path (what an R7a DAC8x floor did to this test).
-    assert latency_floor_for(INNOMAKER_HIFI_AMP_PRO_ID) is None
+    # test of the floor path (what an R7a DAC8x floor did to this test, and
+    # what jts4's measured floor then did to its InnoMaker replacement).
+    assert latency_floor_for(HIFIBERRY_DAC8X_STUDIO_ID) is None
     monkeypatch.delenv("JASPER_CAMILLA_CHUNKSIZE", raising=False)
     monkeypatch.delenv("JASPER_CAMILLA_TARGET_LEVEL", raising=False)
     parsed = _generated_sound_devices(
-        monkeypatch, tmp_path, INNOMAKER_HIFI_AMP_PRO_ID
+        monkeypatch, tmp_path, HIFIBERRY_DAC8X_STUDIO_ID
     )
     assert parsed["chunksize"] == DEFAULT_CHUNKSIZE == 1024
     assert parsed["target_level"] == DEFAULT_TARGET_LEVEL == 2048
@@ -398,7 +399,7 @@ def test_generated_active_speaker_baseline_carries_the_dac8x_floor(
         classify_output_contract,
         topology_supports_shm_ring,
     )
-    from jasper.audio_hardware.dac import INNOMAKER_HIFI_AMP_PRO_ID
+    from jasper.audio_hardware.dac import HIFIBERRY_DAC8X_STUDIO_ID
     from tests.test_active_speaker_profile import _two_way_preset
     from tests.test_active_speaker_runtime_contract import _active_topology
 
@@ -422,7 +423,8 @@ def test_generated_active_speaker_baseline_carries_the_dac8x_floor(
     assert parsed["target_level"] == 1536
 
     # Control: same emit, same preset, a profile that declares NO floor.
-    _stage_output_profile(monkeypatch, tmp_path, INNOMAKER_HIFI_AMP_PRO_ID)
+    # (Named the InnoMaker until it declared jts4's measured floor.)
+    _stage_output_profile(monkeypatch, tmp_path, HIFIBERRY_DAC8X_STUDIO_ID)
     control = parse_camilla_devices_config(
         emit_active_speaker_baseline_config(
             preset, playback_device="outputd_active_content_playback"

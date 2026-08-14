@@ -411,8 +411,11 @@ def ring_ioplug_wire_supported(
 # outputd's period_frames"). A geometry mismatch against an existing ring is a
 # hard ``open()`` error (c/jts-ring-ioplug: "a geometry mismatch against an
 # existing ring is an open() error"). On a box whose resolved outputd period is
-# not 128 (the packaged default is 1024, and only a DAC declaring a 128-frame
-# latency floor lowers it), CamillaDSP's ring open would fail and the arm would
+# not 128 (the packaged default is 1024; a DAC declaring a 128-frame latency
+# floor lowers it, and so does an operator ``JASPER_OUTPUTD_PERIOD_FRAMES`` in
+# ``/etc/jasper/jasper.env``, which outranks the reconciler's floor-derived
+# value — jts4 reached the ring that way on 2026-08-14, before its profile
+# declared a floor), CamillaDSP's ring open would fail and the arm would
 # roll back with a confusing daemon-level error — so the coupling reconciler
 # PREFLIGHTs the match and fail-closes to loopback with a crisp reason. The fix
 # is always to bring the OUTPUTD period to the slot, never to raise this file.
@@ -978,10 +981,14 @@ def ring_geometry_matches_outputd(
                 "geometry fan-in never builds and the attach fails hard. Align on "
                 f"{RING_SLOT_FRAMES}: if the conf.d has drifted off it, run sudo "
                 "systemctl start jasper-audio-hardware-reconcile.service (it "
-                "converges the conf.d back); if the OUTPUTD period is off it, this "
-                f"DAC declares no {RING_SLOT_FRAMES}-frame latency floor and "
-                "shm_ring is unavailable to it — stay on loopback until issue "
-                "#2147 makes the slot derivable"
+                "converges the conf.d back); if the OUTPUTD period is off it, "
+                f"bring it to {RING_SLOT_FRAMES} — either by declaring a "
+                f"{RING_SLOT_FRAMES}-frame LatencyFloor on this DAC, or by "
+                f"setting JASPER_OUTPUTD_PERIOD_FRAMES={RING_SLOT_FRAMES} (with "
+                "a matching JASPER_OUTPUTD_DAC_BUFFER_FRAMES) in "
+                "/etc/jasper/jasper.env, which outranks the reconciler's value. "
+                "Until one of those, stay on loopback; issue #2147 would make "
+                "the slot derivable and retire the choice"
             ),
         )
     return RingGeometryMatch(

@@ -14,7 +14,7 @@ from jasper import audio_runtime_plan as audio_plan
 from jasper.audio_hardware.dac import (
     APPLE_USB_C_DONGLE_ID,
     HIFIBERRY_DAC8X_ID,
-    INNOMAKER_HIFI_AMP_PRO_ID,
+    HIFIBERRY_DAC8X_STUDIO_ID,
     latency_floor_for,
 )
 from jasper.audio_runtime_plan import (
@@ -512,10 +512,11 @@ def test_outputd_latency_floor_actions_unset_when_profile_has_no_floor():
     # defaults apply. Asserted, not assumed, that this profile is floorless —
     # a later floor declaration must fail here rather than quietly making the
     # {"unset"} expectation unreachable (what an R7a DAC8x floor did when this
-    # test named `hifiberry_dac8x`).
-    assert latency_floor_for(INNOMAKER_HIFI_AMP_PRO_ID) is None
+    # test named `hifiberry_dac8x`, and what jts4's measured floor then did
+    # when it named `innomaker_hifi_amp_pro`).
+    assert latency_floor_for(HIFIBERRY_DAC8X_STUDIO_ID) is None
     actions = outputd_latency_floor_actions(
-        profile_id=INNOMAKER_HIFI_AMP_PRO_ID,
+        profile_id=HIFIBERRY_DAC8X_STUDIO_ID,
         base_env={},
         outputd_env={
             "JASPER_CAMILLA_CHUNKSIZE": "256",

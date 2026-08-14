@@ -379,9 +379,6 @@ def test_innomaker_lane_does_not_claim_the_narrower_launch_scopes() -> None:
     assert APPLE_USB_C_DONGLE.supports_active_crossover_commissioning is False
     assert APPLE_USB_C_DONGLE.supports_active_outputd_lane is True
     assert INNOMAKER_HIFI_AMP_PRO.chip_aec_qualification == "needs_calibration"
-    # No measured buffer floor yet => the conservative global default ships.
-    assert INNOMAKER_HIFI_AMP_PRO.latency_floor is None
-    assert dac.latency_floor_for(INNOMAKER_HIFI_AMP_PRO.id) is None
 
 
 def test_dual_apple_profile_is_first_class_composite_four_output_dac() -> None:
@@ -728,8 +725,48 @@ def test_latency_floor_for_round_trips_for_bash() -> None:
 def test_latency_floor_for_is_none_for_undeclared_and_unknown() -> None:
     # A DAC that declares no floor keeps the global default — None is the
     # non-breaking signal the reconciler treats as "use shipped default".
-    assert dac.latency_floor_for(INNOMAKER_HIFI_AMP_PRO_ID) is None
+    # (Named the InnoMaker until it declared jts4's measured floor.)
+    assert dac.latency_floor_for(HIFIBERRY_DAC8X_STUDIO_ID) is None
     assert dac.latency_floor_for("no_such_dac") is None
+
+
+def test_innomaker_declares_the_jts4_measured_floor() -> None:
+    # jts4 (Pi Zero 2 W + InnoMaker HiFi AMP Pro, 2026-08-14). The OUTPUTD pair
+    # is measured on that board: period 128 / dac_buffer 256 — the pair both
+    # other declaring profiles use — took 1 DAC xrun in 5 minutes here, and 512
+    # took zero in 5 minutes plus zero in a 3-minute run through the armed ring.
+    # The CAMILLA pair is NOT measured here: it is Apple's/DAC8x's starting
+    # point, and this test pins the DECLARATION so a later real measurement has
+    # to change it deliberately rather than drift onto it.
+    assert INNOMAKER_HIFI_AMP_PRO.latency_floor == LatencyFloor(
+        camilla_chunksize=256,
+        camilla_target_level=1536,
+        outputd_period_frames=128,
+        outputd_dac_buffer_frames=512,
+    )
+
+
+def test_innomaker_floor_period_is_what_makes_the_ring_reachable() -> None:
+    """The 128 is not cosmetic: it is the whole ring-eligibility fact.
+
+    Ring A's slot is fan-in's COMPILE-TIME ``RING_SLOT_FRAMES`` with no env
+    override, and the conf.d renderer refuses any other period, so a declared
+    floor reaches shm_ring only by EQUALLING it. Pinned against the constant
+    rather than the literal 128, so moving one moves this test with it.
+    """
+    from jasper.fanin_coupling import RING_SLOT_FRAMES
+
+    floor = dac.latency_floor_for(INNOMAKER_HIFI_AMP_PRO_ID)
+    assert floor is not None
+    assert floor.outputd_period_frames == RING_SLOT_FRAMES
+    # And the deeper DAC ring this board needed is a real divergence from the
+    # two profiles measured on Pi 5 silicon, not a copy of them.
+    assert floor.outputd_dac_buffer_frames == 512
+    assert APPLE_USB_C_DONGLE.latency_floor is not None
+    assert (
+        floor.outputd_dac_buffer_frames
+        != APPLE_USB_C_DONGLE.latency_floor.outputd_dac_buffer_frames
+    )
 
 
 def test_dac8x_declares_the_soak_validated_floor() -> None:

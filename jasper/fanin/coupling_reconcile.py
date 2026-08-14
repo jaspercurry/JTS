@@ -919,6 +919,7 @@ def _reconcile_coupling_inner(
                     reason,
                     fanin_snapshot,
                     outputd_snapshot,
+                    do_kick_hardware,
                 )
 
         # Env already at desired AND coherent: re-confirm camilla only (self-heal a
@@ -1006,6 +1007,7 @@ def _reconcile_coupling_inner(
             reason,
             fanin_snapshot,
             outputd_snapshot,
+            do_kick_hardware,
         )
     return _disarm(
         do_restart,
@@ -1759,11 +1761,46 @@ def load_topology_for_wire():
         return None
 
 
+def _effective_env_value(
+    later_text: str, key: str, *, later_path: str
+) -> tuple[str | None, str]:
+    """What a two-file ``EnvironmentFile=`` chain resolves for ``key``, and from where.
+
+    Every audio daemon this module gates lists ``/etc/jasper/jasper.env`` as its
+    FIRST ``EnvironmentFile=`` and its own ``/var/lib/jasper/<daemon>.env`` as a
+    LATER one, so the later file wins and the earlier one is the fallback
+    (``jasper-fanin.service``, ``jasper-outputd.service``). A reader that
+    consults only the later file reports a default while an operator value in
+    the system env still controls the next daemon start — and that is not
+    hypothetical: it is the
+    documented operator seam, which ``outputd_latency_floor_actions`` reaches by
+    REMOVING the generated key from the later file precisely so the earlier one
+    is the only declaration left.
+
+    ``later_text`` is the caller's already-read snapshot of the later file (the
+    arm path holds one it may have just written); ``jasper.env`` is read here.
+    Returns the RAW string and its source path, applying no emptiness or parse
+    policy — each caller's own vocabulary for "declared but empty" differs, and
+    collapsing them here would make one of them wrong. ``source`` is meaningful
+    only when the value is not ``None``.
+
+    ONE chain, three readers: this, :func:`resolve_effective_fanin_ring_slots`
+    and :func:`resolve_effective_fanin_wire_format`. Before it there were two
+    hand-rolled copies and one reader (:func:`_resolved_outputd_period_frames`)
+    that had never grown one.
+    """
+    raw = read_value(later_text, key)
+    if raw is not None:
+        return raw, later_path
+    return read_value(_read_snapshot(JASPER_ENV_PATH).text, key), JASPER_ENV_PATH
+
+
 def resolve_effective_fanin_wire_format(fanin_text: str) -> tuple[str, str]:
     """fan-in's declared Ring-A wire format, and which file declared it.
 
     Same ``jasper.env`` -> ``fanin.env`` chain systemd gives ``jasper-fanin``
-    (mirrors :func:`resolve_effective_fanin_ring_slots`): looking only at
+    (:func:`_effective_env_value`, shared with
+    :func:`resolve_effective_fanin_ring_slots`): looking only at
     ``fanin.env`` would report the default while an operator's value in the
     earlier system env still controls the next daemon start. An unset value
     declares the narrow default, which is what the Rust daemon resolves.
@@ -1780,13 +1817,9 @@ def resolve_effective_fanin_wire_format(fanin_text: str) -> tuple[str, str]:
     """
     from jasper.fanin_coupling import RING_WIRE_FORMAT, RING_WIRE_FORMAT_ENV_VAR
 
-    raw = read_value(fanin_text, RING_WIRE_FORMAT_ENV_VAR)
-    source = FANIN_ENV_PATH
-    if raw is None:
-        raw = read_value(
-            _read_snapshot(JASPER_ENV_PATH).text, RING_WIRE_FORMAT_ENV_VAR
-        )
-        source = JASPER_ENV_PATH
+    raw, source = _effective_env_value(
+        fanin_text, RING_WIRE_FORMAT_ENV_VAR, later_path=FANIN_ENV_PATH
+    )
     if raw is None or not raw.strip():
         return RING_WIRE_FORMAT, "default"
     return raw.strip(), source
@@ -2252,19 +2285,31 @@ def ring_assets_ready() -> tuple[bool, str]:
 
 
 def _resolved_outputd_period_frames(outputd_text: str) -> int:
-    """outputd's resolved ``JASPER_OUTPUTD_PERIOD_FRAMES`` (env-file, else default).
+    """outputd's resolved ``JASPER_OUTPUTD_PERIOD_FRAMES`` (env chain, else default).
 
-    The reconciler-owned ``outputd.env`` carries the DAC-floor-derived period the
-    audio-hardware reconciler writes (e.g. the Apple-dongle floor's 128); when
-    absent, outputd falls back to the packaged default written on its unit
-    (``DEFAULT_OUTPUTD_PERIOD_FRAMES`` = 1024). Reading the env file matches what
-    outputd will resolve on its next start — the SAME source scripts/ring-proto/
-    arm.sh reads (it reads the live process environ; this reads the file that
-    seeds it). A malformed value falls back to the default.
+    Same two-file chain systemd gives ``jasper-outputd`` — ``/etc/jasper/jasper.env``
+    first, ``/var/lib/jasper/outputd.env`` last, so the later file wins — resolved
+    through :func:`_effective_env_value`, the shared primitive the fan-in gates use.
+    When neither file declares it, outputd falls back to the packaged default
+    written on its unit (``DEFAULT_OUTPUTD_PERIOD_FRAMES`` = 1024). A malformed
+    value falls back to the default too.
+
+    READING ``outputd.env`` ALONE WAS A GATE BUG, and the two-file chain is not a
+    theoretical nicety here. ``outputd_latency_floor_actions`` gives an operator
+    key in ``jasper.env`` precedence by REMOVING the generated key from
+    ``outputd.env`` — so on a box using the documented operator seam, the period
+    lives ONLY in the file this reader used to skip. It then reported the 1024
+    default and ``ring_geometry_ready`` refused the arm while the RUNNING outputd
+    was correctly at 128 (reproduced on jts4, 2026-08-14). Its sibling
+    :func:`resolve_effective_fanin_ring_slots` already modelled the chain for
+    fan-in's identical ``jasper.env`` -> ``fanin.env`` ordering; this is the same
+    fix on the outputd side.
     """
     from jasper.audio_runtime_plan import DEFAULT_OUTPUTD_PERIOD_FRAMES
 
-    raw = read_value(outputd_text, "JASPER_OUTPUTD_PERIOD_FRAMES")
+    raw, _ = _effective_env_value(
+        outputd_text, "JASPER_OUTPUTD_PERIOD_FRAMES", later_path=OUTPUTD_ENV_PATH
+    )
     if raw is None:
         return DEFAULT_OUTPUTD_PERIOD_FRAMES
     try:
@@ -2592,26 +2637,17 @@ def resolve_effective_fanin_ring_slots(fanin_text: str) -> FaninRingSlotsResolut
 
     ``jasper-fanin.service`` reads ``/etc/jasper/jasper.env`` first and
     ``/var/lib/jasper/fanin.env`` last, so the reconciler and doctor must model the
-    same chain. Looking only at ``fanin.env`` can report the new default while an
-    old ``JASPER_FANIN_RING_SLOTS=8`` in the earlier system env still controls the
-    next daemon start.
+    same chain (:func:`_effective_env_value`). Looking only at ``fanin.env`` can
+    report the new default while an old ``JASPER_FANIN_RING_SLOTS=8`` in the
+    earlier system env still controls the next daemon start.
     """
     from jasper.fanin_coupling import RING_SLOTS_ENV_VAR, resolve_ring_slots
 
-    fanin_raw = read_value(fanin_text, RING_SLOTS_ENV_VAR)
-    if fanin_raw is not None:
-        raw = fanin_raw
-        source = FANIN_ENV_PATH
-    else:
-        jasper_raw = read_value(
-            _read_snapshot(JASPER_ENV_PATH).text, RING_SLOTS_ENV_VAR
-        )
-        if jasper_raw is not None:
-            raw = jasper_raw
-            source = JASPER_ENV_PATH
-        else:
-            raw = None
-            source = "default"
+    raw, source = _effective_env_value(
+        fanin_text, RING_SLOTS_ENV_VAR, later_path=FANIN_ENV_PATH
+    )
+    if raw is None:
+        source = "default"
     try:
         return FaninRingSlotsResolution(
             value=resolve_ring_slots(raw),
@@ -2998,6 +3034,7 @@ def _fail_ring_arm(
     detail: str,
     restarted_fanin: bool = False,
     restarted_outputd: bool = False,
+    reconverge_content_format: "DaemonOp | None" = None,
 ) -> CouplingResult:
     """Recover one failed ring-arm stage and publish its common outcome.
 
@@ -3006,6 +3043,20 @@ def _fail_ring_arm(
     and return a failed arm result.  Keeping that sequence here prevents a new
     stage from accidentally omitting recovery or reporting different progress
     flags while each caller still owns its domain-specific event name and detail.
+
+    ``reconverge_content_format`` is passed by exactly the stages that run AFTER
+    :func:`_arm_ring` converged ``JASPER_OUTPUTD_CONTENT_FORMAT`` to the ring
+    wire, and it kicks that key's single writer once more. Recovery has just
+    written ``loopback`` back into fanin.env, so the same oneshot re-derives the
+    LOOPBACK lane's width from it — without this, a box recovered to loopback
+    would keep asking for the ring's narrow S16_LE while CamillaDSP emits the
+    wide program default, which the plug-wrapped passive lane silently
+    requantizes and the RAW active lane refuses at the open (an outputd park).
+    ``_recover_to_loopback`` deliberately does not kick for the content-BUFFER
+    floor (a cushion, where being wrong is safe); a content-lane WIDTH is not a
+    cushion, which is why this one is reconverged and that one is not.
+    Best-effort: a failed re-converge is carried in ``detail`` and never
+    downgrades the recovery, whose own env + daemon work already landed.
     """
     recovered = _recover_to_loopback(
         do_restart,
@@ -3015,6 +3066,19 @@ def _fail_ring_arm(
         outputd_snapshot.path,
         reason,
     )
+    if reconverge_content_format is not None:
+        reconverge_ok, reconverge_detail = reconverge_content_format()
+        if not reconverge_ok:
+            detail = "; ".join(
+                d
+                for d in (
+                    detail,
+                    "and the content-format re-converge to loopback failed "
+                    f"({reconverge_detail}) — jasper-outputd may still request the "
+                    "ring wire until the next audio-hardware reconcile",
+                )
+                if d
+            )
     log_event(
         logger,
         "fanin.coupling_reconcile",
@@ -3045,6 +3109,7 @@ def _arm_ring(
     reason,
     fanin_snapshot,
     outputd_snapshot,
+    do_kick_hardware: "DaemonOp | None" = None,
 ) -> CouplingResult:
     """Arm the ``shm_ring`` coupling (Ring A + Ring B), fail-safe to loopback.
 
@@ -3064,6 +3129,7 @@ def _arm_ring(
     self-heals a shear-prone stale ``JASPER_FANIN_RING_SLOTS`` — the 2026-07-05
     defect-A geometry hole); then (5) ``_delete_stale_ring_files`` clears a
     geometry-mismatched on-disk ring so the writer re-creates it fresh. Then the
+    CONTENT-FORMAT CONVERGE (``do_kick_hardware``, below), and only then the
     ordered spine — outputd (the post-DSP ring's reader) first, fan-in (Ring A
     writer) second,
     CamillaDSP (loads the ring config, opening jts_ring_capture plus the post-DSP
@@ -3075,6 +3141,31 @@ def _arm_ring(
     activation window; the gates are wire-width + asset-presence + geometry
     coherence + the ordered restart landing, and the fan-in STATUS transport is
     confirmed by the doctor.
+
+    THE CONTENT-FORMAT CONVERGE, and the first-arm reboot it closes.
+    ``JASPER_OUTPUTD_CONTENT_FORMAT`` is a pure function of the coupling
+    (``content_lane_format_for_coupling``) but its single writer is
+    ``jasper-audio-hardware-reconcile``, not this module — so on a FIRST arm
+    nothing had re-derived it by the time the spine restarts outputd, and outputd
+    came up still asking for the LOOPBACK lane's wide ``S32_LE`` while CamillaDSP's
+    ioplug attached the ring at the resolved ``S16_LE``. That is a hard
+    ``attach_fatal``, so jasper-camilla crash-looped into its start limit and
+    ``StartLimitAction=reboot`` rebooted the speaker; a SECOND arm then converged,
+    because by then some ordinary hardware-reconcile pass had moved the key. jts4
+    reproduced exactly that on 2026-08-14.
+
+    The fix asks the OWNER to converge rather than writing the key here: this
+    reconcile has already persisted ``JASPER_FANIN_CAMILLA_COUPLING=shm_ring``
+    into fanin.env (the write happens before the preflights run), and the
+    hardware reconciler reads that token file-fresh on every pass, so one blocking
+    start of that oneshot re-derives the ring wire into outputd.env. Writing
+    ``JASPER_OUTPUTD_CONTENT_FORMAT`` from here instead would make two writers of
+    one key; reordering the spine would fix nothing, since no step of it re-derived
+    the format at all. The kick lands AFTER every preflight so a refused arm still
+    bounces nothing and moves no width, and FAIL-CLOSED: a kick that does not land
+    refuses the arm rather than restarting outputd into the stale value the whole
+    step exists to retire. Its cost on an already-converged box is one oneshot that
+    changes no key and therefore restarts nothing.
     """
     assets_ok, assets_detail = ring_assets_ready()
     if not assets_ok:
@@ -3221,6 +3312,34 @@ def _arm_ring(
     # not user data. Best-effort — the writer's own attach error is the backstop.
     _delete_stale_ring_files(reason, fanin_snapshot.text)
 
+    # CONTENT-FORMAT CONVERGE — see the docstring. Kick the single writer of
+    # JASPER_OUTPUTD_CONTENT_FORMAT so it re-derives that key from the coupling
+    # already persisted above, BEFORE the spine restarts outputd against it.
+    # Blocking (15 s bound), so this returns with the key actually re-emitted
+    # rather than merely requested.
+    do_kick = do_kick_hardware or (
+        lambda: _start_audio_hardware_reconcile(reason=reason)
+    )
+    kick_ok, kick_detail = do_kick()
+    if not kick_ok:
+        return _fail_ring_arm(
+            do_restart,
+            do_restart_outputd,
+            do_reconcile,
+            desired,
+            reason,
+            fanin_snapshot,
+            outputd_snapshot,
+            event_result="arm_ring_content_format_converge_failed",
+            detail=(
+                "could not converge JASPER_OUTPUTD_CONTENT_FORMAT to the ring "
+                f"wire ({kick_detail}); arming would restart jasper-outputd on "
+                "the loopback lane's width and fail CamillaDSP's ring attach — "
+                "run `sudo systemctl start jasper-audio-hardware-reconcile`, "
+                "then re-arm"
+            ),
+        )
+
     out_ok, out_detail = do_restart_outputd()
     if not out_ok:
         return _fail_ring_arm(
@@ -3233,6 +3352,7 @@ def _arm_ring(
             outputd_snapshot,
             event_result="arm_ring_outputd_failed",
             detail=out_detail,
+            reconverge_content_format=do_kick,
         )
 
     fan_ok, fan_detail = do_restart()
@@ -3248,6 +3368,7 @@ def _arm_ring(
             event_result="arm_ring_fanin_failed",
             detail=fan_detail,
             restarted_outputd=True,
+            reconverge_content_format=do_kick,
         )
 
     cam_ok, cam_detail = do_reconcile(COUPLING_SHM_RING)
@@ -3264,6 +3385,7 @@ def _arm_ring(
             detail=cam_detail,
             restarted_fanin=True,
             restarted_outputd=True,
+            reconverge_content_format=do_kick,
         )
 
     # A completed arm is a SUCCESS for the strike record's purpose: CamillaDSP

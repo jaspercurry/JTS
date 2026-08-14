@@ -681,13 +681,50 @@ INNOMAKER_HIFI_AMP_PRO = DacProfile(
     # SELECTABLE at /sound/setup/ and leaves a running box byte-identically
     # passive until it is commissioned.
     #
-    # Remaining per-board work, neither of which gates the lane: measured
-    # latency-floor data (no latency_floor declared, so it ships the
-    # conservative global default), and chip-AEC qualification, which stays
-    # needs_calibration below.
+    # Remaining per-board work, which does not gate the lane: chip-AEC
+    # qualification, which stays needs_calibration below. (The latency floor was
+    # the other item and is now declared — see below.)
     supports_active_outputd_lane=True,
     active_outputd_lane_channels=2,
     final_edge_format="S32_LE",
+    # Hardware evidence, and the two halves have DIFFERENT standing — read the
+    # split before transferring any of it.
+    #
+    # MEASURED (jts4, Pi Zero 2 W + InnoMaker HiFi AMP Pro, 2026-08-14): the
+    # outputd pair. A 440 Hz -20 dBFS tone through the correction lane at period
+    # 128 / dac_buffer 256 — the pair BOTH other declaring profiles use — took 1
+    # DAC xrun in 5 minutes on this board, so 256 is not the floor here. At period
+    # 128 / dac_buffer 512: zero DAC xruns in 5 minutes, and zero again in a
+    # 3-minute run through the armed ring. DAC presentation latency 10.58 ms. The
+    # deeper DAC ring is this board's own result and not a transfer: the Zero 2 W
+    # is a 4x-slower quad-A53 than the Pi 5 the other two profiles were measured
+    # on, and the writer needs more than two periods of slack to stay ahead of it.
+    # The 128-frame PERIOD is what makes shm_ring reachable at all (it must equal
+    # fan-in's compile-time RING_SLOT_FRAMES, which is 128).
+    #
+    # UNMEASURED on this board: the CamillaDSP pair. It is Apple's/DAC8x's
+    # (256, 1536) STARTING POINT, transferred, not a result here — and stated as
+    # such rather than left to read as measured. Two facts bound the risk. First,
+    # the pair is INERT on the path this board actually runs: a shm_ring-coupled
+    # box takes its CamillaDSP geometry from RING_CAMILLA_CHUNKSIZE /
+    # RING_CAMILLA_TARGET_LEVEL (128/128, jasper.fanin_coupling), which
+    # apply_capture_precedence merges LAST over whatever this floor resolved, so
+    # the declared pair governs the LOOPBACK lane only. Second, the dataclass has
+    # no optional half — declaring the measured outputd floor REQUIRES supplying a
+    # CamillaDSP pair, and the shipped global default (1024, 2048) is not even
+    # expressible here (2048 < 4 x 1024 fails the pair invariant). So the honest
+    # exposure is named rather than avoidable: an InnoMaker box that falls BACK to
+    # loopback now runs 256/1536 instead of the global default, on a pair no run
+    # on this silicon has confirmed. What would falsify it is a loopback-lane soak
+    # on this board showing CamillaDSP xruns or clipped samples the global default
+    # did not; until someone runs one, this is a transfer with a cushion (6x, not
+    # the validator's 4x minimum), matching what both measured profiles chose.
+    latency_floor=LatencyFloor(
+        camilla_chunksize=256,
+        camilla_target_level=1536,
+        outputd_period_frames=128,
+        outputd_dac_buffer_frames=512,
+    ),
     chip_aec_detail=(
         "InnoMaker HiFi AMP Pro needs per-profile chip-AEC timing calibration"
     ),

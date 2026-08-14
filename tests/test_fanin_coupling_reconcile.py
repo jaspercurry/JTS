@@ -1098,6 +1098,219 @@ def _ring_conf(tmp_path, *, capture_n_slots: int = 2, period_frames: int = 128):
     return conf
 
 
+def test_arm_converges_the_content_format_before_any_restart(
+    tmp_path, _ring_assets_present
+):
+    """jts4's first-arm reboot, pinned as an ORDER.
+
+    ``JASPER_OUTPUTD_CONTENT_FORMAT`` is written only by
+    jasper-audio-hardware-reconcile, so on a first arm nothing had re-derived it
+    from the new coupling by the time the spine restarted outputd: outputd came
+    up still asking for the loopback lane's S32_LE while CamillaDSP's ioplug
+    attached the ring at S16_LE, which is an attach_fatal — jasper-camilla
+    crash-looped into StartLimitAction=reboot and rebooted the speaker
+    (2026-08-14). The converge must therefore precede EVERY restart, not merely
+    happen somewhere in the arm.
+
+    Asserted as a full ordered list rather than an index comparison: the spine's
+    own order (outputd, fan-in, camilla) is the validated ring-proto order and a
+    converge that displaced one of those would be a different bug.
+    """
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(tmp_path / "outputd.env", "")
+    calls, ro, rf, rc = _recorder()
+
+    def kick():
+        calls.append("converge-content-format")
+        return (True, "")
+
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+        kick_hardware_reconcile=kick,
+    )
+
+    assert result.ok is True, result.detail
+    assert calls == [
+        "converge-content-format",
+        "outputd",
+        "fanin",
+        "camilla:shm_ring",
+    ]
+    # The coupling the converge reads is already persisted when it runs — that is
+    # what lets the single writer derive the RING wire rather than the old one.
+    assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
+
+
+def test_arm_refuses_when_the_content_format_converge_fails(
+    tmp_path, _ring_assets_present
+):
+    """Fail-CLOSED: no converge, no arm — and specifically, no outputd restart.
+
+    Restarting outputd after a failed converge is exactly the reboot path above,
+    so the refusal must land BEFORE the spine. The box recovers to loopback with
+    a reason naming the key and the remedy.
+    """
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(tmp_path / "outputd.env", "")
+    calls, ro, rf, rc = _recorder()
+
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+        kick_hardware_reconcile=lambda: (False, "unit failed"),
+    )
+
+    assert result.ok is False
+    assert result.recovered is True
+    assert "JASPER_OUTPUTD_CONTENT_FORMAT" in result.detail
+    assert "jasper-audio-hardware-reconcile" in result.detail
+    # Recovery bounces the box back to loopback; what must NOT appear is an
+    # outputd restart while the coupling was still shm_ring.
+    assert calls[:1] != ["outputd"]
+    assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
+
+
+def test_arm_reconverges_the_content_format_when_a_later_stage_fails(
+    tmp_path, _ring_assets_present
+):
+    """A recovered box must not keep asking for the ring's width.
+
+    The converge lands before the spine, so a spine failure recovers to loopback
+    with JASPER_OUTPUTD_CONTENT_FORMAT still at the ring wire — narrower than the
+    loopback lane's program default. The plug-wrapped passive lane would silently
+    requantize it and the RAW active lane would refuse the open, so the failure
+    handler kicks the same single writer again, this time against the loopback
+    coupling recovery has just written back.
+    """
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(tmp_path / "outputd.env", "")
+    calls, ro, rf, rc = _recorder(camilla_ok=False)
+
+    def kick():
+        calls.append("converge-content-format")
+        return (True, "")
+
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+        kick_hardware_reconcile=kick,
+    )
+
+    assert result.ok is False
+    # Two converges: one before the spine, one after recovery wrote loopback.
+    assert calls.count("converge-content-format") == 2
+    assert calls[0] == "converge-content-format"
+    assert calls[-1] == "converge-content-format"
+    assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
+
+
+def test_geometry_gate_honours_an_outputd_period_from_the_jasper_env_position(
+    tmp_path, monkeypatch
+):
+    """The gate must model outputd's TWO-file env chain, not just outputd.env.
+
+    jasper-outputd.service loads /etc/jasper/jasper.env first and outputd.env
+    last. The documented operator seam puts JASPER_OUTPUTD_PERIOD_FRAMES in the
+    FIRST file, and ``outputd_latency_floor_actions`` honours it by REMOVING the
+    generated key from the second — so on a seam-configured box the period lives
+    ONLY in jasper.env. Reading outputd.env alone reported the 1024 packaged
+    default and refused the arm while the running outputd was correctly at 128
+    (jts4, 2026-08-14).
+
+    The conf.d here pins 128, so the gate passes iff it reads the seam.
+    """
+    import jasper.ring_assets as ra
+
+    monkeypatch.setattr(
+        ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
+    )
+    monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path)))
+    monkeypatch.setattr(ra, "RING_A_PROGRAM_FILE", str(tmp_path / "program.ring"))
+    monkeypatch.setattr(ra, "RING_B_CONTENT_FILE", str(tmp_path / "content.ring"))
+    jasper_env = _write(
+        tmp_path / "jasper.env",
+        "JASPER_OUTPUTD_PERIOD_FRAMES=128\nJASPER_OUTPUTD_DAC_BUFFER_FRAMES=512\n",
+    )
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.JASPER_ENV_PATH", str(jasper_env)
+    )
+    # The seam's whole shape: the generated key is ABSENT from outputd.env.
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(tmp_path / "outputd.env", "")
+    calls, ro, rf, rc = _recorder()
+
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+
+    assert result.ok is True, result.detail
+    assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
+
+
+def test_geometry_gate_prefers_outputd_env_over_the_jasper_env_position(
+    tmp_path, monkeypatch
+):
+    """The chain's DIRECTION, so the fix cannot be satisfied by reading either file.
+
+    outputd.env is loaded LAST and therefore wins. A jasper.env value that agrees
+    with the conf.d must NOT rescue an outputd.env value that disagrees — that
+    would be a gate passing a geometry the daemon will not run.
+    """
+    import jasper.ring_assets as ra
+
+    monkeypatch.setattr(
+        ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
+    )
+    monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path)))
+    monkeypatch.setattr(ra, "RING_A_PROGRAM_FILE", str(tmp_path / "program.ring"))
+    monkeypatch.setattr(ra, "RING_B_CONTENT_FILE", str(tmp_path / "content.ring"))
+    jasper_env = _write(tmp_path / "jasper.env", "JASPER_OUTPUTD_PERIOD_FRAMES=128\n")
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.JASPER_ENV_PATH", str(jasper_env)
+    )
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(
+        tmp_path / "outputd.env", "JASPER_OUTPUTD_PERIOD_FRAMES=1024\n"
+    )
+    calls, ro, rf, rc = _recorder()
+
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+
+    assert result.ok is False
+    assert "1024" in result.detail
+    assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
+
+
 def test_arm_shm_ring_refused_on_slot_mismatch_recovers(tmp_path, monkeypatch):
     # Defect A: assets + period match, but fan-in's JASPER_FANIN_RING_SLOTS resolves
     # to a value != the conf.d jts_ring_capture n_slots. This is the 2026-07-05 hole
@@ -1919,7 +2132,12 @@ def test_disarm_shm_ring_kicks_audio_hardware_reconcile_after_outputd(
     reconciler unsets the route's outputd content-buffer floor while the bridge
     is shm_ring (inert there), so without the kick a disarmed box sits on
     outputd's compile-default content buffer until the next udev/boot/deploy
-    event — there is no timer for that reconciler."""
+    event — there is no timer for that reconciler.
+
+    The ARM kicks the same oneshot for a DIFFERENT key and at the OPPOSITE end
+    of the spine (the jts4 first-arm reboot: JASPER_OUTPUTD_CONTENT_FORMAT must
+    reach the ring wire BEFORE outputd restarts), so this pins WHERE each kick
+    lands, not merely that one happened."""
     fanin_env = _write(tmp_path / "fanin.env", "")
     outputd_env = _write(tmp_path / "outputd.env", "")
     calls, ro, rf, rc = _recorder()
@@ -1938,8 +2156,8 @@ def test_disarm_shm_ring_kicks_audio_hardware_reconcile_after_outputd(
         active_leader_check=lambda: False,
         kick_hardware_reconcile=kick,
     )
-    # ARM never kicks — the floor suppression only matters on the way OUT.
-    assert "hw-reconcile" not in calls
+    # ARM kicks FIRST: the content-format converge precedes the whole spine.
+    assert calls == ["hw-reconcile", "outputd", "fanin", "camilla:shm_ring"]
 
     calls.clear()
     result = _reconcile(
