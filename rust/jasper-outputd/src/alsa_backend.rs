@@ -435,7 +435,17 @@ pub struct AlsaBackend {
 /// transport dispatches on the composite SHAPE, not the DAC's identity. Stays
 /// exactly two children (a pairwise drift guard cannot be half-vectorized).
 pub struct PairedCompositeSink {
-    content: PCM,
+    /// `None` under the SHM-ring content source, exactly as
+    /// [`AlsaBackend::content`] is — see `content_pcm_skipped`, the shared owner
+    /// of that decision.
+    ///
+    /// The transport honours that decision on its own terms rather than leaning
+    /// on `Config::from_env`, which admits a ring only on a single-ALSA sink and
+    /// so is the reason no composite reaches the skip arm. A sink that opens a
+    /// lane its run loop never reads is wrong independently of which
+    /// configurations can currently reach it — and a gate is a far easier thing
+    /// to widen than a transport is to re-audit.
+    content: Option<PCM>,
     dac_a: PCM,
     dac_b: PCM,
     pub content_pcm: String,
@@ -456,12 +466,15 @@ pub struct PairedCompositeSink {
     /// field beside two typed buffer pairs.
     periods: ChildPeriods,
     /// The format the ACTIVE content capture PCM negotiated — same contract as
-    /// [`AlsaBackend::content_format`], never `Option` here because the
-    /// composite sink always opens its content lane (the SHM-ring source is
-    /// single-ALSA only).
-    content_format: SampleFormat,
+    /// [`AlsaBackend::content_format`], `Option` for the same reason: `None`
+    /// means no ALSA content PCM was opened at all, so there is no lane to have
+    /// negotiated anything and `/state` keeps reporting the declaration rather
+    /// than claiming a readback that never ran. Read that doc for what the `None`
+    /// case is honest about; one shape, two sinks.
+    content_format: Option<SampleFormat>,
     /// Reused i16 ingest staging for an `S16Le` active content lane. Same
-    /// contract as [`AlsaBackend::content_widen_buf`]; empty on an `S32Le` lane.
+    /// contract as [`AlsaBackend::content_widen_buf`]; empty on an `S32Le` lane,
+    /// and empty when no ALSA content lane was opened at all.
     content_widen_buf: Vec<i16>,
 }
 
@@ -606,30 +619,56 @@ fn final_sink_startup<T>(result: Result<T>) -> Result<T> {
     result.context(FinalSinkStartupConfigError)
 }
 
+/// Does this box open an ALSA content PCM at all?
+///
+/// **The one owner of that question, read by BOTH sinks.** The content ALSA PCM
+/// is NOT opened when a non-ALSA content source owns the program: (PROTOTYPE)
+/// the SHM ring. It feeds `content_buf` directly in the run loop, so opening
+/// snd-aloop here would leave a STARTED, UNREAD capture lane — and once the
+/// reconciler stops rendering that lane, the open fails, and on this unit
+/// `Restart=on-failure` walks the ladder to `StartLimitAction=reboot`.
+///
+/// One predicate rather than the same comparison spelled once per sink: a second
+/// copy is exactly what would let one transport keep opening a lane the other
+/// had learned to skip. That divergence is not hypothetical — it is the state
+/// this function was extracted to end, with `PairedCompositeSink` on the wrong
+/// side of it.
+///
+/// Equivalent to `config.shm_ring.is_some()` by construction (`Config::from_env`
+/// builds `shm_ring` as `Some` iff this mode is selected), which is what makes
+/// the run loop's dispatch total: a skipped sink takes the ring arm and never
+/// reaches `read_content_period` at all.
+fn content_pcm_skipped(config: &Config) -> bool {
+    config.content_bridge_mode == crate::config::ContentBridgeMode::ShmRing
+}
+
+/// The `NegotiatedPcm` reported in place of a content lane that was never opened
+/// — one stand-in for both sinks, so `/state` keeps one vocabulary whatever the
+/// transport.
+///
+/// `buffer_frames = period_frames` is deliberate: there is no ALSA capture ring
+/// here at all, so this is a period-sized stand-in, **NOT** a real jitter buffer.
+/// The honest buffering depth of the non-ALSA source is reported separately in
+/// /state so no consumer is misled: the SHM ring's TRUE capacity (n_slots x
+/// period) rides `content.ring.capacity_frames` (see
+/// `OutputdState::snapshot_json`). jasper-doctor validates that instead of
+/// applying the ALSA ">= 2x period" floor to this synthetic.
+fn synthetic_content_negotiated(config: &Config) -> NegotiatedPcm {
+    NegotiatedPcm {
+        sample_rate: config.sample_rate,
+        period_frames: config.period_frames,
+        buffer_frames: config.period_frames,
+    }
+}
+
 impl AlsaBackend {
     pub fn new(config: &Config) -> Result<Self> {
-        // The content ALSA PCM is NOT opened when a non-ALSA content source
-        // owns the program: (PROTOTYPE) the SHM ring. It feeds `content_buf`
-        // directly in the run loop; opening snd-aloop here would leave an unread
-        // capture lane. A synthetic NegotiatedPcm stands in for the /state
-        // contract, with `buffer_frames = period_frames`: there is no ALSA capture
-        // ring here, so this is a period-sized stand-in, NOT a real jitter buffer.
-        // The honest buffering depth of the non-ALSA source is reported separately
-        // in /state so no consumer is misled: the SHM ring's TRUE capacity
-        // (n_slots x period) rides `content.ring.capacity_frames` (see
-        // OutputdState::snapshot_json). jasper-doctor validates that instead of
-        // applying the ALSA ">= 2x period" floor to this synthetic.
-        let skip_content_pcm =
-            config.content_bridge_mode == crate::config::ContentBridgeMode::ShmRing;
+        // Skip decision and its /state stand-in both come from the shared
+        // owners above — see `content_pcm_skipped` for why they are shared
+        // rather than spelled once per sink.
+        let skip_content_pcm = content_pcm_skipped(config);
         let (content, content_negotiated) = if skip_content_pcm {
-            (
-                None,
-                NegotiatedPcm {
-                    sample_rate: config.sample_rate,
-                    period_frames: config.period_frames,
-                    buffer_frames: config.period_frames,
-                },
-            )
+            (None, synthetic_content_negotiated(config))
         } else {
             // This whole content-lane open (through the plain `.with_context`
             // calls below, deliberately NOT `final_sink_startup`) is exit-1 /
@@ -1114,37 +1153,49 @@ impl PairedCompositeSink {
             config.period_frames,
         ))?;
 
-        let content =
-            PCM::new(&config.content_pcm, Direction::Capture, true).with_context(|| {
+        // The composite's half of the shared skip — the coherent single sink's
+        // arm, spelled the same way, off the same predicate. Under the SHM-ring
+        // content source nothing is opened and nothing is `.start()`ed: the run
+        // loop reads the ring and never asks this sink for a content period, so
+        // an open here would leave a started capture lane that nobody drains and
+        // that a later reconciler stops rendering at all.
+        let skip_content_pcm = content_pcm_skipped(config);
+        let (content, content_negotiated) = if skip_content_pcm {
+            (None, synthetic_content_negotiated(config))
+        } else {
+            let content =
+                PCM::new(&config.content_pcm, Direction::Capture, true).with_context(|| {
+                    format!(
+                        "opening outputd active content capture PCM {}",
+                        config.content_pcm
+                    )
+                })?;
+            let negotiated = configure_pcm(PcmConfig {
+                role: "active_content",
+                pcm_name: &config.content_pcm,
+                pcm: &content,
+                sample_rate: config.sample_rate,
+                period_frames: config.period_frames,
+                channels: config.content_channels,
+                // The active lane's own declared hop — same axis the single-ALSA
+                // content role reads, and independent of what the composite's
+                // children run at their edges (those take the DECLARED edge format
+                // below, from the other declaration).
+                format: config.content_format,
+                buffer_frames: config.content_buffer_frames,
+                manual_start: false,
+            })
+            .with_context(|| {
                 format!(
-                    "opening outputd active content capture PCM {}",
+                    "configuring outputd active content capture PCM {}",
                     config.content_pcm
                 )
             })?;
-        let content_negotiated = configure_pcm(PcmConfig {
-            role: "active_content",
-            pcm_name: &config.content_pcm,
-            pcm: &content,
-            sample_rate: config.sample_rate,
-            period_frames: config.period_frames,
-            channels: config.content_channels,
-            // The active lane's own declared hop — same axis the single-ALSA
-            // content role reads, and independent of what the composite's
-            // children run at their edges (those take the DECLARED edge format
-            // below, from the other declaration).
-            format: config.content_format,
-            buffer_frames: config.content_buffer_frames,
-            manual_start: false,
-        })
-        .with_context(|| {
-            format!(
-                "configuring outputd active content capture PCM {}",
-                config.content_pcm
-            )
-        })?;
-        content
-            .start()
-            .with_context(|| format!("starting capture PCM {}", config.content_pcm))?;
+            content
+                .start()
+                .with_context(|| format!("starting capture PCM {}", config.content_pcm))?;
+            (Some(content), negotiated)
+        };
 
         let dac_a = final_sink_startup(
             PCM::new(&dac_a_pcm, Direction::Playback, false)
@@ -1235,15 +1286,19 @@ impl PairedCompositeSink {
             }
         }
 
-        // `content_format=` and `format=` spelled exactly as the single sink's
-        // `event=outputd.alsa.opened` line spells them, so one grep recipe reads
-        // both hops on either transport and a half-flipped box is visible at
-        // open rather than only in STATUS. `format=` is the CHILDREN's edge (both
-        // children, one declaration); it is bare for the same reason it is bare
-        // over there — operators and journal recipes read that key.
+        // `content_source=`, `content_format=` and `format=` spelled exactly as
+        // the single sink's `event=outputd.alsa.opened` line spells them, so one
+        // grep recipe reads both hops on either transport and a half-flipped box
+        // is visible at open rather than only in STATUS. `format=` is the
+        // CHILDREN's edge (both children, one declaration); it is bare for the
+        // same reason it is bare over there — operators and journal recipes read
+        // that key. `content_source=` is what keeps this line honest under the
+        // skip: `content_pcm=` names a lane that, on a ring box, was never
+        // opened, and the source key is the one token that says so at open time.
         eprintln!(
-            "event=outputd.dual_apple.opened content_pcm={} content_format={} dac_a_pcm={} dac_b_pcm={} sample_rate={} period_frames={} content_buffer_frames={} dac_buffer_frames={} linked={} max_delay_delta_frames={} format={}",
+            "event=outputd.dual_apple.opened content_pcm={} content_source={} content_format={} dac_a_pcm={} dac_b_pcm={} sample_rate={} period_frames={} content_buffer_frames={} dac_buffer_frames={} linked={} max_delay_delta_frames={} format={}",
             config.content_pcm,
+            if skip_content_pcm { "shm_ring" } else { "alsa" },
             config.content_format.as_str(),
             dac_a_pcm,
             dac_b_pcm,
@@ -1278,14 +1333,27 @@ impl PairedCompositeSink {
             // — neither child reached here otherwise. Built at the top of this
             // function (see there for why it happens before the opens).
             periods,
-            content_format: config.content_format,
+            // `Some` only when an ALSA content lane was actually opened and its
+            // readback passed — the coherent single sink's rule, unchanged.
+            content_format: if skip_content_pcm {
+                None
+            } else {
+                Some(config.content_format)
+            },
             // The active content lane is 4-channel, so its ingest staging is
-            // wider than the per-child period buffers above.
-            content_widen_buf: s16_staging(
-                config.content_format,
-                config.period_frames,
-                config.content_channels,
-            ),
+            // wider than the per-child period buffers above. No ALSA content
+            // lane opened ⇒ no ingest staging, whatever the declaration says:
+            // the SHM-ring source feeds `content_buf` directly and owns whatever
+            // staging its own wire needs, so nothing here is sized for it.
+            content_widen_buf: if skip_content_pcm {
+                Vec::new()
+            } else {
+                s16_staging(
+                    config.content_format,
+                    config.period_frames,
+                    config.content_channels,
+                )
+            },
         })
     }
 
@@ -1294,8 +1362,15 @@ impl PairedCompositeSink {
     }
 
     /// The format the active content lane negotiated (readback-checked at open
-    /// by `configure_pcm`'s content readback).
-    pub fn content_format(&self) -> SampleFormat {
+    /// by `configure_pcm`'s content readback), or `None` when no ALSA content
+    /// PCM was opened at all (the SHM-ring source). See the field's doc.
+    ///
+    /// The composite twin of [`AlsaBackend::content_format`], and `Option` for
+    /// the same reason it is `Option` over there: `/state` must fall back to the
+    /// declaration when nothing negotiated, not report an unheld readback. One
+    /// shape, two sinks — `RuntimeAlsaSink::content_format` forwards both arms
+    /// unwrapped, so a `None` here reaches the same `/state` handling.
+    pub fn content_format(&self) -> Option<SampleFormat> {
         self.content_format
     }
 
@@ -1360,21 +1435,56 @@ impl PairedCompositeSink {
         // `io` borrows `self.content` and has a Drop impl, so nothing inside
         // those scopes may take `&mut self`. Decide the fill here, journal it
         // after the borrow ends.
+        //
+        // Refuse the no-ALSA-lane case FIRST, before anything touches the staging
+        // buffer — the coherent single sink's rule, and for its reason.
+        //
+        // UNREACHABLE by construction, and stated as a claim rather than assumed:
+        // `content` is `None` only when `content_pcm_skipped` was true, which is
+        // true only under the SHM-ring source, and the run loop dispatches a
+        // ring-sourced box to `ShmRingSource::read_period` — this function is the
+        // `else` arm it does not take. So this is the typed refusal for a
+        // construction that no longer holds, never a runtime path.
+        //
+        // PARK-class (`final_sink_startup`, EX_CONFIG 78) rather than the
+        // ordinary exit-1 the coherent lane's equivalent line takes, and the
+        // divergence is deliberate: the coherent lane's refusal is reached only
+        // through `read_content_available`, whose one live caller (the
+        // dac_content drain) swallows it, whereas THIS result propagates out of
+        // the run loop with `?`. The condition is a static property of the struct
+        // — set once in `new`, never mutated — so it would be true on every
+        // period and on every restart alike, exactly the case the marker exists
+        // to park rather than retry. Exiting 1 here would walk the restart ladder
+        // into `StartLimitAction=reboot`, which is the failure this whole change
+        // exists to remove; parking puts it where an operator sees it instead.
+        let content = final_sink_startup(self.content.as_ref().context(
+            "outputd active content PCM was not opened (SHM-ring content source); \
+             refusing to read a lane this sink does not hold",
+        ))?;
         let spec = ContentPcmReadSpec {
             channels: 4,
             pcm_name: &self.content_pcm,
             negotiated: self.content_negotiated,
             role: ContentPcmRole::ActiveContent,
         };
-        let classified = match self.content_format {
+        // `content_format` is `Some` here by construction: `new` sets it to `None`
+        // only on the path that leaves `content` `None` too, and the `?` above
+        // already returned in that case. Refuse rather than default, for the
+        // reason the coherent lane's twin refuses — the wrong arm hands a typed
+        // IO handle a buffer of half-samples and the speaker plays loud garbage.
+        // Park-class for the same static-property reason as the refusal above.
+        let lane_format = final_sink_startup(self.content_format.context(
+            "outputd active content PCM is open but its negotiated format is unknown; \
+             refusing to guess the ingest width",
+        ))?;
+        let classified = match lane_format {
             // Same park-class refusal as the coherent lane's, same reason, same
             // shared message — see `PACKED_CONTENT_LANE_UNSUPPORTED`.
             SampleFormat::S24_3Le => {
                 return final_sink_startup(Err(anyhow::anyhow!(PACKED_CONTENT_LANE_UNSUPPORTED)));
             }
             SampleFormat::S32Le => {
-                let io = self
-                    .content
+                let io = content
                     .io_i32()
                     .context("getting i32 IO handle for outputd active content input")?;
                 read_content_pcm(
@@ -1382,15 +1492,14 @@ impl PairedCompositeSink {
                     spec,
                     &mut self.counters,
                     |samples| io.readi(samples),
-                    |error| self.content.try_recover(error, true),
+                    |error| content.try_recover(error, true),
                 )?
             }
             SampleFormat::S16Le => {
                 if self.content_widen_buf.len() != out.len() {
                     self.content_widen_buf.resize(out.len(), 0);
                 }
-                let io = self
-                    .content
+                let io = content
                     .io_i16()
                     .context("getting i16 IO handle for outputd active content input")?;
                 // Disjoint field borrows, same as the single-ALSA arm — no
@@ -1400,7 +1509,7 @@ impl PairedCompositeSink {
                     spec,
                     &mut self.counters,
                     |samples| io.readi(samples),
-                    |error| self.content.try_recover(error, true),
+                    |error| content.try_recover(error, true),
                 )?;
                 widen_period(&self.content_widen_buf, out)?;
                 classified

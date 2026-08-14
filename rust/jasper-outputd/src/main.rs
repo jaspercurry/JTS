@@ -289,13 +289,18 @@ impl RuntimeAlsaSink {
     }
 
     /// The sample format this sink's CONTENT lane negotiated, or `None` when it
-    /// opened no ALSA content PCM at all (the single-ALSA SHM-ring source) — the
-    /// one case where STATUS keeps echoing the declaration because there is no
+    /// opened no ALSA content PCM at all (the SHM-ring content source) — the one
+    /// case where STATUS keeps echoing the declaration because there is no
     /// negotiation to report.
+    ///
+    /// BOTH arms forward their sink's own answer unwrapped. While the composite
+    /// arm wrapped its answer in `Some(...)`, a composite could only ever claim a
+    /// negotiated format — which was true while that transport always opened its
+    /// lane, and became a false claim the moment it learned to skip it.
     fn content_format(&self) -> Option<SampleFormat> {
         match self {
             Self::Single(sink) => sink.content_format(),
-            Self::Composite(sink) => Some(sink.content_format()),
+            Self::Composite(sink) => sink.content_format(),
         }
     }
 
