@@ -12,6 +12,7 @@ does not play audio, write CamillaDSP state, or persist level changes.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -207,15 +208,68 @@ def _band_highpass_hz(band_limit: Any) -> float | None:
     return _finite_float(band_limit.get("highpass_hz"))
 
 
+def declared_protection_highpass_floor_hz(driver: Any) -> float | None:
+    """The confirmed declared protective high-pass floor for one driver payload.
+
+    Reads the driver's own ``required_protection_filters`` — the declaration
+    the operator confirmed and that ``driver_safety._target_issues`` already
+    refuses to accept below this module's ``min_highpass_hz`` code policy
+    (reason ``<role>:highpass_below_code_policy``). A confirmed declaration is
+    therefore at or above policy by construction, which is why this is the one
+    floor a consumer needs to read and why no consumer restates a floor value.
+
+    ``None`` means *no floor is declared* — never a guessed default. Consumers
+    must treat that as "unchanged behaviour", not as "floor of zero" and not as
+    an invitation to substitute the class-default policy floor: inventing a
+    floor where the operator declared none is exactly the nanny behaviour the
+    2026-08-14 never-nanny ruling excludes.
+    """
+
+    if not isinstance(driver, Mapping):
+        return None
+    filters = driver.get("required_protection_filters")
+    if not isinstance(filters, list):
+        return None
+    floors: list[float] = []
+    for item in filters:
+        if not isinstance(item, Mapping):
+            continue
+        if str(item.get("kind") or "").strip().lower() != "highpass":
+            continue
+        cutoff = _finite_float(item.get("cutoff_hz"))
+        if cutoff is not None and cutoff > 0:
+            floors.append(cutoff)
+    return max(floors) if floors else None
+
+
+def protection_highpass_floor_satisfied(
+    *,
+    highpass_hz: float | None,
+    floor_hz: float | None,
+) -> bool:
+    """Whether a high-pass corner honours a declared protection floor.
+
+    The single comparison rule every protection-floor consumer shares (the
+    derived-protection clamp, the crossover-preview disclosure, and the
+    path-safety load gate), so the three surfaces cannot drift apart on the
+    boundary case. An absent floor is satisfied; an absent high-pass against a
+    real floor is not.
+    """
+
+    if floor_hz is None:
+        return True
+    return highpass_hz is not None and highpass_hz >= floor_hz
+
+
 def _highpass_satisfied(
     *,
     profile: DriverProtectionProfile,
     band_limit: Any,
 ) -> bool:
-    if profile.min_highpass_hz is None:
-        return True
-    highpass = _band_highpass_hz(band_limit)
-    return highpass is not None and highpass >= profile.min_highpass_hz
+    return protection_highpass_floor_satisfied(
+        highpass_hz=_band_highpass_hz(band_limit),
+        floor_hz=profile.min_highpass_hz,
+    )
 
 
 def driver_protection_payload(

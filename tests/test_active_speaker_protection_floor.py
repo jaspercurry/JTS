@@ -1,0 +1,556 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""Contract pins for the declared tweeter protection floor (issue #2491).
+
+One defect, three surfaces. Before this module existed, a crossover candidate
+below the tweeter's own confirmed protective high-pass floor was invisible to
+all three:
+
+* the derived defense-in-depth high-pass was ``2.0 x fc``, so it followed the
+  error DOWN (LR4 @ 2000 Hz on a 5000 Hz-floor tweeter emitted a 4000 Hz
+  "protective" high-pass — below the floor, structurally);
+* ``POST /active-speaker/check-path-safety`` returned ``status=pass``,
+  ``blocker_count=0``, ``ok_to_load_active_config=true`` for that config;
+* the crossover preview reported zero blockers at confirm time.
+
+The pins below are deliberately split so no one of the three can mask another:
+the clamp is proved without touching path safety, the gate is proved against a
+staged candidate whose protective high-pass is ALREADY clamped, and the
+never-nanny boundary (an undeclared floor, and a non-tweeter role) is pinned in
+both directions.
+
+The two real-box fixtures in ``tests/fixtures/active_speaker_protection_floor_20260814/``
+are verbatim design drafts captured from jts.local's first sanctioned composite
+arm (2026-08-14, issue #2491's closing comment): the 2000 Hz draft that armed
+nothing and produced the 4000 Hz protective high-pass, and the honestly
+re-issued 5000 Hz draft that did arm.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from pathlib import Path
+from typing import Any
+
+from jasper.active_speaker.calibration_level import calibration_level_payload
+from jasper.active_speaker.crossover_preview import build_crossover_preview
+from jasper.active_speaker.design_draft import (
+    DRIVER_RESEARCH_KIND,
+    build_design_draft,
+)
+from jasper.active_speaker.driver_protection import (
+    declared_protection_highpass_floor_hz,
+    protection_highpass_floor_satisfied,
+)
+from jasper.active_speaker.path_safety import (
+    _tweeter_protection_floor_verdict,
+    build_startup_load_path_safety_evidence,
+    evaluate_path_safety_evidence,
+)
+from jasper.active_speaker.staging import (
+    compile_preset_from_crossover_preview,
+    stage_protected_startup_config,
+)
+from jasper.active_speaker.test_signal_plan import (
+    PROTECTIVE_TWEETER_HP_MULTIPLIER,
+    protective_tweeter_highpass_frequency_hz,
+)
+from jasper.output_topology import OutputTopology
+from tests.active_speaker_fixtures import (
+    mono_output_topology,
+    valid_camilla_config as _valid_config,
+)
+
+REAL_BOX_FIXTURES = Path(__file__).parent / "fixtures" / (
+    "active_speaker_protection_floor_20260814"
+)
+BELOW_FLOOR_DRAFT = REAL_BOX_FIXTURES / "design-draft-2000hz-below-floor.json"
+AT_FLOOR_DRAFT = REAL_BOX_FIXTURES / "design-draft-5000hz-at-floor.json"
+
+
+def _highpass_filters(cutoff_hz: float) -> list[dict[str, Any]]:
+    return [{
+        "kind": "highpass",
+        "cutoff_hz": cutoff_hz,
+        "minimum_slope_db_per_octave": 24.0,
+        "family_or_equivalent": "equivalent_or_steeper",
+    }]
+
+
+def _driver_research(
+    *,
+    fc_hz: float,
+    tweeter_floor_hz: float | None = None,
+    woofer_floor_hz: float | None = None,
+) -> dict[str, Any]:
+    tweeter: dict[str, Any] = {
+        "role": "tweeter",
+        "manufacturer": "Eminence",
+        "model": "F110M-8",
+        "recommended_highpass_hz": 1500,
+        "do_not_test_below_hz": 1200,
+        "sources": ["https://example.test/tweeter"],
+    }
+    if tweeter_floor_hz is not None:
+        tweeter["required_protection_filters"] = _highpass_filters(tweeter_floor_hz)
+    woofer: dict[str, Any] = {
+        "role": "woofer",
+        "manufacturer": "Dayton Audio",
+        "model": "Epique E150HE-44",
+        "usable_frequency_range_hz": [45, 8000],
+        "recommended_lowpass_hz": fc_hz,
+        "sources": ["https://example.test/woofer"],
+    }
+    if woofer_floor_hz is not None:
+        woofer["required_protection_filters"] = _highpass_filters(woofer_floor_hz)
+    return {
+        "artifact_schema_version": 1,
+        "kind": DRIVER_RESEARCH_KIND,
+        "drivers": [woofer, tweeter],
+        "crossover_candidates": [{
+            "between_roles": ["woofer", "tweeter"],
+            "frequency_hz": fc_hz,
+            "filter_type": "Linkwitz-Riley",
+            "slope_db_per_octave": 24,
+            "confidence": "medium",
+        }],
+    }
+
+
+def _preview(
+    topology: OutputTopology,
+    *,
+    fc_hz: float,
+    tweeter_floor_hz: float | None = None,
+    woofer_floor_hz: float | None = None,
+) -> dict[str, Any]:
+    return build_crossover_preview(
+        build_design_draft(
+            topology,
+            driver_research=_driver_research(
+                fc_hz=fc_hz,
+                tweeter_floor_hz=tweeter_floor_hz,
+                woofer_floor_hz=woofer_floor_hz,
+            ),
+            created_at="2026-08-14T12:00:00Z",
+        ),
+        created_at="2026-08-14T12:30:00Z",
+    )
+
+
+def _preset(topology: OutputTopology, preview: dict[str, Any]):
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert issues == [], issues
+    assert preset is not None
+    return preset
+
+
+def _stage(tmp_path: Path, topology: OutputTopology, preview: dict[str, Any]) -> dict:
+    return stage_protected_startup_config(
+        topology,
+        crossover_preview=preview,
+        config_path=tmp_path / "active_staged.yml",
+        metadata_path=tmp_path / "active_staged.json",
+        validate=_valid_config,
+        created_at="2026-08-14T13:00:00Z",
+    )
+
+
+def _report(topology: OutputTopology, staged: dict[str, Any], tmp_path: Path) -> dict:
+    rollback = tmp_path / "rollback.yml"
+    rollback.write_text(
+        (tmp_path / "active_staged.yml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    evidence = build_startup_load_path_safety_evidence(
+        topology,
+        staged_config=staged,
+        calibration_level=calibration_level_payload(),
+        current_config_path=rollback,
+    )
+    return evaluate_path_safety_evidence(evidence)
+
+
+def _floor_blockers(report: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        issue
+        for issue in report["issues"]
+        if issue["code"] == "tweeter_protection_floor_honoured_not_verified"
+    ]
+
+
+# --- (a) the clamp: a below-floor candidate is raised TO the floor -----------
+
+
+def test_below_floor_candidate_clamps_protective_highpass_to_the_declared_floor(
+    tmp_path: Path,
+) -> None:
+    topology = mono_output_topology()
+    preview = _preview(topology, fc_hz=2000, tweeter_floor_hz=5000)
+    preset = _preset(topology, preview)
+
+    assert preset.drivers["tweeter"].protection_highpass_floor_hz == 5000.0
+    # The pre-fix derivation was 2000 * 2.0 = 4000 -- below the floor.
+    assert protective_tweeter_highpass_frequency_hz(preset, "tweeter") == 5000.0
+
+    staged = _stage(tmp_path, topology, preview)
+    text = (tmp_path / "active_staged.yml").read_text(encoding="utf-8")
+
+    assert staged["config"]["tweeter_protective_highpass_hz"] == 5000.0
+    assert "freq: 5000.0000" in text
+    assert "freq: 4000.0000" not in text
+
+
+# --- (b) no regression to clamp-always --------------------------------------
+
+
+def test_at_or_above_floor_candidate_keeps_the_derived_multiple() -> None:
+    topology = mono_output_topology()
+
+    at_floor = _preset(topology, _preview(topology, fc_hz=5000, tweeter_floor_hz=5000))
+    above = _preset(topology, _preview(topology, fc_hz=6000, tweeter_floor_hz=5000))
+
+    # ``>=`` boundary: crossing exactly AT the floor honours it, and the derived
+    # multiple (10000) wins over the floor (5000) because it is stricter.
+    assert protective_tweeter_highpass_frequency_hz(at_floor, "tweeter") == (
+        5000 * PROTECTIVE_TWEETER_HP_MULTIPLIER
+    )
+    assert protective_tweeter_highpass_frequency_hz(above, "tweeter") == (
+        6000 * PROTECTIVE_TWEETER_HP_MULTIPLIER
+    )
+
+
+# --- (f) no declared floor -> current behaviour, unchanged ------------------
+
+
+def test_undeclared_floor_keeps_the_unclamped_multiple(tmp_path: Path) -> None:
+    topology = mono_output_topology()
+    preview = _preview(topology, fc_hz=2000, tweeter_floor_hz=None)
+    preset = _preset(topology, preview)
+
+    assert preset.drivers["tweeter"].protection_highpass_floor_hz is None
+    # The clamp must not invent a floor where the operator declared none: the
+    # class-default code policy (5000 Hz for an undeclared HF style) is NOT
+    # substituted here.
+    assert protective_tweeter_highpass_frequency_hz(preset, "tweeter") == 4000.0
+
+    staged = _stage(tmp_path, topology, preview)
+    report = _report(topology, staged, tmp_path)
+
+    assert staged["config"]["tweeter_protection_floor_hz"] is None
+    assert _floor_blockers(report) == []
+    assert report["status"] == "pass"
+
+
+# --- (c) the gate: check-path-safety refuses, by name -----------------------
+
+
+def test_path_safety_refuses_a_below_floor_staged_candidate(tmp_path: Path) -> None:
+    topology = mono_output_topology()
+    staged = _stage(tmp_path, topology, _preview(
+        topology, fc_hz=2000, tweeter_floor_hz=5000,
+    ))
+    report = _report(topology, staged, tmp_path)
+
+    assert staged["config"]["tweeter_crossover_highpass_hz"] == 2000.0
+    assert staged["config"]["tweeter_protection_floor_hz"] == 5000.0
+    assert report["status"] == "blocked"
+    assert report["requirements_met"] is False
+    assert report["ok_to_load_active_config"] is False
+    assert report["load_gate"] == "requirements_blocked"
+
+    blockers = _floor_blockers(report)
+    assert len(blockers) == 1
+    message = blockers[0]["message"]
+    assert blockers[0]["severity"] == "blocker"
+    assert blockers[0]["path_id"] == "startup_reload"
+    # The refusal names the driver, the corner, the floor, and the remedy --
+    # not a bare "<check> is not verified".
+    assert "tweeter" in message
+    assert "2000 Hz" in message
+    assert "5000 Hz" in message
+    assert "raise the crossover" in message
+
+    startup_reload = next(
+        path for path in report["paths"] if path["id"] == "startup_reload"
+    )
+    assert startup_reload["checks"]["tweeter_protection_floor_honoured"] is False
+
+
+def test_check_path_safety_endpoint_payload_refuses_a_below_floor_candidate(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """The refusal reaches the HTTP surface, not just the evidence builder.
+
+    ``POST /active-speaker/check-path-safety`` dispatches to
+    ``_active_speaker_check_path_safety_payload``; this drives that coroutine
+    over persisted state so the claim "check-path-safety refuses" is pinned at
+    the response object the household's browser actually receives.
+    """
+
+    from jasper.output_topology import save_output_topology
+    from jasper.web.sound_setup import _active_speaker_check_path_safety_payload
+
+    topology = mono_output_topology()
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(topology, topology_path)
+    rollback = tmp_path / "rollback.yml"
+
+    staged = _stage(tmp_path, topology, _preview(
+        topology, fc_hz=2000, tweeter_floor_hz=5000,
+    ))
+    rollback.write_text(
+        (tmp_path / "active_staged.yml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    assert staged["status"] == "staged"
+
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
+        str(tmp_path / "active_staged.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_PATH_SAFETY_EVIDENCE",
+        str(tmp_path / "path_safety.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE",
+        str(tmp_path / "startup_load.json"),
+    )
+
+    class _Camilla:
+        async def get_config_file_path(self, *, best_effort: bool = False) -> str:
+            return str(rollback)
+
+    payload = asyncio.run(
+        _active_speaker_check_path_safety_payload(camilla_factory=_Camilla)
+    )
+    report = payload["report"]
+
+    assert report["status"] == "blocked"
+    assert report["ok_to_load_active_config"] is False
+    assert report["blocker_count"] >= 1
+    blockers = _floor_blockers(report)
+    assert len(blockers) == 1
+    assert "5000 Hz" in blockers[0]["message"]
+    # The named blocker is also persisted on the evidence the gate binds to.
+    assert any(
+        issue["code"] == "tweeter_crossover_below_declared_protection_floor"
+        for issue in payload["evidence"]["observed_issues"]
+    )
+    assert payload["startup_load"]["preflight"]["status"] != "ready"
+
+
+def test_path_safety_passes_an_at_floor_staged_candidate(tmp_path: Path) -> None:
+    topology = mono_output_topology()
+    staged = _stage(tmp_path, topology, _preview(
+        topology, fc_hz=5000, tweeter_floor_hz=5000,
+    ))
+    report = _report(topology, staged, tmp_path)
+
+    assert staged["config"]["tweeter_protective_highpass_hz"] == 10000.0
+    assert report["status"] == "pass"
+    assert report["ok_to_load_active_config"] is True
+    assert _floor_blockers(report) == []
+
+
+# --- (g) never-nanny boundary: nothing grows where protection is not owed ----
+
+
+def test_a_non_tweeter_declared_floor_grows_no_clamp_and_no_refusal(
+    tmp_path: Path,
+) -> None:
+    """A woofer's declared floor must not gate the woofer/tweeter crossover.
+
+    The live jts.local composite declares its woofer channels
+    ``protection_status=not_required`` while the tweeter channels are
+    ``software_guard_requested``. The derived protective high-pass and the load
+    gate are both tweeter-scoped, so a floor declared on any other role changes
+    nothing -- hard stops belong exactly and only to the protected role.
+    """
+
+    topology = mono_output_topology()
+    woofer_channel = next(
+        channel
+        for group in topology.speaker_groups
+        for channel in group.channels
+        if channel.role == "woofer"
+    )
+    assert woofer_channel.protection_required is False
+    assert woofer_channel.protection_status == "not_required"
+
+    preview = _preview(
+        topology,
+        fc_hz=2000,
+        tweeter_floor_hz=None,
+        woofer_floor_hz=5000,
+    )
+    preset = _preset(topology, preview)
+    staged = _stage(tmp_path, topology, preview)
+    report = _report(topology, staged, tmp_path)
+
+    assert preset.drivers["woofer"].protection_highpass_floor_hz == 5000.0
+    assert protective_tweeter_highpass_frequency_hz(preset, "woofer") is None
+    assert protective_tweeter_highpass_frequency_hz(preset, "tweeter") == 4000.0
+    assert staged["config"]["tweeter_protection_floor_hz"] is None
+    assert _floor_blockers(report) == []
+    assert report["ok_to_load_active_config"] is True
+
+
+# --- (d) preview disclosure -------------------------------------------------
+
+
+def test_preview_discloses_a_below_floor_candidate_without_blocking() -> None:
+    topology = mono_output_topology()
+    preview = _preview(topology, fc_hz=2000, tweeter_floor_hz=5000)
+    crossover = preview["groups"][0]["crossovers"][0]
+
+    disclosures = [
+        issue
+        for issue in crossover["issues"]
+        if issue["code"] == "crossover_below_declared_protection_floor"
+    ]
+    assert len(disclosures) == 1
+    assert disclosures[0]["severity"] == "warning"
+    assert "5000 Hz" in disclosures[0]["message"]
+    assert "2000 Hz" in disclosures[0]["message"]
+    assert "refuse" in disclosures[0]["message"]
+    assert crossover["declared_protection_floor_hz"] == 5000.0
+    # Preview stays advisory: the hard refusal is the load gate's, so the
+    # candidate still compiles and the household still sees its own design.
+    assert crossover["proposed_frequency_hz"] == 2000.0
+    assert preview["status"] == "ready_for_protected_staging"
+
+
+def test_preview_is_silent_when_the_candidate_honours_the_floor() -> None:
+    topology = mono_output_topology()
+    preview = _preview(topology, fc_hz=5000, tweeter_floor_hz=5000)
+    crossover = preview["groups"][0]["crossovers"][0]
+
+    assert [
+        issue
+        for issue in crossover["issues"]
+        if issue["code"] == "crossover_below_declared_protection_floor"
+    ] == []
+    assert crossover["declared_protection_floor_hz"] == 5000.0
+
+
+# --- (e) the clamp and the gate are independent -----------------------------
+
+
+def test_gate_verdict_is_independent_of_the_clamp() -> None:
+    """Refusing a below-floor candidate must not depend on the clamp working.
+
+    Staged metadata whose protective high-pass is ALREADY at the floor (i.e.
+    the clamp did its job) is still refused, because the CROSSOVER itself sits
+    below the floor. Deleting the clamp cannot hide the gate, and satisfying
+    the clamp cannot silence it.
+    """
+
+    honoured, issue = _tweeter_protection_floor_verdict({
+        "config": {
+            "tweeter_protective_highpass_hz": 5000.0,  # clamp applied
+            "tweeter_crossover_highpass_hz": 2000.0,
+            "tweeter_protection_floor_hz": 5000.0,
+        }
+    })
+
+    assert honoured is False
+    assert issue is not None
+    assert issue["code"] == "tweeter_crossover_below_declared_protection_floor"
+
+
+def test_clamp_is_independent_of_the_gate() -> None:
+    """The clamp is pure preset arithmetic -- no path-safety input reaches it."""
+
+    topology = mono_output_topology()
+    preset = _preset(topology, _preview(topology, fc_hz=2000, tweeter_floor_hz=5000))
+
+    assert protective_tweeter_highpass_frequency_hz(preset, "tweeter") == 5000.0
+
+
+# --- the shared floor reader and comparison rule -----------------------------
+
+
+def test_declared_floor_reader_takes_the_strictest_highpass_and_nothing_else() -> None:
+    assert declared_protection_highpass_floor_hz({
+        "required_protection_filters": [
+            {"kind": "lowpass", "cutoff_hz": 9000.0},
+            {"kind": "highpass", "cutoff_hz": 3000.0},
+            {"kind": "highpass", "cutoff_hz": 5000.0},
+        ]
+    }) == 5000.0
+    assert declared_protection_highpass_floor_hz({
+        "required_protection_filters": [{"kind": "lowpass", "cutoff_hz": 9000.0}]
+    }) is None
+    assert declared_protection_highpass_floor_hz({}) is None
+    assert declared_protection_highpass_floor_hz(None) is None
+    assert declared_protection_highpass_floor_hz({
+        "required_protection_filters": [{"kind": "highpass", "cutoff_hz": "nope"}]
+    }) is None
+
+
+def test_floor_comparison_rule_is_greater_or_equal_and_absent_floor_passes() -> None:
+    assert protection_highpass_floor_satisfied(highpass_hz=5000, floor_hz=5000) is True
+    assert protection_highpass_floor_satisfied(highpass_hz=5001, floor_hz=5000) is True
+    assert protection_highpass_floor_satisfied(highpass_hz=4999, floor_hz=5000) is False
+    assert protection_highpass_floor_satisfied(highpass_hz=1, floor_hz=None) is True
+    assert protection_highpass_floor_satisfied(highpass_hz=None, floor_hz=None) is True
+    assert protection_highpass_floor_satisfied(highpass_hz=None, floor_hz=5000) is False
+
+
+# --- real-box regression: jts.local first composite arm, 2026-08-14 ----------
+
+
+def test_real_box_below_floor_arm_is_now_clamped_and_refused(tmp_path: Path) -> None:
+    draft = json.loads(BELOW_FLOOR_DRAFT.read_text(encoding="utf-8"))
+    topology = OutputTopology.from_mapping(draft["topology"])
+    preview = build_crossover_preview(draft)
+    preset = _preset(topology, preview)
+    staged = _stage(tmp_path, topology, preview)
+    report = _report(topology, staged, tmp_path)
+
+    # What the box actually declared and actually crossed at.
+    assert preset.drivers["tweeter"].protection_highpass_floor_hz == 5000.0
+    assert staged["config"]["tweeter_crossover_highpass_hz"] == 2000.0
+    # The box emitted freq: 4000.0000 for as_tweeter_protective_hp.
+    assert staged["config"]["tweeter_protective_highpass_hz"] == 5000.0
+    assert "freq: 4000.0000" not in (tmp_path / "active_staged.yml").read_text(
+        encoding="utf-8"
+    )
+    # The box returned status=pass / blocker_count=0 / ok_to_load=true.
+    assert report["status"] == "blocked"
+    assert report["ok_to_load_active_config"] is False
+    assert len(_floor_blockers(report)) == 1
+    # Every side of the stereo pair discloses at confirm time.
+    assert len(preview["groups"]) == 2
+    for group in preview["groups"]:
+        assert any(
+            issue["code"] == "crossover_below_declared_protection_floor"
+            for issue in group["crossovers"][0]["issues"]
+        )
+
+
+def test_real_box_honest_redraft_at_the_floor_still_arms(tmp_path: Path) -> None:
+    draft = json.loads(AT_FLOOR_DRAFT.read_text(encoding="utf-8"))
+    topology = OutputTopology.from_mapping(draft["topology"])
+    preview = build_crossover_preview(draft)
+    staged = _stage(tmp_path, topology, preview)
+    report = _report(topology, staged, tmp_path)
+
+    assert staged["config"]["tweeter_crossover_highpass_hz"] == 5000.0
+    # Matches the protective high-pass the box actually armed with.
+    assert staged["config"]["tweeter_protective_highpass_hz"] == 10000.0
+    assert report["status"] == "pass"
+    assert report["ok_to_load_active_config"] is True
+    assert _floor_blockers(report) == []
+    for group in preview["groups"]:
+        assert not any(
+            issue["code"] == "crossover_below_declared_protection_floor"
+            for issue in group["crossovers"][0]["issues"]
+        )

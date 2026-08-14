@@ -1610,7 +1610,14 @@ playback must satisfy all applicable layers; none may be relabeled as another.
 A tweeter's declared `driver_style` (dome, AMT, planar, ribbon, compression
 driver, supertweeter) sets `driver_protection_profile`'s minimum protective
 high-pass floor — 2000 Hz for a compression driver versus the 5000 Hz
-conservative default for an undeclared/unrecognised style. `driver_style` is
+conservative default for an undeclared/unrecognised style. That style floor
+bounds what the *declaration* may say: a confirmed
+`required_protection_filters` high-pass below it is refused
+(`<role>:highpass_below_code_policy`). The floor that then reaches the shipped
+graph is the confirmed declared cutoff itself — it clamps the derived
+protective high-pass and gates the protected startup load (issue #2491). A
+driver that declares no protective high-pass declares no graph floor; nothing
+is substituted for it. `driver_style` is
 topology-owned, not part of the research/manual-settings schema: it lives on
 `SpeakerChannel` next to `physical_output_index`, set on the layout step's DAC
 output card for initial topology creation and then exposed on the tweeter's
