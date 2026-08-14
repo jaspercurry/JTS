@@ -137,11 +137,6 @@ pub struct StateServer {
     /// Coupling transport echo. Cloned from the mixer so STATUS reads the same
     /// atomics the work loop writes.
     coupling: CouplingObservability,
-    /// Music-only side-output (multi-room sync tap) — shared with the
-    /// mixer. `None` pcm = solo speaker (tap disabled).
-    music_output_pcm: Option<String>,
-    music_frames_written: Arc<AtomicU64>,
-    music_output_drops: Arc<AtomicU64>,
     selected_input_index: Arc<AtomicI32>,
     /// Watchdog handle for the heartbeat metrics.
     heartbeat: Arc<Heartbeat>,
@@ -223,7 +218,6 @@ pub struct StateServerConfig {
     pub input_buffer_frames: u32,
     pub output_buffer_frames: u32,
     pub output_pcm: String,
-    pub music_output_pcm: Option<String>,
     pub tts_metrics: Option<TtsMetrics>,
     /// The combo-mode host-clock STATUS fragment (C7), created and initialized
     /// (to the disabled block) by `main` and updated by the `fanin-host-clock`
@@ -241,7 +235,6 @@ impl StateServer {
             input_buffer_frames,
             output_buffer_frames,
             output_pcm,
-            music_output_pcm,
             tts_metrics,
             host_clock_fragment,
         } = config;
@@ -273,9 +266,6 @@ impl StateServer {
             output_xrun_count: Arc::clone(&mixer.output_xrun_count),
             output_delay_frames: Arc::clone(&mixer.output_delay_frames),
             coupling: mixer.coupling.clone(),
-            music_output_pcm,
-            music_frames_written: Arc::clone(&mixer.music_frames_written),
-            music_output_drops: Arc::clone(&mixer.music_output_drops),
             selected_input_index: mixer.selected_input_index(),
             heartbeat,
             sample_rate,
@@ -695,9 +685,6 @@ impl StateServer {
         buf.push(',');
 
         self.push_output_json(&mut buf);
-        buf.push(',');
-
-        self.push_music_output_json(&mut buf);
         buf.push(',');
 
         self.push_tts_json(&mut buf);
@@ -1221,36 +1208,6 @@ impl StateServer {
         buf.push('}');
     }
 
-    fn push_music_output_json(&self, buf: &mut String) {
-        // music_output object — the multi-room sync tap (off on a solo
-        // speaker). `enabled:false` with no further fields when unconfigured;
-        // when configured, `drops` growing => the snapserver consumer is behind.
-        buf.push_str(r#""music_output":{"#);
-        match &self.music_output_pcm {
-            Some(pcm) => {
-                push_kv_bool(buf, "enabled", true);
-                buf.push(',');
-                push_kv_str(buf, "pcm", pcm);
-                buf.push(',');
-                push_kv_u64(
-                    buf,
-                    "frames_written",
-                    self.music_frames_written.load(Ordering::Relaxed),
-                );
-                buf.push(',');
-                push_kv_u64(
-                    buf,
-                    "drops",
-                    self.music_output_drops.load(Ordering::Relaxed),
-                );
-            }
-            None => {
-                push_kv_bool(buf, "enabled", false);
-            }
-        }
-        buf.push('}');
-    }
-
     fn push_tts_json(&self, buf: &mut String) {
         buf.push_str(r#""tts":{"#);
         match &self.tts_metrics {
@@ -1582,9 +1539,6 @@ mod tests {
                 transport: "loopback",
                 ring: None,
             },
-            music_output_pcm: Some("hw:Loopback,0,6".to_string()),
-            music_frames_written: Arc::new(AtomicU64::new(54321)),
-            music_output_drops: Arc::new(AtomicU64::new(3)),
             selected_input_index: Arc::new(AtomicI32::new(-1)),
             heartbeat: Arc::new(Heartbeat::new()),
             sample_rate: 48000,
@@ -1636,7 +1590,6 @@ mod tests {
             "selected_input",
             "inputs",
             "output",
-            "music_output",
             "tts",
             "watchdog",
         ] {
@@ -1875,8 +1828,12 @@ mod tests {
         assert!(j.contains(r#""full_waits":9"#), "missing full_waits: {j}");
         // Un-folded drop counters (issue #1524): parse the ring object and assert
         // the folded `drops` key is GONE while the split stuck-vs-no-reader keys
-        // and the stall fields are present. (A whole-document substring check
-        // would false-match the legitimate `music_output.drops`.)
+        // and the stall fields are present. Parsed rather than substring-checked
+        // so the assertion is SCOPED to `output.ring`: a whole-document check
+        // cannot say which object a `drops` key belongs to, and this test is a
+        // claim about the ring's shape, not the document's. (Until 2026-08-14 the
+        // concrete false-match was the music-only tap's `music_output.drops`; that
+        // block is deleted, but the scoping is what the assertion needs.)
         let parsed: serde_json::Value = serde_json::from_str(&j).expect("STATUS parses");
         let ring = &parsed["output"]["ring"];
         assert!(
@@ -1919,35 +1876,6 @@ mod tests {
         assert!(
             !j.contains(r#""ring":{"#),
             "loopback must emit no ring block: {j}"
-        );
-    }
-
-    #[test]
-    fn snapshot_json_music_output_fields() {
-        // Enabled (make_test_server configures the tap): pcm + counters.
-        let mut server = make_test_server();
-        let j = server.snapshot_json();
-        assert!(
-            j.contains(r#""music_output":{"enabled":true"#),
-            "got: {}",
-            j,
-        );
-        assert!(j.contains(r#""pcm":"hw:Loopback,0,6""#));
-        // 54321 is the music tap's count, distinct from the output's 98765.
-        assert!(j.contains(r#""frames_written":54321"#));
-        assert!(j.contains(r#""drops":3"#));
-
-        // Disabled (solo speaker): just enabled:false, no pcm/counters echoed.
-        server.music_output_pcm = None;
-        let j = server.snapshot_json();
-        assert!(
-            j.contains(r#""music_output":{"enabled":false}"#),
-            "got: {}",
-            j,
-        );
-        assert!(
-            !j.contains(r#""hw:Loopback,0,6""#),
-            "a disabled tap must not echo its pcm name",
         );
     }
 

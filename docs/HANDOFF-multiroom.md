@@ -5,13 +5,15 @@
 > multiple JTS speakers (stereo pairs, 2.1 with a wireless sub, and
 > multi-room). SHIPPED: the control/observability scaffolding
 > (config/state/reconcile, the `/rooms` bond-forming UI, the channel-split
-> weave, inv-5), **Increment 1** (fanin's music-only output — the voice/music
-> split), **Increment 2** (the per-channel correction axis — one CamillaDSP
+> weave, inv-5), **Increment 2** (the per-channel correction axis — one CamillaDSP
 > bakes L-for-leader-seat / R-for-follower-seat), **Increment 5 PR-1** (leader
 > CamillaDSP → snapserver pipe → snapclient FIFO → member outputd
 > `dac_content` lane), **Increment 5 PR-2** (member-local TTS + grouping
-> supervisor), and the 2026-06-11 cleanup that removed the retired
-> outputd-as-producer machinery. The **P0 spike RAN on hardware** (2026-06-10,
+> supervisor), the 2026-06-11 cleanup that removed the retired
+> outputd-as-producer machinery, and the 2026-08-14 owner-ruled deletion of
+> **Increment 1** (fanin's second music-only PCM — never consumed; the shipped
+> Increment 5 reaches the same voice/music split by routing leader TTS to
+> outputd instead). The **P0 spike RAN on hardware** (2026-06-10,
 > jts3↔jts): resource gate passed (snapcast ≈ ~15 MB Pss / ~0.2 % CPU) and the
 > software sync proxy was clean. Still to build: Increment 6
 > (per-follower calibration) and any future auto-unwind policy. **§0
@@ -277,21 +279,31 @@ Increment 6 (per-follower calibration). What exists:
   runtime health honestly reads `degraded` ("no music producer feeds the
   snapfifo") until the real producer lands. **SHIPPED:** inv. 5
   (`rate_adjust=false`) and the channel-split live weave (§2/§4).
-- **`jasper-fanin` music-only output (Increment 1 — the inv-2 producer half +
-  the standalone inv-3 leak fix)** — `JASPER_FANIN_MUSIC_OUTPUT_PCM` (off by
-  default). When set, `mixer.rs` `step()` writes a SECOND output per period: the
-  program post-duck, **pre-TTS** (`write_music_only` — a lossy, non-blocking,
-  period-aligned drop-on-full side-tap, so it can NEVER back-pressure the primary
-  output, inv-1). Best-effort open (a bad/unopenable PCM logs
-  `event=fanin.music_output.open_failed` and degrades to solo, primary path
-  untouched); STATUS gains a `music_output` block
-  (`enabled`/`pcm`/`frames_written`/`drops`). This is the corrected inv-2
-  design's separation point (keep TTS in fanin, tap music pre-TTS) AND the
-  standalone inv-3 fix. **Not yet consumed** — wiring it to snapserver (the
-  leader round-trip) is Increment 2, and `SNAPFIFO_PRODUCER_WIRED` stays `False`
-  until then. Verified on-device: 57 fanin unit tests green + clean warning-free
-  build on ARM/ALSA (jts3); the second-output AUDIO is exercised in Increment 2
-  on the pair.
+- **`jasper-fanin` music-only output (Increment 1) — DELETED 2026-08-14 by owner
+  ruling** ([#2285](https://github.com/jaspercurry/JTS/issues/2285) deletion arc;
+  PR [#2483](https://github.com/jaspercurry/JTS/pull/2483)). It shipped as
+  `JASPER_FANIN_MUSIC_OUTPUT_PCM` (off by default): when set, `mixer.rs`
+  `step()` wrote a SECOND ALSA output per period carrying the program post-duck
+  and **pre-TTS**, plus a `music_output` STATUS block. **Nothing ever set the
+  env var and nothing ever read the second PCM or its STATUS block** — no
+  installer, unit, reconciler, or wizard wrote it in the ~2 months it shipped —
+  so the read path was live and the producer half was inert. **Because it was
+  never on, removing it changes the behaviour of no role.** Nor was it what
+  any role's TTS separation rested on: on the **passive bonded pair** — the
+  shape the snapserver round-trip is built for, and the one the LEADER diagram
+  in §2 shows — Increment 5 PR-2 routes the leader's assistant TTS to
+  `jasper-outputd` (`grouping-voice.env`;
+  `tts_route.expected_grouping_tts_route`'s `passive_member` arm), so fan-in's
+  ONE output carries no assistant while bonded, and Increment 5 PR-1's producer
+  is the leader's **CamillaDSP** feeding the snapserver pipe, not a second
+  fan-in PCM. The roles that deliberately keep TTS in fan-in — the
+  `active_endpoint` arm (its TTS must stay upstream of the local
+  crossover/protection graph; see
+  [HANDOFF-distributed-active.md](HANDOFF-distributed-active.md)) and the
+  non-parked `sub` arm — never had this tap either. So it solved nothing for
+  anyone. **If multi-room v2 wants a pre-TTS fan-in tap, rebuild it
+  deliberately** against the then-current topology rather than reviving this
+  one; the PR above is the full removed-code record.
 - **systemd units** (`deploy/systemd/jasper-{snapserver,snapclient,
   grouping-reconcile}.service`) — disabled by default, in
   `jts-audio.slice` (`MemorySwapMax=0` inherited), no CPU caps,
@@ -659,7 +671,9 @@ SOLO (today, unchanged):
   renderers → fanin (music + TTS) → CamillaDSP (correct) → outputd → DAC
 
 LEADER (stereo pair):
-  renderers → fanin (MUSIC ONLY — JASPER_FANIN_MUSIC_OUTPUT_PCM, Increment 1)
+  renderers → fanin (MUSIC ONLY by construction — on this PASSIVE pair the
+                     leader's TTS is routed to outputd while bonded, so fanin's
+                     ONE output carries no assistant; Increment 5 PR-2)
             → CamillaDSP   (bake per-channel: L=leader-seat, R=follower-seat;
                             volume_limit:0.0 clamp; ONE instance)
             → pipe (FIFO)  → snapserver  (ONE stereo stream; Snapcast owns rate)
@@ -837,18 +851,20 @@ intention:** every increment ships its solo-path proof as a regression test —
 golden-YAML tests for config generators (default args reproduce today's output
 byte-for-byte), default-config tests for daemons (feature env unset → no
 construction) — and §7's "Solo (N=1), grouping off — zero cost" row is the
-acceptance criterion at deploy time. Increment 1 already follows this shape
-(`JASPER_FANIN_MUSIC_OUTPUT_PCM` unset → no second PCM, no work) — every later
-increment holds the same bar.
+acceptance criterion at deploy time. Increment 3 follows this shape
+(`JASPER_OUTPUTD_DAC_CONTENT_FIFO` unset → no FIFO reader, no per-period work)
+— every increment holds the same bar.
 
 **Increment plan (RE-SCOPED 2026-06-10 after review — hardware-free / non-silencing
 slices FIRST; nothing that can silence the leader ships before inv-A's hardware
 gate). The earlier "2a = followers play" was NOT an honest slice: repointing the
 leader's CamillaDSP to a pipe leaves its DAC with nothing to read → a silent leader
 until the round-trip exists, so 2a secretly dragged in the outputd rework.**
-- **Increment 1 — DONE** (`JASPER_FANIN_MUSIC_OUTPUT_PCM`): the music/voice split,
-  the foundation. *Repurposed* — its music-only signal feeds the leader's pre-stream
-  CamillaDSP, not snapserver directly.
+- **Increment 1 — DELETED 2026-08-14** (`JASPER_FANIN_MUSIC_OUTPUT_PCM`): shipped
+  as the music/voice split's producer half and was never consumed. Increment 5
+  PR-2 achieved the split by routing the leader's TTS to outputd instead, which
+  leaves fanin's ONE output music-only while bonded — so the second PCM had no
+  job left. Details + rebuild guidance in §0.
 - **Increment 2 — per-channel correction axis — ✅ BUILT (2026-06-11; pure Python,
   zero audio-path activation).** `emit_sound_config(room_peqs_right=…)`: ONE
   config, channel 0 corrected for the
@@ -919,8 +935,9 @@ until the round-trip exists, so 2a secretly dragged in the outputd rework.**
   the leader's camilla keeps capturing lane 7 (`jasper_capture`) — all 8
   loopback substreams are allocated, and PR-2's TTS socket flip makes lane
   7 music-only BY CONSTRUCTION while bonded, so Increment 1's fanin music
-  tap is NOT used by this design (it stays available for future group
-  announcements). **Reboot-loop chain-breaker (post-merge review,
+  tap was NOT used by this design — which is why it was deleted 2026-08-14
+  (§0). A future group-announcement feature rebuilds a tap deliberately;
+  this one was not being kept warm for it. **Reboot-loop chain-breaker (post-merge review,
   MEASURED):** camilladsp 4.1.3 exits CLEAN (0) when its File sink path is
   absent, and blocks un-SIGTERM-ably in open(2) when the FIFO has no
   reader — with jasper-camilla's `Restart=always` + `StartLimitBurst=5/60s`,
@@ -1108,7 +1125,9 @@ tech blog (open-loop mic measurement → on-device PEQ) · snapcast#715 / #1014
 > low-latency) — this subsection's "avoid re-adding the outputd TTS path" is
 > *reversed*, because a sample-locked leader needs a post-buffer mix point. The
 > BLOCKER analysis below remains accurate about WHY the naive dual-read was wrong;
-> read it for the reasoning, not the prescription.
+> read it for the reasoning, not the prescription. The `✅ BUILT` producer this
+> subsection prescribes (`JASPER_FANIN_MUSIC_OUTPUT_PCM`) was deleted 2026-08-14 —
+> see §0.
 
 > #### ⚠ BLOCKER — TTS is pre-mixed into the streamed program
 >
@@ -2055,8 +2074,10 @@ front-run the complexity nor forget where it belongs.
    only.** The owner confirmed the assistant replies on the speaker it was
    addressed from, NOT house-wide (the Sonos/Alexa default; room music keeps
    playing elsewhere). This is now a *requirement*, not a maybe — it is the
-   entire reason inv-2 needs the `jasper-fanin` music-only output (followers
-   get music with the leader's TTS held back; see §2 "inv-2 realization"). Had
+   entire reason inv-2 needs a music/voice split at all (followers get music
+   with the leader's TTS held back). On the passive bonded pair the shipped
+   realization is Increment 5 PR-2's TTS route to outputd, not the deleted
+   fan-in second PCM; see §0. Had
    whole-house announcements been wanted instead, the leader would just stream
    its full mix and the TTS-separation work would vanish — so this decision is
    load-bearing for the inv-2 build. Time-synced whole-house announcements

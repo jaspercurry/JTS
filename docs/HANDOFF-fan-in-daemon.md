@@ -756,7 +756,6 @@ works without any wizard interaction.
 # systemd unit (deploy/systemd/jasper-fanin.service) sets the
 # production input/output buffer overrides below.
 JASPER_FANIN_OUTPUT_PCM=hw:Loopback,0,7
-JASPER_FANIN_MUSIC_OUTPUT_PCM=                                  # OPTIONAL music-only (pre-TTS) multi-room tap; unset/"disabled" = off (solo). See note below.
 JASPER_FANIN_INPUT_PCMS=hw:Loopback,1,0|hw:Loopback,1,1|hw:Loopback,1,2|hw:Loopback,1,3|hw:Loopback,1,4
 JASPER_FANIN_INPUT_RENDERERS=spotify|airplay|bluealsa|usbsink|correction   # informational, surfaces in /state
 JASPER_FANIN_SAMPLE_RATE=48000
@@ -875,25 +874,17 @@ HANDOFF-multiroom.md Increment 5 PR-2 and
 [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md)
 "Robust Barge-In Contract".
 
-**`JASPER_FANIN_MUSIC_OUTPUT_PCM` — the multi-room music-only tap (off by
-default).** When set, the mixer writes a SECOND output every period: the
-program **post-duck but pre-TTS** — the room's music as played, minus the
-assistant. This is the synced stream a grouping leader streams to followers
-([`docs/HANDOFF-multiroom.md`](HANDOFF-multiroom.md) §2 "inv-2 realization");
-keeping the assistant off it is the inv-3 guarantee (followers never hear the
-leader's TTS). The write is a LOSSY side-tap — non-blocking, period-aligned
-(`avail_update` gate, so a partial write can't shear a period), drop-on-full —
-so it can NEVER back-pressure the primary `JASPER_FANIN_OUTPUT_PCM`, which
-stays the sole timing owner (inv-1). A misconfigured/unopenable PCM logs
-`event=fanin.music_output.open_failed` and degrades to solo with the primary
-path untouched (best-effort open, never fatal). Health is on the STATUS
-`music_output` object (`enabled` / `pcm` / `frames_written` / `drops` — a
-growing `drops` means the consumer, e.g. snapserver, is behind). Unset / empty
-/ `disabled` = no second output, byte-for-byte the pre-multiroom behaviour
-(verified by `config::tests::music_output_pcm_off_by_default_and_parses_when_set`
-and `mixer::tests::music_only_tap_is_post_duck_and_pre_tts`). **Not yet wired
-to snapserver** — that round-trip is Increment 2 of the multi-room build; this
-increment is the producer half (and the standalone inv-3 leak fix).
+**`JASPER_FANIN_MUSIC_OUTPUT_PCM` — DELETED 2026-08-14 by owner ruling.** It
+shipped as an optional SECOND output PCM carrying the program post-duck but
+pre-TTS (the multi-room "music-only tap"), with its own `music_output` STATUS
+block. Nothing ever set the env var and nothing ever read the second PCM, so
+the producer half was inert for its whole life and removing it changes no
+behaviour. The shipped bonded dataplane gets its voice/music split a different
+way — on a passive bonded pair the grouping reconciler routes the leader's
+assistant TTS to `jasper-outputd`, which leaves fan-in's one output carrying
+no assistant. fan-in therefore has exactly one program output again.
+Rationale, the per-role detail, and rebuild guidance:
+[`docs/HANDOFF-multiroom.md`](HANDOFF-multiroom.md) §0 (Increment 1).
 
 **Period sizing**: 256 frames at 48 kHz = ~5.3 ms wakeup cadence,
 frequent enough that the heartbeat sentinel sees real forward

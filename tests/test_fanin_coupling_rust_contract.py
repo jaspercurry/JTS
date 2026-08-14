@@ -279,7 +279,16 @@ def test_shm_ring_mixer_publishes_slots_and_opens_no_aloop_pcm():
     assert "RING_SLOT_FRAMES" in text
 
     ring_arm = _shm_ring_construction_arm(text)
-    for opener in ("open_output(", "open_music_output(", "PCM::new("):
+    # `open_music_output(` was a third name here until 2026-08-14, when the
+    # unconsumed `JASPER_FANIN_MUSIC_OUTPUT_PCM` tap was deleted by owner ruling.
+    # `PCM::new(` catches a re-added INLINE open in this arm and nothing more — a
+    # NEW helper (`fn open_whatever` calling `PCM::new` at its own definition site,
+    # outside this slice) is invisible here, exactly as `open_music_output` was
+    # before it got its own name in this list. The music tap's own resurrection is
+    # pinned by name in `test_fanin_music_output_tap_stays_deleted` below; the
+    # general helper-shaped case is a known gap in THIS assertion, named so the
+    # list does not read as broader than it is.
+    for opener in ("open_output(", "PCM::new("):
         assert opener not in ring_arm, (
             f"the ShmRing arm must open no ALSA PCM — found {opener!r}. The aloop "
             "mirror was removed in U4/P7-4; the ring is the whole output here. "
@@ -305,6 +314,71 @@ def test_shm_ring_mixer_publishes_slots_and_opens_no_aloop_pcm():
         "the loopback arm must still open config.output_pcm — if this fails, the "
         "negative assertions above are not proving anything"
     )
+
+
+def test_fanin_music_output_tap_stays_deleted():
+    """The multi-room music-only tap is gone from fan-in and does not come back.
+
+    `JASPER_FANIN_MUSIC_OUTPUT_PCM` was fan-in's OPTIONAL second, pre-TTS output
+    PCM (multi-room Increment 1). Its read path was live — env parse, a
+    best-effort open in `Mixer::new`, a per-period `write_music_only`, a
+    `music_output` STATUS block — while **no writer anywhere ever set the env
+    var**, so the producer half was inert for its whole life. Deleted 2026-08-14
+    by owner ruling (#2285 deletion arc, PR #2483), with both HANDOFF-multiroom.md
+    and HANDOFF-fan-in-daemon.md telling a future session to rebuild deliberately
+    rather than revive this one.
+
+    This is the assertion that makes those two sentences enforceable, and it is
+    the shape P7-1, P7-2, and P7-3 each shipped for their own retirements: a
+    name-absence guard, comment-stripped, so the crate's prose ABOUT the deletion
+    neither satisfies nor trips it.
+
+    Why it is not redundant with the ShmRing-arm opener list above: that list is
+    SCOPED to one construction arm and catches an INLINE `PCM::new`. A revived
+    `open_music_output` helper calls `PCM::new` at its own definition site,
+    outside that slice — invisible there, caught here. Reviving the tap also
+    means reviving the env parse and the config field, and each is pinned by
+    name, so a partial resurrection fails just as loudly as a whole one.
+    """
+    sources = {
+        "config.rs": _config_rs_text(),
+        "mixer.rs": _mixer_rs_text(),
+        "state.rs": _state_rs_text(),
+    }
+    # Env key, config field, and the opener helper. Three names because the tap
+    # had three separable halves; any one of them coming back is the regression.
+    retired = (
+        "JASPER_FANIN_MUSIC_OUTPUT_PCM",
+        "music_output_pcm",
+        "open_music_output",
+    )
+    for filename, text in sources.items():
+        code = _rust_code_only(text)
+        for name in retired:
+            assert name not in code, (
+                f"{filename} names the retired music-only tap ({name!r}). It was "
+                "deleted 2026-08-14 by owner ruling — nothing ever wrote its env "
+                "var, and the shipped bonded split routes the leader's TTS to "
+                "jasper-outputd instead (see docs/HANDOFF-multiroom.md §0). If "
+                "multi-room v2 wants a pre-TTS fan-in tap, design it against the "
+                "then-current topology and update this guard deliberately. (If "
+                "that hit is inside a TRAILING comment, the strip only drops "
+                "whole-line comments — move it onto its own line.)"
+            )
+
+    # POSITIVE CONTROL: the readers + stripper must yield real code, or every
+    # assertion above passes vacuously on an empty string. One surviving,
+    # load-bearing name per file — each the direct neighbour of a deleted one.
+    for filename, needle in (
+        ("config.rs", "JASPER_FANIN_OUTPUT_PCM"),
+        ("mixer.rs", "open_output"),
+        ("state.rs", "push_output_json"),
+    ):
+        code = _rust_code_only(sources[filename])
+        assert needle in code, (
+            f"positive control failed: {filename} should still contain {needle!r}. "
+            "If this fails, the absence assertions above are not proving anything."
+        )
 
 
 # NOTE — the retired `mirror_frames` / `mirror_drops` keys are deliberately NOT
