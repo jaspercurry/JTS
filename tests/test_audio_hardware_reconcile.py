@@ -2902,7 +2902,7 @@ def test_reconcile_apple_leaves_the_shipped_ring_conf_byte_identical(
         "event=audio_hardware_reconcile.ring_conf reason=test "
         "result=unchanged output_dac_id=apple_usb_c_dongle period_frames=128 "
         "previous_period_frames=128 sample_format=S16_LE ring_a_channels=2 "
-        "ring_b_channels=2 topology="
+        "ring_b_channels=2 ring_active_channels=2 topology="
     ) in result.stderr
     assert conf.read_bytes() == before_bytes
     assert conf.stat().st_mtime_ns == before_mtime
@@ -2933,7 +2933,7 @@ def test_reconcile_leaves_ring_conf_untouched_for_a_floorless_dac(
         "event=audio_hardware_reconcile.ring_conf reason=test result=skipped "
         "output_dac_id=hifiberry_dac8x_studio period_frames=none "
         "previous_period_frames=none sample_format=none ring_a_channels=none "
-        "ring_b_channels=none topology=none reason=no_declared_floor"
+        "ring_b_channels=none ring_active_channels=none topology=none reason=no_declared_floor"
     ) in result.stderr
     assert conf.read_bytes() == before_bytes
     assert conf.stat().st_mtime_ns == before_mtime
@@ -2966,7 +2966,7 @@ def test_reconcile_leaves_the_shipped_ring_conf_byte_identical_for_dac8x(
         "event=audio_hardware_reconcile.ring_conf reason=test "
         "result=unchanged output_dac_id=hifiberry_dac8x period_frames=128 "
         "previous_period_frames=128 sample_format=S16_LE ring_a_channels=2 "
-        "ring_b_channels=2 topology="
+        "ring_b_channels=2 ring_active_channels=2 topology="
     ) in result.stderr
     assert conf.read_bytes() == before_bytes
     assert conf.stat().st_mtime_ns == before_mtime

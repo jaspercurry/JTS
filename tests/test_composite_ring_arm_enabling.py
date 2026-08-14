@@ -419,6 +419,30 @@ def test_the_reconciler_stages_the_composite_active_lane_pair():
     )
 
 
+def test_the_ring_conf_journal_carries_the_active_width():
+    """The whitelist arm that stops 1d's headline output being dropped silently.
+
+    ``render_ring_conf_if_needed`` parses the renderer's ``key value`` lines
+    through a ``case`` whose unmatched arm drops the key with NO diagnostic — so
+    a key the renderer prints and this whitelist lacks is invisible rather than
+    wrong, which is the shape that hid ``ring_active_channels`` in the first
+    place. Pinning the ARM (not only the rendered log line) is that same
+    silent-drop lesson applied to the fix for it: the three literal log-line
+    pins in ``test_audio_hardware_reconcile.py`` would all still pass if the arm
+    were re-added under a misspelled key and the value came from somewhere else.
+    """
+    script = (REPO_ROOT / "deploy" / "bin" / "jasper-audio-hardware-reconcile").read_text(
+        encoding="utf-8"
+    )
+    assert 'ring_active_channels) channels_active="$value" ;;' in script, (
+        "the renderer prints ring_active_channels; without this whitelist arm "
+        "the case drops it silently"
+    )
+    assert "ring_active_channels=${channels_active:-none}" in script, (
+        "the parsed value must reach the journal line, or the arm is inert"
+    )
+
+
 def test_an_aloop_composite_still_clears_the_pair():
     """SCOPED TO THE OBSERVED-BROKEN PATH. A composite whose accepted graph does
     NOT name the ring device keeps the unconditional clear it has today."""
