@@ -3813,6 +3813,10 @@ async function runPlanCapture(ctx, { index, attempt, retake = false }) {
     const integrity = summarizeCaptureIntegrity({
       watch: integrityWatch,
       stats: typeof recorder.captureStats === "function" ? recorder.captureStats() : null,
+      // What this page will actually encode, counted here rather than at the
+      // encoder below so the report describes the SAME array `stop()` returned
+      // (#2094). Nothing between here and `float32ToWavBlob` touches it.
+      encodedFrames: samples ? samples.length : null,
     });
     if (integrityWatch) integrityWatch.dispose();
     integrityWatch = null;

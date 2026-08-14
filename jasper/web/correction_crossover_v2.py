@@ -3681,6 +3681,12 @@ def bind_production_analyze(
             calibration=curve,
             geometry=geometry,
             priors=priors,
+            # #2094: the phone's own frame counters, reconciled against the
+            # frames just decoded. This seam is the ONLY place both halves of
+            # the ledger exist — the page's account arrives on the relay's
+            # event channel, the received count comes out of the WAV — so it is
+            # the only place the comparison can be made.
+            capture_report=getattr(result, "capture_integrity", None),
         )
         # #1855: retention labels the capture from the FLOW's phase (this
         # function's own required ``phase`` argument), never from
@@ -3822,6 +3828,14 @@ def _maybe_retain_capture(
         capture_integrity = getattr(result, "capture_integrity", None)
         if isinstance(capture_integrity, dict) and capture_integrity:
             sidecar["capture_integrity"] = capture_integrity
+        # The reconciliation of that report against what actually arrived
+        # (issue #2094) — the page's claim and the host's count side by side,
+        # with the losing hop named. Written whenever the analysis carries one,
+        # which is every capture analysed through the live seam; a test double
+        # that returns something other than a ProgramAnalysis leaves it absent.
+        frame_ledger = getattr(analysis, "frame_ledger", None)
+        if frame_ledger is not None:
+            sidecar["frame_ledger"] = frame_ledger.to_dict()
         if bundle_session_id:
             # The index this store never had. With it, a pulled ring sidecar
             # joins to its bundle by id instead of by directory mtime — which

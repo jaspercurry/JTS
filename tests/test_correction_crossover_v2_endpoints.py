@@ -5117,7 +5117,8 @@ def test_production_analyze_threads_geometry_and_resolved_calibration(monkeypatc
 
     seen: dict[str, Any] = {}
 
-    def spy(program, samples, rate, *, calibration=None, geometry=None, priors=None):
+    def spy(program, samples, rate, *, calibration=None, geometry=None,
+            priors=None, capture_report=None):
         seen.update(calibration=calibration, geometry=geometry, rate=rate)
         return "analysis"
 
@@ -5171,7 +5172,8 @@ def test_production_analyze_annotates_uncalibrated_when_none_resolves(monkeypatc
 
     seen: dict[str, Any] = {}
 
-    def spy(program, samples, rate, *, calibration=None, geometry=None, priors=None):
+    def spy(program, samples, rate, *, calibration=None, geometry=None,
+            priors=None, capture_report=None):
         seen.update(calibration=calibration)
         return "analysis"
 
@@ -5213,7 +5215,8 @@ def test_production_analyze_threads_mic_tier_from_resolved_calibration(monkeypat
 
     seen: dict[str, Any] = {}
 
-    def spy(program, samples, rate, *, calibration=None, geometry=None, priors=None):
+    def spy(program, samples, rate, *, calibration=None, geometry=None,
+            priors=None, capture_report=None):
         seen["priors"] = priors
         return "analysis"
 
@@ -5256,7 +5259,8 @@ def test_production_analyze_mic_tier_defaults_to_phone_when_no_calibration_resol
 
     seen: dict[str, Any] = {}
 
-    def spy(program, samples, rate, *, calibration=None, geometry=None, priors=None):
+    def spy(program, samples, rate, *, calibration=None, geometry=None,
+            priors=None, capture_report=None):
         seen["priors"] = priors
         return "analysis"
 
@@ -5288,7 +5292,8 @@ def test_production_analyze_mic_tier_handles_a_bare_calibration_curve_record(mon
 
     seen: dict[str, Any] = {}
 
-    def spy(program, samples, rate, *, calibration=None, geometry=None, priors=None):
+    def spy(program, samples, rate, *, calibration=None, geometry=None,
+            priors=None, capture_report=None):
         seen["priors"] = priors
         return "analysis"
 
@@ -5956,7 +5961,8 @@ def test_plan_flow_stored_calibration_lands_in_the_analyze_call_and_evidence(
 
     seen: dict[str, Any] = {}
 
-    def spy(program, samples, rate, *, calibration=None, geometry=None, priors=None):
+    def spy(program, samples, rate, *, calibration=None, geometry=None,
+            priors=None, capture_report=None):
         seen["calibration"] = calibration
         return "analysis"
 
@@ -6016,7 +6022,8 @@ def test_plan_flow_stored_calibration_refuses_on_device_mismatch(
 
     seen: dict[str, Any] = {}
 
-    def spy(program, samples, rate, *, calibration=None, geometry=None, priors=None):
+    def spy(program, samples, rate, *, calibration=None, geometry=None,
+            priors=None, capture_report=None):
         seen["calibration"] = calibration
         return "analysis"
 

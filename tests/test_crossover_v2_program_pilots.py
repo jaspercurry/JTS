@@ -37,10 +37,13 @@ from jasper.audio_measurement.program import (
     build_verify_program,
     render_program_pcm,
 )
+from jasper.audio_measurement.frame_ledger import reconcile_capture_frames
 from jasper.audio_measurement.program_analysis import (
     AMBIENT_MIN_USABLE_FRACTION,
     INTEGRITY_CHECK_CLIPPED_RUN,
     INTEGRITY_CHECK_DISCONTINUITY_STEP,
+    INTEGRITY_CHECK_FRAME_LEDGER,
+    INTEGRITY_CHECK_RENDER_GAP,
     INTEGRITY_CHECK_REPEAT_EPSILON,
     INTEGRITY_CHECK_REPEAT_LEVEL,
     INTEGRITY_CHECK_SWEEP_HEARD,
@@ -681,6 +684,17 @@ def test_verify_courtesy_prelude_clean_capture_still_passes():
 # assemble by hand.
 
 
+def _unreported_ledger(received_frames: int = 1_000_000):
+    """The frame ledger of a capture whose page sent no report (issue #2094).
+
+    Every builder test below is asking a question about the SIGNAL checks, so
+    each hands in the shape that leaves the two frame-accounting checks
+    unevaluated — which is also what the single-capture runner and any
+    pre-#2094 page bundle actually produce.
+    """
+    return reconcile_capture_frames(None, received_frames=received_frames)
+
+
 def _statuses(integrity) -> dict[str, str]:
     return {c.name: c.status for c in integrity.checks}
 
@@ -706,6 +720,11 @@ def test_verify_clean_capture_records_a_real_integrity_verdict():
     integrity = res.capture_integrity
     assert integrity is not None
     assert _statuses(integrity) == {
+        # #2094: this fixture hands in raw samples, so there is no capture-page
+        # report to reconcile and both frame-accounting checks say so by name
+        # rather than passing on evidence nobody supplied.
+        INTEGRITY_CHECK_RENDER_GAP: INTEGRITY_NOT_EVALUATED,
+        INTEGRITY_CHECK_FRAME_LEDGER: INTEGRITY_NOT_EVALUATED,
         INTEGRITY_CHECK_SWEEP_HEARD: INTEGRITY_PASS,
         INTEGRITY_CHECK_SWEEP_SCHEDULE: INTEGRITY_PASS,
         INTEGRITY_CHECK_CLIPPED_RUN: INTEGRITY_PASS,
@@ -846,7 +865,7 @@ def test_unheard_sweep_leaves_the_schedule_check_not_evaluated():
         _sweep_location(
             confidence=SWEEP_LOCATE_CONFIDENCE_FLOOR - 0.01, residual=huge,
         ),
-    ])
+    ], _unreported_ledger())
     statuses = _statuses(integrity)
     assert statuses[INTEGRITY_CHECK_SWEEP_HEARD] == INTEGRITY_FAIL
     assert statuses[INTEGRITY_CHECK_SWEEP_SCHEDULE] == INTEGRITY_NOT_EVALUATED
@@ -866,13 +885,13 @@ def test_sweep_exactly_at_the_confidence_floor_is_heard():
     prog = _verify_pilot_program()
     integrity = _verify_capture_integrity(prog, SR, [
         _sweep_location(confidence=SWEEP_LOCATE_CONFIDENCE_FLOOR, residual=0.0),
-    ])
+    ], _unreported_ledger())
     assert _statuses(integrity)[INTEGRITY_CHECK_SWEEP_HEARD] == INTEGRITY_PASS
 
 
 def test_no_summed_sweep_located_is_not_evaluated_never_a_pass():
     prog = _verify_pilot_program()
-    integrity = _verify_capture_integrity(prog, SR, [])
+    integrity = _verify_capture_integrity(prog, SR, [], _unreported_ledger())
     statuses = _statuses(integrity)
     assert statuses[INTEGRITY_CHECK_SWEEP_HEARD] == INTEGRITY_NOT_EVALUATED
     assert statuses[INTEGRITY_CHECK_SWEEP_SCHEDULE] == INTEGRITY_NOT_EVALUATED
@@ -902,7 +921,7 @@ def test_integrity_to_dict_is_json_safe_and_carries_the_reasons():
     prog = _verify_pilot_program()
     integrity = _verify_capture_integrity(prog, SR, [
         _sweep_location(confidence=0.9, residual=3.0),
-    ])
+    ], _unreported_ledger())
     record = json.loads(json.dumps(integrity.to_dict()))
     assert record["glitched"] is False
     by_name = {c["name"]: c for c in record["checks"]}
@@ -921,7 +940,7 @@ def test_integrity_warns_only_on_a_failure_and_names_both_lists(caplog):
     with caplog.at_level(logging.WARNING, logger=_ANALYSIS_LOGGER):
         _verify_capture_integrity(prog, SR, [
             _sweep_location(confidence=0.9, residual=over_ceiling),
-        ])
+        ], _unreported_ledger())
     assert "event=program_analysis.capture_integrity" in caplog.text
     assert f"failed={INTEGRITY_CHECK_SWEEP_SCHEDULE}" in caplog.text
     assert INTEGRITY_CHECK_REPEAT_EPSILON in caplog.text
@@ -929,5 +948,5 @@ def test_integrity_warns_only_on_a_failure_and_names_both_lists(caplog):
     with caplog.at_level(logging.WARNING, logger=_ANALYSIS_LOGGER):
         _verify_capture_integrity(prog, SR, [
             _sweep_location(confidence=0.9, residual=0.0),
-        ])
+        ], _unreported_ledger())
     assert "event=program_analysis.capture_integrity" not in caplog.text
