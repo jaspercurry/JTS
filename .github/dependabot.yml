@@ -11,23 +11,29 @@
 # remain separate ecosystems below.
 #
 # Why every ecosystem is grouped: without `groups`, Dependabot raises one PR
-# per dependency per directory. The two cargo entries below share the same
-# crates (serde, serde_json, anyhow, libc), so a single weekly cycle fanned
-# out into 8+ near-identical Rust PRs — and with four ecosystems each allowed
-# 5 open PRs, up to 20 can land within seconds of each other. That happened
-# on 2026-07-21 20:24Z: eight dependabot runs were created inside 20 seconds
-# and saturated the 20-concurrent-job GitHub Actions ceiling, delaying their
-# own jobs by 137-559s. It is the only contention-driven CI queueing episode
-# in the measured window.
+# per dependency per directory. The cargo entries below share the same crates
+# (alsa, serde, serde_json, anyhow, libc), so a single weekly cycle fanned out
+# into 8+ near-identical Rust PRs — and each entry is allowed 5 open PRs, so
+# many can land within seconds of each other. That happened on 2026-07-21
+# 20:24Z, when there were four entries (a 20-PR ceiling): eight dependabot
+# runs were created inside 20 seconds and saturated the 20-concurrent-job
+# GitHub Actions ceiling, delaying their own jobs by 137-559s. It is the only
+# contention-driven CI queueing episode in the measured window.
 #
-# Grouping collapses that weekly fan-out from ~16 open PRs to ~5. It REDUCES
-# the burst rather than removing it: a full-lane PR peaks at 6 concurrent
-# jobs (shell + the 3-version pytest matrix + js + rust), so 5 grouped PRs
-# still demand ~30 jobs against the 20-job ceiling — the queue drains ~1.6x
-# faster, it does not stop forming. The durable win is 5 PRs a week to review
-# instead of 16, and a shorter queue tail. The cost is that a broken bump
-# reddens its whole group's PR (exclude that one package, or ask Dependabot
-# to split, when it happens).
+# Grouping REDUCES the burst rather than removing it. A full-lane PR peaks at
+# 6 concurrent jobs (shell + the 3-version pytest matrix + js + rust). One
+# grouped PR per group means today's six entries can raise at most 7 a week
+# (uv's two groups, github-actions, and one per cargo directory) — ~42 jobs
+# against the 20-job ceiling. The durable win is a handful of PRs a week to
+# review instead of ~16, and a shorter queue tail. The cost is that a broken
+# bump reddens its whole group's PR (exclude that one package, or ask
+# Dependabot to split, when it happens).
+#
+# The two extra cargo directories (jasper-host-clock, jasper-dual-dac-lab)
+# raise that weekly ceiling from 5 PRs to 7. That cost is accepted
+# deliberately: both crates link `alsa`, and while they were unwatched their
+# pinned version drifted away from the daemons' (issue #2266) with nothing
+# raising a PR to notice.
 #
 # `groups` deliberately omits `applies-to`, which defaults to
 # "version-updates", so SECURITY updates are structurally ungrouped and are
@@ -83,9 +89,12 @@ updates:
         patterns:
           - "*"
 
-  # Both cargo entries pin the same shared crates, so each is grouped
-  # separately: Dependabot groups cannot span `updates` entries, and one
-  # PR per daemon keeps a red Cargo.lock scoped to the daemon that broke.
+  # Every crate directory that links libasound gets its own entry. They pin
+  # the same shared crates, so each is grouped separately: Dependabot groups
+  # cannot span `updates` entries, and one PR per crate keeps a red Cargo.lock
+  # scoped to the crate that broke. The four must stay on one `alsa` version —
+  # tests/test_build_and_ci_contracts.py fails if a bump lands in one crate
+  # and not the rest.
   - package-ecosystem: "cargo"
     directory: "/rust/jasper-fanin"
     schedule:
@@ -103,5 +112,31 @@ updates:
     open-pull-requests-limit: 5
     groups:
       jasper-outputd-crates:
+        patterns:
+          - "*"
+
+  # jasper-host-clock links libasound behind its optional `alsa` feature,
+  # which jasper-fanin enables unconditionally — so its pin reaches the
+  # production binary even though the library crate itself is feature-gated.
+  - package-ecosystem: "cargo"
+    directory: "/rust/jasper-host-clock"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      jasper-host-clock-crates:
+        patterns:
+          - "*"
+
+  # jasper-dual-dac-lab is lab-only and install.sh never builds it, so CI's
+  # `cargo test --locked` step is its sole rot gate. Left unwatched it aged
+  # three minor versions behind the daemons on `alsa`.
+  - package-ecosystem: "cargo"
+    directory: "/rust/jasper-dual-dac-lab"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      jasper-dual-dac-lab-crates:
         patterns:
           - "*"

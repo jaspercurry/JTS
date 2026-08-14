@@ -9,11 +9,11 @@ authors = ["Jasper Curry <jaspercurry@gmail.com>"]
 rust-version = "1.75"
 
 [dependencies]
-# NOTE: parity with jasper-outputd's ALSA wrapper version no longer holds —
-# jasper-outputd bumped to alsa "0.11" (commit 5aff01dc); this lab-only
-# crate is still on "0.9". Bump here if parity is wanted; low-risk since
-# this binary is lab-only.
-alsa = "0.9"
+# Idiomatic Rust wrapper around libasound — this lab runner opens both Apple
+# DACs directly to validate the dual-device shape. Every ALSA-linking crate in
+# rust/ shares one version; tests/test_build_and_ci_contracts.py owns that
+# invariant.
+alsa = "0.12"
 anyhow = "1"
 libc = "0.2"
 serde_json = "1"

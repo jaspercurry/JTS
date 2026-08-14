@@ -26,8 +26,10 @@ jasper-resampler = { path = "../jasper-resampler" }
 # JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring content source. Pure (mmap via libc, no
 # ALSA), default-off — the reader is only constructed when the flag selects it.
 jasper-ring = { path = "../jasper-ring" }
-# Same ALSA wrapper used by jasper-fanin. outputd's ALSA backend reads
-# Camilla's post-DSP loopback lane and writes the final DAC directly.
+# Idiomatic Rust wrapper around libasound — outputd's ALSA backend reads
+# Camilla's post-DSP loopback lane and writes the final DAC directly. Every
+# ALSA-linking crate in rust/ shares one version;
+# tests/test_build_and_ci_contracts.py owns that invariant.
 alsa = "0.12"
 
 # Top-level error context for daemon startup and I/O failures.

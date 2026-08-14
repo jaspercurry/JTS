@@ -139,6 +139,62 @@ def test_dependabot_groups_leave_security_updates_ungrouped() -> None:
             assert config.get("patterns"), f"group {name!r} has no patterns"
 
 
+def _alsa_linking_crates() -> dict[str, str]:
+    """Map each `rust/<crate>` directory to the `alsa` version it declares."""
+
+    found: dict[str, str] = {}
+    for manifest in sorted((ROOT / "rust").glob("*/Cargo.toml")):
+        declared = tomllib.loads(manifest.read_text(encoding="utf-8"))
+        spec = declared.get("dependencies", {}).get("alsa")
+        if spec is None:
+            continue
+        version = spec if isinstance(spec, str) else spec.get("version")
+        assert version, f"{manifest} declares alsa with no version"
+        found[f"/rust/{manifest.parent.name}"] = version
+    return found
+
+
+def test_alsa_linking_crates_share_one_version() -> None:
+    """All four libasound-linking crates must pin the same `alsa` version.
+
+    They talk to the same libasound on the same Pi and share the same wrapper
+    API, so a split pin means one of them is being type-checked against an API
+    the others do not have. It drifted silently once already (issue #2266):
+    jasper-outputd reached 0.12 while jasper-fanin and jasper-host-clock sat on
+    0.11 and the lab runner on 0.9 — three minor versions apart, with two false
+    manifest comments each asserting a parity that no longer held. A comment
+    cannot fail; this can.
+    """
+
+    crates = _alsa_linking_crates()
+
+    assert len(crates) == 4, f"expected 4 alsa-linking crates, found {crates}"
+    assert len(set(crates.values())) == 1, (
+        f"alsa version split across crates: {crates}"
+    )
+
+
+def test_dependabot_watches_every_alsa_linking_crate() -> None:
+    """An unwatched crate directory ages with nothing raising a PR.
+
+    That is exactly how the split in test_alsa_linking_crates_share_one_version
+    formed: only jasper-fanin and jasper-outputd had cargo entries, so the other
+    two never got a bump PR and nobody noticed them falling behind.
+    """
+
+    watched = {
+        entry["directory"]
+        for entry in _dependabot()["updates"]
+        if entry["package-ecosystem"] == "cargo"
+    }
+    unwatched = sorted(set(_alsa_linking_crates()) - watched)
+
+    assert not unwatched, (
+        "alsa-linking crate directories with no cargo entry in "
+        f".github/dependabot.yml: {unwatched}"
+    )
+
+
 def test_hang_backstop_is_configured_and_uses_the_signal_method() -> None:
     """The suite must fail a hang, never block on one.
 
