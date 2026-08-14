@@ -186,6 +186,26 @@ REASON_PROGRAM_PROFILE_INCOMPLETE = "program_profile_incomplete"
 # the session; the household's one action is to try again.
 REASON_INTERNAL_ERROR = "internal_error"
 REASON_VERIFY_OUT_OF_TOLERANCE = "verify_out_of_tolerance"
+# Issue #1873 (owner field report, 2026-07-29): the SAME out-of-tolerance
+# observation, once a second graded attempt has shown it REPEATS. The code above
+# is honest about one attempt and dishonest about two: it is retriable, and its
+# copy invites a retry, because a single mismatch really can be a bad take. When
+# consecutive attempts agree inside the instrument's own repeat floor (the
+# session that filed this measured 3.66 dB then 3.82 dB against a 1.5 dB
+# tolerance — 0.16 dB apart), the mismatch is a FINDING about the speaker, and
+# every further retry re-measures the same applied graph into the same answer
+# while the relay session's clock runs out. In the owner's words: "The speaker
+# didn't match the prediction — that's just the reality of what it is. This
+# shouldn't be 'you don't like it, give me something you do like.'"
+#
+# Its own code rather than a second sentence on the code above, for the reason
+# every split in this file has: the two states differ in what the household
+# should DO. Terminal (budget 0, so ``NON_RETRIABLE_CODES``) because a retry
+# cannot change it — the same "deterministic ⇒ terminal" rule
+# ``program_profile_not_confirmed`` and ``protection_not_separable`` already
+# state. Renders through the SAME ``verify_fail`` template as its four
+# siblings; it is one more parameterization of that screen, not a new screen.
+REASON_VERIFY_DETERMINISTIC_MISMATCH = "verify_deterministic_mismatch"
 # Internal-only addition BEYOND the §5.10 table: §5.2's "inconclusive —
 # re-verify" verdict (VERIFY's own detected first reflection forced a shorter
 # gate than MEASURE's, so the overlay difference is not evidence about driver
@@ -815,6 +835,27 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
             "The result didn't quite match the prediction.",
             "Try again, or undo to restore the previous sound.",
         ),
+    ),
+    # #1873. Budget 0 — the ONE verify_fail row that is not retriable, and the
+    # reason it is not is the reason it exists: a second graded attempt already
+    # agreed with the first inside the instrument's repeat floor, so a third
+    # lands in the same place. The copy says so rather than leaving the
+    # household to discover it by spending the session's remaining time.
+    #
+    # Order of the sentence is the order the household needs it: the finding
+    # first (this is what your speaker does), then WHY the obvious button is
+    # gone, then the two levers that can actually change the outcome. Both are
+    # already on this screen — ``_verify_fail_envelope``'s Undo and Re-measure —
+    # and for a non-retriable code that envelope promotes Re-measure to the
+    # primary rather than offering a "Try again" this row has just ruled out.
+    # Naming two actions follows ``verify_crossover_region``'s precedent: when
+    # neither lever dominates, listing one would be picking for the household.
+    REASON_VERIFY_DETERMINISTIC_MISMATCH: ReasonSpec(
+        REASON_VERIFY_DETERMINISTIC_MISMATCH, TEMPLATE_VERIFY_FAIL, 0, "",
+        "JTS checked twice and measured the same difference both times, so "
+        "this is what your speaker actually does — not a bad measurement, and "
+        "another try lands in the same place. Undo to restore the previous "
+        "sound, or re-measure to fit the crossover again.",
     ),
     REASON_VERIFY_CROSSOVER_REGION: _retriable_reason(
         REASON_VERIFY_CROSSOVER_REGION, TEMPLATE_VERIFY_FAIL, 2,

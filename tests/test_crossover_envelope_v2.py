@@ -61,6 +61,8 @@ from jasper.active_speaker.crossover_v2_flow import (
     REASON_RELAY_TIMEOUT,
     REASON_SNR_FLOOR,
     REASON_USER_STOPPED,
+    REASON_VERIFY_CROSSOVER_REGION,
+    REASON_VERIFY_DETERMINISTIC_MISMATCH,
     REASON_VERIFY_INCONCLUSIVE,
     REASON_VERIFY_LEVEL_SHIFT,
     REASON_VERIFY_OUT_OF_TOLERANCE,
@@ -2400,6 +2402,110 @@ def test_verify_level_shift_copy_matches_the_controls_on_its_own_screen():
     labels = [a["label"] for a in env["alternate_actions"]]
     assert "Re-measure" in labels
     assert "Undo (restore previous sound)" in labels
+
+
+# --- #1873: the wizard drops a retry its own copy has just ruled out ----------
+
+
+def test_deterministic_mismatch_promotes_remeasure_over_a_dead_retry():
+    """The household's field report on this screen was that "Try again" was the
+    only obvious control, so they took it until the relay session expired. For a
+    verdict that has already established the mismatch repeats, that button is a
+    dead lever presented as the next step: it opens a fresh /v2/verify and
+    re-checks the SAME applied graph.
+
+    So the primary becomes Re-measure — the lever that CAN change the outcome,
+    by fitting a new crossover — and Undo stays beside it. Both were already on
+    this screen; what changes is which one the screen steers towards, and that
+    the dead one is gone."""
+    env = build_crossover_envelope_v2(_status(
+        phase="verify", applied=True,
+        failure={"code": REASON_VERIFY_DETERMINISTIC_MISMATCH},
+    ))
+    assert env["screen"] == "verify_fail"
+    assert env["verdict_text"] == (
+        REASON_REGISTRY[REASON_VERIFY_DETERMINISTIC_MISMATCH].message
+    )
+    assert env["next_action"]["id"] == "verify_remeasure"
+    assert env["next_action"]["endpoint"] == "/correction/crossover/v2/session"
+    # Promoted, not gated behind the expert disclosure it sat in as an
+    # alternate — a primary the screen steers towards is not a disclosure.
+    assert "expert" not in env["next_action"]
+    # …and it keeps the flag that makes it survive the wizard's
+    # relay-in-flight gate while the ended session winds down. On a primary
+    # the same flag also suppresses the connect link/QR for that dead relay,
+    # which is the wanted behaviour for a verdict that ends the session.
+    assert env["next_action"]["show_during_relay"] is True
+    ids = [a["id"] for a in env["alternate_actions"]]
+    assert "verify_undo" in ids
+    # …and not offered twice.
+    assert "verify_remeasure" not in ids
+    assert "verify_retry" not in ids
+
+
+def test_deterministic_mismatch_copy_matches_the_controls_on_its_own_screen():
+    """The #1924 rule, applied to the new code: every control the sentence names
+    is on this screen, and the sentence does not name one that is not. It must
+    not say "Try again" — that button is gone precisely because this verdict
+    says it cannot help."""
+    env = build_crossover_envelope_v2(_status(
+        phase="verify", applied=True,
+        failure={"code": REASON_VERIFY_DETERMINISTIC_MISMATCH},
+    ))
+    verdict = env["verdict_text"]
+    assert "Undo" in verdict
+    assert "re-measure" in verdict
+    assert "Try again" not in verdict
+    assert "Re-measure" in env["next_action"]["label"]
+    assert "Undo (restore previous sound)" in _labels(env)
+
+
+def test_a_retriable_verify_fail_code_keeps_its_try_again():
+    """The regression guard on the swap above. Every OTHER verify_fail code is
+    retriable and its retry is a real lever, so the shipped screen — "Try again"
+    primary, Undo + expert Re-measure alternates — is untouched."""
+    for code in (
+        REASON_VERIFY_OUT_OF_TOLERANCE, REASON_VERIFY_INCONCLUSIVE,
+        REASON_VERIFY_LEVEL_SHIFT, REASON_VERIFY_CROSSOVER_REGION,
+    ):
+        env = build_crossover_envelope_v2(_status(
+            phase="verify", applied=True, failure={"code": code},
+        ))
+        assert env["screen"] == "verify_fail", code
+        assert env["next_action"]["id"] == "verify_retry", code
+        alternates = {a["id"]: a for a in env["alternate_actions"]}
+        assert alternates["verify_remeasure"]["expert"] is True, code
+        assert "verify_undo" in alternates, code
+
+
+def test_a_budget_zero_code_reaching_this_screen_by_the_applied_override_keeps_retry():
+    """The swap is keyed on the code's OWN registry row — verify_fail template
+    AND budget 0 — never on budget alone, and this is why.
+
+    ``relay_timeout`` and ``user_stopped`` are budget-0 ``session_restart``
+    rows that land on this screen only because something is applied (W6.7
+    ruling 3). Their zero budget says no further CAPTURE of what failed can
+    help; it says nothing about the VERIFY check, and here "Try again" means a
+    fresh /v2/verify session — which for a dead relay is precisely the fix.
+    Keying on budget alone would have taken the working button away."""
+    for code in (REASON_RELAY_TIMEOUT, REASON_USER_STOPPED):
+        assert REASON_REGISTRY[code].retry_budget == 0, code
+        env = build_crossover_envelope_v2(_status(
+            phase="verify", applied=True, failure={"code": code},
+        ))
+        assert env["screen"] == "verify_fail", code
+        assert env["next_action"]["id"] == "verify_retry", code
+
+
+def test_an_unknown_code_on_the_verify_fail_screen_keeps_its_retry():
+    """A code with no registry row makes no claim about whether a retry can
+    help, so the defensive branch keeps the affordance rather than removing one
+    on the strength of an absent record."""
+    env = build_crossover_envelope_v2(_status(
+        phase="verify", applied=True, failure={"code": "not_a_registered_code"},
+    ))
+    assert env["screen"] == "verify_fail"
+    assert env["next_action"]["id"] == "verify_retry"
 
 
 def test_level_reference_reset_is_disclosed_on_a_failed_verify():

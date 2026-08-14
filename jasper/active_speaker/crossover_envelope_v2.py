@@ -2519,6 +2519,33 @@ def _verify_fail_envelope(
     entitled to the Undo affordance the moment something is live on the
     speaker, regardless of which check failed.
 
+    **A code no retry can clear does not get a "Try again" (#1873).** For every
+    other code on this screen the primary is honest: "Try again" opens a fresh
+    ``/v2/verify`` session and re-runs the check, and a transient condition can
+    genuinely clear. For a code whose own registry row has already ruled the
+    retry out — ``verify_deterministic_mismatch``, whose verdict IS that a
+    second attempt agreed with the first — it is a dead lever presented as the
+    obvious next step, and the household's field report on this screen is
+    exactly that: they took it, repeatedly, until the relay session expired.
+    So such a code promotes **Re-measure** —
+    the lever that CAN change the outcome, by fitting a new crossover rather
+    than re-checking the applied one — to the primary, and Undo stays beside it.
+    The screen's action set is otherwise unchanged; what is removed is the one
+    button whose own copy has just said it will not help.
+
+    Keyed on the code's OWN registry row — its template AND its budget — never
+    on the code itself, so a future non-retriable verify-fail row inherits this
+    without an edit here. Both halves are load-bearing, and the template half is
+    what keeps this scoped to the observed defect. A budget-0 code that reaches
+    this screen through the ``applied`` override (``relay_timeout``,
+    ``user_stopped`` — ``session_restart`` rows) says nothing about the VERIFY
+    check: its zero budget means "no extra CAPTURE of the thing that failed can
+    help", and "Try again" here is a fresh ``/v2/verify`` session, which for a
+    dead relay is precisely the fix. Only a row whose own template is
+    ``verify_fail`` is a verdict ABOUT the check, and only then does budget 0
+    mean re-running it is pointless. A code with no registry row at all makes no
+    claim either way and keeps the retry.
+
     ``verify_undo`` and ``verify_remeasure`` carry ``show_during_relay``
     (W6.12, the same seam W6.10 added for the review screen's Apply): the
     JS action-row renderer's relay-in-flight gate otherwise blanket-clears
@@ -2533,6 +2560,20 @@ def _verify_fail_envelope(
     the "get me out of this" affordances that must stay reachable
     regardless.
     """
+    remeasure = {
+        "id": "verify_remeasure",
+        "label": "Re-measure",
+        "endpoint": "/correction/crossover/v2/session",
+        "body": {},
+        "expert": True,
+        "show_during_relay": True,
+    }
+    own_spec = REASON_REGISTRY.get(code)
+    retriable = not (
+        own_spec is not None
+        and own_spec.template == TEMPLATE_VERIFY_FAIL
+        and own_spec.retry_budget == 0
+    )
     return _envelope(
         screen="verify_fail", active_step="verify",
         verdict=message,
@@ -2542,19 +2583,33 @@ def _verify_fail_envelope(
             "label": "Try again",
             "endpoint": "/correction/crossover/v2/verify",
             "body": {},
+        } if retriable else {
+            # Promoted, not duplicated: it leaves the alternate list below so
+            # the household is never offered the same action twice. ``expert``
+            # is dropped with the promotion — a primary the screen is steering
+            # towards is not a disclosure-gated one.
+            #
+            # ``show_during_relay`` is KEPT, and it does a second thing on a
+            # primary that it does not do on an alternate: the wizard reads it
+            # as ``suppressConnectAffordance`` and hides the phone connect
+            # link/QR (``crossover/main.js``, the review screen's Apply is what
+            # it was built for). That is the wanted behaviour here, stated so it
+            # is a choice rather than a side effect — this verdict ENDS the
+            # capture session, so during the seconds the relay spends winding
+            # down the screen should not still be advertising a link to it. It
+            # is the same rule ``TEMPLATE_SESSION_RESTART`` follows with
+            # ``advertise_relay=False``. Without the flag the relay-in-flight
+            # gate would hide this primary in that window and leave the
+            # household with Undo alone — the affordance being promoted, gone at
+            # exactly the moment it is needed.
+            **{k: v for k, v in remeasure.items() if k != "expert"},
+            "label": "Re-measure this speaker",
         },
         alternate_actions=[
             # Shared with the aged-failure entry screen — see ``_undo_action``
             # for the restore-path rationale and the open W6.7 N2 item.
             _undo_action(),
-            {
-                "id": "verify_remeasure",
-                "label": "Re-measure",
-                "endpoint": "/correction/crossover/v2/session",
-                "body": {},
-                "expert": True,
-                "show_during_relay": True,
-            },
+            *([remeasure] if retriable else []),
         ],
         status=status,
         # Gauge fix (2026-07-24): the flatness lines are a SIBLING claim to

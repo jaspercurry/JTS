@@ -1625,6 +1625,7 @@ from jasper.active_speaker.crossover_v2.vocabulary import (
     REASON_SNR_FLOOR as REASON_SNR_FLOOR,
     REASON_USER_STOPPED as REASON_USER_STOPPED,
     REASON_VERIFY_CROSSOVER_REGION as REASON_VERIFY_CROSSOVER_REGION,
+    REASON_VERIFY_DETERMINISTIC_MISMATCH as REASON_VERIFY_DETERMINISTIC_MISMATCH,
     REASON_VERIFY_INCONCLUSIVE as REASON_VERIFY_INCONCLUSIVE,
     REASON_VERIFY_LEVEL_SHIFT as REASON_VERIFY_LEVEL_SHIFT,
     REASON_VERIFY_OUT_OF_TOLERANCE as REASON_VERIFY_OUT_OF_TOLERANCE,
@@ -1820,6 +1821,80 @@ MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB = 15.0
 # either — a step this large is the input chain moving, not the speaker.
 # PROVISIONAL pending W6 bench validation.
 VERIFY_PILOT_TRANSFER_STEP_CEILING_DB = 0.35
+
+# Issue #1873's repeatability discriminator: how close two consecutive graded
+# VERIFY attempts have to land before the mismatch between them is called
+# DETERMINISTIC rather than transient.
+#
+# MEASURED, not chosen. Panel course-correction P0 (`captures/
+# repeat-floor-20260731/README.md`) repeated the shipped stage-2 VERIFY
+# instrument back-to-back with the microphone bolted in place, through the real
+# deconvolution / gating / smoothing / grading path, and reported the repeat
+# floor of THIS EXACT metric — ``max_db_notch_excluded`` over 1000-4000 Hz — as
+# 0.052 dB median / 0.085 dB p95 between consecutive measurements. Its own table
+# then states the honest per-attempt claim threshold for that metric as
+# **0.2 dB, twice the consecutive-pair p95**. That number is what is used here;
+# this module derives nothing.
+#
+# **The rule already has an owner, and this is its second spelling — so it says
+# so.** :data:`~jasper.active_speaker.attempts_loop.CLAIM_FLOOR_P95_MULTIPLE`
+# (2.0) owns "an honest per-attempt claim floor is twice the observed
+# consecutive-pair p95", and its own comment records that the p95 over the 13
+# accepted pairs is 0.08508 dB — so the rule computes 0.17016 dB, and the
+# README's 0.2 is that same rule at conservative display rounding, not a second
+# threshold. The kernel there COMPUTES the floor from a banked repeat study;
+# this constant HARDCODES the rounded value instead, because a live VERIFY
+# sitting has no such bank to read — it holds two attempts of its own and
+# nothing else, and importing a kernel that needs a study it cannot supply would
+# buy a dependency rather than a number.
+#
+# **Which way the 17.5% gap cuts, stated carefully, because the intuition runs
+# backwards.** The discriminator declares determinism when the separation is
+# ``<=`` the floor, so a BIGGER floor is a WIDER agreement window: 0.2 fires
+# marginally MORE readily than the derived 0.17016 would, and against the
+# kernel's own rule it slightly OVER-claims determinism rather than under-
+# claiming it. That is acceptable, but not for the reason the arithmetic
+# suggests — the margin comes from the fixed-mic caveat below, which puts the
+# true same-sitting floor for a hand-held phone at or above 0.2. Measured
+# against reality rather than against the bench number, 0.2 is still the
+# conservative end.
+#
+# So a maintainer must NOT "tighten" this toward 0.17016 believing it moves
+# safe-ward: it moves the other way, narrowing the window until real repeats at
+# a hand-held mic stop being recognised as repeats and the household is handed
+# back the dead retry this whole change removes. If that kernel ever gains a
+# VERIFY-time source for its floor, this constant is what should go — replaced
+# by the computed value, not hand-edited toward it.
+#
+# **It is a fixed-mic floor, and that direction is the safe one.** The same
+# README is explicit that the mic-replacement arm — remove, replace, re-aim — is
+# unmeasured and is the dominant cross-session term (the panel's 3.2 dB bound).
+# A household CAN nudge the phone between in-session attempts, so the true
+# same-sitting floor is somewhere at or above 0.2 dB. Using the tightest
+# measured value therefore makes this discriminator HARDER to trigger: it
+# under-claims determinism, which costs a household one more retry it did not
+# need, where over-claiming would remove a retry that could have helped. Only
+# the second is a wrong answer about the speaker.
+#
+# **Consecutive, never a fixed baseline** — the README's finding 1, in its own
+# words: against a fixed early baseline the floor walks with drift
+# (+0.0046 dB/repeat, r = +0.81, ~0.07 dB over 15 repeats), against the
+# predecessor it is flat (-0.0021 dB/repeat). So the comparison below is always
+# this attempt against the one before it, and the stored value is refreshed on
+# every graded attempt. That is the opposite of G3's frozen
+# ``_verify_pilot_baseline`` above, deliberately: G3 asks whether the recording
+# chain has moved SINCE the sitting began, and this asks whether the speaker
+# gives the same answer TWICE. Different questions, different baselines.
+VERIFY_REPEAT_FLOOR_DB = 0.2
+
+#: ``terminal_outcome`` for the verdict above — the relay contract's slot for
+#: WHY the host ended the set at consume time. Its siblings are the admission
+#: ladder's settle kinds ("this position ran out of tries"); this one says the
+#: opposite kind of thing, which is why it is named rather than borrowed: the
+#: captures were fine and they agreed, and it is the agreement that ends the
+#: set. Read by the journal (``capture_relay.plan_terminal_result``); the phone
+#: carries it without branching on it.
+VERIFY_TERMINAL_OUTCOME_DETERMINISTIC = "verify_result_is_deterministic"
 
 # Re-exported from :mod:`jasper.active_speaker.crossover_v2.programs`, which
 # owns it and states why it has no switch and why both the phone's duration
@@ -4963,6 +5038,39 @@ class CrossoverV2Session:
         # session keeps the within-session protection and surrenders the
         # cross-session comparability the gate could never honestly claim.
         self._verify_pilot_baseline: dict[str, float] | None = None
+        # #1873's repeatability discriminator: the PREVIOUS VERIFY attempt's
+        # out-of-tolerance ``max_db_notch_excluded``, in this session only.
+        #
+        # A MISMATCH, not merely a grade. The claim the discriminator makes is
+        # "this mismatch repeats", so only an attempt that WAS out of tolerance
+        # can be the thing it repeats. An attempt graded inside tolerance clears
+        # this back to ``None`` — otherwise a pass at 1.4 dB and a fail at
+        # 1.55 dB, 0.15 dB apart and straddling the 1.5 dB threshold, would be
+        # called deterministic when what they actually show is a speaker sitting
+        # exactly on the line, where one more take genuinely can land under it.
+        #
+        # SESSION-SCOPED for the same ruling that made ``_verify_pilot_baseline``
+        # above session-scoped (#1927 / owner 2026-07-31), and the argument is
+        # stronger here: ``VERIFY_REPEAT_FLOOR_DB`` is a FIXED-MIC number, and a
+        # verify-only re-arm is a fresh sitting whose microphone has plausibly
+        # been re-placed. Rehydrating a previous session's grade would compare
+        # two numbers across exactly the term that floor does not cover, and
+        # would then call the result deterministic. Nothing writes this field
+        # but the tracking comparison in ``_verify_verdict``, by construction
+        # rather than by a check — so the discriminator can only ever fire on
+        # two attempts of one sitting.
+        #
+        # Cleared to ``None`` by an attempt whose tracking number was absent or
+        # non-numeric: that capture graded nothing, so it is not a mismatch
+        # anything can agree WITH, and leaving a stale value standing would let
+        # an older attempt supply the agreement. An attempt that early-returns
+        # BEFORE the tracking comparison (locate, pilot level, integrity, gate
+        # comparability, G3) never reaches it at all and leaves the last
+        # mismatch standing — it neither refreshes nor invalidates it, because
+        # it produced no grade to do either with. One intervening ungraded
+        # capture is ~21 s of the drift the repeat-floor bench measured at
+        # 0.0046 dB per repeat, which is inside the noise of a 0.2 dB window.
+        self._verify_last_mismatch_max_db: float | None = None
         # WHEN this session set the reference above (epoch float, the same
         # clock and type as the host's persisted ``failure.at``). Stamped in
         # the same statement that sets the baseline, so the two cannot
@@ -6019,7 +6127,19 @@ class CrossoverV2Session:
             # decided now — dropped and the group advanced, or the honest end
             # named — so the household is never shown a retry screen whose
             # button only leads to a pre-play refusal.
-            verdict = self._resolve_spent_slot(phase, index, slot, verdict)
+            #
+            # UNLESS the verdict already ended the set on its own finding
+            # (#1873's deterministic mismatch is the one that can). The settle
+            # would then describe the same ending twice and keep the weaker
+            # account: ``_terminal_spent_verdict`` replaces the reason with the
+            # exhaustion sentence, whose "still could not get a clean read"
+            # is simply false about captures that were clean and agreed. Same
+            # call ``_settled_group_verdict`` already makes for a close-time
+            # product gate — publish the specific finding, not the meter's
+            # summary of it. Inert for every path that predates this: the only
+            # other writers of ``terminal`` are reached FROM this method.
+            if verdict.payload.get("terminal") is not True:
+                verdict = self._resolve_spent_slot(phase, index, slot, verdict)
         if verdict.accepted:
             # A position group's PHASE is accepted only when its last index is
             # in; a single-capture phase closes on its own acceptance. Both
@@ -8879,6 +8999,61 @@ class CrossoverV2Session:
         self._verify_code = code
         self._verify_gate = gate
 
+    def _note_verify_mismatch(self, max_db: Any) -> str:
+        """Which out-of-tolerance code this attempt earns (#1873).
+
+        The single owner of both halves of the discriminator — reading the
+        previous attempt's mismatch and recording this one — so "what counts as
+        the predecessor" cannot be answered differently in two places.
+
+        ``verify_out_of_tolerance`` is the honest answer for a FIRST mismatch:
+        one bad take really can produce it, and the household is entitled to
+        try again. ``verify_deterministic_mismatch`` is the honest answer once a
+        second attempt has landed within :data:`VERIFY_REPEAT_FLOOR_DB` of the
+        first — at that separation the instrument cannot tell the two apart, so
+        what the household is looking at is the speaker's own answer, twice.
+        The finding is the same either way; what changes is whether "try again"
+        is still a real option, and that is exactly what the two codes' copy
+        and retry budgets differ on.
+
+        **The comparison is against the predecessor, never a fixed baseline** —
+        see :data:`VERIFY_REPEAT_FLOOR_DB` for the measured reason. So this
+        writes on every graded mismatch, including the one that returns the
+        deterministic code: nothing downstream re-reads it, and leaving the
+        pair stale would be a second rule to keep true.
+
+        **The non-finite guard is load-bearing for NaN — do not read it as
+        defensive tidying.** Delete it and a NaN grade arriving with a
+        predecessor in hand returns the DETERMINISTIC code: ``abs(nan - x)`` is
+        ``nan``, ``nan > VERIFY_REPEAT_FLOOR_DB`` is ``False``, so the
+        comparison below falls THROUGH to the mismatch branch and a household
+        is told an unmeasurable capture agreed with a real one. (The
+        infinities are the inert case — ``+inf`` reaches here and answers
+        ``out_of_tolerance`` with or without the guard, and ``-inf`` never
+        reaches here at all.)
+
+        It is unreachable for NaN today, and only by an upstream accident this
+        method must not depend on: the caller gates on
+        ``max_db > VERIFY_TOLERANCE_DB``, which is ``False`` for ``nan``, so a
+        NaN grade takes the PASS branch instead of arriving here. That is a
+        property of one comparison in one caller, not a contract — and the
+        answer it protects is the one that would be wrong.
+
+        Clearing the pair is the second half: a value nothing can agree with
+        must not become the thing a later attempt agrees WITH either.
+        """
+        if not isinstance(max_db, (int, float)) or not math.isfinite(float(max_db)):
+            # No usable grade: this attempt is a mismatch nothing can agree
+            # with, and it cannot agree with anything either.
+            self._verify_last_mismatch_max_db = None
+            return REASON_VERIFY_OUT_OF_TOLERANCE
+        current = float(max_db)
+        previous = self._verify_last_mismatch_max_db
+        self._verify_last_mismatch_max_db = current
+        if previous is None or abs(current - previous) > VERIFY_REPEAT_FLOOR_DB:
+            return REASON_VERIFY_OUT_OF_TOLERANCE
+        return REASON_VERIFY_DETERMINISTIC_MISMATCH
+
     def _verify_verdict(self, analysis: ProgramAnalysis) -> PhaseVerdict:
         # Reset every call — a stale value from a PRIOR attempt must never
         # leak into THIS attempt's diagnostic (mirrors ``_last_measure_guard``'s
@@ -9014,13 +9189,34 @@ class CrossoverV2Session:
         # travel in the persisted evidence as diagnostic fields only.
         max_db = tracking.get("max_db_notch_excluded")
         if not isinstance(max_db, (int, float)) or max_db > VERIFY_TOLERANCE_DB:
-            self._set_verify_outcome(
-                "fail", REASON_VERIFY_OUT_OF_TOLERANCE, gate_record,
-            )
-            return PhaseVerdict(
-                False, REASON_VERIFY_OUT_OF_TOLERANCE,
-                payload={"tracking": dict(tracking)},
-            )
+            code = self._note_verify_mismatch(max_db)
+            self._set_verify_outcome("fail", code, gate_record)
+            # Its own name: the integrity-screen branch above already binds a
+            # ``payload`` in this scope, and the two describe different
+            # captures' verdicts.
+            mismatch_payload: dict[str, Any] = {"tracking": dict(tracking)}
+            if code == REASON_VERIFY_DETERMINISTIC_MISMATCH:
+                # The runner's own contract for "no later capture can make this
+                # set usable" (``capture_relay.session.run_capture_plan``): it
+                # publishes this exact ``capture_result`` and returns, instead
+                # of waiting for a next begin whose only answer is a refusal.
+                # That is what stops the retry loop riding the relay session
+                # into TTL expiry — the session closes on the verdict rather
+                # than on the clock. The phone has rendered a terminal
+                # ``capture_result`` since build 20260803.4 (#2097), so this
+                # needs no page change: it drops the live "Try again" and shows
+                # the host's own ``reason`` with a route back to the speaker
+                # page, where Undo and Re-measure live.
+                mismatch_payload["terminal"] = True
+                mismatch_payload["terminal_outcome"] = (
+                    VERIFY_TERMINAL_OUTCOME_DETERMINISTIC
+                )
+            return PhaseVerdict(False, code, payload=mismatch_payload)
+        # Graded, and inside tolerance: the mismatch did NOT repeat, so the pair
+        # #1873's discriminator would draw its claim from is broken. A later
+        # failure in the same session starts a fresh pair rather than agreeing
+        # with a grade that has a passing attempt between it and now.
+        self._verify_last_mismatch_max_db = None
         # PR-L5's delta probe. Runs only once tracking has PASSED — a session
         # that already failed at the handoff band does not need a second
         # verdict about the same capture, and its retry budget (2) still means
@@ -10937,6 +11133,8 @@ __all__ = [
     "SWEEP_SCHEDULE_RESIDUAL_CEILING_MS",
     "SWEEP_LOCATE_CONFIDENCE_FLOOR",
     "VERIFY_PILOT_TRANSFER_STEP_CEILING_DB",
+    "VERIFY_REPEAT_FLOOR_DB",
+    "VERIFY_TERMINAL_OUTCOME_DETERMINISTIC",
     "alignment_to_candidate_fields",
     "back_off_gain",
     "TEMPLATE_SILENT_AUTO_RETRY",
@@ -10962,6 +11160,7 @@ __all__ = [
     "REASON_PROGRAM_PROFILE_INCOMPLETE",
     "REASON_INTERNAL_ERROR",
     "REASON_VERIFY_OUT_OF_TOLERANCE",
+    "REASON_VERIFY_DETERMINISTIC_MISMATCH",
     "REASON_VERIFY_CROSSOVER_REGION",
     "REASON_VERIFY_INCONCLUSIVE",
     "REASON_VERIFY_LEVEL_SHIFT",
