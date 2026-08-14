@@ -279,7 +279,11 @@ def test_shm_ring_mixer_publishes_slots_and_opens_no_aloop_pcm():
     assert "RING_SLOT_FRAMES" in text
 
     ring_arm = _shm_ring_construction_arm(text)
-    for opener in ("open_output(", "open_music_output(", "PCM::new("):
+    # `open_music_output(` was a third name here until 2026-08-14, when the
+    # unconsumed `JASPER_FANIN_MUSIC_OUTPUT_PCM` tap was deleted by owner ruling.
+    # A name that cannot appear anywhere in the crate guards nothing; the general
+    # `PCM::new(` below already catches any re-added playback open in this arm.
+    for opener in ("open_output(", "PCM::new("):
         assert opener not in ring_arm, (
             f"the ShmRing arm must open no ALSA PCM — found {opener!r}. The aloop "
             "mirror was removed in U4/P7-4; the ring is the whole output here. "

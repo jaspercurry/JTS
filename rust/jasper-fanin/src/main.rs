@@ -467,7 +467,6 @@ fn run() -> Result<()> {
             input_buffer_frames: config.input_buffer_frames,
             output_buffer_frames: config.output_buffer_frames,
             output_pcm: config.output_pcm.clone(),
-            music_output_pcm: config.music_output_pcm.clone(),
             tts_metrics,
             host_clock_fragment: Arc::clone(&host_clock_fragment),
         },
