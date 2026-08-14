@@ -717,6 +717,13 @@ What exists:
   one key moves, because the preserved env is known to start and writing more
   (clearing the active-lane pair under an armed shm-ring content bridge) would
   trip outputd's own allowlist and park it at exit 78 instead.
+  The park is additionally gated on the pass having **observed** the hardware
+  at all: a pass whose observation failed knows strictly less than the pass
+  that wrote that env, and it re-renders no ALSA template either, so the two
+  artifacts on disk stay the coherent pair they already were and preserving is
+  the better bet. That is what keeps a broken interpreter — which fails the
+  observation and the endpoint contract together — from parking a healthy
+  recognized DAC.
 - Apple-only analog mixer services: `jasper-dac-init.service` and
   `jasper-headphone-monitor.service` exist to pin/watch the Apple USB-C
   dongle `Headphone` control. The audio-hardware reconciler enables
