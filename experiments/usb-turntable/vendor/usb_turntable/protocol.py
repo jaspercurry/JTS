@@ -29,7 +29,12 @@ STARTUP_QUIET_SECONDS = 0.5
 STARTUP_NOISE_MAX_BYTES = 64
 HEARTBEAT_INTERVAL = 1.0
 HEARTBEAT_LOST_AFTER = 5.0
+# At 115200 baud, 20 ms is over 200 byte-times but far below the 1 Hz heartbeat.
+HEARTBEAT_INTERBYTE_QUIET_SECONDS = 0.020
 SETTLE_SECONDS = 0.300
+NORMAL_HEARTBEAT = "#"
+REMOTE_LOS_HEARTBEAT = "###"
+STARTUP_TIMEOUT_FRAME = b"CR+ERR=31;"
 
 
 class Transport(Protocol):
@@ -51,6 +56,7 @@ class FrameParser:
 
     def __init__(self) -> None:
         self.buffer = bytearray()
+        self._heartbeat_run = 0
 
     def feed(self, payload: bytes) -> tuple[list[str], list[str]]:
         frames: list[str] = []
@@ -60,15 +66,13 @@ class FrameParser:
             if payload[index] == ord("#"):
                 if self.buffer:
                     raise ProtocolError("heartbeat byte appeared inside a protocol frame")
-                end = index + 1
-                while end < len(payload) and payload[end] == ord("#"):
-                    end += 1
-                heartbeat = bytes(payload[index:end])
-                if len(heartbeat) >= 3:
-                    raise ProtocolError(f"malformed heartbeat bytes: {heartbeat!r}")
-                heartbeats.extend("#" for _ in heartbeat)
-                index = end
+                self._heartbeat_run += 1
+                if self._heartbeat_run > 3:
+                    run = b"#" * self._heartbeat_run
+                    raise ProtocolError(f"malformed heartbeat bytes: {run!r}")
+                index += 1
                 continue
+            heartbeats.extend(self.finalize_heartbeat_run())
             if payload[index] in (0, 10, 13):
                 raise ProtocolError(f"forbidden control byte 0x{payload[index]:02x} in protocol stream")
             if payload[index] == ord(";"):
@@ -86,9 +90,97 @@ class FrameParser:
             index += 1
         return frames, heartbeats
 
+    def finalize_heartbeat_run(self) -> list[str]:
+        """Classify a hash run only after a non-hash byte or inter-byte quiet."""
+        count, self._heartbeat_run = self._heartbeat_run, 0
+        if count == 0:
+            return []
+        if count in (1, 2):
+            return [NORMAL_HEARTBEAT] * count
+        if count == 3:
+            return [REMOTE_LOS_HEARTBEAT]
+        run = b"#" * count
+        raise ProtocolError(f"malformed heartbeat bytes: {run!r}")
+
+    @property
+    def heartbeat_pending(self) -> bool:
+        return self._heartbeat_run > 0
+
     @property
     def pending(self) -> str:
-        return bytes(self.buffer).decode("ascii", errors="backslashreplace")
+        heartbeat = NORMAL_HEARTBEAT * self._heartbeat_run
+        frame = bytes(self.buffer).decode("ascii", errors="backslashreplace")
+        return heartbeat + frame
+
+
+class _StartupStreamParser:
+    """Recognize the one approved open-time byte-stream shape."""
+
+    def __init__(self) -> None:
+        self.state = "idle"
+        self.prefix_length = 0
+        self.prefix_has_ff = False
+        self.frame_index = 0
+
+    def _finish_prefix(self) -> None:
+        if not 1 <= self.prefix_length <= STARTUP_NOISE_MAX_BYTES:
+            raise ProtocolError("startup noise prefix length is outside 1..64 bytes")
+        if not self.prefix_has_ff:
+            raise ProtocolError("startup noise prefix did not contain 0xff")
+        self.state = "expect_timeout_frame"
+
+    def allow_heartbeat(self) -> None:
+        if self.state == "prefix":
+            self._finish_prefix()
+        elif self.state == "timeout_frame":
+            raise ProtocolError("heartbeat appeared inside CR+ERR=31 startup frame")
+
+    def feed_nonheartbeat(self, byte: int) -> None:
+        if byte == ord("#"):
+            raise ValueError("heartbeat bytes must use allow_heartbeat")
+        if self.state == "idle":
+            if byte not in (0xFE, 0xFF):
+                raise ProtocolError(f"startup returned unapproved byte 0x{byte:02x}")
+            self.state = "prefix"
+            self._append_prefix_byte(byte)
+            return
+        if self.state == "prefix":
+            if byte in (0xFE, 0xFF):
+                self._append_prefix_byte(byte)
+                return
+            self._finish_prefix()
+        if self.state == "expect_timeout_frame":
+            if byte != STARTUP_TIMEOUT_FRAME[0]:
+                raise ProtocolError("startup noise prefix was not followed by exact CR+ERR=31;")
+            self.state = "timeout_frame"
+            self.frame_index = 1
+            return
+        if self.state == "timeout_frame":
+            if byte != STARTUP_TIMEOUT_FRAME[self.frame_index]:
+                raise ProtocolError("malformed CR+ERR=31 startup frame")
+            self.frame_index += 1
+            if self.frame_index == len(STARTUP_TIMEOUT_FRAME):
+                self.state = "complete"
+            return
+        raise ProtocolError("unexpected or duplicate data after CR+ERR=31 startup frame")
+
+    def _append_prefix_byte(self, byte: int) -> None:
+        self.prefix_length += 1
+        if self.prefix_length > STARTUP_NOISE_MAX_BYTES:
+            raise ProtocolError("startup noise prefix exceeded 64 bytes")
+        self.prefix_has_ff = self.prefix_has_ff or byte == 0xFF
+
+    @property
+    def shape_complete(self) -> bool:
+        return self.state in ("idle", "complete")
+
+    @property
+    def pending_detail(self) -> str:
+        return {
+            "prefix": "startup noise prefix was not followed by CR+ERR=31;",
+            "expect_timeout_frame": "startup noise prefix was not followed by CR+ERR=31;",
+            "timeout_frame": "CR+ERR=31 startup frame was incomplete",
+        }.get(self.state, "startup stream did not complete")
 
 
 def _error_code(frame: str) -> int | None:
@@ -154,6 +246,7 @@ class ProtocolSession:
         self._next_heartbeat_at = now + HEARTBEAT_INTERVAL
         self._last_rx_heartbeat: float | None = None
         self._heartbeat_state = "local_fail"
+        self._last_heartbeat_byte_at: float | None = None
         self._last_command_at: float | None = None
         self.synchronized = False
 
@@ -169,74 +262,130 @@ class ProtocolSession:
 
     def _accept_heartbeats(self, heartbeats: list[str]) -> None:
         for heartbeat in heartbeats:
-            self._last_rx_heartbeat = self.monotonic()
-            self._heartbeat_state = "normal"
+            now = self.monotonic()
+            self._last_rx_heartbeat = now
+            if heartbeat == REMOTE_LOS_HEARTBEAT:
+                self._heartbeat_state = "remote_fail"
+                if self.heartbeat:
+                    # The vendor FSM sends a normal heartbeat while the remote
+                    # endpoint reports LOS. Receiving it lets that endpoint
+                    # leave LOS and resume its normal heartbeat.
+                    self.transport.write(b"#")
+                    self._next_heartbeat_at = now + HEARTBEAT_INTERVAL
+            else:
+                self._heartbeat_state = "normal"
+
+    def _feed_protocol(self, chunk: bytes) -> list[str]:
+        frames, heartbeats = self.parser.feed(chunk)
+        if self.parser.heartbeat_pending:
+            self._last_heartbeat_byte_at = self.monotonic()
+        else:
+            self._last_heartbeat_byte_at = None
+        self._accept_heartbeats(heartbeats)
+        return frames
+
+    def _finalize_heartbeat_run(self) -> None:
+        heartbeats = self.parser.finalize_heartbeat_run()
+        self._last_heartbeat_byte_at = None
+        self._accept_heartbeats(heartbeats)
+
+    def _heartbeat_quiet_deadline(self) -> float | None:
+        if not self.parser.heartbeat_pending or self._last_heartbeat_byte_at is None:
+            return None
+        return self._last_heartbeat_byte_at + HEARTBEAT_INTERBYTE_QUIET_SECONDS
+
+    def _link_is_normal(self) -> bool:
+        if not self.heartbeat:
+            return True
+        now = self.monotonic()
+        if self._last_rx_heartbeat is None or now - self._last_rx_heartbeat > HEARTBEAT_LOST_AFTER:
+            self._heartbeat_state = "local_fail"
+        return self._heartbeat_state == "normal"
 
     def synchronize(self) -> None:
         """Observe a bounded, quiescent startup stream before the first CT byte."""
         started = self.monotonic()
         deadline = started + self.startup_timeout
         last_nonheartbeat = started
-        normal_heartbeat_seen = False
-        prefix_seen = False
-        timeout_frame_seen = False
+        link_normal = False
+        startup = _StartupStreamParser()
         while self.monotonic() < deadline:
             self._send_heartbeat_if_due()
             remaining = deadline - self.monotonic()
-            chunk = self.transport.read_chunk(min(0.1, max(0.0, remaining)))
+            wait = min(0.1, max(0.0, remaining))
+            quiet_deadline = self._heartbeat_quiet_deadline()
+            if quiet_deadline is not None:
+                wait = min(wait, max(0.0, quiet_deadline - self.monotonic()))
+            chunk = self.transport.read_chunk(wait)
             if chunk:
-                if all(byte == ord("#") for byte in chunk):
-                    try:
-                        frames, heartbeats = FrameParser().feed(chunk)
-                    except ProtocolError as exc:
-                        raise StartupSynchronizationError(str(exc)) from exc
-                    if frames or not heartbeats or any(item != "#" for item in heartbeats):
-                        raise StartupSynchronizationError("startup returned a non-normal heartbeat")
-                    self._accept_heartbeats(heartbeats)
-                    normal_heartbeat_seen = True
-                elif (
-                    not prefix_seen
-                    and not timeout_frame_seen
-                    and 1 <= len(chunk) <= STARTUP_NOISE_MAX_BYTES
-                    and all(byte in (0xFE, 0xFF) for byte in chunk)
-                    and 0xFF in chunk
-                ):
-                    prefix_seen = True
-                    last_nonheartbeat = self.monotonic()
-                elif prefix_seen and not timeout_frame_seen and chunk == b"CR+ERR=31;":
-                    timeout_frame_seen = True
-                    last_nonheartbeat = self.monotonic()
-                else:
-                    raise StartupSynchronizationError(
-                        f"startup returned unapproved bytes: {chunk.hex()}"
-                    )
+                try:
+                    for byte in chunk:
+                        if byte == ord("#"):
+                            startup.allow_heartbeat()
+                            self._feed_protocol(b"#")
+                        else:
+                            self._finalize_heartbeat_run()
+                            startup.feed_nonheartbeat(byte)
+                            last_nonheartbeat = self.monotonic()
+                except ProtocolError as exc:
+                    raise StartupSynchronizationError(str(exc)) from exc
+            quiet_deadline = self._heartbeat_quiet_deadline()
+            if (
+                not chunk
+                and wait == 0
+                and quiet_deadline is not None
+                and self.monotonic() >= quiet_deadline
+            ):
+                try:
+                    self._finalize_heartbeat_run()
+                except ProtocolError as exc:
+                    raise StartupSynchronizationError(str(exc)) from exc
+            link_normal = self._heartbeat_state == "normal"
             now = self.monotonic()
-            shape_complete = (not prefix_seen and not timeout_frame_seen) or (
-                prefix_seen and timeout_frame_seen
-            )
             if (
                 now - started >= STARTUP_OBSERVE_SECONDS
                 and now - last_nonheartbeat >= STARTUP_QUIET_SECONDS
-                and normal_heartbeat_seen
-                and shape_complete
+                and link_normal
+                and not self.parser.heartbeat_pending
+                and startup.shape_complete
             ):
                 self.synchronized = True
                 return
         detail = ""
-        if not normal_heartbeat_seen:
+        if self.parser.heartbeat_pending:
+            detail = ": heartbeat run did not reach an inter-byte quiet boundary"
+        elif not startup.shape_complete:
+            detail = f": {startup.pending_detail}"
+        elif not link_normal:
             detail = ": no normal heartbeat observed"
-        elif prefix_seen != timeout_frame_seen:
-            detail = ": incomplete startup noise/CR+ERR=31 pair"
         raise StartupSynchronizationError(f"startup did not become synchronized{detail}")
 
     def _read_runtime(self, timeout: float) -> list[str]:
-        self._send_heartbeat_if_due()
-        chunk = self.transport.read_chunk(max(0.0, timeout))
-        if not chunk:
-            return []
-        frames, heartbeats = self.parser.feed(chunk)
-        self._accept_heartbeats(heartbeats)
-        return frames
+        frames: list[str] = []
+        deadline = self.monotonic() + max(0.0, timeout)
+        attempted_read = False
+        while True:
+            self._send_heartbeat_if_due()
+            now = self.monotonic()
+            quiet_deadline = self._heartbeat_quiet_deadline()
+            if quiet_deadline is None and attempted_read:
+                return frames
+            wait_until = quiet_deadline if quiet_deadline is not None else deadline
+            wait = max(0.0, wait_until - now)
+            chunk = self.transport.read_chunk(wait)
+            attempted_read = True
+            if chunk:
+                frames.extend(self._feed_protocol(chunk))
+                if not self.parser.heartbeat_pending:
+                    return frames
+                continue
+            quiet_deadline = self._heartbeat_quiet_deadline()
+            if quiet_deadline is not None:
+                if wait == 0 and self.monotonic() >= quiet_deadline:
+                    self._finalize_heartbeat_run()
+                    return frames
+                continue
+            return frames
 
     def _reject_device_error(self, command: str, frames: list[str]) -> None:
         for frame in frames:
@@ -257,6 +406,37 @@ class ProtocolSession:
         if self.monotonic() < due:
             self._require_quiet_until(due, "between-command receive")
 
+    def _recover_runtime_link(self) -> None:
+        if self._link_is_normal():
+            return
+        deadline = self.monotonic() + self.response_timeout
+        while self.monotonic() < deadline:
+            frames = self._read_runtime(min(0.1, deadline - self.monotonic()))
+            if frames or self.parser.pending:
+                raise ProtocolError(
+                    "link recovery received unexpected protocol data: "
+                    f"frames={frames!r}, pending={self.parser.pending!r}"
+                )
+            if self._link_is_normal():
+                return
+        raise CommunicationTimeout(
+            f"link did not return to a normal heartbeat within {self.response_timeout:.1f}s"
+        )
+
+    def _prepare_command(self) -> None:
+        self._pace()
+        frames = self._read_runtime(0.0)
+        if frames or self.parser.pending:
+            raise ProtocolError(
+                "pre-command receive was not quiescent: "
+                f"frames={frames!r}, pending={self.parser.pending!r}"
+            )
+        self._recover_runtime_link()
+
+    def _finish_command(self, command: str) -> None:
+        self._require_quiet_until(self.monotonic() + SETTLE_SECONDS, f"{command} settle")
+        self._recover_runtime_link()
+
     @staticmethod
     def _encode(command: str) -> bytes:
         try:
@@ -268,7 +448,7 @@ class ProtocolSession:
         if not self.synchronized:
             raise ProtocolError("session must be synchronized before sending a command")
         command = build_command(spec, *parameters)
-        self._pace()
+        self._prepare_command()
         self.transport.write(self._encode(command))
         self._last_command_at = self.monotonic()
         deadline = self.monotonic() + self.response_timeout
@@ -294,7 +474,7 @@ class ProtocolSession:
                     raise ProtocolError(f"unexpected frame for {command}: {frame!r}")
         if not acknowledged:
             raise CommunicationTimeout(f"no exact CR+OK for {command} within {self.response_timeout:.1f}s")
-        self._require_quiet_until(self.monotonic() + SETTLE_SECONDS, f"{command} settle")
+        self._finish_command(command)
         return ExchangeResult(command, tuple(frames), True, True, False)
 
     def execute_motion(self, spec: CommandSpec, *parameters: object) -> ExchangeResult:
@@ -303,7 +483,7 @@ class ProtocolSession:
         if not self.synchronized:
             raise ProtocolError("session must be synchronized before sending a command")
         command = build_command(spec, *parameters)
-        self._pace()
+        self._prepare_command()
         self.transport.write(self._encode(command))
         self._last_command_at = self.monotonic()
         ack_deadline = self.monotonic() + self.response_timeout
@@ -334,5 +514,5 @@ class ProtocolSession:
             raise CommunicationTimeout(f"no exact CR+OK for {command} within {self.response_timeout:.1f}s")
         if not completed:
             raise CompletionTimeout(f"{command} was acknowledged but no exact TB_END arrived within {self.motion_timeout:.1f}s")
-        self._require_quiet_until(self.monotonic() + SETTLE_SECONDS, f"{command} settle")
+        self._finish_command(command)
         return ExchangeResult(command, tuple(frames), True, True, pause_seen)

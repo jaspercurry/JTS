@@ -136,6 +136,16 @@ serial line as success:
   true. `pause_seen` separately records an optional pause event during motion.
 - `frames` preserves the relevant controller responses for diagnosis.
 
+The upstream package assembles heartbeat hash runs across serial reads and
+classifies them after 20 ms of inter-byte quiet. Exact `###` reports remote link
+loss, and the controller replies with `#` and waits for a normal heartbeat.
+Fresh-open recovery is bounded by `--startup-timeout`; once synchronized,
+runtime pre-command and post-settle recovery is bounded by
+`--response-timeout`. Four or more consecutive hash bytes fail explicitly. A
+recovery error after an acknowledged command means the platform may already
+have acted even though this wrapper exits nonzero; inspect the physical
+platform before another command.
+
 The wrapper exits `0` only for those strict successes and `1` for no detected
 device, a blocked preflight, controller/protocol failure, or an incomplete
 operation. Argument errors exit `2`.
@@ -164,6 +174,14 @@ Successful command `frames` begin after synchronization; quarantined startup
 bytes are not command responses. Do not work around startup noise by teaching
 JTS to accept arbitrary serial lines as acknowledgements; fix that behavior in
 the upstream package.
+
+**Heartbeat recovery failure.** An exact `###` heartbeat puts the link into a
+bounded recovery state. The controller answers with `#` but sends no new command
+until a normal heartbeat arrives. During fresh-open startup, that wait is
+bounded by `--startup-timeout`; runtime recovery before a command or after its
+settle is bounded by `--response-timeout`. If recovery times out, inspect the
+USB path and the platform state before retrying; after-command recovery can fail
+after the requested physical action has already occurred.
 
 **Acknowledged but incomplete.** If conditions remain safe, send the vendor
 stop request, inspect `frames`, and retry only after confirming the platform is

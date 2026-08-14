@@ -15,6 +15,13 @@ source-plus-manifest rewrite therefore fails closed unless the adapter's trust
 root is deliberately updated. Update this tree only by replacing it from the
 upstream package, regenerating the manifest, and updating that trust root.
 
+This snapshot includes the upstream bounded heartbeat-link recovery merged by
+USB-Turntable PR #2: exact `###` link-loss reports are answered with `#`, command
+traffic waits for a normal heartbeat, and malformed or timed-out recovery fails
+explicitly. Fresh-open recovery is bounded by the adapter's
+`--startup-timeout`; runtime pre-command and post-settle recovery is bounded by
+`--response-timeout`.
+
 The package uses only the Python standard library and requires Python 3.10 or
 newer.
 

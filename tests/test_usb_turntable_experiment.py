@@ -140,11 +140,11 @@ def test_vendored_upstream_snapshot_matches_manifest(turntable) -> None:
     manifest = turntable.verify_vendor()
 
     assert turntable.VENDOR_MANIFEST_SHA256 == (
-        "b2e050948d7656706cd700c72c080dbf0a6b2425f11a23554be232978f76734d"
+        "371ae63ab8ada0866b5efce93d013b5d592950066adb38d43e59b823d8c32fd3"
     )
-    assert manifest["commit"] == "6a72332a0d9a630efcb7f37be66bfbaa5768caeb"
+    assert manifest["commit"] == "64a37c31161ffc02b9467c26d4fa06d7fb8b3334"
     assert manifest["aggregate_sha256"] == (
-        "a16d1674bdbdda564813df669a8ad199cbaef7f36922a703f607d41ce38e4005"
+        "ae0660b4f67eb31ec56ae4a10d681ae347b5abfeb9ca516b67821a08304ab7aa"
     )
     assert len(manifest["files"]) == 9
     assert manifest["runtime_dependencies"] == []
@@ -652,7 +652,7 @@ def test_relative_turn_rejects_non_positive_or_non_finite_degrees(
 
 def test_stop_and_motion_timeout_language_preserves_safety_boundary(turntable) -> None:
     help_text = " ".join(turntable.build_parser().format_help().split())
-    readme = README.read_text()
+    readme = " ".join(README.read_text().split())
 
     assert "send the vendor stop request" in help_text
     assert "expiry does not stop platform motion" in help_text
@@ -660,6 +660,14 @@ def test_stop_and_motion_timeout_language_preserves_safety_boundary(turntable) -
     assert "delay or prevent transmission" in readme
     assert "does not cancel or stop platform motion" in readme
     assert "hardware power cutoff" in readme
+    assert "classifies them after 20 ms of inter-byte quiet" in readme
+    assert "Exact `###` reports remote link loss" in readme
+    assert "Fresh-open recovery is bounded by `--startup-timeout`" in readme
+    assert (
+        "runtime pre-command and post-settle recovery is bounded by "
+        "`--response-timeout`"
+    ) in readme
+    assert "platform may already have acted" in readme
     assert "request an immediate stop" not in help_text
     assert "# Always available" not in readme
     assert "**Emergency stop.**" not in readme
