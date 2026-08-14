@@ -95,6 +95,36 @@ STATUS_POLL_TRANSIENT_GRACE_S = 15.0
 # level drops, and GIVING UP is always a WARNING regardless of the budget.
 STATUS_POLL_WARN_BUDGET = 10
 
+# The same tolerance, for the one call the grace above deliberately did not
+# cover: the BLOB PULL (issue #1650). Same number because it answers the same
+# policy question — how long is a relay that has stopped answering an outage
+# rather than a death — and it is the same object rather than a second literal
+# so the two can never drift apart.
+#
+# What is NOT shared is the ANCHOR, and that is the load-bearing half. The pull
+# runs inside the poll loop, one line after a status call that just SUCCEEDED,
+# so a run of failing pulls is interleaved with healthy status polls. Sharing
+# ``transient_since`` would let each of those successes clear the anchor and
+# the retry would never expire — a relay that answers ``/status`` but cannot
+# serve ``/blob`` would spin until the phone-inactivity deadline fired and
+# blamed the household for an upload they had already completed. A separate
+# anchor, cleared only by a pull that actually SUCCEEDS, bounds the retry at
+# this grace no matter how healthy the control plane looks.
+#
+# Why re-pulling is sound at all: ``GET /sessions/:id/blob`` is a pure read of
+# stored bytes (``relay/src/worker.js`` — the Worker deletes a blob only on an
+# explicit DELETE or TTL expiry), so the capture the phone already uploaded is
+# still there. Nothing is re-recorded and the household is not asked for
+# anything; the Pi simply asks again for bytes it failed to receive.
+#
+# And why this has NO counterpart to STATUS_POLL_WARN_BUDGET: the journal cost
+# is bounded by construction, so there is no flap to cap. Only a SUCCESSFUL
+# pull clears the anchor, and a successful pull is a capture consumed — so the
+# retries are bounded by this grace per capture, and the captures by the plan's
+# own ``max_attempts``. The status poll needed a budget precisely because it has
+# no such ceiling: it runs at the poll cadence for the whole session.
+BLOB_PULL_TRANSIENT_GRACE_S = STATUS_POLL_TRANSIENT_GRACE_S
+
 # The deferred-by-design APPLY-hold budget. When the next plan entry's begin
 # is gated on an external event (``auto_advance == "on_apply"`` — the
 # "applying" hold between MEASURE and VERIFY), the phone is deliberately
@@ -1691,6 +1721,10 @@ def _poll_capture_plan(
     # Every tolerated poll this SESSION, across outages — never reset, because
     # bounding a flap is the whole point (see STATUS_POLL_WARN_BUDGET).
     transient_total = 0
+    # The blob pull's OWN outage anchor (``None`` while pulls are succeeding),
+    # cleared only by a successful pull. Deliberately not the one above — see
+    # BLOB_PULL_TRANSIENT_GRACE_S for why sharing it would never expire.
+    blob_pull_stalled_since: float | None = None
     while True:
         raise_if_stopped()
         attempt_started = monotonic()
@@ -2103,11 +2137,55 @@ def _poll_capture_plan(
                     session_id=session.session_id,
                     capture_index=capture_index,
                 )
-                blob, header_integrity = client.pull_blob(
-                    session.session_id,
-                    session.pull_token,
-                    capture_index=capture_index,
-                )
+                pull_started = monotonic()
+                try:
+                    blob, header_integrity = client.pull_blob(
+                        session.session_id,
+                        session.pull_token,
+                        capture_index=capture_index,
+                    )
+                except (OSError, RelayError) as exc:
+                    # The capture is UPLOADED and safe on the relay; only our
+                    # fetch of it failed. Giving up here is the one failure
+                    # that voids work the household already did right, so a
+                    # transient stall is re-pulled rather than fatal
+                    # (issue #1650). See BLOB_PULL_TRANSIENT_GRACE_S.
+                    if not is_transient_relay_failure(exc):
+                        raise
+                    if blob_pull_stalled_since is None:
+                        blob_pull_stalled_since = pull_started
+                    stalled_for_s = monotonic() - blob_pull_stalled_since
+                    if stalled_for_s > BLOB_PULL_TRANSIENT_GRACE_S:
+                        # Re-raise the ORIGINAL exception, so every caller
+                        # classifies this exactly as it did before the
+                        # tolerance existed.
+                        log_event(
+                            logger,
+                            "capture_relay.blob_pull_gave_up",
+                            level=logging.WARNING,
+                            session_id=session.session_id,
+                            index=index,
+                            attempt=attempt,
+                            capture_index=capture_index,
+                            stalled_for_s=round(stalled_for_s, 1),
+                            error=type(exc).__name__,
+                        )
+                        raise
+                    log_event(
+                        logger,
+                        "capture_relay.blob_pull_transient",
+                        level=logging.WARNING,
+                        session_id=session.session_id,
+                        index=index,
+                        attempt=attempt,
+                        capture_index=capture_index,
+                        stalled_for_s=round(stalled_for_s, 1),
+                        grace_s=BLOB_PULL_TRANSIENT_GRACE_S,
+                        error=type(exc).__name__,
+                    )
+                    sleep(poll_interval_s)
+                    continue
+                blob_pull_stalled_since = None
                 raise_if_stopped()
                 integrity = (
                     _plan_blob_integrity(state, capture_index)

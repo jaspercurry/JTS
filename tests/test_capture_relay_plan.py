@@ -34,6 +34,7 @@ from jasper.capture_relay import crypto
 from jasper.capture_relay.client import RelayClient, RelayError, RelayResponse
 from jasper.capture_relay.integrity import authenticated_phone_event
 from jasper.capture_relay.session import (
+    BLOB_PULL_TRANSIENT_GRACE_S,
     STATUS_POLL_TRANSIENT_GRACE_S,
     STATUS_POLL_WARN_BUDGET,
     CaptureActivityProbe,
@@ -1765,6 +1766,201 @@ def test_a_dead_session_answer_is_never_retried():
     assert excinfo.value.status == 404
     assert counts["stalled"] == 1  # raised on the first, never re-polled
     assert clock["t"] == 10.0  # and burned no extra grace doing it
+
+
+def _stalling_pull_blob(client, clock, *, stalls, stall_s, exc=None):
+    """Stall the first ``stalls`` BLOB PULLS, then serve normally.
+
+    The field shape (issue #1650): the GET went out, the multi-megabyte body
+    never came back, and the socket timed out — so the clock really advances
+    by the request's whole budget on every stall."""
+    real_pull = client.pull_blob
+    budget = {"left": stalls}
+    counts = {"stalled": 0, "ok": 0}
+
+    def pull_blob(*args, **kwargs):
+        if budget["left"] > 0:
+            budget["left"] -= 1
+            counts["stalled"] += 1
+            clock["t"] += stall_s
+            raise (exc if exc is not None else TimeoutError("relay stalled"))
+        counts["ok"] += 1
+        return real_pull(*args, **kwargs)
+
+    client.pull_blob = pull_blob
+    return counts, budget
+
+
+def test_one_transient_blob_pull_stall_does_not_void_an_uploaded_capture(caplog):
+    """THE INCIDENT (issue #1650). The phone's capture was uploaded and safe on
+    the relay; one stalled pull of it killed the session and the capture was
+    never analyzed — the void the household experiences as a dead end after
+    doing everything right.
+
+    The blob pull is the largest request a session makes (megabytes, against
+    R2) and it runs on the same control-plane timeout as a status poll, so it
+    is the call MOST likely to stall — and it was the only one with no
+    tolerance. A ``GET /blob`` is a pure read the Worker serves from stored
+    bytes, so re-pulling is not a gamble: the capture is still there."""
+    caplog.set_level(logging.WARNING, logger="jasper.capture_relay.session")
+    backend = FakePlanRelayBackend()
+    client, session, _phone = _mint_plan_session(backend)
+    authorize, on_armed, consume, authorized, consumed = _plan_callbacks(
+        backend, session
+    )
+    clock, monotonic, sleep = _walk_clock()
+    counts, _budget = _stalling_pull_blob(client, clock, stalls=1, stall_s=10.0)
+
+    outcomes = run_capture_plan(
+        client,
+        session,
+        authorize_begin=authorize,
+        on_armed=on_armed,
+        consume_capture=consume,
+        **_run_kwargs(sleep=sleep, monotonic=monotonic),
+    )
+
+    # The walk finished unchanged — and, the point of the issue, the capture
+    # whose pull stalled was actually CONSUMED rather than silently voided.
+    assert [(o.index, o.attempt, o.accepted) for o in outcomes] == [
+        (1, 1, True),
+        (2, 2, True),
+        (3, 3, True),
+    ]
+    assert [wav for (_i, _a, wav) in consumed] == [_wav(1), _wav(2), _wav(3)]
+    assert authorized == [(1, 1), (2, 2), (3, 3)]
+    assert backend.phases(session.session_id)[-1] == "capture_set_complete"
+    # The stall really happened, and it is not silent.
+    assert counts["stalled"] == 1
+    assert "capture_relay.blob_pull_transient" in caplog.text
+    assert "capture_relay.blob_pull_gave_up" not in caplog.text
+
+
+def test_a_sustained_blob_pull_outage_still_ends_the_session(caplog):
+    """The other half of the promise, and the reason the pull carries its OWN
+    outage anchor.
+
+    Every retry here is preceded by a status poll that SUCCEEDS — the pull sits
+    one line below it inside the same loop — so an anchor shared with the
+    status grace would be cleared on every pass and this session would retry
+    until the phone-inactivity deadline fired and told the household their
+    phone never uploaded, which it had. Anchored on the pull alone, the run of
+    failures is what it looks like: one outage, bounded by the grace."""
+    caplog.set_level(logging.WARNING, logger="jasper.capture_relay.session")
+    backend = FakePlanRelayBackend()
+    client, session, _phone = _mint_plan_session(backend)
+    authorize, on_armed, consume, _authorized, consumed = _plan_callbacks(
+        backend, session
+    )
+    clock, monotonic, sleep = _walk_clock()
+    real_status = client.status
+    status_ok = {"n": 0}
+
+    def status(*args, **kwargs):
+        status_ok["n"] += 1
+        return real_status(*args, **kwargs)
+
+    client.status = status
+    counts, budget = _stalling_pull_blob(client, clock, stalls=99, stall_s=10.0)
+
+    with pytest.raises(TimeoutError):
+        run_capture_plan(
+            client,
+            session,
+            authorize_begin=authorize,
+            on_armed=on_armed,
+            consume_capture=consume,
+            **_run_kwargs(sleep=sleep, monotonic=monotonic),
+        )
+
+    # Bounded: it gave up on the SECOND stall (10 s is inside the 15 s window,
+    # 20 s is past it), nowhere near the 99 it was offered — and it did so
+    # while the control plane was answering every single time.
+    assert counts["stalled"] == 2
+    assert budget["left"] == 97
+    assert status_ok["n"] > counts["stalled"]
+    assert not consumed  # the capture was never analyzed, and we say so
+    assert "capture_relay.blob_pull_gave_up" in caplog.text
+
+
+def test_a_dead_session_answer_to_a_blob_pull_is_never_retried():
+    """The boundary the pull tolerance must not cross, mirroring the status
+    poll's. 401/403/404/410 is the relay stating a fact — the session is purged
+    or expired, the blob is gone — and re-asking cannot change it. Spending the
+    grace on it would only delay the honest terminal."""
+    backend = FakePlanRelayBackend()
+    client, session, _phone = _mint_plan_session(backend)
+    authorize, on_armed, consume, _authorized, _consumed = _plan_callbacks(
+        backend, session
+    )
+    clock, monotonic, sleep = _walk_clock()
+    counts, _budget = _stalling_pull_blob(
+        client, clock, stalls=99, stall_s=10.0, exc=RelayError("gone", 410)
+    )
+
+    with pytest.raises(RelayError) as excinfo:
+        run_capture_plan(
+            client,
+            session,
+            authorize_begin=authorize,
+            on_armed=on_armed,
+            consume_capture=consume,
+            **_run_kwargs(sleep=sleep, monotonic=monotonic),
+        )
+
+    assert excinfo.value.status == 410
+    assert counts["stalled"] == 1  # raised on the first, never re-pulled
+    assert clock["t"] == 10.0  # and burned no extra grace doing it
+
+
+def test_transient_blob_pull_failures_reset_on_every_successful_pull():
+    """The grace is per-OUTAGE, not per-session. A long walk may legitimately
+    meet one stall early and another late; each is inside the window on its
+    own, and both must be survived — which they only can be if a pull that
+    SUCCEEDS clears the anchor. Without the reset the second stall is measured
+    from the first and voids a capture the household already gave us."""
+    backend = FakePlanRelayBackend()
+    client, session, _phone = _mint_plan_session(backend)
+    authorize, on_armed, consume, _authorized, consumed = _plan_callbacks(
+        backend, session
+    )
+    clock, monotonic, sleep = _walk_clock()
+    real_pull = client.pull_blob
+    # Two separate one-pull outages on DIFFERENT captures, each burning most of
+    # the grace. Their combined 20 s dwarfs the 15 s window, so a runner that
+    # never reset would give up inside the second one.
+    stall_at = {1, 3}
+    pulls = {"n": 0}
+    counts = {"stalled": 0}
+
+    def pull_blob(*args, **kwargs):
+        pulls["n"] += 1
+        if pulls["n"] in stall_at:
+            counts["stalled"] += 1
+            clock["t"] += 10.0
+            raise TimeoutError("relay stalled")
+        return real_pull(*args, **kwargs)
+
+    client.pull_blob = pull_blob
+
+    outcomes = run_capture_plan(
+        client,
+        session,
+        authorize_begin=authorize,
+        on_armed=on_armed,
+        consume_capture=consume,
+        **_run_kwargs(sleep=sleep, monotonic=monotonic),
+    )
+
+    assert counts["stalled"] == 2  # both outages were really exercised
+    assert clock["t"] == 20.0 > BLOB_PULL_TRANSIENT_GRACE_S
+    assert [(o.index, o.attempt, o.accepted) for o in outcomes] == [
+        (1, 1, True),
+        (2, 2, True),
+        (3, 3, True),
+    ]
+    # Every capture the phone uploaded was analyzed, none voided.
+    assert [wav for (_i, _a, wav) in consumed] == [_wav(1), _wav(2), _wav(3)]
 
 
 # --- begin ordering: dedup / replay / out-of-order / budget --------------------
