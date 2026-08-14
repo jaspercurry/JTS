@@ -58,6 +58,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     PHASE_VERIFY,
     POSITION_ROLES,
     REASON_APPLY_FAILED,
+    REASON_CHANNEL_MAP_MISMATCH,
     REASON_CLOUD_GEOMETRY_LOCKED,
     REASON_CORRECTION_NOT_AN_IMPROVEMENT,
     REASON_CORRECTION_MODEL_ERROR,
@@ -66,6 +67,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     REASON_VERIFY_DETERMINISTIC_MISMATCH,
     TIER_EXPRESS,
     TIER_FULL,
+    VERIFY_TERMINAL_OUTCOME_DETERMINISTIC,
     CrossoverV2Session,
     V2FlowSeams,
     build_v2_cloud_index_phase_map,
@@ -1679,6 +1681,163 @@ def test_a_repeated_verify_mismatch_ends_the_real_runner_instead_of_looping():
     state = v2host.load_v2_state()
     assert state["verify"]["outcome"] == "fail"
     assert state["verify"]["code"] == REASON_VERIFY_DETERMINISTIC_MISMATCH
+    # …AND it keeps its own outcome token — see the composition guard below,
+    # which is what makes this line more than decoration.
+    assert terminal["terminal_outcome"] == VERIFY_TERMINAL_OUTCOME_DETERMINISTIC
+
+
+def test_a_self_ended_verdict_keeps_its_own_outcome_token_not_the_settles():
+    """#1873's finding and #2086's condition rung, composed.
+
+    ``verify_deterministic_mismatch`` is non-retriable, so the settle's
+    condition rung would answer for it — and re-stamp ``terminal_outcome`` as
+    ``condition_not_retriable``, erasing the specific token #1873 gives the page
+    and the journal. ``consume_capture``'s ``terminal is not True`` guard is
+    what stops that, and this is the test that holds it: with that guard removed
+    the assertion below flips to ``condition_not_retriable`` while every other
+    test in BOTH PRs stays green, because neither suite asserted the token on
+    this path. An argument in place of a guard guards nothing.
+
+    Asserted on the WIRE rather than on the verdict object, because reaching the
+    phone and the journal is the token's whole job.
+    """
+    backend = FakePlanRelayBackend()
+    spec = build_v2_verify_session_spec(
+        FC_HZ, acknowledgement_binding=_BINDING, plan_shape=resolve_plan_shape(),
+    )
+    client, session, phone = _mint_v2_session(backend, spec)
+    graded: list[float] = []
+
+    def verify_analysis(program):
+        deviation = (3.66, 3.82, 99.0)[min(len(graded), 2)]
+        graded.append(deviation)
+        return _verify_analysis(program, max_db=deviation)
+
+    conductor = _stage2_conductor(
+        backend, session, phone, analyses={"verify": verify_analysis},
+    )
+    _run(_build_runner(conductor, VolumeRecorder()), client, session)
+
+    terminal = backend.host_events[session.session_id][-1]
+    assert terminal["terminal"] is True
+    assert terminal["terminal_outcome"] == VERIFY_TERMINAL_OUTCOME_DETERMINISTIC
+    assert terminal["code"] == REASON_VERIFY_DETERMINISTIC_MISMATCH
+    # The settle's own sentence never reached the household either.
+    assert "JTS measured this spot" not in terminal["reason"]
+
+
+def test_a_close_refusal_no_take_can_clear_ends_the_runner_with_tries_left():
+    """The #2086 shape that OUTLIVED the bounded-retry ruling, end to end.
+
+    Same close refusal as the test above, one thing changed: the position's
+    meter is untouched. That is the state PR #2097 left behind — the settle
+    ladder only asked whether the extras were gone, so a rejection naming a
+    condition NO take can clear rode out as an ordinary retryable verdict. The
+    phone rendered "Try again" over ``attempts.left: 3``, the tap posted the
+    next begin, and ``authorize_begin``'s non-retriable arm raised
+    ``CaptureBeginRefused`` before any audio played — the session dead, the
+    household reading "The speaker page shows what happens next", exactly the
+    2026-08-03 sentence pair the issue was filed on.
+
+    So the assertions that matter are the ones that separate this from the
+    exhaustion terminal: the meter is FULL, and no ``capture_refused`` was ever
+    published.
+    """
+    shape = resolve_plan_shape()
+    spec = build_v2_verify_session_spec(
+        FC_HZ, acknowledgement_binding=_BINDING, plan_shape=shape,
+    )
+    backend = FakePlanRelayBackend()
+    client, session, phone = _mint_v2_session(backend, spec)
+    closing_index = spec.capture_plan.capture_target
+
+    conductor = _stage2_conductor(backend, session, phone)
+    conductor._delta_probe_refusal = (  # type: ignore[method-assign]
+        lambda _probe: (
+            REASON_CORRECTION_MODEL_ERROR
+            if conductor.current_phase == PHASE_CLOUD_VERIFY
+            else None
+        )
+    )
+    volume = VolumeRecorder()
+    # NOT wrapped in pytest.raises: the runner returning at all is half the
+    # claim. Before the fix this call raised CaptureBeginRefused.
+    _run(_build_runner(conductor, volume), client, session)
+
+    phases = backend.phases(session.session_id)
+    assert "capture_refused" not in phases, (
+        "the household was sent to a begin the gate was always going to refuse"
+    )
+    assert phases[-1] == "capture_result"
+    terminal = backend.host_events[session.session_id][-1]
+    assert terminal["index"] == closing_index
+    assert terminal["accepted"] is False
+    assert terminal["terminal"] is True
+    assert terminal["terminal_outcome"] == "condition_not_retriable"
+    assert terminal["code"] == REASON_CORRECTION_MODEL_ERROR
+    # The condition's OWN sentence, not the exhaustion one — nothing was spent.
+    assert terminal["reason"] == REASON_REGISTRY[REASON_CORRECTION_MODEL_ERROR].message
+    assert "JTS measured this spot" not in terminal["reason"]
+    # THE DISCRIMINATOR against the spent-slot terminal beside it: every extra
+    # is still unspent. The count stays on the wire and stays true — the slot
+    # was closed by the condition, and ``terminal_outcome`` is what says so.
+    assert terminal["attempts"] == {
+        "used": 0, "allowed": MAX_EXTRA_ATTEMPTS_PER_POSITION, "left": 3,
+        "by_speaker": 0, "by_household": 0,
+    }
+    # Every position the household walked — the closing one included — is still
+    # the session's, and the honest code is what the speaker page will render.
+    # A refusal at the close must not un-retain what was measured to reach it.
+    assert conductor.last_failure_code == REASON_CORRECTION_MODEL_ERROR
+    from jasper.active_speaker.crossover_v2_flow import (
+        build_v2_verify_index_phase_map,
+    )
+
+    walked = {
+        i for i, p in build_v2_verify_index_phase_map(plan_shape=shape).items()
+        if p == PHASE_CLOUD_VERIFY
+    }
+    assert closing_index in walked
+    assert len(conductor.group_positions(PHASE_CLOUD_VERIFY)) == len(walked)
+    assert _persisted_failure(v2host.load_v2_state()) == {
+        "code": REASON_CORRECTION_MODEL_ERROR,
+    }
+    assert volume.events[-1] == "abandon"
+
+def test_a_first_take_refusal_no_take_can_clear_never_offers_a_retry():
+    """The same class at the OTHER end of the journey: CHECK, take one.
+
+    ``channel_map_mismatch`` is the one non-retriable condition a stage-1
+    capture screen produces, and it fires on the very first take — so there is
+    no meter to be empty and the exhaustion ladder had nothing to say about it.
+    The household was told "check the speaker wiring, or if the room is noisy,
+    quiet it and try again" ON A RETRY BUTTON whose begin the gate refuses.
+    """
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec)
+    conductor = _conductor(
+        backend, session, phone, published=[],
+        analyses={"check": lambda program: _check_analysis(program, channel_map=False)},
+    )
+    volume = VolumeRecorder()
+    _run(_build_runner(conductor, volume), client, session)
+
+    phases = backend.phases(session.session_id)
+    assert "capture_refused" not in phases
+    terminal = backend.host_events[session.session_id][-1]
+    assert terminal["phase"] == "capture_result"
+    assert (terminal["index"], terminal["attempt"]) == (1, 1)
+    assert terminal["accepted"] is False
+    assert terminal["terminal"] is True
+    assert terminal["terminal_outcome"] == "condition_not_retriable"
+    assert terminal["code"] == REASON_CHANNEL_MAP_MISMATCH
+    assert terminal["attempts"]["used"] == 0
+    assert conductor.current_phase == PHASE_CHECK
+    assert _persisted_failure(v2host.load_v2_state()) == {
+        "code": REASON_CHANNEL_MAP_MISMATCH,
+    }
+    assert volume.events[-1] == "abandon"
 
 
 def test_position_retention_survives_a_retake_through_the_real_evidence_store(

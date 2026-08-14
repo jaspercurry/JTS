@@ -2786,10 +2786,9 @@ plus at most `MAX_EXTRA_ATTEMPTS_PER_POSITION` (3) extra attempts,
 counted in one `SlotAttempts` ledger no matter who asked — a household
 "Try again", a voluntary retake, or a geometry rung. `ReasonSpec.
 retry_budget` no longer supplies a count: zero still means "no extra
-attempt can help" (`NON_RETRIABLE_CODES` — those refuse on the next begin
-with their own copy, unchanged), and any non-zero value now means only
-"retriable". The relay plan's `max_attempts` still bounds the whole
-session.
+attempt can help" (`NON_RETRIABLE_CODES`), and any non-zero value now
+means only "retriable". The relay plan's `max_attempts` still bounds the
+whole session.
 
 *Where these live now (#2291 Phase 5c):* the meter and the settle ladder
 are `crossover_v2/admission.py` (`MAX_EXTRA_ATTEMPTS_PER_POSITION`,
@@ -2806,9 +2805,28 @@ the plan alive, never the relay's `retake` flag: a geometry rung travels
 the ordinary begin path with `retake=false`, so the flag would bill every
 system-forced take to the household.
 
-**Exhaustion attributes and degrades; it does not end a session with copy
-that says "measure again."** It is settled at the verdict that spends the
-last extra (`_resolve_spent_slot`), not at the next begin, so the phone
+**A rejection the next begin would refuse is settled AT THAT REJECTION;
+it does not end a session with copy that says "measure again."** Two
+conditions close a slot and `authorize_begin` refuses on both, so the
+ladder (`admission.settle_spent_slot` → `_resolve_spent_slot`) answers for
+both — otherwise the same lie returns by the second door.
+
+*The condition rung comes first* (`terminal_outcome=condition_not_retriable`,
+journal `event=correction.crossover_v2_position_not_retriable`): a rejection
+whose code is in `NON_RETRIABLE_CODES` is terminal however many extras the
+slot still has, because nothing about it changes before the next begin. It
+keeps the code's own registry sentence — never the exhaustion sentence,
+which would be false about a take rejected on its first attempt — and the
+`attempts` block rides out unspent, which is exactly what
+`terminal_outcome` distinguishes. Two producers reach it: `check_screens`'
+`channel_map_mismatch`, and the post-apply round/delta-probe `correction_*`
+refusals (`_round_refusal_for`, `_delta_probe_refusal`). Both were
+reproduced riding out as ordinary retryable verdicts before #2086's second
+half — the page rendered "Try again" over `attempts.left: 3`, and the tap
+raised `CaptureBeginRefused` pre-play.
+
+*Then exhaustion.* It is settled at the verdict that spends the
+last extra, not at the next begin, so the phone
 is never handed a retry screen whose button only leads to a pre-play
 refusal. Three outcomes, in order: an earlier accepted take at that index
 still stands, so it is kept (`kept_earlier_take`); or the group can still

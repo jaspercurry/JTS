@@ -1232,8 +1232,15 @@ def reason_diagnosis(
 # that would not have improved the speaker, a dead link. The bounded-retry
 # ruling (#2086) is a CEILING on retries, not a floor: it stops the flow asking
 # a household for a fifth take of the same spot, and it does not start it asking
-# for a second take of something a second take cannot fix. These refuse on the
-# next begin, with their own copy, exactly as they always have.
+# for a second take of something a second take cannot fix.
+#
+# A rejection carrying one of these rides out as a TERMINAL capture verdict, at
+# the settle — :data:`~.admission.SETTLE_CONDITION_NOT_RETRIABLE`, the ladder's
+# first rung — with its own copy and however many extras the slot still has, so
+# the phone renders its terminal screen instead of a "Try again" button the next
+# begin would refuse. ``assess_begin``'s ``REFUSE_NON_RETRIABLE`` is the
+# BACKSTOP for a begin that reaches a settled slot anyway (a page that ignored
+# the terminal verdict, a replayed event), not the ordinary path.
 NON_RETRIABLE_CODES = frozenset(
     code for code, spec in REASON_REGISTRY.items() if spec.retry_budget == 0
 )

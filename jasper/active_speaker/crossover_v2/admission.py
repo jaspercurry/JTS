@@ -75,6 +75,7 @@ __all__ = [
     "DECISION_KINDS",
     "MAX_EXTRA_ATTEMPTS_PER_POSITION",
     "SETTLE_BELOW_POSITION_FLOOR",
+    "SETTLE_CONDITION_NOT_RETRIABLE",
     "SETTLE_GROUP_CLOSE_REQUIRED",
     "SETTLE_GROUP_KINDS",
     "SETTLE_KEPT_EARLIER_TAKE",
@@ -393,15 +394,14 @@ def assess_begin(
     sees the real reason, not a manufactured "link timed out." Every other
     begin is admitted.
 
-    **Retry exhaustion does NOT normally arrive here** (owner ruling #2086). A
-    slot that has spent its extras is settled at the verdict that spent the
-    last one — the flow's ``_resolve_spent_slot`` either drops the position and
-    advances the group, or names the honest end — so the household is never
-    handed a "try again" screen whose button is about to end the session.
-    :data:`REFUSE_EXTRAS_SPENT` is the backstop for a begin that reaches a
-    settled slot anyway (a page that ignored the verdict, a replayed event),
-    and the copy the flow renders for it says the tries are gone rather than
-    inviting one more.
+    **Neither closing condition normally arrives here** (owner ruling #2086).
+    Both are settled at the REJECTION that closed the slot — the flow's
+    ``_resolve_spent_slot`` either drops the position and advances the group, or
+    names the honest end — so the household is never handed a "try again" screen
+    whose button is about to end the session. :data:`REFUSE_EXTRAS_SPENT` and
+    :data:`REFUSE_NON_RETRIABLE` are the backstops for a begin that reaches a
+    settled slot anyway (a page that ignored the terminal verdict, a replayed
+    event), and neither renders copy inviting one more take.
 
     The returned ``code`` on :data:`REFUSE_EXTRAS_SPENT` is the condition
     actually observed at this slot — never a generic exhaustion code that would
@@ -441,7 +441,10 @@ def assess_begin(
     if last_reason is not None and last_reason in non_retriable:
         # Not exhaustion — a condition another take cannot clear. Its own copy
         # already names the one action that helps, so the flow publishes it
-        # unchanged (and it never promised "measure again").
+        # unchanged. Reaching this at all means a begin outran the terminal
+        # verdict :data:`SETTLE_CONDITION_NOT_RETRIABLE` already published for
+        # the same condition; the refusal and that verdict name the same code,
+        # so the two accounts agree.
         return BeginDecision(REFUSE_NON_RETRIABLE, code=last_reason)
     if ledger.extras_left <= 0:
         return BeginDecision(REFUSE_EXTRAS_SPENT, code=last_reason or default_code)
@@ -459,15 +462,28 @@ def assess_begin(
 # --------------------------------------------------------------------------- #
 #
 # The other half of the bounded-retry ruling. :func:`assess_begin` answers "may
-# one more capture start"; this answers "the last one is spent — what is the
-# honest outcome". Owner ruling #2086 item 3 put the answer HERE, at the verdict
-# that spent the extra, rather than at the next begin: a household must never be
-# shown a retry screen whose button only leads to a pre-play refusal, which is
-# the 2026-08-03 shape (a screen reading "step 6, one last time" over a slot the
-# meter had already closed).
+# one more capture start"; this answers "this take was rejected — is there an
+# honest next take, or is this the outcome". Owner ruling #2086 item 3 put the
+# answer HERE, at the verdict, rather than at the next begin: a household must
+# never be shown a retry screen whose button only leads to a pre-play refusal,
+# which is the 2026-08-03 shape (a screen reading "step 6, one last time" over a
+# slot the meter had already closed).
+#
+# TWO conditions close a slot, and the begin gate refuses on both, so both
+# settle here or the same lie returns by a second door. The meter running out is
+# one. A rejection naming a condition no further take can clear is the other:
+# nothing about it changes between this verdict and the next begin, so the
+# retry screen it used to leave up was a promise the gate was already going to
+# break — with ``attempts.left: 3`` printed beside it (#2086, reproduced on
+# ``correction_model_error`` at a post-apply close and on
+# ``channel_map_mismatch`` at CHECK).
 
 #: The slot still has extras. Nothing settles; the household retries as before.
 SETTLE_RETRY_REMAINS = "retry_remains"
+#: This rejection named a condition another take cannot clear, so the tries the
+#: meter still shows are tries the begin gate would refuse. Outranks every rung
+#: below — see :func:`settle_spent_slot`.
+SETTLE_CONDITION_NOT_RETRIABLE = "condition_not_retriable"
 #: A single-capture phase with nothing left to spend: this take is the last word.
 SETTLE_PHASE_CANNOT_PROCEED = "phase_cannot_proceed"
 #: A position group — the outcome needs the group's own lock-guarded facts, so
@@ -485,6 +501,7 @@ SETTLE_POSITION_UNRESOLVED = "position_unresolved"
 #: caller takes its close lock.
 SETTLE_SLOT_KINDS = frozenset({
     SETTLE_RETRY_REMAINS,
+    SETTLE_CONDITION_NOT_RETRIABLE,
     SETTLE_PHASE_CANNOT_PROCEED,
     SETTLE_GROUP_CLOSE_REQUIRED,
 })
@@ -506,27 +523,48 @@ SETTLE_KINDS = SETTLE_SLOT_KINDS | SETTLE_GROUP_KINDS
 
 
 def settle_spent_slot(
-    *, ledger: SlotAttempts | None, is_group: Callable[[], bool],
+    *,
+    ledger: SlotAttempts | None,
+    is_group: Callable[[], bool],
+    code: str | None = None,
+    non_retriable: Container[str] = frozenset(),
 ) -> str:
     """Does this rejection settle the position, and can it settle alone?
 
-    The ladder's first two rungs. A slot with extras left (or no meter yet) is
-    not settled at all. Once the extras are gone, a single-capture phase is
-    decided right here — there is no group to fall back on — while a position
-    group's outcome depends on facts that are only true while its close lock is
-    held, so it answers :data:`SETTLE_GROUP_CLOSE_REQUIRED` and the caller
-    continues into :func:`settle_group_position` under that lock.
+    **The first rung is the CONDITION, not the meter** — the same precedence
+    :func:`assess_begin` keeps, and for the same reason. A rejection whose code
+    is non-retriable is settled however many extras the slot still has, because
+    the next begin would refuse it: leaving that verdict retryable is what puts
+    a household in front of a "Try again" button leading to a pre-play refusal,
+    with the honest count beside it reading "3 left". Stating it here rather
+    than at the caller keeps ONE ladder answering "does this rejection settle
+    the position", so a kind arriving without an arm is caught by the same
+    declared-kinds guard every other rung has.
+
+    Then the meter. A slot with extras left (or no meter yet) is not settled at
+    all. Once the extras are gone, a single-capture phase is decided right here
+    — there is no group to fall back on — while a position group's outcome
+    depends on facts that are only true while its close lock is held, so it
+    answers :data:`SETTLE_GROUP_CLOSE_REQUIRED` and the caller continues into
+    :func:`settle_group_position` under that lock.
 
     Splitting the ladder there is the lock boundary and nothing else: the group
     rungs read "what has this group retained" and "what is still unwalked", and
     a decision made from those facts outside the lock could be acted on after
     another close had already changed them.
 
+    ``code`` is THIS capture's own observation and ``non_retriable`` the
+    registry projection, both stated by the flow for the reason
+    :func:`assess_begin`'s are: the reason codes are the flow's. They default to
+    "nothing observed" so the meter rungs can still be asked in isolation.
+
     ``is_group`` is a **callable** for the reason :func:`assess_begin`'s
     ``apply_failure_code`` is one — call count. It reaches the journey plan, and
     the shipped flow does not ask it while a slot still has retries to offer; a
     value resolved at call time would ask it on every rejected capture.
     """
+    if code is not None and code in non_retriable:
+        return SETTLE_CONDITION_NOT_RETRIABLE
     if ledger is None or ledger.extras_left > 0:
         return SETTLE_RETRY_REMAINS
     return (
