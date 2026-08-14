@@ -210,7 +210,10 @@ never redirected.
   gave it ([#2041](https://github.com/jaspercurry/JTS/issues/2041)); relay
   capture, every position including the first, only ever goes through
   `/relay/capture`, which owns its own level-match volume reassertion. The
-  phone-relay flows above were never affected.
+  phone-relay flows above were never affected. `/verify` and
+  `/repeat-position` remain fully ungated (no transport check, no
+  level-match check, unlike `/relay/verify`) — tracked as the widened
+  [#2455](https://github.com/jaspercurry/JTS/issues/2455).
 - 🧱 **v2 crossover captures now reach the SAME household-mic hint (W6.12,
   2026-07-19).** Every v2 crossover capture logged
   `crossover_v2_uncalibrated_capture` even with a resolvable stored mic

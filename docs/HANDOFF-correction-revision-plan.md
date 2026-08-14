@@ -298,7 +298,9 @@ establishes — ambient floor, locked level, realized device, calibration
 identity; indexed here because "which facts a capture carries" *is* this rung;
 closed — `/upload-noise` now refuses non-local sessions outright, mirroring
 the `/autolevel/start` / `/local-capture/setup` refusal, since relay capture
-already owns its own level-match reassertion through `/relay/capture` only),
+already owns its own level-match reassertion through `/relay/capture` only;
+the same review's `/verify` and `/repeat-position` finding widened into
+#2455),
 #2050 (the rung's own work item — so a Monday "ratify P2" ruling has somewhere
 to land), #2053 (saved-mic serial entry + calibration-to-physical-device
 binding — the remainder of #1656).
