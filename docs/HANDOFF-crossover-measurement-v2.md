@@ -438,7 +438,12 @@ the module, not a second copy here.
    *unconditionally* across every snapshot, so `handle_v2_restore` can pin a
    restore to the prior compiled config even after a VERIFY re-arm. The
    `/sound` declaration undo is written in the SAME state write, so neither
-   half can describe a different apply from the other.
+   half can describe a different apply from the other. The anchor is a
+   `(path, digest)` pair, and **its integrity is `restore_applied_baseline_profile`'s
+   to prove** (#2519): it hashes the retained file itself and refuses under
+   `restore_target_unreadable` or `restore_target_changed`, then hands the
+   digest it just computed to `apply_dsp_config`, whose own proof is a
+   validate-to-load race check over the current call and nothing older.
 9. **The walked-away guarantee.** `SessionVolumePlan` holds one measurement
    window with an abort target, a wall-clock ceiling, and a restore-once latch
    drained by close, session death, or the ceiling. **Each stage arms its own

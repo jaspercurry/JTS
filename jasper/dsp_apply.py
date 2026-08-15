@@ -371,6 +371,31 @@ def dsp_write_epoch(*, state_path: str | Path | None = None) -> str:
     return dsp_write_epoch_from_state(last_dsp_apply_state(state_path=state_path))
 
 
+#: Proof-phase outcomes, as three DISTINCT results (#2519). The proof asks one
+#: question — "are the bytes about to be loaded the bytes that were proven?" —
+#: and there are three separate ways it cannot answer yes: nothing was recorded
+#: to compare against, the file could not be read, or the digests disagree.
+#: They were one result carrying one message, "DSP candidate changed after
+#: validation and before load", which describes only the third. A jts3 Undo
+#: refused under that sentence twice nine minutes apart — identical refusals,
+#: which a race does not produce — and it named a cause the operator could not
+#: act on. Each condition names itself now.
+DSP_PROOF_ANCHOR_MISSING = "anchor_missing"
+DSP_PROOF_CANDIDATE_UNREADABLE = "candidate_unreadable"
+DSP_PROOF_CANDIDATE_CHANGED = "candidate_changed"
+
+#: Results that prove the load never ran. Every one of them is raised BEFORE
+#: ``load_config``, so the speaker is still playing whatever it was playing.
+#: Callers that classify "did this touch the graph?" read this set rather than
+#: transcribing the members, which is what kept the two new results from
+#: silently degrading to "we cannot tell what happened".
+DSP_PROOF_INACTIVE_RESULTS = frozenset({
+    DSP_PROOF_ANCHOR_MISSING,
+    DSP_PROOF_CANDIDATE_UNREADABLE,
+    DSP_PROOF_CANDIDATE_CHANGED,
+})
+
+
 def _sha256(path: Path) -> str | None:
     try:
         h = hashlib.sha256()
@@ -380,6 +405,48 @@ def _sha256(path: Path) -> str | None:
         return h.hexdigest()
     except OSError:
         return None
+
+
+def config_file_sha256(path: str | Path) -> str | None:
+    """The digest :func:`apply_dsp_config`'s proof compares against.
+
+    Public so a caller that must verify the same bytes verifies them with the
+    same hasher (#2519): the restore path checks its Undo anchor's integrity
+    before entering the apply transaction, and a second hasher there is a
+    second answer waiting to disagree with the proof's. ``None`` when the file
+    cannot be read, exactly as the proof reads it.
+    """
+    return _sha256(Path(path))
+
+
+def _proof_failure(
+    actual_sha256: str | None, expected_sha256: str
+) -> tuple[str, str] | None:
+    """The proof's ``(result, message)``, or ``None`` when the bytes match.
+
+    Ordered by what the caller can do about it. An absent expectation is a
+    caller defect — nothing was recorded to prove against, so the refusal is
+    unconditional. An unreadable candidate is an operator-actionable I/O or
+    permissions fault on a file whose bytes may be perfectly intact. Only a
+    digest that was computed and disagrees is the validate-to-load race the
+    third message describes.
+    """
+    if not expected_sha256:
+        return (
+            DSP_PROOF_ANCHOR_MISSING,
+            "DSP candidate has no recorded digest to prove the load against",
+        )
+    if actual_sha256 is None:
+        return (
+            DSP_PROOF_CANDIDATE_UNREADABLE,
+            "DSP candidate could not be read to prove it against its digest",
+        )
+    if actual_sha256 != expected_sha256:
+        return (
+            DSP_PROOF_CANDIDATE_CHANGED,
+            "DSP candidate changed after validation and before load",
+        )
+    return None
 
 
 class _FileLock:
@@ -720,8 +787,11 @@ async def apply_dsp_config(
     rollback to their terminal result without an outer transaction deadline.
 
     When ``expected_candidate_sha256`` is provided, the candidate is hashed
-    again after validation and immediately before load. A changed file is
-    refused without asking CamillaDSP to load it.
+    again after validation and immediately before load. A candidate the proof
+    cannot clear is refused without asking CamillaDSP to load it, under the
+    result that names WHY — :data:`DSP_PROOF_ANCHOR_MISSING`,
+    :data:`DSP_PROOF_CANDIDATE_UNREADABLE`, or
+    :data:`DSP_PROOF_CANDIDATE_CHANGED`.
     """
 
     candidate = Path(candidate_path)
@@ -806,17 +876,14 @@ async def apply_dsp_config(
         if expected_candidate_sha256 is not None:
             state.phase = "proof"
             state.config_sha256 = _sha256(candidate)
-            if (
-                not expected_candidate_sha256
-                or state.config_sha256 != expected_candidate_sha256
-            ):
-                state.result = "candidate_changed"
+            proof_failure = _proof_failure(
+                state.config_sha256, expected_candidate_sha256
+            )
+            if proof_failure is not None:
+                state.result, proof_message = proof_failure
                 state.finished_at = _utc_now()
                 record_dsp_apply_state(state, state_path=state_path)
-                raise DspApplyError(
-                    "DSP candidate changed after validation and before load",
-                    state,
-                )
+                raise DspApplyError(proof_message, state)
 
         state.phase = "load"
         record_dsp_apply_state(state, state_path=state_path)

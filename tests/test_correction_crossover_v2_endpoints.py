@@ -78,6 +78,8 @@ from jasper.active_speaker.crossover_v2_flow import (
     locate_failed_diagnosis,
     resolve_plan_shape,
 )
+import jasper.active_speaker.baseline_profile as baseline_profile_mod
+
 from jasper.capture_relay.client import RelayClient
 from jasper.capture_relay.session import (
     CaptureAborted,
@@ -87,6 +89,7 @@ from jasper.capture_relay.session import (
     mint_session,
     register_session,
 )
+from jasper.dsp_apply import config_file_sha256
 from jasper.web import correction_crossover_v2 as v2host
 
 from tests.test_capture_relay_plan import FakePlanRelayBackend, PhonePlanDriver
@@ -10481,3 +10484,127 @@ def test_playback_signal_handler_failure_never_stops_the_measurement():
     # …and a cleared signal is simply inert.
     signal.clear()
     signal.fire(object())
+
+
+# --- #2519: Undo has to survive a verify re-arm, through the REAL seams -------
+#
+# The night this was filed, a jts3 apply was followed by a ``verify_retry``
+# re-arm (issue #2517 forced one), and from then on BOTH the delta probe's
+# automatic rollback and the household's own Undo refused deterministically —
+# nine minutes apart, with the same message about a candidate that had
+# "changed after validation and before load" over a config file nothing had
+# touched. Re-arms are ordinary, so the anchor surviving one is not an
+# incidental property to leave to argument: these drive apply → re-arm → Undo
+# end to end, over the real apply/restore transaction.
+
+
+def _apply_prior_then_v2_candidate(monkeypatch, tmp_path):
+    """Apply the household's pre-existing crossover, then a v2 measured
+    candidate over it — the state a household is in when VERIFY arms. Returns
+    the durable v2 state's Undo anchor."""
+    from jasper.active_speaker.baseline_profile import apply_baseline_profile
+    from jasper.active_speaker.crossover_preview import build_crossover_preview
+
+    from tests.test_active_speaker_baseline_profile import _draft
+
+    topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+
+    prior_cam = _FakeApplyCam()
+    prior_payload = _bg_run_async(
+        apply_baseline_profile(
+            topology,
+            design_draft=draft,
+            crossover_preview=preview,
+            measurements={},
+            load_config=prior_cam.set_config_file_path,
+            get_current_config_path=prior_cam.get_config_file_path,
+            tuning_owner="automatic",
+            measured_candidate=_prior_measured_candidate(preset),
+        )
+    )
+    assert prior_payload["status"] == "applied", prior_payload.get("issues")
+
+    candidate = _run6_measured_candidate(preset)
+    v2host.save_v2_state({
+        "session_id": "cap_apply",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": candidate.fingerprint},
+        "applied": False,
+    })
+    apply_payload = _apply(
+        {
+            "expected_candidate_fingerprint": candidate.fingerprint,
+            "candidate": candidate.to_dict(),
+        },
+        _bg_run_async,
+        _FakeApplyCam,
+    )
+    assert apply_payload["status"] == "applied", apply_payload.get("issues")
+
+    anchor = (v2host.load_v2_state() or {}).get("pre_apply_profile")
+    assert isinstance(anchor, dict)
+    assert (
+        anchor["candidate_fingerprint"]
+        == prior_payload["profile"]["candidate_fingerprint"]
+    )
+    return anchor
+
+
+def _rearm_verify():
+    """What ``prepare_v2_verify`` does to durable state on a ``verify_retry``:
+    re-derive the session context (which re-ensures the crossover preview) and
+    persist a conductor under a BRAND-NEW session id."""
+    v2host.ensure_crossover_preview_ready()
+    v2host.persist_conductor_state(_StubConductor("cap_rearm"), failure_code=None)
+
+
+def test_a_verify_rearm_leaves_the_undo_anchor_restorable(monkeypatch, tmp_path):
+    """The anchor is a ``(path, digest)`` pair, and BOTH halves have to come
+    through the re-arm still describing the file on disk — a preserved record
+    pointing at bytes that moved is an anchor in name only."""
+    anchor = _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
+
+    _rearm_verify()
+
+    rearmed = (v2host.load_v2_state() or {}).get("pre_apply_profile")
+    assert rearmed == anchor
+    target = Path(rearmed["config"]["path"])
+    assert config_file_sha256(target) == rearmed["config"]["sha256"]
+
+    restore_payload = v2host.handle_v2_restore(_bg_run_async, _FakeApplyCam)
+
+    assert restore_payload["status"] == "restored", restore_payload.get("issues")
+    assert (v2host.load_v2_state() or {})["applied"] is False
+
+
+def test_the_delta_probe_rollback_still_restores_after_a_verify_rearm(
+    monkeypatch, tmp_path,
+):
+    """The automatic half of the same guarantee. The probe runs one capture
+    INTO the re-armed session, so its rollback is the first caller to meet a
+    re-armed anchor — and it reaches the apply transaction with a real digest,
+    never the empty expectation that refuses unconditionally."""
+    anchor = _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
+
+    _rearm_verify()
+
+    seen: dict[str, object] = {}
+    real_apply = baseline_profile_mod.apply_dsp_config
+
+    async def observed_apply(**kwargs):
+        seen["expected"] = kwargs.get("expected_candidate_sha256")
+        return await real_apply(**kwargs)
+
+    monkeypatch.setattr(baseline_profile_mod, "apply_dsp_config", observed_apply)
+
+    rollback = v2host.bind_delta_probe_rollback(_bg_run_async, _FakeApplyCam)
+
+    assert rollback("realized_shape_differs_from_commanded") is True
+    # Non-empty is the load-bearing half: an empty expectation is a guaranteed
+    # proof refusal (``DSP_PROOF_ANCHOR_MISSING``), which is what a lost anchor
+    # would look like from inside the transaction.
+    assert seen["expected"] == anchor["config"]["sha256"]
+    assert seen["expected"]
+    assert (v2host.load_v2_state() or {})["applied"] is False

@@ -36,6 +36,7 @@ from jasper.dsp_apply import (
     CamillaConfigValidationResult,
     DspApplyError,
     apply_dsp_config,
+    config_file_sha256,
     dsp_writer_lock,
     validate_camilla_config,
 )
@@ -3566,6 +3567,40 @@ async def restore_applied_baseline_profile(
                 "disk; a full remeasure is required",
             )],
         }
+    # The Undo anchor's integrity is THIS function's to prove, and it is a
+    # different question from the one :func:`~jasper.dsp_apply.apply_dsp_config`
+    # asks (#2519). That proof is a validate-to-load race check over a candidate
+    # compiled seconds earlier; the digest above was recorded by the apply that
+    # wrote this file, which can be days back. Handing the older digest to the
+    # race check made every way of failing it — including an unreadable file —
+    # report "DSP candidate changed after validation and before load", the
+    # sentence a jts3 Undo refused under twice nine minutes apart.
+    #
+    # So the anchor is verified here, under names that say what is wrong with
+    # it, and the digest THIS call computed is what threads into the apply
+    # transaction — which then proves only what it can honestly prove: that the
+    # bytes did not move between validation and load.
+    retained_digest = config_file_sha256(candidate_path)
+    if retained_digest is None:
+        return {
+            "status": "blocked",
+            "issues": [_issue(
+                "blocker",
+                "restore_target_unreadable",
+                "the previous crossover configuration is on disk but could not "
+                "be read; check its permissions, then try again",
+            )],
+        }
+    if retained_digest != candidate_sha256:
+        return {
+            "status": "blocked",
+            "issues": [_issue(
+                "blocker",
+                "restore_target_changed",
+                "the previous crossover configuration file no longer matches "
+                "what was applied from it; a full remeasure is required",
+            )],
+        }
 
     async with dsp_writer_lock(
         baseline_config_path(config_path).parent,
@@ -3578,7 +3613,7 @@ async def restore_applied_baseline_profile(
                 load_config=load_config,
                 get_current_config_path=get_current_config_path,
                 acquire_lock=False,
-                expected_candidate_sha256=candidate_sha256,
+                expected_candidate_sha256=retained_digest,
                 validate=validate,
             )
         except DspApplyError as exc:

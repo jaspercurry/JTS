@@ -90,6 +90,7 @@ from jasper.active_speaker.crossover_v2.vocabulary import (
     REASON_POSITION_HOLD_EXPIRED,
     REASON_POSITION_TARGET_MISSING,
 )
+from jasper.dsp_apply import DSP_PROOF_INACTIVE_RESULTS
 from jasper.log_event import log_event
 
 if TYPE_CHECKING:
@@ -8284,9 +8285,15 @@ def _dsp_apply_is_known_inactive(payload: Mapping[str, Any]) -> bool:
     if not isinstance(apply, Mapping):
         return False
     phase, result = str(apply.get("phase") or ""), str(apply.get("result") or "")
+    # The proof-phase set is imported, not transcribed (#2519). Every proof
+    # failure refuses before ``load_config`` runs, so all of them are known
+    # inactive — and a transcribed member list is how the two results that
+    # split out of ``candidate_changed`` would have silently become "we cannot
+    # tell whether the speaker changed", which raises the far scarier
+    # ``apply_result_unknown`` refusal at the household.
     return bool(apply.get("finished_at")) and (
-        (phase, result) in {("prepare", "prepare_failed"),
-                            ("proof", "candidate_changed")}
+        (phase, result) == ("prepare", "prepare_failed")
+        or (phase == "proof" and result in DSP_PROOF_INACTIVE_RESULTS)
         or (phase == "validate"
             and result in {"invalid_config", "runner_error", "timeout"})
         or (apply.get("rollback_attempted") is True
