@@ -496,9 +496,14 @@ def test_assemble_args_follower_server_empty_client_set():
 
 
 def test_assemble_args_follower_uses_outputd_fifo_not_direct_alsa():
-    """Every active member (either profile) writes the round-trip outputd
-    FIFO via snapclient's `file` player — there is no direct-ALSA endpoint
-    variant any more."""
+    """The DUMB member shape, which is the default (active_endpoint=False):
+    the round-trip outputd FIFO via snapclient's `file` player, and no
+    direct-ALSA sink on that path.
+
+    Scoped to that path, not a universal. An active-speaker endpoint
+    (active_endpoint=True) writes an ALSA sink instead — pinned by
+    test_assemble_args_active_endpoint_writes_loopback_not_fifo below.
+    This test's name describes the default path it covers."""
     from jasper.multiroom.reconcile import MEMBER_CONTENT_FIFO
 
     d = _assemble_args(_follower())

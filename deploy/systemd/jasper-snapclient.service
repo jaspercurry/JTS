@@ -45,7 +45,7 @@ EnvironmentFile=-/run/jasper-grouping/snapcast-args.env
 UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES
 # TWO player shapes. Which one this box gets is decided by
 # jasper-grouping-reconcile and baked into $JASPER_SNAPCLIENT_ARGS
-# above (`jasper.multiroom.reconcile.grouping_args_env`, branching on
+# above (`jasper.multiroom.reconcile._assemble_args`, branching on
 # `active_endpoint`); ExecStart itself is indifferent.
 #
 #   DUMB member (active_endpoint false) — `--player file:filename=`
