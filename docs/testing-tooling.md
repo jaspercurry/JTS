@@ -1310,10 +1310,14 @@ It provides USB detection, an identity/firmware probe, a read-only
 no-motion offset-from-zero query, left/right relative movement, a
 confirm-gated zero redefinition, home, the vendor stop request, and guarded
 absolute measurement positions. The latter always homes first and is bounded
-to `-45` through `+45` degrees from the acoustic on-axis zero. JTS owns only
-the Raspberry Pi power preflight, the measurement-rig guard, the `set-zero`
-confirmation gate, and those operator-facing names; the upstream package owns
-USB discovery, serial framing, response parsing, and command completion.
+to `-45` through `+45` degrees from the acoustic on-axis zero. JTS owns the
+Raspberry Pi power preflight, the measurement-rig guard, the `set-zero`
+confirmation gate, those operator-facing names, and a bounded one-retry
+recovery (against a freshly opened controller session) for the read/guarded-
+idempotent commands (`offset`, `probe`, the guarded `position`) on the
+vendored transport's exact `ProtocolError` base class; the upstream package
+owns USB discovery, serial framing, response parsing, command completion, and
+the transport session itself.
 
 Positioning is opt-in and has no voice tool, measurement scheduler, or permanent
 daemon. A full install adds only a bounded udev-triggered stop one-shot for the
