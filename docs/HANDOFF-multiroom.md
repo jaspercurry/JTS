@@ -1005,7 +1005,8 @@ until the round-trip exists, so 2a secretly dragged in the outputd rework.**
   every 30 s (cold start 60 s); 3 consecutive starved polls → `reset-failed` +
   `--no-block restart jasper-grouping-reconcile` (rate-limited 1/10 min). An
   ACTIVE endpoint (active follower or active-speaker leader) feeds the DAC via
-  the camilla#2 active-content lane, not the `dac_content` round-trip, so the
+  the ACTIVE ring (formerly camilla#2's aloop active-content lane, deleted at
+  P9-C), not the `dac_content` round-trip, so the
   reconciler disables `dac_content` there and the supervisor **skips** the
   starvation watch for it (keyed on `is_active_speaker_box()` — the same
   predicate the reconciler uses; its absence is correct, not starvation —

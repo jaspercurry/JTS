@@ -155,7 +155,8 @@ Renderers (each on its own snd-aloop substream pair):
   bluealsa-aplay       → hw:Loopback,0,2
   jasper-usbsink       → hw:Loopback,0,3
   correction/test      → hw:Loopback,0,4
-  outputd active lane  → hw:Loopback,0,5    [Camilla → outputd, N-channel active-speaker content]
+  (pair 5 UNALLOCATED — formerly the outputd active lane; its PCM defs were
+   deleted at P9-C once the ACTIVE ring became the roleful transport)
   outputd content lane → hw:Loopback,0,6    [Camilla → outputd on a passive box; also the
                                              active-follower grouping round-trip]
 
@@ -1496,7 +1497,11 @@ follow-on if/when warranted.
   capabilities of the Raspberry Pi 5" — the scheduling-latency numbers
   driving the SCHED_FIFO + PREEMPT_RT-gated design.
 
-Last verified: 2026-07-24 (atomic turn-start volume context, standalone live updates, and fail-closed post-DSP outputd parity checked against both Rust consumers; prior 2026-07-16 pass covered gentle-envelope calibration offset, held-content expiry, drained-before-end reference commit, and expanded STATUS observability against PR #1542; prior pass covered bounded raw-block queue and live gain ramp; prior 2026-07-14 automatic coupling profile gate rechecked: streambox
+Last verified: 2026-08-15 (topology diagram corrected for P9-C, audio-graph
+consolidation #2285: snd-aloop pair 5's PCM definitions — the outputd active
+lane — were deleted once the ACTIVE ring became the roleful transport,
+verified against `deploy/alsa/asoundrc.jasper`'s allocation header; prior
+2026-07-24 pass: atomic turn-start volume context, standalone live updates, and fail-closed post-DSP outputd parity checked against both Rust consumers; prior 2026-07-16 pass covered gentle-envelope calibration offset, held-content expiry, drained-before-end reference commit, and expanded STATUS observability against PR #1542; prior pass covered bounded raw-block queue and live gain ramp; prior 2026-07-14 automatic coupling profile gate rechecked: streambox
 stays loopback while the independent USB DIRECT decision still runs;
 librespot Tier-2 recovery final mutation rechecked
 as active-only `try-restart`, including concurrent Off/role parking;

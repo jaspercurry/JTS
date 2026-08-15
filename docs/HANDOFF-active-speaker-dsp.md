@@ -1479,8 +1479,10 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
   crate needs system ALSA); the byte-identical width-2 and pairwise-composite
   regression tests must pass.
 - **Stage 2 — reconciler + wide content lane, dry-run.** `kind`-dispatched
-  `OutputTransportPlan` env; route from `dac_channel_map`; the
-  `__OUTPUTD_ACTIVE_CONTENT_CHANNELS__` wide lane, **ban `type plug`/`plughw:`**,
+  `OutputTransportPlan` env; route from `dac_channel_map`; a wide active-content
+  lane sized from `JASPER_OUTPUTD_ACTIVE_CHANNELS` (the originally-planned
+  `__OUTPUTD_ACTIVE_CONTENT_CHANNELS__` render token was never implemented —
+  see the "2a landed" note below), **ban `type plug`/`plughw:`**,
   width-exact `hw:`. *Red:* `reconcile --print-env` diff non-empty for dual-Apple
   or DAC8x-stereo; `aplay -D outputd_dac` not resolvable as the renderer user.
   **2a landed (transport plumbing; drive-what-we-use width):**
@@ -1494,10 +1496,22 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
   **that actual W** so outputd opens the DAC at exactly the outputs the speaker
   drives (a DAC8x running a 2-way drives 2, not 8). A config exceeding the cap
   fails closed (`active_graph_width_out_of_range got=W cap=N`); otherwise
-  byte-identical stereo. The active content lane (snd-aloop substream 5) is raw
+  byte-identical stereo.
+  *(P9-C note: `JASPER_OUTPUTD_CONTENT_PCM=outputd_active_content_capture`
+  named a live aloop PCM when this landed. P9-C later deleted that pair's
+  definitions once the ACTIVE ring became the roleful transport; an armed
+  box now reads the ring instead, and this env value is what an
+  unarmed/rolled-back box still gets — opening it now fails and outputd
+  parks. See
+  [HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md).)*
+  The active content lane (snd-aloop substream 5) is raw
   `type hw` (card/device/subdevice only — the `hw` plugin rejects
   channels/rate/format; width is set by the openers and locked by snd-aloop),
-  `type plug`/`plughw:` banned. The active-capable product `DacProfile`s declare
+  `type plug`/`plughw:` banned.
+  *(P9-C note: this raw `type hw` substream — snd-aloop pair 5 — no longer
+  exists; its PCM definitions were deleted at P9-C. The rule against
+  `type plug`/`plughw:` is preserved history here, not a live constraint on
+  this pair.)* The active-capable product `DacProfile`s declare
   `supports_active_outputd_lane=True` (Apple USB-C dongle cap 2, InnoMaker
   HiFi AMP Pro cap 2,
   DAC8x/DAC8x-Studio cap 8, dual-Apple composite cap 4). Because the gate accepts
@@ -2683,5 +2697,16 @@ was retired by W5b hours after f59d5a776 was checked, so that file is deleted
 and the selector selects nothing (see "The two commissioning surfaces"). The
 `Last verified` date is deliberately NOT bumped: this footer records what was
 checked at f59d5a776, and correcting one entry is not a re-read of the doc.
+
+Correction (2026-08-15, audio-graph consolidation #2285 P9-C): the Stage 2
+"wide content lane" design section (around "Stage 2 — reconciler + wide
+content lane, dry-run" and "2a landed") described a
+`__OUTPUTD_ACTIVE_CONTENT_CHANNELS__` render token that was never actually
+implemented in `asoundrc.jasper`, and its raw `type hw` aloop substream
+(snd-aloop pair 5) had its PCM definitions deleted at P9-C once the ACTIVE
+ring became the roleful transport — corrected inline with pointer notes,
+same rationale as the 2026-07-27 entry above: correcting these entries is
+not a re-read of the doc, so `Last verified` stays unbumped. See
+[HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md).
 
 Last verified: 2026-08-04

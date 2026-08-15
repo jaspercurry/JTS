@@ -24,11 +24,14 @@
 # waits that out (category A — see `FinalSinkStartupConfigError`'s doc comment
 # in rust/jasper-outputd/src/alsa_backend.rs for why marking that open
 # park-class would turn a routine wait into a silent speaker). The SAME failure
-# is permanent when the peer is locked at a different width or the env drifted
-# (category B): every retry fails identically and the unit rides
-# Restart=on-failure into StartLimitAction=reboot. The two are one signature
-# apart only by COUNT, so this helper counts consecutive content-lane failures
-# and parks the unit out-of-band once the count says the lane is not opening.
+# is permanent when the peer is locked at a different width, the env drifted, or
+# — since P9-C deleted the ACTIVE lane's pair-5 PCM definitions — a roleful box
+# that is not ring-armed names a PCM that no longer exists (category B): every
+# retry fails identically and the unit would ride Restart=on-failure into
+# StartLimitAction=reboot. The two are one signature apart only by COUNT, so this
+# helper counts consecutive content-lane failures and parks the unit out-of-band
+# once the count says the lane is not opening. Which category-B cause it was
+# decides the remediation the park records — see CONTENT_LANE_ACTIVE_SIGNATURE.
 # That park is TERMINAL for the boot: nothing re-arms outputd on its own. It
 # comes back on a sound-card udev event (jasper-audio-hardware-reconcile does
 # reset-failed + start), a deploy, jasper-camilla-recover's OnFailure pass, a

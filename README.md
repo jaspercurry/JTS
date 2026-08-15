@@ -855,8 +855,9 @@ reference. Currently:
   eventing vs polling, Pause+disarm preemption, sidecar-owned
   preempt proxy). The audio-path section is written against the
   current per-source fan-in lane / `jasper-outputd` topology —
-  DLNA adds one private snd-aloop lane (allocation is full, so it
-  must reuse one). **Start here before any `jasper/dlna/` work.**
+  DLNA adds one private snd-aloop lane (pair 5, unallocated since
+  P9-C deleted the old active-content lane there). **Start here
+  before any `jasper/dlna/` work.**
 - [`HANDOFF-remote-updates.md`](docs/HANDOFF-remote-updates.md) —
   Research only, no implementation yet. Design space for an OTA
   "Check for updates" button on the management dashboard: option

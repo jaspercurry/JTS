@@ -396,7 +396,7 @@ renderers─fanin─music tap─► camilla#1 (:1234)  B/C+headroom, File→SNAP
                                                        │  (pipe; or loopback in the two-instance build)
                                                        ▼
        camilla#2 (:1235)  crossover, rate_adjust OFF  (passive, DAC-clocked by backpressure)
-                                                       │  (pair 5)
+                                                       │  (ACTIVE ring — pair 5's PCM defs deleted at P9-C)
                                                        ▼
        outputd-final   DAC owner + AEC reference  (POST-crossover ⇒ inv-A, band-limited TTS in the reference)
                                                        ▼  DAC (tweeter-safe)
@@ -421,8 +421,11 @@ pipe/FIFO for free. snapclient writes a **FIFO**; `outputd-summer` writes a
 **pipe** that camilla#2 **File-captures** (`type: File`/`Stdin` — which has *no*
 rate-adjust, exactly matching camilla#2's `rate_adjust` OFF; see
 [HANDOFF-multiroom.md](HANDOFF-multiroom.md) "File/pipe has no rate-adjust"). So
-the only forced loopbacks are pair 7 (`fanin→camilla#1`, dsnoop multi-reader)
-and pair 5 (`camilla#2→outputd-final`); renderers hold 0–4; **pair 6 is free**
+the only forced loopback left is pair 7 (`fanin→camilla#1`, dsnoop
+multi-reader) — `camilla#2→outputd-final` crosses the ACTIVE ring on an
+armed box now that pair 5's PCM definitions are deleted (P9-C); an
+unarmed/rolled-back box still names the dead pair and outputd parks;
+renderers hold 0–4; **pair 6 is free**
 (consumed only if the summer writes a loopback — the two-instance build below).
 No 9th pair, no second `snd-aloop` card. *File-capture-frees-pair-6 is confirmed
 in principle; nail it empirically in the camilla#1/#2 emit work.*
@@ -693,9 +696,10 @@ on-device begins; **5 is the v1 gate** (matched pair proven on hardware).
   **re-proves** (`classify_camilla_graph`) the driver-domain config, swaps
   CamillaDSP glitch-free (snapclient → `hw:Loopback,0,6` → CamillaDSP captures
   `hw:Loopback,1,6` — pair 6 is the passive content lane, free on an active
-  follower since its outputd is always Composite/active (reads pair 5) and never
-  opens the passive lane; snd_aloop caps at 8 pairs so no dedicated extra pair
-  exists — `enable_rate_adjust`, no resampler, `chunksize` 1024,
+  follower since its outputd is always Composite/active (reads the ACTIVE
+  ring, not snd-aloop) and never opens the passive lane; snd_aloop caps at 8
+  pairs so no dedicated extra pair exists — `enable_rate_adjust`, no
+  resampler, `chunksize` 1024,
   `S16_LE`), stashes the prior solo-active config, and on un-bond restores the
   **active** baseline (never a passive graph). The reconciler
   ([reconcile.py](../jasper/multiroom/reconcile.py)) detects an active box
@@ -1073,7 +1077,10 @@ tweeter TTS, inv-B-through-Layer-A).
 > same fail-closed direction, same `active_content_pcm_busy` /
 > `active_content_pcm_unverified` block reasons. Current truth:
 > `_probe_active_content_pcm_once` in
-> [reconcile.py](../jasper/multiroom/reconcile.py).
+> [reconcile.py](../jasper/multiroom/reconcile.py). This is not merely a
+> signal swap: the underlying PCM itself (`outputd_active_content_playback`,
+> `hw:Loopback,0,5`) is deleted from `asoundrc.jasper`, not just retired as
+> a probe target — there is no procfs path left to fall back to.
 
 > **Stage B Step 0 recovery hardened (2026-06-24) — outputd follows the paired
 > graph contract.** The same `jts3` deployment exposed a recovery-only gap:
@@ -1091,6 +1098,11 @@ tweeter TTS, inv-B-through-Layer-A).
 > the same paired statefiles, so a deploy/restart no longer downgrades
 > `/var/lib/jasper/outputd.env` to `outputd_content_capture` while grouped active
 > lanes are already owned.
+
+> **[P9-C note, 2026-08-15]** `outputd_active_content_playback`'s PCM
+> definitions (pair 5) are deleted; see the 2026-08-15 superseded callout
+> above (Stage B Step 0 hardened again) for the ring-based signal camilla#2's
+> endpoint now proves against instead.
 
 **Stage C — matched pair (two identical active speakers, one as leader):
 BLOCKED.** Precondition is a **second commissioned active speaker with real
@@ -1354,7 +1366,11 @@ starvation, the loopback going silent, is the deferred prerequisite for
 Verification scope of the 2026-08-15 pass: the active-leader **handle-barrier**
 claims only — the release signal, its probe outcomes, and the block reasons —
 re-read against `jasper/multiroom/reconcile.py`. Nothing else in this file was
-re-verified, and the dated entries above remain a historical record.
+re-verified, and the dated entries above remain a historical record. A small
+same-day P9-C doc follow-up additionally propagated the deleted-pair-5 fact
+to the other places this file names it (the pair-budget diagram, the
+follower's `hw:Loopback,0,6` note, and two bracketed pointers) without
+re-reading the rest of the file.
 
 Last verified: 2026-08-15 (active-leader positive handle barrier: the release
 signal is a NON-BLOCKING exclusive `flock` on the ACTIVE ring's writer lock,
@@ -1372,7 +1388,8 @@ recovery-budget wording rechecked against
 `deploy/bin/jasper-camilla-recover`; 2026-06-24 active-leader outputd recovery
 now follows the
 paired statefile contract: camilla#1 `program_bake_pipe` plus camilla#2
-`driver_domain_baseline` on `outputd_active_content_playback`; initial arm
+`driver_domain_baseline` on `outputd_active_content_playback` (pair 5 —
+deleted at P9-C; see the 2026-08-15 entry above); initial arm
 seeds `crossover-statefile.yml` before audio-hardware reconcile. Prior
 2026-06-23: dumb receiver-side wireless sub [gap 5] landed
 HW-free — `jasper-outputd` `ChannelPick::Sub` LR4 low-pass + passive-main
