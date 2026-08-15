@@ -468,7 +468,7 @@ def test_keep_needs_no_reason_but_every_other_outcome_does():
     assert AdoptionDecision(outcome=AdoptionOutcome.KEEP).reason == ""
     for outcome in (
         AdoptionOutcome.RESTORE,
-        AdoptionOutcome.USER_DECISION,
+        AdoptionOutcome.KEEP_FOR_ITERATION,
         AdoptionOutcome.RECOVERY_REQUIRED,
     ):
         with pytest.raises(CrossoverV2ContractError, match="must state a reason"):

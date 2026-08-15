@@ -406,10 +406,14 @@ is `not_evaluated`, never a pass. See
 [`jasper/audio_measurement/frame_ledger.py`](../jasper/audio_measurement/frame_ledger.py)
 for the per-hop exactness argument, including the one hop no counter can close.
 
-`verification_result` bundles them and `decide_adoption` combines their
-**statuses** — never their internals — through a table it does not get to
-reinterpret. That split exists because a realization answer once stood in for
-an acoustic one and a failing round read as passed.
+`verification_result` bundles them. Since #2537 they are then composed into
+**three adoption axes** — `evaluate_evidence_trust`, `evaluate_applied_safety`,
+`evaluate_round_quality` — and `decide_adoption` selects one of five rows from
+those. The four-verdict split exists because a realization answer once stood in
+for an acoustic one and a failing round read as passed; the three-axis rebuild
+exists because the table those four fed keyed on whether a round could *prove*
+it helped, and reverted a measured, safe, improving candidate that could not.
+See "The round, graded" below for the table itself.
 
 The two measurements a round compares, reduced to comparands and carrying the
 margin below which a difference is not a change, are
@@ -438,8 +442,9 @@ the module, not a second copy here.
 | [`crossover_v2/intervention.py`](../jasper/active_speaker/crossover_v2/intervention.py) | The deterministic prescription planner as pure functions — assembly around existing DSP primitives, never a second fitter. |
 | [`crossover_v2/accountability.py`](../jasper/active_speaker/crossover_v2/accountability.py) | Whether a built candidate may be PROPOSED at all — three assertions, most-specific first. |
 | [`crossover_v2/proposal.py`](../jasper/active_speaker/crossover_v2/proposal.py) | One committed candidate gathered into the fingerprinted `InterventionProposal` the round receipt names. Computes nothing; refuses rather than raising. |
-| [`crossover_v2/verification.py`](../jasper/active_speaker/crossover_v2/verification.py) | The four independent verification verdicts and adoption as data. |
+| [`crossover_v2/verification.py`](../jasper/active_speaker/crossover_v2/verification.py) | The four verification verdicts, the three adoption axes they compose into, and the five-row table. |
 | [`crossover_v2/round_evidence.py`](../jasper/active_speaker/crossover_v2/round_evidence.py) | The two measurements one round compares, and the margin that makes a difference a change. |
+| [`crossover_v2/round_anchor.py`](../jasper/active_speaker/crossover_v2/round_anchor.py) | What an apply displaced, what it put live, and whether the running graph is still that. |
 | [`crossover_v2/coordinator.py`](../jasper/active_speaker/crossover_v2/coordinator.py) | The round's tail: grade, act on the adoption table, restore, bank the receipt. |
 | [`crossover_v2/attempt_grading.py`](../jasper/active_speaker/crossover_v2/attempt_grading.py) | Whether a VERIFY capture is a new tuning attempt, and how it grades against the cross-session ledger. |
 | [`fc_selector.py`](../jasper/active_speaker/fc_selector.py) | R17's Fc selector as pure functions over small arrays. No session state, no I/O, no import of the flow. |
@@ -1973,7 +1978,10 @@ Since #2291 Phase 3c that spatial report is also the SPEC verdict's input on
 the round receipt (see "The round, graded" below), so the failure is recorded
 as one of four graded answers rather than as disclosure alone. It still does
 not gate: spec reads "any" in every row of the adoption table, because a first
-pass may honestly be improved and out of spec.
+pass may honestly be improved and out of spec — and since #2537 there is a
+second reason it must not (the trusted-floor intersection, described below).
+What #2537 added is that each failing band rides the receipt as a next-round
+target, which is disclosure and not a gate.
 
 **`/state.crossover_v2.prediction`** (two-stage commission work order D4,
 issue #1806) carries the PREDICTED post-apply response and the spec verdict it
@@ -2087,12 +2095,86 @@ that actually matters — a MEASURING session replaces the previous round's
 An unusable capture short-circuits rather than being graded and then
 overwritten, so the journal cannot show a benefit no usable capture supports.
 
-**Adoption** is `verification.decide_adoption`'s table plus three modifiers
-(`boosted`, `rollback_available`, `restore_failed`). Two guarantees are worth
-stating because they are why the table is keyed on two statuses rather than
-short-circuiting on a tracking pass: **a realization pass never overrides a
-measured regression**, and **indeterminate never claims success**. A boosted
-intervention whose benefit is indeterminate fails closed and comes back off.
+**Adoption is a table over three axes (#2537).** The four verdicts above are
+*evidence*; the three axes are the questions a decision is actually made on, and
+each has its own evaluator in `verification.py`:
+
+| axis | asks | DECIDES on | discloses |
+|---|---|---|---|
+| `evaluate_evidence_trust` | did we measure the state we applied? | capture validity, realization availability | — |
+| `evaluate_applied_safety` | is that state safe to leave on? | the delta probe's directional findings, capture integrity | which instruments looked |
+| `evaluate_round_quality` | how good is it, and what is left to fix? | **`(realization, benefit)` only** | spec, each failing band, the probe's reason |
+
+**The quality axis's STATUS is #2291's own table, unchanged in what it reads.**
+Same two statuses, same nine cells, same nine causes. What #2537 changed is what
+a non-keep cell resolves to, not what decides it.
+
+**Spec is still deliberately not a decision factor**, and there are now two
+independent reasons, both of which have to hold. It is an *outcome, not a proxy
+for benefit* — every row reads "any" for spec, and the permutation pin is
+load-bearing. AND the spec verdicts available today are computed over the raw
+250 Hz-2 kHz band with **no intersection against the session's own trusted
+floor** (357.1 Hz on a 7 ms gate), so a series keyed on them would rank rounds
+partly on sub-trusted-floor evidence the same session's delta probe refuses to
+grade — a term the E4 sweep measured moving ~2 dB with gate length alone. That
+intersection is a **separate filed fix and must land before any axis is allowed
+to decide on a spec verdict.** Spec and the per-band deviations ride the receipt
+as next-round TARGETS, which costs nothing and inherits none of it.
+
+`decide_adoption` selects one of five rows. Every row id is on the decision, the
+`…_round_graded` journal line, and the receipt, so a driver chaining rounds
+branches on a symbol rather than parsing a reason:
+
+| row | condition | outcome |
+|---|---|---|
+| `row1_trusted_safe_passed` | nothing outstanding | `keep` |
+| `row2_trusted_safe_missed` | something outstanding | `keep_for_iteration` |
+| `row3_unsafe` | a hazard was measured | `restore` |
+| `row4_untrusted_evidence` | the applied state was not measured | `restore` |
+| `row5_trusted_safe_regressed` | the entry baseline measured flatter | `restore` |
+
+(`row0_restore_failed` is outside the table: a restore was attempted and did not
+complete, which is not a decision about the evidence at all.)
+
+**What each row is for, in the owner's own terms** (ruling, 2026-08-15: *we're
+looking for the least bad MEASURED tune. reverting to an unknown measured state
+seems dumb… the first application is not the end point, it is just the start*):
+
+* **`keep_for_iteration` keeps the graph on the speaker** and records the misses
+  as the next round's targets — including each failing spec band by its own
+  edges and measured deviation. A round that measured a real state and did not
+  reach target has produced the best measured tune available; reverting it
+  trades that for a state nobody measured.
+* **`row4` restores anything unmeasured**, because "least bad MEASURED tune"
+  cannot include a state nobody measured. `unproven_boost_failed_closed`
+  survives *only* here — with trusted evidence a boost is judged
+  realized-vs-declared on the safety axis instead.
+* **`row5` still restores a measured regression.** The ruling turns on *unknown*
+  previous states; a regression is the one case where the previous state's own
+  measurement is the evidence.
+
+**Safety is the only axis that pulls a measured graph off, and direction is its
+discriminator.** A −2.3 dB uncommanded level shift is `row2` (the household
+loses some output; the next round learns something); a +2.3 dB one is `row3`
+(energy nobody asked for). Same magnitude, opposite answer. The three hazards
+are: a commanded boost realized above its declared bound
+(`delta_probe.boost_overshoot`, the one directional exceedance rule in that
+module), an uncommanded shift measured LOUDER than declared, and a clipped
+capture. A band-scoped level claim (#2533) narrows *where* a level was
+measured, never *whether* it happened, so a positive band-scoped shift is still
+a hard stop.
+
+**What "safe" does not claim.** `SAFETY_NO_FINDING` means no instrument that ran
+reported a hazard — an absent or ungraded probe reports no finding rather than
+one, matching `DELTA_PROBE_ROLLBACK_VERDICTS`'s own rule that an absent
+measurement is not evidence. The verdict's evidence carries `probe_graded` so a
+reader can tell "safe because nothing was found" from "safe because nothing
+looked."
+
+**Ordering:** a failed restore outranks everything; then safety; then trust;
+then quality. Safety before trust because both restore, so the order only
+decides which name the receipt carries — and a clipped capture is both, where
+naming the hazard beats naming the absence.
 
 The conductor grades once per session — at the end of `_consume_verify` on a
 tier that walks no post-apply cloud, and at the close of the post-apply cloud
@@ -2107,6 +2189,51 @@ session. `handle_v2_restore` is not idempotent — a successful restore sets
 correction is still applied when it is not. `bind_delta_probe_rollback`
 therefore attempts the restore once and hands every later caller the FIRST
 outcome verbatim (`event=correction.crossover_v2_delta_probe_restore_repeat`).
+
+**The restore's TARGET is the round's own snapshot (#2537).** "The previous
+sound" used to have two owners that could silently diverge — the global
+applied-baseline-profile record, which apply/restore reads, and the saved sound
+intent, which `jasper-sound reconcile-current-dsp` renders. On 2026-08-15 an
+operator reconciled the running config at 01:00; at 07:30 a round's restore
+faithfully put back the profile record's answer, which was run 2's candidate
+from six and a half hours earlier. The mechanics were right; the target was not.
+
+So `observe_apply_success` now stashes a `round_anchor` beside
+`pre_apply_profile`, in the same durable write and re-stamped by every apply:
+`{displaced: {config_path, sha256}, applied: {config_path, sha256}}`, both read
+off the apply transaction's own result (`DspApplyState.prior_config_path` is the
+running graph at apply moment, by construction). Round N+1's `displaced` is
+therefore exactly round N's `applied`, which is the chain a chained series
+needs.
+
+`rollback_anchor_refusal` gained a fourth precondition,
+`ANCHOR_RUNNING_CONFIG_DIVERGED`: the graph about to be REPLACED must still be
+the one this round applied, by path and by digest. On a mismatch it **refuses**
+rather than re-anchoring — the flow knows the running graph is not the round's
+and cannot know what a household wants done about that, and stomping a config an
+operator deliberately reconciled to is the one outcome nobody asked for. Journal:
+`event=correction.crossover_v2_restore_running_config_diverged` (ERROR).
+
+The check needs a LIVE reading, so it is a parameter: `handle_v2_restore` takes
+it from CamillaDSP at the moment of action, and the `rollback_available`
+capability probe deliberately does not (a camilla hiccup would flip a whole
+round to `recovery_required`). The two can disagree, and the disagreement is
+bounded and loud: a divergence found at the endpoint returns "not restored",
+which re-grades the round into `recovery_required`. **Every way the question
+cannot be answered — no live reading, no anchor, a state written before #2537 —
+reports "cannot compare", never "it moved".**
+
+**Read-side provenance.** `baseline_profile.applied_profile_displacement`
+compares the applied record's `config.path` against the running CamillaDSP
+statefile. Where that record is read as authority — today
+`_active_graph_fingerprint`, the receipt's `applied_graph_fingerprint` — a
+displaced record answers `""` (the coordinator's `unknown` word) rather than
+naming a graph the speaker is not playing, and logs
+`event=correction.crossover_v2_applied_profile_displaced`. **This adds a reader,
+never a second writer:** `reconcile-current-dsp` stays entirely ignorant of the
+active-speaker profile system, which is the separation that makes it safe to run
+at deploy time, and the record's only writer is still the apply path. That is
+#2537's option (b); option (a) would have traded the separation away.
 
 **The receipt** is one immutable record per round at
 `crossover_v2/<relay_session_id>/round_receipt.json` in the evidence bundle,
@@ -2144,8 +2271,13 @@ inside the receipt's digest, so a banked receipt cannot be relabelled without
 its fingerprint moving.
 
 **Journal:** `event=correction.crossover_v2_round_graded` carries all four
-verdicts WITH their evidence (the *why*, which the statuses alone cannot say),
-`…_round_restore` the restore, `…_round_receipt` where it landed.
+verdicts AND the three axes WITH their evidence (the *why*, which the statuses
+alone cannot say), plus `row=` — the stable identifier of the rule that fired,
+since three of the five rows restore and two keep, so `adoption=` alone cannot
+say which. `…_round_restore` carries the restore, `…_round_receipt` where it
+landed. The receipt itself carries the three axes at `round_axes`, because the
+receipt is what the NEXT round reads and "keep, and here is what to fix" is only
+actionable if the targets travel with it.
 
 **The rollback anchor is durable.** `save_v2_state` takes `durable=`, and the
 two writes that own `pre_apply_profile` — `observe_apply_success`, which

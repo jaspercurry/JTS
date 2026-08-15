@@ -2,41 +2,61 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""#2291 Phase 3b — the four verdicts and the adoption table.
+"""#2291 Phase 3b's four verdicts, and #2537's three axes and five rows.
 
-Every row of the issue's adoption table is a named test here, and so is
-every override rule stated beside it: a realization pass never beats a
-measured regression, improved-but-out-of-spec is a legal keep, indeterminate
-never claims success, an unproven boost fails closed, and a restore that
-cannot be performed escalates instead of quietly keeping the graph.
+Every row of the adoption table is a named test here, and so is every override
+rule stated beside it: safety outranks trust, trust outranks quality, a failed
+restore outranks everything, a measured regression never keeps, a boost is
+invisible on a trusted round, and a restore that cannot be performed escalates
+instead of quietly keeping the graph.
+
+The directionality pin is the one to read first
+(``test_the_level_shift_hard_stop_is_directional``): the same magnitude of
+uncommanded level shift is a hard stop in one direction and a learning signal
+in the other, and getting that backwards is what reverted a measured, safe,
+improving candidate on 2026-08-15.
 """
 
 from __future__ import annotations
 
+import inspect
 import itertools
 import re
+import types
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_v2.contracts import (
+    ADOPTION_ROW_KEEP,
+    ADOPTION_ROW_KEEP_FOR_ITERATION,
+    ADOPTION_ROW_RESTORE_FAILED,
+    ADOPTION_ROW_RESTORE_REGRESSION,
+    ADOPTION_ROW_RESTORE_UNSAFE,
+    ADOPTION_ROW_RESTORE_UNTRUSTED,
+    ADOPTION_ROWS,
     AdoptionOutcome,
     BenefitStatus,
     CaptureValidity,
     CrossoverV2ContractError,
+    EvidenceTrust,
+    QualityStatus,
     RealizationStatus,
     ResponseCurve,
+    SafetyStatus,
     SpecStatus,
 )
+from jasper.active_speaker.delta_probe import (
+    REASON_UNCOMMANDED_LEVEL_SHIFT_OUTSIDE_BAND,
+    VERDICT_LEVEL_MISMATCH as DELTA_VERDICT_LEVEL_MISMATCH,
+    VERDICT_MATCHED as DELTA_VERDICT_MATCHED,
+)
+from jasper.active_speaker.crossover_v2 import verification as verification_module
 from jasper.active_speaker.crossover_v2.verification import (
     ADOPTION_MEASURED_REGRESSION,
     ADOPTION_NO_ROLLBACK_ANCHOR,
-    ADOPTION_REALIZATION_FAILED,
-    ADOPTION_REALIZATION_UNAVAILABLE,
-    ADOPTION_REALIZED_AND_IMPROVED,
     ADOPTION_RESTORE_FAILED,
-    ADOPTION_UNPROVEN,
     ADOPTION_UNPROVEN_BOOST,
     BENEFIT_BASELINE_UNAVAILABLE,
     BENEFIT_GRID_MISMATCH,
@@ -51,23 +71,37 @@ from jasper.active_speaker.crossover_v2.verification import (
     CAPTURE_INTEGRITY_CLEAN,
     CAPTURE_INTEGRITY_FAILED,
     CAPTURE_INTEGRITY_UNAVAILABLE,
+    ADOPTION_REALIZATION_FAILED,
+    ADOPTION_REALIZATION_UNAVAILABLE,
+    ADOPTION_REALIZED_AND_IMPROVED,
+    ADOPTION_UNPROVEN,
+    CLIPPED_RUN_CHECK,
     REALIZATION_NO_COMPARATOR,
     REALIZATION_NO_TRACKING,
     REALIZATION_OUT_OF_TOLERANCE,
     REALIZATION_WITHIN_TOLERANCE,
+    SAFETY_BOOST_OVER_DECLARED_BOUND,
+    SAFETY_CLIPPED_CAPTURE,
+    SAFETY_NO_FINDING,
+    SAFETY_UNCOMMANDED_LEVEL_LOUDER,
     SPEC_BAND_OUT_OF_TOLERANCE,
     SPEC_IN_TOLERANCE,
     SPEC_NO_EVALUABLE_BAND,
     SPEC_NO_REPORT,
     SPEC_PARTIAL_COVERAGE,
     TRACKING_COMPARATOR_KEY,
+    TRUST_MEASURED,
     MeasurementComparand,
     Verdict,
-    _ADOPTION_TABLE,
+    _QUALITY_ROWS,
+    _QUALITY_TABLE,
     decide_adoption,
+    evaluate_applied_safety,
     evaluate_benefit,
     evaluate_capture_validity,
+    evaluate_evidence_trust,
     evaluate_realization,
+    evaluate_round_quality,
     evaluate_spec,
     verification_result,
 )
@@ -690,16 +724,493 @@ def test_a_verdict_renders_a_loggable_payload():
     }
 
 
+
 # --------------------------------------------------------------------------
-# 5. adoption — the issue's table, row by row
+# 5. the three adoption axes (#2537)
 # --------------------------------------------------------------------------
 
 
-def _adopt(realization, benefit, **overrides):
+def _capture(status=CaptureValidity.USABLE, reason=CAPTURE_INTEGRITY_CLEAN):
+    return Verdict(status, reason, {})
+
+
+def _realization(
+    status=RealizationStatus.MATCHED, reason=REALIZATION_WITHIN_TOLERANCE
+):
+    return Verdict(status, reason, {})
+
+
+def _benefit(status=BenefitStatus.IMPROVED, reason=BENEFIT_IMPROVED):
+    return Verdict(status, reason, {})
+
+
+def _spec(status=SpecStatus.PASSED, reason=SPEC_IN_TOLERANCE):
+    return Verdict(status, reason, {})
+
+
+class _Probe:
+    """The attributes :mod:`verification` reads off a delta-probe map.
+
+    A stand-in rather than a real :class:`DeltaProbeMap`, and deliberately: the
+    evaluators read this object DUCK-TYPED (the same rule
+    ``evaluate_capture_validity`` follows for ``CaptureIntegrity``), so a test
+    that could only be written with the real class would be pinning an import
+    rather than a contract. The real map's own fields are pinned in
+    ``tests/test_active_speaker_delta_probe.py``.
+    """
+
+    def __init__(
+        self,
+        *,
+        verdict=DELTA_VERDICT_MATCHED,
+        reason="tracked",
+        residual_offset_db=None,
+        residual_offset_tolerance_db=1.5,
+        boost_over_declared_bound=False,
+        boost_overshoot_db=None,
+    ):
+        self.verdict = verdict
+        self.reason = reason
+        self.residual_offset_db = residual_offset_db
+        self.residual_offset_tolerance_db = residual_offset_tolerance_db
+        self.boost_over_declared_bound = boost_over_declared_bound
+        self.boost_overshoot_db = boost_overshoot_db
+
+
+class _Integrity:
+    def __init__(self, failed=(), not_evaluated=()):
+        self.failed = tuple(failed)
+        self.not_evaluated = tuple(not_evaluated)
+
+
+# --- trust ------------------------------------------------------------------
+
+
+def test_a_usable_capture_with_a_graded_realization_is_trusted():
+    verdict = evaluate_evidence_trust(
+        capture=_capture(), realization=_realization()
+    )
+    assert verdict.status is EvidenceTrust.TRUSTED
+    assert verdict.reason == TRUST_MEASURED
+
+
+def test_an_unusable_capture_is_untrusted_under_its_own_reason():
+    verdict = evaluate_evidence_trust(
+        capture=_capture(CaptureValidity.UNUSABLE, CAPTURE_INTEGRITY_FAILED),
+        realization=_realization(RealizationStatus.UNAVAILABLE),
+    )
+    assert verdict.status is EvidenceTrust.UNTRUSTED
+    # The CAPTURE's reason, not the realization's: an unusable capture is why
+    # the realization is unavailable, and naming the symptom would misdirect.
+    assert verdict.reason == CAPTURE_INTEGRITY_FAILED
+
+
+def test_an_ungraded_realization_is_untrusted_under_its_own_reason():
+    verdict = evaluate_evidence_trust(
+        capture=_capture(),
+        realization=_realization(
+            RealizationStatus.UNAVAILABLE, REALIZATION_NO_TRACKING
+        ),
+    )
+    assert verdict.status is EvidenceTrust.UNTRUSTED
+    assert verdict.reason == REALIZATION_NO_TRACKING
+
+
+@pytest.mark.parametrize("benefit", list(BenefitStatus))
+def test_the_benefit_verdict_never_decides_evidence_trust(benefit):
+    """#2537's correction, and the whole of it.
+
+    An indeterminate benefit means the round could not compare its measured
+    state to a BEFORE. The post-apply capture is fine, so the applied state IS
+    measured — and "reverting to an unknown measured state seems dumb" is the
+    owner's ruling on exactly that. Trust reads capture and realization; the
+    benefit is a quality question.
+
+    Parametrised over the whole enum rather than the one interesting member:
+    the claim is that this axis cannot see the benefit at all, and a signature
+    with no benefit parameter is what proves it.
+    """
+
+    assert "benefit" not in inspect.signature(evaluate_evidence_trust).parameters
+    del benefit
+
+
+# --- safety -----------------------------------------------------------------
+
+
+def test_no_finding_is_reported_as_safe_and_says_what_looked():
+    verdict = evaluate_applied_safety(probe=_Probe(), integrity=_Integrity())
+    assert verdict.status is SafetyStatus.SAFE
+    assert verdict.reason == SAFETY_NO_FINDING
+    # "Safe because nothing was found" must be distinguishable from "safe
+    # because nothing looked" — see the function's own docstring.
+    assert verdict.evidence["probe_graded"] is True
+    assert verdict.evidence["integrity_graded"] is True
+
+
+def test_an_absent_probe_is_reported_as_safe_but_ungraded():
+    """An absent measurement is not evidence of a hazard.
+
+    ``DELTA_PROBE_ROLLBACK_VERDICTS`` already holds this line for the probe's
+    own rollback set, in as many words: rolling back on an absent measurement
+    "would revert every session whose household closed the phone before the
+    post-apply sweep". This axis must not contradict it.
+    """
+
+    verdict = evaluate_applied_safety(probe=None, integrity=None)
+    assert verdict.status is SafetyStatus.SAFE
+    assert verdict.evidence["probe_graded"] is False
+    assert verdict.evidence["integrity_graded"] is False
+
+
+def test_a_boost_realized_above_its_declared_bound_is_unsafe():
+    verdict = evaluate_applied_safety(
+        probe=_Probe(boost_over_declared_bound=True, boost_overshoot_db=4.2),
+        integrity=_Integrity(),
+    )
+    assert verdict.status is SafetyStatus.UNSAFE
+    assert verdict.reason == SAFETY_BOOST_OVER_DECLARED_BOUND
+    assert verdict.evidence["boost_overshoot_db"] == 4.2
+
+
+def test_a_clipped_capture_is_unsafe():
+    verdict = evaluate_applied_safety(
+        probe=_Probe(), integrity=_Integrity(failed=(CLIPPED_RUN_CHECK,))
+    )
+    assert verdict.status is SafetyStatus.UNSAFE
+    assert verdict.reason == SAFETY_CLIPPED_CAPTURE
+
+
+def test_a_non_clipping_integrity_failure_is_not_a_safety_finding():
+    """It is an evidence-trust failure, which is a different row.
+
+    A capture that failed its schedule check is unusable, not dangerous, and
+    the receipt must say which.
+    """
+
+    verdict = evaluate_applied_safety(
+        probe=_Probe(), integrity=_Integrity(failed=("schedule_residual",))
+    )
+    assert verdict.status is SafetyStatus.SAFE
+
+
+@pytest.mark.parametrize(
+    ("residual_db", "expected"),
+    [
+        (+2.3, SafetyStatus.UNSAFE),
+        (-2.3, SafetyStatus.SAFE),
+        (+1.4, SafetyStatus.SAFE),
+        (-1.4, SafetyStatus.SAFE),
+    ],
+)
+def test_the_level_shift_hard_stop_is_directional(residual_db, expected):
+    """DIRECTION is the discriminator, at identical magnitude (#2537).
+
+    +2.3 dB and −2.3 dB are the same number and opposite facts: one is energy
+    nobody asked for, the other is a household losing some output and a signal
+    for the next round. The 2026-08-15 JTS3 residual was negative, and it was
+    reverted anyway.
+
+    The two 1.4 dB rows are the tolerance's own edge — inside it, neither
+    direction is a finding at all.
+    """
+
+    verdict = evaluate_applied_safety(
+        probe=_Probe(
+            verdict=DELTA_VERDICT_LEVEL_MISMATCH,
+            residual_offset_db=residual_db,
+            residual_offset_tolerance_db=1.5,
+        ),
+        integrity=_Integrity(),
+    )
+    assert verdict.status is expected
+    if expected is SafetyStatus.UNSAFE:
+        assert verdict.reason == SAFETY_UNCOMMANDED_LEVEL_LOUDER
+
+
+def test_a_positive_residual_without_the_level_verdict_is_not_a_hard_stop():
+    """The probe decides whether a residual is a FINDING; this axis reads it.
+
+    ``residual_offset_db`` is measured on every classified map. Only
+    ``level_mismatch`` says the level moved materially AND sufficiently to
+    explain the map's failure. Treating a bare number as a hazard would put a
+    second owner on that judgement.
+    """
+
+    verdict = evaluate_applied_safety(
+        probe=_Probe(verdict=DELTA_VERDICT_MATCHED, residual_offset_db=+9.0),
+        integrity=_Integrity(),
+    )
+    assert verdict.status is SafetyStatus.SAFE
+
+
+def test_a_band_scoped_positive_shift_is_still_a_hard_stop():
+    """#2533 narrows WHERE a level was measured, never WHETHER it happened."""
+
+    verdict = evaluate_applied_safety(
+        probe=_Probe(
+            verdict=DELTA_VERDICT_LEVEL_MISMATCH,
+            reason=REASON_UNCOMMANDED_LEVEL_SHIFT_OUTSIDE_BAND,
+            residual_offset_db=+2.3,
+        ),
+        integrity=_Integrity(),
+    )
+    assert verdict.status is SafetyStatus.UNSAFE
+    assert verdict.evidence["probe_reason"] == (
+        REASON_UNCOMMANDED_LEVEL_SHIFT_OUTSIDE_BAND
+    )
+
+
+def test_the_clipped_run_check_name_matches_the_analyzers_own():
+    """The one literal this module copies rather than imports.
+
+    ``verification`` cannot import ``program_analysis`` at module scope (5,500
+    lines of scipy behind a ``TYPE_CHECKING`` guard), so it repeats the check
+    name. A copy with no guard is a copy that drifts.
+    """
+
+    from jasper.audio_measurement.program_analysis import (
+        INTEGRITY_CHECK_CLIPPED_RUN,
+    )
+
+    assert CLIPPED_RUN_CHECK == INTEGRITY_CHECK_CLIPPED_RUN
+
+
+# --- quality ----------------------------------------------------------------
+
+
+def _quality(**overrides):
     kwargs = {
-        "realization": realization,
-        "benefit": benefit,
-        "spec": SpecStatus.FAILED,
+        "realization": _realization(),
+        "benefit": _benefit(),
+        "spec": _spec(),
+        "probe": _Probe(),
+        "spec_report": None,
+    }
+    kwargs.update(overrides)
+    return evaluate_round_quality(**kwargs)
+
+
+def test_everything_the_round_wanted_is_a_pass_with_no_targets():
+    verdict = _quality()
+    assert verdict.status is QualityStatus.PASSED
+    assert verdict.reason == ADOPTION_REALIZED_AND_IMPROVED
+    assert verdict.evidence["targets"] == []
+
+
+def test_a_measured_regression_outranks_the_target_list():
+    """A round that made the speaker worse has nothing to hand the next one."""
+
+    verdict = _quality(
+        benefit=_benefit(BenefitStatus.REGRESSED, BENEFIT_REGRESSED),
+        spec=_spec(SpecStatus.FAILED, SPEC_BAND_OUT_OF_TOLERANCE),
+    )
+    assert verdict.status is QualityStatus.REGRESSED
+    assert verdict.reason == ADOPTION_MEASURED_REGRESSION
+
+
+@pytest.mark.parametrize(
+    ("overrides", "target"),
+    [
+        (
+            {"realization": _realization(
+                RealizationStatus.FAILED, REALIZATION_OUT_OF_TOLERANCE
+            )},
+            f"realization:{REALIZATION_OUT_OF_TOLERANCE}",
+        ),
+        (
+            {"benefit": _benefit(
+                BenefitStatus.INDETERMINATE, BENEFIT_BASELINE_UNAVAILABLE
+            )},
+            f"benefit:{BENEFIT_BASELINE_UNAVAILABLE}",
+        ),
+        (
+            {"spec": _spec(SpecStatus.FAILED, SPEC_BAND_OUT_OF_TOLERANCE)},
+            f"spec:{SPEC_BAND_OUT_OF_TOLERANCE}",
+        ),
+        (
+            {"probe": _Probe(
+                verdict=DELTA_VERDICT_LEVEL_MISMATCH,
+                reason=REASON_UNCOMMANDED_LEVEL_SHIFT_OUTSIDE_BAND,
+            )},
+            f"delta_probe:{REASON_UNCOMMANDED_LEVEL_SHIFT_OUTSIDE_BAND}",
+        ),
+    ],
+)
+def test_each_instrument_short_of_its_answer_becomes_a_named_target(
+    overrides, target
+):
+    """Every instrument contributes a TARGET; only two contribute a STATUS.
+
+    The target list is what the next round chases, so it is drawn from all four
+    instruments. The status is #2291's table, keyed on ``(realization,
+    benefit)`` alone — see the spec/probe pins below for why the other two are
+    deliberately excluded from the decision.
+    """
+    assert target in _quality(**overrides).evidence["targets"]
+
+
+def test_an_ungraded_probe_cannot_make_a_round_pass_and_cannot_fail_it():
+    """No evidence to refuse on, and no permission granted either."""
+
+    verdict = _quality(probe=None)
+    assert verdict.status is QualityStatus.PASSED
+    assert not any(t.startswith("delta_probe:") for t in verdict.evidence["targets"])
+
+
+@pytest.mark.parametrize("spec_status", list(SpecStatus))
+def test_the_spec_verdict_never_moves_the_quality_STATUS(spec_status):
+    """Two independent reasons, and both have to hold.
+
+    *Spec is an outcome, not a proxy for benefit* — every row of #2291's table
+    reads "any" for spec, and the permutation pin on ``decide_adoption`` is
+    load-bearing. AND the spec verdicts available today are computed over the
+    raw 250 Hz-2 kHz band with no intersection against the session's own trusted
+    floor (357.1 Hz on a 7 ms gate), so deciding on them would key a series on
+    sub-trusted-floor evidence the same session's delta probe refuses to grade —
+    a term the E4 sweep measured moving ~2 dB with gate length alone. That
+    intersection is a separate filed fix and must land before any axis decides
+    on a spec verdict.
+
+    So it rides as DISCLOSURE, and this is the pin that keeps it there.
+    """
+    statuses = {
+        _quality(spec=_spec(status, f"reason_{status.value}")).status
+        for status in SpecStatus
+    }
+    assert len(statuses) == 1
+    # …while still reaching the target list, so the next round can chase it.
+    missed = _quality(spec=_spec(SpecStatus.FAILED, SPEC_BAND_OUT_OF_TOLERANCE))
+    assert f"spec:{SPEC_BAND_OUT_OF_TOLERANCE}" in missed.evidence["targets"]
+    del spec_status
+
+
+def test_the_delta_probe_verdict_never_moves_the_quality_STATUS():
+    """Its rollback verdicts have their own path; the rest are non-rollback by
+    a standing ruling, so neither belongs in this status either."""
+    graded = _quality(probe=_Probe())
+    band_scoped = _quality(probe=_Probe(
+        verdict=DELTA_VERDICT_LEVEL_MISMATCH,
+        reason=REASON_UNCOMMANDED_LEVEL_SHIFT_OUTSIDE_BAND,
+    ))
+    assert graded.status is band_scoped.status
+    assert graded.reason == band_scoped.reason
+    assert any(
+        t.startswith("delta_probe:") for t in band_scoped.evidence["targets"]
+    )
+
+
+def test_the_quality_status_is_2291s_own_table_unchanged_in_what_it_reads():
+    """The nine cells, keyed on the same two statuses, with the same causes.
+
+    #2537 changed what a non-keep cell RESOLVES TO, not what decides it. A
+    lookup with no default is what makes a tenth combination impossible.
+    """
+    assert set(_QUALITY_TABLE) == {
+        (realization, benefit)
+        for realization in RealizationStatus
+        for benefit in BenefitStatus
+    }
+    assert _QUALITY_TABLE[
+        (RealizationStatus.MATCHED, BenefitStatus.IMPROVED)
+    ] == (QualityStatus.PASSED, ADOPTION_REALIZED_AND_IMPROVED)
+    # Every REGRESSED cell carries the regression as its cause, including the
+    # one the pre-#2537 table gave to ``realization_failed``: a realization
+    # failure no longer takes a graph off, so it cannot be the restoring cause.
+    for realization in RealizationStatus:
+        quality, reason = _QUALITY_TABLE[(realization, BenefitStatus.REGRESSED)]
+        assert quality is QualityStatus.REGRESSED
+        assert reason == ADOPTION_MEASURED_REGRESSION
+    # And the causes that survive verbatim, on cells that used to restore or
+    # ask and now keep-for-iteration.
+    assert _QUALITY_TABLE[
+        (RealizationStatus.FAILED, BenefitStatus.IMPROVED)
+    ] == (QualityStatus.MISSED, ADOPTION_REALIZATION_FAILED)
+    assert _QUALITY_TABLE[
+        (RealizationStatus.UNAVAILABLE, BenefitStatus.IMPROVED)
+    ] == (QualityStatus.MISSED, ADOPTION_REALIZATION_UNAVAILABLE)
+    assert _QUALITY_TABLE[
+        (RealizationStatus.MATCHED, BenefitStatus.INDETERMINATE)
+    ] == (QualityStatus.MISSED, ADOPTION_UNPROVEN)
+
+
+def test_each_failing_spec_band_rides_the_receipt_as_its_own_target():
+    """"250-2000 Hz, +4.70 dB against a 1.5 dB tolerance" is an instruction.
+
+    "spec failed" is only a mood, and the receipt is what the NEXT round reads.
+    The fixture is cycle 4's own shape: TWO bands failed, and the second is
+    nowhere near any gate floor — which is why the per-band list is worth
+    carrying even while the spec verdict itself is not yet trusted enough to
+    decide on (see ``test_the_spec_verdict_never_moves_the_quality_STATUS``).
+    """
+
+    verdict = _quality(
+        spec=_spec(SpecStatus.FAILED, SPEC_BAND_OUT_OF_TOLERANCE),
+        spec_report=_report_with_two_failing_bands(),
+    )
+    bands = verdict.evidence["spec_bands"]
+
+    assert [(b["f_lo_hz"], b["f_hi_hz"]) for b in bands] == [
+        (250.0, 2000.0), (8000.0, 16000.0),
+    ]
+    assert bands[0]["max_deviation_db"] == pytest.approx(4.70)
+    assert bands[0]["tolerance_db"] == pytest.approx(1.5)
+    # Signed, because "too loud" and "too quiet" call for opposite corrections.
+    assert bands[1]["max_deviation_db"] == pytest.approx(-2.63)
+    assert bands[1]["max_deviation_hz"] == pytest.approx(14072.0)
+
+
+def test_a_passing_or_unevaluable_band_is_not_a_target():
+    """A band that passed has nothing to aim at, and one that could not be
+    measured has nothing to aim WITH — ``passed=False, evaluable=False`` means
+    "not measured", not "failed"."""
+
+    verdict = _quality(spec_report=_report_with_two_failing_bands())
+    named = {(b["f_lo_hz"], b["f_hi_hz"]) for b in verdict.evidence["spec_bands"]}
+    assert (2000.0, 8000.0) not in named   # passed
+    assert (20.0, 250.0) not in named      # unevaluable
+
+
+def _report_with_two_failing_bands():
+    """Cycle 4's shape: two failing bands, one passing, one unevaluable.
+
+    The numbers are that round's own, from the receipt: band 1 measured
+    **+4.70 dB** against a 1.5 dB tolerance (3.1x over), and band 3 measured
+    **-2.63 dB at 14,072 Hz**. Grading is MAX deviation, not RMS.
+    """
+
+    return types.SimpleNamespace(bands=(
+        types.SimpleNamespace(
+            f_lo_hz=20.0, f_hi_hz=250.0, tolerance_db=3.0, evaluable=False,
+            passed=None, max_deviation_db=None, max_deviation_hz=None,
+        ),
+        types.SimpleNamespace(
+            f_lo_hz=250.0, f_hi_hz=2000.0, tolerance_db=1.5, evaluable=True,
+            passed=False, max_deviation_db=4.70, max_deviation_hz=331.8,
+        ),
+        types.SimpleNamespace(
+            f_lo_hz=2000.0, f_hi_hz=8000.0, tolerance_db=2.0, evaluable=True,
+            passed=True, max_deviation_db=0.4, max_deviation_hz=4000.0,
+        ),
+        types.SimpleNamespace(
+            f_lo_hz=8000.0, f_hi_hz=16000.0, tolerance_db=2.0, evaluable=True,
+            passed=False, max_deviation_db=-2.63, max_deviation_hz=14072.0,
+        ),
+    ))
+
+
+# --------------------------------------------------------------------------
+# 6. adoption — the five rows (#2537)
+# --------------------------------------------------------------------------
+
+
+def _adopt(*, trust=None, safety=None, quality=None, **overrides):
+    kwargs = {
+        "trust": trust or Verdict(EvidenceTrust.TRUSTED, TRUST_MEASURED, {}),
+        "safety": safety or Verdict(SafetyStatus.SAFE, SAFETY_NO_FINDING, {}),
+        "quality": quality or Verdict(
+            QualityStatus.PASSED, ADOPTION_REALIZED_AND_IMPROVED, {}
+        ),
         "boosted": False,
         "rollback_available": True,
     }
@@ -707,292 +1218,270 @@ def _adopt(realization, benefit, **overrides):
     return decide_adoption(**kwargs)
 
 
-def test_row_matched_improved_keeps():
-    """``matched | improved | pass or fail | keep`` — the only keep row."""
-
-    decision = _adopt(RealizationStatus.MATCHED, BenefitStatus.IMPROVED)
+def test_row1_trusted_safe_passed_keeps():
+    decision = _adopt()
     assert decision.outcome is AdoptionOutcome.KEEP
+    assert decision.row == ADOPTION_ROW_KEEP
     assert decision.reason == ADOPTION_REALIZED_AND_IMPROVED
 
 
-@pytest.mark.parametrize(
-    "benefit",
-    [BenefitStatus.IMPROVED, BenefitStatus.REGRESSED, BenefitStatus.INDETERMINATE],
-)
-def test_row_realization_failed_restores_whatever_the_benefit_says(benefit):
-    """``failed | any | any | restore``."""
+def test_row2_trusted_safe_missed_keeps_for_iteration():
+    """The measured state STAYS live, and the misses become next-round targets.
 
-    decision = _adopt(RealizationStatus.FAILED, benefit)
-    assert decision.outcome is AdoptionOutcome.RESTORE
-    assert decision.reason == ADOPTION_REALIZATION_FAILED
+    This is the row the owner's ruling created, and the 2026-08-15 JTS3 cycle-4
+    round is what lands on it: usable capture, tracked realization, a level
+    residual pointing quieter, an unprovable benefit, and a spec band out of
+    tolerance.
+    """
 
-
-@pytest.mark.parametrize(
-    "realization", [RealizationStatus.MATCHED, RealizationStatus.UNAVAILABLE]
-)
-def test_row_clear_regression_restores(realization):
-    """``matched or unavailable | clearly regressed | any | restore``."""
-
-    decision = _adopt(realization, BenefitStatus.REGRESSED)
-    assert decision.outcome is AdoptionOutcome.RESTORE
-    assert decision.reason == ADOPTION_MEASURED_REGRESSION
-
-
-def test_row_unavailable_indeterminate_asks_rather_than_claiming_success():
-    """``unavailable | indeterminate | any | do not claim success``."""
-
-    decision = _adopt(RealizationStatus.UNAVAILABLE, BenefitStatus.INDETERMINATE)
-    assert decision.outcome is AdoptionOutcome.USER_DECISION
+    decision = _adopt(
+        quality=Verdict(
+            QualityStatus.MISSED, ADOPTION_UNPROVEN,
+            {"targets": [f"spec:{SPEC_BAND_OUT_OF_TOLERANCE}"]},
+        ),
+    )
+    assert decision.outcome is AdoptionOutcome.KEEP_FOR_ITERATION
+    assert decision.row == ADOPTION_ROW_KEEP_FOR_ITERATION
     assert decision.reason == ADOPTION_UNPROVEN
 
 
-def test_row_unavailable_improved_does_not_claim_the_graph_is_why():
-    """The keep row names ``matched``; this table does not widen it.
-
-    And the cause names the *realization* gap, not the benefit: the speaker
-    did measure better, so a receipt reading "benefit unproven" here would
-    be false.
-    """
-
-    decision = _adopt(RealizationStatus.UNAVAILABLE, BenefitStatus.IMPROVED)
-    assert decision.outcome is AdoptionOutcome.USER_DECISION
-    assert decision.reason == ADOPTION_REALIZATION_UNAVAILABLE
-    assert decision.reason != ADOPTION_UNPROVEN
-
-
-def test_row_restore_attempted_but_failed_requires_recovery():
-    """``restore attempted but failed | any | any | recovery required``."""
-
+def test_row3_unsafe_restores_under_the_hazards_own_name():
     decision = _adopt(
-        RealizationStatus.MATCHED, BenefitStatus.IMPROVED, restore_failed=True
+        safety=Verdict(
+            SafetyStatus.UNSAFE, SAFETY_BOOST_OVER_DECLARED_BOUND, {}
+        ),
     )
-    assert decision.outcome is AdoptionOutcome.RECOVERY_REQUIRED
-    assert decision.reason == ADOPTION_RESTORE_FAILED
-
-
-def test_a_failed_restore_outranks_every_other_row():
-    for realization, benefit, spec, boosted, rollback in itertools.product(
-        RealizationStatus, BenefitStatus, SpecStatus, (False, True), (False, True)
-    ):
-        decision = decide_adoption(
-            realization=realization,
-            benefit=benefit,
-            spec=spec,
-            boosted=boosted,
-            rollback_available=rollback,
-            restore_failed=True,
-        )
-        assert decision.outcome is AdoptionOutcome.RECOVERY_REQUIRED
-
-
-# -- the named override rules ----------------------------------------------
-
-
-def test_a_realization_pass_never_overrides_a_measured_regression():
-    """The 2026-08-10 shape, and the reason the table is keyed on both."""
-
-    decision = _adopt(RealizationStatus.MATCHED, BenefitStatus.REGRESSED)
-    assert decision.outcome is not AdoptionOutcome.KEEP
     assert decision.outcome is AdoptionOutcome.RESTORE
+    assert decision.row == ADOPTION_ROW_RESTORE_UNSAFE
+    assert decision.reason == SAFETY_BOOST_OVER_DECLARED_BOUND
 
 
-@pytest.mark.parametrize("spec", list(SpecStatus))
-def test_improved_but_out_of_spec_is_a_valid_keep(spec):
-    """#2291's named valid first pass: realized, improved, not yet in spec."""
+def test_row4_untrusted_evidence_restores():
+    """An unmeasured applied state cannot be the least bad MEASURED tune."""
 
     decision = _adopt(
-        RealizationStatus.MATCHED, BenefitStatus.IMPROVED, spec=spec
+        trust=Verdict(
+            EvidenceTrust.UNTRUSTED, CAPTURE_INTEGRITY_FAILED, {}
+        ),
     )
-    assert decision.outcome is AdoptionOutcome.KEEP
-
-
-@pytest.mark.parametrize("realization", list(RealizationStatus))
-@pytest.mark.parametrize("spec", list(SpecStatus))
-@pytest.mark.parametrize("boosted", [False, True])
-def test_indeterminate_evidence_never_claims_success(realization, spec, boosted):
-    decision = _adopt(
-        realization,
-        BenefitStatus.INDETERMINATE,
-        spec=spec,
-        boosted=boosted,
-    )
-    assert decision.outcome is not AdoptionOutcome.KEEP
-
-
-def test_spec_never_changes_the_adoption_decision():
-    """Every row of the issue's table reads "any" for spec."""
-
-    for realization, benefit, boosted, rollback in itertools.product(
-        RealizationStatus, BenefitStatus, (False, True), (False, True)
-    ):
-        outcomes = {
-            decide_adoption(
-                realization=realization,
-                benefit=benefit,
-                spec=spec,
-                boosted=boosted,
-                rollback_available=rollback,
-            ).outcome
-            for spec in SpecStatus
-        }
-        assert len(outcomes) == 1, (realization, benefit, boosted, rollback)
-
-
-@pytest.mark.parametrize("realization", list(RealizationStatus))
-def test_an_unproven_boost_fails_closed_instead_of_asking(realization):
-    """Energy we put into a driver and cannot show was warranted comes off.
-
-    Whatever realization said. When realization *failed*, that row was
-    already restoring and states its own, more specific cause — the boost
-    modifier only has to promote the rows that would otherwise have asked.
-    """
-
-    decision = _adopt(realization, BenefitStatus.INDETERMINATE, boosted=True)
     assert decision.outcome is AdoptionOutcome.RESTORE
-    assert decision.outcome is not AdoptionOutcome.USER_DECISION
-    expected = (
-        ADOPTION_REALIZATION_FAILED
-        if realization is RealizationStatus.FAILED
-        else ADOPTION_UNPROVEN_BOOST
-    )
-    assert expected in decision.reason
+    assert decision.row == ADOPTION_ROW_RESTORE_UNTRUSTED
+    assert decision.reason == CAPTURE_INTEGRITY_FAILED
 
 
-@pytest.mark.parametrize("rollback", [True, False])
-def test_a_boosted_but_measured_improvement_is_not_an_unproven_boost(rollback):
-    """``(unavailable, improved, boosted)`` — the benefit was MEASURED.
+def test_row5_a_measured_regression_restores():
+    """The fifth row, and why it is not a keep_for_iteration.
 
-    The fail-closed modifier is scoped to indeterminate benefit, so this
-    cell lands exactly where its unboosted sibling does: ``user_decision``,
-    cause ``realization_unavailable``. Restoring it under
-    ``unproven_boost_failed_closed`` would put a false statement on a
-    receipt — the benefit is not unproven, only unattributed — and with no
-    rollback anchor it would escalate a round that measured *better* to
-    ``recovery_required``.
+    The ruling turns on UNKNOWN previous states. A regression is the one case
+    where the previous state's own measurement is the evidence, so going back
+    goes back to a measured tune.
     """
 
     decision = _adopt(
-        RealizationStatus.UNAVAILABLE,
-        BenefitStatus.IMPROVED,
-        boosted=True,
-        rollback_available=rollback,
+        quality=Verdict(
+            QualityStatus.REGRESSED, ADOPTION_MEASURED_REGRESSION, {}
+        ),
     )
-    assert decision.outcome is AdoptionOutcome.USER_DECISION
-    assert decision.reason == ADOPTION_REALIZATION_UNAVAILABLE
-    assert ADOPTION_UNPROVEN_BOOST not in decision.reason
-    unboosted = _adopt(
-        RealizationStatus.UNAVAILABLE,
-        BenefitStatus.IMPROVED,
-        boosted=False,
-        rollback_available=rollback,
-    )
-    assert decision == unboosted
+    assert decision.outcome is AdoptionOutcome.RESTORE
+    assert decision.row == ADOPTION_ROW_RESTORE_REGRESSION
+    assert decision.reason == ADOPTION_MEASURED_REGRESSION
 
 
-def test_the_boost_modifier_reads_only_the_indeterminate_cells():
-    """Scope check across the whole surface: a boost changes the answer
-    only where the benefit is indeterminate."""
+def test_safety_outranks_trust_so_the_row_names_the_hazard():
+    """Both restore, so the order only decides which name the receipt carries.
 
-    for realization, benefit, rollback in itertools.product(
-        RealizationStatus, BenefitStatus, (False, True)
-    ):
-        if benefit is BenefitStatus.INDETERMINATE:
-            continue
-        boosted = _adopt(
-            realization, benefit, boosted=True, rollback_available=rollback
-        )
-        plain = _adopt(
-            realization, benefit, boosted=False, rollback_available=rollback
-        )
-        assert boosted == plain, (realization, benefit, rollback)
-
-
-def test_an_unproven_cut_asks_the_household_rather_than_restoring():
-    decision = _adopt(
-        RealizationStatus.MATCHED, BenefitStatus.INDETERMINATE, boosted=False
-    )
-    assert decision.outcome is AdoptionOutcome.USER_DECISION
-
-
-def test_an_unproven_boost_with_no_rollback_anchor_escalates():
-    """A restore the host cannot perform is never reported as a restore,
-    and never silently kept."""
+    A clipped capture is BOTH — unusable evidence and a hazard — and naming the
+    hazard is the more useful of two true statements.
+    """
 
     decision = _adopt(
-        RealizationStatus.MATCHED,
-        BenefitStatus.INDETERMINATE,
-        boosted=True,
-        rollback_available=False,
+        trust=Verdict(EvidenceTrust.UNTRUSTED, CAPTURE_INTEGRITY_FAILED, {}),
+        safety=Verdict(SafetyStatus.UNSAFE, SAFETY_CLIPPED_CAPTURE, {}),
     )
-    assert decision.outcome is AdoptionOutcome.RECOVERY_REQUIRED
-    assert ADOPTION_NO_ROLLBACK_ANCHOR in decision.reason
-    assert ADOPTION_UNPROVEN_BOOST in decision.reason
+    assert decision.outcome is AdoptionOutcome.RESTORE
+    assert decision.row == ADOPTION_ROW_RESTORE_UNSAFE
+    assert decision.reason == SAFETY_CLIPPED_CAPTURE
+
+
+def test_trust_outranks_quality():
+    decision = _adopt(
+        trust=Verdict(EvidenceTrust.UNTRUSTED, REALIZATION_NO_TRACKING, {}),
+        quality=Verdict(
+            QualityStatus.REGRESSED, ADOPTION_MEASURED_REGRESSION, {}
+        ),
+    )
+    assert decision.row == ADOPTION_ROW_RESTORE_UNTRUSTED
+
+
+def test_an_unproven_boost_fails_closed_on_the_untrusted_row_only():
+    """The pre-#2537 cause, surviving exactly where its argument still holds.
+
+    With no trusted evidence there is nothing to judge a boost by, and "energy
+    we put into a driver and cannot justify" is still the honest sentence. With
+    trusted evidence the boost is judged realized-vs-declared on the safety
+    axis instead — which is what stops a measured, safe, improving candidate
+    from being reverted for carrying a boost.
+    """
+
+    untrusted = _adopt(
+        trust=Verdict(EvidenceTrust.UNTRUSTED, CAPTURE_INTEGRITY_FAILED, {}),
+        boosted=True,
+    )
+    assert untrusted.outcome is AdoptionOutcome.RESTORE
+    assert untrusted.reason == ADOPTION_UNPROVEN_BOOST
 
 
 @pytest.mark.parametrize(
-    ("realization", "benefit"),
+    "quality_status",
+    [QualityStatus.PASSED, QualityStatus.MISSED, QualityStatus.REGRESSED],
+)
+def test_a_boost_never_changes_a_trusted_rounds_answer(quality_status):
+    """The regression #2537 exists to fix, pinned as a property.
+
+    On 2026-08-15 a boosted candidate with a usable capture and a tracked
+    realization was reverted BECAUSE it carried a boost. With trusted evidence
+    the modifier must now be invisible.
+    """
+
+    reason = (
+        ADOPTION_MEASURED_REGRESSION
+        if quality_status is QualityStatus.REGRESSED
+        else ADOPTION_UNPROVEN
+        if quality_status is QualityStatus.MISSED
+        else ADOPTION_REALIZED_AND_IMPROVED
+    )
+    quality = Verdict(quality_status, reason, {})
+    without = _adopt(quality=quality, boosted=False)
+    with_boost = _adopt(quality=quality, boosted=True)
+    assert with_boost.outcome is without.outcome
+    assert with_boost.row == without.row
+    assert with_boost.reason == without.reason
+
+
+def test_a_failed_restore_outranks_every_row():
+    for trust, safety, quality in itertools.product(
+        EvidenceTrust, SafetyStatus, QualityStatus
+    ):
+        decision = _adopt(
+            trust=Verdict(trust, "t", {}),
+            safety=Verdict(safety, "s", {}),
+            quality=Verdict(quality, "q", {}),
+            restore_failed=True,
+        )
+        assert decision.outcome is AdoptionOutcome.RECOVERY_REQUIRED
+        assert decision.reason == ADOPTION_RESTORE_FAILED
+        assert decision.row == ADOPTION_ROW_RESTORE_FAILED
+
+
+@pytest.mark.parametrize(
+    ("trust", "safety", "quality", "row"),
     [
-        (RealizationStatus.MATCHED, BenefitStatus.REGRESSED),
-        (RealizationStatus.UNAVAILABLE, BenefitStatus.REGRESSED),
-        (RealizationStatus.FAILED, BenefitStatus.IMPROVED),
+        (
+            EvidenceTrust.UNTRUSTED, SafetyStatus.SAFE, QualityStatus.PASSED,
+            ADOPTION_ROW_RESTORE_UNTRUSTED,
+        ),
+        (
+            EvidenceTrust.TRUSTED, SafetyStatus.UNSAFE, QualityStatus.PASSED,
+            ADOPTION_ROW_RESTORE_UNSAFE,
+        ),
+        (
+            EvidenceTrust.TRUSTED, SafetyStatus.SAFE, QualityStatus.REGRESSED,
+            ADOPTION_ROW_RESTORE_REGRESSION,
+        ),
     ],
 )
-def test_a_regression_with_no_rollback_anchor_escalates(realization, benefit):
-    decision = _adopt(realization, benefit, rollback_available=False)
+def test_a_restore_with_no_anchor_escalates_and_keeps_its_row(
+    trust, safety, quality, row
+):
+    """The row says WHICH rule fired; a missing anchor only stops its execution."""
+
+    decision = _adopt(
+        trust=Verdict(trust, "cause", {}),
+        safety=Verdict(safety, "cause", {}),
+        quality=Verdict(quality, "cause", {}),
+        rollback_available=False,
+    )
     assert decision.outcome is AdoptionOutcome.RECOVERY_REQUIRED
-    assert decision.outcome is not AdoptionOutcome.KEEP
+    assert decision.reason.startswith(f"{ADOPTION_NO_ROLLBACK_ANCHOR}:")
+    assert decision.row == row
 
 
-def test_no_combination_can_keep_without_measured_improvement():
-    """The safety claim in one sweep: KEEP requires matched + improved."""
-
-    for realization, benefit, spec, boosted, rollback, failed in itertools.product(
-        RealizationStatus,
-        BenefitStatus,
-        SpecStatus,
-        (False, True),
-        (False, True),
-        (False, True),
+@pytest.mark.parametrize("rollback", [True, False])
+def test_a_keeping_row_never_needs_a_rollback_anchor(rollback):
+    for quality_status, reason in (
+        (QualityStatus.PASSED, ADOPTION_REALIZED_AND_IMPROVED),
+        (QualityStatus.MISSED, ADOPTION_UNPROVEN),
     ):
-        decision = decide_adoption(
-            realization=realization,
-            benefit=benefit,
-            spec=spec,
+        decision = _adopt(
+            quality=Verdict(quality_status, reason, {}),
+            rollback_available=rollback,
+        )
+        assert decision.outcome in (
+            AdoptionOutcome.KEEP, AdoptionOutcome.KEEP_FOR_ITERATION
+        )
+
+
+def test_every_axis_combination_lands_on_exactly_one_known_row():
+    """No combination falls through, and no row is invented.
+
+    The pre-#2537 table got exhaustiveness from a dict lookup with no default.
+    A guard ladder has to be shown to have it.
+    """
+
+    seen = set()
+    for trust, safety, quality, boosted, rollback in itertools.product(
+        EvidenceTrust, SafetyStatus, QualityStatus, (False, True), (False, True)
+    ):
+        decision = _adopt(
+            trust=Verdict(trust, "t", {}),
+            safety=Verdict(safety, "s", {}),
+            quality=Verdict(quality, "q", {}),
             boosted=boosted,
             rollback_available=rollback,
-            restore_failed=failed,
         )
-        if decision.outcome is AdoptionOutcome.KEEP:
-            assert realization is RealizationStatus.MATCHED
-            assert benefit is BenefitStatus.IMPROVED
-            assert not failed
+        assert decision.row in ADOPTION_ROWS
+        assert decision.row != ADOPTION_ROW_RESTORE_FAILED
+        seen.add(decision.row)
+    assert seen == ADOPTION_ROWS - {ADOPTION_ROW_RESTORE_FAILED}
 
 
-def test_the_table_covers_every_realization_and_benefit_pair():
-    """No combination falls through to a default, and a new enum member
-    fails here rather than landing quietly on an existing row."""
+def test_a_fourth_quality_member_would_raise_rather_than_fall_through():
+    """The exhaustiveness property, checked where it actually lives.
 
-    assert set(_ADOPTION_TABLE) == set(
-        itertools.product(RealizationStatus, BenefitStatus)
-    )
+    ``QualityStatus`` has three members today, so no test can construct a
+    fourth. What CAN be checked is the structure that makes a fourth fail: a
+    mapping with no default. A guard ladder's equivalent would be a trailing
+    ``raise`` that ``decide_adoption``'s own type guard makes unreachable —
+    a branch this test could not enter either, and one nothing would notice
+    had been deleted.
 
+    Mutation-checked: deleting a member from ``_QUALITY_ROWS`` fails this,
+    and swapping the ladder back in fails it at import.
+    """
 
-def test_every_table_cell_states_its_own_cause():
-    """The reason rides in the cell, so there is no second table to drift."""
-
-    for cell, (_intent, reason) in _ADOPTION_TABLE.items():
-        assert reason.strip(), cell
+    assert set(_QUALITY_ROWS) == set(QualityStatus)
+    # And the mapping is the ONLY place a quality answer becomes an outcome —
+    # a re-added ``is QualityStatus.X`` branch would be a second owner.
+    source = Path(verification_module.__file__).read_text(encoding="utf-8")
+    body = source.split("def decide_adoption(", 1)[1].split("\ndef ", 1)[0]
+    assert "_QUALITY_ROWS[quality.status]" in body
+    assert "is QualityStatus." not in body
 
 
 @pytest.mark.parametrize(
     ("field_name", "value"),
-    [("realization", "matched"), ("benefit", "improved"), ("spec", "passed")],
+    [
+        ("trust", Verdict(SafetyStatus.SAFE, "s", {})),
+        ("safety", Verdict(EvidenceTrust.TRUSTED, "t", {})),
+        ("quality", Verdict(SafetyStatus.SAFE, "s", {})),
+        ("trust", EvidenceTrust.TRUSTED),
+    ],
 )
-def test_adoption_refuses_a_status_that_is_not_the_typed_one(field_name, value):
+def test_adoption_refuses_an_axis_that_is_not_the_typed_one(field_name, value):
     kwargs = {
-        "realization": RealizationStatus.MATCHED,
-        "benefit": BenefitStatus.IMPROVED,
-        "spec": SpecStatus.FAILED,
+        "trust": Verdict(EvidenceTrust.TRUSTED, "t", {}),
+        "safety": Verdict(SafetyStatus.SAFE, "s", {}),
+        "quality": Verdict(QualityStatus.PASSED, "q", {}),
         "boosted": False,
         "rollback_available": True,
         field_name: value,
@@ -1002,19 +1491,36 @@ def test_adoption_refuses_a_status_that_is_not_the_typed_one(field_name, value):
 
 
 def test_every_non_keep_decision_states_a_reason():
-    for realization, benefit, boosted, rollback, failed in itertools.product(
-        RealizationStatus, BenefitStatus, (False, True), (False, True), (False, True)
+    for trust, safety, quality, boosted, rollback, failed in itertools.product(
+        EvidenceTrust, SafetyStatus, QualityStatus,
+        (False, True), (False, True), (False, True),
     ):
-        decision = decide_adoption(
-            realization=realization,
-            benefit=benefit,
-            spec=SpecStatus.FAILED,
+        decision = _adopt(
+            trust=Verdict(trust, "t", {}),
+            safety=Verdict(safety, "s", {}),
+            quality=Verdict(quality, "q", {}),
             boosted=boosted,
             rollback_available=rollback,
             restore_failed=failed,
         )
         if decision.outcome is not AdoptionOutcome.KEEP:
             assert decision.reason.strip()
+        assert decision.row
+
+
+def test_no_axis_combination_can_keep_a_graph_that_measured_worse():
+    """The safety property #2291 established, carried into the new table."""
+
+    for trust, safety in itertools.product(EvidenceTrust, SafetyStatus):
+        decision = _adopt(
+            trust=Verdict(trust, "t", {}),
+            safety=Verdict(safety, "s", {}),
+            quality=Verdict(
+                QualityStatus.REGRESSED, ADOPTION_MEASURED_REGRESSION, {}
+            ),
+        )
+        assert decision.outcome is not AdoptionOutcome.KEEP
+        assert decision.outcome is not AdoptionOutcome.KEEP_FOR_ITERATION
 
 
 # --------------------------------------------------------------------------
@@ -1055,6 +1561,4 @@ def test_the_evaluator_is_pure():
     )
     assert first == second
     assert evaluate_spec(_report()) == evaluate_spec(_report())
-    assert _adopt(RealizationStatus.MATCHED, BenefitStatus.IMPROVED) == _adopt(
-        RealizationStatus.MATCHED, BenefitStatus.IMPROVED
-    )
+    assert _adopt() == _adopt()

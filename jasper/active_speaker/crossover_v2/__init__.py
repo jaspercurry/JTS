@@ -55,6 +55,7 @@ which walks every module here.
 from __future__ import annotations
 
 from .contracts import (
+    ADOPTION_ROWS,
     PLAN_REFUSAL_REASONS,
     PROPOSAL_FINGERPRINT_KINDS,
     AdoptionDecision,
@@ -63,17 +64,21 @@ from .contracts import (
     CandidateAcousticContext,
     CaptureValidity,
     CrossoverV2ContractError,
+    EvidenceTrust,
     InterventionProposal,
     PlanRefusal,
+    QualityStatus,
     RealizationStatus,
     ResponseCurve,
     RoundReceipt,
+    SafetyStatus,
     SpecStatus,
     TrimStrategy,
     VerificationResult,
 )
 
 __all__ = [
+    "ADOPTION_ROWS",
     "PLAN_REFUSAL_REASONS",
     "PROPOSAL_FINGERPRINT_KINDS",
     "AdoptionDecision",
@@ -82,11 +87,14 @@ __all__ = [
     "CandidateAcousticContext",
     "CaptureValidity",
     "CrossoverV2ContractError",
+    "EvidenceTrust",
     "InterventionProposal",
     "PlanRefusal",
+    "QualityStatus",
     "RealizationStatus",
     "ResponseCurve",
     "RoundReceipt",
+    "SafetyStatus",
     "SpecStatus",
     "TrimStrategy",
     "VerificationResult",

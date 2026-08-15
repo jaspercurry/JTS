@@ -55,6 +55,13 @@ from jasper.audio_measurement.evidence_identity import json_fingerprint
 from ..branch_chain import CrossoverSection
 
 __all__ = [
+    "ADOPTION_ROWS",
+    "ADOPTION_ROW_KEEP",
+    "ADOPTION_ROW_KEEP_FOR_ITERATION",
+    "ADOPTION_ROW_RESTORE_FAILED",
+    "ADOPTION_ROW_RESTORE_REGRESSION",
+    "ADOPTION_ROW_RESTORE_UNSAFE",
+    "ADOPTION_ROW_RESTORE_UNTRUSTED",
     "AdoptionDecision",
     "AdoptionOutcome",
     "BenefitStatus",
@@ -62,14 +69,17 @@ __all__ = [
     "CandidateFcDisagreementError",
     "CaptureValidity",
     "CrossoverV2ContractError",
+    "EvidenceTrust",
     "InterventionProposal",
     "NoCrossoverSectionsError",
     "PLAN_REFUSAL_REASONS",
     "PROPOSAL_FINGERPRINT_KINDS",
     "PlanRefusal",
+    "QualityStatus",
     "RealizationStatus",
     "ResponseCurve",
     "RoundReceipt",
+    "SafetyStatus",
     "SpecStatus",
     "TrimStrategy",
     "VerificationResult",
@@ -865,6 +875,59 @@ class VerificationResult:
         }
 
 
+class EvidenceTrust(str, Enum):
+    """Could this round measure the state it applied? (#2537)
+
+    The first of the adoption table's three axes. Safety and quality are both
+    read off measurements, so a round that could not measure has little for
+    them to read — but this does NOT gate them: safety is evaluated first and
+    checked first, precisely so a hazard visible in a bad capture is named as a
+    hazard rather than as an absence.
+
+    :attr:`UNTRUSTED` is the honest word for "no usable evidence", and it is
+    what the owner's own ruling turns on — *an unmeasured applied state cannot
+    be the least bad MEASURED tune*, so it comes off. It is deliberately not
+    called "failed": nothing about the correction is being asserted.
+    """
+
+    TRUSTED = "trusted"
+    UNTRUSTED = "untrusted"
+
+
+class SafetyStatus(str, Enum):
+    """Is the applied state safe to leave on a household's speaker? (#2537)
+
+    The adoption table's hard-stop axis, and the ONLY one that can pull a
+    measured graph off for something other than the absence of evidence.
+    **Direction is the whole discriminator**: quieter than declared is a
+    quality signal to learn from, louder than declared is a hazard.
+    """
+
+    SAFE = "safe"
+    UNSAFE = "unsafe"
+
+
+class QualityStatus(str, Enum):
+    """How good is the measured result, once it is trusted and safe? (#2537)
+
+    Three-valued, and the third value is why: :attr:`MISSED` and
+    :attr:`REGRESSED` are not the same answer.
+
+    * :attr:`MISSED` — the round did not hit its target, and no better MEASURED
+      state is known. Keeping it is the least-bad measured tune, and the misses
+      become the next round's targets.
+    * :attr:`REGRESSED` — a better measured state IS known: the entry baseline
+      measured flatter than the applied graph, past the margin. That is the one
+      case where going back returns to a state this round itself measured, so
+      the owner's "reverting to an unknown measured state seems dumb" does not
+      cover it — the previous state is not unknown, it is the evidence.
+    """
+
+    PASSED = "passed"
+    MISSED = "missed"
+    REGRESSED = "regressed"
+
+
 class AdoptionOutcome(str, Enum):
     """What the round did with the intervention.
 
@@ -872,17 +935,24 @@ class AdoptionOutcome(str, Enum):
     already learned this lesson: a status says what actually happened
     (``accepted_not_applied`` rather than ``applied``), and
     ``recovery_required`` always travels with a typed reason.
+
+    :attr:`KEEP_FOR_ITERATION` replaced ``user_decision`` in #2537. The old
+    name described a screen nobody rendered — ``_act_on_adoption`` treated it
+    exactly like ``KEEP``, so a cell whose whole purpose was "do not claim
+    success" claimed success by silence. The new name says what the round
+    actually does with a trusted, safe, imperfect result: it keeps it, because
+    it is the best MEASURED state known, and it records what to fix next.
     """
 
     KEEP = "keep"
+    KEEP_FOR_ITERATION = "keep_for_iteration"
     RESTORE = "restore"
-    USER_DECISION = "user_decision"
     RECOVERY_REQUIRED = "recovery_required"
 
 
 @dataclass(frozen=True, init=False)
 class AdoptionDecision:
-    """Keep, restore, ask, or escalate — with a reason that is never optional.
+    """Keep, keep-and-iterate, restore, or escalate — with a reason and a row.
 
     :attr:`AdoptionOutcome.RECOVERY_REQUIRED` is the one state that must never
     be reported as a restore: it means a restore was attempted and did not
@@ -890,27 +960,47 @@ class AdoptionDecision:
     one.  Its reason is mandatory, mirroring the R21 receipt's
     ``recovery_reason``.
 
+    ``row`` is the decision table's own stable identifier (#2537) — one of
+    :data:`ADOPTION_ROWS`.  It exists because ``outcome`` and ``reason``
+    together still cannot say *which rule fired*: two rows can share an
+    outcome (three of the five restore) and a reason travels from whichever
+    axis decided, so a driver chaining rounds mechanically would have to
+    re-derive the rule from the reason string.  The row is the thing that does
+    not move when a reason's wording does.
+
     Consumed since #2291 Phase 3b, which applies the issue's adoption table.
     """
 
     outcome: AdoptionOutcome
     reason: str
+    row: str
 
-    def __init__(self, *, outcome: AdoptionOutcome, reason: str = "") -> None:
+    def __init__(
+        self,
+        *,
+        outcome: AdoptionOutcome,
+        reason: str = "",
+        row: str = "",
+    ) -> None:
         if not isinstance(outcome, AdoptionOutcome):
             raise CrossoverV2ContractError("outcome must be an AdoptionOutcome")
         if not isinstance(reason, str):
             raise CrossoverV2ContractError("reason must be a string")
+        if not isinstance(row, str):
+            raise CrossoverV2ContractError("row must be a string")
         if outcome in (
             AdoptionOutcome.RECOVERY_REQUIRED,
             AdoptionOutcome.RESTORE,
-            AdoptionOutcome.USER_DECISION,
+            AdoptionOutcome.KEEP_FOR_ITERATION,
         ) and not reason.strip():
             raise CrossoverV2ContractError(
                 f"adoption outcome {outcome.value!r} must state a reason"
             )
+        if row and row not in ADOPTION_ROWS:
+            raise CrossoverV2ContractError(f"unknown adoption row {row!r}")
         object.__setattr__(self, "outcome", outcome)
         object.__setattr__(self, "reason", reason)
+        object.__setattr__(self, "row", row)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -918,7 +1008,35 @@ class AdoptionDecision:
             "kind": "jts_crossover_v2_adoption_decision",
             "outcome": self.outcome.value,
             "reason": self.reason,
+            "row": self.row,
         }
+
+
+#: The adoption table's five rows, as stable identifiers (#2537).
+#:
+#: Numbered after the owner's own ruling, which named four; row 5 is the fifth
+#: the ruling's principle *requires* and did not enumerate — see
+#: :class:`QualityStatus.REGRESSED` for why a measured regression is not a
+#: "keep for iteration".  The numbers are part of the identifier so a reader
+#: can line a receipt up against the table without a lookup, and they are
+#: frozen: a future row appends, it never renumbers.
+ADOPTION_ROW_KEEP = "row1_trusted_safe_passed"
+ADOPTION_ROW_KEEP_FOR_ITERATION = "row2_trusted_safe_missed"
+ADOPTION_ROW_RESTORE_UNSAFE = "row3_unsafe"
+ADOPTION_ROW_RESTORE_UNTRUSTED = "row4_untrusted_evidence"
+ADOPTION_ROW_RESTORE_REGRESSION = "row5_trusted_safe_regressed"
+#: Outside the table: a restore was attempted and did not complete, which no
+#: row describes because it is not a decision about the evidence at all.
+ADOPTION_ROW_RESTORE_FAILED = "row0_restore_failed"
+
+ADOPTION_ROWS: frozenset[str] = frozenset({
+    ADOPTION_ROW_KEEP,
+    ADOPTION_ROW_KEEP_FOR_ITERATION,
+    ADOPTION_ROW_RESTORE_UNSAFE,
+    ADOPTION_ROW_RESTORE_UNTRUSTED,
+    ADOPTION_ROW_RESTORE_REGRESSION,
+    ADOPTION_ROW_RESTORE_FAILED,
+})
 
 
 #: What a round records when the host cannot name the graph a capture was
@@ -1001,6 +1119,14 @@ class RoundReceipt:
     post_measurement: Mapping[str, Any]
     verification: VerificationResult
     adoption: AdoptionDecision
+    #: The three axes the adoption row was read off — trust, safety, quality —
+    #: each as ``{"status": ..., "reason": ..., "evidence": {...}}`` (#2537).
+    #: On the receipt rather than only in the journal because the receipt is
+    #: what the NEXT round reads: "keep, and here is what to fix" is only
+    #: actionable if the misses travel with it, and a journal line is not an
+    #: artifact a chained driver can fetch.  ``{}`` on a round graded before
+    #: this shipped, which is an absence and not "all three passed".
+    round_axes: Mapping[str, Any]
     restore_result: Mapping[str, Any]
     evidence_identities: Mapping[str, Any]
     created_at: str
@@ -1020,6 +1146,7 @@ class RoundReceipt:
         entry_baseline: Mapping[str, Any] | None = None,
         applied_graph_fingerprint: str = "",
         post_measurement: Mapping[str, Any] | None = None,
+        round_axes: Mapping[str, Any] | None = None,
         restore_result: Mapping[str, Any] | None = None,
         evidence_identities: Mapping[str, Any] | None = None,
     ) -> None:
@@ -1080,6 +1207,9 @@ class RoundReceipt:
         )
         object.__setattr__(self, "verification", verification)
         object.__setattr__(self, "adoption", adoption)
+        object.__setattr__(
+            self, "round_axes", _json_mapping(round_axes, field_name="round_axes")
+        )
         object.__setattr__(self, "restore_result", restore)
         object.__setattr__(
             self,
@@ -1102,6 +1232,7 @@ class RoundReceipt:
             "post_measurement": dict(self.post_measurement),
             "verification": self.verification.to_dict(),
             "adoption": self.adoption.to_dict(),
+            "round_axes": dict(self.round_axes),
             "restore_result": dict(self.restore_result),
             "evidence_identities": dict(self.evidence_identities),
             "created_at": self.created_at,

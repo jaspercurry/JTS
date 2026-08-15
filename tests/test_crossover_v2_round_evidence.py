@@ -32,9 +32,13 @@ import pytest
 
 from jasper.active_speaker.crossover_v2 import round_evidence
 from jasper.active_speaker.crossover_v2.contracts import (
+    ADOPTION_ROW_KEEP,
+    ADOPTION_ROW_KEEP_FOR_ITERATION,
     AdoptionOutcome,
     BenefitStatus,
+    CaptureValidity,
     CrossoverV2ContractError,
+    EvidenceTrust,
     RealizationStatus,
     SpecStatus,
 )
@@ -715,6 +719,10 @@ def test_realized_and_improved_keeps_even_with_a_failing_spec():
     The post-cloud spec verdict is wired in as an ANSWER, not a gate. If it
     were a gate, a first pass that honestly moved the speaker forward would be
     thrown away for not being perfect.
+
+    #2537 left this cell exactly where it was — a realized, improved round is
+    still a plain ``KEEP`` — and put the failing band on the receipt as the next
+    round's target beside it.
     """
 
     rough_baseline = _baseline_from(_flatter(_post(), factor=6.0))
@@ -727,6 +735,11 @@ def test_realized_and_improved_keeps_even_with_a_failing_spec():
     assert evaluation.benefit.status is BenefitStatus.IMPROVED
     assert evaluation.spec.status is SpecStatus.FAILED
     assert evaluation.adoption.outcome is AdoptionOutcome.KEEP
+    assert evaluation.adoption.row == ADOPTION_ROW_KEEP
+    assert any(
+        target.startswith("spec:")
+        for target in evaluation.quality.evidence["targets"]
+    )
 
 
 def test_the_acoustic_grade_survives_a_round_with_no_comparable_baseline():
@@ -785,8 +798,21 @@ def test_a_failed_restore_outranks_every_other_answer():
     assert evaluation.adoption.outcome is AdoptionOutcome.RECOVERY_REQUIRED
 
 
-def test_an_unproven_boost_fails_closed_and_an_unproven_cut_asks():
-    """The modifier's scope, both sides, so neither can be dropped unnoticed."""
+def test_an_unprovable_benefit_keeps_the_measured_graph_boosted_or_not():
+    """#2537's correction, at the composed-round level.
+
+    This test used to pin the opposite: a round with no comparable baseline
+    RESTORED when the intervention carried a boost and asked the household when
+    it did not. That is the rule that threw away the 2026-08-15 JTS3 cycle-4
+    candidate — a usable capture, a tracked realization, a measured pooled
+    residual of 0.915 dB, reverted to a state nobody had measured.
+
+    An unprovable benefit is now a QUALITY unknown: the applied state WAS
+    measured, so it stays and the missing comparison becomes a target. The
+    boost modifier is invisible here because the evidence is trusted; it
+    survives only on the untrusted row (pinned in
+    ``tests/test_crossover_v2_verification.py``).
+    """
 
     post = _post()
 
@@ -794,8 +820,31 @@ def test_an_unproven_boost_fails_closed_and_an_unproven_cut_asks():
     cut_only = _round(post, None, boosted=False)
 
     assert boosted.benefit.status is BenefitStatus.INDETERMINATE
+    assert boosted.trust.status is EvidenceTrust.TRUSTED
+    assert boosted.adoption.outcome is AdoptionOutcome.KEEP_FOR_ITERATION
+    assert boosted.adoption.row == ADOPTION_ROW_KEEP_FOR_ITERATION
+    # Boosted and cut-only agree completely: the modifier reads nothing here.
+    assert cut_only.adoption == boosted.adoption
+    assert any(
+        target.startswith("benefit:")
+        for target in boosted.quality.evidence["targets"]
+    )
+
+
+def test_an_unusable_capture_still_fails_a_boost_closed():
+    """The one place ``unproven_boost_failed_closed`` survives (#2537).
+
+    With no usable capture there is no measurement of the applied state at all,
+    so the pre-#2537 sentence still holds verbatim: a boost whose benefit we
+    cannot show is energy we put into a driver and cannot justify.
+    """
+
+    unusable = _post(integrity=_integrity(failed=("clipped_run",)))
+    boosted = _round(unusable, None, boosted=True)
+
+    assert boosted.capture.status is CaptureValidity.UNUSABLE
+    assert boosted.trust.status is EvidenceTrust.UNTRUSTED
     assert boosted.adoption.outcome is AdoptionOutcome.RESTORE
-    assert cut_only.adoption.outcome is AdoptionOutcome.USER_DECISION
 
 
 def test_the_spec_answer_never_changes_the_adoption():
@@ -804,6 +853,13 @@ def test_the_spec_answer_never_changes_the_adoption():
     #2160's wire adds an answer to the receipt. If it ever adds a gate, that
     is a table change with evidence attached — and this test is what makes
     that a deliberate act rather than a quiet one.
+
+    #2537 kept this pin intact and gained a second reason to: the spec verdicts
+    available today are computed over the raw 250 Hz-2 kHz band with no
+    intersection against the session's own trusted floor, so a decision keyed on
+    them would inherit a gate-length-dependent term no round can control. Spec
+    reaches the receipt as a next-round TARGET (asserted below) and nothing
+    more.
     """
     from jasper.active_speaker.flat_spec import evaluate_flat_spec
 
@@ -816,17 +872,26 @@ def test_the_spec_answer_never_changes_the_adoption():
         evaluate_flat_spec(hz, np.zeros(hz.size), np.zeros(hz.size, dtype=bool)),
     ]
 
-    outcomes = {
-        _round(better_post, rough_baseline, spec_report=report).adoption.outcome
+    evaluations = [
+        _round(better_post, rough_baseline, spec_report=report)
         for report in reports
-    }
-    statuses = {
-        _round(better_post, rough_baseline, spec_report=report).spec.status
-        for report in reports
-    }
+    ]
+    outcomes = {evaluation.adoption.outcome for evaluation in evaluations}
+    rows = {evaluation.adoption.row for evaluation in evaluations}
+    statuses = {evaluation.spec.status for evaluation in evaluations}
 
     assert len(outcomes) == 1, "spec must not move the adoption"
+    assert len(rows) == 1, "…nor the row it fired"
     assert len(statuses) == 3, "…while still producing three different answers"
+    # Not inert, though: it reaches the receipt as a target for the next round.
+    failing = next(
+        evaluation for evaluation in evaluations
+        if evaluation.spec.status is SpecStatus.FAILED
+    )
+    assert any(
+        target.startswith("spec:")
+        for target in failing.quality.evidence["targets"]
+    )
 
 
 def _receipt_kwargs(evaluation, baseline, **overrides):

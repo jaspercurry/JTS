@@ -388,9 +388,15 @@ def _stage_1(monkeypatch) -> tuple[Any, dict[str, Any]]:
     return _open_prepared(monkeypatch, prepared)
 
 
-def _stage_2(monkeypatch) -> tuple[Any, dict[str, Any]]:
+def _stage_2(monkeypatch, *, camilla_factory: Any = None) -> tuple[Any, dict[str, Any]]:
+    """``camilla_factory`` defaults to ``None`` for every caller that never
+    reaches the rollback seam's DSP leg. A caller that actually FIRES the
+    rollback (#2537 made ``handle_v2_restore`` call ``camilla_factory()``
+    unconditionally, ahead of its own refusal check) must supply a callable —
+    see ``test_stage_2_rollback_refuses_cleanly_with_no_pre_apply_profile``.
+    """
     prepared = v2host.prepare_v2_verify(
-        {}, status=_status(), run_async=None, camilla_factory=None
+        {}, status=_status(), run_async=None, camilla_factory=camilla_factory
     )
     return _open_prepared(monkeypatch, prepared)
 
@@ -1022,9 +1028,17 @@ def test_stage_2_rollback_refuses_cleanly_with_no_pre_apply_profile(monkeypatch)
     Issue #1863 proper — not OFFERING Undo when no restorable profile exists —
     is a render-side affordance question on the done / verify-fail / applied-
     failure screens, and is untouched here.
+
+    ``camilla_factory`` must be callable: #2537 made ``handle_v2_restore``
+    read the running config's path (the fourth anchor precondition's live
+    half) BEFORE its refusal check, so the factory is invoked unconditionally
+    now. ``SimpleNamespace()`` has no ``get_config_file_path``, so the read is
+    swallowed as an ``AttributeError`` and resolves to "could not compare" —
+    the refusal below still fires on the ``no_pre_apply_profile`` precondition
+    alone, which is what this test pins.
     """
     _seed_applied_stage_1_state()  # applied, but no ``pre_apply_profile``
-    conductor, _state = _stage_2(monkeypatch)
+    conductor, _state = _stage_2(monkeypatch, camilla_factory=lambda: SimpleNamespace())
 
     rollback = _flow_seams(conductor).rollback
 
@@ -1105,6 +1119,15 @@ _PERSISTED_TOP_LEVEL_KEYS = {
     "kind",
     "measure",
     "pre_apply_profile",
+    # Deliberate widening (#2537). What one apply DISPLACED (the running
+    # config immediately before the load) and what it PUT LIVE, from that
+    # apply's own transaction — see round_anchor.py's module docstring for
+    # the jts3 cycle-4 incident this closes. Written by
+    # ``observe_apply_success`` alongside ``pre_apply_profile`` in the same
+    # state write, carried forward by every ordinary persist the same way,
+    # and cleared by ``observe_restore`` once the anchor it names is no
+    # longer live.
+    "round_anchor",
     # Deliberate widening (#2291 Phase 3c). WHERE this round's receipt landed —
     # round id plus the bundle artifact's fingerprint — so the next round can
     # resolve the previous one by identity rather than scanning bundles. It

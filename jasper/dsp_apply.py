@@ -419,6 +419,39 @@ def config_file_sha256(path: str | Path) -> str | None:
     return _sha256(Path(path))
 
 
+def same_config_file(left: str | Path, right: str | Path) -> bool:
+    """Do two paths name ONE config file? (#2537)
+
+    Beside :func:`config_file_sha256` and public for the same reason: two
+    callers asking "is this the same config" must get one answer. They ask it of
+    different pairs — the applied-profile record against CamillaDSP's statefile
+    (:func:`~jasper.active_speaker.baseline_profile.applied_profile_displacement`),
+    and a round's own anchor against the running path
+    (:func:`~jasper.active_speaker.crossover_v2.round_anchor.running_config_diverged`)
+    — but it is the same question about the same kind of path, and it shipped as
+    two near-verbatim copies until an adversarial gate caught them.
+
+    **Resolved rather than string-compared.** A statefile carries whatever
+    CamillaDSP was handed and a record carries what the apply wrote, so a
+    symlinked or non-normalised spelling of the same file must not read as a
+    difference.
+
+    ``Path.resolve`` touches the filesystem and can raise on a path that no
+    longer exists — which is not a claim about whether these are the same file —
+    so the fallback is the plain string comparison rather than a propagated
+    error. Both callers are on read paths that must not raise.
+
+    This answers only sameness of the FILE. Whether its bytes still match what
+    was recorded is :func:`config_file_sha256`'s question, and the callers ask
+    both because a same-fingerprint recompile can rewrite a file under its own
+    name.
+    """
+    try:
+        return Path(left).resolve() == Path(right).resolve()
+    except (OSError, ValueError, RuntimeError):
+        return str(left) == str(right)
+
+
 def _proof_failure(
     actual_sha256: str | None, expected_sha256: str
 ) -> tuple[str, str] | None:

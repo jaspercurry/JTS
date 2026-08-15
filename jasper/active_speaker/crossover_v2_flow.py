@@ -1852,6 +1852,8 @@ from jasper.active_speaker.crossover_v2.vocabulary import (
     REASON_CORRECTION_ROLLBACK_FAILED as REASON_CORRECTION_ROLLBACK_FAILED,
     REASON_CORRECTION_SPATIALLY_COSTLY as REASON_CORRECTION_SPATIALLY_COSTLY,
     REASON_CORRECTION_UNPROVEN_BOOST as REASON_CORRECTION_UNPROVEN_BOOST,
+    REASON_CORRECTION_UNSAFE_RESULT as REASON_CORRECTION_UNSAFE_RESULT,
+    REASON_CORRECTION_UNVERIFIABLE_RESULT as REASON_CORRECTION_UNVERIFIABLE_RESULT,
     REASON_DELAY_EXCEEDS_SEARCH_WINDOW as REASON_DELAY_EXCEEDS_SEARCH_WINDOW,
     REASON_DRIFT_BASELINES_DISAGREE as REASON_DRIFT_BASELINES_DISAGREE,
     REASON_DRIVER_LEVELS_DISAGREE as REASON_DRIVER_LEVELS_DISAGREE,
@@ -9037,6 +9039,12 @@ class CrossoverV2Session:
                 commanded_delta_present=self._measure_commanded_delta is not None,
                 realization_tolerance_db=VERIFY_TOLERANCE_DB,
                 reference_mark=REFERENCE_MARK_DESIGN_AXIS,
+                # The map this session's own probe produced, or ``None`` when it
+                # never ran one (#2537). Both triggers reach this AFTER
+                # :meth:`_run_delta_probe` has stamped ``self._delta_probe``, so
+                # the round's safety axis and the probe's own refusal read the
+                # same evidence rather than two reads a capture apart.
+                delta_probe=self._delta_probe,
             ),
             self._round_ports(),
         )

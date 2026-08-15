@@ -38,6 +38,7 @@ from jasper.dsp_apply import (
     apply_dsp_config,
     config_file_sha256,
     dsp_writer_lock,
+    same_config_file,
     validate_camilla_config,
 )
 from jasper.log_event import log_event
@@ -1341,6 +1342,65 @@ def load_applied_baseline_profile_state(
 ) -> dict[str, Any] | None:
     """Read the applied Layer-A SSOT, even while a new candidate is staged."""
     return _frozen_applied_profile(load_baseline_profile_state(path))
+
+
+#: :func:`applied_profile_displacement`'s answers. ``""`` is the fourth and it
+#: means the record is authoritative — an empty string rather than a word so
+#: the check reads as a guard at every call site.
+APPLIED_PROFILE_DISPLACED = "applied_profile_displaced"
+APPLIED_PROFILE_PATH_UNKNOWN = "applied_profile_path_unknown"
+APPLIED_PROFILE_RUNNING_UNKNOWN = "running_config_path_unknown"
+
+
+def applied_profile_displacement(
+    applied: Mapping[str, Any] | None,
+    *,
+    statefile_path: str | Path | None = None,
+) -> str:
+    """Is this applied-profile record still what the speaker is PLAYING? (#2537)
+
+    ``""`` when the record's own ``config.path`` is the path CamillaDSP's
+    durable statefile selects — the record is authoritative. Otherwise one of
+    the three codes above, naming why it cannot be trusted as "the current
+    sound".
+
+    **The defect this exists for.** On 2026-08-15 (jts3 cycle 4) the applied
+    record still named run 2's candidate while the speaker had been reconciled
+    out of band to ``sound_current.yml``. Nothing compared the two, so a restore
+    faithfully put back "the previous sound" per the record — a graph the
+    speaker had not played for six and a half hours. The record had silently
+    stopped being the truth, and the statefile is the one place that says so.
+
+    **This adds a READER, never a second writer.** ``reconcile-current-dsp``
+    and every other out-of-band path stay entirely ignorant of the
+    active-speaker profile system, which is the separation of concerns that
+    makes them safe to run; the record's only writer remains
+    :func:`persist_applied_baseline_profile` on the apply path. What changes is
+    that consumers stop assuming the record won a race it never entered.
+
+    Fail-soft and *reporting*, never gating on its own: a missing statefile or a
+    record with no path yields a code, and each caller decides what an unknown
+    provenance means for its own question. An unreadable statefile is
+    :data:`APPLIED_PROFILE_RUNNING_UNKNOWN` — "we could not check" — which is a
+    different answer from "we checked and it moved", and conflating them is the
+    class of mistake this whole issue is about.
+    """
+
+    from .environment import read_camilla_statefile_config_path
+
+    config = (applied or {}).get("config")
+    recorded = str(config.get("path") or "") if isinstance(config, Mapping) else ""
+    if not recorded:
+        return APPLIED_PROFILE_PATH_UNKNOWN
+    running = read_camilla_statefile_config_path(statefile_path)
+    if not running:
+        return APPLIED_PROFILE_RUNNING_UNKNOWN
+    # ``same_config_file`` rather than a comparison here: "do two paths name one
+    # config file" is one rule with two askers (the other is
+    # ``crossover_v2.round_anchor.running_config_diverged``), and it shipped as
+    # two near-verbatim copies until an adversarial gate caught them. Its own
+    # docstring carries the resolve-vs-string-compare reasoning.
+    return "" if same_config_file(running, recorded) else APPLIED_PROFILE_DISPLACED
 
 
 def _revalidation_payload(

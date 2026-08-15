@@ -293,6 +293,16 @@ class RoundEvidence:
     #: identity on the way would have lost a fact it used to carry. Required
     #: for the reason directly above.
     candidate_fingerprint: str
+    #: The round's
+    #: :class:`~jasper.active_speaker.delta_probe.DeltaProbeMap`, or ``None``
+    #: when the session ran none (#2537). REQUIRED, for the same reason
+    #: ``proposal_fingerprint_kind`` above is and one stronger: this type has
+    #: exactly one production constructor, and the field feeds
+    #: :func:`~.verification.evaluate_applied_safety` — the adoption table's
+    #: only hard stop. A default would let a caller silence that stop by
+    #: forgetting a keyword, which is the cheapest possible way to lose a
+    #: safety check. ``None`` is a legitimate value and must be stated.
+    delta_probe: Any | None
 
 
 @dataclass(frozen=True)
@@ -319,8 +329,8 @@ class RoundDecision:
     """What the round decided, and what it left behind.
 
     ``refusal is None`` means the caller's own capture verdict stands — the
-    ``KEEP`` and ``USER_DECISION`` arms, which deliberately do not manufacture a
-    refusal out of "we could not tell."
+    ``KEEP`` and ``KEEP_FOR_ITERATION`` arms, which deliberately do not
+    manufacture a refusal out of "it is not perfect yet."
 
     Every field is what the caller should now hold, including on the failure
     paths: a round whose grading raised returns this object with every field at
@@ -376,6 +386,7 @@ def run_round(evidence: RoundEvidence, ports: RoundPorts) -> RoundDecision:
             rollback_available=rollback_available(
                 ports, session_id=evidence.session_id,
             ),
+            delta_probe=evidence.delta_probe,
         )
     except (OSError, RuntimeError, TypeError, ValueError, KeyError,
             AttributeError, IndexError, ZeroDivisionError):
@@ -411,14 +422,22 @@ def _log_round(evaluation: RoundEvaluation, *, session_id: str) -> None:
         logger, "correction.crossover_v2_round_graded",
         session_id=session_id,
         adoption=evaluation.adoption.outcome.value,
+        # WHICH rule fired, beside what it decided (#2537). Three of the five
+        # rows restore and two keep, so ``adoption`` alone cannot say, and the
+        # reason travels from whichever axis spoke — the row is the stable
+        # thing to grep a journal for.
+        row=evaluation.adoption.row,
         reason=evaluation.adoption.reason,
         capture=record["verdicts"]["capture"]["status"],
         realization=record["verdicts"]["realization"]["status"],
         benefit=record["verdicts"]["benefit"]["status"],
         spec=record["verdicts"]["spec"]["status"],
+        trust=record["axes"]["trust"]["status"],
+        safety=record["axes"]["safety"]["status"],
+        quality=record["axes"]["quality"]["status"],
         post_residual_db=evaluation.post_residual_db,
         post_residual_bins=evaluation.post_residual_bins,
-        evidence=record["verdicts"],
+        evidence={**record["verdicts"], **record["axes"]},
     )
 
 
@@ -439,6 +458,14 @@ def _act_on_adoption(
     break it.
 
     * ``KEEP`` — the caller's verdict stands.
+    * ``KEEP_FOR_ITERATION`` — the caller's verdict also stands, and the graph
+      stays live (#2537). The round's outstanding targets ride the journal and
+      the receipt's ``round_axes``; this path deliberately does not manufacture
+      a refusal out of "it is not perfect yet", which would report a failure
+      that did not happen and revert the least-bad MEASURED tune the household
+      has. Same arm as ``KEEP`` because they leave the speaker in the same
+      state — what differs is the receipt, which is where the difference
+      belongs.
     * ``RESTORE`` — fire the rollback seam (once-guarded on the host side, so
       the delta probe's own rollback and this one cannot both run), then refuse
       under the cause's own code. A successful restore keeps the "the previous
@@ -450,13 +477,9 @@ def _act_on_adoption(
       code, whose copy already tells the household the correction is still
       applied and Undo is on screen. No new screen: this is the shape the delta
       probe's refusal established.
-    * ``USER_DECISION`` — the capture verdict stands, and nothing here claims
-      success. The round's own answer rides the journal and the receipt; this
-      path deliberately does not manufacture a refusal out of "we could not
-      tell", which would report a failure that did not happen.
     """
     outcome = evaluation.adoption.outcome
-    if outcome is AdoptionOutcome.KEEP or outcome is AdoptionOutcome.USER_DECISION:
+    if outcome in (AdoptionOutcome.KEEP, AdoptionOutcome.KEEP_FOR_ITERATION):
         return evaluation, None, None
     if outcome is AdoptionOutcome.RESTORE:
         restored, restore_result = _run_round_restore(
@@ -523,9 +546,9 @@ def _regrade_after_failed_restore(
     """
     try:
         adoption = decide_adoption(
-            realization=evaluation.result.realization,
-            benefit=evaluation.result.benefit,
-            spec=evaluation.result.spec,
+            trust=evaluation.trust,
+            safety=evaluation.safety,
+            quality=evaluation.quality,
             boosted=applied_boosts(ports, session_id=evidence.session_id),
             rollback_available=rollback_available(
                 ports, session_id=evidence.session_id,
@@ -544,6 +567,9 @@ def _regrade_after_failed_restore(
         benefit=evaluation.benefit,
         spec=evaluation.spec,
         result=evaluation.result,
+        trust=evaluation.trust,
+        safety=evaluation.safety,
+        quality=evaluation.quality,
         adoption=adoption,
         post_residual_db=evaluation.post_residual_db,
         post_residual_bins=evaluation.post_residual_bins,
@@ -680,6 +706,15 @@ def _write_round_receipt(
         "round_id": evidence.session_id,
         "artifact_fingerprint": str(fingerprint or ""),
         "receipt_fingerprint": receipt.fingerprint,
+        # WHAT the round decided, WHICH row decided it, and the deciding axis's
+        # own reason (#2537), beside the pointers to where the full receipt
+        # landed. The done screen needs the outcome to know whether it owes a
+        # "kept, and here is what is still off" caveat, and a driver chaining
+        # rounds needs the row — fetching a bundle artifact to answer either
+        # would make a live surface depend on evidence storage.
+        "adoption": evaluation.adoption.outcome.value,
+        "row": evaluation.adoption.row,
+        "reason": evaluation.adoption.reason,
     }
     log_event(
         logger, "correction.crossover_v2_round_receipt",

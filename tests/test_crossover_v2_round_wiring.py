@@ -68,14 +68,25 @@ from jasper.active_speaker.crossover_v2.round_evidence import (
     measured_response_from_analysis,
 )
 from jasper.active_speaker.crossover_v2.contracts import (
-    BenefitStatus,
-    RealizationStatus,
-    SpecStatus,
+    EvidenceTrust,
+    QualityStatus,
+    SafetyStatus,
 )
 from jasper.active_speaker.crossover_v2.verification import (
     ADOPTION_MEASURED_REGRESSION,
     ADOPTION_REALIZED_AND_IMPROVED,
+    ADOPTION_UNPROVEN,
     ADOPTION_UNPROVEN_BOOST,
+    CAPTURE_INTEGRITY_FAILED,
+    CAPTURE_INTEGRITY_UNAVAILABLE,
+    REALIZATION_NO_COMPARATOR,
+    REALIZATION_NO_TRACKING,
+    SAFETY_BOOST_OVER_DECLARED_BOUND,
+    SAFETY_CLIPPED_CAPTURE,
+    SAFETY_NO_FINDING,
+    SAFETY_UNCOMMANDED_LEVEL_LOUDER,
+    TRUST_MEASURED,
+    Verdict,
 )
 from jasper.active_speaker.crossover_v2_flow import (
     ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
@@ -381,6 +392,16 @@ def test_a_measurably_improved_round_keeps_the_graph_and_the_verdict(monkeypatch
     screen — the round adds an answer, it does not add a refusal. This is the
     control every restore pin below needs: without it, a wiring bug that
     refused EVERY round would satisfy those tests and fail nobody.
+
+    **#2537 update (corrected in commit c1ea01838).** The quality axis's
+    STATUS is keyed on ``(realization, benefit)`` only — #2291's own table,
+    unchanged in what it reads. Spec rides as disclosure (a next-round
+    target) and never decides keep-vs-keep_for_iteration; an earlier cut of
+    #2537 folded spec into the decision and was corrected back out (the
+    permutation invariant — "spec is any in every row" — is load-bearing and
+    is what this Express-tier fixture would otherwise have tripped, since it
+    walks no post-apply cloud and so never has a spec report at all). So this
+    still lands on the bare ``KEEP``.
     """
     _seed_round_state()
     conductor, attempts = _restoring_stage_2(monkeypatch)
@@ -395,6 +416,9 @@ def test_a_measurably_improved_round_keeps_the_graph_and_the_verdict(monkeypatch
     evaluation = conductor.round_evaluation
     assert evaluation.adoption.outcome is AdoptionOutcome.KEEP
     assert evaluation.adoption.reason == ADOPTION_REALIZED_AND_IMPROVED
+    # The disclosure target list still names the unwalked spatial arm — spec
+    # not deciding the status is not spec vanishing from the receipt.
+    assert evaluation.quality.evidence["targets"] == ["spec:no_spec_report"]
     # Nothing was put back, because nothing needed to be.
     assert attempts == []
 
@@ -429,22 +453,41 @@ def test_a_measured_regression_restores_and_refuses_under_its_own_code(monkeypat
 def test_an_unproven_boost_with_a_valid_anchor_comes_back_off(monkeypatch):
     """Fail closed: energy into a driver that nobody can show helped.
 
-    Two facts have to meet for this cell — an INDETERMINATE benefit (here, no
-    comparable "before" at all) and a boosting intervention — and the outcome
-    has to be the boost's OWN code, not the measured-regression one. The
-    difference is a real sentence: nothing measured worse, JTS simply could not
-    tell, and said so.
+    **#2537 update (corrected in commit c1ea01838).** The pre-#2537 fail-closed
+    cell fired on an INDETERMINATE benefit alone, and that is exactly the
+    2026-08-15 JTS3 cycle-4 defect #2537 exists to fix: a measured, safe,
+    improving-but-unprovable candidate was reverted BECAUSE it carried a
+    boost, even though its capture was perfectly usable and its realization
+    tracked. #2537 moves the boost-fail-closed rule onto the evidence-TRUST
+    axis, which is deliberately blind to benefit
+    (:func:`~jasper.active_speaker.crossover_v2.verification.evaluate_evidence_trust`'s
+    own docstring: "a benefit that came out indeterminate is deliberately NOT
+    here"). So this cell now needs UNTRUSTED evidence — a capture that could
+    not be graded at all, not merely one with no comparable "before" — and
+    only THEN does a boosting intervention fail closed rather than ask. See
+    ``test_the_same_unproven_round_without_a_boost_asks_instead_of_restoring``
+    for the sibling scenario (trusted evidence, indeterminate benefit) that
+    the pre-#2537 cell wrongly restored and #2537 now correctly keeps.
     """
     _seed_round_state()
     conductor, attempts = _restoring_stage_2(monkeypatch)
-    assert conductor.measure_entry_baseline is None  # no comparable before
     _install_applied_graph(monkeypatch, boosts=True)
+    # No integrity record at all — genuinely UNUSABLE evidence, not merely an
+    # unprovable benefit. VERIFY's own capture gate still accepts it (see
+    # tests/test_crossover_v2_conductor.py's
+    # test_verify_without_an_integrity_record_is_not_refused_but_says_so);
+    # only the round's evidence-trust axis refuses it.
+    analysis = dataclasses.replace(
+        _post_apply_analysis(conductor), capture_integrity=None,
+    )
 
-    verdict = _consume_verify(conductor, _post_apply_analysis(conductor))
+    verdict = _consume_verify(conductor, analysis)
 
     assert verdict.accepted is False
     assert verdict.code == REASON_CORRECTION_UNPROVEN_BOOST
     evaluation = conductor.round_evaluation
+    assert evaluation.trust.status is EvidenceTrust.UNTRUSTED
+    assert evaluation.trust.reason == CAPTURE_INTEGRITY_UNAVAILABLE
     assert evaluation.adoption.outcome is AdoptionOutcome.RESTORE
     assert evaluation.adoption.reason == ADOPTION_UNPROVEN_BOOST
     assert attempts == [1]
@@ -453,13 +496,22 @@ def test_an_unproven_boost_with_a_valid_anchor_comes_back_off(monkeypatch):
 def test_the_same_unproven_round_without_a_boost_asks_instead_of_restoring(
     monkeypatch,
 ):
-    """The control for the pin above: the modifier is the BOOST, not the doubt.
+    """The sibling of the fail-closed boost pin: TRUSTED evidence, same doubt.
 
-    Identical evidence, one changed fact — the candidate only cuts. An
-    unverified cut can wait for a household to decide, so the table lands on
-    ``user_decision``, nothing is restored, and the capture's own verdict
-    stands. Without this, a wiring bug that restored every indeterminate round
-    would look exactly like the fail-closed boost working.
+    The candidate only cuts (unboosted) and has no comparable "before", so the
+    benefit is INDETERMINATE — but the capture itself is perfectly usable and
+    the realization tracked. An unverified cut can wait for a household to
+    decide; nothing is restored, and the capture's own verdict stands.
+
+    **#2537 update (corrected in commit c1ea01838).** This is the exact JTS3
+    2026-08-15 cycle-4 shape the owner ruled on, and the pre-#2537 table
+    restored it — the fail-closed boost cell fired on INDETERMINATE benefit
+    alone, which reverted a measured, safe round to an unmeasured state. Now
+    it lands on ``KEEP_FOR_ITERATION``: trusted evidence with an outstanding
+    quality target, not a question to ask and not a restore. Proven below on
+    BOTH a boosted and an unboosted candidate — see
+    ``test_an_unproven_boost_with_a_valid_anchor_comes_back_off`` for the
+    genuinely UNTRUSTED-evidence sibling that still fails closed.
     """
     _seed_round_state()
     conductor, attempts = _restoring_stage_2(monkeypatch)
@@ -469,8 +521,28 @@ def test_the_same_unproven_round_without_a_boost_asks_instead_of_restoring(
     verdict = _consume_verify(conductor, _post_apply_analysis(conductor))
 
     assert verdict.accepted is True
-    assert conductor.round_evaluation.adoption.outcome is AdoptionOutcome.USER_DECISION
+    evaluation = conductor.round_evaluation
+    assert evaluation.adoption.outcome is AdoptionOutcome.KEEP_FOR_ITERATION
+    assert evaluation.adoption.reason == ADOPTION_UNPROVEN
+    assert evaluation.trust.status is EvidenceTrust.TRUSTED
+    assert evaluation.quality.status is QualityStatus.MISSED
     assert attempts == []
+
+    # …and the boost is provably invisible here: the SAME usable capture,
+    # boosted instead of cut-only, lands on the identical outcome and reason.
+    _seed_round_state()
+    boosted_conductor, boosted_attempts = _restoring_stage_2(monkeypatch)
+    _install_applied_graph(monkeypatch, boosts=True)
+
+    boosted_verdict = _consume_verify(
+        boosted_conductor, _post_apply_analysis(boosted_conductor),
+    )
+
+    assert boosted_verdict.accepted is True
+    boosted_evaluation = boosted_conductor.round_evaluation
+    assert boosted_evaluation.adoption.outcome is evaluation.adoption.outcome
+    assert boosted_evaluation.adoption.reason == evaluation.adoption.reason
+    assert boosted_attempts == []
 
 
 def test_an_unproven_boost_with_no_anchor_escalates_instead_of_promising(
@@ -478,20 +550,28 @@ def test_an_unproven_boost_with_no_anchor_escalates_instead_of_promising(
 ):
     """A restore nobody can perform is not a restore.
 
-    Same evidence as the fail-closed boost, one changed fact — the speaker has
-    no stashed profile to go back to, which is every first-ever apply. The
-    table must escalate rather than issue a restore instruction Undo would then
-    refuse.
+    Same evidence as the fail-closed boost pin — genuinely UNTRUSTED evidence
+    (no integrity record), not merely an unprovable benefit; see
+    ``test_an_unproven_boost_with_a_valid_anchor_comes_back_off`` for why that
+    distinction is #2537's whole correction — one changed fact: the speaker
+    has no stashed profile to go back to, which is every first-ever apply.
+    The table must escalate rather than issue a restore instruction Undo
+    would then refuse.
     """
     _seed_round_state(anchor=False)
     conductor, attempts = _restoring_stage_2(monkeypatch)
     _install_applied_graph(monkeypatch, boosts=True)
+    analysis = dataclasses.replace(
+        _post_apply_analysis(conductor), capture_integrity=None,
+    )
 
-    verdict = _consume_verify(conductor, _post_apply_analysis(conductor))
+    verdict = _consume_verify(conductor, analysis)
 
     assert verdict.accepted is False
     assert verdict.code == REASON_CORRECTION_ROLLBACK_FAILED
-    outcome = conductor.round_evaluation.adoption.outcome
+    evaluation = conductor.round_evaluation
+    assert evaluation.trust.status is EvidenceTrust.UNTRUSTED
+    outcome = evaluation.adoption.outcome
     assert outcome is AdoptionOutcome.RECOVERY_REQUIRED
     # Nothing was attempted, and the record says so rather than implying a
     # restore that silently failed.
@@ -509,13 +589,17 @@ def test_the_no_anchor_arm_does_not_send_the_household_to_undo(monkeypatch):
     dead end.
 
     Pinned on the rendered string rather than on the code, because the code was
-    always right and only the sentence lied.
+    always right and only the sentence lied. Same genuinely-UNTRUSTED evidence
+    shape as the pin above (#2537) — see its docstring.
     """
     _seed_round_state(anchor=False)
     conductor, attempts = _restoring_stage_2(monkeypatch)
     _install_applied_graph(monkeypatch, boosts=True)
+    analysis = dataclasses.replace(
+        _post_apply_analysis(conductor), capture_integrity=None,
+    )
 
-    verdict = _consume_verify(conductor, _post_apply_analysis(conductor))
+    verdict = _consume_verify(conductor, analysis)
     assert verdict.code == REASON_CORRECTION_ROLLBACK_FAILED
     assert attempts == []
 
@@ -1709,15 +1793,48 @@ def test_every_restore_the_table_can_ask_for_has_its_own_household_code():
     it returns with a RESTORE intent, and require a deliberate entry for each:
     any reason other than ``measured_regression`` that lands on the
     measured-regression code is reaching the fallback, which would tell a
-    household about a regression when the round found a realization failure.
+    household about a regression when the round found something else.
+
+    **#2537 update (corrected in commit c1ea01838).** ``decide_adoption`` no
+    longer takes ``realization=/benefit=/spec=`` — it takes three axis
+    ``Verdict``s (``trust``/``safety``/``quality``), and two of those axes are
+    new sources of a RESTORE reason that did not exist in the pre-#2537 table:
+    the safety axis's three hazard reasons, and the trust axis's own capture/
+    realization reasons on an UNBOOSTED untrusted round (see
+    ``test_an_unproven_boost_with_a_valid_anchor_comes_back_off`` for why a
+    boosted untrusted round instead reads ``ADOPTION_UNPROVEN_BOOST``). This
+    walk is rebuilt over the CURRENT three axes, with each Verdict carrying a
+    REAL reason a real evaluator would produce — the exhaustiveness claim is
+    about ``round_restore_reason``'s actual reason vocabulary, so a walk using
+    placeholder strings could not check it.
     """
     reasons = set()
-    for realization in RealizationStatus:
-        for benefit in BenefitStatus:
-            for spec in SpecStatus:
+    trust_reasons = (
+        CAPTURE_INTEGRITY_UNAVAILABLE, CAPTURE_INTEGRITY_FAILED,
+        REALIZATION_NO_TRACKING, REALIZATION_NO_COMPARATOR,
+    )
+    safety_reasons = (
+        SAFETY_BOOST_OVER_DECLARED_BOUND, SAFETY_UNCOMMANDED_LEVEL_LOUDER,
+        SAFETY_CLIPPED_CAPTURE,
+    )
+    for trust_status, trust_reason in (
+        (EvidenceTrust.TRUSTED, TRUST_MEASURED),
+        *((EvidenceTrust.UNTRUSTED, r) for r in trust_reasons),
+    ):
+        for safety_status, safety_reason in (
+            (SafetyStatus.SAFE, SAFETY_NO_FINDING),
+            *((SafetyStatus.UNSAFE, r) for r in safety_reasons),
+        ):
+            for quality_status, quality_reason in (
+                (QualityStatus.PASSED, ADOPTION_REALIZED_AND_IMPROVED),
+                (QualityStatus.MISSED, ADOPTION_UNPROVEN),
+                (QualityStatus.REGRESSED, ADOPTION_MEASURED_REGRESSION),
+            ):
                 for boosted in (True, False):
                     decision = coordinator.decide_adoption(
-                        realization=realization, benefit=benefit, spec=spec,
+                        trust=Verdict(trust_status, trust_reason, {}),
+                        safety=Verdict(safety_status, safety_reason, {}),
+                        quality=Verdict(quality_status, quality_reason, {}),
                         boosted=boosted, rollback_available=True,
                     )
                     if decision.outcome is AdoptionOutcome.RESTORE:
@@ -1917,6 +2034,16 @@ def test_the_full_tier_grades_its_round_at_the_post_apply_cloud_close(
     the adoption verdict, its reason, and the receipt on disk. Deleting the
     ``_grade_round_once`` call from the ``PHASE_CLOUD_VERIFY`` branch leaves
     every one of them absent.
+
+    Lands on the bare ``KEEP``, not ``KEEP_FOR_ITERATION`` — #2537's quality
+    STATUS is keyed on ``(realization, benefit)`` alone (corrected in commit
+    c1ea01838; spec rides as disclosure only, never as a decision input, per
+    the restored "spec is any in every row" permutation invariant). This
+    fixture's post-apply positions all play ``_in_room_summed_db()``
+    (scaled), which its own docstring names as "an UNCORRECTED speaker in a
+    room" and which genuinely fails one flat-spec band — so the receipt's
+    target list still names it (see the assertion below), but it does not
+    move the outcome off ``KEEP``.
     """
     _seed_full_round_state()
     conductor, attempts = _full_stage_2(monkeypatch)
@@ -1941,6 +2068,11 @@ def test_the_full_tier_grades_its_round_at_the_post_apply_cloud_close(
     assert evaluation is not None, "the cloud close did not grade the round"
     assert evaluation.adoption.outcome is AdoptionOutcome.KEEP
     assert evaluation.adoption.reason == ADOPTION_REALIZED_AND_IMPROVED
+    # Spec still names its own miss on the target list — it just does not
+    # move the outcome off KEEP.
+    assert any(
+        target.startswith("spec:") for target in evaluation.quality.evidence["targets"]
+    )
     # Nothing was put back, because nothing needed to be.
     assert attempts == []
     # …and the round banked a receipt, at the path a later reader can build
