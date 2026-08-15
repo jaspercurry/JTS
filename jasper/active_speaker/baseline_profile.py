@@ -38,6 +38,7 @@ from jasper.dsp_apply import (
     apply_dsp_config,
     config_file_sha256,
     dsp_writer_lock,
+    same_config_file,
     validate_camilla_config,
 )
 from jasper.log_event import log_event
@@ -1394,16 +1395,12 @@ def applied_profile_displacement(
     running = read_camilla_statefile_config_path(statefile_path)
     if not running:
         return APPLIED_PROFILE_RUNNING_UNKNOWN
-    # Resolved rather than string-compared: the statefile carries whatever
-    # CamillaDSP was handed, and the record carries what the apply wrote, so a
-    # symlinked or non-normalised spelling of the SAME file must not read as a
-    # displacement. ``Path.resolve`` is filesystem-touching and can raise on a
-    # path that no longer exists, which is itself not a displacement claim.
-    try:
-        same = Path(running).resolve() == Path(recorded).resolve()
-    except (OSError, ValueError, RuntimeError):
-        same = str(running) == str(recorded)
-    return "" if same else APPLIED_PROFILE_DISPLACED
+    # ``same_config_file`` rather than a comparison here: "do two paths name one
+    # config file" is one rule with two askers (the other is
+    # ``crossover_v2.round_anchor.running_config_diverged``), and it shipped as
+    # two near-verbatim copies until an adversarial gate caught them. Its own
+    # docstring carries the resolve-vs-string-compare reasoning.
+    return "" if same_config_file(running, recorded) else APPLIED_PROFILE_DISPLACED
 
 
 def _revalidation_payload(

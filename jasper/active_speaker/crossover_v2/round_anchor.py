@@ -52,7 +52,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping
 
-from jasper.dsp_apply import config_file_sha256
+from jasper.dsp_apply import config_file_sha256, same_config_file
 
 __all__ = [
     "ROUND_ANCHOR_STATE_KEY",
@@ -169,24 +169,8 @@ def running_config_diverged(
     recorded_path = str(applied.get("config_path") or "")
     if not recorded_path:
         return False
-    if not _same_file(running_config_path, recorded_path):
+    if not same_config_file(running_config_path, recorded_path):
         return True
     recorded_sha = str(applied.get("sha256") or "")
     live_sha = config_file_sha256(running_config_path) or ""
     return bool(recorded_sha and live_sha and recorded_sha != live_sha)
-
-
-def _same_file(left: str, right: str) -> bool:
-    """Two paths naming one file, resolved rather than string-compared.
-
-    The statefile carries whatever CamillaDSP was handed and the record carries
-    what the apply wrote, so a symlinked or non-normalised spelling of the SAME
-    file must not read as a displacement. ``Path.resolve`` touches the
-    filesystem and can raise on a path that no longer exists, which is itself
-    not a displacement claim — so the fallback is the plain comparison.
-    """
-
-    try:
-        return Path(left).resolve() == Path(right).resolve()
-    except (OSError, ValueError, RuntimeError):
-        return str(left) == str(right)

@@ -1969,15 +1969,18 @@ GET  /crossover/status       active-speaker targets + measurement evidence
 GET  /crossover/envelope     commissioning screen envelope (dumb frontend):
                              {schema_version, screen, active, steps,
                              verdict_text, nudges, next_action, progress, relay,
-                             candidate_review, prediction, busy, findings};
-                             schema v13
+                             candidate_review, prediction, busy, findings,
+                             round};
+                             schema v14
                              (CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION — this
                              route dispatches to the v2 envelope, which is
                              the only flow since W5b). `prediction` is the
                              predicted response + its stored spec verdict,
                              sent on the `review` screen only. `busy` marks a
                              machine-paced screen (the `closing` state's
-                             fit-in-flight moment, and nowhere else).
+                             fit-in-flight moment, and nowhere else). `round`
+                             is the last graded round's adoption row, outcome,
+                             and reason (#2537), or null before one is graded.
                              `findings` carries the household-readable lines
                              of what the measurement banked (attribution's
                              `household_copy`, never its mechanism/evidence
