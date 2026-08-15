@@ -148,6 +148,7 @@ from jasper.active_speaker.delta_probe import (
     VERDICT_LEVEL_MISMATCH,
     DeltaProbeMap,
     classify_delta_probe,
+    seam_rollback_deferral,
     spatial_cost_from_group_spreads,
 )
 from jasper.active_speaker.branch_chain import CrossoverSection
@@ -10027,8 +10028,38 @@ class CrossoverV2Session:
         only theirs to make when the restore actually happened; a household
         listening to a correction while being told it was reverted is a false
         statement about their speaker, not a rounding of one.
+
+        **One class defers instead of restoring (#2559).** A ``model_error``
+        whose realized deviation points entirely quieter than commanded is a
+        quality miss, and the owner's iterate ruling keeps those for the next
+        round rather than reverting them. The seam PREEMPTS the adoption table —
+        a refusal here ends the session before ``decide_adoption`` runs — so
+        letting that class through is the only way the table's
+        ``keep_for_iteration`` row can ever fire on it.
+        :func:`~jasper.active_speaker.delta_probe.seam_rollback_deferral` owns
+        which class that is; this method owns saying so out loud, because a
+        restore that did not happen must be as legible in the journal as one
+        that did.
         """
         if probe is None or probe.verdict not in DELTA_PROBE_ROLLBACK_VERDICTS:
+            return None
+        deferral = seam_rollback_deferral(probe)
+        if deferral:
+            log_event(
+                logger, "correction.crossover_v2_delta_probe_seam_deferred",
+                level=logging.WARNING, session_id=self.session_id,
+                reason=deferral, verdict=probe.verdict,
+                probe_reason=probe.reason,
+                # The measurement the deferral rests on, beside the deferral, so
+                # the journal answers "how do you know it was quieter" without a
+                # second lookup. Negative here is the whole finding.
+                max_signed_error_db=(
+                    None if probe.max_signed_error_db is None
+                    else round(probe.max_signed_error_db, 3)
+                ),
+                max_error_db=round(probe.max_error_db, 3),
+                worst_hz=round(probe.worst_hz, 1),
+            )
             return None
         verdict_code = DELTA_PROBE_REASON_BY_VERDICT[probe.verdict]
         restored = False

@@ -15,6 +15,7 @@ catch permanently.
 from __future__ import annotations
 
 import math
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -35,6 +36,7 @@ from jasper.active_speaker.delta_probe import (
     DELTA_PROBE_VERDICTS,
     REASON_UNCOMMANDED_LEVEL_SHIFT,
     REASON_UNCOMMANDED_LEVEL_SHIFT_OUTSIDE_BAND,
+    SEAM_DEFERRED_QUIETER_THAN_COMMANDED,
     SPATIAL_COST_UNAVAILABLE,
     VERDICT_FRAME_MISMATCH,
     VERDICT_LEVEL_DEPENDENT_SHORTFALL,
@@ -48,6 +50,8 @@ from jasper.active_speaker.delta_probe import (
     evaluate_spatial_cost,
     graded_command_floor_db,
     interquartile_band_hz,
+    louder_than_commanded,
+    seam_rollback_deferral,
     spatial_cost_from_group_spreads,
     widest_exceedance_octaves,
 )
@@ -1894,3 +1898,217 @@ def test_to_dict_carries_the_boost_evidence_the_hard_stop_rests_on():
     }
     assert payload["boost"]["over_declared_bound"] is True
     assert payload["boost"]["overshoot_db"] == pytest.approx(5.0, abs=1e-6)
+
+
+# --------------------------------------------------------------------------- #
+# the direction of a shape miss, and the one rollback the seam defers (#2559)
+# --------------------------------------------------------------------------- #
+
+
+#: Where the 14:47 fixture's realization miss sits. Inside the graded band (the
+#: correction commands a lift from 1 kHz up), so the miss is a SHAPE claim
+#: rather than a quiet-bin level one.
+_DIP_BAND = (_GRID_HZ > 2_000.0) & (_GRID_HZ < 6_000.0)
+
+
+def _shape_miss(depth_db: float = 3.32, *, sign: float = -1.0):
+    """The 2026-08-15 14:47 jts3 shape, at either sign.
+
+    ``depth_db`` is the realized deviation that round measured at 1330 Hz
+    against a 2.0 dB tolerance. ``sign=-1`` is what it actually measured — a
+    dip, with every graded bin realizing at or below what was commanded, which
+    is the whole class the owner's ruling is about. ``sign=+1`` is the same
+    magnitude pointing the other way, and it is the control that keeps every
+    assertion below from passing for a subject wired to one answer.
+    """
+    commanded = _commanded_lift(depth_db=8.0, corner_hz=1_000.0)
+    realized = commanded + sign * np.where(_DIP_BAND, depth_db, 0.0)
+    return classify_delta_probe(_GRID_HZ, realized, commanded, band_hz=_band())
+
+
+def _quieter_only_model_error(depth_db: float = 3.32):
+    return _shape_miss(depth_db)
+
+
+def test_the_1447_shape_is_a_model_error_that_realized_only_quieter():
+    """The measurement the ruling turns on, before any policy reads it."""
+    probe = _quieter_only_model_error()
+
+    assert probe.verdict == VERDICT_MODEL_ERROR
+    assert probe.rollback is True
+    assert probe.realized_louder_than_commanded is False
+    # Negative: the most POSITIVE disagreement in the whole graded band still
+    # points quieter. That is what "entirely negative-direction" means, measured.
+    assert probe.max_signed_error_db is not None
+    assert probe.max_signed_error_db <= 0.0
+
+
+def test_a_quieter_only_model_error_defers_to_the_adoption_table():
+    assert seam_rollback_deferral(_quieter_only_model_error()) == (
+        SEAM_DEFERRED_QUIETER_THAN_COMMANDED
+    )
+
+
+def test_the_shape_hard_stop_is_directional_at_identical_magnitude():
+    """Same magnitude, opposite sign, opposite answer.
+
+    #2537 pinned exactly this on the LEVEL axis (−2.3 dB keeps, +2.3 dB
+    restores). This is the same rule on the SHAPE axis, and it is the whole of
+    what this change narrows: 3.32 dB quieter defers, 3.32 dB louder does not.
+    """
+    quieter = _shape_miss(3.32, sign=-1.0)
+    louder = _shape_miss(3.32, sign=+1.0)
+
+    assert quieter.verdict == louder.verdict == VERDICT_MODEL_ERROR
+    assert quieter.max_signed_error_db == pytest.approx(0.0, abs=1e-9)
+    assert louder.max_signed_error_db == pytest.approx(3.32, abs=1e-6)
+    assert seam_rollback_deferral(quieter) == SEAM_DEFERRED_QUIETER_THAN_COMMANDED
+    assert seam_rollback_deferral(louder) == ""
+
+
+def test_one_bin_realized_louder_withholds_the_deferral():
+    """Unstructured on purpose, unlike every sibling exceedance rule here.
+
+    The width rule exists so a single noisy bin cannot pull a household's
+    correction OFF the speaker. This rule decides the opposite question —
+    whether a finding that already exists may be handled leniently — so being
+    generous about admitting positive-direction evidence would be generous in
+    exactly the wrong direction.
+    """
+    commanded = _commanded_lift(depth_db=8.0, corner_hz=1_000.0)
+    realized = commanded - np.where(_DIP_BAND, 3.32, 0.0)
+    noisy = int(np.flatnonzero(_DIP_BAND)[10])
+    realized[noisy] = commanded[noisy] + 4.0
+
+    probe = classify_delta_probe(_GRID_HZ, realized, commanded, band_hz=_band())
+
+    assert probe.verdict == VERDICT_MODEL_ERROR
+    # The width rule still says this single bin is not structured…
+    assert probe.boost_over_declared_bound is False
+    # …and the deferral is withheld anyway.
+    assert probe.realized_louder_than_commanded is True
+    assert seam_rollback_deferral(probe) == ""
+
+
+def test_a_boost_realized_over_its_bound_is_always_louder_than_commanded():
+    """The implication the explicit boost guard is stated on top of.
+
+    ``seam_rollback_deferral`` names ``boost_over_declared_bound`` outright even
+    though the per-bin rule already subsumes it. This is the subsumption,
+    measured: if it ever stopped holding — the two bounds are independently
+    tunable — the explicit guard is what keeps the fence standing.
+    """
+    commanded = _commanded_lift()
+    probe = classify_delta_probe(
+        _GRID_HZ, commanded + 5.0, commanded, band_hz=_band()
+    )
+
+    assert probe.boost_over_declared_bound is True
+    assert probe.realized_louder_than_commanded is True
+    assert seam_rollback_deferral(probe) == ""
+
+
+def test_a_boost_over_its_bound_never_defers_even_when_stated_alone():
+    """The explicit guard on its own terms, with the per-bin rule held off.
+
+    A stub rather than a classified map, because the point is what the FUNCTION
+    does when only the boost finding is present — which is the state the
+    subsumption above would have to break for this guard to become load-bearing.
+    """
+    stub = SimpleNamespace(
+        verdict=VERDICT_MODEL_ERROR,
+        realized_louder_than_commanded=False,
+        boost_over_declared_bound=True,
+    )
+    assert seam_rollback_deferral(stub) == ""
+
+
+@pytest.mark.parametrize(
+    ("verdict", "why"),
+    [
+        (
+            VERDICT_LEVEL_DEPENDENT_SHORTFALL,
+            "a claim about a driver's headroom, not about shape",
+        ),
+        (
+            VERDICT_SPATIALLY_COSTLY,
+            "a claim about the room's own spread, with no model between the "
+            "two measurements",
+        ),
+    ],
+)
+def test_no_other_rollback_verdict_defers(verdict, why):
+    """The narrowing is one class wide.
+
+    Neither of these is the shape claim the owner ruled on, so neither may
+    borrow the lenience it granted.
+    """
+    stub = SimpleNamespace(
+        verdict=verdict,
+        realized_louder_than_commanded=False,
+        boost_over_declared_bound=False,
+    )
+    assert seam_rollback_deferral(stub) == "", why
+
+
+@pytest.mark.parametrize(
+    "probe",
+    [
+        None,
+        SimpleNamespace(verdict=VERDICT_MATCHED),
+        SimpleNamespace(verdict=VERDICT_UNAVAILABLE),
+        SimpleNamespace(verdict=VERDICT_LEVEL_MISMATCH),
+        SimpleNamespace(verdict=VERDICT_FRAME_MISMATCH),
+    ],
+    ids=["absent", "matched", "unavailable", "level_mismatch", "frame_mismatch"],
+)
+def test_a_map_that_never_reached_a_seam_rollback_records_no_deferral(probe):
+    """Silence about a deferral is wrong; INVENTING one is equally wrong.
+
+    None of these verdicts is in ``DELTA_PROBE_ROLLBACK_VERDICTS``, so no seam
+    rollback was ever declined on them, and a receipt claiming otherwise would
+    describe a decision the round never made.
+    """
+    assert seam_rollback_deferral(probe) == ""
+
+
+def test_the_direction_helper_reports_not_measured_rather_than_zero():
+    """``None``, never 0.0 — ``gain_factor``'s own distinction."""
+    grid = _GRID_HZ
+    commanded = np.zeros_like(grid)
+    empty = np.zeros_like(grid, dtype=bool)
+    assert louder_than_commanded(
+        commanded + 9.0, commanded, np.full_like(grid, 1.5), empty
+    ) == (False, None)
+
+
+def test_the_direction_helper_measures_the_raw_curve_not_a_frame_removed_one():
+    """:func:`boost_overshoot`'s reason, verbatim: this asks how much energy
+    reached the driver, and a fitted offset removed first would hide exactly the
+    whole-band overshoot the lenience must not be granted for."""
+    commanded = _commanded_lift()
+    # A pure +4 dB offset: the frame fit absorbs it, so the frame-removed curve
+    # is flat and a check taken there would call this "quieter only".
+    probe = classify_delta_probe(
+        _GRID_HZ, commanded + 4.0, commanded, band_hz=_band()
+    )
+
+    assert probe.frame.fitted is True
+    assert probe.frame.offset_db == pytest.approx(4.0, abs=1e-6)
+    assert probe.realized_louder_than_commanded is True
+    assert seam_rollback_deferral(probe) == ""
+
+
+def test_to_dict_carries_the_direction_evidence_the_deferral_rests_on():
+    payload = _quieter_only_model_error().to_dict()
+
+    assert set(payload["direction"]) == {
+        "realized_louder_than_commanded",
+        "max_signed_error_db",
+        "seam_rollback_deferral",
+    }
+    assert payload["direction"]["realized_louder_than_commanded"] is False
+    assert payload["direction"]["max_signed_error_db"] <= 0.0
+    assert payload["direction"]["seam_rollback_deferral"] == (
+        SEAM_DEFERRED_QUIETER_THAN_COMMANDED
+    )

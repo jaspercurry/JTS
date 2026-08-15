@@ -96,7 +96,11 @@ from typing import TYPE_CHECKING, Any, Generic, Iterable, Mapping, TypeVar
 
 import numpy as np
 
-from ..delta_probe import VERDICT_LEVEL_MISMATCH, VERDICT_MATCHED
+from ..delta_probe import (
+    VERDICT_LEVEL_MISMATCH,
+    VERDICT_MATCHED,
+    seam_rollback_deferral,
+)
 from ..flat_spec import (
     FlatSpecReport,
     evaluate_flat_spec,
@@ -818,6 +822,16 @@ def evaluate_applied_safety(
     the evidence mapping reports ``probe_graded`` — a reader can tell "safe
     because nothing was found" from "safe because nothing looked".
 
+    **It also discloses a restore that did NOT happen (#2559).** The probe's own
+    seam-bound rollback preempts this table, so a round the seam let through on
+    the quieter-only ``model_error`` class would otherwise reach a household and
+    a receipt with no record that an immediate restore was declined. ``evidence``
+    carries the direction facts and ``seam_deferred``, the deferral's stable
+    reason from its single owner
+    (:func:`~jasper.active_speaker.delta_probe.seam_rollback_deferral`) — read
+    here, never re-derived. It changes no status: a deferral is a statement
+    about the seam, and the axes still answer for themselves.
+
     Duck-typed on both inputs, exactly like
     :func:`evaluate_capture_validity`: the two attributes read off ``integrity``
     keep this module free of a heavy import, and reading the probe by attribute
@@ -859,6 +873,21 @@ def evaluate_applied_safety(
         "boost_overshoot_db": (
             getattr(probe, "boost_overshoot_db", None) if probe is not None else None
         ),
+        # WHICH WAY the graded bins missed, and whether the probe's own seam
+        # therefore handed its rollback to this table instead of restoring on it
+        # (#2559). It rides the SAFETY axis rather than the quality one because
+        # its basis is a safety-direction fact — nothing realized louder than
+        # commanded — and because ``round_axes`` is what puts it on the receipt.
+        # ``""`` means no deferral, which is every round the seam did not
+        # preempt; a reader must be able to tell that from a restore.
+        "realized_louder_than_commanded": (
+            bool(getattr(probe, "realized_louder_than_commanded", False))
+            if probe is not None else False
+        ),
+        "max_signed_error_db": (
+            getattr(probe, "max_signed_error_db", None) if probe is not None else None
+        ),
+        "seam_deferred": seam_rollback_deferral(probe),
     }
 
     if boost_over_bound:

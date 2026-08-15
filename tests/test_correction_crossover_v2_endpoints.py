@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import inspect
 import json
 import logging
@@ -4842,6 +4843,119 @@ def test_restore_refuses_across_a_topology_change(monkeypatch):
         v2host.CrossoverV2Refused, match="output configuration changed"
     ):
         v2host.handle_v2_restore(None, lambda: SimpleNamespace())
+
+
+def test_restore_never_loads_a_graph_the_round_did_not_displace(tmp_path, caplog):
+    """#2559, end to end: the 2026-08-15 14:47 jts3 firing, refused.
+
+    The round applied at 14:45:41, displacing ``sound_current.yml``. Its stash
+    was frozen from an applied-baseline-profile record stale since 00:34, so it
+    names run 2's candidate. The seam fired ninety-seven seconds later; the
+    running graph was still the round's own, so #2537's divergence check passed
+    correctly — and the restore loaded the stale candidate.
+
+    What must NOT happen is the load. Asserted on the CamillaDSP handle rather
+    than on the exception alone: a refusal raised after the graph moved would
+    satisfy ``pytest.raises`` and still have changed the household's sound.
+    """
+    displaced = tmp_path / "sound_current.yml"
+    displaced.write_text("the sound the round displaced\n", encoding="utf-8")
+    stale = tmp_path / "active_speaker_baseline_candidate_3298558b817e.yml"
+    stale.write_text("run 2's candidate, applied at 00:34\n", encoding="utf-8")
+    applied = tmp_path / "round1_candidate.yml"
+    applied.write_text("what the round put live\n", encoding="utf-8")
+
+    loaded: list[str] = []
+
+    class _RecordingCam:
+        async def get_config_file_path(self, best_effort=False):
+            return str(applied)
+
+        async def set_config_file_path(self, path, best_effort=False):
+            loaded.append(str(path))
+            return True
+
+    v2host.save_v2_state({
+        "session_id": "cap_1447",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": "fp-1"},
+        "applied": True,
+        "pre_apply_profile": {
+            "status": "applied",
+            "source": {},
+            "config": {
+                "path": str(stale),
+                "sha256": hashlib.sha256(stale.read_bytes()).hexdigest(),
+            },
+        },
+        "round_anchor": {
+            "displaced": {"config_path": str(displaced), "sha256": ""},
+            "applied": {"config_path": str(applied), "sha256": ""},
+        },
+    })
+    caplog.set_level(logging.ERROR, logger=v2host.logger.name)
+
+    with pytest.raises(
+        v2host.CrossoverV2Refused, match="which sound to put back"
+    ):
+        v2host.handle_v2_restore(_bg_run_async, _RecordingCam)
+
+    assert loaded == [], "the speaker's graph must not move on a refused restore"
+    # The journal is the only record an automatic rollback leaves — it has no
+    # household screen at all — so the refusal names BOTH paths there.
+    line = next(
+        record.getMessage() for record in caplog.records
+        if "event=correction.crossover_v2_restore_stash_not_displaced " in
+        record.getMessage()
+    )
+    assert str(stale) in line and str(displaced) in line
+
+
+def test_the_seam_rollback_reports_not_restored_when_the_stash_is_stale(
+    tmp_path, monkeypatch,
+):
+    """…and the conductor's own seam degrades to "not restored", not to a crash.
+
+    ``bind_delta_probe_rollback`` catches ``CrossoverV2Refused`` as the ordinary
+    outcome for an automatic caller, so the new refusal reaches the round the
+    same way a first-ever-apply refusal does: ``False``, which re-grades the
+    round into ``recovery_required`` rather than silently leaving it graded as
+    though a restore had happened.
+    """
+    stale = tmp_path / "active_speaker_baseline_candidate_3298558b817e.yml"
+    stale.write_text("run 2's candidate\n", encoding="utf-8")
+    displaced = tmp_path / "sound_current.yml"
+    displaced.write_text("the sound the round displaced\n", encoding="utf-8")
+
+    class _NoopCam:
+        async def get_config_file_path(self, best_effort=False):
+            return str(tmp_path / "round1_candidate.yml")
+
+    v2host.save_v2_state({
+        "session_id": "cap_1447",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": "fp-1"},
+        "applied": True,
+        "pre_apply_profile": {
+            "status": "applied",
+            "source": {},
+            "config": {
+                "path": str(stale),
+                "sha256": hashlib.sha256(stale.read_bytes()).hexdigest(),
+            },
+        },
+        "round_anchor": {
+            "displaced": {"config_path": str(displaced), "sha256": ""},
+            "applied": {"config_path": "", "sha256": ""},
+        },
+    })
+
+    rollback = v2host.bind_delta_probe_rollback(_bg_run_async, _NoopCam)
+
+    assert rollback("model_error") is False
+    # The state is untouched: nothing was restored, so ``applied`` must not have
+    # been cleared by a path that did not restore anything.
+    assert v2host.load_v2_state().get("applied") is True
 
 
 def test_status_block_surfaces_apply_blocked():

@@ -11,14 +11,20 @@ displaced out of band at 01:00 by reconciling the running config to
 ``sound_current.yml``. The restore MECHANICS were proven good that night. The
 TARGET was wrong, because one fact had two owners.
 
-Three claims are pinned here, and the first is the incident itself:
+Four claims are pinned here, and the first is the incident itself:
 
 1. the exact cycle-4 shape — candidate applied, running config displaced out of
    band, restore fired — must REFUSE rather than resurrect the stale candidate;
 2. the divergence rule reports "it moved" only when it actually compared two
    things, never when it could not;
 3. a displaced applied-profile record stops being read as authoritative for
-   "which graph is on the speaker".
+   "which graph is on the speaker";
+4. issue #2559 — a restore aimed at a graph this round never displaced refuses
+   too. The same record, the same speaker, seven hours later: at 14:47 the
+   staleness was already INSIDE the stash when the apply froze it, so claim 1's
+   check (which asks about the moment of restore) passed and the restore
+   resurrected the candidate anyway. Claims 1 and 4 ask about two different
+   moments and both are needed.
 """
 
 from __future__ import annotations
@@ -35,6 +41,7 @@ from jasper.active_speaker.baseline_profile import (
 )
 from jasper.active_speaker.crossover_v2.round_anchor import (
     ROUND_ANCHOR_STATE_KEY,
+    restore_target_diverged,
     round_anchor_record,
     running_config_diverged,
 )
@@ -436,6 +443,257 @@ def test_a_state_written_before_this_shipped_still_restores(tmp_path):
     assert rollback_anchor_refusal(
         state, running_config_path=reconciled
     ) is None
+
+
+# --------------------------------------------------------------------------- #
+# 2c. the restore TARGET — was the stash right when it was TAKEN? (#2559)
+# --------------------------------------------------------------------------- #
+
+
+#: The two files the 2026-08-15 14:47 jts3 firing was between. Named because
+#: every test below is the same incident asked a different way, and the stale
+#: one is the record that has now resurrected three times.
+_DISPLACED = "sound_current.yml"
+_STALE_CANDIDATE = "active_speaker_baseline_candidate_3298558b817e.yml"
+
+
+def test_the_1447_shape_restores_what_the_round_displaced_or_refuses(tmp_path):
+    """THE second incident, as a fixture.
+
+    14:45:41 — the round applies, displacing ``sound_current.yml``. The
+    applied-baseline-profile record it froze its stash from had been stale since
+    00:34, so the stash names run 2's candidate instead. 14:47:18 — the delta
+    probe's seam fires. Nothing has moved the running graph in those ninety-seven
+    seconds, so the divergence check passes correctly, and the restore reloads
+    the stale candidate: a graph the speaker had not played for fourteen hours.
+
+    The target must be the graph the round displaced, or the restore must refuse.
+    Never the stale record's.
+    """
+    displaced_path, displaced_sha = _yaml(tmp_path, _DISPLACED, "the sound\n")
+    stale_path, stale_sha = _yaml(tmp_path, _STALE_CANDIDATE, "run 2's\n")
+    anchor = round_anchor_record(
+        _apply_payload(
+            prior_path=displaced_path,
+            applied_path=str(tmp_path / "round1_candidate.yml"),
+            applied_sha="",
+        )
+    )
+
+    assert restore_target_diverged(anchor, stale_path, stale_sha) is True
+    # The control, so the fixture is proven able to answer False: a stash that
+    # names what the round actually displaced restores exactly as before.
+    assert restore_target_diverged(anchor, displaced_path, displaced_sha) is False
+
+
+def test_the_two_anchor_checks_ask_about_different_moments(tmp_path):
+    """Why #2553's check could not have caught this, stated as a measurement.
+
+    The divergence check asks "has the running graph moved SINCE the apply".
+    Ninety-seven seconds after an apply the answer is no, and it was no on
+    2026-08-15 — which is why every precondition passed. The target check asks
+    "was the stash right AT the apply". Same state, same anchor, opposite
+    answers, and only the second one sees this defect.
+    """
+    displaced_path, _ = _yaml(tmp_path, _DISPLACED, "the sound\n")
+    applied_path, applied_sha = _yaml(tmp_path, "round1_candidate.yml", "round 1\n")
+    stale_path, stale_sha = _yaml(tmp_path, _STALE_CANDIDATE, "run 2's\n")
+    anchor = round_anchor_record(
+        _apply_payload(
+            prior_path=displaced_path,
+            applied_path=applied_path,
+            applied_sha=applied_sha,
+        )
+    )
+
+    # The running graph IS still the one this round applied — no divergence.
+    assert running_config_diverged(anchor, applied_path) is False
+    # …and the stash is still aimed at the wrong sound.
+    assert restore_target_diverged(anchor, stale_path, stale_sha) is True
+
+
+def test_a_stash_naming_the_displaced_file_with_other_bytes_is_a_wrong_target(
+    tmp_path,
+):
+    """The digest half, isolated.
+
+    Same filename, different bytes — the shape
+    ``build_baseline_profile_candidate``'s source fingerprint permits, asked
+    here about the graph being PUT BACK. The two digests are comparable because
+    there is one hasher: the anchor's is ``config_file_sha256`` of the displaced
+    file at apply moment, and a profile's ``config.sha256`` is that same
+    function's answer for the file it applied — which is what
+    ``restore_applied_baseline_profile``'s ``restore_target_changed`` already
+    relies on.
+    """
+    displaced_path, displaced_sha = _yaml(tmp_path, _DISPLACED, "the sound\n")
+    anchor = round_anchor_record(
+        _apply_payload(
+            prior_path=displaced_path, applied_path="", applied_sha="",
+        )
+    )
+
+    assert restore_target_diverged(anchor, displaced_path, displaced_sha) is False
+    assert restore_target_diverged(anchor, displaced_path, "0" * 64) is True
+    # An absent digest on either side is an absence, so the path check stands
+    # alone rather than the pair reporting a mismatch it never measured.
+    assert restore_target_diverged(anchor, displaced_path, "") is False
+    assert restore_target_diverged(
+        {"displaced": {"config_path": displaced_path, "sha256": ""}},
+        displaced_path, "0" * 64,
+    ) is False
+
+
+def test_the_same_hasher_answers_for_both_sides_of_the_digest_comparison(tmp_path):
+    """The digest branch's precondition, measured rather than assumed.
+
+    If the anchor's digest and a profile's ``config.sha256`` were computed by
+    different hashers, this check would refuse EVERY restore — a far worse
+    failure than the one it fixes. They are not: both are
+    :func:`jasper.dsp_apply.config_file_sha256` of the same bytes, and this
+    walks that all the way from the file to both sides of the comparison.
+    """
+    from jasper.dsp_apply import config_file_sha256
+
+    displaced_path, _ = _yaml(tmp_path, _DISPLACED, "the sound\n")
+    anchor = round_anchor_record(
+        _apply_payload(prior_path=displaced_path, applied_path="", applied_sha="")
+    )
+    profile_recorded_sha = config_file_sha256(displaced_path)
+
+    assert anchor["displaced"]["sha256"] == profile_recorded_sha
+    assert restore_target_diverged(anchor, displaced_path, profile_recorded_sha) is False
+
+
+@pytest.mark.parametrize(
+    ("anchor", "target", "why"),
+    [
+        (None, "/tmp/x.yml", "no anchor at all — a state written before #2537"),
+        ({}, "/tmp/x.yml", "an anchor with no displaced half"),
+        (
+            {"displaced": {"config_path": ""}},
+            "/tmp/x.yml",
+            "an apply CamillaDSP could not name a prior config for",
+        ),
+        ({"displaced": {"config_path": "/a.yml"}}, "", "a stash naming no config"),
+        ({"displaced": {"config_path": "/a.yml"}}, None, "no stash path at all"),
+    ],
+)
+def test_what_cannot_be_compared_is_never_reported_as_a_wrong_target(
+    anchor, target, why
+):
+    """The same honesty rule as the divergence check, for the same reason.
+
+    Every one of these would refuse a household's Undo on a non-finding, and the
+    first row is every speaker that applied before the anchor shipped.
+    """
+    assert restore_target_diverged(anchor, target) is False, why
+
+
+def _stale_stash_state(*, stash_path: str, stash_sha: str, displaced_path: str):
+    """A durable v2 state whose stash is the 14:47 shape.
+
+    No ``topology_fingerprint`` (the documented "predates the fingerprint,
+    allowed through" path) and no ``applied`` half on the anchor, so the ONLY
+    check left that can refuse is the target one — and the control below proves
+    that rather than assuming it.
+    """
+    return {
+        "applied": True,
+        "pre_apply_profile": {
+            "kind": "prior",
+            "source": {},
+            "config": {"path": stash_path, "sha256": stash_sha},
+        },
+        ROUND_ANCHOR_STATE_KEY: {
+            "displaced": {"config_path": displaced_path, "sha256": ""},
+            "applied": {"config_path": "", "sha256": ""},
+        },
+    }
+
+
+def test_the_restore_refuses_when_the_stash_is_not_what_the_round_displaced(
+    tmp_path,
+):
+    """The refusal both restore paths read, with the household's own sentence."""
+    from jasper.web.correction_crossover_v2 import (
+        ANCHOR_STASH_NOT_DISPLACED,
+        rollback_anchor_refusal,
+    )
+
+    displaced_path, _ = _yaml(tmp_path, _DISPLACED, "the sound\n")
+    stale_path, stale_sha = _yaml(tmp_path, _STALE_CANDIDATE, "run 2's\n")
+
+    refusal = rollback_anchor_refusal(
+        _stale_stash_state(
+            stash_path=stale_path,
+            stash_sha=stale_sha,
+            displaced_path=displaced_path,
+        )
+    )
+
+    assert refusal is not None
+    assert refusal.code == ANCHOR_STASH_NOT_DISPLACED
+    # A household sentence: no path, no code, no hardware noun — the copy rule
+    # every other anchor refusal here carries.
+    assert "which sound to put back" in refusal.message
+    assert stale_path not in refusal.message
+    assert not any(
+        word in refusal.message.lower()
+        for word in ("tweeter", "woofer", "yml", "config_path", "anchor")
+    )
+
+
+def test_the_restore_is_allowed_when_the_stash_is_what_the_round_displaced(
+    tmp_path,
+):
+    """The control the test above needs to mean anything.
+
+    Without it a fixture refusing for one of the other four reasons would read
+    as a passing target test.
+    """
+    from jasper.web.correction_crossover_v2 import rollback_anchor_refusal
+
+    displaced_path, displaced_sha = _yaml(tmp_path, _DISPLACED, "the sound\n")
+
+    assert rollback_anchor_refusal(
+        _stale_stash_state(
+            stash_path=displaced_path,
+            stash_sha=displaced_sha,
+            displaced_path=displaced_path,
+        )
+    ) is None
+
+
+def test_the_capability_probe_answers_the_stale_stash_question_itself(tmp_path):
+    """Static, so the ROUND learns before it decides — unlike the live check.
+
+    ``running_config_diverged`` is deliberately held back from the capability
+    probe: it needs a CamillaDSP round trip, and a hiccup there would route an
+    otherwise-fine round to ``recovery_required``. Stash-versus-displaced needs
+    no live reading — the same apply wrote both facts — so the probe answers it,
+    and a round that cannot restore stops promising a restore it would then have
+    to refuse. #2291's drift argument applied to the new check, pinned at the
+    seam's own call shape (no live reading passed).
+    """
+    from jasper.web.correction_crossover_v2 import (
+        ANCHOR_STASH_NOT_DISPLACED,
+        rollback_anchor_refusal,
+    )
+
+    displaced_path, _ = _yaml(tmp_path, _DISPLACED, "the sound\n")
+    stale_path, stale_sha = _yaml(tmp_path, _STALE_CANDIDATE, "run 2's\n")
+
+    refusal = rollback_anchor_refusal(
+        _stale_stash_state(
+            stash_path=stale_path,
+            stash_sha=stale_sha,
+            displaced_path=displaced_path,
+        ),
+        running_config_path=None,
+    )
+
+    assert refusal is not None and refusal.code == ANCHOR_STASH_NOT_DISPLACED
 
 
 # --------------------------------------------------------------------------- #

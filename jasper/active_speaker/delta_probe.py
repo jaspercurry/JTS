@@ -296,6 +296,68 @@ DELTA_PROBE_ROLLBACK_VERDICTS: frozenset[str] = frozenset({
     VERDICT_SPATIALLY_COSTLY,
 })
 
+#: The one reason the seam hands a rollback verdict to the adoption table
+#: instead of restoring on it (#2559). A stable string, because it rides the
+#: journal and the round receipt: an immediate restore that did not happen must
+#: be as legible as one that did.
+SEAM_DEFERRED_QUIETER_THAN_COMMANDED = "model_error_quieter_than_commanded"
+
+
+def seam_rollback_deferral(probe: Any | None) -> str:
+    """Why this map's seam-bound rollback DEFERS to the adoption table, or ``""``.
+
+    Owner ruling, 2026-08-15: a ``model_error`` whose realized deviation points
+    entirely QUIETER than commanded is a quality miss that keeps for iteration,
+    not a hazard that comes off the speaker. It is the same directional
+    discipline #2537 put on the level axis — *"quieter-than-declared costs a
+    household some output and tells the next round something, while
+    louder-than-declared is energy nobody asked for"* — applied to the shape
+    axis, and it is the rule that would have changed the 2026-08-15 14:47 jts3
+    round: a −3.32 dB dip at 1330 Hz, nothing realized louder than commanded
+    anywhere, tracking passed, 2.399 dB of measured improvement, reverted by a
+    seam that never asked which way the miss pointed.
+
+    **The seam preempts the table, so the narrowing has to happen here.** A
+    seam rollback ends the session before ``decide_adoption`` runs at all
+    (2026-08-15: ``attempt_decision decision=ungraded``), so a quality row can
+    only fire for a round the seam let through. Deferring is what makes the
+    table reachable; it decides nothing about the outcome, and ``row5``'s
+    restore on a measured regression is as available afterwards as before.
+
+    **It NARROWS one class and touches nothing else.** Every other rollback
+    verdict is unchanged, and so is every positive-direction finding:
+
+    * :data:`VERDICT_LEVEL_DEPENDENT_SHORTFALL` and
+      :data:`VERDICT_SPATIALLY_COSTLY` never defer. The first is a claim about a
+      driver's headroom and the second about the room's own spread; neither is
+      the shape claim this ruling is about.
+    * A map with ANY graded bin realized louder than commanded past tolerance
+      never defers, whatever else it measured.
+    * ``boost_over_declared_bound`` never defers. That is implied by the bin
+      rule above — an overshooting boost IS a bin realized louder — and it is
+      stated anyway, because a fence that holds only through a numeric
+      implication between two independently-tunable bounds is not a fence. Both
+      halves are pinned.
+
+    ``""`` for an absent probe and for a non-rollback verdict: those never
+    reached a seam rollback, so there is nothing for them to defer and saying
+    otherwise would put a deferral on the record of a round that had none.
+
+    Duck-typed on the probe for :func:`~...verification.evaluate_applied_safety`'s
+    reason — it holds whatever the host handed it, including ``None`` — and so
+    that one function answers for both readers: the seam that acts on it and the
+    receipt that discloses it.
+    """
+    if probe is None:
+        return ""
+    if str(getattr(probe, "verdict", "") or "") != VERDICT_MODEL_ERROR:
+        return ""
+    if bool(getattr(probe, "realized_louder_than_commanded", False)):
+        return ""
+    if bool(getattr(probe, "boost_over_declared_bound", False)):
+        return ""
+    return SEAM_DEFERRED_QUIETER_THAN_COMMANDED
+
 # --------------------------------------------------------------------------- #
 # classification thresholds
 # --------------------------------------------------------------------------- #
@@ -743,6 +805,19 @@ class DeltaProbeMap:
     #: The widest contiguous run, in octaves, over which that excess cleared
     #: this probe's per-bin tolerance. ``0.0`` means nothing cleared it.
     boost_overshoot_octaves: float = 0.0
+    #: Did ANY graded bin realize LOUDER than commanded, past that bin's own
+    #: tolerance? (#2559) The direction of the shape miss, measured over every
+    #: graded bin rather than only the boosted ones — see
+    #: :func:`louder_than_commanded` for why it is unstructured and why it is
+    #: taken on the raw realized curve. ``False`` on an unavailable map, where
+    #: :attr:`max_signed_error_db` is ``None`` to say nothing was measured.
+    realized_louder_than_commanded: bool = False
+    #: The most POSITIVE ``realized − commanded`` over the graded bins, dB.
+    #: Negative on a map whose every bin realized quieter than commanded — which
+    #: is a measurement, and the one :attr:`realized_louder_than_commanded`
+    #: reduces to a finding against the per-bin tolerance. ``None`` when no bin
+    #: was graded, never 0.0 (``gain_factor``'s distinction).
+    max_signed_error_db: float | None = None
 
     @property
     def matched(self) -> bool:
@@ -792,6 +867,16 @@ class DeltaProbeMap:
                 "over_declared_bound": self.boost_over_declared_bound,
                 "overshoot_db": self.boost_overshoot_db,
                 "overshoot_octaves": self.boost_overshoot_octaves,
+            },
+            # Which WAY the graded bins missed, nested for the boost block's
+            # reason (#2559): the finding and the amount behind it are one set,
+            # and a reader asking whether a rollback was deferred needs both.
+            "direction": {
+                "realized_louder_than_commanded": (
+                    self.realized_louder_than_commanded
+                ),
+                "max_signed_error_db": self.max_signed_error_db,
+                "seam_rollback_deferral": seam_rollback_deferral(self),
             },
             # The frame's own terms and the grades taken with it removed, nested
             # together so a reader picks a frame of reference once and reads a
@@ -965,6 +1050,52 @@ def boost_overshoot(
         freqs_hz, boosted & (excess > tolerance_db)
     )
     return widest >= DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES, worst, float(widest)
+
+
+def louder_than_commanded(
+    realized_db: np.ndarray,
+    commanded_db: np.ndarray,
+    tolerance_db: np.ndarray,
+    probe_mask: np.ndarray,
+) -> tuple[bool, float | None]:
+    """Did ANY graded bin realize LOUDER than commanded, past tolerance? (#2559)
+
+    ``(over the bound anywhere, the most POSITIVE realized − commanded in dB)``.
+    The direction of a shape miss, which this module measured nowhere before:
+    every other exceedance rule here takes ``abs`` — right for "is the shape
+    wrong", useless for "which way".
+
+    **Deliberately unstructured, where every sibling rule is structured.**
+    :func:`boost_overshoot` and :func:`_structured_exceedance` require a
+    :data:`DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES` run before they will call
+    something a finding, because they are deciding whether a defect EXISTS and
+    a single noisy bin must not pull a household's correction off the speaker.
+    This one is not deciding that — the verdict is already a finding by the time
+    anyone asks. It decides whether a finding that exists may be handled the
+    LENIENT way, so one bin measured louder is enough to withhold the lenience.
+    A width rule here would be a rule for admitting more positive-direction
+    evidence into the quiet class, which is the wrong direction to be generous
+    in. There is deliberately no octaves term returned, so nothing downstream
+    can gate on structure by accident.
+
+    **Bins only, no frame removal.** :func:`boost_overshoot`'s reason, verbatim
+    and for the same question: a frame is removed to ask whether the SHAPE is
+    right, and this asks how much energy actually reached the driver. Subtracting
+    a fitted offset first would hide exactly the whole-band overshoot the
+    lenience must not be granted for.
+
+    ``None`` for the scalar only when the mask selects nothing — "not measured",
+    never 0.0. ``classify_delta_probe`` never reaches here with an empty mask
+    (:data:`DELTA_PROBE_MIN_BINS` is checked first), so this arm serves a direct
+    caller rather than a production path.
+    """
+    if not bool(probe_mask.any()):
+        return False, None
+    excess = realized_db - commanded_db
+    return (
+        bool((probe_mask & (excess > tolerance_db)).any()),
+        float(np.max(excess[probe_mask])),
+    )
 
 
 def _octave_span(span_hz: tuple[float, float]) -> float:
@@ -1309,6 +1440,12 @@ def classify_delta_probe(
     boost_over_bound, boost_overshoot_db, boost_overshoot_octaves = boost_overshoot(
         freqs, realized, commanded, tolerance_full, mask,
     )
+    # WHICH WAY the graded bins missed (#2559), on the raw curve for the same
+    # reason the boost finding above is: this asks how much energy reached the
+    # driver, not whether the shape is right.
+    realized_louder, max_signed_error_db = louder_than_commanded(
+        realized, commanded, tolerance_full, mask,
+    )
 
     def _map(verdict: str, reason: str) -> DeltaProbeMap:
         return DeltaProbeMap(
@@ -1341,6 +1478,8 @@ def classify_delta_probe(
             boost_over_declared_bound=boost_over_bound,
             boost_overshoot_db=boost_overshoot_db,
             boost_overshoot_octaves=boost_overshoot_octaves,
+            realized_louder_than_commanded=realized_louder,
+            max_signed_error_db=max_signed_error_db,
         )
 
     if not exceeded:
@@ -1561,6 +1700,7 @@ __all__ = [
     "DELTA_PROBE_TOLERANCE_HIGH_DB",
     "DELTA_PROBE_TOLERANCE_LOW_DB",
     "DELTA_PROBE_VERDICTS",
+    "SEAM_DEFERRED_QUIETER_THAN_COMMANDED",
     "SPATIAL_COST_UNAVAILABLE",
     "REASON_UNCOMMANDED_LEVEL_SHIFT",
     "REASON_UNCOMMANDED_LEVEL_SHIFT_OUTSIDE_BAND",
@@ -1578,6 +1718,8 @@ __all__ = [
     "evaluate_spatial_cost",
     "graded_command_floor_db",
     "interquartile_band_hz",
+    "louder_than_commanded",
+    "seam_rollback_deferral",
     "spatial_cost_from_group_spreads",
     "widest_exceedance_octaves",
 ]
