@@ -19,7 +19,10 @@ import {
   INTEGRITY_EVENT_CAP,
   INTEGRITY_LOST_FOCUS_MESSAGE,
   INTEGRITY_LOST_FOCUS_NOTE,
+  ZERO_RUN_QUANTUM,
+  ZERO_RUN_RECORD_CAP,
   createIntegrityWatch,
+  scanZeroFillRuns,
   summarizeCaptureIntegrity,
 } from "../../capture-page/js/capture-integrity.js";
 import { runTestFunctions } from "./run_test_functions.mjs";
@@ -253,6 +256,213 @@ function testFrameCountsAreOmittedWhenNotMeasured() {
   ok();
 }
 
+// ---------------------------------------------------------------------------
+// The zero-run witness for hop A (issue #2557, verdict 2026-08-15).
+//
+// A browser capture-FIFO resync hands the audio graph one silent render
+// quantum. The counters above cannot see it — the worklet gets an ordinary
+// input array that happens to be full of zeros — so the evidence is the DATA:
+// 128 consecutive exact zeros beginning on the render grid. These tests pin the
+// two halves of that claim separately, because it is the CONJUNCTION that is
+// diagnostic: a shorter run is not the fingerprint at all, and a run off the
+// grid is a different finding rather than a weaker one.
+
+// A capture that looks like a real room: never silent, deterministic so the
+// suite cannot flake, and seeded to hit exact zero at roughly the 0.5 % rate
+// measured in the campaign's ambient data.
+function ambientCapture(length, { zeroRate = 0.005, seed = 1234567 } = {}) {
+  const out = new Float32Array(length);
+  let state = seed;
+  for (let i = 0; i < length; i += 1) {
+    // A plain LCG: the point is a fixed sequence, not statistical quality.
+    state = (state * 1103515245 + 12345) % 2147483648;
+    const unit = state / 2147483648;
+    out[i] = unit < zeroRate ? 0 : (unit - 0.5) * 0.02 || 0.001;
+  }
+  return out;
+}
+
+function silence(buffer, offset, length) {
+  for (let i = offset; i < offset + length; i += 1) buffer[i] = 0;
+  return buffer;
+}
+
+// THE FINGERPRINT. One whole quantum of digital silence, block-aligned, in
+// otherwise live signal — the shape found in 13 of 13 testable glitch events.
+function testAnAlignedQuantumOfSilenceIsFlagged() {
+  const capture = ambientCapture(64 * ZERO_RUN_QUANTUM);
+  const offset = 20 * ZERO_RUN_QUANTUM;
+  silence(capture, offset, ZERO_RUN_QUANTUM);
+
+  const scan = scanZeroFillRuns(capture);
+  assert.equal(scan.count, 1);
+  assert.equal(scan.quantum, ZERO_RUN_QUANTUM);
+  assert.deepEqual(scan.runs, [
+    { offset: offset, len: ZERO_RUN_QUANTUM, phase: 0 },
+  ]);
+  ok();
+}
+
+// A run that ends at the last sample must still be closed. The state machine
+// only emits a run when it sees a non-zero sample after it, so without the
+// end-of-buffer flush a capture whose tail died would report nothing — the one
+// failure the household is most likely to hit.
+function testARunAtTheEndOfTheCaptureIsClosed() {
+  const capture = ambientCapture(64 * ZERO_RUN_QUANTUM);
+  const offset = capture.length - ZERO_RUN_QUANTUM;
+  silence(capture, offset, ZERO_RUN_QUANTUM);
+
+  const scan = scanZeroFillRuns(capture);
+  assert.equal(scan.count, 1);
+  assert.equal(scan.runs[0].offset, offset);
+  assert.equal(scan.runs[0].len, ZERO_RUN_QUANTUM);
+  ok();
+}
+
+// ONE SAMPLE SHORT IS NOT THE FINGERPRINT. 127 zeros is not a render quantum,
+// and a detector that accepted it would be claiming a mechanism its own
+// evidence does not support.
+function testAShortRunIsNotTheFingerprint() {
+  const capture = ambientCapture(64 * ZERO_RUN_QUANTUM);
+  silence(capture, 20 * ZERO_RUN_QUANTUM, ZERO_RUN_QUANTUM - 1);
+
+  const scan = scanZeroFillRuns(capture);
+  assert.equal(scan.count, 0);
+  assert.deepEqual(scan.runs, []);
+  ok();
+}
+
+// OFF THE GRID IS A DIFFERENT FINDING. 128 zeros that do NOT begin on a render
+// boundary are reported — they are real silence and worth seeing — but their
+// phase is non-zero, so nothing can read them as "one delivered quantum".
+function testAMisalignedRunIsReportedButNotAsAQuantum() {
+  const capture = ambientCapture(64 * ZERO_RUN_QUANTUM);
+  const offset = 20 * ZERO_RUN_QUANTUM + 37;
+  silence(capture, offset, ZERO_RUN_QUANTUM);
+
+  const scan = scanZeroFillRuns(capture);
+  assert.equal(scan.count, 1);
+  assert.equal(scan.runs[0].offset, offset);
+  assert.equal(scan.runs[0].phase, 37);
+  assert.notEqual(scan.runs[0].phase, 0);
+  ok();
+}
+
+// THE FALSE-POSITIVE CONTROL. Real rooms produce exact zeros constantly — about
+// one sample in 200 — and 0 of 3 clean campaign controls contained a run this
+// long; their longest was 13 samples. An epsilon tolerance is what would break
+// this test, which is exactly why the scan compares against exact zero.
+//
+// The control PROVES ITS OWN INSTRUMENT first: a fixture that happened to
+// contain no exact zeros would pass this test while checking nothing, so the
+// zero density is asserted before the verdict is.
+function testAmbientExactZerosDoNotTripIt() {
+  const capture = ambientCapture(400_000);
+  let zeros = 0;
+  for (let i = 0; i < capture.length; i += 1) if (capture[i] === 0) zeros += 1;
+  assert.ok(zeros > 1500, `fixture is not room-like: ${zeros} exact zeros`);
+
+  // Plus the worst clean run the campaign actually measured, planted on the
+  // render grid where it would be most tempting to call it a quantum.
+  silence(capture, 100 * ZERO_RUN_QUANTUM, 13);
+
+  const scan = scanZeroFillRuns(capture);
+  assert.equal(scan.count, 0);
+  ok();
+}
+
+// Two adjacent lost quanta are ONE run of 256, and `len / quantum` recovers the
+// block count — which is why no second counter lives in the worklet.
+function testAdjacentQuantaMergeIntoOneRunWhoseLengthSaysHowMany() {
+  const capture = ambientCapture(64 * ZERO_RUN_QUANTUM);
+  const offset = 8 * ZERO_RUN_QUANTUM;
+  silence(capture, offset, 2 * ZERO_RUN_QUANTUM);
+
+  const scan = scanZeroFillRuns(capture);
+  assert.equal(scan.count, 1);
+  assert.equal(scan.runs[0].len / scan.quantum, 2);
+  assert.equal(scan.runs[0].phase, 0);
+  ok();
+}
+
+// Same bounded-log / exact-count contract the focus events keep: a capture that
+// is mostly silence cannot grow the relay event, and the FIRST runs are the
+// ones attribution needs.
+function testTheRunListIsBoundedButTheCountIsNot() {
+  const runs = ZERO_RUN_RECORD_CAP + 5;
+  const capture = ambientCapture((2 * runs + 4) * ZERO_RUN_QUANTUM);
+  for (let i = 0; i < runs; i += 1) {
+    silence(capture, (2 * i + 1) * ZERO_RUN_QUANTUM, ZERO_RUN_QUANTUM);
+  }
+
+  const scan = scanZeroFillRuns(capture);
+  assert.equal(scan.count, runs);
+  assert.equal(scan.runs.length, ZERO_RUN_RECORD_CAP);
+  assert.equal(scan.runs[0].offset, ZERO_RUN_QUANTUM);
+  ok();
+}
+
+// Same degrade-never-throw rule as the watch: this module is imported by a page
+// that also runs under harnesses with no capture in hand.
+function testANonBufferDegradesRatherThanThrowing() {
+  for (const bad of [null, undefined, {}, "", 0, { length: NaN }]) {
+    assert.equal(scanZeroFillRuns(bad), null);
+  }
+  assert.deepEqual(scanZeroFillRuns(new Float32Array(0)), {
+    count: 0, runs: [], quantum: ZERO_RUN_QUANTUM,
+  });
+  ok();
+}
+
+// The wire half: a scanned capture says so even when it found nothing, and an
+// unscanned one omits the keys rather than claiming a clean take.
+function testSummaryCarriesTheZeroRunWitness() {
+  const capture = ambientCapture(64 * ZERO_RUN_QUANTUM);
+  silence(capture, 20 * ZERO_RUN_QUANTUM, ZERO_RUN_QUANTUM);
+
+  const flagged = summarizeCaptureIntegrity({ samples: capture });
+  assert.equal(flagged.zero_run_count, 1);
+  assert.equal(flagged.zero_run_quantum, ZERO_RUN_QUANTUM);
+  assert.equal(flagged.zero_runs[0].phase, 0);
+  assert.equal(flagged.zero_runs[0].len, ZERO_RUN_QUANTUM);
+
+  const clean = summarizeCaptureIntegrity({
+    samples: ambientCapture(64 * ZERO_RUN_QUANTUM),
+  });
+  assert.equal(clean.zero_run_count, 0);
+  assert.deepEqual(clean.zero_runs, []);
+
+  const unscanned = summarizeCaptureIntegrity({
+    stats: { frames: 8192, blocks: 64, block_gaps: 0, block_gap_frames: 0 },
+    encodedFrames: 8192,
+  });
+  assert.equal("zero_run_count" in unscanned, false);
+  assert.equal("zero_runs" in unscanned, false);
+  assert.equal("zero_run_quantum" in unscanned, false);
+  ok();
+}
+
+// The counter this scan exists to compensate for: a zero-FILLED input array is
+// an ordinary block to the worklet, so `silent_blocks` stays 0 through the very
+// event the capture is being refused for. Both facts ride the same report.
+function testSilentBlocksStaysZeroThroughAZeroFilledQuantum() {
+  const capture = ambientCapture(64 * ZERO_RUN_QUANTUM);
+  silence(capture, 20 * ZERO_RUN_QUANTUM, ZERO_RUN_QUANTUM);
+
+  const summary = summarizeCaptureIntegrity({
+    stats: {
+      frames: capture.length, blocks: 64,
+      block_gaps: 0, block_gap_frames: 0, silent_blocks: 0,
+    },
+    encodedFrames: capture.length,
+    samples: capture,
+  });
+  assert.equal(summary.silent_blocks, 0);
+  assert.equal(summary.block_gaps, 0);
+  assert.equal(summary.zero_run_count, 1);
+  ok();
+}
+
 // The two household-facing strings name no browser, platform, or vendor, and
 // say what will happen rather than only what went wrong.
 function testCopyIsPlainAndProviderAgnostic() {
@@ -278,6 +488,16 @@ await runTestFunctions(
     testSummaryCarriesTheFrameLedgersPageEnd,
     testTheTwoTransferEndsAreIndependent,
     testFrameCountsAreOmittedWhenNotMeasured,
+    testAnAlignedQuantumOfSilenceIsFlagged,
+    testARunAtTheEndOfTheCaptureIsClosed,
+    testAShortRunIsNotTheFingerprint,
+    testAMisalignedRunIsReportedButNotAsAQuantum,
+    testAmbientExactZerosDoNotTripIt,
+    testAdjacentQuantaMergeIntoOneRunWhoseLengthSaysHowMany,
+    testTheRunListIsBoundedButTheCountIsNot,
+    testANonBufferDegradesRatherThanThrowing,
+    testSummaryCarriesTheZeroRunWitness,
+    testSilentBlocksStaysZeroThroughAZeroFilledQuantum,
     testCopyIsPlainAndProviderAgnostic,
   ],
   () => passed,

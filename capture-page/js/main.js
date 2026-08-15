@@ -35,8 +35,8 @@ import {
   summarizeCaptureIntegrity,
   INTEGRITY_LOST_FOCUS_MESSAGE,
   INTEGRITY_LOST_FOCUS_NOTE,
-} from "./capture-integrity.js?v=20260814-1";
-import { runLevelRampProtocol } from "./level-events.js?v=20260814-1";
+} from "./capture-integrity.js?v=20260815-4";
+import { runLevelRampProtocol } from "./level-events.js?v=20260815-4";
 import { inferCalibrationModel } from "./calibration-model.js?v=20260712-1";
 import {
   assertCaptureProtocolCompatible,
@@ -54,8 +54,8 @@ import {
   delayMs,
   float32ToWavBlob,
   rmsToDbfs,
-} from "./measurement-audio.js?v=20260814-1";
-import { buildAmbientStatsEvent } from "./ambient-stats.js?v=20260814-1";
+} from "./measurement-audio.js?v=20260815-4";
+import { buildAmbientStatsEvent } from "./ambient-stats.js?v=20260815-4";
 
 const PAGE_VERSION_URL = new URL("../version.json", import.meta.url);
 
@@ -3940,6 +3940,11 @@ async function runPlanCapture(ctx, { index, attempt, retake = false }) {
       // encoder below so the report describes the SAME array `stop()` returned
       // (#2094). Nothing between here and `float32ToWavBlob` touches it.
       encodedFrames: samples ? samples.length : null,
+      // The array itself, scanned for the render-quantum of digital silence a
+      // browser capture-FIFO resync leaves behind (#2557). Same array, same
+      // moment: the scan describes exactly the bytes this page is about to
+      // upload, not a proxy for them.
+      samples: samples,
     });
     if (integrityWatch) integrityWatch.dispose();
     integrityWatch = null;

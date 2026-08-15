@@ -48,7 +48,7 @@ sanitizes it again before rendering a plain navigation link to the local Pi page
 | `js/fragment.js` | Parse `#s=&u=&k=&a=` (key/spec MAC never leave the fragment) | `capture_fragment_test.mjs` |
 | `js/constraints.js` | Realized-constraints verify/degrade per the spec's per-kind policy | `capture_constraints_test.mjs` |
 | `js/wakelock.js` | Screen Wake Lock + `visibilitychange` abort | `capture_wakelock_test.mjs` |
-| `js/capture-integrity.js` | Per-take focus/visibility log + block-accounting summary (#2151) + the page end of the host's end-to-end frame ledger (#2094) | `capture_integrity_test.mjs`, `capture_plan_loop_test.mjs`, `capture_frame_report_emit.mjs` |
+| `js/capture-integrity.js` | Per-take focus/visibility log + block-accounting summary (#2151) + the page end of the host's end-to-end frame ledger (#2094) + the pre-upload scan for a zero-filled render quantum (#2557) | `capture_integrity_test.mjs`, `capture_plan_loop_test.mjs`, `capture_frame_report_emit.mjs` |
 | `js/level-events.js` | Batched phone-side mic-level events for the level-match ramp | `capture_level_events_test.mjs` |
 | `js/ambient-stats.js` | Per-octave-band ambient-noise stats for a driver sweep's quiet window (Wave 2) | `capture_ambient_stats_test.mjs`, `test_capture_page_ambient_stats_bridge.py` |
 | `js/config.js` | `RELAY_BASE` (one relay origin for the fleet) | — |
@@ -231,6 +231,19 @@ Pi ignores unknown keys, and an older page simply declares no counts, which the
 Pi grades as `not_evaluated` and never as loss. `tests/js/capture_frame_report_emit.mjs`
 runs this page's real summarizer and hands the result to the Pi's real
 reconciler, so a rename on either side fails rather than degrading quietly.
+
+Build `20260815.4` extends it once more (#2557), and this one reports the DATA
+rather than a counter: before uploading, the page scans the assembled capture for
+runs of at least one render quantum of consecutive EXACT zeros and sends
+`zero_run_count`, a bounded `zero_runs` log of `{offset, len, phase}`, and the
+`zero_run_quantum` those phases are taken against. The 2026-08-15 verdict found
+that shape — 128 zeros beginning at an index ≡ 0 mod 128 — in 13 of 13 testable
+glitch events and in 0 of 3 clean controls, which is what makes it a witness
+rather than a heuristic. Both directions are safe for the same reason as the two
+additions above: an older Pi ignores the keys, and an older page sends none,
+which is "not scanned" and never "scanned clean". **No Pi reads them** — the host
+refuses these takes on its own residual-desync evidence, and consuming the
+witness is a separate decision with its own release order.
 
 The one thing that is NOT optional in either direction: the field must ride a
 repeat of the WHOLE armed payload, never a partial event. The relay's
