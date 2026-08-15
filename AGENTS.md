@@ -143,6 +143,10 @@ only produce follow-ups — it cannot gate what already landed.
   that spirit: extend a seam rather than special-casing; make state visible
   through stable `event=` logs, `/state`, and doctor; recover without an
   operator; fail loudly rather than silently; and respect the Pi's budget.
+- **Right-sized simplicity — the 80/20 rule.** Elegant over sprawling, in
+  both directions: no god files or copy-paste sprawl, and no astronaut
+  engineering. The calibration lives in one place: the
+  [COAH](#coah-quality-bar) "Clean" bullet.
 
 **Diagnosis honesty is part of the bar.** A log line that names a resource
 is not evidence the resource ran out; a plausible mechanism is not a located
@@ -153,6 +157,11 @@ worked example of getting this wrong and repairing it.
 
 ### Project-specific reinforcements
 
+- **Watch where code lands, not just how much (extends rule 4).** A god
+  file is born one reasonable-looking diff at a time, so put new logic
+  behind the seam that owns it — or cut the natural seam while it is
+  fresh — rather than growing a file that already carries several
+  concerns.
 - **Bug work starts with evidence.** Fetch the logs, probe the
   affected daemon/user surface, and name the specific failure line or
   state transition before proposing a fix.
@@ -321,8 +330,9 @@ inherits it from the repo instead of being told.
   keep their window lean; prefer deliberate handoffs over
   auto-compaction) and system saturation (bounded CPU/memory/IO/
   subprocess/network under load — the [COAH](#coah-quality-bar) bar);
-  single source of truth; elastic, modular, observable, resilient,
-  reliable, performant code.
+  single source of truth; separation of concerns; 80/20 right-sized
+  simplicity; elastic, modular, observable, resilient, reliable,
+  performant code.
 
 The [COAH quality bar](#coah-quality-bar) below is what the gate
 reviews against; this section is who reviews and how work gets there.
@@ -337,7 +347,15 @@ the JTS staff-maintainer review bar:
 - **Clean.** Boundaries are crisp, ownership is local, names explain the
   domain, and the design is the smallest durable shape that fits the
   existing system. Prefer simple composition over speculative
-  abstractions; leave the codebase easier to reason about.
+  abstractions; leave the codebase easier to reason about. Two failure
+  directions, equally real: sprawl (god files accreting concerns a
+  filename no longer describes, copy-paste twins, a second source of
+  truth) and astronaut engineering (layers, registries, and generality
+  no current need has earned). The 80/20 calibration that resolves
+  them: trim speculative flexibility and unneeded generality, never
+  correctness, tests, observability, or the right seam — the proper
+  solution a staff engineer would defend in public, minus everything
+  speculative.
 - **Observable.** Failures and important state transitions are visible
   through stable `event=` logs, `/state` or doctor surfaces where
   appropriate, and user-facing UI hints when a household needs to act.

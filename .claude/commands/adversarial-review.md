@@ -7,7 +7,8 @@ description: |
   user says any variant of: "adversarial review", "review my work", "review
   what you just did", "would any of this give you pause", "staff review this",
   "review this branch/PR/diff", "is this product-grade". Defends two invariants
-  above all: separation of concerns and a single source of truth.
+  above all — separation of concerns and a single source of truth — and
+  right-sizes every change: 80/20, no sprawl, no astronaut engineering.
 ---
 
 # Adversarial review — staff-level, evidence-first, per-session
@@ -57,7 +58,9 @@ Hold both directions in tension with **balance** (below): a *missing* seam
 (scattered special cases, copy-paste twins, a fact set in two places) is a
 finding — but so is *astronaut engineering* (a speculative abstraction, a
 single-use registry, indirection not warranted by a real, named need). The
-smallest durable shape that fits the existing system wins.
+smallest durable shape that fits the existing system wins — calibrated per
+COAH's "Clean" bullet in [AGENTS.md](../../AGENTS.md#coah-quality-bar).
+Simpler-but-hacky is not a simplification.
 
 ## Method — evidence before judgment
 
@@ -102,31 +105,39 @@ For every new production file, public API, and persisted/schema field, name:
 - why an existing owner or a smaller alternative is insufficient.
 
 Compare the diff with the smallest viable alternative in the existing seams.
-Flag future-only code, speculative flexibility, duplicated validation or
-ownership, single-use abstractions, and framework machinery whose only
-justification is a later round. If a public API or schema field has no current
-producer and consumer, or the diff exceeds an owner budget without explicit
-approval, it is a blocker. Complete this gate before reviewing whether the
-chosen implementation is correct.
+Apply the **deletion test** — name anything removable with no loss of
+required behavior: future-only code, speculative flexibility, pass-through
+wrappers, duplicated validation or ownership, single-use abstractions,
+config no current caller exercises, handling for states that cannot occur,
+and framework machinery whose only justification is a later round. If a
+public API or schema field has no current producer and consumer, or the diff
+exceeds an owner budget without explicit approval, it is a blocker.
+
+**Judge sprawl by where code lands, not only by how much.** For each file
+the diff grows meaningfully, ask whether the additions still belong to that
+file's one concern — logic the filename no longer describes is a second
+concern accreting. God files are born one reasonable-looking diff at a
+time; the cheap moment to cut the natural seam is now, while it is fresh,
+so a finding here names the seam the code should move behind. Two
+counterweights keep this lens honest: do not shatter one coherent concern
+across files or layers for tidiness (astronaut engineering in file form),
+and scope findings to what **this change** added or grew — a pre-existing
+mess the diff didn't worsen is a nit or a backlog note, never a demand to
+refactor working code the task didn't touch.
+
+Complete this gate before reviewing whether the chosen implementation is
+correct.
 
 ## The product-grade lens (apply to the design, not just the diff)
 
-- **Separation of concerns and modularity** (invariant 1): does each change land
-  behind the boundary that owns it? Extend the registries/protocols/contracts
-  the repo already has (config-ownership patterns, provider registries,
-  reconcilers, `LiveConnection`, `MusicSourceSpec`, `DacProfile`) instead of
-  scattering special cases.
-- **Single source of truth** (invariant 2): does each fact keep exactly one
-  owner and one writer, read fresh where staleness would mislead, documented in
-  exactly one place?
+- **The two invariants** (above): does each change land behind the boundary
+  that owns it, and does each fact keep exactly one owner and one writer?
 - **Boundaries that scale:** we WILL add more DACs, more microphones, more LLM
   voice providers, more music sources, more transit cities. Would the next one
   land **declaration-only** through an existing seam, or did this change just
   bury a per-device/per-provider branch somewhere central?
-- **Balance:** flag BOTH failure directions — a missing seam (scattered special
-  cases, copy-paste twins, duplicated facts) and astronaut engineering
-  (speculative flexibility, single-use abstractions, complexity not warranted
-  by a real, named need).
+- **Balance** (above): flag BOTH failure directions — the missing seam and the
+  astronaut engineering.
 - **Resilience, observability, elegance, performance:** hold each change to the
   checklist below, not to vibes.
 
@@ -135,13 +146,18 @@ chosen implementation is correct.
 - **Blocker:** likely correctness, safety, data/secret, rollback, deploy,
   hardware, audio-output, connectivity, or security problem.
 - **Should-fix:** real debt this change introduces — a boundary/contract
-  violation, scaling trap, single-source-of-truth violation, observability gap,
-  or missing test — that shouldn't ship un-ticketed even if it needn't block
+  violation, scaling trap, single-source-of-truth violation, unjustified
+  complexity (a needless layer or abstraction, or growth of an
+  already-overloaded file past its natural seam), observability gap, or
+  missing test — that shouldn't ship un-ticketed even if it needn't block
   this PR.
 - **Nit:** polish or maintainability improvement that should not block.
 - **No issue:** explicitly say when a high-risk category was checked and passed.
 
 ## JTS-specific review checklist
+
+Spend depth where the blast radius is: a category this diff cannot touch is
+one explicit "No issue — N/A" line, not an investigation.
 
 - **Audio/hearing safety:** volume ceilings, positive-gain clamps, source
   handoff, TTS gain, CamillaDSP config safety, rollback behavior.
@@ -201,8 +217,9 @@ files, anchor-heavy edits, or intentional full sweeps.
 1. **Findings first**, ordered by severity (Blocker → Should-fix → Nit), each
    with file/function references and the evidence you checked.
 2. **Product-grade verdict:** one short paragraph — is this product-grade for
-   this codebase, and would the next DAC/mic/provider/source land cleanly
-   through it? Name any boundary it strains (especially either invariant above).
+   this codebase, would the next DAC/mic/provider/source land cleanly through
+   it, and is it the smallest durable shape (name anything you would delete)?
+   Name any boundary it strains (especially either invariant above).
 3. **Docs impact:** commands run, mapped docs scanned, docs updated or
    rationale.
 4. **Verification:** tests/commands actually run, results, and any hardware
