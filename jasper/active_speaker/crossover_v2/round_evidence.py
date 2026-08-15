@@ -557,11 +557,13 @@ def evaluate_round(
 
     ``spec_report`` is the post-apply spatial cloud's report when the tier
     produced one, and ``None`` otherwise (#2160's honest wire: the failure
-    that used to be disclosure-only is now the SPEC verdict's input). It can
-    never make a round RESTORE — spec sits on the quality axis, whose only
-    restoring value is a measured regression — but since #2537 it does decide
-    between ``keep`` and ``keep_for_iteration``, and each failing band rides
-    into the receipt as a next-round target.
+    that used to be disclosure-only is now the SPEC verdict's input). It
+    **cannot change the adoption** — spec is "any" in every row of #2291's
+    table, and #2537 kept it that way for a second reason as well (the
+    trusted-floor intersection; see
+    :func:`~.verification.evaluate_round_quality`). What #2537 added is that
+    each failing band rides into the receipt as a next-round target, which is
+    disclosure and not a gate.
 
     Args:
       post_analysis: the post-apply VERIFY capture's analysis.
