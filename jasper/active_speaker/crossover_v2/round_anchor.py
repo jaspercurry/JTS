@@ -56,6 +56,7 @@ from jasper.dsp_apply import config_file_sha256, same_config_file
 
 __all__ = [
     "ROUND_ANCHOR_STATE_KEY",
+    "restore_target_diverged",
     "round_anchor_record",
     "running_config_diverged",
 ]
@@ -75,7 +76,9 @@ def round_anchor_record(payload: Mapping[str, Any]) -> dict[str, Any]:
     * ``displaced`` — ``DspApplyState.prior_config_path``, what CamillaDSP
       reported as the running config immediately before the load. That is the
       RUNNING graph at apply moment *by construction*, and it is the only
-      reading nothing out-of-band can have moved yet.
+      reading nothing out-of-band can have moved yet. It is therefore also the
+      round's own answer to "which sound is the previous one", which
+      :func:`restore_target_diverged` holds the restore's target against.
     * ``applied`` — the profile's own ``config.path``/``sha256``, the file this
       apply put live.
 
@@ -174,3 +177,68 @@ def running_config_diverged(
     recorded_sha = str(applied.get("sha256") or "")
     live_sha = config_file_sha256(running_config_path) or ""
     return bool(recorded_sha and live_sha and recorded_sha != live_sha)
+
+
+def restore_target_diverged(
+    anchor: Mapping[str, Any] | None,
+    restore_target_path: str | None,
+    restore_target_sha256: str | None = None,
+) -> bool:
+    """Is the graph a restore would RELOAD something other than what we displaced?
+
+    The other half of the check-then-act, and the half #2553 left open (#2559).
+    :func:`running_config_diverged` asks about the graph being REPLACED — has
+    anything moved it since the apply. This asks about the graph being PUT
+    BACK: the restore's target is resolved from the applied-baseline-profile
+    record, the round's ``displaced`` identity is resolved from the apply
+    transaction, and when those two disagree the record was already stale at
+    apply time and the restore is aimed at a sound this round never displaced.
+
+    It fired for real on 2026-08-15 at 14:47 (jts3). The round applied at
+    14:45:41, displacing ``sound_current.yml``; the delta probe's seam rollback
+    ran ninety-seven seconds later; every precondition passed — including the
+    divergence check, correctly, because nothing HAD moved the running graph in
+    those ninety-seven seconds — and the restore put back
+    ``active_speaker_baseline_candidate_3298558b817e.yml``, run 2's candidate
+    from 00:34, which an operator had reconciled away from at 01:00. The record
+    was stale before the round started, so the round's own stash inherited the
+    staleness and no check downstream of the apply could see it. The third
+    resurrection of that one record.
+
+    ``False`` for every way the question cannot be answered — no target, no
+    anchor, no ``displaced`` half, an anchor that recorded no displaced path —
+    for :func:`running_config_diverged`'s reason stated once for both: "we could
+    not compare" must never be reported as "it moved". A state written before
+    the anchor shipped therefore restores exactly as it did.
+
+    Both facts are compared, and the digests are comparable because there is one
+    hasher: ``displaced.sha256`` is
+    :func:`~jasper.dsp_apply.config_file_sha256` of the displaced file at apply
+    moment, and a profile's ``config.sha256`` is that same function's answer for
+    the file that profile applied — which is what
+    ``restore_applied_baseline_profile``'s own ``restore_target_changed`` check
+    already relies on. So a digest disagreement here means the bytes behind that
+    filename were not the bytes this round displaced.
+
+    Reports; it does not decide. The caller that acts on it
+    (``rollback_anchor_refusal``) refuses, exactly as it does for a divergent
+    running config and for the same reason: this module knows the restore is
+    aimed at the wrong sound and cannot know which sound a household would
+    rather have. Reloading a graph nobody measured — the thing the owner's
+    iterate ruling calls out by name — is the one outcome nobody asked for.
+    """
+
+    target = str(restore_target_path or "")
+    if not target:
+        return False
+    displaced = anchor.get("displaced") if isinstance(anchor, Mapping) else None
+    if not isinstance(displaced, Mapping):
+        return False
+    recorded_path = str(displaced.get("config_path") or "")
+    if not recorded_path:
+        return False
+    if not same_config_file(target, recorded_path):
+        return True
+    recorded_sha = str(displaced.get("sha256") or "")
+    target_sha = str(restore_target_sha256 or "")
+    return bool(recorded_sha and target_sha and recorded_sha != target_sha)

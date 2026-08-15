@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -60,6 +61,10 @@ import pytest
 
 from jasper.active_speaker import baseline_profile as baseline_profile_mod
 from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.delta_probe import (
+    SEAM_DEFERRED_QUIETER_THAN_COMMANDED,
+    VERDICT_MODEL_ERROR,
+)
 from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
 from jasper.active_speaker.crossover_v2 import coordinator
 from jasper.active_speaker.crossover_v2.contracts import AdoptionOutcome
@@ -775,15 +780,22 @@ def test_two_restore_triggers_run_one_undo_and_keep_the_honest_sentence(
     assert first.code == REASON_CORRECTION_MEASURED_REGRESSION
 
     # Trigger 2: the delta probe, on the next capture. On the commanded axis
-    # the bridge really rehydrated, the speaker delivered 2 dB less than the
-    # applied filters asked for across the whole band — a rollback verdict.
+    # the bridge really rehydrated, the speaker delivered 2 dB MORE than the
+    # applied filters asked for across the whole band — a rollback verdict the
+    # seam still acts on immediately.
+    #
+    # The direction is load-bearing since #2559: the same magnitude in the
+    # QUIETER direction is the one class the seam now defers to the adoption
+    # table, so a fixture pointing that way would exercise the deferral rather
+    # than this test's subject (two askers, one Undo). Louder-than-commanded is
+    # the safety class, and it restores exactly as it always did.
     freqs = np.asarray(_COMMANDED_FREQS_HZ, dtype=float)
     predicted = np.zeros_like(freqs)
     second = _consume_verify(
         conductor,
         dataclasses.replace(
             _post_apply_analysis(conductor),
-            verify_tracking_curve=(freqs, predicted - 2.0, predicted),
+            verify_tracking_curve=(freqs, predicted + 2.0, predicted),
         ),
         attempt=2,
     )
@@ -1137,6 +1149,103 @@ def test_the_round_receipt_lands_in_the_bundle_fingerprinted_and_readable(
     assert identity["round_id"] == _MINTED_RELAY_SESSION_ID
     assert identity["receipt_fingerprint"] == receipt["fingerprint"]
     assert identity["artifact_fingerprint"]
+
+
+def test_a_quieter_only_shape_miss_reaches_the_table_instead_of_the_seam(
+    monkeypatch, real_bundle, caplog,
+):
+    """#2559 piece 2, end to end: the seam defers and the round grades.
+
+    2026-08-15 14:47 (jts3): a ``model_error`` whose realized deviation pointed
+    entirely quieter — a −3.32 dB dip at 1330 Hz, nothing realized louder than
+    declared anywhere, tracking passed, 2.399 dB of measured improvement — was
+    reverted by the seam. The seam PREEMPTS the adoption table (that round
+    ended ``attempt_decision decision=ungraded``), so ``decide_adoption`` never
+    saw the evidence at all.
+
+    Three things have to hold together, and none implies another: no Undo runs,
+    the capture is still accepted so the round is graded, and the deferral is on
+    the record. A seam that silently declined to restore would be the same
+    dishonesty in the other direction.
+    """
+    import numpy as np
+
+    _seed_round_state()
+    conductor, attempts = _restoring_stage_2(monkeypatch)
+    _install_entry_baseline(conductor, scale=1.5)
+    _install_applied_graph(monkeypatch, boosts=False)
+    caplog.set_level(logging.WARNING, logger=flow.logger.name)
+
+    freqs = np.asarray(_COMMANDED_FREQS_HZ, dtype=float)
+    predicted = np.zeros_like(freqs)
+    verdict = _consume_verify(
+        conductor,
+        dataclasses.replace(
+            _post_apply_analysis(conductor),
+            verify_tracking_curve=(freqs, predicted - 2.0, predicted),
+        ),
+    )
+
+    assert conductor.delta_probe is not None
+    # Still a rollback verdict by the probe's own reckoning — the deferral is a
+    # decision about what to DO with it, not a demotion of the measurement.
+    assert conductor.delta_probe.verdict == VERDICT_MODEL_ERROR
+    assert conductor.delta_probe.rollback is True
+    assert conductor.delta_probe.realized_louder_than_commanded is False
+
+    assert attempts == [], "no Undo may run for a quieter-only shape miss"
+    assert verdict.accepted is True
+
+    line = next(
+        record.getMessage() for record in caplog.records
+        if "event=correction.crossover_v2_delta_probe_seam_deferred " in
+        record.getMessage()
+    )
+    assert f"reason={SEAM_DEFERRED_QUIETER_THAN_COMMANDED}" in line
+    assert "max_signed_error_db=-2.0" in line
+
+    receipt = _round_receipt_json(real_bundle, _MINTED_RELAY_SESSION_ID)
+    safety = receipt["round_axes"]["safety"]
+    assert safety["evidence"]["seam_deferred"] == (
+        SEAM_DEFERRED_QUIETER_THAN_COMMANDED
+    )
+    assert safety["evidence"]["realized_louder_than_commanded"] is False
+    # …and the table it was handed to actually ran, which is the whole point of
+    # deferring rather than restoring.
+    assert receipt["adoption"]["outcome"] in {
+        AdoptionOutcome.KEEP.value, AdoptionOutcome.KEEP_FOR_ITERATION.value,
+    }
+
+
+def test_a_louder_shape_miss_still_restores_at_the_seam(monkeypatch, real_bundle):
+    """The control, at the same place: the narrowing is one direction wide.
+
+    Same harness, same magnitude, opposite sign. The seam restores, the session
+    ends on its own verdict, and no round receipt is written — the shipped
+    behaviour for every seam rollback, unchanged.
+    """
+    import numpy as np
+
+    _seed_round_state()
+    conductor, attempts = _restoring_stage_2(monkeypatch)
+    _install_entry_baseline(conductor, scale=1.5)
+    _install_applied_graph(monkeypatch, boosts=False)
+
+    freqs = np.asarray(_COMMANDED_FREQS_HZ, dtype=float)
+    predicted = np.zeros_like(freqs)
+    verdict = _consume_verify(
+        conductor,
+        dataclasses.replace(
+            _post_apply_analysis(conductor),
+            verify_tracking_curve=(freqs, predicted + 2.0, predicted),
+        ),
+    )
+
+    assert conductor.delta_probe is not None
+    assert conductor.delta_probe.verdict == VERDICT_MODEL_ERROR
+    assert conductor.delta_probe.realized_louder_than_commanded is True
+    assert attempts == [1]
+    assert verdict.accepted is False
 
 
 def test_the_receipt_records_what_the_round_DID_not_only_what_it_decided(

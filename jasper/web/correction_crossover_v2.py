@@ -88,6 +88,7 @@ from jasper.active_speaker.crossover_v2.journey import (
 # and this module keeps only the wiring (write it on apply, read it on restore).
 from jasper.active_speaker.crossover_v2.round_anchor import (
     ROUND_ANCHOR_STATE_KEY,
+    restore_target_diverged,
     round_anchor_record,
     running_config_diverged,
 )
@@ -8399,15 +8400,20 @@ def _restore_sound_declaration(record: Any) -> tuple[str, str]:
     return DECLARATION_RESTORED, ""
 
 
-#: Why a rollback anchor cannot be restored from, as four named codes. On the
+#: Why a rollback anchor cannot be restored from, as five named codes. On the
 #: journal and the round receipt, so "we could not put the old sound back" says
-#: WHICH of the four it was without re-deriving it from a sentence.
+#: WHICH of the five it was without re-deriving it from a sentence.
 ANCHOR_NOT_APPLIED = "not_applied"
 ANCHOR_NO_PRE_APPLY_PROFILE = "no_pre_apply_profile"
 ANCHOR_TOPOLOGY_CHANGED = "topology_changed"
 #: The speaker is no longer playing the graph this round applied — something
 #: changed the running config out of band since the apply (#2537).
 ANCHOR_RUNNING_CONFIG_DIVERGED = "running_config_diverged"
+#: The stashed "previous sound" is not the graph this round displaced — the
+#: applied-baseline-profile record it was frozen from was already stale when the
+#: apply read it, so restoring it would put back a sound this round never
+#: replaced (#2559).
+ANCHOR_STASH_NOT_DISPLACED = "stash_not_displaced"
 
 
 @dataclass(frozen=True)
@@ -8432,7 +8438,7 @@ def rollback_anchor_refusal(
     preconditions, and a round could have promised a restore that Undo then
     refused — the exact drift #2291 exists to close.
 
-    The four are, in the order Undo needs them:
+    The five are, in the order Undo needs them:
 
     * nothing is applied, so there is no apply to reverse;
     * nothing was stashed — a genuine first-ever apply on this speaker;
@@ -8441,16 +8447,38 @@ def rollback_anchor_refusal(
       predates the fingerprint carries none, cannot be compared, and is
       allowed through to the restore path, which validates the config bytes
       itself;
+    * the stash does not name the graph this round DISPLACED (#2559);
     * the speaker is no longer playing the graph this round APPLIED (#2537).
 
-    **Why the fourth exists.** On 2026-08-15 (jts3 cycle 4) an operator
-    reconciled the running config out of band at 01:00; at 07:30 a round's
-    restore fired, faithfully put back the profile record's "previous sound" —
-    run 2's candidate, applied six and a half hours earlier — and reported
-    success. Every existing check passed, because every existing check asks
-    about the ANCHOR and none of them asks whether the graph being replaced is
+    **Why the fourth and fifth exist.** On 2026-08-15 (jts3 cycle 4) an
+    operator reconciled the running config out of band at 01:00; at 07:30 a
+    round's restore fired, faithfully put back the profile record's "previous
+    sound" — run 2's candidate, applied six and a half hours earlier — and
+    reported success. Every check that existed then passed, because every one of
+    them asks about the ANCHOR and none asks whether the graph being replaced is
     the one this round put there. A restore is a check-then-act on a shared
-    resource; this is its check.
+    resource; the fifth check is its check.
+
+    The FOURTH is the other half of the same shape, and it took a second live
+    firing to find (#2559). At 14:47 the same day, ninety-seven seconds after an
+    apply, the fifth check passed — correctly, nothing had moved the running
+    graph in ninety-seven seconds — and the restore resurrected the same stale
+    candidate anyway. The staleness was not downstream of the apply; it was
+    already inside the stash, because ``pre_apply_profile`` is frozen from the
+    applied-baseline-profile record and that record had been stale since 00:34.
+    So the two checks ask about different moments and both are needed: the
+    fourth asks whether the stash was right when it was TAKEN, the fifth whether
+    it is still right now.
+
+    **The fourth is where a stale record stops being able to hurt a household,
+    and it adds no writer.** #2537 named three options for the record; this is
+    still option (b) — validate at the READER — extended to the one reader that
+    resolves a restore TARGET rather than merely a precondition. The record's
+    sole writer is still ``persist_applied_baseline_profile`` on the apply path,
+    ``reconcile-current-dsp`` stays ignorant of the active-speaker profile
+    system, and no operator repair is required for correctness: a stale record
+    now refuses a restore instead of aiming one, and the next apply overwrites
+    it as it always did.
 
     It refuses rather than re-anchors, and that is the honest half: this
     function knows the running graph is not the one the round applied, and it
@@ -8458,28 +8486,37 @@ def rollback_anchor_refusal(
     config an operator deliberately reconciled to is the one outcome nobody
     asked for.
 
-    **The fourth check needs a LIVE reading, which is why it is a parameter and
+    **The fifth check needs a LIVE reading, which is why it is a parameter and
     why ``None`` skips it.** ``running_config_path`` is what CamillaDSP reports
     right now — an async round trip this pure function must not make, and one
     the ``rollback_available`` capability probe deliberately does not make
     either: a camilla hiccup would flip that probe to "no anchor" and route an
     otherwise-fine round to ``recovery_required``. So the probe answers the
-    three STATIC preconditions and :func:`handle_v2_restore` adds the live one
+    four STATIC preconditions and :func:`handle_v2_restore` adds the live one
     at the moment of action, which is where a check-then-act window belongs.
     The two can therefore disagree, and the disagreement is bounded and loud: a
     divergence found at the endpoint returns "not restored", which re-grades the
     round with ``restore_failed=True`` into ``recovery_required``. That is the
     operator path, not a silent difference of opinion.
 
+    **The fourth is static, so the probe DOES answer it, and that is the point.**
+    Stash-versus-displaced needs no live reading — both facts were written into
+    the durable state by the same apply — so a round learns before it decides
+    that it has no restorable anchor, and routes a would-be restore to
+    ``recovery_required`` instead of promising one the seam then refuses. That
+    is #2291's own drift argument applied to the new check rather than an
+    exception carved out of it.
+
     A state with no ``round_anchor`` — applied before #2537 shipped, or by an
-    apply that could not name either path — cannot be compared and is allowed
-    through, exactly as a stash predating the topology fingerprint is.
+    apply that could not name either path — cannot be compared by either anchor
+    check and is allowed through, exactly as a stash predating the topology
+    fingerprint is.
 
     Pure and side-effect-free by design: it is called on the read path to
     answer a capability question, so it must not log, mutate, or apply
-    anything. :func:`handle_v2_restore` owns the journal lines for the topology
-    and divergence cases, because those fire when a household actually presses
-    the button.
+    anything. :func:`handle_v2_restore` owns the journal lines for the
+    topology, stale-stash and divergence cases, because those fire when a
+    household actually presses the button.
     """
     from jasper.active_speaker.baseline_profile import topology_config_fingerprint
     from jasper.output_topology import load_output_topology
@@ -8516,6 +8553,20 @@ def rollback_anchor_refusal(
                 "crossover was applied, so the previous sound can't be safely "
                 "restored — re-measure the crossover instead",
             )
+    stashed_config = pre_apply_profile.get("config")
+    if restore_target_diverged(
+        state.get(ROUND_ANCHOR_STATE_KEY),
+        str(stashed_config.get("path") or "")
+        if isinstance(stashed_config, Mapping) else "",
+        str(stashed_config.get("sha256") or "")
+        if isinstance(stashed_config, Mapping) else "",
+    ):
+        return RollbackAnchorRefusal(
+            ANCHOR_STASH_NOT_DISPLACED,
+            "JTS can't tell which sound to put back: the sound it has on "
+            "record as the previous one isn't the one this tuning replaced — "
+            "check the speaker's current sound, then re-measure",
+        )
     if running_config_diverged(
         state.get(ROUND_ANCHOR_STATE_KEY), running_config_path
     ):
@@ -8570,7 +8621,7 @@ def handle_v2_restore(
 
     state = load_v2_state()
     cam = camilla_factory()
-    # The LIVE half of the fourth precondition (#2537), read here and only
+    # The LIVE half of the fifth precondition (#2537), read here and only
     # here: what is CamillaDSP actually playing right now? Guarded to ``None``
     # — "could not compare" — because a camilla that cannot answer is a camilla
     # the restore below is about to fail against anyway, and refusing on its
@@ -8579,12 +8630,14 @@ def handle_v2_restore(
         running_config_path = run_async(cam.get_config_file_path(best_effort=True))
     except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
         running_config_path = None
-    # The four preconditions live in ``rollback_anchor_refusal`` (#2291, #2537),
-    # so this endpoint and the round's ``rollback_available`` seam cannot come
-    # to different conclusions about the same state. Item 2 (#1605)'s topology
-    # check is one of them, and its journal line stays HERE: it fires when a
-    # household actually pressed Undo, not on every capability probe. So does
-    # the divergence line, for the same reason and one more — the seam does not
+    # The five preconditions live in ``rollback_anchor_refusal`` (#2291, #2537,
+    # #2559), so this endpoint and the round's ``rollback_available`` seam
+    # cannot come to different conclusions about the same state. Item 2
+    # (#1605)'s topology check is one of them, and its journal line stays HERE:
+    # it fires when a household actually pressed Undo, not on every capability
+    # probe. So does the stale-stash line, for that same reason alone — the
+    # seam DOES answer that precondition, it just does not journal it. And so
+    # does the divergence line, for that reason and one more: the seam does not
     # take the live reading at all.
     refusal = rollback_anchor_refusal(
         state, running_config_path=str(running_config_path or "") or None,
@@ -8608,8 +8661,27 @@ def handle_v2_restore(
                     .get("config_path") or ""
                 ),
             )
+        elif refusal.code == ANCHOR_STASH_NOT_DISPLACED:
+            # Both paths, because the whole finding is that they disagree — and
+            # a reader diagnosing this needs to see WHICH stale record the
+            # stash was frozen from, not just that one was (#2559).
+            log_event(
+                logger,
+                "correction.crossover_v2_restore_stash_not_displaced",
+                level=logging.ERROR,
+                stash_config_path=str(
+                    ((state or {}).get("pre_apply_profile") or {})
+                    .get("config", {})
+                    .get("path") or ""
+                ),
+                displaced_config_path=str(
+                    ((state or {}).get(ROUND_ANCHOR_STATE_KEY) or {})
+                    .get("displaced", {})
+                    .get("config_path") or ""
+                ),
+            )
         raise CrossoverV2Refused(refusal.message)
-    # No refusal means the anchor cleared all four checks, so the state is
+    # No refusal means the anchor cleared all five checks, so the state is
     # present and ``pre_apply_profile`` is a Mapping — indexed rather than
     # re-tested, because a second test here would be a fifth transcription of
     # the rule this function was extracted to own.

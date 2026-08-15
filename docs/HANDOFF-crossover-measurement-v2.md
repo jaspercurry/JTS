@@ -444,7 +444,7 @@ the module, not a second copy here.
 | [`crossover_v2/proposal.py`](../jasper/active_speaker/crossover_v2/proposal.py) | One committed candidate gathered into the fingerprinted `InterventionProposal` the round receipt names. Computes nothing; refuses rather than raising. |
 | [`crossover_v2/verification.py`](../jasper/active_speaker/crossover_v2/verification.py) | The four verification verdicts, the three adoption axes they compose into, and the five-row table. |
 | [`crossover_v2/round_evidence.py`](../jasper/active_speaker/crossover_v2/round_evidence.py) | The two measurements one round compares, and the margin that makes a difference a change. |
-| [`crossover_v2/round_anchor.py`](../jasper/active_speaker/crossover_v2/round_anchor.py) | What an apply displaced, what it put live, and whether the running graph is still that. |
+| [`crossover_v2/round_anchor.py`](../jasper/active_speaker/crossover_v2/round_anchor.py) | What an apply displaced, what it put live, whether the running graph is still that, and whether a restore is aimed at what the round displaced. |
 | [`crossover_v2/coordinator.py`](../jasper/active_speaker/crossover_v2/coordinator.py) | The round's tail: grade, act on the adoption table, restore, bank the receipt. |
 | [`crossover_v2/attempt_grading.py`](../jasper/active_speaker/crossover_v2/attempt_grading.py) | Whether a VERIFY capture is a new tuning attempt, and how it grades against the cross-session ledger. |
 | [`fc_selector.py`](../jasper/active_speaker/fc_selector.py) | R17's Fc selector as pure functions over small arrays. No session state, no I/O, no import of the flow. |
@@ -2171,6 +2171,26 @@ measurement is not evidence. The verdict's evidence carries `probe_graded` so a
 reader can tell "safe because nothing was found" from "safe because nothing
 looked."
 
+**The same direction rule reaches the SHAPE axis (#2559).** The delta probe's
+own seam-bound rollback preempts this table — a seam refusal ends the session
+before `decide_adoption` runs at all — so on 2026-08-15 a `model_error` whose
+realized deviation pointed entirely quieter (a −3.32 dB dip at 1330 Hz, nothing
+realized louder than commanded anywhere, tracking passed, 2.399 dB of measured
+improvement) came off the speaker without the table ever seeing it. Owner ruling
+the same day: quieter-direction `model_error` defers to the table.
+`delta_probe.seam_rollback_deferral` owns that one class; everything else the
+seam restored on, it still restores on — `level_dependent_shortfall`,
+`spatially_costly`, any graded bin realized louder than commanded past
+tolerance (unstructured, so one bin withholds the deferral),
+`boost_over_declared_bound`, and every ungradeable map, which never reached a
+seam rollback in the first place. The measurement behind it is
+`DeltaProbeMap.realized_louder_than_commanded` / `max_signed_error_db`, taken on
+the RAW realized curve for `boost_overshoot`'s reason: this asks how much energy
+reached the driver, not whether the shape is right. A deferral is never silent —
+it journals `event=correction.crossover_v2_delta_probe_seam_deferred` (WARNING)
+and rides the safety axis's evidence as `seam_deferred`, so the receipt records
+the restore that did **not** happen.
+
 **Ordering:** a failed restore outranks everything; then safety; then trust;
 then quality. Safety before trust because both restore, so the order only
 decides which name the receipt carries — and a clipped capture is both, where
@@ -2206,22 +2226,43 @@ running graph at apply moment, by construction). Round N+1's `displaced` is
 therefore exactly round N's `applied`, which is the chain a chained series
 needs.
 
-`rollback_anchor_refusal` gained a fourth precondition,
-`ANCHOR_RUNNING_CONFIG_DIVERGED`: the graph about to be REPLACED must still be
-the one this round applied, by path and by digest. On a mismatch it **refuses**
-rather than re-anchoring — the flow knows the running graph is not the round's
-and cannot know what a household wants done about that, and stomping a config an
-operator deliberately reconciled to is the one outcome nobody asked for. Journal:
-`event=correction.crossover_v2_restore_running_config_diverged` (ERROR).
+`rollback_anchor_refusal` has **five** preconditions. Two of them are anchor
+checks, and they ask about two different moments:
 
-The check needs a LIVE reading, so it is a parameter: `handle_v2_restore` takes
-it from CamillaDSP at the moment of action, and the `rollback_available`
+| code | asks | when it is answerable |
+|---|---|---|
+| `ANCHOR_STASH_NOT_DISPLACED` (#2559) | was the stash right when it was TAKEN — does `pre_apply_profile`'s config name the graph this round displaced? | static; both facts came from the same apply |
+| `ANCHOR_RUNNING_CONFIG_DIVERGED` (#2537) | is it still right NOW — is the graph about to be REPLACED still the one this round applied? | needs a live CamillaDSP reading |
+
+Both compare by path **and** by digest, and both **refuse** rather than
+re-anchoring — the flow knows the restore is aimed at the wrong sound and cannot
+know what a household wants done about that, and stomping a config an operator
+deliberately reconciled to is the one outcome nobody asked for. Journal:
+`event=correction.crossover_v2_restore_stash_not_displaced` and
+`…_restore_running_config_diverged` (both ERROR); the first names both paths,
+because the whole finding is that they disagree.
+
+**Why the second was not enough.** On 2026-08-15 at 14:47 the same speaker
+resurrected the same stale candidate a third time, ninety-seven seconds after an
+apply. The divergence check passed, correctly — nothing had moved the running
+graph in ninety-seven seconds. The staleness was already INSIDE the stash,
+because `pre_apply_profile` is frozen from the applied-baseline-profile record
+and that record had been stale since 00:34.
+
+The live check is a parameter because it needs a live reading: `handle_v2_restore`
+takes it from CamillaDSP at the moment of action, and the `rollback_available`
 capability probe deliberately does not (a camilla hiccup would flip a whole
 round to `recovery_required`). The two can disagree, and the disagreement is
 bounded and loud: a divergence found at the endpoint returns "not restored",
-which re-grades the round into `recovery_required`. **Every way the question
-cannot be answered — no live reading, no anchor, a state written before #2537 —
-reports "cannot compare", never "it moved".**
+which re-grades the round into `recovery_required`. The stash check is static,
+so the probe DOES answer it and a round learns before it decides that it has no
+restorable anchor. **Every way either question cannot be answered — no live
+reading, no anchor, a state written before #2537 — reports "cannot compare",
+never "it moved".**
+
+A stale applied-profile record therefore needs **no operator repair for
+correctness**: it can no longer aim a restore, and the next apply overwrites it
+as it always did.
 
 **Read-side provenance.** `baseline_profile.applied_profile_displacement`
 compares the applied record's `config.path` against the running CamillaDSP
