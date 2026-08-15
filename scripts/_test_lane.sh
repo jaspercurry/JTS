@@ -96,18 +96,26 @@ resolve_lane_tool() {
 # lane can fix that at the caller's shell, but each CAN make the failure
 # unmissable in the text itself: the functions below let a lane accumulate a
 # real passed-test count across however many pytest invocations it makes, and
-# print a single `==> <lane>: N passed` / `==> <lane>: FAILED` line as the
-# provably LAST line of stdout, via an EXIT trap that fires on every exit path
-# -- normal completion, an explicit `exit`, or `set -e` aborting mid-script
-# (including inside resolve_lane_tool's FATAL block above). A truncating pipe
-# then always shows the verdict, never just whatever happened to be running
-# when the transcript got cut.
+# print a single `==> <lane>: ...` line as the provably LAST line of stdout,
+# via an EXIT trap that fires on every exit path -- normal completion, an
+# explicit `exit`, or `set -e` aborting mid-script (including inside
+# resolve_lane_tool's FATAL block above). A truncating pipe then always shows
+# the verdict, never just whatever happened to be running when the transcript
+# got cut. lane_emit_verdict below owns the set of shapes that line can take.
 #
 # N counts passing EXECUTIONS across phases, not distinct tests: test-fast
 # can run the same node id more than once (a changed test file matches both
 # the changed-file-selection phase and the always-on guards), and each
 # passing run adds to N. An honest count of what actually ran, not a claim
 # about how many distinct tests exist.
+
+# Counts pytest phases whose captured output actually carried a recognisable
+# `-q` summary line. Owned entirely by this file: incremented in
+# lane_pipe_pytest, read in lane_emit_verdict, and never touched by a lane.
+# It is what stops `N passed` from being printed for a run in which nothing
+# pytest-shaped was ever parsed -- `0 passed` reads like "nothing to run",
+# which is the one thing a verdict line must never say by accident.
+_lane_summary_seen=0
 
 # lane_pipe_pytest <output-file> <command...>
 #
@@ -130,11 +138,30 @@ resolve_lane_tool() {
 # `tee` produced a BrokenPipeError in the writing process, not a silent
 # pass). A failed tee SHOULD read FAILED, and in the realistic failure paths
 # it does, via that cascade rather than via [1].
+#
+# This is also where `_lane_summary_seen` is counted, and it has to be: this
+# function runs in the CURRENT shell, so it can set a global, whereas
+# lane_extract_passed_count cannot -- every one of its call sites is a
+# command substitution, i.e. a subshell whose variable writes die with it.
 lane_pipe_pytest() {
   local output_file="$1"
   shift
   PYTHONUNBUFFERED=1 "$@" | tee "${output_file}"
-  return "${PIPESTATUS[0]}"
+  # Read before any other command: a simple command updates PIPESTATUS too,
+  # so the pipeline's own statuses are readable only right here.
+  local status="${PIPESTATUS[0]}"
+  # The real pytest `-q` summary shapes -- a count plus an outcome word, or
+  # the wordless "no tests ran". Deliberately broad: the question this
+  # answers is "did a pytest actually report back?", not "did it pass",
+  # which the exit status already settled. Under `set -e` + pipefail a
+  # failing phase aborts the shell at the pipeline above and never reaches
+  # here; that path prints FAILED and never consults this counter.
+  if grep -Eq \
+    '[0-9]+ (passed|failed|errors?|skipped|xfailed|xpassed|deselected|warnings?)|no tests ran' \
+    "${output_file}" 2>/dev/null; then
+    _lane_summary_seen=$(( ${_lane_summary_seen:-0} + 1 ))
+  fi
+  return "${status}"
 }
 
 # lane_extract_passed_count <output-file>
@@ -166,12 +193,63 @@ lane_extract_passed_count() {
 # portability floor) has no namerefs, so there is no portable way to pass a
 # variable BY REFERENCE into a function, and each lane script has only one
 # running total to report.
+#
+# The passed status is necessary but NOT sufficient, which is why the two
+# globals below are consulted as well. Observed 2026-08-15: a `test-merge`
+# killed by SIGTERM at ~23% printed `==> test-merge: 0 passed` -- the
+# SUCCESS shape -- because bash's terminating-signal handler still runs the
+# EXIT trap, and the `$?` it handed that trap was 0, not 143. The lane's own
+# process status was honest (143); only the printed text lied, and "0
+# passed" reads as "nothing to run".
+#
+# What bash does here is PER-SIGNAL, not one rule. Measured on 3.2.57, this
+# file's portability floor:
+#
+#   SIGTERM, SIGHUP     the trap runs and `$?` is a STALE ZERO. The
+#                       incident, and a second unreported instance of it.
+#                       Only the `_lane_finished` marker can catch this --
+#                       a `>= 128` test cannot, because the status is 0.
+#   SIGINT              the trap runs with an HONEST 130. This is what the
+#                       `>= 128` branch is for, and why it is tested FIRST:
+#                       it is the one path that can name the signal.
+#   SIGQUIT             no sentinel at all -- bash never runs the EXIT trap.
+#                       Structural and deterministic (3/3 group-wide AND
+#                       bash-only), identical before and after this fix. An
+#                       ABSENT verdict, which is not a false one.
+#
+# A second signal arriving DURING the trap is a race, not a category of its
+# own, and it is NOT exempt from this fix. A second SIGTERM landing inside
+# the trap's own execution window -- roughly the first few milliseconds --
+# loses the line. From +10 ms on, the trap has already printed and the
+# ordinary rules apply: pre-fix `0 passed`, post-fix `INTERRUPTED -- NO
+# VERDICT`, 10/10 at each of +10, +30, +100 and +300 ms. The window's edge
+# is fuzzy rather than a fixed cell -- +1 ms lost the line 10/10, while +0
+# and +3 ms still printed it 9 times in 10. Regression-test the
+# double-signal path; do not assume it is unchanged.
+#
+# So the success shape is gated on a POSITIVE "the lane reached its end"
+# marker, with the signal test ahead of it for the honest-status case.
+#
+# Fail-closed by construction: a future lane that forgets to set
+# `_lane_finished` prints INTERRUPTED, never a false pass. `>= 128` is
+# bash's own encoding of child signal death, so a program that deliberately
+# exits e.g. 143 is reported as a signal too -- an acceptable ambiguity,
+# since both readings are "not a verdict" and neither is a success shape.
 lane_emit_verdict() {
   local lane="$1"
   local status="$2"
-  if [[ "${status}" -eq 0 ]]; then
-    printf '==> %s: %s passed\n' "${lane}" "${_lane_passed_total:-0}"
-  else
+  if [[ "${status}" -ge 128 ]]; then
+    printf '==> %s: INTERRUPTED (signal %s) -- NO VERDICT\n' \
+      "${lane}" "$(( status - 128 ))"
+  elif [[ "${status}" -ne 0 ]]; then
     printf '==> %s: FAILED\n' "${lane}"
+  elif [[ "${_lane_finished:-false}" != true ]]; then
+    # The observed case. The zero is untrustworthy, so there is no signal
+    # number to report and none is invented.
+    printf '==> %s: INTERRUPTED -- NO VERDICT\n' "${lane}"
+  elif [[ "${_lane_summary_seen:-0}" -eq 0 ]]; then
+    printf '==> %s: NO VERDICT (no pytest summary parsed)\n' "${lane}"
+  else
+    printf '==> %s: %s passed\n' "${lane}" "${_lane_passed_total:-0}"
   fi
 }
