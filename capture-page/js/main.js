@@ -1589,14 +1589,17 @@ const RELAY_BEGIN_RECONNECT_BACKOFF_MS = [2000, 4000, 8000];
 // the pre-arm retry to this comment rather than restating it.
 //
 // What one retry-eligible attempt can cost:
-//   * up to RELAY_CONTROL_TIMEOUT_MS (3 s) for the begin post to abort; plus
-//   * up to the FULL admission window if the post lands and a later poll is
-//     what blips — `waitForCaptureAuthorized` opens a fresh 20 s deadline per
-//     call and rethrows a connectivity abort from any poll inside it.
-//   => ~23 s per attempt, not the ~3 s a post-only reading suggests.
+//   * up to RELAY_CONTROL_TIMEOUT_MS (3 s) for the begin post to abort; PLUS
+//   * ~23 s in the admission wait if the post lands and a later poll is what
+//     blips. `waitForCaptureAuthorized` opens a fresh 20 s deadline per call
+//     and rethrows a connectivity abort from any poll inside it — and its
+//     deadline check runs BEFORE each poll, so the final poll starts just
+//     inside 20 s and then carries its own 3 s timeout on top (measured 22.9 s
+//     at the shipped constants). The 20 s deadline is not the wait's ceiling.
+//   => ~26 s per attempt, not the ~3 s a post-only reading suggests.
 //
-// So the rung count alone bounds this at 4 × 23 s + 14 s of backoff ≈ 106 s,
-// which is the whole of the Pi's 120 s `awaiting_arm` budget
+// So the rung count alone bounds this at 4 × 26 s + 14 s of backoff ≈ 118 s,
+// which is effectively the whole of the Pi's 120 s `awaiting_arm` budget
 // (jasper/capture_relay/session.py's DEFAULT_TIMEOUT_S). That budget is set
 // ONCE at admission and refreshed by nothing the page does here — the re-posts
 // this ladder sends are the runner's "nothing to do" no-op branch, which
@@ -1606,13 +1609,16 @@ const RELAY_BEGIN_RECONNECT_BACKOFF_MS = [2000, 4000, 8000];
 //
 // 30 s of wall clock, checked before each re-send (and before its backoff, so
 // a rung that cannot fit is never started), bounds the whole exchange at
-// budget + one trailing attempt ≈ 30 + 23 = ~53 s. The manual affordance
-// therefore always appears with ≳67 s of the Pi's window intact — ample for a
+// budget + one trailing attempt ≈ 30 + 26 = ~56 s. Note the tail sits OUTSIDE
+// the budget by construction: the budget gates when the last re-send may
+// START, and that attempt then runs its own full length. The manual affordance
+// therefore always appears with ≳64 s of the Pi's window intact — ample for a
 // tap to re-post, take its ambient window, and arm. A genuinely transient blip
-// still gets every rung: even when every attempt burns the full 3 s post abort
-// the fourth starts at ~23 s (3+2, 3+4, 3+8), inside the budget. Only SLOW
-// attempts are cut short, which is exactly the case where spending more would
-// cost the household the fallback it is being cut short to preserve.
+// still gets every rung: in the fast-fail family, where each attempt ends on
+// its 3 s post abort and never reaches the admission wait, the fourth starts
+// at ~23 s (3+2, 3+4, 3+8) — inside the budget. Only SLOW attempts are cut
+// short, which is exactly the case where spending more would cost the
+// household the fallback it is being cut short to preserve.
 const RELAY_BEGIN_RECONNECT_BUDGET_MS = 30000;
 
 // What the phone says while it is quietly re-trying the begin exchange. The

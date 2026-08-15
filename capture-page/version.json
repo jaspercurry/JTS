@@ -2,5 +2,5 @@
   "schema_version": 1,
   "capture_protocol_version": 3,
   "supported_capture_protocol_versions": [3],
-  "capture_page_build": "20260815.2"
+  "capture_page_build": "20260815.3"
 }
