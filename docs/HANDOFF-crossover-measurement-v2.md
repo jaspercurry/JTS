@@ -2742,7 +2742,7 @@ unready setup.
 | `driver_levels_disagree` | confirm seam | 0 (hard stop) | **TWO gates share this code** — the household's remedy is identical, so one sentence serves both, and `event=` separates them in the journal (`_assert_accountable` runs the frame gate first, as the more specific diagnosis). (a) `event=…_level_frame_refused` — linearization-integrity PR-L5's shared level FRAME: the two measured estimates of where the drivers sit relative to each other (`solve_branch_trims`' mirrored ±1-octave power average and the fit's `driver_core_level_db` median) disagree by more than `LEVEL_FRAME_AGREEMENT_TOLERANCE_DB`, so no trim derived from them can be trusted. Since #1929 that median is read over each driver's **radiating band** — declared `measurement_band_hz` spans routinely reach past Fc, and a median that counts a driver's own crossover stopband refused healthy speakers (2026-07-30 field session, 3.395 dB). **Since the #1866 frame-gate ruling (2026-07-30) the frame gate no longer refuses on a disagreement alone**: it consults gate (b)'s realized-level verdict for the same candidate, and when THAT passes it banks the disagreement as an M7 finding (`event=…_level_frame_finding`, WARNING, carrying both estimators' per-role levels, both bands, and the realized difference; persisted to the bundle as `findings_measure.json`) and the session **proceeds — the same tune, not refused**. Read "proceeds" precisely: it commits the anchor the fit always computed, which is `giveback + system − core` (the trim term cancels), so the committed inter-driver placement is set by the CORE-MEDIAN frame — the *disputed* estimator — and gate (b) grades the OUTCOME rather than picking a winner between the two frames. The ruling's own wording ("proceeds on the near-Fc anchor (the trim solve)") describes the opposite; the corrected mechanism above is the **ratified** one (owner confirmed 2026-07-30, #1866 comment 5137494519). `event=…_level_frame_refused` therefore now means both instruments failed — or, on a path that is fail-closed and today unreachable, that no realized verdict existed at all. Why: #1929 removed a structural bias from one estimator but not the residual, which scales with ordinary driver shape (a pair identical by construction reads 0.910 dB apart; ~1.33 dB per dB/octave of woofer passband tilt on top), so the gate was refusing healthy speakers whose OUTPUT every other instrument graded fine. (b) `event=…_level_match_refused` — PR-L4 item 1: after the committed trim the two drivers' *realized* levels — read on their own mirrored ±1-octave half-bands about Fc, not across each whole passband — sit further than `REALIZED_LEVEL_MATCH_TOLERANCE_DB` apart, so a flat sum is impossible whatever the per-driver fit achieved. Both refuse BEFORE the apply thread starts, so the speaker is untouched |
 | `correction_not_an_improvement` | confirm seam | 0 (hard stop) | PR-L4 item 2: the PREDICTED post-apply response fails the flat spec and is not better than the measured pre-apply state by `PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB`. Also refused before the apply. **Since rung P3 / R10b both of its terms carry the committed residual delay, which does not cancel between them and narrows the margin as the residual grows** — see "VERIFY compares the applied response with the summed model at the committed delay" below for the measured curve and why the onset is capture-specific |
 | `correction_model_error` | VERIFY / post-apply group | 0 (hard stop) | linearization-integrity PR-L5: the delta probe's realized-vs-commanded map does not match in SHAPE — the emitted filters are not doing what the fit's model of them says. Catches the PR-L2 shelf-Q class permanently. **Fires AFTER the apply**, so it rolls the correction back first and then names itself. **Since #2521 it fires only on an exceedance that survives the capture's trusted band AND the removal of the fitted frame** — one that does not survive is the non-rollback `frame_mismatch` finding instead (see "The delta probe verifies the apply" below) |
-| `correction_level_shortfall` | VERIFY / post-apply group | 0 (hard stop) | PR-L5: the shape landed but the depth did not — realized/commanded scale below `DELTA_PROBE_SHORTFALL_GAIN_CEILING` on a commanded LIFT. A driver-compression diagnostic. Rolled back |
+| `correction_level_shortfall` | VERIFY / post-apply group | 0 (hard stop) | PR-L5: the shape landed but the depth did not — realized/commanded scale below `DELTA_PROBE_SHORTFALL_GAIN_CEILING` on a commanded LIFT. A driver-compression diagnostic. Rolled back. **Since #2521 it sits behind the same frame gate `correction_model_error` does** — a real but in-tolerance depth shortfall riding a room tilt demotes to `frame_mismatch` rather than reverting a tuning on evidence that is entirely instrument |
 | `correction_spatially_costly` | post-apply group | 0 (hard stop) | PR-L5: the map matched at the mark and the cross-position level spread WIDENED past `DELTA_PROBE_SPREAD_WIDENING_TOLERANCE_DB` — the correction fitted one position's interference rather than the speaker. Placement, not filters. Rolled back |
 | `correction_rollback_failed` | VERIFY / post-apply group | 0 (hard stop) | PR-L5: the probe found one of the three defects above AND the automatic rollback could not run (no binding, a refused restore, or a seam that raised). The correction is therefore **still applied**, and this row exists so the copy says so instead of promising a restore that did not happen. Names Undo as the manual action |
 
@@ -2865,6 +2865,21 @@ exceedance from 0.575 octaves to zero (pinned by
 `test_fitting_the_frame_over_the_graded_bins_would_delete_the_keystone`). Too
 few quiet bins means no frame is measured, and then nothing is demoted.
 
+**The gate sits ahead of BOTH rollback doors**, and that is load-bearing rather
+than tidy. `level_dependent_shortfall` is as much a rollback as `model_error`,
+so guarding only the shape door leaves the whole #2521 class walking through the
+scale one: a 4 dB lift realized at 80 % depth is `matched` on its own — the
+0.8 dB miss never clears tolerance — and becomes a `level_dependent_shortfall`
+ROLLBACK once a −0.9 dB/octave room frame is added, with its frame-removed
+exceedance still exactly 0.0. Over a randomized sweep, 203 of 4,000 draws rolled
+back on evidence that was entirely frame (adversarial gate on PR #2530; the
+sweep is now a property test,
+`test_no_rollback_survives_a_zero_frame_removed_exceedance`). `spatially_costly`
+is the one rollback deliberately outside the gate and structurally cannot be
+behind it: it is reached only from the branch where the mark map MATCHED, and it
+compares two real measurements of the room's spread with no model between them
+for a frame to explain away.
+
 `gain_factor` carries an INTERCEPT for the same class of reason: through the
 origin, on a commanded curve that is mostly one sign, a constant level shift
 arrives as apparent SCALE — the 2026-08-14 session's −7.8 dB against a
@@ -2877,8 +2892,10 @@ reaches a refusal screen, so both are surfaced three other ways instead of
 passing silently: the probe logs at WARNING (band it was handed, band it
 graded, the frame's terms, the frame-removed grades, the gain and its
 intercept), the verdict is persisted as `verify.delta_probe` — the small
-durable summary, six scalars: verdict, reason, the two level numbers, and the
-frame's offset and tilt, each finding's own claim travelling with it — and the
+durable summary, eight scalars: verdict, reason, the two level numbers, the
+frame's offset and tilt, and the bin count and span they were fitted over (a
+tilt from a narrow quiet region can be large and mean nothing, so `frame_fit`'s
+own ill-conditioning defence travels with the terms it qualifies) — and the
 done screen carries a caveat nudge alongside its "Verified." badge. When
 there are too few quiet bins to run the level discriminator at all, the verdict
 below it carries a `|level_check_unavailable` suffix in its `reason` — a
@@ -4505,7 +4522,8 @@ spine, and moving the date would claim a sweep that did not happen.
 
 **Addendum, 2026-08-15 — the delta probe's band, frame, and retained curve
 (#2521 / #2522).** The delta-probe paragraphs under "The delta probe verifies
-the apply", the `correction_model_error` row in the refusal table, the "VERIFY
+the apply", the `correction_model_error` and `correction_level_shortfall` rows
+in the refusal table, the "VERIFY
 discloses the FRAME it compared across" section's closing note, and the stage
 bridge's key list were re-derived against `delta_probe.classify_delta_probe`,
 `crossover_v2_flow._run_delta_probe`, `capture_dispatch._gate_trusted_band_hz`,
@@ -4519,7 +4537,12 @@ vs 325–22,480, `max_error_db=23.4` at 21,266 Hz, the −7.8 dB / ≈2.02 pair)
 quoted from issue #2521's diagnosis and were NOT re-measured here. The stage
 bridge's key list also gained `proposal_fingerprint`, which had been live since
 #2392 and unlisted — a drift found while updating the count, not a change this
-work made. **The date below is deliberately NOT bumped**, for the same reason as
-the addendum above.
+work made. The adversarial review of PR #2530 then moved the frame gate ahead of
+BOTH rollback doors (it had guarded only the shape one, leaving the same class
+walking through the scale door) and added the frame's fitted span to the two
+surfaces that report its terms; the numbers quoted for both — 203 of 4,000 swept
+draws, and p95 |tilt| 10.5 dB/octave over a 10-bin quiet span — are the gate's,
+re-derived on this branch before being written here. **The date below is
+deliberately NOT bumped**, for the same reason as the addendum above.
 
 Last verified: 2026-08-13

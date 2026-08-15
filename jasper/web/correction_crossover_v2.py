@@ -2826,6 +2826,13 @@ def _delta_probe_summary(probe: Any) -> dict[str, Any]:
     they were. ``None`` when no frame was fitted — never 0.0, which would read
     as "measured, and flat".
 
+    ``frame_n_bins`` / ``frame_band_hz`` ride beside them because they are
+    ``frame_fit``'s own stated defence against an ill-conditioned fit: two
+    scalars fitted over a narrow quiet span can be large and mean nothing, and a
+    reader judging this verdict needs to see how much was trusted. They cannot
+    change the verdict — the gate only narrows — but they bound how much weight
+    the two terms above can carry.
+
     ``getattr`` throughout, and through the nested ``frame`` too: this runs
     against duck-typed probe stand-ins in tests, and an absent field is
     "unknown", never a raise that loses the whole snapshot.
@@ -2838,6 +2845,11 @@ def _delta_probe_summary(probe: Any) -> dict[str, Any]:
         "residual_offset_db": getattr(probe, "residual_offset_db", None),
         "frame_offset_db": getattr(frame, "offset_db", None),
         "frame_tilt_db_per_octave": getattr(frame, "tilt_db_per_octave", None),
+        "frame_n_bins": getattr(frame, "n_bins", None),
+        "frame_band_hz": (
+            list(band) if isinstance(band := getattr(frame, "band_hz", None), tuple)
+            else None
+        ),
     }
 
 

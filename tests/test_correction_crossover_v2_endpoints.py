@@ -8760,7 +8760,9 @@ def test_the_probe_verdict_is_persisted_even_on_a_pass():
     probe = SimpleNamespace(
         verdict="level_mismatch", reason="uncommanded_level_shift",
         expected_offset_db=-22.458, residual_offset_db=-4.0,
-        frame=SimpleNamespace(offset_db=None, tilt_db_per_octave=None),
+        frame=SimpleNamespace(
+            offset_db=None, tilt_db_per_octave=None, n_bins=0, band_hz=None,
+        ),
     )
     conductor = _StubConductor("s1")
     conductor.verify_outcome = "pass"
@@ -8776,6 +8778,8 @@ def test_the_probe_verdict_is_persisted_even_on_a_pass():
         "residual_offset_db": -4.0,
         "frame_offset_db": None,
         "frame_tilt_db_per_octave": None,
+        "frame_n_bins": 0,
+        "frame_band_hz": None,
     }
     # A conductor with no probe writes no key rather than an empty claim.
     plain = _StubConductor("s1")
@@ -8792,11 +8796,20 @@ def test_a_frame_mismatch_persists_the_frame_it_is_a_claim_about():
     terms would be telling a reader what happened and refusing to say by how
     much — the same gap ``residual_offset_db`` was added to close for
     ``level_mismatch``.
+
+    The span the two terms were fitted over travels with them (adversarial
+    gate, 2026-08-15): a tilt fitted over a narrow quiet region is free to be
+    large and mean nothing — measured p95 |tilt| of 10.5 dB/octave over a
+    10-bin span — so a reader judging this verdict needs ``frame_fit``'s own
+    ill-conditioning defence, not only its answer.
     """
     probe = SimpleNamespace(
         verdict="frame_mismatch", reason="uncommanded_frame_shift",
         expected_offset_db=0.0, residual_offset_db=-2.39,
-        frame=SimpleNamespace(offset_db=-2.39, tilt_db_per_octave=-0.916),
+        frame=SimpleNamespace(
+            offset_db=-2.39, tilt_db_per_octave=-0.916, n_bins=214,
+            band_hz=(120.0, 3_300.0),
+        ),
     )
     conductor = _StubConductor("s1")
     conductor.verify_outcome = "pass"
@@ -8808,6 +8821,8 @@ def test_a_frame_mismatch_persists_the_frame_it_is_a_claim_about():
     assert persisted["verdict"] == "frame_mismatch"
     assert persisted["frame_offset_db"] == -2.39
     assert persisted["frame_tilt_db_per_octave"] == -0.916
+    assert persisted["frame_n_bins"] == 214
+    assert persisted["frame_band_hz"] == [120.0, 3_300.0]
 
 
 def test_the_graded_band_is_persisted_even_on_a_pass():

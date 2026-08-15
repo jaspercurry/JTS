@@ -947,20 +947,111 @@ def test_a_broadband_tilt_is_disclosed_not_rolled_back():
     assert probe.frame_removed_exceedance_octaves == 0.0
 
 
-def test_a_tilt_does_not_become_a_shortfall_either():
-    """The other rollback door, closed by the same fix.
+@pytest.mark.parametrize("depth", [1.0, 0.8])
+def test_a_tilt_does_not_become_a_shortfall_either(depth):
+    """**The other rollback door, and it takes TWO mechanisms to close it.**
 
-    A tilt against a ramp-shaped command IS a scale factor — with an intercept
-    even more cleanly than without one — so a fix that only guarded
-    ``model_error`` would have swapped one false rollback for another. The
-    regression runs on the frame-removed curve, where the same speaker reads
-    full depth.
+    ``level_dependent_shortfall`` is as much a rollback as ``model_error``, so a
+    room tilt must not be able to reach it either. Two different things get it
+    there, and this test only proved the first until the adversarial gate found
+    the second (2026-08-15):
+
+    ``depth=1.0`` — a perfectly realized correction under a tilt. A tilt against
+    a ramp-shaped command IS a scale factor, more cleanly with an intercept than
+    without, so a raw-curve regression reads it as depth loss. Running the
+    regression on the FRAME-REMOVED curve is what fixes this one: the same
+    speaker reads full depth.
+
+    ``depth=0.8`` — a REAL but in-tolerance depth shortfall under the same tilt,
+    which the frame-removed regression correctly still reads as 0.8. Nothing
+    about the regression can save this one: the verdict has to be gated on
+    whether the EXCEEDANCE survives the frame, and the exceedance here is
+    entirely the tilt. The gate's own reproducer (a 4 dB Gaussian lift at 5 kHz)
+    is `test_a_real_but_in_tolerance_shortfall_under_a_tilt_is_not_a_rollback`
+    below; this parametrization is the same class on this file's fixture.
     """
     commanded = _commanded_lift()
-    realized = commanded - 0.9 * np.log2(_GRID_HZ / 1_000.0)
+    realized = depth * commanded - 0.9 * np.log2(_GRID_HZ / 1_000.0)
     probe = classify_delta_probe(_GRID_HZ, realized, commanded, band_hz=_band())
     assert probe.verdict != VERDICT_LEVEL_DEPENDENT_SHORTFALL
-    assert probe.gain_factor == pytest.approx(1.0, abs=1e-6)
+    assert probe.rollback is False
+    # 1e-3, for the reason
+    # ``test_a_proportional_undershoot_of_a_lift_is_a_level_shortfall`` records:
+    # the quiet bins admit commands up to ``DELTA_PROBE_MIN_COMMANDED_DB``, so a
+    # depth shortfall that scales those too leaves a trace of itself in the
+    # fitted tilt (measured here: 1.8e-4 of gain).
+    assert probe.gain_factor == pytest.approx(depth, abs=1e-3)
+
+
+def test_a_real_but_in_tolerance_shortfall_under_a_tilt_is_not_a_rollback():
+    """**The adversarial gate's reproducer** (2026-08-15), pinned verbatim.
+
+    A 4 dB Gaussian lift at 5 kHz realized at 80 % depth. On its own the 0.8 dB
+    miss never clears tolerance, so the map is ``matched`` — the probe has no
+    finding about this speaker at all. Add a −0.9 dB/octave room frame and the
+    first cut of the frame gate turned it into a ``level_dependent_shortfall``
+    ROLLBACK, with its frame-removed exceedance still exactly 0.0: the entire
+    finding was the frame, reached through the one rollback door the gate did
+    not guard. Over a randomized sweep, 203 of 4,000 draws did this.
+
+    Both halves are asserted, because the second is only meaningful against the
+    first: no tilt ⇒ no finding, tilt ⇒ a DISCLOSED finding, never a rollback.
+    """
+    lift = 4.0 * np.exp(-0.5 * (np.log2(_GRID_HZ / 5_000.0) / 0.5) ** 2)
+
+    clean = classify_delta_probe(_GRID_HZ, 0.8 * lift, lift, band_hz=_band())
+    assert clean.verdict == VERDICT_MATCHED
+
+    tilted = classify_delta_probe(
+        _GRID_HZ, 0.8 * lift - 0.9 * np.log2(_GRID_HZ / 1_000.0), lift,
+        band_hz=_band(),
+    )
+    assert tilted.rollback is False
+    assert tilted.verdict == VERDICT_FRAME_MISMATCH
+    # The number that made this a bug: the graded evidence, frame removed, is
+    # nothing at all — so there was never anything here to refuse on.
+    assert tilted.frame_removed_exceedance_octaves == 0.0
+    # …and the shortfall really was measurable, which is what makes this the
+    # hard case rather than a restatement of the pure-tilt one above. (1e-3 for
+    # the quiet-bin bias the sibling test above records — the Gaussian's own
+    # tails sit in those bins, so the shortfall scales them too.)
+    assert tilted.gain_factor == pytest.approx(0.8, abs=1e-3)
+
+
+def test_no_rollback_survives_a_zero_frame_removed_exceedance():
+    """The gate's randomized sweep, as a property rather than one fixture.
+
+    Every rollback this probe returns must rest on evidence that survived the
+    frame. Swept over shape, depth, tilt and offset, the invariant is: if the
+    verdict rolls back, the frame-removed exceedance is a real one. This is the
+    guard that would have caught the shortfall door — the class it closes is
+    wider than any single reproducer, and a future third rollback verdict added
+    below the gate would fail here rather than in production.
+    """
+    rng = np.random.default_rng(20260815)
+    rollbacks = 0
+    for _ in range(400):
+        center = 10.0 ** rng.uniform(math.log10(200.0), math.log10(15_000.0))
+        commanded = rng.uniform(-10.0, 10.0) * np.exp(
+            -0.5 * (np.log2(_GRID_HZ / center) / rng.uniform(0.2, 2.0)) ** 2
+        )
+        realized = (
+            rng.uniform(0.3, 1.6) * commanded
+            + rng.uniform(-1.5, 1.5) * np.log2(_GRID_HZ / 1_000.0)
+            + rng.uniform(-3.0, 3.0)
+        )
+        probe = classify_delta_probe(
+            _GRID_HZ, realized, commanded, band_hz=_band(),
+        )
+        if probe.rollback:
+            rollbacks += 1
+            assert probe.frame_removed_exceedance_octaves != 0.0, (
+                f"{probe.verdict} rolled back on evidence that is entirely "
+                f"frame (offset {probe.frame.offset_db}, tilt "
+                f"{probe.frame.tilt_db_per_octave})"
+            )
+    # The sweep must actually reach the rollback verdicts, or it proves nothing.
+    assert rollbacks > 50
 
 
 def test_a_genuine_in_band_shape_error_still_rolls_back():
@@ -1057,7 +1148,19 @@ def test_the_frame_gate_can_only_narrow_a_finding():
     The RAW grade decides whether there is a finding; the frame-removed grade
     decides only whether that finding is a rollback. So a frame fitted from a
     noisy quiet region cannot fabricate a rollback — the worst it can do is
-    fail to demote one. Walked over this file's fixture vocabulary.
+    fail to demote one, or move a demotion between the two rollback names.
+    Walked over this file's fixture vocabulary.
+
+    **Scope, named rather than implied** (adversarial gate, 2026-08-15): these
+    fixtures supply no spatial arm, and that is not an oversight to fix by
+    extending them. ``spatially_costly`` is returned from the branch where the
+    mark map MATCHED — no exceedance was ever in play — so the frame gate is
+    structurally upstream of it and this property has nothing to say about it.
+    That verdict rests on two real measurements of the room's spread, with no
+    model between them for a frame to explain away;
+    ``test_a_chain_defect_outranks_the_spatial_arm`` and
+    ``test_an_unavailable_spatial_arm_cannot_produce_a_costly_verdict`` own its
+    behaviour. The claim here is about the two verdicts the gate does guard.
     """
     commanded = _commanded_lift()
     fixtures = [
@@ -1072,6 +1175,31 @@ def test_the_frame_gate_can_only_narrow_a_finding():
         probe = classify_delta_probe(_GRID_HZ, realized, cmd, band_hz=_band())
         if probe.rollback:
             assert probe.exceedance_octaves >= DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES
+
+
+def test_a_spatially_costly_verdict_is_reached_without_the_frame_gate():
+    """The boundary above, exercised rather than only described.
+
+    A map that matches at the mark and widened the room still rolls back, and it
+    does so from ahead of the frame gate — so a fitted frame, of any size, is
+    irrelevant to it. Pinned so "the gate guards every rollback" can never be
+    read into the narrowing property.
+    """
+    commanded = _commanded_lift()
+    # Matched at the mark AND carrying a real quiet-bin frame, so the frame is
+    # genuinely fitted and genuinely non-zero at the moment this verdict is
+    # returned — a fixture with no frame could not tell the two orderings apart.
+    probe = classify_delta_probe(
+        _GRID_HZ, commanded - 0.2 * np.log2(_GRID_HZ / 1_000.0), commanded,
+        band_hz=_band(),
+        spatial=evaluate_spatial_cost(
+            [_Band(1_000.0, 1.0)], [_Band(1_000.0, 3.0)],
+        ),
+    )
+    assert probe.verdict == VERDICT_SPATIALLY_COSTLY
+    assert probe.rollback is True
+    assert probe.frame.fitted is True
+    assert probe.frame.tilt_db_per_octave == pytest.approx(-0.2, abs=1e-6)
 
 
 def test_the_frames_offset_term_is_the_residual_offset_it_already_reported():

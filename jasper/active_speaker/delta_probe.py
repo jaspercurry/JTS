@@ -132,9 +132,19 @@ octaves to nothing, i.e. it deleted the one defect this module exists to catch.
 What the frame may and may not do is asymmetric on purpose:
 
 * it can only **narrow** a finding. The raw grade still decides whether there is
-  a finding at all (``matched`` is unchanged), and only the rollback question is
-  re-asked with the frame removed. A wild frame fitted from a noisy quiet region
-  therefore cannot fabricate a rollback — the worst it can do is fail to demote.
+  a finding at all (``matched`` is unchanged); what is re-asked with the frame
+  removed is the ROLLBACK question, and the gate sits ahead of **both** rollback
+  doors — ``model_error`` and ``level_dependent_shortfall`` alike. A wild frame
+  fitted from a noisy quiet region therefore cannot fabricate a rollback; the
+  worst it can do is fail to demote, or move a demoted finding between those two
+  names. Guarding only the shape door leaves the whole #2521 class walking
+  through the scale one — see the gate comment in :func:`classify_delta_probe`
+  for the reproduction.
+* :data:`VERDICT_SPATIALLY_COSTLY` is outside the gate, deliberately. It is
+  reached only when the mark map MATCHED, so no exceedance was ever in play, and
+  it rests on two real measurements of the room's own spread rather than on a
+  measurement against a model — there is no frame between them for this to
+  remove.
 * a frame that could not be fitted (too few quiet bins) removes nothing, so the
   verdict stands exactly as it did before this existed. Strict is the honest
   direction for an absent measurement.
@@ -187,6 +197,12 @@ VERDICT_LEVEL_MISMATCH = "level_mismatch"
 #: offset and one broadband tilt, fitted where the correction commanded nothing
 #: and therefore uncommanded by construction. Removing that frame makes the map
 #: pass (#2521).
+#:
+#: It replaces whichever rollback the map would otherwise have reached — a SHAPE
+#: claim (``model_error``) or a SCALE one (``level_dependent_shortfall``) — because
+#: neither survives evidence that turns out to be the frame. A real but
+#: in-tolerance depth shortfall riding a room tilt reaches this verdict, and
+#: should: on its own it was ``matched``.
 #:
 #: The tilt-carrying sibling of :data:`VERDICT_LEVEL_MISMATCH`, and not a
 #: rollback verdict for the same reason: a frame difference is a property of the
@@ -863,12 +879,21 @@ def classify_delta_probe(
     # commands the SAME value, which ``lstsq`` resolves to the minimum-norm
     # solution rather than raising. On that degenerate shape the intercept and
     # the scale are not separately identifiable — only their sum at the one
-    # commanded value is — so the reported pair is a minimum-norm split of it
-    # rather than the plain ratio. The split stays monotone in the realized
-    # level, so a deeper shortfall still reads lower and the ordering the
-    # shortfall ceiling tests survives; only the exact crossing moves, by a few
-    # percent on that shape. A real correction's commanded curve is never one
-    # constant.
+    # commanded value is — so the reported pair is a minimum-norm split of it,
+    # and the split is NOT a near-miss of the plain ratio: for a flat ``k`` dB
+    # command realized EXACTLY, it returns ``k²/(1+k²)``, which is under
+    # :data:`DELTA_PROBE_SHORTFALL_GAIN_CEILING` for every ``k`` below 2.38 dB
+    # (0.80 at 2 dB, 0.50 at 1 dB). A perfectly realized shallow flat lift would
+    # read as a deep shortfall.
+    #
+    # What keeps that off every production path is not the size of the error but
+    # how knife-edge the degeneracy is: the second column only has to vary at
+    # all. A commanded range of 1e-9 dB across the graded bins already returns
+    # gain exactly 1.0 (measured). A correction's commanded curve is the response
+    # of a filter cascade sampled on a log grid, so its graded bins are never one
+    # repeated constant — and the branch is unreachable anyway unless something
+    # ELSE already put the map over tolerance, since an exactly realized
+    # correction never gets past ``matched``.
     design = np.column_stack((np.ones_like(c), c))
     intercept, gain_factor = (
         float(v) for v in np.linalg.lstsq(design, deframed[mask], rcond=None)[0]
@@ -961,6 +986,39 @@ def classify_delta_probe(
         # in the record would say why that call was made blind. Say it.
         unavailable_suffix = _LEVEL_CHECK_UNAVAILABLE_SUFFIX
 
+    # THE FRAME GATE, and it sits AHEAD OF BOTH ROLLBACK DOORS on purpose
+    # (#2521, owner ruling 2026-08-15). Does the exceedance survive removing the
+    # frame? An exceedance that does not survive is a statement about the two
+    # curves' frames, which this comparison cannot attribute to the correction —
+    # so it is disclosed, loudly, and the household keeps the tuning. One that
+    # does survive is graded below with the instrument's own offset and slope
+    # already out of the way, and reaches the same rollback it always did.
+    #
+    # **It guards the SHORTFALL door too, and it has to.** The first cut of this
+    # gate sat below the shape-or-scale discriminator, guarding ``model_error``
+    # alone — which is what the issue's wording asked for and is a hole:
+    # ``level_dependent_shortfall`` is equally a rollback, and a real but
+    # in-tolerance depth shortfall combined with a room tilt walks straight
+    # through it. Reproduced (adversarial gate, 2026-08-15): a 4 dB Gaussian
+    # lift at 5 kHz realized at 80 % depth is ``matched`` on its own — the 0.8 dB
+    # miss never clears tolerance — and becomes a ``level_dependent_shortfall``
+    # ROLLBACK once a −0.9 dB/octave frame is added, with its frame-removed
+    # exceedance still exactly 0.0. Over a randomized sweep, 203 of 4,000 draws
+    # rolled back on evidence that was entirely frame. The finding there is the
+    # tilt, and the tilt is precisely what this probe may not refuse on.
+    #
+    # An unfitted frame removes nothing, so ``frame_exceeded`` equals
+    # ``exceeded`` there and this branch cannot fire: no frame measured, no
+    # demotion.
+    #
+    # :data:`VERDICT_SPATIALLY_COSTLY` is deliberately NOT behind this gate, and
+    # cannot be: it is returned above, from the branch where the mark map
+    # MATCHED. It is also a different evidence class — two real measurements of
+    # the room's own spread, with no model and therefore no frame between them —
+    # so there is nothing here that could explain it away.
+    if not frame_exceeded:
+        return _map(VERDICT_FRAME_MISMATCH, "uncommanded_frame_shift")
+
     # Shape or scale?
     #
     # Re-measure the error against the best-fit SCALED command. If the residual
@@ -994,20 +1052,6 @@ def classify_delta_probe(
             VERDICT_LEVEL_DEPENDENT_SHORTFALL,
             "realized_short_of_commanded" + unavailable_suffix,
         )
-    # A shape claim, and the last question before it becomes a rollback: does
-    # the exceedance survive removing the frame? (#2521, owner ruling
-    # 2026-08-15.) An exceedance that does not survive is a statement about the
-    # two curves' frames, which this comparison cannot attribute to the
-    # correction — so it is disclosed, loudly, and the household keeps the
-    # tuning. One that does survive is a shape defect measured with the
-    # instrument's own offset and slope already out of the way, and it is the
-    # same rollback it has always been.
-    #
-    # An unfitted frame removes nothing, so ``frame_exceeded`` equals
-    # ``exceeded`` there and this branch cannot fire: no frame measured, no
-    # demotion.
-    if not frame_exceeded:
-        return _map(VERDICT_FRAME_MISMATCH, "uncommanded_frame_shift")
     return _map(
         VERDICT_MODEL_ERROR,
         "realized_shape_differs_from_commanded" + unavailable_suffix,

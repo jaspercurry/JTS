@@ -9885,6 +9885,18 @@ class CrossoverV2Session:
                 None if probe.frame.tilt_db_per_octave is None
                 else round(probe.frame.tilt_db_per_octave, 4)
             ),
+            # ``frame_fit``'s own ill-conditioning defence, and it has to travel
+            # with the two terms it qualifies: a tilt fitted over a narrow quiet
+            # span is free to be large and mean nothing (measured over 200 seeds
+            # of a 10-bin quiet region, p95 |tilt| 10.5 dB/octave). It cannot
+            # wrongly demote — the gate only narrows — but it does set the
+            # ``frame_removed_*`` numbers a reader quotes, so the span they were
+            # taken over belongs beside them.
+            frame_n_bins=probe.frame.n_bins,
+            frame_band_hz=(
+                None if probe.frame.band_hz is None
+                else tuple(round(v, 1) for v in probe.frame.band_hz)
+            ),
             frame_removed_max_db=(
                 None if probe.frame_removed_max_db is None
                 else round(probe.frame_removed_max_db, 3)
