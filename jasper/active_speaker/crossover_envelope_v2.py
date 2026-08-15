@@ -100,7 +100,17 @@ from .crossover_v2_flow import (
     tier_display_info,
     verify_inconclusive_cause,
 )
-from .delta_probe import VERDICT_FRAME_MISMATCH, VERDICT_LEVEL_MISMATCH
+from .crossover_v2.contracts import AdoptionOutcome
+from .delta_probe import (
+    REASON_UNCOMMANDED_LEVEL_SHIFT_OUTSIDE_BAND,
+    VERDICT_FRAME_MISMATCH,
+    VERDICT_LEVEL_MISMATCH,
+)
+
+#: The one adoption outcome this screen has copy for, as the wire value the
+#: durable ``round_receipt`` carries. Named from the enum rather than spelled
+#: out, so the screen and the decision cannot drift apart.
+ADOPTION_KEEP_FOR_ITERATION = AdoptionOutcome.KEEP_FOR_ITERATION.value
 
 logger = logging.getLogger(__name__)
 
@@ -1733,10 +1743,16 @@ def _done_nudges(
             # No hardware noun and no instruction to act: this is a statement
             # about what the check could and could not confirm. The household's
             # Undo button is already the primary action on this screen.
-            "text": (
-                "The overall loudness changed by more than this check expected, "
-                "so it could not confirm the correction's shape."
-            ),
+            #
+            # REASON-AWARE since #2537. The verdict alone stopped being enough
+            # when #2533 split it in two: a level the quiet bins measured
+            # across the whole graded band, and one they only measured in a
+            # sliver of it. The whole-band sentence ("the overall loudness")
+            # is false for the second, and it was being shown for it — the
+            # 2026-08-15 JTS3 round's level was measured entirely above
+            # 12 kHz. Same register either way, and the band-scoped one names
+            # where rather than claiming a smaller version of the same thing.
+            "text": _level_mismatch_text(probe),
         })
     if probe.get("verdict") == VERDICT_FRAME_MISMATCH:
         nudges.append({
@@ -1752,6 +1768,98 @@ def _done_nudges(
             ),
         })
     return nudges
+
+
+def _level_mismatch_text(probe: Mapping[str, Any]) -> str:
+    """The level-mismatch caveat, in the register the finding actually supports.
+
+    Two sentences for one verdict (#2537), because #2533 gave it two reasons:
+
+    * :data:`~jasper.active_speaker.delta_probe.REASON_UNCOMMANDED_LEVEL_SHIFT`
+      — the quiet bins measured the level across the whole graded band, so
+      "the overall loudness" is what was measured;
+    * :data:`~jasper.active_speaker.delta_probe.REASON_UNCOMMANDED_LEVEL_SHIFT_OUTSIDE_BAND`
+      — they did not, and the band they DID cover travels on the map as
+      ``quiet.core_band_hz``. Naming it is the difference between a true
+      sentence and a true-sounding one.
+
+    Falls back to the whole-band sentence for any other reason string, which is
+    the conservative direction: a caveat that says slightly more than the
+    evidence supports still tells the household the shape went unconfirmed,
+    where inventing a band from an absent field would state a fact.
+    """
+
+    band = _mapping(probe.get("quiet")).get("core_band_hz")
+    named = (
+        probe.get("reason") == REASON_UNCOMMANDED_LEVEL_SHIFT_OUTSIDE_BAND
+        and isinstance(band, (list, tuple))
+        and len(band) == 2
+        and all(isinstance(edge, (int, float)) for edge in band)
+    )
+    if not named:
+        return (
+            "The overall loudness changed by more than this check expected, "
+            "so it could not confirm the correction's shape."
+        )
+    lo, hi = (_frequency_label(float(edge)) for edge in band)
+    return (
+        f"The loudness between {lo} and {hi} changed by more than this check "
+        "expected, so it could not confirm the correction's shape."
+    )
+
+
+def _frequency_label(hz: float) -> str:
+    """A frequency as a household reads it — ``480 Hz``, ``12.4 kHz``.
+
+    Local to this caveat rather than promoted: the wizards render frequencies
+    in several house styles already, and picking one for all of them is a
+    design decision this PR is not making.
+    """
+
+    if hz >= 1000.0:
+        return f"{hz / 1000.0:.1f} kHz".replace(".0 kHz", " kHz")
+    return f"{hz:.0f} Hz"
+
+
+#: The household copy for a round that KEPT an imperfect result (#2537), as one
+#: nudge rather than a screen: ``keep_for_iteration`` leaves the speaker in the
+#: same state ``keep`` does, so it must not look like a failure — but the round
+#: measured something it did not fix, and saying nothing is how "we could not
+#: tell" becomes "verified" by silence.
+#:
+#: Deliberately register-matched to the caveats above: no hardware noun, no
+#: instruction to act, and a statement about what this round did and did not
+#: reach. The Undo button is already the primary action on this screen for a
+#: household that dislikes the result.
+KEEP_FOR_ITERATION_TEXT = (
+    "This is the best sound measured so far, and it is what the speaker is "
+    "playing. Some of what was measured is still off target — measuring again "
+    "is how that gets closer."
+)
+
+
+def _round_adoption_nudges(v2: Mapping[str, Any]) -> list[dict[str, str]]:
+    """The done screen's caveat for a round that KEPT an imperfect result.
+
+    Appended at the CALL SITE rather than inside :func:`_done_nudges`, for that
+    composer's own stated reason and G1's precedent: ``_done_nudges`` answers
+    "which badge did the VERIFY OUTCOME earn", and this answers what the ROUND
+    decided — a different instrument, owed on this screen whichever badge won.
+
+    Reads the adoption outcome off ``round_receipt``, which the coordinator
+    stamps beside the receipt's identity. Silent for every other outcome: a
+    ``keep`` round has nothing outstanding to disclose, and a round that
+    restored or escalated never reaches the done screen at all.
+    """
+
+    receipt = _mapping(v2.get("round_receipt"))
+    if str(receipt.get("adoption") or "") != ADOPTION_KEEP_FOR_ITERATION:
+        return []
+    return [{
+        "code": "crossover_v2_keep_for_iteration",
+        "severity": "warn",
+        "text": KEEP_FOR_ITERATION_TEXT,
+    }]
 
 
 # --- G1's ripple reservation (owner ruling 2026-08-03, issue #2087) ----------
@@ -3514,6 +3622,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                     result_outcome=result_outcome,
                     tier=str(v2.get("tier") or ""),
                 )
+                + _round_adoption_nudges(v2)
                 + _ripple_reservation_nudges(status)
             ),
             status=status,

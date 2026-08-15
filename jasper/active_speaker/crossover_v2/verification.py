@@ -2,16 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Four independent verification verdicts, and adoption as data (#2291).
+"""Four verification verdicts, three adoption axes, and the table (#2291, #2537).
 
 **The defect this module exists to make impossible.** On 2026-08-10 a jts3
 round reported VERIFY tracking the model to within 1.291 dB (tolerance
 1.5 dB) while the post-apply cloud failed all three spec bands, worst
 +7.727 dB at 428.44 Hz — and the run read as *passed*. One overloaded
 pass/fail let a realization answer stand in for an acoustic one. So the four
-questions are computed by four functions here, each answering only its own,
-and :func:`decide_adoption` combines their *statuses* — never their
-internals — through a table it does not get to reinterpret.
+questions are computed by four functions here, each answering only its own.
 
 The four, in the issue's words:
 
@@ -21,9 +19,25 @@ The four, in the issue's words:
 * **Spec** — is the result inside the target envelope?
 
 Spec is an *outcome*, never a proxy for benefit: "realized, improved, and
-still out of spec" is a valid keep, and "realized while the speaker
-regressed" is a valid restore. Both fit in the data model because the
+still out of spec" keeps the graph on the speaker, and "realized while the
+speaker regressed" restores it. Both fit in the data model because the
 statuses are independent.
+
+**The second defect, and the one the adoption table was rebuilt for (#2537).**
+Four independent verdicts still left one question — *what do we do with the
+graph* — keyed on whether the round could PROVE it helped. On 2026-08-15 a
+jts3 round measured its pooled residual from 3.304 to 0.915 dB on a usable
+capture, could not compare it to a before, carried a boost, and was therefore
+reverted to a state nobody had measured at all. The owner's ruling that day:
+*we're looking for the least bad MEASURED tune. reverting to an unknown
+measured state seems dumb… the first application is not the end point, it is
+just the start.* So the four verdicts now compose into **three adoption axes**
+— :func:`evaluate_evidence_trust`, :func:`evaluate_applied_safety`,
+:func:`evaluate_round_quality` — and :func:`decide_adoption` selects one of
+five rows from those. Keeping an imperfect measured result and handing its
+misses forward is a first-class outcome
+(:attr:`~.contracts.AdoptionOutcome.KEEP_FOR_ITERATION`); the hard stops are
+reserved for the safety class and for evidence that does not exist.
 
 **This module invents no DSP and owns no threshold.** Every number it
 reports is lifted from a shipped primitive:
@@ -65,10 +79,11 @@ those are different answers: absent evidence is
 adoption rows, and conflating them is how "we do not know" gets reported as
 a verdict.
 
-**Nothing calls any of this yet.** #2291 Phase 3c wires these functions into
-the journey/host: it computes the verdicts, logs their ``to_dict()``
-payloads, and applies the decision. This module emits no logs, reads no
-clock, touches no file, and imports neither :mod:`jasper.web` nor
+**Everything here is live.** #2291 Phase 3c wired these functions into the
+journey/host through :mod:`.round_evidence` and :mod:`.coordinator`, which
+compute the verdicts, log their ``to_dict()`` payloads, and apply the
+decision. This module still emits no logs, reads no clock, touches no file,
+and imports neither :mod:`jasper.web` nor
 :mod:`jasper.active_speaker.crossover_v2_flow` — same inputs, same outputs,
 every time.
 """
@@ -88,13 +103,22 @@ from ..flat_spec import (
     spec_flatness_gauge,
 )
 from .contracts import (
+    ADOPTION_ROW_KEEP,
+    ADOPTION_ROW_KEEP_FOR_ITERATION,
+    ADOPTION_ROW_RESTORE_FAILED,
+    ADOPTION_ROW_RESTORE_REGRESSION,
+    ADOPTION_ROW_RESTORE_UNSAFE,
+    ADOPTION_ROW_RESTORE_UNTRUSTED,
     AdoptionDecision,
     AdoptionOutcome,
     BenefitStatus,
     CaptureValidity,
     CrossoverV2ContractError,
+    EvidenceTrust,
+    QualityStatus,
     RealizationStatus,
     ResponseCurve,
+    SafetyStatus,
     SpecStatus,
     VerificationResult,
     detached_json,
@@ -116,6 +140,10 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from jasper.audio_measurement.program_analysis import CaptureIntegrity
 
 __all__ = [
+    "ADOPTION_MEASURED_REGRESSION",
+    "ADOPTION_NO_ROLLBACK_ANCHOR",
+    "ADOPTION_RESTORE_FAILED",
+    "ADOPTION_UNPROVEN_BOOST",
     "BENEFIT_BASELINE_UNAVAILABLE",
     "BENEFIT_GRID_MISMATCH",
     "BENEFIT_IMPROVED",
@@ -129,22 +157,34 @@ __all__ = [
     "CAPTURE_INTEGRITY_CLEAN",
     "CAPTURE_INTEGRITY_FAILED",
     "CAPTURE_INTEGRITY_UNAVAILABLE",
+    "CLIPPED_RUN_CHECK",
     "MeasurementComparand",
+    "QUALITY_MEASURED_REGRESSION",
+    "QUALITY_TARGETS_OUTSTANDING",
+    "QUALITY_TARGET_MET",
     "REALIZATION_NO_COMPARATOR",
     "REALIZATION_NO_TRACKING",
     "REALIZATION_OUT_OF_TOLERANCE",
     "REALIZATION_WITHIN_TOLERANCE",
+    "SAFETY_BOOST_OVER_DECLARED_BOUND",
+    "SAFETY_CLIPPED_CAPTURE",
+    "SAFETY_NO_FINDING",
+    "SAFETY_UNCOMMANDED_LEVEL_LOUDER",
     "SPEC_BAND_OUT_OF_TOLERANCE",
     "SPEC_IN_TOLERANCE",
     "SPEC_NO_EVALUABLE_BAND",
     "SPEC_NO_REPORT",
     "SPEC_PARTIAL_COVERAGE",
     "TRACKING_COMPARATOR_KEY",
+    "TRUST_MEASURED",
     "Verdict",
     "decide_adoption",
+    "evaluate_applied_safety",
     "evaluate_benefit",
     "evaluate_capture_validity",
+    "evaluate_evidence_trust",
     "evaluate_realization",
+    "evaluate_round_quality",
     "evaluate_spec",
     "verification_result",
 ]
@@ -294,11 +334,13 @@ def evaluate_realization(
 
     The commanded-delta probe
     (:func:`~jasper.active_speaker.delta_probe.classify_delta_probe`) is the
-    sibling instrument for this same question, and it is deliberately **not**
-    joined in here: two instruments need a precedence policy, and no defect
-    has yet located what that policy should be. Phase 3c can route its
-    verdict in when one has been. Naming the cut rather than inventing the
-    policy.
+    sibling instrument for this same question, and it is still **not** joined
+    in *here*: this verdict answers the VERIFY comparator's question and only
+    that. #2537 located the precedence policy the original cut was waiting for,
+    and it is a separation rather than a merge — the probe's directional
+    findings feed :func:`evaluate_applied_safety`, and everything else it says
+    becomes a target in :func:`evaluate_round_quality`. Two instruments, two
+    axes, no arbitration between them.
     """
 
     tolerance = _positive_db(tolerance_db, field_name="tolerance_db")
@@ -649,205 +691,492 @@ def verification_result(
 
 
 # --------------------------------------------------------------------------
-# 5. adoption — the issue's table, as data
+# 5. evidence trust — the axis that gates the other two
 # --------------------------------------------------------------------------
 
+#: The round measured the state it applied.
+TRUST_MEASURED = "applied_state_measured"
 
-class _Intent(str, Enum):
-    """What the evidence says should happen to the applied graph.
 
-    One step short of an :class:`~.contracts.AdoptionOutcome`: the table
-    below reads only the two graded statuses, and the modifiers that follow
-    (is it boosted, can we actually restore) turn an intent into an outcome.
-    Separating them is what lets the table stay a literal transcription of
-    the issue.
+def evaluate_evidence_trust(
+    *,
+    capture: Verdict[CaptureValidity],
+    realization: Verdict[RealizationStatus],
+) -> Verdict[EvidenceTrust]:
+    """Could this round measure the state it applied? (#2537)
+
+    The first axis of the adoption table, and a *composition* rather than a
+    fifth measurement: it reads the two verdicts that already answer "is there
+    evidence here", and reports the first one that says no, carrying that
+    verdict's own reason so the row names the actual absence.
+
+    * an **unusable capture** — integrity checks failed, or no integrity record
+      at all — means there is no post-apply measurement. Nothing downstream can
+      be read from a capture that could not be graded.
+    * an **unavailable realization** means the VERIFY comparator produced no
+      number, so the round cannot say the applied graph did what it commanded.
+
+    **A benefit that came out indeterminate is deliberately NOT here, and that
+    is the whole correction #2537 makes.** An indeterminate benefit means the
+    round could not compare the applied state to a BEFORE — the post-apply
+    capture itself is fine. Treating that as untrusted evidence is what threw
+    away the 2026-08-15 JTS3 cycle-4 candidate: a measured state, graded on a
+    usable capture, restored to a previous state whose own measurement was
+    exactly the thing that was missing. In the owner's words, *reverting to an
+    unknown measured state seems dumb*. An unprovable improvement is a QUALITY
+    unknown — it becomes a next-round target — not a reason to discard the
+    measurement.
     """
 
-    KEEP = "keep"
-    RESTORE = "restore"
-    UNPROVEN = "unproven"
+    if capture.status is CaptureValidity.UNUSABLE:
+        return Verdict(
+            EvidenceTrust.UNTRUSTED, capture.reason, dict(capture.evidence)
+        )
+    if realization.status is RealizationStatus.UNAVAILABLE:
+        return Verdict(
+            EvidenceTrust.UNTRUSTED, realization.reason, dict(realization.evidence)
+        )
+    return Verdict(
+        EvidenceTrust.TRUSTED,
+        TRUST_MEASURED,
+        {
+            "capture": capture.reason,
+            "realization": realization.reason,
+        },
+    )
 
 
-ADOPTION_REALIZED_AND_IMPROVED = "realized_and_improved"
-ADOPTION_REALIZATION_FAILED = "realization_failed"
+# --------------------------------------------------------------------------
+# 6. safety — the only axis that pulls a measured graph off
+# --------------------------------------------------------------------------
+
+#: A commanded boost realized MORE lift than it declared
+#: (:func:`~jasper.active_speaker.delta_probe.boost_overshoot`).
+SAFETY_BOOST_OVER_DECLARED_BOUND = "boost_realized_above_declared_bound"
+#: The speaker measured LOUDER than declared where nothing was commanded.
+SAFETY_UNCOMMANDED_LEVEL_LOUDER = "uncommanded_level_shift_louder"
+#: A stimulus segment carried a full-scale run.
+SAFETY_CLIPPED_CAPTURE = "clipped_capture"
+#: Nothing in the evidence available says this state is unsafe. **Not the same
+#: claim as "this state is safe"** — see :func:`evaluate_applied_safety`, whose
+#: evidence mapping reports which instruments actually looked.
+SAFETY_NO_FINDING = "no_unsafe_finding"
+
+#: The integrity check name a clipped stimulus segment fails. The literal is
+#: :data:`jasper.audio_measurement.program_analysis.INTEGRITY_CHECK_CLIPPED_RUN`,
+#: repeated rather than imported for the reason the module's ``TYPE_CHECKING``
+#: block gives — that module is 5,500 lines of scipy — and pinned against the
+#: original by a contract test so the copy cannot drift.
+CLIPPED_RUN_CHECK = "clipped_run"
+
+
+def evaluate_applied_safety(
+    *,
+    probe: Any | None,
+    integrity: "CaptureIntegrity | None",
+) -> Verdict[SafetyStatus]:
+    """Is the applied state safe to leave on a household's speaker? (#2537)
+
+    The adoption table's hard stop, and the only axis that can pull a *measured*
+    graph off for something other than the absence of evidence. Three findings,
+    each read from a shipped instrument and none of them re-derived here:
+
+    * a commanded **boost realized above its declared bound**
+      (:attr:`~jasper.active_speaker.delta_probe.DeltaProbeMap.boost_over_declared_bound`)
+      — energy in a driver the graph did not declare;
+    * an uncommanded level shift measured **LOUDER** than declared
+      (:data:`~jasper.active_speaker.delta_probe.VERDICT_LEVEL_MISMATCH` with a
+      positive residual past its own tolerance);
+    * a **clipped** stimulus segment in the post-apply capture.
+
+    **Direction is the discriminator, and it is load-bearing.** The same
+    magnitude of uncommanded level shift is a hard stop in one direction and a
+    learning signal in the other: quieter-than-declared costs a household some
+    output and tells the next round something, while louder-than-declared is
+    energy nobody asked for. So a −2.3 dB residual reaches
+    :class:`~.contracts.QualityStatus.MISSED` and stays live; a +2.3 dB one
+    reaches :class:`~.contracts.SafetyStatus.UNSAFE` and comes off. The
+    2026-08-15 JTS3 cycle-4 residual was negative.
+
+    **A band-scoped level claim does not soften the direction.** #2533 narrows
+    an uncommanded-shift *reason* when the quiet bins that measured it do not
+    span the graded band, and that narrowing is a statement about WHERE the
+    level was measured, never about whether it happened. A positive shift
+    measured in a sliver is still a positive shift, so it is still unsafe, and
+    the reason it was narrowed under travels in the evidence.
+
+    **What "safe" does and does not claim.** :data:`SAFETY_NO_FINDING` means no
+    instrument that ran reported a hazard — it is not a warrant that none
+    exists. An absent or ungraded probe reports no finding here rather than a
+    hazard, which is the shipped rule this module must not contradict:
+    :data:`~jasper.active_speaker.delta_probe.DELTA_PROBE_ROLLBACK_VERDICTS`
+    deliberately excludes ``unavailable`` because "an absent measurement is not
+    evidence of a bad correction, and rolling back on it would revert every
+    session whose household closed the phone before the post-apply sweep". So
+    the evidence mapping reports ``probe_graded`` — a reader can tell "safe
+    because nothing was found" from "safe because nothing looked".
+
+    Duck-typed on both inputs, exactly like
+    :func:`evaluate_capture_validity`: the two attributes read off ``integrity``
+    keep this module free of a heavy import, and reading the probe by attribute
+    lets a host that never ran one pass ``None``.
+    """
+
+    from ..delta_probe import VERDICT_LEVEL_MISMATCH
+
+    clipped = (
+        () if integrity is None
+        else tuple(name for name in integrity.failed if name == CLIPPED_RUN_CHECK)
+    )
+    verdict = str(getattr(probe, "verdict", "") or "") if probe is not None else ""
+    residual = getattr(probe, "residual_offset_db", None) if probe is not None else None
+    residual_tolerance = (
+        getattr(probe, "residual_offset_tolerance_db", None)
+        if probe is not None else None
+    )
+    boost_over_bound = bool(
+        getattr(probe, "boost_over_declared_bound", False)
+    ) if probe is not None else False
+    evidence: dict[str, Any] = {
+        # Which instruments actually looked, so "safe" can be read honestly.
+        "probe_graded": bool(verdict),
+        "probe_verdict": verdict,
+        "probe_reason": (
+            str(getattr(probe, "reason", "") or "") if probe is not None else ""
+        ),
+        "integrity_graded": integrity is not None,
+        "clipped_checks": list(clipped),
+        "residual_offset_db": (
+            float(residual) if isinstance(residual, (int, float))
+            and not isinstance(residual, bool) else None
+        ),
+        "residual_offset_tolerance_db": (
+            float(residual_tolerance)
+            if isinstance(residual_tolerance, (int, float))
+            and not isinstance(residual_tolerance, bool) else None
+        ),
+        "boost_over_declared_bound": boost_over_bound,
+        "boost_overshoot_db": (
+            getattr(probe, "boost_overshoot_db", None) if probe is not None else None
+        ),
+    }
+
+    if boost_over_bound:
+        return Verdict(
+            SafetyStatus.UNSAFE, SAFETY_BOOST_OVER_DECLARED_BOUND, evidence
+        )
+    louder = (
+        verdict == VERDICT_LEVEL_MISMATCH
+        and evidence["residual_offset_db"] is not None
+        and evidence["residual_offset_tolerance_db"] is not None
+        and evidence["residual_offset_db"]
+        > evidence["residual_offset_tolerance_db"]
+    )
+    if louder:
+        return Verdict(
+            SafetyStatus.UNSAFE, SAFETY_UNCOMMANDED_LEVEL_LOUDER, evidence
+        )
+    if clipped:
+        return Verdict(SafetyStatus.UNSAFE, SAFETY_CLIPPED_CAPTURE, evidence)
+    return Verdict(SafetyStatus.SAFE, SAFETY_NO_FINDING, evidence)
+
+
+# --------------------------------------------------------------------------
+# 7. quality — what the next round is for
+# --------------------------------------------------------------------------
+
+#: Every question this round asked came back the way it wanted.
+QUALITY_TARGET_MET = "measured_target_met"
+#: The round did not hit its target, and no better MEASURED state is known.
+QUALITY_TARGETS_OUTSTANDING = "measured_targets_outstanding"
+#: A better measured state IS known — the entry baseline. Same literal as
+#: :data:`ADOPTION_MEASURED_REGRESSION`, and the same fact: the two named it
+#: separately before #2537 and there is no reason for two words.
+QUALITY_MEASURED_REGRESSION = "measured_regression"
+
+
+def evaluate_round_quality(
+    *,
+    realization: Verdict[RealizationStatus],
+    benefit: Verdict[BenefitStatus],
+    spec: Verdict[SpecStatus],
+    probe: Any | None,
+    spec_report: FlatSpecReport | None,
+) -> Verdict[QualityStatus]:
+    """How good is the measured result, and what should the next round fix?
+
+    The adoption table's third axis (#2537), and the one the owner's ruling is
+    actually about: *the first application is not the end point, it is just the
+    start. The plan is to iterate and learn.* So this does not reduce to
+    pass/fail — it produces the **target list** a chained round is driven from.
+
+    Three answers:
+
+    * :attr:`~.contracts.QualityStatus.REGRESSED` — the benefit verdict measured
+      the speaker as *clearly worse* than the entry baseline, past the margin.
+      This is the one quality answer that restores, because it is the one where
+      a better measured state is known. It outranks the target list: a round
+      that made the speaker worse has nothing to hand the next one.
+    * :attr:`~.contracts.QualityStatus.PASSED` — nothing is outstanding.
+    * :attr:`~.contracts.QualityStatus.MISSED` — something is, and the evidence
+      names it.
+
+    **A target is anything short of the answer this round wanted**, from all
+    four instruments: realization short of MATCHED, benefit short of IMPROVED,
+    spec short of PASSED (plus each failing band, by its own edges and its own
+    measured deviation), and a delta-probe verdict short of MATCHED. That is a
+    strictly wider net than the pre-#2537 keep row, and deliberately: the old
+    row could only say keep or not-keep, so anything it noticed had to become a
+    reason to revert. A target costs nothing to carry and is the entire point of
+    a round that ends by handing work forward.
+
+    **An unavailable probe or an indeterminate benefit are targets, not
+    failures.** They mean the round could not confirm something, so it cannot
+    call itself PASSED — but neither is evidence against the graph, and neither
+    restores. That distinction is the same one
+    :data:`~jasper.active_speaker.delta_probe.VERDICT_UNAVAILABLE` already
+    draws: "no evidence to refuse on, and no permission granted either."
+    """
+
+    from ..delta_probe import VERDICT_MATCHED
+
+    if benefit.status is BenefitStatus.REGRESSED:
+        return Verdict(
+            QualityStatus.REGRESSED,
+            QUALITY_MEASURED_REGRESSION,
+            dict(benefit.evidence),
+        )
+
+    targets: list[str] = []
+    if realization.status is not RealizationStatus.MATCHED:
+        targets.append(f"realization:{realization.reason}")
+    if benefit.status is not BenefitStatus.IMPROVED:
+        targets.append(f"benefit:{benefit.reason}")
+    if spec.status is not SpecStatus.PASSED:
+        targets.append(f"spec:{spec.reason}")
+    probe_verdict = str(getattr(probe, "verdict", "") or "") if probe is not None else ""
+    if probe_verdict and probe_verdict != VERDICT_MATCHED:
+        targets.append(
+            f"delta_probe:{str(getattr(probe, 'reason', '') or probe_verdict)}"
+        )
+
+    evidence: dict[str, Any] = {
+        "targets": targets,
+        "spec_bands": _failing_spec_bands(spec_report),
+    }
+    if not targets:
+        return Verdict(QualityStatus.PASSED, QUALITY_TARGET_MET, evidence)
+    return Verdict(QualityStatus.MISSED, QUALITY_TARGETS_OUTSTANDING, evidence)
+
+
+def _failing_spec_bands(report: FlatSpecReport | None) -> list[dict[str, Any]]:
+    """Each evaluable band that measured out of tolerance, as a next-round target.
+
+    Per-band rather than "spec failed", because the receipt is what the NEXT
+    round reads and "250-2000 Hz missed by 0.8 dB at 331.8 Hz" is an
+    instruction where "spec failed" is only a mood. Lifted from the report's own
+    :class:`~jasper.active_speaker.flat_spec.BandResult` fields — nothing here
+    re-grades a band or recomputes a deviation.
+    """
+
+    if report is None:
+        return []
+    bands: list[dict[str, Any]] = []
+    for band in report.bands:
+        if not (band.evaluable and band.passed is False):
+            continue
+        bands.append({
+            "f_lo_hz": float(band.f_lo_hz),
+            "f_hi_hz": float(band.f_hi_hz),
+            "tolerance_db": float(band.tolerance_db),
+            "max_deviation_db": (
+                None if band.max_deviation_db is None
+                else float(band.max_deviation_db)
+            ),
+            "max_deviation_hz": (
+                None if band.max_deviation_hz is None
+                else float(band.max_deviation_hz)
+            ),
+        })
+    return bands
+
+
+# --------------------------------------------------------------------------
+# 8. adoption — the three axes, as a table
+# --------------------------------------------------------------------------
+
 ADOPTION_MEASURED_REGRESSION = "measured_regression"
-ADOPTION_UNPROVEN = "benefit_unproven"
-#: Distinct from :data:`ADOPTION_UNPROVEN` because the benefit in that one
-#: cell was *improved* — what is missing is the evidence that the graph we
-#: applied is why. A receipt saying "benefit unproven" there would be false.
-ADOPTION_REALIZATION_UNAVAILABLE = "realization_unavailable"
+#: The one cause that survives the #2537 rewrite unchanged, and only on
+#: :data:`~.contracts.ADOPTION_ROW_RESTORE_UNTRUSTED`. Before #2537 a boosted
+#: intervention failed closed whenever the BENEFIT was indeterminate, which is
+#: how a measured, safe, improving candidate was reverted on 2026-08-15. With
+#: trusted evidence a boost is now judged realized-vs-declared on the safety
+#: axis; with untrusted evidence there is nothing to judge it by, and the
+#: pre-#2537 argument still stands verbatim — *a boost whose benefit we cannot
+#: show is energy we put into a driver and cannot justify, so it comes off.*
 ADOPTION_UNPROVEN_BOOST = "unproven_boost_failed_closed"
 ADOPTION_RESTORE_FAILED = "restore_failed"
 ADOPTION_NO_ROLLBACK_ANCHOR = "restore_required_without_rollback_anchor"
 
-#: #2291's adoption table, transcribed. Every (realization, benefit) pair
-#: exists here — all nine — so a combination cannot fall through to a
-#: default, and a new enum member fails the exhaustiveness test rather than
-#: silently landing on one. Each cell carries its own cause alongside its
-#: intent, so a receipt says *why* the graph stayed or came off rather than
-#: only that it did, and there is no second table to drift. Read against the
-#: issue's rows:
+#: Which row a TRUSTED, SAFE round lands on, by its quality answer — the last
+#: three of the table's five, and the only ones with more than one possible
+#: outcome between them.
 #:
-#: * ``matched | improved | pass or fail | keep`` — the one keep row. Spec is
-#:   "pass or fail", which is why spec is not a key: "improved but out of
-#:   spec" is an honest first pass.
-#: * ``failed | any | any | restore`` — all three ``FAILED`` rows, which state
-#:   the realization failure rather than the benefit, because that is the
-#:   stronger and more specific cause.
-#: * ``matched or unavailable | clearly regressed | any | restore``.
-#: * ``unavailable | indeterminate | any | do not claim success``.
-#: * ``any | indeterminate ... | any | do not claim success`` — so every
-#:   indeterminate row is UNPROVEN, including ``matched``.
-#:
-#: ``unavailable | improved`` is UNPROVEN because the keep row names
-#: ``matched`` and this table does not widen it: the speaker measured
-#: better, but with no realization evidence the round cannot say the graph
-#: it applied is why. Not claiming success is the conservative reading of a
-#: table whose whole purpose is to stop success being claimed.
-_ADOPTION_TABLE: Mapping[
-    tuple[RealizationStatus, BenefitStatus], tuple[_Intent, str]
-] = {
-    (RealizationStatus.MATCHED, BenefitStatus.IMPROVED): (
-        _Intent.KEEP,
-        ADOPTION_REALIZED_AND_IMPROVED,
+#: A MAPPING rather than a guard ladder, and that is the one structural thing
+#: this table kept from #2291's: a lookup with no default means a fourth
+#: :class:`~.contracts.QualityStatus` member raises ``KeyError`` at its first
+#: call instead of falling through to whichever branch happened to come last.
+#: A ladder can only get that property from a trailing ``raise`` that the
+#: signature's own type guard makes unreachable — a branch no test can enter,
+#: which is a guard in name only.
+_QUALITY_ROWS: Mapping[QualityStatus, tuple[AdoptionOutcome, str]] = {
+    QualityStatus.PASSED: (AdoptionOutcome.KEEP, ADOPTION_ROW_KEEP),
+    QualityStatus.MISSED: (
+        AdoptionOutcome.KEEP_FOR_ITERATION, ADOPTION_ROW_KEEP_FOR_ITERATION,
     ),
-    (RealizationStatus.MATCHED, BenefitStatus.REGRESSED): (
-        _Intent.RESTORE,
-        ADOPTION_MEASURED_REGRESSION,
-    ),
-    (RealizationStatus.MATCHED, BenefitStatus.INDETERMINATE): (
-        _Intent.UNPROVEN,
-        ADOPTION_UNPROVEN,
-    ),
-    (RealizationStatus.UNAVAILABLE, BenefitStatus.IMPROVED): (
-        _Intent.UNPROVEN,
-        ADOPTION_REALIZATION_UNAVAILABLE,
-    ),
-    (RealizationStatus.UNAVAILABLE, BenefitStatus.REGRESSED): (
-        _Intent.RESTORE,
-        ADOPTION_MEASURED_REGRESSION,
-    ),
-    (RealizationStatus.UNAVAILABLE, BenefitStatus.INDETERMINATE): (
-        _Intent.UNPROVEN,
-        ADOPTION_UNPROVEN,
-    ),
-    (RealizationStatus.FAILED, BenefitStatus.IMPROVED): (
-        _Intent.RESTORE,
-        ADOPTION_REALIZATION_FAILED,
-    ),
-    (RealizationStatus.FAILED, BenefitStatus.REGRESSED): (
-        _Intent.RESTORE,
-        ADOPTION_REALIZATION_FAILED,
-    ),
-    (RealizationStatus.FAILED, BenefitStatus.INDETERMINATE): (
-        _Intent.RESTORE,
-        ADOPTION_REALIZATION_FAILED,
+    QualityStatus.REGRESSED: (
+        AdoptionOutcome.RESTORE, ADOPTION_ROW_RESTORE_REGRESSION,
     ),
 }
 
 
 def decide_adoption(
     *,
-    realization: RealizationStatus,
-    benefit: BenefitStatus,
-    spec: SpecStatus,
+    trust: Verdict[EvidenceTrust],
+    safety: Verdict[SafetyStatus],
+    quality: Verdict[QualityStatus],
     boosted: bool,
     rollback_available: bool,
     restore_failed: bool = False,
 ) -> AdoptionDecision:
-    """Keep, restore, ask, or escalate — #2291's table plus two modifiers.
+    """Keep, keep-and-iterate, restore, or escalate — the #2537 table.
+
+    **What this replaces, and why.** #2291's table was keyed on
+    ``(realization, benefit)`` and had one keep cell: a round had to *prove* it
+    improved the speaker or the graph came off. The 2026-08-15 JTS3 cycle-4
+    round is what that costs. Its capture was usable, its realization tracked,
+    its measured pooled residual went 3.304 → 0.915 dB, its uncommanded level
+    residual pointed *quieter* — and because no comparable entry baseline made
+    the benefit provable and the intervention carried a boost, the fail-closed
+    cell reverted it to a previous state whose own measurement nobody had. The
+    owner's ruling (2026-08-15): *we're looking for the least bad MEASURED tune.
+    reverting to an unknown measured state seems dumb… the first application is
+    not the end point, it is just the start.*
+
+    So the axes changed. Not "did we prove it helped", but three separable
+    questions, each with its own evaluator above:
+
+    * :func:`evaluate_evidence_trust` — did we measure the state we applied?
+    * :func:`evaluate_applied_safety` — is that state safe to leave on?
+    * :func:`evaluate_round_quality` — how good is it, and what is left to fix?
+
+    The five rows, by their :data:`~.contracts.ADOPTION_ROWS` identifiers:
+
+    ====================================== ================================
+    row                                    outcome
+    ====================================== ================================
+    ``row1_trusted_safe_passed``           ``KEEP``
+    ``row2_trusted_safe_missed``           ``KEEP_FOR_ITERATION``
+    ``row3_unsafe``                        ``RESTORE``
+    ``row4_untrusted_evidence``            ``RESTORE``
+    ``row5_trusted_safe_regressed``        ``RESTORE``
+    ====================================== ================================
 
     Args:
-      realization: the realization verdict's status.
-      benefit: the measured-benefit verdict's status.
-      spec: the spec verdict's status. **Deliberately not a factor** — every
-        row of the issue's table reads "any" for spec, because spec is an
-        outcome and not a proxy for benefit. It is a required argument so a
-        caller must state it (and so a receipt carries it), and a test pins
-        that permuting it changes no decision. If it ever *should* matter,
-        that is a table change with evidence attached, not a quiet read.
+      trust / safety / quality: the three axis verdicts. **Verdicts, not bare
+        statuses**, and that is a deliberate change from the pre-#2537
+        signature. The reason a row fires under IS the deciding axis's own
+        reason — "the boost realized above its declared bound", "the spec band
+        is out of tolerance" — so taking statuses and minting a parallel cause
+        vocabulary here would put a second owner on every one of them. This
+        function still decides nothing an evaluator did not: it selects which
+        axis speaks.
       boosted: does the applied intervention contain a boost? Computed by the
-        host with the shipped predicate (``camilla_yaml.linearization_has_boost``
-        — any filter whose numeric ``gain`` exceeds 0 dB); this module keeps
-        no second copy of that rule. Read **only** when
-        :attr:`~.contracts.BenefitStatus.INDETERMINATE`, which is the scope
-        #2291's row states ("indeterminate because evidence is
-        incomparable/missing … boosted candidates fail closed"). A boost whose
-        benefit was *measured* past the margin is not unproven, so it must not
-        be restored under an unproven-boost cause.
+        host with the shipped predicate
+        (``camilla_yaml.linearization_has_boost``); this module keeps no second
+        copy of that rule. Read **only** on the untrusted row — see
+        :data:`ADOPTION_UNPROVEN_BOOST`.
       rollback_available: can the host actually restore the entry graph? The
         flow's capability idiom is seam presence — ``STAGE_VERIFY_CAPABILITIES``
         provides ``CAPABILITY_ROLLBACK``, and ``bind_v2_stage_seams`` binds the
         rollback seam only for a stage that declares it
-        (:mod:`jasper.web.correction_crossover_v2`). #2291 Phase 3a (#2316)
-        moved that binding onto the stage that actually reaches the delta
-        probe, so on the shipped two-stage host the seam is present where this
-        decision is made. The parameter exists so the decision *sees* seam
-        presence rather than assuming it: a host that binds no rollback — a
-        first-ever round with no anchor, a future single-stage caller — must
-        get a different answer, not a restore instruction nothing can carry
-        out.
+        (:mod:`jasper.web.correction_crossover_v2`). The parameter exists so the
+        decision *sees* seam presence rather than assuming it: a host that binds
+        no rollback must get a different answer, not a restore instruction
+        nothing can carry out.
       restore_failed: a restore was attempted and did not complete.
 
     Safety, stated plainly because this decides whether a graph stays on a
     speaker:
 
-    * **A realization pass never overrides a benefit regression.** The
-      ``(MATCHED, REGRESSED)`` cell restores. That cell is the 2026-08-10
-      shape, and it is the reason this table is keyed on both statuses
-      instead of short-circuiting on a tracking pass.
-    * **Indeterminate never claims success.** Every ``INDETERMINATE`` cell is
-      UNPROVEN, which can only become ``user_decision``, ``restore``, or
-      ``recovery_required`` — never ``keep``.
-    * **A boosted intervention fails closed when the benefit is
-      indeterminate.** An unverified *cut* can wait for a household to
-      decide; a *boost* whose benefit we cannot show is energy we put into a
-      driver and cannot justify, so it comes off — ``boosted`` promotes that
-      cell to a restore rather than leaving it a question. The modifier is
-      scoped to :attr:`~.contracts.BenefitStatus.INDETERMINATE` on purpose: a
-      boost that measured *improved* but lacks realization evidence is
-      unattributed, not unproven, and restoring it under an unproven-boost
-      cause would put a false statement on a receipt — the same defect this
-      module already fixed for the unboosted sibling cell. That cell stays
-      ``user_decision``, which claims no success either.
-    * **A restore we cannot perform is not a restore.** When the evidence
-      says the graph must come off and no rollback anchor exists, the answer
-      is ``recovery_required`` — a loud operator path — never a ``restore``
-      the host has no way to execute and never a ``keep``. That is also
-      #2291's "the first-ever correction round refuses to apply if no valid
-      rollback anchor exists", answered after the fact rather than before it.
+    * **The restore trigger set NARROWED for quality and WIDENED for hazard,
+      and both directions are intended.** Gone as restore triggers: a
+      realization that missed tolerance, an unprovable benefit under a boost, a
+      spec band out of tolerance. Added: a boost measured above its declared
+      bound, an uncommanded shift measured LOUDER than declared, a clipped
+      capture, and every previously-``user_decision`` untrusted cell. Nothing
+      that was a hard stop for a hazard stopped being one.
+    * **A measured regression still restores.** The owner's ruling turns on
+      *unknown* previous states; a regression is the case where the previous
+      state's measurement is exactly the evidence, so going back is going back
+      to a measured tune. That is
+      :data:`~.contracts.ADOPTION_ROW_RESTORE_REGRESSION`, the fifth row the
+      ruling's four did not enumerate and its principle requires.
+    * **An unmeasured applied state never stays.** The untrusted row restores
+      even though nothing accuses the graph, because "least bad MEASURED tune"
+      cannot include a state nobody measured.
+    * **Safety is checked BEFORE trust.** Both rows restore, so the order only
+      decides which name the receipt carries — and naming the hazard beats
+      naming the absence when both are true (a clipped capture is both). A
+      hazard read off weak evidence lands on the conservative side by
+      construction.
+    * **A restore we cannot perform is not a restore.** When the evidence says
+      the graph must come off and no rollback anchor exists, the answer is
+      ``recovery_required`` — a loud operator path — never a ``restore`` the
+      host has no way to execute and never a ``keep``.
     * **A failed restore outranks everything.** Checked first: the speaker is
       then in neither the entry graph nor the intended one, and no later row
       can describe that better.
     """
 
     for name, value, kind in (
-        ("realization", realization, RealizationStatus),
-        ("benefit", benefit, BenefitStatus),
-        ("spec", spec, SpecStatus),
+        ("trust", trust, EvidenceTrust),
+        ("safety", safety, SafetyStatus),
+        ("quality", quality, QualityStatus),
     ):
-        if not isinstance(value, kind):
-            raise CrossoverV2ContractError(f"{name} must be a {kind.__name__}")
+        if not isinstance(value, Verdict) or not isinstance(value.status, kind):
+            raise CrossoverV2ContractError(
+                f"{name} must be a Verdict carrying a {kind.__name__}"
+            )
 
     if restore_failed:
         return AdoptionDecision(
-            outcome=AdoptionOutcome.RECOVERY_REQUIRED, reason=ADOPTION_RESTORE_FAILED
+            outcome=AdoptionOutcome.RECOVERY_REQUIRED,
+            reason=ADOPTION_RESTORE_FAILED,
+            row=ADOPTION_ROW_RESTORE_FAILED,
         )
-
-    intent, reason = _ADOPTION_TABLE[(realization, benefit)]
-    if intent is _Intent.KEEP:
-        return AdoptionDecision(outcome=AdoptionOutcome.KEEP, reason=reason)
-    if intent is _Intent.RESTORE:
-        return _restore_or_recover(reason, rollback_available=rollback_available)
-    if boosted and benefit is BenefitStatus.INDETERMINATE:
+    if safety.status is SafetyStatus.UNSAFE:
         return _restore_or_recover(
-            ADOPTION_UNPROVEN_BOOST, rollback_available=rollback_available
+            safety.reason,
+            row=ADOPTION_ROW_RESTORE_UNSAFE,
+            rollback_available=rollback_available,
         )
-    return AdoptionDecision(outcome=AdoptionOutcome.USER_DECISION, reason=reason)
+    if trust.status is EvidenceTrust.UNTRUSTED:
+        return _restore_or_recover(
+            ADOPTION_UNPROVEN_BOOST if boosted else trust.reason,
+            row=ADOPTION_ROW_RESTORE_UNTRUSTED,
+            rollback_available=rollback_available,
+        )
+    outcome, row = _QUALITY_ROWS[quality.status]
+    if outcome is AdoptionOutcome.RESTORE:
+        return _restore_or_recover(
+            quality.reason, row=row, rollback_available=rollback_available,
+        )
+    return AdoptionDecision(outcome=outcome, reason=quality.reason, row=row)
 
 
 def _restore_or_recover(
-    reason: str, *, rollback_available: bool
+    reason: str, *, row: str, rollback_available: bool
 ) -> AdoptionDecision:
     """A restore the host can run, or the escalation when it cannot.
 
@@ -857,11 +1186,18 @@ def _restore_or_recover(
     step earlier — before the attempt rather than after it — because a
     decision to restore with no anchor to restore *to* is not a decision the
     host can carry out.
+
+    The ROW is the same either way: the rule fired, and only its execution was
+    impossible. A receipt that renamed the row on a missing anchor would say a
+    different rule applied.
     """
 
     if rollback_available:
-        return AdoptionDecision(outcome=AdoptionOutcome.RESTORE, reason=reason)
+        return AdoptionDecision(
+            outcome=AdoptionOutcome.RESTORE, reason=reason, row=row
+        )
     return AdoptionDecision(
         outcome=AdoptionOutcome.RECOVERY_REQUIRED,
         reason=f"{ADOPTION_NO_ROLLBACK_ANCHOR}:{reason}",
+        row=row,
     )

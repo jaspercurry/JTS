@@ -82,6 +82,15 @@ from jasper.active_speaker.crossover_v2.journey import (
     available_stage_priors,
     open_stage,
 )
+# The round's own rollback-anchor provenance (#2537) — what an apply displaced,
+# what it put live, and whether the running graph is still that. A pure leaf
+# like ``journey`` above: it owns the record's shape and the divergence rule,
+# and this module keeps only the wiring (write it on apply, read it on restore).
+from jasper.active_speaker.crossover_v2.round_anchor import (
+    ROUND_ANCHOR_STATE_KEY,
+    round_anchor_record,
+    running_config_diverged,
+)
 # The position gate's two TERMINAL codes, at module level because the constants
 # they name are module level. A pure-organ leaf like ``journey`` above, so this
 # adds no cycle and no import cost worth deferring — every other flow symbol in
@@ -544,6 +553,7 @@ def reset_v2_journey_state() -> None:
     pre_apply_profile = state.get("pre_apply_profile")
     attempts_loop = state.get("attempts_loop")
     sound_declaration_undo = state.get("sound_declaration_undo")
+    round_anchor = state.get(ROUND_ANCHOR_STATE_KEY)
     save_v2_state({
         "session_id": None,
         "accepted_phases": [],
@@ -577,6 +587,14 @@ def reset_v2_journey_state() -> None:
             if isinstance(sound_declaration_undo, Mapping)
             else None
         ),
+        # Preserved on the same terms (#2537), and load-bearing for the same
+        # reason: Start over keeps the applied graph playing and keeps Undo
+        # reachable, so dropping the round's own record of what that apply
+        # displaced would leave the restore unable to check whether the graph
+        # it is about to replace is still the one it applied.
+        ROUND_ANCHOR_STATE_KEY: (
+            dict(round_anchor) if isinstance(round_anchor, Mapping) else None
+        ),
     })
     log_event(logger, "correction.crossover_v2_journey_reset_kept_applied")
 
@@ -587,6 +605,7 @@ def observe_apply_success(
     pre_apply_profile: Mapping[str, Any] | None = None,
     sound_declaration_undo: Mapping[str, Any] | None = None,
     expected_post_apply_offset_db: float = 0.0,
+    round_anchor: Mapping[str, Any] | None = None,
 ) -> None:
     """Mark the v2 candidate applied — the apply-complete event that arms the
     soft-held VERIFY (§5.2). Called by the v2 apply endpoint on success.
@@ -614,6 +633,16 @@ def observe_apply_success(
     ``/sound``, reporting success. Passing ``None`` is therefore not a default
     to skip: it is an ordinary apply CLEARING a record that no longer inverts
     anything.
+
+    ``round_anchor`` (#2537) is
+    :func:`~jasper.active_speaker.crossover_v2.round_anchor.round_anchor_record`'s
+    snapshot of what this apply displaced and what it put live, written in the
+    SAME state write and for exactly ``pre_apply_profile``'s reason: it
+    describes this one reversible event, so it must be re-stamped by every apply
+    and can never outlive the graph its sibling describes. ``None`` clears it,
+    which is what an apply that could not name either path should leave behind —
+    an absent anchor makes the restore's divergence check say "cannot compare",
+    never "matches".
 
     ``expected_post_apply_offset_db`` (#1811) is the whole-band level move the
     emitted graph made and did NOT command as part of the correction's shape —
@@ -665,6 +694,12 @@ def observe_apply_success(
         dict(sound_declaration_undo)
         if isinstance(sound_declaration_undo, Mapping)
         else None
+    )
+    # UNCONDITIONAL for the same reason as the two above (#2537): three halves
+    # of one reversible event, re-stamped together or the round's own record of
+    # what it displaced starts describing a different apply.
+    state[ROUND_ANCHOR_STATE_KEY] = (
+        dict(round_anchor) if isinstance(round_anchor, Mapping) else None
     )
     offset_db = float(expected_post_apply_offset_db)
     state["expected_post_apply_offset_db"] = (
@@ -753,6 +788,12 @@ def observe_restore() -> None:
     # reach ``/sound``. The recovery is the household sentence, which names the
     # exact frequency to set, plus the ERROR journal line.
     state["sound_declaration_undo"] = None
+    # The third half of the same Undo (#2537): what this apply displaced and
+    # what it put live. Cleared here for exactly ``pre_apply_profile``'s
+    # reason — the apply it describes has just been reversed, so a surviving
+    # record would describe a graph that is no longer live and a displacement
+    # that has already been undone.
+    state[ROUND_ANCHOR_STATE_KEY] = None
     # fsync'd (#2291), the mirror of ``observe_apply_success``: this write
     # CLEARS the rollback anchor and flips ``applied`` after the previous graph
     # is already back on the speaker, so a power cut that loses it leaves the
@@ -3553,6 +3594,12 @@ def persist_conductor_state(
     #     session id, so the very first Undo after every apply would find no
     #     record and leave ``/sound`` declaring the undone crossover.
     state["sound_declaration_undo"] = prior.get("sound_declaration_undo")
+    # #2537's round anchor is the FIFTH key in the same host-owned class, and
+    # takes the same unconditional shape for the same reason — ``round_anchor``
+    # describes the live apply, and the deferred VERIFY that auto-arms after
+    # every apply persists under a brand-new session id, so session-scoping it
+    # would blank the restore's divergence check on the very first re-arm.
+    state[ROUND_ANCHOR_STATE_KEY] = prior.get(ROUND_ANCHOR_STATE_KEY)
     state["apply_blocked"] = (
         prior.get("apply_blocked")
         if prior.get("session_id") == snap.session_id
@@ -6916,11 +6963,35 @@ def _active_graph_fingerprint() -> str:
     answer to the round and should not become two vocabularies.
     """
     from jasper.active_speaker.baseline_profile import (
+        APPLIED_PROFILE_DISPLACED,
+        applied_profile_displacement,
         load_applied_baseline_profile_state,
     )
 
     applied = load_applied_baseline_profile_state()
     if not isinstance(applied, Mapping):
+        return ""
+    # The record is only an answer to "which graph is on the speaker" while it
+    # is still the graph on the speaker (#2537). An out-of-band reconcile
+    # changes the RUNNING config without touching this record, and a receipt
+    # that then named the record's fingerprint would assert a graph the speaker
+    # had not played for hours — which is exactly the 2026-08-15 cycle-4 shape,
+    # one layer up from the restore it misdirected. A displaced record answers
+    # ``""``, which the coordinator turns into its own ``unknown`` word: the
+    # honest "we cannot name it", not a wrong name.
+    #
+    # ONLY on a positive displacement. The other two codes mean the comparison
+    # could not be made — no statefile to read, no path on the record — and
+    # this module's standing rule is that an absent measurement is not evidence
+    # of a defect. Dropping a fingerprint because a statefile was unreadable
+    # would make every box without one report ``unknown`` forever.
+    if applied_profile_displacement(applied) == APPLIED_PROFILE_DISPLACED:
+        log_event(
+            logger,
+            "correction.crossover_v2_applied_profile_displaced",
+            level=logging.WARNING,
+            surface="entry_graph_fingerprint",
+        )
         return ""
     return str(applied.get("candidate_fingerprint") or "")
 
@@ -8053,7 +8124,12 @@ def handle_v2_apply(
                 observe_apply_success(
                     expected, pre_apply_profile=pre_apply_profile,
                     sound_declaration_undo=declaration_undo,
-                    expected_post_apply_offset_db=offset_db)
+                    expected_post_apply_offset_db=offset_db,
+                    # Read from the transaction that just completed, so the
+                    # displaced identity is the graph CamillaDSP was actually
+                    # playing a moment ago rather than whatever a global record
+                    # says later (#2537).
+                    round_anchor=round_anchor_record(payload))
     issue = None
     if payload.get("status") in {"blocked", "apply_failed"}:
         # Finding N: name the blocker compactly (not buried in the full
@@ -8323,12 +8399,15 @@ def _restore_sound_declaration(record: Any) -> tuple[str, str]:
     return DECLARATION_RESTORED, ""
 
 
-#: Why a rollback anchor cannot be restored from, as three named codes. On the
+#: Why a rollback anchor cannot be restored from, as four named codes. On the
 #: journal and the round receipt, so "we could not put the old sound back" says
-#: WHICH of the three it was without re-deriving it from a sentence.
+#: WHICH of the four it was without re-deriving it from a sentence.
 ANCHOR_NOT_APPLIED = "not_applied"
 ANCHOR_NO_PRE_APPLY_PROFILE = "no_pre_apply_profile"
 ANCHOR_TOPOLOGY_CHANGED = "topology_changed"
+#: The speaker is no longer playing the graph this round applied — something
+#: changed the running config out of band since the apply (#2537).
+ANCHOR_RUNNING_CONFIG_DIVERGED = "running_config_diverged"
 
 
 @dataclass(frozen=True)
@@ -8341,17 +8420,19 @@ class RollbackAnchorRefusal:
 
 def rollback_anchor_refusal(
     state: Mapping[str, Any] | None,
+    *,
+    running_config_path: str | None = None,
 ) -> RollbackAnchorRefusal | None:
     """Why this durable state has no restorable anchor, or ``None`` if it has.
 
     **One owner for a rule with two readers.** :func:`handle_v2_restore` raises
     on this, and #2291's ``rollback_available`` seam asks it before the round's
     adoption decision commits to a ``restore`` instruction. Before this
-    function the two would have been separate transcriptions of the same three
+    function the two would have been separate transcriptions of the same
     preconditions, and a round could have promised a restore that Undo then
     refused — the exact drift #2291 exists to close.
 
-    The three are, in the order Undo needs them:
+    The four are, in the order Undo needs them:
 
     * nothing is applied, so there is no apply to reverse;
     * nothing was stashed — a genuine first-ever apply on this speaker;
@@ -8359,12 +8440,45 @@ def rollback_anchor_refusal(
       reloading it would realize the WRONG graph (item 2, #1605). A stash that
       predates the fingerprint carries none, cannot be compared, and is
       allowed through to the restore path, which validates the config bytes
-      itself.
+      itself;
+    * the speaker is no longer playing the graph this round APPLIED (#2537).
+
+    **Why the fourth exists.** On 2026-08-15 (jts3 cycle 4) an operator
+    reconciled the running config out of band at 01:00; at 07:30 a round's
+    restore fired, faithfully put back the profile record's "previous sound" —
+    run 2's candidate, applied six and a half hours earlier — and reported
+    success. Every existing check passed, because every existing check asks
+    about the ANCHOR and none of them asks whether the graph being replaced is
+    the one this round put there. A restore is a check-then-act on a shared
+    resource; this is its check.
+
+    It refuses rather than re-anchors, and that is the honest half: this
+    function knows the running graph is not the one the round applied, and it
+    does not know what the household would want done about that. Stomping a
+    config an operator deliberately reconciled to is the one outcome nobody
+    asked for.
+
+    **The fourth check needs a LIVE reading, which is why it is a parameter and
+    why ``None`` skips it.** ``running_config_path`` is what CamillaDSP reports
+    right now — an async round trip this pure function must not make, and one
+    the ``rollback_available`` capability probe deliberately does not make
+    either: a camilla hiccup would flip that probe to "no anchor" and route an
+    otherwise-fine round to ``recovery_required``. So the probe answers the
+    three STATIC preconditions and :func:`handle_v2_restore` adds the live one
+    at the moment of action, which is where a check-then-act window belongs.
+    The two can therefore disagree, and the disagreement is bounded and loud: a
+    divergence found at the endpoint returns "not restored", which re-grades the
+    round with ``restore_failed=True`` into ``recovery_required``. That is the
+    operator path, not a silent difference of opinion.
+
+    A state with no ``round_anchor`` — applied before #2537 shipped, or by an
+    apply that could not name either path — cannot be compared and is allowed
+    through, exactly as a stash predating the topology fingerprint is.
 
     Pure and side-effect-free by design: it is called on the read path to
     answer a capability question, so it must not log, mutate, or apply
-    anything. :func:`handle_v2_restore` owns the journal line for the topology
-    case, because that is the one that fires when a household actually presses
+    anything. :func:`handle_v2_restore` owns the journal lines for the topology
+    and divergence cases, because those fire when a household actually presses
     the button.
     """
     from jasper.active_speaker.baseline_profile import topology_config_fingerprint
@@ -8402,6 +8516,15 @@ def rollback_anchor_refusal(
                 "crossover was applied, so the previous sound can't be safely "
                 "restored — re-measure the crossover instead",
             )
+    if running_config_diverged(
+        state.get(ROUND_ANCHOR_STATE_KEY), running_config_path
+    ):
+        return RollbackAnchorRefusal(
+            ANCHOR_RUNNING_CONFIG_DIVERGED,
+            "the speaker's sound was changed by something else after this "
+            "crossover was applied, so undoing it now would replace that "
+            "change instead — check the speaker's current sound first",
+        )
     return None
 
 
@@ -8446,12 +8569,26 @@ def handle_v2_restore(
     )
 
     state = load_v2_state()
-    # The three preconditions live in ``rollback_anchor_refusal`` (#2291), so
-    # this endpoint and the round's ``rollback_available`` seam cannot come to
-    # different conclusions about the same state. Item 2 (#1605)'s topology
+    cam = camilla_factory()
+    # The LIVE half of the fourth precondition (#2537), read here and only
+    # here: what is CamillaDSP actually playing right now? Guarded to ``None``
+    # — "could not compare" — because a camilla that cannot answer is a camilla
+    # the restore below is about to fail against anyway, and refusing on its
+    # silence would trade a real remedy for a non-finding.
+    try:
+        running_config_path = run_async(cam.get_config_file_path(best_effort=True))
+    except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
+        running_config_path = None
+    # The four preconditions live in ``rollback_anchor_refusal`` (#2291, #2537),
+    # so this endpoint and the round's ``rollback_available`` seam cannot come
+    # to different conclusions about the same state. Item 2 (#1605)'s topology
     # check is one of them, and its journal line stays HERE: it fires when a
-    # household actually pressed Undo, not on every capability probe.
-    refusal = rollback_anchor_refusal(state)
+    # household actually pressed Undo, not on every capability probe. So does
+    # the divergence line, for the same reason and one more — the seam does not
+    # take the live reading at all.
+    refusal = rollback_anchor_refusal(
+        state, running_config_path=str(running_config_path or "") or None,
+    )
     if refusal is not None:
         if refusal.code == ANCHOR_TOPOLOGY_CHANGED:
             log_event(
@@ -8459,13 +8596,24 @@ def handle_v2_restore(
                 "correction.crossover_v2_restore_topology_mismatch",
                 level=logging.WARNING,
             )
+        elif refusal.code == ANCHOR_RUNNING_CONFIG_DIVERGED:
+            log_event(
+                logger,
+                "correction.crossover_v2_restore_running_config_diverged",
+                level=logging.ERROR,
+                running_config_path=str(running_config_path or ""),
+                applied_config_path=str(
+                    ((state or {}).get(ROUND_ANCHOR_STATE_KEY) or {})
+                    .get("applied", {})
+                    .get("config_path") or ""
+                ),
+            )
         raise CrossoverV2Refused(refusal.message)
-    # No refusal means the anchor cleared all three checks, so the state is
+    # No refusal means the anchor cleared all four checks, so the state is
     # present and ``pre_apply_profile`` is a Mapping — indexed rather than
-    # re-tested, because a second test here would be a fourth transcription of
+    # re-tested, because a second test here would be a fifth transcription of
     # the rule this function was extracted to own.
     pre_apply_profile = (state or {})["pre_apply_profile"]
-    cam = camilla_factory()
     payload = run_async(
         restore_applied_baseline_profile(
             pre_apply_profile,

@@ -43,6 +43,7 @@ from jasper.active_speaker.delta_probe import (
     VERDICT_MODEL_ERROR,
     VERDICT_SPATIALLY_COSTLY,
     VERDICT_UNAVAILABLE,
+    boost_overshoot,
     classify_delta_probe,
     evaluate_spatial_cost,
     graded_command_floor_db,
@@ -1777,3 +1778,119 @@ def test_to_dict_carries_the_quiet_evidence_the_level_verdict_rests_on():
     assert len(quiet["core_band_hz"]) == 2
     assert quiet["probe_coverage"] < DELTA_PROBE_MIN_QUIET_COVERAGE
     assert quiet["entry_anchor_offset_db"] == pytest.approx(-1.0, abs=1e-9)
+
+
+# --------------------------------------------------------------------------- #
+# the boost-overshoot hard stop (#2537)
+# --------------------------------------------------------------------------- #
+
+
+def test_an_exactly_realized_boost_measures_no_overshoot():
+    commanded = _commanded_lift()
+    probe = classify_delta_probe(_GRID_HZ, commanded, commanded, band_hz=_band())
+    assert probe.boost_over_declared_bound is False
+    assert probe.boost_overshoot_db == pytest.approx(0.0, abs=1e-9)
+    assert probe.boost_overshoot_octaves == 0.0
+
+
+def test_a_boost_realized_far_above_what_it_commanded_clears_the_bound():
+    """Energy the graph did not declare, over a structured run of the band."""
+    commanded = _commanded_lift()
+    probe = classify_delta_probe(
+        _GRID_HZ, commanded + 5.0, commanded, band_hz=_band()
+    )
+    assert probe.boost_over_declared_bound is True
+    assert probe.boost_overshoot_db == pytest.approx(5.0, abs=1e-6)
+    assert probe.boost_overshoot_octaves >= DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES
+
+
+def test_the_boost_finding_is_DIRECTIONAL_where_every_other_one_is_not():
+    """Under-realizing a boost is a quality miss; over-realizing it is a hazard.
+
+    Same magnitude, opposite sign, opposite answer — and the control matters:
+    the under-realized case still produces a large ``max_error_db``, so the
+    rest of the module DOES see it. Only this finding is silent about it.
+    """
+    commanded = _commanded_lift()
+    under = classify_delta_probe(
+        _GRID_HZ, commanded - 5.0, commanded, band_hz=_band()
+    )
+    over = classify_delta_probe(
+        _GRID_HZ, commanded + 5.0, commanded, band_hz=_band()
+    )
+
+    assert under.boost_over_declared_bound is False
+    assert under.boost_overshoot_db == pytest.approx(-5.0, abs=1e-6)
+    assert over.boost_over_declared_bound is True
+    # The control: the module is not blind to the under-realized case, it just
+    # does not call it a hazard.
+    assert under.max_error_db == pytest.approx(over.max_error_db, abs=1e-6)
+
+
+def test_a_cut_only_correction_reports_not_measured_never_zero():
+    """``None`` is "no graded bin commanded a boost", which 0.0 would misreport
+    as "measured, and it did not overshoot" — the distinction ``gain_factor``
+    and ``residual_offset_db`` both draw."""
+    commanded = -_commanded_lift()
+    probe = classify_delta_probe(_GRID_HZ, commanded, commanded, band_hz=_band())
+    assert probe.boost_overshoot_db is None
+    assert probe.boost_over_declared_bound is False
+
+
+def test_a_single_overshooting_bin_is_texture_not_a_hard_stop():
+    """The structured-exceedance rule, so noise cannot revert a correction.
+
+    A hard stop that fired on one bin would pull a household's graph off for a
+    measurement artefact — the same argument ``_structured_exceedance`` already
+    makes for every other finding in this module.
+    """
+    commanded = _commanded_lift()
+    realized = commanded.copy()
+    realized[300] += 9.0
+
+    probe = classify_delta_probe(_GRID_HZ, realized, commanded, band_hz=_band())
+
+    assert probe.boost_overshoot_db == pytest.approx(9.0, abs=1e-6)
+    assert probe.boost_overshoot_octaves < DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES
+    assert probe.boost_over_declared_bound is False
+
+
+def test_the_overshoot_is_measured_on_the_raw_curve_not_the_frame_removed_one():
+    """A frame is removed to ask whether the SHAPE is right; this asks how much
+    energy reached the driver. Subtracting a fitted offset first would hide
+    exactly the whole-band overshoot the hard stop exists for."""
+    grid = _LINEAR_GRID_HZ
+    commanded = np.where((grid >= 400.0) & (grid <= 12_000.0), 4.0, 0.0)
+    probe = classify_delta_probe(
+        grid, commanded + 3.0, commanded, band_hz=(400.0, 20_000.0)
+    )
+    assert probe.frame.fitted is True
+    assert probe.frame.offset_db == pytest.approx(3.0, abs=1e-6)
+    # The frame says "the whole comparison sits 3 dB high"; the overshoot says
+    # the boosted bins delivered 3 dB more than they asked for. Both are true,
+    # and only the second is the safety question.
+    assert probe.boost_overshoot_db == pytest.approx(3.0, abs=1e-6)
+    assert probe.boost_over_declared_bound is True
+
+
+def test_boost_overshoot_reports_no_finding_when_no_bin_is_boosted():
+    """The helper's own contract, on the grid rather than through a verdict."""
+    grid = _GRID_HZ
+    commanded = -np.ones_like(grid) * 4.0
+    mask = np.ones_like(grid, dtype=bool)
+    over, worst, octaves = boost_overshoot(
+        grid, commanded + 9.0, commanded, np.full_like(grid, 1.5), mask
+    )
+    assert (over, worst, octaves) == (False, None, 0.0)
+
+
+def test_to_dict_carries_the_boost_evidence_the_hard_stop_rests_on():
+    commanded = _commanded_lift()
+    payload = classify_delta_probe(
+        _GRID_HZ, commanded + 5.0, commanded, band_hz=_band()
+    ).to_dict()
+    assert set(payload["boost"]) == {
+        "over_declared_bound", "overshoot_db", "overshoot_octaves",
+    }
+    assert payload["boost"]["over_declared_bound"] is True
+    assert payload["boost"]["overshoot_db"] == pytest.approx(5.0, abs=1e-6)

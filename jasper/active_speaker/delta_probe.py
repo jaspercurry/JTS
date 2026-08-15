@@ -718,16 +718,31 @@ class DeltaProbeMap:
     #: one bin sat at 493 Hz and one at 1.9 kHz. ``None`` when no residual was
     #: measured.
     quiet_core_band_hz: tuple[float, float] | None = None
-    #: :attr:`quiet_core_band_hz`'s span in octaves divided by
-    #: :attr:`probe_band_hz`'s — how spread the evidence for a level claim is,
-    #: relative to the band that claim is made over. Uniform sampling of the
-    #: graded band scores exactly 0.5 (see
+    #: :attr:`quiet_core_band_hz`'s span in octaves divided by the SAME
+    #: statistic over every graded-band bin on this grid — how spread the
+    #: evidence for a level claim is, relative to a full sampling of the band
+    #: that claim is made over. A quiet set spread like the graded band's own
+    #: bins scores exactly 1.0 (see
     #: :data:`DELTA_PROBE_MIN_QUIET_COVERAGE`); below that bar the level verdict
     #: keeps its finding but narrows its reason to
     #: :data:`REASON_UNCOMMANDED_LEVEL_SHIFT_OUTSIDE_BAND`. ``None`` when no
     #: residual was measured, or when the graded band spans no octaves at all
     #: for a coverage to be a fraction OF.
     quiet_probe_coverage: float | None = None
+    #: Did a commanded BOOST realize more lift than it declared, structurally?
+    #: (#2537) The adoption table's one delta-probe-sourced hard stop — see
+    #: :func:`boost_overshoot` for the rule and why it is the one directional
+    #: exceedance in this module. ``False`` both when nothing overshot and when
+    #: no graded bin commanded a boost; the two are told apart by
+    #: :attr:`boost_overshoot_db`, which is ``None`` only in the second case.
+    boost_over_declared_bound: bool = False
+    #: The worst signed ``realized − commanded``, dB, over the graded bins where
+    #: the correction commanded a boost. Positive is over-realized. ``None``
+    #: when no graded bin commanded one — "not measured", never 0.0.
+    boost_overshoot_db: float | None = None
+    #: The widest contiguous run, in octaves, over which that excess cleared
+    #: this probe's per-bin tolerance. ``0.0`` means nothing cleared it.
+    boost_overshoot_octaves: float = 0.0
 
     @property
     def matched(self) -> bool:
@@ -769,6 +784,14 @@ class DeltaProbeMap:
                 ),
                 "probe_coverage": self.quiet_probe_coverage,
                 "entry_anchor_offset_db": self.entry_anchor_offset_db,
+            },
+            # The directional boost finding, nested for the same reason: a
+            # reader judging a hard stop needs the answer, the amount, and how
+            # wide it ran as one set (#2537).
+            "boost": {
+                "over_declared_bound": self.boost_over_declared_bound,
+                "overshoot_db": self.boost_overshoot_db,
+                "overshoot_octaves": self.boost_overshoot_octaves,
             },
             # The frame's own terms and the grades taken with it removed, nested
             # together so a reader picks a frame of reference once and reads a
@@ -894,6 +917,54 @@ def _structured_exceedance(
     exceeds = probe_mask & (np.abs(error_db) > tolerance_db)
     widest, _ = widest_exceedance_octaves(freqs_hz, exceeds)
     return widest >= DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES, widest
+
+
+def boost_overshoot(
+    freqs_hz: np.ndarray,
+    realized_db: np.ndarray,
+    commanded_db: np.ndarray,
+    tolerance_db: np.ndarray,
+    probe_mask: np.ndarray,
+) -> tuple[bool, float | None, float]:
+    """Did a commanded BOOST realize MORE lift than it asked for? (#2537)
+
+    ``(over the declared bound, worst signed excess in dB, widest run in
+    octaves)``, measured only in graded bins where the correction commanded a
+    **boost** — ``commanded > 0``. Every array is on the full grid, exactly as
+    :func:`_structured_exceedance` requires and for the same run-contiguity
+    reason.
+
+    **Directional, where every other exceedance rule here is not.** The rest of
+    this module asks "did realized and commanded disagree", takes ``abs``, and
+    is right to: a shape defect is a defect in either direction. This one asks
+    the hearing-safety question instead — *is the speaker putting more energy
+    into a driver than the graph declared it would* — and under-realizing a
+    boost is not that. A boost that delivered 3 dB of a commanded 6 is a
+    quality miss to learn from; one that delivered 9 is energy nobody asked
+    for.
+
+    The bound is this probe's own per-bin tolerance, which is why it is an
+    argument rather than a second constant: a bin is over the bound when
+    ``realized − commanded > tolerance(f)``, the same slack the graded verdict
+    already concedes. And the finding is STRUCTURED on the same rule as every
+    other one here (:data:`DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES`), so a single
+    noisy bin cannot pull a household's correction off the speaker.
+
+    The middle value is ``None`` when no graded bin commanded a boost — "not
+    measured", never 0.0, which would read as "measured, and it did not
+    overshoot" (the distinction ``gain_factor`` and ``residual_offset_db`` both
+    draw). A cut-only correction reaches that, and so does a boost whose bins
+    all fell under the graded floor.
+    """
+    boosted = probe_mask & (commanded_db > 0.0)
+    if not bool(boosted.any()):
+        return False, None, 0.0
+    excess = realized_db - commanded_db
+    worst = float(np.max(excess[boosted]))
+    widest, _ = widest_exceedance_octaves(
+        freqs_hz, boosted & (excess > tolerance_db)
+    )
+    return widest >= DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES, worst, float(widest)
 
 
 def _octave_span(span_hz: tuple[float, float]) -> float:
@@ -1229,6 +1300,16 @@ def classify_delta_probe(
     )
     frame_error = frame_error_full[mask]
 
+    # Did a commanded boost realize MORE than it asked for? (#2537) Measured on
+    # the RAW realized curve, not the frame-removed one, and that is the point:
+    # a frame is removed to answer whether the correction's SHAPE is right, and
+    # this asks how much energy actually reached the driver. Subtracting a
+    # fitted offset first would hide exactly the whole-band overshoot the
+    # adoption table's hard stop exists for.
+    boost_over_bound, boost_overshoot_db, boost_overshoot_octaves = boost_overshoot(
+        freqs, realized, commanded, tolerance_full, mask,
+    )
+
     def _map(verdict: str, reason: str) -> DeltaProbeMap:
         return DeltaProbeMap(
             verdict=verdict, reason=reason, probe_band_hz=probe_band_hz,
@@ -1257,6 +1338,9 @@ def classify_delta_probe(
             quiet_n_bins=quiet_n_bins,
             quiet_core_band_hz=quiet_core_band_hz,
             quiet_probe_coverage=quiet_probe_coverage,
+            boost_over_declared_bound=boost_over_bound,
+            boost_overshoot_db=boost_overshoot_db,
+            boost_overshoot_octaves=boost_overshoot_octaves,
         )
 
     if not exceeded:
@@ -1489,6 +1573,7 @@ __all__ = [
     "VERDICT_MODEL_ERROR",
     "VERDICT_SPATIALLY_COSTLY",
     "VERDICT_UNAVAILABLE",
+    "boost_overshoot",
     "classify_delta_probe",
     "evaluate_spatial_cost",
     "graded_command_floor_db",

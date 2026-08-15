@@ -79,9 +79,12 @@ from .contracts import (
     BenefitStatus,
     CaptureValidity,
     CrossoverV2ContractError,
+    EvidenceTrust,
+    QualityStatus,
     RealizationStatus,
     ResponseCurve,
     RoundReceipt,
+    SafetyStatus,
     SpecStatus,
     VerificationResult,
     _text,
@@ -475,6 +478,13 @@ class RoundEvaluation:
     benefit: Verdict[BenefitStatus]
     spec: Verdict[SpecStatus]
     result: VerificationResult
+    #: The three axes :func:`~.verification.decide_adoption` read (#2537),
+    #: kept beside the four verdicts they compose for exactly the same reason:
+    #: the adoption decision carries the row and the deciding axis's reason,
+    #: and these carry the numbers all three were read from.
+    trust: Verdict[EvidenceTrust]
+    safety: Verdict[SafetyStatus]
+    quality: Verdict[QualityStatus]
     adoption: AdoptionDecision
     #: The post-apply pooled spec residual, lower-is-better, or ``None``.
     #: Separated out because it has a second consumer: it is the acoustic
@@ -492,10 +502,26 @@ class RoundEvaluation:
                 "benefit": self.benefit.to_dict(),
                 "spec": self.spec.to_dict(),
             },
+            "axes": self.axes(),
             "result": self.result.to_dict(),
             "adoption": self.adoption.to_dict(),
             "post_residual_db": self.post_residual_db,
             "post_residual_bins": self.post_residual_bins,
+        }
+
+    def axes(self) -> dict[str, Any]:
+        """The three adoption axes alone, for the receipt's ``round_axes``.
+
+        Separated from :meth:`to_dict` because the receipt carries these and
+        not the four verdicts underneath them: the verdicts already ride on the
+        receipt's ``verification`` field, and a receipt with both would state
+        the same statuses twice.
+        """
+
+        return {
+            "trust": self.trust.to_dict(),
+            "safety": self.safety.to_dict(),
+            "quality": self.quality.to_dict(),
         }
 
 
@@ -509,10 +535,11 @@ def evaluate_round(
     reference_mark: str,
     boosted: bool,
     rollback_available: bool,
+    delta_probe: Any | None = None,
     restore_failed: bool = False,
     margin_db: float = MEASURED_BENEFIT_MARGIN_DB,
 ) -> RoundEvaluation:
-    """Grade one round: the four questions, then the adoption table.
+    """Grade one round: the four questions, the three axes, then the table.
 
     The composition #2291 Phase 3b left for its caller, taken here once so
     every surface that grades a round grades it the same way. It decides
@@ -530,10 +557,11 @@ def evaluate_round(
 
     ``spec_report`` is the post-apply spatial cloud's report when the tier
     produced one, and ``None`` otherwise (#2160's honest wire: the failure
-    that used to be disclosure-only is now the SPEC verdict's input). It
-    cannot change the adoption — spec is "any" in every row of the issue's
-    table, because a first pass may honestly be improved and out of spec — so
-    routing it in adds an answer to the receipt without adding a gate.
+    that used to be disclosure-only is now the SPEC verdict's input). It can
+    never make a round RESTORE — spec sits on the quality axis, whose only
+    restoring value is a measured regression — but since #2537 it does decide
+    between ``keep`` and ``keep_for_iteration``, and each failing band rides
+    into the receipt as a next-round target.
 
     Args:
       post_analysis: the post-apply VERIFY capture's analysis.
@@ -549,6 +577,14 @@ def evaluate_round(
       reference_mark: the position identity both captures were taken at.
       boosted / rollback_available / restore_failed: the adoption modifiers;
         see :func:`~.verification.decide_adoption` for each one's scope.
+      delta_probe: the round's
+        :class:`~jasper.active_speaker.delta_probe.DeltaProbeMap`, or ``None``
+        when the session never ran one (#2537). It is an *optional* input and
+        an absent one is not a hazard: see
+        :func:`~.verification.evaluate_applied_safety` for why an ungraded
+        probe reports no finding rather than an unsafe one, and
+        :func:`~.verification.evaluate_round_quality` for why an ungraded probe
+        still cannot let a round call itself PASSED.
       margin_db: defaults to this module's own
         :data:`MEASURED_BENEFIT_MARGIN_DB` — the owner supplying its own
         constant, so there is no call site free to pass a different bar.
@@ -556,16 +592,18 @@ def evaluate_round(
 
     from .verification import (
         decide_adoption,
+        evaluate_applied_safety,
         evaluate_benefit,
         evaluate_capture_validity,
+        evaluate_evidence_trust,
         evaluate_realization,
+        evaluate_round_quality,
         evaluate_spec,
         verification_result,
     )
 
-    capture = evaluate_capture_validity(
-        getattr(post_analysis, "capture_integrity", None)
-    )
+    integrity = getattr(post_analysis, "capture_integrity", None)
+    capture = evaluate_capture_validity(integrity)
     if capture.status is CaptureValidity.UNUSABLE:
         realization: Any = Verdict(
             RealizationStatus.UNAVAILABLE, capture.reason, capture.evidence
@@ -601,10 +639,21 @@ def evaluate_round(
     result = verification_result(
         capture=capture, realization=realization, benefit=benefit, spec=spec
     )
+    # The three axes are composed from the FOUR VERDICT OBJECTS, not from
+    # ``result``'s collapsed statuses (#2537): a row's reason is the deciding
+    # axis's reason, and ``result`` keeps only the statuses plus one joined
+    # string. Reading it here would force the axes to re-derive a cause the
+    # verdicts already carry.
+    trust = evaluate_evidence_trust(capture=capture, realization=realization)
+    safety = evaluate_applied_safety(probe=delta_probe, integrity=integrity)
+    quality = evaluate_round_quality(
+        realization=realization, benefit=benefit, spec=spec,
+        probe=delta_probe, spec_report=spec_report,
+    )
     adoption = decide_adoption(
-        realization=result.realization,
-        benefit=result.benefit,
-        spec=result.spec,
+        trust=trust,
+        safety=safety,
+        quality=quality,
         boosted=boosted,
         rollback_available=rollback_available,
         restore_failed=restore_failed,
@@ -615,6 +664,9 @@ def evaluate_round(
         benefit=benefit,
         spec=spec,
         result=result,
+        trust=trust,
+        safety=safety,
+        quality=quality,
         adoption=adoption,
         post_residual_db=None if post_residual is None else post_residual[0],
         post_residual_bins=None if post_residual is None else post_residual[1],
@@ -709,6 +761,10 @@ def build_round_receipt(
         post_measurement=post_measurement,
         verification=evaluation.result,
         adoption=evaluation.adoption,
+        # The three axes the row was read off (#2537) — banked with the
+        # decision, because a receipt saying "keep, and here is what to fix"
+        # is only actionable to the NEXT round if the targets travel with it.
+        round_axes=evaluation.axes(),
         restore_result=restore_result,
         evidence_identities=evidence_identities,
         created_at=created_at,

@@ -916,6 +916,132 @@ def test_a_level_mismatch_caveats_the_pass_screen():
     )
 
 
+def test_a_whole_band_level_shift_keeps_the_overall_loudness_sentence():
+    """The reason-aware split's control side (#2537).
+
+    ``uncommanded_level_shift`` means the quiet bins measured the level across
+    the whole graded band, so "the overall loudness" is exactly what was
+    measured and the sentence is unchanged from before the split existed.
+    """
+    caveat = _level_caveat({
+        "verdict": "level_mismatch",
+        "reason": "uncommanded_level_shift",
+        "residual_offset_db": -4.0,
+        "quiet": {"core_band_hz": [12_000.0, 20_000.0]},
+    })
+    assert "overall loudness" in caveat["text"]
+    assert "kHz" not in caveat["text"]
+
+
+def test_a_band_scoped_level_shift_names_the_band_it_actually_covered():
+    """The deferred #2545 nit, and the sentence that was false (#2533/#2537).
+
+    A level measured entirely above 12 kHz was being reported as "the overall
+    loudness changed" — the 2026-08-15 JTS3 round's own shape, where 158 of 160
+    quiet bins sat above 12 kHz. #2533 narrowed the REASON and gave the map the
+    band; this is the screen catching up, so the household reads a true
+    sentence rather than a true-sounding one.
+    """
+    caveat = _level_caveat({
+        "verdict": "level_mismatch",
+        "reason": "uncommanded_level_shift_outside_probe_band",
+        "residual_offset_db": -1.457,
+        "quiet": {"core_band_hz": [12_400.0, 19_800.0]},
+    })
+    assert "overall loudness" not in caveat["text"]
+    assert "12.4 kHz" in caveat["text"]
+    assert "19.8 kHz" in caveat["text"]
+    assert "could not confirm" in caveat["text"]
+    assert not any(
+        word in caveat["text"].lower()
+        for word in ("tweeter", "woofer", "amplifier", "horn")
+    )
+
+
+def test_a_band_scoped_reason_with_no_band_falls_back_rather_than_inventing_one():
+    """A caveat that says slightly more than the evidence supports still tells
+    the household the shape went unconfirmed; a band invented from an absent
+    field would state a fact."""
+    for quiet in ({}, {"core_band_hz": None}, {"core_band_hz": [480.0]}):
+        caveat = _level_caveat({
+            "verdict": "level_mismatch",
+            "reason": "uncommanded_level_shift_outside_probe_band",
+            "quiet": quiet,
+        })
+        assert "overall loudness" in caveat["text"]
+
+
+def test_a_sub_kilohertz_band_reads_in_hertz():
+    caveat = _level_caveat({
+        "verdict": "level_mismatch",
+        "reason": "uncommanded_level_shift_outside_probe_band",
+        "quiet": {"core_band_hz": [331.8, 812.4]},
+    })
+    assert "332 Hz" in caveat["text"]
+    assert "812 Hz" in caveat["text"]
+
+
+def _level_caveat(delta_probe):
+    """The level-mismatch nudge off a passing done screen."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done",
+        verify={"outcome": "pass", "delta_probe": delta_probe},
+        candidate=_candidate_summary(),
+    ))
+    return next(
+        n for n in env["nudges"] if n["code"] == "crossover_v2_level_mismatch"
+    )
+
+
+def test_a_kept_for_iteration_round_says_so_rather_than_only_verified():
+    """#2537's household copy for the row that keeps an imperfect result.
+
+    ``keep_for_iteration`` leaves the speaker in the same state ``keep`` does,
+    so it must not read as a failure — but the round measured something it did
+    not fix, and saying nothing is how "we could not tell" becomes "verified"
+    by silence.
+    """
+    env = build_crossover_envelope_v2(_status(
+        phase="done",
+        verify={"outcome": "pass"},
+        candidate=_candidate_summary(),
+        round_receipt={"round_id": "s1", "adoption": "keep_for_iteration"},
+    ))
+    codes = {n["code"] for n in env["nudges"]}
+    assert "crossover_v2_keep_for_iteration" in codes
+    nudge = next(
+        n for n in env["nudges"] if n["code"] == "crossover_v2_keep_for_iteration"
+    )
+    assert nudge["severity"] == "warn"
+    assert "best sound measured so far" in nudge["text"]
+    assert "measuring again" in nudge["text"]
+    # No hardware noun and no instruction to press anything — the same copy
+    # rule every other caveat on this screen carries.
+    assert not any(
+        word in nudge["text"].lower()
+        for word in ("tweeter", "woofer", "amplifier", "horn", "button")
+    )
+
+
+@pytest.mark.parametrize(
+    "receipt",
+    [None, {}, {"round_id": "s1"}, {"round_id": "s1", "adoption": "keep"}],
+    ids=["absent", "empty", "no_adoption", "plain_keep"],
+)
+def test_only_a_kept_for_iteration_round_gets_that_caveat(receipt):
+    """A ``keep`` round has nothing outstanding to disclose, and a round that
+    restored or escalated never reaches this screen at all."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done",
+        verify={"outcome": "pass"},
+        candidate=_candidate_summary(),
+        round_receipt=receipt,
+    ))
+    assert "crossover_v2_keep_for_iteration" not in {
+        n["code"] for n in env["nudges"]
+    }
+
+
 def test_a_level_mismatch_rides_beside_an_out_of_spec_badge_too():
     """Two instruments, two claims, neither silencing the other."""
     env = build_crossover_envelope_v2(_status(

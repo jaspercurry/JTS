@@ -9037,6 +9037,12 @@ class CrossoverV2Session:
                 commanded_delta_present=self._measure_commanded_delta is not None,
                 realization_tolerance_db=VERIFY_TOLERANCE_DB,
                 reference_mark=REFERENCE_MARK_DESIGN_AXIS,
+                # The map this session's own probe produced, or ``None`` when it
+                # never ran one (#2537). Both triggers reach this AFTER
+                # :meth:`_run_delta_probe` has stamped ``self._delta_probe``, so
+                # the round's safety axis and the probe's own refusal read the
+                # same evidence rather than two reads a capture apart.
+                delta_probe=self._delta_probe,
             ),
             self._round_ports(),
         )
