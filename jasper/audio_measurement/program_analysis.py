@@ -3503,14 +3503,21 @@ def ripple_at_trim(
 ) -> float:
     """The summed pair's ripple (max-min dB) over ``[lo_hz, hi_hz]`` at ONE trim.
 
-    The single owner of "how flat do these two branches sum at this trim", so a
-    caller comparing two trims changes exactly one thing between the two reads.
-    :func:`solve_ripple_optimal_trim` scans with it; the linearization planner
-    calls it a second time at the ANCHORED trim so its rejection telemetry logs
-    a pair that differs only in the trim. Before that pair existed, the
-    rejection event sat a linearized-branch ripple beside a RAW-branch one and
-    the two moved together — a gap that read as flatness thrown away was mostly
-    the linearization itself, which ships either way (#2541).
+    The shared computation behind the trim-rejection telemetry PAIR, so that
+    pair is commensurable by construction rather than by two call sites
+    agreeing: :func:`solve_ripple_optimal_trim` evaluates every scanned
+    candidate through it, and the linearization planner calls it once more at
+    the ANCHORED trim, so the two ripples the rejection event logs differ in
+    exactly one variable. Before that pair existed, the event sat a
+    linearized-branch ripple beside a RAW-branch one and the two moved
+    together — a gap that read as flatness thrown away was mostly the
+    linearization itself, which ships either way (#2541).
+
+    It is not this module's only summed-ripple site: ``_flatter_sum_polarity``
+    composes the same two functions inline, at both polarities. That is left
+    alone deliberately — it is a different question (which SIGN sums flatter,
+    at a fixed trim), and folding it in would be a code change for a docstring's
+    convenience.
 
     Masking is internal, so full-length and already-band-sliced inputs give the
     same number; the scan pre-slices only to keep its per-candidate sums cheap.
@@ -3522,6 +3529,14 @@ def ripple_at_trim(
 
     ``inf`` when the band holds no bins — :func:`_ripple_db`'s own answer,
     carried rather than converted into a fabricated number.
+
+    Expects Python scalars for the trims and ``complex128``/``float64`` arrays
+    for the branches, which is what every caller hands it. The explicit
+    ``float()``/``int()`` casts below make the scalars weak under NEP 50, so a
+    ``float32`` scalar or a ``complex64`` branch pair would promote differently
+    here than under the inline expression this replaced — unreachable rather
+    than guarded against, and named so a future lower-precision caller knows to
+    check rather than assume.
     """
     return _ripple_db(
         freqs,
