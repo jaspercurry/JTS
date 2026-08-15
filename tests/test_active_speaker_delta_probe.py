@@ -1379,6 +1379,21 @@ def test_a_declared_common_attenuation_move_is_realized_and_grades_to_zero():
     )
     assert strayed.residual_offset_db == pytest.approx(0.5, abs=1e-9)
 
+    # The same speaker, on a session whose model was NOT anchored exactly right
+    # going in — which is the ordinary case, and the arm that proves the anchor
+    # is what holds the residual at zero rather than a happy zero doing it. The
+    # standing offset is still a finding (it is a real difference between these
+    # two curves) but it is the FRAME's, not a level move nobody commanded.
+    standing_db = -2.0
+    anchored = _entry_anchored(
+        commanded, realized=commanded + declared_db + standing_db,
+        anchor_db=standing_db, expected_offset_db=declared_db,
+    )
+    assert anchored.entry_anchor_offset_db == pytest.approx(standing_db, abs=1e-9)
+    assert anchored.residual_offset_db == pytest.approx(0.0, abs=1e-9)
+    assert anchored.verdict != VERDICT_LEVEL_MISMATCH
+    assert anchored.rollback is False
+
 
 def test_a_level_shift_measured_only_above_the_graded_band_is_not_whole_band():
     """**#2533 (b).** The 2026-08-15 JTS3 shape: the correction commands the
