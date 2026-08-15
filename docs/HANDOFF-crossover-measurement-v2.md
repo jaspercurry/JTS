@@ -2874,10 +2874,12 @@ and reports `gain_intercept_db` beside the scale.
 
 Because neither `level_mismatch` nor `frame_mismatch` is a rollback, neither
 reaches a refusal screen, so both are surfaced three other ways instead of
-passing silently: the probe logs at WARNING, the verdict is persisted as
-`verify.delta_probe` (verdict, reason, the two level numbers, the band it was
-handed, and the frame's terms with the grades that survived removing it), and
-the done screen carries a caveat nudge alongside its "Verified." badge. When
+passing silently: the probe logs at WARNING (band it was handed, band it
+graded, the frame's terms, the frame-removed grades, the gain and its
+intercept), the verdict is persisted as `verify.delta_probe` — the small
+durable summary, six scalars: verdict, reason, the two level numbers, and the
+frame's offset and tilt, each finding's own claim travelling with it — and the
+done screen carries a caveat nudge alongside its "Verified." badge. When
 there are too few quiet bins to run the level discriminator at all, the verdict
 below it carries a `|level_check_unavailable` suffix in its `reason` — a
 rollback decided without that check says so.

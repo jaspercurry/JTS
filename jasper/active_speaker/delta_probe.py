@@ -861,7 +861,14 @@ def classify_delta_probe(
     # ``c`` carries only bins at or above the graded floor, so it cannot be
     # all-zero; the design matrix is rank-deficient only if every graded bin
     # commands the SAME value, which ``lstsq`` resolves to the minimum-norm
-    # solution rather than raising.
+    # solution rather than raising. On that degenerate shape the intercept and
+    # the scale are not separately identifiable — only their sum at the one
+    # commanded value is — so the reported pair is a minimum-norm split of it
+    # rather than the plain ratio. The split stays monotone in the realized
+    # level, so a deeper shortfall still reads lower and the ordering the
+    # shortfall ceiling tests survives; only the exact crossing moves, by a few
+    # percent on that shape. A real correction's commanded curve is never one
+    # constant.
     design = np.column_stack((np.ones_like(c), c))
     intercept, gain_factor = (
         float(v) for v in np.linalg.lstsq(design, deframed[mask], rcond=None)[0]

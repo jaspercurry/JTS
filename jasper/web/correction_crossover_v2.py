@@ -2810,19 +2810,34 @@ def _fc_selection_summary(conductor: Any) -> dict[str, Any] | None:
 def _delta_probe_summary(probe: Any) -> dict[str, Any]:
     """The delta probe's verdict, small enough to live in durable state (#1811).
 
-    Everything a reader needs to judge a non-rollback finding — chiefly
-    ``level_mismatch``, which by design produces no refusal and would otherwise
-    be invisible outside the journal: what the verdict was, why, the level move
-    the emitter declared, and the one it could not account for. The full map
-    (per-bin errors, exceedance width, gain factor, spatial arm) stays on
-    ``event=correction.crossover_v2_delta_probe`` — this is the durable
-    summary, not a second copy of the record.
+    Everything a reader needs to judge a non-rollback finding — the two that by
+    design produce no refusal and would otherwise be invisible outside the
+    journal: what the verdict was, why, the level move the emitter declared, the
+    one it could not account for, and (since #2521) the two terms of the frame
+    it removed. The full map (per-bin errors, exceedance width, gain factor,
+    spatial arm, both bands) stays on
+    ``event=correction.crossover_v2_delta_probe`` — this is the durable summary,
+    not a second copy of the record.
+
+    The frame terms are here rather than only on the journal line for exactly
+    the reason ``residual_offset_db`` is: ``frame_mismatch`` is a claim ABOUT
+    those two numbers, so a durable record naming the verdict without them
+    would say a level and a slope explained the finding while withholding what
+    they were. ``None`` when no frame was fitted — never 0.0, which would read
+    as "measured, and flat".
+
+    ``getattr`` throughout, and through the nested ``frame`` too: this runs
+    against duck-typed probe stand-ins in tests, and an absent field is
+    "unknown", never a raise that loses the whole snapshot.
     """
+    frame = getattr(probe, "frame", None)
     return {
         "verdict": str(getattr(probe, "verdict", "") or ""),
         "reason": str(getattr(probe, "reason", "") or ""),
         "expected_offset_db": getattr(probe, "expected_offset_db", 0.0),
         "residual_offset_db": getattr(probe, "residual_offset_db", None),
+        "frame_offset_db": getattr(frame, "offset_db", None),
+        "frame_tilt_db_per_octave": getattr(frame, "tilt_db_per_octave", None),
     }
 
 
