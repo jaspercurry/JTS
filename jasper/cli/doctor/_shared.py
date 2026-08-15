@@ -445,6 +445,17 @@ def _loopback_playback_active() -> bool:
     So False means "no snd-aloop renderer lane is open", NOT "nothing
     is playing". A caller that needs true output silence must consult
     fan-in's DIRECT lane and the armed lane set as well.
+
+    RETIREMENT. This reader survives the audio-graph consolidation
+    (#2285) only because the snd-aloop renderer lanes are still a
+    supported configuration — a box on `loopback` coupling, or one whose
+    ring platform never armed, still opens subs 0..4 and this is still
+    the only place that fact lives. It has nothing left to observe once
+    the renderer lanes stop using snd-aloop (every renderer on ring
+    ingress AND the per-renderer aloop PCM definitions deleted); delete
+    it then, together with its two callers' music-active gates. Do not
+    retire it on fleet arming state alone — the fleet being ring-armed
+    is not the code dropping aloop support.
     """
     import glob
     for status_path in glob.glob("/proc/asound/Loopback/pcm0p/sub*/status"):

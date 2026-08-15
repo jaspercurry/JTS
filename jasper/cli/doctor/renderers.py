@@ -1076,6 +1076,17 @@ def _fanin_lane_busy_owner_matches(device: str, unit: str) -> tuple[bool, str]:
 
     Ring lanes take the sibling path above (`_ring_lane_busy_owner_matches`),
     which reads the same fact out of the ring header.
+
+    RETIREMENT. This aloop branch survives the audio-graph consolidation
+    (#2285) because a renderer whose lane is NOT armed for ring ingress
+    still writes its snd-aloop substream, and then `/proc/asound` is the
+    only place its owner pid exists. It retires when the snd-aloop
+    renderer lanes themselves are deleted — at which point the ring
+    sibling is the whole story and `_FANIN_PRIVATE_RENDERER_DEVICES`
+    goes with it, including its second use as the EBUSY-accept gate in
+    `check_renderer_device_resolvable`. Fleet arming state is not that
+    trigger: a fleet whose every box is ring-armed has not deleted the
+    aloop lanes from the code, and an un-armed box would still open one.
     """
     if device in _ring_renderer_devices():
         return _ring_lane_busy_owner_matches(device, unit)
