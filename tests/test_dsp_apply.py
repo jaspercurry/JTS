@@ -29,6 +29,7 @@ from jasper.dsp_apply import (
     ValidationStatus,
     apply_dsp_config,
     config_file_sha256,
+    same_config_file,
     camilla_graph_mutation,
     _DSP_LOCK_OWNERSHIP,
     _dsp_apply_lock,
@@ -880,3 +881,37 @@ def test_every_proof_result_is_declared_inactive():
         DSP_PROOF_CANDIDATE_UNREADABLE,
         DSP_PROOF_CANDIDATE_CHANGED,
     }
+
+
+def test_same_config_file_never_raises_on_a_path_it_cannot_resolve(tmp_path: Path):
+    """The claim its docstring makes, and the reason it is load-bearing (#2537).
+
+    Both callers are on READ paths that must not raise: one answers whether an
+    applied-profile record is still authoritative, the other whether a restore's
+    target is still the graph the round applied. A propagated ``ValueError``
+    from a malformed path would turn a provenance question into a 500 on a
+    household's Undo.
+
+    A NUL byte is the reachable shape — ``Path.resolve`` raises ``ValueError``
+    on it — and the fallback is the plain string comparison, so the answer is
+    still honest rather than merely non-raising.
+    """
+    assert same_config_file("/tmp/a\x00b.yml", "/tmp/a\x00b.yml") is True
+    assert same_config_file("/tmp/a\x00b.yml", "/tmp/other.yml") is False
+
+
+def test_same_config_file_resolves_rather_than_string_compares(tmp_path: Path):
+    """One file, two spellings — the whole reason this is not ``==``.
+
+    A statefile carries whatever CamillaDSP was handed and a record carries what
+    the apply wrote, so a symlinked or non-normalised spelling of one file must
+    not read as two.
+    """
+    real = tmp_path / "config.yml"
+    real.write_text("devices: {}\n", encoding="utf-8")
+    link = tmp_path / "link.yml"
+    link.symlink_to(real)
+
+    assert same_config_file(link, real) is True
+    assert same_config_file(tmp_path / "sub" / ".." / "config.yml", real) is True
+    assert same_config_file(real, tmp_path / "other.yml") is False
