@@ -268,8 +268,10 @@ order's plain reading and are recorded here rather than only in the code:
      no cut-only cascade can realize, and the greedy search spent filter slots
      on it. Measured on the reconstructed fixture: all eight slots between 9.7
      and 11.8 kHz on a branch declared to radiate to 1282.3 Hz, and
-     `correction_giveback_db` (the SSOT the linearized trim anchors on) falling
-     from 2.1668 to 0.0136 dB.
+     `correction_giveback_db` (the SSOT the linearized trim anchors on) reading
+     0.0136 dB against the 2.1668 dB the *same unbounded solve* returns on the
+     same fixture without its stopband floor — 2.15 dB of anchor, bought by
+     out-of-band content alone.
   3. `LinearizationFit.headroom_cost_db` is **stamped by the composer**, not
      computed by the fit core: a correction's cost is a property of the chain
      it is emitted into, and the topology-agnostic core knows neither the

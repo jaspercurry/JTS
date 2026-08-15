@@ -278,12 +278,17 @@ def test_a_flat_driver_behind_its_crossover_attracts_no_correction():
 
     **The 0.0124 was 0.0230 before #2523**, on the same fixture and the same
     filters (none). What moved is the band the FIT claim is made over: the
-    residual now runs to the SOLVE band's edge rather than the adaptive trim's,
-    and the bins it drops are the ones where the branch's own measured curve
-    parts company with the IDEAL crossover it is graded against. Both numbers
-    say "this branch already IS its target"; the smaller one says it over the
-    span the fit actually solved. VERIFY and OBSERVE still report the wider
-    spans, so nothing about the deep stopband stopped being disclosed.
+    residual now runs to the SOLVE band's edge rather than the adaptive trim's
+    (2597.9 -> 2259.0 Hz here), and the bins it drops are the ones where the
+    branch's own measured curve parts company with the IDEAL crossover it is
+    graded against. Both numbers say "this branch already IS its target"; the
+    smaller one says it over the span the fit actually solved.
+
+    VERIFY narrows WITH it and is not a second opinion on the dropped bins: it
+    is defined as an octave past the fit band's own top, so it moved 5195.9 ->
+    4518.0 Hz. **OBSERVE is the layer that still covers everything** — it is
+    whole-grid by construction, independent of both bands, and it is what keeps
+    the deep stopband disclosed rather than merely unsolved.
     """
     shaped = _perfect_branch_fit(shaped=True)
     assert shaped.filters == ()

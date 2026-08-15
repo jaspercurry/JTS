@@ -2713,11 +2713,15 @@ def fit_driver_linearization(
     # pre-#2523 solve spent ALL EIGHT filter slots between 9.7 and 11.8 kHz —
     # including an −11.6 dB Highshelf at 11757.7 Hz — on a branch declared to
     # radiate only to 1282.3 Hz, and reported 19.0133 dB rms of residual for it.
-    # The cost is not confined to the claim: ``correction_giveback_db`` fell
-    # from 2.1668 to 0.0136 dB, because the budget that would have corrected
-    # (and so given back) the CORE band went out of band instead. That number is
-    # the SSOT the flow anchors each branch's linearized trim on, so the whole
-    # 2.15 dB lands in an emitted trim and in the ripple scan that grades it.
+    # The cost is not confined to the claim: that solve returned a
+    # ``correction_giveback_db`` of 0.0136 dB, against 2.1668 dB from the SAME
+    # unbounded solve on the same fixture WITHOUT the stopband floor — the
+    # budget that would have corrected (and so given back) the CORE band went
+    # out of band instead. (Under this bound the floored fixture reads 2.1112,
+    # i.e. back with its floor-free twin, which is the invariance the test
+    # asserts.) That number is the SSOT the flow anchors each branch's
+    # linearized trim on, so the whole 2.15 dB lands in an emitted trim and in
+    # the ripple scan that grades it.
     #
     # **The bound is on what the solver is FED, never on how its output is
     # judged.** Every honesty guard downstream is untouched: the cut-only and

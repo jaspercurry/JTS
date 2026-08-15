@@ -2786,8 +2786,19 @@ def test_the_solve_band_is_the_declared_band_widened_by_the_branchs_own_margin(
     change gives the gain bound its own margin, this fails and whoever splits
     them has to say which band the solve gets.
 
-    Also proves the bound BITES across the crossover range, so the invariance
-    tests below cannot pass by the mask being a no-op.
+    **Asserted as an EQUALITY on the realized edge, which is what makes it a
+    pin.** An upper bound (``fit_band_hz[1] <= gain_band_hz[1]``) is satisfied
+    by any margin at or below the gain band's, so a solve-only split to a
+    quarter octave would pass one — the review's mutation of exactly that shape
+    is what this assertion exists to fail. What is compared is the top bin the
+    fit ACTUALLY solved over against the top grid bin inside
+    ``gain_band_hz``, so the number under test comes from the production mask
+    rather than from this fixture recomputing the margin for itself.
+
+    The fixture also proves the bound BITES across the crossover range — the
+    unbounded arm reaches past the edge on every corner — which is what makes
+    the equality meaningful rather than vacuous, and what keeps the invariance
+    tests below from passing on a no-op mask.
     """
     from jasper.active_speaker.branch_target import branch_target
 
@@ -2805,10 +2816,15 @@ def test_the_solve_band_is_the_declared_band_widened_by_the_branchs_own_margin(
 
     bounded = _solve_band_fit(resp, envelope, sections, band)
     unbounded = _solve_band_fit(resp, envelope, sections, band, bounded=False)
-    assert bounded.fit_band_hz[1] <= solve_top_hz
     assert unbounded.fit_band_hz[1] > solve_top_hz, (
         "the fixture must reproduce the unbounded reach to pin the fix"
     )
+    # THE EQUALITY. The last grid bin inside the branch's own gain band, read
+    # off the BranchTarget rather than recomputed here, against the last bin the
+    # fit reports having solved over.
+    grid_hz = envelope.freqs_hz
+    last_in_gain_band = float(grid_hz[grid_hz <= target.gain_band_hz[1]][-1])
+    assert bounded.fit_band_hz[1] == pytest.approx(last_in_gain_band)
 
 
 def test_out_of_band_content_does_not_reach_the_solve():
@@ -2837,7 +2853,14 @@ def test_out_of_band_content_does_not_reach_the_solve():
     dirty_fit = _solve_band_fit(*dirty[:2], dirty[2], dirty[3])
 
     assert dirty_fit.fit_band_hz == clean_fit.fit_band_hz
-    assert dirty_fit.target_level_db == clean_fit.target_level_db
+    # ``approx`` and not ``==``, for the same reason the filter gains below are:
+    # the median is taken over a LADDER-SMOOTHED curve, and a 1/3-octave kernel
+    # sitting on the boundary bin averages ~5e-15 dB of the out-of-band floor
+    # inward across ~20 bins. Whether that survives into the median's last bit
+    # depends on summation order, so it is the same double on macOS and 1 ULP
+    # apart on Linux — an exact compare here was green locally and red on all
+    # three CI pytest legs.
+    assert dirty_fit.target_level_db == pytest.approx(clean_fit.target_level_db)
     assert len(dirty_fit.filters) == len(clean_fit.filters)
     for got, want in zip(dirty_fit.filters, clean_fit.filters):
         assert got.biquad_type == want.biquad_type
