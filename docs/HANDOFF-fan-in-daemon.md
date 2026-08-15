@@ -227,8 +227,10 @@ hold two 128-frame slots, so a block over ~2.7 ms costs exactly one slot of
 audio — a silence insertion when CamillaDSP reads an empty Ring A, a deletion
 when fan-in cannot publish in time. Detached is not the idle state (see the
 paragraph below — an idle renderer leaves its lane ATTACHED); it is a fault or a
-transient: a geometry shear, a permission refusal, startup before the ring
-directory exists, or the one period an orphan re-latch spends detached. So this
+transient: a geometry shear, a permission refusal, a full tmpfs, `.open.lock`
+contention against the writer's own open, or the one period an orphan re-latch
+spends detached. A missing ring directory is *not* on that list —
+`ensure_parent_dir` creates it, so a root fan-in never observes one. So this
 is not a cost every box pays all the time — but a shear or a permissions fault
 persists until an operator clears it, so an affected box paid it every ~2 s
 meanwhile, and unlike `fanin-direct-opener` (#2533) this path needs no USB host

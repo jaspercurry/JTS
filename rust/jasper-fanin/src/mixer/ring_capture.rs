@@ -75,13 +75,16 @@
 //! is the ATTACHED-with-`writer_alive:false` state described above, because
 //! `create_or_attach` CREATES the ring when it is absent and fan-in (root) can
 //! always do so. Detached means a genuine fault (a geometry shear, a permission
-//! refusal) or a transient (startup before the ring directory exists, the single
-//! period an orphan re-latch spends detached). So this is not a
-//! most-of-the-time cost — but for as long as a lane IS detached, the bounded
-//! `flock` really did run inside the render period, and a shear or a
-//! permissions fault persists until an operator fixes it. `jasper-doctor` agrees
-//! with that reading: it reports a detached lane as a PROBLEM, and
-//! attached-never-fed as a resting state.
+//! refusal, a full tmpfs) or a transient (`.open.lock` contention against the
+//! writer's own open, the single period an orphan re-latch spends detached).
+//! Note the ring DIRECTORY is not on that list: `ensure_parent_dir` creates it,
+//! so a missing directory is not a startup state a root fan-in can observe. So
+//! this is not a most-of-the-time cost — but for as long as a lane IS detached,
+//! the bounded `flock` really did run inside the render period, and a shear or a
+//! permissions fault persists until an operator fixes it. `jasper-doctor` reads
+//! it the same way: a detached lane is a PROBLEM there, while a lane that is
+//! attached with a PAUSED renderer (frames read, `writer_alive:false`) falls
+//! through to healthy — which is the idle case, and is not detached.
 //!
 //! The retry latches are also PHASE-SEEDED per lane ([`reattach_phase`]) so a box
 //! with several detached lanes spreads its attempts across the window instead of
@@ -134,11 +137,11 @@ pub(super) const RING_REATTACH_RETRY_PERIODS: u64 = 384;
 /// **What it buys now that the attach is off-thread.** Not render-thread time —
 /// [`RingAttacher`] already removed that, and a queued attach costs one
 /// non-blocking `send`. It spreads the WORKER side: when several lanes are
-/// detached at once (a geometry shear across the conf.d, a ring directory that
-/// is not there yet at startup), their `create_or_attach` calls each take their
-/// own bounded `flock` and contend for `/dev/shm/jts-ring/`. Spreading them
-/// keeps that work off one instant, and keeps the property that made lockstep
-/// dangerous from ever being reintroduced by a future inline call.
+/// detached at once (a geometry shear across the conf.d, a tmpfs that filled),
+/// their `create_or_attach` calls each take their own bounded `flock` and
+/// contend for `/dev/shm/jts-ring/`. Spreading them keeps that work off one
+/// instant, and keeps the property that made lockstep dangerous from ever being
+/// reintroduced by a future inline call.
 ///
 /// `lane_count == 0` cannot occur (a lane index implies a lane) but returns 0
 /// rather than dividing by it — a phase of 0 is a legal, if unspread, answer.
@@ -155,9 +158,25 @@ pub(super) const fn reattach_phase(lane_index: usize, lane_count: usize) -> u64 
 /// `/state`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum RingDetachReason {
-    /// The ring file does not exist yet, or this process cannot create/open it.
-    /// The overwhelmingly common startup state: fan-in starts before (or without)
-    /// the renderer that writes the ring.
+    /// The ring path could not be resolved at all — the `NotFound`/`ENOENT`
+    /// classification, and a genuinely NARROW one.
+    ///
+    /// **It is not "fan-in started before the renderer".** That was the original
+    /// P6a text here and it is wrong in the direction that matters:
+    /// [`attach_ring`] creates the ring when it is absent (`O_CREAT|O_EXCL`, with
+    /// `ensure_parent_dir` creating the directory first) and fan-in runs as root,
+    /// so starting before — or entirely without — the renderer produces an
+    /// ATTACH, not this. A lane whose renderer never publishes sits ATTACHED with
+    /// `writer_alive:false`; see the module docs' presence model.
+    ///
+    /// What actually lands here is a RACE: the ring file or its directory
+    /// disappearing between the create/attach steps (an arm/disarm or a
+    /// geometry-change clear running underneath this open). The other failure
+    /// modes people reach for do NOT land here — `.open.lock` exhaustion returns
+    /// `EAGAIN` (`WouldBlock`), a full tmpfs returns `ENOSPC` (`StorageFull`),
+    /// and a permission refusal returns `EACCES` (`PermissionDenied`); all three
+    /// classify as [`RingDetachReason::Refused`], whose remediation text is the
+    /// one that fits them.
     Unavailable,
     /// The ring exists but its header declares a different geometry than this lane
     /// builds — the conf.d block and fan-in's derived geometry have sheared. This
@@ -416,8 +435,10 @@ enum RingAttachOutcome {
 /// detached — `create_or_attach` CREATES an absent ring and fan-in runs as root,
 /// so the file materializes whichever end arrives first (see
 /// [`open_ring_input`]). Detached is a FAULT-or-transient state: a geometry
-/// shear, a permission refusal, startup before the ring directory exists, or the
-/// single period an orphan re-latch spends detached. Two things follow. It is
+/// shear, a permission refusal, a full tmpfs, `.open.lock` contention against
+/// the writer's own open, or the single period an orphan re-latch spends
+/// detached. (Not a missing ring directory — `ensure_parent_dir` creates
+/// it.) Two things follow. It is
 /// not a most-of-the-time cost — but a shear or a permissions fault does not
 /// clear itself, so an affected box paid this every ~2 s until an operator
 /// noticed, and unlike the DIRECT lane's opener it needs no host and no cable to
