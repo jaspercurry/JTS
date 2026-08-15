@@ -1000,36 +1000,46 @@ def test_severing_the_registry_costs_the_carve_out_its_reason_of_record():
     assert without["disclosure"], "the screen's own carve-out is still disclosed"
 
 
-def test_the_gate_validity_clamp_never_appears_as_a_carve_out():
-    """``carve_outs_by_band``'s docstring says the clamp is NOT included and
-    that a band's ``n_excluded`` can therefore exceed what the carve-outs
-    cover. Pinned structurally rather than left as prose.
+def test_the_gate_trusted_floor_clamp_never_appears_as_a_carve_out():
+    """``carve_outs_by_band``'s docstring says the gate's floor is NOT
+    included. Pinned structurally rather than left as prose.
 
     The clamp has no path into the records by construction —
     ``carve_outs_by_band`` is handed the registry and the SCREEN's intervals,
-    and never sees ``validity_floor_hz`` at all — so this drives the real
-    assembly with a clamp high enough to remove a whole spec band's worth of
-    bins and checks both halves of the claim: the carve-outs are unmoved, and
-    the divergence it creates between ``n_excluded`` and the carved intervals
-    is real (which is exactly why ``validity_floor_hz`` is disclosed
-    separately)."""
+    and never sees a floor at all — so this drives the real assembly with a
+    clamp high enough to move real bins out of grading and checks that the
+    carve-outs are unmoved.
+
+    **#2551 strengthened the claim.** The clamp used to be a mask entry, so
+    a band's ``n_excluded`` could exceed what these records covered and the
+    floor was the difference. It is now a band EDGE, so a sub-floor bin is
+    not in the band to be excluded from: ``n_excluded`` is EXACTLY the
+    carve-outs' own count, and the floor shows up as ``graded_lo_hz``. Both
+    halves are asserted, because "the clamp does not contaminate the
+    interference accounting" is now provable by equality rather than by
+    reading a disclosure field."""
     combined = combine_positions(_locked_cloud(), echo_band_hz=SYNTHETIC_BAND_HZ)
     unclamped = assemble_cloud_group_result(combined, echo_band_hz=SYNTHETIC_BAND_HZ)
+    # 400 Hz validity => 1000 Hz trusted, well inside the low band.
     clamped = assemble_cloud_group_result(
-        combined, echo_band_hz=SYNTHETIC_BAND_HZ, validity_floor_hz=3000.0,
+        combined, echo_band_hz=SYNTHETIC_BAND_HZ, validity_floor_hz=400.0,
     )
 
     # The clamp moved real bins out of grading...
-    assert clamped["validity_floor_hz"] == 3000.0
-    excluded_before = sum(b["n_excluded"] for b in unclamped["spec"]["bands"])
-    excluded_after = sum(b["n_excluded"] for b in clamped["spec"]["bands"])
-    assert excluded_after > excluded_before
+    assert clamped["trusted_floor_hz"] == 1000.0
+    assert clamped["spec"]["bands"][0]["graded_lo_hz"] == 1000.0
+    graded_before = sum(b["n_bins"] for b in unclamped["spec"]["bands"])
+    graded_after = sum(b["n_bins"] for b in clamped["spec"]["bands"])
+    assert graded_after < graded_before
 
     # ...and changed NOTHING about the carve-outs, which speak only for the
-    # honesty instruments.
+    # honesty instruments — nor about the count that mirrors them.
     assert json.dumps(clamped["carve_outs"], sort_keys=True) == json.dumps(
         unclamped["carve_outs"], sort_keys=True
     )
+    assert [b["n_excluded"] for b in clamped["spec"]["bands"]] == [
+        b["n_excluded"] for b in unclamped["spec"]["bands"]
+    ]
     # Nor did it reach ``merged_excluded_bands_hz`` (PR-5's own separation).
     assert clamped["merged_excluded_bands_hz"] == unclamped["merged_excluded_bands_hz"]
 

@@ -15,14 +15,16 @@ every surface.
 Two layers, mirroring ``test_crossover_v2_cloud_pipeline.py``:
 
 * **Synthetic (always runs).** The gauge's own lifted-from-the-report
-  contract; the validity-floor clamp's contract; and the frame-consistency
-  walk — pipeline result → durable ``cloud`` block → ``_compact_cloud_status``
-  → ``/state`` → the envelope's rendered ledger line — asserted byte-identical
-  at every hop.
+  contract; the WIRING half of the trusted-floor clamp's contract (which
+  floor the assembler derives and publishes, and what it does to the payload
+  — the evaluator's own arithmetic is ``tests/test_flat_spec.py``'s); and the
+  frame-consistency walk — pipeline result → durable ``cloud`` block →
+  ``_compact_cloud_status`` → ``/state`` → the envelope's rendered ledger line
+  — asserted byte-identical at every hop.
 * **Corpus-gated.** The same walk on the real S0 main-leg cloud, so the
   contract is pinned against hardware data and the S0 session's own measured
-  regime (including its one collapsed-gate position) is stated with numbers
-  rather than assumed.
+  regime — including what its own ``2.5/T`` floor costs the low band — is
+  stated with numbers rather than assumed.
 """
 from __future__ import annotations
 
@@ -37,6 +39,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     PHASE_CLOUD_MEASURE,
     PHASE_CLOUD_VERIFY,
     assemble_cloud_group_result,
+    cloud_trusted_floor_hz,
     cloud_validity_floor_hz,
 )
 from jasper.active_speaker.flat_spec import (
@@ -46,6 +49,7 @@ from jasper.active_speaker.flat_spec import (
     spec_convergence_residual,
     spec_flatness_gauge,
 )
+from jasper.audio_measurement.gating import TRUSTED_FLOOR_MULTIPLIER
 from jasper.audio_measurement.spatial_combine import PositionCapture, combine_positions
 from jasper.web.correction_crossover_v2 import (
     _chart_cloud_status,
@@ -318,63 +322,133 @@ def test_cloud_validity_floor_is_none_when_no_position_reports_one():
     assert cloud_validity_floor_hz([]) is None
 
 
-def test_validity_floor_clamps_the_spec_bands_lower_edge():
-    """A floor above the spec table's own 250 Hz edge removes those bins from
-    the evaluation — from the deviation metrics AND from the reference level,
-    since a bin that is not a measurement must not be able to re-center the
-    target either."""
+def test_the_trusted_floor_not_the_validity_floor_is_what_grades():
+    """#2551: the spec is intersected at ``2.5/T``, not ``1/T``.
+
+    The defect this pins out: the evaluator used to be handed the group's
+    VALIDITY floor, which on every real JTS3 gate sits below the spec
+    table's own 250 Hz edge and therefore clamped nothing, while the same
+    session's gate disclosure and delta probe both refused to grade below
+    ``2.5/T``. One capture, two graders, two honesty floors.
+
+    A 142.86 Hz validity floor — the exact number a 7 ms gate produces, and
+    the one every S0 position reports — is below 250 Hz, so under the old
+    rule it changed nothing. Its trusted floor is 357.14 Hz, which is ABOVE
+    the table's edge and does move the low band."""
     combined = combine_positions(_locked_cloud(), echo_band_hz=SYNTHETIC_BAND_HZ)
     unclamped = assemble_cloud_group_result(combined, echo_band_hz=SYNTHETIC_BAND_HZ)
     clamped = assemble_cloud_group_result(
-        combined, echo_band_hz=SYNTHETIC_BAND_HZ, validity_floor_hz=1000.0,
+        combined, echo_band_hz=SYNTHETIC_BAND_HZ, validity_floor_hz=142.857,
     )
+    assert clamped["validity_floor_hz"] == pytest.approx(142.857)
+    assert clamped["trusted_floor_hz"] == pytest.approx(357.1425)
+    # The floor the old code clamped at is below the table edge; the one this
+    # test asserts on is above it. That gap IS the defect.
+    assert 142.857 < SPEC_BANDS[0][0] < clamped["trusted_floor_hz"]
+
     low_before = unclamped["spec"]["bands"][0]
     low_after = clamped["spec"]["bands"][0]
-    assert low_after["n_excluded"] > low_before["n_excluded"]
-    assert low_after["n_bins"] == low_before["n_bins"]  # membership is unchanged
+    assert low_before["graded_lo_hz"] == SPEC_BANDS[0][0]
+    assert low_after["graded_lo_hz"] == pytest.approx(357.1425)
+    # Fewer bins IN the band — a band-edge move, not a mask entry, so the
+    # interference count is untouched (see the carve-out separation).
+    assert low_after["n_bins"] < low_before["n_bins"]
+    assert low_after["n_excluded"] == low_before["n_excluded"]
+    # ...and the reference re-centres with it (item 2 of the fix shape).
     assert clamped["spec"]["reference_db"] != unclamped["spec"]["reference_db"]
-    assert clamped["validity_floor_hz"] == 1000.0
+    assert clamped["spec"]["reference_band_hz"] == [
+        pytest.approx(357.1425), REFERENCE_BAND_HZ[1],
+    ]
+
+
+def test_a_band_wholly_below_the_trusted_floor_is_unevaluable_never_failed():
+    """#2551 fix-shape item 1, the honesty half. A band with nothing above
+    the floor has NO EVIDENCE — which is not a failure and not a pass. The
+    tell that separates it from "the axis never reached this band" is
+    ``graded_lo_hz >= f_hi_hz``.
+
+    ``overall_passed`` still reads False, by ``FlatSpecReport``'s own "will
+    not report a clean bill of health for a spectrum it could not fully
+    measure" rule, so nothing is flattered by the distinction."""
+    combined = combine_positions(_locked_cloud(), echo_band_hz=SYNTHETIC_BAND_HZ)
+    # 2000 Hz trusted floor = the whole 250 Hz-2 kHz band, and not one bin
+    # more (the reference band's 2-8 kHz half survives, so the report stands).
+    clamped = assemble_cloud_group_result(
+        combined,
+        echo_band_hz=SYNTHETIC_BAND_HZ,
+        validity_floor_hz=SPEC_BANDS[0][1] / TRUSTED_FLOOR_MULTIPLIER,
+    )
+    low = clamped["spec"]["bands"][0]
+    assert low["f_lo_hz"] == SPEC_BANDS[0][0]  # the NOMINAL row is still named
+    assert low["graded_lo_hz"] == pytest.approx(SPEC_BANDS[0][1])
+    assert low["graded_lo_hz"] >= low["f_hi_hz"]
+    assert low["evaluable"] is False
+    assert low["passed"] is None  # never False
+    assert low["n_bins"] == 0
+    assert low["max_deviation_db"] is None
+    assert clamped["spec"]["overall_passed"] is False
+    # The bands that DO clear the floor are graded normally.
+    assert clamped["spec"]["bands"][1]["evaluable"] is True
 
 
 def test_a_floor_below_the_spec_edge_changes_no_graded_number():
-    """The ordinary case (JTS3 gates measure ~143-200 Hz, the spec starts at
-    250 Hz): the clamp grades exactly the same bins, so every band figure,
-    the reference level, the verdict, and the whole gauge are byte-identical.
+    """The clamp is an intersection, so a trusted floor beneath the table's
+    own 250 Hz edge is a genuine no-op: every band figure, the reference
+    level, the verdict, and the whole gauge are byte-identical.
 
-    What it DOES change is ``excluded_intervals`` — a report-wide disclosure
-    spanning the entire axis, which now records the sub-250 Hz region the
-    clamp removed. That is honest (those bins genuinely were dropped) and it
-    is exactly why the gauge quotes spec-band BIN counts rather than an
-    interval count: an interval below every spec band was never graded, so
-    counting it as "excluded from grading" would over-report."""
+    Since #2551 that is true of ``excluded_intervals`` too. The clamp raises
+    a band EDGE rather than adding mask entries, so a sub-floor bin is never
+    reported as "excluded" — the report-wide interference disclosure and the
+    per-band ``n_excluded`` both stay the honesty instruments' own count, and
+    the floor is disclosed as ``graded_lo_hz``/``trusted_floor_hz``
+    instead."""
     combined = combine_positions(_locked_cloud(), echo_band_hz=SYNTHETIC_BAND_HZ)
     unclamped = assemble_cloud_group_result(combined, echo_band_hz=SYNTHETIC_BAND_HZ)
+    # 99 Hz validity => 247.5 Hz trusted, just under the 250 Hz table edge.
     clamped = assemble_cloud_group_result(
-        combined, echo_band_hz=SYNTHETIC_BAND_HZ, validity_floor_hz=142.86,
+        combined, echo_band_hz=SYNTHETIC_BAND_HZ, validity_floor_hz=99.0,
     )
+    assert clamped["trusted_floor_hz"] == pytest.approx(247.5)
+    assert clamped["trusted_floor_hz"] < SPEC_BANDS[0][0]
     assert json.dumps(clamped["flatness"], sort_keys=True) == json.dumps(
         unclamped["flatness"], sort_keys=True
     )
-    for key in ("bands", "reference_db", "overall_passed"):
+    for key in ("bands", "reference_db", "overall_passed", "excluded_intervals"):
         assert json.dumps(clamped["spec"][key], sort_keys=True) == json.dumps(
             unclamped["spec"][key], sort_keys=True
         ), key
-    added = [
-        i for i in clamped["spec"]["excluded_intervals"]
-        if i not in unclamped["spec"]["excluded_intervals"]
-    ]
-    assert added and all(hi < SPEC_BANDS[0][0] for _lo, hi in added)
-    assert clamped["validity_floor_hz"] == pytest.approx(142.86)
+    assert clamped["validity_floor_hz"] == pytest.approx(99.0)
 
 
 def test_no_floor_clamps_nothing_and_is_disclosed_as_unknown():
     """``None`` is "the lower edge could not be verified", not zero and not a
     withheld gauge — the whole 2-16 kHz evidence would otherwise be thrown
-    away over an unknown floor."""
+    away over an unknown floor. Both published floors say so."""
     combined = combine_positions(_locked_cloud(), echo_band_hz=SYNTHETIC_BAND_HZ)
     result = assemble_cloud_group_result(combined, echo_band_hz=SYNTHETIC_BAND_HZ)
     assert result["validity_floor_hz"] is None
+    assert result["trusted_floor_hz"] is None
+    assert result["spec"]["trusted_floor_hz"] is None
     assert result["flatness"]["evaluable"] is True
+    assert result["spec"]["bands"][0]["graded_lo_hz"] == SPEC_BANDS[0][0]
+
+
+def test_the_trusted_floor_is_two_and_a_half_over_T_and_unknown_stays_unknown():
+    """``cloud_trusted_floor_hz`` is ``2.5 * f_valid``, the same multiply
+    :func:`jasper.audio_measurement.gating.f_trusted_floor_hz` performs, read
+    from that module so the two cannot drift.
+
+    "No floor" propagates as ``None`` — never as zero, which would read as a
+    clamp at DC and silently grade everything."""
+    assert cloud_trusted_floor_hz(142.857) == pytest.approx(
+        TRUSTED_FLOOR_MULTIPLIER * 142.857
+    )
+    assert cloud_trusted_floor_hz(142.857) == pytest.approx(357.1425)
+    assert cloud_trusted_floor_hz(None) is None
+    assert cloud_trusted_floor_hz(0.0) is None
+    assert cloud_trusted_floor_hz(-5.0) is None
+    assert cloud_trusted_floor_hz(float("inf")) is None
+    assert cloud_trusted_floor_hz(float("nan")) is None
 
 
 def test_the_floor_clamp_never_inflates_the_interference_interval_count():
@@ -640,26 +714,28 @@ def test_an_unavailable_pipeline_degrades_honestly_at_every_surface():
 
 S0_ECHO_BAND_HZ = (5000.0, 19_000.0)
 
-# The validity floor the clamp's cost is measured at.
+# The TRUSTED floor the clamp's cost is measured at, and the validity floor
+# that produces it (#2551 moved the grading floor from 1/T to 2.5/T, so the
+# constant a test hands the assembler is the validity one).
 #
 # It is an EXPLICIT constant rather than a reading taken off this corpus, and
 # that changed on 2026-08-02 (#2045). Until PR #1991, ``cloud_04`` reported a
 # measured reflection here and the group's own ``max()`` floor WAS 1777.8 Hz —
 # but that reflection was a false early fire (the #1790 field instance #1991
 # was written to fix), so the number was an artifact of the detector rather
-# than a property of the room. #1991 removed it and all ten positions now gate
-# to 142.857 Hz, which is below the spec table's low-band edge and therefore
-# clamps nothing.
+# than a property of the room.
 #
-# The clamp's COST is still worth pinning — it is the mechanism's own
-# behaviour, and it moves the headline number in the flattering direction — so
-# ``test_the_validity_floor_clamp_costs_the_low_band`` keeps measuring it, at
-# the floor the artifact used to produce. Sourcing it from a constant means
-# that guard no longer depends on a detector bug to have a subject, and it is
-# why the two facts now have separate tests with separate failure names:
-# ``test_the_real_s0_positions_no_longer_collapse_a_gate`` owns "the corpus no
-# longer produces a clamping floor", this constant owns "clamping costs this".
-CLAMP_FLOOR_HZ = 1777.8
+# The clamp's COST is worth pinning at a fixed floor — it is the mechanism's
+# own behaviour, and it moves the headline number in the flattering direction
+# — so ``test_the_trusted_floor_clamp_costs_the_low_band`` keeps measuring it
+# here. Sourcing it from a constant means that guard does not depend on a
+# detector bug to have a subject, and it is why the two facts have separate
+# tests with separate failure names:
+# ``test_the_real_s0_positions_no_longer_collapse_a_gate`` owns "every
+# position gates to the same 7 ms bound", this constant owns "clamping at a
+# floor this high costs exactly this".
+CLAMP_TRUSTED_FLOOR_HZ = 1777.8
+CLAMP_VALIDITY_FLOOR_HZ = CLAMP_TRUSTED_FLOOR_HZ / TRUSTED_FLOOR_MULTIPLIER
 
 
 def _s0_combined():
@@ -726,14 +802,21 @@ def test_the_real_s0_positions_no_longer_collapse_a_gate():
     propagated through the group ``max()`` and flipped a band verdict
     fail→pass — so a detector artifact was silently re-grading the speaker.
 
-    All ten positions now gate to the search-span bound at 142.857 Hz, which
-    is below the spec table's 250 Hz edge, so the group's own floor clamps
-    NOTHING: same bins, same reference, same verdict.
+    All ten positions gate to the search-span bound at 142.857 Hz.
 
     This half was carved out of the old
     ``test_the_real_s0_worst_position_floor_clamps_the_low_band``, whose name
     described the artifact rather than the speaker. The clamp MECHANISM's cost
     is still pinned, next door, at an explicit floor.
+
+    **The second half of this test was inverted by #2551**, and the numbers
+    below are the reason the issue was filed. 142.857 Hz is indeed under the
+    spec table's 250 Hz edge, and while the evaluator was handed that
+    VALIDITY floor the group's own floor clamped nothing — which is what this
+    test used to assert. The floor the same session's gate disclosure prints,
+    and the one its delta probe grades above, is ``2.5/T`` = **357.14 Hz**,
+    which clears 250 Hz. So the corpus's own honest floor was clamping the
+    low band all along and the spec was not applying it.
     """
     combined = _s0_combined()
     floors = {
@@ -744,42 +827,57 @@ def test_the_real_s0_positions_no_longer_collapse_a_gate():
     assert sorted(floors)[0] == "cloud_01"
     assert all(f == pytest.approx(142.857, abs=1e-3) for f in floors.values())
 
-    # ...so the group's own worst floor sits below the spec table's lowest
-    # graded edge, and clamping at it is a no-op. This is the assertion that
-    # would have gone quietly vacuous had the old test's pins simply been
-    # bumped from 1777.8 to 142.857.
     unclamped = assemble_cloud_group_result(combined, echo_band_hz=S0_ECHO_BAND_HZ)
     natural_worst = max(floors.values())
+    # The validity floor is below the table's edge; its trusted counterpart is
+    # above it. That gap is the defect #2551 names, on real hardware data.
     assert natural_worst < unclamped["spec"]["bands"][0]["f_lo_hz"]
+    natural_trusted = cloud_trusted_floor_hz(natural_worst)
+    assert natural_trusted == pytest.approx(357.1429, abs=5e-4)
+    assert natural_trusted > unclamped["spec"]["bands"][0]["f_lo_hz"]
+
     natural = assemble_cloud_group_result(
         combined, echo_band_hz=S0_ECHO_BAND_HZ, validity_floor_hz=natural_worst,
     )
-    assert natural["flatness"]["n_bins"] == unclamped["flatness"]["n_bins"]
-    assert natural["spec"]["reference_db"] == pytest.approx(
-        unclamped["spec"]["reference_db"], abs=1e-9
+    assert natural["trusted_floor_hz"] == pytest.approx(357.1429, abs=5e-4)
+    assert natural["spec"]["bands"][0]["graded_lo_hz"] == pytest.approx(
+        357.1429, abs=5e-4
     )
-    assert natural["spec"]["bands"][0]["passed"] == (
-        unclamped["spec"]["bands"][0]["passed"]
+    # What the session's OWN floor costs, measured 2026-08-15 on this corpus.
+    # Small, and in the flattering direction — stated rather than discovered.
+    assert natural["flatness"]["n_bins"] == unclamped["flatness"]["n_bins"] - 73
+    assert natural["spec"]["reference_db"] == pytest.approx(-27.2997, abs=5e-4)
+    reference_shift = (
+        natural["spec"]["reference_db"] - unclamped["spec"]["reference_db"]
     )
+    headline_shift = natural["flatness"]["max_db"] - unclamped["flatness"]["max_db"]
+    assert reference_shift == pytest.approx(-0.0611, abs=5e-4)
+    assert headline_shift == pytest.approx(+0.0611, abs=5e-4)
+    assert headline_shift == pytest.approx(-reference_shift, abs=1e-9)
+    # No verdict is bought by it — every band still fails on its own merits.
+    assert [b["passed"] for b in natural["spec"]["bands"]] == [False, False, False]
+    assert natural["spec"]["overall_passed"] is False
 
 
 @corpus.requires_s0_curves
-def test_the_validity_floor_clamp_costs_the_low_band(monkeypatch):
+def test_the_trusted_floor_clamp_costs_the_low_band(monkeypatch):
     """The clamp's measured cost, stated and pinned rather than assumed.
 
-    **RE-WORKED 2026-08-02 (#2045)** — see ``tests._flat_lin_corpus`` "The
-    2026-08-02 re-pin era". This test used to take its floor FROM the corpus,
-    where ``cloud_04``'s collapsed gate supplied 1777.8 Hz. PR #1991 showed
-    that collapse was a false early fire (#1790) and removed it, so the
-    corpus's own floor now clamps nothing —
-    ``test_the_real_s0_positions_no_longer_collapse_a_gate`` next door is that
-    fact's guard.
+    **RE-WORKED 2026-08-02 (#2045)**, and re-pointed at the trusted floor by
+    **#2551** — see ``tests._flat_lin_corpus`` "The 2026-08-02 re-pin era".
+    This test used to take its floor FROM the corpus, where ``cloud_04``'s
+    collapsed gate supplied 1777.8 Hz; PR #1991 showed that collapse was a
+    false early fire (#1790) and removed it.
 
     The costs below are the CLAMP MECHANISM's own behaviour and are worth
-    guarding whether or not this corpus happens to produce a clamping floor,
-    so the floor is now the explicit :data:`CLAMP_FLOOR_HZ` — the value the
-    artifact used to produce. Sourcing it from a constant is what keeps this
-    guard from depending on a detector bug to have a subject.
+    guarding at a floor high enough to move real numbers, so the floor is the
+    explicit :data:`CLAMP_TRUSTED_FLOOR_HZ` — the value the artifact used to
+    produce. Sourcing it from a constant is what keeps this guard from
+    depending on a detector bug to have a subject. #2551 only changed HOW it
+    is supplied: the assembler takes a validity floor and derives ``2.5/T``
+    itself, so the test hands over :data:`CLAMP_VALIDITY_FLOOR_HZ` and
+    asserts the trusted number it produces. Every figure below is unchanged
+    by that move, because the clamp grades the same bins either way.
 
     Clamping at that floor costs, measured 2026-08-02:
 
@@ -800,18 +898,25 @@ def test_the_validity_floor_clamp_costs_the_low_band(monkeypatch):
     is quiet would move the other way — the sign does not generalize.
 
     None of it is the speaker improving; it is the same speaker graded on
-    fewer bins, which is exactly why ``n_bins``/``n_excluded`` ride on the
-    gauge (``ConvergenceResidual``'s own "a residual that fell because the
-    mask grew is not convergence" rule).
+    fewer bins, which is exactly why ``n_bins`` rides on the gauge
+    (``ConvergenceResidual``'s own "a residual that fell because the
+    denominator shrank is not convergence" rule).
     """
     combined = _s0_combined()
     unclamped = assemble_cloud_group_result(combined, echo_band_hz=S0_ECHO_BAND_HZ)
 
     # The mechanism itself, exercised at the floor the artifact used to make.
     clamped = assemble_cloud_group_result(
-        combined, echo_band_hz=S0_ECHO_BAND_HZ, validity_floor_hz=CLAMP_FLOOR_HZ,
+        combined,
+        echo_band_hz=S0_ECHO_BAND_HZ,
+        validity_floor_hz=CLAMP_VALIDITY_FLOOR_HZ,
     )
-    assert clamped["validity_floor_hz"] == pytest.approx(CLAMP_FLOOR_HZ, abs=0.1)
+    assert clamped["trusted_floor_hz"] == pytest.approx(
+        CLAMP_TRUSTED_FLOOR_HZ, abs=0.1
+    )
+    assert clamped["spec"]["bands"][0]["graded_lo_hz"] == pytest.approx(
+        CLAMP_TRUSTED_FLOOR_HZ, abs=0.1
+    )
     assert (
         clamped["flatness"]["n_bins"] == unclamped["flatness"]["n_bins"] - 987
     )

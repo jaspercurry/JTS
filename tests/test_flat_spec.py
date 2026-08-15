@@ -425,6 +425,10 @@ def test_to_dict_round_trip_stability_keys_and_types():
         "excluded_intervals",
         "best_effort_above_hz",
         "smoothing_fraction",
+        # #2551: the honesty floor these numbers were graded at, and the span
+        # `reference_db` was pooled over once that floor applied.
+        "trusted_floor_hz",
+        "reference_band_hz",
     }
     assert type(d["reference_db"]) is float
     assert type(d["overall_passed"]) is bool
@@ -432,6 +436,11 @@ def test_to_dict_round_trip_stability_keys_and_types():
     assert d["best_effort_above_hz"] == 16000.0
     assert type(d["smoothing_fraction"]) is int
     assert d["smoothing_fraction"] == 3
+    # No floor supplied here, so "not stated" — never a fabricated 0.0 — and
+    # the reference band is the module constant, JSON-shaped as a list.
+    assert d["trusted_floor_hz"] is None
+    assert d["reference_band_hz"] == list(REFERENCE_BAND_HZ)
+    assert all(type(v) is float for v in d["reference_band_hz"])
 
     assert isinstance(d["bands"], list)
     assert len(d["bands"]) == len(SPEC_BANDS)
@@ -453,6 +462,8 @@ def test_to_dict_round_trip_stability_keys_and_types():
             "level_deviation_db",
             "max_ripple_db",
             "max_ripple_hz",
+            # #2551: the edge these numbers came from, beside the nominal one.
+            "graded_lo_hz",
         }
         for key in (
             "f_lo_hz",
@@ -464,6 +475,7 @@ def test_to_dict_round_trip_stability_keys_and_types():
             "level_deviation_db",
             "max_ripple_db",
             "max_ripple_hz",
+            "graded_lo_hz",
         ):
             assert type(band_dict[key]) is float, key
         for key in ("n_bins", "n_excluded"):
@@ -691,6 +703,164 @@ def test_non_finite_spec_db_raise_value_error():
     db[0] = np.inf
     with pytest.raises(ValueError, match="finite"):
         evaluate_flat_spec(_FREQS_HZ, db)
+
+
+# --------------------------------------------------------------------------- #
+# the trusted-floor intersection (issue #2551)
+# --------------------------------------------------------------------------- #
+#
+# `_FREQS_HZ`'s band-1 bins are 300 / 600 / 1000 / 1500 Hz, so a 700 Hz floor
+# splits that band cleanly in half — two bins below it, two above — and the
+# reference band (indices 0-7) loses exactly the same two.
+_CLAMP_FLOOR_HZ = 700.0
+_CLAMPED_BAND1_IDX = [2, 3]
+_CLAMPED_REF_IDX = list(range(2, 8))
+
+
+def test_the_trusted_floor_raises_every_bands_lower_edge():
+    """#2551 item 1. A band is graded from ``max(f_lo, trusted_floor_hz)``,
+    and the metrics come from that span and no other.
+
+    The two sub-floor bins carry a 20 dB spike here, so a grader that ignored
+    the floor could not possibly produce the same numbers as one that
+    honoured it — the assertion is not vacuous on a flat curve."""
+    db = _flat_db(0.0)
+    db[0] = 20.0   # 300 Hz — below the floor
+    db[1] = 20.0   # 600 Hz — below the floor
+    report = evaluate_flat_spec(_FREQS_HZ, db, trusted_floor_hz=_CLAMP_FLOOR_HZ)
+
+    reference_db = _hand_power_mean_db([db[i] for i in _CLAMPED_REF_IDX])
+    assert report.reference_db == pytest.approx(reference_db)
+
+    low = report.bands[0]
+    assert low.f_lo_hz == 250.0            # the NOMINAL row is still named
+    assert low.graded_lo_hz == 700.0       # ...beside the edge actually used
+    assert low.evaluable is True
+    assert low.n_bins == len(_CLAMPED_BAND1_IDX)
+    assert low.max_deviation_db == pytest.approx(
+        _signed_max_deviation([db[i] for i in _CLAMPED_BAND1_IDX], reference_db)
+    )
+    assert low.rms_deviation_db == pytest.approx(
+        _rms_deviation([db[i] for i in _CLAMPED_BAND1_IDX], reference_db)
+    )
+    # The 20 dB spike is below the floor, so it cannot be the worst bin and
+    # cannot fail the band.
+    assert low.max_deviation_hz >= 700.0
+    assert low.passed is True
+
+    # Bands entirely above the floor keep their nominal edge, unmoved.
+    for band in report.bands[1:]:
+        assert band.graded_lo_hz == band.f_lo_hz
+
+    assert report.trusted_floor_hz == 700.0
+
+
+def test_the_trusted_floor_raises_the_reference_bands_lower_edge_too():
+    """#2551 item 2. The reference is a power mean, so leaving sub-floor bins
+    in the frame while removing them from every band would let untrustworthy
+    energy re-centre the zero each surviving deviation is stated against.
+
+    The clamp therefore MOVES the reference — asserted against a hand mean
+    over the surviving bins, and against the unclamped mean being different —
+    and the report publishes the span it was pooled over."""
+    db = _flat_db(0.0)
+    db[0] = 20.0
+    db[1] = 20.0
+
+    unclamped = evaluate_flat_spec(_FREQS_HZ, db)
+    clamped = evaluate_flat_spec(_FREQS_HZ, db, trusted_floor_hz=_CLAMP_FLOOR_HZ)
+
+    assert unclamped.reference_db == pytest.approx(
+        _hand_power_mean_db([db[i] for i in _REF_IDX])
+    )
+    assert clamped.reference_db == pytest.approx(
+        _hand_power_mean_db([db[i] for i in _CLAMPED_REF_IDX])
+    )
+    assert clamped.reference_db != unclamped.reference_db
+
+    assert unclamped.reference_band_hz == REFERENCE_BAND_HZ
+    assert clamped.reference_band_hz == (700.0, REFERENCE_BAND_HZ[1])
+    # And the gauge names the frame that was USED, not the module constant.
+    assert flat_spec.spec_flatness_gauge(clamped).reference_band_hz == (
+        700.0, REFERENCE_BAND_HZ[1]
+    )
+
+
+def test_a_band_wholly_below_the_trusted_floor_is_unevaluable_never_failed():
+    """#2551 item 1's honesty half. No evidence is not a failure.
+
+    ``graded_lo_hz >= f_hi_hz`` is the tell that separates this from "the
+    axis never reached this band" — that case reports the nominal edge."""
+    report = evaluate_flat_spec(
+        _FREQS_HZ, _flat_db(0.0), trusted_floor_hz=2000.0,
+    )
+    low = report.bands[0]
+    assert low.f_lo_hz == 250.0
+    assert low.graded_lo_hz == 2000.0
+    assert low.graded_lo_hz >= low.f_hi_hz
+    assert low.evaluable is False
+    assert low.passed is None          # never False
+    assert low.max_deviation_db is None
+    assert low.rms_deviation_db is None
+    assert low.n_bins == 0
+    assert low.n_excluded == 0
+    # ...and an unevaluable band still cannot be mistaken for a clean one.
+    assert report.overall_passed is False
+    assert all(b.evaluable for b in report.bands[1:])
+
+    # Contrast: no-coverage-on-the-axis reports the NOMINAL edge, because
+    # nothing clamped it.
+    sparse = evaluate_flat_spec(_FREQS_HZ[:8], _flat_db(0.0)[:8])
+    assert sparse.bands[2].evaluable is False
+    assert sparse.bands[2].graded_lo_hz == sparse.bands[2].f_lo_hz
+
+
+def test_a_band_failing_above_the_trusted_floor_still_fails():
+    """The clamp must not become a way to stop failing. A band entirely above
+    the floor and genuinely out of tolerance keeps ``passed=False``;
+    ``evaluable=False`` is reserved for absent evidence and is never borrowed
+    to soften a verdict."""
+    db = _flat_db(0.0)
+    for i in _BAND3_IDX:
+        db[i] = -6.0  # 8-16 kHz, far above any floor asserted here
+    report = evaluate_flat_spec(_FREQS_HZ, db, trusted_floor_hz=_CLAMP_FLOOR_HZ)
+    top = report.bands[2]
+    assert top.graded_lo_hz == top.f_lo_hz
+    assert top.evaluable is True
+    assert top.passed is False
+    assert abs(top.max_deviation_db) > top.tolerance_db
+    assert report.overall_passed is False
+
+
+def test_no_floor_or_an_unusable_floor_clamps_nothing():
+    """``None`` is "no floor was measured", and a non-finite one is the same
+    statement arriving badly — both grade exactly as the pre-#2551 evaluator
+    did rather than silently clamping at zero or at NaN.
+
+    The NaN case is why the guard is a finiteness check and not a bare
+    ``max()``: ``max(250.0, nan)`` returns whichever argument came first."""
+    db = _flat_db(0.0)
+    db[0] = 20.0
+    baseline = json.dumps(evaluate_flat_spec(_FREQS_HZ, db).to_dict(), sort_keys=True)
+    for floor in (None, float("nan"), float("inf")):
+        report = evaluate_flat_spec(_FREQS_HZ, db, trusted_floor_hz=floor)
+        assert json.dumps(report.to_dict(), sort_keys=True) == baseline, floor
+        assert report.trusted_floor_hz is None, floor
+        assert report.bands[0].graded_lo_hz == 250.0, floor
+
+
+def test_a_floor_at_or_above_the_reference_band_top_raises():
+    """The documented raise, at the documented boundary. With no reference
+    level there is nothing to state a deviation against anywhere, so the
+    honest answer is "this capture cannot be graded" rather than a report of
+    three unevaluable bands with a fabricated frame.
+
+    The wiring layer's own fail-soft turns this into an unavailable cloud
+    block; it is not a crash path."""
+    with pytest.raises(
+        ValueError, match=r"reference band 8000\.0-8000\.0 Hz has zero non-excluded"
+    ):
+        evaluate_flat_spec(_FREQS_HZ, _flat_db(0.0), trusted_floor_hz=8000.0)
 
 
 # --------------------------------------------------------------------------- #
