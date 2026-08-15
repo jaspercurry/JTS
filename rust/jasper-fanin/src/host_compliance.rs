@@ -64,9 +64,12 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
+use std::thread::{self, JoinHandle};
 
 use jasper_host_clock::FallbackReason;
+use log::{info, warn};
 use serde::{Deserialize, Serialize};
 
 /// The persistence schema version. Bump ONLY on an incompatible field change; a
@@ -237,6 +240,184 @@ fn tmp_path(path: &Path) -> PathBuf {
 /// new StateDirectory / privilege grant is needed: this reuses the exact posture
 /// the xrun ring established. Overridable via `JASPER_FANIN_HOST_COMPLIANCE_PATH`.
 pub const DEFAULT_COMPLIANCE_PATH: &str = "/var/lib/jasper/fanin/host_compliance.json";
+
+/// One persistence request from the render thread to the compliance writer
+/// thread. Each variant carries everything its log line needs, so the writer —
+/// not the audio loop — emits both the success and the failure line and the
+/// `event=` names are unchanged from when the write ran inline.
+#[derive(Debug, Clone)]
+pub enum ComplianceWrite {
+    /// The full proof landed this session: persist a fresh record.
+    Written { record: HostCompliance },
+    /// A first probe-fail strike: persist the bumped counter, proof RETAINED.
+    StrikeRetained {
+        record: HostCompliance,
+        reason: RevokeReason,
+    },
+    /// A live probe pass forgave an earlier strike: persist `consecutive_failures = 0`.
+    PassReset { record: HostCompliance },
+    /// Revocation: delete the proof.
+    Revoked {
+        reason: RevokeReason,
+        consecutive_failures: u32,
+    },
+}
+
+/// The render thread's handle on the compliance writer: a non-blocking `send`
+/// and a queue-depth gauge for STATUS.
+///
+/// **Why this exists (#2533).** Every `HostCompliance::store` is
+/// `create_dir_all` + `File::create` + `write_all` + **`sync_all`** + `rename`,
+/// and `revoke` is a `remove_file`. Those ran on the render thread, inside a
+/// period budget of `period_frames / 48 kHz` (5.33 ms at the shipped 256), with
+/// the whole downstream pipeline holding **two 128-frame slots** of cushion
+/// (Ring A and Ring B are both `n_slots = 2`). An SD-card fsync comfortably
+/// exceeds that, and the cost of exceeding it is that CamillaDSP reads an empty
+/// Ring A — one 128-frame slot of silence spliced into the played timeline,
+/// which is exactly the artefact issue #2533 measured. Fan-in's own ring-stall
+/// detector has a 1 s floor, so it is structurally blind to a 5 ms overrun:
+/// nothing counted it, and `output_xruns` stayed 0 through every failure.
+///
+/// The audio loop now does one `Sender::send` (an unbounded-channel push: a
+/// heap alloc and a mutex the writer thread only holds while dequeuing) and
+/// never touches the filesystem.
+#[derive(Debug, Clone)]
+pub struct ComplianceWriter {
+    tx: Sender<ComplianceWrite>,
+    /// Requests sent minus requests completed — the STATUS
+    /// `resampler.compliance.pending_writes` gauge. Steady state is 0; a
+    /// persistently non-zero value means the writer thread is stuck on I/O
+    /// (which no longer costs audio, which is the point).
+    pending: Arc<AtomicU64>,
+}
+
+impl ComplianceWriter {
+    /// Queue one request. Non-blocking and infallible from the caller's side: a
+    /// disconnected writer (thread gone) is counted as completed and dropped —
+    /// persistence is best-effort by contract, and the fail direction is the one
+    /// this feature already had (an unwritten proof costs the next session the
+    /// ~2.5-min descent; it never costs audio).
+    pub fn request(&self, write: ComplianceWrite) {
+        self.pending.fetch_add(1, Ordering::Relaxed);
+        if self.tx.send(write).is_err() {
+            self.pending.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Live queue depth. STATUS reads the shared counter through
+    /// [`pending_handle`](Self::pending_handle), so the daemon never calls this;
+    /// it exists for the tests that pin the drain (`#[cfg(test)]` keeps it out of
+    /// the `-D warnings` binary build, mirroring
+    /// [`ComplianceProof::written_this_session`]).
+    #[cfg(test)]
+    pub fn pending_writes(&self) -> u64 {
+        self.pending.load(Ordering::Relaxed)
+    }
+
+    /// The gauge handle, for the STATUS snapshot (cheap `Arc` clone).
+    pub fn pending_handle(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.pending)
+    }
+}
+
+/// Spawn the dedicated compliance writer thread and return its handle.
+///
+/// Mirrors the two deferred writers fan-in already runs (`fanin-xrun-writer`,
+/// `fanin-assistant-reference-writer`): an `mpsc` channel, a named thread, and a
+/// loop that ends when the last `Sender` drops. Must be spawned BEFORE
+/// `mlockall` like every other fan-in helper thread — it is, because the only
+/// caller is `Mixer::new`, which `main` runs well before the lock.
+///
+/// A queued request can be lost if the process exits before the writer drains
+/// (SIGKILL, watchdog). The cost is one descent on the next boot; never audio.
+pub fn spawn_writer(path: PathBuf) -> std::io::Result<(ComplianceWriter, JoinHandle<()>)> {
+    let (tx, rx) = mpsc::channel::<ComplianceWrite>();
+    let pending = Arc::new(AtomicU64::new(0));
+    let thread_pending = Arc::clone(&pending);
+    let handle = thread::Builder::new()
+        .name("fanin-compliance-writer".to_string())
+        .spawn(move || {
+            while let Ok(write) = rx.recv() {
+                apply_write(&path, write);
+                thread_pending.fetch_sub(1, Ordering::Relaxed);
+            }
+        })?;
+    Ok((ComplianceWriter { tx, pending }, handle))
+}
+
+/// Perform one queued request and log its outcome. Runs ONLY on the writer
+/// thread. The `event=` names and their meanings are the ones the inline writes
+/// used, so existing journal greps and incident forensics keep working.
+fn apply_write(path: &Path, write: ComplianceWrite) {
+    match write {
+        ComplianceWrite::Written { record } => match record.store(path) {
+            Ok(()) => info!(
+                "event=fanin.host_compliance.written path={} floor_frames={} \
+                 probe_response_ratio={:.3} — future sessions prime at the floor",
+                path.display(),
+                record.floor_frames,
+                record.probe_response_ratio,
+            ),
+            Err(e) => warn!(
+                "event=fanin.host_compliance.write_io_failed path={} detail={} — proof not \
+                 persisted this session (audio unaffected; descent already ran)",
+                path.display(),
+                e,
+            ),
+        },
+        ComplianceWrite::StrikeRetained { record, reason } => match record.store(path) {
+            Ok(()) => warn!(
+                "event=fanin.host_compliance.strike_retained reason={} \
+                 consecutive_failures={} path={} — snapped held target back to the ceiling \
+                 for THIS session; proof RETAINED (one bad measurement does not cost the \
+                 floor), next session still primes",
+                reason.as_str(),
+                record.consecutive_failures,
+                path.display(),
+            ),
+            Err(e) => warn!(
+                "event=fanin.host_compliance.strike_write_io_failed reason={} path={} \
+                 detail={} — strike not persisted (proof retained at the prior counter; \
+                 audio unaffected)",
+                reason.as_str(),
+                path.display(),
+                e,
+            ),
+        },
+        ComplianceWrite::PassReset { record } => match record.store(path) {
+            Ok(()) => info!(
+                "event=fanin.host_compliance.pass_reset path={} — live probe pass on a \
+                 floor-primed session cleared the strike counter to 0",
+                path.display(),
+            ),
+            Err(e) => warn!(
+                "event=fanin.host_compliance.pass_reset_io_failed path={} detail={} — strike \
+                 counter not cleared this session (proof otherwise intact)",
+                path.display(),
+                e,
+            ),
+        },
+        ComplianceWrite::Revoked {
+            reason,
+            consecutive_failures,
+        } => match HostCompliance::revoke(path) {
+            Ok(()) => warn!(
+                "event=fanin.host_compliance.revoked reason={} consecutive_failures={} \
+                 path={} — deleted the proof, snapped held target back to the ceiling; \
+                 the normal descent will re-prove",
+                reason.as_str(),
+                consecutive_failures,
+                path.display(),
+            ),
+            Err(e) => warn!(
+                "event=fanin.host_compliance.revoke_io_failed reason={} path={} detail={}",
+                reason.as_str(),
+                path.display(),
+                e,
+            ),
+        },
+    }
+}
 
 /// The per-tick outer signals [`ComplianceProof`] reads that it cannot derive
 /// itself, sampled once per render period on the mixer thread. All come from
@@ -711,6 +892,13 @@ pub struct HostComplianceObservability {
     /// Reaching [`PROBE_FAIL_STRIKE_LIMIT`] deletes the proof (so it never sits at
     /// `≥ 2` on disk in the steady state).
     pub consecutive_failures: Arc<AtomicU64>,
+    /// Deferred persistence queue depth — requests handed to the
+    /// `fanin-compliance-writer` thread that it has not finished yet (#2533).
+    /// Steady state 0. A value that stays non-zero means the writer is stuck on
+    /// filesystem I/O; that no longer costs audio, which is exactly why the
+    /// depth is worth surfacing. Shares the writer's own counter when
+    /// persistence is armed; a private zero when it is not.
+    pub pending_writes: Arc<AtomicU64>,
 }
 
 impl HostComplianceObservability {
@@ -724,7 +912,16 @@ impl HostComplianceObservability {
             proved_at_epoch_s: Arc::new(AtomicU64::new(proved_at_epoch_s)),
             revoked_reason_last_code: Arc::new(AtomicU64::new(0)),
             consecutive_failures: Arc::new(AtomicU64::new(consecutive_failures as u64)),
+            pending_writes: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Share the deferred writer's live queue-depth counter, so STATUS reports
+    /// the real depth rather than this observable's private zero. Consuming
+    /// builder — called once, at lane build, right after the writer is spawned.
+    pub fn with_pending_handle(mut self, handle: Arc<AtomicU64>) -> Self {
+        self.pending_writes = handle;
+        self
     }
 
     /// Clone the `Arc` handles (cheap) for the resampler observability snapshot.
@@ -734,6 +931,7 @@ impl HostComplianceObservability {
             proved_at_epoch_s: Arc::clone(&self.proved_at_epoch_s),
             revoked_reason_last_code: Arc::clone(&self.revoked_reason_last_code),
             consecutive_failures: Arc::clone(&self.consecutive_failures),
+            pending_writes: Arc::clone(&self.pending_writes),
         }
     }
 
@@ -1169,6 +1367,111 @@ mod tests {
         assert!(!path.exists(), "revoke deletes the file");
         // Revoking an absent file is success (idempotent).
         HostCompliance::revoke(&path).expect("revoke idempotent");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- Deferred writer (#2533) ------------------------------------------
+
+    /// Wait, BOUNDED, for the writer thread to drain its queue. Returns whether
+    /// it drained; the caller asserts, so a hung writer fails the test instead of
+    /// hanging the suite.
+    fn drained(writer: &ComplianceWriter) -> bool {
+        for _ in 0..500 {
+            if writer.pending_writes() == 0 {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        false
+    }
+
+    #[test]
+    fn the_writer_persists_off_thread_and_the_queue_drains() {
+        // THE #2533 CONTRACT: the render thread hands over a record and does no
+        // filesystem work itself. `request` must return promptly (it is a channel
+        // push), the file must appear, and the queue depth must return to 0.
+        let dir = std::env::temp_dir().join(format!("jts-compl-writer-{}", std::process::id()));
+        let path = dir.join("host_compliance.json");
+        let _ = std::fs::remove_dir_all(&dir);
+        let (writer, _handle) = spawn_writer(path.clone()).expect("writer spawns");
+        let rec = HostCompliance::new(1_700_000_042, 1.317, 576);
+        writer.request(ComplianceWrite::Written {
+            record: rec.clone(),
+        });
+        assert!(drained(&writer), "the writer thread must drain its queue");
+        assert_eq!(
+            HostCompliance::load(&path).expect("the deferred write landed"),
+            rec,
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_writer_applies_a_revoke_and_the_three_write_variants() {
+        // Order is preserved by the channel, so a Written→StrikeRetained→
+        // PassReset→Revoked sequence ends with no file — the same end state the
+        // inline calls produced, which is what keeps boot-time `load` honest.
+        let dir = std::env::temp_dir().join(format!("jts-compl-writer-rev-{}", std::process::id()));
+        let path = dir.join("host_compliance.json");
+        let _ = std::fs::remove_dir_all(&dir);
+        let (writer, _handle) = spawn_writer(path.clone()).expect("writer spawns");
+        let rec = HostCompliance::new(1_700_000_000, 1.5, 576);
+        writer.request(ComplianceWrite::Written {
+            record: rec.clone(),
+        });
+        writer.request(ComplianceWrite::StrikeRetained {
+            record: rec.with_consecutive_failures(1),
+            reason: RevokeReason::ProbeFail,
+        });
+        assert!(drained(&writer), "queue drains");
+        assert_eq!(
+            HostCompliance::load(&path)
+                .expect("strike write landed")
+                .consecutive_failures,
+            1,
+            "the retained strike is the record on disk",
+        );
+        writer.request(ComplianceWrite::PassReset {
+            record: rec.with_consecutive_failures(0),
+        });
+        assert!(drained(&writer), "queue drains");
+        assert_eq!(
+            HostCompliance::load(&path)
+                .expect("pass reset landed")
+                .consecutive_failures,
+            0,
+        );
+        writer.request(ComplianceWrite::Revoked {
+            reason: RevokeReason::DllDemotion,
+            consecutive_failures: 0,
+        });
+        assert!(drained(&writer), "queue drains");
+        assert!(!path.exists(), "the revoke deleted the proof");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_request_to_a_dead_writer_neither_blocks_nor_leaks_queue_depth() {
+        // The render thread must survive the writer thread going away: the send
+        // fails, the depth returns to 0, and nothing blocks. (Dropping the
+        // returned JoinHandle does not stop the thread, so end the thread by
+        // dropping the RECEIVER's owner — done here by letting the writer's
+        // channel disconnect via a writer built on a path we then never drain.)
+        let dir =
+            std::env::temp_dir().join(format!("jts-compl-writer-dead-{}", std::process::id()));
+        let path = dir.join("host_compliance.json");
+        let (writer, handle) = spawn_writer(path.clone()).expect("writer spawns");
+        let orphan = writer.clone();
+        drop(writer); // last live Sender is `orphan`, so the thread stays up
+        orphan.request(ComplianceWrite::Revoked {
+            reason: RevokeReason::EarlyUnlock,
+            consecutive_failures: 0,
+        });
+        assert!(drained(&orphan), "queue drains through the clone");
+        drop(orphan); // no Senders left → the thread's recv() ends
+        handle
+            .join()
+            .expect("writer thread exits when senders drop");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

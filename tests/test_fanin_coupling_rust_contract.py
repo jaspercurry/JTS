@@ -39,6 +39,9 @@ _FANIN_STATE_RS = _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "state.rs"
 _FANIN_HOST_COMPLIANCE_RS = (
     _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "host_compliance.rs"
 )
+_FANIN_DIRECT_CAPTURE_RS = (
+    _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "mixer" / "direct_capture.rs"
+)
 
 
 def _config_rs_text() -> str:
@@ -69,6 +72,12 @@ def _host_compliance_rs_text() -> str:
     if not _FANIN_HOST_COMPLIANCE_RS.exists():
         pytest.skip(f"rust source not present: {_FANIN_HOST_COMPLIANCE_RS}")
     return _FANIN_HOST_COMPLIANCE_RS.read_text(encoding="utf-8")
+
+
+def _direct_capture_rs_text() -> str:
+    if not _FANIN_DIRECT_CAPTURE_RS.exists():
+        pytest.skip(f"rust source not present: {_FANIN_DIRECT_CAPTURE_RS}")
+    return _FANIN_DIRECT_CAPTURE_RS.read_text(encoding="utf-8")
 
 
 def test_coupling_selector_env_var_name_agrees():
@@ -646,14 +655,22 @@ def test_host_compliance_status_block_and_wiring():
     #    contract). The two-strike probe-fail RETAIN and the probe-PASS reset are
     #    their own events so an operator can tell a retained strike (proof kept)
     #    from a delete-revoke and a counter reset.
+    # The prime decision is the mixer's; the four PERSISTENCE outcomes are logged
+    # by the deferred writer thread that performs them (#2533), so the events live
+    # with the I/O rather than on the render thread. Both halves are pinned: the
+    # names still exist, and they exist in the file that actually writes.
+    assert "event=fanin.host_compliance.prime_at_floor" in mixer_text, (
+        "the mixer must log the prime decision it makes"
+    )
     for event in (
         "event=fanin.host_compliance.written",
         "event=fanin.host_compliance.revoked",
-        "event=fanin.host_compliance.prime_at_floor",
         "event=fanin.host_compliance.strike_retained",
         "event=fanin.host_compliance.pass_reset",
     ):
-        assert event in mixer_text, f"mixer must emit {event}"
+        assert event in _host_compliance_rs_text(), (
+            f"the compliance writer must emit {event}"
+        )
 
     # 7. The two-strike probe-fail policy is a pure, testable classifier that the
     #    mixer consults: a probe FAIL retains the proof the first time (a
@@ -709,12 +726,125 @@ def test_host_compliance_prime_is_per_session_not_construction_only():
     # The honouring snap re-primes at the floor via the same prime_at_floor the
     # construction path uses (one floor-prime mechanism, called per session).
     honor_start = resampler_text.index("fn snap_decay_back_honoring_proof(")
-    honor_end = resampler_text.index("fn live_proof_present(", honor_start)
+    honor_end = resampler_text.index("fn engage_armed_floor_prime(", honor_start)
     honor_body = resampler_text[honor_start:honor_end]
-    assert "self.decay.prime_at_floor()" in honor_body, (
-        "the honouring snap must re-prime at the floor via prime_at_floor when a "
-        "live proof is present"
+    assert "self.decay.arm_prime_at_floor()" in honor_body, (
+        "the honouring snap must ARM the floor prime when a live proof is present "
+        "(it engages on the lane's first frames — #2533)"
     )
+
+
+def test_a_proven_floor_cannot_touch_a_lane_whose_host_is_not_streaming():
+    """#2533: the persisted floor prime is ARMED at a session boundary and ENGAGED
+    only by real input frames.
+
+    The proof is evidence about a host that STREAMED. Applying it to a lane that is
+    merely attached let a silent host's floor reach the output path: it lowered the
+    lock threshold from the acquisition ceiling to the floor, and it reported
+    `decay_at_floor()` — the compliance proof machine's "descent complete" input,
+    the gate in front of an `fsync` on the render thread — for a descent that never
+    ran. Fan-in's render loop has one period of budget (5.33 ms at 256 frames) and
+    the downstream pipeline holds two 128-frame slots, so anything blocking there
+    costs a whole slot of audio.
+    """
+    resampler_text = _lane_resampler_rs_text()
+
+    # The arm/engage pair exists and the engage is driven by the INPUT pushes.
+    assert "pub fn arm_prime_at_floor(" in resampler_text
+    assert "pub fn engage_armed_prime(" in resampler_text
+    for push in ("pub fn push_input(", "pub fn push_input_wide("):
+        start = resampler_text.index(push)
+        end = resampler_text.index("\n    }", start)
+        assert "self.engage_armed_floor_prime();" in resampler_text[start:end], (
+            f"{push} must engage an armed floor prime — frames are the trigger"
+        )
+
+    # The build-time entry ARMS rather than applying.
+    build_start = resampler_text.index("pub fn prime_decay_at_floor(")
+    build_end = resampler_text.index("\n    }", build_start)
+    assert "self.decay.arm_prime_at_floor();" in resampler_text[build_start:build_end], (
+        "the build-time prime entry must ARM, not apply"
+    )
+
+    # A hard boundary abandons a pending arm exactly as it abandons a live prime,
+    # so the next frame cannot silently undo a snap-back.
+    snap_start = resampler_text.index("pub fn snap_back(")
+    snap_end = resampler_text.index("\n        }", snap_start)
+    assert "self.floor_prime_armed = false;" in resampler_text[snap_start:snap_end], (
+        "snap_back must disarm a pending prime"
+    )
+
+
+def test_no_blocking_io_on_the_fanin_render_thread():
+    """#2533: no filesystem write and no device open/close may run inside `step()`.
+
+    Measured consequence when they did: fan-in's period budget is 5.33 ms at the
+    shipped 256-frame period and both Ring A (fan-in→CamillaDSP) and Ring B
+    (CamillaDSP→outputd) are two 128-frame slots deep, so a render-thread block
+    over ~2.7 ms costs exactly one slot — a 128-frame silence INSERTION when
+    CamillaDSP reads an empty Ring A, or a 128-frame DELETION when fan-in
+    free-run-drops a slot it could not publish. Both signs were measured in the
+    field. Fan-in's own ring-stall detector has a 1 s floor and is structurally
+    blind to it, so nothing counts these; the guard has to be structural.
+
+    Two owners, both off-thread: `fanin-compliance-writer` (proof fsync + revoke)
+    and `fanin-direct-opener` (gadget `snd_pcm_open` / `snd_pcm_close`).
+    """
+    mixer_text = _mixer_rs_text()
+    host_compliance_text = _host_compliance_rs_text()
+    direct_text = _direct_capture_rs_text()
+
+    # 1. The compliance writer thread owns every proof write and the revoke.
+    assert "pub fn spawn_writer(" in host_compliance_text
+    assert '.name("fanin-compliance-writer".to_string())' in host_compliance_text, (
+        "the proof writer must be its own named thread"
+    )
+    # The mixer NEVER performs the I/O itself — it queues.
+    mixer_code = _rust_code_only(mixer_text)
+    for inline in (".store(&hc.path)", "HostCompliance::revoke("):
+        assert inline not in mixer_code, (
+            f"the render thread must not call {inline} — an fsync/unlink inside the "
+            "period budget is the #2533 defect"
+        )
+    assert "hc.request_write(" in mixer_code, "the mixer must queue writes instead"
+
+    # 2. The direct-lane opener thread owns every gadget open and close.
+    assert "pub(super) fn spawn(" in direct_text
+    assert '.name("fanin-direct-opener".to_string())' in direct_text, (
+        "the gadget opener must be its own named thread"
+    )
+    direct_code = _rust_code_only(direct_text)
+    # `open_direct_capture` may appear ONLY inside the opener thread body.
+    opener_start = direct_code.index("fn spawn(")
+    opener_end = direct_code.index("fn publish_pending(", opener_start)
+    assert "open_direct_capture(" in direct_code[opener_start:opener_end], (
+        "the opener thread performs the device open"
+    )
+    assert (
+        direct_code.count("open_direct_capture(") == 1
+    ), "no other call site in the direct lane may open the device"
+    # The retiring handle travels to the opener so its Drop (snd_pcm_close) does
+    # not run in the render loop.
+    assert "fn hand_retired_handle_to_opener(" in direct_code
+    assert "retire: Option<PCM>" in direct_code, (
+        "a retired PCM must be handed over, not dropped on the render thread"
+    )
+    # The Absent retry is a poll + queue, never an inline open.
+    reopen_start = direct_code.index("fn maybe_reopen_direct(")
+    reopen_end = direct_code.index("fn adopt_open_outcome(", reopen_start)
+    reopen_body = direct_code[reopen_start:reopen_end]
+    assert "open_direct_capture(" not in reopen_body, (
+        "the ~2 s Absent retry must not open the device on the render thread"
+    )
+    assert "opener.request(" in reopen_body and ".poll()" in reopen_body, (
+        "the Absent retry must queue an open and poll for the result"
+    )
+
+    # 3. Both queues are observable in STATUS (depth / in-flight), so a stuck
+    #    writer or a hanging device open is visible rather than silent.
+    state_text = _state_rs_text()
+    assert '"pending_writes"' in state_text
+    assert '"reopen_pending"' in state_text
 
 
 def test_host_compliance_prime_gated_on_host_clock_servo_armed():

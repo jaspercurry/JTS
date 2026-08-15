@@ -352,6 +352,7 @@ pub(super) fn open_ring_input(
         // SHM ring, the same way the DIRECT lane's only source is the gadget.
         pcm: None,
         direct: None,
+        direct_opener: None,
         ring: Some(ring),
         label: label.to_string(),
         // STATUS's `pcm` for this lane is the ring PATH, not an ALSA name: it is
@@ -616,6 +617,7 @@ mod tests {
         Input {
             pcm: None,
             direct: None,
+            direct_opener: None,
             ring: Some(ring),
             label: "spotify".to_string(),
             pcm_name: path.to_string(),
