@@ -765,7 +765,7 @@ is its only reference source — the `JASPER_AEC_REF_SOURCE=alsa` fallback
 that read `pcm.jasper_ref` was retired. `pcm.jasper_ref` now has no
 reader at all — U4/P7-3 retired the timing probe's
 `--jasper-capture-pcm`, the one consumer it briefly had left — and
-survives only as a shipped definition until P9-B deletes the aloop
+survives only as a shipped definition until P9-E deletes the aloop
 PCMs: a plug wrapper over
 `pcm.jasper_capture`, which is a dsnoop on the summed fan-in output
 `hw:Loopback,1,7` before CamillaDSP processing. Since U4/P7-4 that lane

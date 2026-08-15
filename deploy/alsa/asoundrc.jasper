@@ -43,7 +43,7 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #   - CamillaDSP reads that summed stream via `pcm.jasper_capture` and
 #     is its only reader. `pcm.jasper_ref`, the plug-wrapped alias, has
 #     no reader left at all (U4/P7-1 then P7-3) and is shipped only
-#     until P9-B deletes these definitions; everything AEC — the bridge
+#     until P9-E deletes these definitions; everything AEC — the bridge
 #     and jasper-aec-tune alike — consumes outputd's speaker monitor.
 #   - In the outputd topology, CamillaDSP writes post-DSP content to
 #     `outputd_content_playback`, and jasper-outputd is the only reader
@@ -134,7 +134,7 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #   - `jasper_ref` (defined below), the plug-wrapped alias, is opened by
 #     nothing: U4/P7-1 retired the AEC bridge's ALSA fallback and P7-3
 #     retired the timing probe's `--jasper-capture-pcm`, which were its
-#     only two readers. It ships until P9-B deletes these definitions.
+#     only two readers. It ships until P9-E deletes these definitions.
 #
 # Why two names: `pcm.jasper_capture` is semantically "the raw dsnoop
 # tap", so its readers see exactly what the kernel produced, while
@@ -293,7 +293,7 @@ pcm.jasper_capture {
 # Plug-wrapped alias for pre-DSP capture. It has NO reader: the AEC
 # bridge's ALSA fallback was the first to go (U4/P7-1) and the timing
 # probe's --jasper-capture-pcm was the last (U4/P7-3). It is retained
-# only because P9-B, not P7, deletes the snd-aloop PCM definitions —
+# only because P9-E, not P7, deletes the snd-aloop PCM definitions —
 # so this block is shipped, unread, and on its way out. Do not attach a
 # new reader to it; a live consumer of the pre-DSP sum reads
 # `jasper_capture` directly, as CamillaDSP does.
