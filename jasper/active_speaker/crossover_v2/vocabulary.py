@@ -363,37 +363,87 @@ REASON_CORRECTION_MEASURED_REGRESSION = "correction_measured_regression"
 # code because "we could not tell, and erred toward your drivers" is a
 # different and more honest sentence than "it measured worse".
 REASON_CORRECTION_UNPROVEN_BOOST = "correction_unproven_boost"
+# #2537's safety row. The post-apply sweep measured the applied graph putting
+# out MORE than it declared — a commanded boost realized above its bound, an
+# uncommanded level shift in the LOUD direction, or a capture that clipped — so
+# it came off. Its own code because the three siblings above all say something
+# else: the graph did what it was told and the room liked it less
+# (measured_regression), the graph missed its own shape (model_error), or
+# nothing could be measured (unproven_boost). Here the graph was measured doing
+# MORE, which is the only cause on this list that is about output rather than
+# accuracy, and the only one a household could be hearing right now.
+#
+# ONE row rather than three hazard-specific ones, on
+# :data:`REASON_CORRECTION_ROLLBACK_FAILED`'s precedent directly below: the
+# household's first fact is that a measured change was found unsafe and put
+# back, the action is identical in all three cases, and the specific hazard is
+# on the round's own record (the safety verdict's reason, in the receipt's
+# ``round_axes`` and the journal) for whoever needs it afterwards.
+REASON_CORRECTION_UNSAFE_RESULT = "correction_unsafe_result"
+# #2537's untrusted row, for an intervention that puts no energy in. Its
+# boosted sibling is REASON_CORRECTION_UNPROVEN_BOOST, whose copy leans on "and
+# it turns some parts up" — a sentence that is false for a cut-only correction,
+# which is why this exists rather than reusing it. The finding is the same and
+# the remedy is the same; what differs is the reason the round erred toward
+# putting the old sound back.
+REASON_CORRECTION_UNVERIFIABLE_RESULT = "correction_unverifiable_result"
 
 def round_restore_reason(cause: str) -> str:
-    """#2291 adoption cause → the code a SUCCESSFUL round restore surfaces.
+    """#2537 adoption cause → the code a SUCCESSFUL round restore surfaces.
 
-    Only the three causes the table can reach with a ``restore`` intent exist,
-    and each maps to the code whose copy states that cause truthfully. A
-    realization failure IS the graph not doing what its own filters commanded,
-    which is :data:`REASON_CORRECTION_MODEL_ERROR`'s existing sentence, so it
-    is reused rather than duplicated.
+    Every cause the table can reach with a ``restore`` outcome is here, and
+    each maps to the code whose copy states that cause truthfully:
+
+    * the three SAFETY causes share
+      :data:`REASON_CORRECTION_UNSAFE_RESULT` — see its note for why one row;
+    * the four EVIDENCE-TRUST causes share
+      :data:`REASON_CORRECTION_UNVERIFIABLE_RESULT`, unless the applied
+      intervention was boosted, in which case ``decide_adoption`` has already
+      substituted :data:`~...verification.ADOPTION_UNPROVEN_BOOST` as the cause
+      and its own stronger sentence renders;
+    * a measured regression keeps its own.
+
+    ``realization_failed`` is deliberately absent since #2537: it is a QUALITY
+    cause now, and quality's only restoring value is a measured regression, so
+    a realization failure can no longer reach this function. Leaving its entry
+    would be a row for a state nothing produces.
 
     A function with a lazy import rather than a module-level dict, because
     :mod:`~jasper.active_speaker.crossover_v2.verification` reaches
     :mod:`~jasper.active_speaker.flat_spec`, which this module imports lazily
     everywhere for that reason.
 
-    Anything unlisted falls back to the measured-regression code — the weakest
-    true statement available for "the round asked for a restore". The mapping
-    is exhaustive today and pinned by a test, so the fallback is a floor, not
-    a branch anything reaches.
+    Anything unlisted falls back to the unverifiable code — the weakest true
+    statement available for "the round asked for a restore", and a safer floor
+    than the measured-regression code it used to be: claiming a REGRESSION the
+    round did not find is a false statement about a household's speaker, while
+    claiming the result could not be verified is true of every unmapped cause
+    by construction. The mapping is exhaustive today and pinned by a test, so
+    the fallback is a floor, not a branch anything reaches.
     """
     from jasper.active_speaker.crossover_v2.verification import (
         ADOPTION_MEASURED_REGRESSION,
-        ADOPTION_REALIZATION_FAILED,
         ADOPTION_UNPROVEN_BOOST,
+        CAPTURE_INTEGRITY_FAILED,
+        CAPTURE_INTEGRITY_UNAVAILABLE,
+        REALIZATION_NO_COMPARATOR,
+        REALIZATION_NO_TRACKING,
+        SAFETY_BOOST_OVER_DECLARED_BOUND,
+        SAFETY_CLIPPED_CAPTURE,
+        SAFETY_UNCOMMANDED_LEVEL_LOUDER,
     )
 
     return {
         ADOPTION_MEASURED_REGRESSION: REASON_CORRECTION_MEASURED_REGRESSION,
-        ADOPTION_REALIZATION_FAILED: REASON_CORRECTION_MODEL_ERROR,
         ADOPTION_UNPROVEN_BOOST: REASON_CORRECTION_UNPROVEN_BOOST,
-    }.get(cause, REASON_CORRECTION_MEASURED_REGRESSION)
+        SAFETY_BOOST_OVER_DECLARED_BOUND: REASON_CORRECTION_UNSAFE_RESULT,
+        SAFETY_UNCOMMANDED_LEVEL_LOUDER: REASON_CORRECTION_UNSAFE_RESULT,
+        SAFETY_CLIPPED_CAPTURE: REASON_CORRECTION_UNSAFE_RESULT,
+        CAPTURE_INTEGRITY_FAILED: REASON_CORRECTION_UNVERIFIABLE_RESULT,
+        CAPTURE_INTEGRITY_UNAVAILABLE: REASON_CORRECTION_UNVERIFIABLE_RESULT,
+        REALIZATION_NO_TRACKING: REASON_CORRECTION_UNVERIFIABLE_RESULT,
+        REALIZATION_NO_COMPARATOR: REASON_CORRECTION_UNVERIFIABLE_RESULT,
+    }.get(cause, REASON_CORRECTION_UNVERIFIABLE_RESULT)
 
 
 #: Delta-probe verdict → the reason code its rollback surfaces. Exhaustive
@@ -1098,6 +1148,20 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "has been put back rather than leaving an unproven change driving your "
         "speaker harder. Measuring again, from your usual listening spot, is "
         "what settles it.",
+    ),
+    REASON_CORRECTION_UNSAFE_RESULT: ReasonSpec(
+        REASON_CORRECTION_UNSAFE_RESULT, TEMPLATE_HARD_STOP, 0, "",
+        "JTS checked what your speaker actually did with this tuning and "
+        "measured more output than the tuning declared, so the previous sound "
+        "has been put back rather than leaving it playing. Measuring again, "
+        "from your usual listening spot, is what settles it.",
+    ),
+    REASON_CORRECTION_UNVERIFIABLE_RESULT: ReasonSpec(
+        REASON_CORRECTION_UNVERIFIABLE_RESULT, TEMPLATE_HARD_STOP, 0, "",
+        "JTS could not complete the check that confirms a new tuning, so the "
+        "previous sound has been put back rather than leaving a change nobody "
+        "has measured on your speaker. Measuring again, from your usual "
+        "listening spot, is what settles it.",
     ),
     # The five rows above all promise "the previous sound has been put back",
     # which is only true when the rollback actually ran. When it did not, THIS
