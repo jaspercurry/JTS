@@ -610,8 +610,11 @@ route family: `commission-load`, `commission-ramp-step`,
 `commission-ramp-ack`, and `commission-ramp-abort`. The browser does not expose
 the protected staging/load/arm implementation steps as separate buttons or
 status grids. The saved topology does not make
-`outputd_active_content_playback` an audible test writer: that PCM is a
-daemon-owned CamillaDSP/outputd lane. Tweeter/high-frequency targets are not
+`outputd_active_content_playback` an audible test writer: that name is a
+daemon-owned CamillaDSP/outputd lane (its aloop PCM definition was deleted
+at P9-C — an armed roleful box now uses the ACTIVE ring instead — but the
+ban holds regardless, since the name still resolves in code and a
+rolled-back box still names it). Tweeter/high-frequency targets are not
 horn-specific: the backend auto-records a
 software-guarded bring-up request when no physical protection evidence is
 present, and the shared driver-test signal policy still enforces
@@ -1134,7 +1137,10 @@ can be diagnosed without scraping journal logs.
   controls as the primary path.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
-Verification scope (2026-08-05): Streambox I²S-HAT visibility/reconcile, USB-role safety, and `/sound/setup/` deploy ingress were rechecked. Prior 2026-08-04: PR-1 route/current-surface scope: `/eq/` and
+Verification scope (2026-08-15): the `outputd_active_content_playback`
+forbidden-test-writer note was corrected for P9-C, audio-graph
+consolidation #2285 — that PCM's aloop definition is deleted, and the ban
+now says so while staying in force. Prior 2026-08-05: Streambox I²S-HAT visibility/reconcile, USB-role safety, and `/sound/setup/` deploy ingress were rechecked. Prior 2026-08-04: PR-1 route/current-surface scope: `/eq/` and
 `/sound/setup/` page-mode ownership, bonded-follower delegation versus local
 commissioning, the fresh-read recognized-field `SoundSettings` merge and one
 lock through DSP/volume convergence, and full/streambox ingress were rechecked
@@ -1180,4 +1186,4 @@ config-preservation/refusal updates for graph-carrier dispatch; see
 HANDOFF-dsp-graph-carrier.md. Prior recheck 2026-06-18 after the
 active-speaker UI / commission-ramp work.)
 
-Last verified: 2026-08-05
+Last verified: 2026-08-15

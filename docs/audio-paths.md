@@ -45,7 +45,12 @@ TTS / CUE chain (CROSSED OVER on every output profile)
     jasper-voice OutputdTtsPlayout → /run/jasper-fanin/tts.sock
                                    → jasper-fanin, mixed after program duck
                                    → jasper-camilla crossover/protection
-                                   → outputd_content_* or outputd_active_content_*
+                                   → outputd_content_* (passive box), or the
+                                     ACTIVE ring on an armed roleful box — the
+                                     aloop outputd_active_content_* pair's PCM
+                                     defs were deleted at P9-C, so an
+                                     unarmed/rolled-back roleful box still
+                                     names it and outputd parks
                                    → jasper-outputd final sink
                                    → selected DAC(s) → amps → drivers
 ```
@@ -182,9 +187,14 @@ mixer, a second output device, or a new volume model.
 
 1. **Give it one private fan-in lane.** Add exactly one PCM alias in
    `deploy/alsa/asoundrc.jasper`, pinned to 48 kHz stereo S16_LE via
-   `plug`. Current allocation: `0` Spotify, `1` AirPlay, `2`
-   Bluetooth, `3` USB sink, `4` correction/test, `5` debug/monitor
-   reserve, `6` outputd post-DSP content, `7` fan-in summed output. Do
+   `plug`. Current allocation (the pair allocation lives canonically in
+   `deploy/modprobe.d/snd-aloop.conf`; `asoundrc.jasper`'s header
+   cross-references it, and this list mirrors both): `0` Spotify, `1` AirPlay, `2`
+   Bluetooth, `3` USB sink, `4` correction/test, `5` UNALLOCATED
+   (formerly the outputd active-speaker content lane; its PCM defs
+   were deleted at P9-C once the ACTIVE ring became the roleful
+   transport), `6` outputd post-DSP content (also the active-follower
+   grouping round-trip), `7` fan-in summed output. Do
    not put a source on substream `6` or `7`. If you need another
    production source lane, stop and redesign the topology rather than
    overloading snd-aloop.
@@ -799,7 +809,14 @@ writer. So:
 
 ---
 
-Last verified: 2026-08-11 (the assistant-gain debugging text re-verified against
+Last verified: 2026-08-15 (the TTS-chain diagram and the substream
+allocation table corrected for P9-C, audio-graph consolidation #2285:
+snd-aloop pair 5's PCM definitions — the outputd active-speaker content
+lane, previously mislabelled here as a "debug/monitor reserve" — were
+deleted once the ACTIVE ring became the roleful transport; verified against
+`deploy/modprobe.d/snd-aloop.conf`, where the pair allocation lives
+canonically, and its cross-reference in `deploy/alsa/asoundrc.jasper`; prior
+2026-08-11 pass: the assistant-gain debugging text re-verified against
 `jasper-tts-protocol`'s `decide_gain`/`sanitize_tts_gain_db` and
 `jasper/cli/doctor/audio_runtime.py`: the doctor asserted a fixed `[-60, 0]`
 clamp the engine stopped enforcing on 2026-07-01 and now asserts the

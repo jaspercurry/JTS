@@ -435,15 +435,25 @@ The repaired output ladder is:
    open** that keeps failing. That open is exit-1/restart class on purpose —
    on boot and on a width-flip deploy it means CamillaDSP has not yet opened
    its half of the snd-aloop pair, and restarting is how outputd waits that
-   out, so the first failures restart untouched. A peer permanently locked at
-   another width (or drifted env) produces the identical failure forever, so
-   the helper counts consecutive failures whose journal tail carries outputd's
-   own content-lane open contexts and, on the 4th, `reset-failed`s and stops
-   the unit — a park that leaves start 5 of `StartLimitBurst=5` unspent
-   instead of reaching the reboot. The reason and the fix are written to
-   `/run/jasper-outputd-content-lane.state` (a plain `/run` file, so it
-   outlives the stop and clears at boot); the streak clears on any other
-   failure class and on the next clean stop.
+   out, so the first failures restart untouched. Three causes make the
+   identical failure permanent: a peer locked at another width, a drifted env,
+   and — since P9-C deleted the ACTIVE lane's snd-aloop pair-5 PCM definitions
+   — a roleful box that is not ring-armed, whose graph names a PCM that no
+   longer exists. So the helper counts consecutive failures whose journal tail
+   carries outputd's own content-lane open contexts and, on the 4th,
+   `reset-failed`s and stops the unit — a park that leaves start 5 of
+   `StartLimitBurst=5` unspent instead of reaching the reboot. The reason and
+   the fix are written to `/run/jasper-outputd-content-lane.state` (a plain
+   `/run` file, so it outlives the stop and clears at boot); the streak clears
+   on any other failure class and on the next clean stop.
+
+   **The recorded fix is lane-specific**, because the two lanes take opposite
+   remedies: the passive lane (pair 6) still has both halves, so its fix is
+   the width; the ACTIVE lane has no snd-aloop transport at all, so its only
+   fix is re-arming the ring. The helper picks between them on the PCM NAME in
+   the failing context — both outputd sinks carry the name, but only the
+   composite sink spells `active` in its context prefix, so a prefix-keyed
+   selector would miss the roleful single-DAC shape entirely.
 
    The bound's floor is fan-in, not outputd. `jasper-camilla.service` is
    `After=sound.target network.target jasper-outputd.service

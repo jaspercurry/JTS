@@ -1005,7 +1005,8 @@ until the round-trip exists, so 2a secretly dragged in the outputd rework.**
   every 30 s (cold start 60 s); 3 consecutive starved polls → `reset-failed` +
   `--no-block restart jasper-grouping-reconcile` (rate-limited 1/10 min). An
   ACTIVE endpoint (active follower or active-speaker leader) feeds the DAC via
-  the camilla#2 active-content lane, not the `dac_content` round-trip, so the
+  the ACTIVE ring (formerly camilla#2's aloop active-content lane, deleted at
+  P9-C), not the `dac_content` round-trip, so the
   reconciler disables `dac_content` there and the supervisor **skips** the
   starvation watch for it (keyed on `is_active_speaker_box()` — the same
   predicate the reconciler uses; its absence is correct, not starvation —
@@ -2944,4 +2945,9 @@ Stage-0 update 2026-06-27: `buffer_ms` was inert (passed as a snapcast
 `reconcile.py:snapserver_argv` so the configured value takes effect. Pre-fix
 buffer-sizing observations predate any real buffer change.
 
-Last verified: 2026-08-04
+2026-08-15 (P9-C, lane-5 deletion): re-verified only the camilla#2
+active-content lane reference, which now names the ACTIVE ring rather than
+snd-aloop pair 5. No other claim in this file was re-read; the rest stands as
+verified on 2026-08-04.
+
+Last verified: 2026-08-15

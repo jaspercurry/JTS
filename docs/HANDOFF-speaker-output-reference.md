@@ -38,7 +38,9 @@ ASSISTANT AUDIO
     -> /run/jasper-fanin/tts.sock
     -> jasper-fanin, mixed after program duck
     -> jasper-camilla crossover/protection
-    -> Ring B, or the paired outputd_content_* / outputd_active_content_* lane
+    -> Ring B (armed roleful box), or the passive outputd_content_* lane —
+       the outputd_active_content_* pair's PCM defs were deleted at P9-C, so
+       an unarmed/rolled-back roleful box still names it and outputd parks
     -> jasper-outputd final sink
     -> DAC(s) / amp(s) / speaker(s)
 ```
@@ -335,9 +337,13 @@ Rechecked against the current tree on 2026-06-01:
   `expected_drain_at()` to
   avoid ending a turn before queued audio drains.
 - `deploy/alsa/asoundrc.jasper` defines the outputd ALSA surfaces:
-  `outputd_content_playback`, `outputd_content_capture`,
-  `outputd_active_content_playback`, `outputd_active_content_capture`,
-  and `outputd_dac`.
+  `outputd_content_playback`, `outputd_content_capture`, and `outputd_dac`.
+  `outputd_active_content_playback` / `outputd_active_content_capture` were
+  defined here too until P9-C deleted them once the ACTIVE ring became the
+  roleful transport — the names survive in code vocabulary (a graph can
+  still declare them) but the PCMs no longer exist; opening one now parks
+  outputd (see
+  [HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md)).
 - `deploy/camilladsp/outputd-cutover.yml` sends Camilla playback to
   `outputd_content_playback` at `DEFAULT_PLAYBACK_FORMAT` (the shipped seed
   must match what `jasper-sound render-flat-cutover` regenerates, so
@@ -668,10 +674,14 @@ What exists:
   dual states park normal output instead of routing stereo outputd to
   the first dongle. Runtime sink activation is intentionally stricter
   than hardware observation: `jasper-audio-hardware-reconcile` switches
-  `/var/lib/jasper/outputd.env` to `JASPER_OUTPUTD_SINK=dual_apple` only
+  `/var/lib/jasper/outputd.env` to `JASPER_OUTPUTD_SINK=dual_apple` for any
+  recognized composite, but arms the composite's ACTIVE-lane pairing only
   when the active-speaker runtime contract proves the already-loaded endpoint
-  graph targets `outputd_active_content_playback` and its width fits the
-  profile cap.
+  graph targets the live ring endpoint (`jts_ring_active_playback`) and its
+  width fits the profile cap. Since P9-C deleted the aloop
+  `outputd_active_content_playback` pair's PCM definitions, a graph still
+  naming that endpoint no longer arms the pairing — see
+  [HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md).
   Until that graph evidence is present, the observed output-hardware
   profile remains dual Apple for UI/diagnostics, but the runtime DAC role
   is parked with `JASPER_OUTPUTD_BACKEND=fake` and logs
@@ -857,9 +867,11 @@ What exists:
   a **content-lane open** that fails on four consecutive starts is parked
   out-of-band by `jasper-outputd-failure-reconcile` (stop + a record at
   `/run/jasper-outputd-content-lane.state`), which spends 4 of the 5 starts
-  and never reaches the reboot. The first failures still restart, because
-  that open is how outputd waits for CamillaDSP's half of the snd-aloop
-  pair. See
+  and never reaches the reboot. The first failures still restart, because on
+  the PASSIVE lane that open is how outputd waits for CamillaDSP's half of
+  the snd-aloop pair. On the ACTIVE lane it is permanent — P9-C deleted that
+  pair's PCM definitions — so a roleful box that is not ring-armed parks here
+  by design, and the record names the ring re-arm as the fix. See
   [HANDOFF-hotplug-resilience.md](HANDOFF-hotplug-resilience.md).
   During install, likely audio clients (`jasper-voice`,
   `jasper-aec-bridge`, outputd, camilla#2, Snapcast, AirPlay, Spotify,
@@ -1121,6 +1133,13 @@ DAC id.** `apply_audio_runtime_env()` reads the resolved `DacProfile`:
   `dac_channel_map`; the existing `apply_observed_composite_policy` (serial-pinned
   A/B order, drift evidence) runs **only here**.
 
+*(P9-C note: `CONTENT_PCM=outputd_active_content_capture` named a live aloop
+PCM when this was written. P9-C deleted that pair's definitions once the
+ACTIVE ring became the roleful transport; an armed box now reads the ring
+instead, and this env value is what an unarmed/rolled-back box still gets —
+opening it now fails and outputd parks. See
+[HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md).)*
+
 The `OutputTransportPlan` (`sink`, `transport_channels`, `channel_map`,
 `dac_pcms`, `clock_domain_contract`) is the **single env+`/state` truth**,
 computed once and *read* on `/state` — never re-derived per `/state` hit.
@@ -1192,18 +1211,32 @@ place to get it right and the most expensive to get wrong later.
 > [HANDOFF-active-speaker-dsp.md](HANDOFF-active-speaker-dsp.md)
 > critical-path step 2.
 
+*(P9-C note: this Stage 2a design routed a single recognized DAC's active
+content over a raw `type hw` aloop substream at width N — snd-aloop pair 5.
+P9-C deleted that substream's PCM definitions once the ACTIVE ring became
+the roleful transport, so this whole raw-hw-aloop shape (including items 4-6
+below) is now the pre-arm/rolled-back state, not the armed one; an armed
+box's content instead crosses Ring B. See
+[HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md)
+for current behavior.)*
+
 **4. One wide snd-aloop content substream — width on the substream, not more
 substreams.** The kernel caps loopback substreams at `MAX_PCM_SUBSTREAMS=8` (you
 cannot raise that without patching the module); but one substream carries up to
 `channels_max=32` and adopts the playback side's channel count. So the fix is to
 make the active content lane **one substream at width N**, not to add substreams:
-- Render the active-content lane width from `JASPER_OUTPUTD_ACTIVE_CHANNELS`
-  (`__OUTPUTD_ACTIVE_CONTENT_CHANNELS__` token in `asoundrc.jasper`).
-  *(2a implementation note: the ALSA `hw` plugin rejects `channels`/`rate`/
-  `format` as unknown fields, so this token approach was abandoned — the active
-  lane is plain `type hw` card/device/subdevice and the width is set by the
-  openers + locked by snd-aloop, NOT pinned in the conf. See the "Stage 2a
-  landed" callout above.)*
+- Render the active-content lane width from `JASPER_OUTPUTD_ACTIVE_CHANNELS`.
+  *(2a implementation note: a `__OUTPUTD_ACTIVE_CONTENT_CHANNELS__` render
+  token was the original plan here but was never implemented in
+  `asoundrc.jasper` — the ALSA `hw` plugin rejects `channels`/`rate`/`format`
+  as unknown fields, so the active lane shipped as plain `type hw`
+  card/device/subdevice instead, with its width set by the openers
+  (CamillaDSP's `playback: channels: N` and outputd's
+  `JASPER_OUTPUTD_ACTIVE_CHANNELS`) and locked by snd-aloop, not pinned in
+  the conf. See the "Stage 2a landed" callout above. P9-C later deleted this
+  substream pair's PCM definitions entirely once the ACTIVE ring became the
+  roleful transport — see
+  [HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md).)*
 - **All format adaptation is explicit and owned by CamillaDSP; the active ALSA
   path fails closed on channel, rate, AND format mismatch.** Ban `type plug`
   (and `plughw:`, which is `plug`+`hw`) on the active path — use width-exact
@@ -2032,6 +2065,20 @@ re-touched since carries forward from its most recent entry below.
   `rust/jasper-outputd`; solo fan-in vs. passive bonded-member outputd TTS
   ownership; the voice playback seam path after the
   `jasper/voice/turn_playback.py` extraction.
+- **2026-08-15 (P9-C, audio-graph consolidation #2285).** Corrected several
+  passages that assumed the aloop active-content pair
+  (`outputd_active_content_playback` / `_capture`, snd-aloop pair 5) still
+  had live PCM definitions: it was deleted once the ACTIVE ring became the
+  roleful transport. Fixed the assistant-audio ASCII chain, the
+  `asoundrc.jasper` ALSA-surfaces list, the dual-Apple active-lane gate
+  (which now checks the ring endpoint, not the aloop name), and a
+  never-implemented `__OUTPUTD_ACTIVE_CONTENT_CHANNELS__` render-token claim
+  (verified against `deploy/alsa/asoundrc.jasper`, whose only render tokens
+  are `__RATE_CONVERTER__`, `__OUTPUTD_DAC_PCM_BLOCK__`, and
+  `__OUTPUTD_DAC_CTL_BLOCK__`); added pointer notes to the design-of-record
+  sections that still describe the deleted raw-hw-aloop shape. See
+  [HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md).
 
-Last verified: 2026-08-08 (full-document pass against `f78dcd597`; revision
-log above)
+Last verified: 2026-08-15 (scoped pass — see the 2026-08-15 entry above for
+what was re-verified; prior 2026-08-08 was the last full-document pass,
+against `f78dcd597`; revision log above)

@@ -155,7 +155,8 @@ _UNCODIFIED = {
     # -- Active-follower round-trip snd-aloop loopback device overrides
     #    (distributed-active Slice 3). Paired snd-aloop substream wiring
     #    with safe code defaults on both ends (snapclient writes
-    #    hw:Loopback,0,5; the follower's CamillaDSP captures hw:Loopback,1,5).
+    #    hw:Loopback,0,6; the follower's CamillaDSP captures hw:Loopback,1,6 —
+    #    see GROUPING_LOOPBACK_PLAYBACK/_CAPTURE in jasper/multiroom/reconcile.py).
     #    The reconciler is the single writer of the daemon-facing device env;
     #    these env overrides exist only for on-device tuning if the default
     #    substream ever collides with the fan-in layout. Not operator config.

@@ -24,11 +24,14 @@
 # waits that out (category A — see `FinalSinkStartupConfigError`'s doc comment
 # in rust/jasper-outputd/src/alsa_backend.rs for why marking that open
 # park-class would turn a routine wait into a silent speaker). The SAME failure
-# is permanent when the peer is locked at a different width or the env drifted
-# (category B): every retry fails identically and the unit rides
-# Restart=on-failure into StartLimitAction=reboot. The two are one signature
-# apart only by COUNT, so this helper counts consecutive content-lane failures
-# and parks the unit out-of-band once the count says the lane is not opening.
+# is permanent when the peer is locked at a different width, the env drifted, or
+# — since P9-C deleted the ACTIVE lane's pair-5 PCM definitions — a roleful box
+# that is not ring-armed names a PCM that no longer exists (category B): every
+# retry fails identically and the unit would ride Restart=on-failure into
+# StartLimitAction=reboot. The two are one signature apart only by COUNT, so this
+# helper counts consecutive content-lane failures and parks the unit out-of-band
+# once the count says the lane is not opening. Which category-B cause it was
+# decides the remediation the park records — see CONTENT_LANE_ACTIVE_SIGNATURE.
 # That park is TERMINAL for the boot: nothing re-arms outputd on its own. It
 # comes back on a sound-card udev event (jasper-audio-hardware-reconcile does
 # reset-failed + start), a deploy, jasper-camilla-recover's OnFailure pass, a
@@ -94,6 +97,28 @@ CONTENT_LANE_JOURNAL_LINES="${JASPER_OUTPUTD_CONTENT_LANE_JOURNAL_LINES:-40}"
 # so a reworded context cannot silently stop matching here.
 CONTENT_LANE_SIGNATURE='(opening|configuring) outputd (active )?content capture PCM|starting capture PCM'
 
+# Which LANE failed, decided on the PCM NAME rather than the context prefix.
+# It picks the remediation, and the two are not interchangeable: since P9-C
+# deleted the snd-aloop pair-5 PCM definitions, a roleful box's active content
+# lane has no ALSA transport at all, so "match the width on both halves of the
+# pair" names a pair that does not exist. The passive lane (pair 6) still has
+# both halves and still has the real width-shear race, so its remediation is
+# unchanged.
+#
+# THE NAME, NOT THE PREFIX — this is the whole correctness of the selector.
+# Only the COMPOSITE sink spells its context `outputd active content capture
+# PCM`; the single-ALSA sink opens the very same ACTIVE lane through the
+# lane-agnostic `outputd content capture PCM`, and that sink is the roleful
+# shape the fleet runs armed (DAC8x). Keying on the prefix therefore handed a
+# rolled-back DAC8x the falsified width remedy. All three contexts on BOTH
+# sinks end `... PCM <content_pcm>`, so anchoring on the trailing name covers
+# every one of the six spellings — including `starting capture PCM`, which
+# carries no lane token of its own but does carry the name.
+CONTENT_LANE_ACTIVE_SIGNATURE='PCM outputd_active_content_capture'
+# Set by content_lane_failure() at the moment it classifies, off the same single
+# journal read, so the remedy cannot disagree with what actually failed.
+CONTENT_LANE_IS_ACTIVE=0
+
 log() {
     local outcome="$1"
     shift || true
@@ -141,7 +166,13 @@ content_lane_failure() {
     local tail
     [[ "$STATUS" == "1" ]] || return 1
     tail="$(journal_tail)"
-    [[ "$tail" =~ $CONTENT_LANE_SIGNATURE ]]
+    [[ "$tail" =~ $CONTENT_LANE_SIGNATURE ]] || return 1
+    # Classify off the SAME read that matched, so the recorded remedy always
+    # describes the lane that actually failed.
+    if [[ "$tail" =~ $CONTENT_LANE_ACTIVE_SIGNATURE ]]; then
+        CONTENT_LANE_IS_ACTIVE=1
+    fi
+    return 0
 }
 
 content_lane_streak() {
@@ -173,8 +204,19 @@ content_lane_streak() {
 }
 
 # The one remediation sentence, written to the record AND the journal line so
-# neither surface sends an operator to the other to learn what to do.
-CONTENT_LANE_ACTION="match the content-lane width on both halves of the pair (JASPER_OUTPUTD_CONTENT_FORMAT against the CamillaDSP playback half), then: systemctl restart jasper-outputd"
+# neither surface sends an operator to the other to learn what to do. Two
+# lanes, two sentences: see CONTENT_LANE_ACTIVE_SIGNATURE for why they cannot
+# share one.
+CONTENT_LANE_ACTION_PASSIVE="match the content-lane width on both halves of the pair (JASPER_OUTPUTD_CONTENT_FORMAT against the CamillaDSP playback half), then: systemctl restart jasper-outputd"
+CONTENT_LANE_ACTION_ACTIVE="this roleful speaker's active content lane has no snd-aloop transport (its pair-5 PCMs were deleted); re-arm the ACTIVE ring: jasper-active-speaker baseline-reemit --endpoint ring && systemctl start jasper-audio-hardware-reconcile && jasper-fanin-coupling-reconcile shm_ring"
+
+content_lane_action() {
+    if [[ "$CONTENT_LANE_IS_ACTIVE" == "1" ]]; then
+        printf '%s' "$CONTENT_LANE_ACTION_ACTIVE"
+    else
+        printf '%s' "$CONTENT_LANE_ACTION_PASSIVE"
+    fi
+}
 
 write_content_lane_state() {
     local count="$1"
@@ -201,11 +243,13 @@ clear_content_lane_state() {
 
 park_content_lane() {
     local count="$1"
+    local action
+    action="$(content_lane_action)"
     write_content_lane_state "$count" \
         "parked_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         "reason=content_lane_open_repeated" \
-        "detail=jasper-outputd could not open its snd-aloop content lane on ${count} consecutive starts" \
-        "action=${CONTENT_LANE_ACTION}" \
+        "detail=jasper-outputd could not open its content lane on ${count} consecutive starts" \
+        "action=${action}" \
         "re_arm=nothing re-arms outputd on its own: a sound-card udev event (jasper-audio-hardware-reconcile), a deploy, jasper-camilla-recover's OnFailure pass, a reboot, or an operator restart"
     # reset-failed clears the start rate-limit counter so the recovery restart
     # is start 1 of a fresh burst rather than start 5 of the one this park
@@ -223,7 +267,8 @@ park_content_lane() {
     "$SYSTEMCTL" --no-block stop jasper-outputd.service >/dev/null 2>&1 || true
     log park reason=content_lane_open_repeated failures="$count" \
         park_after="$CONTENT_LANE_PARK_AFTER" state="$CONTENT_LANE_STATE" \
-        action="\"${CONTENT_LANE_ACTION}\""
+        lane="$([[ "$CONTENT_LANE_IS_ACTIVE" == "1" ]] && printf active || printf passive)" \
+        action="\"${action}\""
 }
 
 # `exec-condition` is systemd's own SERVICE_RESULT spelling for an

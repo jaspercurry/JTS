@@ -528,22 +528,19 @@ that points at a shared dmix:
    source. Keep the label identical to the `fanin_label` declared
    in the `MusicSourceSpec` (§3.3) — mux uses it to select the lane.
 
-**Substream allocation is nearly full.** The 8 snd-aloop substream
-pairs are already assigned: `0` Spotify, `1` AirPlay, `2` Bluetooth,
+**Substream allocation has one free slot.** The 8 snd-aloop substream
+pairs are otherwise assigned: `0` Spotify, `1` AirPlay, `2` Bluetooth,
 `3` the USB lane's silent fallback (USB On switches that positional lane to
-direct `hw:UAC2Gadget` capture), `4` correction/test, `5` debug/monitor reserve, `6`
+direct `hw:UAC2Gadget` capture), `4` correction/test, `6`
 outputd post-DSP content, `7` fan-in summed output (see
-`asoundrc.jasper` and audio-paths.md). There is **no free
-production lane** — audio-paths.md is explicit that a sixth
-production source is a "stop and redesign the topology" event. So
-DLNA must **reuse or repurpose** an existing lane rather than
-blindly grab a new index. The realistic candidate is the `5`
-debug/monitor reserve (repurpose it for DLNA and move offline-AEC
-capture elsewhere, or fold DLNA onto an existing renderer's lane if
-that source is mutually exclusive with DLNA in practice). This is a
-design decision to settle **before** implementation — do not assume
-a spare `hw:Loopback,0,8`; the modprobe `snd-aloop.conf` pins
-exactly 8 pairs.
+`asoundrc.jasper` and audio-paths.md). Pair `5` — formerly the outputd
+active-speaker content lane, mislabelled here as a "debug/monitor
+reserve" — is genuinely UNALLOCATED since P9-C deleted that lane's PCM
+definitions (the ACTIVE ring is the roleful transport now; see
+[HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md)).
+So DLNA can claim pair `5` directly rather than needing to reuse or
+repurpose an existing lane — do not assume a spare `hw:Loopback,0,8`;
+the modprobe `snd-aloop.conf` pins exactly 8 pairs.
 
 ### 3.10 Room-correction pause list (`jasper/correction/coordinator.py`)
 
@@ -1394,7 +1391,13 @@ Volumio's two-endpoint approach confused users).
 
 ---
 
-Last verified: 2026-06-07 (audio-path section rewritten to the
+Last verified: 2026-08-15 (substream-allocation section corrected for P9-C,
+audio-graph consolidation #2285: pair 5 — previously mislabelled a
+"debug/monitor reserve" and described as the reason allocation was full —
+is genuinely free now that its PCM definitions are deleted, so the "no free
+production lane" conclusion flips to DLNA being able to claim pair 5
+directly; verified against `deploy/alsa/asoundrc.jasper`'s allocation
+header. Prior 2026-06-07 pass: audio-path section rewritten to the
 fan-in / `jasper-outputd` topology; source-handoff and
 correction-pause integration requirements added; roadmap ordinal
 reconciled — see PLAN.md. Cast-vs-DLNA research and decision

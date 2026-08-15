@@ -461,19 +461,21 @@ detail.
 | [#2306](https://github.com/jaspercurry/JTS/issues/2306) | P5c follow-ups, including the explicitly-owed Pi-side doctor pass | Open — rides the R6 session |
 | [#2319](https://github.com/jaspercurry/JTS/issues/2319) | `camillagui.socket` — unauthenticated root listener on `0.0.0.0:5005` with `ReadWritePaths=/etc/camilladsp` | Open. Pre-existing, surfaced by the R7 hearing-safety repanel, out of R7 scope; the jts3 hardware runbooks stop the socket for their sequence |
 | [#2327](https://github.com/jaspercurry/JTS/issues/2327) | jts3's corpus-mode chip-AEC `sys_delay` needs re-derivation after the DAC8x floor changed the period geometry | Open and **live-owed** from the 2026-08-11 floor deploy — jts3 has been running post-floor since then |
-| [#2332](https://github.com/jaspercurry/JTS/issues/2332) | Rollback ladder step 2 is refused on an ordinary armed box (ring-plan endpoint mismatch) | Open. Owner-ruled 2026-08-12 (this issue): refuse-then-complete is documented as the canonical rollback route in the lifecycle section below; the validator is untouched. Hardware verification rides the #2254 corpus-exit session's de-arm ([owner ruling](https://github.com/jaspercurry/JTS/issues/2254#issuecomment-5267220207)) |
+| [#2332](https://github.com/jaspercurry/JTS/issues/2332) | Rollback ladder step 2 is refused on an ordinary armed box (ring-plan endpoint mismatch) | Open. Owner-ruled 2026-08-12 (this issue): refuse-then-complete is documented as the canonical rollback route in the lifecycle section below; the validator is untouched. "Complete" means the box validates clean at the aloop endpoint, not that it plays audio — P9-C deleted that endpoint's PCM definitions, so a completed rollback is a parked box until re-armed. Hardware verification rides the #2254 corpus-exit session's de-arm ([owner ruling](https://github.com/jaspercurry/JTS/issues/2254#issuecomment-5267220207)) |
 | [#2337](https://github.com/jaspercurry/JTS/issues/2337) | An `/eq/` or `/sound/` save on an armed roleful box re-emitted the snapshot's ALSA endpoint and silently disarmed the ring | **Closed** by PR [#2343](https://github.com/jaspercurry/JTS/pull/2343) (merged 2026-08-11) and proven on armed jts3 the same day — two household-path `/sound/apply` saves preserved every armed-state field. The jts3 operating restriction is **lifted 2026-08-11** (`captures/endpoint-deploy-jts3-20260811T185255Z`) |
 | [#2338](https://github.com/jaspercurry/JTS/issues/2338) | Unify `build_baseline_profile_candidate` onto `active_emit_devices` — the second emit site never learned the both-halves lesson | **Closed** by PR [#2359](https://github.com/jaspercurry/JTS/pull/2359) (merged 2026-08-12, `f6e2ea640`) — filed at #2335's merge, same family as #2337/#2339. It routes the candidate builder's capture lane, wire format and latency geometry through `active_emit_devices` and walks the contract at four forwarding sites instead of two |
 | [#2339](https://github.com/jaspercurry/JTS/issues/2339) | `reconcile-current-dsp` clobbered an armed ring graph, so arm step 3 and every deploy silently de-armed a roleful box | **Closed** by PR [#2343](https://github.com/jaspercurry/JTS/pull/2343) (merged 2026-08-11) — found live on jts3 during the arm, and proven fixed there the same day: a full deploy left the arm intact, the seam firing exactly as before onto an identical graph. Restriction **lifted 2026-08-11** (`captures/endpoint-deploy-jts3-20260811T185255Z`) |
 | [#2340](https://github.com/jaspercurry/JTS/issues/2340) | Deploying to jts.local over its USB management address self-severs the deploy's own ssh — install succeeds on the Pi while the laptop hangs on a half-open socket | **Closed** by PR [#2358](https://github.com/jaspercurry/JTS/pull/2358) (merged `1caff2304`, 2026-08-11) — the deploy preflight now warns when `PI_HOST` resolves inside the USB gadget's management subnet, and `SSH_BATCH_OPTS` carries keepalives so a severed transport surfaces as an ssh error in about a minute instead of an unbounded hang |
-| [#2344](https://github.com/jaspercurry/JTS/issues/2344) | A `web_commissioning` measurement sweep on an armed box excites the unfed aloop lane and measures silence | Open. The mechanism is **two** defects, not one, and they take opposite fixes: the applied-summed measurement graph inherited the snapshot's lane and now reads `resolve_live_active_endpoint` like the rest of that family, while the per-driver/summed **commissioning** graph resolved the ring by name but forwarded none of the rest of `active_emit_devices` and now **refuses** on an armed box instead of emitting a ring sink over the aloop capture — and that refusal is **permanent, not a stopgap**: the owner's 2026-08-12 ruling on [#2254](https://github.com/jaspercurry/JTS/issues/2254) fixes the corpus-exit shape as de-arm → chip-AEC commission on the aloop path → re-arm, so commissioning never has to learn the ring. Code in PR [#2363](https://github.com/jaspercurry/JTS/pull/2363) (up 2026-08-12, not merged), mutation-proved; on-device armed-ring sweep **pending**, so the jts3 restriction is **ENFORCED** until it passes and this issue closes on the sweep validating the *first* half's route |
+| [#2344](https://github.com/jaspercurry/JTS/issues/2344) | A `web_commissioning` measurement sweep on an armed box excites the unfed aloop lane and measures silence | Open. The mechanism is **two** defects, not one, and they take opposite fixes: the applied-summed measurement graph inherited the snapshot's lane and now reads `resolve_live_active_endpoint` like the rest of that family, while the per-driver/summed **commissioning** graph resolved the ring by name but forwarded none of the rest of `active_emit_devices` and now **refuses** on an armed box instead of emitting a ring sink over the aloop capture — and that refusal is **permanent, not a stopgap**: the owner ruled forward-only on 2026-08-13 ([#2412](https://github.com/jaspercurry/JTS/issues/2412)), superseding the earlier de-arm → chip-AEC commission on the aloop path → re-arm shape this row used to describe — the aloop pipeline is deleted even though commissioning/corpus mode still depends on it, corpus mode is a small debug/experimental feature that may stay broken in the interim, and the failure stays fail-closed and loud. Code in PR [#2363](https://github.com/jaspercurry/JTS/pull/2363) (up 2026-08-12, not merged), mutation-proved; on-device armed-ring sweep **pending**, so the jts3 restriction is **ENFORCED** until it passes and this issue closes on the sweep validating the *first* half's route |
 | [#2345](https://github.com/jaspercurry/JTS/issues/2345) | fan-in emits `tts.assistant_loudness.final_gain_db=+3.0` while the doctor asserts the clamp is `[-60, 0]` — the assistant can be boosted past a bound the doctor believes is enforced | **Closed** by PR [#2355](https://github.com/jaspercurry/JTS/pull/2355) (merged 2026-08-11, `3ef3e74cd`). **The doctor's assertion was the stale half.** The engine has had no fixed positive ceiling since `6304556a4` "Remove fixed TTS gain ceiling" (2026-07-01), which updated `audio-paths.md` and `HANDOFF-volume.md` and missed the doctor; positive gain there is intentional, because a pre-DSP decision pre-compensates for CamillaDSP's downstream attenuation. The `+3.0` was not a clamp at all but the computed peak cap (`max_peak_dbfs=-3.0` minus the uncalibrated fallback source peak `-6.0`) holding a `+5.0` request down, so whether ordinary music re-anchors the target positively never had to be answered. The doctor now asserts the per-decision contract `max(floor, min(requested_gain_db, peak_cap_gain_db))` — the real floor and the computed peak cap — rather than a positive ceiling nothing enforces. |
 | [#2348](https://github.com/jaspercurry/JTS/issues/2348) | Gain-structure normalization at prescribe time — push the static trim set to the computed headroom ceiling | Open — [#2291](https://github.com/jaspercurry/JTS/issues/2291)'s prescribe stage, raised by the gain structures the arm's re-emit exposed on jts3 |
 
 **P8 splits.** P8a is this ladder — solo-stereo width plus active
 N-channel. P8b — composite ring plus bonded round-trip ingress — moves
-out to later, and still hard-gates P9; jts5 stays on aloop lanes 5/6
-until P8b.
+out to later, and still hard-gates P9; jts5 stays on the aloop lane 6
+bonded round-trip until P8b — lane 5 no longer exists anywhere in the
+fleet, since P9-C deleted its PCM definitions once the ACTIVE ring became
+the roleful transport.
 
 **P8b item 1a — the composite content-PCM skip — LANDED.** The one piece of
 P8b's item 1 that is independent of the rest and safe on its own, so it
@@ -482,10 +484,15 @@ landed alone rather than waiting on the arm-enabling set.
 capture PCM unconditionally, while its `AlsaBackend` sibling had carried a
 `skip_content_pcm` arm since the ring shipped. Under `shm_ring` the run
 loop reads the ring and never calls `read_content_period`, so a composite
-would have held a **started, unread** aloop capture lane — and once P9-C
-removes `outputd_active_content_capture`, that open fails, exit 1,
-`Restart=on-failure`, `StartLimitBurst=5`, `StartLimitAction=reboot`.
-Without 1a, item 1 does not gate P9-C, which is item 1's entire stated
+would have held a **started, unread** aloop capture lane — and since P9-C
+deleted `outputd_active_content_capture`'s PCM definitions, that open now
+fails; four consecutive failures are parked out-of-band by
+[`jasper-outputd-failure-reconcile`](../deploy/bin/jasper-outputd-failure-reconcile)
+rather than escalating to `StartLimitAction=reboot` (the carve-out landed in
+[#2261](https://github.com/jaspercurry/JTS/pull/2261), closing
+[#2247](https://github.com/jaspercurry/JTS/issues/2247); see the rollback
+warning below) — the box stays up, but a composite without the skip would sit
+permanently parked and silent. Without 1a, item 1 does not gate P9-C, which is item 1's entire stated
 purpose. The skip decision and its `/state` stand-in are now **one owner
 each**, read by both sinks (`content_pcm_skipped`,
 `synthetic_content_negotiated` in `rust/jasper-outputd/src/alsa_backend.rs`)
@@ -554,10 +561,12 @@ contract; ring `VERSION` stays 1 (value-space widening on existing
 fields, not a layout change); `MAX_RING_CHANNELS = 8`, mono excluded
 (policy, not layout), composite excluded from the STEREO ring by program
 shape and — since P8b item 1 — ARMABLE on the ACTIVE ring at 4 channels,
-though no composite box is armed: item 2's linked-group recovery
-has LANDED (#2255, closed via #2496), so the remaining gate is an
-operator-driven arm plus item 6's measured buffering check —
-enabled, not armed;
+and **armed on jts.local since 2026-08-15**, the fleet's first composite
+ring arm (item 2's linked-group recovery had LANDED first — #2255, closed
+via #2496 — leaving only the operator-driven arm and item 6's measured
+buffering check, both of which that arm discharged; recorded in the
+campaign lifeline's "jts.local ARMED-CLEAN" entry,
+`captures/PLAN-ring-v2-rulings-2026-08-10.md`);
 `MAX_SLOT_BYTES` stays 64 KiB (round 2 proposed tightening to 8 KiB;
 round 3's resilience lens overruled it — 32 KiB is #2147's legitimate
 future case); `resolve_ring_wire` stays equality-only, never ranking;
@@ -581,6 +590,42 @@ ROLLBACK  jasper-active-speaker baseline-reemit --endpoint aloop
        -> systemctl start jasper-audio-hardware-reconcile     (marker -> cleared)
        -> jasper-fanin-coupling-reconcile loopback            (ring keys unset)
 ```
+
+**Rollback no longer restores audio.** P9-C deleted the aloop active-content
+lane's PCM definitions (`outputd_active_content_playback` / `_capture`); the
+name survives in the endpoint vocabulary, so `--endpoint aloop` still runs
+and the ladder still completes, but it now re-points the box at a transport
+that does not exist. The box finishes the ladder and then parks: four
+consecutive content-lane open failures are parked out-of-band by
+`jasper-outputd-failure-reconcile` (a record written to
+`/run/jasper-outputd-content-lane.state`), spending 4 of
+`StartLimitBurst=5` and never reaching `StartLimitAction=reboot`. Recovery is
+re-arming the ring, not rolling back again. Rollback is now a de-arm for
+maintenance, not a fail-safe.
+
+**Both halves of the deleted pair fail, and CamillaDSP's half is the louder
+one.** outputd owned the capture side; CamillaDSP owned the playback side,
+and `resolve_output_layout` hands it the dead name whenever
+`ring_active_endpoint_armed()` is false — so the **auto** path reaches this
+state too, not only an explicit `--endpoint aloop`. CamillaDSP then cannot
+open its playback device. That is bounded and reboot-free by construction
+(`jasper-camilla.service` is `Restart=always` with `StartLimitAction=none`,
+so it lands in `failed`), but its `OnFailure=jasper-camilla-recover` first
+**stops all 11 `JASPER_CORE_GRAPH_PARK_UNITS`** — jasper-voice,
+jasper-aec-bridge, jasper-outputd, jasper-camilla-crossover,
+snapclient/snapserver, shairport-sync, nqptp, librespot, bluealsa-aplay,
+jasper-mux — and then returns early (`reason=camilla_start_failed
+action=parked_no_reboot`) without reaching the loop that would start them
+again. So the honest steady state of a rolled-back or never-armed roleful
+box is **silent, with voice and every renderer and the mux stopped**,
+re-entered about every 5 minutes (`COOLDOWN_SEC=300`). It is availability
+class, bounded, loud, and self-describing in the journal — and the
+management surface is untouched, because `jasper-control`, `jasper-web` and
+nginx are deliberately not in the park set, so `http://<speaker>/` stays
+reachable to diagnose from. That is the diagnosis surface, not the recovery
+one: no web route arms the ring, so the arm stays the operator's CLI ladder,
+which the park record already names. The speaker itself cannot be asked
+either, because voice is one of the stopped units.
 
 **Step 1 accepts EITHER roleful boot graph — a box does not have to be
 commissioned to arm.** A roleful box has two legal boot graphs, and the
@@ -615,7 +660,10 @@ Ring A and stops feeding the snd-aloop tap, so a graph that moved only its sink
 would source a device nobody writes — silence with every daemon healthy, and
 *quiet*, because the plan compares capture channels (Ring A and the tap are both
 stereo) and the width gate only holds ring-**named** lanes to the wire.
-`--endpoint aloop` restores the tap by the same derivation. The graph takes its
+`--endpoint aloop` runs the same derivation in reverse and names the
+snd-aloop tap, but that lane has had no PCM definitions since P9-C, so the
+resulting graph is un-openable and the box parks (see the rollback warning
+above). The graph takes its
 `format` from `resolve_ring_wire` and its CamillaDSP `chunksize`/`target_level`
 from the certified ring geometry (`RING_CAMILLA_*`, chunk/target 128 with
 `enable_rate_adjust: false`) — **never** the box's program-lane default or its
@@ -749,7 +797,10 @@ into a two-way comparison and turn ordinary device-resolution drift into a
 crossover-drift claim. Whether the graph names the RIGHT transport stays with
 `check_fanin_coupling` and `ring_edge_width_ready`.
 
-**Why every intermediate state is safe.** After step 1 the graph on disk
+**Why every intermediate state is safe (ARM ladder).** This is scoped to
+arming — the ROLLBACK ladder does not converge back to silence-then-recovery
+the same way; it converges to a parked box by design, per the rollback
+warning above. After step 1 the graph on disk
 names the ring while the coupling is still loopback. Nothing in steps 1 or
 2 reloads CamillaDSP — `baseline-reemit` writes the artifact and repoints
 the statefile, and `jasper-audio-hardware-reconcile` bounces outputd but
@@ -769,7 +820,8 @@ needs a standing surface rather than an operator's memory: the box that
 looks fine while you are standing at it is the box that comes back silent.
 
 The ROLLBACK side's step-2 window is louder than silence, in one of two
-ways depending on whether the validator can read the graph:
+ways depending on whether the validator can read the graph — both now
+converge on a parked box, differing only in which refusal gets there:
 
 - **When it can** (the ordinary armed box), rollback step 2 is **refused**.
   Its candidate is validated against the coupling, which is still
@@ -782,7 +834,10 @@ ways depending on whether the validator can read the graph:
   edge to close: step 3 does not gate on the marker, so running
   `jasper-fanin-coupling-reconcile loopback` anyway completes the rollback,
   the box validates clean again, and a later hardware reconcile clears the
-  stale marker. Verified through `validate-outputd-env` in a scratch probe,
+  stale marker. **Validating clean is not the same as playing:** the env is
+  coherent, but the graph names the deleted aloop transport, so outputd
+  parks — a completed rollback is a parked box until re-armed. Verified
+  through `validate-outputd-env` in a scratch probe,
   not on hardware; the first hardware run rides the pending jts3 corpus-exit
   session's de-arm, per the same
   [owner ruling](https://github.com/jaspercurry/JTS/issues/2254#issuecomment-5267220207).
@@ -920,8 +975,8 @@ is jts3's 2026-08-11 arm.
 |---|---|
 | **P6** (U3) | Four aloop renderer lanes — librespot, shairport-sync, bluealsa-aplay, correction sweeps — all `plug:` wrappers over `*_substream` PCMs. fan-in's `Input` carried an aloop `pcm` or a USB `direct` capture and nothing else, which is why the ring-reader lane source was a **net-new build** rather than a re-point; P6a adds it as a third variant (`ring`), so P6b–d ARE re-points through that seam |
 | **P7** (U4) | Lane 7's readers and its ring-box writer are all retired now, in that order: the AEC bridge's `REF_DEVICE = "jasper_ref"` at **P7-1**, `aec_tune`'s `arecord -D jasper_capture` at **P7-2**, and fan-in's `RingOutput` lossy aloop MIRROR — the thing that made the dsnoop consumers survive ring coupling at all — at **P7-4**. The order is the point and it held: P7-2 re-pointed the tuner *before* P7-4 removed the writer, so the window in which a ring box's tuner reads a silenced tap never shipped. CamillaDSP is the tap's last consumer, and it reaches lane 7 only under `loopback` coupling — the one place the lane still has a producer. **What was left was doctor prose, and P7-5 took it**: `check_loopback` (`doctor/audio.py`) — true on both couplings, and now carrying the docstring saying why (P7-4 removed a WRITER, not the card) — and `check_shairport_sync_loopback_plughw` (`doctor/renderers.py`), which turned out to need a small LOGIC fix rather than prose: its three legacy branches named `shairport_substream` as the redeploy target on a box whose lane map resolves the ring. `check_fanin_asound_wiring` came off this list in pieces — its *attribution strings* were fixed in P7-1, its docstring's "can break AEC" framing in P7-5, and its wiring assertions stand until P9-B removes the PCMs. P7-4 additionally fixed `check_fanin_service`'s two mirror comments; that check's `output.pcm` equality is a config echo and keeps passing, but it is vestigial on a ring box — scope it per-coupling if a later phase stops configuring `output_pcm` there (P7-5 re-verified that tripwire against `config.rs` / `state.rs` / `mixer.rs`: still parsed and published unconditionally, opened only in the `Coupling::Loopback` arm, so it stands) |
-| **P8** (U1) | outputd admits `shm_ring` on **two** paths since R7b — the stereo one (`is_full_range_stereo_lr_sink`) and an armed ACTIVE-ring endpoint (`ring_active_ok`), both in `Config::from_env` (`rust/jasper-outputd/src/config.rs`; read the predicates there rather than a copy here). The second is what jts3 runs, so a roleful box's post-crossover program is now a live ring content path alongside aloop lane 5 — but only on an armed roleful box, and only at **two channels**. P8a's channel half is still unexercised: no ring in the fleet has carried more than stereo (jts3's active ring is 2ch), so N>2 waits for a wider roleful box to arm. Unarmed roleful boxes, composite sinks, and bonded ACTIVE followers' snapclient (`hw:Loopback,0,6`) still need the aloop lanes, which is why P9 stays hard-gated on P8 |
-| **P9** (U4) | Both snd-aloop drop-ins ship, and `deploy/alsa/asoundrc.jasper` defines the renderer substreams, the `outputd_content_*` / `outputd_active_content_*` pairs, and the `jasper_capture` / `jasper_ref` dsnoop taps |
+| **P8** (U1) | outputd admits `shm_ring` on **two** paths since R7b — the stereo one (`is_full_range_stereo_lr_sink`) and an armed ACTIVE-ring endpoint (`ring_active_ok`), both in `Config::from_env` (`rust/jasper-outputd/src/config.rs`; read the predicates there rather than a copy here). The second is what jts3 runs, so a roleful box's post-crossover program is now a live ring content path — but only on an armed roleful box, and only at **two channels**; aloop lane 5, which used to carry this content, was deleted at P9-C and no longer exists as an alternative. P8a's channel half is still unexercised: no ring in the fleet has carried more than stereo (jts3's active ring is 2ch), so N>2 waits for a wider roleful box to arm. Unarmed roleful boxes and composite sinks still NAME the deleted lane-5 endpoint and now park rather than play — P9 stays hard-gated on P8 so that arming, not aloop, becomes the path for them; bonded ACTIVE followers' snapclient round-trip (`hw:Loopback,0,6`, pair 6) is unaffected and keeps working either way |
+| **P9** (U4) | Both snd-aloop drop-ins still ship, and `deploy/alsa/asoundrc.jasper` still defines the renderer substreams, the passive `outputd_content_*` pair, and the `jasper_capture` / `jasper_ref` dsnoop taps — P9-C already deleted the active `outputd_active_content_*` pair (pair 5) ahead of the rest of P9, since the ACTIVE ring replaced it as the roleful transport |
 
 The aloop surface is broad and concentrated: a loose
 `Loopback|_substream|snd-aloop` grep matched ≈180 files at `9cc41b987`
@@ -969,22 +1024,29 @@ Owned elsewhere; listed so no arc can claim to be done without them.
    the same PR, keep `resync_threshold_in_seconds = 0.2` through the
    migration, per-lane rollback to the aloop conf until P9, re-run the
    bonded A/V spot-check.
-2. **Active/composite + bonded aloop dependencies survive naive
-   deletion** (U1/U4). R7b removed one of these dependencies and left the
-   rest: an *armed* roleful box now carries its post-crossover program
-   content on the active ring (outputd's second `shm_ring` branch) — at two
-   channels, which is all any ring has carried — but an unarmed roleful box
-   still rides aloop lane 5, and bonded followers still write
-   `hw:Loopback,0,6`. Composite output is ARMABLE on the active ring since
-   P8b item 1 (a roleful composite resolves a 4-channel active width, the
-   conf.d renders it, and outputd admits it) but **no composite box is
-   armed**. Item 2's linked-group recovery has LANDED (#2255, closed via
-   #2496), so what remains is not a code gate: arming is an operator-driven
-   ladder gated on item 6's measured buffering-regime check on the real box,
-   and every composite in the fleet is on its aloop lane today. So P9 stays HARD-GATED on P8 on
-   **both** halves: the capabilities P8b still owes (composite ring *arming*,
-   bonded round-trip ingress) *and* the per-box arrival every remaining box
-   has yet to make.
+2. **Active/composite + bonded aloop dependencies — REALIZED and ACCEPTED,
+   not avoided** (U1/U4). R7b removed one of these dependencies, and P9-C
+   then closed the remaining gap the hard way: an *armed* roleful box
+   carries its post-crossover program content on the active ring (outputd's
+   second `shm_ring` branch) — at two channels, which is all any ring has
+   carried — but an unarmed roleful box, or an unarmed roleful composite,
+   now NAMES a deleted transport (aloop lane 5's PCM definitions are gone)
+   instead of quietly falling back to a working one. The deletion converted
+   what used to be silent breakage into a loud, fail-closed park (see the
+   rollback warning above) — accepted, not mitigated. Bonded followers are
+   untouched: they still write `hw:Loopback,0,6`, a lane P9-C did not
+   touch. Composite output is ARMABLE on the active ring since P8b item 1
+   (a roleful composite resolves a 4-channel active width, the conf.d
+   renders it, and outputd admits it), and **jts.local armed its dual-Apple
+   composite on 2026-08-15** — the fleet's first composite ring arm, clean
+   across its 5-minute watch (campaign lifeline, "jts.local ARMED-CLEAN"
+   entry in `captures/PLAN-ring-v2-rulings-2026-08-10.md`). Item 2's
+   linked-group recovery had LANDED before it (#2255, closed via #2496), so
+   nothing there was a code gate: arming was an operator-driven ladder
+   gated on item 6's measured buffering-regime check on the real box, and
+   that box has now walked it. So P9 stays HARD-GATED on P8 on the half that
+   remains: the capability P8b still owes (bonded round-trip ingress) *and*
+   the per-box arrival every remaining box has yet to make.
 3. **A ring box silently narrows, or a wide box arms a narrow ring.**
    `ring_edge_width_ready` plus the reconciler's per-coupling emission
    are the belt; `check_camilla_playback_format` is the braces. Ring v2
@@ -1415,4 +1477,12 @@ exit gate's width half. The egress and remaining source-half facts,
 Appendix A, and Appendix B were not re-verified and stand as last verified
 above.
 
-Last verified: 2026-08-11
+2026-08-15 (P9-C, lane-5 deletion): re-verified only the surfaces this
+cutover falsified — the ACTIVE-ring arm/rollback ladder and its park
+consequence on both daemons, the P8/P9 work rows, the #2344 row against the
+#2412 ruling, risk 2, and the two composite-arm claims against the campaign
+lifeline's 2026-08-15 "jts.local ARMED-CLEAN" entry. Everything else,
+including both appendices and the P6/P7 rows, was not re-read and stands as
+last verified above.
+
+Last verified: 2026-08-15

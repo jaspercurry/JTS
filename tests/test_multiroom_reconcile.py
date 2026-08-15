@@ -429,7 +429,7 @@ def test_snapclient_argv_alsa_player_takes_precedence_over_fifo():
     argv = snapclient_argv(
         _follower(),
         player_fifo="/x.fifo",
-        player_alsa_device="hw:Loopback,0,5",
+        player_alsa_device="hw:Loopback,0,6",
     )
     assert "--soundcard" in argv and "file:filename=" not in " ".join(argv)
 

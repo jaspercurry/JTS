@@ -195,19 +195,19 @@ MEMBER_CONTENT_FIFO = ARGS_DIR + "/member-content.fifo"
 # latency is nulled by snapclient `--latency` (HANDOFF-distributed-active.md
 # "Clock domain"). An active follower runs TWO loopback hops that must NOT
 # collide: (1) snapclient -> camilla [this grouping round-trip], and (2) camilla
-# -> outputd's active-content lane = substream 5 (`outputd_active_content_*`).
-# So the round-trip must use a DIFFERENT pair from 5. snd_aloop caps
+# -> outputd's active-content lane, which is the ACTIVE RING. snd_aloop caps
 # `pcm_substreams` at 8 (pairs 0-7 — a 9th is silently clamped, verified on
 # jts3), so a dedicated extra pair is impossible without a second card (which
 # reintroduces the removed-LoopbackAEC wedge risk). The round-trip therefore
 # rides pair 6 — the PASSIVE stereo content lane (`outputd_content_*`). That is
 # safe to share by a hard hardware-mode invariant: an active follower's outputd
-# is ALWAYS Composite (active topology -> Composite sink -> it reads the
-# active-content lane on pair 5) and NEVER opens the passive content lane on
-# pair 6; a passive box that DOES use pair 6 is never an active follower. The
-# full allocation: 0-4 renderers, 5 active-content, 6 passive-content / active-
-# follower round-trip, 7 fan-in. No reboot needed (pair 6 always exists). Both
-# sides are env-overridable for on-device tuning.
+# is ALWAYS Composite (active topology -> Composite sink -> it reads the ACTIVE
+# ring) and NEVER opens the passive content lane on pair 6; a passive box that
+# DOES use pair 6 is never an active follower. The full allocation: 0-4
+# renderers, 5 unallocated (the active-content lane's aloop pair, deleted with
+# its PCM definitions), 6 passive-content / active-follower round-trip, 7
+# fan-in. No reboot needed (pair 6 always exists). Both sides are
+# env-overridable for on-device tuning.
 #
 #   snapclient (writer)  --player alsa --soundcard <PLAYBACK>  -> hw:Loopback,0,6
 #   CamillaDSP (reader)  capture device              <CAPTURE>  <- hw:Loopback,1,6
@@ -303,9 +303,9 @@ CROSSOVER_UNIT = "jasper-camilla-crossover.service"
 # NON-BLOCKING exclusive `flock` that SUCCEEDS proves no writer owns the ring.
 #
 # Why this and not the per-substream `/proc/asound/Loopback/pcm0p/sub5/status`
-# read it replaces (audio-graph consolidation #2285, P9-C): that path is
-# snd-aloop pair 5, which P9-C deletes. The lock is strictly the better signal
-# even before then — the kernel drops an `flock` on process exit INCLUDING
+# read it replaces (audio-graph consolidation #2285, P9-C): that path was
+# snd-aloop pair 5, whose PCM definitions P9-C deleted. The lock is strictly
+# the better signal independently — the kernel drops an `flock` on process exit INCLUDING
 # SIGKILL, so it has no frozen-state window, and it is the SAME primitive
 # camilla#2 contends on when it attaches. `/dev/snd/pcmC*D0p` was never usable
 # here (it covers every playback substream and reads false-busy while renderers
