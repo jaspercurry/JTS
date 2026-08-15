@@ -1309,8 +1309,10 @@ For anyone touching the resilience code:
   reconcile plus explicit outputd retry, then parks repeated config exits
   instead of looping into `StartLimitAction=reboot`. The same hook parks a
   content-lane open that fails on four consecutive starts — the first
-  failures still restart, because that open is how outputd waits for
-  CamillaDSP's half of the snd-aloop pair. Details in
+  failures still restart, because on the passive lane that open is how outputd
+  waits for CamillaDSP's half of the snd-aloop pair. On the ACTIVE lane the
+  failure is permanent (P9-C deleted its pair-5 PCMs), and the park's record
+  says so, naming the ring re-arm rather than a width fix. Details in
   [docs/HANDOFF-hotplug-resilience.md](HANDOFF-hotplug-resilience.md).
 - `deploy/systemd/jasper-dongle-recover.service` — `Type=oneshot`
   unit that `reset-failed`s the audio daemons, restarts the output graph

@@ -867,9 +867,11 @@ What exists:
   a **content-lane open** that fails on four consecutive starts is parked
   out-of-band by `jasper-outputd-failure-reconcile` (stop + a record at
   `/run/jasper-outputd-content-lane.state`), which spends 4 of the 5 starts
-  and never reaches the reboot. The first failures still restart, because
-  that open is how outputd waits for CamillaDSP's half of the snd-aloop
-  pair. See
+  and never reaches the reboot. The first failures still restart, because on
+  the PASSIVE lane that open is how outputd waits for CamillaDSP's half of
+  the snd-aloop pair. On the ACTIVE lane it is permanent — P9-C deleted that
+  pair's PCM definitions — so a roleful box that is not ring-armed parks here
+  by design, and the record names the ring re-arm as the fix. See
   [HANDOFF-hotplug-resilience.md](HANDOFF-hotplug-resilience.md).
   During install, likely audio clients (`jasper-voice`,
   `jasper-aec-bridge`, outputd, camilla#2, Snapcast, AirPlay, Spotify,

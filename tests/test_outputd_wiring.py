@@ -118,6 +118,9 @@ def test_asoundrc_no_longer_declares_the_active_content_lane():
     shape the no-legacy-fallback doctrine refuses.
     """
     rc = _non_comment((REPO / "deploy" / "alsa" / "asoundrc.jasper").read_text())
+    # Read guard first: every assertion below is an ABSENCE, so an empty or
+    # comment-only read would satisfy all of them vacuously.
+    assert len(rc) > 1000, f"asoundrc read looks truncated ({len(rc)} chars)"
     for name in (
         "pcm.outputd_active_content_playback",
         "pcm.outputd_active_content_capture",
@@ -125,6 +128,8 @@ def test_asoundrc_no_longer_declares_the_active_content_lane():
     ):
         assert name not in rc, f"{name} was re-declared in asoundrc.jasper"
     # Nothing may claim substream 5 under any alias — the pair stays free.
+    # Deliberately the broader of the two assertions: it fails on any future
+    # re-declaration whatever the PCM is named.
     assert "subdevice 5" not in rc
 
     # Positive control: the same read still finds the SURVIVING passive lane,

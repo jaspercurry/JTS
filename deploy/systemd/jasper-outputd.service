@@ -112,12 +112,16 @@ ExecCondition=/bin/sh -c 'backend="$${JASPER_OUTPUTD_BACKEND:-alsa}"; card="$${J
 # It also owns the one exit-1 class the restart ladder above cannot resolve:
 # a content-lane open that keeps failing. The first such failures restart
 # normally — that open is how outputd waits for CamillaDSP's half of the
-# snd-aloop pair on boot and on a width-flip deploy. A peer permanently locked
-# at another width produces the same failure forever, so on the 4th consecutive
-# one the helper stops the unit out-of-band (leaving start 5 of the burst
-# unspent) and records the reason and the fix in
-# /run/jasper-outputd-content-lane.state. Recovery is the same as the config
-# park: fix the width, then `systemctl restart jasper-outputd`.
+# snd-aloop pair on boot and on a width-flip deploy. The same failure is
+# permanent in two shapes: a peer locked at another width (the PASSIVE lane,
+# pair 6), or — since P9-C deleted the ACTIVE lane's pair-5 PCM definitions —
+# a roleful box that is not ring-armed naming a PCM that no longer exists. On
+# the 4th consecutive failure the helper stops the unit out-of-band (leaving
+# start 5 of the burst unspent) and records the reason and the fix in
+# /run/jasper-outputd-content-lane.state. Recovery depends on which lane it
+# was, and the record names the right one: fix the width for the passive lane,
+# or re-arm the ACTIVE ring for a roleful box; then
+# `systemctl restart jasper-outputd`.
 ExecStopPost=-/usr/local/sbin/jasper-outputd-failure-reconcile
 ExecStart=/opt/jasper/bin/jasper-outputd
 

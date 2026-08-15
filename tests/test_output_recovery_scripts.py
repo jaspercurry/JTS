@@ -27,9 +27,26 @@ CONTENT_LANE_JOURNAL = (
 )
 # The ACTIVE half of the same class: a roleful box whose aloop pair-5 PCMs no
 # longer exist, so the open fails on the NAME rather than on a width.
+#
+# TWO SINKS OPEN THIS LANE AND THEY SPELL THE CONTEXT DIFFERENTLY. The
+# composite (dual-Apple) sink says "outputd ACTIVE content capture PCM"; the
+# single-ALSA sink — the roleful shape the fleet runs armed, DAC8x/jts3 —
+# opens the same ACTIVE lane through the lane-agnostic "outputd content
+# capture PCM". Both carry the PCM NAME, which is what the selector reads.
+# Keying on the composite's prefix gave a rolled-back DAC8x the falsified
+# width remedy; both fixtures exist so that regression cannot return.
 ACTIVE_CONTENT_LANE_JOURNAL = (
     "event=outputd.alsa.opening content_pcm=outputd_active_content_capture\n"
     "Error: opening outputd active content capture PCM "
+    "outputd_active_content_capture\n"
+    "\n"
+    "Caused by:\n"
+    "    0: ALSA function 'snd_pcm_open' failed with error 'ENOENT: "
+    "No such file or directory'\n"
+)
+SINGLE_ALSA_ACTIVE_CONTENT_LANE_JOURNAL = (
+    "event=outputd.alsa.opening content_pcm=outputd_active_content_capture\n"
+    "Error: opening outputd content capture PCM "
     "outputd_active_content_capture\n"
     "\n"
     "Caused by:\n"
@@ -421,22 +438,55 @@ def test_passive_lane_park_keeps_the_width_remedy(tmp_path: Path) -> None:
     assert "--endpoint ring" not in action
 
 
-def test_a_lane_agnostic_context_falls_through_to_the_passive_remedy(
+def test_single_alsa_active_lane_park_names_the_ring_not_a_width(
     tmp_path: Path,
 ) -> None:
-    """`starting capture PCM` names no lane; the passive text is the safe half.
+    """A roleful SINGLE-DAC box gets the ring remedy too — the B1 regression.
 
-    It is the only one of the two that can be true on a passive box, and a
-    passive box is the one that can still be repaired without re-arming.
+    `AlsaBackend` carries the ACTIVE lane on a roleful single DAC (DAC8x/jts3,
+    the shape the fleet runs armed) and opens it through the LANE-AGNOSTIC
+    context "opening outputd content capture PCM <name>". A selector keyed on
+    the composite sink's "outputd ACTIVE content capture PCM" prefix therefore
+    missed it entirely and handed that box the width remedy for the pair this
+    PR deleted. The selector reads the trailing PCM NAME instead, which both
+    sinks carry.
     """
     harness = _FailureReconcileHarness(tmp_path)
-    result = _park_with(
-        harness,
+    result = _park_with(harness, SINGLE_ALSA_ACTIVE_CONTENT_LANE_JOURNAL)
+
+    assert "lane=active" in result.stderr
+    action = harness.state_record()["action"]
+    assert "baseline-reemit --endpoint ring" in action
+    assert "match the content-lane width" not in action
+
+
+def test_a_lane_agnostic_context_follows_the_pcm_name(tmp_path: Path) -> None:
+    """`starting capture PCM` names no lane in its prefix — but it names the PCM.
+
+    Both sinks emit this one context, so it is the case that proves the
+    selector reads the name: the same prefix routes to opposite remedies
+    depending only on which lane's PCM failed.
+    """
+    passive_dir = tmp_path / "passive"
+    passive_dir.mkdir()
+    active_dir = tmp_path / "active"
+    active_dir.mkdir()
+
+    passive = _FailureReconcileHarness(passive_dir)
+    passive_result = _park_with(
+        passive,
         "Error: starting capture PCM outputd_content_capture\n",
     )
+    assert "lane=passive" in passive_result.stderr
+    assert "match the content-lane width" in passive.state_record()["action"]
 
-    assert "lane=passive" in result.stderr
-    assert "match the content-lane width" in harness.state_record()["action"]
+    active = _FailureReconcileHarness(active_dir)
+    active_result = _park_with(
+        active,
+        "Error: starting capture PCM outputd_active_content_capture\n",
+    )
+    assert "lane=active" in active_result.stderr
+    assert "baseline-reemit --endpoint ring" in active.state_record()["action"]
 
 
 def test_park_detail_claims_no_transport_that_may_not_exist(
@@ -456,35 +506,52 @@ def test_park_detail_claims_no_transport_that_may_not_exist(
     assert "consecutive starts" in detail
 
 
-def test_content_lane_active_signature_tracks_the_active_open_contexts() -> None:
-    """The ACTIVE discriminator is derived from outputd's own context strings."""
+def test_content_lane_active_signature_covers_both_sinks() -> None:
+    """The ACTIVE discriminator must fire on EVERY context, from EITHER sink.
+
+    Derived from outputd's own context literals rather than a hand-list, and
+    crossed with both lane names — because the previous version of this guard
+    checked only the composite sink's two spellings and so RATIFIED the gap
+    that let a roleful single-DAC rollback take the passive remedy.
+    """
     contexts = _open_context_literals(ALSA_BACKEND.read_text(encoding="utf-8"))
     active = _content_lane_active_signature()
+    signature = _content_lane_signature()
 
-    expected_active = {
+    # Both sinks' spellings, all three stages. `X` is the extractor's
+    # placeholder for the interpolated PCM name.
+    expected = {
+        "opening outputd content capture PCM X",
+        "configuring outputd content capture PCM X",
         "opening outputd active content capture PCM X",
         "configuring outputd active content capture PCM X",
+        "starting capture PCM X",
     }
-    assert expected_active <= contexts, (
-        "the composite content-lane open contexts moved in "
+    assert expected <= contexts, (
+        "content-lane open contexts moved in "
         "rust/jasper-outputd/src/alsa_backend.rs; update "
-        "CONTENT_LANE_ACTIVE_SIGNATURE in "
+        "CONTENT_LANE_SIGNATURE / CONTENT_LANE_ACTIVE_SIGNATURE in "
         "deploy/bin/jasper-outputd-failure-reconcile to match. "
-        f"missing={sorted(expected_active - contexts)}"
+        f"missing={sorted(expected - contexts)}"
     )
-    for context in sorted(expected_active):
-        assert active.search(f"Error: {context}"), context
 
-    # Non-vacuity in the direction that matters: the discriminator must NOT
-    # claim the passive lane, or every passive width shear gets the ring remedy.
-    assert not active.search(
-        "Error: opening outputd content capture PCM outputd_content_capture"
-    )
-    assert not active.search("Error: starting capture PCM outputd_content_capture")
-    # And it stays a strict subset of the signature that gates the park at all.
-    signature = _content_lane_signature()
-    for context in sorted(expected_active):
-        assert signature.search(f"Error: {context}")
+    for context in sorted(expected):
+        active_line = f"Error: {context.replace('X', 'outputd_active_content_capture')}"
+        passive_line = f"Error: {context.replace('X', 'outputd_content_capture')}"
+        # Every context, either sink, carrying the ACTIVE name -> active remedy.
+        assert active.search(active_line), f"active discriminator missed: {active_line}"
+        # The same context carrying the PASSIVE name must NOT claim active, or
+        # every passive width shear is sent to re-arm a ring it does not use.
+        assert not active.search(passive_line), (
+            f"active discriminator over-claimed: {passive_line}"
+        )
+        # And the park gate itself must fire on both, or neither remedy is
+        # reached at all.
+        assert signature.search(active_line), active_line
+        assert signature.search(passive_line), passive_line
+
+    # Non-vacuity: the discriminator is narrower than "any outputd open".
+    assert not active.search("Error: opening outputd DAC PCM outputd_dac")
 
 
 def test_outputd_failure_reconcile_park_bound_leaves_a_start_unspent() -> None:

@@ -187,8 +187,9 @@ mixer, a second output device, or a new volume model.
 
 1. **Give it one private fan-in lane.** Add exactly one PCM alias in
    `deploy/alsa/asoundrc.jasper`, pinned to 48 kHz stereo S16_LE via
-   `plug`. Current allocation (mirrors the allocation header in
-   `asoundrc.jasper`, the SSOT): `0` Spotify, `1` AirPlay, `2`
+   `plug`. Current allocation (the pair allocation lives canonically in
+   `deploy/modprobe.d/snd-aloop.conf`; `asoundrc.jasper`'s header
+   cross-references it, and this list mirrors both): `0` Spotify, `1` AirPlay, `2`
    Bluetooth, `3` USB sink, `4` correction/test, `5` UNALLOCATED
    (formerly the outputd active-speaker content lane; its PCM defs
    were deleted at P9-C once the ACTIVE ring became the roleful
@@ -813,7 +814,8 @@ allocation table corrected for P9-C, audio-graph consolidation #2285:
 snd-aloop pair 5's PCM definitions — the outputd active-speaker content
 lane, previously mislabelled here as a "debug/monitor reserve" — were
 deleted once the ACTIVE ring became the roleful transport; verified against
-`deploy/alsa/asoundrc.jasper`'s allocation header, the SSOT; prior
+`deploy/modprobe.d/snd-aloop.conf`, where the pair allocation lives
+canonically, and its cross-reference in `deploy/alsa/asoundrc.jasper`; prior
 2026-08-11 pass: the assistant-gain debugging text re-verified against
 `jasper-tts-protocol`'s `decide_gain`/`sanitize_tts_gain_db` and
 `jasper/cli/doctor/audio_runtime.py`: the doctor asserted a fixed `[-60, 0]`

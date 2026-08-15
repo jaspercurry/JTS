@@ -599,10 +599,31 @@ that does not exist. The box finishes the ladder and then parks: four
 consecutive content-lane open failures are parked out-of-band by
 `jasper-outputd-failure-reconcile` (a record written to
 `/run/jasper-outputd-content-lane.state`), spending 4 of
-`StartLimitBurst=5` and never reaching `StartLimitAction=reboot` — the box
-stays up and reachable, the speaker goes silent. Recovery is re-arming the
-ring, not rolling back again. Rollback is now a de-arm for maintenance, not
-a fail-safe.
+`StartLimitBurst=5` and never reaching `StartLimitAction=reboot`. Recovery is
+re-arming the ring, not rolling back again. Rollback is now a de-arm for
+maintenance, not a fail-safe.
+
+**Both halves of the deleted pair fail, and CamillaDSP's half is the louder
+one.** outputd owned the capture side; CamillaDSP owned the playback side,
+and `resolve_output_layout` hands it the dead name whenever
+`ring_active_endpoint_armed()` is false — so the **auto** path reaches this
+state too, not only an explicit `--endpoint aloop`. CamillaDSP then cannot
+open its playback device. That is bounded and reboot-free by construction
+(`jasper-camilla.service` is `Restart=always` with `StartLimitAction=none`,
+so it lands in `failed`), but its `OnFailure=jasper-camilla-recover` first
+**stops all 11 `JASPER_CORE_GRAPH_PARK_UNITS`** — jasper-voice,
+jasper-aec-bridge, jasper-outputd, jasper-camilla-crossover,
+snapclient/snapserver, shairport-sync, nqptp, librespot, bluealsa-aplay,
+jasper-mux — and then returns early (`reason=camilla_start_failed
+action=parked_no_reboot`) without reaching the loop that would start them
+again. So the honest steady state of a rolled-back or never-armed roleful
+box is **silent, with voice and every renderer and the mux stopped**,
+re-entered about every 5 minutes (`COOLDOWN_SEC=300`). It is availability
+class, bounded, loud, and self-describing in the journal — and the
+management surface is untouched, because `jasper-control`, `jasper-web` and
+nginx are deliberately not in the park set, so `http://<speaker>/` stays
+reachable to re-arm from. That is the recovery path; the speaker itself
+cannot be asked, because voice is one of the stopped units.
 
 **Step 1 accepts EITHER roleful boot graph — a box does not have to be
 commissioned to arm.** A roleful box has two legal boot graphs, and the
@@ -1454,4 +1475,12 @@ exit gate's width half. The egress and remaining source-half facts,
 Appendix A, and Appendix B were not re-verified and stand as last verified
 above.
 
-Last verified: 2026-08-11
+2026-08-15 (P9-C, lane-5 deletion): re-verified only the surfaces this
+cutover falsified — the ACTIVE-ring arm/rollback ladder and its park
+consequence on both daemons, the P8/P9 work rows, the #2344 row against the
+#2412 ruling, risk 2, and the two composite-arm claims against the campaign
+lifeline's 2026-08-15 "jts.local ARMED-CLEAN" entry. Everything else,
+including both appendices and the P6/P7 rows, was not re-read and stands as
+last verified above.
+
+Last verified: 2026-08-15

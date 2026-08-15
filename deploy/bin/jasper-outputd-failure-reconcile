@@ -97,16 +97,24 @@ CONTENT_LANE_JOURNAL_LINES="${JASPER_OUTPUTD_CONTENT_LANE_JOURNAL_LINES:-40}"
 # so a reworded context cannot silently stop matching here.
 CONTENT_LANE_SIGNATURE='(opening|configuring) outputd (active )?content capture PCM|starting capture PCM'
 
-# The ACTIVE half of that signature, on its own. It decides WHICH remediation
-# the park records, and the two are not interchangeable: since P9-C deleted the
-# snd-aloop pair-5 PCM definitions, a roleful box's active content lane has no
-# ALSA transport at all, so "match the width on both halves of the pair" names
-# a pair that does not exist. The passive lane (pair 6) still has both halves
-# and still has the real width-shear race, so its remediation is unchanged.
-# `starting capture PCM` carries no lane token; a match on that alone falls
-# through to the passive text, which is the safe direction — it is the only one
-# that can be true on a passive box.
-CONTENT_LANE_ACTIVE_SIGNATURE='(opening|configuring) outputd active content capture PCM'
+# Which LANE failed, decided on the PCM NAME rather than the context prefix.
+# It picks the remediation, and the two are not interchangeable: since P9-C
+# deleted the snd-aloop pair-5 PCM definitions, a roleful box's active content
+# lane has no ALSA transport at all, so "match the width on both halves of the
+# pair" names a pair that does not exist. The passive lane (pair 6) still has
+# both halves and still has the real width-shear race, so its remediation is
+# unchanged.
+#
+# THE NAME, NOT THE PREFIX — this is the whole correctness of the selector.
+# Only the COMPOSITE sink spells its context `outputd active content capture
+# PCM`; the single-ALSA sink opens the very same ACTIVE lane through the
+# lane-agnostic `outputd content capture PCM`, and that sink is the roleful
+# shape the fleet runs armed (DAC8x). Keying on the prefix therefore handed a
+# rolled-back DAC8x the falsified width remedy. All three contexts on BOTH
+# sinks end `... PCM <content_pcm>`, so anchoring on the trailing name covers
+# every one of the six spellings — including `starting capture PCM`, which
+# carries no lane token of its own but does carry the name.
+CONTENT_LANE_ACTIVE_SIGNATURE='PCM outputd_active_content_capture'
 # Set by content_lane_failure() at the moment it classifies, off the same single
 # journal read, so the remedy cannot disagree with what actually failed.
 CONTENT_LANE_IS_ACTIVE=0

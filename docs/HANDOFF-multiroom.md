@@ -2945,4 +2945,9 @@ Stage-0 update 2026-06-27: `buffer_ms` was inert (passed as a snapcast
 `reconcile.py:snapserver_argv` so the configured value takes effect. Pre-fix
 buffer-sizing observations predate any real buffer change.
 
-Last verified: 2026-08-04
+2026-08-15 (P9-C, lane-5 deletion): re-verified only the camilla#2
+active-content lane reference, which now names the ACTIVE ring rather than
+snd-aloop pair 5. No other claim in this file was re-read; the rest stands as
+verified on 2026-08-04.
+
+Last verified: 2026-08-15
