@@ -1504,6 +1504,13 @@ pub struct Input {
     /// deleting the snd-aloop hop for that renderer. `None` (and `pcm.is_some()`)
     /// on every unarmed lane and every lane on an unarmed box.
     ring: Option<ring_capture::RingCapture>,
+    /// The ring lane's deferred ATTACH channel (#2538). `Some` alongside `ring`
+    /// (spawned at lane construction); `None` on every other lane and on a ring
+    /// lane only if the attacher thread could not be spawned. The render loop
+    /// hands every `RingReader::create_or_attach` — and the bounded inter-process
+    /// `flock` inside it — to this thread instead of running one inside the
+    /// period budget. One per lane, so each lane's in-flight latch is its own.
+    ring_attacher: Option<ring_capture::RingAttacher>,
     pub label: String,
     pub pcm_name: String,
     /// Per-input read buffer (i16 interleaved stereo). Reused as the
@@ -1591,7 +1598,20 @@ impl Mixer {
         let mut host_compliance: Option<HostComplianceState> = None;
 
         let mut inputs = Vec::with_capacity(config.input_pcms.len());
-        for (label, pcm_name) in config.input_renderers.iter().zip(&config.input_pcms) {
+        // The lane's position, handed to the ring lanes so each seeds its reattach
+        // latch at a different phase of the retry window (#2538) instead of every
+        // detached lane retrying in the same render period. Taken over ALL lanes
+        // rather than over ring lanes only: the property wanted is "two ring lanes
+        // get different phases", which distinct indices already give, and counting
+        // ring lanes first would need a second pass to learn a number nothing else
+        // uses.
+        let lane_count = config.input_renderers.len();
+        for (lane_index, (label, pcm_name)) in config
+            .input_renderers
+            .iter()
+            .zip(&config.input_pcms)
+            .enumerate()
+        {
             // DEFAULT-OFF: build a per-input resampler on the configured
             // clock-crossing lane when EITHER the input resampler OR USB DIRECT
             // is enabled (both steer this lane to the DAC clock; direct has no
@@ -1636,7 +1656,7 @@ impl Mixer {
             let input = if is_direct {
                 open_direct_input(label, pcm_name, config, resampler)
             } else if is_ring {
-                ring_capture::open_ring_input(label, config, resampler)
+                ring_capture::open_ring_input(label, config, resampler, lane_index, lane_count)
             } else {
                 match open_input(pcm_name, label, config, resampler) {
                     Ok(input) => input,
@@ -3563,6 +3583,7 @@ fn open_input(
         direct: None,
         direct_opener: None,
         ring: None,
+        ring_attacher: None,
         label: label.to_string(),
         pcm_name: pcm_name.to_string(),
         read_buf: vec![0i16; period_samples],
@@ -3688,6 +3709,7 @@ fn open_direct_input(
         direct: Some(direct),
         direct_opener,
         ring: None,
+        ring_attacher: None,
         label: label.to_string(),
         pcm_name: pcm_name.to_string(),
         read_buf: vec![0i16; period_samples],

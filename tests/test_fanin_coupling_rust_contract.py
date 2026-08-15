@@ -11,6 +11,7 @@ or the daemon and the emitted/armed config disagree on the transport.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -41,6 +42,9 @@ _FANIN_HOST_COMPLIANCE_RS = (
 )
 _FANIN_DIRECT_CAPTURE_RS = (
     _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "mixer" / "direct_capture.rs"
+)
+_FANIN_RING_CAPTURE_RS = (
+    _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "mixer" / "ring_capture.rs"
 )
 
 
@@ -78,6 +82,26 @@ def _direct_capture_rs_text() -> str:
     if not _FANIN_DIRECT_CAPTURE_RS.exists():
         pytest.skip(f"rust source not present: {_FANIN_DIRECT_CAPTURE_RS}")
     return _FANIN_DIRECT_CAPTURE_RS.read_text(encoding="utf-8")
+
+
+def _ring_capture_rs_text() -> str:
+    if not _FANIN_RING_CAPTURE_RS.exists():
+        pytest.skip(f"rust source not present: {_FANIN_RING_CAPTURE_RS}")
+    return _FANIN_RING_CAPTURE_RS.read_text(encoding="utf-8")
+
+
+def _call_sites(fn: str, code: str) -> int:
+    """How many times `fn(` is spelled in `code` as a WHOLE identifier.
+
+    A plain `code.count("attach_ring(")` is wrong here and wrong in a way that
+    reads as covered: `maybe_reattach_ring(` ends in `attach_ring(`, so the
+    substring matches the very function whose body must NOT contain a call. A
+    negative assertion written that way can never pass, and a positive one
+    over-counts by however many differently-named neighbours happen to end in
+    the same letters. `\\w` already covers `_`, so one lookbehind is the whole
+    fix.
+    """
+    return len(re.findall(rf"(?<!\w){re.escape(fn)}\(", code))
 
 
 def test_coupling_selector_env_var_name_agrees():
@@ -810,12 +834,16 @@ def test_no_blocking_io_on_the_fanin_render_thread():
     field. Fan-in's own ring-stall detector has a 1 s floor and is structurally
     blind to it, so nothing counts these; the guard has to be structural.
 
-    Two owners, both off-thread: `fanin-compliance-writer` (proof fsync + revoke)
-    and `fanin-direct-opener` (gadget `snd_pcm_open` / `snd_pcm_close`).
+    Three owners, all off-thread: `fanin-compliance-writer` (proof fsync +
+    revoke), `fanin-direct-opener` (gadget `snd_pcm_open` / `snd_pcm_close`), and
+    `fanin-ring-attacher` (`RingReader::create_or_attach`, whose inter-process
+    `flock` is bounded at 500 ms — ~187 slots — and which fires on the ORDINARY
+    idle state of a renderer lane, with no USB host involved at all: #2538).
     """
     mixer_text = _mixer_rs_text()
     host_compliance_text = _host_compliance_rs_text()
     direct_text = _direct_capture_rs_text()
+    ring_text = _ring_capture_rs_text()
 
     # 1. The compliance writer thread owns every proof write and the revoke.
     assert "pub fn spawn_writer(" in host_compliance_text
@@ -863,11 +891,70 @@ def test_no_blocking_io_on_the_fanin_render_thread():
         "the Absent retry must queue an open and poll for the result"
     )
 
-    # 3. Both queues are observable in STATUS (depth / in-flight), so a stuck
-    #    writer or a hanging device open is visible rather than silent.
+    # 3. The ring-lane attacher thread owns every reattach (#2538).
+    assert "pub(super) fn spawn(" in ring_text
+    assert '.name(format!("fanin-ring-attacher-{label}"))' in ring_text, (
+        "the ring attacher must be its own named thread, one per lane"
+    )
+    ring_code = _rust_code_only(ring_text)
+    # `attach_ring` — and through it `RingReader::create_or_attach` — has exactly
+    # TWO production callers: the attacher thread, and `open_ring_input`, which
+    # runs in `Mixer::new` on the constructing thread and is not the render loop.
+    # The test module's own call sites are excluded by SLICING it off rather than
+    # by budgeting for them, so a new test can never loosen the guard.
+    ring_production_code = ring_code[: ring_code.index("mod tests {")]
+    assert _call_sites("RingReader::create_or_attach", ring_production_code) == 1, (
+        "`create_or_attach` may be spelled once, inside `attach_ring`"
+    )
+    attacher_start = ring_production_code.index("fn spawn(")
+    attacher_end = ring_production_code.index("fn publish_pending(", attacher_start)
+    assert (
+        _call_sites("attach_ring", ring_production_code[attacher_start:attacher_end])
+        == 1
+    ), "the attacher thread performs the attach"
+    construction_start = ring_production_code.index("fn open_ring_input(")
+    construction_end = ring_production_code.index(
+        "fn read_ring_and_render(", construction_start
+    )
+    assert (
+        _call_sites(
+            "attach_ring", ring_production_code[construction_start:construction_end]
+        )
+        == 1
+    ), "the CONSTRUCTION attach stays inline — `Mixer::new` is not the render loop"
+    # The ~2 s Detached retry is a poll + queue, never an inline attach. SCOPED
+    # assertion FIRST, before the whole-file count below: a re-inline trips both,
+    # and the one that fires is the one whose message the next reader gets.
+    reattach_start = ring_production_code.index("fn maybe_reattach_ring(")
+    reattach_end = ring_production_code.index("fn adopt_attach_outcome(", reattach_start)
+    reattach_body = ring_production_code[reattach_start:reattach_end]
+    assert not _call_sites("attach_ring", reattach_body), (
+        "the ~2 s Detached retry must not attach the ring on the render thread — "
+        "`create_or_attach` takes a 500 ms-bounded flock inside a 5.33 ms period"
+    )
+    assert "attacher.request(" in reattach_body and ".poll()" in reattach_body, (
+        "the Detached retry must queue an attach and poll for the result"
+    )
+    # Backstop for a re-inline the scoped slice above would not see: a NEW caller
+    # somewhere else in the file that the render loop can reach.
+    assert _call_sites("attach_ring", ring_production_code) == 3, (
+        "`attach_ring` has exactly three spellings in production code: its own "
+        "definition, the attacher thread, and `open_ring_input`. A fourth means "
+        "a new caller — check it is not on the render thread."
+    )
+    # And the retry latches are phase-seeded so lanes cannot retry in lockstep.
+    assert "pub(super) const fn reattach_phase(" in ring_production_code
+    assert "reattach_phase(lane_index, lane_count)" in ring_production_code, (
+        "each ring lane must seed its retry latch from its own phase"
+    )
+
+    # 4. All three queues are observable in STATUS (depth / in-flight), so a stuck
+    #    writer, a hanging device open, or a hanging attach is visible rather than
+    #    silent.
     state_text = _state_rs_text()
     assert '"pending_writes"' in state_text
     assert '"reopen_pending"' in state_text
+    assert '"attach_pending"' in state_text
 
 
 def test_host_compliance_prime_gated_on_host_clock_servo_armed():
