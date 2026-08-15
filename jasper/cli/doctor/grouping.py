@@ -16,7 +16,6 @@ import re
 import shutil
 import socket
 import subprocess
-from dataclasses import dataclass
 from pathlib import Path
 
 from ...env_load import parse_env_text
@@ -940,25 +939,52 @@ def check_crossover_unit_installed() -> CheckResult:
 #
 #     https://github.com/jaspercurry/JTS/issues/2508
 #
-# WHAT IT ASSERTS. Every OPEN aloop substream has a REGISTERED purpose. The
-# registry below is pure data — one row per substream pair that legitimately
-# has a holder in this phase. Pair 5 is deliberately ABSENT: P9-C deleted it,
-# so an open pair 5 is a box that resurrected a deleted lane (a rolled-back
-# binary, a stale asoundrc, a hand-started process) and is exactly the
-# regression P9-C can produce. That is the FAIL.
+# WHAT IT ASSERTS. Every OPEN aloop substream has a REGISTERED purpose, where
+# the registered set is DERIVED — never restated — from the three places that
+# already own the pair allocation:
+#
+#   pairs 0-4  `_FANIN_EXPECTED_ALOOP_INPUTS`   (jasper/cli/doctor/audio_runtime.py)
+#   pair  7    `_FANIN_EXPECTED_OUTPUT_PCM`     (same file)
+#   pair  6    `GROUPING_LOOPBACK_PLAYBACK`     (jasper/multiroom/reconcile.py)
+#
+# Deriving rather than tabulating is what makes retirement MECHANICAL: a pair
+# stops being registered the moment its owning constant stops naming it, with
+# no edit here and no phase label to remember. A hand-maintained table would
+# be a fifth restatement of the allocation (after the modprobe conf prose,
+# asoundrc.jasper, and the two constants above) and would silently keep
+# permitting a lane after its owner dropped it — risk 5.1's "permanent by
+# silence" transplanted onto the very instrument built to measure it.
+#
+# The input roster is read in its ALOOP form deliberately, not through
+# `_fanin_expected_inputs()`: a ring-armed renderer lane still RESERVES its
+# aloop pair (nothing else may take it), so the registered set must not flap
+# with arming state.
+#
+# Pair 5 is absent because no owner names it any more: P9-C deleted its PCM
+# definitions. So an open pair 5 is a box that resurrected a deleted lane (a
+# rolled-back binary, a stale asoundrc, a hand-started process) and is exactly
+# the regression P9-C can produce. That is the FAIL.
+#
+# NOT IMPLEMENTED, DELIBERATELY — the first half of design :497. That bullet
+# opens "snd-aloop present ⟹ grouping-capable box" (restated at :441 as "the
+# module loads only on a grouping-capable box"). This check does NOT assert it,
+# and must not: snd-aloop is still required fleet-wide today, and
+# `check_loopback` (jasper/cli/doctor/audio.py) asserts the OPPOSITE — the
+# module must be present on every box. That clause only becomes assertable once
+# the remnant is grouping-only, so it is carried to #2508 rather than dropped.
 #
 # WHY NOT THE LITERAL "anything but pair 6 is a FAIL". That is the END state
-# (after P9-E reduces asoundrc.jasper to the grouping pair), NOT the state this
-# PR ships into, and shipping it today would red-doctor healthy hardware. Live
+# (once the reduce lands and asoundrc.jasper carries only the grouping pair),
+# NOT the state this PR ships into, and shipping it today would red-doctor
+# healthy hardware. Live
 # evidence, 2026-08-14: jts4 holds `/proc/asound/Loopback/pcm1c/sub3` in
 # `state: RUNNING`, owner cgroup `jasper-fanin.service` — the usbsink lane's
 # idle-read fallback that deploy/modprobe.d/snd-aloop.conf documents ("fan-in
 # still OPENS hw:Loopback,1,3 as the usbsink lane's idle read fallback when USB
 # Audio Input is off"). jts3 and jts.local held nothing. A guard that fails on
 # a documented, healthy holder is a false positive, and a doctor that cries
-# wolf is worse than no doctor. So the registry encodes the CURRENT legitimate
-# set and each row names the phase that retires it; P9-E deletes rows and the
-# guard tightens toward the design's end state on its own, with no edit here.
+# wolf is worse than no doctor. So the registered set tracks its owners, and
+# the guard tightens toward the design's end state as those owners drop pairs.
 #
 # BOUNDED. At most 4 PCM directories x `_ALOOP_SUBSTREAMS` status reads (32
 # small procfs files), plus one `comm`/`cgroup` read per offender, capped at
@@ -968,11 +994,14 @@ def check_crossover_unit_installed() -> CheckResult:
 # FAIL: the guard must not convert "I could not look" into "something is
 # wrong".
 #
-# SERIALIZED. `exclusive_group="audio-probe"` is load-bearing, not decoration:
-# `check_renderer_device_resolvable` (renderers.py) opens real PCMs with
-# `aplay` as its probe. Run concurrently, this check would observe that
-# probe's temporary open as an unregistered holder and FAIL a healthy box.
-# The registry's exclusive lane is what keeps the two from seeing each other.
+# SERIALIZED. `exclusive_group="audio-probe"` shares a lane with
+# `check_renderer_device_resolvable` (renderers.py), which opens real PCMs with
+# `aplay` as its probe. Today the false positive is UNREACHABLE: every PCM that
+# probe opens maps to a pair this check still registers (0/1/2 renderer lanes,
+# 4 correction), so an observed temporary open reads as `ok` either way. The
+# serialization is kept because it becomes load-bearing the moment a pair
+# retires — an unregistered pair briefly held open by a co-tenant probe would
+# then read as an offender — and its cost is near zero.
 # ---------------------------------------------------------------------------
 
 #: procfs ALSA root. Overridable for tests, matching the established
@@ -1003,99 +1032,80 @@ _ALOOP_SUBSTREAMS = 8
 _ALOOP_OFFENDER_DETAIL_CAP = 4
 
 
-@dataclass(frozen=True)
-class _AloopSubstreamPurpose:
-    """One registered reason an snd-aloop substream pair may be open.
-
-    Pure data. ``retires_with`` is the phase that deletes the row — the
-    remnant's own shrink schedule, kept next to the fact it justifies rather
-    than in a doc that can drift away from it.
-    """
-
-    pair: int
-    purpose: str
-    retires_with: str
-
-
-#: Every substream pair with a legitimate holder in THIS phase, mirroring the
-#: allocation comment in deploy/modprobe.d/snd-aloop.conf. Pair 5 is absent on
-#: purpose — see the header comment. Keep this table and that conf file in
-#: step; tests/test_doctor_grouping_remnant.py pins them together.
-_ALOOP_REGISTERED_PURPOSES: tuple[_AloopSubstreamPurpose, ...] = (
-    _AloopSubstreamPurpose(
-        pair=0,
-        purpose="librespot/spotify renderer lane (fan-in reads the capture side)",
-        retires_with="P9-E (renderer lanes fully ring-armed)",
-    ),
-    _AloopSubstreamPurpose(
-        pair=1,
-        purpose="shairport/airplay renderer lane (fan-in reads the capture side)",
-        retires_with="P9-E (renderer lanes fully ring-armed)",
-    ),
-    _AloopSubstreamPurpose(
-        pair=2,
-        purpose="bluealsa renderer lane (fan-in reads the capture side)",
-        retires_with="P9-E (renderer lanes fully ring-armed)",
-    ),
-    _AloopSubstreamPurpose(
-        pair=3,
-        purpose=(
-            "usbsink lane idle-read fallback — fan-in holds hw:Loopback,1,3 "
-            "when USB Audio Input is off (nothing writes the playback side)"
-        ),
-        retires_with="P9-E (usbsink lane fully DIRECT/ring)",
-    ),
-    _AloopSubstreamPurpose(
-        pair=4,
-        purpose="correction measurement lane (fan-in reads the capture side)",
-        retires_with="P9-E (correction lane ring-armed)",
-    ),
-    _AloopSubstreamPurpose(
-        pair=6,
-        purpose=(
-            "THE REMNANT — bonded grouping round-trip "
-            "(snapclient -> hw:Loopback,0,6 -> CamillaDSP captures "
-            "hw:Loopback,1,6), and the passive stereo content lane on a "
-            "passive box"
-        ),
-        retires_with="#2508 (grouping migrated off the pair-6 aloop remnant)",
-    ),
-    _AloopSubstreamPurpose(
-        pair=7,
-        purpose=(
-            "fan-in summed music output (loopback coupling; no writer under "
-            "shm_ring)"
-        ),
-        retires_with="P9-E (shm_ring coupling everywhere)",
-    ),
-)
-
-#: Derived once — the pairs that may legitimately be open right now.
-_ALOOP_REGISTERED_PAIRS = frozenset(
-    row.pair for row in _ALOOP_REGISTERED_PURPOSES
-)
-
-
 def _aloop_proc_root() -> Path:
     return Path(
         os.environ.get(_ALOOP_PROC_ROOT_ENV, _ALOOP_PROC_ROOT_DEFAULT)
     )
 
 
+def _pair_from_loopback_pcm(pcm: str) -> int | None:
+    """Substream index from an ``hw:Loopback,<device>,<sub>`` name.
+
+    Returns None for anything that is not an snd-aloop hw triple — a ring path,
+    a plug wrapper, a renamed card. Callers treat None as "cannot derive" and
+    degrade to `warn`; they must never treat it as "this pair is not
+    registered", because that would SHRINK the registered set and turn a
+    healthy box red.
+    """
+    m = re.fullmatch(r"hw:([^,]+),\d+,(\d+)", pcm.strip())
+    if not m or m.group(1) != _ALOOP_CARD_ID:
+        return None
+    return int(m.group(2))
+
+
 def _grouping_pair_index() -> int | None:
     """The substream index the grouping round-trip is pinned to.
 
-    Read from `jasper.multiroom.reconcile`'s own constants rather than
+    Read from `jasper.multiroom.reconcile`'s own constant rather than
     hardcoded, so the remnant's identity has ONE owner. Returns None when the
-    constant is not an `hw:<card>,<device>,<sub>` triple this can parse — the
-    caller degrades to `warn` rather than guessing an index.
+    constant is not a Loopback hw triple this can parse — the caller degrades
+    to `warn` rather than guessing an index.
     """
     from ...multiroom.reconcile import GROUPING_LOOPBACK_PLAYBACK
 
-    m = re.fullmatch(
-        r"hw:[^,]+,\d+,(\d+)", GROUPING_LOOPBACK_PLAYBACK.strip()
+    return _pair_from_loopback_pcm(GROUPING_LOOPBACK_PLAYBACK)
+
+
+def _derive_registered_pairs() -> tuple[dict[int, str], int] | None:
+    """``({pair: provenance}, grouping_pair)`` derived from the owning facts.
+
+    The registered set is never written down here — it is read out of the
+    constants that already own the allocation (see the header comment). A pair
+    leaves the set exactly when its owner stops naming it.
+
+    Returns None if ANY source constant is unparseable. That is deliberately
+    all-or-nothing: a partial derivation would silently shrink the registered
+    set, and a shrunk set turns legitimate holders into doctor FAILs. Better to
+    say "I could not derive this" than to red-doctor a healthy speaker.
+    """
+    from .audio_runtime import (
+        _FANIN_EXPECTED_ALOOP_INPUTS,
+        _FANIN_EXPECTED_OUTPUT_PCM,
     )
-    return int(m.group(1)) if m else None
+
+    registered: dict[int, str] = {}
+
+    for label, pcm in _FANIN_EXPECTED_ALOOP_INPUTS:
+        pair = _pair_from_loopback_pcm(pcm)
+        if pair is None:
+            return None
+        registered[pair] = f"fan-in input lane {label!r}"
+
+    output_pair = _pair_from_loopback_pcm(_FANIN_EXPECTED_OUTPUT_PCM)
+    if output_pair is None:
+        return None
+    registered[output_pair] = "fan-in summed music output"
+
+    grouping_pair = _grouping_pair_index()
+    if grouping_pair is None:
+        return None
+    # Last on purpose: the remnant's own row wins the provenance string if the
+    # grouping round-trip ever shares a pair with another owner (today it does
+    # not — pair 6's passive-content use is mutually exclusive by hardware
+    # mode, never concurrent).
+    registered[grouping_pair] = "THE REMNANT — bonded grouping round-trip (#2508)"
+
+    return registered, grouping_pair
 
 
 def _aloop_substream_owner(status_text: str) -> str:
@@ -1140,13 +1150,16 @@ def check_grouping_aloop_remnant() -> CheckResult:
     Audio-graph consolidation #2285, P9-C. See the header comment above for
     the full rationale; the operator-facing summary:
 
-    - snd-aloop absent           -> ok (no remnant on this box)
-    - /proc unreadable           -> warn (fail-soft; never a FAIL)
-    - every open pair registered -> ok, reporting the remnant's current size
-    - an UNREGISTERED pair open  -> fail, naming the offender
+    - snd-aloop absent            -> ok (no remnant on this box)
+    - registered set underivable  -> warn (never a shrunken set)
+    - /proc unreadable            -> warn (fail-soft; never a FAIL)
+    - every open pair registered  -> ok, reporting the remnant's current size
+    - an UNREGISTERED pair open   -> fail, naming the offender
 
-    The unregistered case is pair 5 today: P9-C deleted its PCM definitions,
-    so anything holding it has resurrected a deleted lane.
+    The registered set is DERIVED from the constants that own the pair
+    allocation, so it shrinks on its own as pairs retire. The unregistered
+    case is pair 5 today: P9-C deleted its PCM definitions, so anything
+    holding it has resurrected a deleted lane.
 
     EOL for the remnant itself: issue #2508.
     """
@@ -1161,24 +1174,25 @@ def check_grouping_aloop_remnant() -> CheckResult:
             "on this box",
         )
 
-    grouping_pair = _grouping_pair_index()
-    if grouping_pair is None:
+    derived = _derive_registered_pairs()
+    if derived is None:
         return CheckResult(
             label,
             "warn",
-            "could not parse the grouping substream index out of "
-            "jasper.multiroom.reconcile.GROUPING_LOOPBACK_PLAYBACK — the "
-            "remnant's scope cannot be verified; expected an "
-            "'hw:<card>,<device>,<sub>' triple",
+            "could not derive the registered substream set from its owning "
+            "constants (_FANIN_EXPECTED_ALOOP_INPUTS / "
+            "_FANIN_EXPECTED_OUTPUT_PCM in jasper/cli/doctor/audio_runtime.py, "
+            "GROUPING_LOOPBACK_PLAYBACK in jasper/multiroom/reconcile.py) — "
+            "each must be an 'hw:Loopback,<device>,<sub>' triple. The "
+            "remnant's scope cannot be verified.",
         )
-    if grouping_pair not in _ALOOP_REGISTERED_PAIRS:
-        return CheckResult(
-            label,
-            "warn",
-            f"the grouping round-trip names pair {grouping_pair}, which this "
-            "check's purpose registry does not list — the registry and "
-            "jasper/multiroom/reconcile.py have drifted apart",
-        )
+    registered_pairs, grouping_pair = derived
+    # There is deliberately NO "grouping pair missing from the registry" branch:
+    # the grouping pair is derived from GROUPING_LOOPBACK_PLAYBACK and inserted
+    # by the same function, so it is in the set by construction. The earlier
+    # hand-maintained table could drift from that constant; a derived set
+    # cannot, so the branch that caught that drift is now unreachable code.
+    # `test_grouping_pair_is_always_registered` pins the invariant instead.
 
     offenders: list[str] = []
     registered_open: set[int] = set()
@@ -1204,7 +1218,7 @@ def check_grouping_aloop_remnant() -> CheckResult:
             first = stripped.splitlines()[0].strip() if stripped else ""
             if not first or first == "closed":
                 continue
-            if pair in _ALOOP_REGISTERED_PAIRS:
+            if pair in registered_pairs:
                 registered_open.add(pair)
                 continue
             owner = _aloop_substream_owner(text)
@@ -1241,7 +1255,7 @@ def check_grouping_aloop_remnant() -> CheckResult:
 
     non_grouping = sorted(registered_open - {grouping_pair})
     detail = (
-        f"scoped: {len(_ALOOP_REGISTERED_PAIRS)} of {_ALOOP_SUBSTREAMS} pairs "
+        f"scoped: {len(registered_pairs)} of {_ALOOP_SUBSTREAMS} pairs "
         f"still registered, grouping remnant on pair {grouping_pair} (#2508)"
     )
     if non_grouping:

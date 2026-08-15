@@ -147,8 +147,9 @@ The honest framing: today's shipped resilience is **Tier 1, Tier 2, Tier 3 (shai
 
 Current production observability for this ladder lives under
 `/state.resilience`: `shairport`, `grouping_supervisor`,
-`system_supervisor`, `wifi_guardian`, `bootloop_guard`, `identity`,
-`disk`, and `multiroom_cascade`. The first three are resident supervisor
+`system_supervisor`, `wifi_guardian`, `bootloop_guard`, `content_lane`,
+`identity`, `disk`, `multiroom_cascade`, and `active_speaker_parked`.
+The first three are resident supervisor
 snapshots; `jasper-doctor` now reads them through its `supervisor runtime
 snapshots` check so a supervisor that is kicking, rate-limited, or failing
 to converge is visible in one-shot diagnostics. `multiroom_cascade` is a

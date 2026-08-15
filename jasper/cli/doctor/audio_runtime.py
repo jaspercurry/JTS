@@ -408,7 +408,9 @@ def check_fanin_asound_wiring() -> CheckResult:
     assertion below is file-level drift detection against
     `deploy/alsa/asoundrc.jasper`, which is why they hold on a
     ring-coupled box too — there the shipped definitions survive with
-    no writer and no reader until P9-B deletes them. The one assertion
+    no writer and no reader. (The pair-5 definitions are already gone:
+    P9-C deleted them. What survives is the pair-0..4/6/7 set, which
+    P9-E reduces to the grouping pair.) The one assertion
     that is not about the graph is the trailing `audio_topology.env`
     probe, which warns about a leftover from the retired dmix/fanin
     switcher.
@@ -504,9 +506,10 @@ def check_fanin_asound_wiring() -> CheckResult:
 
     # `pcm.jasper_ref` has had NO reader since U4/P7-3 retired the last one
     # (the AEC bridge's ALSA fallback went first, in P7-1). The definition is
-    # deliberately retained — `deploy/alsa/asoundrc.jasper` still ships it and
-    # P9-B deletes the aloop PCMs — so what these two branches report is
-    # deployed-asoundrc drift from the shipped file, not a broken consumer.
+    # deliberately retained — `deploy/alsa/asoundrc.jasper` still ships it, and
+    # P9-E is what reduces the remaining aloop PCMs to the grouping pair — so
+    # what these two branches report is deployed-asoundrc drift from the
+    # shipped file, not a broken consumer.
     ref = _asound_pcm_block(active, "jasper_ref")
     if ref is None:
         return CheckResult(
@@ -3667,6 +3670,16 @@ def check_outputd_content_lane_park() -> CheckResult:
             f"be read ({state.get('error')}) — a park cannot be ruled out. "
             "The record is written root:jasper 0660 by jasper-outputd's "
             "ExecStopPost; check that the reader is in group jasper.",
+        )
+
+    if status == "unintelligible":
+        return CheckResult(
+            label,
+            "warn",
+            f"content-lane record at {state.get('path')} is present but its "
+            "count/timestamp do not parse (a truncated write) — a park cannot "
+            "be ruled out from it. Check jasper-outputd's recent starts "
+            "directly; the record is cleared on the next clean stop.",
         )
 
     if state.get("parked"):

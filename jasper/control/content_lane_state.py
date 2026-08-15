@@ -108,6 +108,15 @@ def snapshot(
         streak window or is a stale leftover from a lane that has since
         recovered.
 
+    ``{"status": "unintelligible", "parked": False, ...}``
+        A non-park record whose ``count``/``last_failure_epoch`` do not parse.
+        Reported distinctly rather than as a healthy "recovered" record: this
+        module's whole posture is that a surface it cannot read must not
+        report a healthy speaker, and an unintelligible record deserves the
+        same treatment as an unreadable one. (Reachable only via a partial
+        write that still renames — the writer is tempfile+rename with
+        ``> "$tmp" 2>/dev/null || true``, so ENOSPC can truncate it.)
+
     Never raises.
     """
     target = path if path is not None else _state_path()
@@ -154,14 +163,19 @@ def snapshot(
         )
         return result
 
+    # A non-park record we cannot read is NOT a recovered lane. Without this,
+    # a truncated record produced `ok | ... a stale record of None failure(s)
+    # remains (Nones old ...)` — unintelligible text AND the opposite verdict
+    # from the unreadable path two branches up.
+    if count is None or last_failure_epoch is None:
+        result["status"] = "unintelligible"
+        return result
+
     # Count-only record: is the streak live, or a leftover from a lane that
     # recovered? The writer clears the record on a clean stop, not on a
     # successful start, so a stale record can outlive the problem it recorded.
     now_sec = time.time() if now is None else now
-    if last_failure_epoch is None:
-        result["streak_live"] = False
-    else:
-        age = now_sec - last_failure_epoch
-        result["streak_live"] = 0 <= age < _window_sec()
-        result["age_sec"] = int(age)
+    age = now_sec - last_failure_epoch
+    result["streak_live"] = 0 <= age < _window_sec()
+    result["age_sec"] = int(age)
     return result

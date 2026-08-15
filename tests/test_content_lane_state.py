@@ -142,16 +142,50 @@ def test_malformed_record_never_raises(tmp_path):
     target = tmp_path / "content-lane.state"
     target.write_text("this is not = = key value\n\x00\n", encoding="utf-8")
     snap = content_lane_state.snapshot(str(target))
-    assert snap["status"] == "present"
     assert snap["parked"] is False
 
 
-def test_non_numeric_count_degrades_to_none(tmp_path):
+def test_unintelligible_record_is_not_reported_as_recovered(tmp_path):
+    """An unparseable non-park record gets the SAME treatment as an unreadable
+    one. Before this, it produced `ok | ... a stale record of None failure(s)
+    remains (Nones old ...)` — unintelligible text and the opposite verdict
+    from its own sibling branch."""
     target = tmp_path / "content-lane.state"
     target.write_text("count=banana\nlast_failure_epoch=nope\n", encoding="utf-8")
     snap = content_lane_state.snapshot(str(target))
+    assert snap["status"] == "unintelligible"
+    assert snap["parked"] is False
     assert snap["count"] is None
-    assert snap["streak_live"] is False
+    # It must NOT claim a streak verdict it cannot support.
+    assert "streak_live" not in snap
+
+
+def test_truncated_record_is_unintelligible(tmp_path):
+    """The reachable shape: a partial write that still renamed (ENOSPC)."""
+    target = tmp_path / "content-lane.state"
+    target.write_text("cou", encoding="utf-8")
+    snap = content_lane_state.snapshot(str(target))
+    assert snap["status"] == "unintelligible"
+
+
+def test_park_record_without_lane_is_still_a_park(tmp_path):
+    """BACK-COMPAT: /run wipes at boot, not on deploy, so a fleet box can
+    carry a pre-`lane=` record across the upgrade. A park must still read as
+    a park, with the lane reported as unknown rather than dropped."""
+    target = tmp_path / "content-lane.state"
+    target.write_text(
+        "count=4\n"
+        "last_failure_epoch=1000\n"
+        "parked_utc=2026-08-14T12:00:00Z\n"
+        "reason=content_lane_open_repeated\n"
+        "detail=could not open its content lane on 4 consecutive starts\n"
+        "action=match the content-lane width on both halves of the pair\n"
+        "re_arm=a deploy, a reboot, or an operator restart\n",
+        encoding="utf-8",
+    )
+    snap = content_lane_state.snapshot(str(target))
+    assert snap["parked"] is True
+    assert snap["lane"] is None
 
 
 # --------------------------------------------------------------------------
@@ -223,6 +257,35 @@ def test_doctor_warns_when_unreadable(state_file):
     result = audio_runtime.check_outputd_content_lane_park()
     assert result.status == "warn"
     assert "could not" in result.detail
+
+
+def test_doctor_warns_on_an_unintelligible_record(state_file):
+    """N2: garbage must not read as a healthy speaker, and must never put
+    `None` into operator text."""
+    state_file.write_text("count=banana\nlast_failure_epoch=nope\n", encoding="utf-8")
+    result = audio_runtime.check_outputd_content_lane_park()
+    assert result.status == "warn"
+    assert "do not parse" in result.detail
+    assert "None" not in result.detail
+
+
+def test_doctor_names_an_unknown_lane_on_a_pre_lane_record(state_file):
+    """SF3/2: the back-compat path for a record written before `lane=` existed.
+    Reachable on any fleet box upgraded without a reboot."""
+    state_file.write_text(
+        "count=4\n"
+        "last_failure_epoch=1000\n"
+        "parked_utc=2026-08-14T12:00:00Z\n"
+        "reason=content_lane_open_repeated\n"
+        "detail=could not open its content lane on 4 consecutive starts\n"
+        "action=match the content-lane width on both halves of the pair\n"
+        "re_arm=a deploy, a reboot, or an operator restart\n",
+        encoding="utf-8",
+    )
+    result = audio_runtime.check_outputd_content_lane_park()
+    assert result.status == "fail"
+    assert "unknown-lane" in result.detail
+    assert "None" not in result.detail
 
 
 def test_doctor_check_is_registered():

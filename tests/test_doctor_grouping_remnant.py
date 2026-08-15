@@ -149,13 +149,15 @@ def test_offender_detail_is_bounded(proc_root, tmp_path, monkeypatch):
     """A pathological box cannot produce an unbounded doctor line.
 
     The registered set is shrunk to the grouping pair alone — which is also
-    P9-E's END STATE — so every other pair reads as an offender and the
+    the reduce's END STATE — so every other pair reads as an offender and the
     offender count (28) genuinely exceeds the cap. An earlier version of this
     test opened only pair 5 across the four PCM dirs, giving exactly 4
     offenders against a cap of 4; `[:cap]` and `[:]` were then
     indistinguishable and the bound was asserted but never proven.
     """
-    monkeypatch.setattr(grouping, "_ALOOP_REGISTERED_PAIRS", frozenset({6}))
+    monkeypatch.setattr(
+        grouping, "_derive_registered_pairs", lambda: ({6: "grouping"}, 6)
+    )
     proc_root(
         _make_card(
             tmp_path,
@@ -294,38 +296,120 @@ def test_unparseable_grouping_constant_is_warn(proc_root, tmp_path, monkeypatch)
     proc_root(_make_card(tmp_path))
     result = grouping.check_grouping_aloop_remnant()
     assert result.status == "warn"
-    assert "could not parse" in result.detail
+    assert "could not derive" in result.detail
+
+
+# --------------------------------------------------------------------------
+# Derivation — the registered set is READ from its owners, never restated
+# --------------------------------------------------------------------------
+
+#: The pairs that must be registered at this head, written as a LITERAL on
+#: purpose. Deriving this expectation from the same constants the production
+#: code derives from would make it move in lockstep with a regression — drop
+#: pair 0 from `_FANIN_EXPECTED_ALOOP_INPUTS` and a derived expectation drops
+#: it too, so nothing fails. A literal is what makes a source-constant
+#: deletion detectable.
+_EXPECTED_REGISTERED_PAIRS = (0, 1, 2, 3, 4, 6, 7)
+
+
+def test_derived_set_matches_the_expected_allocation():
+    """Dropping a pair from any owning constant changes this set."""
+    derived, grouping_pair = grouping._derive_registered_pairs()
+    assert tuple(sorted(derived)) == _EXPECTED_REGISTERED_PAIRS
+    assert grouping_pair == 6
+
+
+@pytest.mark.parametrize("pair", _EXPECTED_REGISTERED_PAIRS)
+def test_every_registered_pair_open_is_ok(proc_root, tmp_path, pair):
+    """THE PER-ROW GUARD.
+
+    One case per registered pair, each opening that pair and requiring `ok`.
+    Dropping a pair from its owning constant makes that pair unregistered, and
+    this test then FAILs it — which is the whole point: an unregistered pair
+    that a real box holds open is a red doctor on healthy hardware.
+    """
+    proc_root(_make_card(tmp_path, {"pcm0p": [pair], "pcm1c": [pair]}))
+    result = grouping.check_grouping_aloop_remnant()
+    assert result.status == "ok", f"pair {pair} open read as {result.detail}"
+
+
+def test_grouping_pair_is_always_registered():
+    """Replaces the old 'grouping pair missing from the registry' warn branch.
+
+    That branch existed because a hand-maintained table could drift from
+    GROUPING_LOOPBACK_PLAYBACK. The derived set inserts the grouping pair from
+    that same constant, so the drift is now structurally impossible and the
+    branch was deleted as unreachable. This is the invariant that replaced it.
+    """
+    derived, grouping_pair = grouping._derive_registered_pairs()
+    assert grouping_pair in derived
+
+
+def test_derivation_is_all_or_nothing_on_a_bad_input(monkeypatch):
+    """A partial derivation would SHRINK the set and red-doctor a healthy box,
+    so an unparseable source must return None (-> warn), never a subset."""
+    from jasper.cli.doctor import audio_runtime
+
+    monkeypatch.setattr(
+        audio_runtime,
+        "_FANIN_EXPECTED_ALOOP_INPUTS",
+        [("spotify", "hw:Loopback,1,0"), ("airplay", "not-a-pcm")],
+    )
+    assert grouping._derive_registered_pairs() is None
+
+
+def test_derivation_rejects_a_non_loopback_card(monkeypatch):
+    from jasper.cli.doctor import audio_runtime
+
+    monkeypatch.setattr(
+        audio_runtime, "_FANIN_EXPECTED_OUTPUT_PCM", "hw:SomeOtherCard,0,7"
+    )
+    assert grouping._derive_registered_pairs() is None
+
+
+def test_ring_armed_lanes_still_reserve_their_aloop_pair():
+    """The roster is read in its ALOOP form, not through the armed-aware
+    `_fanin_expected_inputs()`: a ring-armed lane still reserves its pair, so
+    the registered set must not flap with arming state.
+
+    Scoped to the derivation function's own source, not the whole module —
+    the module comment legitimately names the armed-aware helper to explain
+    why it is NOT used, and a file-wide substring check flagged that prose.
+    """
+    import inspect
+
+    source = inspect.getsource(grouping._derive_registered_pairs)
+    assert "_FANIN_EXPECTED_ALOOP_INPUTS" in source
+    assert "_fanin_expected_inputs" not in source
 
 
 def test_pair_five_is_not_registered():
-    """P9-C DELETED pair 5. If a future edit re-registers it, this fails —
-    which is the point: the deletion is the thing the guard protects."""
-    assert 5 not in grouping._ALOOP_REGISTERED_PAIRS
+    """P9-C DELETED pair 5, so no owner names it any more. If a future edit
+    re-registers it, this fails — the deletion is what the guard protects."""
+    derived, _ = grouping._derive_registered_pairs()
+    assert 5 not in derived
     text = _RECONCILE_PY.read_text(encoding="utf-8")
-    assert "5 unallocated" in text or "5    UNALLOCATED" in text or (
-        "unallocated" in text.lower()
-    ), "reconcile.py should still describe pair 5 as unallocated"
+    assert "unallocated" in text.lower(), (
+        "reconcile.py should still describe pair 5 as unallocated"
+    )
 
 
 def test_registered_pairs_are_within_the_module_range():
     substreams = _modprobe_substreams()
-    for row in grouping._ALOOP_REGISTERED_PURPOSES:
-        assert 0 <= row.pair < substreams, (
-            f"registered pair {row.pair} is outside pcm_substreams={substreams}"
+    derived, _ = grouping._derive_registered_pairs()
+    for pair in derived:
+        assert 0 <= pair < substreams, (
+            f"registered pair {pair} is outside pcm_substreams={substreams}"
         )
 
 
-def test_every_registered_purpose_names_its_retirement():
-    """Each row carries the phase that deletes it — the remnant's shrink
-    schedule lives next to the fact it justifies."""
-    for row in grouping._ALOOP_REGISTERED_PURPOSES:
-        assert row.purpose.strip(), f"pair {row.pair} has no purpose"
-        assert row.retires_with.strip(), f"pair {row.pair} has no retirement"
-
-
-def test_registered_pairs_have_no_duplicates():
-    pairs = [row.pair for row in grouping._ALOOP_REGISTERED_PURPOSES]
-    assert len(pairs) == len(set(pairs))
+def test_no_phase_labels_in_the_registry():
+    """The retirement pointer is gone: retirement is mechanical (a pair leaves
+    when its owning constant stops naming it), so there is no phase label here
+    to drift against the campaign's own vocabulary."""
+    source = Path(grouping.__file__).read_text(encoding="utf-8")
+    assert "retires_with" not in source
+    assert "P9-E (" not in source
 
 
 def test_check_text_carries_the_eol_issue():
