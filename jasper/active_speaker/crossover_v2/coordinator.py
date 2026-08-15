@@ -706,13 +706,15 @@ def _write_round_receipt(
         "round_id": evidence.session_id,
         "artifact_fingerprint": str(fingerprint or ""),
         "receipt_fingerprint": receipt.fingerprint,
-        # WHAT the round decided and WHICH row decided it (#2537), beside the
-        # pointers to where the full receipt landed. The done screen needs the
-        # outcome to know whether it owes a "kept, and here is what is still
-        # off" caveat, and fetching a bundle artifact to render one sentence
-        # would make a screen depend on evidence storage.
+        # WHAT the round decided, WHICH row decided it, and the deciding axis's
+        # own reason (#2537), beside the pointers to where the full receipt
+        # landed. The done screen needs the outcome to know whether it owes a
+        # "kept, and here is what is still off" caveat, and a driver chaining
+        # rounds needs the row — fetching a bundle artifact to answer either
+        # would make a live surface depend on evidence storage.
         "adoption": evaluation.adoption.outcome.value,
         "row": evaluation.adoption.row,
+        "reason": evaluation.adoption.reason,
     }
     log_event(
         logger, "correction.crossover_v2_round_receipt",

@@ -130,7 +130,7 @@ def _step_statuses(env: dict) -> dict[str, str]:
 
 def test_schema_8_and_v2_step_tuple():
     env = build_crossover_envelope_v2(_status(phase="check"))
-    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 13
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 14
     assert env["flow"] == "v2"
     assert tuple(step["id"] for step in env["steps"]) == V2_STEP_IDS
 
@@ -145,7 +145,7 @@ def test_legacy_env_still_serves_v2_envelope(monkeypatch):
 
     monkeypatch.setenv("JASPER_CROSSOVER_FLOW", "legacy")
     env = build_crossover_envelope(_status(phase="check"))
-    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 13
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 14
     assert env["flow"] == "v2"
 
 
@@ -1042,6 +1042,56 @@ def test_only_a_kept_for_iteration_round_gets_that_caveat(receipt):
     }
 
 
+def test_the_envelope_names_which_adoption_row_the_round_fired():
+    """The machine half of #2537's disclosure, for a driver chaining rounds.
+
+    Three of the five rows restore and two keep, so ``adoption`` alone cannot
+    say which rule applied, and the reason travels from whichever axis decided.
+    The ROW is the stable thing to branch on.
+    """
+    env = build_crossover_envelope_v2(_status(
+        phase="done",
+        verify={"outcome": "pass"},
+        candidate=_candidate_summary(),
+        round_receipt={
+            "round_id": "s1",
+            "adoption": "keep_for_iteration",
+            "row": "row2_trusted_safe_missed",
+            "reason": "measured_targets_outstanding",
+        },
+    ))
+    assert env["round"] == {
+        "row": "row2_trusted_safe_missed",
+        "adoption": "keep_for_iteration",
+        "reason": "measured_targets_outstanding",
+    }
+
+
+@pytest.mark.parametrize(
+    "receipt", [None, {}, {"round_id": "s1"}], ids=["absent", "empty", "id_only"]
+)
+def test_a_session_that_graded_no_round_reports_an_absence_not_an_empty_row(
+    receipt,
+):
+    env = build_crossover_envelope_v2(_status(
+        phase="done",
+        verify={"outcome": "pass"},
+        candidate=_candidate_summary(),
+        round_receipt=receipt,
+    ))
+    assert env["round"] is None
+
+
+def test_the_round_key_is_present_on_every_screen():
+    """Always-present, so a driver never has to tell "no round yet" from "this
+    build predates the key"."""
+    for phase in ("check", "measure", "apply", "verify", "done"):
+        env = build_crossover_envelope_v2(_status(phase=phase))
+        assert "round" in env
+    inactive = build_crossover_envelope_v2({"active": False})
+    assert inactive["round"] is None
+
+
 def test_a_level_mismatch_rides_beside_an_out_of_spec_badge_too():
     """Two instruments, two claims, neither silencing the other."""
     env = build_crossover_envelope_v2(_status(
@@ -1327,7 +1377,7 @@ def test_the_envelope_schema_version_moved_with_the_candidate_review_shape():
     env = build_crossover_envelope_v2(_status(
         phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(),
     ))
-    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 13
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 14
     assert "headroom_cost" in env["candidate_review"]
 
 
@@ -3903,7 +3953,7 @@ def test_the_review_screen_moved_the_schema_version():
     unredeployed page ignores the new keys rather than refusing the envelope,
     the same property the 8 → 9 bump had."""
     env = build_crossover_envelope_v2(_review_status())
-    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 13
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 14
     assert "prediction" in env
     assert env["busy"] is False  # present on every screen, true on one
     # Present on EVERY screen, populated on two — the key's absence would make

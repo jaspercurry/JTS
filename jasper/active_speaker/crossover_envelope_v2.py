@@ -114,6 +114,14 @@ ADOPTION_KEEP_FOR_ITERATION = AdoptionOutcome.KEEP_FOR_ITERATION.value
 
 logger = logging.getLogger(__name__)
 
+# Bumped 13 → 14: the envelope gained an always-present ``round`` key — the last
+# graded round's adoption ROW, outcome, and reason (#2537). Additive: no key
+# removed or re-typed, and the crossover wizard's own module ignores it, so an
+# unredeployed page is unaffected. The version is bumped for the same reason 13
+# was: the consumer this key exists for is an EXTERNAL DRIVER chaining rounds,
+# and it needs a stable way to know the contract is present rather than probing
+# for a key that is ``null`` on every screen before VERIFY completes anyway.
+#
 # Bumped 9 → 10: the screen vocabulary gained ``review`` — the two-stage
 # commission flow's apply-decision interlude (work order D3, issue #1806) — and
 # the envelope gained a ``prediction`` key (the predicted curve + its stored
@@ -167,7 +175,7 @@ logger = logging.getLogger(__name__)
 # ignores the rest, so an unredeployed page is unaffected. The version is
 # bumped because the EXTERNAL DRIVER this key exists for is a separate program
 # that needs a stable way to know the contract is present.
-CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION = 13
+CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION = 14
 
 # The v2 step tuple (§5.9, amended 2026-07-20). The step machinery inside each
 # step is gone; these five are the whole journey.
@@ -1838,6 +1846,29 @@ KEEP_FOR_ITERATION_TEXT = (
 )
 
 
+def _round_summary(status: Mapping[str, Any]) -> dict[str, str] | None:
+    """The last graded round's adoption row, outcome, and reason — or ``None``.
+
+    Read straight off the durable ``round_receipt`` the coordinator stamps; this
+    computes nothing and re-derives nothing, which is what keeps the screen and
+    the receipt from disagreeing about what a round decided.
+
+    ``None`` for a session that has graded no round, which is every screen
+    before VERIFY completes — an absence, not a row named ``""``.
+    """
+
+    receipt = _mapping(_mapping(status.get("crossover_v2")).get("round_receipt"))
+    row = str(receipt.get("row") or "")
+    adoption = str(receipt.get("adoption") or "")
+    if not (row or adoption):
+        return None
+    return {
+        "row": row,
+        "adoption": adoption,
+        "reason": str(receipt.get("reason") or ""),
+    }
+
+
 def _round_adoption_nudges(v2: Mapping[str, Any]) -> list[dict[str, str]]:
     """The done screen's caveat for a round that KEPT an imperfect result.
 
@@ -2358,6 +2389,17 @@ def _envelope(
         "busy": bool(busy),
         "progress": _progress(active_step),
         "applied": _applied_chip(status),
+        # WHICH adoption row the last graded round fired, for a driver chaining
+        # rounds (#2537). Three of the five rows restore and two keep, so the
+        # outcome alone cannot say which rule applied, and the reason travels
+        # from whichever axis decided — the row is the stable thing to branch
+        # on. ``None`` until a round has been graded.
+        #
+        # Machine data on a household surface, deliberately: the alternative is
+        # a series driver fetching an evidence-bundle artifact to learn what the
+        # screen it is already polling was built from. The household-facing
+        # rendering of the same fact is the ``keep_for_iteration`` caveat.
+        "round": _round_summary(status),
         "candidate_review": dict(candidate_review) if candidate_review else None,
         # Flat-linearization plan PR-4: the compact per-group honesty verdict
         # (spec pass/fail per band, excluded-interval count, geometry verdict
@@ -3195,6 +3237,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             "alternate_actions": [],
             "progress": {"position": 0, "total": len(_STEP_IDS)},
             "applied": _applied_chip(status),
+            "round": None,
             "candidate_review": None,
             "cloud": None,
         }

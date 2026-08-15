@@ -256,6 +256,115 @@ def test_a_missing_digest_on_either_side_leaves_the_path_check_standing(tmp_path
 
 
 # --------------------------------------------------------------------------- #
+# 2b. the refusal the divergence rule feeds
+# --------------------------------------------------------------------------- #
+
+
+def _applied_state(tmp_path, *, applied_path: str, applied_sha: str):
+    """A durable v2 state that clears the three pre-#2537 anchor checks.
+
+    No ``topology_fingerprint`` on the stash, which is the documented "predates
+    the fingerprint, cannot be compared, allowed through" path — so the ONLY
+    thing left that can refuse is the divergence check, and a passing control
+    below proves that is true rather than assumed.
+    """
+    del tmp_path
+    return {
+        "applied": True,
+        "pre_apply_profile": {"kind": "prior", "source": {}},
+        ROUND_ANCHOR_STATE_KEY: {
+            "displaced": {"config_path": "", "sha256": ""},
+            "applied": {"config_path": applied_path, "sha256": applied_sha},
+        },
+    }
+
+
+def test_the_restore_refuses_when_the_running_graph_is_not_the_rounds(tmp_path):
+    """The cycle-4 shape, at the precondition every restore path reads.
+
+    Both readers of ``rollback_anchor_refusal`` see one rule; this is the one
+    the household's Undo and the round's automatic restore both refuse on.
+    """
+    from jasper.web.correction_crossover_v2 import (
+        ANCHOR_RUNNING_CONFIG_DIVERGED,
+        rollback_anchor_refusal,
+    )
+
+    applied_path, applied_sha = _yaml(tmp_path, "candidate.yml", "the round's\n")
+    reconciled, _ = _yaml(tmp_path, "sound_current.yml", "someone else's\n")
+    state = _applied_state(
+        tmp_path, applied_path=applied_path, applied_sha=applied_sha
+    )
+
+    refusal = rollback_anchor_refusal(state, running_config_path=reconciled)
+
+    assert refusal is not None
+    assert refusal.code == ANCHOR_RUNNING_CONFIG_DIVERGED
+    # A household sentence, not a bug report: no path, no code, no hardware
+    # noun — the same copy rule every other anchor refusal here carries.
+    assert "changed by something else" in refusal.message
+    assert reconciled not in refusal.message
+    assert not any(
+        word in refusal.message.lower()
+        for word in ("tweeter", "woofer", "yml", "config_path")
+    )
+
+
+def test_the_restore_is_allowed_when_the_running_graph_is_still_the_rounds(
+    tmp_path,
+):
+    """The control the test above needs to mean anything.
+
+    Without it, a fixture that refused for one of the OTHER three reasons would
+    read as a passing divergence test.
+    """
+    from jasper.web.correction_crossover_v2 import rollback_anchor_refusal
+
+    applied_path, applied_sha = _yaml(tmp_path, "candidate.yml", "the round's\n")
+    state = _applied_state(
+        tmp_path, applied_path=applied_path, applied_sha=applied_sha
+    )
+
+    assert rollback_anchor_refusal(
+        state, running_config_path=applied_path
+    ) is None
+
+
+def test_the_capability_probe_takes_no_live_reading_and_so_never_diverges(
+    tmp_path,
+):
+    """The seam answers the three STATIC preconditions; the endpoint adds the
+    live one.
+
+    Deliberate: a camilla hiccup flipping ``rollback_available`` to False would
+    route an otherwise-fine round to ``recovery_required``. A divergence found
+    at the endpoint instead returns "not restored", which re-grades the round
+    the same way — one round later and only when it matters.
+    """
+    from jasper.web.correction_crossover_v2 import rollback_anchor_refusal
+
+    applied_path, applied_sha = _yaml(tmp_path, "candidate.yml", "the round's\n")
+    state = _applied_state(
+        tmp_path, applied_path=applied_path, applied_sha=applied_sha
+    )
+
+    assert rollback_anchor_refusal(state) is None
+
+
+def test_a_state_written_before_this_shipped_still_restores(tmp_path):
+    """No ``round_anchor`` means the comparison cannot be made, and an absent
+    comparison must not refuse a household's Undo."""
+    from jasper.web.correction_crossover_v2 import rollback_anchor_refusal
+
+    reconciled, _ = _yaml(tmp_path, "sound_current.yml", "anything\n")
+    state = {"applied": True, "pre_apply_profile": {"kind": "prior", "source": {}}}
+
+    assert rollback_anchor_refusal(
+        state, running_config_path=reconciled
+    ) is None
+
+
+# --------------------------------------------------------------------------- #
 # 3. the read-side provenance of the applied-profile record
 # --------------------------------------------------------------------------- #
 
