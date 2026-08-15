@@ -19,11 +19,16 @@ from jasper.dsp_apply import (
     BassExtensionApplyPending,
     CANONICAL_DSP_WRITER_LOCK_PATH,
     CamillaConfigValidationResult,
+    DSP_PROOF_ANCHOR_MISSING,
+    DSP_PROOF_CANDIDATE_CHANGED,
+    DSP_PROOF_CANDIDATE_UNREADABLE,
+    DSP_PROOF_INACTIVE_RESULTS,
     DspApplyError,
     DspApplyState,
     DspWriterLockTimeout,
     ValidationStatus,
     apply_dsp_config,
+    config_file_sha256,
     camilla_graph_mutation,
     _DSP_LOCK_OWNERSHIP,
     _dsp_apply_lock,
@@ -748,3 +753,130 @@ def test_validate_accepts_zero_volume_limit_without_binary(
 
     assert result.status == ValidationStatus.MISSING
     assert result.ok_to_apply
+
+
+# ---------------------------------------------------------------------------
+# #2519 — the proof phase's three distinct refusals.
+#
+# All three used to be one result carrying one message: "DSP candidate changed
+# after validation and before load". A jts3 Undo refused deterministically
+# under that sentence over a config file nothing had touched in four days, and
+# two attempts nine minutes apart produced it again — a race's diagnosis for a
+# condition that cannot be a race. These pin that each condition now names
+# itself, and that the true race keeps the sentence it earned.
+# ---------------------------------------------------------------------------
+
+
+def _always_valid(path: str | Path) -> CamillaConfigValidationResult:
+    return CamillaConfigValidationResult(status=ValidationStatus.VALID, path=str(path))
+
+
+async def _proof_refusal(tmp_path: Path, cfg: Path, expected_sha: str):
+    loaded: list[str] = []
+
+    async def load(path: str) -> bool:
+        loaded.append(path)
+        return True
+
+    with pytest.raises(DspApplyError) as excinfo:
+        await apply_dsp_config(
+            source="active_speaker_baseline_restore",
+            candidate_path=cfg,
+            load_config=load,
+            state_path=tmp_path / "dsp_apply_state.json",
+            lock_path=tmp_path / "dsp_apply.lock",
+            expected_candidate_sha256=expected_sha,
+            validate=_always_valid,
+        )
+    # Every proof refusal happens BEFORE the load, which is what makes all
+    # three members of DSP_PROOF_INACTIVE_RESULTS honest.
+    assert loaded == []
+    return excinfo.value
+
+
+async def test_an_empty_restore_anchor_is_named_missing_not_a_race(tmp_path: Path):
+    """An empty-but-not-None expectation is a guaranteed refusal. Reporting it
+    as a candidate that "changed after validation" tells the operator to look
+    for a writer that does not exist."""
+    cfg = tmp_path / "candidate.yml"
+    cfg.write_text("---\n")
+
+    exc = await _proof_refusal(tmp_path, cfg, "")
+
+    assert exc.state.result == DSP_PROOF_ANCHOR_MISSING
+    assert "no recorded digest" in str(exc)
+    assert "changed after validation" not in str(exc)
+
+
+async def test_an_unreadable_candidate_is_named_unreadable_not_a_race(
+    tmp_path: Path, monkeypatch,
+):
+    """``_sha256`` answers ``None`` for a file it cannot read — a permissions
+    or I/O fault on a file whose bytes may be perfectly intact. Comparing that
+    ``None`` against a real digest produced the race's message too."""
+    cfg = tmp_path / "candidate.yml"
+    cfg.write_text("---\n")
+    monkeypatch.setattr(dsp_apply_module, "_sha256", lambda _path: None)
+
+    exc = await _proof_refusal(tmp_path, cfg, "a" * 64)
+
+    assert exc.state.result == DSP_PROOF_CANDIDATE_UNREADABLE
+    assert "could not be read" in str(exc)
+    assert "changed after validation" not in str(exc)
+
+
+async def test_a_digest_that_disagrees_keeps_the_race_message(tmp_path: Path):
+    """The one condition the sentence was written for: the bytes were read,
+    and they are not the bytes that were proven."""
+    cfg = tmp_path / "candidate.yml"
+    cfg.write_text("---\n")
+
+    exc = await _proof_refusal(tmp_path, cfg, "b" * 64)
+
+    assert exc.state.result == DSP_PROOF_CANDIDATE_CHANGED
+    assert str(exc) == "DSP candidate changed after validation and before load"
+
+
+async def test_a_matching_digest_still_loads(tmp_path: Path):
+    """The proof's pass path, so the three refusals above are proven to be
+    refusals rather than the only outcome this guard can produce."""
+    cfg = tmp_path / "candidate.yml"
+    cfg.write_text("---\n")
+    loaded: list[str] = []
+
+    async def load(path: str) -> bool:
+        loaded.append(path)
+        return True
+
+    state = await apply_dsp_config(
+        source="active_speaker_baseline_restore",
+        candidate_path=cfg,
+        load_config=load,
+        state_path=tmp_path / "dsp_apply_state.json",
+        lock_path=tmp_path / "dsp_apply.lock",
+        expected_candidate_sha256=config_file_sha256(cfg),
+        validate=_always_valid,
+    )
+
+    assert state.result == "success"
+    assert loaded == [str(cfg)]
+
+
+def test_config_file_sha256_is_the_hasher_the_proof_uses(tmp_path: Path):
+    """The public helper exists so a caller verifying the same bytes cannot
+    reach a different answer than the proof does."""
+    cfg = tmp_path / "candidate.yml"
+    cfg.write_text("---\ndevices: {}\n")
+
+    assert config_file_sha256(cfg) == dsp_apply_module._sha256(cfg)
+    assert config_file_sha256(tmp_path / "absent.yml") is None
+
+
+def test_every_proof_result_is_declared_inactive():
+    """The set exists so a classifier reads it instead of transcribing it. A
+    fourth proof result added without a decision about activity fails here."""
+    assert DSP_PROOF_INACTIVE_RESULTS == {
+        DSP_PROOF_ANCHOR_MISSING,
+        DSP_PROOF_CANDIDATE_UNREADABLE,
+        DSP_PROOF_CANDIDATE_CHANGED,
+    }

@@ -36,6 +36,7 @@ from jasper.dsp_apply import (
     CamillaConfigValidationResult,
     DspApplyError,
     apply_dsp_config,
+    config_file_sha256,
     dsp_writer_lock,
     validate_camilla_config,
 )
@@ -3520,15 +3521,27 @@ async def restore_applied_baseline_profile(
     ``retained_profile`` is the frozen ``applied_recomposition_profile`` a
     later apply preserved before overwriting the Layer-A SSOT (see
     :func:`build_baseline_profile_candidate`'s ``finalize`` /
-    ``_frozen_applied_profile``). Its ``config.path`` still points at that
-    prior profile's own already-compiled, already-validated YAML — composing
-    a NEW candidate never overwrites a config file an applied anchor still
-    points to (``build_baseline_profile_candidate`` gives the new candidate a
-    source-fingerprinted sibling instead). This reloads THAT exact file — never
-    recomposed — through the same atomic validate-load-confirm-rollback
-    transaction (:func:`jasper.dsp_apply.apply_dsp_config`)
+    ``_frozen_applied_profile``). Its ``config.path`` points at that prior
+    profile's own already-compiled, already-validated YAML, and this reloads
+    THAT exact file — never recomposed — through the same atomic
+    validate-load-confirm-rollback transaction
+    (:func:`jasper.dsp_apply.apply_dsp_config`)
     :func:`apply_baseline_profile` rides, then persists it back as the
     applied SSOT via :func:`persist_applied_baseline_profile`.
+
+    **That path is not the graph's identity, so the file is not immutable
+    (#2519).** ``build_baseline_profile_candidate`` names every solo candidate
+    from its SOURCE fingerprint, and :func:`_source_payload` — which owns the
+    list of what that fingerprint covers, and is the only place it should be
+    read — states the consequence outright: several inputs that DO reach the
+    emitted bytes are excluded from it, so "two candidates differing only in
+    one of those land on the SAME filename carrying DIFFERENT bytes."
+
+    A different-fingerprint candidate therefore cannot touch this file, and the
+    mtime pruner cannot evict it (``also_protect``) — but a same-fingerprint
+    recompile can rewrite it underneath the anchor. That is why the integrity
+    check below exists and what ``restore_target_changed`` reports: a live
+    condition, not defensive scaffolding.
 
     Never raises for an ordinary refusal: returns a ``status`` in
     ``{"restored", "blocked", "restore_failed"}`` the caller maps to an HTTP
@@ -3566,6 +3579,40 @@ async def restore_applied_baseline_profile(
                 "disk; a full remeasure is required",
             )],
         }
+    # The Undo anchor's integrity is THIS function's to prove, and it is a
+    # different question from the one :func:`~jasper.dsp_apply.apply_dsp_config`
+    # asks (#2519). That proof is a validate-to-load race check over a candidate
+    # compiled seconds earlier; the digest above was recorded by the apply that
+    # wrote this file, which can be days back. Handing the older digest to the
+    # race check made every way of failing it — including an unreadable file —
+    # report "DSP candidate changed after validation and before load", the
+    # sentence a jts3 Undo refused under twice nine minutes apart.
+    #
+    # So the anchor is verified here, under names that say what is wrong with
+    # it, and the digest THIS call computed is what threads into the apply
+    # transaction — which then proves only what it can honestly prove: that the
+    # bytes did not move between validation and load.
+    retained_digest = config_file_sha256(candidate_path)
+    if retained_digest is None:
+        return {
+            "status": "blocked",
+            "issues": [_issue(
+                "blocker",
+                "restore_target_unreadable",
+                "the previous crossover configuration is on disk but could not "
+                "be read; check its permissions, then try again",
+            )],
+        }
+    if retained_digest != candidate_sha256:
+        return {
+            "status": "blocked",
+            "issues": [_issue(
+                "blocker",
+                "restore_target_changed",
+                "the previous crossover configuration file no longer matches "
+                "what was applied from it; a full remeasure is required",
+            )],
+        }
 
     async with dsp_writer_lock(
         baseline_config_path(config_path).parent,
@@ -3578,7 +3625,7 @@ async def restore_applied_baseline_profile(
                 load_config=load_config,
                 get_current_config_path=get_current_config_path,
                 acquire_lock=False,
-                expected_candidate_sha256=candidate_sha256,
+                expected_candidate_sha256=retained_digest,
                 validate=validate,
             )
         except DspApplyError as exc:

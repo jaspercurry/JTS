@@ -39,6 +39,7 @@ from jasper.active_speaker.baseline_profile import (
     recompose_applied_baseline_yaml,
     restore_applied_baseline_profile,
 )
+from jasper.dsp_apply import config_file_sha256
 from jasper.active_speaker.crossover_preview import build_crossover_preview
 from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, build_design_draft
 from jasper.active_speaker.measurement import (
@@ -6389,3 +6390,114 @@ def test_prune_keeps_the_protected_undo_target_even_when_it_is_oldest(
     assert len(remaining) == keep           # total still bounded to K
     # A non-protected old orphan is still pruned — protection is targeted.
     assert "active_speaker_baseline_candidate_orphan000.yml" not in remaining
+
+
+# ---------------------------------------------------------------------------
+# #2519 — the Undo anchor's integrity belongs to the restore path.
+#
+# The recorded digest is from the apply that wrote the retained file, which can
+# be days old; ``apply_dsp_config``'s proof is a validate-to-load TOCTOU check
+# over the current call. Feeding the stale digest to the TOCTOU proof made
+# every way of failing it report "DSP candidate changed after validation and
+# before load" — the sentence a jts3 Undo refused under, deterministically,
+# over a file nothing had touched since the apply that wrote it.
+# ---------------------------------------------------------------------------
+
+
+async def test_restore_blocks_when_the_retained_config_cannot_be_read(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """Present but unreadable is an operator-actionable fault on a file whose
+    bytes may be intact, and it must say so rather than accuse a writer of
+    racing."""
+    (
+        state_path, config_path, load_config, current_config_path,
+        _prior_payload, _run8_payload, retained,
+    ) = await _apply_prior_then_run8(monkeypatch, tmp_path)
+    target = Path(retained["config"]["path"])
+    monkeypatch.setattr(
+        baseline_profile_mod,
+        "config_file_sha256",
+        lambda path: None if Path(path) == target else "unused",
+    )
+
+    payload = await restore_applied_baseline_profile(
+        retained,
+        load_config=load_config,
+        get_current_config_path=current_config_path,
+        state_path=state_path,
+        config_path=config_path,
+        validate=_valid_config,
+    )
+
+    assert payload["status"] == "blocked"
+    assert {issue["code"] for issue in payload["issues"]} == {
+        "restore_target_unreadable"
+    }
+    assert "changed after validation" not in payload["issues"][0]["message"]
+
+
+async def test_restore_blocks_when_the_retained_config_no_longer_matches(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """The file really did move since it was applied. That is a fact about the
+    ANCHOR, named as one — not a claim that something raced this call."""
+    (
+        state_path, config_path, load_config, current_config_path,
+        _prior_payload, _run8_payload, retained,
+    ) = await _apply_prior_then_run8(monkeypatch, tmp_path)
+    target = Path(retained["config"]["path"])
+    target.write_text(
+        target.read_text(encoding="utf-8") + "# a later writer\n", encoding="utf-8"
+    )
+
+    payload = await restore_applied_baseline_profile(
+        retained,
+        load_config=load_config,
+        get_current_config_path=current_config_path,
+        state_path=state_path,
+        config_path=config_path,
+        validate=_valid_config,
+    )
+
+    assert payload["status"] == "blocked"
+    assert {issue["code"] for issue in payload["issues"]} == {"restore_target_changed"}
+    assert "changed after validation" not in payload["issues"][0]["message"]
+    # A refused restore must not have touched the applied SSOT.
+    active = load_applied_baseline_profile_state(state_path)
+    assert active is not None
+    assert active["candidate_fingerprint"] != retained["candidate_fingerprint"]
+
+
+async def test_restore_threads_the_digest_it_just_computed_into_the_proof(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """One owner for the anchor's integrity, and the apply transaction still
+    gets a REAL TOCTOU proof — the digest of the bytes this call just read, so
+    a writer that moves the file between here and the load is still caught."""
+    (
+        state_path, config_path, load_config, current_config_path,
+        _prior_payload, _run8_payload, retained,
+    ) = await _apply_prior_then_run8(monkeypatch, tmp_path)
+    target = Path(retained["config"]["path"])
+    seen: dict[str, object] = {}
+    real_apply = baseline_profile_mod.apply_dsp_config
+
+    async def observed_apply(**kwargs):
+        seen["expected"] = kwargs.get("expected_candidate_sha256")
+        return await real_apply(**kwargs)
+
+    monkeypatch.setattr(baseline_profile_mod, "apply_dsp_config", observed_apply)
+
+    payload = await restore_applied_baseline_profile(
+        retained,
+        load_config=load_config,
+        get_current_config_path=current_config_path,
+        state_path=state_path,
+        config_path=config_path,
+        validate=_valid_config,
+    )
+
+    assert payload["status"] == "restored", payload.get("issues")
+    assert seen["expected"] == config_file_sha256(target)
+    assert seen["expected"] == retained["config"]["sha256"]

@@ -90,6 +90,7 @@ from jasper.active_speaker.crossover_v2.vocabulary import (
     REASON_POSITION_HOLD_EXPIRED,
     REASON_POSITION_TARGET_MISSING,
 )
+from jasper.dsp_apply import DSP_PROOF_INACTIVE_RESULTS
 from jasper.log_event import log_event
 
 if TYPE_CHECKING:
@@ -7930,6 +7931,10 @@ def bind_delta_probe_rollback(run_async: Any, camilla_factory: Any) -> Any:
             logger, "correction.crossover_v2_delta_probe_restore",
             level=logging.WARNING if not restored else logging.INFO,
             reason=reason, status=payload.get("status"),
+            # The same code the household's own Undo journals (#2519). This
+            # caller has NO screen — it reduces the payload to a bool for the
+            # conductor — so the refusal's cause exists nowhere else at all.
+            code=_restore_refusal_code(payload),
             sound_declaration=str(payload.get("sound_declaration") or ""),
         )
         return restored
@@ -8247,9 +8252,26 @@ def handle_v2_restore(
         logger,
         "correction.crossover_v2_restored",
         status=payload.get("status"),
+        code=_restore_refusal_code(payload),
         sound_declaration=str(payload.get("sound_declaration") or ""),
     )
     return payload
+
+
+def _restore_refusal_code(payload: Mapping[str, Any]) -> str:
+    """WHY a restore did not restore, as its issue code (``""`` on success).
+
+    The journal is the ONLY record of a refused restore (#2519). ``status``
+    alone cannot carry the reason: the two anchor-integrity refusals return
+    ``blocked``, the same word ``restore_target_invalid`` and
+    ``restore_target_missing`` already return, and — because all four refuse
+    before ``apply_dsp_config`` is ever entered — nothing lands in
+    ``dsp_apply_state.json`` either. The delta probe's automatic rollback has
+    no household screen at all, so without this a jts3-shaped failure is again
+    a status with no cause behind it. Shared by both log sites so the manual
+    Undo and the automatic rollback cannot name the same refusal differently.
+    """
+    return str((_blocking_apply_issue(payload) or {}).get("id") or "")
 
 
 def _blocking_apply_issue(payload: Mapping[str, Any]) -> dict[str, str] | None:
@@ -8284,9 +8306,15 @@ def _dsp_apply_is_known_inactive(payload: Mapping[str, Any]) -> bool:
     if not isinstance(apply, Mapping):
         return False
     phase, result = str(apply.get("phase") or ""), str(apply.get("result") or "")
+    # The proof-phase set is imported, not transcribed (#2519). Every proof
+    # failure refuses before ``load_config`` runs, so all of them are known
+    # inactive — and a transcribed member list is how the two results that
+    # split out of ``candidate_changed`` would have silently become "we cannot
+    # tell whether the speaker changed", which raises the far scarier
+    # ``apply_result_unknown`` refusal at the household.
     return bool(apply.get("finished_at")) and (
-        (phase, result) in {("prepare", "prepare_failed"),
-                            ("proof", "candidate_changed")}
+        (phase, result) == ("prepare", "prepare_failed")
+        or (phase == "proof" and result in DSP_PROOF_INACTIVE_RESULTS)
         or (phase == "validate"
             and result in {"invalid_config", "runner_error", "timeout"})
         or (apply.get("rollback_attempted") is True

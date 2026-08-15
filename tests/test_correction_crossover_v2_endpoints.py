@@ -78,6 +78,8 @@ from jasper.active_speaker.crossover_v2_flow import (
     locate_failed_diagnosis,
     resolve_plan_shape,
 )
+import jasper.active_speaker.baseline_profile as baseline_profile_mod
+
 from jasper.capture_relay.client import RelayClient
 from jasper.capture_relay.session import (
     CaptureAborted,
@@ -87,6 +89,7 @@ from jasper.capture_relay.session import (
     mint_session,
     register_session,
 )
+from jasper.dsp_apply import config_file_sha256
 from jasper.web import correction_crossover_v2 as v2host
 
 from tests.test_capture_relay_plan import FakePlanRelayBackend, PhonePlanDriver
@@ -10481,3 +10484,259 @@ def test_playback_signal_handler_failure_never_stops_the_measurement():
     # …and a cleared signal is simply inert.
     signal.clear()
     signal.fire(object())
+
+
+# --- #2519: Undo has to survive a verify re-arm, through the REAL seams -------
+#
+# The night this was filed, a jts3 apply was followed by a ``verify_retry``
+# re-arm (issue #2517 forced one), and from then on BOTH the delta probe's
+# automatic rollback and the household's own Undo refused deterministically —
+# nine minutes apart, with the same message about a candidate that had
+# "changed after validation and before load" over a config file nothing had
+# touched. Re-arms are ordinary, so the anchor surviving one is not an
+# incidental property to leave to argument: these drive apply → re-arm → Undo
+# end to end, over the real apply/restore transaction.
+
+
+def _apply_prior_then_v2_candidate(monkeypatch, tmp_path):
+    """Apply the household's pre-existing crossover, then a v2 measured
+    candidate over it — the state a household is in when VERIFY arms. Returns
+    the durable v2 state's Undo anchor."""
+    from jasper.active_speaker.baseline_profile import apply_baseline_profile
+    from jasper.active_speaker.crossover_preview import build_crossover_preview
+
+    from tests.test_active_speaker_baseline_profile import _draft
+
+    topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+
+    prior_cam = _FakeApplyCam()
+    prior_payload = _bg_run_async(
+        apply_baseline_profile(
+            topology,
+            design_draft=draft,
+            crossover_preview=preview,
+            measurements={},
+            load_config=prior_cam.set_config_file_path,
+            get_current_config_path=prior_cam.get_config_file_path,
+            tuning_owner="automatic",
+            measured_candidate=_prior_measured_candidate(preset),
+        )
+    )
+    assert prior_payload["status"] == "applied", prior_payload.get("issues")
+
+    candidate = _run6_measured_candidate(preset)
+    v2host.save_v2_state({
+        "session_id": "cap_apply",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": candidate.fingerprint},
+        "applied": False,
+    })
+    apply_payload = _apply(
+        {
+            "expected_candidate_fingerprint": candidate.fingerprint,
+            "candidate": candidate.to_dict(),
+        },
+        _bg_run_async,
+        _FakeApplyCam,
+    )
+    assert apply_payload["status"] == "applied", apply_payload.get("issues")
+
+    anchor = (v2host.load_v2_state() or {}).get("pre_apply_profile")
+    assert isinstance(anchor, dict)
+    assert (
+        anchor["candidate_fingerprint"]
+        == prior_payload["profile"]["candidate_fingerprint"]
+    )
+    return anchor
+
+
+def test_the_rearm_stand_in_matches_prepare_v2_verifys_durable_write_set():
+    """``_rearm_verify`` below is a stand-in, and a stand-in is only evidence
+    while it stays faithful. Its fidelity claim is narrow and checkable:
+    ``prepare_v2_verify`` reaches durable v2 state through
+    ``persist_conductor_state`` and nothing else. A future re-arm that writes
+    the state file by another route fails here rather than quietly making the
+    two tests below prove something about a shape production no longer has."""
+    import inspect
+
+    source = inspect.getsource(v2host.prepare_v2_verify)
+
+    assert "persist_conductor_state(" in source
+    for direct_writer in (
+        "save_v2_state(", "clear_v2_state(", "reset_v2_journey_state(",
+        "observe_restore(", "observe_apply_success(", "_update_current_review(",
+    ):
+        assert direct_writer not in source, direct_writer
+
+
+def _rearm_verify():
+    """What ``prepare_v2_verify`` does to durable state on a ``verify_retry``:
+    re-derive the session context (which re-ensures the crossover preview) and
+    persist a conductor under a BRAND-NEW session id. The write-set fidelity
+    of this stand-in is pinned by the test directly above."""
+    v2host.ensure_crossover_preview_ready()
+    v2host.persist_conductor_state(_StubConductor("cap_rearm"), failure_code=None)
+
+
+def test_a_verify_rearm_leaves_the_undo_anchor_restorable(monkeypatch, tmp_path):
+    """The anchor is a ``(path, digest)`` pair, and BOTH halves have to come
+    through the re-arm still describing the file on disk — a preserved record
+    pointing at bytes that moved is an anchor in name only."""
+    anchor = _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
+
+    _rearm_verify()
+
+    rearmed = (v2host.load_v2_state() or {}).get("pre_apply_profile")
+    assert rearmed == anchor
+    target = Path(rearmed["config"]["path"])
+    assert config_file_sha256(target) == rearmed["config"]["sha256"]
+
+    restore_payload = v2host.handle_v2_restore(_bg_run_async, _FakeApplyCam)
+
+    assert restore_payload["status"] == "restored", restore_payload.get("issues")
+    assert (v2host.load_v2_state() or {})["applied"] is False
+
+
+def test_the_delta_probe_rollback_still_restores_after_a_verify_rearm(
+    monkeypatch, tmp_path,
+):
+    """The automatic half of the same guarantee. The probe runs one capture
+    INTO the re-armed session, so its rollback is the first caller to meet a
+    re-armed anchor — and it reaches the apply transaction with a real digest,
+    never the empty expectation that refuses unconditionally."""
+    anchor = _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
+
+    _rearm_verify()
+
+    seen: dict[str, object] = {}
+    real_apply = baseline_profile_mod.apply_dsp_config
+
+    async def observed_apply(**kwargs):
+        seen["expected"] = kwargs.get("expected_candidate_sha256")
+        return await real_apply(**kwargs)
+
+    monkeypatch.setattr(baseline_profile_mod, "apply_dsp_config", observed_apply)
+
+    rollback = v2host.bind_delta_probe_rollback(_bg_run_async, _FakeApplyCam)
+
+    assert rollback("realized_shape_differs_from_commanded") is True
+    # Non-empty is the load-bearing half: an empty expectation is a guaranteed
+    # proof refusal (``DSP_PROOF_ANCHOR_MISSING``), which is what a lost anchor
+    # would look like from inside the transaction.
+    assert seen["expected"] == anchor["config"]["sha256"]
+    assert seen["expected"]
+    assert (v2host.load_v2_state() or {})["applied"] is False
+
+
+# --- #2519: a refused restore has to SAY why, in the only record it has ------
+
+
+@pytest.mark.parametrize("result", [
+    "anchor_missing", "candidate_unreadable", "candidate_changed",
+])
+def test_every_proof_refusal_classifies_as_known_inactive(result):
+    """The "imported, not transcribed" claim, with teeth. Rebinding
+    ``DSP_PROOF_INACTIVE_RESULTS`` to the pre-#2519 transcription
+    (``{"candidate_changed"}``) passed the whole suite — so the silent
+    degradation this PR exists to prevent had no guard at all.
+
+    What degrading costs: a proof refusal never reaches ``load_config``, so the
+    speaker is provably untouched. Reading one as UNKNOWN routes the household
+    to ``apply_result_unknown`` — "JTS could not confirm whether DSP apply
+    finished; review the current speaker state" — about an apply that did
+    nothing."""
+    payload = {
+        "status": "apply_failed",
+        "apply": {"phase": "proof", "result": result, "finished_at": "now"},
+    }
+
+    assert v2host._dsp_apply_is_known_inactive(payload) is True
+
+
+def test_an_unrecognised_proof_result_is_not_assumed_inactive():
+    """The other direction, so the test above is a claim about the SET rather
+    than about the phase. A proof outcome nobody has classified must read as
+    unknown — fail closed, exactly as an unhandled load-phase result does."""
+    payload = {
+        "status": "apply_failed",
+        "apply": {"phase": "proof", "result": "some_future_result",
+                  "finished_at": "now"},
+    }
+
+    assert v2host._dsp_apply_is_known_inactive(payload) is False
+
+
+def test_a_refused_undo_journals_the_issue_code_behind_its_status(
+    monkeypatch, tmp_path, caplog,
+):
+    """``blocked`` is the same word four different refusals return, and an
+    anchor-integrity refusal never enters ``apply_dsp_config``, so
+    ``dsp_apply_state.json`` records nothing either. Without the code on this
+    line the next jts3-shaped failure is again a status with no cause."""
+    anchor = _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
+    target = Path(anchor["config"]["path"])
+    target.write_text(
+        target.read_text(encoding="utf-8") + "# a later writer\n", encoding="utf-8"
+    )
+
+    with caplog.at_level(logging.INFO, logger="jasper.web.correction_crossover_v2"):
+        payload = v2host.handle_v2_restore(_bg_run_async, _FakeApplyCam)
+
+    assert payload["status"] == "blocked"
+    assert (
+        "event=correction.crossover_v2_restored status=blocked "
+        "code=restore_target_changed" in caplog.text
+    )
+
+
+def test_a_successful_undo_journals_an_empty_code(monkeypatch, tmp_path, caplog):
+    """The code is a refusal's reason, not a field that invents one. A restore
+    that worked has no issue to name."""
+    _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
+
+    with caplog.at_level(logging.INFO, logger="jasper.web.correction_crossover_v2"):
+        payload = v2host.handle_v2_restore(_bg_run_async, _FakeApplyCam)
+
+    assert payload["status"] == "restored", payload.get("issues")
+    assert 'event=correction.crossover_v2_restored status=restored code=""' in (
+        caplog.text
+    )
+
+
+def test_the_automatic_rollback_journals_the_same_code_the_undo_does(
+    monkeypatch, tmp_path, caplog,
+):
+    """The delta probe's rollback reduces the payload to a bool for its
+    conductor and has no household screen, so this journal line is the ONLY
+    place its refusal reason can exist.
+
+    Asserted against THAT record, never ``caplog.text``. The rollback runs
+    ``handle_v2_restore`` underneath it, so the shared text already carries a
+    ``code=`` from the ``…_restored`` line — a substring assertion over the
+    whole buffer passes while the site with no screen behind it says nothing,
+    which is precisely the site this test exists for (gate finding, delta
+    review: removing ``code=`` from the delta-probe call alone left all three
+    journal tests green)."""
+    anchor = _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
+    target = Path(anchor["config"]["path"])
+    target.write_text(
+        target.read_text(encoding="utf-8") + "# a later writer\n", encoding="utf-8"
+    )
+    rollback = v2host.bind_delta_probe_rollback(_bg_run_async, _FakeApplyCam)
+
+    with caplog.at_level(logging.INFO, logger="jasper.web.correction_crossover_v2"):
+        assert rollback("realized_shape_differs_from_commanded") is False
+
+    # The trailing space keeps the sibling events out — ``…_restore_repeat``
+    # and ``…_restore_refused`` are different lines with different contracts.
+    probe_lines = [
+        record.getMessage() for record in caplog.records
+        if record.getMessage().startswith(
+            "event=correction.crossover_v2_delta_probe_restore "
+        )
+    ]
+
+    assert len(probe_lines) == 1, probe_lines
+    assert "code=restore_target_changed" in probe_lines[0]
