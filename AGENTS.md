@@ -3106,7 +3106,13 @@ must pipe one. Either way, check the actual last line rather than
 trusting a truncated transcript: both lanes print a terminal
 `==> <lane>: N passed` / `==> <lane>: FAILED` sentinel as their last
 stdout line specifically so it survives `tail -N` (issue #1850) —
-that line is the verdict, not whatever scrolled by above it.
+that line is the verdict, not whatever scrolled by above it. Only the
+`N passed` shape means the lane reached its end *and* a pytest summary
+was actually parsed; a run cut short says so (`INTERRUPTED … NO
+VERDICT`), and one killed abruptly enough prints no sentinel at all.
+Treat anything that is not `N passed` — a missing last line included —
+as "do not trust this run"; a killed lane can no longer read as
+`0 passed`.
 
 Pull-request CI is risk-proportional but deliberately narrow.
 [`scripts/ci-classify.py`](scripts/ci-classify.py) selects one of two

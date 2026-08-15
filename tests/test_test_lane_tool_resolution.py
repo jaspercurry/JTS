@@ -29,6 +29,15 @@ Three related contracts share this file rather than growing their own:
   verdict sentinel as the actual last line of stdout, via an EXIT trap that
   fires on every exit path -- including the FATAL block above, which this
   file already guards separately.
+* **the sentinel must not lie about a run that never finished** -- observed
+  2026-08-15: a ``scripts/test-merge`` SIGTERM'd at ~23% printed ``==>
+  test-merge: 0 passed``, the SUCCESS shape, because bash ran the EXIT trap
+  with a STALE ZERO in ``$?`` rather than 143. The lane's process status was
+  honest; only the text lied, and "0 passed" reads as "nothing to run". A
+  ``status >= 128`` check alone cannot catch that, so the success shape is
+  gated on a positive "the lane reached its end" marker plus a parsed pytest
+  summary. What bash hands the trap is per-signal, not one rule;
+  ``lane_emit_verdict`` in ``scripts/_test_lane.sh`` owns that table.
 * **issue #1758** -- ``--last-failed --last-failed-no-failures none`` only
   guards an EMPTY cache; a cached node id that no longer resolves (a renamed
   or deleted test) makes pytest's own machinery silently fall back to
@@ -46,9 +55,13 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
+import shlex
 import shutil
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -716,6 +729,257 @@ def test_lane_verdict_sentinel_survives_tail_truncation_when_unresolvable(
     assert result.returncode != 0, result
     last_three = result.stdout.rstrip("\n").splitlines()[-3:]
     assert f"==> {lane}: FAILED" in last_three, result.stdout
+
+
+# --------------------------------------------------------------------------- #
+# the sentinel must never claim a verdict for a run that did not finish
+# --------------------------------------------------------------------------- #
+
+# The poison shape: the sentinel a truncated transcript reads as success.
+# Matched with `search`, not `fullmatch`, because real pytest `-q` progress
+# dots carry no trailing newline, so the sentinel is glued to the end of the
+# dot line -- exactly as in the 2026-08-15 transcript.
+_PASSED_SENTINEL_RE = re.compile(r"==> \S+: \d+ passed$")
+
+# Bounds for the signal test. Generous enough to survive a loaded CI box,
+# finite so a stand-in that never starts (or a lane that never dies) fails
+# the test instead of hanging the suite.
+_STUB_START_DEADLINE_SEC = 30.0
+_LANE_EXIT_DEADLINE_SEC = 30.0
+
+
+def _blocking_pytest_stub(repo: Path, marker: Path) -> Path:
+    """A pytest stand-in that reproduces the observed transcript, then blocks.
+
+    Writes ``marker`` only once it is genuinely running, so the caller can
+    wait on a fact rather than race the signal against process startup. The
+    progress dots are written WITHOUT a trailing newline and no summary line
+    is ever printed: that is what a real ``pytest -q`` looks like at 23% of
+    a run, and it is why the sentinel ends up glued to the dot line.
+
+    The sleep is bounded and the fallback exit is nonzero: if the signal
+    never arrives, this stand-in must not hand the lane a clean exit that
+    would make the test pass for the wrong reason.
+    """
+    path = repo / "blocking-pytest"
+    path.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys, time\n"
+        f"MARKER = {str(marker)!r}\n"
+        "sys.stdout.write('.' * 65)\n"
+        "sys.stdout.flush()\n"
+        "with open(MARKER, 'w', encoding='utf-8') as fh:\n"
+        "    fh.write('running')\n"
+        "time.sleep(120)\n"
+        "raise SystemExit(1)\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+    return path
+
+
+def _kill_group(proc: "subprocess.Popen[str]", sig: int) -> None:
+    """Signal the whole process group, as a real Ctrl-C / job kill would.
+
+    Signalling only the lane's own pid would leave the pytest stand-in
+    running and would not reproduce the incident, in which the lane, its
+    child, and its ``tee`` all took the signal together.
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), sig)
+    except (ProcessLookupError, PermissionError):  # already reaped
+        pass
+
+
+def test_lane_killed_by_a_signal_does_not_print_a_passed_shaped_verdict(
+    lane_sandbox: tuple[Path, dict[str, str]],
+) -> None:
+    """THE regression: a SIGTERM'd lane must not end in the success shape.
+
+    Observed 2026-08-15 against a real ``scripts/test-merge`` run killed at
+    ~23%::
+
+        .....................................scripts/test-merge: line 28: ...
+        ==> test-merge: 0 passed
+
+    ``0 passed`` is the success shape, and it is the worst possible output:
+    not obviously wrong, and it reads as "nothing to run". Root cause is
+    bash's own behaviour, not the lane's: for SIGTERM it runs the EXIT trap
+    with a stale zero in ``$?``. The lane's process status is honest
+    (asserted below); only the printed text lied. The per-signal picture,
+    and why that defeats a ``status >= 128`` check, is owned by
+    ``lane_emit_verdict`` in ``scripts/_test_lane.sh``.
+
+    Asserted loosely on WHICH interrupted shape appears, because what bash
+    leaves in ``$?`` for a signal-run EXIT trap is bash's business and may
+    differ by version: either interrupted wording is a correct outcome, and
+    neither is a verdict. What is asserted strictly is the promise -- never
+    a ``N passed`` tail.
+    """
+    repo, env = lane_sandbox
+    marker = repo / "pytest-started"
+    stand_in = shutil.which("true") or "/usr/bin/true"
+    proc = subprocess.Popen(
+        [_BASH, "scripts/test-merge"],
+        cwd=repo,
+        env={
+            **env,
+            "PYTEST": str(_blocking_pytest_stub(repo, marker)),
+            "MYPY": stand_in,
+        },
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + _STUB_START_DEADLINE_SEC
+        while not marker.exists():
+            if proc.poll() is not None:
+                pytest.fail(
+                    "the lane exited before its pytest stand-in ever ran:\n"
+                    f"{proc.communicate()[0]}"
+                )
+            if time.monotonic() >= deadline:
+                pytest.fail("the blocking pytest stand-in never started")
+            time.sleep(0.05)
+        _kill_group(proc, signal.SIGTERM)
+        stdout, _ = proc.communicate(timeout=_LANE_EXIT_DEADLINE_SEC)
+    finally:
+        if proc.poll() is None:
+            _kill_group(proc, signal.SIGKILL)
+            proc.communicate(timeout=_LANE_EXIT_DEADLINE_SEC)
+
+    assert proc.returncode != 0, (
+        "the lane's own process status was honest in the incident (143); if it "
+        "is 0 here the test is no longer reproducing that shape"
+    )
+    last_line = stdout.rstrip("\n").splitlines()[-1]
+    assert not _PASSED_SENTINEL_RE.search(last_line), (
+        f"a signal-killed lane printed the SUCCESS shape: {last_line!r}\n{stdout}"
+    )
+    assert "INTERRUPTED" in last_line and last_line.endswith("NO VERDICT"), (
+        f"expected an interrupted sentinel, got {last_line!r}\n{stdout}"
+    )
+    assert "==> test-merge: INTERRUPTED" in last_line, stdout
+
+
+def _emit_verdict(status: int, *, preamble: str = "") -> subprocess.CompletedProcess:
+    """Call ``lane_emit_verdict`` directly, under the lanes' own shell options.
+
+    ``set -euo pipefail`` matters: the function reads its two globals
+    defensively precisely because ``set -u`` is in force in a real lane, and
+    a test that dropped ``-u`` would not exercise that.
+    """
+    script = (
+        "set -euo pipefail\n"
+        f"source {shlex.quote(str(_SCRIPTS / '_test_lane.sh'))}\n"
+        f"{preamble}\n"
+        f"lane_emit_verdict test-merge {status}\n"
+    )
+    return subprocess.run(
+        [_BASH, "-c", script], capture_output=True, text=True
+    )
+
+
+def test_lane_emit_verdict_names_the_signal_when_the_status_is_honest() -> None:
+    """When the status IS 128+N, say which signal -- and say it first.
+
+    Two assertions, because the branch ORDER has two competitors and the
+    first assertion alone leaves one of them untested.
+
+    The first sets the finished/summary globals to their most permissive
+    values, pinning signal-branch over the FAILED and ``N passed`` shapes.
+
+    The second is the one that pins signal-branch over the FINISH-MARKER
+    branch, by leaving ``_lane_finished`` unset -- and it has to exist
+    separately, because setting the marker true in the first case takes that
+    competitor out of the running entirely. This is production-reachable,
+    not a contrived state: a group-wide SIGINT is the measured case where
+    bash hands the trap an honest 128+N *mid-run*, so the status is 130 and
+    the finish marker is false at the same moment. Were the marker checked
+    first, that path would collapse to the wordless interrupted shape and
+    the signal number -- the only diagnostic the operator gets about WHY the
+    run stopped -- would be silently lost.
+    """
+    result = _emit_verdict(
+        143, preamble="_lane_finished=true\n_lane_summary_seen=1\n_lane_passed_total=7"
+    )
+
+    assert result.returncode == 0, result
+    assert result.stdout.strip() == (
+        "==> test-merge: INTERRUPTED (signal 15) -- NO VERDICT"
+    ), result
+
+    mid_run = _emit_verdict(130, preamble="_lane_summary_seen=1")
+
+    assert mid_run.returncode == 0, mid_run
+    assert mid_run.stdout.strip() == (
+        "==> test-merge: INTERRUPTED (signal 2) -- NO VERDICT"
+    ), (
+        "an honest signal status must name its signal even when the lane never "
+        f"reached its end -- got {mid_run.stdout!r}"
+    )
+
+
+def test_lane_emit_verdict_refuses_a_verdict_when_the_lane_never_finished() -> None:
+    """A stale-zero status with real parsed passes still gets no verdict.
+
+    This is the isolation test for the load-bearing mechanism. Everything
+    except the finish marker says "success": the status is 0, a pytest
+    summary was parsed, and the running total is nonzero -- exactly the
+    state the 2026-08-15 trap was in, minus the count. Only the missing
+    ``_lane_finished`` can produce the right answer here.
+
+    ``_lane_finished`` is left entirely UNSET rather than set false, which
+    pins the fail-closed direction claimed in the helper's comment: a future
+    lane that forgets to set it prints INTERRUPTED, never a false pass. It
+    also proves the defensive read survives ``set -u``.
+    """
+    result = _emit_verdict(0, preamble="_lane_summary_seen=1\n_lane_passed_total=7")
+
+    assert result.returncode == 0, result
+    assert result.stdout.strip() == "==> test-merge: INTERRUPTED -- NO VERDICT", result
+    assert "passed" not in result.stdout, result
+
+
+@pytest.mark.parametrize("lane", _LANES)
+def test_lane_that_parsed_no_pytest_summary_says_so_instead_of_zero_passed(
+    lane: str, lane_sandbox: tuple[Path, dict[str, str]]
+) -> None:
+    """A completed run that never saw a pytest summary must not say "0 passed".
+
+    ``0 passed`` is indistinguishable from the signal-death shape this
+    section exists for, and from a lane whose pytest never really reported.
+    The exit status is deliberately unchanged -- this run is a clean exit 0,
+    it just has nothing to claim, so the honesty is entirely in the text.
+
+    The stand-in exits 0 while printing nothing at all, which is what a
+    pytest replaced by a recording stub (or by ``true``) looks like.
+    """
+    repo, env = lane_sandbox
+    stand_in = repo / "silent-pytest"
+    stand_in.write_text(
+        "#!/usr/bin/env python3\nraise SystemExit(0)\n", encoding="utf-8"
+    )
+    stand_in.chmod(0o755)
+    other_tool_stand_in = shutil.which("true") or "/usr/bin/true"
+    result = _run(
+        repo,
+        {
+            **env,
+            "PYTEST": str(stand_in),
+            "RUFF": other_tool_stand_in,
+            "MYPY": other_tool_stand_in,
+        },
+        lane,
+    )
+
+    assert result.returncode == 0, result
+    last_line = result.stdout.rstrip("\n").splitlines()[-1]
+    assert last_line == f"==> {lane}: NO VERDICT (no pytest summary parsed)", (
+        result.stdout
+    )
 
 
 # --------------------------------------------------------------------------- #

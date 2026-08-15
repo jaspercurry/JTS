@@ -25,6 +25,10 @@ source "${_lane_dir}/_test_lane.sh"
 # before the mktemp line ever runs.
 _lane_output_tmp=""
 _lane_passed_total=0
+# Set true as the literal LAST statement of this script: the EXIT trap cannot
+# tell "finished" from "died partway" out of the pending status alone. Why not
+# -- see lane_emit_verdict, which owns that story.
+_lane_finished=false
 cleanup() {
   # Captured FIRST, before any other command: `$?` reflects only the most
   # recent command, and the `rm` below would otherwise clobber it before
@@ -73,3 +77,7 @@ _lane_output_tmp="$(mktemp "${TMPDIR:-/tmp}/jts-test-merge-output.XXXXXX")"
 lane_pipe_pytest "${_lane_output_tmp}" \
   "${pytest_bin}" -q --tb=short --ignore=tests/voice_eval -n 4 "$@"
 _lane_passed_total="$(lane_extract_passed_count "${_lane_output_tmp}")"
+
+# LAST statement, deliberately: everything the lane promises has now run, so
+# the EXIT trap may print a verdict rather than INTERRUPTED. Keep it last.
+_lane_finished=true

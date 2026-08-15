@@ -27,6 +27,10 @@ phase_tmp=""
 changed_file_tmp=""
 selected_test_tmp=""
 _lane_passed_total=0
+# Set true as the literal LAST statement of this script: the EXIT trap cannot
+# tell "finished" from "died partway" out of the pending status alone. Why not
+# -- see lane_emit_verdict, which owns that story.
+_lane_finished=false
 cleanup() {
   # Captured FIRST, before any other command: `$?` reflects only the most
   # recent command, and the `rm` below would otherwise clobber it before
@@ -343,3 +347,7 @@ fi
 echo "==> pytest always-on fast guards"
 lane_pipe_pytest "${phase_tmp}" "${pytest_bin}" -q --tb=short tests/test_dependency_groups.py "$@"
 _lane_passed_total=$(( _lane_passed_total + $(lane_extract_passed_count "${phase_tmp}") ))
+
+# LAST statement, deliberately: every phase the lane promises has now run, so
+# the EXIT trap may print a verdict rather than INTERRUPTED. Keep it last.
+_lane_finished=true
