@@ -7931,6 +7931,10 @@ def bind_delta_probe_rollback(run_async: Any, camilla_factory: Any) -> Any:
             logger, "correction.crossover_v2_delta_probe_restore",
             level=logging.WARNING if not restored else logging.INFO,
             reason=reason, status=payload.get("status"),
+            # The same code the household's own Undo journals (#2519). This
+            # caller has NO screen — it reduces the payload to a bool for the
+            # conductor — so the refusal's cause exists nowhere else at all.
+            code=_restore_refusal_code(payload),
             sound_declaration=str(payload.get("sound_declaration") or ""),
         )
         return restored
@@ -8248,9 +8252,26 @@ def handle_v2_restore(
         logger,
         "correction.crossover_v2_restored",
         status=payload.get("status"),
+        code=_restore_refusal_code(payload),
         sound_declaration=str(payload.get("sound_declaration") or ""),
     )
     return payload
+
+
+def _restore_refusal_code(payload: Mapping[str, Any]) -> str:
+    """WHY a restore did not restore, as its issue code (``""`` on success).
+
+    The journal is the ONLY record of a refused restore (#2519). ``status``
+    alone cannot carry the reason: the two anchor-integrity refusals return
+    ``blocked``, the same word ``restore_target_invalid`` and
+    ``restore_target_missing`` already return, and — because all four refuse
+    before ``apply_dsp_config`` is ever entered — nothing lands in
+    ``dsp_apply_state.json`` either. The delta probe's automatic rollback has
+    no household screen at all, so without this a jts3-shaped failure is again
+    a status with no cause behind it. Shared by both log sites so the manual
+    Undo and the automatic rollback cannot name the same refusal differently.
+    """
+    return str((_blocking_apply_issue(payload) or {}).get("id") or "")
 
 
 def _blocking_apply_issue(payload: Mapping[str, Any]) -> dict[str, str] | None:

@@ -3521,15 +3521,27 @@ async def restore_applied_baseline_profile(
     ``retained_profile`` is the frozen ``applied_recomposition_profile`` a
     later apply preserved before overwriting the Layer-A SSOT (see
     :func:`build_baseline_profile_candidate`'s ``finalize`` /
-    ``_frozen_applied_profile``). Its ``config.path`` still points at that
-    prior profile's own already-compiled, already-validated YAML — composing
-    a NEW candidate never overwrites a config file an applied anchor still
-    points to (``build_baseline_profile_candidate`` gives the new candidate a
-    source-fingerprinted sibling instead). This reloads THAT exact file — never
-    recomposed — through the same atomic validate-load-confirm-rollback
-    transaction (:func:`jasper.dsp_apply.apply_dsp_config`)
+    ``_frozen_applied_profile``). Its ``config.path`` points at that prior
+    profile's own already-compiled, already-validated YAML, and this reloads
+    THAT exact file — never recomposed — through the same atomic
+    validate-load-confirm-rollback transaction
+    (:func:`jasper.dsp_apply.apply_dsp_config`)
     :func:`apply_baseline_profile` rides, then persists it back as the
     applied SSOT via :func:`persist_applied_baseline_profile`.
+
+    **That path is not the graph's identity, so the file is not immutable
+    (#2519).** ``build_baseline_profile_candidate`` names every solo candidate
+    from its SOURCE fingerprint, and :func:`_source_payload` — which owns the
+    list of what that fingerprint covers, and is the only place it should be
+    read — states the consequence outright: several inputs that DO reach the
+    emitted bytes are excluded from it, so "two candidates differing only in
+    one of those land on the SAME filename carrying DIFFERENT bytes."
+
+    A different-fingerprint candidate therefore cannot touch this file, and the
+    mtime pruner cannot evict it (``also_protect``) — but a same-fingerprint
+    recompile can rewrite it underneath the anchor. That is why the integrity
+    check below exists and what ``restore_target_changed`` reports: a live
+    condition, not defensive scaffolding.
 
     Never raises for an ordinary refusal: returns a ``status`` in
     ``{"restored", "blocked", "restore_failed"}`` the caller maps to an HTTP
