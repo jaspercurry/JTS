@@ -366,6 +366,15 @@ function testAmbientExactZerosDoNotTripIt() {
   // render grid where it would be most tempting to call it a quantum.
   silence(capture, 100 * ZERO_RUN_QUANTUM, 13);
 
+  // Plus a QUIET PASSAGE: four whole quanta of real but very small signal, the
+  // hush between two notes in a genuinely quiet room. This is the sample the
+  // scan must keep calling audio, and it is the reason the comparison is
+  // against exact zero — any tolerance wide enough to swallow this level turns
+  // a quiet room into a rejected measurement.
+  for (let i = 0; i < 4 * ZERO_RUN_QUANTUM; i += 1) {
+    capture[200 * ZERO_RUN_QUANTUM + i] = i % 2 === 0 ? 3e-6 : -3e-6;
+  }
+
   const scan = scanZeroFillRuns(capture);
   assert.equal(scan.count, 0);
   ok();
