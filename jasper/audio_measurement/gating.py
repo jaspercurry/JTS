@@ -30,7 +30,8 @@ This module does no I/O and holds no state:
 * :func:`f_valid_floor_hz` is the floor formula in isolation, for callers
   that already know the window length.
 * :func:`f_trusted_floor_hz` is the *disclosed-beside-it* stricter floor
-  (see "The gating contract" below). It never gates.
+  (see "The gating contract" below). It sizes no window here; what reads it
+  is :data:`TRUSTED_FLOOR_MULTIPLIER`'s note.
 
 Pipeline stage: **derive**. This module turns a deconvolved impulse
 response into a windowed one plus the record of what it did. It owns
@@ -68,9 +69,10 @@ block therefore carries, beside the window it chose:
     value the code cannot produce.
 ``f_valid_floor_hz`` / ``f_trusted_hz``
     The nominal ``1/T`` floor and the stricter ``2.5/T`` floor, disclosed
-    side by side. **The trusted floor is disclosed, never enforced** — it
-    changes nothing about what gates or what refuses. Migrating the
-    refusal rule onto ``2.5/T`` is a separate, ratified decision.
+    side by side. **The trusted floor changes nothing about the window or
+    about what refuses** — migrating the refusal rule onto ``2.5/T`` is
+    still a separate, ratified decision. What it does bound is
+    :data:`TRUSTED_FLOOR_MULTIPLIER`'s note.
 ``internal_reflection_ledger``
     Candidate early features the gate found and *classified* rather than
     gated (see :func:`detect_first_reflection`).
@@ -287,9 +289,17 @@ NEAR_FLOOR_RATIO = 1.25
 # sits below the trusted floor of the shorter ones, while everything above
 # 2 kHz held to <=0.006 dB (captures/gating-experiments-20260731 §4).
 #
-# THIS NUMBER NEVER GATES. It is reported so a reader can see how much of a
-# band was merely "resolved" rather than trusted. Moving the refusal rule
-# onto it is a separate, deliberate decision.
+# THIS NUMBER SIZES NO WINDOW AND NO REFUSAL RULE READS IT. It is reported
+# so a reader can see how much of a band was merely "resolved" rather than
+# trusted, and moving the gate's refusal rule onto it is still a separate,
+# deliberate decision.
+#
+# It DOES bound a verdict, since #2551 (PR #2566): the flat spec's band
+# clamps grade above it, reaching it through
+# :func:`jasper.active_speaker.crossover_v2_flow.cloud_trusted_floor_hz`.
+# That was the deliberate decision this comment used to reserve, taken for
+# the spec and for nothing else — the mechanics live with the consumer, in
+# :func:`jasper.active_speaker.flat_spec.evaluate_flat_spec`, not here.
 TRUSTED_FLOOR_MULTIPLIER = 2.5
 
 # --- asymmetric-cost classification ledger ---------------------------------
@@ -367,8 +377,8 @@ def f_trusted_floor_hz(window_s: float) -> float:
     """The stricter floor DISCLOSED beside :func:`f_valid_floor_hz`.
 
     ``f_trusted ~= 2.5 / window_s``. Same ``+inf`` guard, same propagation.
-    Nothing in the gate, the refusal rules, or the band clamps reads this
-    value — see :data:`TRUSTED_FLOOR_MULTIPLIER`.
+    Nothing in the gate or the refusal rules reads this value; the flat
+    spec's band clamps do — see :data:`TRUSTED_FLOOR_MULTIPLIER`.
     """
     return TRUSTED_FLOOR_MULTIPLIER * f_valid_floor_hz(window_s)
 
@@ -704,7 +714,8 @@ def _fragment(
         window ENDS. ``window_ms == reflection_onset_ms - direct_peak_ms``
         on the measured path, by construction.
     ``f_valid_floor_hz`` / ``f_trusted_hz``
-        ``1/T`` and ``2.5/T``. Only the first has ever gated anything.
+        ``1/T`` and ``2.5/T``. Only the first has ever sized a window; what
+        the second bounds is :data:`TRUSTED_FLOOR_MULTIPLIER`'s note.
     ``internal_reflection_ledger``
         A list, possibly empty, never ``None`` — an empty ledger means "the
         search looked and found no prominent early feature", which is a
