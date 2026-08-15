@@ -429,30 +429,44 @@ DELTA_PROBE_SPREAD_WIDENING_TOLERANCE_DB: float = 1.0
 # "the level moved" from "a shape defect that happens to have a mean".
 DELTA_PROBE_RESIDUAL_OFFSET_TOLERANCE_DB: float = 1.5
 
-# How spread the quiet evidence must be, as a fraction of the band its level is
-# claimed over, before that claim may be made band-wide (#2533).
+# How spread the quiet evidence must be, relative to a FULL sampling of the band
+# its level is claimed over, before that claim may be made band-wide (#2533).
 #
-# The quantity is
-# :attr:`DeltaProbeMap.quiet_probe_coverage`: the INTERQUARTILE span of the
-# quiet bins, in octaves, divided by the graded band's span in octaves.
+# The quantity is :attr:`DeltaProbeMap.quiet_probe_coverage`: the interquartile
+# octave span of the quiet bins divided by **the same statistic taken over every
+# graded-band bin on the same grid**. Not divided by the band's whole span —
+# that ratio is not a property of the evidence, it is a property of the GRID.
+# Production grids are structurally LINEAR (``rfftfreq``; ``spatial_combine``
+# refuses anything else, because ``smooth_fractional_octave`` assumes linear
+# bins), so bin density rises with frequency and any interquartile span is pulled
+# toward the top octaves. Measured on the retained 2026-08-15 grid (511 bins,
+# 46.9208 Hz apart), a quiet set sampling a 357 Hz-10 kHz graded band perfectly
+# and uniformly scored **0.303** against that band's whole span — i.e. the
+# whole-span form of this ratio could not be cleared by ANY quiet set on real
+# data, at any band width.
 #
-# **0.5 is derived, not tuned.** Bins spread uniformly in log frequency across a
-# span have an interquartile span of exactly HALF that span — ``q25`` sits a
-# quarter of the way along and ``q75`` three quarters, so their ratio is the
-# square root of the whole. So a quiet set that samples the graded band uniformly
-# scores exactly 0.5, and this bar says only: *evidence less spread than a
-# uniform sampling of the band it is claimed over is not a measurement of that
-# band.* Nothing about any particular speaker enters it, and a test pins the
-# uniform case at the bar so the derivation cannot quietly stop holding.
+# Dividing by the band's own interquartile span fixes that by construction:
+# numerator and denominator are the same statistic, over the same grid, so
+# whatever the grid does to one it does to the other. **1.0 therefore means
+# "spread exactly like a full sampling of the graded band", and it is grid
+# invariant** — an interleaved co-spanning quiet set measures 1.000 on the
+# production linear grid and 1.000 on a log one (pinned).
 #
-# It is a FLOOR, not a proof of representativeness, which is why
+# **0.5 is a judgment, not a derivation, and it is stated as one.** What is
+# derived is the 1.0 reference above. The bar says a quiet set must be at least
+# half as spread as the band's own bins are, and it is placed in a wide measured
+# gap rather than fitted to anything: on the production grid the tightest PASSING
+# shape (co-spanning in alternating half-octave blocks) scores 0.870 and the
+# shape this exists to catch scores 0.248, so any bar between roughly 0.3 and 0.8
+# makes the same calls. That is why the two numbers are disclosed on every map —
 # :attr:`DeltaProbeMap.quiet_probe_coverage` and
-# :attr:`DeltaProbeMap.quiet_core_band_hz` are disclosed on every map rather than
-# reduced away to a pass/fail. What it rules out is the case that produced it
-# (2026-08-15 JTS3 cycle 4): the correction commanded 463 Hz-12 kHz, so the quiet
-# set was a 12-20 kHz sliver — 158 of its 160 bins above 12 kHz, coverage under
-# 0.1 — and the level measured in it was reported as a whole-band
-# ``uncommanded_level_shift``.
+# :attr:`DeltaProbeMap.quiet_core_band_hz` — rather than reduced away to a
+# pass/fail.
+#
+# What it rules out is the case that produced it (2026-08-15 JTS3 cycle 4): the
+# correction commanded 463 Hz-12 kHz, so the quiet set was a 12-20 kHz sliver —
+# 158 of its 160 bins above 12 kHz, coverage 0.239 — and the level measured in it
+# was reported as a whole-band ``uncommanded_level_shift``.
 DELTA_PROBE_MIN_QUIET_COVERAGE: float = 0.5
 
 #: ``reason`` for a level shift the quiet bins measured across the WHOLE graded
@@ -635,6 +649,12 @@ class DeltaProbeMap:
     #: instead of being reported as one. See :attr:`entry_anchor_offset_db` for
     #: the term that was removed and what it means when it is ``None``.
     #:
+    #: **On a CHAINED round this number is not trustworthy without checking the
+    #: previous round's commanded band.** It carries ``−mean(previous round's
+    #: commanded curve over these bins)``, which is zero when that round
+    #: commanded nothing here and unbounded when it did — see
+    #: :func:`classify_delta_probe`'s docstring for the fabricate and mask cases.
+    #:
     #: ``None`` when the correction commands something almost everywhere in band
     #: and there are too few quiet bins to measure it — "not measured", which 0.0
     #: would misreport as "measured, and nothing moved" (the same distinction
@@ -679,6 +699,12 @@ class DeltaProbeMap:
     #: (a session with no entry baseline, a state file written before that key
     #: shipped, a length disagreement) or when too few quiet bins carry a finite
     #: one.
+    #:
+    #: It discloses what was REMOVED, and cannot disclose what the removal left
+    #: behind: on a chained round the entry capture rides a graph whose own
+    #: correction this module never sees, so a non-``None`` anchor is not a
+    #: warrant that the residual beside it is clean — see
+    #: :func:`classify_delta_probe`'s docstring.
     entry_anchor_offset_db: float | None = None
     #: How many quiet bins :attr:`residual_offset_db` was measured over. Distinct
     #: from ``frame.n_bins``: the frame is always fitted over the whole quiet
@@ -882,6 +908,24 @@ def _octave_span(span_hz: tuple[float, float]) -> float:
     return math.log2(hi / lo)
 
 
+def interquartile_band_hz(freqs_hz: np.ndarray) -> tuple[float, float] | None:
+    """The middle half of a bin set, as ``(low, high)`` in hertz (#2533).
+
+    The robust reading of "where does this evidence sit": min/max is what two
+    stray bins defeat, and the delta probe already reports that as
+    ``frame.band_hz``. Public because the coverage ratio a verdict turns on is
+    only reconstructible offline with the statistic that produced it.
+
+    ``None`` for an empty set, or one whose quartiles do not straddle a positive
+    span — no middle half, so no span to state.
+    """
+    freqs = np.asarray(freqs_hz, dtype=np.float64)
+    if freqs.size == 0:
+        return None
+    lo, hi = (float(v) for v in np.percentile(freqs, (25.0, 75.0)))
+    return (lo, hi) if hi > lo > 0.0 else None
+
+
 def classify_delta_probe(
     freqs_hz: np.ndarray,
     realized_delta_db: np.ndarray,
@@ -929,6 +973,20 @@ def classify_delta_probe(
     absence here rather than the ``grid_mismatch`` the three graded arrays get,
     for ``verify_measured_curve_from_state``'s reason: a truncated optional
     record should read as "no anchor", not reach the classifier as a bad grid.
+
+    **READ THIS BEFORE TRUSTING A RESIDUAL FROM A CHAINED ROUND.**
+    ``commanded_delta_db`` is measured against the RAW crossover, while
+    ``entry_delta_db`` is a measurement of whatever graph was active at entry.
+    When those differ — a REPEAT round, where the entry graph already carried a
+    correction — the residual carries ``−mean(previous round's commanded curve
+    over this round's quiet bins)``. That term is exactly zero when the previous
+    round commanded nothing in those bins, and is **otherwise unbounded**: this
+    function is never given the previous round's curve and cannot see, disclose,
+    or bound it. It can fabricate a shift (a previous round correcting out to
+    20 kHz against a new one stopping at 8 kHz measures a +6.000 dB phantom) and
+    it can mask one (a genuine −2.2 dB shift re-grading to 0.000). Keeping a
+    chained round's commanded band from retreating out of the previous round's
+    empties the overlap by construction.
 
     Topology-agnostic by construction: this function knows about a measured
     curve, a commanded curve, and a band. It has no notion of drivers, ways,
@@ -1023,16 +1081,25 @@ def classify_delta_probe(
     # 12-20 kHz, and −0.221 declared graph move. Only the middle term is a level
     # move at all.
     #
-    # **Known incompleteness, and it is bounded.** ``commanded`` is the new
+    # **Known incompleteness, and it is NOT bounded.** ``commanded`` is the new
     # correction's transfer relative to the RAW crossover, while ``entry_delta``
     # is a measurement of whatever graph was active at entry. On a first apply
-    # that graph carries no linearization and the two agree exactly. On a repeat
-    # round they differ by the PREVIOUS correction's own transfer — which is
-    # small wherever the two rounds agree, and is zero in these bins whenever the
-    # previous round also commanded nothing there. What survives is smaller and
-    # rarer than the standing anchoring term it replaces, which was present on
-    # every session; it is disclosed as ``entry_anchor_offset_db`` so a reader
-    # can see exactly what was removed.
+    # that graph carries no linearization and the two agree exactly. On a REPEAT
+    # round the residual carries a contaminant of exactly
+    #
+    #     −mean(previous round's commanded curve over this round's quiet bins)
+    #
+    # which is zero when the previous round commanded nothing there and has no
+    # bound at all when it did — the previous round's curve is not an input to
+    # this function and nothing here can see it. Two shapes were constructed
+    # (adversarial gate, PR #2545): a previous round correcting out to 20 kHz
+    # against a new one stopping at 8 kHz puts a **+6.000 dB phantom** in the
+    # residual, and the same overlap can MASK — a genuine −2.2 dB uncommanded
+    # shift re-grades to residual 0.000 and ``frame_mismatch``. The operational
+    # mitigation is to keep a chained round's commanded band from retreating out
+    # of the previous round's, which makes the overlap empty by construction.
+    # ``entry_anchor_offset_db`` discloses what WAS removed; nothing here can
+    # disclose this term.
     entry: np.ndarray | None = None
     if entry_delta_db is not None:
         candidate = np.asarray(entry_delta_db, dtype=np.float64)
@@ -1059,35 +1126,48 @@ def classify_delta_probe(
         else None
     )
 
-    # WHERE those bins sit, and how spread they are relative to the band their
-    # level is claimed over (#2533). A residual is measured in the quiet bins and
-    # asserted across the GRADED ones, so how far the evidence itself reaches is
-    # part of the claim. The INTERQUARTILE span is the robust reading, and the
-    # robustness is load-bearing rather than stylistic: min/max — which is what
-    # ``frame.band_hz`` already reports — is exactly what two stray bins defeat,
-    # and on 2026-08-15 two of them (493 Hz and 1.9 kHz) made a set with 158 of
-    # its 160 bins above 12 kHz span 463 Hz-20 kHz on paper.
+    # WHERE those bins sit, and how spread they are relative to a FULL sampling
+    # of the band their level is claimed over (#2533). A residual is measured in
+    # the quiet bins and asserted across the GRADED ones, so how far the evidence
+    # itself reaches is part of the claim. The INTERQUARTILE span is the robust
+    # reading, and the robustness is load-bearing rather than stylistic: min/max
+    # — which is what ``frame.band_hz`` already reports — is exactly what two
+    # stray bins defeat, and on 2026-08-15 two of them (493 Hz and 1.9 kHz) made
+    # a set with 158 of its 160 bins above 12 kHz span 463 Hz-20 kHz on paper.
+    #
+    # The denominator is that SAME statistic over every graded-band bin on this
+    # grid, never the band's whole span — see
+    # :data:`DELTA_PROBE_MIN_QUIET_COVERAGE`. Production grids are linear, so a
+    # whole-span denominator measures the grid rather than the evidence, and no
+    # real quiet set can clear any bar against it.
     quiet_n_bins = int(residual_bins.sum()) if quiet_measurable else 0
     quiet_core_band_hz: tuple[float, float] | None = None
     quiet_probe_coverage: float | None = None
     if quiet_measurable:
-        q_lo, q_hi = (
-            float(v) for v in np.percentile(freqs[residual_bins], (25.0, 75.0))
+        quiet_core_band_hz = interquartile_band_hz(freqs[residual_bins])
+        band_core_hz = interquartile_band_hz(
+            freqs[in_band & (freqs >= probe_band_hz[0]) & (freqs <= probe_band_hz[1])]
         )
-        quiet_core_band_hz = (q_lo, q_hi)
-        probe_span_octaves = _octave_span(probe_band_hz)
-        if probe_span_octaves > 0.0:
+        band_core_octaves = 0.0 if band_core_hz is None else _octave_span(band_core_hz)
+        if quiet_core_band_hz is not None and band_core_octaves > 0.0:
             quiet_probe_coverage = (
-                _octave_span(quiet_core_band_hz) / probe_span_octaves
+                _octave_span(quiet_core_band_hz) / band_core_octaves
             )
 
-    # The FRAME between the two curves, fitted in exactly those quiet bins
-    # (#2521) — the same set, and the same argument, one term further: a slope
-    # measured where the correction asked for nothing is uncommanded by
-    # construction, just as the level above is. Its offset term IS
-    # ``residual_offset_db`` (``fit_frame`` pivots at the fitted bins' geometric
-    # mean, which makes the offset the plain mean of the difference); the tilt
-    # is the term nothing in this module could see before.
+    # The FRAME between the two curves, fitted over the QUIET bins (#2521) — the
+    # same argument one term further: a slope measured where the correction asked
+    # for nothing is uncommanded by construction, just as the level above is.
+    #
+    # **Its offset term is the ABSOLUTE quiet-bin disagreement, which is the
+    # residual only on the unanchored path** (#2533). ``fit_frame`` pivots at the
+    # fitted bins' geometric mean, so the offset is the plain mean of
+    # ``realized − commanded`` over ``quiet``; ``residual_offset_db`` is that
+    # same mean over ``residual_bins`` with ``entry_anchor_offset_db`` removed.
+    # The two bin sets coincide unless a supplied entry curve is non-finite
+    # somewhere in ``quiet``, in which case ``residual_bins`` is a strict subset.
+    # So the identity is ``residual == frame.offset_db − entry_anchor_offset_db``
+    # when every quiet bin carried a usable anchor, and it degrades to the
+    # pre-#2533 ``residual == frame.offset_db`` when none did.
     #
     # NOT fitted over the graded bins. A two-parameter fit over the region the
     # correction commands lets the defect set its own frame and then subtract
@@ -1245,10 +1325,11 @@ def classify_delta_probe(
             # with ``quiet_core_band_hz`` naming the band it covers, instead of
             # asserting a whole-band shift the quiet bins never saw.
             #
-            # A genuinely whole-band shift is unaffected, because it is measured
-            # wherever the correction is quiet: bins spread across the band keep
-            # an interquartile span that overlaps the graded one, and the
-            # whole-band reason with it.
+            # A shift whose evidence is spread like the graded band's own bins
+            # keeps the whole-band reason: the ratio is 1.0 for a co-spanning
+            # quiet set on either grid shape, well clear of the bar. What the bar
+            # narrows is evidence concentrated somewhere the band is not — the
+            # 12-20 kHz sliver at 0.248, a single mid-band notch at 0.036.
             band_scoped = (
                 quiet_probe_coverage is not None
                 and quiet_probe_coverage < DELTA_PROBE_MIN_QUIET_COVERAGE
@@ -1411,6 +1492,7 @@ __all__ = [
     "classify_delta_probe",
     "evaluate_spatial_cost",
     "graded_command_floor_db",
+    "interquartile_band_hz",
     "spatial_cost_from_group_spreads",
     "widest_exceedance_octaves",
 ]

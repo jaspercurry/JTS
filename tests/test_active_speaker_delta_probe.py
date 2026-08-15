@@ -46,6 +46,7 @@ from jasper.active_speaker.delta_probe import (
     classify_delta_probe,
     evaluate_spatial_cost,
     graded_command_floor_db,
+    interquartile_band_hz,
     spatial_cost_from_group_spreads,
     widest_exceedance_octaves,
 )
@@ -1311,12 +1312,47 @@ def test_to_dict_carries_the_band_the_frame_and_the_intercept():
 # --------------------------------------------------------------------------- #
 
 
-def _entry_anchored(commanded, *, realized, band=None, anchor_db=0.0, **kwargs):
+#: A PRODUCTION-shaped grid: linear, at the retained 2026-08-15 session's own
+#: geometry (511 bins, 46.9208 Hz apart, from 23.4375 Hz).
+#:
+#: The coverage gate has to be exercised on this shape and not only on
+#: ``_GRID_HZ``, because a log grid is the ONE shape production cannot produce:
+#: captures arrive on an ``rfftfreq`` grid and
+#: ``spatial_combine._capture_arrays`` refuses anything whose bin steps are not
+#: uniform (``smooth_fractional_octave`` assumes linear bins). A ratio that only
+#: behaves on ``np.logspace`` is a ratio that never runs.
+_LINEAR_GRID_HZ = 23.4375 + 46.9208 * np.arange(511)
+
+#: Both shapes, for the gate's own tests. ``ids`` so a failure names the grid.
+_GRID_SHAPES = [
+    pytest.param(_LINEAR_GRID_HZ, id="linear-production"),
+    pytest.param(_GRID_HZ, id="log-fixture"),
+]
+
+
+def _entry_anchored(commanded, *, realized, grid=None, band=None, anchor_db=0.0,
+                    **kwargs):
     """Classify with a flat pre-apply anchor of ``anchor_db`` dB."""
+    f = _GRID_HZ if grid is None else grid
     return classify_delta_probe(
-        _GRID_HZ, realized, commanded, band_hz=band or _band(),
-        entry_delta_db=np.full_like(_GRID_HZ, anchor_db), **kwargs,
+        f, realized, commanded, band_hz=band or (float(f[0]), float(f[-1])),
+        entry_delta_db=np.full_like(f, anchor_db), **kwargs,
     )
+
+
+def _half_octave_blocks(f, lo_hz, hi_hz, depth_db=-4.0):
+    """A commanded curve that alternates commanded/quiet every HALF OCTAVE.
+
+    Co-spanning by construction: the quiet bins are interleaved THROUGH the
+    graded band rather than sitting beside it, which is the shape a genuinely
+    whole-band level shift leaves behind. Half an octave because every graded run
+    must still clear :data:`DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES`, and a run
+    specified in BINS cannot promise that on a linear grid — 40 bins is three
+    octaves at 400 Hz and a seventh of one at 18 kHz.
+    """
+    in_band = (f >= lo_hz) & (f <= hi_hz)
+    block = np.floor(np.log2(np.maximum(f, 1.0) / lo_hz) / 0.5)
+    return np.where(in_band & (block % 2 == 0), depth_db, 0.0)
 
 
 def _mirror_profile(peak_gain_db: float) -> dict:
@@ -1395,7 +1431,8 @@ def test_a_declared_common_attenuation_move_is_realized_and_grades_to_zero():
     assert anchored.rollback is False
 
 
-def test_a_level_shift_measured_only_above_the_graded_band_is_not_whole_band():
+@pytest.mark.parametrize("grid", _GRID_SHAPES)
+def test_a_level_shift_measured_only_above_the_graded_band_is_not_whole_band(grid):
     """**#2533 (b).** The 2026-08-15 JTS3 shape: the correction commands the
     midband, so the only bins that can measure a level sit above it.
 
@@ -1406,9 +1443,10 @@ def test_a_level_shift_measured_only_above_the_graded_band_is_not_whole_band():
     ``quiet_core_band_hz`` names the band it actually covers.
     """
     band = (400.0, 20_000.0)
-    commanded = np.zeros_like(_GRID_HZ)
-    commanded[(_GRID_HZ >= 400.0) & (_GRID_HZ <= 12_000.0)] = -4.0
-    probe = _entry_anchored(commanded, realized=commanded - 3.0, band=band)
+    commanded = np.where((grid >= 400.0) & (grid <= 12_000.0), -4.0, 0.0)
+    probe = _entry_anchored(
+        commanded, realized=commanded - 3.0, grid=grid, band=band,
+    )
 
     assert probe.verdict == VERDICT_LEVEL_MISMATCH
     assert probe.rollback is False
@@ -1447,80 +1485,184 @@ def test_a_standing_model_offset_present_before_the_apply_never_reaches_it():
     assert blind.verdict == VERDICT_LEVEL_MISMATCH
 
 
-def test_a_genuine_whole_band_shift_still_trips_the_level_verdict():
+@pytest.mark.parametrize("grid", _GRID_SHAPES)
+def test_a_genuine_whole_band_shift_still_trips_the_level_verdict(grid):
     """**#2533 (d).** The control that keeps the two fixes from swallowing the
     thing this verdict exists to catch.
 
     A real uncommanded drop, on top of a standing anchor AND a declared graph
-    move, still fires — and the residual reports the REAL shift rather than the
-    sum of all three, which is the whole point of anchoring it.
+    move, still fires with the WHOLE-BAND reason — and the residual reports the
+    REAL shift rather than the sum of all three, which is the whole point of
+    anchoring it.
+
+    The quiet bins are interleaved THROUGH the graded band, which is what a
+    whole-band shift actually leaves behind and what makes this a test of the
+    coverage gate rather than a test that happens to route around it: a quiet set
+    sitting beside the band, as the first cut of this fixture had it, scores well
+    over the bar on both grids for reasons that have nothing to do with the
+    mechanism.
     """
-    commanded = np.zeros_like(_GRID_HZ)
-    commanded[(_GRID_HZ >= 1_000.0) & (_GRID_HZ <= 3_000.0)] = -4.0
+    lo_hz, hi_hz = 400.0, 12_800.0
+    commanded = _half_octave_blocks(grid, lo_hz, hi_hz)
     standing_db, declared_db, shift_db = -2.0, 1.0, -3.0
     realized = commanded + standing_db + declared_db + shift_db
 
     probe = _entry_anchored(
-        commanded, realized=realized, anchor_db=standing_db,
-        expected_offset_db=declared_db,
+        commanded, realized=realized, grid=grid, band=(lo_hz, hi_hz),
+        anchor_db=standing_db, expected_offset_db=declared_db,
     )
     assert probe.verdict == VERDICT_LEVEL_MISMATCH
     assert probe.reason == REASON_UNCOMMANDED_LEVEL_SHIFT
     assert probe.residual_offset_db == pytest.approx(shift_db, abs=1e-9)
     assert probe.entry_anchor_offset_db == pytest.approx(standing_db, abs=1e-9)
-    # The quiet bins bracket the graded band, so the whole-band claim is one the
-    # evidence supports.
     assert probe.quiet_probe_coverage >= DELTA_PROBE_MIN_QUIET_COVERAGE
+    # The fixture really is co-spanning: the quiet evidence's middle half sits
+    # INSIDE the band it is claimed over, on either grid.
+    assert probe.quiet_core_band_hz[0] > probe.probe_band_hz[0]
+    assert probe.quiet_core_band_hz[0] < probe.probe_band_hz[1]
 
 
-def test_uniform_sampling_of_a_band_scores_exactly_the_coverage_bar():
-    """:data:`DELTA_PROBE_MIN_QUIET_COVERAGE` is derived, and this is where.
+@pytest.mark.parametrize("grid", _GRID_SHAPES)
+def test_a_co_spanning_quiet_set_scores_one_whatever_the_grid_shape(grid):
+    """**The 1.0 reference is what is derived**, and it is grid-invariant.
 
-    Bins spread uniformly in log frequency across a span have an interquartile
-    span of exactly HALF that span — ``q25`` sits a quarter of the way along and
-    ``q75`` three quarters, so their ratio is the square root of the whole. A
-    quiet set that samples the graded band uniformly therefore scores 0.5, and
-    the bar says only "less spread than a uniform sampling of the band it is
-    claimed over". Nothing about any speaker enters it.
+    ``quiet_probe_coverage`` divides the quiet bins' interquartile octave span by
+    the SAME statistic over every graded-band bin on the same grid. A quiet set
+    that samples the band exactly as densely as the band's own bins therefore
+    scores 1.0 — on a production linear grid and on a log one alike, because
+    whatever the grid does to the numerator it does to the denominator.
 
-    Pinned through the SAME ``np.percentile`` call the classifier makes, so the
-    derivation cannot stop holding without this failing.
+    This is the pin that the earlier whole-span denominator could not have
+    passed; see the sibling test for what that one scored on real geometry.
     """
-    lo_hz, hi_hz = 100.0, 20_000.0
-    uniform = np.geomspace(lo_hz, hi_hz, 4_001)
-    q_lo, q_hi = (float(v) for v in np.percentile(uniform, (25.0, 75.0)))
-    coverage = math.log2(q_hi / q_lo) / math.log2(hi_hz / lo_hz)
-    assert coverage == pytest.approx(DELTA_PROBE_MIN_QUIET_COVERAGE, abs=1e-3)
+    lo_hz, hi_hz = 400.0, 12_000.0
+    band = (grid >= lo_hz) & (grid <= hi_hz)
+    idx = np.flatnonzero(band)
+    quiet = np.zeros_like(grid, dtype=bool)
+    quiet[idx[::2]] = True
+
+    quiet_core = interquartile_band_hz(grid[quiet])
+    band_core = interquartile_band_hz(grid[band])
+    coverage = (
+        math.log2(quiet_core[1] / quiet_core[0])
+        / math.log2(band_core[1] / band_core[0])
+    )
+    assert coverage == pytest.approx(1.0, abs=0.02)
+    assert coverage > DELTA_PROBE_MIN_QUIET_COVERAGE
 
 
-def test_two_stray_bins_cannot_make_a_sliver_look_band_wide():
+def test_a_whole_span_denominator_would_be_unclearable_on_a_production_grid():
+    """Why the denominator is the band's own interquartile span and not its span.
+
+    Production grids are LINEAR (``rfftfreq``; ``spatial_combine`` refuses
+    anything else because ``smooth_fractional_octave`` assumes linear bins), so
+    bin density rises with frequency and any interquartile span is pulled toward
+    the top octaves. Against the band's WHOLE span, a quiet set sampling the real
+    357 Hz–10 kHz graded band perfectly and uniformly scores ~0.30 — under the
+    bar, on the best possible evidence. That form of the ratio measured the grid,
+    not the evidence, and no real quiet set could ever have cleared it.
+    """
+    lo_hz, hi_hz = 357.1, 10_000.0
+    band = (_LINEAR_GRID_HZ >= lo_hz) & (_LINEAR_GRID_HZ <= hi_hz)
+    idx = np.flatnonzero(band)
+    quiet = np.zeros_like(_LINEAR_GRID_HZ, dtype=bool)
+    quiet[idx[::2]] = True
+    quiet_core = interquartile_band_hz(_LINEAR_GRID_HZ[quiet])
+
+    whole_span = math.log2(
+        _LINEAR_GRID_HZ[idx[-1]] / _LINEAR_GRID_HZ[idx[0]]
+    )
+    old_form = math.log2(quiet_core[1] / quiet_core[0]) / whole_span
+    assert old_form < DELTA_PROBE_MIN_QUIET_COVERAGE
+    assert old_form == pytest.approx(0.303, abs=0.01)
+
+    # The shipped form, on the identical bins, clears it comfortably.
+    band_core = interquartile_band_hz(_LINEAR_GRID_HZ[band])
+    shipped = math.log2(quiet_core[1] / quiet_core[0]) / math.log2(
+        band_core[1] / band_core[0]
+    )
+    assert shipped > DELTA_PROBE_MIN_QUIET_COVERAGE
+
+
+@pytest.mark.parametrize("grid", _GRID_SHAPES)
+def test_two_stray_bins_cannot_make_a_sliver_look_band_wide(grid):
     """Why the coverage reads the INTERQUARTILE span and not the min/max.
 
     ``frame.band_hz`` already reports the quiet bins' min/max, and on 2026-08-15
     two strays (493 Hz and 1.9 kHz) made a set with 158 of its 160 bins above
     12 kHz span 463 Hz-20 kHz on paper. This fixture is that shape: the min/max
     reading clears the bar comfortably and the interquartile one does not, on the
-    same bins.
+    same bins and on either grid.
     """
     band = (400.0, 20_000.0)
-    commanded = np.zeros_like(_GRID_HZ)
-    commanded[(_GRID_HZ >= 400.0) & (_GRID_HZ <= 12_000.0)] = -4.0
+    commanded = np.where((grid >= 400.0) & (grid <= 12_000.0), -4.0, 0.0)
     # The two strays: in-band, and quiet, but far below where the rest sit.
     for stray_hz in (500.0, 1_900.0):
-        commanded[int(np.argmin(np.abs(_GRID_HZ - stray_hz)))] = 0.0
-    probe = _entry_anchored(commanded, realized=commanded - 3.0, band=band)
+        commanded[int(np.argmin(np.abs(grid - stray_hz)))] = 0.0
+    probe = _entry_anchored(
+        commanded, realized=commanded - 3.0, grid=grid, band=band,
+    )
 
     assert probe.reason == REASON_UNCOMMANDED_LEVEL_SHIFT_OUTSIDE_BAND
     assert probe.quiet_probe_coverage < DELTA_PROBE_MIN_QUIET_COVERAGE
-    # The control: read min/max instead — which is what ``frame.band_hz`` is —
-    # and the same bins score above the bar, i.e. the robustness is load-bearing
-    # rather than stylistic.
-    lo_hz, hi_hz = probe.frame.band_hz
-    probe_lo, probe_hi = probe.probe_band_hz
-    min_max_coverage = (
-        math.log2(hi_hz / lo_hz) / math.log2(probe_hi / probe_lo)
-    )
+    # The strays really did reach the min/max reading: it spans nearly the whole
+    # analysis band while the middle half sits entirely above 12 kHz.
+    assert probe.frame.band_hz[0] < 1_000.0
+    assert probe.quiet_core_band_hz[0] > 12_000.0
+    # The control: score the same bins through min/max — which is what
+    # ``frame.band_hz`` is — against the same denominator, and the bar clears.
+    band_bins = (grid >= probe.probe_band_hz[0]) & (grid <= probe.probe_band_hz[1])
+    band_core = interquartile_band_hz(grid[band_bins])
+    min_max_coverage = math.log2(
+        probe.frame.band_hz[1] / probe.frame.band_hz[0]
+    ) / math.log2(band_core[1] / band_core[0])
     assert min_max_coverage > DELTA_PROBE_MIN_QUIET_COVERAGE
+
+
+@pytest.mark.parametrize("grid", _GRID_SHAPES)
+def test_a_repeat_round_carries_the_previous_rounds_command_into_the_residual(grid):
+    """**The limitation, pinned rather than hidden** (#2533, adversarial gate).
+
+    ``commanded`` is measured against the RAW crossover while the entry capture
+    rides whatever graph was active, so on a chained round the residual carries
+    ``−mean(previous round's commanded curve over this round's quiet bins)``.
+    That term is not an input to the classifier and cannot be bounded by it. Both
+    directions are reproduced here so the documented behaviour is what the code
+    actually does, and so a future change that fixes it fails this test loudly
+    instead of silently improving prose.
+    """
+    band = (400.0, 20_000.0)
+    # This round stops at 8 kHz; the previous one corrected all the way out, so
+    # its command overlaps every one of this round's quiet bins.
+    this_round = np.where((grid >= 400.0) & (grid <= 8_000.0), -6.0, 0.0)
+    previous_round = np.where((grid >= 400.0) & (grid <= 20_000.0), -6.0, 0.0)
+
+    # FABRICATES: the speaker realized this round exactly and nothing moved, yet
+    # the residual reads +6.000 dB — the previous round's command, with its sign
+    # flipped, read as an uncommanded level shift.
+    phantom = classify_delta_probe(
+        grid, this_round, this_round, band_hz=band, entry_delta_db=previous_round,
+    )
+    assert phantom.residual_offset_db == pytest.approx(6.0, abs=1e-9)
+
+    # MASKS: a genuine −2.2 dB uncommanded drop, against a previous round that
+    # commanded −2.2 dB across exactly this round's quiet bins, re-grades to a
+    # residual of zero — the level verdict never fires and the finding arrives as
+    # the frame instead.
+    overlap = np.where(grid > 8_000.0, -2.2, 0.0)
+    masked = classify_delta_probe(
+        grid, this_round - 2.2, this_round, band_hz=band, entry_delta_db=overlap,
+    )
+    assert masked.residual_offset_db == pytest.approx(0.0, abs=1e-9)
+    assert masked.verdict != VERDICT_LEVEL_MISMATCH
+    assert masked.rollback is False
+    # The same evidence with no overlapping previous round names the shift.
+    clean = classify_delta_probe(
+        grid, this_round - 2.2, this_round, band_hz=band,
+        entry_delta_db=np.zeros_like(grid),
+    )
+    assert clean.residual_offset_db == pytest.approx(-2.2, abs=1e-9)
+    assert clean.verdict == VERDICT_LEVEL_MISMATCH
 
 
 def test_the_residual_is_the_frames_offset_minus_the_anchor():
@@ -1609,10 +1751,10 @@ def test_to_dict_carries_the_quiet_evidence_the_level_verdict_rests_on():
     """A band-scoped verdict is a claim ABOUT the band it covered, so the band,
     the coverage, the bin count and the anchor removed all ride the record."""
     band = (400.0, 20_000.0)
-    commanded = np.zeros_like(_GRID_HZ)
-    commanded[(_GRID_HZ >= 400.0) & (_GRID_HZ <= 12_000.0)] = -4.0
+    grid = _LINEAR_GRID_HZ
+    commanded = np.where((grid >= 400.0) & (grid <= 12_000.0), -4.0, 0.0)
     payload = _entry_anchored(
-        commanded, realized=commanded - 3.0, band=band, anchor_db=-1.0,
+        commanded, realized=commanded - 3.0, grid=grid, band=band, anchor_db=-1.0,
     ).to_dict()
     quiet = payload["quiet"]
     assert set(quiet) == {

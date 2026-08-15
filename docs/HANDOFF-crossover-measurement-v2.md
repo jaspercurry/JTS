@@ -2856,12 +2856,26 @@ disclosed as `entry_anchor_offset_db`; `None` there means no pre-apply curve was
 usable, and then nothing is removed and the standing offset stays visible, on
 exactly `expected_offset_db`'s "nothing known" rule. The decomposition is an
 identity the record carries: `residual_offset_db == frame.offset_db −
-entry_anchor_offset_db`. Its one known incompleteness is bounded and named in the
-module: `commanded_delta` is the new correction's transfer relative to the RAW
-crossover, while the entry capture rides whatever graph was active, so on a
-REPEAT round the two differ by the previous correction's own transfer — exactly
-zero on a first apply, and zero in these bins whenever the previous round also
-commanded nothing there.
+entry_anchor_offset_db`.
+
+**Its one known incompleteness is NOT bounded, and it bites on chained rounds.**
+`commanded_delta` is the new correction's transfer relative to the RAW crossover,
+while the entry capture rides whatever graph was active. On a first apply that
+graph carries no linearization and the two agree exactly. On a REPEAT round the
+residual carries `−mean(previous round's commanded curve over this round's quiet
+bins)` — zero when that round commanded nothing there, and otherwise unbounded,
+because the previous round's curve is not an input to the probe and nothing in it
+can see, disclose, or bound the term. It can **fabricate** a shift (a previous
+round correcting out to 20 kHz against a new one stopping at 8 kHz measures a
++6.000 dB phantom) and it can **mask** one (a genuine −2.2 dB uncommanded shift
+re-grading to residual 0.000 and `frame_mismatch`). Both shapes were constructed
+by the adversarial gate on PR #2545 and are pinned by
+`test_a_repeat_round_carries_the_previous_rounds_command_into_the_residual`.
+
+**Operationally: keep a chained round's commanded band from retreating out of the
+previous round's.** That empties the overlap by construction, which is the only
+thing that makes the term zero. `entry_anchor_offset_db` discloses what was
+removed and is **not** a warrant that the residual beside it is clean.
 
 The two conditions that reach the verdict subtract **different** numbers, and
 have to: (a) "did the level move" is a change question and reads the anchored
@@ -2880,10 +2894,23 @@ as a whole-band `uncommanded_level_shift`. The set's own span did not show it
 either — two strays at 493 Hz and 1.9 kHz made 158-of-160 bins above 12 kHz span
 463 Hz–20 kHz on paper — which is why `quiet_core_band_hz` is the INTERQUARTILE
 span and not the min/max `frame.band_hz` already reports. `quiet_probe_coverage`
-is that span in octaves over the graded band's, and `DELTA_PROBE_MIN_QUIET_COVERAGE`
-is 0.5 by derivation rather than by tuning: bins spread uniformly in log
-frequency have an interquartile span of exactly half that span, so the bar says
-only "less spread than a uniform sampling of the band it is claimed over".
+is that span in octaves over **the same statistic taken across every graded-band
+bin on the same grid** — never over the band's whole span, which measures the
+GRID rather than the evidence. Production grids are structurally linear
+(`rfftfreq`; `spatial_combine` refuses anything else because
+`smooth_fractional_octave` assumes linear bins), so bin density rises with
+frequency and any interquartile span is pulled toward the top octaves: on the
+retained 2026-08-15 grid a quiet set sampling a 357 Hz–10 kHz graded band
+perfectly and uniformly scores **0.303** against that band's whole span, so a
+whole-span ratio is unclearable on real data at any band width. The like-for-like
+ratio is grid-invariant by construction — an interleaved co-spanning quiet set
+measures **1.000** on the production linear grid and **1.000** on a log one.
+`DELTA_PROBE_MIN_QUIET_COVERAGE = 0.5` is then a **judgment, not a derivation**:
+what is derived is the 1.0 reference, and the bar admits evidence at least half
+as spread as the band's own bins. It sits in a wide measured gap — on the
+production grid the tightest passing shape scores 0.800 and the shape this exists
+to catch scores 0.249, so any bar between roughly 0.3 and 0.8 makes the same
+calls.
 Under it, the verdict, the rollback answer and the household surface are all
 unchanged — narrowing them would make the instrument stricter on evidence it had
 just called unrepresentative, the inverse of the "a gate may only narrow"
