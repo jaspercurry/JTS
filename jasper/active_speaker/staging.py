@@ -1456,7 +1456,12 @@ def stage_protected_startup_config(
             ))
             blocker_count += 1
 
-    if blocker_count == 0 and bound_preset and resolved_playback_device and devices:
+    if (
+        blocker_count == 0
+        and bound_preset
+        and resolved_playback_device
+        and devices is not None
+    ):
         try:
             out_path.parent.mkdir(parents=True, exist_ok=True)
             # Stage the production graph with an all-muted per-output mask

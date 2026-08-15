@@ -1649,14 +1649,38 @@ def check_fanin_coupling() -> CheckResult:
         in (RING_CAPTURE_DEVICE, RING_PLAYBACK_DEVICE, RING_ACTIVE_PLAYBACK_DEVICE)
     ]
     if stale_ring_devices:
+        # WHICH command clears this depends on the topology, and on a roleful box
+        # the coupling reconciler alone cannot. `jasper-fanin-coupling-reconcile
+        # loopback` routes through `reconcile_current_dsp`, which refuses to host
+        # a roleful box's transient startup/commissioning graph
+        # (`eq_on_active_not_wired` -> status `skipped`) and — because the
+        # coupling is already non-ring — reports SUCCESS without moving the
+        # graph. The operator then re-runs a command that converges nothing while
+        # the warn persists. The graph has to be moved by step 1 of the ladder,
+        # exactly as the shm_ring branch above already spells out for its own
+        # direction.
+        if _requires_roleful_graph():
+            recovery = (
+                "this box is ROLEFUL, so the coupling reconciler cannot move its "
+                "graph (it declines to host a transient active graph and reports "
+                "success without converging). Run the ROLLBACK ladder, in order: "
+                "sudo /opt/jasper/.venv/bin/jasper-active-speaker baseline-reemit "
+                "--endpoint aloop && sudo systemctl start "
+                "jasper-audio-hardware-reconcile && sudo /opt/jasper/.venv/bin/"
+                "jasper-fanin-coupling-reconcile loopback"
+            )
+        else:
+            recovery = (
+                "Run: sudo /opt/jasper/.venv/bin/"
+                "jasper-fanin-coupling-reconcile loopback"
+            )
         return CheckResult(
             label,
             "warn",
             f"intent={coupling} but the loaded graph still names ring ioplug "
             f"device(s): {'; '.join(stale_ring_devices)}; a disarm's camilla step "
             "likely failed — CamillaDSP captures a writer-dead ring (silence) while "
-            "the env reads clean. Run: sudo /opt/jasper/.venv/bin/"
-            "jasper-fanin-coupling-reconcile loopback",
+            f"the env reads clean. {recovery}",
         )
     expected = "Alsa"
     if capture == expected:

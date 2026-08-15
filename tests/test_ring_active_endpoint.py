@@ -2856,7 +2856,13 @@ def test_the_crossed_pair_is_unreachable_from_the_reconciler():
 
 
 def _anchor_reemit_harness(
-    monkeypatch, tmp_path, *, applied=None, decision_status=None, reproof=None
+    monkeypatch,
+    tmp_path,
+    *,
+    applied=None,
+    decision_status=None,
+    reproof=None,
+    commission_loaded=False,
 ):
     """Stage `baseline-reemit` on a box whose boot graph is the startup anchor.
 
@@ -2869,6 +2875,7 @@ def _anchor_reemit_harness(
 
     from jasper.active_speaker.runtime_contract import (
         GRAPH_ALL_MUTED_ACTIVE_STARTUP,
+        GRAPH_DRIVER_DOMAIN_BASELINE,
         GRAPH_PARKED_ALL_MUTED,
         GraphSafety,
     )
@@ -2929,21 +2936,43 @@ def _anchor_reemit_harness(
     monkeypatch.setattr(staging_mod, "staged_config_path", _staged_config_path)
     monkeypatch.setattr(staging_mod, "staged_metadata_path", _staged_metadata_path)
 
-    anchor = GraphSafety(
-        classification=(
-            GRAPH_PARKED_ALL_MUTED
-            if decision_status == "parked"
-            else GRAPH_ALL_MUTED_ACTIVE_STARTUP
+    # Commission-load state is stubbed in BOTH directions on purpose: the live
+    # default path would otherwise decide this test's outcome from whatever the
+    # dev machine happens to have on disk.
+    monkeypatch.setattr(
+        cli,
+        "load_commission_load_state",
+        lambda *a, **k: (
+            {"status": "loaded", "target": "mono/tweeter",
+             "candidate_config_path": "/var/lib/camilladsp/configs/commissioning.yml"}
+            if commission_loaded
+            else {}
         ),
-        allowed=True,
-        issues=(),
     )
+
+    # (safe-graph status, classification, which slot carries it). The last two
+    # are the DISCRIMINATOR cases: `preserve_current` is also how an approved
+    # runtime graph and a driver-domain baseline are preserved, so a check keyed
+    # on the status alone would accept them and re-stage an all-muted anchor over
+    # a commissioned box.
+    shapes = {
+        None: ("select_active_startup", GRAPH_ALL_MUTED_ACTIVE_STARTUP, "fallback"),
+        "parked": ("parked_muted", GRAPH_PARKED_ALL_MUTED, "fallback"),
+        "preserve_approved": (
+            "preserve_current", GRAPH_APPROVED_ACTIVE_RUNTIME, "current",
+        ),
+        "preserve_driver_domain": (
+            "preserve_current", GRAPH_DRIVER_DOMAIN_BASELINE, "current",
+        ),
+    }
+    status, classification, slot = shapes[decision_status]
+    graph = GraphSafety(classification=classification, allowed=True, issues=())
     decision = SimpleNamespace(
-        status="parked_muted" if decision_status == "parked" else "select_active_startup",
+        status=status,
         selected_config_path=None,
-        current_graph=None,
+        current_graph=graph if slot == "current" else None,
         preferred_graph=None,
-        fallback_graph=anchor,
+        fallback_graph=graph if slot == "fallback" else None,
         issues=(),
     )
 
@@ -3033,8 +3062,9 @@ def test_baseline_reemit_restages_the_startup_anchor_at_both_endpoints(
     assert f"config_path: {h.live_config}" in h.statefile.read_text(encoding="utf-8")
 
 
+@pytest.mark.parametrize("endpoint", ["ring", "aloop"])
 def test_baseline_reemit_prefers_the_applied_baseline_over_the_anchor(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, endpoint
 ):
     """Precedence: a commissioned box behaves EXACTLY as it did before.
 
@@ -3051,7 +3081,7 @@ def test_baseline_reemit_prefers_the_applied_baseline_over_the_anchor(
 
     code = main([
         "baseline-reemit",
-        "--endpoint", "ring",
+        "--endpoint", endpoint,
         "--statefile", str(baseline.statefile),
     ])
     assert code == 0
@@ -3062,7 +3092,10 @@ def test_baseline_reemit_prefers_the_applied_baseline_over_the_anchor(
     assert anchor.live_meta.read_text(encoding="utf-8") == '{"status": "stale"}'
 
 
-def test_baseline_reemit_refuses_a_box_on_neither_accepted_graph(monkeypatch, tmp_path):
+@pytest.mark.parametrize("endpoint", ["ring", "aloop"])
+def test_baseline_reemit_refuses_a_box_on_neither_accepted_graph(
+    monkeypatch, tmp_path, endpoint
+):
     """Neither class -> refuse by NAME, write nothing, and say what to do.
 
     A parked box has no roleful boot graph to move, so re-staging one would be
@@ -3077,7 +3110,7 @@ def test_baseline_reemit_refuses_a_box_on_neither_accepted_graph(monkeypatch, tm
     with contextlib.redirect_stdout(out):
         code = main([
             "baseline-reemit",
-            "--endpoint", "ring",
+            "--endpoint", endpoint,
             "--statefile", str(h.statefile),
         ])
     text = out.getvalue()
@@ -3086,12 +3119,16 @@ def test_baseline_reemit_refuses_a_box_on_neither_accepted_graph(monkeypatch, tm
     assert "parked_all_muted" in text, text
     assert "approved_active_runtime" in text, text
     assert "all_muted_active_startup" in text, text
-    # Nothing moved.
+    # Nothing moved — all THREE live surfaces, like the sibling refusal tests.
     assert h.live_config.read_text(encoding="utf-8") == "stale: true\n"
+    assert h.live_meta.read_text(encoding="utf-8") == '{"status": "stale"}'
     assert "config_path: /somewhere/else.yml" in h.statefile.read_text(encoding="utf-8")
 
 
-def test_baseline_reemit_out_is_preview_only_for_the_anchor(monkeypatch, tmp_path):
+@pytest.mark.parametrize("endpoint", ["ring", "aloop"])
+def test_baseline_reemit_out_is_preview_only_for_the_anchor(
+    monkeypatch, tmp_path, endpoint
+):
     """--out keeps its inspection semantics on the anchor path too.
 
     An operator reaching for a preview is not asking to arm the box, and on this
@@ -3104,12 +3141,17 @@ def test_baseline_reemit_out_is_preview_only_for_the_anchor(monkeypatch, tmp_pat
     preview = tmp_path / "preview.yml"
     code = main([
         "baseline-reemit",
-        "--endpoint", "ring",
+        "--endpoint", endpoint,
         "--out", str(preview),
         "--statefile", str(h.statefile),
     ])
     assert code == 0
-    assert f'device: "{RING_ACTIVE_PLAYBACK_DEVICE}"' in preview.read_text("utf-8")
+    expected_device = (
+        RING_ACTIVE_PLAYBACK_DEVICE
+        if endpoint == "ring"
+        else OUTPUTD_ACTIVE_PLAYBACK_DEVICE
+    )
+    assert f'device: "{expected_device}"' in preview.read_text("utf-8")
     assert h.live_config.read_text(encoding="utf-8") == "stale: true\n"
     assert h.live_meta.read_text(encoding="utf-8") == '{"status": "stale"}'
     assert "config_path: /somewhere/else.yml" in h.statefile.read_text(encoding="utf-8")
@@ -3138,7 +3180,10 @@ def test_baseline_reemit_help_names_both_accepted_graph_classes():
     assert GRAPH_ALL_MUTED_ACTIVE_STARTUP in help_text, help_text
 
 
-def test_baseline_reemit_anchor_refusal_writes_nothing_at_all(monkeypatch, tmp_path):
+@pytest.mark.parametrize("endpoint", ["ring", "aloop"])
+def test_baseline_reemit_anchor_refusal_writes_nothing_at_all(
+    monkeypatch, tmp_path, endpoint
+):
     """A re-staged anchor that fails the re-proof must not reach disk.
 
     This is the fail-closure that matters most on this path, and it is STRICTER
@@ -3157,10 +3202,225 @@ def test_baseline_reemit_anchor_refusal_writes_nothing_at_all(monkeypatch, tmp_p
     h = _anchor_reemit_harness(monkeypatch, tmp_path, reproof="unsafe")
     code = main([
         "baseline-reemit",
-        "--endpoint", "ring",
+        "--endpoint", endpoint,
         "--statefile", str(h.statefile),
     ])
     assert code == 1
     assert h.live_config.read_text(encoding="utf-8") == "stale: true\n"
     assert h.live_meta.read_text(encoding="utf-8") == '{"status": "stale"}'
     assert "config_path: /somewhere/else.yml" in h.statefile.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "decision_status,expected_class",
+    [
+        ("preserve_approved", GRAPH_APPROVED_ACTIVE_RUNTIME),
+        ("preserve_driver_domain", "driver_domain_baseline"),
+    ],
+)
+@pytest.mark.parametrize("endpoint", ["ring", "aloop"])
+def test_baseline_reemit_refuses_a_preserved_non_anchor_graph(
+    monkeypatch, tmp_path, endpoint, decision_status, expected_class
+):
+    """The CLASSIFICATION discriminator, not the status — pinned (review C-SF1).
+
+    `_startup_anchor_from_decision` deliberately checks the classification and
+    not just `decision.status`, because `preserve_current` is ALSO how an
+    approved runtime graph and a driver-domain baseline are preserved. Its
+    docstring says so; nothing tested it, and a status-only variant passed the
+    whole suite.
+
+    The box this protects is reachable, not hypothetical: a roleful box whose
+    loaded graph classifies `approved_active_runtime` while its
+    `active_speaker_baseline_profile.json` is missing or unreadable. `is_baseline`
+    is derived from the graph's own `# Source:` marker, with no dependence on
+    that state file — so `applied` is falsy, this path is entered, and the
+    selector answers `preserve_current` + `approved_active_runtime`. Without the
+    discriminator the command would re-stage an all-muted anchor over a
+    COMMISSIONED speaker and repoint its boot statefile at it: silence at the
+    next CamillaDSP restart.
+
+    Both endpoints, because the rollback direction reaches the same guard.
+    """
+    from jasper.cli.active_speaker import main
+
+    h = _anchor_reemit_harness(
+        monkeypatch, tmp_path, decision_status=decision_status
+    )
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        code = main([
+            "baseline-reemit",
+            "--endpoint", endpoint,
+            "--statefile", str(h.statefile),
+        ])
+    text = out.getvalue()
+
+    assert code == 1
+    # The refusal NAMES what it found, so an operator is not left guessing.
+    assert expected_class in text, text
+    # Nothing moved, on any of the three live surfaces.
+    assert h.live_config.read_text(encoding="utf-8") == "stale: true\n"
+    assert h.live_meta.read_text(encoding="utf-8") == '{"status": "stale"}'
+    assert "config_path: /somewhere/else.yml" in h.statefile.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("endpoint", ["ring", "aloop"])
+def test_baseline_reemit_refuses_while_a_commission_load_is_active(
+    monkeypatch, tmp_path, endpoint
+):
+    """Single-flight against a live commission load (review H-N1).
+
+    The path this command publishes over is not only the boot graph — it is the
+    universal RE-MUTE anchor of the audible commissioning flow. Four controls
+    reload exactly it, and one of them is the operator's own by-ear stop during a
+    Stage-5 ramp (`commission-ramp ack --outcome too_loud`). Re-pointing that
+    file at a different endpoint while a driver is armed at level moves the stop
+    button while it is the thing standing between a driver and a bad load.
+
+    So this refuses, exactly as `_cmd_commission_load` already refuses for the
+    same shared artifact, and the refusal is checked to write nothing.
+    """
+    from jasper.cli.active_speaker import main
+
+    h = _anchor_reemit_harness(monkeypatch, tmp_path, commission_loaded=True)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        code = main([
+            "baseline-reemit",
+            "--endpoint", endpoint,
+            "--statefile", str(h.statefile),
+        ])
+    text = out.getvalue()
+
+    assert code == 1
+    assert "commission-rollback" in text, text
+    assert h.live_config.read_text(encoding="utf-8") == "stale: true\n"
+    assert h.live_meta.read_text(encoding="utf-8") == '{"status": "stale"}'
+    assert "config_path: /somewhere/else.yml" in h.statefile.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("endpoint", ["ring", "aloop"])
+def test_baseline_reemit_force_overrides_the_commission_load_refusal(
+    monkeypatch, tmp_path, endpoint
+):
+    """`--force` is the documented escape hatch, and it actually passes.
+
+    Same escape the sibling refusal offers. Asserted because a guard whose
+    override does not work is a guard an operator cannot get past in the one
+    situation they need to.
+    """
+    from jasper.cli.active_speaker import main
+
+    h = _anchor_reemit_harness(monkeypatch, tmp_path, commission_loaded=True)
+    code = main([
+        "baseline-reemit",
+        "--endpoint", endpoint,
+        "--force",
+        "--statefile", str(h.statefile),
+    ])
+    assert code == 0
+    assert h.live_config.read_text(encoding="utf-8") != "stale: true\n"
+    assert f"config_path: {h.live_config}" in h.statefile.read_text(encoding="utf-8")
+
+
+def test_baseline_reemit_published_evidence_names_no_temp_proof_dir(
+    monkeypatch, tmp_path
+):
+    """Published staged evidence must not name the deleted proof directory.
+
+    The anchor is proved in a `TemporaryDirectory` that is gone by the time the
+    metadata lands, and `validate_camilla_config` records the file it was handed
+    in BOTH `path` and (when the camilladsp binary exists) `argv`. Publishing
+    those verbatim writes evidence pointing at a path that cannot exist.
+
+    Nothing reads those two fields today — `_staged_candidate_ready` takes only
+    `status` — so this is evidence honesty rather than behaviour. It is pinned
+    because published evidence is exactly what a later reader trusts without
+    re-deriving, and because the publish block's comment claims it.
+    """
+    import json as _json
+
+    from jasper.active_speaker import staging as staging_mod
+    from jasper.cli.active_speaker import main
+
+    h = _anchor_reemit_harness(monkeypatch, tmp_path)
+
+    # Force a validation result that carries the proof path in both fields, the
+    # shape a Pi with camilladsp installed produces.
+    real_stage = staging_mod.stage_protected_startup_config
+
+    def _stage_with_validation(topology_arg, **kwargs):
+        payload = real_stage(topology_arg, **kwargs)
+        proof = payload["config"]["path"]
+        payload["config"]["validation"] = {
+            "status": "valid",
+            "path": proof,
+            "argv": ["/usr/local/bin/camilladsp", "--check", proof],
+        }
+        return payload
+
+    monkeypatch.setattr(
+        staging_mod, "stage_protected_startup_config", _stage_with_validation
+    )
+
+    code = main([
+        "baseline-reemit",
+        "--endpoint", "ring",
+        "--statefile", str(h.statefile),
+    ])
+    assert code == 0
+
+    published = _json.loads(h.live_meta.read_text(encoding="utf-8"))
+    blob = _json.dumps(published)
+    assert "jts-reemit-anchor-" not in blob, blob
+    validation = published["config"]["validation"]
+    assert validation["path"] == str(h.live_config), validation
+    assert str(h.live_config) in validation["argv"], validation
+    # The VERDICT still travels — only its locations were corrected.
+    assert validation["status"] == "valid", validation
+
+
+def test_baseline_reemit_publishes_the_anchor_pair_durably(monkeypatch, tmp_path):
+    """BOTH halves of the anchor pair are fsynced, not just the graph.
+
+    The graph is written `durable=True` because it is the box's next boot graph.
+    Its staged metadata is what LOCATES that graph — the runtime contract follows
+    `config.path` — so a power cut that keeps the durable half and loses the
+    non-durable one leaves the box off its anchor. It parks silent and still
+    takes deploys, so this is availability rather than safety, but the two halves
+    should survive together and the fix is one kwarg.
+    """
+    from jasper import atomic_io
+    from jasper.cli.active_speaker import main
+
+    h = _anchor_reemit_harness(monkeypatch, tmp_path)
+    text_calls: list[tuple[str, dict]] = []
+    json_calls: list[tuple[str, dict]] = []
+    real_text = atomic_io.atomic_write_text
+    real_json = atomic_io.atomic_write_json
+
+    def _spy_text(path, text, **kwargs):
+        text_calls.append((str(path), kwargs))
+        return real_text(path, text, **kwargs)
+
+    def _spy_json(path, payload, **kwargs):
+        json_calls.append((str(path), kwargs))
+        return real_json(path, payload, **kwargs)
+
+    monkeypatch.setattr(atomic_io, "atomic_write_text", _spy_text)
+    monkeypatch.setattr(atomic_io, "atomic_write_json", _spy_json)
+
+    code = main([
+        "baseline-reemit",
+        "--endpoint", "ring",
+        "--statefile", str(h.statefile),
+    ])
+    assert code == 0
+
+    graph_writes = [c for c in text_calls if c[0] == str(h.live_config)]
+    meta_writes = [c for c in json_calls if c[0] == str(h.live_meta)]
+    assert graph_writes, text_calls
+    assert meta_writes, json_calls
+    assert all(c[1].get("durable") for c in graph_writes), graph_writes
+    assert all(c[1].get("durable") for c in meta_writes), meta_writes

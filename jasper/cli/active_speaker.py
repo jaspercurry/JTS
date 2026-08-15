@@ -452,6 +452,36 @@ def _describe_safe_graph_for_refusal(decision: Any) -> str:
     return detail
 
 
+def _relocate_validation_evidence(
+    validation: Any, proof_path: Path, target: Path
+) -> Any:
+    """Re-point a validation result's own path fields from the proof dir to the target.
+
+    ``validate_camilla_config`` records the file it was handed — ``path`` on
+    every return branch, and the same string inside ``argv`` when the camilladsp
+    binary exists. The anchor is proved in a temporary directory that is deleted
+    before the metadata lands, so publishing the result verbatim would record a
+    path that cannot exist. The VERDICT is about bytes that are now at ``target``,
+    so the verdict travels and its locations are corrected with it.
+
+    Substring replacement over ``argv`` rather than a rebuilt command line: the
+    argv belongs to the validator, and guessing its shape here would be a second
+    place that knows how it invokes camilladsp.
+    """
+    if not isinstance(validation, Mapping):
+        return validation
+    proof, dest = str(proof_path), str(target)
+    relocated = dict(validation)
+    if relocated.get("path") == proof:
+        relocated["path"] = dest
+    argv = relocated.get("argv")
+    if isinstance(argv, list):
+        relocated["argv"] = [
+            dest if arg == proof else arg for arg in argv
+        ]
+    return relocated
+
+
 def _reemit_staged_startup_anchor(
     args: argparse.Namespace, topology: Any, device: str, source: str
 ) -> int:
@@ -478,6 +508,18 @@ def _reemit_staged_startup_anchor(
     proved are published over the live artifact. A refusal leaves the box's
     existing anchor untouched, which mirrors the applied path's "a refusal
     writes nothing at all".
+
+    SINGLE-FLIGHT AGAINST A LIVE COMMISSION LOAD. The path this publishes over is
+    not only the boot graph — it is the universal RE-MUTE anchor of the audible
+    commissioning flow. ``load_driver_commissioning_config`` records it as
+    ``previous_config_path``, and four controls reload exactly it: the
+    commission-load rollback, ``commission-rollback``, ``commission-ramp abort``,
+    and the operator's own by-ear ``commission-ramp ack --outcome too_loud``.
+    Moving it to a different endpoint while a driver is armed at level would
+    re-point the operator's stop button at a graph whose device this box may not
+    be arming yet. So this refuses while a commission load is active, mirroring
+    the refusal ``_cmd_commission_load`` already makes for the same shared
+    artifact; ``--force`` is the same escape hatch there. Roll back first.
     """
     import tempfile
 
@@ -490,6 +532,30 @@ def _reemit_staged_startup_anchor(
         staged_metadata_path,
     )
     from jasper.atomic_io import atomic_write_json, atomic_write_text
+
+    # Single-flight (see SINGLE-FLIGHT above). Checked BEFORE the stage, so a
+    # refused run does no work and touches nothing at all.
+    existing = load_commission_load_state()
+    if existing.get("status") == "loaded" and not args.force:
+        refusal = {
+            "status": "refused",
+            "reason": "commission_load_active",
+            "active_target": existing.get("target"),
+            "candidate_config_path": existing.get("candidate_config_path"),
+            "next_step": (
+                "A per-driver commissioning config is loaded, and this command "
+                "republishes the all-muted anchor that commission-rollback / "
+                "commission-ramp abort / `ack --outcome too_loud` reload. Run "
+                "`commission-rollback` first, or pass --force."
+            ),
+        }
+        if args.json:
+            print(json.dumps(refusal, indent=2, sort_keys=True))
+        else:
+            print("Re-emit refused: a per-driver commissioning load is active.")
+            print(f"  active target: {existing.get('target')}")
+            print(f"  {refusal['next_step']}")
+        return 1
 
     design_draft = load_design_draft()
     crossover_preview = load_crossover_preview(current_design_draft=design_draft)
@@ -581,9 +647,17 @@ def _reemit_staged_startup_anchor(
             )
 
         # Publish the PROVEN bytes. YAML first, then the metadata that locates
-        # it: the runtime contract finds this candidate by following the
-        # metadata's `config.path`, so metadata naming a not-yet-written graph
-        # would be a window where the box's anchor points at nothing.
+        # it. Both orders are recoverable — the anchor's path is FIXED, so
+        # metadata written first would locate the previous, still-valid bytes
+        # rather than nothing — but this order keeps the interleaved window
+        # pointing at a graph whose evidence is at worst one revision stale,
+        # instead of at bytes its evidence has never described.
+        # Second unlocked writer of this pair (the first is the /sound wizard's
+        # own staging): interleaved runs could leave one graph's metadata over
+        # another's bytes. Not locked here because no shared lock covers this
+        # pair today and inventing one is a two-writer change; both writers emit
+        # all-muted anchors for the same topology, so the bounded consequence is
+        # stale evidence, not an audible one.
         target = staged_config_path()
         meta_target = staged_metadata_path()
         try:
@@ -593,17 +667,37 @@ def _reemit_staged_startup_anchor(
         atomic_write_text(
             target, yaml, mode=target_mode, group_from_parent=True, durable=True
         )
-        # Only the three fields that name a LOCATION are rewritten; every other
-        # field describes the graph itself and is location-independent, so the
-        # published evidence stays the evidence that proved.
+        # Every field that names a LOCATION is rewritten — the three top-level
+        # ones and the validation result's own `path`/`argv`, which
+        # `validate_camilla_config` builds from whatever file it was handed and
+        # which would otherwise publish the deleted proof directory. Nothing
+        # reads those two today (`_staged_candidate_ready` takes only `status`),
+        # so this is evidence honesty rather than behaviour — but published
+        # evidence naming a path that cannot exist is exactly the kind of thing
+        # a later reader trusts. Every remaining field describes the graph
+        # itself and is location-independent, so the published evidence stays
+        # the evidence that proved.
         published = dict(payload)
         published["metadata_path"] = str(meta_target)
         published["config"] = {
             **payload["config"],
             "path": str(target),
             "basename": target.name,
+            "validation": _relocate_validation_evidence(
+                payload["config"].get("validation"), proof_path, target
+            ),
         }
-        atomic_write_json(meta_target, published, mode=0o640, group_from_parent=True)
+        # durable=True to match the graph write above: this file is what LOCATES
+        # the graph, so losing it to a power cut while the durable half survives
+        # leaves the box off its anchor until someone re-stages. It parks silent
+        # and still takes deploys, but the two halves should survive together.
+        atomic_write_json(
+            meta_target,
+            published,
+            mode=0o640,
+            group_from_parent=True,
+            durable=True,
+        )
 
         statefile = Path(args.statefile)
         statefile_written = False
@@ -690,10 +784,17 @@ def _cmd_baseline_reemit(args: argparse.Namespace) -> int:
     (the marker derives 1) -> ``jasper-fanin-coupling-reconcile shm_ring``, and
     the rollback is its mirror through ``--endpoint aloop``.
 
-    It is a pure re-emit from the IMMUTABLE applied snapshot — the same seam
-    ``/sound`` and the commissioning host use — so Layer A is rebuilt from the
-    evidence that was applied, not from any current draft. The only thing that
-    moves is the endpoint the graph is emitted against.
+    ON THE APPLIED PATH it is a pure re-emit from the IMMUTABLE applied snapshot
+    — the same seam ``/sound`` and the commissioning host use — so Layer A is
+    rebuilt from the evidence that was applied, not from any current draft, and
+    the only thing that moves is the endpoint the graph is emitted against. The
+    ANCHOR path below has no immutable snapshot to rebuild from: it re-stages
+    from the box's CURRENT design draft and crossover preview, so a draft edited
+    since the anchor was last staged does land in the re-staged graph. That is
+    the same derivation the ``/sound`` wizard's own staging runs, through the
+    same bind/protection/all-muted gates, and the result is all-muted either way
+    — but it is a real difference between the two paths, not a shared "only the
+    endpoint moves" guarantee.
 
     TWO GRAPH CLASSES ARE ACCEPTED, because a roleful box has two legal boot
     graphs and both have to be able to take step 1:
@@ -1495,6 +1596,17 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "PREVIEW: write the re-emitted YAML here and touch nothing else — "
             "no live artifact, no canonical copy, no statefile"
+        ),
+    )
+    reemit.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "re-stage the startup anchor even while a per-driver commissioning "
+            "load is active. Refused by default: this command republishes the "
+            "all-muted anchor that commission-rollback and the Stage-5 ramp's "
+            "abort / `ack --outcome too_loud` reload, so moving it mid-load "
+            "re-points the operator's own stop control"
         ),
     )
     reemit.add_argument("--json", action="store_true")

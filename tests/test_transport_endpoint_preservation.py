@@ -1282,3 +1282,73 @@ async def test_boot_anchor_is_byte_identical_on_every_non_ring_device(
         "the derived device block changed a NON-ring emit; #2364's blast radius "
         "was supposed to be the ring branch only"
     )
+
+
+async def test_boot_anchor_refuses_a_typod_ring_wire_instead_of_tracebacking(
+    tmp_path, monkeypatch
+):
+    """A bad ``JASPER_FANIN_RING_WIRE_FORMAT`` is this function's blocker, not a crash.
+
+    The applied path's twin is pinned in `test_active_speaker_baseline_profile.py`
+    and the candidate emitter's typed raise in `test_ring_active_endpoint.py`; the
+    anchor was the third same-shape site and the only one shipping unpinned.
+
+    Failing loud on a token neither language recognizes is right — jasper-fanin
+    parks on the same value rather than guessing a wire. What matters is HOW it
+    fails: `stage_protected_startup_config` is called by the `/sound/` wizard as
+    well as the CLI, so an unhandled `ValueError` here is a 500 on a household
+    page. It has to arrive as an ordinary staging blocker, and nothing may be
+    written.
+    """
+    from jasper.active_speaker.staging import stage_protected_startup_config
+    from jasper.fanin_coupling import RING_WIRE_FORMAT_ENV_VAR
+
+    topology, preset = _commissioning_box()
+    fanin_env = tmp_path / "fanin.env"
+    fanin_env.write_text(f"{RING_WIRE_FORMAT_ENV_VAR}=s32le\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.FANIN_ENV_PATH", str(fanin_env)
+    )
+
+    out_dir = tmp_path / "ring"
+    payload = stage_protected_startup_config(
+        topology,
+        preset=preset,
+        playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+        config_dir=out_dir,
+        metadata_path=out_dir / "staged_metadata.json",
+        run_config_check=False,
+    )
+
+    assert payload["status"] == "blocked", payload
+    codes = [
+        issue["code"]
+        for issue in payload["issues"]
+        if issue.get("severity") == "blocker"
+    ]
+    assert "ring_wire_declaration_invalid" in codes, payload["issues"]
+    detail = next(
+        issue["message"]
+        for issue in payload["issues"]
+        if issue.get("code") == "ring_wire_declaration_invalid"
+    )
+    assert RING_WIRE_FORMAT_ENV_VAR in detail, detail
+    assert "s32le" in detail, "the operator needs to see the value they typed"
+    # NOTHING was emitted — the refusal precedes the write, so a bad wire cannot
+    # leave a half-formed anchor behind.
+    assert not Path(payload["config"]["path"]).exists(), payload["config"]["path"]
+
+    # CONTROL: the same box at the ALSA lane is unaffected. The wire is resolved
+    # only for a ring sink, so a typo cannot block an unarmed box's ordinary
+    # re-stage — without this the assertion above would also pass if the branch
+    # blocked everything.
+    alsa_dir = tmp_path / "alsa"
+    alsa = stage_protected_startup_config(
+        topology,
+        preset=preset,
+        playback_device=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+        config_dir=alsa_dir,
+        metadata_path=alsa_dir / "staged_metadata.json",
+        run_config_check=False,
+    )
+    assert alsa["status"] == "staged", alsa["issues"]
