@@ -2844,6 +2844,52 @@ before classifying. What survives is measured where the correction commanded
 nothing and reported as `residual_offset_db`; a material, sufficient residual
 is the `level_mismatch` verdict, which is a finding, not a rollback.
 
+**That residual is a CHANGE, and its claim is bounded by where it was measured**
+(#2533). `measured − predicted` is an in-room gated capture against an on-axis
+two-branch model, and their level anchors do not agree; that disagreement is a
+standing property of the comparison, present before the apply and unchanged by
+it, so a residual that reports it is not reporting a level move. The probe
+therefore also takes the PRE-apply capture in the same frame — `entry_delta_db`,
+built by `_run_delta_probe`'s `_entry_delta_db` from `verify_priors.entry_baseline`
+(#2291's key; nothing new is retained) — and the standing term cancels. It is
+disclosed as `entry_anchor_offset_db`; `None` there means no pre-apply curve was
+usable, and then nothing is removed and the standing offset stays visible, on
+exactly `expected_offset_db`'s "nothing known" rule. The decomposition is an
+identity the record carries: `residual_offset_db == frame.offset_db −
+entry_anchor_offset_db`. Its one known incompleteness is bounded and named in the
+module: `commanded_delta` is the new correction's transfer relative to the RAW
+crossover, while the entry capture rides whatever graph was active, so on a
+REPEAT round the two differ by the previous correction's own transfer — exactly
+zero on a first apply, and zero in these bins whenever the previous round also
+commanded nothing there.
+
+The two conditions that reach the verdict subtract **different** numbers, and
+have to: (a) "did the level move" is a change question and reads the anchored
+residual, while (b) "do the quiet bins explain the graded failure" is measured
+against the model and so removes the quiet bins' whole absolute disagreement
+(`residual + anchor`, which is `frame.offset_db`). Handing (b) the anchored
+number would leave the standing offset inside the levelled error, and a genuine
+uncommanded shift on any speaker whose model is not perfectly anchored would
+arrive one gate later as `frame_mismatch` — true, but less specific.
+
+A third condition bounds the CLAIM rather than the finding. A residual is
+measured in the quiet bins and asserted across the graded ones, and nothing
+checked that those two sets meet: on 2026-08-15 the correction commanded
+463 Hz–12 kHz, so the quiet set was a 12–20 kHz sliver whose level was reported
+as a whole-band `uncommanded_level_shift`. The set's own span did not show it
+either — two strays at 493 Hz and 1.9 kHz made 158-of-160 bins above 12 kHz span
+463 Hz–20 kHz on paper — which is why `quiet_core_band_hz` is the INTERQUARTILE
+span and not the min/max `frame.band_hz` already reports. `quiet_probe_coverage`
+is that span in octaves over the graded band's, and `DELTA_PROBE_MIN_QUIET_COVERAGE`
+is 0.5 by derivation rather than by tuning: bins spread uniformly in log
+frequency have an interquartile span of exactly half that span, so the bar says
+only "less spread than a uniform sampling of the band it is claimed over".
+Under it, the verdict, the rollback answer and the household surface are all
+unchanged — narrowing them would make the instrument stricter on evidence it had
+just called unrepresentative, the inverse of the "a gate may only narrow"
+asymmetry below — and the reason alone narrows, to
+`uncommanded_level_shift_outside_probe_band`, with the covered band beside it.
+
 **A broadband TILT gets the same treatment, for the same reason** (#2521, owner
 ruling 2026-08-15: least-bad is adoptable with disclosure, hard stops are
 reserved for the safety class). `measured − predicted` is a cross-frame
@@ -2892,10 +2938,13 @@ reaches a refusal screen, so both are surfaced three other ways instead of
 passing silently: the probe logs at WARNING (band it was handed, band it
 graded, the frame's terms, the frame-removed grades, the gain and its
 intercept), the verdict is persisted as `verify.delta_probe` — the small
-durable summary, eight scalars: verdict, reason, the two level numbers, the
-frame's offset and tilt, and the bin count and span they were fitted over (a
-tilt from a narrow quiet region can be large and mean nothing, so `frame_fit`'s
-own ill-conditioning defence travels with the terms it qualifies) — and the
+durable summary: verdict, reason, the two level numbers, the standing anchor
+removed from the residual, the quiet evidence it was measured over (bin count,
+interquartile band, coverage — because a band-scoped reason is a claim ABOUT how
+little of the graded band its evidence covered), the frame's offset and tilt,
+and the bin count and span they were fitted over (a tilt from a narrow quiet
+region can be large and mean nothing, so `frame_fit`'s own ill-conditioning
+defence travels with the terms it qualifies) — and the
 done screen carries a caveat nudge alongside its "Verified." badge. When
 there are too few quiet bins to run the level discriminator at all, the verdict
 below it carries a `|level_check_unavailable` suffix in its `reason` — a
@@ -4544,5 +4593,23 @@ surfaces that report its terms; the numbers quoted for both — 203 of 4,000 swe
 draws, and p95 |tilt| 10.5 dB/octave over a 10-bin quiet span — are the gate's,
 re-derived on this branch before being written here. **The date below is
 deliberately NOT bumped**, for the same reason as the addendum above.
+
+**Addendum, 2026-08-15 — the residual becomes a change, and its band claim is
+bounded (#2533).** The three new paragraphs under "The delta probe verifies the
+apply" and the durable-summary sentence a few paragraphs below it were written
+against `delta_probe.classify_delta_probe` and
+`crossover_v2_flow._entry_delta_db` as landed on this branch. The cycle-4 figures
+quoted there — the reported −3.342 dB decomposing as −1.660 standing anchoring,
+−1.457 real measured change confined to 12–20 kHz and −0.221 declared graph move;
+the quiet set's 158-of-160 bins above 12 kHz with strays at 493 Hz and 1.9 kHz —
+are an OFFLINE re-derivation of session `cap_M_7TWNJJenpHAa4olM7tEA`'s retained
+`verify_priors`, not a fresh hardware run. Re-grading that record through the
+patched classifier reproduces the live `residual_offset_db` (−3.338 against the
+persisted −3.342, the difference being the 512-point decimation of a
+163,574-bin grid), removes a −1.528 anchor, and scores `quiet_probe_coverage`
+0.079 against a graded band of 539.6–9,970.6 Hz. The synthetic pins are in
+`tests/test_active_speaker_delta_probe.py`, the retention/re-grade contract in
+`tests/test_crossover_v2_stage_bridge.py`. **The date below is deliberately NOT
+bumped**, for the same reason as the two addenda above.
 
 Last verified: 2026-08-13

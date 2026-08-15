@@ -2833,6 +2833,17 @@ def _delta_probe_summary(probe: Any) -> dict[str, Any]:
     change the verdict — the gate only narrows — but they bound how much weight
     the two terms above can carry.
 
+    ``entry_anchor_offset_db`` and the three ``quiet_*`` terms are here for the
+    same reason one step further (#2533). ``residual_offset_db`` is now a level
+    CHANGE rather than an absolute disagreement, so the record has to say what
+    standing offset was subtracted to make it one — and ``None`` there means
+    nothing was, which changes how the number should be read. The quiet terms
+    bound the claim: ``uncommanded_level_shift_outside_probe_band`` is a verdict
+    ABOUT how little of the graded band its evidence covered, so the covered band
+    and the coverage travel with it. ``quiet_core_band_hz`` is deliberately not a
+    second copy of ``frame_band_hz``: that one is the min/max, and this one is
+    the interquartile span, which is the difference the verdict turns on.
+
     ``getattr`` throughout, and through the nested ``frame`` too: this runs
     against duck-typed probe stand-ins in tests, and an absent field is
     "unknown", never a raise that loses the whole snapshot.
@@ -2843,6 +2854,14 @@ def _delta_probe_summary(probe: Any) -> dict[str, Any]:
         "reason": str(getattr(probe, "reason", "") or ""),
         "expected_offset_db": getattr(probe, "expected_offset_db", 0.0),
         "residual_offset_db": getattr(probe, "residual_offset_db", None),
+        "entry_anchor_offset_db": getattr(probe, "entry_anchor_offset_db", None),
+        "quiet_n_bins": getattr(probe, "quiet_n_bins", None),
+        "quiet_core_band_hz": (
+            list(core) if isinstance(
+                core := getattr(probe, "quiet_core_band_hz", None), tuple
+            ) else None
+        ),
+        "quiet_probe_coverage": getattr(probe, "quiet_probe_coverage", None),
         "frame_offset_db": getattr(frame, "offset_db", None),
         "frame_tilt_db_per_octave": getattr(frame, "tilt_db_per_octave", None),
         "frame_n_bins": getattr(frame, "n_bins", None),
@@ -3082,13 +3101,13 @@ def persist_conductor_state(
                 # carry the stale key; nothing reads it.)
                 #
                 # The delta probe's verdict, on EVERY outcome including a pass
-                # (#1811). A non-rollback non-matched verdict — today only
-                # ``level_mismatch`` — otherwise reached no surface at all: the
+                # (#1811). A non-rollback non-matched verdict — ``level_mismatch``
+                # and ``frame_mismatch`` — otherwise reached no surface at all: the
                 # refusal path ignores it by design, so the household saw a
                 # clean "Verified." over a shape question the probe never got
-                # to answer. Four scalars, not the whole map: the verdict, why,
-                # and the two level numbers a reader needs to judge it. The
-                # full record stays in the journal.
+                # to answer. A summary, not the whole map: the verdict, why, and
+                # the numbers each non-rollback verdict is a claim ABOUT — see
+                # ``_delta_probe_summary``. The full record stays in the journal.
                 **(
                     {"delta_probe": _delta_probe_summary(conductor.delta_probe)}
                     if getattr(conductor, "delta_probe", None) is not None

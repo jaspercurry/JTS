@@ -19,6 +19,7 @@ conductor test file; importers name this module instead.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from dataclasses import dataclass, field
 from typing import Any
@@ -28,6 +29,7 @@ import numpy as np
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import fc_sweep as _fc
 from jasper.active_speaker.crossover_v2 import intervention as iv
+from jasper.active_speaker.crossover_v2.contracts import ResponseCurve
 from jasper.active_speaker.crossover_v2.round_evidence import (
     EntryBaseline,
     measured_response_from_analysis,
@@ -1605,6 +1607,42 @@ def _tracking_curve(c, error_db):
     predicted = np.asarray(c.measure_predicted_sum[1], dtype=float)
     error = error_db(freqs) if callable(error_db) else np.full_like(freqs, error_db)
     return freqs, predicted + error, predicted
+
+
+def _anchor_entry_baseline(c, error_db=0.0):
+    """Give ``c`` a PRE-apply capture in ``_tracking_curve``'s own frame (#2533).
+
+    The delta probe now reads the entry baseline as the anchor its residual is
+    measured against, so a probe fixture has to say what the model-vs-measurement
+    disagreement was BEFORE the apply — the same way ``_tracking_curve`` says
+    what it is after. ``error_db`` (callable or scalar) is that disagreement:
+    ``0.0``, the default, is a session whose model was anchored exactly right
+    going in, which is what every pre-#2533 probe test implicitly assumed by
+    reporting the absolute post-apply disagreement as a level move.
+
+    Without this the walked fixture's entry capture is an unrelated synthetic
+    response, so its anchor is a phantom (−4.5 dB on the eligible fixture) that
+    no test intended and none states.
+
+    Replaces only the curve and its exclusion mask; the record's identity
+    (program, mark, graph fingerprint, capture time) is the one the walk banked.
+    """
+    freqs = np.asarray(c.measure_commanded_delta[0], dtype=float)
+    commanded = np.asarray(c.measure_commanded_delta[1], dtype=float)
+    predicted = np.asarray(c.measure_predicted_sum[1], dtype=float)
+    error = error_db(freqs) if callable(error_db) else np.full_like(freqs, error_db)
+    # measured_pre = predicted_raw + error, and predicted_raw is the post-apply
+    # prediction with the command taken back out — the same recovery
+    # ``_entry_delta_db`` performs.
+    measured_pre = (predicted - commanded) + error
+    banked = c.measure_entry_baseline
+    assert banked is not None, "walk the session past ENTRY_BASELINE first"
+    c._measure_entry_baseline = dataclasses.replace(
+        banked,
+        curve=ResponseCurve(freqs, measured_pre),
+        excluded=tuple(False for _ in freqs),
+    )
+    return c._measure_entry_baseline
 
 
 def _boost_vocabulary_spy(seen: list[bool]):
