@@ -116,6 +116,101 @@ export function createIntegrityWatch({ win, doc, now, onLoss } = {}) {
   };
 }
 
+// One Web Audio render quantum. The grid every browser's audio graph runs on,
+// and therefore the grid a FIFO resync writes its silence onto.
+export const ZERO_RUN_QUANTUM = 128;
+
+// Bounded for the same reason `INTEGRITY_EVENT_CAP` is: a pathological capture
+// (a mic that died mid-sweep, a buffer that is mostly silence) must not grow
+// the relay event without limit. The FIRST runs are what attribution needs, and
+// `zero_run_count` stays exact past the cap.
+export const ZERO_RUN_RECORD_CAP = 8;
+
+// Scan an assembled capture for runs of digital silence at least one render
+// quantum long. Returns `{count, runs, quantum}`, or `null` when handed
+// something that is not an indexable buffer.
+//
+// WHY THIS EXISTS (issue #2557, verdict 2026-08-15). Every one of 13 testable
+// glitch events in the 2026-08-15 measurement campaign contained exactly one run
+// of 128 consecutive digital-zero samples starting at an index ≡ 0 mod 128 — one
+// whole render quantum, block-aligned, sitting in a live room's noise floor. No
+// clean control contained any such run (0/3; their longest natural zero run was
+// 13 samples). The zeros are the browser's own capture FIFO handing the graph a
+// silent quantum, and they are present in the Float32Array BEFORE this page
+// encodes it. That makes the fault a MEASURABLE fact at capture time rather than
+// an inference drawn from the analyzer's residual desync days later, which is
+// the whole difference between "retake this now" and "these numbers were wrong
+// and nobody knew".
+//
+// EXACT ZEROS ONLY — no epsilon, and the absence of one is load-bearing. A real
+// room's samples hit exact zero about 0.5 % of the time, so a tolerance band
+// would start matching quiet passages and manufacture false positives on the
+// takes it is supposed to clear; 128 consecutive EXACT zeros has a chance
+// probability around 10⁻²⁹⁵. That is #1765's banked lesson in one line: a
+// capture glitch is a SPLICE, never drift, and an epsilon fitted on a glitch is
+// an artefact. `-0 === 0` in JS, which is right — a negative zero float is a
+// digital zero; `NaN` compares false and correctly ends a run.
+//
+// WHAT IT CANNOT SEE, stated so nobody over-reads a zero count. A FIFO that
+// DROPS samples rather than inserting silence splices the content without
+// writing any zeros, so no scan of the data can witness it. And a run is not
+// self-evidently a fault: the offset is reported precisely because a run at
+// offset 0 has a benign reading (a graph that had not warmed up) that a boolean
+// would have hidden. This module reports; it never judges.
+//
+// COST. One linear pass with an early state machine and no copies, over the same
+// array `float32ToWavBlob` is about to walk sample by sample anyway — so the
+// scan is strictly cheaper than the encode that already follows it, and it runs
+// on the page thread, never on the audio render thread.
+export function scanZeroFillRuns(samples, options = {}) {
+  if (!samples || !Number.isFinite(samples.length)) return null;
+  const quantum = Number.isFinite(options.quantum) && options.quantum > 0
+    ? options.quantum : ZERO_RUN_QUANTUM;
+  const cap = Number.isFinite(options.cap) && options.cap >= 0
+    ? options.cap : ZERO_RUN_RECORD_CAP;
+  const runs = [];
+  const total = samples.length;
+  let count = 0;
+  let run = 0;
+
+  // `phase` is the run's offset on the render grid, computed here beside the
+  // offset it comes from so there is one writer for it and nothing downstream
+  // has to know which modulus to use. Phase 0 with `len === quantum` is the
+  // clean block-aligned fingerprint.
+  //
+  // A NONZERO PHASE DOES NOT RULE THE QUANTUM OUT, and a consumer that tested
+  // `phase === 0` would miss real events. One natural ambient zero sitting
+  // immediately beside a zero-filled quantum merges with it into a single run —
+  // `{offset: n - 1, len: 129, phase: 127}` — which still CONTAINS a whole
+  // block-aligned quantum. At the measured ambient zero density (P ≈ 0.005 per
+  // sample, either neighbour) that is roughly 1 % of events, which is why all 13
+  // events of the 2026-08-15 campaign happened to read phase 0 and why that
+  // must not be read as a rule. So the three fields are reported together and
+  // the question to ask of a run is CONTAINMENT — does `offset`/`len` cover an
+  // aligned quantum — never phase alone.
+  const closeRun = (end) => {
+    if (run < quantum) return;
+    count += 1;
+    if (runs.length < cap) {
+      const offset = end - run;
+      runs.push({ offset: offset, len: run, phase: offset % quantum });
+    }
+  };
+
+  for (let i = 0; i < total; i += 1) {
+    if (samples[i] === 0) {
+      run += 1;
+      continue;
+    }
+    if (run !== 0) {
+      closeRun(i);
+      run = 0;
+    }
+  }
+  closeRun(total);
+  return { count: count, runs: runs, quantum: quantum };
+}
+
 // Build the wire object the page posts alongside its capture.
 //
 // FAIL-SOFT BY CONSTRUCTION: every field is omitted when its source is absent,
@@ -126,9 +221,21 @@ export function createIntegrityWatch({ win, doc, now, onLoss } = {}) {
 // `stats` is `recorder.captureStats()` from measurement-audio.js. Read its
 // comment for what the counters can and cannot see: they measure the AUDIO
 // RENDER GRAPH (quanta the worklet was handed), so they catch a render-thread
-// stall but NOT a resync inside the browser's upstream microphone FIFO. When
+// stall but NOT a resync inside the browser's upstream microphone FIFO — and
+// `silent_blocks` does not close that gap either, because it counts only the
+// `process()` calls handed NO input array at all. A FIFO resync hands the
+// worklet a perfectly ordinary input array that happens to be full of zeros, so
+// `silent_blocks` read 0 on every one of the #2557 events. `samples` is what
+// closes it: the counters describe the graph, the scan describes the DATA. When
 // `focus_lost` is true and `block_gaps` is 0, that asymmetry is itself the
 // finding — it places the discontinuity upstream of the worklet.
+//
+// `samples` is the assembled capture — the same Float32Array `encodedFrames`
+// counts and the encoder is about to read. Passing it scans it (see
+// `scanZeroFillRuns`); passing nothing omits the zero-run keys entirely, so an
+// absent scan never reads as a clean one. Nothing on the host branches on these
+// keys: they are DISCLOSURE, and the host's own residual-desync classifier is
+// what refuses such a take.
 //
 // `encodedFrames` (issue #2094) is the number of frames this page is about to
 // hand the WAV encoder — `samples.length` at the call site. It is the page's
@@ -142,6 +249,7 @@ export function summarizeCaptureIntegrity({
   watch = null,
   stats = null,
   encodedFrames = null,
+  samples = null,
 } = {}) {
   const summary = {};
   if (watch) {
@@ -157,6 +265,15 @@ export function summarizeCaptureIntegrity({
     }
   }
   if (Number.isFinite(encodedFrames)) summary.encoded_frames = encodedFrames;
+  const zeroRuns = scanZeroFillRuns(samples);
+  if (zeroRuns) {
+    // A scanned capture reports its count even when that count is zero: "looked,
+    // found none" is the finding a household-facing retake decision would rest
+    // on, and it is exactly what an absent key must not be mistaken for.
+    summary.zero_run_quantum = zeroRuns.quantum;
+    summary.zero_run_count = zeroRuns.count;
+    summary.zero_runs = zeroRuns.runs;
+  }
   return summary;
 }
 

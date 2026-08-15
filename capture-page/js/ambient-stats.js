@@ -23,8 +23,8 @@
 // Node (tests/js/capture_ambient_stats_test.mjs) and cross-checked against
 // the real Python parser (tests/test_capture_page_ambient_stats_bridge.py).
 
-import { rmsToDbfs } from "./measurement-audio.js?v=20260814-1";
-import { CLIP_ABS_THRESHOLD } from "./level-events.js?v=20260814-1";
+import { rmsToDbfs } from "./measurement-audio.js?v=20260815-4";
+import { CLIP_ABS_THRESHOLD } from "./level-events.js?v=20260815-4";
 
 // MUST match jasper.audio_measurement.level_solver.AMBIENT_STATS_SCHEMA_VERSION.
 export const AMBIENT_STATS_SCHEMA_VERSION = 1;

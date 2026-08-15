@@ -718,7 +718,14 @@ Tokens are bearer tokens in a header. Sessions + blobs auto-expire at `ttl_s`
   `capture-page/js/capture-integrity.js`): whether the page held the foreground
   during the recording window (`focus_lost`, `focus_losses`, a bounded
   `focus_events` log) plus the render-graph block counters (`blocks`,
-  `block_gaps`, `block_gap_frames`, `silent_blocks`). It rides a REPEAT of the
+  `block_gaps`, `block_gap_frames`, `silent_blocks`) plus the frame ledger's page
+  end (`frames`, `encoded_frames`, #2094) plus a scan of the assembled capture
+  for a zero-filled render quantum (`zero_run_count`, a bounded `zero_runs` log
+  of `{offset, len, phase}`, and `zero_run_quantum`, #2557). Note what
+  `silent_blocks` is NOT: it counts render callbacks handed no input array at
+  all, so it stays 0 through the zero-FILLED array an upstream FIFO resync
+  delivers — the scan is what witnesses that, and it reads the data rather than
+  the graph. It rides a REPEAT of the
   whole armed event, not a partial one — the phone-event slot is
   last-write-wins, and the runner's arm-once guard makes the repeat a no-op.
   Posting it before the blob is the ordering guarantee: the Pi reads the event

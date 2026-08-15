@@ -250,6 +250,21 @@ export async function createMonoRecorder(options = {}) {
     // log it still separates the two: a splice with focus lost and no render gap
     // places the fault upstream of the worklet.
     //
+    // `silent_blocks` DOES NOT COVER THAT EITHER, and its name oversells it
+    // (issue #2557, verdict 2026-08-15). It counts `process()` calls that were
+    // handed NO input channel at all — an input-starved render callback. The
+    // upstream FIFO resync hands the worklet a perfectly ordinary input array
+    // that happens to be filled with zeros, which is an ordinary block by every
+    // test here, so `silent_blocks` read 0 on all 13 events of the 2026-08-15
+    // measurement campaign while a whole 128-sample quantum of digital silence
+    // sat in each capture. The witness for that shape is a scan of the ASSEMBLED
+    // BUFFER (`scanZeroFillRuns` in capture-page/js/capture-integrity.js), which
+    // sees every zero-filled quantum this counter cannot and reports where each
+    // one landed. A second counter in here would only restate what that scan
+    // already proves — `len / quantum` recovers the block count — at the price
+    // of new work on the real-time render thread, so there deliberately is not
+    // one.
+    //
     // `frames` (issue #2094) is the left edge of the host's end-to-end frame
     // ledger: how many frames are in the array this worklet is transferring. It
     // is read off the assembled buffer rather than accumulated separately, so

@@ -40,12 +40,30 @@ same frame count back and takes channel 0 of a multichannel file without changin
 it. There is no counter to put between them because there is nothing between them
 that could change a count without failing loudly first.
 
-**Hop A is the one that cannot be closed, and saying so is the point.** A drop or
-resync inside the browser's microphone FIFO delivers an unbroken run of quanta
-whose CONTENT has a discontinuity; no Web Audio surface exposes it, so no counter
-here can see it. That hop keeps the analyzer's own splice detectors as its
-backstop, and a splice those find while this ledger balances is itself the
-finding: it places the loss upstream of the audio graph.
+**Hop A cannot be closed by COUNTERS — but since 2026-08-15 its DATA witnesses
+itself.** A drop or resync inside the browser's microphone FIFO delivers an
+unbroken run of quanta whose CONTENT has a discontinuity; no Web Audio surface
+exposes it, so no counter in this ledger can see it, and every count above goes
+on agreeing with every other. That much is unchanged. What changed is that the
+discontinuity no longer has to be inferred: issue #2557's verdict (2026-08-15)
+found that all 13 testable glitch events of that campaign carried exactly one run
+of 128 consecutive digital-zero samples beginning at an index ≡ 0 mod 128 — one
+render quantum, block-aligned, written into a live room's noise floor — while 0
+of 3 clean controls carried any such run (their longest natural zero run: 13
+samples). The capture page now scans its assembled buffer for that shape before
+upload (``scanZeroFillRuns`` in ``capture-page/js/capture-integrity.js``) and
+reports ``zero_run_count`` / ``zero_runs`` alongside the counts this module
+reconciles, so hop A's own signature arrives WITH the capture instead of being
+reconstructed from WAV forensics weeks later.
+
+This module reads none of those keys, and that is a boundary rather than an
+oversight: they are DISCLOSURE, and nothing here grades them. The analyzer's own
+splice detectors stay the thing that refuses such a take, and they still earn
+their place — a FIFO that drops samples rather than inserting silence splices the
+content without writing any zeros, so no scan of the data can witness that half.
+A splice those detectors find while this ledger balances AND the reported zero-run
+count is 0 therefore remains exactly the finding it always was: the loss is
+upstream of the audio graph, and it did not arrive as a silent quantum.
 
 **Hop B is the LEADING CANDIDATE for the 2026-08-03 shape, and is now counted
 exactly.** The worklet checks that ``currentFrame`` advances by exactly the
@@ -54,11 +72,18 @@ the record does not support is calling hop B the located cause: #2094's issue bo
 and the #2083 forensics both say the browser audio graph and the mic's USB link
 "cannot be separated" by signal analysis, and these counters postdate the
 incident, so no capture from that session was ever counted. The unseparated rival
-is hop A — the one hop above that is structurally invisible. That asymmetry is
-usable rather than merely regrettable: a FUTURE capture whose ledger balances,
-whose render gap is zero, and in which the analyzer still finds a splice is
-evidence FOR hop A, because every hop this module can count has just said it lost
-nothing.
+is hop A — the one hop above that no counter reaches. That asymmetry is usable
+rather than merely regrettable: a FUTURE capture whose ledger balances, whose
+render gap is zero, and in which the analyzer still finds a splice is evidence
+FOR hop A, because every hop this module can count has just said it lost nothing.
+
+That prediction was tested on 2026-08-15 and returned hop A — by direct data
+witness (the 128-sample zero run above), which is stronger than the elimination
+argument sketched here. It settles THAT campaign's events, not this paragraph's:
+the 2026-08-03 captures predate the signature and were never tested for it. So
+hop B stays the leading candidate for the 2026-08-03 shape on exactly the evidence
+it always had, and "leading candidate" stays the strongest word the record
+supports.
 
 Note what a hop-B loss does NOT do to the count comparison: the skipped frames
 were never handed to anyone, so ``frames``, ``encoded_frames`` and the host's
@@ -119,12 +144,16 @@ __all__ = [
 #: page and the host are separate releases: the wire spelling is a contract, not
 #: an implementation detail, and it should be greppable from both sides.
 #:
-#: This is the READ set, not the whole report. The page also sends ``blocks`` and
-#: ``silent_blocks``; neither is reconciled here — ``blocks`` is ``frames`` over
-#: the render quantum, a redundant restatement rather than an independent count,
-#: and ``silent_blocks`` is already inside ``block_gap_frames`` (see
-#: :attr:`FrameLedger.lost_at`). A constant for a key nothing reads would make
-#: this comment false, so neither has one until something reconciles it.
+#: This is the READ set, not the whole report. The page also sends ``blocks``,
+#: ``silent_blocks`` and the zero-run keys (``zero_run_count``, ``zero_runs``,
+#: ``zero_run_quantum``); none is reconciled here — ``blocks`` is ``frames`` over
+#: the render quantum, a redundant restatement rather than an independent count;
+#: ``silent_blocks`` is already inside ``block_gap_frames`` (see
+#: :attr:`FrameLedger.lost_at`), and counts only the render callbacks handed NO
+#: input array, so it says nothing about the zero-FILLED array a FIFO resync
+#: delivers (#2557); and the zero-run keys are hop-A DISCLOSURE that nothing has
+#: chosen to grade yet. A constant for a key nothing reads would make this
+#: comment false, so none has one until something reconciles it.
 REPORT_KEY_FRAMES = "frames"
 REPORT_KEY_ENCODED_FRAMES = "encoded_frames"
 REPORT_KEY_RENDER_GAPS = "block_gaps"
