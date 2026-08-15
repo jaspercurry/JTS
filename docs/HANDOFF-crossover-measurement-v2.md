@@ -3146,7 +3146,12 @@ Two further events cover what the correction COSTS (#1808, #1809):
 - `event=correction.crossover_v2_linearization_fit_band` — the band each
   driver was allowed to add level in, solved from its own crossover
   (`radiating_band_hz`, `crossover_order`). A boost outside it is the #1809
-  defect; cuts outside it are ordinary.
+  defect. Cuts outside it are ordinary, but only out to half an octave past:
+  since #2523 the whole solve runs over that widened band
+  (`linearization_fit._solve_band_mask`), so the branch's deep stopband is
+  excluded from the objective rather than corrected into. This event carries
+  the LIFT band; the reported `fit_band_hz` on each role's fit is where the
+  solve actually ran.
 - `event=correction.crossover_v2_linearization_headroom` — per role,
   `chain_peak_db` (what the emitted `crossover ⊗ linearization ⊗ trim` chain
   actually puts above unity), `headroom_cost_db` (that peak plus the 1.0 dB

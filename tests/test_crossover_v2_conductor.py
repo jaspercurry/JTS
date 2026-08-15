@@ -9810,22 +9810,48 @@ def test_prediction_gate_logs_the_improved_path_with_both_terms(caplog):
     peak an octave below Fc lives inside the woofer's radiating band and
     outside the tweeter's, so "where do these two drivers sit" has an 8 dB
     band-dependent answer and no level instrument can reconcile it. On Fc both
-    estimators see it. The fit still takes the peak out and still cannot fix
-    the comb, which is all this test needs: 3.90 dB pooled residual to 0.605,
-    ``after_passed=false``.
+    estimators see it.
+
+    **The two branches now carry their own halves of the crossover (#2523),
+    and that is a fixture DEFECT repaired rather than a threshold re-tuned.**
+    Until now both roles were handed the identical UNSHAPED curve — a tweeter
+    measuring full output at 200 Hz, three octaves below its own high-pass,
+    which no speaker can do. It survived because the defect was symmetric: both
+    roles were fitted over the same too-wide band, drew near-identical
+    corrections, and so realized matching levels. #2523 fits each role over its
+    own band, the symmetry breaks, and the accountability gate correctly
+    refused a pair whose tweeter correction was 8 filters of bass cut on a
+    driver the crossover already silences. So each branch is built the way
+    ``_healthy_crossed_over_pair`` builds its own — the shared shape THROUGH
+    that role's half of the matched LR4 — and the shape is retuned to an 8 dB
+    peak on a 5 dB, 5-cycle-per-octave comb, which reaches the same branch on
+    the same terms: ``reason=improved``, ``after_passed=false``. Measured on
+    both sides of #2523 so the fixture is not tuned to the change — 2.233 dB
+    pooled residual falling to 1.094 (before) / 1.176 (after), against a
+    0.5 dB floor.
     """
     caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    from jasper.active_speaker.branch_chain import (
+        CrossoverSection, crossover_response_db,
+    )
+
     freqs = _LINEARIZABLE_FREQS_HZ
-    peak_db = 12.0 * np.exp(-0.5 * ((np.log2(freqs / _FIXTURE_FC_HZ) / 0.4) ** 2))
-    comb_db = 5.0 * np.sin(2.0 * np.pi * np.log2(freqs / 200.0) * 3.0)
+    peak_db = 8.0 * np.exp(-0.5 * ((np.log2(freqs / _FIXTURE_FC_HZ) / 0.4) ** 2))
+    comb_db = 5.0 * np.sin(2.0 * np.pi * np.log2(freqs / 200.0) * 5.0)
     shape_db = peak_db + comb_db
-    shape_tf = (10.0 ** (shape_db / 20.0)).astype(complex)
+    lowpass = (CrossoverSection(fc_hz=_FIXTURE_FC_HZ, order=4, highpass=False),)
+    highpass = (CrossoverSection(fc_hz=_FIXTURE_FC_HZ, order=4, highpass=True),)
+    woofer_db = crossover_response_db(freqs, lowpass) + shape_db
+    tweeter_db = crossover_response_db(freqs, highpass) + shape_db
     trim_w, trim_t, _lw, _lt = solve_branch_trims(
-        freqs, shape_tf, shape_tf, _FIXTURE_FC_HZ,
+        freqs,
+        (10.0 ** (woofer_db / 20.0)).astype(complex),
+        (10.0 ** (tweeter_db / 20.0)).astype(complex),
+        _FIXTURE_FC_HZ,
     )
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(
-        program, woofer_db=shape_db, tweeter_db=shape_db,
+        program, woofer_db=woofer_db, tweeter_db=tweeter_db,
         trim_db={
             "woofer": round(float(trim_w), 3), "tweeter": round(float(trim_t), 3),
         },
@@ -10035,11 +10061,12 @@ def test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused(caplog):
     * *"the committed trim lands the two branches 0.32 dB apart where the
       pre-#1929 trim left them 2.85 dB apart."* **No longer true, and the reason
       is a genuine improvement.** Those were 2.847 and −0.321 dB under the flat
-      target; they are now 0.693 and 0.725 dB — the two arms land within 0.04 dB
+      target; they are now 0.853 and 0.885 dB (0.693 and 0.725 before #2523 gave
+      the solve its own band) — the two arms land within 0.04 dB
       of each other and both pass. **R10a made the pipeline robust to the
       pre-#1929 frame error.** The frame still mislevels the ANCHOR by its full
-      6.16 dB, but the ripple-optimal scan now walks it back: 6.0 dB in the
-      pre-#1929 arm against 0.8 dB in the shipped one, asserted below. Under the
+      6.16 dB, but the ripple-optimal scan now walks it back: 5.9 dB in the
+      pre-#1929 arm against 0.7 dB in the shipped one, asserted below. Under the
       flat target the scan could not, because the fit had already buried ~9 dB
       of spurious cut in the branch it was scanning, and the mislevel survived
       into the shipped pair. So the realized instrument no longer corroborates
@@ -10157,10 +10184,16 @@ def test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused(caplog):
     # flat target they read 2.847 and −0.321 dB. (It is not a fully independent
     # third opinion — it is ``solve_branch_trims``' own estimator re-read on the
     # trimmed pair, "One estimator, not a second opinion" per its own docstring.)
+    #
+    # Both moved +0.16 dB at #2523 (0.693 -> 0.853, 0.725 -> 0.885) because
+    # each branch is now fitted over its own solve band, which changes the
+    # filters both arms carry. They moved TOGETHER — the gap between the arms,
+    # which is this line's actual subject, is 0.032 dB before and after — and
+    # both still pass with 2.1 dB of margin on a 3.0 dB tolerance.
     before_difference_db = before_plan.realized_level_match.difference_db
     after_difference_db = after_plan.realized_level_match.difference_db
-    assert before_difference_db == pytest.approx(0.693, abs=0.05)
-    assert after_difference_db == pytest.approx(0.725, abs=0.05)
+    assert before_difference_db == pytest.approx(0.853, abs=0.05)
+    assert after_difference_db == pytest.approx(0.885, abs=0.05)
     assert abs(before_difference_db - after_difference_db) < 0.1
     assert before_plan.realized_level_match.matched is True
     assert after_plan.realized_level_match.matched is True
@@ -10168,24 +10201,26 @@ def test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused(caplog):
     # …and the MECHANISM that makes them agree, so the line above reads as a
     # measured rescue rather than a coincidence. Four graded pairs, two per arm,
     # ``(resolved, anchored)`` each: the pre-#1929 arm's anchor is mislevelled by
-    # the frame's full error and the ripple-optimal scan walks the tweeter 5.6 dB
+    # the frame's full error and the ripple-optimal scan walks the tweeter 5.9 dB
     # to undo it; the shipped arm's anchor is already right and the scan moves it
-    # 0.4 dB. That walk is what the flat target used to prevent, by burying ~9 dB
+    # 0.7 dB. That walk is what the flat target used to prevent, by burying ~9 dB
     # of spurious cut in the very branch the scan reads.
     #
     # Both walks grew 0.2 dB at R10b (5.4 -> 5.6 and 0.2 -> 0.4) because
     # the anchor each is measured FROM now carries the realized biquad cascade's
     # give-back rather than `predicted_response`'s Lorentzian, and again at
     # #2106 (5.6 -> 6.0 and 0.4 -> 0.8) because the boost the ruling permits
-    # reshapes both linearized branches the scan reads. The ratio the claim
-    # rests on survives — 7.5x, where the assertion asks for 5x — and the two
-    # arms' realized level match, the actual subject above, still lands them
+    # reshapes both linearized branches the scan reads. #2523 then shrank both
+    # (6.0 -> 5.9 and 0.8 -> 0.7): a solve confined to each branch's own band
+    # leaves the scan less to walk back. The ratio the claim rests on survives
+    # every one of those — 8.4x now, where the assertion asks for 5x — and the
+    # two arms' realized level match, the actual subject above, still lands them
     # within 0.04 dB of each other.
     #
     # The 10x the ratio assertion used to ask for is deliberately not kept.
     # The claim is that the scan's rescue SCALES with the frame error the arm
     # carries — large where the anchor is mislevelled by 6.16 dB, small where
-    # it is right — and 7.5x states that as clearly as 14x did. A threshold
+    # it is right — and 8.4x states that as clearly as 14x did. A threshold
     # tightened to whatever the fixture last happened to produce tests the
     # fixture rather than the claim; both magnitudes are pinned to +-0.1 dB
     # directly above it, which is the stricter statement anyway.
@@ -10193,16 +10228,26 @@ def test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused(caplog):
     (pre_resolved, pre_anchored, post_resolved, post_anchored) = graded
     pre_walk_db = abs(pre_resolved["tweeter"] - pre_anchored["tweeter"])
     post_walk_db = abs(post_resolved["tweeter"] - post_anchored["tweeter"])
-    assert pre_walk_db == pytest.approx(6.0, abs=0.1)
-    assert post_walk_db == pytest.approx(0.8, abs=0.1)
+    #
+    # Both walks shrank 0.1 dB at #2523 (6.0 -> 5.9 and 0.8 -> 0.7), because a
+    # solve that no longer spends filters outside each branch's own band leaves
+    # the ripple scan less to walk back. The ratio the claim rests on grew from
+    # 7.5x to 8.4x.
+    assert pre_walk_db == pytest.approx(5.9, abs=0.1)
+    assert post_walk_db == pytest.approx(0.7, abs=0.1)
     assert pre_walk_db > 5.0 * post_walk_db
-    # …and the pre-#1929 walk now sits EXACTLY ON the wild-trim guard's margin,
-    # which is a strict `>` — so the guard does not fire, by 0.0 dB. Pinned
-    # because it is one 0.1 dB scan step from firing: a future change that
-    # nudges this fixture up would silently move the pre-arm onto the guard's
-    # fallback branch and change which pair it commits.
-    assert pre_walk_db == pytest.approx(LINEARIZATION_TRIM_SANITY_MARGIN_DB, abs=0.05)
-    assert not pre_walk_db > LINEARIZATION_TRIM_SANITY_MARGIN_DB
+    # …and the pre-#1929 walk sits just UNDER the wild-trim guard's margin,
+    # which is a strict `>` — so the guard does not fire. It used to sit
+    # EXACTLY on it (6.0 against 6.0, clearing by 0.0 dB); #2523 bought it one
+    # 0.1 dB scan step of clearance, which is the same effect the issue names
+    # on live hardware. Still pinned tightly, because it is two steps from
+    # firing rather than none and a future change that nudges this fixture up
+    # would silently move the pre-arm onto the guard's fallback branch and
+    # change which pair it commits.
+    assert pre_walk_db < LINEARIZATION_TRIM_SANITY_MARGIN_DB
+    assert LINEARIZATION_TRIM_SANITY_MARGIN_DB - pre_walk_db == pytest.approx(
+        0.1, abs=0.05,
+    )
 
 
 def test_the_frame_still_disagrees_on_a_pair_that_is_perfect_by_construction():

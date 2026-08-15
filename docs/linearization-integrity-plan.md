@@ -249,11 +249,29 @@ order's plain reading and are recorded here rather than only in the code:
   2. The **fit's lift band is bounded to the driver's radiating side of its
      crossover** — the same own-side-of-Fc principle PR-L3 established for
      trim averaging, expressed as "within 3 dB of full output" so it also
-     bounds the knee. Cuts are unbounded: out-of-band leakage still reaches
-     the summed response and removing it spends no headroom. The defect: a branch
-     measured THROUGH its crossover reads that crossover's rolloff as a driver
-     deficit, and the L5 lift vocabulary "corrected" it with +11.6155 dB (Q 8)
-     at 2747 Hz, 750 Hz inside the woofer's own LR4 stopband.
+     bounds the knee. The defect: a branch measured THROUGH its crossover reads
+     that crossover's rolloff as a driver deficit, and the L5 lift vocabulary
+     "corrected" it with +11.6155 dB (Q 8) at 2747 Hz, 750 Hz inside the
+     woofer's own LR4 stopband.
+
+     **AMENDED 2026-08-15 (#2523).** This item used to continue "Cuts are
+     unbounded: out-of-band leakage still reaches the summed response and
+     removing it spends no headroom." The first clause is retired; the
+     justification is not. Cuts are bounded too, at a LOOSER band — the
+     radiating band widened by `branch_target.STOPBAND_GAIN_MARGIN_OCTAVES`
+     (half an octave), which is what the whole SOLVE now runs over
+     (`linearization_fit._solve_band_mask`). A shoulder cut is still kept, for
+     exactly the reason above. What changed is the far end: R10a (#1817) gave
+     the fit an IDEAL crossover as its target, and a real branch does not follow
+     one into its own deep stopband — breakup, cabinet leakage and the capture's
+     noise floor sit tens of dB above it — so the objective was being fed demand
+     no cut-only cascade can realize, and the greedy search spent filter slots
+     on it. Measured on the reconstructed fixture: all eight slots between 9.7
+     and 11.8 kHz on a branch declared to radiate to 1282.3 Hz, and
+     `correction_giveback_db` (the SSOT the linearized trim anchors on) reading
+     0.0136 dB against the 2.1668 dB the *same unbounded solve* returns on the
+     same fixture without its stopband floor — 2.15 dB of anchor, bought by
+     out-of-band content alone.
   3. `LinearizationFit.headroom_cost_db` is **stamped by the composer**, not
      computed by the fit core: a correction's cost is a property of the chain
      it is emitted into, and the topology-agnostic core knows neither the

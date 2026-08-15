@@ -57,6 +57,7 @@ from jasper.active_speaker.linearization_fit import (
     _ladder_smooth,
     _power_band_average_db,
     _shelf_stage,
+    _solve_band_mask,
     complex_correction_response,
     core_level_band_hz,
     driver_core_level_db,
@@ -65,7 +66,10 @@ from jasper.active_speaker.linearization_fit import (
     reduce_cuts_for_lift,
     solve_shared_level_frame,
 )
-from jasper.active_speaker.branch_target import SIGNIFICANT_GAIN_DB
+from jasper.active_speaker.branch_target import (
+    SIGNIFICANT_GAIN_DB,
+    STOPBAND_GAIN_MARGIN_OCTAVES,
+)
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.program_analysis import DriverResponse
 from jasper.correction.peq import PEQ, predicted_response
@@ -2649,6 +2653,371 @@ def test_the_bound_does_not_move_the_target_level_or_the_give_back():
     )
     assert bounded.target_level_db == unbounded.target_level_db
     assert driver_core_level_db(resp, envelope) == unbounded.target_level_db
+
+
+# --------------------------------------------------------------------------- #
+# the SOLVE band (#2523) — what the objective is FED, not how it is judged
+# --------------------------------------------------------------------------- #
+
+
+def _solve_band_fixture(
+    *,
+    fc_hz: float = 1600.0,
+    order: int = 4,
+    stopband_floor_db: float | None = None,
+    floor_from_declared_edge: bool = False,
+    in_band_extra: np.ndarray | None = None,
+    excited_hi_hz: float = 12_000.0,
+):
+    """A woofer measured THROUGH its own LR4 low-pass, carrying real in-band
+    shape to correct, and optionally the thing a real branch does that an IDEAL
+    crossover does not: a stopband that FLOORS instead of falling forever.
+
+    That floor is #2523 in one line. Breakup, cabinet leakage, the sibling
+    driver's bleed and the capture's own noise floor all put real energy where
+    a digital LR4 predicts −40, −60, −80 dB — and since R10a the fit grades the
+    branch against exactly that prediction. Every dB of the gap arrived at the
+    solve as a demand no cut-only cascade of eight filters at 12 dB apiece can
+    answer, in bins the crossover has already handed off.
+
+    The floor is applied strictly ABOVE the solve band's own edge, so a fixture
+    built with one differs from a fixture built without one *only* outside the
+    band the objective is entitled to see. ``floor_from_declared_edge`` moves
+    its onset down to the DECLARED edge instead — inside the solve band, so no
+    invariance claim may use it. It exists because the adaptive trim's walk
+    stops at one cut budget below target, and on a steep enough branch that
+    happens before the solve edge; a fixture whose floor starts past the trim's
+    own stopping point cannot demonstrate the unbounded reach it is there to
+    contrast against.
+
+    Returns ``(resp, envelope, sections, radiating_band_hz, solve_top_hz)``.
+    """
+    from jasper.active_speaker.branch_chain import (
+        CrossoverSection, crossover_response_db, radiating_band_hz,
+    )
+
+    sections = (CrossoverSection(fc_hz=fc_hz, order=order, highpass=False),)
+    band = radiating_band_hz(sections)
+    solve_top_hz = band[1] * 2.0 ** STOPBAND_GAIN_MARGIN_OCTAVES
+    db = (
+        crossover_response_db(_NATIVE_FREQS_HZ, sections)
+        - _bell(_NATIVE_FREQS_HZ, 700.0, 5.0, 0.3)
+        + _bell(_NATIVE_FREQS_HZ, 400.0, 3.0, 0.25)
+    )
+    if in_band_extra is not None:
+        db = db + in_band_extra
+    if stopband_floor_db is not None:
+        onset_hz = band[1] if floor_from_declared_edge else solve_top_hz
+        above = _NATIVE_FREQS_HZ > onset_hz
+        db = db.copy()
+        db[above] = np.maximum(db[above], stopband_floor_db)
+    resp = _driver_response("woofer", db)
+    envelope = _envelope("woofer", resp, excited_band_hz=(150.0, excited_hi_hz))
+    return resp, envelope, sections, band, solve_top_hz
+
+
+def _solve_band_fit(
+    resp, envelope, sections, band, *,
+    bounded: bool = True,
+    vocabulary: FitVocabulary = FitVocabulary(allow_boost=True),
+):
+    """The production call shape: boost vocabulary, the branch's own
+    crossover-shaped target, and either the declared band or the unbounded
+    ``(0, inf)`` a one-way box gets. The unbounded arm is the pre-#2523 solve
+    byte for byte — before this change ``radiating_band_hz`` reached only the
+    lift stage, so ``(0, inf)`` and "no bound at all" were the same fit."""
+    from jasper.active_speaker.branch_target import branch_target
+
+    return fit_driver_linearization(
+        resp, envelope,
+        vocabulary=vocabulary,
+        radiating_band_hz=band if bounded else (0.0, float("inf")),
+        target=branch_target(sections, envelope.freqs_hz),
+    )
+
+
+def test_the_solve_band_mask_widens_both_edges_from_one_helper():
+    """The mask itself, in isolation: both edges move by the SAME margin
+    through :func:`~jasper.active_speaker.branch_target.octave_scaled`, and
+    0/inf stay fixed points (a woofer has no lower bound to widen, a tweeter no
+    upper one)."""
+    grid_hz = np.geomspace(100.0, 20_000.0, 400)
+    everything = np.ones_like(grid_hz, dtype=bool)
+    span = 2.0 ** STOPBAND_GAIN_MARGIN_OCTAVES
+
+    assert _solve_band_mask(grid_hz, everything, None) is everything
+    assert _solve_band_mask(
+        grid_hz, everything, (0.0, float("inf")),
+    ).all(), "a one-way box's band narrows nothing"
+
+    used = grid_hz[_solve_band_mask(grid_hz, everything, (1000.0, 2000.0))]
+    assert used[0] >= 1000.0 / span and used[-1] <= 2000.0 * span
+    assert used[0] < 1000.0 and used[-1] > 2000.0, "both edges must widen"
+
+    woofer = grid_hz[_solve_band_mask(grid_hz, everything, (0.0, 2000.0))]
+    assert woofer[0] == grid_hz[0], "0 Hz is a fixed point — nothing below to widen"
+    tweeter = grid_hz[_solve_band_mask(grid_hz, everything, (2000.0, float("inf")))]
+    assert tweeter[-1] == grid_hz[-1], "inf is a fixed point"
+
+
+def test_an_empty_radiating_band_falls_back_instead_of_refusing_every_bin():
+    """A mid squeezed between two crossovers closer together than their own
+    edges honestly has no radiating band, and ``radiating_band_hz`` says so by
+    returning ``lo > hi``. Narrowing to nothing would refuse that driver every
+    bin; the pre-#2523 band is a better answer, and it is the same fallback
+    ``_core_level_mask`` takes for the same input."""
+    grid_hz = np.geomspace(100.0, 20_000.0, 400)
+    everything = np.ones_like(grid_hz, dtype=bool)
+    assert _solve_band_mask(grid_hz, everything, (4000.0, 1000.0)) is everything
+
+
+@pytest.mark.parametrize(
+    "fc_hz,order", [(800.0, 2), (1600.0, 4), (2500.0, 4), (4000.0, 8)],
+)
+def test_the_solve_band_is_the_declared_band_widened_by_the_branchs_own_margin(
+    fc_hz, order,
+):
+    """**One band vocabulary, not two.** The solve band's outer edge IS
+    :attr:`~jasper.active_speaker.branch_target.BranchTarget.gain_band_hz`'s —
+    both are :func:`~jasper.active_speaker.branch_chain.radiating_band_hz`
+    widened by :data:`~jasper.active_speaker.branch_target.
+    STOPBAND_GAIN_MARGIN_OCTAVES` through the same
+    :func:`~jasper.active_speaker.branch_target.octave_scaled`. If a future
+    change gives the gain bound its own margin, this fails and whoever splits
+    them has to say which band the solve gets.
+
+    **Asserted as an EQUALITY on the realized edge, which is what makes it a
+    pin.** An upper bound (``fit_band_hz[1] <= gain_band_hz[1]``) is satisfied
+    by any margin at or below the gain band's, so a solve-only split to a
+    quarter octave would pass one — the review's mutation of exactly that shape
+    is what this assertion exists to fail. What is compared is the top bin the
+    fit ACTUALLY solved over against the top grid bin inside
+    ``gain_band_hz``, so the number under test comes from the production mask
+    rather than from this fixture recomputing the margin for itself.
+
+    The fixture also proves the bound BITES across the crossover range — the
+    unbounded arm reaches past the edge on every corner — which is what makes
+    the equality meaningful rather than vacuous, and what keeps the invariance
+    tests below from passing on a no-op mask.
+    """
+    from jasper.active_speaker.branch_target import branch_target
+
+    resp, envelope, sections, band, solve_top_hz = _solve_band_fixture(
+        # Shallow enough to stay above the adaptive trim's own floor (one cut
+        # budget below target), so the unbounded walk actually runs past the
+        # solve edge on every corner in the sweep — including the steepest,
+        # where an LR8 is already 16 dB down by then.
+        fc_hz=fc_hz, order=order, stopband_floor_db=-8.0,
+        floor_from_declared_edge=True,
+    )
+    target = branch_target(sections, envelope.freqs_hz)
+    assert target is not None
+    assert solve_top_hz == pytest.approx(target.gain_band_hz[1])
+
+    bounded = _solve_band_fit(resp, envelope, sections, band)
+    unbounded = _solve_band_fit(resp, envelope, sections, band, bounded=False)
+    assert unbounded.fit_band_hz[1] > solve_top_hz, (
+        "the fixture must reproduce the unbounded reach to pin the fix"
+    )
+    # THE EQUALITY. The last grid bin inside the branch's own gain band, read
+    # off the BranchTarget rather than recomputed here, against the last bin the
+    # fit reports having solved over.
+    grid_hz = envelope.freqs_hz
+    last_in_gain_band = float(grid_hz[grid_hz <= target.gain_band_hz[1]][-1])
+    assert bounded.fit_band_hz[1] == pytest.approx(last_in_gain_band)
+
+
+def test_out_of_band_content_does_not_reach_the_solve():
+    """**The #2523 keystone.** Two branches identical everywhere the objective
+    is entitled to look, differing wildly above it: same filters, same band,
+    same level, same claim.
+
+    The contrast arm is what makes it a fix rather than a fixture. On the SAME
+    pair, the pre-#2523 solve spent its whole eight-filter budget, ran its fit
+    band from 2.4 kHz to 11.8 kHz, and reported a residual of ~19 dB rms — for
+    a branch whose in-band behaviour never changed by a decibel.
+    """
+    clean = _solve_band_fixture()
+    dirty = _solve_band_fixture(stopband_floor_db=-14.0)
+    solve_top_hz = clean[4]
+
+    # The fixtures really are identical below the edge and really do differ
+    # above it — otherwise this test proves nothing either way.
+    inside = _NATIVE_FREQS_HZ <= solve_top_hz
+    assert np.array_equal(
+        clean[0].magnitude_db[inside], dirty[0].magnitude_db[inside],
+    )
+    assert np.max(dirty[0].magnitude_db[~inside] - clean[0].magnitude_db[~inside]) > 20.0
+
+    clean_fit = _solve_band_fit(*clean[:2], clean[2], clean[3])
+    dirty_fit = _solve_band_fit(*dirty[:2], dirty[2], dirty[3])
+
+    assert dirty_fit.fit_band_hz == clean_fit.fit_band_hz
+    # ``approx`` and not ``==``, for the same reason the filter gains below are:
+    # the median is taken over a LADDER-SMOOTHED curve, and a 1/3-octave kernel
+    # sitting on the boundary bin averages ~5e-15 dB of the out-of-band floor
+    # inward across ~20 bins. Whether that survives into the median's last bit
+    # depends on summation order, so it is the same double on macOS and 1 ULP
+    # apart on Linux — an exact compare here was green locally and red on all
+    # three CI pytest legs.
+    assert dirty_fit.target_level_db == pytest.approx(clean_fit.target_level_db)
+    assert len(dirty_fit.filters) == len(clean_fit.filters)
+    for got, want in zip(dirty_fit.filters, clean_fit.filters):
+        assert got.biquad_type == want.biquad_type
+        assert got.freq == pytest.approx(want.freq)
+        assert got.q == pytest.approx(want.q, abs=1e-3)
+        # Not bit-identical, and the residue is the honest reason: the fit
+        # consumes a LADDER-SMOOTHED curve, and a 1/3-octave kernel sitting on
+        # the edge bin averages a little of what lies beyond it. That is the
+        # measurement bleeding, not the objective reading out of band — it is
+        # ~1e-4 dB here against the ~19 dB the objective moved.
+        assert got.gain == pytest.approx(want.gain, abs=1e-3)
+    assert dirty_fit.residual_rms_db == pytest.approx(clean_fit.residual_rms_db, abs=1e-3)
+
+    # …and the disclosure layer still shows every dB of it, because OBSERVE is
+    # deliberately whole-grid. A stopband the fit no longer solves in is still
+    # a stopband a reader is entitled to see.
+    assert (
+        dirty_fit.observe_octave_summary["8000"]
+        - clean_fit.observe_octave_summary["8000"]
+    ) > 20.0
+
+    # The give-back is the term that leaves this module: it is the SSOT
+    # ``crossover_v2.intervention.plan_linearization`` anchors each branch's
+    # linearized trim on. It too is unmoved by content out of band — to within
+    # the same smoothing bleed, which is why this is a tolerance and the
+    # filters above are not.
+    assert dirty_fit.correction_giveback_db == pytest.approx(
+        clean_fit.correction_giveback_db, abs=0.05,
+    )
+
+    # The contrast: this is what the solve did with it before #2523.
+    was = _solve_band_fit(*dirty[:2], dirty[2], dirty[3], bounded=False)
+    assert len(was.filters) == MAX_FILTERS_PER_DRIVER
+    assert was.fit_band_hz[1] > 4.0 * clean_fit.fit_band_hz[1]
+    assert was.residual_rms_db > 15.0
+    # …and the cost was not confined to the claim. Every filter went out of
+    # band, so the CORE band went uncorrected and the give-back with it — the
+    # anchor would have returned 2.15 dB less level than the branch's own
+    # correction actually removed. That is an emitted trim, not a report.
+    assert was.correction_giveback_db < 0.1
+    assert clean_fit.correction_giveback_db - was.correction_giveback_db > 2.0
+
+
+def test_a_fit_that_never_reaches_the_solve_edge_is_byte_identical():
+    """The regression arm: where the bound does not bite, nothing moved. A
+    woofer swept only to its own handoff has an envelope that runs out before
+    the solve band does, so the mask is an intersection with everything."""
+    resp, envelope, sections, band, solve_top_hz = _solve_band_fixture(
+        excited_hi_hz=1600.0,
+    )
+    bounded = _solve_band_fit(resp, envelope, sections, band)
+    unbounded = _solve_band_fit(resp, envelope, sections, band, bounded=False)
+    assert bounded.fit_band_hz[1] < solve_top_hz, (
+        "the fixture must run out before the bound does, or it pins nothing"
+    )
+    assert bounded.to_dict() == unbounded.to_dict()
+
+
+def test_the_solve_band_never_launders_an_in_band_drift():
+    """**The honesty guard is untouched.** The change is what the solver is
+    FED, not how its output is judged: an in-band deviation too deep for the
+    per-filter cut cap to answer must still be reported at full size.
+
+    Graded against the unbounded arm on the same response, so the claim is a
+    measured equality rather than a threshold nobody can fail. The trim's own
+    drift-rejection guard is a separate seam this change does not touch —
+    ``decide_trim`` is swept across its margin in both directions and both
+    level orderings by ``tests/test_crossover_v2_proposal.py::
+    test_the_drift_outcome_string_and_the_drift_strategy_are_the_same_bit``.
+    """
+    # A DEEP in-band dip under a CUT-ONLY vocabulary: the fit cannot fill it by
+    # construction, so the whole deviation survives into the claim and there is
+    # something real for a laundering bug to hide.
+    dip = -_bell(_NATIVE_FREQS_HZ, 600.0, 10.0, 0.2)
+    resp, envelope, sections, band, _top = _solve_band_fixture(in_band_extra=dip)
+    bounded = _solve_band_fit(
+        resp, envelope, sections, band, vocabulary=CUT_ONLY_VOCABULARY,
+    )
+    unbounded = _solve_band_fit(
+        resp, envelope, sections, band, bounded=False,
+        vocabulary=CUT_ONLY_VOCABULARY,
+    )
+
+    assert bounded.residual_max_db > 8.0, (
+        "an unrealizable IN-BAND deficit must still show in the claim"
+    )
+    # Not shrunk, and the direction is the assertion. The two arms are
+    # different fits — the unbounded one runs its greedy search over more bins
+    # and picks slightly different cuts — so this is a bound, not an equality:
+    # the mask may never make an in-band deficit look SMALLER than the solve
+    # that saw more of the spectrum reported it.
+    assert bounded.residual_max_db >= unbounded.residual_max_db - 1e-6
+    assert bounded.residual_max_db == pytest.approx(
+        unbounded.residual_max_db, abs=0.05,
+    ), "…and it is the same claim, not a different one that happens to be big"
+
+
+def test_a_resonance_between_the_declared_edge_and_the_solve_edge_is_still_cut():
+    """**Why the band is WIDENED, and not masked at the declared edge.** The
+    declared band is the −3 dB span; a driver feature just past it sits where
+    the crossover is a few dB down and the branch is still most of the sum.
+    Masking there refuses cuts this repo has twice measured as genuine work —
+    the resonance in
+    ``test_the_bound_is_boost_only_cuts_still_reach_out_of_band_leakage`` 0.17
+    octaves past the edge, and the conductor fixture's tweeter bump 0.39
+    octaves inside its high-pass edge that "turned a passing correction into a
+    refused one".
+
+    Both live inside half an octave, which is what the margin buys. This pins
+    the shoulder case directly: a resonance placed BETWEEN the two edges is
+    still cut, and the realized cascade actually removes most of it.
+    """
+    resp0, _env0, sections, band, solve_top_hz = _solve_band_fixture()
+    shoulder_hz = math.sqrt(band[1] * solve_top_hz)  # dead centre, in log f
+    assert band[1] < shoulder_hz < solve_top_hz
+
+    resp, envelope, sections, band, _top = _solve_band_fixture(
+        in_band_extra=_bell(_NATIVE_FREQS_HZ, shoulder_hz, 8.0, 0.2),
+    )
+    fit = _solve_band_fit(resp, envelope, sections, band)
+
+    grid_hz = envelope.freqs_hz
+    idx = int(np.argmin(np.abs(grid_hz - shoulder_hz)))
+    realized_db = 20.0 * np.log10(np.abs(
+        complex_correction_response(fit.filters, grid_hz)
+    ))
+    assert realized_db[idx] < -4.0, (
+        "the shoulder resonance must still be cut, and by most of its height"
+    )
+    assert [f for f in fit.filters if f.freq > solve_top_hz] == [], (
+        "…without placing a filter beyond the solve band"
+    )
+
+
+def test_a_demand_straddling_the_solve_band_edge_is_corrected_from_inside_it():
+    """The edge itself. A hard mask has an edge wherever it is drawn, and a
+    feature centred ON it can only be fitted from inside — so what has to hold
+    is that the correction still lands, not that a filter sits on the centre.
+
+    Sanity, not a free pass: the same fit must not answer the edge by reaching
+    past it, and the driver's own in-band shape must survive the encounter.
+    """
+    _r0, _e0, _s0, band, solve_top_hz = _solve_band_fixture()
+    resp, envelope, sections, band, _top = _solve_band_fixture(
+        in_band_extra=_bell(_NATIVE_FREQS_HZ, solve_top_hz, 9.0, 0.25),
+    )
+    fit = _solve_band_fit(resp, envelope, sections, band)
+
+    grid_hz = envelope.freqs_hz
+    realized_db = 20.0 * np.log10(np.abs(
+        complex_correction_response(fit.filters, grid_hz)
+    ))
+    edge_idx = int(np.argmin(np.abs(grid_hz - solve_top_hz)))
+    assert realized_db[edge_idx] < -3.0, "a straddling demand still gets answered"
+    assert all(f.freq <= solve_top_hz for f in fit.filters)
+    # No filter runs away trying to reach the half of the bell it cannot see.
+    assert all(f.gain >= -PER_FILTER_CUT_CAP_DB for f in fit.filters)
 
 
 # --------------------------------------------------------------------------- #

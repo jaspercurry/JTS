@@ -62,12 +62,27 @@ THIS module knows what a crossover is; it is handed a band, like every other
 bound it consumes. A driver measured through its own crossover carries that
 crossover's rolloff in its curve, and a boost-capable fit reads the rolloff as
 a driver deficit and spends gain undoing a filter the same graph emits three
-lines earlier. CUTS are not bounded: whatever leaks past the handoff still
-reaches the summed response, and removing it spends no headroom (a cut
-cannot raise a peak). A vocabulary that forbids
+lines earlier. A vocabulary that forbids
 boost still enforces the cut-only invariant with an explicit ``raise`` before
 returning (not a bare ``assert`` — a hardware-bound safety invariant must
 survive ``python -O``; see :func:`fit_driver_linearization`), pinned by a test.
+
+**The SOLVE runs over the same band widened by half an octave** (#2523), which
+is a SECOND, looser bound and not the one above. #1809's asymmetry stands
+exactly where it was measured: a cut past the handoff is ordinary useful work,
+because whatever leaks through still reaches the sum and removing it spends no
+headroom. What #1809 did not have to answer, because it predates R10a's
+crossover-shaped target, is how far past. A real branch does not follow an
+IDEAL crossover into its own deep stopband — it flattens into breakup, leakage
+and the noise floor — so graded against one, its stopband reads as tens of dB
+of "too loud" that no cut-only cascade of eight filters at 12 dB apiece can
+answer, and the greedy search spends slots there anyway. So the objective stops
+where the branch stops materially reaching the sum: the declared band widened
+by :data:`~jasper.active_speaker.branch_target.STOPBAND_GAIN_MARGIN_OCTAVES`,
+which keeps every shoulder cut #1809 measured and drops the deep-stopband
+demand it never looked at. Bins outside are EXCLUDED from the objective, never
+given a zeroed target — a zeroed target is still a demand a greedy search can
+win on. See :func:`_solve_band_mask`.
 
 **Boost filters AIMED at a band the cloud's positions disagree about are
 dropped** (#1967). :attr:`FitVocabulary.boost_excluded_bands_hz` is a
@@ -113,7 +128,12 @@ from jasper.correction.peq import design_peq, predicted_response
 from jasper.sound.profile import RESPONSE_SAMPLE_RATE_HZ
 
 from .branch_chain import chain_response
-from .branch_target import SIGNIFICANT_GAIN_DB, BranchTarget
+from .branch_target import (
+    SIGNIFICANT_GAIN_DB,
+    STOPBAND_GAIN_MARGIN_OCTAVES,
+    BranchTarget,
+    octave_scaled,
+)
 from .linearization_envelope import (
     ENVELOPE_CEILING_SENTINEL_DB,
     EnvelopeCurve,
@@ -1498,6 +1518,57 @@ def _adaptive_band_trim(
     return fit_lo_idx, fit_hi_idx
 
 
+def _solve_band_mask(
+    grid_hz: np.ndarray,
+    band_mask: np.ndarray,
+    radiating_band_hz: tuple[float, float] | None,
+) -> np.ndarray:
+    """``band_mask`` narrowed to the bins this branch still materially reaches
+    the summed response in (#2523) — the declared radiating band widened by
+    :data:`~jasper.active_speaker.branch_target.STOPBAND_GAIN_MARGIN_OCTAVES`.
+
+    This is the band the solve's OBJECTIVE runs over. Bins outside it are
+    EXCLUDED, not given a zeroed target: a zeroed target is still a demand, and
+    ``design_peq`` is greedy over the residue, so a bin that reads "you are
+    52.9 dB too loud" wins the search whatever the target says. Excluding it
+    means the search never sees it.
+
+    **Why the band has to be widened, and why by THIS margin.** The declared
+    radiating band is the -3 dB span, and masking the solve at exactly that
+    edge refuses cuts this repo has twice measured as genuine work: the
+    resonance 0.17 octaves past the edge in
+    ``test_the_bound_is_boost_only_cuts_still_reach_out_of_band_leakage``, and
+    the conductor fixture's tweeter bump 0.39 octaves inside its high-pass edge
+    that "turned a passing correction into a refused one". Both are bins where
+    the crossover is only a few dB down and the branch is still most of the
+    sum. The margin is the SAME half octave
+    :attr:`~jasper.active_speaker.branch_target.BranchTarget.gain_band_hz`
+    already widens the same band by, imported rather than restated, and the
+    reason it transfers is that its derivation transfers: half an octave past
+    an LR4 edge the branch is 8.46 dB down and still moves the sum by 0.285 dB
+    per dB of its own change (~29% leverage — see that constant's own comment).
+    That leverage argument is direction-agnostic; a cut moves the sum by the
+    same 0.285 dB per dB a boost does. One physical question, one number. Two
+    constants here would be the drift, not the safety.
+
+    ``None`` — every caller before #1809, and a one-way box's summed chain —
+    narrows nothing. An intersection that comes back EMPTY also narrows
+    nothing: a mid squeezed between two crossovers closer together than their
+    own edges honestly has no radiating band (:func:`~jasper.active_speaker.
+    branch_chain.radiating_band_hz` documents that case), and refusing it every
+    bin would be a worse answer than the pre-#2523 one. Same fallback posture,
+    and the same reason, as :func:`_core_level_mask`'s empty intersection.
+    """
+    if radiating_band_hz is None:
+        return band_mask
+    lo_hz, hi_hz = radiating_band_hz
+    narrowed = band_mask & (
+        (grid_hz >= octave_scaled(lo_hz, -STOPBAND_GAIN_MARGIN_OCTAVES))
+        & (grid_hz <= octave_scaled(hi_hz, STOPBAND_GAIN_MARGIN_OCTAVES))
+    )
+    return narrowed if narrowed.any() else band_mask
+
+
 # A falling top octave IS now compensated — by ``_hf_continuation_stage``
 # below, NOT by the falling-slope Lowshelf once sketched here. That earlier
 # "corner the shelf at ``fit_lo_hz``" guidance was the wrong shape: a shelf
@@ -2493,14 +2564,20 @@ def fit_driver_linearization(
     (the default, and every caller before #1809) means unbounded, which is
     also the honest answer for a one-way box's summed chain.
 
-    It bounds the LIFT stage and deliberately nothing else. Cuts still run to
-    the fit band's own edge — out-of-band leakage is real, reaches the summed
-    response, and removing it spends no headroom — and ``target_level_db``,
-    ``plateau_level_db`` and ``correction_giveback_db`` are all still read over
-    the envelope's own region. What #1809 is about is a driver spending GAIN
-    against its own crossover: the 2026-07-28 JTS3 woofer carried +11.6155 dB
-    (Q 8) at 2747 Hz, above its own 2 kHz LR4 crossover, which arrived at
-    +1.06 dB of net acoustic contribution and cost 11.6 dB of headroom.
+    It bounds two things at two widths, and the difference between them is the
+    whole design. LIFT is bounded at the band ITSELF (#1809): what that is
+    about is a driver spending GAIN against its own crossover — the 2026-07-28
+    JTS3 woofer carried +11.6155 dB (Q 8) at 2747 Hz, above its own 2 kHz LR4
+    crossover, which arrived at +1.06 dB of net acoustic contribution and cost
+    11.6 dB of headroom. The SOLVE — the shelf regression, the peaking loop's
+    design band, the CD-horn stage's eligibility, and the residual the FIT
+    claim is made over — is bounded at the band widened by
+    :data:`~jasper.active_speaker.branch_target.STOPBAND_GAIN_MARGIN_OCTAVES`
+    (#2523, :func:`_solve_band_mask`), because a cut in the SHOULDER still
+    reaches the sum and a cut 18 dB down the branch's own low-pass does not.
+    ``target_level_db``, ``plateau_level_db`` and ``correction_giveback_db``
+    are read over the envelope's own region under both bounds and neither
+    moves them.
 
     ``target_level_db`` staying whole-region is a POSITIVE choice, not an
     oversight. It is the LEVEL every stage here grades against — the shelf's
@@ -2549,8 +2626,11 @@ def fit_driver_linearization(
          smooth it.
       2. Fit band = envelope-nonzero bins, trimmed by the adaptive-band-trim
          walk (never fit past where the curve has already fallen more than
-         one filter's cut budget below target). The LIFT band is that band
-         intersected with ``radiating_band_hz``.
+         one filter's cut budget below target), then narrowed to the SOLVE
+         band — ``radiating_band_hz`` widened by
+         :data:`~jasper.active_speaker.branch_target.
+         STOPBAND_GAIN_MARGIN_OCTAVES`. The LIFT band is that band
+         intersected with ``radiating_band_hz`` itself.
       3. Target level = median of the smoothed curve over the trusted core
          passband (NOT the band minimum).
       4. Shelf stage: one cut-only Highshelf if the fit band's regression
@@ -2616,6 +2696,54 @@ def fit_driver_linearization(
     band_mask = np.zeros_like(envelope_mask)
     band_mask[fit_lo_idx:fit_hi_idx + 1] = True
     band_mask &= envelope_mask
+
+    # THE SOLVE BAND (#2523). The fit band, narrowed to where this branch still
+    # materially reaches the summed response — see :func:`_solve_band_mask`.
+    #
+    # **What was wrong, measured.** Since R10a the fit grades against the
+    # branch's own IDEAL digital crossover, and a real branch does not follow an
+    # ideal crossover into its own deep stopband: it rolls off, then flattens
+    # into breakup, leakage and the capture's noise floor. Every dB of that gap
+    # arrived at the solve as a demand. On the 2026-08-13 JTS3 run the woofer
+    # declared ``[0, 1361.6] Hz`` and the disclosure layer read tens of dB of it
+    # at 16 and 20 kHz.
+    #
+    # Reconstructed in ``test_out_of_band_content_does_not_reach_the_solve`` as
+    # a woofer behind a 1600 Hz LR4 whose stopband floors at −14 dB: the
+    # pre-#2523 solve spent ALL EIGHT filter slots between 9.7 and 11.8 kHz —
+    # including an −11.6 dB Highshelf at 11757.7 Hz — on a branch declared to
+    # radiate only to 1282.3 Hz, and reported 19.0133 dB rms of residual for it.
+    # The cost is not confined to the claim: that solve returned a
+    # ``correction_giveback_db`` of 0.0136 dB, against 2.1668 dB from the SAME
+    # unbounded solve on the same fixture WITHOUT the stopband floor — the
+    # budget that would have corrected (and so given back) the CORE band went
+    # out of band instead. (Under this bound the floored fixture reads 2.1112,
+    # i.e. back with its floor-free twin, which is the invariance the test
+    # asserts.) That number is the SSOT the flow anchors each branch's
+    # linearized trim on, so the whole 2.15 dB lands in an emitted trim and in
+    # the ripple scan that grades it.
+    #
+    # **The bound is on what the solver is FED, never on how its output is
+    # judged.** Every honesty guard downstream is untouched: the cut-only and
+    # per-filter-cap raises, the lift stage's envelope/stopband/boost-exclusion
+    # gates, the trim's own sanity margin. A genuine in-band drift rejects
+    # exactly as it did.
+    #
+    # **What this deliberately does NOT narrow.** ``level_mask`` (and so
+    # ``target_level_db``, ``plateau_level_db`` and ``correction_giveback_db``)
+    # is #1929's question and keeps #1929's answer. ``_observe_octave_summary``
+    # stays whole-grid: it is the DISCLOSURE layer, and a stopband the fit no
+    # longer solves in is still a stopband a reader is entitled to see. Masking
+    # a disclosure is how a fit stops being able to surprise anyone.
+    band_mask = _solve_band_mask(grid_hz, band_mask, radiating_band_hz)
+    # Re-read the band's edges off the mask the stages will actually run on, so
+    # ``design_peq``'s design band, the shelf's regression, the CD-horn stage's
+    # eligibility, the VERIFY band and the reported ``fit_band_hz`` cannot
+    # disagree with it. A no-op narrowing reproduces the trim's own indices
+    # exactly (its endpoints are envelope-mask bins by construction), so every
+    # caller that declares no crossover is byte-identical.
+    solve_idx = np.flatnonzero(band_mask)
+    fit_lo_idx, fit_hi_idx = int(solve_idx[0]), int(solve_idx[-1])
 
     # Where LIFT may go (#1809) — the fit band clamped to the side of the
     # crossover this driver actually radiates on.
