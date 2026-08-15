@@ -216,7 +216,7 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         # deployed page still advertises [1, 2, 3], so this page build must
         # publish AFTER the Pis stop emitting 1 and 2, not before.
         "supported_capture_protocol_versions": [3],
-        "capture_page_build": "20260815.1",
+        "capture_page_build": "20260815.2",
     }
     # The ?v= query is the page's ONLY cache-invalidation mechanism, and the
     # Pi's build gate checks the stamp's FORMAT, not its value — so a phone
@@ -224,7 +224,7 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
     # version.json without bumping this is therefore a shipping hazard, not a
     # cosmetic mismatch: that is what this pairing exists to catch, and what it
     # caught for the flat-linearization PR-3b page fix.
-    assert "main.js?v=20260815-1" in index_html
+    assert "main.js?v=20260815-2" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260802-1"' in main_js
     # Bumped with #2094: the recorder worklet now reports the frame count the
@@ -316,9 +316,9 @@ def test_the_digest_covers_the_shared_module_the_build_copies_in():
 # The published state of capture-page/js/**, paired with the build stamp it
 # ships under. See the test below for why a digest rather than a rule.
 _CAPTURE_PAGE_JS_DIGEST = (
-    "0a6944a570e1ad2aed673ad8f8a7a3445d34fa77621d7e979225cee4cc9a1268"
+    "ff0b6c4f9307b541457e7b2f841ee9fa10bf54196c843c236dfb91b4b4e1a04e"
 )
-_CAPTURE_PAGE_JS_DIGEST_BUILD = "20260815.1"
+_CAPTURE_PAGE_JS_DIGEST_BUILD = "20260815.2"
 
 
 def test_capture_page_js_cannot_change_without_a_deliberate_build_stamp_decision():

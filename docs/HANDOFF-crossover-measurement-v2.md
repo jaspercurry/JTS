@@ -260,10 +260,13 @@ A network blip on the begin exchange used to land in the same
 tap-to-continue state, which cost the first remote night a whole stage
 ([issue #2517](https://github.com/jaspercurry/JTS/issues/2517)): one blip at the
 admission moment became a 120 s `awaiting_arm` expiry. The capture page now
-re-sends that exchange automatically on a bounded backoff ladder before it ever
-asks for a tap (`withRelayReconnect` in
-[`capture-page/js/main.js`](../capture-page/js/main.js); the ladder's rungs and
-the safety argument for re-posting an identical begin are stated there). The
+re-sends that exchange automatically on a backoff ladder — bounded by both rung
+count *and* wall clock, so it can never spend the `awaiting_arm` budget the
+household's tap still needs — before it ever asks for a tap
+(`withRelayReconnect` in
+[`capture-page/js/main.js`](../capture-page/js/main.js); the rungs, the
+wall-clock arithmetic, and the safety argument for re-posting an identical
+begin are all stated there, not restated here). The
 distinction matters to a driver author: a **rejected** capture still needs a
 human and is #2506's problem, while a **transport** blip no longer does. Both
 still end the run if they outlast their budgets, so the envelope-stall

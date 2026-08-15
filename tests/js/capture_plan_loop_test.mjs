@@ -381,7 +381,14 @@ const createMonoRecorder = async () => {
   }
   return globalThis.__recorder;
 };
-const delayMs = async () => {};
+// RECORDS rather than merely swallowing (#2517 gate nit). A no-op stub makes
+// every duration in the page free, which is how a ladder whose 2 s / 4 s / 8 s
+// rungs carry a SAFETY claim shipped with nothing pinning those numbers. Tests
+// read globalThis.__delayCalls; the delay itself is still free, so the suite
+// stays instant.
+const delayMs = async (ms) => {
+  (globalThis.__delayCalls = globalThis.__delayCalls || []).push(Number(ms) || 0);
+};
 const safeReturnUrl = (spec) => {
   const raw = spec && typeof spec.return_url === "string" ? spec.return_url.trim() : "";
   if (!raw) return "";
@@ -4031,6 +4038,7 @@ async function testAdmissionPollBlipRetriesTheWholeBeginExchange() {
 // affordance and copy naming it — never an unbounded silent loop.
 async function testAnExhaustedBeginLadderFallsBackToTheManualAffordance() {
   statusHistory.length = 0;
+  globalThis.__delayCalls = [];
   const { onPlanStart, stopCapture } = await loadModule();
   globalThis.__recorder = makeRecorder();
   installDocument(makeStatusEl());
@@ -4050,6 +4058,13 @@ async function testAnExhaustedBeginLadderFallsBackToTheManualAffordance() {
     beginPosts(), 4,
     "one attempt plus three re-sends — the backoff ladder's length, no more",
   );
+  // The DURATIONS, not just the count. Every failure here is instant, so the
+  // whole ladder fits inside RELAY_BEGIN_RECONNECT_BUDGET_MS and all three
+  // rungs are spent — which is what makes this the right place to pin them.
+  assert.deepEqual(
+    globalThis.__delayCalls, [2000, 4000, 8000],
+    "the ladder waits 2 s / 4 s / 8 s between re-sends, in that order",
+  );
   const lastStatus = statusHistory[statusHistory.length - 1];
   assert.ok(
     lastStatus.includes(
@@ -4061,6 +4076,81 @@ async function testAnExhaustedBeginLadderFallsBackToTheManualAffordance() {
   const stopped = stopCapture();
   assert.ok(stopped, "Stop stays live after the ladder is spent");
   await stopped;
+  ok();
+}
+
+// 44g (#2517 gate SHOULD-FIX). Rung count is NOT a bound on time. One attempt
+// can sit in waitForCaptureAuthorized's fresh 20 s admission window before the
+// blip that ends it, so four rungs alone reach ~106 s — the whole of the Pi's
+// 120 s `awaiting_arm` budget, which is set once at admission and refreshed by
+// nothing these no-op re-posts do. The ladder must therefore also stop on wall
+// clock, and stop the SAME way rung exhaustion does, so the household's tap
+// still has budget to spend. Drives a stubbed clock rather than real time: the
+// point is the arithmetic, and 30 s of real sleeping proves nothing extra.
+async function testTheBeginLadderStopsOnWallClockNotJustRungCount() {
+  statusHistory.length = 0;
+  globalThis.__delayCalls = [];
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+
+  const spec = planSpec({ target: 1, maxAttempts: 2 });
+  const beginButton = makeNode("button");
+  beginButton.textContent = "I've positioned the mic — measure Woofer driver";
+
+  const realNow = Date.now;
+  let clock = realNow.call(Date);
+  let beginPosts = 0;
+  const client = {
+    async postEvent(event) {
+      if (event.begin_capture && !event.armed) {
+        beginPosts += 1;
+        // What the ladder cannot see from the outside: this attempt spent a
+        // full admission window before its poll blipped.
+        clock += 20000;
+        throw RELAY_TIMEOUT;
+      }
+      return { ok: true };
+    },
+    async fetchPhoneStatus() {
+      return { host_event: {} };
+    },
+    async putBlob() {
+      throw new Error("must not upload");
+    },
+  };
+  const ctx = makeCtx(spec, client);
+  ctx.captureRefs = {
+    buttons: [{ action: "begin_capture", el: beginButton }], levelMeters: [],
+  };
+
+  Date.now = () => clock;
+  try {
+    await onPlanStart(ctx);
+  } finally {
+    Date.now = realNow;
+  }
+
+  // Rungs alone would have spent all four attempts (and ~76 s of the Pi's
+  // window). The 30 s budget stops after the second: 20 s + a 2 s rung fits,
+  // 40 s + a 4 s rung does not.
+  assert.equal(
+    beginPosts, 2,
+    "slow attempts exhaust the wall-clock budget before the rung count",
+  );
+  assert.deepEqual(
+    globalThis.__delayCalls, [2000],
+    "the rung that could not fit inside the budget is never even started",
+  );
+  // …and the wall-clock stop is not a different, quieter ending: the household
+  // gets exactly the affordance rung exhaustion produces.
+  const lastStatus = statusHistory[statusHistory.length - 1];
+  assert.ok(
+    lastStatus.includes(
+      "Tap I've positioned the mic — measure Woofer driver to try again",
+    ),
+    `a budget stop surfaces the same manual affordance, got: ${lastStatus}`,
+  );
   ok();
 }
 
@@ -4734,6 +4824,7 @@ const tests = [
   testBeginPostBlipRetriesAutomaticallyWithNoHumanTap,
   testAdmissionPollBlipRetriesTheWholeBeginExchange,
   testAnExhaustedBeginLadderFallsBackToTheManualAffordance,
+  testTheBeginLadderStopsOnWallClockNotJustRungCount,
   testANonConnectivityBeginFailureSkipsTheRetryLadder,
   testTerminalCaptureResultMidSweepNamesTheReason,
   testStaleRejectedVerdictMidSweepIsIgnored,
