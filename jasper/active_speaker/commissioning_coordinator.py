@@ -136,6 +136,17 @@ _SUMMED_TEST_FAILURE_FAMILIES: tuple[tuple[tuple[str, ...], str], ...] = (
         "mode. Switch it back to the standard output path, then retry the "
         "combined test.",
     ),
+    # The box declares a ring wire nothing can resolve — an operator-set override
+    # that no longer parses. Mapped for the same reason as the code above: the
+    # backend sentence names the daemon that owns the other half, which reads as
+    # a command and which `_household_safe_reason` has no reason to strip. The
+    # household cannot fix a bad override from this card, so the copy sends them
+    # to the one place that shows it.
+    (
+        ("ring_wire_declaration_invalid",),
+        "This speaker's output connection is set to something JTS doesn't "
+        "recognise, so the combined test can't run. Open System status.",
+    ),
     # The quiet test path could not be opened or restored. Nothing the household
     # can prepare differently — retry, then escalate.
     (

@@ -39,6 +39,7 @@ from .camilla_yaml import (
     STARTUP_HEADROOM_DB,
     STARTUP_LIMITER_CLIP_LIMIT_DB,
     STARTUP_MUTE_GAIN_DB,
+    active_emit_devices,
     audible_outputs_for_role,
     emit_active_speaker_commissioning_config,
 )
@@ -1414,7 +1415,48 @@ def stage_protected_startup_config(
     software_guard_requested = _software_guard_requested_any(active_groups)
     blocker_count = sum(1 for issue in issues if issue.get("severity") == "blocker")
 
+    # THE ANCHOR'S DEVICE BLOCK IS DERIVED, NOT DEFAULTED (#2364). This graph is
+    # the box's durable BOOT anchor, so every half of its device contract has to
+    # match the endpoint it names. Forwarding only the device NAME left the other
+    # halves at the emitter's snd-aloop defaults, which on the ACTIVE ring is a
+    # sink of `jts_ring_active_playback` over a capture of `plug:jasper_capture`
+    # — the tap fan-in STOPS feeding under `shm_ring` — plus the program-lane
+    # format and the loopback chunk/target/queue geometry. That is a graph that
+    # names the right device and behaves like the wrong one: silence with every
+    # daemon healthy, and quiet, because nothing downstream inspects transport
+    # coherence (`build_startup_load_preflight`'s gates are about staging,
+    # identity, protection and level, never the transport).
+    #
+    # `active_emit_devices` is the ONE derivation for "what does an emit against
+    # THIS device have to declare", the same one `recompose_applied_baseline_yaml`
+    # reads — so the anchor and the applied baseline now answer the endpoint
+    # question in the same place instead of two. Non-ring devices get the
+    # emitter's own defaults back, so this is byte-identical on every box that is
+    # not armed.
+    #
+    # CROSS-BOOT SEMANTICS, stated because #2364 asked for them: the anchor names
+    # whichever endpoint the operator last chose, exactly as the applied baseline
+    # does. `baseline-reemit --endpoint ring` moves it to the ring, `--endpoint
+    # aloop` moves it back, and a re-stage in between re-derives from the live
+    # marker rather than freezing a stale answer.
+    devices = None
     if blocker_count == 0 and bound_preset and resolved_playback_device:
+        # A ring wire token neither jasper-fanin nor JTS can resolve must reach
+        # the operator as this function's ordinary blocker, not as a traceback
+        # out of a wizard or the CLI. Mirrors the applied path's refusal, code
+        # included, so one bad token reads the same wherever it surfaces.
+        try:
+            devices = active_emit_devices(resolved_playback_device, topology=topology)
+        except ValueError as exc:
+            issues.append(_issue(
+                "blocker",
+                "ring_wire_declaration_invalid",
+                f"this box declares a ring wire neither jasper-fanin nor JTS can "
+                f"resolve, so there is no wire to emit against: {exc}",
+            ))
+            blocker_count += 1
+
+    if blocker_count == 0 and bound_preset and resolved_playback_device and devices:
         try:
             out_path.parent.mkdir(parents=True, exist_ok=True)
             # Stage the production graph with an all-muted per-output mask
@@ -1422,9 +1464,20 @@ def stage_protected_startup_config(
             # real path: this same config is what later freezes as the durable
             # profile. Per-driver unmute is a transient runtime load, never the
             # frozen boot config — so the staged candidate is fully muted.
+            #
+            # Every device field is named EXPLICITLY, like the applied path's
+            # emit: a field added to `ActiveEmitDevices` and not added here is
+            # the subset-forwarding defect this block exists to close.
             emitted_config = emit_active_speaker_commissioning_config(
                 bound_preset,
                 playback_device=resolved_playback_device,
+                capture_device=devices.capture_device,
+                capture_format=devices.capture_format,
+                playback_format=devices.playback_format,
+                chunksize=devices.chunksize,
+                target_level=devices.target_level,
+                queuelimit=devices.queuelimit,
+                enable_rate_adjust=devices.enable_rate_adjust,
                 audible_outputs=frozenset(),
                 out_path=out_path,
                 baseline_id=f"staged-{_safe_stem(topology.topology_id)}",
@@ -1747,10 +1800,11 @@ def prepare_driver_commissioning_config(
     #
     # Scoped to THIS builder, not the shared context: `stage_protected_startup_config`
     # emits the all-muted durable BOOT anchor through the same context, and an
-    # armed box must keep being able to refresh that anchor. Disclosed rather
-    # than implied: that anchor therefore still emits the TAP shape on an armed
-    # box. It is all-muted and this path never loads it, so it excites nothing —
-    # but it is a real residual, and #2364 owns it.
+    # armed box must keep being able to refresh that anchor. The two builders
+    # answer the ring differently ON PURPOSE, and the difference is audibility:
+    # the anchor is all-muted and DERIVES its device block (#2364), so it can
+    # name the ring coherently; this emit is swept at level, so it refuses the
+    # ring outright and sends the operator through de-arm instead.
     #
     # Membership is over ALL ring PCMs, the same set `active_emit_devices` keys
     # on, so this reads the one owner of "is this a ring device" instead of

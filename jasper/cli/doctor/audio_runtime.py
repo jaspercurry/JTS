@@ -2281,13 +2281,20 @@ def check_ring_conf_floor_render() -> CheckResult:
     # every OK branch, so an operator never has to already know that the floor is
     # only one of the two gates. The WARN branches leave it off on purpose — see
     # the docstring.
+    # Says "roleful box", NOT "commissioned box": step 1 accepts either roleful
+    # boot graph — an applied baseline or the all-muted startup anchor a
+    # mid-commission box boots from — so an operator on the fleet-typical
+    # composite must not read this and conclude the arm is out of reach until
+    # commissioning finishes. It is not.
     roleful_note = (
         " This box is ROLEFUL (active crossover), so even a rendered conf.d "
         "does not make it ring on its own: the ACTIVE ring is armed only by an "
         "explicit `jasper-active-speaker baseline-reemit --endpoint ring` "
         "followed by jasper-audio-hardware-reconcile and "
         "`jasper-fanin-coupling-reconcile shm_ring`, never by the unattended "
-        "default pass."
+        "default pass. That first step works on a mid-commission box too — it "
+        "re-stages the all-muted startup anchor when no applied baseline is "
+        "saved yet."
         if _requires_roleful_graph()
         else ""
     )
