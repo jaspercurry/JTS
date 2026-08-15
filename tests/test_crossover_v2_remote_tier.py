@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import re
 import secrets
 import threading
@@ -71,6 +72,7 @@ from jasper.web.correction_crossover_v2 import (
     POSITION_READY_ENDPOINT,
     POSITION_TARGET_MISSING_CODE,
     REMOTE_POSITION_HOLD_BUDGET_S,
+    SESSION_CEILING_EXPIRED_CODE,
     PositionGate,
 )
 
@@ -427,6 +429,128 @@ def test_a_hold_whose_driver_never_answers_expires_loudly():
     assert gate.pending() is None
 
 
+def test_a_walk_that_outlives_its_ceiling_is_named_rather_than_left_generic():
+    """The CUMULATIVE bound, named (issue #2506).
+
+    ``REMOTE_POSITION_HOLD_BUDGET_S`` catches a driver that STOPPED. It cannot
+    catch one that answers every position too slowly to finish: stage 1 gates
+    nine begins under a 2520 s ceiling, so ~280 s a move exhausts the session
+    with no single hold anywhere near 600 s. That death used to limp on to the
+    relay link's own expiry and reach the household as ``relay_timeout`` — a
+    claim about a transport that never failed. It ends here instead, by name.
+    """
+    now = {"t": 0.0}
+    gate = PositionGate(clock=lambda: now["t"])
+    entry = _entry(-7, POSITION_ROLE_ONAX)
+    with pytest.raises(CaptureBeginDeferred):
+        gate.gate(9, 9, entry)
+    # A driver that is merely slow: nowhere near its own hold budget.
+    now["t"] = 280.0
+    with pytest.raises(CaptureBeginDeferred):
+        gate.gate(9, 9, entry)
+    assert now["t"] < REMOTE_POSITION_HOLD_BUDGET_S
+    gate.note_session_ceiling_expired()
+    with pytest.raises(CaptureBeginRefused) as refused:
+        gate.gate(9, 9, entry)
+    assert refused.value.code == SESSION_CEILING_EXPIRED_CODE
+    assert refused.value.code != POSITION_HOLD_EXPIRED_CODE
+    # …and the refused hold stops being advertised, so a driver is not still
+    # being asked to move an arm for a capture that will never run.
+    assert gate.pending() is None
+
+
+def test_the_modal_ceiling_death_announces_no_hold_it_is_about_to_refuse(caplog):
+    """The shape a real slow-driver run actually dies in.
+
+    The ceiling is crossed while the session is BETWEEN holds far more often
+    than during one: the driver releases position N, the page posts the begin
+    for N+1, and that begin is the first thing to meet the latch. Deciding the
+    refusal before publishing keeps the journal honest — one
+    ``session_ceiling_expired``, rather than a ``position_pending`` announcing
+    a hold that is refused in the same breath and never waited a second.
+    """
+    logger_name = "jasper.web.correction_crossover_v2"
+    # POSITIVE CONTROL FIRST. ``position_pending`` is an INFO line, so a
+    # WARNING-level capture would swallow it and the absence assertion below
+    # would pass against ANY implementation — instrument silence read as
+    # evidence. Prove the line reaches this capture before trusting its absence.
+    healthy = PositionGate()
+    with caplog.at_level(logging.INFO, logger=logger_name):
+        with pytest.raises(CaptureBeginDeferred):
+            healthy.gate(4, 4, _entry(7))
+    assert any(
+        "crossover_v2_position_pending" in rec.getMessage() for rec in caplog.records
+    ), [rec.getMessage() for rec in caplog.records]
+
+    caplog.clear()
+    gate = PositionGate()
+    with caplog.at_level(logging.INFO, logger=logger_name):
+        gate.note_session_ceiling_expired()
+        with pytest.raises(CaptureBeginRefused) as refused:
+            gate.gate(4, 4, _entry(7))  # a hold this gate has never opened
+    assert refused.value.code == SESSION_CEILING_EXPIRED_CODE
+    lines = [rec.getMessage() for rec in caplog.records]
+    assert not any("crossover_v2_position_pending" in ln for ln in lines), lines
+    ceiling = [ln for ln in lines if "crossover_v2_session_ceiling_expired" in ln]
+    assert len(ceiling) == 1, lines
+    assert "waited_s=0.0" in ceiling[0]
+    assert gate.pending() is None
+
+
+def test_a_stalled_driver_keeps_its_own_name_when_both_bounds_are_past():
+    """Order is load-bearing. On a walk long enough to reach the ceiling BOTH
+    bounds can be past at once, and "nothing answered this position" is the
+    more actionable of the two sentences — so the per-hold budget is tested
+    first and the cumulative name never absorbs a genuine stall."""
+    now = {"t": 0.0}
+    gate = PositionGate(clock=lambda: now["t"])
+    entry = _entry(22, POSITION_ROLE_OFFAX)
+    with pytest.raises(CaptureBeginDeferred):
+        gate.gate(6, 6, entry)
+    gate.note_session_ceiling_expired()
+    now["t"] = REMOTE_POSITION_HOLD_BUDGET_S + 1.0
+    with pytest.raises(CaptureBeginRefused) as refused:
+        gate.gate(6, 6, entry)
+    assert refused.value.code == POSITION_HOLD_EXPIRED_CODE
+
+
+def test_the_ceiling_latch_leaves_an_already_released_begin_alone():
+    """The latch ends a HOLD; it is not a second admission check.
+
+    A begin the driver already released is past this gate, and the measurement
+    volume is the thing that fails closed on a session past its ceiling
+    (``SessionVolumePlan.assert_ready`` refuses a stale-active plan). Refusing
+    here as well would put a second owner on that decision.
+    """
+    gate = PositionGate()
+    entry = _entry(0)
+    with pytest.raises(CaptureBeginDeferred):
+        gate.gate(3, 3, entry)
+    gate.release(3)
+    gate.note_session_ceiling_expired()
+    gate.gate(3, 3, entry)  # admitted — no raise
+
+
+def test_the_ceiling_refusal_is_a_registry_code_the_teardown_leaves_published():
+    """Both halves of what makes a gate refusal honest, for the new code.
+
+    The teardown arm trusts a gate refusal's own code only when the registry
+    knows it (else it degrades to ``relay_timeout``), and re-posts a terminal
+    host event only for codes the runner has NOT already published — so a code
+    missing from either set reaches the household as the transport lie the
+    other two gate codes exist to avoid.
+    """
+    from jasper.web.correction_crossover_v2 import POSITION_GATE_TERMINAL_CODES
+
+    assert SESSION_CEILING_EXPIRED_CODE in REASON_REGISTRY
+    assert SESSION_CEILING_EXPIRED_CODE in POSITION_GATE_TERMINAL_CODES
+    spec = REASON_REGISTRY[SESSION_CEILING_EXPIRED_CODE]
+    assert spec.retry_budget == 0
+    # The sentence must not be the per-hold one: the whole point is that
+    # nothing stalled.
+    assert spec.message != REASON_REGISTRY[POSITION_HOLD_EXPIRED_CODE].message
+
+
 def test_an_entry_with_no_target_is_refused_not_measured():
     """A remote plan emits a target on EVERY entry, so a missing one means the
     plan and the gate disagree about the session's shape."""
@@ -639,6 +763,34 @@ def test_a_finished_session_stops_advertising_its_hold():
         # …and a late driver POST cannot reach a gate nobody is holding.
         with pytest.raises(ValueError, match="no remote measurement is waiting"):
             setup._handle_crossover_v2_position_ready(_json_handler('{"index": 1}'))
+
+
+def test_the_ceiling_detector_reaches_the_live_gate_and_only_when_it_fires():
+    """The wiring behind the cumulative name (issue #2506).
+
+    Detection has ONE owner — the lazy enforcement the wizard/driver poll
+    already runs, which is the only thing that reads the plan's ``opened_at``
+    against the stage's own stamped ceiling. It also DRAINS what it finds, so a
+    gate sampling the plan on its own 1.5 s cadence would race that drain and
+    lose the fact; it is told instead. This pins both directions: a poll that
+    finds nothing stale must not latch anything.
+    """
+    gate = PositionGate()
+    quiet = SimpleNamespace(enforce_session_volume_ceiling_if_stale=lambda *_: False)
+    stale = SimpleNamespace(enforce_session_volume_ceiling_if_stale=lambda *_: True)
+    with _live_remote_slot(gate) as setup:
+        with pytest.raises(CaptureBeginDeferred):
+            gate.gate(7, 7, _entry(-22, POSITION_ROLE_OFFAX))
+        setup._enforce_session_volume_ceiling(quiet)
+        with pytest.raises(CaptureBeginDeferred):
+            gate.gate(7, 7, _entry(-22, POSITION_ROLE_OFFAX))
+        setup._enforce_session_volume_ceiling(stale)
+        with pytest.raises(CaptureBeginRefused) as refused:
+            gate.gate(7, 7, _entry(-22, POSITION_ROLE_OFFAX))
+        assert refused.value.code == SESSION_CEILING_EXPIRED_CODE
+    # A hand-walked session registers no gate at all, and the same poll must
+    # still enforce the ceiling rather than raise on the missing gate.
+    setup._enforce_session_volume_ceiling(stale)
 
 
 def test_the_release_route_admits_the_pending_capture():

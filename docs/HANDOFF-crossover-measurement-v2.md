@@ -251,9 +251,44 @@ nobody at the device therefore stops there and eventually dies on the runner's
 inactivity budget. **The driver should detect the stall from the envelope
 rather than wait it out** — a `relay` block that stays in flight while
 `position_pending` is absent and no new capture is accepted is the signature —
-and report it for a human. There is no auto-retry path today; whether to add
-one is deferred to [issue #2506](https://github.com/jaspercurry/JTS/issues/2506)
-until real runs show how often it matters.
+and report it for a human. There is no auto-retry path today
+([issue #2506](https://github.com/jaspercurry/JTS/issues/2506)), and the gap is
+about a CLASS, not a run count: a genuinely transient rejection — the
+`silent_auto_retry` vocabulary, `clipped` and `drift_baselines_disagree` — is
+one the same spot would clear on the next take, and it routes to a button no
+unattended session can press.
+
+**Do not size that gap from the 2026-08-15 remote deaths.** Those sessions died
+on rejected lateral captures, but the cause was located and it was not
+transient: a deterministic ~128-sample playback insertion in the fan-in render
+thread, which broke *every* lateral capture and which retries measurably did not
+clear ([issue #2533](https://github.com/jaspercurry/JTS/issues/2533)). Against a
+deterministic Pi-side fault an auto-retake is actively harmful — it would spend
+the tier's attempt budget re-measuring a defect and hide it behind a
+budget-exhausted death instead of a named rejection. That fault class has since
+been fixed ([#2536](https://github.com/jaspercurry/JTS/pull/2536),
+[#2542](https://github.com/jaspercurry/JTS/pull/2542)), which is exactly why the
+case left for auto-retry is the transient one. Whatever lands must stay bounded
+by the attempt budget already minted, and must keep the honest rejection
+visible when the budget runs out.
+
+What #2506 is blocked on is where the fire can live. **A retake cannot be fired
+from the Pi.** The relay protocol has the phone
+initiate every capture (`begin_capture {index, attempt}`), and the host→phone
+vocabulary — `capture_authorized` / `capture_deferred` / `capture_refused` /
+`capture_result` / `capture_set_complete` / `capture_set_exhausted` — carries no
+"record now". The page's only two begins that need no thumb are
+`advanceAfterAccepted` (an *accepted* verdict) and the `capture_deferred`
+re-post loop (which re-posts the identical begin, and only inside the
+begin→authorize exchange, before anything is recorded). A rejected verdict
+reaches neither. So the fire is the page's; what the Pi already publishes is the
+**decision** — `PhaseVerdict.to_relay_dict()` puts `template` and `auto_retry`
+(`spec.template == TEMPLATE_SILENT_AUTO_RETRY`, today `clipped` and
+`drift_baselines_disagree`) on the wire beside `attempts`, and the page reads
+neither field. Keep the class filter on the Pi when that lands: `auto_retry` is
+already the machine-readable "safe to retry from the same spot", and the
+geometry ask (`cloud_geometry_locked`, or remote's own
+`geometry_retake_unreachable`) is deliberately not in it.
 
 **A transient relay failure is NOT that stall — the page recovers on its own.**
 A network blip on the begin exchange used to land in the same
@@ -279,18 +314,31 @@ external positioner can serve neither, so a remote session ends with
 `geometry_retake_unreachable` and recommends running a Full measurement by
 hand. It never asks for a pose the positioner cannot reach.
 
-An unanswered hold does not wait forever: `REMOTE_POSITION_HOLD_BUDGET_S`
-(600 s) refuses it as `position_hold_expired`, because a dead driver would
-otherwise pin the measurement volume, the paused voice, and the relay slot
-indefinitely. Note this is a **per-hold** bound and not the operative total —
-the session's own wall-clock ceiling (`session_wall_clock_ceiling_s`, 2520 s
-for stage 1 and 2040 s for stage 2 at the shipped shape) covers the whole walk,
-so a merely-slow driver ends on that ceiling first. The hold cannot outlive its
-session: the relay slot drops the gate as soon as it leaves an in-flight
-status, and the gate clears its own pending state on both exits.
+**Two clocks end a hold, and they name different drivers.** An unanswered hold
+does not wait forever: `REMOTE_POSITION_HOLD_BUDGET_S` (600 s) refuses it as
+`position_hold_expired`, because a dead driver would otherwise pin the
+measurement volume, the paused voice, and the relay slot indefinitely. That is
+a **per-hold** bound and not the operative total — the session's own wall-clock
+ceiling (`session_wall_clock_ceiling_s`, 2520 s for stage 1 and 2040 s for
+stage 2 at the shipped shape) covers the whole walk, so a driver that answers
+every position but answers slowly ends on that ceiling with no single hold ever
+expiring. That death has its own name too, since
+[issue #2506](https://github.com/jaspercurry/JTS/issues/2506):
+`session_ceiling_expired`, refused by the gate on the next held begin after the
+lazy ceiling enforcement (the same envelope poll a driver is already making)
+reports the walk stale. It is checked **after** the per-hold budget, so a
+genuine stall keeps the more actionable sentence when both bounds are past. No
+new budget is introduced by that name: past the ceiling the session volume
+fails closed (`SessionVolumePlan.assert_ready` refuses a stale-active plan), so
+every capture after it was already doomed — what changed is that the session
+says so instead of limping on to the relay link's own expiry and reporting
+`relay_timeout`, a claim about a transport that never failed. The hold cannot
+outlive its session either: the relay slot drops the gate as soon as it leaves
+an in-flight status, and the gate clears its own pending state on both exits.
 Observability: `event=correction.crossover_v2_remote_session_open`,
 `…_position_pending` (with `degrees`), `…_position_released`,
-`…_position_hold_expired`, `…_geometry_retake_unreachable`.
+`…_position_hold_expired`, `…_session_ceiling_expired`,
+`…_geometry_retake_unreachable`.
 
 **The link is minted to outlive the stage.** A relay link is an absolute clock
 (`TIME_BUDGET_LINK` — minted once, refreshed by nothing), and the shared

@@ -89,6 +89,7 @@ from jasper.active_speaker.crossover_v2.journey import (
 from jasper.active_speaker.crossover_v2.vocabulary import (
     REASON_POSITION_HOLD_EXPIRED,
     REASON_POSITION_TARGET_MISSING,
+    REASON_SESSION_CEILING_EXPIRED,
 )
 from jasper.dsp_apply import DSP_PROOF_INACTIVE_RESULTS
 from jasper.log_event import log_event
@@ -6499,10 +6500,13 @@ def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
 #: this budget on several holds ends on that ceiling long before any individual
 #: hold expires: stage 1's ceiling is only 4.2 holds' worth, so the FIFTH full
 #: hold of a nine-capture walk exceeds it. A driver that stalls once is caught
-#: here by name; a driver that is merely slow at every position is caught
-#: there, and reads as a session timeout rather than as a position hold. Recorded rather than reconciled — whether the per-hold budget
-#: should instead be derived from the ceiling and the capture count is deferred
-#: to https://github.com/jaspercurry/JTS/issues/2506.
+#: here by name; a driver that is merely slow at every position is caught by the
+#: ceiling, and since issue #2506 that death has its OWN name too —
+#: :data:`SESSION_CEILING_EXPIRED_CODE`, raised by :meth:`PositionGate.gate`
+#: once :func:`enforce_session_volume_ceiling_if_stale` reports the walk
+#: outlived its ceiling. Whether the per-hold budget should instead be DERIVED
+#: from the ceiling and the capture count is still open; the two bounds are
+#: named separately on purpose, because they describe different drivers.
 REMOTE_POSITION_HOLD_BUDGET_S = 600.0
 
 #: Headroom added to a remote stage's own wall-clock ceiling when its relay link
@@ -6524,7 +6528,7 @@ REMOTE_RELAY_TTL_MARGIN_S = 300
 #: Machine reasons the gate answers a begin with. Stable strings: a driver
 #: branches on these, and the phone renders the message beside them.
 #:
-#: The two TERMINAL ones are the registry's own codes, aliased rather than
+#: The three TERMINAL ones are the registry's own codes, aliased rather than
 #: re-spelled: they are persisted as this session's failure and rendered to a
 #: household through ``REASON_REGISTRY``, so a second literal here would be a
 #: second definition of the same verdict. ``POSITION_HOLD_CODE`` has no registry
@@ -6533,12 +6537,17 @@ REMOTE_RELAY_TTL_MARGIN_S = 300
 POSITION_HOLD_CODE = "awaiting_position"
 POSITION_HOLD_EXPIRED_CODE = REASON_POSITION_HOLD_EXPIRED
 POSITION_TARGET_MISSING_CODE = REASON_POSITION_TARGET_MISSING
+SESSION_CEILING_EXPIRED_CODE = REASON_SESSION_CEILING_EXPIRED
 
 #: The gate's terminal codes, as a set — what the teardown arm below tests a
 #: refusal against to know the runner already published an honest
 #: ``capture_refused`` for it.
 POSITION_GATE_TERMINAL_CODES = frozenset(
-    {REASON_POSITION_HOLD_EXPIRED, REASON_POSITION_TARGET_MISSING}
+    {
+        REASON_POSITION_HOLD_EXPIRED,
+        REASON_POSITION_TARGET_MISSING,
+        REASON_SESSION_CEILING_EXPIRED,
+    }
 )
 
 #: The endpoint an external driver POSTs to report the microphone in place.
@@ -6606,8 +6615,19 @@ class PositionGate:
     Gating is per ``(index, attempt)``, so a retake re-gates — the same uniform
     rule rather than a special case that has to be reasoned about.
 
-    Thread-safe: :meth:`gate` runs on the relay worker thread and
-    :meth:`release` on an HTTP handler thread.
+    **Two bounds end a hold, and they name different drivers** (issue #2506).
+    :data:`REMOTE_POSITION_HOLD_BUDGET_S` is the per-hold one: a driver that
+    STOPPED answering. The session's own wall-clock ceiling is the cumulative
+    one: a driver answering every position, just too slowly to finish the walk.
+    The second is not measured here — this class keeps no session clock, because
+    the ceiling already has an owner (``SessionVolumePlan``'s ``opened_at`` plus
+    the stage's stamped ceiling) and a second clock for one bound is a second
+    definition of it. :meth:`note_session_ceiling_expired` is how the owner's
+    finding reaches the hold that is blocking on it.
+
+    Thread-safe: :meth:`gate` runs on the relay worker thread,
+    :meth:`release` and :meth:`note_session_ceiling_expired` on HTTP handler
+    threads.
     """
 
     def __init__(self, *, clock: Callable[[], float] | None = None) -> None:
@@ -6616,6 +6636,7 @@ class PositionGate:
         self._pending: dict[str, Any] | None = None
         self._released: set[tuple[int, int]] = set()
         self._opened_at: float | None = None
+        self._session_ceiling_expired = False
 
     # -- the relay worker's side ------------------------------------------- #
 
@@ -6625,7 +6646,8 @@ class PositionGate:
         Returns cleanly once the driver has released this ``(index, attempt)``;
         raises :class:`CaptureBeginDeferred` while it has not, and
         :class:`CaptureBeginRefused` when the hold outlived
-        :data:`REMOTE_POSITION_HOLD_BUDGET_S` or the entry carries no target.
+        :data:`REMOTE_POSITION_HOLD_BUDGET_S`, when the whole walk outlived the
+        session's wall-clock ceiling, or when the entry carries no target.
         """
         from jasper.active_speaker.crossover_v2_flow import (
             POSITION_DEG_KEY,
@@ -6658,7 +6680,56 @@ class PositionGate:
                 self._pending = None
                 self._opened_at = None
                 return
+            # BOTH refusals are decided before a NEW hold is published, so the
+            # modal ceiling death (release N, then the page's begin for N+1)
+            # emits ONE event instead of announcing a hold and refusing it in
+            # the same breath. This does not reorder the two bounds: a hold
+            # that has not opened has waited 0.0 s, which can never exceed the
+            # per-hold budget, so that check is vacuous here and the ordering
+            # below is exactly the ordering an OPEN hold sees.
             opened = self._opened_at
+            waited = 0.0 if opened is None else now - opened
+            if waited > REMOTE_POSITION_HOLD_BUDGET_S:
+                self._pending = None
+                self._opened_at = None
+                log_event(
+                    logger,
+                    "correction.crossover_v2_position_hold_expired",
+                    level=logging.WARNING,
+                    index=int(index),
+                    attempt=int(attempt),
+                    degrees=target,
+                    waited_s=round(waited, 1),
+                )
+                raise CaptureBeginRefused(
+                    POSITION_HOLD_EXPIRED_CODE,
+                    "Nothing reported the microphone in place, so the "
+                    "measurement stopped waiting.",
+                )
+            # Checked SECOND, so a stalled driver keeps the specific diagnosis
+            # even when both bounds are past: "nothing answered this position"
+            # is the more actionable of the two, and the cumulative name would
+            # otherwise absorb it on any walk long enough to reach the ceiling.
+            # ``waited_s`` on this line is the CURRENT hold's own wait, and a
+            # small value is the point — it is how the journal says no
+            # individual hold expired.
+            if self._session_ceiling_expired:
+                self._pending = None
+                self._opened_at = None
+                log_event(
+                    logger,
+                    "correction.crossover_v2_session_ceiling_expired",
+                    level=logging.WARNING,
+                    index=int(index),
+                    attempt=int(attempt),
+                    degrees=target,
+                    waited_s=round(waited, 1),
+                )
+                raise CaptureBeginRefused(
+                    SESSION_CEILING_EXPIRED_CODE,
+                    "The measurement ran out of time before the microphone "
+                    "reached every position.",
+                )
             if opened is None:
                 # A NEW hold: publish what is being waited on and start its clock.
                 self._opened_at = now
@@ -6682,26 +6753,6 @@ class PositionGate:
                     degrees=target,
                     role=role,
                 )
-                waited = 0.0
-            else:
-                waited = now - opened
-            if waited > REMOTE_POSITION_HOLD_BUDGET_S:
-                self._pending = None
-                self._opened_at = None
-                log_event(
-                    logger,
-                    "correction.crossover_v2_position_hold_expired",
-                    level=logging.WARNING,
-                    index=int(index),
-                    attempt=int(attempt),
-                    degrees=target,
-                    waited_s=round(waited, 1),
-                )
-                raise CaptureBeginRefused(
-                    POSITION_HOLD_EXPIRED_CODE,
-                    "Nothing reported the microphone in place, so the "
-                    "measurement stopped waiting.",
-                )
         raise CaptureBeginDeferred(
             POSITION_HOLD_CODE,
             f"Waiting for the microphone to reach {target:+d}°.",
@@ -6713,6 +6764,27 @@ class PositionGate:
         """What this session is waiting for, or ``None`` — the envelope's read."""
         with self._lock:
             return dict(self._pending) if self._pending else None
+
+    def note_session_ceiling_expired(self) -> None:
+        """Record that the walk outlived the session's wall-clock ceiling.
+
+        Called by the one component that DETECTS it —
+        :func:`enforce_session_volume_ceiling_if_stale`, the lazy enforcement
+        the wizard/driver poll already runs — rather than sampled here, for two
+        reasons. The ceiling belongs to ``SessionVolumePlan``, which stamps the
+        ``opened_at`` and the stage's own ceiling it is measured against; and
+        that enforcement DRAINS the volume it finds stale, so the plan stops
+        reporting ``stale_active`` a poll later. A gate that sampled the plan
+        would therefore race the drain and lose the fact it was looking for.
+        This is a LATCH for exactly that reason: once the walk has outlived its
+        ceiling, no later state can un-say it.
+
+        Idempotent, and safe to call with no hold pending — the next held begin
+        is the one that reports it, and a session whose captures are all done
+        never asks again.
+        """
+        with self._lock:
+            self._session_ceiling_expired = True
 
     def release(self, index: int | None = None) -> dict[str, Any]:
         """Report the microphone in place for the pending capture.
