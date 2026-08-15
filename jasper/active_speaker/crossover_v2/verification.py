@@ -96,6 +96,7 @@ from typing import TYPE_CHECKING, Any, Generic, Iterable, Mapping, TypeVar
 
 import numpy as np
 
+from ..delta_probe import VERDICT_LEVEL_MISMATCH, VERDICT_MATCHED
 from ..flat_spec import (
     FlatSpecReport,
     evaluate_flat_spec,
@@ -822,8 +823,6 @@ def evaluate_applied_safety(
     lets a host that never ran one pass ``None``.
     """
 
-    from ..delta_probe import VERDICT_LEVEL_MISMATCH
-
     clipped = (
         () if integrity is None
         else tuple(name for name in integrity.failed if name == CLIPPED_RUN_CHECK)
@@ -937,8 +936,6 @@ def evaluate_round_quality(
     :data:`~jasper.active_speaker.delta_probe.VERDICT_UNAVAILABLE` already
     draws: "no evidence to refuse on, and no permission granted either."
     """
-
-    from ..delta_probe import VERDICT_MATCHED
 
     if benefit.status is BenefitStatus.REGRESSED:
         return Verdict(
