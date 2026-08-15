@@ -511,6 +511,36 @@ def _get_relay_capture_for(*kind_prefixes: str) -> dict[str, Any] | None:
     return relay
 
 
+def _enforce_session_volume_ceiling(v2host: Any) -> None:
+    """Lazy wall-clock-ceiling enforcement, and the one place a live position
+    gate learns the walk outlived its ceiling (issue #2506).
+
+    The enforcement itself is unchanged and cheap on the happy path: an
+    in-memory ``stale_active`` check, then a force-drain of a session volume
+    that outlived the ceiling its stage armed. What is added is telling the
+    remote tier's :class:`~.correction_crossover_v2.PositionGate`, when there is
+    one, so a hold blocking on a slow-but-alive driver ends by NAME
+    (``session_ceiling_expired``) instead of limping on to the relay link's own
+    expiry and reaching the household as ``relay_timeout`` — a transport claim
+    about a transport that never failed.
+
+    It has to be told rather than sample the plan itself: this call drains what
+    it finds, so the plan stops reporting ``stale_active`` immediately after,
+    and a gate sampling on its own 1.5 s re-post cadence would race that drain.
+    Detection therefore has ONE owner, which is this call.
+    """
+    if not v2host.enforce_session_volume_ceiling_if_stale(_run_async, _camilla):
+        return
+    with _session_lock:
+        gate = _relay_position_gate
+    if gate is None:
+        return
+    try:
+        gate.note_session_ceiling_expired()
+    except (OSError, RuntimeError, ValueError):
+        logger.warning("could not mark the position gate's ceiling", exc_info=True)
+
+
 def _active_relay_phase() -> str | None:
     """Return the in-flight global relay phase that excludes DSP apply."""
 
@@ -7332,9 +7362,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     # W6.1 E3: lazy wall-clock-ceiling enforcement on read —
                     # a session volume that outlived its 1800 s ceiling is
                     # force-drained here (cheap in-memory stale check first).
-                    v2host.enforce_session_volume_ceiling_if_stale(
-                        _run_async, _camilla
-                    )
+                    _enforce_session_volume_ceiling(v2host)
                     payload, status = correction_crossover_flow.handle_status(
                         relay=_get_relay_capture_for(
                             "crossover_sweep:", "crossover_v2:", "level_ramp:crossover"
@@ -7352,10 +7380,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     # W6.1 E3: lazy wall-clock-ceiling enforcement on read (see
                     # /crossover/status) — the envelope is the wizard's poll, so
                     # a walked-away session's volume is restored within a poll of
-                    # crossing the ceiling even if no other drain path fires.
-                    v2host.enforce_session_volume_ceiling_if_stale(
-                        _run_async, _camilla
-                    )
+                    # crossing the ceiling even if no other drain path fires. It
+                    # is also the REMOTE driver's own poll, which is what makes
+                    # it the reliable detector for a slow-driver ceiling death.
+                    _enforce_session_volume_ceiling(v2host)
                     payload, status = correction_crossover_flow.handle_envelope(
                         relay=_get_relay_capture_for(
                             "crossover_sweep:", "crossover_v2:", "level_ramp:crossover"

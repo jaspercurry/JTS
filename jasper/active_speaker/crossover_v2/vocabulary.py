@@ -255,7 +255,7 @@ REASON_USER_STOPPED = "user_stopped"
 # forward. RETAINED but unreached since the two-stage split (D10): no shipped
 # session holds for an apply any more.
 REASON_REVIEW_HOLD_TIMEOUT = "review_hold_timeout"
-# The EXTERNALLY POSITIONED tier's two gate refusals (``TIER_REMOTE``). Named
+# The EXTERNALLY POSITIONED tier's three gate refusals (``TIER_REMOTE``). Named
 # reasons rather than a fall-through to ``relay_timeout`` because the position
 # gate is consulted AHEAD of the conductor — nothing sets ``last_failure_code``
 # on this path, so an unnamed gate refusal persisted as "the measurement link
@@ -267,11 +267,23 @@ REASON_REVIEW_HOLD_TIMEOUT = "review_hold_timeout"
 #   position_target_missing— a plan entry carried no target angle, so the gate
 #                            refused rather than measure an unknown position.
 #                            A build-shape disagreement, not an operator error.
+#   session_ceiling_expired— the WHOLE walk outlived the session's wall-clock
+#                            ceiling while a hold was pending, with no single
+#                            hold having expired (issue #2506). The per-hold
+#                            budget catches a driver that STOPS; this catches
+#                            one that is merely slow at every position, and it
+#                            is a different sentence: nothing stalled, the walk
+#                            ran out of measurement window. Without it that
+#                            death limped on to the relay link's own expiry and
+#                            reached the household as ``relay_timeout`` — the
+#                            same transport claim about a healthy transport that
+#                            the two codes above exist to avoid.
 #
-# Both TEMPLATE_SESSION_RESTART, for the same reason the review hold is: no
+# All three TEMPLATE_SESSION_RESTART, for the same reason the review hold is: no
 # retry at this position can help once the session has been torn down.
 REASON_POSITION_HOLD_EXPIRED = "position_hold_expired"
 REASON_POSITION_TARGET_MISSING = "position_target_missing"
+REASON_SESSION_CEILING_EXPIRED = "session_ceiling_expired"
 # The geometry-locked retake asks for a pose PAST the walk — 75 cm out, and on
 # its second rung 75 cm out AND above mark height. An external positioner swings
 # on one horizontal axis at a fixed radius, so it can serve neither rung. Rather
@@ -983,6 +995,12 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "This measurement did not say where the microphone should be, so it "
         "stopped rather than record an unknown position. Start over from this "
         "page.",
+    ),
+    REASON_SESSION_CEILING_EXPIRED: ReasonSpec(
+        REASON_SESSION_CEILING_EXPIRED, TEMPLATE_SESSION_RESTART, 0, "",
+        "The whole measurement ran out of time while it was still waiting for "
+        "the microphone to reach a position. Start over from this page once "
+        "the positioner can work through the walk more quickly.",
     ),
     REASON_GEOMETRY_RETAKE_UNREACHABLE: ReasonSpec(
         REASON_GEOMETRY_RETAKE_UNREACHABLE, TEMPLATE_SESSION_RESTART, 0, "",
