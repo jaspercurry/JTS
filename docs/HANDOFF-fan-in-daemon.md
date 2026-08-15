@@ -305,7 +305,7 @@ which looks identical to "paused" on every other signal).
   mixes TTS/cues before CamillaDSP crossover/protection.
 - **AEC diagnostic tap shape.** `pcm.jasper_ref` is a plug-wrapped
   alias that nothing opens — U4/P7-1 retired the bridge fallback and
-  P7-3 the timing probe, and it ships only until P9-B deletes the
+  P7-3 the timing probe, and it ships only until P9-E deletes the
   aloop PCMs. It is not an AEC fallback: outputd's
   UDP speaker monitor after CamillaDSP/outputd is the bridge's only
   reference source.
@@ -742,7 +742,7 @@ Fan-in checks are in the main doctor run-list:
    renderer/test lane with a pinned 48 kHz stereo S16_LE plug wrapper,
    points `pcm.jasper_capture` at summed substream 7, and checks that
    the now-readerless `pcm.jasper_ref` alias still plug-wraps it — a
-   shipped-vs-deployed asoundrc drift check until P9-B.
+   shipped-vs-deployed asoundrc drift check until P9-E.
 
 2. **`check_fanin_service`** treats disabled or inactive
    `jasper-fanin.service` as a failure, probes
