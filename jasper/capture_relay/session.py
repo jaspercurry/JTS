@@ -56,6 +56,20 @@ DEFAULT_TTL_S = 900
 DEFAULT_POLL_INTERVAL_S = 0.75
 DEFAULT_TIMEOUT_S = 120.0
 
+# The longest link the relay Worker grants (``MAX_TTL_S`` in
+# relay/src/worker.js, pinned in lockstep by tests/test_capture_relay_session.py).
+#
+# The Worker CLAMPS an over-large request rather than refusing it, so a caller
+# that asks for more is not an error there — it is a silent disagreement here.
+# ``open_capture`` publishes the requested ``ttl_s`` to the phone as
+# ``time_budget.session_s``, which is the number the household is told the link
+# lives for; a request the Worker quietly cut back would make that disclosure a
+# lie. So a caller sizing a TTL from its own budget clamps against this, and the
+# published number stays the granted one. It is a mirror of a separately
+# released artifact, exactly like ``LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS``, not a
+# knob to tune from this side.
+MAX_TTL_S = 3600
+
 # How long the plan runner keeps polling through CONSECUTIVE transport failures
 # on ``client.status`` before it gives up and lets the failure end the session
 # (issue #2083). One 10 s HTTP stall on a single status poll used to kill a live
@@ -244,8 +258,10 @@ class CapturePageIncompatible(RuntimeError):
 #   TIME_BUDGET_STEP — the per-step phone-inactivity budget (``DEFAULT_TIMEOUT_S``
 #     and the wider first-begin / hold variants). Refreshed on every tap, so it
 #     is the one a household spends by walking away mid-walk.
-#   TIME_BUDGET_LINK — the relay session's own TTL (``DEFAULT_TTL_S``), counted
-#     from the moment the link was minted and refreshed by nothing.
+#   TIME_BUDGET_LINK — the relay session's own TTL (``DEFAULT_TTL_S`` unless the
+#     caller mints a longer link — the v2 REMOTE preparers size theirs from the
+#     stage's own wall-clock ceiling), counted from the moment the link was
+#     minted and refreshed by nothing.
 TIME_BUDGET_STEP = "step"
 TIME_BUDGET_LINK = "link"
 #: The THIRD answer, and the reason it is a value rather than an absence

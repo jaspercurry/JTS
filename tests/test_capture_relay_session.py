@@ -1281,3 +1281,30 @@ def test_transient_relay_failures_are_exactly_the_ones_no_clock_explains():
     assert is_transient_relay_failure(CaptureFailed("bad blob")) is False
     assert is_transient_relay_failure(CaptureTimeout("gone")) is False
     assert is_transient_relay_failure(ValueError("nonsense")) is False
+
+
+def test_max_ttl_stays_in_lockstep_with_the_worker():
+    """The Pi's ``MAX_TTL_S`` mirrors the Worker's, and the Worker CLAMPS.
+
+    Both halves matter. The mirror is what lets a caller sizing a long link
+    (``correction_crossover_v2.relay_link_ttl_s``, issue #2509) clamp on this
+    side; the clamp is WHY it has to. An over-large request is not refused by
+    the relay — it is silently cut back — and the session publishes its
+    requested ``ttl_s`` to the phone as ``time_budget.session_s``, so an
+    unclamped caller would tell the household a link lifetime the relay never
+    granted.
+    """
+    from pathlib import Path
+
+    from jasper.capture_relay.session import MAX_TTL_S
+
+    worker_src = (
+        Path(__file__).resolve().parent.parent / "relay" / "src" / "worker.js"
+    ).read_text(encoding="utf-8")
+    assert f"const MAX_TTL_S = {MAX_TTL_S};" in worker_src, (
+        "worker link-TTL ceiling drifted from the Pi-side mirror"
+    )
+    assert "ttl = Math.max(MIN_TTL_S, Math.min(MAX_TTL_S, ttl));" in worker_src, (
+        "the worker must CLAMP a requested ttl_s — a refusal instead would "
+        "make the Pi-side clamp a silent downgrade rather than a disclosure fix"
+    )

@@ -6147,10 +6147,11 @@ def test_session_wall_clock_ceiling_scales_with_the_plan_and_is_capped():
     # (see HANDOFF-crossover-measurement-v2.md "The capture flow" / "What it
     # is" -- tier_display_info() is the derivation of record for that number).
     # The bare-defaults scenario below is 10 captures ⇒ 1800 + (10-3)*120 =
-    # 2640 s. Neither this scenario's number nor the shipped one fits inside
-    # the 900 s relay TTL and this test must not be read as claiming
-    # otherwise; what the split buys is a lower worst case and a fresh TTL
-    # per stage.
+    # 2640 s. Both scenarios are HAND-WALKED shapes, which ride the 900 s relay
+    # default; neither number fits inside it and this test must not be read as
+    # claiming otherwise. What the split buys is a lower worst case and a fresh
+    # TTL per stage. (A REMOTE stage sizes its link from this ceiling instead —
+    # `correction_crossover_v2.relay_link_ttl_s`, issue #2509.)
     assert session_wall_clock_ceiling_s(shipped) == 2640.0
     assert session_wall_clock_ceiling_s(
         build_v2_verify_capture_plan(FC_HZ, plan_shape=resolve_plan_shape())

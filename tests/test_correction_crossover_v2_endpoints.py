@@ -3603,11 +3603,16 @@ def test_both_session_preparers_rearm_the_walked_away_volume_ceiling():
     """
     import inspect
 
+    # The derivation is now BOUND to a name (issue #2509 sizes the relay link
+    # from the same number), so pinning the two tokens separately would no
+    # longer prove the value reaches the arm. Pin the binding and the arm.
     for fn in (v2host.prepare_v2_session, v2host.prepare_v2_verify):
         source = inspect.getsource(fn)
-        assert "set_wall_clock_ceiling_s(" in source, fn.__name__
-        assert "session_wall_clock_ceiling_s(spec.capture_plan)" in source, (
-            f"{fn.__name__} must size the ceiling from the plan it emits"
+        assert "ceiling_s = session_wall_clock_ceiling_s(spec.capture_plan)" in (
+            source
+        ), f"{fn.__name__} must size the ceiling from the plan it emits"
+        assert "set_wall_clock_ceiling_s(ceiling_s)" in source, (
+            f"{fn.__name__} must arm the ceiling it derived"
         )
     # And the two plans really do want different ceilings, which is the whole
     # reason the re-arm cannot be done once at import.
