@@ -6680,7 +6680,56 @@ class PositionGate:
                 self._pending = None
                 self._opened_at = None
                 return
+            # BOTH refusals are decided before a NEW hold is published, so the
+            # modal ceiling death (release N, then the page's begin for N+1)
+            # emits ONE event instead of announcing a hold and refusing it in
+            # the same breath. This does not reorder the two bounds: a hold
+            # that has not opened has waited 0.0 s, which can never exceed the
+            # per-hold budget, so that check is vacuous here and the ordering
+            # below is exactly the ordering an OPEN hold sees.
             opened = self._opened_at
+            waited = 0.0 if opened is None else now - opened
+            if waited > REMOTE_POSITION_HOLD_BUDGET_S:
+                self._pending = None
+                self._opened_at = None
+                log_event(
+                    logger,
+                    "correction.crossover_v2_position_hold_expired",
+                    level=logging.WARNING,
+                    index=int(index),
+                    attempt=int(attempt),
+                    degrees=target,
+                    waited_s=round(waited, 1),
+                )
+                raise CaptureBeginRefused(
+                    POSITION_HOLD_EXPIRED_CODE,
+                    "Nothing reported the microphone in place, so the "
+                    "measurement stopped waiting.",
+                )
+            # Checked SECOND, so a stalled driver keeps the specific diagnosis
+            # even when both bounds are past: "nothing answered this position"
+            # is the more actionable of the two, and the cumulative name would
+            # otherwise absorb it on any walk long enough to reach the ceiling.
+            # ``waited_s`` on this line is the CURRENT hold's own wait, and a
+            # small value is the point — it is how the journal says no
+            # individual hold expired.
+            if self._session_ceiling_expired:
+                self._pending = None
+                self._opened_at = None
+                log_event(
+                    logger,
+                    "correction.crossover_v2_session_ceiling_expired",
+                    level=logging.WARNING,
+                    index=int(index),
+                    attempt=int(attempt),
+                    degrees=target,
+                    waited_s=round(waited, 1),
+                )
+                raise CaptureBeginRefused(
+                    SESSION_CEILING_EXPIRED_CODE,
+                    "The measurement ran out of time before the microphone "
+                    "reached every position.",
+                )
             if opened is None:
                 # A NEW hold: publish what is being waited on and start its clock.
                 self._opened_at = now
@@ -6703,47 +6752,6 @@ class PositionGate:
                     attempt=int(attempt),
                     degrees=target,
                     role=role,
-                )
-                waited = 0.0
-            else:
-                waited = now - opened
-            if waited > REMOTE_POSITION_HOLD_BUDGET_S:
-                self._pending = None
-                self._opened_at = None
-                log_event(
-                    logger,
-                    "correction.crossover_v2_position_hold_expired",
-                    level=logging.WARNING,
-                    index=int(index),
-                    attempt=int(attempt),
-                    degrees=target,
-                    waited_s=round(waited, 1),
-                )
-                raise CaptureBeginRefused(
-                    POSITION_HOLD_EXPIRED_CODE,
-                    "Nothing reported the microphone in place, so the "
-                    "measurement stopped waiting.",
-                )
-            # Checked SECOND, so a stalled driver keeps the specific diagnosis
-            # even when both bounds are past: "nothing answered this position"
-            # is the more actionable of the two, and the cumulative name would
-            # otherwise absorb it on any walk long enough to reach the ceiling.
-            if self._session_ceiling_expired:
-                self._pending = None
-                self._opened_at = None
-                log_event(
-                    logger,
-                    "correction.crossover_v2_session_ceiling_expired",
-                    level=logging.WARNING,
-                    index=int(index),
-                    attempt=int(attempt),
-                    degrees=target,
-                    waited_s=round(waited, 1),
-                )
-                raise CaptureBeginRefused(
-                    SESSION_CEILING_EXPIRED_CODE,
-                    "The measurement ran out of time before the microphone "
-                    "reached every position.",
                 )
         raise CaptureBeginDeferred(
             POSITION_HOLD_CODE,

@@ -251,12 +251,29 @@ nobody at the device therefore stops there and eventually dies on the runner's
 inactivity budget. **The driver should detect the stall from the envelope
 rather than wait it out** — a `relay` block that stays in flight while
 `position_pending` is absent and no new capture is accepted is the signature —
-and report it for a human. There is no auto-retry path today, and **it has now
-killed two remote runs** (2026-08-15, jts3 cycles 2 and 4 — both honest
-glitch-vocabulary rejections a retake would have cleared), so
-[issue #2506](https://github.com/jaspercurry/JTS/issues/2506) is no longer a
-question of whether it matters. What it *is* blocked on is where the fire can
-live. **A retake cannot be fired from the Pi.** The relay protocol has the phone
+and report it for a human. There is no auto-retry path today
+([issue #2506](https://github.com/jaspercurry/JTS/issues/2506)), and the gap is
+about a CLASS, not a run count: a genuinely transient rejection — the
+`silent_auto_retry` vocabulary, `clipped` and `drift_baselines_disagree` — is
+one the same spot would clear on the next take, and it routes to a button no
+unattended session can press.
+
+**Do not size that gap from the 2026-08-15 remote deaths.** Those sessions died
+on rejected lateral captures, but the cause was located and it was not
+transient: a deterministic ~128-sample playback insertion in the fan-in render
+thread, which broke *every* lateral capture and which retries measurably did not
+clear ([issue #2533](https://github.com/jaspercurry/JTS/issues/2533)). Against a
+deterministic Pi-side fault an auto-retake is actively harmful — it would spend
+the tier's attempt budget re-measuring a defect and hide it behind a
+budget-exhausted death instead of a named rejection. That fault class has since
+been fixed ([#2536](https://github.com/jaspercurry/JTS/pull/2536),
+[#2542](https://github.com/jaspercurry/JTS/pull/2542)), which is exactly why the
+case left for auto-retry is the transient one. Whatever lands must stay bounded
+by the attempt budget already minted, and must keep the honest rejection
+visible when the budget runs out.
+
+What #2506 is blocked on is where the fire can live. **A retake cannot be fired
+from the Pi.** The relay protocol has the phone
 initiate every capture (`begin_capture {index, attempt}`), and the host→phone
 vocabulary — `capture_authorized` / `capture_deferred` / `capture_refused` /
 `capture_result` / `capture_set_complete` / `capture_set_exhausted` — carries no

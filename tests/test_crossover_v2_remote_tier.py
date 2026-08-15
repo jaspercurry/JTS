@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import re
 import secrets
 import threading
@@ -455,6 +456,30 @@ def test_a_walk_that_outlives_its_ceiling_is_named_rather_than_left_generic():
     assert refused.value.code != POSITION_HOLD_EXPIRED_CODE
     # …and the refused hold stops being advertised, so a driver is not still
     # being asked to move an arm for a capture that will never run.
+    assert gate.pending() is None
+
+
+def test_the_modal_ceiling_death_announces_no_hold_it_is_about_to_refuse(caplog):
+    """The shape a real slow-driver run actually dies in.
+
+    The ceiling is crossed while the session is BETWEEN holds far more often
+    than during one: the driver releases position N, the page posts the begin
+    for N+1, and that begin is the first thing to meet the latch. Deciding the
+    refusal before publishing keeps the journal honest — one
+    ``session_ceiling_expired``, rather than a ``position_pending`` announcing
+    a hold that is refused in the same breath and never waited a second.
+    """
+    gate = PositionGate()
+    with caplog.at_level(logging.WARNING, logger="jasper.web.correction_crossover_v2"):
+        gate.note_session_ceiling_expired()
+        with pytest.raises(CaptureBeginRefused) as refused:
+            gate.gate(4, 4, _entry(7))  # a hold this gate has never opened
+    assert refused.value.code == SESSION_CEILING_EXPIRED_CODE
+    lines = [rec.getMessage() for rec in caplog.records]
+    assert not any("crossover_v2_position_pending" in ln for ln in lines), lines
+    ceiling = [ln for ln in lines if "crossover_v2_session_ceiling_expired" in ln]
+    assert len(ceiling) == 1, lines
+    assert "waited_s=0.0" in ceiling[0]
     assert gate.pending() is None
 
 
