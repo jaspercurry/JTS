@@ -488,6 +488,18 @@ def _reconcile_camilla(
     file was just rewritten under us). reconcile_current_dsp validates with
     ``camilladsp --check`` before loading and fail-closes on an invalid config,
     so a failure here leaves the previously-loaded config running.
+
+    ONE ``skipped`` IS ACCEPTED IN THE ARM DIRECTION, on direct proof only. A
+    mid-commission roleful box boots from the all-muted staged startup anchor,
+    which the carrier correctly refuses to host EQ on
+    (:data:`CARRIER_TRANSIENT_ACTIVE_REFUSAL`) — so every arm of the
+    fleet-typical composite failed here, with the reconciler keeping loopback
+    (jts.local, 2026-08-15). :func:`ring_endpoint_anchor_converged` proves from
+    the artifacts on disk that the graph IS that anchor and IS already at the
+    ring endpoint at the box's wire; only then is the step converged, with its
+    own detail so the outcome is never confused with a re-emit. Every other
+    ``skipped`` — a different refusal code, a commissioning load, an anchor that
+    is not coherent — fails exactly as before.
     """
     import asyncio
 
@@ -506,6 +518,28 @@ def _reconcile_camilla(
     # failure and fail-safe back to loopback.
     if status == "skipped" and coupling != COUPLING_SHM_RING:
         return True, str(status)
+    refusal = str(payload.get("reason") or "")
+    if status == "skipped" and refusal == CARRIER_TRANSIENT_ACTIVE_REFUSAL:
+        # Keyed on the ONE refusal this acceptance is about, not on "skipped"
+        # generally: a refusal code added later is a shape nobody proved
+        # convergent, so it keeps failing until someone decides otherwise.
+        converged, anchor_detail = ring_endpoint_anchor_converged()
+        log_event(
+            logger,
+            "fanin.coupling_reconcile",
+            result=(
+                "camilla_converged_anchor"
+                if converged
+                else "camilla_anchor_not_converged"
+            ),
+            reason=reason,
+            refusal=refusal,
+            detail=anchor_detail,
+            level=logging.INFO if converged else logging.WARNING,
+        )
+        if converged:
+            return True, CAMILLA_ANCHOR_CONVERGED_DETAIL
+        return False, f"{refusal}: {anchor_detail}"
     return False, str(payload.get("reason") or status or "unknown")
 
 
@@ -2473,6 +2507,155 @@ def active_ring_endpoint_proof() -> tuple[bool, str]:
     )
 
 
+# The carrier's refusal reason for a roleful box's TRANSIENT boot graph — the
+# startup anchor and the commissioning load (``jasper.sound.graph_carrier``'s
+# ``_ActiveGraphCarrier.reemit`` raises ``CarrierCannotHostEq`` with exactly this
+# code). Spelled here rather than imported because that module raises a bare
+# literal and this module already keys on ``reconcile_current_dsp``'s status
+# vocabulary the same way; ``tests/test_ring_anchor_arm_acceptance.py`` pins the
+# two spellings against the real exception so a rename fails loudly instead of
+# silently turning the acceptance below into dead code.
+CARRIER_TRANSIENT_ACTIVE_REFUSAL = "eq_on_active_not_wired"
+
+# The camilla step's detail when it converged on an anchor rather than by
+# re-emitting. Distinct from "reconciled"/"unchanged" (a graph that was written)
+# and from the refusal reason, so the journal AND the operator's stdout line say
+# which of the three happened.
+CAMILLA_ANCHOR_CONVERGED_DETAIL = "converged_anchor"
+
+
+def ring_endpoint_anchor_converged() -> tuple[bool, str]:
+    """Is the loaded graph ALREADY this box's staged anchor at the ring endpoint?
+
+    THE STATE THIS ANSWERS FOR, and why the camilla step needed it. A
+    mid-commission roleful box — the fleet-typical composite, which #2514 exists
+    to let onto the ring — boots from the all-muted staged startup anchor, not
+    from an applied baseline. ``reconcile_current_dsp`` resolves that graph to
+    :class:`~jasper.sound.graph_carrier._ActiveGraphCarrier` with
+    ``is_baseline=False``, which refuses to host EQ
+    (:data:`CARRIER_TRANSIENT_ACTIVE_REFUSAL` -> status ``skipped``). That
+    refusal is CORRECT and unchanged: an all-muted transient graph must never be
+    re-emitted through a preference template. But the arm's camilla step read
+    every ``skipped`` as "the ring config was NOT loaded" and failed, so an
+    anchor-riding box could never pass step 3 — observed on jts.local
+    2026-08-15, ``detail=eq_on_active_not_wired result=arm_ring_camilla_failed``
+    with the reconciler correctly keeping loopback.
+
+    THE ACCEPTANCE IS A DIRECT PROOF, never a widening of the refusal. There is
+    genuinely nothing for a reconcile to do when the graph the statefile points
+    at IS the box's own published anchor AND that anchor already names the ring
+    endpoint at the box's wire: an all-muted anchor hosts no EQ, and the graph is
+    already where the arm wanted to put it. Each of those is proved from the
+    artifact on disk, through the owner that already answers for it:
+
+    1. **Identity** — the statefile's ``config_path``
+       (:func:`read_loaded_camilla_graph`) is the path the box PUBLISHED as its
+       staged anchor (``load_staged_startup_config``'s ``config.path``, the same
+       record ``web_commissioning`` and ``/sound/`` key their anchor tests on).
+       A commissioning load lives at its own fixed path
+       (``DEFAULT_COMMISSIONING_CONFIG_NAME``) and therefore fails here, which is
+       the point: a per-driver commissioning graph is a transient with a driver
+       armed at level, and must never be read as a converged arm.
+    2. **Endpoint** — capture is Ring A and playback is the ACTIVE ring. Both
+       lanes, because a graph that plays the ring while capturing the snd-aloop
+       tap captures a device nobody writes once fan-in stops feeding the tap —
+       digital silence with every daemon healthy (the #2364 trap, fixed at the
+       emitter in #2514 and refused here as well).
+    3. **Wire** — every ring lane states the box's resolved ring wire, via
+       :func:`graph_wire_declarations` and :func:`_wire_channels_for_ring`, the
+       same two helpers :func:`ring_edge_width_ready` holds the graph to. Format
+       is what the ruling asked for; the CHANNELS axis rides along because this
+       predicate is also consulted on the CONFIRM path, where
+       ``ring_edge_width_ready`` does not run — without it an armed anchor box
+       whose width later sheared would be reported converged forever instead of
+       being recovered to loopback. Including it can only ever REFUSE more.
+
+    FAIL-CLOSED on anything indeterminate: an unreadable statefile or config, no
+    published anchor, a lane that declares no format or no channel count. The
+    caller then fails exactly as it did before this function existed, so every
+    graph shape other than the one proved above keeps today's behaviour.
+
+    NOT a gate in :func:`default_ring_gates` and not a preflight: it is the
+    camilla step's own acceptance criterion, consulted only after
+    ``reconcile_current_dsp`` has already declined, so it can neither admit nor
+    refuse an arm that the preflight ladder has not already passed.
+    """
+    from jasper.active_speaker.staging import load_staged_startup_config
+    from jasper.fanin_coupling import (
+        RING_ACTIVE_PLAYBACK_DEVICE,
+        RING_CAPTURE_DEVICE,
+    )
+
+    graph = read_loaded_camilla_graph()
+    if graph.note:
+        return False, f"cannot read the loaded CamillaDSP graph ({graph.note})"
+
+    staged = load_staged_startup_config()
+    # ``isinstance`` rather than the ``(… or {}).get(…)`` idiom the web
+    # commissioning reader uses: that shape raises AttributeError on a record
+    # whose ``config`` is a truthy NON-mapping, and this reader sits inside the
+    # reconciler's ordered arm, where an escaping exception would skip the
+    # snapshot restore that makes a refused arm non-destructive. A malformed
+    # record is a refusal here, never a raise.
+    config_record = staged.get("config")
+    anchor_path = (
+        config_record.get("path") if isinstance(config_record, Mapping) else None
+    )
+    if not anchor_path:
+        return False, (
+            "this box publishes no staged startup anchor "
+            f"(staged status={staged.get('status')!r}), so the loaded graph "
+            "cannot be proved to BE one"
+        )
+    if os.path.realpath(graph.path) != os.path.realpath(str(anchor_path)):
+        return False, (
+            f"the loaded graph is {graph.path}, which is not this box's "
+            f"published startup anchor ({anchor_path})"
+        )
+
+    capture = graph.devices.get("capture_device")
+    playback = graph.devices.get("playback_device")
+    if capture != RING_CAPTURE_DEVICE or playback != RING_ACTIVE_PLAYBACK_DEVICE:
+        return False, (
+            f"the staged anchor captures {capture!r} and plays {playback!r}, "
+            f"not the ring endpoint pair (capture {RING_CAPTURE_DEVICE!r} -> "
+            f"playback {RING_ACTIVE_PLAYBACK_DEVICE!r})"
+        )
+
+    wire, wire_problem = resolve_wire_for_gate(load_topology_for_wire())
+    if wire is None:
+        return False, wire_problem
+    problems: list[str] = []
+    for decl in graph_wire_declarations(graph):
+        if decl.sample_format != wire.sample_format:
+            problems.append(
+                f"{decl.end} declares format {decl.sample_format}, expected "
+                f"{wire.sample_format}"
+            )
+        want_channels = _wire_channels_for_ring(decl.ring, wire)
+        if want_channels is None:
+            problems.append(
+                f"{decl.end} declares {decl.channels} channels, but this box's "
+                "wire resolves NO active-ring width to prove that against"
+            )
+        elif decl.channels != want_channels:
+            problems.append(
+                f"{decl.end} declares {decl.channels} channels, expected "
+                f"{want_channels}"
+            )
+    if problems:
+        return False, (
+            "the staged anchor is at the ring endpoint but does not state this "
+            f"box's ring wire: {'; '.join(problems)}"
+        )
+    return True, (
+        f"the loaded graph IS this box's staged startup anchor ({graph.path}) "
+        f"at the ACTIVE ring endpoint, stating the box's ring wire "
+        f"({wire.sample_format}); an all-muted anchor hosts no EQ, so there is "
+        "nothing left for the camilla step to re-emit"
+    )
+
+
 def composite_ring_wire_ready(topology: Any) -> tuple[bool, str]:
     """May THIS composite sink ride the ACTIVE ring at the wire the box declares?
 
@@ -2520,6 +2703,19 @@ def composite_ring_wire_ready(topology: Any) -> tuple[bool, str]:
     truth). This refuses the unsafe COMBINATION and names the remedy, rather
     than silently rewriting the operator's file.
 
+    THE REMEDY NAMES ALL THREE RUNGS, and that is a correction. It used to say
+    "set the key, re-run ``jasper-audio-hardware-reconcile``, then re-arm" —
+    which leaves the box's BOOT GRAPH still narrow, because a roleful graph's
+    capture and playback formats are baked when it is EMITTED
+    (``active_emit_devices`` resolves them once, at emit) and the hardware
+    reconciler re-renders the conf.d and outputd's env, not the graph. An
+    operator following the old two-command remedy meets the same refusal on the
+    next arm — this time from ``ring_edge_width_ready``, naming the graph.
+    Measured on jts.local 2026-08-15: the staged anchor declared ``S16_LE`` on
+    both lanes before ``baseline-reemit --endpoint ring`` and ``S32_LE`` on both
+    after it. So the remedy is the whole ladder, graph first, exactly as
+    ``docs/HANDOFF-audio-graph-consolidation.md`` spells it.
+
     Non-composite topologies pass untouched — jts3's roleful DAC8x arm and every
     stereo-ring box keep the wire they have today.
     """
@@ -2551,9 +2747,15 @@ def composite_ring_wire_ready(topology: Any) -> tuple[bool, str]:
             f"transport change, which the every-end wire gate cannot see "
             f"(a narrow arm is perfectly self-consistent). Set "
             f"{RING_WIRE_FORMAT_ENV_VAR}={RING_WIRE_FORMAT_WIDE} in "
-            f"/var/lib/jasper/fanin.env and re-run "
-            f"jasper-audio-hardware-reconcile so every end re-renders, then "
-            f"re-arm. Keeping the coupling on loopback."
+            f"/var/lib/jasper/fanin.env, then re-run the WHOLE three-step arm "
+            f"ladder in order: `jasper-active-speaker baseline-reemit "
+            f"--endpoint ring`, then `systemctl start "
+            f"jasper-audio-hardware-reconcile`, then "
+            f"`jasper-fanin-coupling-reconcile shm_ring`. The boot graph's own "
+            f"capture and playback formats are baked when it is EMITTED, so "
+            f"re-running the hardware reconciler alone leaves a stale narrow "
+            f"boot graph and the next arm refuses again. Keeping the coupling "
+            f"on loopback."
         )
     return True, (
         f"composite sink declares the wide ring wire ({RING_WIRE_FORMAT_WIDE}), "
@@ -3659,6 +3861,17 @@ def _arm_ring(
         restarted_fanin=True,
         restarted_outputd=True,
         reconciled_camilla=True,
+        # The camilla step has two success shapes now, and the operator's stdout
+        # line prints ``detail`` only when it is non-empty. An ORDINARY re-emit
+        # stays silent there — byte-identical for every applied-baseline box —
+        # while the anchor-converged acceptance says so, because "the ring config
+        # was loaded" and "the graph was already the anchor at the ring" are
+        # different facts and only one of them wrote anything.
+        detail=(
+            CAMILLA_ANCHOR_CONVERGED_DETAIL
+            if cam_detail == CAMILLA_ANCHOR_CONVERGED_DETAIL
+            else ""
+        ),
     )
 
 

@@ -633,6 +633,33 @@ the program lane, and the width gate reported "all declaring ends" while
 structurally unable to see the graph. The capture half would have halted the
 next attempt one rung further, in silence.
 
+**Step 3 CONVERGES on an anchor box; it only re-emits on a commissioned
+one.** Step 3's camilla rung is `reconcile_current_dsp`, and an all-muted
+startup anchor is a *transient* active graph, which the carrier correctly
+refuses to host EQ on (`eq_on_active_not_wired` → status `skipped`). The rung
+used to read every `skipped` as "the ring config was NOT loaded" and fail,
+rolling the whole box back to loopback — so the fleet-typical anchor box, the
+one step 1 was widened for, could never pass step 3 at all. Observed on
+jts.local, 2026-08-15, on its first composite arm: `ok=False changed=False
+outputd=True fanin=True camilla=False recovered=True
+detail=eq_on_active_not_wired result=arm_ring_camilla_failed` — fail-closed,
+nothing broken, and no way forward. The rung now accepts that ONE refusal when
+`jasper.fanin.coupling_reconcile.ring_endpoint_anchor_converged` can prove from
+the artifacts on disk that the loaded graph IS this box's published anchor
+(the statefile's `config_path` is the staged record's `config.path`), that it
+already captures `jts_ring_capture` and plays `jts_ring_active_playback`, and
+that both ring lanes state the box's resolved wire on format AND channels.
+There is genuinely nothing to re-emit there: an all-muted anchor hosts no EQ,
+and step 1 already put the graph at the endpoint. It reports
+`detail=converged_anchor` — in the journal
+(`event=fanin.coupling_reconcile result=camilla_converged_anchor`) and on the
+operator's stdout line — so a converged arm is never read as one that wrote a
+graph. A commissioned box's applied baseline still RECONCILES exactly as
+before, and every other `skipped` still fails and recovers to loopback: a
+different refusal code, a per-driver commissioning load (told apart by PATH,
+since it classifies like the anchor), an anchor still at the aloop endpoint,
+one that moved only its sink, or one at the wrong wire.
+
 **Expected on an armed box: `jasper-doctor` reports `audio runtime plan: warn`,
 permanently.** A box whose DAC declares a `LatencyFloor` carries two standing
 plan warnings once the coupling is `shm_ring` — `JASPER_CAMILLA_CHUNKSIZE` /

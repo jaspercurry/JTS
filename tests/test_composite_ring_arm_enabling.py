@@ -356,6 +356,40 @@ def test_a_composite_may_not_arm_the_ring_at_the_narrow_wire(monkeypatch):
     assert "JASPER_FANIN_RING_WIRE_FORMAT=S32_LE" in detail
 
 
+def test_the_narrow_wire_remedy_names_the_WHOLE_three_step_ladder(monkeypatch):
+    """A REMEDY THAT DID NOT WORK, corrected.
+
+    It used to say: set the key, re-run ``jasper-audio-hardware-reconcile``, then
+    re-arm. That leaves the box's BOOT GRAPH still narrow — a roleful graph's
+    capture and playback formats are baked when it is EMITTED
+    (``active_emit_devices`` resolves them once, at emit), and the hardware
+    reconciler re-renders the conf.d and outputd's env, not the graph. The
+    operator meets the same refusal on the next arm, this time from
+    ``ring_edge_width_ready``. Measured on jts.local 2026-08-15: the staged
+    anchor declared S16_LE on both lanes before ``baseline-reemit --endpoint
+    ring`` and S32_LE on both after.
+
+    So the remedy is the whole ladder, GRAPH FIRST, and all three commands are
+    pinned — two of them would read as covered while the load-bearing one was
+    missing.
+    """
+    from jasper.fanin import coupling_reconcile
+
+    monkeypatch.setattr(
+        "jasper.fanin_coupling.read_declared_ring_wire_format", lambda: "S16_LE"
+    )
+    _, detail = coupling_reconcile.composite_ring_wire_ready(_composite_active_2way())
+    for command in (
+        "jasper-active-speaker baseline-reemit --endpoint ring",
+        "systemctl start jasper-audio-hardware-reconcile",
+        "jasper-fanin-coupling-reconcile shm_ring",
+    ):
+        assert command in detail, f"remedy must name `{command}`: {detail}"
+    assert detail.index("baseline-reemit") < detail.index(
+        "jasper-audio-hardware-reconcile"
+    ), "the graph rung must be named FIRST — that ordering is the whole fix"
+
+
 def test_a_composite_at_the_wide_wire_passes_the_rule(monkeypatch):
     monkeypatch.setattr(
         "jasper.fanin_coupling.read_declared_ring_wire_format", lambda: "S32_LE"
