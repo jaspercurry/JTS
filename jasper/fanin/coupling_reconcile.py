@@ -523,7 +523,18 @@ def _reconcile_camilla(
         # Keyed on the ONE refusal this acceptance is about, not on "skipped"
         # generally: a refusal code added later is a shape nobody proved
         # convergent, so it keeps failing until someone decides otherwise.
-        converged, anchor_detail = ring_endpoint_anchor_converged()
+        # The DAEMON's own answer to "which graph is loaded", not the
+        # statefile's. ``reconcile_current_dsp`` obtained it from
+        # ``cam.get_config_file_path`` over CamillaDSP's websocket and carries
+        # it in this very payload; the statefile is a durable pointer with
+        # several other writers and can name a graph the running daemon does
+        # not hold. Proving identity against the weaker reader would let a
+        # statefile moved mid-arm report ``converged_anchor`` while CamillaDSP
+        # still writes the lane the ring replaced — the #2364 silence class,
+        # arrived at from the other side.
+        converged, anchor_detail = ring_endpoint_anchor_converged(
+            loaded_config_path=payload.get("current_config_path")
+        )
         log_event(
             logger,
             "fanin.coupling_reconcile",
@@ -1811,25 +1822,45 @@ class LoadedCamillaGraph:
     otherwise. It is never an exception: a box with no statefile yet is the
     ordinary fresh-install state, and a gate that refused it would refuse the
     unattended pass on every new box.
+
+    ``text`` is the file's raw bytes-as-str, carried rather than discarded so a
+    caller that must inspect something the ``devices:`` subset does not model —
+    :func:`ring_endpoint_anchor_converged`'s per-output MUTE proof is the one —
+    can do it off the SAME read. Re-opening the file for that would let the
+    device answer and the mute answer come from two revisions of it, which is
+    the exact split this snapshot object exists to prevent. Empty whenever
+    ``note`` is set.
     """
 
     path: str
     devices: Mapping[str, Any]
     note: str = ""
+    text: str = ""
 
 
-def read_loaded_camilla_graph() -> LoadedCamillaGraph:
+def read_loaded_camilla_graph(config_path: str | None = None) -> LoadedCamillaGraph:
     """Read the loaded CamillaDSP graph once, for the callers that compare it.
 
     Statefile -> ``config_path`` -> the config's ``devices:`` subset, through the
     same public reader (``read_camilla_statefile_config_path``) every other
     surface uses, so this adds no fourth copy of the statefile scan and honours
     ``JASPER_CAMILLA_STATEFILE``.
+
+    ``config_path`` OVERRIDES the statefile read, and exists because the
+    statefile is the WEAKER of two available answers to "which graph is loaded".
+    It is a durable pointer with several writers (``write_camilla_statefile``
+    from ``baseline-reemit`` and ``runtime-safe-graph``, the pipe guard), so it
+    can move while the running daemon still holds the previous graph. A caller
+    that already has the DAEMON's own answer — ``reconcile_current_dsp``'s
+    payload carries ``current_config_path``, taken from
+    ``cam.get_config_file_path`` over CamillaDSP's websocket — passes it here so
+    the read is about the graph the daemon actually has. Omitted, the statefile
+    stays the answer, which is what every existing caller wants.
     """
     from jasper.active_speaker.environment import read_camilla_statefile_config_path
     from jasper.camilla_config_contract import parse_camilla_devices_config
 
-    config_path = read_camilla_statefile_config_path()
+    config_path = config_path or read_camilla_statefile_config_path()
     if not config_path:
         return LoadedCamillaGraph(
             path="",
@@ -1851,7 +1882,7 @@ def read_loaded_camilla_graph() -> LoadedCamillaGraph:
             devices={},
             note=f"{config_path} declares no parseable devices block",
         )
-    return LoadedCamillaGraph(path=config_path, devices=devices)
+    return LoadedCamillaGraph(path=config_path, devices=devices, text=text)
 
 
 def load_topology_for_wire():
@@ -2524,7 +2555,98 @@ CARRIER_TRANSIENT_ACTIVE_REFUSAL = "eq_on_active_not_wired"
 CAMILLA_ANCHOR_CONVERGED_DETAIL = "converged_anchor"
 
 
-def ring_endpoint_anchor_converged() -> tuple[bool, str]:
+def _anchor_is_all_muted(graph: LoadedCamillaGraph) -> tuple[bool, str]:
+    """Prove EVERY output of ``graph`` ends in a wired hard mute. (ok, why-not).
+
+    THE FACT THE ACCEPTANCE CLAIMS, MEASURED. The predicate below justifies
+    convergence with "an all-muted anchor hosts no EQ" — and before this it
+    proved a FILENAME and inherited the mutedness from
+    ``stage_protected_startup_config``, a writer in another module it never
+    consults. The hearing-safety lens demonstrated the gap on real files: a graph
+    at the published anchor path with one output unmuted at −20 dB, and one with
+    every output at full scale, were both ACCEPTED. Neither is reachable through
+    a shipped writer (the stager blocks a non-muted emit with
+    ``staged_config_not_fully_muted``), so this is hardening — but the acceptance
+    is the last thing between a graph at the ring endpoint and the drivers, and
+    on that path the fact it names is the fact it should measure.
+
+    THE SAME PROOF ``_parked_graph_allowed`` USES, deliberately: parse the text
+    once, and for every output the graph itself declares, require the repo's one
+    mute idiom — an ``as_out{i}_commission_mute`` ``Gain`` at
+    :data:`STARTUP_MUTE_GAIN_DB` with ``mute: true`` AND wired to channel ``i``
+    (``output_hard_muted_and_wired``). Muted-but-unwired and wired-but-unmuted
+    both fail. The width comes from the graph's own ``playback_channels``, which
+    the caller has already held to the topology-derived active-ring width, so
+    this checks every roleful output and cannot be satisfied by a graph that
+    declares fewer.
+
+    ``bypassed`` REFUSES WHOLESALE, mirroring
+    ``runtime_contract._channel_terminally_muted``'s fact 3: CamillaDSP skips a
+    bypassed step entirely, so ``bypassed: true`` leaves a channel fully live
+    while the mute above still reads as satisfied — ``GraphView`` models filters
+    and channels, not the per-step flag. No JTS emitter ever writes it, so its
+    presence means the graph was hand-edited, and deciding which bypassed step is
+    harmless is exactly the generous reading this proof exists to reject.
+
+    Fails closed on every shape it cannot read: unparseable YAML, a non-mapping
+    document, a missing or non-positive channel count.
+    """
+    import yaml
+
+    from jasper.active_speaker.camilla_yaml import (
+        STARTUP_MUTE_GAIN_DB,
+        output_commission_mute_name,
+    )
+    from jasper.active_speaker.graph_safety import (
+        output_hard_muted_and_wired,
+        view_from_yaml_dict,
+    )
+
+    try:
+        payload = yaml.safe_load(graph.text)
+    except yaml.YAMLError as exc:
+        return False, f"its YAML does not parse ({type(exc).__name__})"
+    if not isinstance(payload, dict):
+        return False, "its YAML is not a mapping"
+
+    pipeline = payload.get("pipeline")
+    if not isinstance(pipeline, list):
+        return False, "it declares no readable pipeline"
+    if any(
+        isinstance(step, dict) and step.get("bypassed") is True for step in pipeline
+    ):
+        return False, (
+            "its pipeline carries a bypassed step — CamillaDSP skips one "
+            "entirely, so a mute behind it is not a mute"
+        )
+
+    width = graph.devices.get("playback_channels")
+    if not isinstance(width, int) or isinstance(width, bool) or width < 1:
+        return False, f"it declares no usable playback channel count ({width!r})"
+
+    view = view_from_yaml_dict(payload)
+    unmuted = [
+        index
+        for index in range(width)
+        if not output_hard_muted_and_wired(
+            view,
+            index,
+            mute_name=output_commission_mute_name(index),
+            mute_gain_db=STARTUP_MUTE_GAIN_DB,
+        )
+    ]
+    if unmuted:
+        return False, (
+            "these outputs are not held at the startup mute floor "
+            f"({STARTUP_MUTE_GAIN_DB:g} dB, muted and wired): "
+            + ", ".join(str(index) for index in unmuted)
+        )
+    return True, ""
+
+
+def ring_endpoint_anchor_converged(
+    *, loaded_config_path: str | None = None
+) -> tuple[bool, str]:
     """Is the loaded graph ALREADY this box's staged anchor at the ring endpoint?
 
     THE STATE THIS ANSWERS FOR, and why the camilla step needed it. A
@@ -2548,10 +2670,14 @@ def ring_endpoint_anchor_converged() -> tuple[bool, str]:
     already where the arm wanted to put it. Each of those is proved from the
     artifact on disk, through the owner that already answers for it:
 
-    1. **Identity** — the statefile's ``config_path``
-       (:func:`read_loaded_camilla_graph`) is the path the box PUBLISHED as its
-       staged anchor (``load_staged_startup_config``'s ``config.path``, the same
-       record ``web_commissioning`` and ``/sound/`` key their anchor tests on).
+    1. **Identity** — the loaded graph's path is the path the box PUBLISHED as
+       its staged anchor (``load_staged_startup_config``'s ``config.path``, the
+       same record ``web_commissioning`` and ``/sound/`` key their anchor tests
+       on) on a record whose own ``status`` is ``staged``. The loaded path comes
+       from the DAEMON (``loaded_config_path``, which
+       ``reconcile_current_dsp``'s skip payload already carries as
+       ``current_config_path``) and falls back to the statefile only when the
+       caller has no daemon answer — see :func:`read_loaded_camilla_graph`.
        A commissioning load lives at its own fixed path
        (``DEFAULT_COMMISSIONING_CONFIG_NAME``) and therefore fails here, which is
        the point: a per-driver commissioning graph is a transient with a driver
@@ -2569,24 +2695,35 @@ def ring_endpoint_anchor_converged() -> tuple[bool, str]:
        ``ring_edge_width_ready`` does not run — without it an armed anchor box
        whose width later sheared would be reported converged forever instead of
        being recovered to loopback. Including it can only ever REFUSE more.
+    4. **All-muted** — every output the graph declares ends in a wired hard mute
+       at :data:`STARTUP_MUTE_GAIN_DB` (:func:`_anchor_is_all_muted`). This is
+       the fact the success detail NAMES, so it is the fact this measures rather
+       than inherits from the writer that emitted the file.
 
-    FAIL-CLOSED on anything indeterminate: an unreadable statefile or config, no
-    published anchor, a lane that declares no format or no channel count. The
-    caller then fails exactly as it did before this function existed, so every
-    graph shape other than the one proved above keeps today's behaviour.
+    FAIL-CLOSED on anything indeterminate: an unreadable config, no published
+    anchor, a record that is not ``staged``, a lane that declares no format or no
+    channel count, an unparseable or unmuted graph. The caller then fails exactly
+    as it did before this function existed, so every graph shape other than the
+    one proved above keeps today's behaviour.
 
-    NOT a gate in :func:`default_ring_gates` and not a preflight: it is the
+    NOT a gate in :func:`default_ring_gates` and not a preflight — it is the
     camilla step's own acceptance criterion, consulted only after
-    ``reconcile_current_dsp`` has already declined, so it can neither admit nor
-    refuse an arm that the preflight ladder has not already passed.
+    ``reconcile_current_dsp`` has already declined. **On the ARM path** that
+    puts it behind the whole preflight ladder, so it can neither admit nor refuse
+    an arm those gates have not already passed. **On the CONFIRM path it is the
+    only graph check that runs at all** — that path's gates are
+    :func:`ring_wire_caps_ready` and :func:`_ring_confirm_needs_self_heal`, and
+    neither reads the loaded graph — which is why axes 3 and 4 are here rather
+    than left to the arm's preflights.
     """
+    from jasper.active_speaker.camilla_yaml import STARTUP_MUTE_GAIN_DB
     from jasper.active_speaker.staging import load_staged_startup_config
     from jasper.fanin_coupling import (
         RING_ACTIVE_PLAYBACK_DEVICE,
         RING_CAPTURE_DEVICE,
     )
 
-    graph = read_loaded_camilla_graph()
+    graph = read_loaded_camilla_graph(loaded_config_path)
     if graph.note:
         return False, f"cannot read the loaded CamillaDSP graph ({graph.note})"
 
@@ -2597,15 +2734,38 @@ def ring_endpoint_anchor_converged() -> tuple[bool, str]:
     # reconciler's ordered arm, where an escaping exception would skip the
     # snapshot restore that makes a refused arm non-destructive. A malformed
     # record is a refusal here, never a raise.
+    status = staged.get("status")
     config_record = staged.get("config")
     anchor_path = (
         config_record.get("path") if isinstance(config_record, Mapping) else None
     )
     if not anchor_path:
+        # The record's SHAPE, not merely its absence: "publishes no anchor" while
+        # the record itself says ``status='staged'`` is self-contradicting, and
+        # sends a debugging operator to re-stage when the real defect is a
+        # corrupt record.
+        malformed = config_record is not None and not isinstance(
+            config_record, Mapping
+        )
         return False, (
-            "this box publishes no staged startup anchor "
-            f"(staged status={staged.get('status')!r}), so the loaded graph "
-            "cannot be proved to BE one"
+            "this box publishes no usable staged startup anchor "
+            + (
+                "(record present but malformed: config is "
+                f"{type(config_record).__name__}, not a mapping)"
+                if malformed
+                else f"(staged status={status!r})"
+            )
+            + ", so the loaded graph cannot be proved to BE one"
+        )
+    if status != "staged":
+        # The record's LOCATOR without the record's VERDICT is the same trust
+        # gap as the mute proof below: a ``blocked`` / ``unreadable`` record
+        # still carries a path, and accepting it would treat a run that the
+        # stager REFUSED as a published anchor.
+        return False, (
+            f"the staged startup anchor record reports status={status!r}, not "
+            "'staged' — a record the stager did not accept is not a published "
+            "anchor"
         )
     if os.path.realpath(graph.path) != os.path.realpath(str(anchor_path)):
         return False, (
@@ -2648,11 +2808,19 @@ def ring_endpoint_anchor_converged() -> tuple[bool, str]:
             "the staged anchor is at the ring endpoint but does not state this "
             f"box's ring wire: {'; '.join(problems)}"
         )
+
+    muted, mute_problem = _anchor_is_all_muted(graph)
+    if not muted:
+        return False, (
+            "the graph at the published anchor path is at the ring endpoint but "
+            f"is not the all-muted anchor: {mute_problem}"
+        )
     return True, (
         f"the loaded graph IS this box's staged startup anchor ({graph.path}) "
         f"at the ACTIVE ring endpoint, stating the box's ring wire "
-        f"({wire.sample_format}); an all-muted anchor hosts no EQ, so there is "
-        "nothing left for the camilla step to re-emit"
+        f"({wire.sample_format}), with every output held at the "
+        f"{STARTUP_MUTE_GAIN_DB:g} dB startup mute floor; an all-muted anchor "
+        "hosts no EQ, so there is nothing left for the camilla step to re-emit"
     )
 
 
@@ -2714,7 +2882,11 @@ def composite_ring_wire_ready(topology: Any) -> tuple[bool, str]:
     Measured on jts.local 2026-08-15: the staged anchor declared ``S16_LE`` on
     both lanes before ``baseline-reemit --endpoint ring`` and ``S32_LE`` on both
     after it. So the remedy is the whole ladder, graph first, exactly as
-    ``docs/HANDOFF-audio-graph-consolidation.md`` spells it.
+    ``docs/HANDOFF-audio-graph-consolidation.md`` spells it — and in the
+    ``sudo /opt/jasper/.venv/bin/…`` spelling the doctor's own rollback ladder
+    uses (``jasper/cli/doctor/audio_runtime.py``), because these two strings are
+    operator-copied text for the same three rungs and only that spelling pastes
+    into a shell and works.
 
     Non-composite topologies pass untouched — jts3's roleful DAC8x arm and every
     stereo-ring box keep the wire they have today.
@@ -2748,10 +2920,10 @@ def composite_ring_wire_ready(topology: Any) -> tuple[bool, str]:
             f"(a narrow arm is perfectly self-consistent). Set "
             f"{RING_WIRE_FORMAT_ENV_VAR}={RING_WIRE_FORMAT_WIDE} in "
             f"/var/lib/jasper/fanin.env, then re-run the WHOLE three-step arm "
-            f"ladder in order: `jasper-active-speaker baseline-reemit "
-            f"--endpoint ring`, then `systemctl start "
-            f"jasper-audio-hardware-reconcile`, then "
-            f"`jasper-fanin-coupling-reconcile shm_ring`. The boot graph's own "
+            f"ladder in order: `sudo /opt/jasper/.venv/bin/jasper-active-speaker "
+            f"baseline-reemit --endpoint ring && sudo systemctl start "
+            f"jasper-audio-hardware-reconcile && sudo /opt/jasper/.venv/bin/"
+            f"jasper-fanin-coupling-reconcile shm_ring`. The boot graph's own "
             f"capture and playback formats are baked when it is EMITTED, so "
             f"re-running the hardware reconciler alone leaves a stale narrow "
             f"boot graph and the next arm refuses again. Keeping the coupling "

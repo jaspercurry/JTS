@@ -372,6 +372,12 @@ def test_the_narrow_wire_remedy_names_the_WHOLE_three_step_ladder(monkeypatch):
     So the remedy is the whole ladder, GRAPH FIRST, and all three commands are
     pinned — two of them would read as covered while the load-bearing one was
     missing.
+
+    The SPELLING is pinned too, in the `sudo /opt/jasper/.venv/bin/…` form the
+    doctor's own rollback ladder uses (`jasper/cli/doctor/audio_runtime.py`).
+    Both strings are operator-copied text for the same three rungs, and only
+    that spelling pastes into a shell and works — a bare `jasper-active-speaker`
+    is not on an operator's PATH.
     """
     from jasper.fanin import coupling_reconcile
 
@@ -380,9 +386,10 @@ def test_the_narrow_wire_remedy_names_the_WHOLE_three_step_ladder(monkeypatch):
     )
     _, detail = coupling_reconcile.composite_ring_wire_ready(_composite_active_2way())
     for command in (
-        "jasper-active-speaker baseline-reemit --endpoint ring",
-        "systemctl start jasper-audio-hardware-reconcile",
-        "jasper-fanin-coupling-reconcile shm_ring",
+        "sudo /opt/jasper/.venv/bin/jasper-active-speaker baseline-reemit "
+        "--endpoint ring",
+        "sudo systemctl start jasper-audio-hardware-reconcile",
+        "sudo /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile shm_ring",
     ):
         assert command in detail, f"remedy must name `{command}`: {detail}"
     assert detail.index("baseline-reemit") < detail.index(

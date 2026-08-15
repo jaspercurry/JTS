@@ -73,13 +73,48 @@ def _graph_yaml(
     playback_device: str,
     fmt: str,
     playback_channels: int = 4,
+    mute_gains_db: "dict[int, float] | None" = None,
+    bypassed: bool = False,
 ) -> str:
-    """A roleful boot graph's ``devices:`` block, in the shape the parser reads.
+    """A roleful boot graph, in the shape the readers actually parse.
 
     Ring A is always the 2-channel stereo program; the composite's ACTIVE ring
     is 4 wide (``active_ring_channels_for_topology`` on the fixture topology),
     so these are the widths a coherent composite anchor declares.
+
+    The ``filters``/``pipeline`` half is REAL, not a stub: the acceptance proves
+    every output ends in a wired hard mute, so a fixture that omitted the mutes
+    would make every test here a mute-refusal test by accident. Defaults to the
+    honest anchor — every output at ``STARTUP_MUTE_GAIN_DB``, muted and wired.
+    ``mute_gains_db`` overrides individual outputs (the unmuted-at-the-anchor
+    attack); ``bypassed`` marks the mute step skipped, which leaves the channel
+    live while the filter definition still reads as muted.
     """
+    from jasper.active_speaker.camilla_yaml import (
+        STARTUP_MUTE_GAIN_DB,
+        output_commission_mute_name,
+    )
+
+    gains = dict(mute_gains_db or {})
+    filters = []
+    steps = []
+    for index in range(playback_channels):
+        name = output_commission_mute_name(index)
+        gain = gains.get(index, STARTUP_MUTE_GAIN_DB)
+        muted = gain <= STARTUP_MUTE_GAIN_DB
+        filters.append(
+            f"  {name}:\n"
+            "    type: Gain\n"
+            "    parameters:\n"
+            f"      gain: {gain}\n"
+            f"      mute: {'true' if muted else 'false'}\n"
+        )
+        steps.append(
+            "  - type: Filter\n"
+            f"    channels: [{index}]\n"
+            f"    names: [{name}]\n"
+            + ("    bypassed: true\n" if bypassed else "")
+        )
     return (
         "devices:\n"
         "  samplerate: 48000\n"
@@ -93,7 +128,7 @@ def _graph_yaml(
         f"    channels: {playback_channels}\n"
         f"    format: {fmt}\n"
         f'    device: "{playback_device}"\n'
-        "filters:\n"
+        "filters:\n" + "".join(filters) + "pipeline:\n" + "".join(steps)
     )
 
 
@@ -104,6 +139,7 @@ def _stage_box(
     graph_yaml: str,
     graph_name: str = "active_speaker_staged_startup.yml",
     publish_anchor: object = True,
+    staged_status: str = "staged",
     wire_format: str = RING_WIRE_FORMAT_WIDE,
 ) -> Path:
     """Put a whole box on disk: a loaded graph, a statefile, a staged record.
@@ -124,7 +160,7 @@ def _stage_box(
     from jasper.fanin import coupling_reconcile as cr
 
     configs = tmp_path / "configs"
-    configs.mkdir(exist_ok=True)
+    configs.mkdir(parents=True, exist_ok=True)
     graph = configs / graph_name
     graph.write_text(graph_yaml, encoding="utf-8")
 
@@ -137,9 +173,14 @@ def _stage_box(
     metadata.write_text(
         json.dumps(
             {
-                "status": "staged",
+                "status": staged_status,
+                # True -> the real record. False -> a genuinely ABSENT anchor
+                # (``config: null``, what ``status=not_staged`` writes).
+                # Anything else is written verbatim, for the malformed shapes.
                 "config": (
-                    {"path": str(anchor)} if publish_anchor is True else publish_anchor
+                    {"path": str(anchor)}
+                    if publish_anchor is True
+                    else (None if publish_anchor is False else publish_anchor)
                 ),
             }
         ),
@@ -323,6 +364,164 @@ def test_the_converged_arm_says_so_on_the_operator_stdout_line(
     assert f"detail={CAMILLA_ANCHOR_CONVERGED_DETAIL}" in capsys.readouterr().out
 
 
+# --- the DAEMON's answer beats the statefile's ------------------------------
+
+
+def test_the_daemon_reported_path_wins_over_a_diverged_statefile(
+    tmp_path, monkeypatch
+):
+    """THE FAIL-OPEN WINDOW THIS CLOSES.
+
+    The refusal is about the graph the running daemon holds
+    (``cam.get_config_file_path`` over CamillaDSP's websocket); the statefile is
+    a durable POINTER with several other writers (``write_camilla_statefile``
+    from ``baseline-reemit`` and ``runtime-safe-graph``, the pipe guard), so it
+    can name a coherent anchor while the daemon is still on the previous graph.
+    Proving identity against the statefile would report ``converged_anchor``
+    with CamillaDSP writing the lane the ring replaced and outputd already
+    flipped to read the ring — a ring with no writer, which is the #2364 silence
+    class arrived at from the other side.
+
+    Here the statefile names the coherent anchor and the daemon names something
+    else. The daemon wins, so this REFUSES.
+    """
+    _stage_box(
+        tmp_path,
+        monkeypatch,
+        graph_yaml=_graph_yaml(
+            capture_device=RING_CAPTURE_DEVICE,
+            playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+            fmt=RING_WIRE_FORMAT_WIDE,
+        ),
+    )
+    # Sanity: through the statefile alone this box converges. Without this the
+    # refusal below could come from the fixture rather than from the divergence.
+    assert ring_endpoint_anchor_converged()[0] is True
+
+    other = tmp_path / "configs" / "some_other_graph.yml"
+    other.write_text(
+        _graph_yaml(
+            capture_device=RING_CAPTURE_DEVICE,
+            playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+            fmt=RING_WIRE_FORMAT_WIDE,
+        ),
+        encoding="utf-8",
+    )
+    ok, detail = ring_endpoint_anchor_converged(loaded_config_path=str(other))
+    assert not ok
+    assert "some_other_graph.yml" in detail, detail
+    assert "not this box's published startup anchor" in detail, detail
+
+
+def test_the_arm_hands_the_camilla_rung_the_daemon_reported_path(
+    tmp_path, monkeypatch
+):
+    """The wiring, not just the parameter: the rung must actually pass the
+    payload field through. Without this the divergence test above guards a
+    function nobody calls that way.
+    """
+    from jasper.fanin import coupling_reconcile as cr
+    from jasper.sound import runtime
+
+    async def fake_reconcile_current_dsp(**_kwargs):
+        return {
+            "status": "skipped",
+            "reason": CARRIER_TRANSIENT_ACTIVE_REFUSAL,
+            "current_config_path": "/var/lib/camilladsp/configs/daemon-says-this.yml",
+        }
+
+    monkeypatch.setattr(runtime, "reconcile_current_dsp", fake_reconcile_current_dsp)
+    seen: list[object] = []
+    monkeypatch.setattr(
+        cr,
+        "ring_endpoint_anchor_converged",
+        lambda *, loaded_config_path=None: (
+            seen.append(loaded_config_path) or (False, "stub")
+        ),
+    )
+
+    cr._reconcile_camilla(COUPLING_SHM_RING, reason="arm")
+    assert seen == ["/var/lib/camilladsp/configs/daemon-says-this.yml"]
+
+
+# --- the anchor must actually BE all-muted ----------------------------------
+
+
+def test_an_unmuted_graph_at_the_anchor_path_is_refused(tmp_path, monkeypatch):
+    """THE HEARING-SAFETY HARD STOP. The acceptance's own success sentence says
+    "an all-muted anchor hosts no EQ" — so it measures that, rather than
+    inheriting it from the writer that emitted the file. A tweeter left unmuted
+    at −20 dB at the published anchor path was ACCEPTED before this.
+    """
+    _stage_box(
+        tmp_path,
+        monkeypatch,
+        graph_yaml=_graph_yaml(
+            capture_device=RING_CAPTURE_DEVICE,
+            playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+            fmt=RING_WIRE_FORMAT_WIDE,
+            mute_gains_db={1: -20.0},
+        ),
+    )
+    ok, detail = ring_endpoint_anchor_converged()
+    assert not ok
+    assert "not the all-muted anchor" in detail, detail
+    assert "startup mute floor" in detail, detail
+    assert detail.rstrip().endswith("1"), detail
+
+
+def test_a_full_scale_graph_at_the_anchor_path_is_refused(tmp_path, monkeypatch):
+    """The loudest shape, refused. Every output unmuted at 0 dB."""
+    _stage_box(
+        tmp_path,
+        monkeypatch,
+        graph_yaml=_graph_yaml(
+            capture_device=RING_CAPTURE_DEVICE,
+            playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+            fmt=RING_WIRE_FORMAT_WIDE,
+            mute_gains_db={index: 0.0 for index in range(4)},
+        ),
+    )
+    ok, detail = ring_endpoint_anchor_converged()
+    assert not ok
+    assert "0, 1, 2, 3" in detail, detail
+
+
+def test_a_bypassed_mute_step_is_refused(tmp_path, monkeypatch):
+    """A mute behind a ``bypassed`` step is not a mute — CamillaDSP skips the
+    step entirely while the filter definition still reads as muted. Refused
+    wholesale, mirroring ``runtime_contract._channel_terminally_muted``'s fact 3.
+    """
+    _stage_box(
+        tmp_path,
+        monkeypatch,
+        graph_yaml=_graph_yaml(
+            capture_device=RING_CAPTURE_DEVICE,
+            playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+            fmt=RING_WIRE_FORMAT_WIDE,
+            bypassed=True,
+        ),
+    )
+    ok, detail = ring_endpoint_anchor_converged()
+    assert not ok
+    assert "bypassed step" in detail, detail
+
+
+def test_an_unparseable_anchor_is_refused(tmp_path, monkeypatch):
+    """Fail-closed on a graph whose devices block parses but whose YAML does
+    not — the two readers disagree, and disagreement is not proof.
+    """
+    good = _graph_yaml(
+        capture_device=RING_CAPTURE_DEVICE,
+        playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+        fmt=RING_WIRE_FORMAT_WIDE,
+    )
+    _stage_box(tmp_path, monkeypatch, graph_yaml=good + "\n  : : torn\n")
+    ok, detail = ring_endpoint_anchor_converged()
+    assert not ok
+    assert "YAML does not parse" in detail, detail
+
+
 # --- (b)(c) every other graph shape keeps failing ---------------------------
 
 
@@ -478,7 +677,10 @@ def test_a_box_publishing_no_anchor_is_refused(tmp_path, monkeypatch):
     )
     ok, detail = ring_endpoint_anchor_converged()
     assert not ok
-    assert "no staged startup anchor" in detail
+    assert "no usable staged startup anchor" in detail, detail
+    # CONTROL for the malformed-record message below: an ABSENT anchor must not
+    # borrow the corrupt-record sentence either.
+    assert "record present but malformed" not in detail, detail
 
 
 def test_an_unreadable_graph_is_refused(tmp_path, monkeypatch):
@@ -505,6 +707,14 @@ def test_an_unusable_wire_declaration_is_refused(tmp_path, monkeypatch):
     """A wire token neither language recognizes. ``jasper-fanin`` parks at exit
     78 on the same value, so there is no wire to prove the graph against and the
     acceptance must not fall back to a guess.
+
+    ASSERTS THE PARSER'S OWN REFUSAL SENTENCE, not the token. Asserting only
+    ``"S24_WHAT" in detail`` cannot tell this refusal from a LEGAL-mismatch one:
+    under a lenient parser the bad token resolves to the wire, the format
+    compare then fails, and the mismatch sentence quotes the same token — so the
+    assertion passes while the parser has stopped rejecting anything. The
+    correctness lens demonstrated exactly that mutation surviving. The control
+    below pins the other sentence.
     """
     _stage_box(
         tmp_path,
@@ -518,7 +728,30 @@ def test_an_unusable_wire_declaration_is_refused(tmp_path, monkeypatch):
     )
     ok, detail = ring_endpoint_anchor_converged()
     assert not ok
-    assert "S24_WHAT" in detail
+    assert "S24_WHAT" in detail, detail
+    assert "refusing to arm on a wire this box cannot declare" in detail, detail
+    assert "does not state this box's ring wire" not in detail, detail
+
+
+def test_a_legal_wire_mismatch_produces_the_OTHER_sentence(tmp_path, monkeypatch):
+    """CONTROL for the test above. A legal-but-different wire is a MISMATCH, and
+    it must not borrow the parser's refusal sentence — otherwise the assertion
+    above would pass for a box whose token was never rejected at all.
+    """
+    _stage_box(
+        tmp_path,
+        monkeypatch,
+        wire_format="S16_LE",
+        graph_yaml=_graph_yaml(
+            capture_device=RING_CAPTURE_DEVICE,
+            playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+            fmt=RING_WIRE_FORMAT_WIDE,
+        ),
+    )
+    ok, detail = ring_endpoint_anchor_converged()
+    assert not ok
+    assert "does not state this box's ring wire" in detail, detail
+    assert "refusing to arm on a wire this box cannot declare" not in detail, detail
 
 
 def test_a_malformed_staged_record_is_refused_not_raised(tmp_path, monkeypatch):
@@ -540,7 +773,33 @@ def test_a_malformed_staged_record_is_refused_not_raised(tmp_path, monkeypatch):
     )
     ok, detail = ring_endpoint_anchor_converged()
     assert not ok
-    assert "no staged startup anchor" in detail
+    assert "record present but malformed" in detail, detail
+    assert "config is str, not a mapping" in detail, detail
+    # The DISTINCTION is the point: a corrupt record must not read as an absent
+    # one, or a debugging operator re-stages when the record is the defect.
+    assert "staged status=" not in detail, detail
+
+
+def test_a_blocked_staged_record_is_refused(tmp_path, monkeypatch):
+    """The record's LOCATOR without the record's VERDICT.
+
+    A ``status: blocked`` record still carries a ``config.path``, so reading the
+    path alone accepts a stage the stager REFUSED. Same trust shape as taking
+    mutedness on faith from the writer — and the same one-line habit fixes it.
+    """
+    _stage_box(
+        tmp_path,
+        monkeypatch,
+        staged_status="blocked",
+        graph_yaml=_graph_yaml(
+            capture_device=RING_CAPTURE_DEVICE,
+            playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+            fmt=RING_WIRE_FORMAT_WIDE,
+        ),
+    )
+    ok, detail = ring_endpoint_anchor_converged()
+    assert not ok
+    assert "status='blocked'" in detail, detail
 
 
 def test_a_different_carrier_refusal_is_never_routed_to_the_acceptance(
@@ -574,6 +833,76 @@ def test_a_different_carrier_refusal_is_never_routed_to_the_acceptance(
         "eq_on_active_bonded_member",
     )
     assert consulted == []
+
+
+# --- the JOURNAL half of the observability promise --------------------------
+
+
+def _anchor_log_records(caplog):
+    """(result, levelno) for every acceptance line this module emitted."""
+    out = []
+    for record in caplog.records:
+        message = record.getMessage()
+        for result in ("camilla_converged_anchor", "camilla_anchor_not_converged"):
+            if f"result={result}" in message:
+                out.append((result, record.levelno))
+    return out
+
+
+def test_the_journal_records_both_acceptance_outcomes(tmp_path, monkeypatch, caplog):
+    """THE SURFACE AN OPERATOR GREPS ON A PI, pinned.
+
+    The stdout half had an assertion and a control; the journal half — the only
+    place the refusal REASON is recorded, and what the doc states verbatim — had
+    nothing, so a rename or an INFO/WARNING flip would have been silent. Four
+    states, the same probe shape the resilience lens ran by hand.
+    """
+    import logging
+
+    from jasper.fanin import coupling_reconcile as cr
+
+    coherent = _graph_yaml(
+        capture_device=RING_CAPTURE_DEVICE,
+        playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+        fmt=RING_WIRE_FORMAT_WIDE,
+    )
+    incoherent = _graph_yaml(
+        capture_device="plug:jasper_capture",
+        playback_device=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+        fmt=RING_WIRE_FORMAT_WIDE,
+    )
+
+    # 1. ARM on a coherent anchor -> INFO, converged.
+    _stage_box(tmp_path, monkeypatch, graph_yaml=coherent)
+    _skipped_carrier_refusal(monkeypatch, reason=CARRIER_TRANSIENT_ACTIVE_REFUSAL)
+    with caplog.at_level(logging.INFO, logger=cr.logger.name):
+        cr._reconcile_camilla(COUPLING_SHM_RING, reason="arm")
+    assert _anchor_log_records(caplog) == [
+        ("camilla_converged_anchor", logging.INFO)
+    ]
+
+    # 2. ARM on an incoherent anchor -> WARNING, not converged, reason recorded.
+    caplog.clear()
+    _stage_box(tmp_path / "b", monkeypatch, graph_yaml=incoherent)
+    with caplog.at_level(logging.INFO, logger=cr.logger.name):
+        cr._reconcile_camilla(COUPLING_SHM_RING, reason="arm")
+    assert _anchor_log_records(caplog) == [
+        ("camilla_anchor_not_converged", logging.WARNING)
+    ]
+    assert f"refusal={CARRIER_TRANSIENT_ACTIVE_REFUSAL}" in caplog.text
+
+    # 3. DISARM -> the acceptance is never consulted, so neither line appears.
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger=cr.logger.name):
+        cr._reconcile_camilla(COUPLING_LOOPBACK, reason="disarm")
+    assert _anchor_log_records(caplog) == []
+
+    # 4. ARM with a DIFFERENT refusal -> likewise silent.
+    caplog.clear()
+    _skipped_carrier_refusal(monkeypatch, reason="eq_on_active_bonded_member")
+    with caplog.at_level(logging.INFO, logger=cr.logger.name):
+        cr._reconcile_camilla(COUPLING_SHM_RING, reason="arm")
+    assert _anchor_log_records(caplog) == []
 
 
 # --- (d)(e) the untouched directions ----------------------------------------
