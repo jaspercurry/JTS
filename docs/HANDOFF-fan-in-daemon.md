@@ -218,6 +218,36 @@ loop reads no wall clock. Neither state can fail the daemon — the fail-hard
 "every configured input is required" contract is exempted for a ring lane
 exactly as it is for the direct one.
 
+**The reattach runs on a worker thread, never in the render loop (#2538).**
+`RingReader::create_or_attach` takes the ring's adjacent `.open.lock` `flock`
+under a 500 ms deadline plus the open/mmap/header-validate work. That used to
+run inline in the render loop once per ~2 s per detached lane; the budget is
+`period_frames / 48 kHz` (5.33 ms at the shipped 256) and both Ring A and Ring B
+hold two 128-frame slots, so a block over ~2.7 ms costs exactly one slot of
+audio — a silence insertion when CamillaDSP reads an empty Ring A, a deletion
+when fan-in cannot publish in time. Detached is not the idle state (see the
+paragraph below — an idle renderer leaves its lane ATTACHED); it is a fault or a
+transient: a geometry shear, a permission refusal, a full tmpfs, `.open.lock`
+contention against the writer's own open, or the one period an orphan re-latch
+spends detached. A missing ring directory is *not* on that list —
+`ensure_parent_dir` creates it, so a root fan-in never observes one. So this
+is not a cost every box pays all the time — but a shear or a permissions fault
+persists until an operator clears it, so an affected box paid it every ~2 s
+meanwhile, and unlike `fanin-direct-opener` (#2533) this path needs no USB host
+at all to be exposed. Each ring lane now owns a `fanin-ring-attacher-<label>`
+thread, queues at most one attach at a time, and keeps rendering silence until a
+reader comes back; `ring.attach_pending` is `true` in `/state` while one is
+outstanding, and a `retries` counter FROZEN beside `attached:false` with
+`attach_pending:false` is the tell that the attacher thread itself is gone (the
+silent-wedge shape, matching the direct lane's `reopen_pending`). A spawn
+failure at construction logs `event=fanin.ring_lane.attacher_unavailable` and
+leaves the lane without reattach self-heal (silence) rather than restoring the
+inline attach. Each lane also seeds its retry latch at its own phase of the
+window, so a box with several detached lanes does not retry them all in one
+render period. Cost: up to four extra threads at Rust's default 2 MiB stack,
+spawned before `lock_memory()` and therefore inside the `mlockall` — bounded and
+small on a 1 GB Pi, and paid only on a box with armed ring lanes.
+
 **An empty ring or a dead writer is NOT a detach.** `jasper_ring`'s reader
 already owns writer liveness: an empty ring zero-fills the buffer and reports
 `SlotRead::Empty`, and `writer_alive` goes false within ~2 s of the writer
@@ -1497,7 +1527,14 @@ follow-on if/when warranted.
   capabilities of the Raspberry Pi 5" — the scheduling-latency numbers
   driving the SCHED_FIFO + PREEMPT_RT-gated design.
 
-Last verified: 2026-08-15 (topology diagram corrected for P9-C, audio-graph
+Last verified: 2026-08-15 for the renderer ring lane's REATTACH path ONLY
+(#2538): `RingReader::create_or_attach` and its 500 ms-bounded `flock` moved off
+the render thread onto per-lane `fanin-ring-attacher-<label>` threads, the retry
+latches gained per-lane phase seeding, and `/state`'s ring block gained
+`attach_pending` — the ring-lane presence-model section was rewritten against
+`rust/jasper-fanin/src/mixer/ring_capture.rs`. The rest of this file was NOT
+re-verified in that pass and keeps its prior date. Prior 2026-08-15 (topology
+diagram corrected for P9-C, audio-graph
 consolidation #2285: snd-aloop pair 5's PCM definitions — the outputd active
 lane — were deleted once the ACTIVE ring became the roleful transport,
 verified against `deploy/alsa/asoundrc.jasper`'s allocation header; prior

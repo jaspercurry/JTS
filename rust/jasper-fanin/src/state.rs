@@ -1114,6 +1114,18 @@ impl StateServer {
                 buf.push(',');
                 push_kv_u64(buf, "retries", r.retries.load(Ordering::Relaxed));
                 buf.push(',');
+                // attach_pending = an attach is QUEUED on this lane's
+                // `fanin-ring-attacher` thread (#2538). The attach — and the
+                // bounded inter-process `flock` inside it — no longer runs in the
+                // render loop, so this is how one in progress is visible; stuck
+                // true alongside a climbing `retries` means the attach itself is
+                // hanging (this lane goes silent, the speaker does not glitch).
+                push_kv_bool(
+                    buf,
+                    "attach_pending",
+                    r.attach_pending.load(Ordering::Relaxed),
+                );
+                buf.push(',');
                 push_kv_bool(buf, "writer_alive", r.writer_alive.load(Ordering::Relaxed));
                 buf.push(',');
                 push_kv_u64(buf, "writer_pid", r.writer_pid.load(Ordering::Relaxed));
@@ -2339,6 +2351,7 @@ mod tests {
             detach_reason: Arc::new(AtomicU64::new(0)),
             attaches: Arc::new(AtomicU64::new(1)),
             retries: Arc::new(AtomicU64::new(0)),
+            attach_pending: Arc::new(AtomicBool::new(false)),
             writer_alive: Arc::new(AtomicBool::new(true)),
             writer_pid: Arc::new(AtomicU64::new(4242)),
             occupancy: Arc::new(AtomicU64::new(3)),
@@ -2374,6 +2387,9 @@ mod tests {
         assert_eq!(block["n_slots"].as_u64(), Some(16));
         assert_eq!(block["attaches"].as_u64(), Some(1));
         assert_eq!(block["retries"].as_u64(), Some(0));
+        // An attach QUEUED on the lane's `fanin-ring-attacher` thread (#2538).
+        // The fixture lane is attached, so nothing is pending.
+        assert_eq!(block["attach_pending"].as_bool(), Some(false));
         assert_eq!(block["writer_alive"].as_bool(), Some(true));
         assert_eq!(block["writer_pid"].as_u64(), Some(4242));
         assert_eq!(block["occupancy"].as_u64(), Some(3));

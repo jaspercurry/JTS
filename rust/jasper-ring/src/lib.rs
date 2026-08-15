@@ -595,6 +595,23 @@ pub struct RingReader {
     metrics: RingMetrics,
 }
 
+// A `RingReader` may be MOVED BETWEEN THREADS by a single owner. It is `Send`
+// automatically — every field is (`RingMapping` carries its own hand-written
+// `unsafe impl Send`, and the rest are owned scalars and a `String`) — and this
+// assertion exists so that stays true across refactors, because a consumer in
+// another crate now depends on it: fan-in's `fanin-ring-attacher` thread
+// (#2538) performs `create_or_attach` off the render thread and sends the
+// finished reader back over an `mpsc` channel. Adding a non-`Send` field here
+// would break that build with a trait error pointing at the channel rather than
+// at the field that caused it; this fails at the field instead.
+//
+// It is deliberately NOT a `Sync` claim: the mapping is single-consumer, and
+// nothing shares a reader between threads. Handover, not sharing.
+const _: fn() = || {
+    fn assert_send<T: Send>() {}
+    assert_send::<RingReader>();
+};
+
 impl RingReader {
     /// Attach to an existing ring, or create it if absent, validating against
     /// `expected`. `O_EXCL` create races are resolved by attaching instead.
