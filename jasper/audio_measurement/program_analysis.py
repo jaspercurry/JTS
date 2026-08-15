@@ -3490,6 +3490,64 @@ def realized_branch_level_match(
     )
 
 
+def ripple_at_trim(
+    freqs: np.ndarray,
+    w_tf: np.ndarray,
+    t_tf: np.ndarray,
+    *,
+    lo_hz: float,
+    hi_hz: float,
+    trim_w_db: float,
+    trim_t_db: float,
+    sign: int,
+) -> float:
+    """The summed pair's ripple (max-min dB) over ``[lo_hz, hi_hz]`` at ONE trim.
+
+    The shared computation behind the trim-rejection telemetry PAIR, so that
+    pair is commensurable by construction rather than by two call sites
+    agreeing: :func:`solve_ripple_optimal_trim` evaluates every scanned
+    candidate through it, and the linearization planner calls it once more at
+    the ANCHORED trim, so the two ripples the rejection event logs differ in
+    exactly one variable. Before that pair existed, the event sat a
+    linearized-branch ripple beside a RAW-branch one and the two moved
+    together — a gap that read as flatness thrown away was mostly the
+    linearization itself, which ships either way (#2541).
+
+    It is not this module's only summed-ripple site: ``_flatter_sum_polarity``
+    composes the same two functions inline, at both polarities. That is left
+    alone deliberately — it is a different question (which SIGN sums flatter,
+    at a fixed trim), and folding it in would be a code change for a docstring's
+    convenience.
+
+    Masking is internal, so full-length and already-band-sliced inputs give the
+    same number; the scan pre-slices only to keep its per-candidate sums cheap.
+
+    No delay term: this is the same zero-residual frame the scan optimizes in.
+    A caller that wants a delay-carrying sum builds it with
+    :func:`predicted_branch_sum` directly, which is what ``_build_candidate``'s
+    own alignment evidence does with its residual.
+
+    ``inf`` when the band holds no bins — :func:`_ripple_db`'s own answer,
+    carried rather than converted into a fabricated number.
+
+    Expects Python scalars for the trims and ``complex128``/``float64`` arrays
+    for the branches, which is what every caller hands it. The explicit
+    ``float()``/``int()`` casts below make the scalars weak under NEP 50, so a
+    ``float32`` scalar or a ``complex64`` branch pair would promote differently
+    here than under the inline expression this replaced — unreachable rather
+    than guarded against, and named so a future lower-precision caller knows to
+    check rather than assume.
+    """
+    return _ripple_db(
+        freqs,
+        predicted_branch_sum(
+            w_tf, t_tf, float(trim_w_db), float(trim_t_db), int(sign),
+        ),
+        float(lo_hz),
+        float(hi_hz),
+    )
+
+
 def solve_ripple_optimal_trim(
     freqs: np.ndarray,
     w_tf: np.ndarray,
@@ -3511,9 +3569,10 @@ def solve_ripple_optimal_trim(
 
     Instead of matching levels, scan the tweeter trim and keep whichever
     value minimizes the SUMMED branch response's ripple (max-min dB) over
-    ``[lo_hz, hi_hz]`` — reusing :func:`predicted_branch_sum` and
-    :func:`_ripple_db` exactly as ``predicted_ripple_db`` elsewhere on the
-    candidate already does, rather than inventing a second flatness metric.
+    ``[lo_hz, hi_hz]`` — evaluated by :func:`ripple_at_trim`, which is
+    :func:`predicted_branch_sum` into :func:`_ripple_db` exactly as
+    ``predicted_ripple_db`` elsewhere on the candidate already does, rather
+    than inventing a second flatness metric.
 
     #1667 introduced this as a fix for ``solve_branch_trims``' bias when the
     evaluation band sat inside one branch's own filter rolloff ("the fix is
@@ -3591,10 +3650,15 @@ def solve_ripple_optimal_trim(
         # searching an empty set.
         candidate_trims = [min(max(seed_trim_db, RIPPLE_TRIM_MIN_DB), RIPPLE_TRIM_MAX_DB)]
     ripples_db = [
-        _ripple_db(
+        ripple_at_trim(
             freqs_band,
-            predicted_branch_sum(w_band, t_band, trim_w_db, candidate_trim, sign),
-            lo, hi,
+            w_band,
+            t_band,
+            lo_hz=lo,
+            hi_hz=hi,
+            trim_w_db=trim_w_db,
+            trim_t_db=candidate_trim,
+            sign=sign,
         )
         for candidate_trim in candidate_trims
     ]
