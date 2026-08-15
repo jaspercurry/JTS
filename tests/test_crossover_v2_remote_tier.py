@@ -469,8 +469,22 @@ def test_the_modal_ceiling_death_announces_no_hold_it_is_about_to_refuse(caplog)
     ``session_ceiling_expired``, rather than a ``position_pending`` announcing
     a hold that is refused in the same breath and never waited a second.
     """
+    logger_name = "jasper.web.correction_crossover_v2"
+    # POSITIVE CONTROL FIRST. ``position_pending`` is an INFO line, so a
+    # WARNING-level capture would swallow it and the absence assertion below
+    # would pass against ANY implementation — instrument silence read as
+    # evidence. Prove the line reaches this capture before trusting its absence.
+    healthy = PositionGate()
+    with caplog.at_level(logging.INFO, logger=logger_name):
+        with pytest.raises(CaptureBeginDeferred):
+            healthy.gate(4, 4, _entry(7))
+    assert any(
+        "crossover_v2_position_pending" in rec.getMessage() for rec in caplog.records
+    ), [rec.getMessage() for rec in caplog.records]
+
+    caplog.clear()
     gate = PositionGate()
-    with caplog.at_level(logging.WARNING, logger="jasper.web.correction_crossover_v2"):
+    with caplog.at_level(logging.INFO, logger=logger_name):
         gate.note_session_ceiling_expired()
         with pytest.raises(CaptureBeginRefused) as refused:
             gate.gate(4, 4, _entry(7))  # a hold this gate has never opened
