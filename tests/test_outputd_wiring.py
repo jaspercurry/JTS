@@ -105,49 +105,45 @@ def test_asoundrc_declares_outputd_post_dsp_lane_without_dsnoop():
     assert f"format {DEFAULT_PLAYBACK_FORMAT}" in capture
 
 
-def test_asoundrc_active_content_lane_is_raw_hw_no_plug():
-    """The active-crossover content lane (snd-aloop substream 5) uses raw
-    `type hw` on both sides of the pair — card/device/subdevice only, exactly
-    like the outputd_dac block (the ALSA `hw` plugin rejects channels/rate/
-    format as unknown fields). The width is NOT pinned in the conf; it is set
-    by the openers (CamillaDSP playback: channels: N; outputd's
-    JASPER_OUTPUTD_ACTIVE_CHANNELS) and locked by snd-aloop, so a mismatch
-    fails closed at open rather than silently remixing onto live drivers.
-    `type plug` is banned (it is the auto-converting plugin)."""
+def test_asoundrc_no_longer_declares_the_active_content_lane():
+    """P9-C deleted the ACTIVE lane's snd-aloop transport (pair 5).
+
+    A roleful box reaches its DAC over the ACTIVE ring
+    (``jts_ring_active_playback``). The NAMES survive in the endpoint
+    vocabulary so ``baseline-reemit --endpoint aloop`` still resolves — it now
+    moves the anchor onto a transport that does not exist, and jasper-outputd
+    fails its content open and parks (jasper-outputd-failure-reconcile, whose
+    active-lane remediation sends the operator back to the ring). Re-declaring
+    these PCMs would restore a SECOND transport for one lane, which is the
+    shape the no-legacy-fallback doctrine refuses.
+    """
     rc = _non_comment((REPO / "deploy" / "alsa" / "asoundrc.jasper").read_text())
-    playback = _pcm_block(rc, "outputd_active_content_playback")
-    capture = _pcm_block(rc, "outputd_active_content_capture")
-    assert "type hw" in playback
-    assert "card Loopback" in playback
-    assert "device 0" in playback
-    assert "subdevice 5" in playback
-    assert "type hw" in capture
-    assert "card Loopback" in capture
-    assert "device 1" in capture
-    assert "subdevice 5" in capture
-    # No conversion plugin, and no channels/rate/format keys (the hw plugin
-    # would reject them, and the width is not pinned here by design).
-    for block in (playback, capture):
-        assert "type plug" not in block
-        assert "type dsnoop" not in block
-        assert "channels" not in block
-        assert "rate" not in block
-        assert "format" not in block
+    for name in (
+        "pcm.outputd_active_content_playback",
+        "pcm.outputd_active_content_capture",
+        "ctl.outputd_active_content_capture",
+    ):
+        assert name not in rc, f"{name} was re-declared in asoundrc.jasper"
+    # Nothing may claim substream 5 under any alias — the pair stays free.
+    assert "subdevice 5" not in rc
+
+    # Positive control: the same read still finds the SURVIVING passive lane,
+    # so a broken reader cannot make the absence assertions pass vacuously.
+    assert "pcm.outputd_content_playback" in rc
+    assert 'pcm "hw:Loopback,1,6"' in _pcm_block(rc, "outputd_content_capture")
 
 
 def test_active_path_pcms_never_use_plug_or_plughw():
     """Contract: NO `type plug` / `plughw:` anywhere on the active-crossover
     path. `plug` is the auto-converting channel/rate/format plugin; on a live-
     driver path it could remix 8->4 onto a tweeter (the single most dangerous
-    fail-open in active mode). Covers the asoundrc active content lanes and
-    the render script text. No DAC profile gets a plug exception anymore —
-    see test_every_single_dac_profile_renders_raw_hw_with_no_plug for the
+    fail-open in active mode). Covers the render script text; the asoundrc
+    active content lanes it also used to cover were deleted by P9-C and are
+    pinned absent by test_asoundrc_no_longer_declares_the_active_content_lane,
+    which is a strictly stronger guarantee than "present but not plug". No DAC
+    profile gets a plug exception anymore — see
+    test_every_single_dac_profile_renders_raw_hw_with_no_plug for the
     per-profile guard that replaced the old InnoMaker-specific check."""
-    rc = _non_comment((REPO / "deploy" / "alsa" / "asoundrc.jasper").read_text())
-    for name in ("outputd_active_content_playback", "outputd_active_content_capture"):
-        block = _pcm_block(rc, name)
-        assert "type plug" not in block, name
-        assert "plughw" not in block, name
     render_lib = (REPO / "deploy" / "lib" / "jasper-asound-render.sh").read_text()
     assert "plughw" not in render_lib
     assert "type plug" not in render_lib
@@ -987,10 +983,13 @@ def test_outputd_composite_skips_the_content_pcm_on_a_ring_box():
     Why this matters, and why it is a gate rather than a tidy-up: under the
     `shm_ring` content source the run loop reads the ring and never calls
     `read_content_period`, so a composite that still opened its aloop lane would
-    hold a STARTED, UNREAD capture lane. When the reconciler stops rendering
-    `outputd_active_content_capture`, that open fails — exit 1, `Restart=on-failure`,
-    `StartLimitBurst=5`, and `StartLimitAction=reboot`. A reboot loop, on a
-    condition no restart can clear.
+    hold a STARTED, UNREAD capture lane. Now that P9-C has deleted the
+    `outputd_active_content_*` PCM definitions, that open fails outright —
+    exit 1, `Restart=on-failure`, and on the 4th consecutive content-lane
+    failure `jasper-outputd-failure-reconcile` parks the unit out of band
+    (`StartLimitAction=reboot` is never reached; #2247/#2261 carved this class
+    out of the restart ladder). The skip is what keeps an ARMED composite off
+    that path entirely, so it plays rather than parks.
 
     A static source check for the reason
     `test_outputd_composite_children_take_the_declared_edge_width` gives: neither

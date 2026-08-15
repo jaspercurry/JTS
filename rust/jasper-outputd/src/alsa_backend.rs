@@ -924,6 +924,19 @@ impl AlsaBackend {
             // (the unit's `ExecStopPost`) counts consecutive failures carrying
             // these contexts and parks the unit out-of-band before the restart
             // ladder reaches `StartLimitAction=reboot`.
+            //
+            // The "routine transient" reasoning above is the PASSIVE lane's
+            // (pair 6), which still has both halves and still races CamillaDSP
+            // on boot. The ACTIVE lane has no snd-aloop transport at all since
+            // P9-C deleted its pair-5 PCM definitions, so on a roleful box that
+            // is not ring-armed this open fails PERMANENTLY, on the name. That
+            // is deliberate and it is why the exit class stays 1 rather than
+            // 78: one shared open site cannot tell the two lanes apart before
+            // it fails, and the streak park above resolves both correctly —
+            // the transient one recovers within the streak, the permanent one
+            // parks with the ACTIVE remediation (re-arm the ring), which
+            // `jasper-outputd-failure-reconcile` selects off the very context
+            // strings this block attaches.
             let content =
                 PCM::new(&config.content_pcm, Direction::Capture, true).with_context(|| {
                     format!("opening outputd content capture PCM {}", config.content_pcm)

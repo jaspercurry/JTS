@@ -25,6 +25,17 @@ CONTENT_LANE_JOURNAL = (
     "    0: set_format(S32LE)\n"
     "    1: Invalid argument (os error 22)\n"
 )
+# The ACTIVE half of the same class: a roleful box whose aloop pair-5 PCMs no
+# longer exist, so the open fails on the NAME rather than on a width.
+ACTIVE_CONTENT_LANE_JOURNAL = (
+    "event=outputd.alsa.opening content_pcm=outputd_active_content_capture\n"
+    "Error: opening outputd active content capture PCM "
+    "outputd_active_content_capture\n"
+    "\n"
+    "Caused by:\n"
+    "    0: ALSA function 'snd_pcm_open' failed with error 'ENOENT: "
+    "No such file or directory'\n"
+)
 # An exit-1 failure that is NOT a content-lane open.
 OTHER_FAILURE_JOURNAL = (
     "event=outputd.alsa.opened content_pcm=outputd_content_capture\n"
@@ -308,6 +319,17 @@ def _content_lane_signature() -> re.Pattern[str]:
     return re.compile(match.group(1))
 
 
+def _content_lane_active_signature() -> re.Pattern[str]:
+    """The helper's ACTIVE-lane discriminator, as an ERE."""
+    match = re.search(
+        r"^CONTENT_LANE_ACTIVE_SIGNATURE='([^']+)'$",
+        FAILURE_RECONCILE.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    assert match is not None, "CONTENT_LANE_ACTIVE_SIGNATURE is no longer parseable"
+    return re.compile(match.group(1))
+
+
 def test_outputd_failure_reconcile_keeps_content_lane_transient_restarting(
     tmp_path: Path,
 ) -> None:
@@ -357,6 +379,112 @@ def test_outputd_failure_reconcile_parks_repeated_content_lane_failures(
     assert "consecutive starts" in record["detail"]
     assert "systemctl restart jasper-outputd" in record["action"]
     assert record["parked_utc"].endswith("Z")
+
+
+def _park_with(harness: "_FailureReconcileHarness", journal: str):
+    """Drive a harness to its park and return the final run."""
+    for _ in range(_park_after() - 1):
+        harness.run(journal=journal)
+    return harness.run(journal=journal)
+
+
+def test_active_lane_park_names_the_ring_not_a_width(tmp_path: Path) -> None:
+    """The ACTIVE lane has no pair to width-match: its remedy is the ring.
+
+    P9-C deleted the pair-5 PCM definitions, so "match the content-lane width
+    on both halves of the pair" names a pair that does not exist. An operator
+    who follows it changes a format nothing reads and the speaker stays parked.
+    """
+    harness = _FailureReconcileHarness(tmp_path)
+    result = _park_with(harness, ACTIVE_CONTENT_LANE_JOURNAL)
+
+    assert "event=outputd.failure_reconcile.park" in result.stderr
+    assert "lane=active" in result.stderr
+
+    action = harness.state_record()["action"]
+    assert "baseline-reemit --endpoint ring" in action
+    assert "jasper-fanin-coupling-reconcile shm_ring" in action
+    # The falsified remedy must be absent, not merely out-ranked.
+    assert "match the content-lane width" not in action
+    assert "JASPER_OUTPUTD_CONTENT_FORMAT" not in action
+
+
+def test_passive_lane_park_keeps_the_width_remedy(tmp_path: Path) -> None:
+    """Pair 6 still has both halves, so its width-shear remedy is unchanged."""
+    harness = _FailureReconcileHarness(tmp_path)
+    result = _park_with(harness, CONTENT_LANE_JOURNAL)
+
+    assert "lane=passive" in result.stderr
+    action = harness.state_record()["action"]
+    assert "match the content-lane width" in action
+    assert "systemctl restart jasper-outputd" in action
+    assert "--endpoint ring" not in action
+
+
+def test_a_lane_agnostic_context_falls_through_to_the_passive_remedy(
+    tmp_path: Path,
+) -> None:
+    """`starting capture PCM` names no lane; the passive text is the safe half.
+
+    It is the only one of the two that can be true on a passive box, and a
+    passive box is the one that can still be repaired without re-arming.
+    """
+    harness = _FailureReconcileHarness(tmp_path)
+    result = _park_with(
+        harness,
+        "Error: starting capture PCM outputd_content_capture\n",
+    )
+
+    assert "lane=passive" in result.stderr
+    assert "match the content-lane width" in harness.state_record()["action"]
+
+
+def test_park_detail_claims_no_transport_that_may_not_exist(
+    tmp_path: Path,
+) -> None:
+    """The record's detail line is lane-agnostic prose.
+
+    It used to say "could not open its snd-aloop content lane", which is false
+    for the ACTIVE lane on this build — that lane has no snd-aloop transport.
+    """
+    harness = _FailureReconcileHarness(tmp_path)
+    _park_with(harness, ACTIVE_CONTENT_LANE_JOURNAL)
+
+    detail = harness.state_record()["detail"]
+    assert "snd-aloop" not in detail
+    assert "content lane" in detail
+    assert "consecutive starts" in detail
+
+
+def test_content_lane_active_signature_tracks_the_active_open_contexts() -> None:
+    """The ACTIVE discriminator is derived from outputd's own context strings."""
+    contexts = _open_context_literals(ALSA_BACKEND.read_text(encoding="utf-8"))
+    active = _content_lane_active_signature()
+
+    expected_active = {
+        "opening outputd active content capture PCM X",
+        "configuring outputd active content capture PCM X",
+    }
+    assert expected_active <= contexts, (
+        "the composite content-lane open contexts moved in "
+        "rust/jasper-outputd/src/alsa_backend.rs; update "
+        "CONTENT_LANE_ACTIVE_SIGNATURE in "
+        "deploy/bin/jasper-outputd-failure-reconcile to match. "
+        f"missing={sorted(expected_active - contexts)}"
+    )
+    for context in sorted(expected_active):
+        assert active.search(f"Error: {context}"), context
+
+    # Non-vacuity in the direction that matters: the discriminator must NOT
+    # claim the passive lane, or every passive width shear gets the ring remedy.
+    assert not active.search(
+        "Error: opening outputd content capture PCM outputd_content_capture"
+    )
+    assert not active.search("Error: starting capture PCM outputd_content_capture")
+    # And it stays a strict subset of the signature that gates the park at all.
+    signature = _content_lane_signature()
+    for context in sorted(expected_active):
+        assert signature.search(f"Error: {context}")
 
 
 def test_outputd_failure_reconcile_park_bound_leaves_a_start_unspent() -> None:

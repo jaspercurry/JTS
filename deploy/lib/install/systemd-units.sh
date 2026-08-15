@@ -849,14 +849,17 @@ release_camilla_content_lane_for_format_flip() {
     # has a window where the still-running previous CamillaDSP pins the pair at
     # the old width while the freshly-restarted jasper-outputd asks for the new
     # one. That open fails at snd_pcm_hw_params — an ordinary error, NOT
-    # outputd's EX_CONFIG park — so Restart=on-failure retries it, and
-    # jasper-outputd.service's StartLimitBurst=5 / StartLimitAction=reboot turns
-    # a format flip into a REBOOT in the middle of an install. Release the lane
-    # first when (and only when) the width actually moves.
+    # outputd's EX_CONFIG park — so Restart=on-failure retries it. Since #2261
+    # jasper-outputd-failure-reconcile parks the unit out-of-band on the 4th
+    # consecutive content-lane open failure, which keeps a format flip from
+    # reaching StartLimitAction=reboot; it still leaves the install with a
+    # parked final-output owner. Release the lane first when (and only when)
+    # the width actually moves.
     #
     # This deliberately INVERTS the documented normal open order (CamillaDSP
     # first, outputd matching the locked params — see deploy/alsa/asoundrc.jasper
-    # on substream 5). Safe because both openers are reconciled to the SAME
+    # on substream 6, the surviving passive content lane). Safe because both
+    # openers are reconciled to the SAME
     # params before either runs: reconcile_sound_dsp_state re-emits the config
     # from the same constant the reconciler emits outputd's request from, so
     # whichever opens first locks what the other is going to ask for.
