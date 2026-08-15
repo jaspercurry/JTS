@@ -622,8 +622,10 @@ re-entered about every 5 minutes (`COOLDOWN_SEC=300`). It is availability
 class, bounded, loud, and self-describing in the journal — and the
 management surface is untouched, because `jasper-control`, `jasper-web` and
 nginx are deliberately not in the park set, so `http://<speaker>/` stays
-reachable to re-arm from. That is the recovery path; the speaker itself
-cannot be asked, because voice is one of the stopped units.
+reachable to diagnose from. That is the diagnosis surface, not the recovery
+one: no web route arms the ring, so the arm stays the operator's CLI ladder,
+which the park record already names. The speaker itself cannot be asked
+either, because voice is one of the stopped units.
 
 **Step 1 accepts EITHER roleful boot graph — a box does not have to be
 commissioned to arm.** A roleful box has two legal boot graphs, and the
