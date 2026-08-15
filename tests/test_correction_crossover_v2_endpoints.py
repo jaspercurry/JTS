@@ -4774,18 +4774,29 @@ def test_undo_after_a_re_verify_does_not_leave_the_verify_screen_standing():
 
 
 def test_restore_refuses_when_nothing_applied():
+    """``camilla_factory`` still has to be CALLABLE. #2537 made
+    ``handle_v2_restore`` read the running config's path (the fourth anchor
+    precondition's live half) BEFORE it reaches this refusal, so the factory
+    is invoked unconditionally now — a bare ``None`` raises ``TypeError``
+    before the refusal ever fires. ``SimpleNamespace()`` has no
+    ``get_config_file_path``, so the probe's own guarded read swallows that
+    as an ``AttributeError`` and resolves to "could not compare", which is
+    exactly the no-live-reading case this test does not care about."""
     v2host.save_v2_state({
         "session_id": "cap_x",
         "accepted_phases": [],
         "applied": False,
     })
     with pytest.raises(v2host.CrossoverV2Refused, match="nothing is applied"):
-        v2host.handle_v2_restore(None, None)
+        v2host.handle_v2_restore(None, lambda: SimpleNamespace())
 
 
 def test_restore_refuses_when_no_pre_apply_profile_is_stashed():
     """The speaker's first-ever apply has no predecessor to undo back to —
-    a policy refusal, never a 500 (the legacy path's failure mode)."""
+    a policy refusal, never a 500 (the legacy path's failure mode).
+
+    ``camilla_factory`` must still be callable — see the sibling test above
+    for why a bare ``None`` no longer reaches this refusal at all."""
     v2host.save_v2_state({
         "session_id": "cap_x",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
@@ -4794,7 +4805,7 @@ def test_restore_refuses_when_no_pre_apply_profile_is_stashed():
         "pre_apply_profile": None,
     })
     with pytest.raises(v2host.CrossoverV2Refused, match="first measured crossover"):
-        v2host.handle_v2_restore(None, None)
+        v2host.handle_v2_restore(None, lambda: SimpleNamespace())
 
 
 def test_restore_refuses_across_a_topology_change(monkeypatch):
@@ -4804,7 +4815,11 @@ def test_restore_refuses_across_a_topology_change(monkeypatch):
     when the current topology's config fingerprint differs from the one stashed
     in pre_apply_profile.source. (The matching-topology pass-through is proven
     end-to-end by test_apply_stashes_pre_apply_profile_and_restore_reverts_
-    through_real_seams, which restores under one unchanged topology.)"""
+    through_real_seams, which restores under one unchanged topology.)
+
+    ``camilla_factory`` must still be callable — see
+    test_restore_refuses_when_nothing_applied for why a bare ``None`` no
+    longer reaches this refusal at all."""
     v2host.save_v2_state({
         "session_id": "cap_x",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
@@ -4826,7 +4841,7 @@ def test_restore_refuses_across_a_topology_change(monkeypatch):
     with pytest.raises(
         v2host.CrossoverV2Refused, match="output configuration changed"
     ):
-        v2host.handle_v2_restore(None, None)
+        v2host.handle_v2_restore(None, lambda: SimpleNamespace())
 
 
 def test_status_block_surfaces_apply_blocked():

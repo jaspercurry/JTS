@@ -2343,17 +2343,38 @@ def test_verify_clean_integrity_still_passes_end_to_end():
 def test_verify_without_an_integrity_record_is_not_refused_but_says_so(caplog):
     """``None`` is "no evidence" — the same convention ``linearity_ok`` and
     ``pilot_snr_ok`` use two lines up, where only an explicit failure refuses.
-    A pre-#1971 analysis shape must not become an un-passable capture; the
-    live analyze seam always populates the record (pinned in
-    tests/test_crossover_v2_program_pilots.py). It is not a SILENT pass
-    either: the journal says ``unavailable``, its own value, so a missing
-    record can never be read as a clean one."""
+    A pre-#1971 analysis shape must not become an un-passable capture at
+    VERIFY's OWN capture gate; the live analyze seam always populates the
+    record (pinned in tests/test_crossover_v2_program_pilots.py). It is not a
+    SILENT pass either: the journal says ``unavailable``, its own value, so a
+    missing record can never be read as a clean one.
+
+    **#2537 update.** That is still true of the per-capture ``verify_diag``
+    line asserted below (still ``accepted=true``, still names
+    ``integrity=unavailable``) — VERIFY's own gate has not changed. What HAS
+    changed is what the ROUND does with a capture it could not grade: an
+    integrity-absent capture is unusable, so :func:`evaluate_evidence_trust`
+    reads it as untrusted evidence, and #2537's table restores-or-recovers on
+    untrusted evidence rather than silently keeping an unmeasured state (the
+    pre-#2537 table's ``user_decision`` cell, which
+    ``AdoptionOutcome.KEEP_FOR_ITERATION``'s own docstring calls out as a
+    screen nobody rendered — treated exactly like ``keep``). This fixture's
+    bare conductor binds no rollback anchor, so the round escalates loudly to
+    ``recovery_required`` rather than promising a restore it cannot perform —
+    the overall verdict is now a refusal, and it is REFUSED FOR ITS OWN NAMED
+    REASON rather than silently."""
     caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
     fakes = FakeSeams()
     c = _verify_to_apply(fakes)
     fakes.verify = lambda program: _verify_analysis(program, integrity=None)
     verdict = _run_phase(c, 3, 3)
-    assert verdict["accepted"] is True
+    # The ROUND refuses — untrusted evidence with no rollback anchor bound.
+    assert verdict["accepted"] is False
+    assert verdict["code"] == REASON_CORRECTION_ROLLBACK_FAILED
+    # …but VERIFY's OWN capture gate still accepted this capture, and the
+    # journal still says so rather than folding it into the round's refusal.
+    assert "event=correction.crossover_v2_verify_diag" in caplog.text
+    assert "accepted=true" in caplog.text
     assert "integrity=unavailable" in caplog.text
     assert "integrity_locate_confidence_min=null" in caplog.text
 
@@ -7002,6 +7023,16 @@ def test_measure_diag_logs_guard_field_on_sweep_schedule_fire(caplog):
 
 
 def test_verify_diag_logs_full_numbers_on_accept(caplog):
+    """The ``verify_diag`` line logs the full disclosure ON ACCEPT — accept
+    meaning VERIFY's OWN capture gate, asserted straight off the line's own
+    ``accepted=true`` field below.
+
+    This fixture is a raw ``ProgramAnalysis`` with no ``capture_integrity``
+    set (a "legacy-shaped" capture, see the ``pilot_transfer_db=null`` note
+    below), so it is unusable evidence for the ROUND (#2537): the overall
+    verdict is a refusal (untrusted evidence, no rollback anchor bound on
+    this bare conductor), asserted first so the numbers-disclosure claim below
+    it is not mistaken for "and therefore the round kept it"."""
     caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
     fakes = FakeSeams()
     fakes.verify = lambda program: ProgramAnalysis(
@@ -7020,7 +7051,9 @@ def test_verify_diag_logs_full_numbers_on_accept(caplog):
     _run_phase(c, 2, 2)
     fakes.apply_done = True
     verdict = _run_phase(c, 3, 3)
-    assert verdict["accepted"] is True
+    # The round refuses (untrusted evidence, no rollback anchor) — #2537.
+    assert verdict["accepted"] is False
+    assert verdict["code"] == REASON_CORRECTION_ROLLBACK_FAILED
     assert "event=correction.crossover_v2_verify_diag" in caplog.text
     assert "accepted=true" in caplog.text
     assert "max_db_notch_excluded=0.9" in caplog.text
@@ -11142,6 +11175,13 @@ def test_verify_diag_names_which_floor_the_gate_landed_on(caplog):
     whole 2026-07-30 corpus every capture was the second state, and the record
     could not say so: the gate computes ``floor_source`` and every v2 consumer
     dropped it.
+
+    This fixture carries no ``capture_integrity`` (a raw ``ProgramAnalysis``),
+    so the ROUND refuses it as untrusted evidence with no rollback anchor
+    bound (#2537) — asserted first so the disclosure claim below is not read
+    as "and so the round kept it". The ``verify_diag`` line's own numbers are
+    unaffected by what the round later decides: it is written at VERIFY's own
+    capture-gate step, before the round grades anything.
     """
     caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
     fakes = FakeSeams()
@@ -11166,7 +11206,9 @@ def test_verify_diag_names_which_floor_the_gate_landed_on(caplog):
     _run_phase(c, 1, 1)
     _run_phase(c, 2, 2)
     fakes.apply_done = True
-    assert _run_phase(c, 3, 3)["accepted"] is True
+    verdict = _run_phase(c, 3, 3)
+    assert verdict["accepted"] is False
+    assert verdict["code"] == REASON_CORRECTION_ROLLBACK_FAILED
 
     assert "verify_gate_window_ms=8.0" in caplog.text
     assert f"verify_gate_floor_source={gating.FLOOR_SEARCH_BOUND}" in caplog.text
@@ -11269,6 +11311,12 @@ def test_verify_pass_states_the_band_it_graded():
     ``evidence`` block, which the host persists only on a NON-pass outcome — so
     the one screen that says the result is good was the one screen that never
     said what was checked.
+
+    This fixture carries no ``capture_integrity``, so the ROUND refuses it as
+    untrusted evidence with no rollback anchor bound (#2537) — asserted first.
+    VERIFY's OWN pass/band bookkeeping (``verify_outcome``,
+    ``verify_graded_band_hz``) is written at the capture-gate step, ahead of
+    round grading, and is unaffected by the round's later refusal.
     """
     fakes = FakeSeams()
     fakes.verify = lambda program: ProgramAnalysis(
@@ -11286,7 +11334,9 @@ def test_verify_pass_states_the_band_it_graded():
     _run_phase(c, 1, 1)
     _run_phase(c, 2, 2)
     fakes.apply_done = True
-    assert _run_phase(c, 3, 3)["accepted"] is True
+    verdict = _run_phase(c, 3, 3)
+    assert verdict["accepted"] is False
+    assert verdict["code"] == REASON_CORRECTION_ROLLBACK_FAILED
 
     assert c.verify_outcome == "pass"
     assert c.verify_graded_band_hz == [2000.0, 4000.0]
@@ -11301,6 +11351,10 @@ def test_a_passing_verify_still_discloses_the_frame_it_compared_across():
     the frame unstated invites exactly the reading the panel had to correct.
     Surfaced on a PASS for the same reason the graded band is (#1868): the
     passing screen is the one that would otherwise overclaim.
+
+    This fixture carries no ``capture_integrity``, so the ROUND refuses it as
+    untrusted evidence with no rollback anchor bound (#2537) — asserted first,
+    same reasoning as the graded-band test above.
     """
     fakes = FakeSeams()
     fakes.verify = lambda program: ProgramAnalysis(
@@ -11315,7 +11369,9 @@ def test_a_passing_verify_still_discloses_the_frame_it_compared_across():
     _run_phase(c, 1, 1)
     _run_phase(c, 2, 2)
     fakes.apply_done = True
-    assert _run_phase(c, 3, 3)["accepted"] is True
+    verdict = _run_phase(c, 3, 3)
+    assert verdict["accepted"] is False
+    assert verdict["code"] == REASON_CORRECTION_ROLLBACK_FAILED
 
     assert c.verify_outcome == "pass"
     assert c.verify_frame == {
@@ -11340,7 +11396,14 @@ def test_a_passing_verify_still_discloses_the_frame_it_compared_across():
 def test_an_unfitted_frame_is_disclosed_as_absent_never_as_agreement():
     """A comparison whose frame could not be measured says nothing, rather than
     reporting a flat frame — absence and "the frames matched" are different
-    claims and must not collapse into one."""
+    claims and must not collapse into one.
+
+    This fixture carries no ``capture_integrity``, so the ROUND refuses it as
+    untrusted evidence with no rollback anchor bound (#2537) — asserted first,
+    same reasoning as the two frame/band tests above. ``verify_frame`` is
+    written at VERIFY's own capture-gate step and is unaffected by the round's
+    later refusal.
+    """
     fakes = FakeSeams()
     fakes.verify = lambda program: ProgramAnalysis(
         phase="verify", program_id=program.program_id,
@@ -11357,7 +11420,9 @@ def test_an_unfitted_frame_is_disclosed_as_absent_never_as_agreement():
     _run_phase(c, 1, 1)
     _run_phase(c, 2, 2)
     fakes.apply_done = True
-    assert _run_phase(c, 3, 3)["accepted"] is True
+    verdict = _run_phase(c, 3, 3)
+    assert verdict["accepted"] is False
+    assert verdict["code"] == REASON_CORRECTION_ROLLBACK_FAILED
 
     assert c.verify_frame is None
 
