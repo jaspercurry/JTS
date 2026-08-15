@@ -613,6 +613,27 @@ def test_the_worklets_frame_count_is_the_buffer_it_transfers():
     assert "'frames:total,blocks:this.blocks,block_gaps:this.gaps,'" in src
 
 
+def test_silent_blocks_counts_only_the_input_starved_callbacks():
+    """``silent_blocks`` is not "blocks that were silent" (issue #2557).
+
+    The 2026-08-15 verdict turned on that distinction. A resync in the browser's
+    own capture FIFO hands the worklet a perfectly ordinary input array that
+    happens to be full of zeros; this counter never looks at content, so it read
+    0 on all 13 glitch events while a whole zero-filled render quantum sat in
+    each capture. Its ONE increment lives in the else-branch of "was I handed an
+    input channel at all", and pinning that is what keeps three prose claims
+    honest at once — this module's read-set comment, the capture page's report
+    comment, and `docs/phone-mic-relay-plan.md`'s field list all say the counter
+    cannot see a zero-FILLED block, and all three become wrong together the day
+    someone starts counting content here without renaming the field.
+    """
+    src = (_REPO / "deploy/assets/shared/js/measurement-audio.js").read_text(
+        encoding="utf-8"
+    )
+    assert "'}else{this.silent++;}'" in src
+    assert src.count("this.silent++") == 1
+
+
 def test_the_measure_sidecar_summary_carries_it_too():
     prog = _measure_program()
     cap = _synthesize(prog)
