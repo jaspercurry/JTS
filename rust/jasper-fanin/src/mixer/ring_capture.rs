@@ -65,16 +65,27 @@
 //! per [`RING_REATTACH_RETRY_PERIODS`] (≈2 s) per detached lane; against a
 //! 5.33 ms render period and two 128-frame slots of downstream cushion, the
 //! worst case was ~187 slots of audio — the #2533 defect class, on a path that
-//! needs no USB host to fire, in the state a renderer lane is in whenever its
-//! renderer is not publishing (detached is the ORDINARY idle state, not an error
-//! state). [`RingAttacher`] moves it to a `fanin-ring-attacher` thread, the
-//! sibling of `fanin-compliance-writer` and `fanin-direct-opener`: the detached
-//! lane costs one non-blocking `try_recv` per period and one non-blocking `send`
-//! per retry window, and keeps rendering silence until a reader comes back.
+//! needs no USB host to fire. [`RingAttacher`] moves it to a
+//! `fanin-ring-attacher` thread, the sibling of `fanin-compliance-writer` and
+//! `fanin-direct-opener`: the detached lane costs one non-blocking `try_recv`
+//! per period and one non-blocking `send` per retry window, and keeps rendering
+//! silence until a reader comes back.
+//!
+//! **How often is a lane detached?** Not "whenever the renderer is idle" — that
+//! is the ATTACHED-with-`writer_alive:false` state described above, because
+//! `create_or_attach` CREATES the ring when it is absent and fan-in (root) can
+//! always do so. Detached means a genuine fault (a geometry shear, a permission
+//! refusal) or a transient (startup before the ring directory exists, the single
+//! period an orphan re-latch spends detached). So this is not a
+//! most-of-the-time cost — but for as long as a lane IS detached, the bounded
+//! `flock` really did run inside the render period, and a shear or a
+//! permissions fault persists until an operator fixes it. `jasper-doctor` agrees
+//! with that reading: it reports a detached lane as a PROBLEM, and
+//! attached-never-fed as a resting state.
 //!
 //! The retry latches are also PHASE-SEEDED per lane ([`reattach_phase`]) so a box
-//! whose renderer lanes are all detached — again, the ordinary idle box — spreads
-//! its attempts across the window instead of firing every lane in one period.
+//! with several detached lanes spreads its attempts across the window instead of
+//! firing every lane in one period.
 
 use super::*;
 
@@ -102,21 +113,30 @@ use jasper_ring::{Geometry, RingMetrics, RingReader, SlotRead, SAMPLE_FORMAT_S16
 pub(super) const RING_REATTACH_RETRY_PERIODS: u64 = 384;
 
 /// This lane's PHASE within the retry window, in render periods: the countdown a
-/// ring lane starts life with, so N lanes spread their attempts evenly across
-/// [`RING_REATTACH_RETRY_PERIODS`] instead of firing in the same period (#2538).
+/// ring lane starts life with, so N lanes spread their FIRST attempts evenly
+/// across [`RING_REATTACH_RETRY_PERIODS`] rather than firing in one period
+/// (#2538).
 ///
-/// **Why the seed is enough to de-phase them permanently.** Every lane re-arms to
-/// the same constant after an attempt, so a one-time offset at construction is
-/// preserved for the life of the process: lane 1 fires at periods p, p+384,
-/// p+768…, lane 2 at p+96, p+480… and they never converge. There is no per-period
-/// bookkeeping and no wall clock — the phase is decided once and then carried by
-/// the ordinary latch.
+/// **What the seed does, and what it does not promise.** It spreads the FIRST
+/// retry of each lane across the window, and nothing here reads a wall clock —
+/// the phase is decided once and then carried by the ordinary latch. It is not a
+/// standing guarantee that two lanes never retry in the same period, and it
+/// should not be read as one:
+///
+/// * the cycle is not exactly this constant. A queue re-arms the latch to
+///   [`RING_REATTACH_RETRY_PERIODS`] and so does ADOPTING the result, so a lane
+///   whose attach finishes one period later runs a 386-period cycle. Separation
+///   holds while lanes' attach latencies match and drifts when they differ.
+/// * the orphan re-latch in [`read_ring_and_render`] sets the latch to 0
+///   unconditionally — deliberately, since that is a live file waiting to be
+///   opened — so lanes orphaned in the same period are in lockstep from then on.
 ///
 /// **What it buys now that the attach is off-thread.** Not render-thread time —
 /// [`RingAttacher`] already removed that, and a queued attach costs one
-/// non-blocking `send`. It spreads the WORKER side: on an idle box every armed
-/// lane is detached, and four simultaneous `create_or_attach` calls contend for
-/// `/dev/shm/jts-ring/` and each take their own bounded `flock`. Spreading them
+/// non-blocking `send`. It spreads the WORKER side: when several lanes are
+/// detached at once (a geometry shear across the conf.d, a ring directory that
+/// is not there yet at startup), their `create_or_attach` calls each take their
+/// own bounded `flock` and contend for `/dev/shm/jts-ring/`. Spreading them
 /// keeps that work off one instant, and keeps the property that made lockstep
 /// dangerous from ever being reintroduced by a future inline call.
 ///
@@ -221,6 +241,12 @@ pub struct RingLaneObservability {
     /// an attempt is counted when it is handed to the `fanin-ring-attacher`
     /// thread rather than when it runs, so this climbs on the retry cadence even
     /// while one attach is still executing.
+    ///
+    /// **The dead-worker tell.** This value FROZEN alongside `attached=false`
+    /// and `attach_pending=false` means the attacher thread is gone: the lane is
+    /// detached, nothing is queued, and nothing is being attempted — a silent
+    /// wedge that no other counter separates from a lane nobody is looking at.
+    /// (Byte-for-byte the direct lane's `retries`/`reopen_pending` shape.)
     pub retries: Arc<AtomicU64>,
     /// Whether an attach is currently QUEUED on this lane's
     /// `fanin-ring-attacher` thread (#2538), mirroring the direct lane's
@@ -384,9 +410,18 @@ enum RingAttachOutcome {
 /// publish in time (a 128-frame DELETION). 500 ms is ~187 of those slots, and
 /// fan-in's own `RingStallTracker` has a 1 s floor and cannot see any of it.
 ///
-/// Unlike the DIRECT lane's opener this needs no host and no cable: DETACHED is
-/// the ordinary idle state of a renderer lane whose renderer is not publishing,
-/// which on a measurement box is most of the time.
+/// **How exposed is a box to that?** Less than a paused renderer suggests, and
+/// the honest bound is worth stating rather than the dramatic one. A lane whose
+/// renderer is merely not publishing is ATTACHED with `writer_alive:false`, not
+/// detached — `create_or_attach` CREATES an absent ring and fan-in runs as root,
+/// so the file materializes whichever end arrives first (see
+/// [`open_ring_input`]). Detached is a FAULT-or-transient state: a geometry
+/// shear, a permission refusal, startup before the ring directory exists, or the
+/// single period an orphan re-latch spends detached. Two things follow. It is
+/// not a most-of-the-time cost — but a shear or a permissions fault does not
+/// clear itself, so an affected box paid this every ~2 s until an operator
+/// noticed, and unlike the DIRECT lane's opener it needs no host and no cable to
+/// be exposed at all.
 ///
 /// The lane now hands attaches to a dedicated thread and keeps rendering silence
 /// until a reader comes back. One `Sender::send` per retry window and one
@@ -397,7 +432,14 @@ enum RingAttachOutcome {
 /// lanes' bounded waits behind one another, so a fourth lane could sit 1.5 s
 /// behind a first lane's slow attach for no benefit. The threads block in
 /// `recv()` when idle and cost no CPU, and the rings they lock are different
-/// inodes, so they do not contend with each other.
+/// inodes, so they do not contend with each other. The cost that is NOT free is
+/// MEMORY: up to four extra threads at Rust's 2 MiB default stack, and because
+/// they are spawned in `Mixer::new` — before `main` calls `lock_memory()` —
+/// their stacks are inside the `mlockall` and stay resident. Bounded and small
+/// against a 1 GB Pi, paid only on a box with armed ring lanes, and the reason
+/// this is a per-lane thread rather than a per-lane thread POOL; but on this
+/// hardware the saturation question is RAM, not CPU, so it is named rather than
+/// left implied.
 pub(super) struct RingAttacher {
     req_tx: Sender<RingAttachRequest>,
     res_rx: std::sync::mpsc::Receiver<RingAttachOutcome>,

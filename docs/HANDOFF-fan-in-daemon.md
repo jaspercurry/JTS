@@ -225,16 +225,26 @@ run inline in the render loop once per ~2 s per detached lane; the budget is
 `period_frames / 48 kHz` (5.33 ms at the shipped 256) and both Ring A and Ring B
 hold two 128-frame slots, so a block over ~2.7 ms costs exactly one slot of
 audio — a silence insertion when CamillaDSP reads an empty Ring A, a deletion
-when fan-in cannot publish in time. Detached is the ORDINARY idle state of a
-lane whose renderer is not publishing, and this path needs no USB host at all,
-so it fires on boxes the `fanin-direct-opener` fix (#2533) does not reach. Each
-ring lane now owns a `fanin-ring-attacher-<label>` thread, queues at most one
-attach at a time, and keeps rendering silence until a reader comes back;
-`ring.attach_pending` is `true` in `/state` while one is outstanding. A spawn
+when fan-in cannot publish in time. Detached is not the idle state (see the
+paragraph below — an idle renderer leaves its lane ATTACHED); it is a fault or a
+transient: a geometry shear, a permission refusal, startup before the ring
+directory exists, or the one period an orphan re-latch spends detached. So this
+is not a cost every box pays all the time — but a shear or a permissions fault
+persists until an operator clears it, so an affected box paid it every ~2 s
+meanwhile, and unlike `fanin-direct-opener` (#2533) this path needs no USB host
+at all to be exposed. Each ring lane now owns a `fanin-ring-attacher-<label>`
+thread, queues at most one attach at a time, and keeps rendering silence until a
+reader comes back; `ring.attach_pending` is `true` in `/state` while one is
+outstanding, and a `retries` counter FROZEN beside `attached:false` with
+`attach_pending:false` is the tell that the attacher thread itself is gone (the
+silent-wedge shape, matching the direct lane's `reopen_pending`). A spawn
 failure at construction logs `event=fanin.ring_lane.attacher_unavailable` and
 leaves the lane without reattach self-heal (silence) rather than restoring the
 inline attach. Each lane also seeds its retry latch at its own phase of the
-window, so an idle box's lanes do not all retry in one render period.
+window, so a box with several detached lanes does not retry them all in one
+render period. Cost: up to four extra threads at Rust's default 2 MiB stack,
+spawned before `lock_memory()` and therefore inside the `mlockall` — bounded and
+small on a 1 GB Pi, and paid only on a box with armed ring lanes.
 
 **An empty ring or a dead writer is NOT a detach.** `jasper_ring`'s reader
 already owns writer liveness: an empty ring zero-fills the buffer and reports

@@ -837,8 +837,9 @@ def test_no_blocking_io_on_the_fanin_render_thread():
     Three owners, all off-thread: `fanin-compliance-writer` (proof fsync +
     revoke), `fanin-direct-opener` (gadget `snd_pcm_open` / `snd_pcm_close`), and
     `fanin-ring-attacher` (`RingReader::create_or_attach`, whose inter-process
-    `flock` is bounded at 500 ms — ~187 slots — and which fires on the ORDINARY
-    idle state of a renderer lane, with no USB host involved at all: #2538).
+    `flock` is bounded at 500 ms — ~187 slots — and which needs no USB host at
+    all to fire: a ring lane detached by a geometry shear or a permission refusal
+    stays detached until an operator clears it, paying that every ~2 s: #2538).
     """
     mixer_text = _mixer_rs_text()
     host_compliance_text = _host_compliance_rs_text()
