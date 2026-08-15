@@ -175,9 +175,19 @@ export function scanZeroFillRuns(samples, options = {}) {
 
   // `phase` is the run's offset on the render grid, computed here beside the
   // offset it comes from so there is one writer for it and nothing downstream
-  // has to know which modulus to use. Phase 0 is the block-aligned fingerprint;
-  // any other phase says these zeros did NOT arrive as a whole quantum, which is
-  // a different finding rather than a weaker one.
+  // has to know which modulus to use. Phase 0 with `len === quantum` is the
+  // clean block-aligned fingerprint.
+  //
+  // A NONZERO PHASE DOES NOT RULE THE QUANTUM OUT, and a consumer that tested
+  // `phase === 0` would miss real events. One natural ambient zero sitting
+  // immediately beside a zero-filled quantum merges with it into a single run —
+  // `{offset: n - 1, len: 129, phase: 127}` — which still CONTAINS a whole
+  // block-aligned quantum. At the measured ambient zero density (P ≈ 0.005 per
+  // sample, either neighbour) that is roughly 1 % of events, which is why all 13
+  // events of the 2026-08-15 campaign happened to read phase 0 and why that
+  // must not be read as a rule. So the three fields are reported together and
+  // the question to ask of a run is CONTAINMENT — does `offset`/`len` cover an
+  // aligned quantum — never phase alone.
   const closeRun = (end) => {
     if (run < quantum) return;
     count += 1;

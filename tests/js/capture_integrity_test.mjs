@@ -287,6 +287,15 @@ function silence(buffer, offset, length) {
   return buffer;
 }
 
+// THE QUESTION A CONSUMER MUST ASK of a reported run, derived from the record
+// alone: does it cover a whole block-aligned quantum? Not `phase === 0` — one
+// natural ambient zero beside a zero-filled quantum merges with it and shifts
+// the phase off the grid while the quantum is still in there.
+function containsAlignedQuantum(run, quantum) {
+  const firstAligned = Math.ceil(run.offset / quantum) * quantum;
+  return firstAligned + quantum <= run.offset + run.len;
+}
+
 // THE FINGERPRINT. One whole quantum of digital silence, block-aligned, in
 // otherwise live signal — the shape found in 13 of 13 testable glitch events.
 function testAnAlignedQuantumOfSilenceIsFlagged() {
@@ -332,9 +341,10 @@ function testAShortRunIsNotTheFingerprint() {
   ok();
 }
 
-// OFF THE GRID IS A DIFFERENT FINDING. 128 zeros that do NOT begin on a render
-// boundary are reported — they are real silence and worth seeing — but their
-// phase is non-zero, so nothing can read them as "one delivered quantum".
+// OFF THE GRID IS A DIFFERENT FINDING. 128 zeros that straddle two render
+// boundaries are reported — they are real silence and worth seeing — but they
+// cover no whole aligned quantum, and it is that CONTAINMENT test, not the
+// phase, that says so.
 function testAMisalignedRunIsReportedButNotAsAQuantum() {
   const capture = ambientCapture(64 * ZERO_RUN_QUANTUM);
   const offset = 20 * ZERO_RUN_QUANTUM + 37;
@@ -344,6 +354,34 @@ function testAMisalignedRunIsReportedButNotAsAQuantum() {
   assert.equal(scan.count, 1);
   assert.equal(scan.runs[0].offset, offset);
   assert.equal(scan.runs[0].phase, 37);
+  assert.equal(containsAlignedQuantum(scan.runs[0], scan.quantum), false);
+  ok();
+}
+
+// THE OVERCLAIM THIS INOCULATES AGAINST. A zero-filled quantum that happens to
+// abut ONE natural ambient zero merges into a single 129-sample run at phase
+// 127 — the quantum arrived whole, and a consumer testing `phase === 0` would
+// throw the event away. At the measured ambient zero density (P ≈ 0.005 per
+// sample, either neighbour) that is roughly 1 in 100 events, which is why all 13
+// events of the 2026-08-15 campaign reading phase 0 is a coincidence of the
+// sample and not a rule to build on.
+function testAQuantumMergedWithOneAmbientZeroIsStillAWholeQuantum() {
+  const capture = ambientCapture(64 * ZERO_RUN_QUANTUM);
+  const aligned = 20 * ZERO_RUN_QUANTUM;
+  // The fixture must isolate the ONE prepended zero, or this is measuring a
+  // longer accidental run instead of the merge it means to.
+  assert.notEqual(capture[aligned - 2], 0);
+  silence(capture, aligned, ZERO_RUN_QUANTUM);
+  capture[aligned - 1] = 0;
+
+  const scan = scanZeroFillRuns(capture);
+  assert.equal(scan.count, 1);
+  assert.deepEqual(scan.runs, [
+    { offset: aligned - 1, len: ZERO_RUN_QUANTUM + 1, phase: ZERO_RUN_QUANTUM - 1 },
+  ]);
+  // The record still carries the whole aligned quantum, by offset/len alone...
+  assert.equal(containsAlignedQuantum(scan.runs[0], scan.quantum), true);
+  // ...and the phase test a reader might reach for first would have missed it.
   assert.notEqual(scan.runs[0].phase, 0);
   ok();
 }
@@ -501,6 +539,7 @@ await runTestFunctions(
     testARunAtTheEndOfTheCaptureIsClosed,
     testAShortRunIsNotTheFingerprint,
     testAMisalignedRunIsReportedButNotAsAQuantum,
+    testAQuantumMergedWithOneAmbientZeroIsStillAWholeQuantum,
     testAmbientExactZerosDoNotTripIt,
     testAdjacentQuantaMergeIntoOneRunWhoseLengthSaysHowMany,
     testTheRunListIsBoundedButTheCountIsNot,
