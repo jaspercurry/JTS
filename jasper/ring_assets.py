@@ -92,6 +92,8 @@ def ring_writer_lock_path(ring_path: str) -> str:
     Python prober contends on exactly the inode the ioplug's writer holds.
     """
     return f"{ring_path}{RING_WRITER_LOCK_SUFFIX}"
+
+
 # The conf.d PCM block name for Ring A (fan-in's program ring). ``n_slots`` under
 # this block is the drift axis with ``JASPER_FANIN_RING_SLOTS`` (Ring B is the
 # ``jts_ring_playback`` block, paired with ``JASPER_OUTPUTD_SHM_RING_SLOTS``).

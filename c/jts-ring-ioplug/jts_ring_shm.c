@@ -821,9 +821,27 @@ static int acquire_writer_lock(const char *path) {
     // scripts/ring-proto/disarm.sh does `rm -rf` over the tmpfs directory.
     // This is the pre-existing shape of ANY path-named lock (the open lock has
     // it too) rather than something this guard introduced, and it is why
-    // delete_stale_ring deliberately unlinks the ring file ALONE. The real fix
-    // is a doctor check that notices two live writer pids on one ring; that is
-    // a follow-up, not this lock's job.
+    // delete_stale_ring deliberately unlinks the ring file ALONE. The detector
+    // is jasper-doctor's check_ring_writer_lock_exclusivity
+    // (jasper/cli/doctor/audio_runtime.py): it enumerates /proc/<pid>/fd for
+    // holders of a <ring>.writer.lock, groups them by PATHNAME so the orphaned
+    // inode and its replacement land in one bucket, and FAILS on two live pids.
+    // It cannot be a header read — writer_pid is a single slot a second attach
+    // overwrites.
+    //
+    // THIS LOCK NOW HAS PYTHON CONSUMERS. Two of them read it, so its semantics
+    // are a cross-language contract, not private to this file:
+    //   - the grouping reconciler's active-content release barrier
+    //     (jasper/multiroom/reconcile.py) takes LOCK_EX|LOCK_NB here and treats
+    //     success as "camilla#1 has released the ACTIVE ring, camilla#2 may
+    //     arm". It deliberately never passes O_CREAT — see the fchmod heal
+    //     above for why a wrong-mode first creator is unrecoverable;
+    //   - the doctor check named above.
+    // The suffix and this function's lock-path construction are pinned against
+    // their Python spellings by tests/test_ring_slot_ceiling_pin.py, so a change
+    // to either fails CI rather than drifting. Changing WHEN this lock is taken
+    // or released still changes what that barrier means: keep the "held for the
+    // life of the mapping" property, or fix both readers in the same commit.
     uint64_t deadline = jts_ring_monotonic_ns() +
                         JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS * 1000000ull;
     for (;;) {

@@ -2082,9 +2082,10 @@ def test_main_active_leader_already_armed_skips_release_probe(
     tmp_path,
     monkeypatch,
 ):
-    """Idempotency: once camilla#2 is active, it legitimately owns substream 5.
-    A steady-state reconcile must not probe that handle as if it were camilla#1
-    still lagging closed."""
+    """Idempotency: once camilla#2 is active it legitimately holds the ACTIVE
+    ring's writer lock. A steady-state reconcile must not probe that lock as if
+    it were camilla#1 that had not let go — the probe would read `busy` and
+    tear down a healthy bond."""
     target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
     monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
     _patch_active_leader(monkeypatch, order)
@@ -2531,9 +2532,10 @@ def test_main_active_leader_skips_arm_and_restores_when_pcm_busy(
     monkeypatch,
 ):
     """jts3 EBUSY regression (2026-06-24): a successful camilla#1 bake is not
-    proof that snd-aloop substream 5 is closed. If the positive handle probe
-    times out busy, camilla#2 is NOT armed; camilla#1 is restored to solo-active
-    so the box keeps playing locally and a later reconcile can retry."""
+    proof that camilla#1 has let go of the ACTIVE ring. If the positive handle
+    probe times out busy — a writer still holds the ring's writer lock —
+    camilla#2 is NOT armed; camilla#1 is restored to solo-active so the box
+    keeps playing locally and a later reconcile can retry."""
     import jasper.multiroom.active_leader_config as alc_mod
 
     target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
@@ -2575,16 +2577,16 @@ def test_main_active_leader_skips_arm_and_restores_when_pcm_busy(
     assert '"active_leader": false' in status
 
 
-def test_main_active_leader_fails_closed_when_probe_tool_missing(
+def test_main_active_leader_fails_closed_when_writer_lock_absent(
     tmp_path,
     monkeypatch,
 ):
     """Hardening (P1 review #3): `unknown` is NOT positive proof of release, so
     the reconciler fails CLOSED — restores solo-active and leaves camilla#2
     un-armed, exactly like the busy path — rather than arming into a possible
-    DAC fight. Since P9-C the concrete `unknown` is an absent writer lock (a
-    box whose ACTIVE lane is not a ring, so nothing can prove release); the
-    point is unchanged: 'can't prove it' never arms."""
+    DAC fight. The concrete `unknown` here is an absent writer lock (a box whose
+    ACTIVE lane is not a ring, so nothing can prove release); the rule is the
+    same for every `unknown` reason: 'can't prove it' never arms."""
     import jasper.multiroom.active_leader_config as alc_mod
 
     target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
