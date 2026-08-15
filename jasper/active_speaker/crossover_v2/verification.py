@@ -1095,7 +1095,7 @@ def decide_adoption(
 ) -> AdoptionDecision:
     """Keep, keep-and-iterate, restore, or escalate — the #2537 table.
 
-    **What this replaces, and why.** #2291's table was keyed on
+    **What this MODIFIES, and why.** #2291's table was keyed on
     ``(realization, benefit)`` and had one keep cell: a round had to *prove* it
     improved the speaker or the graph came off. The 2026-08-15 JTS3 cycle-4
     round is what that costs. Its capture was usable, its realization tracked,
@@ -1107,7 +1107,11 @@ def decide_adoption(
     reverting to an unknown measured state seems dumb… the first application is
     not the end point, it is just the start.*
 
-    So the axes changed. Not "did we prove it helped", but three separable
+    **That table is still here, unchanged in what it reads.** It is
+    :data:`_QUALITY_TABLE` — same nine cells, same two keys, same nine causes —
+    and what changed is what a non-keep cell RESOLVES TO. Two axes join it, and
+    neither is a new way to grade a correction: one asks whether there was
+    evidence at all, one asks whether the result is a hazard. Three separable
     questions, each with its own evaluator above:
 
     * :func:`evaluate_evidence_trust` — did we measure the state we applied?
@@ -1155,11 +1159,12 @@ def decide_adoption(
 
     * **The restore trigger set NARROWED for quality and WIDENED for hazard,
       and both directions are intended.** Gone as restore triggers: a
-      realization that missed tolerance, an unprovable benefit under a boost, a
-      spec band out of tolerance. Added: a boost measured above its declared
-      bound, an uncommanded shift measured LOUDER than declared, a clipped
-      capture, and every previously-``user_decision`` untrusted cell. Nothing
-      that was a hard stop for a hazard stopped being one.
+      realization that missed tolerance, and an unprovable benefit under a
+      boost. Added: a boost measured above its declared bound, an uncommanded
+      shift measured LOUDER than declared, a clipped capture, and every
+      previously-``user_decision`` untrusted cell. Nothing that was a hard stop
+      for a hazard stopped being one. A spec band out of tolerance was never a
+      restore trigger and still is not — see :func:`evaluate_round_quality`.
     * **A measured regression still restores.** The owner's ruling turns on
       *unknown* previous states; a regression is the case where the previous
       state's measurement is exactly the evidence, so going back is going back
