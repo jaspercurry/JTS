@@ -633,6 +633,55 @@ the program lane, and the width gate reported "all declaring ends" while
 structurally unable to see the graph. The capture half would have halted the
 next attempt one rung further, in silence.
 
+**Step 3 CONVERGES on an anchor box; it only re-emits on a commissioned
+one.** Step 3's camilla rung is `reconcile_current_dsp`, and an all-muted
+startup anchor is a *transient* active graph, which the carrier correctly
+refuses to host EQ on (`eq_on_active_not_wired` → status `skipped`). The rung
+used to read every `skipped` as "the ring config was NOT loaded" and fail,
+rolling the whole box back to loopback — so the fleet-typical anchor box, the
+one step 1 was widened for, could never pass step 3 at all. Observed on
+jts.local, 2026-08-15, on its first composite arm: `ok=False changed=False
+outputd=True fanin=True camilla=False recovered=True
+detail=eq_on_active_not_wired result=arm_ring_camilla_failed` — fail-closed,
+nothing broken, and no way forward. The rung now accepts that ONE refusal when
+`jasper.fanin.coupling_reconcile.ring_endpoint_anchor_converged` can prove
+**four** things from the artifacts on disk:
+
+1. **identity** — the loaded graph's path is the staged record's `config.path`,
+   on a record whose own `status` is `staged`. The loaded path is the one the
+   **daemon** reports (`reconcile_current_dsp`'s skip payload carries
+   `current_config_path`, taken from CamillaDSP's websocket), falling back to the
+   statefile only when no daemon answer is in hand — the statefile is a durable
+   pointer with several other writers and can name a graph the running daemon
+   does not hold;
+2. **endpoint** — it captures `jts_ring_capture` and plays
+   `jts_ring_active_playback`;
+3. **wire** — both ring lanes state the box's resolved wire, on format AND
+   channels;
+4. **all-muted** — every output ends in a **terminal** wired hard mute at
+   `STARTUP_MUTE_GAIN_DB`, measured on the graph rather than inherited from the
+   stager that emitted it. All three facts of
+   `graph_safety.output_terminally_muted` (promoted from
+   `runtime_contract._flat_output_terminally_muted`, which now delegates): the
+   mute idiom, wired; the mute is TERMINAL for its channel; and no `bypassed`
+   step anywhere. Fact 2 is the one that matters — CamillaDSP applies later
+   steps after earlier ones, so a `+240 dB` Gain appended after the mute, the
+   same gain appended into the mute step's own `names`, or a trailing `Dither`
+   all undo it while a present-somewhere mute still reads as satisfied. Those
+   are the three falsifications `_parked_graph_allowed` already records.
+
+There is genuinely nothing to re-emit there: an all-muted anchor hosts no EQ,
+and step 1 already put the graph at the endpoint. It reports
+`detail=converged_anchor` — in the journal
+(`event=fanin.coupling_reconcile result=camilla_converged_anchor`, INFO; the
+refusal is `result=camilla_anchor_not_converged`, WARNING, carrying the reason)
+and on the operator's stdout line — so a converged arm is never read as one that
+wrote a graph. A commissioned box's applied baseline still RECONCILES exactly as
+before, and every other `skipped` still fails and recovers to loopback: a
+different refusal code, a per-driver commissioning load (told apart by PATH,
+since it classifies like the anchor), an anchor still at the aloop endpoint,
+one that moved only its sink, one at the wrong wire, or one that is not muted.
+
 **Expected on an armed box: `jasper-doctor` reports `audio runtime plan: warn`,
 permanently.** A box whose DAC declares a `LatencyFloor` carries two standing
 plan warnings once the coupling is `shm_ring` — `JASPER_CAMILLA_CHUNKSIZE` /
