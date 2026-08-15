@@ -109,12 +109,13 @@ class FakeController:
         self.offset_result = SimpleNamespace(
             acknowledged=True, degrees=Decimal("0.0"), frames=("OA=0.0\N{DEGREE SIGN}",)
         )
+        self.close_calls = 0
 
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc, traceback) -> None:
-        pass
+        self.close_calls += 1
 
     def probe(self):
         self.calls.append(("probe",))
@@ -142,13 +143,27 @@ class FakeController:
 
 
 class FakeControllerFactory:
-    def __init__(self, controller: FakeController) -> None:
-        self.instance = controller
+    """Stand-in for ``TurntableApi.controller``.
+
+    Accepts either one ``FakeController`` (the default -- every ``.open()``
+    call returns the same instance, matching every pre-#2516 test's
+    assumption) or a sequence of them (one per ``.open()`` call, holding
+    the last if called more times than scripted) -- used by the session-
+    retry tests to prove the wrapper opens a genuinely DIFFERENT controller
+    on retry, mirroring a fresh CLI invocation, not the same one reused.
+    """
+
+    def __init__(self, controller: "FakeController | list[FakeController]") -> None:
+        self._controllers = (
+            controller if isinstance(controller, list) else [controller]
+        )
+        self.instance = self._controllers[0]
         self.open_calls: list[dict[str, object]] = []
 
     def open(self, **kwargs):
         self.open_calls.append(kwargs)
-        return self.instance
+        index = min(len(self.open_calls) - 1, len(self._controllers) - 1)
+        return self._controllers[index]
 
 
 def fake_api(turntable, *, devices=None):
@@ -638,14 +653,24 @@ def test_offset_reads_without_motion_or_power_preflight(turntable, capsys) -> No
 
 # --- Issue #2516: one bounded retry on the vendored ProtocolError -----------
 #
-# The vendored transport occasionally raises ProtocolError ("heartbeat byte
-# appeared inside a protocol frame") mid-exchange -- a parse race, not a real
-# command failure. `offset`, `probe`, `detect`, and the guarded `position`
-# retry the whole operation exactly once; everything else stays zero-retry.
+# Fix round (adversarial gate on PR #2524): the vendored parser's own
+# `_prepare_command` fails closed on the very next command after the race
+# (its FrameParser buffer is left non-empty), so an IN-SESSION retry cannot
+# recover -- only a fresh controller session (fresh `.open()`, fresh
+# parser) does, mirroring a brand-new CLI invocation. Retry eligibility is
+# also the EXACT `ProtocolError` base class only: `CompletionTimeout`,
+# `CommandRejected`, `CommunicationTimeout`, and
+# `StartupSynchronizationError` are subclasses that report a REAL command
+# outcome and must never be retried. `offset`, `probe`, and the guarded
+# `position` retry the whole operation exactly once against a fresh
+# session; `detect` never touches the serial link so it can't raise this
+# error at all; everything else stays zero-retry. The tests below cover
+# wrapper-level orchestration with a fake exception type; a later section
+# exercises the same retry path against the REAL vendored parser.
 
 
-def test_probe_retries_once_on_protocol_error_and_succeeds(turntable, capsys) -> None:
-    api, _factory, controller = fake_api(turntable)
+def test_probe_retries_once_via_a_fresh_session_and_succeeds(turntable, capsys) -> None:
+    api, factory, controller = fake_api(turntable)
     controller.probe = make_queue(
         FakeProtocolError("heartbeat byte appeared inside a protocol frame"),
         controller.probe_result,
@@ -657,10 +682,12 @@ def test_probe_retries_once_on_protocol_error_and_succeeds(turntable, capsys) ->
     assert output["ok"] is True
     assert output["retried"] is True
     assert controller.probe.call_count == 2
+    # .open() was called twice -- one fresh session per attempt.
+    assert factory.open_calls == [{"port": None}, {"port": None}]
 
 
-def test_offset_retries_once_on_protocol_error_and_succeeds(turntable, capsys) -> None:
-    api, _factory, controller = fake_api(turntable)
+def test_offset_retries_once_via_a_fresh_session_and_succeeds(turntable, capsys) -> None:
+    api, factory, controller = fake_api(turntable)
     controller.offset_angle = make_queue(
         FakeProtocolError("heartbeat byte appeared inside a protocol frame"),
         controller.offset_result,
@@ -672,26 +699,54 @@ def test_offset_retries_once_on_protocol_error_and_succeeds(turntable, capsys) -
     assert output["ok"] is True
     assert output["retried"] is True
     assert controller.offset_angle.call_count == 2
+    assert factory.open_calls == [{"port": None}, {"port": None}]
 
 
-def test_detect_retries_once_on_protocol_error_and_succeeds(turntable, capsys) -> None:
-    discover_devices = make_queue(
+def test_retry_opens_a_genuinely_different_controller_and_closes_the_first(
+    turntable, capsys
+) -> None:
+    """The retry must open a NEW session object, not reuse the failed one.
+
+    Uses a two-controller factory directly (bypassing the single-instance
+    ``fake_api()`` helper) so the two attempts are provably different
+    objects -- the closest a fake-based test can get to proving "fresh
+    session" without the real vendored parser (see the real-parser section
+    below for that proof).
+    """
+    first_controller = FakeController()
+    first_controller.probe = record_and_queue(
+        first_controller,
+        "probe",
         FakeProtocolError("heartbeat byte appeared inside a protocol frame"),
-        [{"path": "/dev/ttyUSB0"}],
     )
+    second_controller = FakeController()
+    factory = FakeControllerFactory([first_controller, second_controller])
     api = turntable.TurntableApi(
-        discover_devices=discover_devices,
-        controller=None,
+        discover_devices=lambda: [],
+        controller=factory,
         protocol_error=FakeProtocolError,
     )
 
-    assert turntable.main(["--json", "detect"], api=api) == 0
+    assert turntable.main(["--json", "probe"], api=api) == 0
 
     output = parse_output(capsys)
     assert output["ok"] is True
     assert output["retried"] is True
-    assert output["devices"] == [{"path": "/dev/ttyUSB0"}]
-    assert discover_devices.call_count == 2
+    assert factory.open_calls == [{"port": None}, {"port": None}]
+    # Attempt 1 raced and was torn down; only attempt 2 actually recorded
+    # a successful probe call, on a genuinely different controller object.
+    assert first_controller.calls == [("probe",)]
+    assert first_controller.close_calls == 1
+    assert second_controller.calls == [("probe",)]
+
+
+def test_detect_is_excluded_from_retryable_commands(turntable) -> None:
+    """Discovery never touches the serial link -- it can't raise the race."""
+    assert "detect" not in turntable.RETRYABLE_COMMANDS
+
+
+def test_retryable_commands_are_exactly_offset_probe_position(turntable) -> None:
+    assert turntable.RETRYABLE_COMMANDS == {"offset", "probe", "position"}
 
 
 def test_guarded_position_retries_whole_operation_when_home_races(
@@ -724,7 +779,8 @@ def test_guarded_position_retries_whole_operation_when_home_races(
     output = parse_output(capsys)
     assert output["ok"] is True
     assert output["retried"] is True
-    assert factory.open_calls == [{"port": None}]
+    # Two fresh-session opens: attempt 1 (raced) and attempt 2 (recovered).
+    assert factory.open_calls == [{"port": None}, {"port": None}]
     # Attempt 1's home races and is retried; attempt 2 re-homes cleanly
     # before the single move.
     assert controller.calls == [
@@ -764,7 +820,7 @@ def test_guarded_position_retries_whole_operation_when_move_races(
     output = parse_output(capsys)
     assert output["ok"] is True
     assert output["retried"] is True
-    assert factory.open_calls == [{"port": None}]
+    assert factory.open_calls == [{"port": None}, {"port": None}]
     # Attempt 1: home succeeds, then the move races. Attempt 2 re-homes
     # from scratch before moving again -- the guard that makes the whole
     # operation safe to retry (a partially-completed attempt 1 is undone
@@ -780,7 +836,7 @@ def test_guarded_position_retries_whole_operation_when_move_races(
 def test_guarded_position_reports_retried_on_home_incomplete_early_return(
     turntable, capsys
 ) -> None:
-    api, _factory, controller = fake_api(turntable)
+    api, factory, controller = fake_api(turntable)
     incomplete = SimpleNamespace(acknowledged=True, completed=False)
     controller.return_to_zero = record_and_queue(
         controller,
@@ -809,11 +865,12 @@ def test_guarded_position_reports_retried_on_home_incomplete_early_return(
     assert output["retried"] is True
     assert "not attempted" in output["error"]
     assert controller.calls == [("return_to_zero",), ("return_to_zero",)]
+    assert factory.open_calls == [{"port": None}, {"port": None}]
 
 
 def test_retry_does_not_fire_for_non_retryable_commands(turntable, capsys) -> None:
     """set-zero is owner-only and destructive -- it stays zero-retry."""
-    api, _factory, controller = fake_api(turntable)
+    api, factory, controller = fake_api(turntable)
     controller.set_zero = record_and_queue(
         controller,
         "set_zero",
@@ -834,6 +891,11 @@ def test_retry_does_not_fire_for_non_retryable_commands(turntable, capsys) -> No
     assert "retried" not in output
     assert output["error_type"] == "FakeProtocolError"
     assert controller.calls == [("set_zero",)]
+    # Exactly one session -- this is the mutation-detecting assertion: if a
+    # future change ever routes "set-zero" through RETRYABLE_COMMANDS, the
+    # real dispatch gate in run() sends it through the fresh-session retry
+    # helper, .open() gets called twice, and this line fails.
+    assert factory.open_calls == [{"port": None}]
 
 
 @pytest.mark.parametrize(
@@ -847,7 +909,7 @@ def test_retry_does_not_fire_for_non_retryable_commands(turntable, capsys) -> No
 def test_retry_does_not_fire_for_unguarded_motion_commands(
     turntable, capsys, argv: list[str], expected_call: str
 ) -> None:
-    api, _factory, controller = fake_api(turntable)
+    api, factory, controller = fake_api(turntable)
     error = FakeProtocolError("heartbeat byte appeared inside a protocol frame")
     setattr(
         controller,
@@ -863,12 +925,13 @@ def test_retry_does_not_fire_for_unguarded_motion_commands(
     assert output["ok"] is False
     assert "retried" not in output
     assert len(controller.calls) == 1
+    assert factory.open_calls == [{"port": None}]
 
 
 def test_second_protocol_error_propagates_with_both_attempts_visible(
     turntable, capsys
 ) -> None:
-    api, _factory, controller = fake_api(turntable)
+    api, factory, controller = fake_api(turntable)
     first = FakeProtocolError("heartbeat byte appeared inside a protocol frame")
     second = FakeProtocolError("forbidden control byte 0x1b in protocol stream")
     controller.probe = make_queue(first, second)
@@ -877,15 +940,17 @@ def test_second_protocol_error_propagates_with_both_attempts_visible(
 
     output = parse_output(capsys)
     assert output["ok"] is False
+    assert output["retried"] is True
     assert output["error_type"] == "FakeProtocolError"
     assert "after one retry" in output["error"]
     assert str(first) in output["error"]
     assert str(second) in output["error"]
     assert controller.probe.call_count == 2
+    assert factory.open_calls == [{"port": None}, {"port": None}]
 
 
 def test_non_protocol_error_never_triggers_retry(turntable, capsys) -> None:
-    api, _factory, controller = fake_api(turntable)
+    api, factory, controller = fake_api(turntable)
 
     def _raise(*_args, **_kwargs):
         controller.calls.append(("probe",))
@@ -897,9 +962,352 @@ def test_non_protocol_error_never_triggers_retry(turntable, capsys) -> None:
 
     output = parse_output(capsys)
     assert output["ok"] is False
+    assert "retried" not in output
     assert output["error_type"] == "RuntimeError"
     assert "after one retry" not in output["error"]
     assert controller.calls == [("probe",)]
+    assert factory.open_calls == [{"port": None}]
+
+
+class _FakeProtocolErrorSubclass(FakeProtocolError):
+    """Stand-in for a real subclass like CompletionTimeout/CommandRejected."""
+
+
+def test_protocol_error_subclass_is_never_retried(turntable, capsys) -> None:
+    """A subclass instance must propagate on the first attempt, no retry.
+
+    This is the fake-level version of fix-round blocker 2's proof
+    (CompletionTimeout must never be silently re-driven); the real-parser
+    section below repeats it with the actual vendored exception classes.
+    """
+    api, factory, controller = fake_api(turntable)
+    controller.turn_relative = record_and_queue(
+        controller,
+        "turn_relative",
+        _FakeProtocolErrorSubclass("acknowledged but no TB_END arrived"),
+        controller.operation_result,
+    )
+
+    assert (
+        turntable.main(
+            [
+                "--json",
+                "position",
+                "10",
+                "--confirm-rig-clear",
+                "--confirm-zero-valid",
+            ],
+            api=api,
+            run_command=healthy_power,
+        )
+        == 1
+    )
+
+    output = parse_output(capsys)
+    assert output["ok"] is False
+    assert "retried" not in output
+    assert output["error_type"] == "_FakeProtocolErrorSubclass"
+    # Exactly one home + one move -- the subclass failure must not trigger
+    # a second, silently re-issued motion command.
+    assert controller.calls == [
+        ("return_to_zero",),
+        ("turn_relative", "ccw", 10.0),
+    ]
+    assert factory.open_calls == [{"port": None}]
+
+
+def test_should_fix_3_vendor_style_cause_chaining_never_implies_a_retry(
+    turntable, capsys
+) -> None:
+    """Regression for fix-round should-fix 3.
+
+    The vendored package chains exceptions internally with `raise ... from
+    exc` in several places unrelated to this wrapper's own retry (e.g.
+    ProtocolSession.synchronize re-raising a parse error as
+    StartupSynchronizationError). A never-retryable command (`left`) that
+    fails with a chained exception must NOT be reported as retried --
+    that fact must come only from an actual `_RetryExhausted`, never from
+    inspecting `exc.__cause__`.
+    """
+    api, factory, controller = fake_api(turntable)
+
+    def _raise_with_vendor_style_cause(*_args, **_kwargs):
+        controller.calls.append(("turn_relative", "cw", 10.0))
+        try:
+            raise ValueError("some unrelated internal vendor parse failure")
+        except ValueError as inner:
+            raise RuntimeError("link did not return to a normal heartbeat") from inner
+
+    controller.turn_relative = _raise_with_vendor_style_cause
+
+    assert (
+        turntable.main(["--json", "left", "10"], api=api, run_command=healthy_power)
+        == 1
+    )
+
+    output = parse_output(capsys)
+    assert output["ok"] is False
+    assert "retried" not in output
+    assert "after one retry" not in output["error"]
+    assert output["error_type"] == "RuntimeError"
+    assert len(controller.calls) == 1
+    assert factory.open_calls == [{"port": None}]
+
+
+# --- Fix round: exercised against the REAL vendored parser -----------------
+#
+# The adversarial gate's core criticism of the first round was that its
+# retry was validated only against a fake exception type, and its in-session
+# design was never checked against how the vendor's own FrameParser and
+# ProtocolSession actually behave after the race. These tests build REAL
+# `usb_turntable.protocol.ProtocolSession` / `FrameParser` /
+# `usb_turntable.controller.TurntableController` instances (no mocking of
+# vendor internals) backed by a scripted `Transport` (the same `Transport`
+# Protocol the vendor's `ProtocolSession` accepts), so every claim below is
+# checked against the actual shipped parser, not a stand-in for it.
+
+
+def _vendor_protocol_modules():
+    """Import the REAL vendored protocol/controller modules for these tests."""
+    vendor_path = str(VENDOR)
+    if vendor_path not in sys.path:
+        sys.path.insert(0, vendor_path)
+    from usb_turntable import commands as vendor_commands
+    from usb_turntable import controller as vendor_controller
+    from usb_turntable import errors as vendor_errors
+    from usb_turntable import protocol as vendor_protocol
+
+    return vendor_protocol, vendor_errors, vendor_commands, vendor_controller
+
+
+class _FakeMonotonicClock:
+    """Advances synthetic time on every call -- no real sleeping, no flakes.
+
+    The vendored ``ProtocolSession`` polls ``monotonic()`` many times per
+    exchange (pacing, settle waits, timeouts); a small fixed step lets every
+    real deadline (``SETTLE_SECONDS``, ``response_timeout``,
+    ``motion_timeout``) elapse deterministically in a handful of calls.
+    """
+
+    def __init__(self, start: float = 1_000.0, step: float = 0.05) -> None:
+        self._now = start
+        self._step = step
+
+    def __call__(self) -> float:
+        self._now += self._step
+        return self._now
+
+
+class _ScriptedTransport:
+    """A real ``Transport`` (see ``protocol.Transport``) that only releases
+    a command's scripted response bytes AFTER that command is written --
+    otherwise the vendor's own pre-command quiescence check
+    (``_prepare_command``) would drain the next command's response before
+    the current command was even sent.
+    """
+
+    def __init__(self, response_batches: list[list[bytes]]) -> None:
+        self._batches = list(response_batches)
+        self._pending: list[bytes] = []
+        self.writes: list[bytes] = []
+
+    def write(self, payload: bytes, timeout: float = 2.0) -> None:
+        self.writes.append(payload)
+        if self._batches:
+            self._pending = list(self._batches.pop(0))
+
+    def read_chunk(self, timeout: float) -> bytes:
+        if self._pending:
+            return self._pending.pop(0)
+        return b""
+
+
+def _real_session(vendor_protocol, response_batches, **timing):
+    """A REAL, already-``synchronized`` ProtocolSession over a scripted
+    transport. Synchronization itself is 100% vendor-owned and untouched by
+    this PR, so these tests set ``synchronized`` directly (a plain public
+    attribute) rather than re-simulating the vendor's startup handshake --
+    what's under test is the parser/session behavior during a live command
+    exchange and the wrapper's own session-teardown-and-reopen retry.
+    """
+    timing.setdefault("response_timeout", 0.3)
+    timing.setdefault("motion_timeout", 0.3)
+    timing.setdefault("startup_timeout", 1.0)
+    session = vendor_protocol.ProtocolSession(
+        _ScriptedTransport(response_batches),
+        heartbeat=False,
+        monotonic=_FakeMonotonicClock(),
+        **timing,
+    )
+    session.synchronized = True
+    return session
+
+
+def _real_controller(vendor_protocol, vendor_controller, response_batches, *, firmware=None, **timing):
+    session = _real_session(vendor_protocol, response_batches, **timing)
+    controller = vendor_controller.TurntableController(session, port="/dev/fake0")
+    if firmware is not None:
+        controller._firmware = firmware
+    return controller
+
+
+class _RealControllerFactory:
+    """``TurntableApi.controller`` stand-in whose ``.open()`` hands out
+    pre-built REAL ``TurntableController`` instances in order -- one per
+    scripted session, so a retry's second ``.open()`` call gets a genuinely
+    different, freshly-synchronized controller, exactly like a second CLI
+    invocation would.
+    """
+
+    def __init__(self, controllers) -> None:
+        self._controllers = list(controllers)
+        self.open_calls: list[dict[str, object]] = []
+
+    def open(self, **kwargs):
+        self.open_calls.append(kwargs)
+        if not self._controllers:
+            raise AssertionError("controller.open() called more times than scripted")
+        return self._controllers.pop(0)
+
+
+def test_real_parser_reproduces_the_heartbeat_mid_frame_race(turntable) -> None:
+    """The gate's exact probe shape: a partial frame + a heartbeat byte
+    raises the bare ProtocolError base class with the parser buffer (and
+    therefore ``pending``) left non-empty.
+    """
+    vendor_protocol, vendor_errors, _commands, _controller = _vendor_protocol_modules()
+
+    parser = vendor_protocol.FrameParser()
+    with pytest.raises(vendor_errors.ProtocolError) as excinfo:
+        parser.feed(b"PARTIALFRAME#")
+
+    assert str(excinfo.value) == "heartbeat byte appeared inside a protocol frame"
+    assert type(excinfo.value) is vendor_errors.ProtocolError
+    assert parser.pending == "PARTIALFRAME"
+
+
+def test_real_parser_in_session_retry_fails_closed(turntable) -> None:
+    """Root-cause proof for fix-round blocker 1: re-calling the SAME
+    session after the race does not recover -- the vendor's own
+    ``_prepare_command`` fails closed on the leftover parser state with a
+    SECOND bare ProtocolError, for an entirely different reason than the
+    first.
+    """
+    vendor_protocol, vendor_errors, vendor_commands, _controller = _vendor_protocol_modules()
+
+    # "connection" (CT();) expects a bare "CR+OK" frame; feeding a heartbeat
+    # byte while "CR+O" is still accumulating in the parser's normal frame
+    # buffer reproduces the exact issue #2516 race during a live exchange.
+    session = _real_session(vendor_protocol, [[b"CR+O", b"#"]])
+
+    with pytest.raises(vendor_errors.ProtocolError) as first:
+        session.execute(vendor_commands.COMMANDS["connection"])
+    assert type(first.value) is vendor_errors.ProtocolError
+    assert "heartbeat byte appeared inside a protocol frame" in str(first.value)
+    assert session.parser.pending == "CR+O"
+
+    with pytest.raises(vendor_errors.ProtocolError) as second:
+        session.execute(vendor_commands.COMMANDS["connection"])
+    assert type(second.value) is vendor_errors.ProtocolError
+    assert "pre-command receive was not quiescent" in str(second.value)
+    assert "CR+O" in str(second.value)
+
+
+def test_wrapper_recovers_the_real_race_via_a_fresh_session(turntable, capsys) -> None:
+    """End-to-end: the wrapper's actual retry path, run against REAL
+    ProtocolSession/FrameParser/TurntableController instances, recovers
+    exactly where the in-session retry above could not -- because it opens
+    a brand-new controller instead of re-calling the raced one.
+    """
+    vendor_protocol, vendor_errors, _commands, vendor_controller = _vendor_protocol_modules()
+
+    session1_controller = _real_controller(vendor_protocol, vendor_controller, [[b"CR+O", b"#"]])
+    session2_controller = _real_controller(
+        vendor_protocol,
+        vendor_controller,
+        [
+            [b"CR+OK;"],
+            [b"FWV=V2R05C02;CR+OK;"],
+            [b"PN=MT320RUBL40ProV3;CR+OK;"],
+        ],
+    )
+    factory = _RealControllerFactory([session1_controller, session2_controller])
+    api = turntable.TurntableApi(
+        discover_devices=lambda: [],
+        controller=factory,
+        protocol_error=vendor_errors.ProtocolError,
+    )
+
+    assert turntable.main(["--json", "probe"], api=api) == 0
+
+    output = parse_output(capsys)
+    assert output["ok"] is True
+    assert output["retried"] is True
+    assert output["result"]["connected"] is True
+    assert output["result"]["product"] == "MT320RUBL40ProV3"
+    assert len(factory.open_calls) == 2
+    # Only the raced attempt used session 1; the recovered probe ran
+    # entirely on session 2's fresh parser.
+    assert session1_controller.session.transport.writes == [b"CT();"]
+    assert len(session2_controller.session.transport.writes) == 3
+
+
+def test_real_completion_timeout_is_never_retried(turntable, capsys) -> None:
+    """Fix-round blocker 2's proof, against the REAL vendor exception
+    hierarchy: a motion command acknowledged but never confirmed complete
+    raises ``CompletionTimeout`` -- a ``ProtocolError`` SUBCLASS -- which
+    must propagate on the very first attempt. Retrying it would silently
+    re-issue an unconfirmed motion command.
+    """
+    vendor_protocol, vendor_errors, _commands, vendor_controller = _vendor_protocol_modules()
+
+    # Guarded `position` homes first; give it a no-op home (offset already
+    # zero) so the single execute_motion() exchange below is the move,
+    # acknowledged (CR+OK) but never completed (no CR+EVENT=TB_END).
+    controller = _real_controller(
+        vendor_protocol,
+        vendor_controller,
+        [
+            [b"OffsetAngle= +0.00\xa1\xe3\r\nCR+OK;"],  # return_to_zero's offset check
+            [b"CR+OK;"],  # TURNSINGLE acknowledged, then nothing -- no TB_END
+        ],
+        firmware="V2R05C02",
+    )
+    factory = _RealControllerFactory([controller])
+    api = turntable.TurntableApi(
+        discover_devices=lambda: [],
+        controller=factory,
+        protocol_error=vendor_errors.ProtocolError,
+    )
+
+    assert (
+        turntable.main(
+            [
+                "--json",
+                "position",
+                "10",
+                "--confirm-rig-clear",
+                "--confirm-zero-valid",
+            ],
+            api=api,
+            run_command=healthy_power,
+        )
+        == 1
+    )
+
+    output = parse_output(capsys)
+    assert output["ok"] is False
+    assert "retried" not in output
+    assert output["error_type"] == "CompletionTimeout"
+    assert isinstance(vendor_errors.CompletionTimeout(""), vendor_errors.ProtocolError)
+    assert type(vendor_errors.CompletionTimeout("")) is not vendor_errors.ProtocolError
+    # Exactly one fresh session, one motion command written -- no retry, no
+    # silently re-issued move.
+    assert len(factory.open_calls) == 1
+    assert controller.session.transport.writes == [
+        b"CT+GETOFFSETANGLE();",
+        b"CT+TURNSINGLE(1,10);",
+    ]
 
 
 def test_incomplete_operation_is_not_success(turntable, capsys) -> None:

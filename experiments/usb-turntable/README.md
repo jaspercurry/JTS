@@ -13,13 +13,21 @@ details in JTS.
 
 The vendor parser occasionally raises `ProtocolError` when a periodic
 heartbeat byte lands inside a response frame mid-exchange -- a transport-layer
-parse race, not a real command failure. On top of the vendor's own heartbeat
-handling, JTS layers one bounded, wrapper-owned retry of the whole operation
-for `offset`, `probe`, `detect`, and the guarded `position` (see "Guarded
-measurement positions" below): a `ProtocolError` on the first attempt is
-retried exactly once before failing; a second failure still propagates. This
-never applies to `set-zero`, `left`, `right`, `stop`, or `home`, which stay
-zero-retry.
+parse race, not a real command failure. Its effect outlives the moment it's
+raised: the vendor's own parser buffer is left non-empty, so the *very next*
+command on that same serial session fails closed too, for an unrelated reason
+("pre-command receive was not quiescent"). An in-process retry that reused the
+same session therefore could not recover. JTS layers one bounded retry of the
+whole operation for `offset`, `probe`, and the guarded `position` (see "Guarded
+measurement positions" below) against a **freshly opened controller session**
+-- a brand-new serial open plus the vendor's own synchronization, exactly what
+a second CLI invocation does. Only the vendored transport's exact
+`ProtocolError` base class is retried; a real command outcome reported as a
+more specific subclass (an unconfirmed motion, a rejected command, a genuine
+link timeout) is never retried and propagates on the first attempt, so an
+unconfirmed motion is never silently re-commanded. `detect` never touches the
+serial link, so it can't raise this error at all. This never applies to
+`set-zero`, `left`, `right`, `stop`, or `home`, which stay zero-retry.
 
 ## Setup
 
@@ -162,15 +170,21 @@ device from receiving the stop command.
 
 The microphone rig's saved zero is the acoustic on-axis home. For automated
 measurements, use signed absolute positions: negative is left and positive is
-right. Each invocation runs the Pi power preflight, opens the controller once,
+right. Each invocation runs the Pi power preflight, opens the controller,
 returns fully to home, and only then makes one relative move to the requested
 angle. It refuses targets outside the inclusive `-45` to `+45` degree envelope.
 
-A `ProtocolError` anywhere in that home-then-move sequence is retried once as
-a whole: the retry re-homes from scratch before moving again, so a race that
-lands mid-home or mid-move cannot leave the arm double-moved. A response with
-`"retried": true` means the vendor transport raced once and recovered; a
-second failure still returns `ok: false` and reports both attempts' errors.
+The vendored transport's exact `ProtocolError` base class anywhere in that
+home-then-move sequence is retried once as a whole, against a **freshly
+opened controller session** (a brand-new serial open, not the raced one
+re-used): the retry re-homes from scratch before moving again, so a race that
+lands mid-home or mid-move cannot leave the arm double-moved. A more specific
+`ProtocolError` subclass -- a motion acknowledged but never confirmed
+complete, a rejected command, a genuine link timeout -- reports a real
+command outcome, not a parse race, and is never retried. A response with
+`"retried": true` means the vendor transport raced once and the fresh session
+recovered; a second failure still returns `ok: false` and reports both
+attempts' errors.
 
 Both confirmations are required on every invocation so an unattended caller
 cannot silently assume the physical setup is safe:
@@ -226,11 +240,14 @@ accessible hardware power cutoff while testing.
 - **Power blocked:** run `power` and read `current_flags`. Improve the supply,
   cable, or powered USB hub rather than relying on the override.
 - **Controller or timeout error:** inspect the structured error and physical
-  platform. `offset`, `probe`, `detect`, and the guarded `position` already
-  retried once automatically (`"retried": true` on success confirms a race
-  was absorbed); a reported failure already survived that. For those
-  commands and for `set-zero`/`left`/`right`/`stop`/`home`, which never
-  auto-retry, only retry by hand once the platform's state is known and the
-  area is clear.
+  platform. `offset`, `probe`, and the guarded `position` already retried
+  once automatically against a fresh controller session when the failure was
+  the vendor transport's own parse race (`"retried": true` on success
+  confirms one was absorbed); a reported failure either already survived
+  that or was a real command outcome (acknowledged-but-incomplete, rejected,
+  timed out) that never auto-retries in the first place. `detect` and
+  `set-zero`/`left`/`right`/`stop`/`home` never auto-retry at all. In every
+  case, only retry by hand once the platform's state is known and the area
+  is clear.
 - **Need to request stop:** run `stop`, while remembering that software delivery
   is not guaranteed; use the hardware cutoff if conditions are unsafe.

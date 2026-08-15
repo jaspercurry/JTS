@@ -39,20 +39,27 @@ AUTOSTOP_PORT_RE = re.compile(r"/dev/ttyUSB\d+")
 EXPERIMENT_ROOT = Path(__file__).resolve().parent
 VENDOR_ROOT = EXPERIMENT_ROOT / "vendor"
 
-# Commands that are safe to retry once, whole-operation, on the vendored
-# transport's ProtocolError (issue #2516: the vendor parser occasionally
-# raises "heartbeat byte appeared inside a protocol frame" when a periodic
-# heartbeat byte lands mid-exchange -- a transport-layer parse race, not a
-# real command failure; an immediate identical retry recovered live both
-# times it was observed). Every command here is read-only or self-guarded:
-# `offset`/`probe` send no motion, `detect` touches no serial link at all,
-# and the guarded `position` always homes first and re-derives its move from
-# the controller's own state, so a retried invocation cannot double-move.
+# Commands that get one whole-operation retry, against a FRESH controller
+# session, on the vendored transport's exact ProtocolError base class
+# (issue #2516: the vendor parser occasionally raises "heartbeat byte
+# appeared inside a protocol frame" when a periodic heartbeat byte lands
+# mid-exchange -- a transport-layer parse race, not a real command
+# failure). `run()` below is the ONLY place this set is consulted -- it is
+# the literal branch condition that routes a command through
+# `_run_with_session_retry` versus the plain single-open path, not a
+# decorative label, so adding a command here without also handling it in
+# that branch fails loudly (`_run_with_session_retry` -- see its docstring
+# for why a fresh session, not an in-session re-call, and why only the
+# EXACT base class retries, never a subclass).
+#
+# `offset`/`probe` send no motion; the guarded `position` always homes
+# first and re-derives its move from the controller's own state, so a
+# retried invocation cannot double-move. `detect` is excluded: discovery
+# never touches the serial link, so it can't raise this error at all.
 # `set-zero` (owner-only, destructive) and the unguarded `left`/`right`/
 # `stop`/`home` motion commands are deliberately excluded and stay
-# zero-retry -- this set is the single source of truth for that split; see
-# `_call_with_protocol_retry`.
-RETRYABLE_COMMANDS = frozenset({"offset", "probe", "detect", "position"})
+# zero-retry.
+RETRYABLE_COMMANDS = frozenset({"offset", "probe", "position"})
 
 _T = TypeVar("_T")
 
@@ -274,32 +281,80 @@ def _operation_succeeded(result: Any) -> bool:
     )
 
 
-def _call_with_protocol_retry(
-    operation: Callable[[], _T],
-    *,
-    protocol_error: type[BaseException],
-    retryable: bool,
-) -> tuple[_T, bool]:
-    """Run ``operation``, retrying the SAME operation exactly once on
-    ``protocol_error`` when ``retryable`` is true.
+class _RetryExhausted(Exception):
+    """Both attempts of a session-retried operation failed with the
+    vendored transport's exact ``ProtocolError`` base class.
 
-    This is the single seam for the whole-operation retry described in
-    issue #2516 -- see ``RETRYABLE_COMMANDS`` for which commands opt in and
-    why it is safe for each of them. A second failure is not swallowed: it
-    propagates the same way an unretried failure always has, with the first
-    attempt's error chained on via ``raise ... from`` so both attempts stay
-    visible.
+    Carries both underlying exceptions so ``main()`` can report the real
+    ``error_type`` (the second attempt's class) and build the combined
+    message from an explicit "a retry happened" fact -- never by
+    inspecting ``__cause__``, which the vendored package also sets
+    internally in several places unrelated to this wrapper's own retry
+    (e.g. ``ProtocolSession.synchronize`` re-raising a parse error as
+    ``StartupSynchronizationError ... from exc``). Inferring "was this
+    retried" from ``__cause__`` alone would misreport an ordinary,
+    never-retried failure as one.
     """
 
-    if not retryable:
-        return operation(), False
+    def __init__(self, first: BaseException, second: BaseException) -> None:
+        super().__init__(str(second))
+        self.first = first
+        self.second = second
+
+
+def _run_with_session_retry(
+    resolved_api: TurntableApi,
+    args: argparse.Namespace,
+    operation: Callable[[Any], _T],
+) -> tuple[_T, bool]:
+    """Run ``operation(controller)`` inside a freshly opened controller
+    session, retrying once against a BRAND-NEW session when the vendored
+    transport raises its own ``ProtocolError`` base class EXACTLY (never a
+    subclass). See ``RETRYABLE_COMMANDS`` for which commands use this and
+    why each is safe to retry as a whole operation.
+
+    Why a fresh session, not an in-session re-call (issue #2516 fix-round
+    blocker 1): the vendor parser's heartbeat-mid-frame race leaves its
+    ``FrameParser`` buffer non-empty (``session.parser.pending``). The
+    vendor's own ``_prepare_command`` then fails closed on the very next
+    command with "pre-command receive was not quiescent" -- ALSO the bare
+    ``ProtocolError`` type, so an in-session retry cannot recover; it just
+    fails a second time for a different reason. Only a brand-new
+    controller (a fresh ``.open()``, which includes the vendor's own
+    ``synchronize()``) starts with a clean parser -- exactly what a
+    brand-new CLI invocation does, which is what recovered live both times
+    this race was observed on jts3.
+
+    Why the EXACT base class only, never a subclass (fix-round blocker 2):
+    ``CompletionTimeout``, ``CommandRejected``, ``CommunicationTimeout``,
+    and ``StartupSynchronizationError`` are ``ProtocolError`` subclasses
+    that report a REAL command outcome (a motion acknowledged but never
+    confirmed complete, a rejected command, a genuine link timeout) -- not
+    a parser parse race. Retrying those could silently re-issue an
+    unconfirmed motion command. Only the bare base class -- which the
+    vendor reserves for "malformed, duplicate, or unexpected frame"
+    parser-level anomalies -- is retried; every subclass instance
+    propagates on the very first attempt, no matter which retryable
+    command raised it.
+    """
+
+    protocol_error = resolved_api.protocol_error
+
+    def _attempt() -> _T:
+        with resolved_api.controller.open(port=args.port) as controller:
+            return operation(controller)
+
     try:
-        return operation(), False
+        return _attempt(), False
     except protocol_error as first_exc:
+        if type(first_exc) is not protocol_error:
+            raise
         try:
-            return operation(), True
+            return _attempt(), True
         except protocol_error as second_exc:
-            raise second_exc from first_exc
+            if type(second_exc) is not protocol_error:
+                raise
+            raise _RetryExhausted(first_exc, second_exc) from second_exc
 
 
 def _power_payload(status: PowerStatus, override: bool) -> dict[str, Any]:
@@ -446,19 +501,13 @@ def run(
         return 1
 
     resolved_api = api or load_upstream_api()
-    retryable = args.command in RETRYABLE_COMMANDS
     if args.command == "hotplug-stop":
         return _run_hotplug_stop(args, resolved_api, sleep)
     if args.command == "detect":
-        devices, retried = _call_with_protocol_retry(
-            resolved_api.discover_devices,
-            protocol_error=resolved_api.protocol_error,
-            retryable=retryable,
-        )
-        detect_payload: dict[str, Any] = {"ok": bool(devices), "devices": devices}
-        if retried:
-            detect_payload["retried"] = True
-        _emit(detect_payload, compact=args.json)
+        # Discovery never opens the serial link, so it can't raise the
+        # vendored ProtocolError at all -- no retry wrapping here.
+        devices = resolved_api.discover_devices()
+        _emit({"ok": bool(devices), "devices": devices}, compact=args.json)
         return 0 if devices else 1
 
     power_status: PowerStatus | None = None
@@ -479,29 +528,19 @@ def run(
             return 1
 
     retried = False
-    with resolved_api.controller.open(port=args.port) as controller:
+    # RETRYABLE_COMMANDS is consulted exactly once, right here -- this branch
+    # IS the dispatch gate (not a decoration around it): a command in the set
+    # goes through the fresh-session retry helper, everything else keeps the
+    # single-open, zero-retry path unchanged from before #2516.
+    if args.command in RETRYABLE_COMMANDS:
         if args.command == "probe":
-            result, retried = _call_with_protocol_retry(
-                controller.probe,
-                protocol_error=resolved_api.protocol_error,
-                retryable=retryable,
+            result, retried = _run_with_session_retry(
+                resolved_api, args, lambda controller: controller.probe()
             )
             ok = bool(getattr(result, "connected", False))
-        elif args.command in {"left", "right"}:
-            direction = "cw" if args.command == "left" else "ccw"
-            result = controller.turn_relative(direction, args.degrees)
-            ok = _operation_succeeded(result)
-        elif args.command == "set-zero":
-            result = controller.set_zero()
-            ok = _operation_succeeded(result)
-        elif args.command == "home":
-            result = controller.return_to_zero()
-            ok = _operation_succeeded(result)
         elif args.command == "offset":
-            offset_result, retried = _call_with_protocol_retry(
-                controller.offset_angle,
-                protocol_error=resolved_api.protocol_error,
-                retryable=retryable,
+            offset_result, retried = _run_with_session_retry(
+                resolved_api, args, lambda controller: controller.offset_angle()
             )
             ok = bool(offset_result.acknowledged)
             result = {
@@ -510,7 +549,7 @@ def run(
             }
         elif args.command == "position":
 
-            def _do_position() -> tuple[Any, Any | None]:
+            def _do_position(controller: Any) -> tuple[Any, Any | None]:
                 home_result = controller.return_to_zero()
                 move_result = None
                 if _operation_succeeded(home_result) and args.degrees != 0:
@@ -518,10 +557,8 @@ def run(
                     move_result = controller.turn_relative(direction, abs(args.degrees))
                 return home_result, move_result
 
-            (home_result, move_result), retried = _call_with_protocol_retry(
-                _do_position,
-                protocol_error=resolved_api.protocol_error,
-                retryable=retryable,
+            (home_result, move_result), retried = _run_with_session_retry(
+                resolved_api, args, _do_position
             )
             if not _operation_succeeded(home_result):
                 payload = {
@@ -545,11 +582,25 @@ def run(
                 "home": home_result,
                 "move": move_result,
             }
-        elif args.command == "stop":
-            result = controller.stop()
-            ok = _operation_succeeded(result)
         else:
-            raise AssertionError(f"unhandled command: {args.command}")
+            raise AssertionError(f"unhandled retryable command: {args.command}")
+    else:
+        with resolved_api.controller.open(port=args.port) as controller:
+            if args.command in {"left", "right"}:
+                direction = "cw" if args.command == "left" else "ccw"
+                result = controller.turn_relative(direction, args.degrees)
+                ok = _operation_succeeded(result)
+            elif args.command == "set-zero":
+                result = controller.set_zero()
+                ok = _operation_succeeded(result)
+            elif args.command == "home":
+                result = controller.return_to_zero()
+                ok = _operation_succeeded(result)
+            elif args.command == "stop":
+                result = controller.stop()
+                ok = _operation_succeeded(result)
+            else:
+                raise AssertionError(f"unhandled command: {args.command}")
 
     payload: dict[str, Any] = {"ok": ok, "result": result}
     if power_status is not None:
@@ -570,16 +621,28 @@ def main(
     args = build_parser().parse_args(argv)
     try:
         return run(args, api=api, run_command=run_command, sleep=sleep)
-    except Exception as exc:  # noqa: BLE001 - manual CLI reports boundary failures
-        error = str(exc)
-        # A retried-and-still-failing ProtocolError chains the first
-        # attempt's error onto the second via `raise ... from` (see
-        # `_call_with_protocol_retry`); surface both so a double failure
-        # doesn't read as a single, unretried one.
-        if exc.__cause__ is not None:
-            error = f"{error} (after one retry; first attempt: {exc.__cause__})"
+    except _RetryExhausted as exc:
+        # Both attempts of a retryable operation failed (see
+        # `_run_with_session_retry`). This is the ONLY signal for "a retry
+        # happened" -- never `exc.__cause__`, which the vendored package
+        # also sets internally in places unrelated to this wrapper's own
+        # retry, so it can't reliably tell a retried failure from an
+        # ordinary one. `error_type` reports the real second-attempt
+        # exception class, matching what an unretried failure of the same
+        # kind would report.
         _emit(
-            {"ok": False, "error": error, "error_type": type(exc).__name__},
+            {
+                "ok": False,
+                "error": f"{exc.second} (after one retry; first attempt: {exc.first})",
+                "error_type": type(exc.second).__name__,
+                "retried": True,
+            },
+            compact=args.json,
+        )
+        return 1
+    except Exception as exc:  # noqa: BLE001 - manual CLI reports boundary failures
+        _emit(
+            {"ok": False, "error": str(exc), "error_type": type(exc).__name__},
             compact=args.json,
         )
         return 1
