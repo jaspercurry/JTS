@@ -19,7 +19,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 
 POWER_FLAG_NAMES = (
@@ -39,6 +39,23 @@ AUTOSTOP_PORT_RE = re.compile(r"/dev/ttyUSB\d+")
 EXPERIMENT_ROOT = Path(__file__).resolve().parent
 VENDOR_ROOT = EXPERIMENT_ROOT / "vendor"
 
+# Commands that are safe to retry once, whole-operation, on the vendored
+# transport's ProtocolError (issue #2516: the vendor parser occasionally
+# raises "heartbeat byte appeared inside a protocol frame" when a periodic
+# heartbeat byte lands mid-exchange -- a transport-layer parse race, not a
+# real command failure; an immediate identical retry recovered live both
+# times it was observed). Every command here is read-only or self-guarded:
+# `offset`/`probe` send no motion, `detect` touches no serial link at all,
+# and the guarded `position` always homes first and re-derives its move from
+# the controller's own state, so a retried invocation cannot double-move.
+# `set-zero` (owner-only, destructive) and the unguarded `left`/`right`/
+# `stop`/`home` motion commands are deliberately excluded and stay
+# zero-retry -- this set is the single source of truth for that split; see
+# `_call_with_protocol_retry`.
+RETRYABLE_COMMANDS = frozenset({"offset", "probe", "detect", "position"})
+
+_T = TypeVar("_T")
+
 
 @dataclass(frozen=True)
 class PowerStatus:
@@ -54,6 +71,7 @@ class PowerStatus:
 class TurntableApi:
     discover_devices: Callable[[], list[dict[str, str | None]]]
     controller: Any
+    protocol_error: type[BaseException]
 
 
 def _flag_names(bits: int) -> tuple[str, ...]:
@@ -138,13 +156,13 @@ def load_upstream_api() -> TurntableApi:
     if not sys.path or sys.path[0] != vendor_path:
         sys.path.insert(0, vendor_path)
 
-    from usb_turntable import TurntableController, discover_devices
+    from usb_turntable import ProtocolError, TurntableController, discover_devices
 
     module_root = Path(sys.modules["usb_turntable"].__file__ or "").resolve().parent
     expected_root = (VENDOR_ROOT / "usb_turntable").resolve()
     if module_root != expected_root:
         raise RuntimeError(f"usb_turntable did not load from the bundle: {module_root}")
-    return TurntableApi(discover_devices, TurntableController)
+    return TurntableApi(discover_devices, TurntableController, ProtocolError)
 
 
 def _jsonable(value: Any) -> Any:
@@ -254,6 +272,34 @@ def _operation_succeeded(result: Any) -> bool:
         getattr(result, "acknowledged", False)
         and getattr(result, "completed", False)
     )
+
+
+def _call_with_protocol_retry(
+    operation: Callable[[], _T],
+    *,
+    protocol_error: type[BaseException],
+    retryable: bool,
+) -> tuple[_T, bool]:
+    """Run ``operation``, retrying the SAME operation exactly once on
+    ``protocol_error`` when ``retryable`` is true.
+
+    This is the single seam for the whole-operation retry described in
+    issue #2516 -- see ``RETRYABLE_COMMANDS`` for which commands opt in and
+    why it is safe for each of them. A second failure is not swallowed: it
+    propagates the same way an unretried failure always has, with the first
+    attempt's error chained on via ``raise ... from`` so both attempts stay
+    visible.
+    """
+
+    if not retryable:
+        return operation(), False
+    try:
+        return operation(), False
+    except protocol_error as first_exc:
+        try:
+            return operation(), True
+        except protocol_error as second_exc:
+            raise second_exc from first_exc
 
 
 def _power_payload(status: PowerStatus, override: bool) -> dict[str, Any]:
@@ -400,11 +446,19 @@ def run(
         return 1
 
     resolved_api = api or load_upstream_api()
+    retryable = args.command in RETRYABLE_COMMANDS
     if args.command == "hotplug-stop":
         return _run_hotplug_stop(args, resolved_api, sleep)
     if args.command == "detect":
-        devices = resolved_api.discover_devices()
-        _emit({"ok": bool(devices), "devices": devices}, compact=args.json)
+        devices, retried = _call_with_protocol_retry(
+            resolved_api.discover_devices,
+            protocol_error=resolved_api.protocol_error,
+            retryable=retryable,
+        )
+        detect_payload: dict[str, Any] = {"ok": bool(devices), "devices": devices}
+        if retried:
+            detect_payload["retried"] = True
+        _emit(detect_payload, compact=args.json)
         return 0 if devices else 1
 
     power_status: PowerStatus | None = None
@@ -424,9 +478,14 @@ def run(
             )
             return 1
 
+    retried = False
     with resolved_api.controller.open(port=args.port) as controller:
         if args.command == "probe":
-            result = controller.probe()
+            result, retried = _call_with_protocol_retry(
+                controller.probe,
+                protocol_error=resolved_api.protocol_error,
+                retryable=retryable,
+            )
             ok = bool(getattr(result, "connected", False))
         elif args.command in {"left", "right"}:
             direction = "cw" if args.command == "left" else "ccw"
@@ -439,14 +498,31 @@ def run(
             result = controller.return_to_zero()
             ok = _operation_succeeded(result)
         elif args.command == "offset":
-            offset_result = controller.offset_angle()
+            offset_result, retried = _call_with_protocol_retry(
+                controller.offset_angle,
+                protocol_error=resolved_api.protocol_error,
+                retryable=retryable,
+            )
             ok = bool(offset_result.acknowledged)
             result = {
                 "offset_degrees": float(offset_result.degrees),
                 "frames": list(offset_result.frames),
             }
         elif args.command == "position":
-            home_result = controller.return_to_zero()
+
+            def _do_position() -> tuple[Any, Any | None]:
+                home_result = controller.return_to_zero()
+                move_result = None
+                if _operation_succeeded(home_result) and args.degrees != 0:
+                    direction = "cw" if args.degrees < 0 else "ccw"
+                    move_result = controller.turn_relative(direction, abs(args.degrees))
+                return home_result, move_result
+
+            (home_result, move_result), retried = _call_with_protocol_retry(
+                _do_position,
+                protocol_error=resolved_api.protocol_error,
+                retryable=retryable,
+            )
             if not _operation_succeeded(home_result):
                 payload = {
                     "ok": False,
@@ -458,13 +534,11 @@ def run(
                     payload["power"] = _power_payload(
                         power_status, args.allow_power_risk
                     )
+                if retried:
+                    payload["retried"] = True
                 _emit(payload, compact=args.json)
                 return 1
 
-            move_result = None
-            if args.degrees != 0:
-                direction = "cw" if args.degrees < 0 else "ccw"
-                move_result = controller.turn_relative(direction, abs(args.degrees))
             ok = move_result is None or _operation_succeeded(move_result)
             result = {
                 "target_degrees": args.degrees,
@@ -480,6 +554,8 @@ def run(
     payload: dict[str, Any] = {"ok": ok, "result": result}
     if power_status is not None:
         payload["power"] = _power_payload(power_status, args.allow_power_risk)
+    if retried:
+        payload["retried"] = True
     _emit(payload, compact=args.json)
     return 0 if ok else 1
 
@@ -495,8 +571,15 @@ def main(
     try:
         return run(args, api=api, run_command=run_command, sleep=sleep)
     except Exception as exc:  # noqa: BLE001 - manual CLI reports boundary failures
+        error = str(exc)
+        # A retried-and-still-failing ProtocolError chains the first
+        # attempt's error onto the second via `raise ... from` (see
+        # `_call_with_protocol_retry`); surface both so a double failure
+        # doesn't read as a single, unretried one.
+        if exc.__cause__ is not None:
+            error = f"{error} (after one retry; first attempt: {exc.__cause__})"
         _emit(
-            {"ok": False, "error": str(exc), "error_type": type(exc).__name__},
+            {"ok": False, "error": error, "error_type": type(exc).__name__},
             compact=args.json,
         )
         return 1

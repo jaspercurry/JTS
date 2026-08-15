@@ -42,8 +42,59 @@ def turntable():
     return load_script()
 
 
+class FakeProtocolError(Exception):
+    """Stand-in for the vendored ``usb_turntable.ProtocolError``.
+
+    Injected via ``TurntableApi.protocol_error`` so retry tests never need
+    to import the real vendor package; the wrapper only needs *a* type to
+    catch, and dependency-injecting it is the same pattern the rest of this
+    fixture module already uses for ``discover_devices``/``controller``.
+    """
+
+
 def command_result(stdout: str, *, returncode: int = 0, stderr: str = ""):
     return SimpleNamespace(stdout=stdout, stderr=stderr, returncode=returncode)
+
+
+def make_queue(*outcomes):
+    """Return a callable that pops through ``outcomes`` in call order.
+
+    Each outcome is either an exception instance (raised) or a plain value
+    (returned). Calling past the end of the queue is a test-authoring bug,
+    not a code-under-test outcome, so it raises loudly. Invocation count is
+    tracked on ``.call_count`` for tests that don't otherwise observe calls.
+    """
+
+    remaining = list(outcomes)
+
+    def _next(*_args, **_kwargs):
+        if not remaining:
+            raise AssertionError("queued fake invoked more times than expected")
+        _next.call_count += 1
+        outcome = remaining.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    _next.call_count = 0
+    return _next
+
+
+def record_and_queue(controller, name, *outcomes):
+    """Like ``make_queue``, but also appends ``(name, *args)`` to
+    ``controller.calls`` per invocation, matching ``FakeController``'s own
+    recording convention. Needed when overriding one method mid-test so
+    ordering assertions spanning overridden and un-overridden methods
+    still hold.
+    """
+
+    queue = make_queue(*outcomes)
+
+    def _wrapped(*args, **kwargs):
+        controller.calls.append((name, *args))
+        return queue(*args, **kwargs)
+
+    return _wrapped
 
 
 def healthy_power(*args, **kwargs):
@@ -106,6 +157,7 @@ def fake_api(turntable, *, devices=None):
     api = turntable.TurntableApi(
         discover_devices=lambda: list(devices or []),
         controller=factory,
+        protocol_error=FakeProtocolError,
     )
     return api, factory, controller
 
@@ -582,6 +634,272 @@ def test_offset_reads_without_motion_or_power_preflight(turntable, capsys) -> No
     assert output["result"]["frames"] == ["OA=0.5\N{DEGREE SIGN}"]
     assert factory.open_calls == [{"port": None}]
     assert controller.calls == [("offset_angle",)]
+
+
+# --- Issue #2516: one bounded retry on the vendored ProtocolError -----------
+#
+# The vendored transport occasionally raises ProtocolError ("heartbeat byte
+# appeared inside a protocol frame") mid-exchange -- a parse race, not a real
+# command failure. `offset`, `probe`, `detect`, and the guarded `position`
+# retry the whole operation exactly once; everything else stays zero-retry.
+
+
+def test_probe_retries_once_on_protocol_error_and_succeeds(turntable, capsys) -> None:
+    api, _factory, controller = fake_api(turntable)
+    controller.probe = make_queue(
+        FakeProtocolError("heartbeat byte appeared inside a protocol frame"),
+        controller.probe_result,
+    )
+
+    assert turntable.main(["--json", "probe"], api=api) == 0
+
+    output = parse_output(capsys)
+    assert output["ok"] is True
+    assert output["retried"] is True
+    assert controller.probe.call_count == 2
+
+
+def test_offset_retries_once_on_protocol_error_and_succeeds(turntable, capsys) -> None:
+    api, _factory, controller = fake_api(turntable)
+    controller.offset_angle = make_queue(
+        FakeProtocolError("heartbeat byte appeared inside a protocol frame"),
+        controller.offset_result,
+    )
+
+    assert turntable.main(["--json", "offset"], api=api) == 0
+
+    output = parse_output(capsys)
+    assert output["ok"] is True
+    assert output["retried"] is True
+    assert controller.offset_angle.call_count == 2
+
+
+def test_detect_retries_once_on_protocol_error_and_succeeds(turntable, capsys) -> None:
+    discover_devices = make_queue(
+        FakeProtocolError("heartbeat byte appeared inside a protocol frame"),
+        [{"path": "/dev/ttyUSB0"}],
+    )
+    api = turntable.TurntableApi(
+        discover_devices=discover_devices,
+        controller=None,
+        protocol_error=FakeProtocolError,
+    )
+
+    assert turntable.main(["--json", "detect"], api=api) == 0
+
+    output = parse_output(capsys)
+    assert output["ok"] is True
+    assert output["retried"] is True
+    assert output["devices"] == [{"path": "/dev/ttyUSB0"}]
+    assert discover_devices.call_count == 2
+
+
+def test_guarded_position_retries_whole_operation_when_home_races(
+    turntable, capsys
+) -> None:
+    """A ProtocolError during home re-runs home *and* the move on retry."""
+    api, factory, controller = fake_api(turntable)
+    controller.return_to_zero = record_and_queue(
+        controller,
+        "return_to_zero",
+        FakeProtocolError("heartbeat byte appeared inside a protocol frame"),
+        controller.operation_result,
+    )
+
+    assert (
+        turntable.main(
+            [
+                "--json",
+                "position",
+                "10",
+                "--confirm-rig-clear",
+                "--confirm-zero-valid",
+            ],
+            api=api,
+            run_command=healthy_power,
+        )
+        == 0
+    )
+
+    output = parse_output(capsys)
+    assert output["ok"] is True
+    assert output["retried"] is True
+    assert factory.open_calls == [{"port": None}]
+    # Attempt 1's home races and is retried; attempt 2 re-homes cleanly
+    # before the single move.
+    assert controller.calls == [
+        ("return_to_zero",),
+        ("return_to_zero",),
+        ("turn_relative", "ccw", 10.0),
+    ]
+
+
+def test_guarded_position_retries_whole_operation_when_move_races(
+    turntable, capsys
+) -> None:
+    """A ProtocolError during the move re-homes on retry -- it cannot double-move."""
+    api, factory, controller = fake_api(turntable)
+    controller.turn_relative = record_and_queue(
+        controller,
+        "turn_relative",
+        FakeProtocolError("heartbeat byte appeared inside a protocol frame"),
+        controller.operation_result,
+    )
+
+    assert (
+        turntable.main(
+            [
+                "--json",
+                "position",
+                "10",
+                "--confirm-rig-clear",
+                "--confirm-zero-valid",
+            ],
+            api=api,
+            run_command=healthy_power,
+        )
+        == 0
+    )
+
+    output = parse_output(capsys)
+    assert output["ok"] is True
+    assert output["retried"] is True
+    assert factory.open_calls == [{"port": None}]
+    # Attempt 1: home succeeds, then the move races. Attempt 2 re-homes
+    # from scratch before moving again -- the guard that makes the whole
+    # operation safe to retry (a partially-completed attempt 1 is undone
+    # by attempt 2's fresh home, so the arm can't be double-moved).
+    assert controller.calls == [
+        ("return_to_zero",),
+        ("turn_relative", "ccw", 10.0),
+        ("return_to_zero",),
+        ("turn_relative", "ccw", 10.0),
+    ]
+
+
+def test_guarded_position_reports_retried_on_home_incomplete_early_return(
+    turntable, capsys
+) -> None:
+    api, _factory, controller = fake_api(turntable)
+    incomplete = SimpleNamespace(acknowledged=True, completed=False)
+    controller.return_to_zero = record_and_queue(
+        controller,
+        "return_to_zero",
+        FakeProtocolError("heartbeat byte appeared inside a protocol frame"),
+        incomplete,
+    )
+
+    assert (
+        turntable.main(
+            [
+                "--json",
+                "position",
+                "10",
+                "--confirm-rig-clear",
+                "--confirm-zero-valid",
+            ],
+            api=api,
+            run_command=healthy_power,
+        )
+        == 1
+    )
+
+    output = parse_output(capsys)
+    assert output["ok"] is False
+    assert output["retried"] is True
+    assert "not attempted" in output["error"]
+    assert controller.calls == [("return_to_zero",), ("return_to_zero",)]
+
+
+def test_retry_does_not_fire_for_non_retryable_commands(turntable, capsys) -> None:
+    """set-zero is owner-only and destructive -- it stays zero-retry."""
+    api, _factory, controller = fake_api(turntable)
+    controller.set_zero = record_and_queue(
+        controller,
+        "set_zero",
+        FakeProtocolError("heartbeat byte appeared inside a protocol frame"),
+        controller.operation_result,
+    )
+
+    assert (
+        turntable.main(
+            ["--json", "set-zero", "--confirm-redefine-zero"],
+            api=api,
+        )
+        == 1
+    )
+
+    output = parse_output(capsys)
+    assert output["ok"] is False
+    assert "retried" not in output
+    assert output["error_type"] == "FakeProtocolError"
+    assert controller.calls == [("set_zero",)]
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected_call"),
+    [
+        (["left", "10"], "turn_relative"),
+        (["home"], "return_to_zero"),
+        (["stop"], "stop"),
+    ],
+)
+def test_retry_does_not_fire_for_unguarded_motion_commands(
+    turntable, capsys, argv: list[str], expected_call: str
+) -> None:
+    api, _factory, controller = fake_api(turntable)
+    error = FakeProtocolError("heartbeat byte appeared inside a protocol frame")
+    setattr(
+        controller,
+        expected_call,
+        record_and_queue(controller, expected_call, error, controller.operation_result),
+    )
+
+    assert (
+        turntable.main(["--json", *argv], api=api, run_command=healthy_power) == 1
+    )
+
+    output = parse_output(capsys)
+    assert output["ok"] is False
+    assert "retried" not in output
+    assert len(controller.calls) == 1
+
+
+def test_second_protocol_error_propagates_with_both_attempts_visible(
+    turntable, capsys
+) -> None:
+    api, _factory, controller = fake_api(turntable)
+    first = FakeProtocolError("heartbeat byte appeared inside a protocol frame")
+    second = FakeProtocolError("forbidden control byte 0x1b in protocol stream")
+    controller.probe = make_queue(first, second)
+
+    assert turntable.main(["--json", "probe"], api=api) == 1
+
+    output = parse_output(capsys)
+    assert output["ok"] is False
+    assert output["error_type"] == "FakeProtocolError"
+    assert "after one retry" in output["error"]
+    assert str(first) in output["error"]
+    assert str(second) in output["error"]
+    assert controller.probe.call_count == 2
+
+
+def test_non_protocol_error_never_triggers_retry(turntable, capsys) -> None:
+    api, _factory, controller = fake_api(turntable)
+
+    def _raise(*_args, **_kwargs):
+        controller.calls.append(("probe",))
+        raise RuntimeError("some other transport failure")
+
+    controller.probe = _raise
+
+    assert turntable.main(["--json", "probe"], api=api) == 1
+
+    output = parse_output(capsys)
+    assert output["ok"] is False
+    assert output["error_type"] == "RuntimeError"
+    assert "after one retry" not in output["error"]
+    assert controller.calls == [("probe",)]
 
 
 def test_incomplete_operation_is_not_success(turntable, capsys) -> None:
