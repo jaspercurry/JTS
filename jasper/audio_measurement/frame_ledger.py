@@ -59,12 +59,11 @@ reconstructed from WAV forensics weeks later.
 This module reads none of those keys, and that is a boundary rather than an
 oversight: they are DISCLOSURE, and nothing here grades them. The analyzer's own
 splice detectors stay the thing that refuses such a take, and they still earn
-their place — a FIFO that
-drops samples rather than inserting silence splices the content without writing
-any zeros, so no scan of the data can witness that half. A splice those detectors
-find while this ledger balances AND the reported zero-run count is 0 therefore
-remains exactly the finding it always was: the loss is upstream of the audio
-graph, and it did not arrive as a silent quantum.
+their place — a FIFO that drops samples rather than inserting silence splices the
+content without writing any zeros, so no scan of the data can witness that half.
+A splice those detectors find while this ledger balances AND the reported zero-run
+count is 0 therefore remains exactly the finding it always was: the loss is
+upstream of the audio graph, and it did not arrive as a silent quantum.
 
 **Hop B is the LEADING CANDIDATE for the 2026-08-03 shape, and is now counted
 exactly.** The worklet checks that ``currentFrame`` advances by exactly the
@@ -80,11 +79,11 @@ FOR hop A, because every hop this module can count has just said it lost nothing
 
 That prediction was tested on 2026-08-15 and returned hop A — by direct data
 witness (the 128-sample zero run above), which is stronger than the elimination
-argument sketched here. It settles that campaign's events, NOT this paragraph's:
-the 2026-08-03 captures predate the scan, their audio has since rotated out of
-the retained dump, and nothing bit-exact was ever run on them. So hop B stays the
-leading candidate for the 2026-08-03 shape on the same evidence as before, and
-"leading candidate" stays the strongest word the record supports.
+argument sketched here. It settles THAT campaign's events, not this paragraph's:
+the 2026-08-03 captures predate the signature and were never tested for it. So
+hop B stays the leading candidate for the 2026-08-03 shape on exactly the evidence
+it always had, and "leading candidate" stays the strongest word the record
+supports.
 
 Note what a hop-B loss does NOT do to the count comparison: the skipped frames
 were never handed to anyone, so ``frames``, ``encoded_frames`` and the host's
