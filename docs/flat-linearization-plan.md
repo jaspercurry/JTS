@@ -49,6 +49,22 @@ reference and the deviation metric:
 | 8 – 16 kHz | ±2.5 dB |
 | > 16 kHz | best-effort, disclosed, never specced |
 
+> **The lower edges above are nominal, and the graded ones are their
+> intersection with the session's own trusted floor (#2551).** 250 Hz is a
+> room-agnostic constant; a gated capture is trustworthy only above `2.5/T`
+> for its own reflection-free window `T` (~357 Hz at the JTS3 room's 7 ms).
+> `evaluate_flat_spec` raises every band's lower edge — and the reference
+> band's — to `max(f_lo, 2.5/T)`, publishing the edge it graded from as each
+> band's `graded_lo_hz`. A band left entirely below the floor is
+> **unevaluable, never failed**. This is an instrument-honesty layer on the
+> table, not a revision of it: the tolerances and the nominal edges are
+> unchanged, and grading 250 Hz at the code's own 2.5-cycle rule would need
+> `T ≥ 10 ms`, which the JTS3 room's ~7 ms reflection-free ceiling does not
+> allow. Clamping is not free — it re-centres the reference and so moves the
+> headline, on the S0 corpus by +0.0611 dB in the flattering direction — and
+> that cost is pinned in `tests/test_flat_spec_ssot.py` rather than left to
+> be discovered.
+
 > **8–16 kHz row, amended 2026-07-25:** S0 showed this ±2.5 dB tolerance
 > is not achievable by EQ against the 5.4–7.0 dB source-fixed comb that
 > sits inside the band ("S0 executed" § e.2). Per this section's own rule

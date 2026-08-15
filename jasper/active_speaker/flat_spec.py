@@ -717,10 +717,15 @@ def spec_convergence_residual(report: FlatSpecReport) -> ConvergenceResidual:
       and the guard is deliberate anyway. :data:`REFERENCE_BAND_HZ` is
       exactly ``SPEC_BANDS[0]`` union ``SPEC_BANDS[1]``, so an evaluation
       that did not raise on an empty reference band necessarily left at
-      least one non-excluded spec-band bin behind. A report reaching this
-      function from anywhere else — hand-built, or rehydrated from the
-      persistence the plan's PR-6b adds — carries no such guarantee, and
-      the alternative there is a ZeroDivisionError.
+      least one non-excluded spec-band bin behind. A ``trusted_floor_hz``
+      does not break that (issue #2551): one floor raises all three lower
+      edges and the reference band's together, so the clamped reference
+      band stays exactly the union of the two clamped tight bands — for a
+      floor at or above 2 kHz, ``SPEC_BANDS[0]`` empties and the reference
+      band and ``SPEC_BANDS[1]`` collapse onto the same span. A report
+      reaching this function from anywhere else — hand-built, or rehydrated
+      from the persistence the plan's PR-6b adds — carries no such
+      guarantee, and the alternative there is a ZeroDivisionError.
     """
     n_excluded = sum(band.n_excluded for band in report.bands)
     # One pass, so the denominator and the numerator can never be assembled
