@@ -178,6 +178,66 @@ def test_the_cycle_4_shape_is_a_divergence(tmp_path):
     assert running_config_diverged(anchor, applied_path) is False
 
 
+def test_a_different_path_alone_is_a_divergence_when_no_digest_can_answer(tmp_path):
+    """The PATH comparison, pinned where it is the only thing that can answer.
+
+    ``test_the_cycle_4_shape_is_a_divergence`` above uses two files with
+    different bytes, so the DIGEST branch reaches the same verdict and the path
+    branch is never load-bearing there — deleting it entirely leaves that test
+    green (adversarial gate, PR #2553; reproduced). This is the shape that
+    isolates it: an anchor whose recorded digest is empty, which
+    :func:`round_anchor_record` emits whenever ``config_file_sha256`` could not
+    read one at apply time (see
+    ``test_an_unreadable_file_records_an_absent_digest_never_a_wrong_one``), and
+    which :func:`running_config_diverged` requires to be non-empty on BOTH sides
+    before the digest branch may speak.
+
+    So on this fixture the digest branch is structurally silent and only the
+    path comparison can return ``True``.
+    """
+    _yaml(tmp_path, "candidate.yml", "the round's\n")
+    reconciled, _ = _yaml(tmp_path, "sound_current.yml", "someone else's\n")
+    anchor = {
+        "applied": {
+            "config_path": str(tmp_path / "candidate.yml"), "sha256": "",
+        },
+    }
+
+    assert running_config_diverged(anchor, reconciled) is True
+    # The control: the same digest-less anchor against its OWN path must still
+    # answer False, or this fixture would pass for a subject wired to True.
+    assert running_config_diverged(
+        anchor, str(tmp_path / "candidate.yml")
+    ) is False
+
+
+def test_two_files_with_identical_bytes_in_different_places_are_a_divergence(
+    tmp_path,
+):
+    """The path comparison's second isolating shape: matching digests.
+
+    A reconcile that lands byte-identical content at a different path — a copy,
+    a promoted canonical name — makes the digest branch answer ``False`` on its
+    merits. If the path comparison were absent, the speaker would be reported as
+    still playing the round's own graph while CamillaDSP is loaded from a file
+    the round never applied, and the restore would proceed against the wrong
+    assumption.
+    """
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    applied_path, applied_sha = _yaml(tmp_path, "candidate.yml", "identical\n")
+    twin_path, twin_sha = _yaml(elsewhere, "candidate.yml", "identical\n")
+    assert twin_sha == applied_sha, "the fixture's whole point is equal digests"
+    anchor = round_anchor_record(
+        _apply_payload(
+            prior_path="", applied_path=applied_path, applied_sha=applied_sha
+        )
+    )
+
+    assert running_config_diverged(anchor, twin_path) is True
+    assert running_config_diverged(anchor, applied_path) is False
+
+
 def test_a_same_named_file_with_different_bytes_is_a_divergence(tmp_path):
     """The sibling shape, and a live condition rather than scaffolding.
 
