@@ -1568,20 +1568,89 @@ const CAPTURE_CHECKING_MESSAGE = "Speaker is checking this measurement…";
 // whether it was stalled").
 const CAPTURE_CLOSING_MESSAGE = "Speaker is working out what it heard…";
 
-// How many times a single POST-ARM control request is re-sent after a relay
-// connectivity abort before the round is treated as lost. Four tries against
-// relay-client.js's 3 s abort absorbs ~12 s of blip — well inside the Pi's
-// 120 s hold on the armed slot, and short enough that a genuinely dead relay
-// still fails while the household is still holding the phone.
-const RELAY_RECONNECT_TRIES = 4;
+// How long the page waits before each re-send of a POST-ARM control request
+// that hit a relay connectivity abort — one entry per re-send, so the ladder's
+// LENGTH is the retry count and the two can never disagree. Three immediate
+// re-sends (four tries total) against relay-client.js's 3 s abort absorbs ~12 s
+// of blip — well inside the Pi's 120 s hold on the armed slot, and short enough
+// that a genuinely dead relay still fails while the household is still holding
+// the phone. Zero delay is right HERE because the speaker is mid-program and
+// every second blind is a second of the round already spent.
+const RELAY_RECONNECT_BACKOFF_MS = [0, 0, 0];
+
+// The PRE-ARM ladder (issue #2517), where the speaker is not playing anything
+// yet and the page can afford to wait out a real blip rather than re-hammer a
+// relay that just refused. Three re-sends at 2 s / 4 s / 8 s.
+const RELAY_BEGIN_RECONNECT_BACKOFF_MS = [2000, 4000, 8000];
+
+// …and the WALL CLOCK that actually bounds that ladder. Rung count alone does
+// not, and this arithmetic is load-bearing —
+// docs/HANDOFF-crossover-measurement-v2.md delegates the safety argument for
+// the pre-arm retry to this comment rather than restating it.
+//
+// What one retry-eligible attempt can cost:
+//   * up to RELAY_CONTROL_TIMEOUT_MS (3 s) for the begin post to abort; PLUS
+//   * ~23 s in the admission wait if the post lands and a later poll is what
+//     blips. `waitForCaptureAuthorized` opens a fresh 20 s deadline per call
+//     and rethrows a connectivity abort from any poll inside it — and its
+//     deadline check runs BEFORE each poll, so the final poll starts just
+//     inside 20 s and then carries its own 3 s timeout on top (measured 22.9 s
+//     at the shipped constants). The 20 s deadline is not the wait's ceiling.
+//   => ~26 s per attempt, not the ~3 s a post-only reading suggests.
+//
+// So the rung count alone bounds this at 4 × 26 s + 14 s of backoff ≈ 118 s,
+// which is effectively the whole of the Pi's 120 s `awaiting_arm` budget
+// (jasper/capture_relay/session.py's DEFAULT_TIMEOUT_S). That budget is set
+// ONCE at admission and refreshed by nothing the page does here — the re-posts
+// this ladder sends are the runner's "nothing to do" no-op branch, which
+// touches no deadline — so an unbounded-in-time ladder could spend the very
+// window it exists to protect and hand the household a tap prompt with seconds
+// left on it.
+//
+// 30 s of wall clock, checked before each re-send (and before its backoff, so
+// a rung that cannot fit is never started), bounds the whole exchange at
+// budget + one trailing attempt ≈ 30 + 26 = ~56 s. Note the tail sits OUTSIDE
+// the budget by construction: the budget gates when the last re-send may
+// START, and that attempt then runs its own full length. The manual affordance
+// therefore always appears with ≳64 s of the Pi's window intact — ample for a
+// tap to re-post, take its ambient window, and arm. A genuinely transient blip
+// still gets every rung: in the fast-fail family, where each attempt ends on
+// its 3 s post abort and never reaches the admission wait, the fourth starts
+// at ~23 s (3+2, 3+4, 3+8) — inside the budget. Only SLOW attempts are cut
+// short, which is exactly the case where spending more would cost the
+// household the fallback it is being cut short to preserve.
+const RELAY_BEGIN_RECONNECT_BUDGET_MS = 30000;
+
+// What the phone says while it is quietly re-trying the begin exchange. The
+// household has NOT been asked to do anything here — distinct on purpose from
+// captureFailureMessage's "Tap … to try again", which is what the page falls
+// back to once this ladder is spent.
+const RELAY_RECONNECTING_BEGIN_MESSAGE =
+  "Lost the connection to the speaker for a moment — retrying…";
 
 // Re-run one relay control request across connectivity aborts. Used where the
 // request is IDEMPOTENT on the Pi (the armed event's last-write-wins slot),
 // never where a repeat would double an effect. Any other error propagates
 // untouched on the first raise — this widens no other failure class.
-async function withRelayReconnect(request, isAborted, tries = RELAY_RECONNECT_TRIES) {
+// `budgetMs`, when set, bounds the ladder by WALL CLOCK as well as by rung
+// count — necessary wherever one attempt's own duration is unbounded by this
+// function (see RELAY_BEGIN_RECONNECT_BUDGET_MS). Both bounds end the ladder
+// the same way: the last error is raised, so the caller's existing failure
+// handling — the manual affordance, on the pre-arm path — is reached
+// identically whichever bound bit first.
+async function withRelayReconnect(request, isAborted, {
+  backoffMs = RELAY_RECONNECT_BACKOFF_MS,
+  budgetMs = null,
+  message = RELAY_RECONNECTING_MESSAGE,
+  tone = "recording",
+} = {}) {
   let lastError = null;
-  for (let attempt = 0; attempt < tries; attempt += 1) {
+  // Anchored at ENTRY, not at the first failure: the attempt that blips has
+  // already spent its own share of the Pi's window, and a bound that ignored
+  // it would not be a bound on the exchange.
+  const deadline = budgetMs ? Date.now() + budgetMs : null;
+  // One initial attempt, plus one re-send per rung of the backoff ladder.
+  for (let attempt = 0; attempt <= backoffMs.length; attempt += 1) {
     if (isAborted()) return undefined;
     try {
       return await request();
@@ -1590,7 +1659,20 @@ async function withRelayReconnect(request, isAborted, tries = RELAY_RECONNECT_TR
         throw err;
       }
       lastError = err;
-      setStatus(RELAY_RECONNECTING_MESSAGE, "recording");
+      setStatus(message, tone);
+      const wait = backoffMs[attempt];
+      if (wait === undefined) break; // rungs spent — surface the failure
+      // Counting the backoff itself, so a rung that cannot fit inside the
+      // budget is never started rather than started and overrun.
+      if (deadline !== null && Date.now() + wait >= deadline) break;
+      // Named in the console as well as on screen: an unattended remote
+      // session has nobody reading the status line, and a remote inspection
+      // of the live tab is how #2517 was diagnosed in the first place.
+      console.debug(
+        `capture page: relay connectivity blip, re-sending in ${wait} ms ` +
+          `(re-send ${attempt + 1} of ${backoffMs.length})`,
+      );
+      if (wait > 0) await delayMs(wait);
     }
   }
   throw lastError;
@@ -3508,15 +3590,56 @@ async function beginAndAwaitAuthorization(ctx, { index, attempt, retake = false 
     // No counter here any more (§2.1): the screen's eyebrow owns it, and this
     // line used to number the same walk differently.
     setStatus("Asking the speaker to start…", "info");
-    await client.postEvent({
-      begin_capture: beginCapturePayload({ index, attempt, retake }),
-      setup: setupWirePayload(),
-    });
-    if (controller.aborted) return { aborted: true };
-    const admission = await waitForCaptureAuthorized(
-      client, spec, index, attempt, () => controller.aborted,
+    // ONE seam for the whole begin exchange (issue #2517). Both halves — the
+    // post AND the admission poll — raise the same relay-connectivity abort,
+    // and until this fix EITHER of them turned a one-blip outage into the
+    // "Tap … to try again" park below runPlanCapture's pre-arm branch. An
+    // unattended remote session has no thumb to offer, so a blip at exactly
+    // the admission moment became a 120 s `awaiting_arm` expiry and a failed
+    // stage. Retrying the exchange as a whole (rather than each call
+    // separately) is what makes the budget ONE budget, and what lets a blip on
+    // the poll recover by re-posting rather than needing its own path.
+    //
+    // Re-posting is safe here, and the Pi is the reason — verified against
+    // jasper/capture_relay/session.py's `run_capture_plan`:
+    //   * it acts on a begin only when the SIGNED sequence advances
+    //     (`if sequence > begin_handled_sequence`), and `RelayClient.postEvent`
+    //     mints a fresh sequence per post, so a re-post is read exactly once;
+    //   * a re-post of a pair already admitted is a documented no-op while the
+    //     Pi still holds it — `if pair in processed:` refuses `begin_replayed`
+    //     ONLY when `phase == "awaiting_begin" or pair != current`, and this
+    //     window is pre-arm, so the Pi is either still `awaiting_begin` for
+    //     this pair (an ordinary admission) or `awaiting_arm` on it (the
+    //     "nothing to do" branch);
+    //   * the deferral `continue` below already re-posts this identical begin
+    //     every 1.5 s, unboundedly, for the same reason.
+    const admission = await withRelayReconnect(
+      async () => {
+        await client.postEvent({
+          begin_capture: beginCapturePayload({ index, attempt, retake }),
+          setup: setupWirePayload(),
+        });
+        if (controller.aborted) return { aborted: true };
+        return waitForCaptureAuthorized(
+          client, spec, index, attempt, () => controller.aborted,
+        );
+      },
+      () => controller.aborted,
+      {
+        backoffMs: RELAY_BEGIN_RECONNECT_BACKOFF_MS,
+        // Rungs alone do NOT bound this: one attempt can sit in
+        // waitForCaptureAuthorized's fresh 20 s admission window before the
+        // blip that ends it. See RELAY_BEGIN_RECONNECT_BUDGET_MS.
+        budgetMs: RELAY_BEGIN_RECONNECT_BUDGET_MS,
+        message: RELAY_RECONNECTING_BEGIN_MESSAGE,
+        tone: "info",
+      },
     );
-    if (controller.aborted || admission.aborted) return { aborted: true };
+    // `admission` is undefined when withRelayReconnect bailed on the abort
+    // check between re-sends.
+    if (controller.aborted || !admission || admission.aborted) {
+      return { aborted: true };
+    }
     if (admission.deferred) {
       renderPlanDeferred(ctx, { index, target, reason: admission.reason });
       if (budget) {

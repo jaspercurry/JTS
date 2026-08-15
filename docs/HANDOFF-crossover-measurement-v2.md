@@ -255,6 +255,23 @@ and report it for a human. There is no auto-retry path today; whether to add
 one is deferred to [issue #2506](https://github.com/jaspercurry/JTS/issues/2506)
 until real runs show how often it matters.
 
+**A transient relay failure is NOT that stall — the page recovers on its own.**
+A network blip on the begin exchange used to land in the same
+tap-to-continue state, which cost the first remote night a whole stage
+([issue #2517](https://github.com/jaspercurry/JTS/issues/2517)): one blip at the
+admission moment became a 120 s `awaiting_arm` expiry. The capture page now
+re-sends that exchange automatically on a backoff ladder — bounded by both rung
+count *and* wall clock, so it can never spend the `awaiting_arm` budget the
+household's tap still needs — before it ever asks for a tap
+(`withRelayReconnect` in
+[`capture-page/js/main.js`](../capture-page/js/main.js); the rungs, the
+wall-clock arithmetic, and the safety argument for re-posting an identical
+begin are all stated there, not restated here). The
+distinction matters to a driver author: a **rejected** capture still needs a
+human and is #2506's problem, while a **transport** blip no longer does. Both
+still end the run if they outlast their budgets, so the envelope-stall
+detection above stays the driver's backstop.
+
 **A geometry-locked group refuses rather than prompting.** If the pre-apply
 group's echo estimates cluster, the hand-walked tiers ask for a wider retake —
 75 cm out, and on the second rung 75 cm out *and above* mark height. An

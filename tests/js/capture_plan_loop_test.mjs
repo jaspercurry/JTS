@@ -381,7 +381,14 @@ const createMonoRecorder = async () => {
   }
   return globalThis.__recorder;
 };
-const delayMs = async () => {};
+// RECORDS rather than merely swallowing (#2517 gate nit). A no-op stub makes
+// every duration in the page free, which is how a ladder whose 2 s / 4 s / 8 s
+// rungs carry a SAFETY claim shipped with nothing pinning those numbers. Tests
+// read globalThis.__delayCalls; the delay itself is still free, so the suite
+// stays instant.
+const delayMs = async (ms) => {
+  (globalThis.__delayCalls = globalThis.__delayCalls || []).push(Number(ms) || 0);
+};
 const safeReturnUrl = (spec) => {
   const raw = spec && typeof spec.return_url === "string" ? spec.return_url.trim() : "";
   if (!raw) return "";
@@ -3889,6 +3896,300 @@ async function testResultWaitSpentBlindReportsTheOutageNotAVerdict() {
   ok();
 }
 
+// ============================================================================
+// 44c-44f (#2517). The PRE-ARM begin exchange gets the same bounded automatic
+// recovery the post-arm half has had since #1824. Before this, ONE transient
+// relay failure on either half of that exchange — the begin post or the
+// admission poll — parked the page on "Tap … to try again" and waited for a
+// thumb; an unattended remote session has none, so the Pi's 120 s
+// `awaiting_arm` budget expired and the stage failed (the 2026-08-15 jts3
+// first-run night). The four tests below pin the whole contract: a blip on
+// either half recovers with no human input, an exhausted ladder still reaches
+// today's manual affordance, and a non-connectivity error never spends a
+// single re-send on a failure that cannot be a blip.
+// ============================================================================
+
+// A fake relay whose begin exchange can be made to fail. `failBeginPosts` /
+// `failAdmissionPolls` count the LEADING failures; everything after them
+// succeeds. `error` is the rejection those failures raise.
+function makeBlippyBeginClient({
+  failBeginPosts = 0,
+  failAdmissionPolls = 0,
+  error = RELAY_TIMEOUT,
+} = {}) {
+  const posted = [];
+  let beginPosts = 0;
+  let admissionPolls = 0;
+  let last = {};
+  let armed = false;
+  const client = {
+    async postEvent(event) {
+      if (event.begin_capture && !event.armed) {
+        beginPosts += 1;
+        if (beginPosts <= failBeginPosts) throw error;
+        const { index, attempt } = event.begin_capture;
+        last = { phase: "capture_authorized", index, attempt };
+      } else if (event.armed && !event.capture_integrity) {
+        armed = true;
+        last = { phase: "sweep_complete" };
+      }
+      posted.push(event);
+      return { ok: true };
+    },
+    async fetchPhoneStatus() {
+      // Only the ADMISSION poll is blipped — the post-arm waits have their own
+      // (already-pinned) tolerance and would mask what this is measuring.
+      if (!armed) {
+        admissionPolls += 1;
+        if (admissionPolls <= failAdmissionPolls) throw error;
+      }
+      return { host_event: last };
+    },
+    async putBlob() {
+      last = { phase: "capture_set_complete", accepted: 1, capture_target: 1 };
+      return { ok: true };
+    },
+  };
+  return {
+    client,
+    posted,
+    beginPosts: () => beginPosts,
+    admissionPolls: () => admissionPolls,
+  };
+}
+
+// 44c. A blip on the begin POST is re-sent automatically and the round
+// completes — no tap, no terminal, and the same (index, attempt) throughout.
+async function testBeginPostBlipRetriesAutomaticallyWithNoHumanTap() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+
+  const spec = planSpec({ target: 1, maxAttempts: 2 });
+  const { client, posted, beginPosts } = makeBlippyBeginClient({ failBeginPosts: 1 });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+
+  assert.equal(beginPosts(), 2, "the begin is re-sent once after the blip");
+  assert.equal(
+    headingText(ctx.screenEl),
+    "All measurements done",
+    "a blip on the begin post is recoverable, never a park on a tap",
+  );
+  const begins = posted.filter((e) => e.begin_capture && !e.armed);
+  assert.deepEqual(
+    begins.map((e) => [e.begin_capture.index, e.begin_capture.attempt]),
+    [[1, 1]],
+    "the re-send carries the SAME (index, attempt) — the Pi reads it once",
+  );
+  // …and the watcher was told, rather than staring at "Asking the speaker".
+  assert.ok(
+    statusHistory.some((line) => line.includes("retrying")),
+    `the blip renders its own quiet retrying line, got: ${statusHistory}`,
+  );
+  assert.ok(
+    !statusHistory.some((line) => line.includes("to try again")),
+    "nothing ever asked the household to tap",
+  );
+  ok();
+}
+
+// 44d. The OTHER half: a blip on the admission poll — the exact shape of the
+// #2517 field failure, where the Pi had already posted `capture_authorized`.
+// The seam wraps the whole exchange, so recovery re-posts the identical begin
+// rather than needing a second, poll-shaped retry path.
+async function testAdmissionPollBlipRetriesTheWholeBeginExchange() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+
+  const spec = planSpec({ target: 1, maxAttempts: 2 });
+  const { client, posted, beginPosts } = makeBlippyBeginClient({
+    failAdmissionPolls: 1,
+  });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+
+  assert.equal(
+    headingText(ctx.screenEl),
+    "All measurements done",
+    "a blip on the admission poll is recoverable too",
+  );
+  assert.equal(beginPosts(), 2, "the whole exchange is re-run, begin included");
+  // BOTH begins reached the relay here (unlike 44c, where the first post is
+  // what failed) — and both carry the identical pair. That repeat is the whole
+  // safety argument: jasper/capture_relay/session.py refuses `begin_replayed`
+  // only when the Pi has moved on, and it cannot have, pre-arm.
+  const begins = posted.filter((e) => e.begin_capture && !e.armed);
+  assert.deepEqual(
+    begins.map((e) => [e.begin_capture.index, e.begin_capture.attempt]),
+    [[1, 1], [1, 1]],
+    "re-posting an already-admitted pair is the Pi's documented no-op",
+  );
+  ok();
+}
+
+// 44e. The ladder is BOUNDED. A relay that never comes back spends the three
+// re-sends and then lands on exactly today's behaviour — the live begin
+// affordance and copy naming it — never an unbounded silent loop.
+async function testAnExhaustedBeginLadderFallsBackToTheManualAffordance() {
+  statusHistory.length = 0;
+  globalThis.__delayCalls = [];
+  const { onPlanStart, stopCapture } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+
+  const spec = planSpec({ target: 1, maxAttempts: 2 });
+  const { client, beginPosts } = makeBlippyBeginClient({ failBeginPosts: 99 });
+  const ctx = makeCtx(spec, client);
+  const beginButton = makeNode("button");
+  beginButton.textContent = "I've positioned the mic — measure Woofer driver";
+  ctx.captureRefs = {
+    buttons: [{ action: "begin_capture", el: beginButton }], levelMeters: [],
+  };
+
+  await onPlanStart(ctx);
+
+  assert.equal(
+    beginPosts(), 4,
+    "one attempt plus three re-sends — the backoff ladder's length, no more",
+  );
+  // The DURATIONS, not just the count. Every failure here is instant, so the
+  // whole ladder fits inside RELAY_BEGIN_RECONNECT_BUDGET_MS and all three
+  // rungs are spent — which is what makes this the right place to pin them.
+  assert.deepEqual(
+    globalThis.__delayCalls, [2000, 4000, 8000],
+    "the ladder waits 2 s / 4 s / 8 s between re-sends, in that order",
+  );
+  const lastStatus = statusHistory[statusHistory.length - 1];
+  assert.ok(
+    lastStatus.includes(
+      "Tap I've positioned the mic — measure Woofer driver to try again",
+    ),
+    `the spent ladder falls back to the manual affordance, got: ${lastStatus}`,
+  );
+  // Still a PRE-arm failure: the session is alive and Stop still works.
+  const stopped = stopCapture();
+  assert.ok(stopped, "Stop stays live after the ladder is spent");
+  await stopped;
+  ok();
+}
+
+// 44g (#2517 gate SHOULD-FIX). Rung count is NOT a bound on time. One attempt
+// can sit in waitForCaptureAuthorized's fresh 20 s admission window before the
+// blip that ends it, so four rungs alone reach ~106 s — the whole of the Pi's
+// 120 s `awaiting_arm` budget, which is set once at admission and refreshed by
+// nothing these no-op re-posts do. The ladder must therefore also stop on wall
+// clock, and stop the SAME way rung exhaustion does, so the household's tap
+// still has budget to spend. Drives a stubbed clock rather than real time: the
+// point is the arithmetic, and 30 s of real sleeping proves nothing extra.
+async function testTheBeginLadderStopsOnWallClockNotJustRungCount() {
+  statusHistory.length = 0;
+  globalThis.__delayCalls = [];
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+
+  const spec = planSpec({ target: 1, maxAttempts: 2 });
+  const beginButton = makeNode("button");
+  beginButton.textContent = "I've positioned the mic — measure Woofer driver";
+
+  const realNow = Date.now;
+  let clock = realNow.call(Date);
+  let beginPosts = 0;
+  const client = {
+    async postEvent(event) {
+      if (event.begin_capture && !event.armed) {
+        beginPosts += 1;
+        // What the ladder cannot see from the outside: this attempt spent a
+        // full admission window before its poll blipped.
+        clock += 20000;
+        throw RELAY_TIMEOUT;
+      }
+      return { ok: true };
+    },
+    async fetchPhoneStatus() {
+      return { host_event: {} };
+    },
+    async putBlob() {
+      throw new Error("must not upload");
+    },
+  };
+  const ctx = makeCtx(spec, client);
+  ctx.captureRefs = {
+    buttons: [{ action: "begin_capture", el: beginButton }], levelMeters: [],
+  };
+
+  Date.now = () => clock;
+  try {
+    await onPlanStart(ctx);
+  } finally {
+    Date.now = realNow;
+  }
+
+  // Rungs alone would have spent all four attempts (and ~76 s of the Pi's
+  // window). The 30 s budget stops after the second: 20 s + a 2 s rung fits,
+  // 40 s + a 4 s rung does not.
+  assert.equal(
+    beginPosts, 2,
+    "slow attempts exhaust the wall-clock budget before the rung count",
+  );
+  assert.deepEqual(
+    globalThis.__delayCalls, [2000],
+    "the rung that could not fit inside the budget is never even started",
+  );
+  // …and the wall-clock stop is not a different, quieter ending: the household
+  // gets exactly the affordance rung exhaustion produces.
+  const lastStatus = statusHistory[statusHistory.length - 1];
+  assert.ok(
+    lastStatus.includes(
+      "Tap I've positioned the mic — measure Woofer driver to try again",
+    ),
+    `a budget stop surfaces the same manual affordance, got: ${lastStatus}`,
+  );
+  ok();
+}
+
+// 44f. A failure that is NOT a connectivity blip — the Pi refusing, a bug, a
+// dead session — must not buy itself three re-sends and ~14 s of backoff. It
+// is surfaced on the first raise, exactly as before.
+async function testANonConnectivityBeginFailureSkipsTheRetryLadder() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+
+  const spec = planSpec({ target: 1, maxAttempts: 2 });
+  const { client, beginPosts } = makeBlippyBeginClient({
+    failBeginPosts: 99,
+    error: new Error("relay 500"),
+  });
+  const ctx = makeCtx(spec, client);
+  const beginButton = makeNode("button");
+  beginButton.textContent = "I've positioned the mic — measure Woofer driver";
+  ctx.captureRefs = {
+    buttons: [{ action: "begin_capture", el: beginButton }], levelMeters: [],
+  };
+
+  await onPlanStart(ctx);
+
+  assert.equal(beginPosts(), 1, "a non-blip failure is never re-sent");
+  const lastStatus = statusHistory[statusHistory.length - 1];
+  assert.ok(
+    lastStatus.includes("relay 500"),
+    `the real error is surfaced verbatim, got: ${lastStatus}`,
+  );
+  assert.ok(
+    !statusHistory.some((line) => line.includes("retrying")),
+    "no retrying line for a failure that cannot be a blip",
+  );
+  ok();
+}
+
 // 45 (#1821, phone half). A TERMINAL `capture_result` posted while the phone
 // is waiting for the tone (the Pi's play seam refusing — see
 // jasper.web.correction_crossover_v2's _post_terminal_failure_host_event) is
@@ -4520,6 +4821,11 @@ const tests = [
   testTheLegacyBareAbortShapeIsAlsoAbsorbed,
   testArmedPostAbortRetriesTheSameCaptureInPlace,
   testResultWaitSpentBlindReportsTheOutageNotAVerdict,
+  testBeginPostBlipRetriesAutomaticallyWithNoHumanTap,
+  testAdmissionPollBlipRetriesTheWholeBeginExchange,
+  testAnExhaustedBeginLadderFallsBackToTheManualAffordance,
+  testTheBeginLadderStopsOnWallClockNotJustRungCount,
+  testANonConnectivityBeginFailureSkipsTheRetryLadder,
   testTerminalCaptureResultMidSweepNamesTheReason,
   testStaleRejectedVerdictMidSweepIsIgnored,
   testAutoBeginClearsTheCountdownCounter,
