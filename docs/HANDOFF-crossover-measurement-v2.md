@@ -4634,9 +4634,22 @@ are an OFFLINE re-derivation of session `cap_M_7TWNJJenpHAa4olM7tEA`'s retained
 patched classifier reproduces the live `residual_offset_db` (−3.338 against the
 persisted −3.342, the difference being the 512-point decimation of a
 163,574-bin grid), removes a −1.528 anchor, and scores `quiet_probe_coverage`
-0.079 against a graded band of 539.6–9,970.6 Hz. The synthetic pins are in
+**0.239** against a graded band of 539.6–9,970.6 Hz. The synthetic pins are in
 `tests/test_active_speaker_delta_probe.py`, the retention/re-grade contract in
-`tests/test_crossover_v2_stage_bridge.py`. **The date below is deliberately NOT
-bumped**, for the same reason as the two addenda above.
+`tests/test_crossover_v2_stage_bridge.py`.
+
+Two claims in the first draft of this addendum were wrong and are corrected
+here rather than quietly rewritten. (1) The coverage ratio divided by the graded
+band's WHOLE span and was justified by a log-uniform derivation — but production
+grids are linear, and that form scored 0.303 for a perfect uniform sampling of a
+real 357 Hz–10 kHz band, i.e. it was unclearable on any real capture at any band
+width. The shipped ratio divides by the band's own interquartile span, which is
+grid-invariant (1.000 co-spanning, on both grid shapes), and the cycle-4 figure
+above is the new metric's; the draft's 0.079 was the old one's. (2) The
+repeat-round contaminant was called "bounded"; it is not, and the caveat above
+now states the fabricate and mask cases the adversarial gate constructed. Both
+corrections came from that gate's review of PR #2545, and every figure in them
+was measured on this branch. **The date below is deliberately NOT bumped**, for
+the same reason as the two addenda above.
 
 Last verified: 2026-08-13
