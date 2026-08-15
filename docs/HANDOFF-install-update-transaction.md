@@ -253,6 +253,13 @@ the manifest still points at the prior good build, and the operator is
 told what failed (and any collateral). "No worse than before" holds in the
 immediate term; re-deploying converges.
 
+A lost SSH transport is not proof of an install failure. If SSH exits 255
+while `install.sh` is running, the wrapper exits 255 but reports the remote
+outcome as unknown because that status can signal a transport failure. The
+install may still be running or may complete after the session ends, and the
+manifest was not verified. Reconnect and inspect the Pi before deciding
+whether to re-deploy.
+
 ### 7. Rust build-cache staging is content-based, not mtime-preserving
 
 Cargo's freshness check is mtime-based: a unit recompiles only when a
@@ -395,8 +402,9 @@ sourced bash helpers). Confirm on a Pi:
 
 ---
 
-Last verified: 2026-07-27 (targeted recheck of the optional enhanced-AEC
-boundary: mandatory v1 stays inside the core transaction, while
+Last verified: 2026-08-15 (targeted recheck of deploy install-status handling
+and the SSH-status-255 transport exception against `scripts/deploy-to-pi.sh`;
+the optional enhanced-AEC boundary remains verified from 2026-07-27: mandatory v1 stays inside the core transaction, while
 manifest-driven v2 retry/activation owns a separate fail-soft marker; broader
 transaction verification remains from 2026-07-15, when outputd two-snapshot counter-growth, uptime
 continuity, and source-intent stability gates rechecked; verified-manifest asset timing and exact
