@@ -1958,12 +1958,19 @@ grade the curve). The `review` screen below renders it.
 **The stage bridge.** Stage 1 and stage 2 are two relay sessions with two
 conductors and nothing shared in memory, so `verify_priors` — written by
 `persist_conductor_state`, read by `prepare_v2_verify` — is the *only* channel
-between them. It carries six keys: `predicted_sum`, `predicted_spec`,
+between them. It carries eight keys: `predicted_sum`, `predicted_spec`,
 `gate_window_ms`, `pilot_transfer_reference`, (since #2291 Phase 3a)
-`commanded_delta`, the delta probe's commanded axis, and (since #2291 Phase 3c)
+`commanded_delta`, the delta probe's commanded axis, (since #2291 Phase 3c)
 `entry_baseline`, the summed at-the-mark capture stage 1 takes immediately
-before apply so stage 2 has a measured "before" to grade its "after" against.
-Before Phase 3a that fifth
+before apply so stage 2 has a measured "before" to grade its "after" against,
+(since #2392) `proposal_fingerprint`, the identity of the `InterventionProposal`
+stage 1 committed and the round receipt names, and (since #2522)
+`verify_measured`, the MEASURED verify curve pair — the third side of the
+comparison whose other two sides this bridge already carried, retained so a
+disputed probe verdict can be re-graded offline instead of needing another
+hardware run. `verify_measured` is the one key written by the stage that
+VERIFIES rather than the stage that fits, so a stage-1 persist writes `None`
+there. Before Phase 3a the `commanded_delta`
 curve was produced in stage 1 and consumed in stage 2 with no key to travel in,
 so every shipped stage 2 reported the probe `unavailable` — grading a correction
 with the shortfall-vs-model-error discriminator switched off. It is reduced to
@@ -1975,7 +1982,12 @@ amount that grows with the within-block spread and vanishes across a flat
 block. Measured through the production response owner (200 cascades,
 1,024–8,192-bin grids): worst block disagreement **1.60 dB**, and **5 of
 100,762** persisted bins change side of the 0.5 dB commanded floor. Rare, but
-it does reach band membership rather than a third decimal.
+it does reach band membership rather than a third decimal. `verify_measured`
+rides the same ceiling and the same dB block average, and there the linearity is
+what makes the record re-gradable: the difference of the two decimated curves is
+exactly the decimated difference, which is the quantity the probe grades. It
+costs about **36 KB** in the state file as written (512 points × 3 arrays, at
+`json.dumps(indent=2)`), against ~25 KB for `commanded_delta` beside it.
 
 Which seams each stage binds is declared once, in `STAGE_MEASURE_CAPABILITIES` /
 `STAGE_VERIFY_CAPABILITIES` (in `crossover_v2/journey.py` since #2291 Phase 4,
@@ -2729,7 +2741,7 @@ unready setup.
 | `apply_failed` | APPLYING | new session | the conductor's own auto-apply came back blocked or errored (gotcha #18). Unlike every other "new session" row, MEASURE's OWN evidence is NOT invalidated (`_persist_terminal_failure`'s §5.6 reset is scoped away from this one code) — an apply failure says nothing about the mic position, and keeping MEASURE accepted is what lets the specific blocked-issue nudge actually render (adversarial review SF2, 2026-07-20) |
 | `driver_levels_disagree` | confirm seam | 0 (hard stop) | **TWO gates share this code** — the household's remedy is identical, so one sentence serves both, and `event=` separates them in the journal (`_assert_accountable` runs the frame gate first, as the more specific diagnosis). (a) `event=…_level_frame_refused` — linearization-integrity PR-L5's shared level FRAME: the two measured estimates of where the drivers sit relative to each other (`solve_branch_trims`' mirrored ±1-octave power average and the fit's `driver_core_level_db` median) disagree by more than `LEVEL_FRAME_AGREEMENT_TOLERANCE_DB`, so no trim derived from them can be trusted. Since #1929 that median is read over each driver's **radiating band** — declared `measurement_band_hz` spans routinely reach past Fc, and a median that counts a driver's own crossover stopband refused healthy speakers (2026-07-30 field session, 3.395 dB). **Since the #1866 frame-gate ruling (2026-07-30) the frame gate no longer refuses on a disagreement alone**: it consults gate (b)'s realized-level verdict for the same candidate, and when THAT passes it banks the disagreement as an M7 finding (`event=…_level_frame_finding`, WARNING, carrying both estimators' per-role levels, both bands, and the realized difference; persisted to the bundle as `findings_measure.json`) and the session **proceeds — the same tune, not refused**. Read "proceeds" precisely: it commits the anchor the fit always computed, which is `giveback + system − core` (the trim term cancels), so the committed inter-driver placement is set by the CORE-MEDIAN frame — the *disputed* estimator — and gate (b) grades the OUTCOME rather than picking a winner between the two frames. The ruling's own wording ("proceeds on the near-Fc anchor (the trim solve)") describes the opposite; the corrected mechanism above is the **ratified** one (owner confirmed 2026-07-30, #1866 comment 5137494519). `event=…_level_frame_refused` therefore now means both instruments failed — or, on a path that is fail-closed and today unreachable, that no realized verdict existed at all. Why: #1929 removed a structural bias from one estimator but not the residual, which scales with ordinary driver shape (a pair identical by construction reads 0.910 dB apart; ~1.33 dB per dB/octave of woofer passband tilt on top), so the gate was refusing healthy speakers whose OUTPUT every other instrument graded fine. (b) `event=…_level_match_refused` — PR-L4 item 1: after the committed trim the two drivers' *realized* levels — read on their own mirrored ±1-octave half-bands about Fc, not across each whole passband — sit further than `REALIZED_LEVEL_MATCH_TOLERANCE_DB` apart, so a flat sum is impossible whatever the per-driver fit achieved. Both refuse BEFORE the apply thread starts, so the speaker is untouched |
 | `correction_not_an_improvement` | confirm seam | 0 (hard stop) | PR-L4 item 2: the PREDICTED post-apply response fails the flat spec and is not better than the measured pre-apply state by `PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB`. Also refused before the apply. **Since rung P3 / R10b both of its terms carry the committed residual delay, which does not cancel between them and narrows the margin as the residual grows** — see "VERIFY compares the applied response with the summed model at the committed delay" below for the measured curve and why the onset is capture-specific |
-| `correction_model_error` | VERIFY / post-apply group | 0 (hard stop) | linearization-integrity PR-L5: the delta probe's realized-vs-commanded map does not match in SHAPE — the emitted filters are not doing what the fit's model of them says. Catches the PR-L2 shelf-Q class permanently. **Fires AFTER the apply**, so it rolls the correction back first and then names itself |
+| `correction_model_error` | VERIFY / post-apply group | 0 (hard stop) | linearization-integrity PR-L5: the delta probe's realized-vs-commanded map does not match in SHAPE — the emitted filters are not doing what the fit's model of them says. Catches the PR-L2 shelf-Q class permanently. **Fires AFTER the apply**, so it rolls the correction back first and then names itself. **Since #2521 it fires only on an exceedance that survives the capture's trusted band AND the removal of the fitted frame** — one that does not survive is the non-rollback `frame_mismatch` finding instead (see "The delta probe verifies the apply" below) |
 | `correction_level_shortfall` | VERIFY / post-apply group | 0 (hard stop) | PR-L5: the shape landed but the depth did not — realized/commanded scale below `DELTA_PROBE_SHORTFALL_GAIN_CEILING` on a commanded LIFT. A driver-compression diagnostic. Rolled back |
 | `correction_spatially_costly` | post-apply group | 0 (hard stop) | PR-L5: the map matched at the mark and the cross-position level spread WIDENED past `DELTA_PROBE_SPREAD_WIDENING_TOLERANCE_DB` — the correction fitted one position's interference rather than the speaker. Placement, not filters. Rolled back |
 | `correction_rollback_failed` | VERIFY / post-apply group | 0 (hard stop) | PR-L5: the probe found one of the three defects above AND the automatic rollback could not run (no binding, a refused restore, or a seam that raised). The correction is therefore **still applied**, and this row exists so the copy says so instead of promising a restore that did not happen. Names Undo as the manual action |
@@ -2803,6 +2815,28 @@ a 5–12 kHz shelf-realization defect and not: 2026-07-27's lived an octave and 
 half above tracking's band and no tolerance there could have caught it. Design
 and the verdict-priority rule: `jasper/active_speaker/delta_probe.py`.
 
+**That band is intersected with the capture's own TRUSTED band, and there is no
+fallback** (#2521). The band comes from
+`gate_disclosure.evaluation_band_hz` — this capture's gate-derived trusted floor
+intersected with the band its stimulus actually radiated — read off the gating
+block by `build_gate_disclosure` and threaded in by `_gate_trusted_band_hz`. The
+probe used to pass the raw grid edges, which were wider at BOTH ends: the first
+remote JTS3 session (2026-08-14) disclosed `357-20000 Hz` and the probe graded
+`325-22,480`, then rolled a correction back on a `max_error_db=23.4` whose worst
+bin sat at 21,266 Hz — a frequency nothing had measured anything at. A capture
+with no trusted band leaves the probe `unavailable`
+(`event=correction.crossover_v2_delta_probe_no_trusted_band`), the same answer
+`_verify_absolute_result` gives for the same missing fact; falling back to the
+grid would apply the widest band to the least trustworthy capture. The commanded
+floor is tiered on the same argument: `DELTA_PROBE_MIN_COMMANDED_DB` (0.5 dB)
+below `DELTA_PROBE_HF_SPLIT_HZ` and `DELTA_PROBE_MIN_COMMANDED_HIGH_DB`
+(2.5 dB, the HF tolerance) above it, because a bin commanding less than the
+uncertainty the tolerance already concedes there cannot answer "did the speaker
+do what we asked". Lifting the LOW tier too would delete the defect the probe
+exists for — the 2026-07-27 shelf's commanded curve passes through 0.5–1.5 dB
+across the octaves its error lives in, and a flat 1.0 dB floor takes its
+exceedance run from 0.575 to 0.307 octaves, under the width rule.
+
 Unlike the tracking check, this comparison is **not** level-offset-invariant —
 a level shortfall is one of the things it classifies — so it takes the apply
 boundary's declared move (`expected_offset_db`, invariant 10a) and removes it
@@ -2810,14 +2844,43 @@ before classifying. What survives is measured where the correction commanded
 nothing and reported as `residual_offset_db`; a material, sufficient residual
 is the `level_mismatch` verdict, which is a finding, not a rollback.
 
-Because it is not a rollback it reaches no refusal screen, so it is surfaced
-three other ways instead of passing silently: the probe logs at WARNING, the
-verdict is persisted as `verify.delta_probe` (four scalars — verdict, reason,
-and the two level numbers), and the done screen carries a caveat nudge
-alongside its "Verified." badge. When there are too few quiet bins to run the
-discriminator at all, the verdict below it carries a
-`|level_check_unavailable` suffix in its `reason` — a rollback decided without
-that check says so.
+**A broadband TILT gets the same treatment, for the same reason** (#2521, owner
+ruling 2026-08-15: least-bad is adoptable with disclosure, hard stops are
+reserved for the safety class). `measured − predicted` is a cross-frame
+difference, so a level offset *and* a slope between the two frames are the
+ordinary state of it, not a defect in the correction — and with the tilt left
+in, every speaker, room, and microphone with a broadband slope failed this probe
+however well its filters realized. The probe therefore fits `offset + tilt` over
+the **quiet bins** — the same set `residual_offset_db` is measured in, where the
+correction commanded nothing and any level or slope is uncommanded by
+construction — and re-asks the exceedance with that frame removed. The RAW grade
+still decides whether there is a finding (`matched` is unchanged, and the
+reported `max_error_db`/`rms_error_db`/`exceedance_octaves` are still the raw
+ones); only the ROLLBACK question is re-asked, so a frame fitted from a noisy
+quiet region can fail to demote but can never fabricate a rollback. An
+exceedance that does not survive is `frame_mismatch`, a finding and not a
+rollback. Fitting the frame over the GRADED bins instead would let the defect
+subtract itself: on the keystone shelf-Q fixture a graded-bin fit takes its
+exceedance from 0.575 octaves to zero (pinned by
+`test_fitting_the_frame_over_the_graded_bins_would_delete_the_keystone`). Too
+few quiet bins means no frame is measured, and then nothing is demoted.
+
+`gain_factor` carries an INTERCEPT for the same class of reason: through the
+origin, on a commanded curve that is mostly one sign, a constant level shift
+arrives as apparent SCALE — the 2026-08-14 session's −7.8 dB against a
+76.5 %-negative commanded curve read as ≈2.02 and drove the
+shortfall-vs-model-error branch. The regression runs on the frame-removed curve
+and reports `gain_intercept_db` beside the scale.
+
+Because neither `level_mismatch` nor `frame_mismatch` is a rollback, neither
+reaches a refusal screen, so both are surfaced three other ways instead of
+passing silently: the probe logs at WARNING, the verdict is persisted as
+`verify.delta_probe` (verdict, reason, the two level numbers, the band it was
+handed, and the frame's terms with the grades that survived removing it), and
+the done screen carries a caveat nudge alongside its "Verified." badge. When
+there are too few quiet bins to run the level discriminator at all, the verdict
+below it carries a `|level_check_unavailable` suffix in its `reason` — a
+rollback decided without that check says so.
 
 **VERIFY discloses the FRAME it compared across** (rung P1, correction-program
 ladder). `measured − predicted` is a difference between two *instruments*: an
@@ -2847,11 +2910,13 @@ disclosed tilt measured over a notch-heavy prediction as indicative only; see
 issue #1990. `n_bins`/`band_hz` ride the record precisely so a reader can see
 how much was trusted.
 
-Nothing about grading moved. `max_db_notch_excluded` is still the number
-`VERIFY_TOLERANCE_DB` gates on and the delta probe still classifies the raw
-error; the tilt-removed pair sits BESIDE them, computed by re-running the same
-graders on a frame-removed curve so the two are one construction over two
-inputs. Why it exists: on the 2026-07-29 corpus the replay scorecard's headline
+Nothing about the TRACKING grade moved. `max_db_notch_excluded` is still the
+number `VERIFY_TOLERANCE_DB` gates on; the tilt-removed pair sits BESIDE it,
+computed by re-running the same graders on a frame-removed curve so the two are
+one construction over two inputs. (The delta probe went further in #2521 — its
+rollback question is re-asked with a frame removed — but it fits its OWN frame
+over its OWN bins; see the paragraph above and the next one.) Why it exists: on
+the 2026-07-29 corpus the replay scorecard's headline
 "predictions are 2.02× optimistic" was ~84 % a single −0.79 dB/octave frame
 tilt (2026-07-31 first-principles panel W1 — raw 2.054 dB rms, 1.335 dB with
 the one scalar out, crossover-band shape correlation +0.97), and the product
@@ -2865,8 +2930,17 @@ alone** — it is the friendlier number by construction, so the done screen (whi
 has no `evidence` block, that being persisted only on a non-pass) prints the raw
 pair from the same record; the verify_fail screen already has it above and does
 not repeat it. An unfitted frame is disclosed as ABSENT, never as a flat one.
-The delta probe takes no second fit — it reads the same `verify_tracking_curve`,
-so its frame is this one.
+
+**The delta probe fits a SECOND frame, over a different bin set, and that is
+deliberate** (#2521). This one is fitted over `notch_excluded_band_mask`'s bins
+inside the tracking band — the bins a MODEL-tracking comparison trusts. The
+probe's is fitted over its own QUIET bins, the ones where the correction
+commanded nothing, because its question is different: it needs a frame no
+commanded defect can have contributed to, and the tracking band is neither
+necessarily quiet nor necessarily wide enough to be one. Both read the same
+`verify_tracking_curve`, so the two frames are estimated from one comparison
+over two bin sets, and both travel in the record (`verify.frame` and
+`verify.delta_probe.frame`) rather than one being derived from the other.
 
 **VERIFY judges the crossover region against the DESIGN, not only the model**
 (R18, issues #1868 / #1654). Tracking grades measured-vs-`predicted_sum`, and
@@ -4426,5 +4500,24 @@ from `main.js`'s `onPlanStart`, and the stall from `main.js`'s
 a capture is ACCEPTED. **The date below is deliberately NOT
 bumped**: that addendum re-verified only what it added, not the rest of the
 spine, and moving the date would claim a sweep that did not happen.
+
+**Addendum, 2026-08-15 — the delta probe's band, frame, and retained curve
+(#2521 / #2522).** The delta-probe paragraphs under "The delta probe verifies
+the apply", the `correction_model_error` row in the refusal table, the "VERIFY
+discloses the FRAME it compared across" section's closing note, and the stage
+bridge's key list were re-derived against `delta_probe.classify_delta_probe`,
+`crossover_v2_flow._run_delta_probe`, `capture_dispatch._gate_trusted_band_hz`,
+and `correction_crossover_v2.persist_conductor_state` as landed. The measured
+figures quoted there (the keystone's 0.575 → 0.307 octaves under a flat 1.0 dB
+floor, its 0.575 → 0 under a graded-bin frame fit, and the ~36 KB retention
+cost) were computed on this branch and are pinned by
+`tests/test_active_speaker_delta_probe.py` and
+`tests/test_crossover_v2_stage_bridge.py`; the live-session numbers (357–20,000
+vs 325–22,480, `max_error_db=23.4` at 21,266 Hz, the −7.8 dB / ≈2.02 pair) are
+quoted from issue #2521's diagnosis and were NOT re-measured here. The stage
+bridge's key list also gained `proposal_fingerprint`, which had been live since
+#2392 and unlisted — a drift found while updating the count, not a change this
+work made. **The date below is deliberately NOT bumped**, for the same reason as
+the addendum above.
 
 Last verified: 2026-08-13

@@ -2279,6 +2279,119 @@ def _decimate_delta(commanded_delta: Any) -> dict[str, Any] | None:
     }
 
 
+def _decimate_verify_measured(tracking_curve: Any) -> dict[str, Any] | None:
+    """Persist-time reduction of the VERIFY capture's graded curve pair (#2522).
+
+    ``crossover_v2_flow.CrossoverV2Session.verify_tracking_curve`` —
+    ``(freqs_hz, measured_db, predicted_db)``, the very pair the delta probe
+    graded. Bounded at the same :data:`MAX_PERSISTED_SUM_POINTS` ceiling over
+    the same fixed-width blocks as :func:`_decimate_delta`, so a reader
+    comparing the two records is comparing comparably-spaced grids. This curve
+    is on the VERIFY capture's grid rather than the MEASURE prediction's, so
+    the two are not expected to land on the SAME frequencies; a re-grade
+    interpolates the commanded axis onto this one, exactly as the live probe
+    does.
+
+    **Averaged in dB, and here that is not merely the unbiased choice — it is
+    what makes the record re-gradable.** Block-averaging in dB is linear, so the
+    difference of the two decimated curves is exactly the decimated difference,
+    and ``measured − predicted`` is precisely the quantity
+    :func:`~jasper.active_speaker.delta_probe.classify_delta_probe` grades
+    (``realized − commanded`` cancels the commanded curve). A power mean, right
+    for :func:`_decimate_sum`'s magnitude curve, would bias each side
+    differently by Jensen's inequality and leave a residual that belongs to
+    neither the speaker nor the model.
+
+    Why persist at all: the commanded and predicted priors were durable and the
+    MEASURED curve was not, so the 2026-08-14 remote ``model_error`` verdict
+    could not be re-graded against a corrected instrument without another full
+    hardware run (#2522). Same store, same lifecycle, no retention knob of its
+    own — this dict is rebuilt on every persist exactly like its neighbours.
+
+    ``None`` for an absent curve, a curve that is not a triple, an empty grid,
+    or arrays whose lengths disagree. Absent means "not re-gradable offline",
+    which is the honest reading and is what every state file written before this
+    key shipped already says.
+    """
+    if tracking_curve is None:
+        return None
+    import numpy as np
+
+    try:
+        freqs, measured, predicted = tracking_curve
+    except (TypeError, ValueError):
+        return None
+    grid = np.asarray(freqs, dtype=float)
+    measured_db = np.asarray(measured, dtype=float)
+    predicted_db = np.asarray(predicted, dtype=float)
+    n = int(grid.size)
+    if n == 0 or int(measured_db.size) != n or int(predicted_db.size) != n:
+        return None
+    if n > MAX_PERSISTED_SUM_POINTS:
+        block = -(-n // MAX_PERSISTED_SUM_POINTS)  # ceil division
+        blocks = n // block
+        kept = blocks * block
+
+        def _blocks(values):
+            return values[:kept].reshape(blocks, block).mean(axis=1)
+
+        grid, measured_db, predicted_db = (
+            _blocks(grid), _blocks(measured_db), _blocks(predicted_db)
+        )
+    return {
+        "freqs_hz": [float(f) for f in grid],
+        "measured_db": [float(v) for v in measured_db],
+        "predicted_db": [float(v) for v in predicted_db],
+    }
+
+
+def verify_measured_curve_from_state(
+    state: Mapping[str, Any] | None,
+) -> tuple[Any, Any, Any] | None:
+    """The persisted VERIFY curve pair, ready to re-grade (#2522).
+
+    The read side of :func:`persist_conductor_state`'s
+    ``verify_priors.verify_measured``, and the mirror of
+    :func:`commanded_delta_prior_from_state`: durable state in, the
+    ``(freqs_hz, measured_db, predicted_db)`` triple
+    :meth:`~jasper.active_speaker.crossover_v2_flow.CrossoverV2Session.
+    _run_delta_probe` consumes out. With the persisted ``commanded_delta`` and
+    the ``delta_probe`` record's own ``requested_band_hz`` /
+    ``expected_offset_db``, that is everything a laptop-side re-grade needs.
+
+    ``None`` covers the honest cases that mean one thing to a re-grade — there
+    is no measured curve to grade: a state file written before this key shipped,
+    a session that never reached VERIFY, and a record that is not the triple
+    this build writes. A length disagreement is one of those and is checked
+    here, for :func:`commanded_delta_prior_from_state`'s reason: three arrays
+    that are not one curve would otherwise reach the classifier as a grid
+    mismatch instead of an absence.
+    """
+    import numpy as np
+
+    priors = (state or {}).get("verify_priors")
+    record = priors.get("verify_measured") if isinstance(priors, Mapping) else None
+    if not isinstance(record, Mapping):
+        return None
+    freqs = record.get("freqs_hz")
+    measured = record.get("measured_db")
+    predicted = record.get("predicted_db")
+    if not freqs or not measured or not predicted:
+        return None
+    if not (len(freqs) == len(measured) == len(predicted)):
+        log_event(
+            logger, "correction.crossover_v2_verify_measured_malformed",
+            level=logging.WARNING,
+            n_freqs=len(freqs), n_measured=len(measured), n_predicted=len(predicted),
+        )
+        return None
+    return (
+        np.asarray(freqs, dtype=float),
+        np.asarray(measured, dtype=float),
+        np.asarray(predicted, dtype=float),
+    )
+
+
 def _predicted_spec_prior(conductor: Any) -> dict[str, Any] | None:
     """The conductor's stored prediction verdict, in the shape the durable
     state carries it (two-stage commission D4).
@@ -3057,6 +3170,19 @@ def persist_conductor_state(
             # the key's own absence already means downstream.
             "commanded_delta": _decimate_delta(
                 getattr(conductor, "measure_commanded_delta", None)
+            ),
+            # The MEASURED side of the same comparison (#2522). Its two
+            # neighbours above are what the correction PREDICTED and COMMANDED;
+            # without this one, a disputed probe verdict could only be
+            # re-examined by measuring the speaker again, because the evidence
+            # that produced it lived in one process's memory and died with it.
+            #
+            # Read through ``getattr`` for ``_predicted_spec_prior``'s reason:
+            # this function persists duck-typed conductors too, and a stand-in
+            # without the property means "nothing measured" — which is what the
+            # key's own absence already means downstream.
+            "verify_measured": _decimate_verify_measured(
+                getattr(conductor, "verify_tracking_curve", None)
             ),
             # #2291's measured "before": the summed capture stage 1 takes at
             # the mark immediately before apply, which stage 2's benefit

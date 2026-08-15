@@ -21,7 +21,9 @@ import pytest
 
 from jasper.active_speaker.delta_probe import (
     DELTA_PROBE_HF_SPLIT_HZ,
+    DELTA_PROBE_MIN_BINS,
     DELTA_PROBE_MIN_COMMANDED_DB,
+    DELTA_PROBE_MIN_COMMANDED_HIGH_DB,
     DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES,
     DELTA_PROBE_RESIDUAL_OFFSET_TOLERANCE_DB,
     DELTA_PROBE_ROLLBACK_VERDICTS,
@@ -31,6 +33,7 @@ from jasper.active_speaker.delta_probe import (
     DELTA_PROBE_TOLERANCE_LOW_DB,
     DELTA_PROBE_VERDICTS,
     SPATIAL_COST_UNAVAILABLE,
+    VERDICT_FRAME_MISMATCH,
     VERDICT_LEVEL_DEPENDENT_SHORTFALL,
     VERDICT_LEVEL_MISMATCH,
     VERDICT_MATCHED,
@@ -39,6 +42,7 @@ from jasper.active_speaker.delta_probe import (
     VERDICT_UNAVAILABLE,
     classify_delta_probe,
     evaluate_spatial_cost,
+    graded_command_floor_db,
     spatial_cost_from_group_spreads,
     widest_exceedance_octaves,
 )
@@ -185,14 +189,23 @@ def test_a_wide_shape_error_is_a_model_error():
 
 def test_a_proportional_undershoot_of_a_lift_is_a_level_shortfall():
     """Shape tracks, depth does not, and what was asked for was LEVEL — the
-    driver compression diagnostic."""
+    driver compression diagnostic.
+
+    ``gain_factor`` is read at 1e-3 rather than 1e-6 since #2521, and the slack
+    is a known quantity rather than a fudge: the quiet bins the frame is fitted
+    over admit commands up to ``DELTA_PROBE_MIN_COMMANDED_DB``, so a shortfall
+    that scales those small commands too puts a trace of itself into the fitted
+    tilt (measured: −0.002 dB/octave here, moving the gain by 3e-4). It is the
+    same bounded bias ``residual_offset_db``'s own docstring already discloses
+    for the offset term, one derivative up.
+    """
     commanded = _commanded_lift(depth_db=10.0)
     probe = classify_delta_probe(
         _GRID_HZ, commanded * 0.5, commanded, band_hz=_band(),
     )
     assert probe.verdict == VERDICT_LEVEL_DEPENDENT_SHORTFALL
     assert probe.reason == "realized_short_of_commanded"
-    assert probe.gain_factor == pytest.approx(0.5, abs=1e-6)
+    assert probe.gain_factor == pytest.approx(0.5, abs=1e-3)
     assert probe.gain_factor < DELTA_PROBE_SHORTFALL_GAIN_CEILING
 
 
@@ -771,3 +784,391 @@ def test_the_spread_widening_tolerance_is_pinned_to_its_stated_value():
         DEFAULT_CLOUD_MEASURE_POSITIONS - 1
     )
     assert licensed_depth_db < 0.4
+
+
+# --------------------------------------------------------------------------- #
+# the trusted band, the graded floor, and the frame (#2521)
+#
+# Four instrument defects, found by re-deriving the first remote JTS3 session's
+# ``verdict=model_error rollback=true``: the probe graded the raw grid edges
+# instead of the capture's trusted band, admitted bins whose command grazed the
+# 0.5 dB floor, left the fitted frame inside the graded error, and regressed
+# gain through the origin so a level offset arrived as scale.
+# --------------------------------------------------------------------------- #
+
+#: A grid that runs PAST the trusted ceiling, the way the production analysis
+#: grid does — the live session's ran to 22,480 Hz while its capture's own gate
+#: disclosure trusted it only to 20,000.
+_WIDE_GRID_HZ = np.logspace(math.log10(100.0), math.log10(22_480.0), 460)
+#: The fixture's trusted ceiling. Deliberately NOT the live session's 20 kHz:
+#: between 20 kHz and this grid's end there is only 0.17 of an octave, which
+#: cannot carry a :data:`DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES` run by itself, so a
+#: fixture at that ceiling could not exercise the control below at all. The
+#: mechanism being pinned — a bin outside the trusted band contributes to no
+#: claim and breaks a run — is the same one at any ceiling.
+_TRUSTED_CEILING_HZ = 12_000.0
+_LIVE_TRUSTED_FLOOR_HZ = 357.0
+
+
+def _above_ceiling_fixture() -> tuple[np.ndarray, np.ndarray]:
+    """A clean correction, plus a large error ABOVE the trusted ceiling."""
+    commanded = np.where(
+        (_WIDE_GRID_HZ >= 1_000.0) & (_WIDE_GRID_HZ <= 6_000.0), 5.0, 0.0
+    )
+    # Something is commanded up there too, and it is badly missed — the live
+    # session's ``worst_hz=21,266 / max_error_db=23.4`` in miniature.
+    above = _WIDE_GRID_HZ > _TRUSTED_CEILING_HZ
+    commanded = np.where(above, 4.0, commanded)
+    realized = commanded + np.where(above, 20.0, 0.0)
+    return realized, commanded
+
+
+def test_content_above_the_trusted_ceiling_cannot_create_an_exceedance():
+    """**#2521 defect 1.** The band is the caller's, and the caller's band is
+    the capture's own gate-derived trusted one — so a bin the capture is not a
+    measurement at cannot roll a correction back, and cannot supply the
+    ``worst_hz`` / ``max_error_db`` a reader will quote either.
+    """
+    realized, commanded = _above_ceiling_fixture()
+    probe = classify_delta_probe(
+        _WIDE_GRID_HZ, realized, commanded,
+        band_hz=(_LIVE_TRUSTED_FLOOR_HZ, _TRUSTED_CEILING_HZ),
+    )
+    assert probe.verdict == VERDICT_MATCHED
+    assert probe.rollback is False
+    assert probe.probe_band_hz[1] <= _TRUSTED_CEILING_HZ
+    assert probe.worst_hz <= _TRUSTED_CEILING_HZ
+    # The band it was HANDED is on the record beside the band it graded, so a
+    # disputed verdict says which bins it saw.
+    assert probe.requested_band_hz == (_LIVE_TRUSTED_FLOOR_HZ, _TRUSTED_CEILING_HZ)
+
+
+def test_the_same_content_graded_to_the_grid_edge_is_the_bug_it_was():
+    """The control for the test above, and the mutation that proves it.
+
+    Identical curves, one changed argument: graded to the raw grid edge — which
+    is exactly what ``_run_delta_probe`` passed before #2521 — the same
+    untrusted content is a rollback whose worst bin nobody measured anything at.
+    """
+    realized, commanded = _above_ceiling_fixture()
+    probe = classify_delta_probe(
+        _WIDE_GRID_HZ, realized, commanded,
+        band_hz=(_LIVE_TRUSTED_FLOOR_HZ, float(_WIDE_GRID_HZ[-1])),
+    )
+    assert probe.rollback is True
+    assert probe.worst_hz > _TRUSTED_CEILING_HZ
+
+
+def test_an_hf_bin_grazing_the_old_floor_is_no_longer_graded():
+    """**#2521 defect 1, second half.** Above the HF split this probe already
+    concedes 2.5 dB of per-bin uncertainty; a bin commanding less than that
+    cannot answer "did the speaker do what we asked"."""
+    commanded = np.where(
+        (_GRID_HZ >= 1_000.0) & (_GRID_HZ <= 5_000.0), 5.0, 0.0
+    )
+    grazing = _GRID_HZ >= 12_000.0
+    commanded = np.where(grazing, 0.6, commanded)
+    realized = commanded + np.where(grazing, 20.0, 0.0)
+    probe = classify_delta_probe(_GRID_HZ, realized, commanded, band_hz=_band())
+    assert probe.verdict == VERDICT_MATCHED
+    assert probe.probe_band_hz[1] <= 5_000.0
+
+    # The control: the SAME 20 dB error, at a bin that commands more than the
+    # tolerance it is graded against, is still a finding.
+    commanded_real = np.where(grazing, 3.0, commanded)
+    realized_real = commanded_real + np.where(grazing, 20.0, 0.0)
+    loud = classify_delta_probe(
+        _GRID_HZ, realized_real, commanded_real, band_hz=_band(),
+    )
+    assert loud.rollback is True
+
+
+def test_the_hf_graded_floor_agrees_with_the_hf_tolerance():
+    """Numerically equal, defined separately: the same measurement-uncertainty
+    bar asked of what was ASKED FOR rather than of how far realization may
+    miss. A floor under the tolerance would grade bins whose whole commanded
+    value is inside the uncertainty already conceded there."""
+    assert DELTA_PROBE_MIN_COMMANDED_HIGH_DB == DELTA_PROBE_TOLERANCE_HIGH_DB
+    floors = graded_command_floor_db(_GRID_HZ)
+    below = _GRID_HZ < DELTA_PROBE_HF_SPLIT_HZ
+    assert np.all(floors[below] == DELTA_PROBE_MIN_COMMANDED_DB)
+    assert np.all(floors[~below] == DELTA_PROBE_MIN_COMMANDED_HIGH_DB)
+
+
+def test_the_tiered_floor_leaves_the_keystone_fixture_untouched():
+    """Why the floor is tiered rather than simply lifted.
+
+    The 2026-07-27 shelf-Q defect's commanded curve passes through 0.5-1.5 dB
+    across the very octaves its error lives in, so a flat lift deletes the one
+    defect this module exists to catch (measured: a 1.0 dB floor takes its
+    exceedance run from 0.575 to 0.307 octaves, under the width rule). The
+    tiered floor grades exactly the bins the old flat 0.5 dB floor did on this
+    fixture — pinned here rather than asserted in prose.
+    """
+    from jasper.active_speaker.linearization_fit import (
+        _HIGHSHELF_Q, _highshelf_response_db,
+    )
+
+    commanded = _highshelf_response_db(_GRID_HZ, 7_000.0, -11.0, _HIGHSHELF_Q)
+    tiered = np.abs(commanded) >= graded_command_floor_db(_GRID_HZ)
+    flat = np.abs(commanded) >= DELTA_PROBE_MIN_COMMANDED_DB
+    assert np.array_equal(tiered, flat)
+
+
+def test_a_broadband_tilt_is_disclosed_not_rolled_back():
+    """**#2521 defect 2 — the arbitrary-hardware blocker.**
+
+    An in-room gated measurement against an on-axis two-branch model differs by
+    a frame, and on the 2026-07-29 corpus one −0.79 dB/octave tilt accounted for
+    84 % of a headline model error. Left in, this probe failed every speaker,
+    room, and microphone with a broadband slope no matter how well its filters
+    realized. Removed, the same curves grade to nothing.
+    """
+    commanded = _commanded_lift()
+    tilt_db_per_octave = -0.9
+    realized = commanded + tilt_db_per_octave * np.log2(_GRID_HZ / 1_000.0)
+
+    probe = classify_delta_probe(_GRID_HZ, realized, commanded, band_hz=_band())
+
+    assert probe.verdict == VERDICT_FRAME_MISMATCH
+    assert probe.reason == "uncommanded_frame_shift"
+    assert probe.rollback is False
+    # The raw grade still SAW it — the demotion is a judgement about what the
+    # finding means, not a failure to notice one.
+    assert probe.exceedance_octaves >= DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES
+    assert probe.max_error_db > DELTA_PROBE_TOLERANCE_LOW_DB
+    # …and what it means is on the record: the tilt that was removed, and the
+    # grade that survived removing it.
+    assert probe.frame.tilt_db_per_octave == pytest.approx(
+        tilt_db_per_octave, abs=1e-6
+    )
+    assert probe.frame_removed_max_db == pytest.approx(0.0, abs=1e-6)
+    assert probe.frame_removed_rms_db == pytest.approx(0.0, abs=1e-6)
+    assert probe.frame_removed_exceedance_octaves == 0.0
+
+
+def test_a_tilt_does_not_become_a_shortfall_either():
+    """The other rollback door, closed by the same fix.
+
+    A tilt against a ramp-shaped command IS a scale factor — with an intercept
+    even more cleanly than without one — so a fix that only guarded
+    ``model_error`` would have swapped one false rollback for another. The
+    regression runs on the frame-removed curve, where the same speaker reads
+    full depth.
+    """
+    commanded = _commanded_lift()
+    realized = commanded - 0.9 * np.log2(_GRID_HZ / 1_000.0)
+    probe = classify_delta_probe(_GRID_HZ, realized, commanded, band_hz=_band())
+    assert probe.verdict != VERDICT_LEVEL_DEPENDENT_SHORTFALL
+    assert probe.gain_factor == pytest.approx(1.0, abs=1e-6)
+
+
+def test_a_genuine_in_band_shape_error_still_rolls_back():
+    """The control for the frame gate: closing the false positive must not
+    close the true one. A localized bump is not a line in log-frequency, so no
+    frame can absorb it."""
+    commanded = np.full_like(_GRID_HZ, 6.0)
+    bump = (_GRID_HZ >= 2_000.0) & (_GRID_HZ <= 3_000.0)
+    probe = classify_delta_probe(
+        _GRID_HZ, commanded + np.where(bump, 6.0, 0.0), commanded, band_hz=_band(),
+    )
+    assert probe.verdict == VERDICT_MODEL_ERROR
+    assert probe.rollback is True
+
+
+def test_the_keystone_survives_frame_removal():
+    """**The keystone, re-asked of the new gate.** The 2026-07-27 shelf-Q
+    realization error must still be a rollback with the frame out — and it is
+    for a reason, not by luck: the frame is fitted where the correction
+    commanded NOTHING, so a defect confined to the commanded region cannot
+    contribute to the line that is then subtracted from it.
+    """
+    from jasper.active_speaker.linearization_fit import (
+        _HIGHSHELF_Q, _highshelf_response_db,
+    )
+
+    commanded = _highshelf_response_db(_GRID_HZ, 7_000.0, -11.0, _HIGHSHELF_Q)
+    realized = _highshelf_response_db(_GRID_HZ, 7_000.0, -11.0, 0.476)
+    probe = classify_delta_probe(_GRID_HZ, realized, commanded, band_hz=_band())
+    assert probe.verdict == VERDICT_MODEL_ERROR
+    assert probe.rollback is True
+    assert probe.frame.fitted is True
+    assert (
+        probe.frame_removed_exceedance_octaves
+        >= DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES
+    )
+
+
+def test_fitting_the_frame_over_the_graded_bins_would_delete_the_keystone():
+    """Why the quiet bins, stated as a measurement rather than a preference.
+
+    Re-runs the keystone's own arithmetic with the frame fitted over the GRADED
+    bins instead — the obvious alternative — and shows the defect subtracting
+    itself: the exceedance disappears. This is the mutation that makes the
+    quiet-bin choice load-bearing rather than incidental.
+    """
+    from jasper.active_speaker.delta_probe import (
+        _structured_exceedance, _tolerance_curve,
+    )
+    from jasper.active_speaker.linearization_fit import (
+        _HIGHSHELF_Q, _highshelf_response_db,
+    )
+    from jasper.audio_measurement.frame_fit import fit_frame
+
+    commanded = _highshelf_response_db(_GRID_HZ, 7_000.0, -11.0, _HIGHSHELF_Q)
+    realized = _highshelf_response_db(_GRID_HZ, 7_000.0, -11.0, 0.476)
+    graded = np.abs(commanded) >= graded_command_floor_db(_GRID_HZ)
+    wrong_frame = fit_frame(
+        _GRID_HZ[graded], realized[graded], commanded[graded],
+    )
+    deframed = realized - wrong_frame.frame_db(_GRID_HZ)
+    exceeded, _width = _structured_exceedance(
+        _GRID_HZ,
+        np.where(graded, deframed - commanded, 0.0),
+        _tolerance_curve(_GRID_HZ),
+        graded,
+    )
+    assert exceeded is False
+    # …while the shipped rule keeps it.
+    probe = classify_delta_probe(_GRID_HZ, realized, commanded, band_hz=_band())
+    assert probe.verdict == VERDICT_MODEL_ERROR
+
+
+def test_an_unfitted_frame_demotes_nothing():
+    """A correction that commands something everywhere leaves no quiet bins, so
+    no frame is measured and the verdict stands exactly as it did before this
+    gate existed. Strict is the honest direction for an absent measurement."""
+    commanded = np.full_like(_GRID_HZ, 6.0)
+    probe = classify_delta_probe(
+        _GRID_HZ, commanded + 4.0, commanded, band_hz=_band(),
+    )
+    assert probe.residual_offset_db is None
+    assert probe.frame.fitted is False
+    assert probe.frame_removed_max_db is None
+    assert probe.frame_removed_rms_db is None
+    assert probe.frame_removed_exceedance_octaves is None
+    assert probe.verdict == VERDICT_MODEL_ERROR
+    assert probe.rollback is True
+
+
+def test_the_frame_gate_can_only_narrow_a_finding():
+    """The safety property the whole design rests on, asserted directly.
+
+    The RAW grade decides whether there is a finding; the frame-removed grade
+    decides only whether that finding is a rollback. So a frame fitted from a
+    noisy quiet region cannot fabricate a rollback — the worst it can do is
+    fail to demote one. Walked over this file's fixture vocabulary.
+    """
+    commanded = _commanded_lift()
+    fixtures = [
+        (commanded, commanded),
+        (commanded * 0.4, commanded),
+        (commanded * 1.5, commanded),
+        (commanded + 6.0 * np.sin(np.log2(_GRID_HZ)), commanded),
+        (commanded - 0.9 * np.log2(_GRID_HZ / 1_000.0), commanded),
+        (commanded + np.where(_GRID_HZ > 6_000.0, 4.0, -4.0), commanded),
+    ]
+    for realized, cmd in fixtures:
+        probe = classify_delta_probe(_GRID_HZ, realized, cmd, band_hz=_band())
+        if probe.rollback:
+            assert probe.exceedance_octaves >= DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES
+
+
+def test_the_frames_offset_term_is_the_residual_offset_it_already_reported():
+    """One quiet-bin set, two estimators, and they agree by construction.
+
+    ``fit_frame`` pivots at the fitted bins' geometric mean, which makes its
+    offset the plain mean of the difference — the same number
+    ``residual_offset_db`` has reported since #1811. Pinned so the frame cannot
+    silently start measuring its level term somewhere else.
+    """
+    commanded = _commanded_lift()
+    probe = classify_delta_probe(
+        _GRID_HZ, commanded - 0.8, commanded, band_hz=_band(),
+    )
+    assert probe.frame.fitted is True
+    assert probe.frame.offset_db == pytest.approx(probe.residual_offset_db, abs=1e-9)
+
+
+def test_a_constant_offset_reads_as_offset_not_as_scale():
+    """**#2521 defect 3.** Through the origin, on a commanded curve that is
+    mostly negative, a constant level shift arrives as apparent SCALE — the live
+    session's −7.8 dB read as gain ≈2.02 and then drove the
+    shortfall-vs-model-error branch. A regression that may state where it
+    crosses zero cannot make that mistake.
+    """
+    commanded = np.zeros_like(_GRID_HZ)
+    commanded[(_GRID_HZ >= 300.0) & (_GRID_HZ <= 3_000.0)] = -6.0
+    commanded[(_GRID_HZ >= 8_000.0) & (_GRID_HZ <= 16_000.0)] = 2.0
+    offset_db = -7.8
+    realized = commanded + offset_db
+
+    probe = classify_delta_probe(_GRID_HZ, realized, commanded, band_hz=_band())
+
+    assert probe.gain_factor == pytest.approx(1.0, abs=1e-6)
+    assert probe.gain_intercept_db == pytest.approx(0.0, abs=1e-6)
+    # The fixture really is the shape that broke: fitted through the origin on
+    # these same bins, the identical curves read as more than 2x scale.
+    graded = np.abs(commanded) >= graded_command_floor_db(_GRID_HZ)
+    c, r = commanded[graded], realized[graded]
+    through_origin = float(np.dot(r, c) / np.dot(c, c))
+    assert through_origin > 2.0
+    # …and the level move itself is still named, by the verdict it always was.
+    assert probe.verdict == VERDICT_LEVEL_MISMATCH
+    assert probe.residual_offset_db == pytest.approx(offset_db, abs=1e-9)
+
+
+def test_the_demotion_and_the_survival_are_the_same_gate():
+    """**#2521's policy half, both arms in one place** (owner ruling
+    2026-08-15: least-bad is adoptable with disclosure; hard stops are reserved
+    for the safety class).
+
+    An exceedance that vanishes under trusted-band + frame-removed grading is
+    an advisory the household is told about and keeps its tuning through; one
+    that survives is the rollback it has always been. Neither arm is a new
+    trigger — both start from a raw grade that already failed.
+    """
+    from jasper.active_speaker.linearization_fit import (
+        _HIGHSHELF_Q, _highshelf_response_db,
+    )
+
+    commanded = _commanded_lift()
+    demoted = classify_delta_probe(
+        _GRID_HZ, commanded - 0.9 * np.log2(_GRID_HZ / 1_000.0), commanded,
+        band_hz=_band(),
+    )
+    survived = classify_delta_probe(
+        _GRID_HZ,
+        _highshelf_response_db(_GRID_HZ, 7_000.0, -11.0, 0.476),
+        _highshelf_response_db(_GRID_HZ, 7_000.0, -11.0, _HIGHSHELF_Q),
+        band_hz=_band(),
+    )
+    assert demoted.exceedance_octaves >= DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES
+    assert survived.exceedance_octaves >= DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES
+    assert demoted.rollback is False
+    assert survived.rollback is True
+    assert demoted.verdict == VERDICT_FRAME_MISMATCH
+    assert survived.verdict == VERDICT_MODEL_ERROR
+
+
+def test_frame_mismatch_is_a_finding_not_a_pass():
+    """Like ``level_mismatch`` and ``unavailable``, it grants no permission: it
+    leaves the shape question unanswered and is not ``matched``."""
+    assert VERDICT_FRAME_MISMATCH in DELTA_PROBE_VERDICTS
+    assert VERDICT_FRAME_MISMATCH not in DELTA_PROBE_ROLLBACK_VERDICTS
+    assert VERDICT_FRAME_MISMATCH != VERDICT_MATCHED
+
+
+def test_to_dict_carries_the_band_the_frame_and_the_intercept():
+    """A ledger row that cannot be re-graded is a verdict nobody can check."""
+    commanded = _commanded_lift()
+    payload = classify_delta_probe(
+        _GRID_HZ, commanded - 0.9 * np.log2(_GRID_HZ / 1_000.0), commanded,
+        band_hz=_band(),
+    ).to_dict()
+    assert payload["requested_band_hz"] == list(_band())
+    assert payload["gain_intercept_db"] is not None
+    frame = payload["frame"]
+    assert frame["tilt_db_per_octave"] == pytest.approx(-0.9, abs=1e-6)
+    assert frame["n_bins"] >= DELTA_PROBE_MIN_BINS
+    assert set(frame["removed"]) == {"max_db", "rms_db", "exceedance_octaves"}

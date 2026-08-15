@@ -145,9 +145,17 @@ def _in_room_summed_db() -> np.ndarray:
 _ROOM_SCALE_EXPECTED_RMS_DB = {0.4: 1.011, 1.0: 2.691, 2.5: 8.566}
 
 
+#: The evaluation band a production gating block carries for these fixtures —
+#: the whole fixture grid, so a probe reading it grades exactly the bins it
+#: graded before the trusted band became its input (#2521). Tests that care
+#: about the clamp pass a narrower one.
+_FIXTURE_TRUSTED_BAND_HZ = (float(_SUMMED_FREQS_HZ[0]), float(_SUMMED_FREQS_HZ[-1]))
+
+
 def _driver_response(
     role: str, window_ms: float, *, summed_db: np.ndarray | None = None,
     floor_source: str | None = None,
+    trusted_band_hz: tuple[float, float] | None = _FIXTURE_TRUSTED_BAND_HZ,
 ) -> DriverResponse:
     if summed_db is not None:
         magnitude_db = np.asarray(summed_db, dtype=float)
@@ -160,9 +168,24 @@ def _driver_response(
         # optional here because most fixtures only care that a window exists,
         # and a block without it reads as "unknown" exactly like a schema-1
         # record does.
+        #
+        # ``pre_post_gate_delta.eval_band_hz`` is the band the capture's own
+        # gate says it can be judged over — written by
+        # ``gate_disclosure.pre_post_gate_delta`` in production and read back by
+        # ``build_gate_disclosure``. The delta probe's band comes from here
+        # since #2521, so a fixture without it is a capture with no trusted
+        # band, which is a real state (an ungateable capture) and leaves the
+        # probe unavailable. Pass ``trusted_band_hz=None`` to build one.
         gating={
             "applied": True, "window_ms": window_ms,
             **({"floor_source": floor_source} if floor_source else {}),
+            **(
+                {"pre_post_gate_delta": {
+                    "eval_band_hz": [float(trusted_band_hz[0]),
+                                     float(trusted_band_hz[1])],
+                }}
+                if trusted_band_hz is not None else {}
+            ),
         },
         snr=None, validity_floor_hz=None,
     )
@@ -300,6 +323,7 @@ def _verify_analysis(
     n_graded_bins=120,
     integrity=_INTEGRITY_FROM_LOCATIONS,
     verify_absolute=None,
+    trusted_band_hz: tuple[float, float] | None = _FIXTURE_TRUSTED_BAND_HZ,
 ) -> ProgramAnalysis:
     locations = (
         _loc(
@@ -328,6 +352,7 @@ def _verify_analysis(
         glitch_detected=bool(integrity is not None and integrity.glitched),
         summed_response=_driver_response(
             "summed", gate_ms, summed_db=summed_db, floor_source=floor_source,
+            trusted_band_hz=trusted_band_hz,
         ),
         summed_ripple_db=1.1,
         # W6.7 ruling 1: the conductor gates on the notch-excluded max, not the

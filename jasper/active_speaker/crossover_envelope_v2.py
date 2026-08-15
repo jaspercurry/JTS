@@ -100,7 +100,7 @@ from .crossover_v2_flow import (
     tier_display_info,
     verify_inconclusive_cause,
 )
-from .delta_probe import VERDICT_LEVEL_MISMATCH
+from .delta_probe import VERDICT_FRAME_MISMATCH, VERDICT_LEVEL_MISMATCH
 
 logger = logging.getLogger(__name__)
 
@@ -1736,6 +1736,19 @@ def _done_nudges(
             "text": (
                 "The overall loudness changed by more than this check expected, "
                 "so it could not confirm the correction's shape."
+            ),
+        })
+    if probe.get("verdict") == VERDICT_FRAME_MISMATCH:
+        nudges.append({
+            "code": "crossover_v2_frame_mismatch",
+            "severity": "warn",
+            # The tilt-carrying sibling of the caveat above, in the same
+            # register and under the same rules: no hardware noun, no
+            # instruction to act, and a statement about what the check could
+            # and could not confirm rather than about the speaker (#2521).
+            "text": (
+                "The overall loudness and balance differed from what this check "
+                "expected, so it could not confirm the correction's shape."
             ),
         })
     return nudges
