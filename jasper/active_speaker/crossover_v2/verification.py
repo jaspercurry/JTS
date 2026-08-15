@@ -693,7 +693,7 @@ def verification_result(
 
 
 # --------------------------------------------------------------------------
-# 5. evidence trust — the axis that gates the other two
+# 5. evidence trust — was there anything to grade?
 # --------------------------------------------------------------------------
 
 #: The round measured the state it applied.

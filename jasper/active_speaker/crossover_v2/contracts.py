@@ -65,21 +65,21 @@ __all__ = [
     "AdoptionDecision",
     "AdoptionOutcome",
     "BenefitStatus",
-    "EvidenceTrust",
-    "QualityStatus",
-    "SafetyStatus",
     "CandidateAcousticContext",
     "CandidateFcDisagreementError",
     "CaptureValidity",
     "CrossoverV2ContractError",
+    "EvidenceTrust",
     "InterventionProposal",
     "NoCrossoverSectionsError",
     "PLAN_REFUSAL_REASONS",
     "PROPOSAL_FINGERPRINT_KINDS",
     "PlanRefusal",
+    "QualityStatus",
     "RealizationStatus",
     "ResponseCurve",
     "RoundReceipt",
+    "SafetyStatus",
     "SpecStatus",
     "TrimStrategy",
     "VerificationResult",
@@ -878,9 +878,11 @@ class VerificationResult:
 class EvidenceTrust(str, Enum):
     """Could this round measure the state it applied? (#2537)
 
-    The first of the adoption table's three axes, and the one that gates the
-    other two: safety and quality are both read off measurements, so a round
-    that could not measure has nothing to read them from.
+    The first of the adoption table's three axes. Safety and quality are both
+    read off measurements, so a round that could not measure has little for
+    them to read — but this does NOT gate them: safety is evaluated first and
+    checked first, precisely so a hazard visible in a bad capture is named as a
+    hazard rather than as an absence.
 
     :attr:`UNTRUSTED` is the honest word for "no usable evidence", and it is
     what the owner's own ruling turns on — *an unmeasured applied state cannot
