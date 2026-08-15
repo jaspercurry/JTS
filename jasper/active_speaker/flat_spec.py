@@ -42,6 +42,20 @@ reference, evaluated per band at the tolerances in :data:`SPEC_BANDS`, with
 interference-flagged bins excluded from both the reference and every band's
 deviation metric.
 
+**The table's edges are nominal; the graded edges are their intersection
+with the session's trusted floor** (issue #2551). :data:`SPEC_BANDS` and
+:data:`REFERENCE_BAND_HZ` are room-agnostic hand-set constants, but a gated
+measurement is only trustworthy above ``2.5/T`` for its own reflection-free
+window ``T`` (:func:`jasper.audio_measurement.gating.f_trusted_floor_hz`,
+and the E4 sweep behind it). ``evaluate_flat_spec``'s ``trusted_floor_hz``
+raises every band's lower edge -- and the reference band's -- to
+``max(f_lo, trusted_floor_hz)``, so no verdict rests on a bin the capture's
+own gate cannot support. A band left entirely below the floor is
+``evaluable=False`` with its ``graded_lo_hz`` sitting above its own top
+edge, never ``passed=False``: there is no evidence there, which is not the
+same as failing. This module still holds no gate policy -- it takes the
+floor as a number from a caller that measured it.
+
 **The tolerances are S0-contingent, not final.** The plan doc is explicit
 that this table is provisional pending the S0 validation session's hardware
 data (mic-move-only captures, no DSP changes) -- see the plan's "Rationale,
@@ -65,6 +79,7 @@ was produced.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -86,6 +101,10 @@ from jasper.audio_measurement.spatial_combine import merged_true_intervals
 # and the room ceiling's clamp floor cannot drift apart (issue #1787, plan D3).
 # Revising 250 -> 300 stays an S0-contingent decision; it just happens in that
 # one module now. The tolerances and the upper edges remain this module's own.
+#
+# These edges are NOMINAL (issue #2551). What a given evaluation actually
+# grades is this table intersected with that session's trusted floor -- see
+# `evaluate_flat_spec`'s `trusted_floor_hz` and `BandResult.graded_lo_hz`.
 SPEC_BANDS: tuple[tuple[float, float, float], ...] = (
     (GATED_SPEC_LOWER_EDGE_HZ, 2000.0, 1.5),
     (2000.0, 8000.0, 2.0),
@@ -98,6 +117,14 @@ SPEC_BANDS: tuple[tuple[float, float, float], ...] = (
 # same inclusive-lower/exclusive-upper edge rule as SPEC_BANDS, so it spans
 # exactly those two bands with no gap or overlap at the 2 kHz seam. Its lower
 # edge is SPEC_BANDS[0]'s by construction, so it reads the same owner.
+#
+# Nominal, like SPEC_BANDS: a `trusted_floor_hz` raises this lower edge too
+# (issue #2551). It has to. The reference is a power mean, so leaving
+# sub-floor bins in the frame while removing them from every band would let
+# untrustworthy energy re-centre the zero that each surviving deviation is
+# stated against -- the same "a contaminated bin must not re-centre the
+# target" argument, applied to the one pooled quantity that can.
+# `FlatSpecReport.reference_band_hz` publishes the span actually pooled.
 REFERENCE_BAND_HZ: tuple[float, float] = (GATED_SPEC_LOWER_EDGE_HZ, 8000.0)
 
 # Above this frequency the plan's table reads "best-effort, disclosed,
@@ -120,18 +147,22 @@ class BandResult:
 
     **Unevaluable is a first-class outcome, not a failure and not a pass.**
     When a band is left with zero non-excluded bins -- because the frequency
-    axis never reached it, or because the interference screen flagged every
-    bin in it -- there is no evidence, so ``evaluable`` is ``False``, every
-    metric below is ``None``, and ``passed`` is ``None`` rather than a
-    fabricated verdict. It is the honesty screen's job to remove
-    interference-dominated bins; it must not be able to remove a whole band
-    from scrutiny by *silently passing* it, nor to destroy the entire report
-    by raising. :attr:`FlatSpecReport.overall_passed` treats an unevaluable
-    band as not-passed, so an unevaluable band can never be mistaken for a
-    clean one.
+    axis never reached it, because the trusted floor left nothing of it, or
+    because the interference screen flagged every bin in it -- there is no
+    evidence, so ``evaluable`` is ``False``, every metric below is ``None``,
+    and ``passed`` is ``None`` rather than a fabricated verdict. It is the
+    honesty screen's job to remove interference-dominated bins; it must not
+    be able to remove a whole band from scrutiny by *silently passing* it,
+    nor to destroy the entire report by raising.
+    :attr:`FlatSpecReport.overall_passed` treats an unevaluable band as
+    not-passed, so an unevaluable band can never be mistaken for a clean
+    one.
 
     Args:
-      f_lo_hz: band lower edge (inclusive).
+      f_lo_hz: the band's NOMINAL lower edge (inclusive) -- its
+        :data:`SPEC_BANDS` row, so a reader can tell which tolerance row
+        this result answers for even when nothing in it was graded. Read
+        ``graded_lo_hz`` for the edge the metrics were actually taken from.
       f_hi_hz: band upper edge (exclusive).
       tolerance_db: the band's +/- tolerance from :data:`SPEC_BANDS`.
       max_deviation_db: the **signed** deviation at the worst non-excluded
@@ -167,6 +198,18 @@ class BandResult:
         the shared frame and the bin furthest from the band's own level are
         the same only when the band's level offset is zero. ``None`` when
         unevaluable / absent.
+      graded_lo_hz: the lower edge the metrics above were **actually** taken
+        from -- ``max(f_lo_hz, trusted_floor_hz)`` (issue #2551), the same
+        nominal-vs-honest pair the gate's own delta probe publishes as
+        ``literal_band_hz`` beside ``eval_band_hz``
+        (:func:`jasper.audio_measurement.gate_disclosure.pre_post_gate_delta`).
+        Equal to ``f_lo_hz`` when no floor was supplied or the floor sits
+        below the band, and **greater than or equal to** ``f_hi_hz`` when
+        the floor swallowed the band whole -- which is the tell that
+        ``evaluable=False`` here means "below this session's trusted floor"
+        rather than "the axis never reached it" or "the screen took every
+        bin". ``None`` on a report built before this field existed; read
+        ``f_lo_hz`` then, since nothing clamped in that era.
 
     **The split, and the identity that makes it exact.** For every
     non-excluded bin ``i`` in the band::
@@ -205,6 +248,7 @@ class BandResult:
     level_deviation_db: float | None = None
     max_ripple_db: float | None = None
     max_ripple_hz: float | None = None
+    graded_lo_hz: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -223,6 +267,10 @@ class BandResult:
             "level_deviation_db": self.level_deviation_db,
             "max_ripple_db": self.max_ripple_db,
             "max_ripple_hz": self.max_ripple_hz,
+            # #2551: the edge these numbers came from, beside the nominal
+            # one above. Disclosure of a clamp that DID move the graded
+            # numbers -- unlike the split, which moves none.
+            "graded_lo_hz": self.graded_lo_hz,
         }
 
 
@@ -250,6 +298,17 @@ class FlatSpecReport:
     carries no evidence of how it was smoothed, and this module deliberately
     does not smooth. The field records what the caller says it handed over,
     so a stored report can be audited later; nothing here validates it.
+
+    ``trusted_floor_hz`` is the floor this evaluation was intersected at
+    (issue #2551), echoed so a stored report says on its face which honesty
+    floor produced its numbers rather than leaving a reader to infer it from
+    the band edges. ``None`` means no floor was supplied -- **"not stated",
+    never "zero"**, the same unknown-vs-zero rule the wiring layer's own
+    floor fields follow. ``reference_band_hz`` is the span whose power mean
+    IS ``reference_db``, after that same clamp: it is
+    :data:`REFERENCE_BAND_HZ` raised to the floor, and it is what
+    :func:`spec_flatness_gauge` publishes rather than the module constant,
+    so a surface naming the frame names the frame that was used.
     """
 
     reference_db: float
@@ -258,6 +317,12 @@ class FlatSpecReport:
     excluded_intervals: tuple[tuple[float, float], ...]
     best_effort_above_hz: float
     smoothing_fraction: int
+    # Defaulted for the same reason `BandResult`'s split fields are: a report
+    # can be hand-built or rehydrated from persistence written before the
+    # clamp existed. The defaults are that era's truth -- nothing clamped,
+    # and the reference band was the module constant.
+    trusted_floor_hz: float | None = None
+    reference_band_hz: tuple[float, float] = REFERENCE_BAND_HZ
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -267,6 +332,10 @@ class FlatSpecReport:
             "excluded_intervals": [list(interval) for interval in self.excluded_intervals],
             "best_effort_above_hz": self.best_effort_above_hz,
             "smoothing_fraction": self.smoothing_fraction,
+            # #2551: the honesty floor these numbers were graded at, and the
+            # span `reference_db` was pooled over once that floor applied.
+            "trusted_floor_hz": self.trusted_floor_hz,
+            "reference_band_hz": list(self.reference_band_hz),
         }
 
 
@@ -282,12 +351,29 @@ def _power_mean_db(values_db: np.ndarray) -> float:
     return float(10.0 * np.log10(np.mean(linear)))
 
 
+def _graded_lo_hz(f_lo_hz: float, trusted_floor_hz: float | None) -> float:
+    """``max(f_lo_hz, trusted_floor_hz)`` -- one band edge, intersected with
+    the session's trusted floor (issue #2551).
+
+    The single place the intersection happens, so the bands and the
+    reference band cannot drift apart on it. A ``None`` or non-finite floor
+    clamps nothing and returns ``f_lo_hz`` unchanged; the finiteness guard
+    is load-bearing rather than defensive, because :func:`max` with a NaN is
+    order-dependent and would silently return whichever argument came
+    first.
+    """
+    if trusted_floor_hz is None or not math.isfinite(trusted_floor_hz):
+        return float(f_lo_hz)
+    return max(float(f_lo_hz), float(trusted_floor_hz))
+
+
 def evaluate_flat_spec(
     freqs_hz: np.ndarray,
     spec_smoothed_db: np.ndarray,
     exclusion_mask: np.ndarray | None = None,
     *,
     smoothing_fraction: int = 3,
+    trusted_floor_hz: float | None = None,
 ) -> FlatSpecReport:
     """Evaluate the flat-linearization spec against one combined, 1/3-oct-
     smoothed magnitude curve (docs/flat-linearization-plan.md, "The spec --
@@ -316,11 +402,39 @@ def evaluate_flat_spec(
             report. Provenance only: an array cannot prove how it was
             smoothed, this module does not smooth, and nothing here
             validates or uses the value.
+        trusted_floor_hz: the session's gate-derived trusted floor in Hz --
+            ``2.5/T`` for the capture's own reflection-free window
+            (:func:`jasper.audio_measurement.gating.f_trusted_floor_hz`).
+            Every band's lower edge, **and the reference band's**, is raised
+            to ``max(f_lo, trusted_floor_hz)`` before anything is measured
+            (issue #2551), so no graded number rests on a bin the gate
+            cannot support. ``None`` (the default) or a non-finite value
+            clamps nothing, which is the pre-#2551 behaviour and what a
+            caller with no measured floor gets: "unknown" must not silently
+            become a floor of zero, and it must not withhold the evidence
+            above an unverified edge either. This module takes the number;
+            it does not derive, validate, or second-guess it.
 
     Reference level: the power mean (:func:`_power_mean_db`) over
-    non-excluded bins inside :data:`REFERENCE_BAND_HZ`. Deliberately spans
+    non-excluded bins inside :data:`REFERENCE_BAND_HZ`, its lower edge
+    raised to ``trusted_floor_hz`` like every band's. Deliberately spans
     only the two tight-tolerance bands so a top-octave deficit cannot
-    re-center the target (plan wording, verbatim).
+    re-center the target (plan wording, verbatim) -- and clamped for the
+    same reason in the other direction, so an untrustworthy low end cannot
+    either. :attr:`FlatSpecReport.reference_band_hz` reports the span
+    actually pooled.
+
+    **Clamping is not free, and its direction does not generalize.** The
+    reference is a power mean, so removing the sub-floor region moves the
+    zero that every surviving deviation is stated against, and the headline
+    number moves one-for-one with it whenever the worst bin survives. On
+    the S0 corpus that shift is +1.0676 dB in the FLATTERING direction
+    (``tests/test_flat_spec_ssot.test_the_trusted_floor_clamp_costs_the_low_band``
+    pins it); on a speaker whose sub-floor region is quiet it would go the
+    other way. None of it is the speaker improving -- it is the same
+    speaker graded on fewer bins, which is what
+    :attr:`BandResult.n_bins`/:attr:`ConvergenceResidual.n_bins` exist to
+    keep visible.
 
     Deviation: ``spec_smoothed_db - reference_db``, evaluated per
     :data:`SPEC_BANDS` entry over that band's non-excluded bins:
@@ -339,17 +453,24 @@ def evaluate_flat_spec(
     computed exactly as they were before the split existed, pinned against a
     frozen pre-change corpus by ``tests/test_flat_spec_attribution.py``.
 
-    A band with **zero non-excluded bins** -- no coverage on the axis, or
-    every bin interference-flagged -- is reported as ``evaluable=False``
-    with ``passed=None`` and ``None`` metrics, not raised on: one band
-    losing its evidence must not destroy the report for the other two.
-    :attr:`FlatSpecReport.overall_passed` is ``True`` only when every band
-    is evaluable *and* passed, so an unevaluable band cannot be mistaken for
-    a clean one. The **reference band** is different and still raises: with
-    no reference level there is nothing to compute a deviation against
-    anywhere, so no band could be evaluated at all.
+    A band with **zero non-excluded bins** -- no coverage on the axis, every
+    bin interference-flagged, or nothing left above ``trusted_floor_hz`` --
+    is reported as ``evaluable=False`` with ``passed=None`` and ``None``
+    metrics, not raised on: one band losing its evidence must not destroy
+    the report for the other two, and a band that is entirely below the
+    session's trusted floor has no evidence rather than a failure.
+    ``graded_lo_hz >= f_hi_hz`` is what distinguishes that third case from
+    the first two. :attr:`FlatSpecReport.overall_passed` is ``True`` only
+    when every band is evaluable *and* passed, so an unevaluable band cannot
+    be mistaken for a clean one. The **reference band** is different and
+    still raises: with no reference level there is nothing to compute a
+    deviation against anywhere, so no band could be evaluated at all. A
+    ``trusted_floor_hz`` at or above the reference band's top edge is
+    therefore a raise, not a report -- it says the whole spec is ungradeable
+    on this capture, which is the honest answer and is what the wiring
+    layer's own fail-soft turns into an "unavailable" cloud block.
 
-    Band membership is ``f_lo <= f < f_hi`` -- inclusive-lower,
+    Band membership is ``graded_lo <= f < f_hi`` -- inclusive-lower,
     exclusive-upper -- for both :data:`SPEC_BANDS` entries and
     :data:`REFERENCE_BAND_HZ` (the same rule, applied uniformly, is what
     keeps the reference band's span exactly equal to
@@ -418,7 +539,10 @@ def evaluate_flat_spec(
 
     included_mask = ~resolved_exclusion_mask
 
-    ref_lo_hz, ref_hi_hz = REFERENCE_BAND_HZ
+    # #2551: the trusted-floor intersection, applied to the reference band
+    # first because every band's deviation is stated against it.
+    nominal_ref_lo_hz, ref_hi_hz = REFERENCE_BAND_HZ
+    ref_lo_hz = _graded_lo_hz(nominal_ref_lo_hz, trusted_floor_hz)
     ref_band_mask = (freqs_hz >= ref_lo_hz) & (freqs_hz < ref_hi_hz) & included_mask
     if not ref_band_mask.any():
         raise ValueError(
@@ -430,7 +554,12 @@ def evaluate_flat_spec(
     deviation_db = spec_smoothed_db - reference_db
 
     band_results: list[BandResult] = []
-    for f_lo_hz, f_hi_hz, tolerance_db in SPEC_BANDS:
+    for nominal_lo_hz, f_hi_hz, tolerance_db in SPEC_BANDS:
+        f_lo_hz = _graded_lo_hz(nominal_lo_hz, trusted_floor_hz)
+        # The clamped edge is what defines membership, so a bin below the
+        # trusted floor is not in the band at all rather than in it and
+        # excluded: `n_excluded` stays the interference screen's own count,
+        # and `graded_lo_hz` below carries the clamp instead.
         band_mask = (freqs_hz >= f_lo_hz) & (freqs_hz < f_hi_hz)
         included_band_mask = band_mask & included_mask
         n_bins = int(band_mask.sum())
@@ -438,7 +567,7 @@ def evaluate_flat_spec(
         if not included_band_mask.any():
             band_results.append(
                 BandResult(
-                    f_lo_hz=float(f_lo_hz),
+                    f_lo_hz=float(nominal_lo_hz),
                     f_hi_hz=float(f_hi_hz),
                     tolerance_db=float(tolerance_db),
                     max_deviation_db=None,
@@ -448,6 +577,7 @@ def evaluate_flat_spec(
                     n_excluded=n_excluded,
                     evaluable=False,
                     passed=None,
+                    graded_lo_hz=f_lo_hz,
                 )
             )
             continue
@@ -465,7 +595,7 @@ def evaluate_flat_spec(
         worst_ripple = int(band_indices[np.argmax(np.abs(band_ripple_db))])
         band_results.append(
             BandResult(
-                f_lo_hz=float(f_lo_hz),
+                f_lo_hz=float(nominal_lo_hz),
                 f_hi_hz=float(f_hi_hz),
                 tolerance_db=float(tolerance_db),
                 max_deviation_db=max_deviation_db,
@@ -478,6 +608,7 @@ def evaluate_flat_spec(
                 level_deviation_db=float(band_level_db - reference_db),
                 max_ripple_db=float(spec_smoothed_db[worst_ripple] - band_level_db),
                 max_ripple_hz=float(freqs_hz[worst_ripple]),
+                graded_lo_hz=f_lo_hz,
             )
         )
 
@@ -491,6 +622,12 @@ def evaluate_flat_spec(
         excluded_intervals=excluded_intervals,
         best_effort_above_hz=float(BEST_EFFORT_ABOVE_HZ),
         smoothing_fraction=int(smoothing_fraction),
+        trusted_floor_hz=(
+            float(trusted_floor_hz)
+            if trusted_floor_hz is not None and math.isfinite(trusted_floor_hz)
+            else None
+        ),
+        reference_band_hz=(ref_lo_hz, float(ref_hi_hz)),
     )
 
 
@@ -580,10 +717,15 @@ def spec_convergence_residual(report: FlatSpecReport) -> ConvergenceResidual:
       and the guard is deliberate anyway. :data:`REFERENCE_BAND_HZ` is
       exactly ``SPEC_BANDS[0]`` union ``SPEC_BANDS[1]``, so an evaluation
       that did not raise on an empty reference band necessarily left at
-      least one non-excluded spec-band bin behind. A report reaching this
-      function from anywhere else — hand-built, or rehydrated from the
-      persistence the plan's PR-6b adds — carries no such guarantee, and
-      the alternative there is a ZeroDivisionError.
+      least one non-excluded spec-band bin behind. A ``trusted_floor_hz``
+      does not break that (issue #2551): one floor raises all three lower
+      edges and the reference band's together, so the clamped reference
+      band stays exactly the union of the two clamped tight bands — for a
+      floor at or above 2 kHz, ``SPEC_BANDS[0]`` empties and the reference
+      band and ``SPEC_BANDS[1]`` collapse onto the same span. A report
+      reaching this function from anywhere else — hand-built, or rehydrated
+      from the persistence the plan's PR-6b adds — carries no such
+      guarantee, and the alternative there is a ZeroDivisionError.
     """
     n_excluded = sum(band.n_excluded for band in report.bands)
     # One pass, so the denominator and the numerator can never be assembled
@@ -804,11 +946,15 @@ class SpecFlatness:
         band's deficit. ``tilt`` below is the reading that cannot do that,
         and a surface rendering this pointer should render that one beside
         it.
-      reference_band_hz: ``(f_lo_hz, f_hi_hz)`` of :data:`REFERENCE_BAND_HZ`
-        — the span whose power mean over non-excluded bins IS the zero that
+      reference_band_hz: :attr:`FlatSpecReport.reference_band_hz` — the span
+        whose power mean over non-excluded bins IS the zero that
         every ``max_db`` here is stated against (:func:`evaluate_flat_spec`
         computes it once as ``reference_db``; this names the span it was
-        pooled over). Carried because the frame is not a detail of the
+        pooled over). That is :data:`REFERENCE_BAND_HZ` with its lower edge
+        raised to the session's trusted floor (issue #2551), so on a clamped
+        evaluation this reads the CLAMPED span and not the module constant
+        — the frame moved, and printing the constant would misstate it.
+        Carried because the frame is not a detail of the
         number, it is half of it: on the 2026-07-30 corpus a dark tweeter
         pulls this full-range mean ~2.7 dB below a woofer-anchored one, and
         the same persisted curve's worst-band pointer moves +5.44 dB @
@@ -963,6 +1109,7 @@ def spec_flatness_gauge(report: FlatSpecReport) -> SpecFlatness:
             n_excluded=residual.n_excluded,
             evaluable=False,
             passed=report.overall_passed,
+            reference_band_hz=report.reference_band_hz,
             tilt=tilt,
         )
     return SpecFlatness(
@@ -975,6 +1122,11 @@ def spec_flatness_gauge(report: FlatSpecReport) -> SpecFlatness:
         n_excluded=residual.n_excluded,
         evaluable=True,
         passed=report.overall_passed,
+        # #2551: the frame that was USED, read off the report, not the module
+        # constant. A clamped reference band re-centres every number above,
+        # so a surface printing the pointer beside `REFERENCE_BAND_HZ` would
+        # be naming a frame the numbers were never stated against.
+        reference_band_hz=report.reference_band_hz,
         tilt=tilt,
         max_band_level_deviation_db=worst.level_deviation_db,
         max_band_ripple_db=worst.max_ripple_db,

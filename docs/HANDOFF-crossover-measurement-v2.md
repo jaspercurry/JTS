@@ -2536,45 +2536,63 @@ and [`tests/js/crossover_cloud_callouts_test.mjs`](../tests/js/crossover_cloud_c
 pixel rendering is verified on-device only — CI cannot see pixels — and is
 still owed to the HW product smoke below.
 
-*The gate-validity clamp.* `cloud_validity_floor_hz` takes the WORST
-(highest) reflection-gate floor across the group's positions — the same
-"worse of the two" rule `_measure_validity_floor_hz` applies to the driver
-branches — and bins below it are excluded from the spec evaluation, from the
-reference level as well as the deviations. It is deliberately kept OUT of
-`merged_excluded_bands_hz` (and so out of `/state`'s
-`excluded_interval_count`), which stays the honesty instruments' own
-"how much interference did we find" number; `validity_floor_hz` discloses the
-clamp separately and is carried through `_compact_cloud_status` onto `/state`,
-the envelope, and the doctor, so a live surface can tell a combed room apart
-from one capture's collapsed gate.
+*The gate's trusted-floor intersection (#2551).* `cloud_validity_floor_hz`
+takes the WORST (highest) reflection-gate floor across the group's positions
+— the same "worse of the two" rule `_measure_validity_floor_hz` applies to
+the driver branches — and `cloud_trusted_floor_hz` turns that `1/T` into the
+`2.5/T` the gate disclosure prints and the delta probe already refuses to
+grade below. **That** trusted number is what `evaluate_flat_spec` intersects
+every spec band's lower edge with, and the reference band's: a bin the gate
+cannot support must not set a verdict, and must not re-centre the frame the
+surviving verdicts are stated against either. Both floors are published —
+`validity_floor_hz` for provenance, `trusted_floor_hz` as the number the
+verdicts were taken above — and both are carried through
+`_compact_cloud_status` onto `/state`, the envelope, and the doctor.
 
-Measured cost on the S0 main leg (all pinned by
-[`tests/test_flat_spec_ssot.py`](../tests/test_flat_spec_ssot.py)), re-derived
-2026-08-02 (#2045): **all ten** positions gate to 142.857 Hz — below the 250 Hz
-spec edge, so the group's own floor makes the clamp a **no-op** that changes no
-graded number.
+The intersection is a band **edge**, not a mask entry, so:
 
-That is a change. Until PR #1991 `cloud_04` reported a measured reflection at
-1777.8 Hz and the group floor was 1777.8 Hz, but that reading was the
-first-reflection detector firing early (the #1790 instance the prominence vote
-rejects). The clamp's cost is still pinned, now at that floor supplied
-explicitly (`CLAMP_FLOOR_HZ`): clamping there moves **987 bins** out of the
-250 Hz–2 kHz band, re-centres the reference **−27.2386 → −28.3062 dB**, moves
-the **headline `max_db` −8.9389 → −7.8713 dB (+1.0676 dB, the flattering
-direction — exactly the reference shift, since the worst bin survives the
-clamp)**, moves the pooled RMS 3.8031 → 3.1740 dB, and **flips the 250 Hz–2 kHz
-band verdict** from +4.2458 dB (fail) to −1.2146 dB (pass). The headline number
-therefore moves *further* than the RMS, and the direction is response-shape
-dependent — measured on this corpus, not a property of the clamp. It is the
-same speaker graded on fewer bins, visible in the gauge's own
-`n_bins`/`n_excluded` pair.
+- a band's `n_excluded` stays *exactly* the honesty instruments' own count,
+  and `merged_excluded_bands_hz` (and so `/state`'s
+  `excluded_interval_count`) remains the "how much interference did we find"
+  number — a short window can never inflate either;
+- the edge each band was graded from rides on it as `graded_lo_hz`, beside
+  the nominal `f_lo_hz`, the same nominal-vs-honest pair the gate's delta
+  probe publishes as `literal_band_hz` beside `eval_band_hz`; and
+- a band left wholly below the floor is `evaluable=False` with
+  `graded_lo_hz >= f_hi_hz`, **never `passed=False`** — absent evidence is
+  not a failure. `overall_passed` still counts it as not-passed, so nothing
+  is flattered by the distinction.
+
+Measured on the S0 main leg (all pinned by
+[`tests/test_flat_spec_ssot.py`](../tests/test_flat_spec_ssot.py)): **all
+ten** positions gate to a 142.857 Hz validity floor, i.e. a **357.14 Hz**
+trusted floor. 142.857 Hz sits *below* the 250 Hz spec edge — which is why,
+while the evaluator was handed the validity floor, the clamp changed no
+graded number at all and this section used to call it a no-op. 357.14 Hz
+sits *above* that edge and costs 73 graded bins, re-centring the reference
+−27.2386 → −27.2997 dB and moving the headline `max_db` **+0.0611 dB in the
+flattering direction** — exactly the reference shift, since the worst bin
+survives. No verdict is bought: all three bands still fail on their merits.
+
+The mechanism's cost at a higher floor is pinned separately, at
+`CLAMP_TRUSTED_FLOOR_HZ` = 1777.8 Hz (the value `cloud_04` produced before
+PR #1991 rejected it as a #1790 early fire). Clamping there moves **987
+bins** out of the 250 Hz–2 kHz band, re-centres the reference **−27.2386 →
+−28.3062 dB**, moves the **headline `max_db` −8.9389 → −7.8713 dB (+1.0676
+dB, the flattering direction)**, moves the pooled RMS 3.8031 → 3.1740 dB,
+and **flips the 250 Hz–2 kHz band verdict** from +4.2458 dB (fail) to
+−1.2146 dB (pass). The headline number therefore moves *further* than the
+RMS, and the direction is response-shape dependent — measured on this
+corpus, not a property of the clamp. It is the same speaker graded on fewer
+bins, visible in the gauge's own `n_bins`.
 
 *Deferred alternative:* per-position, per-bin validity masking inside
 `combine_positions` (mask each position below its own floor, keep the other
 positions' good data) is strictly better and is deferred only because it is a
 `spatial_combine` signature/estimator change, not a wiring one. Revisit
-trigger: a real session where one collapsed gate meaningfully shrinks the
-graded band — the `cloud_04` case above is already that evidence.
+trigger: a real session where one short gate meaningfully shrinks the graded
+band — the S0 corpus is already that evidence now that the floor is the
+trusted one.
 
 **The fit's honesty ladder is NOT this claim.** `LinearizationFit`'s
 fit/verify/observe levels (including `observe_octave_summary`, rendered by
@@ -3664,8 +3682,10 @@ journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(c
   `reason`, `spec_passed`,
   `spec_evaluable`, `flatness_max_db`, `flatness_max_hz`,
   `flatness_reference_band_lo_hz`/`flatness_reference_band_hi_hz` (the frame
-  the deviation is stated against — a power mean over `REFERENCE_BAND_HZ`;
-  the pointer moves in sign and frequency under a different frame, issue
+  the deviation is stated against — a power mean over `REFERENCE_BAND_HZ`
+  with its lower edge raised to the session's trusted floor, #2551, so this
+  pair is read off the report rather than assumed to be the constant; the
+  pointer moves in sign and frequency under a different frame, issue
   #1857), `flatness_bands` (issue #1857 — EVERY graded band's own deviation
   from that same reference, not just the one `flatness_max_db` picked, as one
   compact `lo-hiHz:+dev.ddB:pass|fail` token per band joined by `;`; a

@@ -64,6 +64,21 @@ peaks (see ``docs/room-correction-regime-plan.md`` D3).
 The spec edge itself stays revisable — ``flat_spec`` records 250-vs-300 as
 S0-contingent — but it can only move *through* this module.
 
+**A session can grade higher than this edge, and since #2551 it says so.**
+:data:`GATED_SPEC_LOWER_EDGE_HZ` is the TABLE's edge, not a promise that a
+given capture has authority there: ``evaluate_flat_spec`` intersects it with
+the session's own trusted floor (``2.5/T`` for the reflection-free window
+that capture achieved) and publishes the result per band as ``graded_lo_hz``.
+This module's relation is unaffected — the clamp only ever raises an edge, so
+a room ceiling at or above 250 Hz can still never sit below the *table's*
+floor — but the two layers' deliberate overlap can narrow, and on a room whose
+gate tops out at 7 ms it closes: the trusted floor is 357.14 Hz against a
+350 Hz room ceiling, so 350-357 Hz is owned by neither layer. That gap is
+disclosed, not introduced: the gate never had authority at 350 Hz in such a
+room, and grading there was the thing #2551 stopped. Whether the room ceiling
+should follow the trusted floor is a room-layer policy question, deliberately
+not answered here.
+
 What is NOT owned here
 ----------------------
 * **Lower band edges.** The room band's *low* edge (20 Hz for design, 50 Hz for
@@ -91,6 +106,10 @@ import math
 # The gated speaker spec's lower edge, in Hz. Owned here so the room layer's
 # clamp floor and the speaker layer's spec floor cannot drift apart;
 # jasper.active_speaker.flat_spec consumes this rather than re-declaring 250.
+#
+# This is the TABLE's nominal edge. What a session actually grades is this
+# value intersected with that capture's trusted floor (2.5/T) — see the
+# module docstring's "A session can grade higher than this edge" note.
 GATED_SPEC_LOWER_EDGE_HZ: float = 250.0
 
 # The room-correction ceiling, in Hz, when no per-room estimate is available.

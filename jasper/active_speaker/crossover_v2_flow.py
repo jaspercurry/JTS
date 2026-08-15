@@ -212,6 +212,7 @@ from jasper.active_speaker.fc_selector import (
 )
 from jasper.active_speaker.linearization_fit import worst_headroom_cost_db
 from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.gating import TRUSTED_FLOOR_MULTIPLIER
 from jasper.audio_measurement.program import (
     BASE_STIMULUS_PEAK_DBFS,
     KIND_SWEEP,
@@ -4169,25 +4170,40 @@ def carve_outs_by_band(
     render "nothing carved here" without having to infer it from an absence.
 
     A record is included in a band when its interval OVERLAPS the band's
-    ``[f_lo_hz, f_hi_hz)`` span, so a null straddling a band edge appears under
-    both bands it actually carves — it removes bins from both.
+    ``[graded_lo_hz, f_hi_hz)`` span — the span actually graded, not the
+    nominal row — so a null straddling a band edge appears under both bands it
+    actually carves, and one sitting entirely below the session's trusted floor
+    appears under none, because it removed no bin any verdict was taken from.
 
-    **What this does NOT include: the gate-validity clamp.** Bins below the
-    group's ``validity_floor_hz`` also leave the spec evaluation (plan PR-5),
-    but they are not an interference verdict and PR-5 deliberately keeps them
-    out of the honesty instruments' own accounting, disclosed separately as
-    ``validity_floor_hz``. So a band's ``n_excluded`` on the spec report can
-    exceed what these records cover, and the floor is the difference — the same
-    separation ``_compact_cloud_status`` carries for exactly this reason.
+    **What this does NOT include: the gate's trusted-floor clamp.** Bins
+    below the group's ``trusted_floor_hz`` also leave the spec evaluation,
+    but they are not an interference verdict and are deliberately kept out of
+    the honesty instruments' own accounting — the same separation
+    ``_compact_cloud_status`` carries for exactly this reason. Since #2551
+    that separation is structural rather than a convention the reader has to
+    hold: the clamp raises each band's lower EDGE, so a sub-floor bin is not
+    in the band to be excluded FROM. A band's ``n_excluded`` is therefore
+    exactly what these records cover, and the floor shows up as the spec
+    report's ``graded_lo_hz`` beside the nominal ``band_hz`` here rather than
+    hiding inside a count.
     """
     records = _carve_out_records(null_report, screen_bands_hz)
     out: list[dict[str, Any]] = []
     for band in spec_report.bands:
         f_lo, f_hi = float(band.f_lo_hz), float(band.f_hi_hz)
+        # Overlap is tested against the edge this band was GRADED from, not
+        # its nominal row: a null below the trusted floor carved nothing out
+        # of this band's grading, because those bins were never in it. That
+        # is what makes the equality claimed above ("n_excluded is exactly
+        # what these records cover") true rather than approximate. `band_hz`
+        # below stays the nominal pair, since it is the join key a consumer
+        # uses against ``spec["bands"]`` — which carries `graded_lo_hz`
+        # itself, so this payload does not copy it and cannot drift from it.
+        graded_lo = f_lo if band.graded_lo_hz is None else float(band.graded_lo_hz)
         in_band = [
             record
             for record in records
-            if record["f_lo_hz"] < f_hi and record["f_hi_hz"] > f_lo
+            if record["f_lo_hz"] < f_hi and record["f_hi_hz"] > graded_lo
         ]
         out.append(
             {
@@ -4237,6 +4253,42 @@ def cloud_validity_floor_hz(positions: Sequence[_CloudPosition]) -> float | None
     ]
     usable = [f for f in floors if math.isfinite(f) and f > 0.0]
     return max(usable) if usable else None
+
+
+def cloud_trusted_floor_hz(validity_floor_hz: float | None) -> float | None:
+    """The group's TRUSTED floor (``2.5/T``) from its validity floor
+    (``1/T``) — the number the flat spec is graded above (issue #2551).
+
+    ``1/T`` is where a reflection-free window of ``T`` has one full cycle of
+    resolution; ``2.5/T`` is where the gated magnitude is actually
+    trustworthy, and the E4 gate-stability sweep is why the distinction is
+    not academic — the 1-4 kHz band moved **2.1 dB** across 3/5/7/10 ms
+    gates purely because part of it sat below the shorter windows' trusted
+    floor, while everything above it held to <=0.006 dB
+    (:data:`~jasper.audio_measurement.gating.TRUSTED_FLOOR_MULTIPLIER`).
+    The gate's own delta probe already prices itself over this floor and
+    refuses to grade below it; before #2551 the spec evaluator did not, so
+    one capture was read by two graders against two honesty floors.
+
+    Derived rather than plumbed, deliberately. Both floors come from the
+    same window — ``f_trusted = 2.5 * f_valid`` exactly
+    (:func:`~jasper.audio_measurement.gating.f_trusted_floor_hz` is that
+    multiply) — and the multiplier is monotonic, so the trusted floor of the
+    group's WORST validity floor is the worst of the positions' trusted
+    floors. One input, one owner, and no caller that passes a validity floor
+    can forget to pass the trusted one and silently grade lower.
+
+    ``None`` in, ``None`` out; likewise for a non-finite or non-positive
+    floor, which is "no floor was established" and never "a floor of zero".
+    Callers clamp nothing then, and say so — see
+    :func:`assemble_cloud_group_result`.
+    """
+    if validity_floor_hz is None:
+        return None
+    floor = float(validity_floor_hz)
+    if not math.isfinite(floor) or floor <= 0.0:
+        return None
+    return TRUSTED_FLOOR_MULTIPLIER * floor
 
 
 def _crossover_region_null_registry(
@@ -4449,49 +4501,57 @@ def assemble_cloud_group_result(
     caller did not state one — "not stated", never "not clamped", the same
     unknown-vs-zero rule ``validity_floor_hz`` follows below.
 
-    **``validity_floor_hz`` clamps the spec band's lower edge.** Bins below
-    the group's gated validity floor (:func:`cloud_validity_floor_hz`) are
-    "not a measurement, they're an artifact of a truncated gate window"
-    (``_analyze_verify``'s own W6.9 comment about the tracking band), so they
-    are excluded from the spec evaluation -- from the reference level as well
-    as from every band's deviation, since a contaminated bin must not be able
-    to re-center the target either. Two properties this deliberately keeps:
+    **The spec is graded above the group's TRUSTED floor, not its validity
+    floor** (issue #2551). ``validity_floor_hz`` is the group's own gated
+    ``1/T`` (:func:`cloud_validity_floor_hz`); :func:`cloud_trusted_floor_hz`
+    turns it into the ``2.5/T`` the gate's delta probe already refuses to
+    grade below, and THAT is what
+    :func:`~jasper.active_speaker.flat_spec.evaluate_flat_spec` intersects
+    every band's lower edge with -- the reference band's included, since a
+    bin the gate cannot support must not be able to re-centre the target
+    either. Both floors are published: ``validity_floor_hz`` for provenance,
+    ``trusted_floor_hz`` as the number the verdicts were actually taken
+    above. Three properties this deliberately keeps:
 
-    * The clamp rides the evaluation's exclusion mask but **not**
-      ``merged_excluded_bands_hz``, which stays the honesty instruments'
-      own count (screen union identified nulls). ``excluded_interval_count``
-      on `/state` is the "how much interference did we find" number and must
-      not silently absorb a gate artifact. ``validity_floor_hz`` is reported
-      alongside so a reader can tell the two apart in ``spec.n_excluded`` --
-      and it is carried all the way to the LIVE surfaces, not just the
-      durable state and the bundle: ``_compact_cloud_status`` projects it
-      onto `/state`, the envelope, and the doctor's read. Without that a page
-      seeing a large ``n_excluded`` could not distinguish a combed room from
-      one capture's collapsed gate.
-    * A ``None`` floor clamps NOTHING and is reported as ``None``. The
+    * **The intersection is a band EDGE, not a mask entry.** A sub-floor bin
+      is not in the band at all, so ``spec.n_excluded`` stays exactly the
+      honesty instruments' own count (screen union identified nulls) and a
+      gate artifact can never inflate it. Which edge each band was graded
+      from is disclosed per band as ``graded_lo_hz``, delta-probe style, and
+      the report echoes ``trusted_floor_hz`` and the clamped
+      ``reference_band_hz`` on its face. ``merged_excluded_bands_hz`` is
+      likewise untouched: ``excluded_interval_count`` on `/state` remains the
+      "how much interference did we find" number.
+    * **A band left entirely below the floor is ``evaluable=False``, never
+      ``passed=False``.** There is no evidence there, which is not a
+      failure; ``graded_lo_hz >= f_hi_hz`` is the tell that distinguishes it
+      from a band the axis never reached.
+      :attr:`~jasper.active_speaker.flat_spec.FlatSpecReport.overall_passed`
+      still treats unevaluable as not-passed, so nothing is flattered by the
+      distinction.
+    * **A ``None`` floor clamps NOTHING and is reported as ``None``.** The
       alternative -- withholding the whole gauge, which is what the retired
       per-capture ``_flatness_tracking`` did when a capture had no floor --
       would throw away the 2-16 kHz evidence over an unverified lower edge.
 
-    Regime, measured on the S0 main leg 2026-07-27, RE-DERIVED 2026-08-02
-    (#2045): the spec table's lower edge is 250 Hz and **all ten** of that
-    session's positions gate to 142.857 Hz, where the clamp changes no graded
-    number at all -- every band figure, the reference level, the verdict, and
-    the whole gauge are byte-identical (only the report-wide
-    ``excluded_intervals`` gains the sub-250 Hz region it removed, which is
-    why the gauge quotes spec-band BIN counts and not an interval count). **So
-    the group floor on this corpus is 142.857 Hz and the clamp is a no-op**,
-    which ``test_flat_spec_ssot.test_the_real_s0_positions_no_longer_collapse_a_gate``
-    pins.
+    Regime, measured on the S0 main leg 2026-07-27, re-derived 2026-08-02
+    (#2045) and re-derived again for #2551: **all ten** of that session's
+    positions gate to a 142.857 Hz validity floor, i.e. a **357.14 Hz**
+    trusted floor, which sits ABOVE the spec table's 250 Hz edge and
+    therefore clamps 987 bins out of the low band. Before #2551 the
+    evaluator was handed the 142.857 Hz number instead, which sits below
+    250 Hz and changed no graded figure at all -- a clamp in name only, on a
+    corpus whose worst deviation bins were beneath the floor its own gate
+    disclosure printed. ``test_flat_spec_ssot`` pins both halves: that the
+    positions no longer collapse a gate, and what intersecting at the
+    trusted floor costs.
 
-    It was not always. Until PR #1991, ``cloud_04`` reported a measured
-    reflection at **1777.8 Hz** and the group floor was 1777.8 Hz -- but that
-    reading was the first-reflection detector firing early, the #1790 field
-    instance the prominence vote was written to reject. The COST of clamping
-    is still worth stating, because it is the mechanism's own behaviour and it
-    moves the headline in the flattering direction; measured at that same
-    floor supplied explicitly (``test_flat_spec_ssot.CLAMP_FLOOR_HZ``, pinned
-    by ``test_the_validity_floor_clamp_costs_the_low_band``), clamping:
+    **Clamping is not free, and it moves the headline in the flattering
+    direction.** That is the mechanism's own behaviour and it is stated here
+    rather than discovered later; measured on the S0 corpus at a 1777.8 Hz
+    trusted floor supplied explicitly
+    (``test_flat_spec_ssot.CLAMP_TRUSTED_FLOOR_HZ``, pinned by
+    ``test_the_trusted_floor_clamp_costs_the_low_band``), clamping:
 
     * moves **987 bins** out of the 250 Hz-2 kHz band;
     * **re-centres the reference** -27.2386 -> -28.3062 dB (-1.0676 dB),
@@ -4515,9 +4575,12 @@ def assemble_cloud_group_result(
     way. Do not generalize the sign.
 
     None of that is the speaker improving -- it is the same speaker graded on
-    fewer bins, which is exactly what ``n_bins``/``n_excluded`` on the gauge
-    exist to keep visible (``ConvergenceResidual``'s own rule). One collapsed
-    gate in a group is therefore expensive by design.
+    fewer bins, which is exactly what the gauge's ``n_bins`` exists to keep
+    visible (``ConvergenceResidual``'s own "a residual that fell because the
+    denominator shrank is not convergence" rule). Its sibling ``n_excluded``
+    reports a different thing and deliberately does not move here: the clamp
+    is an edge, not a mask entry. One short gate in a group is therefore
+    expensive by design, and the group takes the WORST position's floor.
 
     **Deferred alternative, recorded rather than dismissed:** the honest
     third option is per-position, per-bin validity masking INSIDE
@@ -4527,9 +4590,10 @@ def assemble_cloud_group_result(
     is strictly better than a group-wide clamp and is out of scope here only
     because it is a ``spatial_combine`` signature and estimator change (the
     power mean would need per-bin weights), not a wiring one. Revisit
-    trigger: a real session where one collapsed gate meaningfully shrinks the
-    graded band -- the S0 ``cloud_04`` case above is that evidence already,
-    so this is queued on measured grounds, not speculation.
+    trigger: a real session where one short gate meaningfully shrinks the
+    graded band -- the S0 corpus is that evidence already now that the floor
+    is the trusted one (357.14 Hz clears the table's 250 Hz edge on every
+    position), so this is queued on measured grounds, not speculation.
 
     **Fail-soft, named, not absolute** (S4 review finding, 2026-07-26 --
     corrected from an earlier "any exception is caught" overclaim). Catches
@@ -4578,19 +4642,18 @@ def assemble_cloud_group_result(
         merged_mask = np.asarray(combined.excluded, dtype=bool) | np.asarray(
             null_report.excluded, dtype=bool
         )
-        # NOTE: ``crossover_registry`` is deliberately absent from this union
-        # and from ``spec_mask`` below. See its builder for why classification
-        # there may never become gating.
-        # The honesty mask is what the instruments found; the spec mask adds
-        # the gate-validity clamp on top (see this function's docstring for
-        # why the two stay distinguishable).
-        spec_mask = merged_mask
-        if validity_floor_hz is not None and math.isfinite(validity_floor_hz):
-            spec_mask = merged_mask | (
-                np.asarray(combined.freqs_hz, dtype=float) < float(validity_floor_hz)
-            )
+        # NOTE: ``crossover_registry`` is deliberately absent from this union.
+        # See its builder for why classification there may never become
+        # gating.
+        # The mask handed to the evaluator is EXACTLY what the honesty
+        # instruments found. The gate's floor rides beside it as a band-edge
+        # intersection instead (#2551), so ``n_excluded`` cannot conflate an
+        # interference verdict with a short window — see this function's
+        # docstring.
+        trusted_floor_hz = cloud_trusted_floor_hz(validity_floor_hz)
         spec_report = evaluate_flat_spec(
-            combined.freqs_hz, combined.power_mean_spec_db, spec_mask,
+            combined.freqs_hz, combined.power_mean_spec_db, merged_mask,
+            trusted_floor_hz=trusted_floor_hz,
         )
         # #2291/#2160: hand the LIVE report to a caller that needs the object
         # rather than the serialized copy below. ``evaluate_spec`` reads
@@ -4649,6 +4712,12 @@ def assemble_cloud_group_result(
                 if validity_floor_hz is not None and math.isfinite(validity_floor_hz)
                 else None
             ),
+            # #2551: the floor the spec was actually graded above — 2.5x the
+            # one directly above, and the same number the gate's own delta
+            # probe prices itself over. Published beside its input rather
+            # than in place of it, so a reader can see both the window's
+            # resolution limit and its trust limit.
+            "trusted_floor_hz": trusted_floor_hz,
             "echo_band_hz": list(echo_band_hz),
             "echo_band_provenance": (
                 dict(echo_band_provenance)
@@ -8626,8 +8695,9 @@ class CrossoverV2Session:
         review finding, 2026-07-26), never a second call to
         :func:`combine_cloud_positions`. ``positions`` is that same group's
         retained list, read for exactly one thing: its gated validity floor
-        (:func:`cloud_validity_floor_hz`), which clamps the spec band's lower
-        edge (plan PR-5).
+        (:func:`cloud_validity_floor_hz`), from which
+        :func:`cloud_trusted_floor_hz` derives the ``2.5/T`` the spec bands'
+        lower edges are intersected with (#2551).
 
         WO-1 adds a second read of the same group — ``_group_position_meta``,
         the per-position records the retention seam was already handed. They
