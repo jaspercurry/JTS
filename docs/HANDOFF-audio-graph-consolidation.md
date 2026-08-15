@@ -582,6 +582,32 @@ ROLLBACK  jasper-active-speaker baseline-reemit --endpoint aloop
        -> jasper-fanin-coupling-reconcile loopback            (ring keys unset)
 ```
 
+**Step 1 accepts EITHER roleful boot graph — a box does not have to be
+commissioned to arm.** A roleful box has two legal boot graphs, and the
+fleet-typical composite (jts.local today, jts5 after re-fit) is on the
+second one by design:
+
+| Boot graph | Class | What step 1 does |
+|---|---|---|
+| APPLIED baseline | `approved_active_runtime` | re-emits it from its immutable snapshot |
+| all-muted startup anchor | `all_muted_active_startup` | re-stages it from the box's own saved design draft + crossover preview |
+
+An applied baseline wins when both are present, so a commissioned box
+(jts3) behaves exactly as it always has. Any other class — a parked
+graph, an unrecognised one, a topology with no roleful outputs — is
+refused by name; step 1 never guesses which of the two a box was meant
+to be. Only `--endpoint` is operator-supplied: the re-stage derives
+everything else from persisted on-box state, so it cannot smuggle in a
+draft the box never saved.
+
+The anchor path publishes the same way the baseline path does, and for
+the same reason: it stages into a scratch location first, re-proves the
+result, and only then writes the live artifact plus the staged metadata
+that LOCATES it (the runtime contract follows that metadata's
+`config.path`). The anchor sits at a fixed path, so writing it *is*
+moving the boot graph — there is no separate pointer to gate on, which
+is why the proof has to come first.
+
 **Step 1 moves BOTH device halves, and declares the RESOLVED wire.** The
 coupling is end-to-end, so the re-emit's ring-endpoint graph captures
 `jts_ring_capture` **and** plays the active ring: under `shm_ring` fan-in writes
@@ -625,9 +651,10 @@ The graph's playback device is in turn chosen by `resolve_output_layout`
 from that marker. Left to themselves the two only reproduce each other —
 a fixed point that holds in BOTH directions, so a box can neither arm nor
 release. `--endpoint` is the explicit operator act that breaks it: it
-re-emits the applied baseline against a NAMED endpoint, publishes it over
-the artifact the statefile reads, and repoints the statefile. Everything
-after that is derivation. (Ratified as Option B in the R7b panel round 2;
+re-emits this box's roleful boot graph — applied baseline or all-muted
+startup anchor, per the table above — against a NAMED endpoint,
+publishes it over the artifact the statefile reads, and repoints the
+statefile. Everything after that is derivation. (Ratified as Option B in the R7b panel round 2;
 it amends E1's earlier coupling-first rollback ordering for the same
 reason the arm needs it.)
 

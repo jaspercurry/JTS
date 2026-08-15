@@ -29,6 +29,8 @@ from jasper.active_speaker.environment import probe_active_speaker_environment
 from jasper.active_speaker.runtime_contract import (
     DEFAULT_FLAT_OUTPUTD_CONFIG,
     DEFAULT_RING_FLAT_OUTPUTD_CONFIG,
+    GRAPH_ALL_MUTED_ACTIVE_STARTUP,
+    GRAPH_APPROVED_ACTIVE_RUNTIME,
     PARKED_MUTED_STATUS,
     apply_safe_graph_decision_to_statefile,
     parked_muted_exits,
@@ -409,6 +411,369 @@ def _baseline_reemit_endpoint(
     return resolve_active_playback_device(topology)
 
 
+def _startup_anchor_from_decision(decision: Any) -> Any | None:
+    """The decision's operative graph, when it IS the all-muted startup anchor.
+
+    Two safe-graph statuses can put a box on that anchor, and they differ only in
+    where the graph came from: ``preserve_current`` (the loaded graph already is
+    it) and ``select_active_startup`` (the persisted staged candidate is it). The
+    classification is checked rather than the status alone, because
+    ``preserve_current`` is also how an APPROVED runtime graph and a
+    driver-domain baseline are preserved — keying on the status would let this
+    command re-stage over a box that is on neither.
+    """
+    graph = {
+        "preserve_current": decision.current_graph,
+        "select_active_startup": decision.fallback_graph,
+    }.get(decision.status)
+    if (
+        graph is not None
+        and graph.allowed
+        and graph.classification == GRAPH_ALL_MUTED_ACTIVE_STARTUP
+    ):
+        return graph
+    return None
+
+
+def _describe_safe_graph_for_refusal(decision: Any) -> str:
+    """What this box was actually found on, in one line an operator can act on."""
+    seen = [
+        f"{label}={graph.classification}"
+        for label, graph in (
+            ("current", decision.current_graph),
+            ("preferred", decision.preferred_graph),
+            ("fallback", decision.fallback_graph),
+        )
+        if graph is not None
+    ]
+    detail = f"safe-graph status={decision.status}"
+    if seen:
+        detail += " (" + ", ".join(seen) + ")"
+    return detail
+
+
+def _relocate_validation_evidence(
+    validation: Any, proof_path: Path, target: Path
+) -> Any:
+    """Re-point a validation result's own path fields from the proof dir to the target.
+
+    ``validate_camilla_config`` records the file it was handed — ``path`` on
+    every return branch, and the same string inside ``argv`` when the camilladsp
+    binary exists. The anchor is proved in a temporary directory that is deleted
+    before the metadata lands, so publishing the result verbatim would record a
+    path that cannot exist. The VERDICT is about bytes that are now at ``target``,
+    so the verdict travels and its locations are corrected with it.
+
+    Substring replacement over ``argv`` rather than a rebuilt command line: the
+    argv belongs to the validator, and guessing its shape here would be a second
+    place that knows how it invokes camilladsp.
+    """
+    if not isinstance(validation, Mapping):
+        return validation
+    proof, dest = str(proof_path), str(target)
+    relocated = dict(validation)
+    if relocated.get("path") == proof:
+        relocated["path"] = dest
+    argv = relocated.get("argv")
+    if isinstance(argv, list):
+        relocated["argv"] = [
+            dest if arg == proof else arg for arg in argv
+        ]
+    return relocated
+
+
+def _reemit_staged_startup_anchor(
+    args: argparse.Namespace, topology: Any, device: str, source: str
+) -> int:
+    """Re-stage the all-muted startup ANCHOR against ``device``. Step 1, no baseline.
+
+    The fleet-typical composite box is mid-commission by design: it has no
+    APPLIED baseline, and its boot graph is the all-muted staged startup graph.
+    Its ring arm needs the same first step every roleful box needs — the GRAPH
+    moves first, so ``jasper-audio-hardware-reconcile`` has a loaded graph to
+    derive the endpoint marker FROM. Refusing here left that box with no step 1
+    at all, and therefore no way onto (or off) the ring.
+
+    DERIVED FROM PERSISTED STATE ONLY. The re-stage reads the box's own saved
+    design draft and crossover preview — the same two files
+    ``jasper.active_speaker.web_commissioning._stage_startup_config`` reads when
+    it is handed neither a preset nor a preview. The operator supplies exactly
+    one thing, ``--endpoint``, which is the act that breaks the marker<->graph
+    fixed point; nothing else about the graph is operator-supplied.
+
+    NOTHING LIVE IS TOUCHED UNTIL THE GRAPH PROVES. The staged artifact sits at a
+    FIXED path, so writing it IS moving the boot graph — there is no separate
+    pointer to gate on. So the re-stage runs against a temporary directory
+    first, with the real CamillaDSP validation, and only the exact bytes that
+    proved are published over the live artifact. A refusal leaves the box's
+    existing anchor untouched, which mirrors the applied path's "a refusal
+    writes nothing at all".
+
+    SINGLE-FLIGHT AGAINST A LIVE COMMISSION LOAD. The path this publishes over is
+    not only the boot graph — it is the universal RE-MUTE anchor of the audible
+    commissioning flow. ``load_driver_commissioning_config`` records it as
+    ``previous_config_path``, and four controls reload exactly it: the
+    commission-load rollback, ``commission-rollback``, ``commission-ramp abort``,
+    and the operator's own by-ear ``commission-ramp ack --outcome too_loud``.
+    Moving it to a different endpoint while a driver is armed at level would
+    re-point the operator's stop button at a graph whose device this box may not
+    be arming yet. So this refuses while a commission load is active, mirroring
+    the refusal ``_cmd_commission_load`` already makes for the same shared
+    artifact; ``--force`` is the same escape hatch there. Roll back first.
+
+    A STALE ``loaded`` RECORD REFUSES TOO, and that is expected rather than a
+    bug to route around. The state file is durable
+    (``/var/lib/jasper/active_speaker_commission_load.json``) while per-driver
+    commissioning is deliberately transient, so a reboot or a CamillaDSP restart
+    mid-commission leaves ``status="loaded"`` on disk with nothing loaded. This
+    reads that record RAW — no live-graph consult — because the whole point of
+    the command is to work with CamillaDSP down, and
+    ``commission_load_runtime_status`` (what ``commission-rollback`` and the web
+    wizard overlay to report ``stale``) needs the running graph to answer. The
+    way past a stale record is ``--force``, or a ``commission-rollback`` /
+    wizard visit, which reconcile the record against the live graph.
+    """
+    import tempfile
+
+    from jasper.active_speaker.crossover_preview import load_crossover_preview
+    from jasper.active_speaker.design_draft import load_design_draft
+    from jasper.active_speaker.runtime_contract import write_camilla_statefile
+    from jasper.active_speaker.staging import (
+        stage_protected_startup_config,
+        staged_config_path,
+        staged_metadata_path,
+    )
+    from jasper.atomic_io import atomic_write_json, atomic_write_text
+
+    # Single-flight (see SINGLE-FLIGHT above). Checked BEFORE the stage, so a
+    # refused run does no work and touches nothing at all.
+    existing = load_commission_load_state()
+    if existing.get("status") == "loaded" and not args.force:
+        refusal = {
+            "status": "refused",
+            "reason": "commission_load_active",
+            "active_target": existing.get("target"),
+            "candidate_config_path": existing.get("candidate_config_path"),
+            "next_step": (
+                "A per-driver commissioning config is loaded, and this command "
+                "republishes the all-muted anchor that commission-rollback / "
+                "commission-ramp abort / `ack --outcome too_loud` reload. Run "
+                "`commission-rollback` first, or pass --force."
+            ),
+        }
+        if args.json:
+            print(json.dumps(refusal, indent=2, sort_keys=True))
+        else:
+            print("Re-emit refused: a per-driver commissioning load is active.")
+            print(f"  active target: {existing.get('target')}")
+            print(f"  {refusal['next_step']}")
+        return 1
+
+    design_draft = load_design_draft()
+    crossover_preview = load_crossover_preview(current_design_draft=design_draft)
+
+    with tempfile.TemporaryDirectory(prefix="jts-reemit-anchor-") as tmp:
+        proof_dir = Path(tmp)
+        payload = stage_protected_startup_config(
+            topology,
+            crossover_preview=crossover_preview,
+            playback_device=device,
+            config_dir=proof_dir,
+            metadata_path=proof_dir / "staged_metadata.json",
+        )
+        blockers = [
+            issue
+            for issue in payload.get("issues") or []
+            if isinstance(issue, Mapping) and issue.get("severity") == "blocker"
+        ]
+        if payload.get("status") != "staged" or blockers:
+            print(
+                "ERROR: could not re-stage the all-muted startup anchor against "
+                f"{device}; NOTHING was written"
+            )
+            for issue in blockers:
+                print(
+                    f"  [{issue.get('severity')}] {issue.get('code')}: "
+                    f"{issue.get('message') or issue.get('detail')}"
+                )
+            return 1
+
+        proof_path = Path(payload["config"]["path"])
+        yaml = proof_path.read_text(encoding="utf-8")
+
+        # RE-PROOF before any byte lands, exactly as the applied path re-proves —
+        # and through the SAME host that will select this graph at the next
+        # deploy or CamillaDSP restart. Asking the selector rather than the
+        # classifier directly is what makes the answer mean "this box will boot
+        # from it", not merely "these bytes classify". It also keeps
+        # `persisted_candidate` classification owned by one function
+        # (`tests/test_active_speaker_cli.py` pins that), instead of teaching a
+        # second caller the evidence-pairing rules.
+        #
+        # The proof graph goes in as `current_config_path` so the selector judges
+        # THESE bytes. Left to its default it would read the statefile — the box's
+        # existing anchor — and happily preserve the very graph being replaced.
+        # The staged metadata is the proof run's own, so the graph is judged
+        # against the evidence that describes it rather than the outgoing set.
+        proof_decision = safe_graph_for_current_topology(
+            topology,
+            current_config_path=proof_path,
+            applied_baseline_path=baseline_profile_state_path(
+                args.applied_baseline_state
+            ),
+            staged_metadata_path=Path(payload["metadata_path"]),
+            # There is no applied baseline on this path by definition; saying so
+            # keeps a missing-baseline read out of the decision entirely.
+            consider_applied_baseline=False,
+        )
+        graph = _startup_anchor_from_decision(proof_decision)
+        selected = proof_decision.selected_config_path
+        if graph is None or selected != str(proof_path):
+            print(
+                "ERROR: the re-staged startup anchor did not re-prove as "
+                f"{GRAPH_ALL_MUTED_ACTIVE_STARTUP}; NOTHING was written"
+            )
+            print(f"  found:  {_describe_safe_graph_for_refusal(proof_decision)}")
+            for issue in proof_decision.issues:
+                print(
+                    f"  [{issue.get('severity')}] {issue.get('code')}: "
+                    f"{issue.get('message')}"
+                )
+            return 1
+
+        if args.out:
+            preview_path = Path(args.out)
+            if not preview_path.parent.exists():
+                print(f"ERROR: parent directory does not exist: {preview_path.parent}")
+                return 1
+            atomic_write_text(preview_path, yaml, mode=0o640)
+            return _report_startup_anchor_reemit(
+                args,
+                device=device,
+                source=source,
+                classification=graph.classification,
+                yaml=yaml,
+                written_path=preview_path,
+                preview=True,
+                statefile_written=False,
+            )
+
+        # Publish the PROVEN bytes. YAML first, then the metadata that locates
+        # it. Both orders are recoverable — the anchor's path is FIXED, so
+        # metadata written first would locate the previous, still-valid bytes
+        # rather than nothing — but this order keeps the interleaved window
+        # pointing at a graph whose evidence is at worst one revision stale,
+        # instead of at bytes its evidence has never described.
+        # Second unlocked writer of this pair (the first is the /sound wizard's
+        # own staging): interleaved runs could leave one graph's metadata over
+        # another's bytes. Not locked here because no shared lock covers this
+        # pair today and inventing one is a two-writer change; both writers emit
+        # all-muted anchors for the same topology, so the bounded consequence is
+        # stale evidence, not an audible one. Backlog: issue #2518.
+        target = staged_config_path()
+        meta_target = staged_metadata_path()
+        try:
+            target_mode = stat.S_IMODE(target.stat().st_mode)
+        except OSError:
+            target_mode = 0o640
+        atomic_write_text(
+            target, yaml, mode=target_mode, group_from_parent=True, durable=True
+        )
+        # Every field that names a LOCATION is rewritten — the three top-level
+        # ones and the validation result's own `path`/`argv`, which
+        # `validate_camilla_config` builds from whatever file it was handed and
+        # which would otherwise publish the deleted proof directory. Nothing
+        # reads those two today (`_staged_candidate_ready` takes only `status`),
+        # so this is evidence honesty rather than behaviour — but published
+        # evidence naming a path that cannot exist is exactly the kind of thing
+        # a later reader trusts. Every remaining field describes the graph
+        # itself and is location-independent, so the published evidence stays
+        # the evidence that proved.
+        published = dict(payload)
+        published["metadata_path"] = str(meta_target)
+        published["config"] = {
+            **payload["config"],
+            "path": str(target),
+            "basename": target.name,
+            "validation": _relocate_validation_evidence(
+                payload["config"].get("validation"), proof_path, target
+            ),
+        }
+        # durable=True to match the graph write above: this file is what LOCATES
+        # the graph, so losing it to a power cut while the durable half survives
+        # leaves the box off its anchor until someone re-stages. It parks silent
+        # and still takes deploys, but the two halves should survive together.
+        atomic_write_json(
+            meta_target,
+            published,
+            mode=0o640,
+            group_from_parent=True,
+            durable=True,
+        )
+
+        statefile = Path(args.statefile)
+        statefile_written = False
+        if read_camilla_statefile_config_path(statefile) != str(target):
+            write_camilla_statefile(statefile, target)
+            statefile_written = True
+
+        return _report_startup_anchor_reemit(
+            args,
+            device=device,
+            source=source,
+            classification=graph.classification,
+            yaml=yaml,
+            written_path=target,
+            preview=False,
+            statefile_written=statefile_written,
+        )
+
+
+def _report_startup_anchor_reemit(
+    args: argparse.Namespace,
+    *,
+    device: str,
+    source: str,
+    classification: str,
+    yaml: str,
+    written_path: Path,
+    preview: bool,
+    statefile_written: bool,
+) -> int:
+    payload = {
+        "playback_device": device,
+        "playback_device_source": source,
+        "classification": classification,
+        "preview": preview,
+        "written_path": str(written_path),
+        "statefile_path": str(args.statefile),
+        "statefile_written": statefile_written,
+        "bytes": len(yaml),
+        "reemitted": "staged_startup_anchor",
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+    print(f"Re-staged all-muted startup anchor against playback_device={device}")
+    print(f"  source:         {source}")
+    print(f"  classification: {classification}")
+    print(f"  bytes:          {len(yaml)}")
+    if preview:
+        print(f"  PREVIEW only:   {written_path}")
+        print("  (live artifact, staged metadata and statefile untouched)")
+    else:
+        print(f"  wrote:          {written_path}")
+        print(
+            "  statefile:      "
+            + (
+                f"repointed -> {written_path}"
+                if statefile_written
+                else "already correct"
+            )
+        )
+    return 0
+
+
 def _cmd_baseline_reemit(args: argparse.Namespace) -> int:
     """Re-emit the APPLIED active baseline against a chosen playback endpoint.
 
@@ -431,10 +796,34 @@ def _cmd_baseline_reemit(args: argparse.Namespace) -> int:
     (the marker derives 1) -> ``jasper-fanin-coupling-reconcile shm_ring``, and
     the rollback is its mirror through ``--endpoint aloop``.
 
-    It is a pure re-emit from the IMMUTABLE applied snapshot — the same seam
-    ``/sound`` and the commissioning host use — so Layer A is rebuilt from the
-    evidence that was applied, not from any current draft. The only thing that
-    moves is the endpoint the graph is emitted against.
+    ON THE APPLIED PATH it is a pure re-emit from the IMMUTABLE applied snapshot
+    — the same seam ``/sound`` and the commissioning host use — so Layer A is
+    rebuilt from the evidence that was applied, not from any current draft, and
+    the only thing that moves is the endpoint the graph is emitted against. The
+    ANCHOR path below has no immutable snapshot to rebuild from: it re-stages
+    from the box's CURRENT design draft and crossover preview, so a draft edited
+    since the anchor was last staged does land in the re-staged graph. That is
+    the same derivation the ``/sound`` wizard's own staging runs, through the
+    same bind/protection/all-muted gates, and the result is all-muted either way
+    — but it is a real difference between the two paths, not a shared "only the
+    endpoint moves" guarantee.
+
+    TWO GRAPH CLASSES ARE ACCEPTED, because a roleful box has two legal boot
+    graphs and both have to be able to take step 1:
+
+    * ``approved_active_runtime`` — a commissioned box's APPLIED baseline. The
+      path above.
+    * ``all_muted_active_startup`` — the all-muted startup ANCHOR a
+      mid-commission box boots from, which is the fleet-typical composite state
+      (no applied baseline yet). Re-staged from the box's own persisted design
+      draft and crossover preview by
+      :func:`_reemit_staged_startup_anchor`.
+
+    Precedence is applied-baseline-first: when a baseline exists it is re-emitted
+    and the anchor is left alone, so a commissioned box behaves exactly as it did
+    before the anchor path existed. Anything else — a parked graph, an
+    unrecognised class, a topology with no roleful outputs — is refused by name
+    rather than guessed at.
 
     WHAT IT WRITES. By default, the artifact the statefile and the classifier
     actually read: the applied profile's own ``config.path``. The bytes are
@@ -460,7 +849,6 @@ def _cmd_baseline_reemit(args: argparse.Namespace) -> int:
         recompose_applied_baseline_yaml,
     )
     from jasper.active_speaker.runtime_contract import (
-        GRAPH_APPROVED_ACTIVE_RUNTIME,
         classify_bass_extension_graph,
         write_camilla_statefile,
     )
@@ -469,17 +857,41 @@ def _cmd_baseline_reemit(args: argparse.Namespace) -> int:
 
     topology = load_output_topology_strict(args.topology)
     applied = load_applied_baseline_profile_state(args.applied_baseline_state)
-    if not applied:
-        print(
-            "ERROR: no APPLIED active-speaker baseline profile is saved; there is "
-            "nothing to re-emit (commission the speaker first)"
-        )
-        return 1
     device, source = _baseline_reemit_endpoint(topology, args.endpoint)
     if not device:
         print(
             "ERROR: this topology resolves no active playback endpoint, so there "
             "is no device to re-emit against"
+        )
+        return 1
+
+    if not applied:
+        # No applied baseline is the fleet-typical MID-COMMISSION state, not a
+        # broken one — so ask what this box is actually booting from before
+        # refusing. An all-muted startup anchor is a legal roleful boot graph and
+        # gets step 1; anything else is named and refused.
+        decision = safe_graph_for_current_topology(
+            topology,
+            statefile_path=args.statefile,
+            applied_baseline_path=baseline_profile_state_path(
+                args.applied_baseline_state
+            ),
+        )
+        if _startup_anchor_from_decision(decision) is not None:
+            return _reemit_staged_startup_anchor(args, topology, device, source)
+        print(
+            "ERROR: no APPLIED active-speaker baseline profile is saved, and this "
+            "box is not on the all-muted active startup graph either, so there is "
+            "nothing to re-emit"
+        )
+        print(f"  found:  {_describe_safe_graph_for_refusal(decision)}")
+        print(
+            f"  accepts: an applied baseline ({GRAPH_APPROVED_ACTIVE_RUNTIME}) or "
+            f"the all-muted startup anchor ({GRAPH_ALL_MUTED_ACTIVE_STARTUP})"
+        )
+        print(
+            "  next:   commission the speaker at http://jts.local/sound/setup/ "
+            "(stage a protected startup config), then re-run this command"
         )
         return 1
 
@@ -1132,11 +1544,36 @@ def build_parser() -> argparse.ArgumentParser:
     reemit = sub.add_parser(
         "baseline-reemit",
         help=(
-            "re-emit the APPLIED active baseline against a playback endpoint, "
+            "re-emit this box's roleful boot graph against a playback endpoint, "
             "publishing it over the live artifact and repointing the statefile. "
             "This is the FIRST step of the active-ring arm (--endpoint ring) and "
             "of its rollback (--endpoint aloop): the reconciler derives its "
-            "endpoint marker from the loaded graph, so the graph must move first"
+            "endpoint marker from the loaded graph, so the graph must move first. "
+            "Accepts either roleful boot graph — an APPLIED baseline "
+            "(approved_active_runtime) on a commissioned box, or the all-muted "
+            "startup anchor (all_muted_active_startup) on a mid-commission one, "
+            "which is re-staged from the box's own saved design draft and "
+            "crossover preview. A baseline wins when both are present; any other "
+            "graph class is refused by name"
+        ),
+        # `help=` shows in the PARENT listing; `description=` is what an operator
+        # running `baseline-reemit --help` actually reads. The accepted graph
+        # classes are spelled from the runtime contract's own constants so this
+        # text cannot drift away from what the command really accepts.
+        description=(
+            "Re-emit this box's roleful boot graph against a playback endpoint. "
+            "Two graph classes are accepted: "
+            f"'{GRAPH_APPROVED_ACTIVE_RUNTIME}' (a commissioned box's APPLIED "
+            "baseline, re-emitted from its immutable snapshot) and "
+            f"'{GRAPH_ALL_MUTED_ACTIVE_STARTUP}' (a mid-commission box's "
+            "all-muted startup anchor, re-staged from its own saved design draft "
+            "and crossover preview). An applied baseline takes precedence when "
+            "both are present. Any other graph class — a parked graph, an "
+            "unrecognised one, or a topology with no roleful outputs — is refused "
+            "by name rather than guessed at. This is the FIRST step of the "
+            "active-ring arm (--endpoint ring) and of its rollback (--endpoint "
+            "aloop): the reconciler derives its endpoint marker from the loaded "
+            "graph, so the graph must move first."
         ),
     )
     reemit.add_argument(
@@ -1171,6 +1608,17 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "PREVIEW: write the re-emitted YAML here and touch nothing else — "
             "no live artifact, no canonical copy, no statefile"
+        ),
+    )
+    reemit.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "re-stage the startup anchor even while a per-driver commissioning "
+            "load is active. Refused by default: this command republishes the "
+            "all-muted anchor that commission-rollback and the Stage-5 ramp's "
+            "abort / `ack --outcome too_loud` reload, so moving it mid-load "
+            "re-points the operator's own stop control"
         ),
     )
     reemit.add_argument("--json", action="store_true")

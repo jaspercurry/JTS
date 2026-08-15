@@ -14,6 +14,9 @@ an operator explicitly arms one.
 
 from __future__ import annotations
 
+import contextlib
+import io
+import json
 import re
 from pathlib import Path
 from types import SimpleNamespace
@@ -1676,6 +1679,37 @@ def _applied_ring_baseline(tmp_path):
     return topology, applied
 
 
+def _startup_anchor_site(topology, out_dir, *, playback_device=None):
+    """Drive ``stage_protected_startup_config``'s emit against the ring.
+
+    The BOOT anchor (#2364). It is the graph a mid-commission box — the
+    fleet-typical composite — actually boots from, so a half-moved device
+    contract here is a durable artifact, not a transient one. Like the candidate
+    site, ``playback_device`` is overridable only so a caller can drive the same
+    site at the ALSA active lane as a control.
+    """
+    from jasper.active_speaker.crossover_preview import build_crossover_preview
+    from jasper.active_speaker.staging import stage_protected_startup_config
+    from tests.active_speaker_fixtures import standard_design_draft
+
+    preview = build_crossover_preview(standard_design_draft(topology))
+
+    def call_site():
+        stage_protected_startup_config(
+            topology,
+            crossover_preview=preview,
+            playback_device=playback_device or RING_ACTIVE_PLAYBACK_DEVICE,
+            config_dir=out_dir,
+            # Pinned to tmp_path: the default is the live
+            # `/var/lib/jasper/active_speaker_staged_config.json`, so omitting it
+            # makes a Pi-side test run overwrite a real speaker's staged metadata.
+            metadata_path=out_dir / "staged_metadata.json",
+            run_config_check=False,
+        )
+
+    return call_site
+
+
 def _recorded_emit_kwargs(
     monkeypatch, call_site, emitter="emit_active_speaker_baseline_config"
 ):
@@ -1695,17 +1729,19 @@ def _recorded_emit_kwargs(
         return real(preset, **kwargs)
 
     monkeypatch.setattr(cy, emitter, recorder)
-    # baseline_profile imported the emitter by name at module import, so the
-    # production seam has its own binding to rebind. Sites whose import is
-    # function-local — crossover-v2's Stage 1 emit resolves the attribute at
-    # call time — have no second binding, and baseline_profile never imported
-    # their emitter at all. Rebinding what exists is not a weakening: a site
-    # whose binding this MISSES records nothing, and the caller's walk then
+    # baseline_profile and staging each imported their emitter by name at module
+    # import, so those production seams have their own binding to rebind. Sites
+    # whose import is function-local — crossover-v2's Stage 1 emit resolves the
+    # attribute at call time — have no second binding, and neither module
+    # imported their emitter at all. Rebinding what exists is not a weakening: a
+    # site whose binding this MISSES records nothing, and the caller's walk then
     # reports every field missing rather than passing quietly.
     import jasper.active_speaker.baseline_profile as bp
+    import jasper.active_speaker.staging as staging
 
-    if hasattr(bp, emitter):
-        monkeypatch.setattr(bp, emitter, recorder)
+    for module in (bp, staging):
+        if hasattr(module, emitter):
+            monkeypatch.setattr(module, emitter, recorder)
     call_site()
     return seen
 
@@ -2036,6 +2072,16 @@ def test_every_emit_devices_field_reaches_the_emitter(tmp_path, monkeypatch):
         "bind_production_play(crossover_v2 CHECK/MEASURE)": (
             _crossover_v2_program_site(topology, tmp_path / "v2", monkeypatch),
             "emit_active_speaker_program_config",
+        ),
+        # Issue #2364 — the sixth instance, and the one the arm ladder walks
+        # over: the all-muted durable BOOT anchor. It forwarded only the device
+        # NAME, so a mid-commission box re-staged at the ring got a ring sink
+        # over the snd-aloop tap in the artifact it BOOTS from. A third emitter
+        # again, and a third module binding, which is why the recorder rebinds
+        # `staging` too.
+        "stage_protected_startup_config(boot anchor)": (
+            _startup_anchor_site(topology, tmp_path / "anchor"),
+            "emit_active_speaker_commissioning_config",
         ),
     }
     for label, (call_site, emitter) in sites.items():
@@ -2789,3 +2835,639 @@ def test_the_crossed_pair_is_unreachable_from_the_reconciler():
         camilla_devices={"playback_device": RING_ACTIVE_PLAYBACK_DEVICE},
     )
     assert [e for e in crossed_errors if "may read only" in e], crossed_errors
+
+
+# --------------------------------------------------------------------------
+# 13. STEP 1 ON A BOX WITH NO APPLIED BASELINE (#2285, #2364).
+#
+# `baseline-reemit` refused outright without an APPLIED baseline. But the
+# fleet-typical composite box (jts.local today, jts5 after re-fit) is
+# mid-commission BY DESIGN: its boot graph is the all-muted staged startup
+# ANCHOR, not a baseline. Every layer BELOW step 1 already admits that shape —
+# `GRAPH_ALL_MUTED_ACTIVE_STARTUP` is a legal outputd endpoint class,
+# `jts_ring_active_playback` is a legal endpoint device, and
+# `active_ring_endpoint_proof` reads only the marker and the conf.d — so the
+# refusal was the ONLY thing standing between that box and the arm ladder.
+#
+# These drive the real command against a real staged artifact and a real
+# statefile. The re-stage, the re-proof, the publish and the repoint all run;
+# only the box's persisted design inputs are supplied by the fixture.
+# --------------------------------------------------------------------------
+
+
+def _anchor_reemit_harness(
+    monkeypatch,
+    tmp_path,
+    *,
+    applied=None,
+    decision_status=None,
+    reproof=None,
+    commission_loaded=False,
+):
+    """Stage `baseline-reemit` on a box whose boot graph is the startup anchor.
+
+    Real staging, real classification, real publish. The safe-graph decision is
+    the one thing stubbed: it reads a box's whole persisted evidence set, has its
+    own tests, and what THIS command owns is which class it accepts and what it
+    does about it.
+    """
+    from types import SimpleNamespace
+
+    from jasper.active_speaker.runtime_contract import (
+        GRAPH_ALL_MUTED_ACTIVE_STARTUP,
+        GRAPH_DRIVER_DOMAIN_BASELINE,
+        GRAPH_PARKED_ALL_MUTED,
+        GraphSafety,
+    )
+    from jasper.active_speaker.crossover_preview import build_crossover_preview
+    from jasper.cli import active_speaker as cli
+    from tests.active_speaker_fixtures import (
+        mono_output_topology,
+        standard_design_draft,
+    )
+
+    topology = mono_output_topology()
+    draft = standard_design_draft(topology)
+
+    live_dir = tmp_path / "live"
+    live_dir.mkdir(parents=True, exist_ok=True)
+    live_config = live_dir / "active_speaker_staged_startup.yml"
+    live_config.write_text("stale: true\n", encoding="utf-8")
+    live_meta = live_dir / "active_speaker_staged_config.json"
+    live_meta.write_text('{"status": "stale"}', encoding="utf-8")
+
+    statefile = tmp_path / "outputd-statefile.yml"
+    statefile.write_text("config_path: /somewhere/else.yml\n", encoding="utf-8")
+
+    monkeypatch.setattr(cli, "load_output_topology_strict", lambda *a, **k: topology)
+    monkeypatch.setattr(
+        "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
+        lambda *a, **k: applied or {},
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.design_draft.load_design_draft", lambda *a, **k: draft
+    )
+    # The box's persisted preview. Built from the SAME saved draft the real
+    # loader would read it against, so the command's "derive from persisted
+    # state only" contract is exercised rather than bypassed.
+    monkeypatch.setattr(
+        "jasper.active_speaker.crossover_preview.load_crossover_preview",
+        lambda *a, **k: build_crossover_preview(draft),
+    )
+    # Redirect only the DEFAULT (no-argument) answer — "where does this box keep
+    # its live anchor". A call that explicitly names a directory or path still
+    # goes where it was directed, which is what keeps the command's own
+    # stage-into-a-temp-dir-first step actually isolated. A blunter stub that
+    # ignored its arguments would send the proof run straight at the live
+    # artifact and make the preview test below vacuous.
+    from jasper.active_speaker import staging as staging_mod
+
+    real_config_path = staging_mod.staged_config_path
+    real_metadata_path = staging_mod.staged_metadata_path
+
+    def _staged_config_path(*, config_dir=None, path=None):
+        if config_dir is None and path is None:
+            return live_config
+        return real_config_path(config_dir=config_dir, path=path)
+
+    def _staged_metadata_path(path=None):
+        return live_meta if path is None else real_metadata_path(path)
+
+    monkeypatch.setattr(staging_mod, "staged_config_path", _staged_config_path)
+    monkeypatch.setattr(staging_mod, "staged_metadata_path", _staged_metadata_path)
+
+    # Commission-load state is stubbed in BOTH directions on purpose: the live
+    # default path would otherwise decide this test's outcome from whatever the
+    # dev machine happens to have on disk.
+    monkeypatch.setattr(
+        cli,
+        "load_commission_load_state",
+        lambda *a, **k: (
+            {"status": "loaded", "target": "mono/tweeter",
+             "candidate_config_path": "/var/lib/camilladsp/configs/commissioning.yml"}
+            if commission_loaded
+            else {}
+        ),
+    )
+
+    # (safe-graph status, classification, which slot carries it). The last two
+    # are the DISCRIMINATOR cases: `preserve_current` is also how an approved
+    # runtime graph and a driver-domain baseline are preserved, so a check keyed
+    # on the status alone would accept them and re-stage an all-muted anchor over
+    # a commissioned box.
+    shapes = {
+        None: ("select_active_startup", GRAPH_ALL_MUTED_ACTIVE_STARTUP, "fallback"),
+        "parked": ("parked_muted", GRAPH_PARKED_ALL_MUTED, "fallback"),
+        "preserve_approved": (
+            "preserve_current", GRAPH_APPROVED_ACTIVE_RUNTIME, "current",
+        ),
+        "preserve_driver_domain": (
+            "preserve_current", GRAPH_DRIVER_DOMAIN_BASELINE, "current",
+        ),
+    }
+    status, classification, slot = shapes[decision_status]
+    graph = GraphSafety(classification=classification, allowed=True, issues=())
+    decision = SimpleNamespace(
+        status=status,
+        selected_config_path=None,
+        current_graph=graph if slot == "current" else None,
+        preferred_graph=None,
+        fallback_graph=graph if slot == "fallback" else None,
+        issues=(),
+    )
+
+    # Stub ONLY the pre-check — "what is this box booting from?" — which reads a
+    # whole persisted evidence set this fixture does not build. The command's
+    # RE-PROOF calls the same selector with an explicit `current_config_path`
+    # (the freshly-staged bytes), and that call is passed through to the real
+    # function: the re-proof is the fail-closure claim these tests exist to
+    # check, so stubbing it would make them prove nothing.
+    real_safe_graph = cli.safe_graph_for_current_topology
+
+    unsafe_reproof = SimpleNamespace(
+        status="blocked",
+        selected_config_path=None,
+        current_graph=GraphSafety(
+            classification="unsafe",
+            allowed=False,
+            issues=({"severity": "blocker", "code": "x", "message": "nope"},),
+        ),
+        preferred_graph=None,
+        fallback_graph=None,
+        issues=({"severity": "blocker", "code": "x", "message": "nope"},),
+    )
+
+    def _safe_graph(topology_arg, **kwargs):
+        if kwargs.get("current_config_path") is None:
+            return decision
+        if reproof == "unsafe":
+            return unsafe_reproof
+        return real_safe_graph(topology_arg, **kwargs)
+
+    monkeypatch.setattr(cli, "safe_graph_for_current_topology", _safe_graph)
+
+    return SimpleNamespace(
+        topology=topology,
+        live_config=live_config,
+        live_meta=live_meta,
+        statefile=statefile,
+    )
+
+
+@pytest.mark.parametrize(
+    "endpoint,expected_playback,expected_capture",
+    [
+        ("ring", RING_ACTIVE_PLAYBACK_DEVICE, RING_CAPTURE_DEVICE),
+        ("aloop", OUTPUTD_ACTIVE_PLAYBACK_DEVICE, "plug:jasper_capture"),
+    ],
+)
+def test_baseline_reemit_restages_the_startup_anchor_at_both_endpoints(
+    monkeypatch, tmp_path, endpoint, expected_playback, expected_capture
+):
+    """A mid-commission box gets step 1, in BOTH directions.
+
+    The arm (`ring`) is the point of the change; the rollback (`aloop`) is the
+    safety net, so it is proven to the same depth rather than assumed to be the
+    same code path with a different string.
+
+    BOTH device halves are asserted, because the whole failure mode this ladder
+    step exists to prevent is a graph that moves its sink and leaves its source
+    behind — a ring sink over the snd-aloop tap is silence with every daemon
+    reporting healthy.
+    """
+    from jasper.cli.active_speaker import main
+
+    h = _anchor_reemit_harness(monkeypatch, tmp_path)
+    code = main([
+        "baseline-reemit",
+        "--endpoint", endpoint,
+        "--statefile", str(h.statefile),
+    ])
+    assert code == 0
+
+    published = h.live_config.read_text(encoding="utf-8")
+    assert f'device: "{expected_playback}"' in published, published
+    assert f'device: "{expected_capture}"' in published, published
+
+    # The metadata is what the runtime contract FOLLOWS to find this candidate,
+    # so a published graph its metadata does not name is an anchor pointing at
+    # nothing.
+    meta = json.loads(h.live_meta.read_text(encoding="utf-8"))
+    assert meta["config"]["path"] == str(h.live_config), meta["config"]
+    assert meta["config"]["basename"] == h.live_config.name
+    assert meta["metadata_path"] == str(h.live_meta)
+    assert meta["status"] == "staged", meta["status"]
+
+    # ...and the boot pointer now names it.
+    assert f"config_path: {h.live_config}" in h.statefile.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("endpoint", ["ring", "aloop"])
+def test_baseline_reemit_prefers_the_applied_baseline_over_the_anchor(
+    monkeypatch, tmp_path, endpoint
+):
+    """Precedence: a commissioned box behaves EXACTLY as it did before.
+
+    jts3 has an applied baseline and is the box this ladder was proven on. If the
+    anchor path could win there, this change would have silently re-pointed a
+    commissioned speaker at a freshly-staged all-muted graph — a working speaker
+    going quiet. So the applied path must win, and the anchor must be left
+    untouched on disk.
+    """
+    from jasper.cli.active_speaker import main
+
+    anchor = _anchor_reemit_harness(monkeypatch, tmp_path)
+    baseline = _reemit_harness(monkeypatch, tmp_path)
+
+    code = main([
+        "baseline-reemit",
+        "--endpoint", endpoint,
+        "--statefile", str(baseline.statefile),
+    ])
+    assert code == 0
+    # The APPLIED artifact was rewritten...
+    assert baseline.artifact.read_text(encoding="utf-8") == "graph: 1\n"
+    # ...and the anchor was not touched at all.
+    assert anchor.live_config.read_text(encoding="utf-8") == "stale: true\n"
+    assert anchor.live_meta.read_text(encoding="utf-8") == '{"status": "stale"}'
+
+
+@pytest.mark.parametrize("endpoint", ["ring", "aloop"])
+def test_baseline_reemit_refuses_a_box_on_neither_accepted_graph(
+    monkeypatch, tmp_path, endpoint
+):
+    """Neither class -> refuse by NAME, write nothing, and say what to do.
+
+    A parked box has no roleful boot graph to move, so re-staging one would be
+    inventing a commissioning state the operator never reached. The refusal names
+    what was found and both accepted classes, so an operator is never left
+    guessing which of the two this box was supposed to be.
+    """
+    from jasper.cli.active_speaker import main
+
+    h = _anchor_reemit_harness(monkeypatch, tmp_path, decision_status="parked")
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        code = main([
+            "baseline-reemit",
+            "--endpoint", endpoint,
+            "--statefile", str(h.statefile),
+        ])
+    text = out.getvalue()
+
+    assert code == 1
+    assert "parked_all_muted" in text, text
+    assert "approved_active_runtime" in text, text
+    assert "all_muted_active_startup" in text, text
+    # Nothing moved — all THREE live surfaces, like the sibling refusal tests.
+    assert h.live_config.read_text(encoding="utf-8") == "stale: true\n"
+    assert h.live_meta.read_text(encoding="utf-8") == '{"status": "stale"}'
+    assert "config_path: /somewhere/else.yml" in h.statefile.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("endpoint", ["ring", "aloop"])
+def test_baseline_reemit_out_is_preview_only_for_the_anchor(
+    monkeypatch, tmp_path, endpoint
+):
+    """--out keeps its inspection semantics on the anchor path too.
+
+    An operator reaching for a preview is not asking to arm the box, and on this
+    path "the live artifact" is three things — the graph, the staged metadata
+    that locates it, and the statefile — so all three are checked.
+    """
+    from jasper.cli.active_speaker import main
+
+    h = _anchor_reemit_harness(monkeypatch, tmp_path)
+    preview = tmp_path / "preview.yml"
+    code = main([
+        "baseline-reemit",
+        "--endpoint", endpoint,
+        "--out", str(preview),
+        "--statefile", str(h.statefile),
+    ])
+    assert code == 0
+    expected_device = (
+        RING_ACTIVE_PLAYBACK_DEVICE
+        if endpoint == "ring"
+        else OUTPUTD_ACTIVE_PLAYBACK_DEVICE
+    )
+    assert f'device: "{expected_device}"' in preview.read_text("utf-8")
+    assert h.live_config.read_text(encoding="utf-8") == "stale: true\n"
+    assert h.live_meta.read_text(encoding="utf-8") == '{"status": "stale"}'
+    assert "config_path: /somewhere/else.yml" in h.statefile.read_text(encoding="utf-8")
+
+
+def test_baseline_reemit_help_names_both_accepted_graph_classes():
+    """The command's own --help states what it accepts, so prose cannot drift.
+
+    The classification tokens are read from the runtime contract rather than
+    typed here: a help string naming a class the contract has renamed is exactly
+    the drift this pins against.
+    """
+    from jasper.active_speaker.runtime_contract import (
+        GRAPH_ALL_MUTED_ACTIVE_STARTUP,
+        GRAPH_APPROVED_ACTIVE_RUNTIME,
+    )
+    from jasper.cli.active_speaker import build_parser
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        with pytest.raises(SystemExit):
+            build_parser().parse_args(["baseline-reemit", "--help"])
+    help_text = out.getvalue()
+
+    assert GRAPH_APPROVED_ACTIVE_RUNTIME in help_text, help_text
+    assert GRAPH_ALL_MUTED_ACTIVE_STARTUP in help_text, help_text
+
+
+@pytest.mark.parametrize("endpoint", ["ring", "aloop"])
+def test_baseline_reemit_anchor_refusal_writes_nothing_at_all(
+    monkeypatch, tmp_path, endpoint
+):
+    """A re-staged anchor that fails the re-proof must not reach disk.
+
+    This is the fail-closure that matters most on this path, and it is STRICTER
+    than the applied path's equivalent for a structural reason: the anchor lives
+    at a FIXED path, so overwriting it IS moving the box's boot graph — there is
+    no separate pointer to withhold. A half-written arm would leave a
+    mid-commission speaker booting from a graph the runtime contract rejects,
+    which is worse than not arming at all.
+
+    All three live surfaces are checked, because "wrote nothing" on this path
+    means three files: the graph, the staged metadata that LOCATES it, and the
+    statefile.
+    """
+    from jasper.cli.active_speaker import main
+
+    h = _anchor_reemit_harness(monkeypatch, tmp_path, reproof="unsafe")
+    code = main([
+        "baseline-reemit",
+        "--endpoint", endpoint,
+        "--statefile", str(h.statefile),
+    ])
+    assert code == 1
+    assert h.live_config.read_text(encoding="utf-8") == "stale: true\n"
+    assert h.live_meta.read_text(encoding="utf-8") == '{"status": "stale"}'
+    assert "config_path: /somewhere/else.yml" in h.statefile.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "decision_status,expected_class",
+    [
+        ("preserve_approved", GRAPH_APPROVED_ACTIVE_RUNTIME),
+        ("preserve_driver_domain", "driver_domain_baseline"),
+    ],
+)
+@pytest.mark.parametrize("endpoint", ["ring", "aloop"])
+def test_baseline_reemit_refuses_a_preserved_non_anchor_graph(
+    monkeypatch, tmp_path, endpoint, decision_status, expected_class
+):
+    """The CLASSIFICATION discriminator, not the status — pinned (review C-SF1).
+
+    `_startup_anchor_from_decision` deliberately checks the classification and
+    not just `decision.status`, because `preserve_current` is ALSO how an
+    approved runtime graph and a driver-domain baseline are preserved. Its
+    docstring says so; nothing tested it, and a status-only variant passed the
+    whole suite.
+
+    The box this protects is reachable, not hypothetical: a roleful box whose
+    loaded graph classifies `approved_active_runtime` while its
+    `active_speaker_baseline_profile.json` is missing or unreadable. `is_baseline`
+    is derived from the graph's own `# Source:` marker, with no dependence on
+    that state file — so `applied` is falsy, this path is entered, and the
+    selector answers `preserve_current` + `approved_active_runtime`. Without the
+    discriminator the command would re-stage an all-muted anchor over a
+    COMMISSIONED speaker and repoint its boot statefile at it: silence at the
+    next CamillaDSP restart.
+
+    Both endpoints, because the rollback direction reaches the same guard.
+    """
+    from jasper.cli.active_speaker import main
+
+    h = _anchor_reemit_harness(
+        monkeypatch, tmp_path, decision_status=decision_status
+    )
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        code = main([
+            "baseline-reemit",
+            "--endpoint", endpoint,
+            "--statefile", str(h.statefile),
+        ])
+    text = out.getvalue()
+
+    assert code == 1
+    # The refusal NAMES what it found, so an operator is not left guessing.
+    assert expected_class in text, text
+    # Nothing moved, on any of the three live surfaces.
+    assert h.live_config.read_text(encoding="utf-8") == "stale: true\n"
+    assert h.live_meta.read_text(encoding="utf-8") == '{"status": "stale"}'
+    assert "config_path: /somewhere/else.yml" in h.statefile.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("endpoint", ["ring", "aloop"])
+def test_baseline_reemit_refuses_while_a_commission_load_is_active(
+    monkeypatch, tmp_path, endpoint
+):
+    """Single-flight against a live commission load (review H-N1).
+
+    The path this command publishes over is not only the boot graph — it is the
+    universal RE-MUTE anchor of the audible commissioning flow. Four controls
+    reload exactly it, and one of them is the operator's own by-ear stop during a
+    Stage-5 ramp (`commission-ramp ack --outcome too_loud`). Re-pointing that
+    file at a different endpoint while a driver is armed at level moves the stop
+    button while it is the thing standing between a driver and a bad load.
+
+    So this refuses, exactly as `_cmd_commission_load` already refuses for the
+    same shared artifact, and the refusal is checked to write nothing.
+    """
+    from jasper.cli.active_speaker import main
+
+    h = _anchor_reemit_harness(monkeypatch, tmp_path, commission_loaded=True)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        code = main([
+            "baseline-reemit",
+            "--endpoint", endpoint,
+            "--statefile", str(h.statefile),
+        ])
+    text = out.getvalue()
+
+    assert code == 1
+    assert "commission-rollback" in text, text
+    assert h.live_config.read_text(encoding="utf-8") == "stale: true\n"
+    assert h.live_meta.read_text(encoding="utf-8") == '{"status": "stale"}'
+    assert "config_path: /somewhere/else.yml" in h.statefile.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("endpoint", ["ring", "aloop"])
+def test_baseline_reemit_force_overrides_the_commission_load_refusal(
+    monkeypatch, tmp_path, endpoint
+):
+    """`--force` is the documented escape hatch, and it actually passes.
+
+    Same escape the sibling refusal offers. Asserted because a guard whose
+    override does not work is a guard an operator cannot get past in the one
+    situation they need to.
+    """
+    from jasper.cli.active_speaker import main
+
+    h = _anchor_reemit_harness(monkeypatch, tmp_path, commission_loaded=True)
+    code = main([
+        "baseline-reemit",
+        "--endpoint", endpoint,
+        "--force",
+        "--statefile", str(h.statefile),
+    ])
+    assert code == 0
+    assert h.live_config.read_text(encoding="utf-8") != "stale: true\n"
+    assert f"config_path: {h.live_config}" in h.statefile.read_text(encoding="utf-8")
+
+
+def test_baseline_reemit_published_evidence_names_no_temp_proof_dir(
+    monkeypatch, tmp_path
+):
+    """Published staged evidence must not name the deleted proof directory.
+
+    The anchor is proved in a `TemporaryDirectory` that is gone by the time the
+    metadata lands, and `validate_camilla_config` records the file it was handed
+    in BOTH `path` and (when the camilladsp binary exists) `argv`. Publishing
+    those verbatim writes evidence pointing at a path that cannot exist.
+
+    Nothing reads those two fields today — `_staged_candidate_ready` takes only
+    `status` — so this is evidence honesty rather than behaviour. It is pinned
+    because published evidence is exactly what a later reader trusts without
+    re-deriving, and because the publish block's comment claims it.
+    """
+    import json as _json
+
+    from jasper.active_speaker import staging as staging_mod
+    from jasper.cli.active_speaker import main
+
+    h = _anchor_reemit_harness(monkeypatch, tmp_path)
+
+    # Force a validation result that carries the proof path in both fields, the
+    # shape a Pi with camilladsp installed produces.
+    real_stage = staging_mod.stage_protected_startup_config
+
+    def _stage_with_validation(topology_arg, **kwargs):
+        payload = real_stage(topology_arg, **kwargs)
+        proof = payload["config"]["path"]
+        payload["config"]["validation"] = {
+            "status": "valid",
+            "path": proof,
+            "argv": ["/usr/local/bin/camilladsp", "--check", proof],
+        }
+        return payload
+
+    monkeypatch.setattr(
+        staging_mod, "stage_protected_startup_config", _stage_with_validation
+    )
+
+    code = main([
+        "baseline-reemit",
+        "--endpoint", "ring",
+        "--statefile", str(h.statefile),
+    ])
+    assert code == 0
+
+    published = _json.loads(h.live_meta.read_text(encoding="utf-8"))
+    blob = _json.dumps(published)
+    assert "jts-reemit-anchor-" not in blob, blob
+    validation = published["config"]["validation"]
+    assert validation["path"] == str(h.live_config), validation
+    assert str(h.live_config) in validation["argv"], validation
+    # The VERDICT still travels — only its locations were corrected.
+    assert validation["status"] == "valid", validation
+
+
+def test_baseline_reemit_publishes_the_anchor_pair_durably(monkeypatch, tmp_path):
+    """BOTH halves of the anchor pair are fsynced, not just the graph.
+
+    The graph is written `durable=True` because it is the box's next boot graph.
+    Its staged metadata is what LOCATES that graph — the runtime contract follows
+    `config.path` — so a power cut that keeps the durable half and loses the
+    non-durable one leaves the box off its anchor. It parks silent and still
+    takes deploys, so this is availability rather than safety, but the two halves
+    should survive together and the fix is one kwarg.
+    """
+    from jasper import atomic_io
+    from jasper.cli.active_speaker import main
+
+    h = _anchor_reemit_harness(monkeypatch, tmp_path)
+    text_calls: list[tuple[str, dict]] = []
+    json_calls: list[tuple[str, dict]] = []
+    real_text = atomic_io.atomic_write_text
+    real_json = atomic_io.atomic_write_json
+
+    def _spy_text(path, text, **kwargs):
+        text_calls.append((str(path), kwargs))
+        return real_text(path, text, **kwargs)
+
+    def _spy_json(path, payload, **kwargs):
+        json_calls.append((str(path), kwargs))
+        return real_json(path, payload, **kwargs)
+
+    monkeypatch.setattr(atomic_io, "atomic_write_text", _spy_text)
+    monkeypatch.setattr(atomic_io, "atomic_write_json", _spy_json)
+
+    code = main([
+        "baseline-reemit",
+        "--endpoint", "ring",
+        "--statefile", str(h.statefile),
+    ])
+    assert code == 0
+
+    graph_writes = [c for c in text_calls if c[0] == str(h.live_config)]
+    meta_writes = [c for c in json_calls if c[0] == str(h.live_meta)]
+    assert graph_writes, text_calls
+    assert meta_writes, json_calls
+    assert all(c[1].get("durable") for c in graph_writes), graph_writes
+    assert all(c[1].get("durable") for c in meta_writes), meta_writes
+
+
+def test_anchor_and_driver_commission_refusals_use_DISTINCT_reason_strings(
+    monkeypatch, tmp_path
+):
+    """The two single-flight refusals are machine-readable and NOT the same token.
+
+    `baseline-reemit` answers `commission_load_active`; its sibling
+    `commission-load` answers `commission_load_already_active`. They refuse for
+    related reasons over the same shared artifact, which is exactly why a caller
+    parsing `--json` has to be able to tell them apart: one says "an anchor
+    re-emit was refused", the other says "a second driver arm was refused", and
+    the remedies differ.
+
+    Pinned APART rather than together — asserting only that each is non-empty,
+    or that both contain "commission_load", would let a future tidy-up collapse
+    them into one token and silently merge two distinct outcomes.
+    """
+    import json as _json
+
+    from jasper.cli.active_speaker import main
+
+    h = _anchor_reemit_harness(monkeypatch, tmp_path, commission_loaded=True)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        code = main([
+            "baseline-reemit",
+            "--endpoint", "ring",
+            "--json",
+            "--statefile", str(h.statefile),
+        ])
+    assert code == 1
+    payload = _json.loads(out.getvalue())
+    assert payload["status"] == "refused", payload
+    assert payload["reason"] == "commission_load_active", payload
+    # The sibling's token, read from its own source rather than retyped, so this
+    # pin tracks a rename instead of going quietly vacuous after one.
+    sibling = (
+        Path(__file__).resolve().parents[1] / "jasper/cli/active_speaker.py"
+    ).read_text(encoding="utf-8")
+    assert '"reason": "commission_load_already_active",' in sibling, (
+        "the sibling refusal's token changed; re-derive whether these two are "
+        "still meant to be distinct"
+    )
+    assert payload["reason"] != "commission_load_already_active"
+    # The refusal is actionable as DATA too, not only as prose.
+    assert payload["active_target"] == "mono/tweeter", payload

@@ -1131,3 +1131,224 @@ async def test_the_durable_boot_anchor_is_not_refused_on_an_armed_box(
     assert "commissioning_ring_transport_unsupported" not in codes, payload
     assert len(emits) == 1, emits
     assert emits[0]["playback_device"] == RING_ACTIVE_PLAYBACK_DEVICE
+    # ...and it is not merely UNREFUSED, it is COHERENT (#2364). The anchor used
+    # to name the ring while every other half of its device contract stayed at
+    # the emitter's snd-aloop defaults; asserting only the sink is what let that
+    # pass. The full-fidelity assertions live in the two tests below.
+    assert emits[0]["capture_device"] == RING_CAPTURE_DEVICE
+
+
+# --------------------------------------------------------------------------
+# THE BOOT ANCHOR'S DEVICE BLOCK (#2364).
+#
+# `stage_protected_startup_config` forwarded only the device NAME, so a box
+# re-staged at the ACTIVE ring got a ring sink over `plug:jasper_capture` — the
+# tap fan-in STOPS feeding under `shm_ring` — with the program-lane format and
+# the loopback chunk/target/queue geometry, in the artifact it BOOTS from.
+# Nothing downstream inspected it: `build_startup_load_preflight`'s gates are
+# about staging, identity, protection and level, never the transport.
+#
+# The fix routes the anchor through `active_emit_devices`, the SAME derivation
+# `recompose_applied_baseline_yaml` reads. These two tests are the pair that
+# makes that safe to believe: one proves the ring answer is right, the other
+# proves nothing else moved.
+# --------------------------------------------------------------------------
+
+
+def _anchor_yaml(topology, preset, out_dir, device):
+    """Stage the boot anchor at ``device`` and return the emitted YAML."""
+    from jasper.active_speaker.staging import stage_protected_startup_config
+
+    payload = stage_protected_startup_config(
+        topology,
+        preset=preset,
+        playback_device=device,
+        config_dir=out_dir,
+        metadata_path=out_dir / "staged_metadata.json",
+        run_config_check=False,
+    )
+    blockers = [i for i in payload.get("issues") or [] if i.get("severity") == "blocker"]
+    assert payload["status"] == "staged" and not blockers, payload
+    return Path(payload["config"]["path"]).read_text(encoding="utf-8")
+
+
+async def test_boot_anchor_derives_the_ring_device_block(tmp_path):
+    """At the ring, every half of the anchor's device contract is the ring's.
+
+    Each value is asserted against its OWNER — `resolve_ring_wire` for the wire
+    format, the `RING_CAMILLA_*` constants for the latency geometry — never a
+    literal repeated here. A literal would pass just as happily against a graph
+    that had drifted away from what fan-in actually declares, which is the exact
+    failure this is meant to catch.
+    """
+    from jasper.active_speaker.camilla_yaml import active_emit_devices
+    from jasper.fanin_coupling import (
+        RING_CAMILLA_CHUNKSIZE,
+        RING_CAMILLA_ENABLE_RATE_ADJUST,
+        RING_CAMILLA_QUEUELIMIT,
+        RING_CAMILLA_TARGET_LEVEL,
+        resolve_ring_wire,
+    )
+
+    topology, preset = _commissioning_box()
+    yaml = _anchor_yaml(
+        topology, preset, tmp_path / "ring", RING_ACTIVE_PLAYBACK_DEVICE
+    )
+
+    wire = resolve_ring_wire(topology).sample_format
+    # The derivation is the single owner; the emitted graph must agree with it.
+    assert active_emit_devices(
+        RING_ACTIVE_PLAYBACK_DEVICE, topology=topology
+    ).capture_device == RING_CAPTURE_DEVICE
+
+    assert f'device: "{RING_CAPTURE_DEVICE}"' in yaml
+    assert f'device: "{RING_ACTIVE_PLAYBACK_DEVICE}"' in yaml
+    # Both ends of one wire: the three rings share one format, so a graph
+    # carrying two different ones is a sheared attach waiting at the arm.
+    assert yaml.count(f"format: {wire}") == 2, yaml
+    assert f"chunksize: {RING_CAMILLA_CHUNKSIZE}" in yaml
+    assert f"target_level: {RING_CAMILLA_TARGET_LEVEL}" in yaml
+    assert f"queuelimit: {RING_CAMILLA_QUEUELIMIT}" in yaml
+    assert (
+        f"enable_rate_adjust: {str(RING_CAMILLA_ENABLE_RATE_ADJUST).lower()}" in yaml
+    )
+    # The tap is GONE, not merely outnumbered — the whole defect was a ring sink
+    # sitting over it.
+    assert "plug:jasper_capture" not in yaml, yaml
+
+
+@pytest.mark.parametrize(
+    "device",
+    [OUTPUTD_ACTIVE_PLAYBACK_DEVICE, "hw:CARD=Lab,DEV=0"],
+    ids=["aloop_active_lane", "lab_override"],
+)
+async def test_boot_anchor_is_byte_identical_on_every_non_ring_device(
+    tmp_path, monkeypatch, device
+):
+    """Off the ring, the derived block reproduces the PRE-CHANGE bytes exactly.
+
+    This is the blast-radius bound for #2364, and it is what makes the fix safe
+    to land on a fleet where zero boxes are armed: every one of them re-stages
+    its anchor through this function, so "nothing moved" has to be provable, not
+    asserted.
+
+    Proven by REPLAYING the exact emit staging just made, minus the seven device
+    kwargs — literally the pre-change call shape — and comparing bytes. The
+    replay reuses the recorded BOUND preset rather than the raw one, because
+    staging binds the preset to the topology (which relabels the outputs); a
+    replay from the unbound preset differs for reasons that have nothing to do
+    with this change. A hand-copied table of the old defaults would rot the
+    moment the emitter's own defaults changed; this cannot, because the
+    defaults are re-read from the emitter's own signature.
+    """
+    import dataclasses
+
+    from jasper.active_speaker import staging as staging_mod
+    from jasper.active_speaker.camilla_yaml import (
+        ActiveEmitDevices,
+        emit_active_speaker_commissioning_config,
+    )
+
+    device_fields = {f.name for f in dataclasses.fields(ActiveEmitDevices)}
+    assert device_fields, "ActiveEmitDevices lost its fields; this test is vacuous"
+
+    seen: dict = {}
+    real = staging_mod.emit_active_speaker_commissioning_config
+
+    def recording(preset_arg, **kwargs):
+        seen["preset"] = preset_arg
+        seen["kwargs"] = dict(kwargs)
+        return real(preset_arg, **kwargs)
+
+    monkeypatch.setattr(
+        staging_mod, "emit_active_speaker_commissioning_config", recording
+    )
+
+    topology, preset = _commissioning_box()
+    derived = _anchor_yaml(topology, preset, tmp_path / "derived", device)
+    assert seen, "staging never reached the emitter; this test proves nothing"
+
+    # The pre-change call shape: same everything, minus the device block.
+    replay_kwargs = {
+        key: value
+        for key, value in seen["kwargs"].items()
+        if key not in device_fields
+    }
+    replay_kwargs["out_path"] = tmp_path / "replay.yml"
+    pre_change = emit_active_speaker_commissioning_config(
+        seen["preset"], **replay_kwargs
+    )
+    assert derived == pre_change, (
+        "the derived device block changed a NON-ring emit; #2364's blast radius "
+        "was supposed to be the ring branch only"
+    )
+
+
+async def test_boot_anchor_refuses_a_typod_ring_wire_instead_of_tracebacking(
+    tmp_path, monkeypatch
+):
+    """A bad ``JASPER_FANIN_RING_WIRE_FORMAT`` is this function's blocker, not a crash.
+
+    The applied path's twin is pinned in `test_active_speaker_baseline_profile.py`
+    and the candidate emitter's typed raise in `test_ring_active_endpoint.py`; the
+    anchor was the third same-shape site and the only one shipping unpinned.
+
+    Failing loud on a token neither language recognizes is right — jasper-fanin
+    parks on the same value rather than guessing a wire. What matters is HOW it
+    fails: `stage_protected_startup_config` is called by the `/sound/` wizard as
+    well as the CLI, so an unhandled `ValueError` here is a 500 on a household
+    page. It has to arrive as an ordinary staging blocker, and nothing may be
+    written.
+    """
+    from jasper.active_speaker.staging import stage_protected_startup_config
+    from jasper.fanin_coupling import RING_WIRE_FORMAT_ENV_VAR
+
+    topology, preset = _commissioning_box()
+    fanin_env = tmp_path / "fanin.env"
+    fanin_env.write_text(f"{RING_WIRE_FORMAT_ENV_VAR}=s32le\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.FANIN_ENV_PATH", str(fanin_env)
+    )
+
+    out_dir = tmp_path / "ring"
+    payload = stage_protected_startup_config(
+        topology,
+        preset=preset,
+        playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+        config_dir=out_dir,
+        metadata_path=out_dir / "staged_metadata.json",
+        run_config_check=False,
+    )
+
+    assert payload["status"] == "blocked", payload
+    codes = [
+        issue["code"]
+        for issue in payload["issues"]
+        if issue.get("severity") == "blocker"
+    ]
+    assert "ring_wire_declaration_invalid" in codes, payload["issues"]
+    detail = next(
+        issue["message"]
+        for issue in payload["issues"]
+        if issue.get("code") == "ring_wire_declaration_invalid"
+    )
+    assert RING_WIRE_FORMAT_ENV_VAR in detail, detail
+    assert "s32le" in detail, "the operator needs to see the value they typed"
+    # NOTHING was emitted — the refusal precedes the write, so a bad wire cannot
+    # leave a half-formed anchor behind.
+    assert not Path(payload["config"]["path"]).exists(), payload["config"]["path"]
+
+    # CONTROL: the same box at the ALSA lane is unaffected. The wire is resolved
+    # only for a ring sink, so a typo cannot block an unarmed box's ordinary
+    # re-stage — without this the assertion above would also pass if the branch
+    # blocked everything.
+    alsa_dir = tmp_path / "alsa"
+    alsa = stage_protected_startup_config(
+        topology,
+        preset=preset,
+        playback_device=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+        config_dir=alsa_dir,
+        metadata_path=alsa_dir / "staged_metadata.json",
+        run_config_check=False,
+    )
+    assert alsa["status"] == "staged", alsa["issues"]

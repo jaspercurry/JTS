@@ -471,3 +471,71 @@ def test_playback_format_fails_on_a_deliberately_wide_file_sink_config(
     assert "S32_LE" in res.detail
     assert "S16_LE" in res.detail
     assert "DEFAULT_PIPE_SINK_FORMAT" in res.detail
+
+
+_STALE_RING_CFG = """\
+devices:
+  capture:
+    type: Alsa
+    channels: 2
+    device: "jts_ring_capture"
+  playback:
+    type: Alsa
+    channels: 2
+    device: "jts_ring_active_playback"
+filters:
+"""
+
+
+def test_stale_ring_devices_under_loopback_send_a_roleful_box_up_the_ladder(
+    monkeypatch, tmp_path
+):
+    """A ROLEFUL box gets the rollback LADDER, not a reconcile that converges nothing.
+
+    This is the state PR #2514's residual describes: a ring-endpoint graph loaded
+    while the coupling has fallen back to loopback. The check's remedy used to be
+    `jasper-fanin-coupling-reconcile loopback` unconditionally — which on a
+    roleful box moves nothing and reports SUCCESS. `reconcile_current_dsp`
+    declines to host a transient active graph (`eq_on_active_not_wired` ->
+    status `skipped`), and `_reconcile_camilla` turns a `skipped` under a
+    non-shm_ring coupling into `True`. So the operator ran a command, was told it
+    worked, and the warn stayed.
+
+    The graph has to be moved by step 1 of the rollback ladder. Asserted through
+    the classification-free half of the message — the command spelling — because
+    that is what an operator copies.
+    """
+    monkeypatch.setattr(audio, "_requires_roleful_graph", lambda: True)
+    res = _run_check(
+        monkeypatch,
+        coupling="loopback",
+        cfg_text=_STALE_RING_CFG,
+        tmp_path=tmp_path,
+    )
+    assert res.status == "warn"
+    assert "jts_ring_active_playback" in res.detail
+    assert "baseline-reemit --endpoint aloop" in res.detail, res.detail
+    assert "jasper-audio-hardware-reconcile" in res.detail, res.detail
+    assert "jasper-fanin-coupling-reconcile loopback" in res.detail, res.detail
+
+
+def test_stale_ring_devices_under_loopback_keep_the_plain_remedy_when_passive(
+    monkeypatch, tmp_path
+):
+    """CONTROL: a PASSIVE box keeps exactly the one-command remedy.
+
+    Without this the assertion above would also pass if the ladder text had been
+    appended unconditionally — and on a passive box the coupling reconciler
+    genuinely is the whole fix, so sending one up a three-rung active-speaker
+    ladder would be worse advice, not more of it.
+    """
+    monkeypatch.setattr(audio, "_requires_roleful_graph", lambda: False)
+    res = _run_check(
+        monkeypatch,
+        coupling="loopback",
+        cfg_text=_STALE_RING_CFG,
+        tmp_path=tmp_path,
+    )
+    assert res.status == "warn"
+    assert "jasper-fanin-coupling-reconcile loopback" in res.detail
+    assert "baseline-reemit" not in res.detail, res.detail
