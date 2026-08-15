@@ -3426,6 +3426,134 @@ def test_baseline_reemit_publishes_the_anchor_pair_durably(monkeypatch, tmp_path
     assert all(c[1].get("durable") for c in meta_writes), meta_writes
 
 
+def _probe_anchor_lock(lock_path) -> bool:
+    """True when some open file description already holds ``lock_path``.
+
+    A second descriptor on the same file is a faithful probe even inside the
+    writer's own process — flock(2): "If a process uses open(2) ... to obtain
+    more than one file descriptor for the same file, these file descriptors are
+    treated independently by flock()."
+    """
+    import fcntl
+    import os
+
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(fd)
+
+
+def test_baseline_reemit_publishes_the_anchor_pair_under_one_lock(
+    monkeypatch, tmp_path
+):
+    """The publish holds the pair's shared lock across BOTH halves (#2518).
+
+    This command is the SECOND writer of the anchor pair; the first is
+    `stage_protected_startup_config`, which every /sound/ route reaches. Neither
+    publishes both halves in one filesystem operation, so a hold covering only
+    one of them still leaves the window where one graph's metadata lands over
+    another's bytes — and #2285's convergence design would invoke this command
+    unattended, making the other racer a machine rather than only a human.
+
+    Two claims, because either alone is insufficient: the lock is HELD at each
+    write, and it is the SAME file the stager derives for this pair. A publish
+    that dutifully locked a file nobody else takes would pass the first claim
+    and serialize nothing.
+    """
+    from jasper import atomic_io
+    from jasper.active_speaker import staging as staging_mod
+    from jasper.cli.active_speaker import main
+
+    h = _anchor_reemit_harness(monkeypatch, tmp_path)
+    lock_path = staging_mod.staged_anchor_lock_path(h.live_config)
+    held_at: dict[str, bool] = {}
+    real_text = atomic_io.atomic_write_text
+    real_json = atomic_io.atomic_write_json
+
+    def _spy_text(path, text, **kwargs):
+        if Path(path) == h.live_config:
+            held_at["graph"] = _probe_anchor_lock(lock_path)
+        return real_text(path, text, **kwargs)
+
+    def _spy_json(path, payload, **kwargs):
+        if Path(path) == h.live_meta:
+            held_at["metadata"] = _probe_anchor_lock(lock_path)
+        return real_json(path, payload, **kwargs)
+
+    monkeypatch.setattr(atomic_io, "atomic_write_text", _spy_text)
+    monkeypatch.setattr(atomic_io, "atomic_write_json", _spy_json)
+
+    code = main([
+        "baseline-reemit",
+        "--endpoint", "ring",
+        "--statefile", str(h.statefile),
+    ])
+
+    assert code == 0
+    assert held_at == {"graph": True, "metadata": True}, held_at
+    # Positive control: released on the way out, so the probe discriminates.
+    assert _probe_anchor_lock(lock_path) is False
+
+
+def test_baseline_reemit_refuses_a_held_anchor_and_publishes_nothing(
+    monkeypatch, tmp_path
+):
+    """A contended publish waits a BOUNDED time, then writes nothing at all.
+
+    Deploys and operator ladder steps invoke this command, and #2285's
+    convergence design would invoke it unattended, so an open-ended wait would
+    hang the caller rather than fail it. The refusal keeps the command's
+    existing "a refusal writes nothing" contract: the outgoing anchor, its
+    metadata, and the statefile are all left exactly as they were, so a retry
+    starts from an intact box.
+    """
+    import fcntl
+    import os
+    import time
+
+    from jasper.active_speaker import staging as staging_mod
+    from jasper.cli.active_speaker import main
+
+    h = _anchor_reemit_harness(monkeypatch, tmp_path)
+    lock_path = staging_mod.staged_anchor_lock_path(h.live_config)
+    monkeypatch.setattr(staging_mod, "STAGED_ANCHOR_LOCK_TIMEOUT_SEC", 0.2)
+
+    holder = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    out = io.StringIO()
+    try:
+        fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        os.write(holder, b"pid 4242 the-other-writer\n")
+        started = time.monotonic()
+        with contextlib.redirect_stdout(out):
+            code = main([
+                "baseline-reemit",
+                "--endpoint", "ring",
+                "--statefile", str(h.statefile),
+            ])
+        waited = time.monotonic() - started
+    finally:
+        os.close(holder)
+
+    text = out.getvalue()
+    assert code == 1
+    assert "NOTHING was written" in text, text
+    assert "the-other-writer" in text, text
+    # Bounded: the proof run plus a 200 ms wait, not an open-ended block.
+    assert waited < 20.0, waited
+    # The outgoing pair AND the statefile survive untouched.
+    assert h.live_config.read_text(encoding="utf-8") == "stale: true\n"
+    assert h.live_meta.read_text(encoding="utf-8") == '{"status": "stale"}'
+    assert "config_path: /somewhere/else.yml" in h.statefile.read_text(
+        encoding="utf-8"
+    )
+
+
 def test_anchor_and_driver_commission_refusals_use_DISTINCT_reason_strings(
     monkeypatch, tmp_path
 ):

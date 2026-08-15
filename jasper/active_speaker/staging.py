@@ -16,11 +16,12 @@ import logging
 import os
 import re
 import time
+from contextlib import ExitStack, contextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
-from jasper.atomic_io import atomic_write_json
+from jasper.atomic_io import advisory_file_lock, atomic_write_json
 from jasper.camilla_config_contract import DEFAULT_VOLUME_LIMIT_DB
 from jasper.dsp_apply import CamillaConfigValidationResult, validate_camilla_config
 from jasper.output_topology import (
@@ -97,7 +98,27 @@ COMMISSIONING_TRANSPORT_GATE_ID = "commissioning_transport_supported"
 STAGED_CONFIG_PATH_ENV = "JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH"
 STAGED_METADATA_PATH_ENV = "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH"
 
+# The staged anchor lock is opened by root (the `jasper-active-speaker` CLI)
+# and by `jasper-web` (the /sound/ wizard). `install.sh` publishes the
+# generated-config directory as `2775 root:jasper`, so a file created there
+# inherits group `jasper` and 0660 lets whichever writer creates it first hand
+# the lock to the other. No install-time heal is needed for a lock that has
+# never existed on any box: unlike `.dsp_apply.lock` there is no pre-upgrade
+# ownership drift to repair.
+STAGED_ANCHOR_LOCK_MODE = 0o660
+# Bounded, never open-ended: this wait sits on a /sound/ web request and on the
+# `baseline-reemit` CLI that deploys and operator ladder steps invoke.
+# It exceeds the holder's longest bounded step -- one `camilladsp --check`
+# inside :func:`~jasper.dsp_apply.validate_camilla_config`, which caps itself --
+# so an ordinary overlap waits its turn instead of refusing, and a refusal
+# means something genuinely abnormal is holding the pair.
+STAGED_ANCHOR_LOCK_TIMEOUT_SEC = 15.0
+
 _SAFE_STEM_RE = re.compile(r"[^A-Za-z0-9_.:-]+")
+
+
+class StagedAnchorLockContended(RuntimeError):
+    """The staged startup anchor pair was held past the bounded wait."""
 
 
 def _utc_now() -> str:
@@ -126,6 +147,138 @@ def staged_config_path(
     if explicit:
         return Path(explicit)
     return Path(config_dir or DEFAULT_CAMILLA_CONFIG_DIR) / DEFAULT_STAGED_CONFIG_NAME
+
+
+def staged_anchor_lock_path(config_path: str | Path) -> Path:
+    """The one cross-process lock for the staged startup anchor PAIR.
+
+    Derived from the GRAPH half's resolved path rather than read out of the
+    environment a second time, so every writer that resolves the same pair
+    locks the same file and a redirected pair (a test, the CLI's temp proof
+    run) locks beside the artifact it is actually writing. Keyed on the graph
+    half because that is the half living in the generated-config directory,
+    where both writers already have write access; the lock covers BOTH halves.
+    """
+
+    path = Path(config_path)
+    return path.with_name(f"{path.name}.lock")
+
+
+def _staged_anchor_lock_holder(lock_path: Path) -> str:
+    """Best-effort read of the stamp a holder left. Diagnostic only.
+
+    Read without the lock (the reader is by definition the loser of the race),
+    so a torn stamp is possible; it names a process for an operator, it is
+    never a fact anything branches on.
+    """
+
+    try:
+        with open(lock_path, "rb") as handle:
+            stamp = handle.read(64).decode("utf-8", errors="replace").strip()
+    except OSError:
+        return "unknown"
+    return stamp or "unknown"
+
+
+def _stamp_staged_anchor_lock_holder(handle: Any, source: str) -> None:
+    """Record who holds the lock, so a contention log can name them."""
+
+    try:
+        handle.seek(0)
+        handle.truncate()
+        handle.write(f"pid {os.getpid()} {source}\n")
+        handle.flush()
+    except OSError:
+        pass  # the stamp is diagnostic — never fail an acquired lock on it
+
+
+@contextmanager
+def staged_anchor_lock(
+    config_path: str | Path,
+    *,
+    source: str,
+    timeout_sec: float | None = None,
+):
+    """Serialize every writer of the staged startup anchor pair (#2518).
+
+    The pair — the all-muted startup graph and the staged metadata that LOCATES
+    it — has two writers: :func:`stage_protected_startup_config` (which every
+    wizard route reaches) and the publish block of ``jasper-active-speaker
+    baseline-reemit``. Neither writes the two halves in one filesystem
+    operation, so interleaved runs could leave one graph's metadata over
+    another's bytes. This lock is what makes each writer's pair atomic with
+    respect to the other's.
+
+    LOCK ORDERING: innermost, always. The driver-capture route already holds
+    :func:`~jasper.dsp_apply.dsp_writer_lock` when it reaches the stager, so
+    the only nesting is ``dsp writer -> staged anchor``. Nothing may acquire
+    the DSP writer lock while holding this one, and nothing may re-enter this
+    lock: ``flock`` is per open file description, so a second acquisition in
+    the same process would block against itself rather than recurse.
+
+    CRASH RELEASE IS THE POINT OF USING ``flock``. Both writers run in
+    short-lived contexts that can be killed mid-write — a CLI invocation inside
+    a deploy, a web request, either of them OOM-killed on a 1 GB Pi. The kernel
+    drops an ``flock`` when the holding descriptor closes, including on process
+    death, so a killed writer can never strand the anchor behind a lock nobody
+    will release. A status file would need a liveness check to say the same
+    thing.
+
+    FAIL-OPEN ON AN UNOPENABLE LOCK FILE, at WARNING, mirroring
+    ``jasper.fanin.coupling_reconcile._acquire_entry_lock``. The consequence of
+    proceeding unserialized is bounded (stale evidence over a same-topology
+    all-muted graph, never an audible change); the consequence of refusing is
+    that a box cannot stage its boot anchor at all. The asymmetry decides it.
+
+    Contention past the bounded wait raises :class:`StagedAnchorLockContended`;
+    each writer translates that into its own refusal contract, and neither
+    writes a byte of the pair.
+    """
+
+    lock_path = staged_anchor_lock_path(config_path)
+    timeout = (
+        STAGED_ANCHOR_LOCK_TIMEOUT_SEC if timeout_sec is None else timeout_sec
+    )
+    started = time.monotonic()
+    with ExitStack() as stack:
+        handle = None
+        try:
+            handle = stack.enter_context(advisory_file_lock(
+                lock_path,
+                mode=STAGED_ANCHOR_LOCK_MODE,
+                group_from_parent=True,
+                timeout_sec=timeout,
+            ))
+        # `TimeoutError` IS an `OSError` subclass, so the bounded-wait refusal
+        # has to be caught FIRST — otherwise the fail-open arm below would
+        # swallow a genuine contention and let both writers run at once.
+        except TimeoutError:
+            waited_ms = round((time.monotonic() - started) * 1000)
+            holder = _staged_anchor_lock_holder(lock_path)
+            logger.warning(
+                "event=active_speaker.staged_anchor_lock_contended path=%s "
+                "source=%s holder=%s waited_ms=%d timeout_ms=%d",
+                lock_path,
+                source,
+                holder,
+                waited_ms,
+                round(timeout * 1000),
+            )
+            raise StagedAnchorLockContended(
+                f"the staged startup anchor is held by {holder}; waited "
+                f"{waited_ms} ms"
+            ) from None
+        except OSError as exc:
+            logger.warning(
+                "event=active_speaker.staged_anchor_lock_unavailable path=%s "
+                "source=%s error=%s",
+                lock_path,
+                source,
+                type(exc).__name__,
+            )
+        if handle is not None:
+            _stamp_staged_anchor_lock_holder(handle, source)
+        yield
 
 
 def load_staged_startup_config(
@@ -1374,6 +1527,76 @@ def _record_camilla_validation(
         ))
 
 
+def _anchor_lock_contended_payload(
+    topology: OutputTopology,
+    *,
+    out_path: Path,
+    meta_path: Path,
+    created_at: str,
+    detail: str,
+) -> dict[str, Any]:
+    """The staging refusal for a pair another writer is publishing.
+
+    Same envelope as an ordinary staged payload — ``status`` plus a blocker in
+    ``issues`` — so every existing consumer's "did this stage?" branch already
+    covers it and no caller learns a new failure vocabulary. Nothing on this
+    path is written: a refusal that overwrote the metadata would be the very
+    corruption the lock exists to prevent.
+    """
+
+    return {
+        "artifact_schema_version": SCHEMA_VERSION,
+        "kind": STAGED_STARTUP_CONFIG_KIND,
+        "status": "blocked",
+        "created_at": created_at,
+        "metadata_path": str(meta_path),
+        "preset": {
+            "preset_id": None,
+            "name": None,
+            "way_count": None,
+            "layout": None,
+            "source": None,
+        },
+        "topology": {
+            "topology_id": topology.topology_id,
+            "name": topology.name,
+            "speaker_group_id": None,
+            "speaker_label": None,
+            "speaker_group_ids": [],
+            "speaker_labels": [],
+        },
+        "hardware": {
+            "device_id": topology.hardware.device_id,
+            "device_label": topology.hardware.device_label,
+            "card_id": topology.hardware.card_id,
+            "physical_output_count": topology.hardware.physical_output_count,
+            "clock_domain_id": topology.hardware.clock_domain_id,
+        },
+        "targets": [],
+        "config": {
+            "path": str(out_path),
+            "basename": out_path.name,
+            "exists": out_path.exists(),
+            "validation": {"status": "skipped", "reason": "not_generated"},
+        },
+        "software_guard": {},
+        "load": {
+            "load_allowed": False,
+            "load_gate": "startup_load_preflight_required",
+            "next_step": (
+                "Run the guarded startup-load preflight before CamillaDSP is "
+                "allowed to reload this staged graph."
+            ),
+        },
+        "required_gates": [],
+        "issues": [_issue("blocker", "staged_config_anchor_lock_contended", detail)],
+        "next_step": (
+            "Another writer is publishing the protected startup config. Wait "
+            "for it to finish, then stage again."
+        ),
+    }
+
+
 def stage_protected_startup_config(
     topology: OutputTopology,
     *,
@@ -1389,9 +1612,54 @@ def stage_protected_startup_config(
     ),
     created_at: str | None = None,
 ) -> dict[str, Any]:
-    """Stage a muted/protected startup YAML and return versioned evidence."""
+    """Stage a muted/protected startup YAML and return versioned evidence.
+
+    Every wizard route that stages the anchor arrives here, so this is where
+    the pair's :func:`staged_anchor_lock` is taken for this writer: the graph
+    and the metadata that locates it are published under one hold, and a
+    contending run refuses without writing either half (#2518).
+    """
 
     created_at = created_at or _utc_now()
+    out_path = staged_config_path(config_dir=config_dir, path=config_path)
+    meta_path = staged_metadata_path(metadata_path)
+    try:
+        with staged_anchor_lock(out_path, source="stage_protected_startup_config"):
+            return _stage_protected_startup_config_locked(
+                topology,
+                preset=preset,
+                crossover_preview=crossover_preview,
+                playback_device=playback_device,
+                out_path=out_path,
+                meta_path=meta_path,
+                run_config_check=run_config_check,
+                validate=validate,
+                created_at=created_at,
+            )
+    except StagedAnchorLockContended as exc:
+        return _anchor_lock_contended_payload(
+            topology,
+            out_path=out_path,
+            meta_path=meta_path,
+            created_at=created_at,
+            detail=str(exc),
+        )
+
+
+def _stage_protected_startup_config_locked(
+    topology: OutputTopology,
+    *,
+    preset: ActiveSpeakerPreset | None,
+    crossover_preview: dict[str, Any] | None,
+    playback_device: str | None,
+    out_path: Path,
+    meta_path: Path,
+    run_config_check: bool,
+    validate: Callable[[str | Path], CamillaConfigValidationResult],
+    created_at: str,
+) -> dict[str, Any]:
+    """Stage the anchor pair. Call only while holding :func:`staged_anchor_lock`."""
+
     ctx = _build_active_commissioning_context(
         topology,
         preset=preset,
@@ -1407,8 +1675,6 @@ def stage_protected_startup_config(
     gates = ctx["gates"]
     issues = ctx["issues"]
 
-    out_path = staged_config_path(config_dir=config_dir, path=config_path)
-    meta_path = staged_metadata_path(metadata_path)
     validation: dict[str, Any] = {"status": "skipped", "reason": "not_generated"}
     classification: dict[str, Any] = {}
     software_guard: dict[str, Any] = {}

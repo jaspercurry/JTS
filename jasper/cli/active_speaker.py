@@ -539,7 +539,9 @@ def _reemit_staged_startup_anchor(
     from jasper.active_speaker.design_draft import load_design_draft
     from jasper.active_speaker.runtime_contract import write_camilla_statefile
     from jasper.active_speaker.staging import (
+        StagedAnchorLockContended,
         stage_protected_startup_config,
+        staged_anchor_lock,
         staged_config_path,
         staged_metadata_path,
     )
@@ -664,52 +666,72 @@ def _reemit_staged_startup_anchor(
         # rather than nothing — but this order keeps the interleaved window
         # pointing at a graph whose evidence is at worst one revision stale,
         # instead of at bytes its evidence has never described.
-        # Second unlocked writer of this pair (the first is the /sound wizard's
-        # own staging): interleaved runs could leave one graph's metadata over
-        # another's bytes. Not locked here because no shared lock covers this
-        # pair today and inventing one is a two-writer change; both writers emit
-        # all-muted anchors for the same topology, so the bounded consequence is
-        # stale evidence, not an audible one. Backlog: issue #2518.
+        #
+        # Second writer of this pair; the first is the /sound wizard's own
+        # staging (`stage_protected_startup_config`). Both halves go out under
+        # the pair's shared `staged_anchor_lock`, so an interleaved run can no
+        # longer leave one graph's metadata over another's bytes (#2518). The
+        # proof run above deliberately stays outside the hold: it writes only
+        # into its temp directory, and holding the live lock across a full
+        # re-stage plus CamillaDSP validation would make a /sound/ save wait on
+        # work that publishes nothing. A /sound/ stage that lands between the
+        # proof and this publish is therefore overwritten wholesale — last pair
+        # wins, and each pair stays internally consistent, which is the property
+        # #2518 asks for.
         target = staged_config_path()
         meta_target = staged_metadata_path()
         try:
-            target_mode = stat.S_IMODE(target.stat().st_mode)
-        except OSError:
-            target_mode = 0o640
-        atomic_write_text(
-            target, yaml, mode=target_mode, group_from_parent=True, durable=True
-        )
-        # Every field that names a LOCATION is rewritten — the three top-level
-        # ones and the validation result's own `path`/`argv`, which
-        # `validate_camilla_config` builds from whatever file it was handed and
-        # which would otherwise publish the deleted proof directory. Nothing
-        # reads those two today (`_staged_candidate_ready` takes only `status`),
-        # so this is evidence honesty rather than behaviour — but published
-        # evidence naming a path that cannot exist is exactly the kind of thing
-        # a later reader trusts. Every remaining field describes the graph
-        # itself and is location-independent, so the published evidence stays
-        # the evidence that proved.
-        published = dict(payload)
-        published["metadata_path"] = str(meta_target)
-        published["config"] = {
-            **payload["config"],
-            "path": str(target),
-            "basename": target.name,
-            "validation": _relocate_validation_evidence(
-                payload["config"].get("validation"), proof_path, target
-            ),
-        }
-        # durable=True to match the graph write above: this file is what LOCATES
-        # the graph, so losing it to a power cut while the durable half survives
-        # leaves the box off its anchor until someone re-stages. It parks silent
-        # and still takes deploys, but the two halves should survive together.
-        atomic_write_json(
-            meta_target,
-            published,
-            mode=0o640,
-            group_from_parent=True,
-            durable=True,
-        )
+            with staged_anchor_lock(target, source="baseline-reemit"):
+                try:
+                    target_mode = stat.S_IMODE(target.stat().st_mode)
+                except OSError:
+                    target_mode = 0o640
+                atomic_write_text(
+                    target,
+                    yaml,
+                    mode=target_mode,
+                    group_from_parent=True,
+                    durable=True,
+                )
+                # Every field that names a LOCATION is rewritten — the three
+                # top-level ones and the validation result's own `path`/`argv`,
+                # which `validate_camilla_config` builds from whatever file it
+                # was handed and which would otherwise publish the deleted proof
+                # directory. Nothing reads those two today
+                # (`_staged_candidate_ready` takes only `status`), so this is
+                # evidence honesty rather than behaviour — but published
+                # evidence naming a path that cannot exist is exactly the kind
+                # of thing a later reader trusts. Every remaining field
+                # describes the graph itself and is location-independent, so the
+                # published evidence stays the evidence that proved.
+                published = dict(payload)
+                published["metadata_path"] = str(meta_target)
+                published["config"] = {
+                    **payload["config"],
+                    "path": str(target),
+                    "basename": target.name,
+                    "validation": _relocate_validation_evidence(
+                        payload["config"].get("validation"), proof_path, target
+                    ),
+                }
+                # durable=True to match the graph write above: this file is what
+                # LOCATES the graph, so losing it to a power cut while the
+                # durable half survives leaves the box off its anchor until
+                # someone re-stages. It parks silent and still takes deploys,
+                # but the two halves should survive together.
+                atomic_write_json(
+                    meta_target,
+                    published,
+                    mode=0o640,
+                    group_from_parent=True,
+                    durable=True,
+                )
+        except StagedAnchorLockContended as exc:
+            print(
+                "ERROR: another writer is publishing the startup anchor "
+                f"({exc}); NOTHING was written"
+            )
+            return 1
 
         statefile = Path(args.statefile)
         statefile_written = False
