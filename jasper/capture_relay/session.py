@@ -258,8 +258,10 @@ class CapturePageIncompatible(RuntimeError):
 #   TIME_BUDGET_STEP — the per-step phone-inactivity budget (``DEFAULT_TIMEOUT_S``
 #     and the wider first-begin / hold variants). Refreshed on every tap, so it
 #     is the one a household spends by walking away mid-walk.
-#   TIME_BUDGET_LINK — the relay session's own TTL (``DEFAULT_TTL_S``), counted
-#     from the moment the link was minted and refreshed by nothing.
+#   TIME_BUDGET_LINK — the relay session's own TTL (``DEFAULT_TTL_S`` unless the
+#     caller mints a longer link — the v2 REMOTE preparers size theirs from the
+#     stage's own wall-clock ceiling), counted from the moment the link was
+#     minted and refreshed by nothing.
 TIME_BUDGET_STEP = "step"
 TIME_BUDGET_LINK = "link"
 #: The THIRD answer, and the reason it is a value rather than an absence

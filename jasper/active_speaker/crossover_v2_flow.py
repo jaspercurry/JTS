@@ -11139,11 +11139,14 @@ def session_wall_clock_ceiling_s(capture_plan: Any) -> float:
     cannot reach them. (An earlier revision of this docstring attributed
     ``build_v2_capture_plan()``'s BARE-DEFAULTS scenario — 10 entries, 2640 s —
     to the shipped Full tier's stage 1, which is a different and smaller plan.
-    Two valid scenarios; only one of them is what ships.) **The split gives each
-    stage its own fresh relay TTL and lowers the worst case, but it does not
-    make either stage fit inside that 900 s TTL, and this docstring must not be
-    read as claiming it does.** At the 19-entry maximum the unclamped value
-    would be 3720 s and the plan's hard cap binds at 3600 s.
+    Two valid scenarios; only one of them is what ships.) **A HAND-WALKED stage
+    rides ``capture_relay.session.DEFAULT_TTL_S``, and neither the split nor
+    this ceiling makes it fit inside that link — this docstring must not be read
+    as claiming it does.** A REMOTE stage does fit, because
+    ``jasper.web.correction_crossover_v2.relay_link_ttl_s`` mints its link from
+    this ceiling rather than from the default (issue #2509). At the 19-entry
+    maximum the unclamped value would be 3720 s and the plan's hard cap binds at
+    3600 s.
     """
     from jasper.active_speaker.session_volume_plan import (
         DEFAULT_WALL_CLOCK_CEILING_S,
