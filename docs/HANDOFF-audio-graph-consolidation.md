@@ -658,9 +658,17 @@ nothing broken, and no way forward. The rung now accepts that ONE refusal when
    `jts_ring_active_playback`;
 3. **wire** — both ring lanes state the box's resolved wire, on format AND
    channels;
-4. **all-muted** — every output ends in a wired hard mute at
+4. **all-muted** — every output ends in a **terminal** wired hard mute at
    `STARTUP_MUTE_GAIN_DB`, measured on the graph rather than inherited from the
-   stager that emitted it.
+   stager that emitted it. All three facts of
+   `graph_safety.output_terminally_muted` (promoted from
+   `runtime_contract._flat_output_terminally_muted`, which now delegates): the
+   mute idiom, wired; the mute is TERMINAL for its channel; and no `bypassed`
+   step anywhere. Fact 2 is the one that matters — CamillaDSP applies later
+   steps after earlier ones, so a `+240 dB` Gain appended after the mute, the
+   same gain appended into the mute step's own `names`, or a trailing `Dither`
+   all undo it while a present-somewhere mute still reads as satisfied. Those
+   are the three falsifications `_parked_graph_allowed` already records.
 
 There is genuinely nothing to re-emit there: an all-muted anchor hosts no EQ,
 and step 1 already put the graph at the endpoint. It reports

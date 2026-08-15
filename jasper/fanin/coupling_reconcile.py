@@ -2570,23 +2570,33 @@ def _anchor_is_all_muted(graph: LoadedCamillaGraph) -> tuple[bool, str]:
     is the last thing between a graph at the ring endpoint and the drivers, and
     on that path the fact it names is the fact it should measure.
 
-    THE SAME PROOF ``_parked_graph_allowed`` USES, deliberately: parse the text
-    once, and for every output the graph itself declares, require the repo's one
-    mute idiom — an ``as_out{i}_commission_mute`` ``Gain`` at
-    :data:`STARTUP_MUTE_GAIN_DB` with ``mute: true`` AND wired to channel ``i``
-    (``output_hard_muted_and_wired``). Muted-but-unwired and wired-but-unmuted
-    both fail. The width comes from the graph's own ``playback_channels``, which
-    the caller has already held to the topology-derived active-ring width, so
-    this checks every roleful output and cannot be satisfied by a graph that
-    declares fewer.
+    THE WHOLE PROOF, not two thirds of it. This asks
+    :func:`~jasper.active_speaker.graph_safety.output_terminally_muted` — the
+    shared three-fact primitive ``runtime_contract._flat_output_terminally_muted``
+    also binds — for every output the graph declares: (1) the repo's one mute
+    idiom, an ``as_out{i}_commission_mute`` ``Gain`` at
+    :data:`STARTUP_MUTE_GAIN_DB` with ``mute: true`` AND wired to channel ``i``;
+    (2) that the mute is TERMINAL — last name in its own ``Filter`` step, no
+    later step touching the channel; (3) no ``bypassed`` step anywhere.
 
-    ``bypassed`` REFUSES WHOLESALE, mirroring
-    ``runtime_contract._channel_terminally_muted``'s fact 3: CamillaDSP skips a
-    bypassed step entirely, so ``bypassed: true`` leaves a channel fully live
-    while the mute above still reads as satisfied — ``GraphView`` models filters
-    and channels, not the per-step flag. No JTS emitter ever writes it, so its
-    presence means the graph was hand-edited, and deciding which bypassed step is
-    harmless is exactly the generous reading this proof exists to reject.
+    FACT 2 IS WHY THIS CALLS THE PRIMITIVE RATHER THAN COMPOSING FACT 1 ITSELF.
+    An earlier revision of this function did the latter, and the hearing-safety
+    lens falsified it three ways on real files — the same three the repo already
+    records in ``_parked_graph_allowed``'s docstring: a ``+240 dB`` ``Gain``
+    appended as an extra pipeline step, the same gain appended INTO the mute
+    step's own ``names`` list after the mute, and a ``Dither`` step appended
+    (which *generates* signal into a muted channel). All three were accepted
+    while this function's caller returned "every output held at the mute floor".
+    A mute that merely appears somewhere in the chain is not a mute.
+
+    The width comes from the graph's own ``playback_channels``, which the caller
+    has already held to the topology-derived active-ring width, so this checks
+    every roleful output and cannot be satisfied by a graph that declares fewer.
+
+    THE BYPASSED PRE-SCAN IS FOR THE MESSAGE, NOT THE VERDICT. The primitive
+    already refuses a bypassed graph (fact 3) but returns a bare ``bool``, so a
+    caller that wants to tell "a step is bypassed" apart from "this output is
+    not muted" has to ask separately. The verdict is the primitive's either way.
 
     Fails closed on every shape it cannot read: unparseable YAML, a non-mapping
     document, a missing or non-positive channel count.
@@ -2598,7 +2608,7 @@ def _anchor_is_all_muted(graph: LoadedCamillaGraph) -> tuple[bool, str]:
         output_commission_mute_name,
     )
     from jasper.active_speaker.graph_safety import (
-        output_hard_muted_and_wired,
+        output_terminally_muted,
         view_from_yaml_dict,
     )
 
@@ -2628,7 +2638,8 @@ def _anchor_is_all_muted(graph: LoadedCamillaGraph) -> tuple[bool, str]:
     unmuted = [
         index
         for index in range(width)
-        if not output_hard_muted_and_wired(
+        if not output_terminally_muted(
+            payload,
             view,
             index,
             mute_name=output_commission_mute_name(index),
@@ -2638,7 +2649,8 @@ def _anchor_is_all_muted(graph: LoadedCamillaGraph) -> tuple[bool, str]:
     if unmuted:
         return False, (
             "these outputs are not held at the startup mute floor "
-            f"({STARTUP_MUTE_GAIN_DB:g} dB, muted and wired): "
+            f"({STARTUP_MUTE_GAIN_DB:g} dB, muted, wired and TERMINAL — nothing "
+            "after the mute touches the channel): "
             + ", ".join(str(index) for index in unmuted)
         )
     return True, ""

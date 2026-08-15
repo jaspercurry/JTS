@@ -490,7 +490,8 @@ def test_a_full_scale_graph_at_the_anchor_path_is_refused(tmp_path, monkeypatch)
 def test_a_bypassed_mute_step_is_refused(tmp_path, monkeypatch):
     """A mute behind a ``bypassed`` step is not a mute — CamillaDSP skips the
     step entirely while the filter definition still reads as muted. Refused
-    wholesale, mirroring ``runtime_contract._channel_terminally_muted``'s fact 3.
+    wholesale — fact 3 of the shared ``graph_safety.output_terminally_muted``
+    primitive this acceptance now asks in full.
     """
     _stage_box(
         tmp_path,
@@ -505,6 +506,134 @@ def test_a_bypassed_mute_step_is_refused(tmp_path, monkeypatch):
     ok, detail = ring_endpoint_anchor_converged()
     assert not ok
     assert "bypassed step" in detail, detail
+
+
+def _append_boost_filter(text: str) -> str:
+    """Add a +240 dB Gain to the graph's ``filters`` block."""
+    return text.replace(
+        "pipeline:\n",
+        "  as_boost:\n    type: Gain\n    parameters:\n"
+        "      gain: 240.0\n      mute: false\n"
+        "pipeline:\n",
+    )
+
+
+def test_a_gain_appended_after_the_mutes_is_refused(tmp_path, monkeypatch):
+    """ATTACK 1 of the three the repo already records.
+
+    A ``+240 dB`` Gain appended as an EXTRA pipeline step on every channel.
+    CamillaDSP applies later steps after earlier ones, so the mute is undone —
+    yet fact 1 (a wired hard mute exists on the channel) still reads as
+    satisfied. Accepted before the acceptance asked for TERMINALITY.
+    """
+    text = _append_boost_filter(
+        _graph_yaml(
+            capture_device=RING_CAPTURE_DEVICE,
+            playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+            fmt=RING_WIRE_FORMAT_WIDE,
+        )
+    )
+    for index in range(4):
+        text += f"  - type: Filter\n    channels: [{index}]\n    names: [as_boost]\n"
+    _stage_box(tmp_path, monkeypatch, graph_yaml=text)
+
+    ok, detail = ring_endpoint_anchor_converged()
+    assert not ok
+    assert "TERMINAL" in detail, detail
+    assert "0, 1, 2, 3" in detail, detail
+
+
+def test_a_gain_injected_into_the_mute_step_is_refused(tmp_path, monkeypatch):
+    """ATTACK 2. The same gain appended INTO each mute step's own ``names`` list,
+    after the mute — a step's filters apply in order, so this re-amplifies
+    without adding a step at all.
+    """
+    from jasper.active_speaker.camilla_yaml import output_commission_mute_name
+
+    text = _append_boost_filter(
+        _graph_yaml(
+            capture_device=RING_CAPTURE_DEVICE,
+            playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+            fmt=RING_WIRE_FORMAT_WIDE,
+        )
+    )
+    for index in range(4):
+        name = output_commission_mute_name(index)
+        text = text.replace(f"names: [{name}]\n", f"names: [{name}, as_boost]\n")
+    _stage_box(tmp_path, monkeypatch, graph_yaml=text)
+
+    ok, detail = ring_endpoint_anchor_converged()
+    assert not ok
+    assert "TERMINAL" in detail, detail
+
+
+def test_a_dither_step_after_the_mutes_is_refused(tmp_path, monkeypatch):
+    """ATTACK 3. A ``Dither`` step appended after the mutes — it GENERATES signal
+    into a channel the mute is supposed to have silenced, so "no step of any
+    other type follows the mute" is the fact that catches it.
+    """
+    text = _graph_yaml(
+        capture_device=RING_CAPTURE_DEVICE,
+        playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+        fmt=RING_WIRE_FORMAT_WIDE,
+    ) + "  - type: Dither\n    channels: [0, 1, 2, 3]\n"
+    _stage_box(tmp_path, monkeypatch, graph_yaml=text)
+
+    ok, detail = ring_endpoint_anchor_converged()
+    assert not ok
+    assert "TERMINAL" in detail, detail
+
+
+def test_the_real_emitted_anchor_passes_terminality(tmp_path):
+    """THE COUNTER-RISK, checked rather than assumed.
+
+    Terminality is only safe to demand if the SHIPPED emitter satisfies it —
+    otherwise this hardening would refuse the very box the PR exists to unblock.
+    Emits a genuine anchor through ``stage_protected_startup_config`` (no
+    hand-built YAML) and walks every output with the same shared primitive the
+    acceptance uses.
+    """
+    import yaml as yaml_lib
+
+    from jasper.active_speaker.camilla_yaml import (
+        STARTUP_MUTE_GAIN_DB,
+        output_commission_mute_name,
+    )
+    from jasper.active_speaker.graph_safety import (
+        output_terminally_muted,
+        view_from_yaml_dict,
+    )
+    from jasper.active_speaker.staging import stage_protected_startup_config
+
+    from tests.active_speaker_fixtures import (
+        mono_output_topology,
+        valid_camilla_config,
+    )
+
+    out = tmp_path / "anchor.yml"
+    payload = stage_protected_startup_config(
+        mono_output_topology(),
+        config_path=out,
+        metadata_path=tmp_path / "anchor.json",
+        validate=valid_camilla_config,
+        created_at="2026-08-15T00:00:00Z",
+    )
+    assert payload["status"] == "staged", payload.get("issues")
+
+    doc = yaml_lib.safe_load(out.read_text(encoding="utf-8"))
+    view = view_from_yaml_dict(doc)
+    width = payload["config"]["playback_channels"]
+    assert width >= 1
+    assert all(
+        output_terminally_muted(
+            doc,
+            view,
+            index,
+            mute_name=output_commission_mute_name(index),
+            mute_gain_db=STARTUP_MUTE_GAIN_DB,
+        )
+        for index in range(width)
+    ), "the shipped emitter must satisfy terminality, or this gate is unshippable"
 
 
 def test_an_unparseable_anchor_is_refused(tmp_path, monkeypatch):

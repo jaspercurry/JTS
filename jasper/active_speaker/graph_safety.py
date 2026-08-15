@@ -648,6 +648,92 @@ def output_hard_muted_and_wired(
     return muted and wired
 
 
+def output_terminally_muted(
+    payload: Mapping[str, Any],
+    view: GraphView,
+    index: int,
+    *,
+    mute_name: str,
+    mute_gain_db: float,
+) -> bool:
+    """True iff channel ``index`` ends the pipeline in a hard mute nothing undoes.
+
+    Three facts, all read off the parsed graph — never off a filename or a
+    source marker:
+
+    1. The channel carries the repo's one mute idiom — a ``Gain`` at
+       ``mute_gain_db`` with ``mute: true``, wired to that channel — proved by
+       :func:`output_hard_muted_and_wired`, the primitive the parked and
+       staged-startup graphs already rest on.
+    2. That mute is TERMINAL for the channel: it is the last name in its own
+       ``Filter`` step, no later ``Filter`` step touches the channel, and no
+       step of any other type follows it at all.
+    3. **No pipeline step is ``bypassed``.** CamillaDSP skips a bypassed step
+       entirely, so ``bypassed: true`` on the mute's own step leaves the channel
+       fully live while fact 1 still reads as satisfied — :class:`GraphView`
+       models filters and channels, not the per-step bypass flag, so the
+       primitive in fact 1 cannot see it. This is checked here, on the raw
+       pipeline, where the flag actually lives.
+
+    Fact 2 exists because of the lesson ``runtime_contract._parked_graph_allowed``
+    learned the hard way: CamillaDSP applies a step's filters in order, so a
+    ``Gain`` appended after the mute re-amplifies, and a later ``Mixer`` can
+    re-inject another channel's signal into a "muted" one. A mute that merely
+    *appears somewhere* in the chain is not a mute. A ``Filter`` step with no
+    ``channels`` key applies to every channel, so it counts as touching this one.
+
+    Fact 3 is deliberately WHOLESALE — any bypassed step anywhere refuses the
+    proof for every channel, not just a bypassed mute. No JTS emitter ever
+    writes ``bypassed``, so its presence means the graph was hand-edited, and
+    reasoning about which bypassed step is harmless is exactly the "generous
+    shape" fact 2 was written to reject. Both bench derivation checkers
+    (``jasper.active_speaker.bench.derivation``,
+    ``jasper.bass_extension.bench.derivation``) refuse bypassed steps outright
+    for the same reason; this matches them. Fails closed on any shape it cannot
+    read.
+
+    PROMOTED HERE from ``runtime_contract._flat_output_terminally_muted``, which
+    now delegates, when a second caller appeared: the ring arm's anchor
+    acceptance (``jasper.fanin.coupling_reconcile._anchor_is_all_muted``) needs
+    the same three facts about the same shape of graph, and a mirrored copy is a
+    drift site on a hearing-safety path. ``mute_name`` / ``mute_gain_db`` are
+    parameters rather than derived here, matching
+    :func:`output_hard_muted_and_wired` and keeping this module free of the
+    emitter's naming module.
+    """
+    if not output_hard_muted_and_wired(
+        view, index, mute_name=mute_name, mute_gain_db=mute_gain_db
+    ):
+        return False
+    pipeline = payload.get("pipeline")
+    if not isinstance(pipeline, list):
+        return False
+    muted = False
+    for raw_step in pipeline:
+        step = raw_step if isinstance(raw_step, dict) else {}
+        if truthy_bool(step.get("bypassed")):
+            return False
+        if step.get("type") != "Filter":
+            # Mixer / Processor / Dither / anything else after the mute can
+            # re-inject or generate signal on the channel.
+            if muted:
+                return False
+            continue
+        channels = step.get("channels")
+        if isinstance(channels, list) and index not in channels:
+            continue
+        names = step.get("names")
+        if not isinstance(names, list):
+            return False
+        if muted:
+            return False
+        if mute_name in names:
+            if names[-1] != mute_name:
+                return False
+            muted = True
+    return muted
+
+
 def output_unmuted_and_wired(view: GraphView, index: int, *, mute_name: str) -> bool:
     """True iff output ``index``'s commission-mute is ``mute: False`` (a Gain)
     **and** wired to channel ``index`` — the per-driver audible-target half."""
