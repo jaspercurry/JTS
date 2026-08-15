@@ -512,6 +512,31 @@ def test_the_two_anchor_checks_ask_about_different_moments(tmp_path):
     assert restore_target_diverged(anchor, stale_path, stale_sha) is True
 
 
+def test_a_different_path_alone_is_a_wrong_target_when_no_digest_can_answer(
+    tmp_path,
+):
+    """The PATH comparison, isolated where it is the only thing that can answer.
+
+    The 14:47 fixture above uses two files with different bytes, so the DIGEST
+    branch reaches the same verdict there and deleting the path comparison
+    leaves it green — the shape an adversarial gate caught in #2553's own
+    sibling test. Here the anchor's recorded digest is empty (what
+    ``round_anchor_record`` emits whenever the displaced file could not be read
+    at apply time), so the digest branch is structurally silent.
+    """
+    stale_path, stale_sha = _yaml(tmp_path, _STALE_CANDIDATE, "run 2's\n")
+    anchor = {
+        "displaced": {"config_path": str(tmp_path / _DISPLACED), "sha256": ""},
+    }
+
+    assert restore_target_diverged(anchor, stale_path, stale_sha) is True
+    # The control: the same digest-less anchor against its OWN path must still
+    # answer False, or this fixture would pass for a subject wired to True.
+    assert restore_target_diverged(
+        anchor, str(tmp_path / _DISPLACED), stale_sha
+    ) is False
+
+
 def test_a_stash_naming_the_displaced_file_with_other_bytes_is_a_wrong_target(
     tmp_path,
 ):
