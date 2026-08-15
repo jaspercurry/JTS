@@ -9764,6 +9764,55 @@ class CrossoverV2Session:
             return 0.0
         return value if math.isfinite(value) else 0.0
 
+    def _entry_delta_db(
+        self, freqs: Any, predicted_s: Any, commanded_db: Any,
+    ) -> Any | None:
+        """This round's PRE-apply capture, in the realized curve's frame (#2533).
+
+        ``measured_pre − predicted_raw``, on the VERIFY grid — the exact
+        counterpart of the ``realized_db`` reconstruction beside the call, with
+        the entry baseline's magnitude in place of the post-apply one, so
+        ``classify_delta_probe`` can measure its residual as a CHANGE across the
+        apply instead of as an absolute disagreement with the model. The
+        raw-branch prediction is recovered the same way that reconstruction
+        recovers it: ``predicted_raw == predicted_post − commanded``.
+
+        The curve is #2291's ``verify_priors.entry_baseline``, already retained
+        and already rehydrated into stage 2 — nothing new is captured, persisted,
+        or asked of the household for this.
+
+        **Bins the entry capture EXCLUDED become NaN, not values.** They are the
+        bins that capture could not trust, and the probe drops non-finite anchor
+        bins rather than anchoring a level claim on them. Interpolation spreads
+        each NaN to its two neighbours, which is the conservative direction.
+
+        Returns ``None`` — "no comparable before", which leaves the probe
+        measuring exactly what it measured before this existed — for a round with
+        no entry baseline, and for any arithmetic this cannot complete. Fail-soft
+        on the same terms as :meth:`_applied_offset_db`: an unusable optional
+        accounting term is nothing known, never a lost verdict.
+        """
+        baseline = self._measure_entry_baseline
+        if baseline is None:
+            return None
+        try:
+            curve = baseline.curve
+            entry_hz = np.asarray(curve.hz, dtype=float)
+            entry_db = np.asarray(curve.db, dtype=float)
+            excluded = np.asarray(baseline.excluded, dtype=bool)
+            if entry_hz.size == 0 or entry_db.size != entry_hz.size:
+                return None
+            if excluded.size == entry_hz.size:
+                entry_db = np.where(excluded, np.nan, entry_db)
+            measured_pre = np.interp(freqs, entry_hz, entry_db)
+            return (measured_pre - predicted_s) + commanded_db
+        except (ValueError, TypeError, IndexError, AttributeError) as exc:
+            log_event(
+                logger, "correction.crossover_v2_delta_probe_no_entry_anchor",
+                level=logging.WARNING, session_id=self.session_id, error=str(exc),
+            )
+            return None
+
     def _run_delta_probe(self) -> DeltaProbeMap | None:
         """Classify what the speaker actually did against what was commanded.
 
@@ -9843,6 +9892,7 @@ class CrossoverV2Session:
                 {"band_spread": self._group_band_spread.get(PHASE_CLOUD_VERIFY, ())},
             ),
             expected_offset_db=self._applied_offset_db(),
+            entry_delta_db=self._entry_delta_db(freqs, predicted_s, commanded_db),
         )
         self._delta_probe = probe
         log_event(
@@ -9921,6 +9971,28 @@ class CrossoverV2Session:
             residual_offset_db=(
                 None if probe.residual_offset_db is None
                 else round(probe.residual_offset_db, 3)
+            ),
+            # WHAT the residual removed and WHERE it was measured (#2533). The
+            # anchor is the standing pre-apply disagreement the residual is no
+            # longer reporting as a level move, and ``None`` means it was not
+            # measured and therefore not removed. The quiet terms bound the
+            # residual's claim exactly as ``frame_n_bins``/``frame_band_hz``
+            # bound the frame's: ``quiet_core_band_hz`` is the INTERQUARTILE span
+            # (``frame_band_hz`` is the min/max, which two stray bins defeat) and
+            # the coverage is what decides between a whole-band reason and a
+            # band-scoped one.
+            entry_anchor_offset_db=(
+                None if probe.entry_anchor_offset_db is None
+                else round(probe.entry_anchor_offset_db, 3)
+            ),
+            quiet_n_bins=probe.quiet_n_bins,
+            quiet_core_band_hz=(
+                None if probe.quiet_core_band_hz is None
+                else tuple(round(v, 1) for v in probe.quiet_core_band_hz)
+            ),
+            quiet_probe_coverage=(
+                None if probe.quiet_probe_coverage is None
+                else round(probe.quiet_probe_coverage, 3)
             ),
             spatial_available=probe.spatial.available,
             spatial_widened=probe.spatial.widened,

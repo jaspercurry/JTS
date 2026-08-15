@@ -8776,6 +8776,12 @@ def test_the_probe_verdict_is_persisted_even_on_a_pass():
         "reason": "uncommanded_level_shift",
         "expected_offset_db": -22.458,
         "residual_offset_db": -4.0,
+        # Absent on this duck-typed stand-in, and absent is what "unknown"
+        # looks like on every field of this summary (#2533).
+        "entry_anchor_offset_db": None,
+        "quiet_n_bins": None,
+        "quiet_core_band_hz": None,
+        "quiet_probe_coverage": None,
         "frame_offset_db": None,
         "frame_tilt_db_per_octave": None,
         "frame_n_bins": 0,

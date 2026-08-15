@@ -849,6 +849,96 @@ def test_a_verdict_can_be_re_graded_from_the_store_alone(monkeypatch):
     )
 
 
+def test_an_anchored_verdict_is_re_gradable_from_the_store_alone(monkeypatch):
+    """**#2533 keeps #2522's contract.** The residual is now measured against the
+    PRE-apply capture, and that capture was already durable.
+
+    Nothing new is retained for it: ``verify_priors.entry_baseline`` is #2291's
+    key, and the raw-branch prediction the anchor is expressed against is
+    recovered from the stored pair the same way the live session recovers it
+    (``predicted_post − commanded``). So a disputed level verdict stays a
+    laptop-side experiment rather than another hardware run — which is the whole
+    reason both curves are on disk.
+    """
+    import numpy as np
+
+    from jasper.active_speaker.crossover_v2.contracts import ResponseCurve
+    from jasper.active_speaker.crossover_v2.round_evidence import EntryBaseline
+
+    conductor, _state = _stage_1(monkeypatch)
+    freqs, _flat_commanded, error = _regradable_fixture()
+    # ``_regradable_fixture`` commands 6 dB across the WHOLE grid, so it has no
+    # quiet bins and therefore no residual to anchor. Same grid and same
+    # localized error — the shape no fitted frame absorbs, so the verdict stays a
+    # rollback — but commanded only over the midband, which is what leaves bins
+    # for the anchor to be measured in.
+    commanded = np.where((freqs >= 300.0) & (freqs <= 8_000.0), 6.0, 0.0)
+    predicted = np.zeros_like(freqs)
+    _install_commanded_delta(conductor, (freqs, commanded))
+
+    # A pre-apply capture that already sat 2.5 dB under its own prediction: the
+    # standing anchoring term this fix exists to stop reporting as a level move.
+    # Installed rather than walked, exactly as the commanded delta above is —
+    # this test is about what crosses the bridge, not about the capture loop.
+    anchor_db = -2.5
+    conductor._measure_entry_baseline = EntryBaseline(
+        program_id="regrade-fixture",
+        reference_mark="design_axis_mark",
+        curve=ResponseCurve(freqs, (predicted - commanded) + anchor_db),
+        excluded=tuple(False for _ in freqs),
+        graph_fingerprint="fingerprint",
+        captured_at="2026-08-15T00:00:00Z",
+    )
+
+    live = _delta_probe_given_a_tracking_curve(
+        conductor, (freqs, predicted + error, predicted),
+    )
+    assert live is not None
+    assert live.entry_anchor_offset_db == pytest.approx(anchor_db, abs=1e-6)
+
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    state = v2host.load_v2_state() or {}
+
+    stored_freqs, stored_measured, stored_predicted = (
+        v2host.verify_measured_curve_from_state(state)
+    )
+    assert stored_freqs.size < freqs.size  # the decimation really happened
+    stored_commanded = v2host.commanded_delta_prior_from_state(state)
+    commanded_on_grid = np.interp(
+        stored_freqs, stored_commanded[0], stored_commanded[1]
+    )
+    stored_entry = v2host.entry_baseline_prior_from_state(state)
+    assert stored_entry is not None
+    entry_on_grid = np.interp(
+        stored_freqs,
+        np.asarray(stored_entry.curve.hz, dtype=float),
+        np.asarray(stored_entry.curve.db, dtype=float),
+    )
+    regraded = delta_probe.classify_delta_probe(
+        stored_freqs,
+        (stored_measured - stored_predicted) + commanded_on_grid,
+        commanded_on_grid,
+        band_hz=live.requested_band_hz,
+        expected_offset_db=live.expected_offset_db,
+        # measured_pre − predicted_raw, and predicted_raw is the stored
+        # post-apply prediction with the command taken back out.
+        entry_delta_db=(entry_on_grid - stored_predicted) + commanded_on_grid,
+    )
+
+    assert regraded.verdict == live.verdict
+    assert regraded.reason == live.reason
+    assert regraded.rollback == live.rollback
+    assert regraded.entry_anchor_offset_db == pytest.approx(
+        live.entry_anchor_offset_db, abs=0.05,
+    )
+    assert regraded.residual_offset_db == pytest.approx(
+        live.residual_offset_db, abs=0.05,
+    )
+    assert regraded.quiet_probe_coverage == pytest.approx(
+        live.quiet_probe_coverage, abs=0.05,
+    )
+
+
 def test_a_truncated_measured_record_reads_as_absent_not_as_a_curve(monkeypatch):
     """Three arrays that are not one curve are an absence, not a grid mismatch.
 
