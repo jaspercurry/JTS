@@ -107,11 +107,11 @@ that session the correction commanded 463 Hz-12 kHz, so the quiet set was
 reported as a whole-band ``uncommanded_level_shift``. The set's own span did not
 show it either: two stray bins at 493 Hz and 1.9 kHz made 158-of-160 bins above
 12 kHz look band-wide, which is why ``quiet_core_band_hz`` is the INTERQUARTILE
-span rather than the min/max ``frame.band_hz`` already reports. When that span is
-less spread than a uniform sampling of the graded band would be
-(:data:`DELTA_PROBE_MIN_QUIET_COVERAGE`) the finding stands and the verdict is
-unchanged — narrowing it would make this instrument stricter on evidence it had
-just declared unrepresentative — but the reason narrows to
+span rather than the min/max ``frame.band_hz`` already reports. When that span
+covers less than :data:`DELTA_PROBE_MIN_QUIET_COVERAGE` of the interquartile span
+the graded band's OWN bins cover on the same grid, the finding stands and the
+verdict is unchanged — narrowing it would make this instrument stricter on
+evidence it had just declared unrepresentative — but the reason narrows to
 :data:`REASON_UNCOMMANDED_LEVEL_SHIFT_OUTSIDE_BAND` and names the band it covers.
 
 The absorption itself is NOT compensated at the speaker. It is the
