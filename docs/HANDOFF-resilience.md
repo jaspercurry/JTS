@@ -1312,7 +1312,13 @@ For anyone touching the resilience code:
   failures still restart, because on the passive lane that open is how outputd
   waits for CamillaDSP's half of the snd-aloop pair. On the ACTIVE lane the
   failure is permanent (P9-C deleted its pair-5 PCMs), and the park's record
-  says so, naming the ring re-arm rather than a width fix. Details in
+  says so, naming the ring re-arm rather than a width fix. That record
+  (`/run/jasper-outputd-content-lane.state`, which also carries a `lane=`
+  token) is read by `jasper/control/content_lane_state.py` — ONE reader with
+  two surfaces, so they cannot disagree: `/state.resilience.content_lane` and
+  `jasper-doctor`'s `check_outputd_content_lane_park`, which fails on a park
+  (the speaker emits nothing and no automatic path re-arms it) and surfaces
+  the record's own lane-specific `action` verbatim. Details in
   [docs/HANDOFF-hotplug-resilience.md](HANDOFF-hotplug-resilience.md).
 - `deploy/systemd/jasper-dongle-recover.service` — `Type=oneshot`
   unit that `reset-failed`s the audio daemons, restarts the output graph

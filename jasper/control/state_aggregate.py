@@ -54,6 +54,7 @@ from ..volume_diagnostics import (
 )
 from . import (
     bootloop_guard_state,
+    content_lane_state,
     debug_control,
     grouping_supervisor,
     mpris,
@@ -1390,6 +1391,17 @@ async def _get_state(
             # for this boot via runtime drop-ins — fix the failing
             # daemon, then reboot to re-arm.
             "bootloop_guard": bootloop_guard_state.snapshot(),
+            # jasper-outputd's content-lane park record (written by its own
+            # ExecStopPost after repeated content-lane open failures, then the
+            # unit is stopped out-of-band so it cannot ride Restart=on-failure
+            # into StartLimitAction=reboot). parked=true means the speaker
+            # emits NOTHING and nothing re-arms it automatically — the record's
+            # own lane-specific `action` is the remedy. Fresh /run read per
+            # call (this daemon is never restarted when outputd parks);
+            # {"status": "absent"} on a healthy boot. Same reader
+            # jasper-doctor's check_outputd_content_lane_park uses, so the two
+            # surfaces cannot disagree.
+            "content_lane": content_lane_state.snapshot(),
             # Bounded after-the-fact timeline for multiroom restart cascades:
             # existing event=multiroom.reconcile.*, restart_broker.*, and
             # grouping_supervisor.* journal lines, scanned into a tiny ring so

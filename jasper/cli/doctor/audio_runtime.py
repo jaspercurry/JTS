@@ -3622,3 +3622,85 @@ def _ring_detach_remedy(reason: str) -> str:
         "the ring file does not exist yet — normal briefly at boot; persistent "
         "means the renderer has never opened its device"
     )
+
+
+@doctor_check(order=52.66, group="audio")
+def check_outputd_content_lane_park() -> CheckResult:
+    """jasper-outputd is not parked on a content-lane open failure.
+
+    ``deploy/bin/jasper-outputd-failure-reconcile`` parks the unit
+    out-of-band after ``CONTENT_LANE_PARK_AFTER`` consecutive content-lane
+    open failures, so the unit cannot ride ``Restart=on-failure`` into
+    ``StartLimitAction=reboot``. That park is TERMINAL for the boot —
+    nothing re-arms outputd on its own — and until this check existed the
+    record it writes had NO reader: a parked speaker was silent, and so was
+    every operator surface.
+
+    Severity is ``fail``, not ``warn``, and the reason is the definition the
+    rest of the doctor uses: a park means the speaker emits NOTHING and no
+    automatic path recovers it. That is operator-action class. A ``warn``
+    would put "your speaker is silent until you intervene" in the same bucket
+    as advisory drift.
+
+    The record's own ``action=`` and ``re_arm=`` text is surfaced verbatim
+    rather than restated here — the writer picks a LANE-SPECIFIC remedy
+    (active vs passive), and a second copy of that prose in Python is a
+    guaranteed drift site.
+    """
+    label = "outputd content lane"
+
+    from ...control import content_lane_state
+
+    state = content_lane_state.snapshot()
+    status = state.get("status")
+
+    if status == "absent":
+        return CheckResult(
+            label, "ok", "no content-lane failure record this boot"
+        )
+
+    if status == "unreadable":
+        return CheckResult(
+            label,
+            "warn",
+            f"content-lane record at {state.get('path')} exists but could not "
+            f"be read ({state.get('error')}) — a park cannot be ruled out. "
+            "The record is written root:jasper 0660 by jasper-outputd's "
+            "ExecStopPost; check that the reader is in group jasper.",
+        )
+
+    if state.get("parked"):
+        lane = state.get("lane") or "unknown"
+        count = state.get("count")
+        parts = [
+            f"PARKED — jasper-outputd stopped after {count} consecutive "
+            f"{lane}-lane open failures",
+        ]
+        parked_utc = state.get("parked_utc")
+        if parked_utc:
+            parts.append(f"at {parked_utc}")
+        action = state.get("action")
+        if action:
+            parts.append(f"ACTION: {action}")
+        re_arm = state.get("re_arm")
+        if re_arm:
+            parts.append(f"RE-ARM: {re_arm}")
+        return CheckResult(label, "fail", ". ".join(parts))
+
+    count = state.get("count")
+    if state.get("streak_live"):
+        return CheckResult(
+            label,
+            "warn",
+            f"content-lane open is failing: {count} consecutive failure(s) "
+            "recorded within the streak window, below the park threshold. "
+            "Usually a transient wait for CamillaDSP to open its half of the "
+            "pair at boot; persistent means the lane will park.",
+        )
+    return CheckResult(
+        label,
+        "ok",
+        f"content lane recovered — a stale record of {count} failure(s) "
+        f"remains ({state.get('age_sec')}s old, outside the streak window); "
+        "it is cleared on the next clean stop",
+    )
