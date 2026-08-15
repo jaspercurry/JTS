@@ -35,6 +35,7 @@ Type=oneshot. It runs, applies the plan, and exits.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import logging
 import os
@@ -48,7 +49,9 @@ from pathlib import Path
 
 from .. import atomic_io
 from .. import tts_routing as _tts_routing
+from ..fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 from ..log_event import log_event
+from ..ring_assets import RING_ACTIVE_CONTENT_FILE, ring_writer_lock_path
 from ..source_intent import (
     RECONCILE_SYSTEMD_TIMEOUT_SECONDS as SOURCE_RECONCILE_SYSTEMD_TIMEOUT_SECONDS,
 )
@@ -293,13 +296,30 @@ AUDIO_HARDWARE_RECONCILE = "/usr/local/sbin/jasper-audio-hardware-reconcile"
 CROSSOVER_UNIT = "jasper-camilla-crossover.service"
 
 # The exclusive active-content PCM camilla#1 owns in solo-active mode and
-# camilla#2 owns after the active-leader handoff. `outputd_active_content_*`
-# resolves to raw snd-aloop pair 5 (see deploy/alsa/asoundrc.jasper), so the
-# per-substream `/proc/asound` status is the only cheap positive release signal:
-# the shared `/dev/snd/pcmC*D0p` node covers every playback substream and would
-# be a false "busy" while renderers hold 0..4 or fan-in holds 7.
-ACTIVE_CONTENT_PLAYBACK_PCM = "hw:Loopback,0,5"
-ACTIVE_CONTENT_PLAYBACK_STATUS_PATH = "/proc/asound/Loopback/pcm0p/sub5/status"
+# camilla#2 owns after the active-leader handoff. It is the ACTIVE ring
+# (`jts_ring_active_playback` -> `/dev/shm/jts-ring/active-content.ring`), and
+# the release signal is the ring's own writer lock: the C ioplug's writer holds
+# an exclusive `flock` on `<ring>.writer.lock` for the life of its mapping, so a
+# NON-BLOCKING exclusive `flock` that SUCCEEDS proves no writer owns the ring.
+#
+# Why this and not the per-substream `/proc/asound/Loopback/pcm0p/sub5/status`
+# read it replaces (audio-graph consolidation #2285, P9-C): that path is
+# snd-aloop pair 5, which P9-C deletes. The lock is strictly the better signal
+# even before then — the kernel drops an `flock` on process exit INCLUDING
+# SIGKILL, so it has no frozen-state window, and it is the SAME primitive
+# camilla#2 contends on when it attaches. `/dev/snd/pcmC*D0p` was never usable
+# here (it covers every playback substream and reads false-busy while renderers
+# hold 0..4 or fan-in holds 7); the lock has no such conflation because it is
+# per-ring.
+#
+# ORDERING CONSEQUENCE, stated because it is live between P9-C's PRs: a box
+# whose active lane is still snd-aloop (the `loopback` coupling, or a box whose
+# ring platform never armed) has no `active-content.ring.writer.lock` at all, so
+# this probe answers `unknown` and the arm fails closed to solo-active with the
+# lock path in the log line. That is the ruled direction — arming without proof
+# is the jts3 EBUSY reboot loop — and it resolves when P9-C's lane-5 deletion
+# makes the ACTIVE lane a ring on every box.
+ACTIVE_CONTENT_WRITER_LOCK_PATH = ring_writer_lock_path(RING_ACTIVE_CONTENT_FILE)
 ACTIVE_CONTENT_RELEASE_TIMEOUT_SEC = 0.8
 ACTIVE_CONTENT_RELEASE_POLL_SEC = 0.05
 
@@ -311,7 +331,7 @@ class _PcmHandleProbeResult:
     state: str  # "released" | "busy" | "unknown"
     reason: str
     detail: str = ""
-    status_path: str = ACTIVE_CONTENT_PLAYBACK_STATUS_PATH
+    lock_path: str = ACTIVE_CONTENT_WRITER_LOCK_PATH
     attempts: int = 0
     timeout_sec: float = 0.0
 
@@ -926,122 +946,146 @@ def _unit_is_active(unit: str) -> bool:
 
 def _probe_active_content_pcm_once(
     *,
-    status_path: str = ACTIVE_CONTENT_PLAYBACK_STATUS_PATH,
-    run=subprocess.run,
-    probe_timeout_sec: float = 0.5,
+    lock_path: str | None = None,
 ) -> _PcmHandleProbeResult:
-    """Read snd-aloop's per-substream status once.
+    """Try to take the ACTIVE ring's writer lock once, non-blocking.
 
-    `/proc/asound/Loopback/pcm0p/sub5/status` reads exactly `closed` when
-    `hw:Loopback,0,5` has no opener. Any open status (RUNNING, PREPARED, etc.)
-    means the exclusive PCM is still held. A missing probe tool is the one
-    fail-soft case: older/minimal installs should not crash the reconciler just
-    because this positive barrier cannot run.
+    The C ioplug's writer holds ``flock(LOCK_EX)`` on ``<ring>.writer.lock`` for
+    the life of its mapping (``acquire_writer_lock``,
+    ``c/jts-ring-ioplug/jts_ring_shm.c``), so:
+
+      - the lock is FREE      -> ``released`` — no writer owns the ACTIVE ring.
+      - ``EWOULDBLOCK``       -> ``busy``     — a live writer still owns it.
+      - anything else         -> ``unknown``  — the caller fails closed.
+
+    Three properties this probe must keep, all ruled with the design:
+
+    1. **Never ``O_CREAT``.** The ioplug creates the lock with ``O_CREAT`` and
+       ``fchmod``-heals the mode precisely because a wrong-mode creation by an
+       out-of-unit first creator locks the renderer out permanently (the sticky
+       directory bit stops it deleting the file). A prober that created the file
+       would be exactly that hazard. An absent lock file means no writer has ever
+       attached this ring -> ``unknown``.
+    2. **Release immediately.** The probe is a BARRIER, not a lock handoff: it
+       drops the lock before returning so it can never be the thing camilla#2
+       contends with.
+    3. **The TOCTOU is accepted, not papered over.** camilla#1 could reattach
+       between a successful probe and camilla#2's own attach; the authority is
+       camilla#2's attach, which takes this same lock and gets ``-EBUSY`` if it
+       lost the race. Fail-closed either way, so no handoff protocol is needed.
+
+    ``O_RDONLY`` is deliberate: ``flock`` needs no write access, and the smaller
+    request is the one more likely to succeed against a lock file created by a
+    peer under a different uid.
+
+    ``lock_path=None`` resolves :data:`ACTIVE_CONTENT_WRITER_LOCK_PATH` at CALL
+    time, never as a bound default — the rule :mod:`jasper.ring_assets` states
+    on ``ring_ioplug_so_path``: a def-time binding makes a caller that repoints
+    the module constant silently probe the original path while every log line
+    still names the constant.
     """
+    lock_path = ACTIVE_CONTENT_WRITER_LOCK_PATH if lock_path is None else lock_path
     try:
-        proc = run(
-            ["cat", status_path],
-            capture_output=True,
-            text=True,
-            timeout=probe_timeout_sec,
-        )
+        fd = os.open(lock_path, os.O_RDONLY | os.O_CLOEXEC)
     except FileNotFoundError as e:
         return _PcmHandleProbeResult(
             "unknown",
-            "probe_tool_missing",
+            "writer_lock_absent",
             detail=str(e),
-            status_path=status_path,
+            lock_path=lock_path,
         )
-    except subprocess.TimeoutExpired as e:
+    except PermissionError as e:
         return _PcmHandleProbeResult(
-            "busy",
-            "probe_timeout",
+            "unknown",
+            "writer_lock_unopenable",
             detail=str(e),
-            status_path=status_path,
+            lock_path=lock_path,
         )
     except OSError as e:
         return _PcmHandleProbeResult(
-            "busy",
-            "probe_error",
+            "unknown",
+            "writer_lock_open_error",
             detail=str(e),
-            status_path=status_path,
+            lock_path=lock_path,
         )
 
-    if proc.returncode != 0:
-        detail = (proc.stderr or "").strip() or f"rc={proc.returncode}"
-        return _PcmHandleProbeResult(
-            "busy",
-            "status_unavailable",
-            detail=detail,
-            status_path=status_path,
-        )
-
-    status = (proc.stdout or "").strip()
-    if status.lower() == "closed":
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as e:
+            # EWOULDBLOCK/EAGAIN — a live writer holds the ring. The ONE busy
+            # answer; every other failure is unknown, because "we could not ask"
+            # must not be reported as "someone is holding it".
+            return _PcmHandleProbeResult(
+                "busy",
+                "writer_lock_held",
+                detail=str(e),
+                lock_path=lock_path,
+            )
+        except OSError as e:
+            return _PcmHandleProbeResult(
+                "unknown",
+                "writer_lock_probe_error",
+                detail=str(e),
+                lock_path=lock_path,
+            )
+        # Barrier, not handoff: drop it before the caller acts on the answer.
+        fcntl.flock(fd, fcntl.LOCK_UN)
         return _PcmHandleProbeResult(
             "released",
-            "status_closed",
-            detail=status,
-            status_path=status_path,
+            "writer_lock_free",
+            lock_path=lock_path,
         )
-    if not status:
-        return _PcmHandleProbeResult(
-            "busy",
-            "status_empty",
-            status_path=status_path,
-        )
-    first_line = status.splitlines()[0].strip()
-    return _PcmHandleProbeResult(
-        "busy",
-        "status_open",
-        detail=first_line,
-        status_path=status_path,
-    )
+    finally:
+        os.close(fd)
 
 
 def _wait_for_active_content_pcm_release(
     *,
     timeout_sec: float = ACTIVE_CONTENT_RELEASE_TIMEOUT_SEC,
     interval_sec: float = ACTIVE_CONTENT_RELEASE_POLL_SEC,
-    status_path: str = ACTIVE_CONTENT_PLAYBACK_STATUS_PATH,
-    run=subprocess.run,
+    lock_path: str | None = None,
     sleep=time.sleep,
     monotonic=time.monotonic,
 ) -> _PcmHandleProbeResult:
     """Poll until camilla#1 has positively released the active-content PCM.
 
-    Returns `busy` on timeout/still-open and `unknown` only for the fail-soft
-    case (probe tool missing). The caller arms camilla#2 ONLY on a positive
-    `released`; both `busy` and `unknown` fail closed to solo-active (it logs
-    `unknown` at WARNING since arming without proof risks the EBUSY reboot
-    loop). `unknown` is theoretical-only — `cat` is universal on a real Pi.
+    Returns `busy` while a live writer still holds the ring's writer lock (and
+    on timeout), and `unknown` when the lock cannot be asked at all — absent,
+    unopenable, or an unexpected errno. The caller arms camilla#2 ONLY on a
+    positive `released`; both `busy` and `unknown` fail closed to solo-active
+    (it logs `unknown` at WARNING since arming without proof risks the EBUSY
+    reboot loop).
+
+    ``lock_path=None`` resolves the module constant at CALL time, for the same
+    reason the single-shot probe does.
     """
+    lock_path = ACTIVE_CONTENT_WRITER_LOCK_PATH if lock_path is None else lock_path
     deadline = monotonic() + max(timeout_sec, 0.0)
     attempts = 0
     last = _PcmHandleProbeResult(
         "busy",
         "not_probed",
-        status_path=status_path,
+        lock_path=lock_path,
         timeout_sec=timeout_sec,
     )
     while True:
         attempts += 1
-        last = _probe_active_content_pcm_once(
-            status_path=status_path,
-            run=run,
-        )
+        last = _probe_active_content_pcm_once(lock_path=lock_path)
         if not last.busy:
             return replace(last, attempts=attempts, timeout_sec=timeout_sec)
         now = monotonic()
         if now >= deadline:
+            # Name the last busy reason in the detail — `writer_lock_held` is
+            # the ordinary one, and anything else arriving here would be a new
+            # busy branch whose identity the operator still needs.
             detail = last.detail
-            if last.reason != "status_open":
-                detail = f"{last.reason}: {detail}" if detail else last.reason
+            detail = f"{last.reason}: {detail}" if detail else last.reason
             return _PcmHandleProbeResult(
                 "busy",
                 "timeout",
                 detail=detail,
-                status_path=status_path,
+                lock_path=lock_path,
                 attempts=attempts,
                 timeout_sec=timeout_sec,
             )
@@ -2357,16 +2401,16 @@ def main(argv: list[str] | None = None) -> int:
             # Arm camilla#2 (systemctl enable --now) ONLY when the bake provably
             # moved camilla#1 off the active-content PCM, outputd re-converged
             # to the active lane, and the exclusive handle positively released.
-            # A successful CamillaDSP config reload is not enough: snd-aloop can
-            # lag the actual close, and arming camilla#2 into that window races
-            # EBUSY against camilla#1's recovery-budget unit.
+            # A successful CamillaDSP config reload is not enough: the transport
+            # can lag the actual close, and arming camilla#2 into that window
+            # races EBUSY against camilla#1's recovery-budget unit.
             if bake_ok:
                 if _unit_is_active(CROSSOVER_UNIT):
                     log_event(
                         logger,
                         "multiroom.reconcile.active_leader_handle_probe",
-                        pcm=ACTIVE_CONTENT_PLAYBACK_PCM,
-                        status_path=ACTIVE_CONTENT_PLAYBACK_STATUS_PATH,
+                        pcm=RING_ACTIVE_PLAYBACK_DEVICE,
+                        lock_path=ACTIVE_CONTENT_WRITER_LOCK_PATH,
                         result="already_armed",
                         reason="crossover_unit_active",
                     )
@@ -2375,8 +2419,8 @@ def main(argv: list[str] | None = None) -> int:
                     log_event(
                         logger,
                         "multiroom.reconcile.active_leader_handle_probe",
-                        pcm=ACTIVE_CONTENT_PLAYBACK_PCM,
-                        status_path=probe.status_path,
+                        pcm=RING_ACTIVE_PLAYBACK_DEVICE,
+                        lock_path=probe.lock_path,
                         result=probe.state,
                         reason=probe.reason,
                         detail=probe.detail or "(none)",
@@ -2386,12 +2430,15 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     if not probe.released:
                         # Arm camilla#2 ONLY on a POSITIVE release proof. `busy`
-                        # (still-open/timeout) and `unknown` (probe tool missing)
-                        # both fail closed to solo-active — arming without proof
-                        # is the exact jts3 EBUSY reboot-loop this barrier exists
-                        # to prevent, and `cat` is universal on a real Pi so the
-                        # `unknown` branch is a theoretical-only safety net, not a
-                        # path we ever want to arm through.
+                        # (a live writer still holds the ring, or the wait timed
+                        # out) and `unknown` (the writer lock could not be asked
+                        # — absent, unopenable, unexpected errno) both fail
+                        # closed to solo-active. Arming without proof is the
+                        # exact jts3 EBUSY reboot-loop this barrier exists to
+                        # prevent, so `unknown` is never a path we arm through.
+                        # See ACTIVE_CONTENT_WRITER_LOCK_PATH for which boxes
+                        # can reach `unknown` and why blocking is the honest
+                        # answer there.
                         endpoint_block_reason = (
                             "active_content_pcm_busy"
                             if probe.busy
@@ -2409,8 +2456,8 @@ def main(argv: list[str] | None = None) -> int:
                                 "restoring solo-active and leaving camilla#2 "
                                 "un-armed"
                             ),
-                            pcm=ACTIVE_CONTENT_PLAYBACK_PCM,
-                            status_path=probe.status_path,
+                            pcm=RING_ACTIVE_PLAYBACK_DEVICE,
+                            lock_path=probe.lock_path,
                             probe_reason=probe.reason,
                             probe_detail=probe.detail or "(none)",
                             attempts=probe.attempts,

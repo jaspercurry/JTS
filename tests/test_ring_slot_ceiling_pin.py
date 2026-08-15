@@ -239,3 +239,73 @@ def test_ring_open_transaction_lock_contract_agrees_between_c_and_rust():
     assert c_timeout == rust_timeout
     assert c_step == int(str(rust_step).replace("_", ""))
     assert c_attempts == rust_attempts
+
+
+def test_ring_writer_lock_suffix_agrees_between_c_and_python():
+    """Python became a READER of the C writer lock (audio-graph consolidation
+    #2285, P9-C): the grouping reconciler's active-content release barrier
+    contends on it, and the doctor's exclusivity guard enumerates its holders.
+    Both derive the path from :mod:`jasper.ring_assets`, so that suffix is a
+    second declaration of a C constant and gets the same cross-file pin the
+    open-lock contract has.
+
+    Also pins the CONSTRUCTION, not just the suffix: ``acquire_writer_lock``
+    appends the suffix to the ring path with no directory indirection
+    (``snprintf(lock_path, ..., "%s%s", path, JTS_RING_WRITER_LOCK_SUFFIX)``),
+    which is what makes a Python prober contend on the same inode the ioplug's
+    writer holds rather than a lookalike beside it.
+    """
+    from jasper.ring_assets import (
+        RING_ACTIVE_CONTENT_FILE,
+        RING_WRITER_LOCK_SUFFIX,
+        ring_writer_lock_path,
+    )
+
+    c = _read(_C_HEADER)
+    c_suffix = _extract_text(
+        r'#define\s+JTS_RING_WRITER_LOCK_SUFFIX\s+"([^"]+)"',
+        c,
+        "JTS_RING_WRITER_LOCK_SUFFIX",
+    )
+
+    assert c_suffix == RING_WRITER_LOCK_SUFFIX
+    # …and it is NOT the transaction lock, which Rust also takes and which says
+    # nothing about who owns the ring.
+    open_suffix = _extract_text(
+        r'#define\s+JTS_RING_OPEN_LOCK_SUFFIX\s+"([^"]+)"',
+        c,
+        "JTS_RING_OPEN_LOCK_SUFFIX",
+    )
+    assert RING_WRITER_LOCK_SUFFIX != open_suffix
+
+    source = _read(_REPO_ROOT / "c" / "jts-ring-ioplug" / "jts_ring_shm.c")
+    _extract_only(
+        r'snprintf\(lock_path,\s*sizeof\(lock_path\),\s*"%s%s",\s*path,\s*\n?'
+        r"\s*JTS_RING_WRITER_LOCK_SUFFIX\);",
+        source,
+        "acquire_writer_lock's lock-path construction",
+    )
+    assert ring_writer_lock_path(RING_ACTIVE_CONTENT_FILE) == (
+        RING_ACTIVE_CONTENT_FILE + c_suffix
+    )
+
+
+def test_doctor_writer_lock_confirm_delay_outlasts_the_c_acquisition_budget():
+    """``acquire_writer_lock`` OPENS the lock file and only THEN spins on
+    ``flock`` until ``JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS`` expires, so a healthy
+    box legitimately has TWO processes holding an fd on one ``.writer.lock`` for
+    up to that long — the live incumbent and a transient contender about to be
+    refused. The doctor's two-live-writers guard confirms a suspected reading
+    after ``_WRITER_LOCK_CONFIRM_DELAY_SEC``; if that delay did not OUTLAST the
+    C budget, an ordinary create-or-attach race would be reported as the
+    defect."""
+    from jasper.cli.doctor.audio_runtime import _WRITER_LOCK_CONFIRM_DELAY_SEC
+
+    c = _read(_C_HEADER)
+    budget_ms = _extract(
+        r"#define\s+JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS\s+(\d+)ull",
+        c,
+        "JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS",
+    )
+
+    assert _WRITER_LOCK_CONFIRM_DELAY_SEC > budget_ms / 1000.0

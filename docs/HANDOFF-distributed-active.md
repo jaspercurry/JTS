@@ -1061,6 +1061,15 @@ tweeter TTS, inv-B-through-Layer-A).
 > real reconcile retried from that blocked state, read exact `closed` on attempt 1
 > (`timeout_sec=0.8`), armed camilla#2, and completed with `rc=0`. The box was
 > then restored to solo (camilla#2/snapcast inactive, no failed units, no reboot).
+>
+> **Superseded (2026-08-15, audio-graph consolidation #2285 P9-C):** the
+> barrier's SIGNAL is no longer that procfs path. It is a non-blocking
+> exclusive `flock` on the ACTIVE ring's writer lock — success means released.
+> Everything else above still holds: same insertion point, same bounded poll,
+> same fail-closed direction, same `active_content_pcm_busy` /
+> `active_content_pcm_unverified` block reasons. Current truth:
+> `_probe_active_content_pcm_once` in
+> [reconcile.py](../jasper/multiroom/reconcile.py).
 
 > **Stage B Step 0 recovery hardened (2026-06-24) — outputd follows the paired
 > graph contract.** The same `jts3` deployment exposed a recovery-only gap:

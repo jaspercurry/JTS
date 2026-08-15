@@ -20,10 +20,16 @@ plain asserts; file I/O goes to pytest's tmp_path.
 
 from __future__ import annotations
 
+import fcntl
 import os
 
 import pytest
 
+from jasper.ring_assets import (
+    RING_ACTIVE_CONTENT_FILE,
+    RING_WRITER_LOCK_SUFFIX,
+    ring_writer_lock_path,
+)
 from jasper.multiroom.config import (
     DEFAULT_BUFFER_MS,
     DEFAULT_CODEC,
@@ -1875,8 +1881,7 @@ def _patch_active_leader(monkeypatch, order):
             order.append("probe")
             or reconcile_mod._PcmHandleProbeResult(
                 "released",
-                "status_closed",
-                detail="closed",
+                "writer_lock_free",
                 attempts=1,
                 timeout_sec=0.8,
             )
@@ -1885,67 +1890,142 @@ def _patch_active_leader(monkeypatch, order):
     return alc_mod
 
 
-def test_active_content_pcm_probe_reports_released_on_closed_status():
-    """The release barrier keys on the per-substream procfs status: exact
-    `closed` means hw:Loopback,0,5 has no opener and camilla#2 may arm."""
-    calls = []
+# --- the ACTIVE-ring writer-lock release barrier (audio-graph consolidation
+# --- #2285, P9-C). These exercise the REAL primitive against REAL files: the
+# --- probe is a non-blocking flock, so a second open file description in this
+# --- same process is a faithful stand-in for a live writer (flock(2): "If a
+# --- process uses open(2) to obtain more than one file descriptor for the same
+# --- file, these file descriptors are treated independently by flock()").
 
-    class Proc:
-        returncode = 0
-        stdout = "closed\n"
-        stderr = ""
 
-    def fake_run(argv, **kwargs):
-        calls.append((argv, kwargs))
-        return Proc()
+#: The real bounded wait, captured before any test monkeypatches the module
+#: attribute, so the end-to-end caller test can restore it.
+_REAL_WAIT_FOR_RELEASE = reconcile_mod._wait_for_active_content_pcm_release
 
+
+def _lock_file(tmp_path):
+    """A stand-in for `<ring>.writer.lock` next to a ring file."""
+    lock = tmp_path / "active-content.ring.writer.lock"
+    lock.write_bytes(b"")
+    return lock
+
+
+def test_active_content_release_probe_reports_released_when_lock_is_free(tmp_path):
+    """No writer holds the ACTIVE ring's writer lock -> `released`, and
+    camilla#2 may arm."""
     result = reconcile_mod._wait_for_active_content_pcm_release(
-        status_path="/tmp/status",
-        run=fake_run,
+        lock_path=str(_lock_file(tmp_path)),
         timeout_sec=0,
     )
 
     assert result.released
-    assert result.reason == "status_closed"
+    assert result.reason == "writer_lock_free"
     assert result.attempts == 1
-    assert calls[0][0] == ["cat", "/tmp/status"]
+    assert result.lock_path == str(tmp_path / "active-content.ring.writer.lock")
 
 
-def test_active_content_pcm_probe_times_out_when_status_stays_open():
-    """Any non-closed ALSA substream status is treated as an open handle.
-    Timeout returns busy so the active-leader arm can fail closed."""
+def test_active_content_release_probe_is_a_barrier_not_a_handoff(tmp_path):
+    """The probe DROPS the lock before returning. If it held the lock across
+    the arm it would be the very thing camilla#2 then contends with, so a
+    second probe immediately after a `released` one must also read `released`
+    (and a real flock must be takeable by an independent holder)."""
+    lock = _lock_file(tmp_path)
 
-    class Proc:
-        returncode = 0
-        stdout = "state: RUNNING\nowner_pid: 1234\n"
-        stderr = ""
-
-    result = reconcile_mod._wait_for_active_content_pcm_release(
-        status_path="/tmp/status",
-        run=lambda *a, **k: Proc(),
-        timeout_sec=0,
+    first = reconcile_mod._wait_for_active_content_pcm_release(
+        lock_path=str(lock), timeout_sec=0
+    )
+    second = reconcile_mod._wait_for_active_content_pcm_release(
+        lock_path=str(lock), timeout_sec=0
     )
 
-    assert result.busy
-    assert result.reason == "timeout"
-    assert result.detail == "state: RUNNING"
+    assert first.released and second.released
+    # And the lock is genuinely claimable afterwards by a would-be camilla#2.
+    fd = os.open(str(lock), os.O_RDWR)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
 
-def test_active_content_pcm_probe_fail_soft_when_probe_tool_missing():
-    """If the probe tool is absent, the barrier reports unknown instead of
-    crashing the reconciler; main() logs a warning and preserves compatibility."""
+def test_active_content_release_probe_reports_busy_while_a_writer_holds(tmp_path):
+    """A live writer holding flock(LOCK_EX) -> `busy`, and the bounded wait
+    times out busy so the active-leader arm fails closed."""
+    lock = _lock_file(tmp_path)
+    holder = os.open(str(lock), os.O_RDWR)
+    fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        once = reconcile_mod._probe_active_content_pcm_once(lock_path=str(lock))
+        waited = reconcile_mod._wait_for_active_content_pcm_release(
+            lock_path=str(lock), timeout_sec=0
+        )
+    finally:
+        fcntl.flock(holder, fcntl.LOCK_UN)
+        os.close(holder)
 
-    def fake_run(*args, **kwargs):
-        raise FileNotFoundError("cat")
+    assert once.busy and once.reason == "writer_lock_held"
+    assert waited.busy
+    assert waited.reason == "timeout"
+    # The timeout detail names the last busy reason, so an operator reading only
+    # the blocked log line still learns WHY it stayed busy.
+    assert "writer_lock_held" in waited.detail
 
+
+def test_active_content_release_probe_unknown_when_lock_file_absent(tmp_path):
+    """An absent writer lock means no writer has ever attached this ring, so
+    the probe cannot prove release: `unknown`, which fails closed."""
     result = reconcile_mod._wait_for_active_content_pcm_release(
-        status_path="/tmp/status",
-        run=fake_run,
+        lock_path=str(tmp_path / "never-attached.ring.writer.lock"),
         timeout_sec=0,
     )
 
     assert result.unknown
-    assert result.reason == "probe_tool_missing"
+    assert result.reason == "writer_lock_absent"
+
+
+def test_active_content_release_probe_never_creates_the_lock_file(tmp_path):
+    """RULED: the probe must NOT pass O_CREAT. The ioplug creates this file
+    with O_CREAT and fchmod-heals its mode precisely because a wrong-mode
+    creation by an out-of-unit first creator locks the renderer out
+    permanently (the sticky directory bit stops it deleting the file). A
+    prober that created it would BE that hazard."""
+    absent = tmp_path / "never-attached.ring.writer.lock"
+
+    result = reconcile_mod._probe_active_content_pcm_once(lock_path=str(absent))
+
+    assert result.unknown
+    assert not absent.exists()
+    assert sorted(p.name for p in tmp_path.iterdir()) == []
+
+
+@pytest.mark.skipif(
+    os.geteuid() == 0, reason="root bypasses the mode bits this asserts"
+)
+def test_active_content_release_probe_unknown_when_lock_is_unopenable(tmp_path):
+    """EACCES is `unknown`, never `released`: 'we could not ask' must not be
+    reported as 'nobody is holding it'."""
+    lock = _lock_file(tmp_path)
+    lock.chmod(0o000)
+    try:
+        result = reconcile_mod._wait_for_active_content_pcm_release(
+            lock_path=str(lock), timeout_sec=0
+        )
+    finally:
+        lock.chmod(0o600)
+
+    assert result.unknown
+    assert result.reason == "writer_lock_unopenable"
+
+
+def test_active_content_writer_lock_path_is_derived_not_spelled():
+    """The reconciler contends on exactly the path the C ioplug's writer holds
+    — the ACTIVE ring file plus the shared suffix — with no second literal."""
+    assert reconcile_mod.ACTIVE_CONTENT_WRITER_LOCK_PATH == ring_writer_lock_path(
+        RING_ACTIVE_CONTENT_FILE
+    )
+    assert reconcile_mod.ACTIVE_CONTENT_WRITER_LOCK_PATH.endswith(
+        RING_WRITER_LOCK_SUFFIX
+    )
 
 
 def test_main_active_leader_bakes_arms_camilla2_and_reseeds(tmp_path, monkeypatch):
@@ -2467,7 +2547,7 @@ def test_main_active_leader_skips_arm_and_restores_when_pcm_busy(
             or reconcile_mod._PcmHandleProbeResult(
                 "busy",
                 "timeout",
-                detail="state: RUNNING",
+                detail="writer_lock_held: [Errno 35] Resource temporarily unavailable",
                 attempts=17,
                 timeout_sec=0.8,
             )
@@ -2499,11 +2579,12 @@ def test_main_active_leader_fails_closed_when_probe_tool_missing(
     tmp_path,
     monkeypatch,
 ):
-    """Hardening (P1 review #3): `unknown` (probe tool missing) is NOT positive
-    proof of release, so the reconciler fails CLOSED — restores solo-active and
-    leaves camilla#2 un-armed, exactly like the busy path — rather than arming
-    into a possible DAC fight. `cat` is universal on a real Pi, so this branch
-    is theoretical-only; the point is that 'can't prove it' never arms."""
+    """Hardening (P1 review #3): `unknown` is NOT positive proof of release, so
+    the reconciler fails CLOSED — restores solo-active and leaves camilla#2
+    un-armed, exactly like the busy path — rather than arming into a possible
+    DAC fight. Since P9-C the concrete `unknown` is an absent writer lock (a
+    box whose ACTIVE lane is not a ring, so nothing can prove release); the
+    point is unchanged: 'can't prove it' never arms."""
     import jasper.multiroom.active_leader_config as alc_mod
 
     target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
@@ -2516,8 +2597,8 @@ def test_main_active_leader_fails_closed_when_probe_tool_missing(
             order.append("probe_missing")
             or reconcile_mod._PcmHandleProbeResult(
                 "unknown",
-                "probe_tool_missing",
-                detail="cat",
+                "writer_lock_absent",
+                detail="[Errno 2] No such file or directory",
                 attempts=1,
                 timeout_sec=0.8,
             )
@@ -2542,6 +2623,56 @@ def test_main_active_leader_fails_closed_when_probe_tool_missing(
     # Still wrote the active endpoint snapclient args — fail-closed here is the
     # late camilla handoff, not a permanent unbond.
     assert reconcile_mod.GROUPING_LOOPBACK_PLAYBACK in target.read_text()
+
+
+def test_main_active_leader_fails_closed_through_the_real_writer_lock_probe(
+    tmp_path,
+    monkeypatch,
+):
+    """End-to-end with the REAL probe, no probe mock: the caller must actually
+    consult ACTIVE_CONTENT_WRITER_LOCK_PATH. A busy lock (a live writer still
+    owns the ACTIVE ring) blocks the arm and restores solo-active.
+
+    This is the wiring pin the mocked branch tests cannot be: they would still
+    pass if the caller probed a path nothing writes."""
+    import jasper.multiroom.active_leader_config as alc_mod
+
+    lock = tmp_path / "active-content.ring.writer.lock"
+    lock.write_bytes(b"")
+    monkeypatch.setattr(
+        reconcile_mod, "ACTIVE_CONTENT_WRITER_LOCK_PATH", str(lock)
+    )
+    monkeypatch.setattr(reconcile_mod, "ACTIVE_CONTENT_RELEASE_TIMEOUT_SEC", 0.0)
+
+    target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
+    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
+    _patch_active_leader(monkeypatch, order)
+    # Undo the helper's probe mock so the REAL flock probe runs.
+    monkeypatch.setattr(
+        reconcile_mod,
+        "_wait_for_active_content_pcm_release",
+        _REAL_WAIT_FOR_RELEASE,
+    )
+    monkeypatch.setattr(
+        alc_mod,
+        "restore_active_leader_solo_sync",
+        lambda: order.append("leader_restore") or "active_speaker_baseline.yml",
+    )
+
+    holder = os.open(str(lock), os.O_RDWR)
+    fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        rc = main(["--reason", "test"])
+    finally:
+        fcntl.flock(holder, fcntl.LOCK_UN)
+        os.close(holder)
+
+    assert rc == 1
+    assert "arm_camilla2" not in order
+    assert "leader_restore" in order
+    status = (tmp_path / "grouping-follower-status.json").read_text()
+    assert '"blocked_reason": "active_content_pcm_busy"' in status
+    assert target.read_text()
 
 
 def test_main_active_leader_skips_bake_and_arm_when_snapserver_down(
