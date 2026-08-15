@@ -520,6 +520,18 @@ def _reemit_staged_startup_anchor(
     be arming yet. So this refuses while a commission load is active, mirroring
     the refusal ``_cmd_commission_load`` already makes for the same shared
     artifact; ``--force`` is the same escape hatch there. Roll back first.
+
+    A STALE ``loaded`` RECORD REFUSES TOO, and that is expected rather than a
+    bug to route around. The state file is durable
+    (``/var/lib/jasper/active_speaker_commission_load.json``) while per-driver
+    commissioning is deliberately transient, so a reboot or a CamillaDSP restart
+    mid-commission leaves ``status="loaded"`` on disk with nothing loaded. This
+    reads that record RAW — no live-graph consult — because the whole point of
+    the command is to work with CamillaDSP down, and
+    ``commission_load_runtime_status`` (what ``commission-rollback`` and the web
+    wizard overlay to report ``stale``) needs the running graph to answer. The
+    way past a stale record is ``--force``, or a ``commission-rollback`` /
+    wizard visit, which reconcile the record against the live graph.
     """
     import tempfile
 
@@ -657,7 +669,7 @@ def _reemit_staged_startup_anchor(
         # another's bytes. Not locked here because no shared lock covers this
         # pair today and inventing one is a two-writer change; both writers emit
         # all-muted anchors for the same topology, so the bounded consequence is
-        # stale evidence, not an audible one.
+        # stale evidence, not an audible one. Backlog: issue #2518.
         target = staged_config_path()
         meta_target = staged_metadata_path()
         try:

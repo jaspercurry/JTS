@@ -3424,3 +3424,48 @@ def test_baseline_reemit_publishes_the_anchor_pair_durably(monkeypatch, tmp_path
     assert meta_writes, json_calls
     assert all(c[1].get("durable") for c in graph_writes), graph_writes
     assert all(c[1].get("durable") for c in meta_writes), meta_writes
+
+
+def test_anchor_and_driver_commission_refusals_use_DISTINCT_reason_strings(
+    monkeypatch, tmp_path
+):
+    """The two single-flight refusals are machine-readable and NOT the same token.
+
+    `baseline-reemit` answers `commission_load_active`; its sibling
+    `commission-load` answers `commission_load_already_active`. They refuse for
+    related reasons over the same shared artifact, which is exactly why a caller
+    parsing `--json` has to be able to tell them apart: one says "an anchor
+    re-emit was refused", the other says "a second driver arm was refused", and
+    the remedies differ.
+
+    Pinned APART rather than together — asserting only that each is non-empty,
+    or that both contain "commission_load", would let a future tidy-up collapse
+    them into one token and silently merge two distinct outcomes.
+    """
+    import json as _json
+
+    from jasper.cli.active_speaker import main
+
+    h = _anchor_reemit_harness(monkeypatch, tmp_path, commission_loaded=True)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        code = main([
+            "baseline-reemit",
+            "--endpoint", "ring",
+            "--json",
+            "--statefile", str(h.statefile),
+        ])
+    assert code == 1
+    payload = _json.loads(out.getvalue())
+    assert payload["status"] == "refused", payload
+    assert payload["reason"] == "commission_load_active", payload
+    # The sibling's token, read from its own source rather than retyped, so this
+    # pin tracks a rename instead of going quietly vacuous after one.
+    sibling = Path("jasper/cli/active_speaker.py").read_text(encoding="utf-8")
+    assert '"reason": "commission_load_already_active",' in sibling, (
+        "the sibling refusal's token changed; re-derive whether these two are "
+        "still meant to be distinct"
+    )
+    assert payload["reason"] != "commission_load_already_active"
+    # The refusal is actionable as DATA too, not only as prose.
+    assert payload["active_target"] == "mono/tweeter", payload
