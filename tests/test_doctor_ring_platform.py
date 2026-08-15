@@ -16,6 +16,8 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from jasper.cli.doctor import audio_runtime as audio
 
 # A minimal but COMPLETE three-block conf.d: every PCM name resolves, and none
@@ -536,3 +538,194 @@ def test_probe_asks_for_the_shipped_wire_today(monkeypatch, tmp_path):
         2,
         2,
     )
+
+
+# --- the ring writer-lock exclusivity guard (audio-graph consolidation #2285,
+# --- P9-C). The C ioplug records the residual this closes verbatim: an flock's
+# --- identity is the PATHNAME, not the inode, so unlinking `<ring>.writer.lock`
+# --- while a writer holds it voids exclusivity SILENTLY and two live writers
+# --- proceed with no log line between them. The guard reads the KERNEL's view
+# --- (who holds an fd on the lock) because the shared header structurally
+# --- cannot answer: `writer_pid` is a single slot a second attach overwrites.
+#
+# --- These build a synthetic /proc so the shapes are deterministic and the
+# --- tests run on any host (macOS has no /proc at all). The same shapes were
+# --- observed end-to-end against real processes on a real Linux box; the PR
+# --- body carries that transcript.
+
+_SHM = "/dev/shm/jts-ring"
+_LOCK = f"{_SHM}/active-content.ring.writer.lock"
+
+
+def _fake_proc(tmp_path, holders, *, unreadable_pids=()):
+    """Build a /proc-shaped tree.
+
+    `holders` maps pid -> list of fd targets (a target ending in " (deleted)"
+    reproduces what the kernel shows for an fd on an unlinked file).
+    """
+    root = tmp_path / "proc"
+    root.mkdir(parents=True)
+    (root / "self").mkdir()  # a non-numeric entry, must be skipped
+    for pid, targets in holders.items():
+        fd_dir = root / str(pid) / "fd"
+        fd_dir.mkdir(parents=True)
+        for i, target in enumerate(targets):
+            os.symlink(target, fd_dir / str(i))
+    for pid in unreadable_pids:
+        fd_dir = root / str(pid) / "fd"
+        fd_dir.mkdir(parents=True)
+        fd_dir.chmod(0o000)
+    return root
+
+
+def _run_guard(monkeypatch, root):
+    monkeypatch.setattr(audio, "_PROC_ROOT", str(root))
+    monkeypatch.setattr(audio, "_WRITER_LOCK_CONFIRM_DELAY_SEC", 0.0)
+    return audio.check_ring_writer_lock_exclusivity()
+
+
+def test_writer_lock_guard_ok_with_one_writer(monkeypatch, tmp_path):
+    """NEGATIVE CONTROL: the normal armed box — one C writer holding one ring's
+    writer lock, plus the Rust reader's mapping of the ring FILE itself — is
+    `ok`. (Scanning maps for the ring file instead would call this a defect:
+    the reader mmaps the same file by design.)"""
+    root = _fake_proc(
+        tmp_path,
+        {
+            41: [_LOCK, "/dev/null", f"{_SHM}/active-content.ring"],
+            42: [f"{_SHM}/active-content.ring", "/dev/snd/pcmC0D0p"],
+        },
+    )
+
+    result = _run_guard(monkeypatch, root)
+
+    assert result.status == "ok"
+    assert "no ring has more than one live writer" in result.detail
+
+
+def test_writer_lock_guard_ok_when_nothing_holds_a_lock(monkeypatch, tmp_path):
+    """An unarmed box holds no writer lock at all — `ok`, not a false alarm."""
+    root = _fake_proc(tmp_path, {41: ["/dev/null"], 42: [f"{_SHM}/program.ring"]})
+
+    result = _run_guard(monkeypatch, root)
+
+    assert result.status == "ok"
+
+
+def test_writer_lock_guard_fails_on_two_live_writers(monkeypatch, tmp_path):
+    """POSITIVE CONTROL: the recorded residual. One incumbent holding the
+    UNLINKED inode plus a fresh writer on a re-created file at the same
+    pathname — two live writers, no log line between them — is `fail`, and the
+    detail names both pids and which one is orphaned."""
+    root = _fake_proc(
+        tmp_path,
+        {
+            41: [f"{_LOCK} (deleted)"],
+            42: [_LOCK],
+        },
+    )
+
+    result = _run_guard(monkeypatch, root)
+
+    assert result.status == "fail"
+    assert "TWO LIVE WRITERS" in result.detail
+    assert "pid 41 (lock file unlinked)" in result.detail
+    assert "pid 42" in result.detail
+    assert _LOCK in result.detail
+
+
+def test_writer_lock_guard_fails_on_two_writers_without_an_unlink(
+    monkeypatch, tmp_path
+):
+    """Two live holders of the SAME inode is equally a broken SPSC contract,
+    so the guard keys on holder COUNT, not on the deleted marker alone."""
+    root = _fake_proc(tmp_path, {41: [_LOCK], 42: [_LOCK]})
+
+    result = _run_guard(monkeypatch, root)
+
+    assert result.status == "fail"
+
+
+def test_writer_lock_guard_ignores_a_contender_that_gave_up(monkeypatch, tmp_path):
+    """`acquire_writer_lock` OPENS the lock file and only THEN spins on flock
+    for up to JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS, so a healthy box legitimately
+    shows two fd holders for up to that long. Only pids present in BOTH samples
+    count: a contender that has gone by the confirm sample is not the defect."""
+    first = _fake_proc(tmp_path, {41: [_LOCK], 42: [_LOCK]})
+    second = _fake_proc(tmp_path / "after", {41: [_LOCK]})
+    seen = []
+
+    real = audio._ring_writer_lock_holders
+
+    def sampling(**kwargs):
+        seen.append(len(seen))
+        root = first if len(seen) == 1 else second
+        return real(proc_root=str(root), shm_dir=_SHM)
+
+    monkeypatch.setattr(audio, "_ring_writer_lock_holders", sampling)
+    monkeypatch.setattr(audio, "_PROC_ROOT", str(first))
+    monkeypatch.setattr(audio, "_WRITER_LOCK_CONFIRM_DELAY_SEC", 0.0)
+
+    result = audio.check_ring_writer_lock_exclusivity()
+
+    assert len(seen) == 2, "a suspected two-writer read must be CONFIRMED"
+    assert result.status == "ok"
+
+
+def test_writer_lock_guard_warns_on_a_lone_orphaned_holder(monkeypatch, tmp_path):
+    """One writer whose lock file was unlinked out from under it: exclusivity
+    is ALREADY void (the next opener creates a fresh inode and is not
+    excluded), so warn before the second writer arrives."""
+    root = _fake_proc(tmp_path, {41: [f"{_LOCK} (deleted)"]})
+
+    result = _run_guard(monkeypatch, root)
+
+    assert result.status == "warn"
+    assert "UNLINKED" in result.detail
+    assert "pid 41" in result.detail
+
+
+def test_writer_lock_guard_warns_when_proc_is_partially_unreadable(
+    monkeypatch, tmp_path
+):
+    """A non-root sweep cannot read other users' /proc/<pid>/fd. That is a
+    BLIND SPOT, so the guard says so rather than reporting a clean bill."""
+    if os.geteuid() == 0:
+        pytest.skip("root can read every /proc/<pid>/fd")
+    root = _fake_proc(tmp_path, {41: ["/dev/null"]}, unreadable_pids=(77,))
+    try:
+        result = _run_guard(monkeypatch, root)
+    finally:
+        (root / "77" / "fd").chmod(0o755)
+
+    assert result.status == "warn"
+    assert "partially blind" in result.detail
+
+
+def test_writer_lock_guard_ignores_locks_outside_the_ring_dir(monkeypatch, tmp_path):
+    """Scoped to the ring tmpfs, and to the WRITER lock: some other subsystem's
+    `.writer.lock`, and the ring's own `.open.lock` (a transaction lock BOTH
+    C and Rust take), are none of this guard's business."""
+    root = _fake_proc(
+        tmp_path,
+        {
+            41: ["/var/lib/other/thing.writer.lock"],
+            42: ["/var/lib/other/thing.writer.lock"],
+            43: [f"{_SHM}/active-content.ring.open.lock"],
+            44: [f"{_SHM}/active-content.ring.open.lock"],
+        },
+    )
+
+    result = _run_guard(monkeypatch, root)
+
+    assert result.status == "ok"
+
+
+def test_writer_lock_guard_counts_one_pid_once(monkeypatch, tmp_path):
+    """A single writer with several fds on one lock is still ONE writer."""
+    root = _fake_proc(tmp_path, {41: [_LOCK, _LOCK, f"{_LOCK} (deleted)"]})
+
+    result = _run_guard(monkeypatch, root)
+
+    # Not a fail (one pid), but the unlinked fd still earns the warn.
+    assert result.status == "warn"

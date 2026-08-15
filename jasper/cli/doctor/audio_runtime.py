@@ -2021,6 +2021,197 @@ def check_ring_ioplug_provenance() -> CheckResult:
     )
 
 
+# How long to wait before CONFIRMING a suspected two-writer observation.
+#
+# MUST exceed the C ioplug's writer-lock acquisition budget
+# (``JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS``, 500 ms): ``acquire_writer_lock``
+# opens the lock file FIRST and only then spins on ``flock`` until that budget
+# expires, so for up to that long a perfectly healthy box legitimately has TWO
+# processes holding an fd on one ``.writer.lock`` — the live incumbent and a
+# transient contender that is about to be refused. A single-sample count would
+# report that ordinary race as the two-live-writers defect. Pinned against the
+# header by ``tests/test_ring_slot_ceiling_pin.py``.
+_WRITER_LOCK_CONFIRM_DELAY_SEC = 0.75
+# The procfs root the writer-lock sweep reads. A module constant, resolved at
+# CALL time by everything below, so a test can repoint it at a synthetic tree.
+_PROC_ROOT = "/proc"
+
+
+def _ring_writer_lock_holders(
+    *,
+    proc_root: str | None = None,
+    shm_dir: str | None = None,
+) -> tuple[dict[str, dict[int, bool]], int]:
+    """Which live pids hold an fd on a ring ``.writer.lock``, by lock path.
+
+    Returns ``({lock_path: {pid: target_was_unlinked}}, unreadable_pid_count)``.
+
+    WHY fds AND NOT ``/proc/*/maps``. The obvious enumeration — scan maps for
+    the RING file — cannot work: the Rust reader mmaps the very same ring file
+    ``PROT_READ|PROT_WRITE`` (``rust/jasper-ring/src/lib.rs`` ``mmap_fd``), so
+    on every armed box the ring has two mappers by design and ">1 mapper" is the
+    healthy state. The WRITER LOCK is the discriminator, because only the C
+    ioplug's writer ever opens it: Rust takes the ``.open.lock`` transaction lock
+    and never this one.
+
+    WHY the pathname is the grouping key. It is the shape of the residual
+    :func:`check_ring_writer_lock_exclusivity` documents: an orphaned incumbent
+    and the fresh file that replaced it share one PATHNAME while holding two
+    different inodes, so grouping by pathname puts both halves in one bucket.
+    ``/proc``'s ``" (deleted)"`` suffix on the incumbent's fd names which half
+    is the orphan.
+    """
+    root = ring_assets.RING_SHM_DIR if shm_dir is None else shm_dir
+    procfs = _PROC_ROOT if proc_root is None else proc_root
+    prefix = root.rstrip("/") + "/"
+    holders: dict[str, dict[int, bool]] = {}
+    unreadable = 0
+    try:
+        entries = os.listdir(procfs)
+    except OSError:
+        return holders, unreadable
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        fd_dir = os.path.join(procfs, entry, "fd")
+        try:
+            fds = os.listdir(fd_dir)
+        except PermissionError:
+            # Non-root doctor runs see only their own processes. Counted so the
+            # verdict can say it was partially blind instead of claiming clean.
+            unreadable += 1
+            continue
+        except OSError:
+            # ENOENT — the pid exited between the two listdirs. Not a blind
+            # spot: a process that is gone holds nothing.
+            continue
+        for fd in fds:
+            try:
+                target = os.readlink(os.path.join(fd_dir, fd))
+            except OSError:
+                continue
+            unlinked = target.endswith(" (deleted)")
+            if unlinked:
+                target = target[: -len(" (deleted)")]
+            if not target.startswith(prefix):
+                continue
+            if not target.endswith(ring_assets.RING_WRITER_LOCK_SUFFIX):
+                continue
+            per_path = holders.setdefault(target, {})
+            # One pid with several fds on one lock is still ONE writer; an
+            # unlinked target anywhere in that pid's fds marks it orphaned.
+            per_path[pid] = per_path.get(pid, False) or unlinked
+    return holders, unreadable
+
+
+@doctor_check(order=51.86, group="audio")
+def check_ring_writer_lock_exclusivity() -> CheckResult:
+    """Do two live writers hold one ring's writer lock?
+
+    THE RESIDUAL THIS CLOSES. ``c/jts-ring-ioplug/jts_ring_shm.c`` records it
+    verbatim: an ``flock``'s identity is the PATHNAME, not the inode, so
+    UNLINKING ``<ring>.writer.lock`` while a writer holds it voids exclusivity
+    SILENTLY — "two live writers proceed with no log line between them.
+    Measured." It is reachable today because ``scripts/ring-proto/disarm.sh``
+    does ``rm -rf`` over the tmpfs directory. The C comment names its own fix, a
+    doctor check that notices two live writer pids on one ring; this is it. It
+    lands here, and not as a follow-up, because the grouping reconciler's
+    active-leader arm now DEPENDS on that lock as a safety signal (the
+    active-content release barrier, ``jasper/multiroom/reconcile.py``).
+
+    THE HEADER CANNOT ANSWER THIS. ``writer_pid`` is a SINGLE header slot
+    (offset 56, ``_Static_assert``-pinned), so a second writer's attach simply
+    overwrites it: the shared file can only ever name one writer and is
+    structurally blind to the exact condition being detected. This reads the
+    KERNEL's view — who holds an fd on the lock — which is the only view the
+    pathname-vs-inode residual cannot fool.
+
+    Statuses:
+      ok    — no lock path has more than one live holder (the normal state,
+              including "no writer anywhere" on an unarmed box).
+      warn  — a holder's lock file has been UNLINKED out from under it (one
+              writer, but exclusivity is already void: the next opener will
+              create a fresh inode and will NOT be excluded), or ``/proc`` was
+              only partially readable so the sweep was blind to some pids.
+      fail  — two or more live pids hold one ring's writer lock, confirmed on a
+              second sample ``_WRITER_LOCK_CONFIRM_DELAY_SEC`` later so an
+              ordinary create-or-attach race cannot masquerade as the defect.
+    """
+    label = "ring writer-lock exclusivity"
+    if not os.path.isdir(_PROC_ROOT):
+        return CheckResult(label, "ok", f"skipped — no {_PROC_ROOT} on this host")
+
+    holders, unreadable = _ring_writer_lock_holders()
+    suspects = {path: pids for path, pids in holders.items() if len(pids) > 1}
+    if suspects:
+        time.sleep(_WRITER_LOCK_CONFIRM_DELAY_SEC)
+        confirmed_holders, confirm_unreadable = _ring_writer_lock_holders()
+        unreadable = max(unreadable, confirm_unreadable)
+        confirmed: dict[str, dict[int, bool]] = {}
+        for path, pids in suspects.items():
+            still = confirmed_holders.get(path, {})
+            # Only pids present in BOTH samples count: a contender that gave up
+            # inside the C budget is gone by now, a real second writer is not.
+            both = {
+                pid: still.get(pid, False) or held
+                for pid, held in pids.items()
+                if pid in still
+            }
+            if len(both) > 1:
+                confirmed[path] = both
+        if confirmed:
+            parts = []
+            for path, pids in sorted(confirmed.items()):
+                who = ", ".join(
+                    f"pid {pid}{' (lock file unlinked)' if unlinked else ''}"
+                    for pid, unlinked in sorted(pids.items())
+                )
+                parts.append(f"{path}: {who}")
+            return CheckResult(
+                label,
+                "fail",
+                "TWO LIVE WRITERS on one ring — exclusivity is void and the "
+                "ring's SPSC contract is broken: "
+                + "; ".join(parts)
+                + ". Most likely the lock file was unlinked while a writer held "
+                "it (scripts/ring-proto/disarm.sh rm -rf's the tmpfs dir). Stop "
+                "the extra writer, then re-arm the lane.",
+            )
+
+    orphaned = [
+        (path, pid)
+        for path, pids in holders.items()
+        for pid, unlinked in pids.items()
+        if unlinked
+    ]
+    if orphaned:
+        detail = "; ".join(f"{path}: pid {pid}" for path, pid in sorted(orphaned))
+        return CheckResult(
+            label,
+            "warn",
+            "a ring writer holds a lock file that has been UNLINKED, so "
+            f"exclusivity is already void for the next opener — {detail}. "
+            "Re-arm the lane to recreate the lock before a second writer "
+            "attaches.",
+        )
+    if unreadable:
+        return CheckResult(
+            label,
+            "warn",
+            f"could not read /proc/<pid>/fd for {unreadable} process(es), so "
+            "this sweep was partially blind — run jasper-doctor as root for a "
+            "complete answer.",
+        )
+    held = sum(len(pids) for pids in holders.values())
+    return CheckResult(
+        label,
+        "ok",
+        f"{len(holders)} ring writer lock(s) held by {held} process(es); "
+        "no ring has more than one live writer",
+    )
+
+
 @doctor_check(order=51.56, group="audio")
 def check_ring_reader_stall() -> CheckResult:
     """A ring being WRITTEN but not READ, judged from the SHARED HEADER.

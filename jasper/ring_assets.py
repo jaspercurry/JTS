@@ -66,6 +66,34 @@ RING_B_CONTENT_FILE = os.path.join(RING_SHM_DIR, "content.ring")
 # B's: the two rings coexist on an armed roleful box and carry different
 # programs at different widths.
 RING_ACTIVE_CONTENT_FILE = os.path.join(RING_SHM_DIR, "active-content.ring")
+# The adjacent lock file whose EXCLUSIVE ``flock`` a C ioplug WRITER holds for
+# the life of its mapping — ``JTS_RING_WRITER_LOCK_SUFFIX`` in
+# ``c/jts-ring-ioplug/jts_ring_shm.h``, spelled here because Python is now a
+# reader of that lock too (the grouping reconciler's active-content release
+# barrier, and the doctor's writer-exclusivity guard). Pinned against the C
+# header by ``tests/test_ring_slot_ceiling_pin.py`` so the two spellings cannot
+# drift.
+#
+# DISTINCT from ``.open.lock`` (``JTS_RING_OPEN_LOCK_SUFFIX``), which is a
+# TRANSACTION lock released as soon as create-or-attach completes. Only the
+# writer lock answers "does a live writer own this ring": this crate's Rust
+# ``RingWriter`` and ``RingReader`` take the ``.open.lock`` and never this one
+# (``rust/jasper-ring/src/lib.rs`` ``OpenTransactionLock``), so an fd on a
+# ``.writer.lock`` is a C writer and nothing else.
+RING_WRITER_LOCK_SUFFIX = ".writer.lock"
+
+
+def ring_writer_lock_path(ring_path: str) -> str:
+    """The writer-lock file that guards ``ring_path``.
+
+    Mirrors ``acquire_writer_lock``'s own construction in
+    ``c/jts-ring-ioplug/jts_ring_shm.c`` — the ring path with
+    :data:`RING_WRITER_LOCK_SUFFIX` appended, no directory indirection — so a
+    Python prober contends on exactly the inode the ioplug's writer holds.
+    """
+    return f"{ring_path}{RING_WRITER_LOCK_SUFFIX}"
+
+
 # The conf.d PCM block name for Ring A (fan-in's program ring). ``n_slots`` under
 # this block is the drift axis with ``JASPER_FANIN_RING_SLOTS`` (Ring B is the
 # ``jts_ring_playback`` block, paired with ``JASPER_OUTPUTD_SHM_RING_SLOTS``).

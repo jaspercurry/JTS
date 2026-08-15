@@ -1051,8 +1051,12 @@ tweeter TTS, inv-B-through-Layer-A).
 > `event=multiroom.reconcile.active_leader_blocked`, restores camilla#1 to the
 > re-proven solo-active baseline, leaves camilla#2 un-armed, records
 > `/state.grouping.endpoint.mode=blocked` with `active_content_pcm_busy`, and
-> exits nonzero so the next reconcile can retry. A missing probe tool is
-> fail-soft/compatibility-only (warning + proceed). **On-device validation
+> exits nonzero so the next reconcile can retry. A probe that cannot ANSWER
+> (`unknown`) is no more proof of release than a busy one: it logs at WARNING and
+> fails closed the same way, under `active_content_pcm_unverified`. (Corrected
+> 2026-08-15 — this sentence claimed `unknown` was fail-soft "warning + proceed",
+> which was already wrong when written, not a consequence of the cutover below.)
+> **On-device validation
 > completed on `jts3` (2026-06-24):** with grouping off, that procfs path reported
 > non-`closed` while camilla#1 owned `hw:Loopback,0,5`; a forced busy probe logged
 > `active_leader_blocked`, restored camilla#1 to
@@ -1061,6 +1065,15 @@ tweeter TTS, inv-B-through-Layer-A).
 > real reconcile retried from that blocked state, read exact `closed` on attempt 1
 > (`timeout_sec=0.8`), armed camilla#2, and completed with `rc=0`. The box was
 > then restored to solo (camilla#2/snapcast inactive, no failed units, no reboot).
+>
+> **Superseded (2026-08-15, audio-graph consolidation #2285 P9-C):** the
+> barrier's SIGNAL is no longer that procfs path. It is a non-blocking
+> exclusive `flock` on the ACTIVE ring's writer lock — success means released.
+> Everything else above still holds: same insertion point, same bounded poll,
+> same fail-closed direction, same `active_content_pcm_busy` /
+> `active_content_pcm_unverified` block reasons. Current truth:
+> `_probe_active_content_pcm_once` in
+> [reconcile.py](../jasper/multiroom/reconcile.py).
 
 > **Stage B Step 0 recovery hardened (2026-06-24) — outputd follows the paired
 > graph contract.** The same `jts3` deployment exposed a recovery-only gap:
@@ -1338,18 +1351,29 @@ starvation, the loopback going silent, is the deferred prerequisite for
    local filter. The brainy/active-endpoint sub path remains separate because
    CamillaDSP Layer A, not outputd `dac_content`, owns driver protection there.
 
-Last verified: 2026-06-25 (Camilla recovery-budget wording rechecked against
+Verification scope of the 2026-08-15 pass: the active-leader **handle-barrier**
+claims only — the release signal, its probe outcomes, and the block reasons —
+re-read against `jasper/multiroom/reconcile.py`. Nothing else in this file was
+re-verified, and the dated entries above remain a historical record.
+
+Last verified: 2026-08-15 (active-leader positive handle barrier: the release
+signal is a NON-BLOCKING exclusive `flock` on the ACTIVE ring's writer lock,
+`/dev/shm/jts-ring/active-content.ring.writer.lock` — free means released, a
+live writer means `busy`, and an absent / unopenable / otherwise unaskable lock
+means `unknown`. `busy` and `unknown` BOTH fail closed to solo-active, under
+`active_content_pcm_busy` and `active_content_pcm_unverified`; nothing arms on
+`unknown`. HW-free tests cover all three outcomes plus the rule that the probe
+never creates the lock file. Its 2026-06-24 `jts3` on-device validation
+exercised the EARLIER procfs signal — forced-busy fail-closed restored
+solo-active without arming camilla#2, and the real retry armed on attempt 1 —
+and has NOT been re-run against the flock barrier. Prior 2026-06-25: Camilla
+recovery-budget wording rechecked against
 `deploy/systemd/jasper-camilla.service` and
 `deploy/bin/jasper-camilla-recover`; 2026-06-24 active-leader outputd recovery
 now follows the
 paired statefile contract: camilla#1 `program_bake_pipe` plus camilla#2
 `driver_domain_baseline` on `outputd_active_content_playback`; initial arm
-seeds `crossover-statefile.yml` before audio-hardware reconcile. Active-leader
-positive handle barrier added and validated on `jts3`:
-`/proc/asound/Loopback/pcm0p/sub5/status` reported non-`closed` under
-camilla#1, forced-busy fail-closed restored solo-active without arming
-camilla#2, and the real retry read exact `closed` on attempt 1 before arming
-camilla#2; HW-free tests cover released/busy/tool-missing branches. Prior
+seeds `crossover-statefile.yml` before audio-hardware reconcile. Prior
 2026-06-23: dumb receiver-side wireless sub [gap 5] landed
 HW-free — `jasper-outputd` `ChannelPick::Sub` LR4 low-pass + passive-main
 outputd LR4 high-pass at the same bond `crossover_hz`
