@@ -1797,18 +1797,25 @@ def _level_mismatch_text(probe: Mapping[str, Any]) -> str:
     where inventing a band from an absent field would state a fact.
     """
 
-    band = _mapping(probe.get("quiet")).get("core_band_hz")
-    named = (
-        probe.get("reason") == REASON_UNCOMMANDED_LEVEL_SHIFT_OUTSIDE_BAND
-        and isinstance(band, (list, tuple))
-        and len(band) == 2
-        and all(isinstance(edge, (int, float)) for edge in band)
+    whole_band = (
+        "The overall loudness changed by more than this check expected, "
+        "so it could not confirm the correction's shape."
     )
-    if not named:
-        return (
-            "The overall loudness changed by more than this check expected, "
-            "so it could not confirm the correction's shape."
+    if probe.get("reason") != REASON_UNCOMMANDED_LEVEL_SHIFT_OUTSIDE_BAND:
+        return whole_band
+    band = _mapping(probe.get("quiet")).get("core_band_hz")
+    # Checked inline rather than through an intermediate flag so the narrowing
+    # is visible to a reader and to a type checker: ``band`` comes off a
+    # persisted JSON payload, so every one of its shapes is possible.
+    if not (
+        isinstance(band, (list, tuple))
+        and len(band) == 2
+        and all(
+            isinstance(edge, (int, float)) and not isinstance(edge, bool)
+            for edge in band
         )
+    ):
+        return whole_band
     lo, hi = (_frequency_label(float(edge)) for edge in band)
     return (
         f"The loudness between {lo} and {hi} changed by more than this check "
