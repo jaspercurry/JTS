@@ -10710,7 +10710,15 @@ def test_the_automatic_rollback_journals_the_same_code_the_undo_does(
 ):
     """The delta probe's rollback reduces the payload to a bool for its
     conductor and has no household screen, so this journal line is the ONLY
-    place its refusal reason can exist."""
+    place its refusal reason can exist.
+
+    Asserted against THAT record, never ``caplog.text``. The rollback runs
+    ``handle_v2_restore`` underneath it, so the shared text already carries a
+    ``code=`` from the ``…_restored`` line — a substring assertion over the
+    whole buffer passes while the site with no screen behind it says nothing,
+    which is precisely the site this test exists for (gate finding, delta
+    review: removing ``code=`` from the delta-probe call alone left all three
+    journal tests green)."""
     anchor = _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
     target = Path(anchor["config"]["path"])
     target.write_text(
@@ -10721,5 +10729,14 @@ def test_the_automatic_rollback_journals_the_same_code_the_undo_does(
     with caplog.at_level(logging.INFO, logger="jasper.web.correction_crossover_v2"):
         assert rollback("realized_shape_differs_from_commanded") is False
 
-    assert "event=correction.crossover_v2_delta_probe_restore" in caplog.text
-    assert "code=restore_target_changed" in caplog.text
+    # The trailing space keeps the sibling events out — ``…_restore_repeat``
+    # and ``…_restore_refused`` are different lines with different contracts.
+    probe_lines = [
+        record.getMessage() for record in caplog.records
+        if record.getMessage().startswith(
+            "event=correction.crossover_v2_delta_probe_restore "
+        )
+    ]
+
+    assert len(probe_lines) == 1, probe_lines
+    assert "code=restore_target_changed" in probe_lines[0]
