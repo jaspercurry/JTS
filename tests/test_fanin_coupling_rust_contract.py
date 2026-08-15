@@ -766,12 +766,35 @@ def test_a_proven_floor_cannot_touch_a_lane_whose_host_is_not_streaming():
         "the build-time prime entry must ARM, not apply"
     )
 
-    # A hard boundary abandons a pending arm exactly as it abandons a live prime,
-    # so the next frame cannot silently undo a snap-back.
+    # An arm must SURVIVE the routine snap-backs it waits through. `tick` calls
+    # `snap_back` on every unlocked period and the mixer ticks every period, so an
+    # arm retired there is destroyed in the same render period it is created — the
+    # regression the first cut of #2533 shipped: the prime became dead code and the
+    # per-session descent skip was silently lost. Retirement is explicit instead.
     snap_start = resampler_text.index("pub fn snap_back(")
     snap_end = resampler_text.index("\n        }", snap_start)
-    assert "self.floor_prime_armed = false;" in resampler_text[snap_start:snap_end], (
-        "snap_back must disarm a pending prime"
+    snap_body = resampler_text[snap_start:snap_end]
+    assert "self.floor_prime_pending = false;" in snap_body, (
+        "snap_back must still abandon an ENGAGED prime (the pre-#2533 contract)"
+    )
+    assert "floor_prime_armed" not in snap_body, (
+        "snap_back must NOT retire an ARM — it runs on every unlocked tick, so an "
+        "arm cleared here can never survive to meet the frames that engage it"
+    )
+    assert "pub fn disarm_prime(" in resampler_text, (
+        "retiring an arm must be an explicit operation"
+    )
+    # Both deciders call it: the revalidation escape and a no-proof boundary.
+    ceiling_start = resampler_text.index("pub fn snap_decay_to_ceiling(")
+    ceiling_end = resampler_text.index("\n    }", ceiling_start)
+    assert "disarm_prime()" in resampler_text[ceiling_start:ceiling_end], (
+        "the revalidation escape must retire a waiting arm (a distrusted proof "
+        "must not be resurrected by the next frame)"
+    )
+    honour_start = resampler_text.index("fn snap_decay_back_honoring_proof(")
+    honour_end = resampler_text.index("fn engage_armed_floor_prime(", honour_start)
+    assert "disarm_prime()" in resampler_text[honour_start:honour_end], (
+        "a session boundary with no live proof must retire any arm it inherits"
     )
 
 

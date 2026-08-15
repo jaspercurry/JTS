@@ -240,6 +240,21 @@ pub(super) struct DirectOpener {
     /// state-server thread. A value stuck at `true` means the device open itself
     /// is hanging — which no longer costs audio, which is the point of deferring it.
     pending_gauge: Arc<AtomicBool>,
+    /// Retired handles this opener could not hand over yet. `Drop` on a `PCM` is
+    /// `snd_pcm_close` — a blocking device call — so a handle that cannot be
+    /// queued is PARKED here rather than dropped on the render thread; the next
+    /// successful request carries one away.
+    ///
+    /// In practice this is empty or holds one: a handle is only ever retired on a
+    /// `Present` → `Absent` transition, and `Present` implies no open is in
+    /// flight (an open is requested only from the `Absent` arm, and adopting its
+    /// result is what makes the lane `Present` again), so a live opener always
+    /// accepts a retiring handle. It is a `Vec` rather than an `Option` precisely
+    /// so that parking can never displace — and therefore never silently close —
+    /// a handle already parked, even if that reasoning is one day wrong. If the
+    /// opener thread is gone entirely these live until the daemon exits: one or
+    /// two descriptors, never a stall.
+    parked: Vec<PCM>,
 }
 
 impl DirectOpener {
@@ -277,6 +292,7 @@ impl DirectOpener {
             res_rx,
             in_flight: false,
             pending_gauge,
+            parked: Vec::new(),
         })
     }
 
@@ -285,23 +301,43 @@ impl DirectOpener {
         self.pending_gauge.store(self.in_flight, Ordering::Relaxed);
     }
 
-    /// Queue one retire+open. Returns `false` (and does nothing) when a request is
-    /// already outstanding or the thread is gone. Never blocks.
+    /// Queue one retire+open. Returns whether it was queued: `false` when a
+    /// request is already outstanding or the thread is gone.
+    ///
+    /// **Never drops a `PCM`.** A handle it cannot hand over is parked (see
+    /// [`parked`](Self::parked)) and offered again on the next call — dropping it
+    /// here would run `snd_pcm_close` on the render thread, which is the whole
+    /// class of call this type exists to move away. Never blocks.
     fn request(&mut self, retire: Option<PCM>, device: &str, open_period: u32) -> bool {
+        if let Some(pcm) = retire {
+            self.parked.push(pcm);
+        }
         if self.in_flight {
             return false;
         }
-        let sent = self
-            .req_tx
-            .send(DirectOpenRequest {
-                retire,
-                device: device.to_string(),
-                open_period,
-            })
-            .is_ok();
-        self.in_flight = sent;
-        self.publish_pending();
-        sent
+        // Carry one parked handle per request; any second one waits for the next.
+        let carried = self.parked.pop();
+        match self.req_tx.send(DirectOpenRequest {
+            retire: carried,
+            device: device.to_string(),
+            open_period,
+        }) {
+            Ok(()) => {
+                self.in_flight = true;
+                self.publish_pending();
+                true
+            }
+            Err(std::sync::mpsc::SendError(request)) => {
+                // The thread is gone and `SendError` owns the request — take the
+                // handle back out and re-park it rather than letting the returned
+                // request drop it here.
+                if let Some(pcm) = request.retire {
+                    self.parked.push(pcm);
+                }
+                self.publish_pending();
+                false
+            }
+        }
     }
 
     /// Collect a finished open, if one is ready. Never blocks.
@@ -850,10 +886,11 @@ fn recover_direct_xrun(
 /// calls and neither may run in the render loop — a `PCM`'s `Drop` IS
 /// `snd_pcm_close`, so the handle has to travel rather than fall out of scope.
 ///
-/// With no opener (spawn failed at construction) the handle is dropped here: a
-/// close on the render thread, which is the pre-#2533 behaviour and the only
-/// alternative to leaking the descriptor. Construction logs that degraded state
-/// once.
+/// With no opener at all (spawn failed at construction — logged once there) the
+/// handle is dropped here: a close on the render thread, which is the pre-#2533
+/// behaviour and the only alternative to leaking the descriptor on a lane that
+/// has no worker to hand it to. With an opener present the handle is always
+/// taken — queued, or parked for the next request — and never closed here.
 fn hand_retired_handle_to_opener(input: &mut Input, retire: Option<PCM>) {
     let device = direct_device(input);
     let open_period = direct_open_period(input);

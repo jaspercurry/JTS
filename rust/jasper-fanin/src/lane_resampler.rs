@@ -854,9 +854,14 @@ impl LaneResampler {
         // ALWAYS take the ceiling snap first. Until this lane sees real input
         // again its decay state must be byte-identical to an unprimed lane's —
         // that is the whole of the "a proven floor never reaches the output path
-        // while the host is not streaming" invariant (#2533). `snap_back` also
-        // clears any previously-armed prime, so the arm below is the single
-        // decision for the session that is about to start.
+        // while the host is not streaming" invariant (#2533).
+        //
+        // The arm/disarm below is then the SINGLE, EXPLICIT decision for the
+        // session about to start, taken from the live proof. `snap_back` must NOT
+        // decide it as a side effect: `tick` calls `snap_back` on every unlocked
+        // period, so an arm retired there could never survive to meet the frames
+        // that engage it (the first cut of #2533 did exactly that and left the
+        // prime dead, losing the per-session descent skip).
         self.decay.snap_back(reason);
         if self.live_proof_present() {
             // A valid proof is live → ARM the floor prime for the next session.
@@ -868,6 +873,11 @@ impl LaneResampler {
             // it. No-op on a disabled machine, but `live_proof_present` is only
             // ever true when the feature is armed.
             self.decay.arm_prime_at_floor();
+        } else {
+            // No live proof (never written, or revoked mid-lifetime): positively
+            // retire any arm this lane was still carrying, so a revoke observed
+            // between one boundary and the next cannot be undone by a later frame.
+            self.decay.disarm_prime();
         }
         self.publish_decay_gauges();
     }
@@ -997,8 +1007,16 @@ impl LaneResampler {
     /// exactly the existing snap-back primitive the lock-loss paths use. Raising a
     /// setpoint needs no drop (the fill refills from input); this only lifts the
     /// held target + republishes the gauges. No-op-cheap when decay is off.
+    ///
+    /// Also RETIRES any armed-but-unengaged prime (#2533): this is the escape a
+    /// distrusted proof takes, so it must not leave an arm behind that the next
+    /// frame would engage. (The routine `snap_back` deliberately leaves arms
+    /// alone — it runs every unlocked period. Retirement is explicit, and this is
+    /// one of the two places that means it.)
     pub fn snap_decay_to_ceiling(&mut self) {
         self.snap_decay_back(DecayFrozenReason::Unlocked);
+        self.decay.disarm_prime();
+        self.publish_decay_gauges();
     }
 
     fn render_silence(&mut self, out: &mut [i16]) {
@@ -1431,22 +1449,35 @@ mod decay {
         /// Snap the held target back to the ceiling and reset decay progress.
         /// Called on any hard boundary (unlock / DLL demotion / stream stop).
         /// Raising a setpoint needs no drop — the fill refills from input.
+        ///
+        /// Clears the ENGAGED prime latch (`floor_prime_pending`) — a snap-back is
+        /// a discontinuity, and the whole point is to re-acquire deep. It does NOT
+        /// touch the ARM (`floor_prime_armed`), because `tick` calls this on EVERY
+        /// unlocked period: an arm cleared here would never survive to meet the
+        /// frames that engage it, which is exactly the regression the first cut of
+        /// #2533 shipped (arm at a session boundary → the same period's tick
+        /// destroys it → the prime is dead code and the per-session descent skip is
+        /// lost). Retiring an arm is an EXPLICIT act — see
+        /// [`disarm_prime`](Self::disarm_prime).
         pub fn snap_back(&mut self, reason: DecayFrozenReason) {
             self.held = self.ceiling;
             self.stable_periods = 0;
             self.periods_since_step = 0;
-            // A snap-back is a hard discontinuity: whatever prime-at-floor state we
-            // were in is abandoned. Clear the latch so the raised ceiling actually
-            // takes effect (the whole point of a snap-back is to re-acquire deep).
-            // The ARM latch goes with it: a pending prime is prime state too, and
-            // leaving it set would let the very next pushed frame undo this snap.
-            // The session-boundary caller re-arms deliberately, AFTER the snap,
-            // when a live proof says to.
             self.floor_prime_pending = false;
-            self.floor_prime_armed = false;
             if self.enabled {
                 self.frozen_reason = Some(reason);
             }
+        }
+
+        /// Retire an ARMED-but-unengaged prime. The explicit counterpart to
+        /// [`arm_prime_at_floor`](Self::arm_prime_at_floor), for the two callers
+        /// that must positively decide a proof may NOT prime the next session: the
+        /// revocation escape (a distrusted proof must re-acquire deep and stay
+        /// there) and a session boundary reached with no live proof. Routine
+        /// unlocked ticks deliberately do not call it — an arm's whole job is to
+        /// wait, silently, for however long the host stays quiet.
+        pub fn disarm_prime(&mut self) {
+            self.floor_prime_armed = false;
         }
 
         /// Prime the machine directly at the floor — the persisted-host-compliance
@@ -2222,18 +2253,45 @@ mod decay {
         }
 
         #[test]
-        fn snap_back_disarms_a_pending_prime() {
-            // A hard boundary abandons a PENDING prime exactly as it abandons a
-            // live one — otherwise the next pushed frame would silently undo the
-            // snap. The session-boundary caller re-arms after the snap when a
-            // live proof says to.
+        fn an_arm_survives_the_unlocked_ticks_it_is_waiting_through() {
+            // THE LIFECYCLE PIN. `tick` snaps back on EVERY unlocked period, and
+            // the mixer ticks every period, so an arm cleared by `snap_back` is
+            // destroyed in the same render period it is created — which is what
+            // the first cut of #2533 shipped: `engage_armed_prime` returned false
+            // forever, the floor prime was dead code, and the per-session descent
+            // skip was silently lost for a host that later streams.
+            //
+            // An arm's whole job is to WAIT, however long the host stays quiet.
             let mut d = build();
             d.arm_prime_at_floor();
             d.snap_back(DecayFrozenReason::Unlocked);
             assert!(
-                !d.floor_prime_armed(),
-                "the snap disarmed the pending prime"
+                d.floor_prime_armed(),
+                "a routine snap must not retire an arm"
             );
+            // A long silent stretch of exactly what the mixer does each period.
+            for _ in 0..5000 {
+                d.tick(DecaySignals {
+                    locked: false,
+                    dll_l0_locked: true,
+                    commanded_ppm_abs: 0.0,
+                });
+                assert_eq!(d.held(), CEIL, "still ceiling while it waits");
+            }
+            assert!(d.floor_prime_armed(), "and the arm is still there");
+            assert!(d.engage_armed_prime(), "so the first frame can engage it");
+            assert_eq!(d.held(), FLOOR);
+        }
+
+        #[test]
+        fn disarm_prime_retires_an_arm_explicitly() {
+            // Retirement is an explicit act, for the two callers that must decide
+            // a proof may NOT prime the next session: the revocation escape and a
+            // session boundary with no live proof.
+            let mut d = build();
+            d.arm_prime_at_floor();
+            d.disarm_prime();
+            assert!(!d.floor_prime_armed(), "disarm_prime retires the arm");
             assert!(
                 !d.engage_armed_prime(),
                 "so nothing engages on the next frame"
@@ -3922,6 +3980,12 @@ mod tests {
         // other session-boundary path, and it honours the proof the same way as the
         // underfill unlock: floor with a live proof, ceiling without. Guards that the
         // fix covers BOTH snap sites, not just the underfill one.
+        //
+        // Since #2533 "honours the proof" means ARMS the floor prime: the boundary
+        // itself leaves the ceiling (the host is not streaming at a boundary), and
+        // the session's first frames engage the floor. Both halves are asserted —
+        // the arm surviving the boundary AND the floor arriving with the frames —
+        // because it is the pair that keeps the ~2.5-min per-session descent skip.
         let mut r = build_with_decay();
         let obs = arm_compliance(&mut r, true);
         let mut out = vec![0i16; PERIOD as usize * 2];
@@ -3930,11 +3994,28 @@ mod tests {
         r.reset();
         assert_eq!(
             r.hold_fill_frames() as u64,
+            CEIL,
+            "reset() with a live proof leaves the ceiling until the host streams again"
+        );
+        // Silence after the boundary must not retire the arm — `tick_decay` snaps
+        // back every unlocked period, and an arm that cannot survive that is dead.
+        for _ in 0..500 {
+            r.render_period(&mut out);
+            r.tick_decay(true, 0.0);
+        }
+        assert_eq!(
+            r.hold_fill_frames() as u64,
+            CEIL,
+            "still waiting, still ceiling"
+        );
+        r.push_input(&tone(1));
+        assert_eq!(
+            r.hold_fill_frames() as u64,
             FLOOR,
-            "reset() with a live proof re-primes at the floor"
+            "reset() with a live proof re-primes at the floor on the session's first frames"
         );
 
-        // Flip the proof off and reset again → ceiling.
+        // Flip the proof off and reset again → ceiling, with no arm left behind.
         obs.flag_present.store(false, Ordering::Relaxed);
         // Re-lock then reset so the machine is in a decayed state again.
         r.push_input(&tone(FLOOR as usize + RADIUS_FRAMES as usize + 1 + 64));
@@ -3944,6 +4025,59 @@ mod tests {
             r.hold_fill_frames() as u64,
             CEIL,
             "reset() with no live proof re-primes at the ceiling"
+        );
+        r.push_input(&tone(1));
+        assert_eq!(
+            r.hold_fill_frames() as u64,
+            CEIL,
+            "and no arm survives a no-proof boundary, so frames cannot resurrect the floor"
+        );
+    }
+
+    /// A revoke that lands while an arm is still WAITING must retire it — the one
+    /// window the arm/engage split opens that the eager prime did not have.
+    ///
+    /// Timeline: a live proof arms at a session boundary; the host stays silent, so
+    /// the arm waits (it must — that is the #2533 lifecycle); the mixer then revokes
+    /// the proof. Two paths reach the lane, and BOTH have to retire the pending arm,
+    /// or the next frame engages a floor the daemon has just decided it does not
+    /// trust: `snap_decay_to_ceiling` (the revalidation-failure escape, called the
+    /// period the revoke happens) and the no-proof branch of the next
+    /// session-boundary snap.
+    #[test]
+    fn a_revoke_retires_an_arm_that_is_still_waiting_for_frames() {
+        let mut out = vec![0i16; PERIOD as usize * 2];
+
+        // --- Path 1: the revalidation escape. ---
+        let mut r = build_with_decay();
+        let obs = arm_compliance(&mut r, false);
+        settle_to_floor(&mut r, &mut out);
+        obs.on_written(1_700_000_000);
+        end_session_by_starving(&mut r, &mut out); // boundary → arms
+                                                   // The revoke arrives while the host is still silent and the arm is waiting.
+        obs.on_revoked(crate::host_compliance::RevokeReason::ProbeFail);
+        r.snap_decay_to_ceiling();
+        r.push_input(&tone(1));
+        assert_eq!(
+            r.hold_fill_frames() as u64,
+            CEIL,
+            "the revalidation escape must retire a waiting arm, so the next frame \
+             cannot engage a floor the daemon just stopped trusting"
+        );
+
+        // --- Path 2: the next session boundary, proof already gone. ---
+        let mut r = build_with_decay();
+        let obs = arm_compliance(&mut r, false);
+        settle_to_floor(&mut r, &mut out);
+        obs.on_written(1_700_000_000);
+        end_session_by_starving(&mut r, &mut out); // boundary → arms
+        obs.flag_present.store(false, Ordering::Relaxed); // revoked, no escape call
+        r.reset(); // the next boundary sees no live proof
+        r.push_input(&tone(1));
+        assert_eq!(
+            r.hold_fill_frames() as u64,
+            CEIL,
+            "a no-proof boundary must retire the arm the previous boundary left"
         );
     }
 

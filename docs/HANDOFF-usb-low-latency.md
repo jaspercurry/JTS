@@ -845,9 +845,21 @@ really-streaming host still skips the ~2.5-min descent exactly as before. Once
 engaged, the held target is the floor and the `floor_prime_pending` latch holds it
 there across the not-yet-locked prime periods so `try_lock` seats the cursor AT the
 floor (the deep-prefill arm). The ceiling is unchanged, so a REVOKE still snaps all
-the way back to it, and a `snap_back` also DISARMS a pending prime (a hard boundary
-abandons a pending prime exactly as it abandons a live one). STATUS shows the armed
-state as `resampler.decay.prime_armed`.
+the way back to it. STATUS shows the armed state as `resampler.decay.prime_armed`.
+
+**An arm WAITS; retiring it is explicit.** `CushionDecay::tick` snaps back on every
+unlocked period and the mixer ticks every period, so `snap_back` must NOT clear the
+arm — an arm cleared there is destroyed in the same render period it is created,
+which makes the prime dead code and silently loses the per-session descent skip
+(shipped, briefly, in the first cut of #2533 and caught by the fan-in Rust suite —
+`per_session_reset_path_also_honours_the_live_proof` and
+`per_session_hardware_scenario_session_b_seats_at_floor_in_same_lane` are the
+guards). `snap_back` therefore clears only the ENGAGED latch
+(`floor_prime_pending`), and two callers positively retire an arm via
+`CushionDecay::disarm_prime`: the revalidation escape (`snap_decay_to_ceiling` — a
+distrusted proof must not be resurrected by the next frame) and a session boundary
+that finds no live proof. That pair is what keeps a revoke landing *while an arm
+waits* from being undone later.
 
 **Session-boundary snap destination (the single source of truth).** At a session
 boundary the snap goes to the FLOOR iff a live, unrevoked proof is present, else the
