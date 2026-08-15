@@ -8400,9 +8400,9 @@ def _restore_sound_declaration(record: Any) -> tuple[str, str]:
     return DECLARATION_RESTORED, ""
 
 
-#: Why a rollback anchor cannot be restored from, as four named codes. On the
+#: Why a rollback anchor cannot be restored from, as five named codes. On the
 #: journal and the round receipt, so "we could not put the old sound back" says
-#: WHICH of the four it was without re-deriving it from a sentence.
+#: WHICH of the five it was without re-deriving it from a sentence.
 ANCHOR_NOT_APPLIED = "not_applied"
 ANCHOR_NO_PRE_APPLY_PROFILE = "no_pre_apply_profile"
 ANCHOR_TOPOLOGY_CHANGED = "topology_changed"
@@ -8621,7 +8621,7 @@ def handle_v2_restore(
 
     state = load_v2_state()
     cam = camilla_factory()
-    # The LIVE half of the fourth precondition (#2537), read here and only
+    # The LIVE half of the fifth precondition (#2537), read here and only
     # here: what is CamillaDSP actually playing right now? Guarded to ``None``
     # — "could not compare" — because a camilla that cannot answer is a camilla
     # the restore below is about to fail against anyway, and refusing on its
@@ -8630,12 +8630,14 @@ def handle_v2_restore(
         running_config_path = run_async(cam.get_config_file_path(best_effort=True))
     except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
         running_config_path = None
-    # The four preconditions live in ``rollback_anchor_refusal`` (#2291, #2537),
-    # so this endpoint and the round's ``rollback_available`` seam cannot come
-    # to different conclusions about the same state. Item 2 (#1605)'s topology
-    # check is one of them, and its journal line stays HERE: it fires when a
-    # household actually pressed Undo, not on every capability probe. So does
-    # the divergence line, for the same reason and one more — the seam does not
+    # The five preconditions live in ``rollback_anchor_refusal`` (#2291, #2537,
+    # #2559), so this endpoint and the round's ``rollback_available`` seam
+    # cannot come to different conclusions about the same state. Item 2
+    # (#1605)'s topology check is one of them, and its journal line stays HERE:
+    # it fires when a household actually pressed Undo, not on every capability
+    # probe. So does the stale-stash line, for that same reason alone — the
+    # seam DOES answer that precondition, it just does not journal it. And so
+    # does the divergence line, for that reason and one more: the seam does not
     # take the live reading at all.
     refusal = rollback_anchor_refusal(
         state, running_config_path=str(running_config_path or "") or None,
@@ -8679,7 +8681,7 @@ def handle_v2_restore(
                 ),
             )
         raise CrossoverV2Refused(refusal.message)
-    # No refusal means the anchor cleared all four checks, so the state is
+    # No refusal means the anchor cleared all five checks, so the state is
     # present and ``pre_apply_profile`` is a Mapping — indexed rather than
     # re-tested, because a second test here would be a fifth transcription of
     # the rule this function was extracted to own.
