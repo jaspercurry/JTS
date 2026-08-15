@@ -113,6 +113,7 @@ from jasper.audio_measurement.program_analysis import (
     overlap_band_hz,
     predicted_branch_sum,
     realized_branch_level_match,
+    ripple_at_trim,
     solve_ripple_optimal_trim,
     summed_model_residual_delay_us,
 )
@@ -1330,6 +1331,7 @@ def plan_linearization(
     # **At the CANDIDATE's corner** — defect sites 3 (the straddle test), 4 (the
     # solve) and 5 (this event's ``fc_hz`` field) of seven.
     ripple_lin: float | None = None
+    ripple_anchored_lin: float | None = None
     if lo_clamped < fc_hz < hi:
         trim_t_lin, ripple_lin, _seed_lin = solve_ripple_optimal_trim(
             freqs,
@@ -1340,6 +1342,27 @@ def plan_linearization(
             hi_hz=hi,
             seed_trim_db=anchored[tweeter_role],
             trim_w_db=anchored[woofer_role],
+            sign=int(request.polarity_sign),
+        )
+        # The scan's own objective, re-read at the trim that SHIPS (#2541).
+        # Same branches, same band, same statistic, same
+        # :func:`ripple_at_trim` the scan itself evaluates every candidate
+        # with — the tweeter trim is the only thing that moves between this
+        # number and ``ripple_lin``, which is what makes the rejection
+        # telemetry below a controlled comparison instead of two variables
+        # changing at once. The woofer trim is ``anchored``'s in both, because
+        # the scan holds it fixed and ``resolved`` inherits it unchanged.
+        #
+        # Finite whenever it is reached: the scan raises on a band with no
+        # bins, so getting past that call means this same band has some.
+        ripple_anchored_lin = ripple_at_trim(
+            freqs,
+            w_lin,
+            t_lin,
+            lo_hz=lo_clamped,
+            hi_hz=hi,
+            trim_w_db=anchored[woofer_role],
+            trim_t_db=anchored[tweeter_role],
             sign=int(request.polarity_sign),
         )
     else:
@@ -1469,10 +1492,30 @@ def plan_linearization(
             # P4 telemetry (2026-07-24 review): the ripple at each trim
             # lets live evidence distinguish "legitimate flatter optimum
             # rejected" from "garbage correctly caught" before anyone
-            # widens the guard. ``None`` is unreachable here — a skipped
-            # scan leaves the trim AT the anchor, so the drift is 0 by
-            # construction — but the field stays honest rather than
-            # reporting a fabricated 0.0.
+            # widens the guard. ``None`` is unreachable on both linearized
+            # fields — a skipped scan leaves the trim AT the anchor, so the
+            # drift is 0 by construction and this event does not fire — but
+            # they stay honest rather than reporting a fabricated 0.0.
+            #
+            # **Read the first two against each other, never either against
+            # the third** (#2541). ``anchored_ripple_db`` and
+            # ``resolved_ripple_db`` are the SAME linearized branches over
+            # the SAME band through the same ``ripple_at_trim``, differing
+            # only in the tweeter trim, so their difference is exactly what
+            # the guard cost this candidate in flatness — the number the
+            # comment above claims to supply.
+            # ``raw_predicted_ripple_db`` is the RAW pre-fit branches at the
+            # MEASURE trim: a different curve at a different stage, kept as
+            # the before-linearization context it is. Pairing it with a
+            # linearized ripple moves two variables at once, and on the
+            # 2026-08-15 jts3 run that pairing read as 11.5 dB of flatness
+            # thrown away when almost all of the gap was the linearization
+            # itself — which ships under this outcome, rejected trim or not.
+            "anchored_ripple_db": (
+                round(float(ripple_anchored_lin), 3)
+                if ripple_anchored_lin is not None
+                else None
+            ),
             "resolved_ripple_db": (
                 round(float(trim.ripple_db), 3)
                 if trim.ripple_db is not None
