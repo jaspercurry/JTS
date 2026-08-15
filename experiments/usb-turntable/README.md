@@ -177,8 +177,10 @@ angle. It refuses targets outside the inclusive `-45` to `+45` degree envelope.
 The vendored transport's exact `ProtocolError` base class anywhere in that
 home-then-move sequence is retried once as a whole, against a **freshly
 opened controller session** (a brand-new serial open, not the raced one
-re-used): the retry re-homes from scratch before moving again, so a race that
-lands mid-home or mid-move cannot leave the arm double-moved. A more specific
+re-used, and not a second run of the Pi power preflight, which already
+passed before the first attempt): the retry re-homes from scratch before
+moving again, so a race that lands mid-home or mid-move cannot leave the arm
+double-moved. A more specific
 `ProtocolError` subclass -- a motion acknowledged but never confirmed
 complete, a rejected command, a genuine link timeout -- reports a real
 command outcome, not a parse race, and is never retried. A response with

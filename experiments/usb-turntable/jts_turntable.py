@@ -282,18 +282,26 @@ def _operation_succeeded(result: Any) -> bool:
 
 
 class _RetryExhausted(Exception):
-    """Both attempts of a session-retried operation failed with the
-    vendored transport's exact ``ProtocolError`` base class.
+    """A retry was attempted (the first attempt raced with the exact
+    ``ProtocolError`` base class) and the second, fresh-session attempt
+    also failed -- with ANY exception, not necessarily the same type.
 
-    Carries both underlying exceptions so ``main()`` can report the real
-    ``error_type`` (the second attempt's class) and build the combined
-    message from an explicit "a retry happened" fact -- never by
-    inspecting ``__cause__``, which the vendored package also sets
-    internally in several places unrelated to this wrapper's own retry
-    (e.g. ``ProtocolSession.synchronize`` re-raising a parse error as
-    ``StartupSynchronizationError ... from exc``). Inferring "was this
-    retried" from ``__cause__`` alone would misreport an ordinary,
-    never-retried failure as one.
+    The fresh ``.open()`` itself can fail for an unrelated reason (e.g. a
+    real ``StartupSynchronizationError`` if the second session genuinely
+    can't synchronize). That must still be reported as a retry: attempt 1
+    may already have moved the platform (home + relative move both ran
+    before it raced), so silently reporting only the second failure --
+    indistinguishable from a cold failure where nothing moved -- would
+    withhold exactly the fact an operator needs before deciding whether to
+    retry by hand. Carries both underlying exceptions so ``main()`` can
+    report the real ``error_type`` (the second attempt's class, whatever
+    it is) and build the combined message from an explicit "a retry
+    happened" fact -- never by inspecting ``__cause__``, which the
+    vendored package also sets internally in several places unrelated to
+    this wrapper's own retry (e.g. ``ProtocolSession.synchronize``
+    re-raising a parse error as ``StartupSynchronizationError ... from
+    exc``). Inferring "was this retried" from ``__cause__`` alone would
+    misreport an ordinary, never-retried failure as one.
     """
 
     def __init__(self, first: BaseException, second: BaseException) -> None:
@@ -335,7 +343,15 @@ def _run_with_session_retry(
     vendor reserves for "malformed, duplicate, or unexpected frame"
     parser-level anomalies -- is retried; every subclass instance
     propagates on the very first attempt, no matter which retryable
-    command raised it.
+    command raised it. This exact-class gate applies ONLY to whether a
+    retry is attempted at all (the first attempt) -- once a retry is
+    underway, ANY failure on the second, fresh-session attempt (including
+    the fresh ``.open()`` itself failing, e.g. a real
+    ``StartupSynchronizationError``) is reported as an exhausted retry
+    (fix-round should-fix, second delta): the retry already happened and
+    attempt 1's operation may already have moved the platform, so that
+    fact must never be silently dropped just because the second failure
+    isn't the bare base class either.
     """
 
     protocol_error = resolved_api.protocol_error
@@ -351,9 +367,7 @@ def _run_with_session_retry(
             raise
         try:
             return _attempt(), True
-        except protocol_error as second_exc:
-            if type(second_exc) is not protocol_error:
-                raise
+        except Exception as second_exc:
             raise _RetryExhausted(first_exc, second_exc) from second_exc
 
 

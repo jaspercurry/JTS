@@ -150,10 +150,16 @@ class FakeControllerFactory:
     assumption) or a sequence of them (one per ``.open()`` call, holding
     the last if called more times than scripted) -- used by the session-
     retry tests to prove the wrapper opens a genuinely DIFFERENT controller
-    on retry, mirroring a fresh CLI invocation, not the same one reused.
+    on retry, mirroring a fresh CLI invocation, not the same one reused. An
+    exception instance in the sequence is RAISED from ``.open()`` instead
+    of returned (same value-or-exception convention as ``make_queue``) --
+    used to prove a second-attempt ``.open()`` failure (not just an
+    ``operation()`` failure) still surfaces as a retried failure.
     """
 
-    def __init__(self, controller: "FakeController | list[FakeController]") -> None:
+    def __init__(
+        self, controller: "FakeController | list[FakeController | BaseException]"
+    ) -> None:
         self._controllers = (
             controller if isinstance(controller, list) else [controller]
         )
@@ -163,7 +169,10 @@ class FakeControllerFactory:
     def open(self, **kwargs):
         self.open_calls.append(kwargs)
         index = min(len(self.open_calls) - 1, len(self._controllers) - 1)
-        return self._controllers[index]
+        item = self._controllers[index]
+        if isinstance(item, BaseException):
+            raise item
+        return item
 
 
 def fake_api(turntable, *, devices=None):
@@ -1014,6 +1023,73 @@ def test_protocol_error_subclass_is_never_retried(turntable, capsys) -> None:
         ("turn_relative", "ccw", 10.0),
     ]
     assert factory.open_calls == [{"port": None}]
+
+
+class _UnrelatedSecondAttemptFailure(Exception):
+    """Stand-in for a real StartupSynchronizationError from the fresh open."""
+
+
+def test_second_attempt_open_failure_of_a_different_type_is_still_reported_as_retried(
+    turntable, capsys
+) -> None:
+    """Gate's delta probe (second round): attempt 1 races AFTER issuing
+    both return_to_zero and turn_relative; the fresh ``.open()`` on
+    attempt 2 then fails with a DIFFERENT exception type entirely (e.g. a
+    real ``StartupSynchronizationError`` if the second session genuinely
+    can't synchronize). This must still surface as a retried failure with
+    both attempts' errors visible -- attempt 1 may already have moved the
+    platform, so silently reporting only the second failure would be
+    indistinguishable from a cold failure where nothing moved, which is
+    exactly what the README tells the operator to check before retrying
+    by hand.
+    """
+    controller = FakeController()
+    controller.turn_relative = record_and_queue(
+        controller,
+        "turn_relative",
+        FakeProtocolError("heartbeat byte appeared inside a protocol frame"),
+    )
+    # The SECOND .open() call itself raises -- a different exception type
+    # than the FakeProtocolError that triggered the retry, and not even a
+    # subclass of it.
+    factory = FakeControllerFactory(
+        [controller, _UnrelatedSecondAttemptFailure("startup did not become synchronized")]
+    )
+    api = turntable.TurntableApi(
+        discover_devices=lambda: [],
+        controller=factory,
+        protocol_error=FakeProtocolError,
+    )
+
+    assert (
+        turntable.main(
+            [
+                "--json",
+                "position",
+                "10",
+                "--confirm-rig-clear",
+                "--confirm-zero-valid",
+            ],
+            api=api,
+            run_command=healthy_power,
+        )
+        == 1
+    )
+
+    output = parse_output(capsys)
+    assert output["ok"] is False
+    assert output["retried"] is True
+    assert output["error_type"] == "_UnrelatedSecondAttemptFailure"
+    assert "startup did not become synchronized" in output["error"]
+    assert "after one retry" in output["error"]
+    assert "heartbeat byte appeared inside a protocol frame" in output["error"]
+    # Attempt 1 fully ran home + move before it raced -- that's the fact
+    # the operator needs, and it must not be silently dropped.
+    assert controller.calls == [
+        ("return_to_zero",),
+        ("turn_relative", "ccw", 10.0),
+    ]
+    assert factory.open_calls == [{"port": None}, {"port": None}]
 
 
 def test_should_fix_3_vendor_style_cause_chaining_never_implies_a_retry(
