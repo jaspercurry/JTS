@@ -24,7 +24,6 @@ Three claims are pinned here, and the first is the incident itself:
 from __future__ import annotations
 
 import hashlib
-from types import SimpleNamespace
 
 import pytest
 
