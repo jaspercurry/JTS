@@ -1532,23 +1532,36 @@ def test_a_co_spanning_quiet_set_scores_one_whatever_the_grid_shape(grid):
     scores 1.0 — on a production linear grid and on a log one alike, because
     whatever the grid does to the numerator it does to the denominator.
 
-    This is the pin that the earlier whole-span denominator could not have
-    passed; see the sibling test for what that one scored on real geometry.
+    Read off the CLASSIFIER's own field rather than recomputed here, so the
+    reference this bar rests on is the number the shipped code produces. This is
+    the pin the earlier whole-span denominator could not have passed; see the
+    sibling test for what that one scored on real geometry.
     """
     lo_hz, hi_hz = 400.0, 12_000.0
     band = (grid >= lo_hz) & (grid <= hi_hz)
     idx = np.flatnonzero(band)
-    quiet = np.zeros_like(grid, dtype=bool)
-    quiet[idx[::2]] = True
-
-    quiet_core = interquartile_band_hz(grid[quiet])
-    band_core = interquartile_band_hz(grid[band])
-    coverage = (
-        math.log2(quiet_core[1] / quiet_core[0])
-        / math.log2(band_core[1] / band_core[0])
+    # Every other in-band bin is quiet, so the two sets sample the band
+    # identically. The alternation breaks every exceedance run, so the map is
+    # ``matched`` — the coverage is measured on every map, not only a failing
+    # one, which is what lets the reference be pinned on its own.
+    commanded = np.zeros_like(grid)
+    commanded[idx[1::2]] = -4.0
+    probe = _entry_anchored(
+        commanded, realized=commanded - 3.0, grid=grid, band=(lo_hz, hi_hz),
     )
-    assert coverage == pytest.approx(1.0, abs=0.02)
-    assert coverage > DELTA_PROBE_MIN_QUIET_COVERAGE
+
+    assert probe.quiet_probe_coverage == pytest.approx(1.0, abs=0.02)
+    assert probe.quiet_probe_coverage > DELTA_PROBE_MIN_QUIET_COVERAGE
+    # The same number, recomputed from the two disclosed spans — so the field is
+    # the ratio it says it is and not an unrelated scalar that happens to be 1.
+    band_core = interquartile_band_hz(
+        grid[(grid >= probe.probe_band_hz[0]) & (grid <= probe.probe_band_hz[1])]
+    )
+    assert probe.quiet_probe_coverage == pytest.approx(
+        math.log2(probe.quiet_core_band_hz[1] / probe.quiet_core_band_hz[0])
+        / math.log2(band_core[1] / band_core[0]),
+        abs=1e-9,
+    )
 
 
 def test_a_whole_span_denominator_would_be_unclearable_on_a_production_grid():
