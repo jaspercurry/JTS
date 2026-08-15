@@ -94,11 +94,7 @@ detail; they do not replace this baseline.
 
 4. **Prefer simplicity.** Solve the requested problem with the
    smallest clear design that fits the codebase. Avoid speculative
-   flexibility, single-use abstractions, and broad refactors. Watch
-   where code lands, not just how much: a god file is born one
-   reasonable-looking diff at a time, so put new logic behind the
-   seam that owns it — or cut the natural seam while it is fresh —
-   rather than growing a file that already carries several concerns.
+   flexibility, single-use abstractions, and broad refactors.
 
 5. **Make surgical changes.** Touch only what the task requires.
    Match local style. Clean up obvious orphans created by your own
@@ -161,6 +157,11 @@ worked example of getting this wrong and repairing it.
 
 ### Project-specific reinforcements
 
+- **Watch where code lands, not just how much (extends rule 4).** A god
+  file is born one reasonable-looking diff at a time, so put new logic
+  behind the seam that owns it — or cut the natural seam while it is
+  fresh — rather than growing a file that already carries several
+  concerns.
 - **Bug work starts with evidence.** Fetch the logs, probe the
   affected daemon/user surface, and name the specific failure line or
   state transition before proposing a fix.

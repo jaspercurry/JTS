@@ -59,8 +59,7 @@ Hold both directions in tension with **balance** (below): a *missing* seam
 finding — but so is *astronaut engineering* (a speculative abstraction, a
 single-use registry, indirection not warranted by a real, named need). The
 smallest durable shape that fits the existing system wins — calibrated per
-COAH's "Clean" bullet: 80/20 trims speculative flexibility and generality,
-never correctness, tests, observability, or the right seam.
+COAH's "Clean" bullet in [AGENTS.md](../../AGENTS.md#coah-quality-bar).
 Simpler-but-hacky is not a simplification.
 
 ## Method — evidence before judgment
