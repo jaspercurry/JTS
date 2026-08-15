@@ -2004,6 +2004,67 @@ def test_replayed_begin_for_finished_attempt_is_refused():
     assert [(i, a) for (i, a, _w) in consumed] == [(1, 1)]
 
 
+def test_repeat_begin_while_awaiting_arm_is_a_no_op_not_a_replay_refusal():
+    """The other side of the replay rule, and a page contract (issue #2517).
+
+    ``capture-page/js/main.js``'s ``beginAndAwaitAuthorization`` re-sends the
+    IDENTICAL ``begin_capture`` after a transient relay failure, so an
+    unattended remote session recovers from a network blip without a human
+    tap. That is only safe because a repeat of the begin the runner is
+    currently holding is a NO-OP: ``pair in processed`` refuses
+    ``begin_replayed`` *only* when ``phase == "awaiting_begin" or pair !=
+    current``, and a pre-arm re-post can be neither — the runner is sitting in
+    ``awaiting_arm`` on that very pair. The sibling test above pins the
+    refusal; this one pins the tolerance the page relies on, so narrowing it
+    fails here rather than in the field.
+    """
+    backend = FakePlanRelayBackend()
+    client, session, phone = _mint_plan_session(backend, capture_target=1)
+    authorize, on_armed, consume, authorized, consumed = _plan_callbacks(
+        backend, session
+    )
+
+    real_step = phone.step
+    repeats = 0
+
+    def repost_the_begin_once_before_arming():
+        nonlocal repeats
+        host = backend.sessions[session.session_id]["host_event"] or {}
+        if (
+            host.get("phase") == "capture_authorized"
+            and phone.armed_for != phone.begun
+            and repeats == 0
+        ):
+            repeats = 1
+            # A FRESH sequence carrying the same payload — exactly what
+            # RelayClient.postEvent mints for the page's re-send.
+            phone.begin(1, 1)
+            return
+        real_step()
+
+    phone.step = repost_the_begin_once_before_arming
+
+    outcomes = run_capture_plan(
+        client,
+        session,
+        authorize_begin=authorize,
+        on_armed=on_armed,
+        consume_capture=consume,
+        **_run_kwargs(),
+    )
+
+    assert repeats == 1, "the harness must actually have re-posted the begin"
+    assert [o.accepted for o in outcomes] == [True]
+    # Admitted ONCE. The repeat neither re-entered admission (which would spend
+    # a second attempt against the ledger) nor refused the session.
+    assert authorized == [(1, 1)]
+    assert [(i, a) for (i, a, _w) in consumed] == [(1, 1)]
+    assert (
+        backend.sessions[session.session_id]["host_event"]["phase"]
+        != "capture_refused"
+    )
+
+
 # --- voluntary retakes (flow-simplification §2.6) -----------------------------
 
 
