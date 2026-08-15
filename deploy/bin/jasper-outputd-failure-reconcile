@@ -218,6 +218,17 @@ content_lane_action() {
     fi
 }
 
+# The lane token, in ONE place. The park record and the journal line both name
+# the lane, and deriving them from two copies of the same conditional is how
+# they drift apart; this is the single expression both call.
+content_lane_name() {
+    if [[ "$CONTENT_LANE_IS_ACTIVE" == "1" ]]; then
+        printf 'active'
+    else
+        printf 'passive'
+    fi
+}
+
 write_content_lane_state() {
     local count="$1"
     shift || true
@@ -243,11 +254,17 @@ clear_content_lane_state() {
 
 park_content_lane() {
     local count="$1"
-    local action
+    local action lane
     action="$(content_lane_action)"
+    lane="$(content_lane_name)"
+    # `lane=` is in the RECORD, not only the journal line: the record is what
+    # jasper-doctor and /state.resilience.content_lane read, and a surface that
+    # can only infer the lane by string-matching the remedy prose would break
+    # the moment that prose is reworded. See jasper/control/content_lane_state.py.
     write_content_lane_state "$count" \
         "parked_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         "reason=content_lane_open_repeated" \
+        "lane=${lane}" \
         "detail=jasper-outputd could not open its content lane on ${count} consecutive starts" \
         "action=${action}" \
         "re_arm=nothing re-arms outputd on its own: a sound-card udev event (jasper-audio-hardware-reconcile), a deploy, jasper-camilla-recover's OnFailure pass, a reboot, or an operator restart"
@@ -267,7 +284,7 @@ park_content_lane() {
     "$SYSTEMCTL" --no-block stop jasper-outputd.service >/dev/null 2>&1 || true
     log park reason=content_lane_open_repeated failures="$count" \
         park_after="$CONTENT_LANE_PARK_AFTER" state="$CONTENT_LANE_STATE" \
-        lane="$([[ "$CONTENT_LANE_IS_ACTIVE" == "1" ]] && printf active || printf passive)" \
+        lane="$lane" \
         action="\"${action}\""
 }
 

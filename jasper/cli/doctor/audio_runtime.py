@@ -408,7 +408,9 @@ def check_fanin_asound_wiring() -> CheckResult:
     assertion below is file-level drift detection against
     `deploy/alsa/asoundrc.jasper`, which is why they hold on a
     ring-coupled box too — there the shipped definitions survive with
-    no writer and no reader until P9-B deletes them. The one assertion
+    no writer and no reader. (The pair-5 definitions are already gone:
+    P9-C deleted them. What survives is the pair-0..4/6/7 set, which
+    P9-E reduces to the grouping pair.) The one assertion
     that is not about the graph is the trailing `audio_topology.env`
     probe, which warns about a leftover from the retired dmix/fanin
     switcher.
@@ -504,9 +506,10 @@ def check_fanin_asound_wiring() -> CheckResult:
 
     # `pcm.jasper_ref` has had NO reader since U4/P7-3 retired the last one
     # (the AEC bridge's ALSA fallback went first, in P7-1). The definition is
-    # deliberately retained — `deploy/alsa/asoundrc.jasper` still ships it and
-    # P9-B deletes the aloop PCMs — so what these two branches report is
-    # deployed-asoundrc drift from the shipped file, not a broken consumer.
+    # deliberately retained — `deploy/alsa/asoundrc.jasper` still ships it, and
+    # P9-E is what reduces the remaining aloop PCMs to the grouping pair — so
+    # what these two branches report is deployed-asoundrc drift from the
+    # shipped file, not a broken consumer.
     ref = _asound_pcm_block(active, "jasper_ref")
     if ref is None:
         return CheckResult(
@@ -3621,4 +3624,96 @@ def _ring_detach_remedy(reason: str) -> str:
     return (
         "the ring file does not exist yet — normal briefly at boot; persistent "
         "means the renderer has never opened its device"
+    )
+
+
+@doctor_check(order=52.66, group="audio")
+def check_outputd_content_lane_park() -> CheckResult:
+    """jasper-outputd is not parked on a content-lane open failure.
+
+    ``deploy/bin/jasper-outputd-failure-reconcile`` parks the unit
+    out-of-band after ``CONTENT_LANE_PARK_AFTER`` consecutive content-lane
+    open failures, so the unit cannot ride ``Restart=on-failure`` into
+    ``StartLimitAction=reboot``. That park is TERMINAL for the boot —
+    nothing re-arms outputd on its own — and until this check existed the
+    record it writes had NO reader: a parked speaker was silent, and so was
+    every operator surface.
+
+    Severity is ``fail``, not ``warn``, and the reason is the definition the
+    rest of the doctor uses: a park means the speaker emits NOTHING and no
+    automatic path recovers it. That is operator-action class. A ``warn``
+    would put "your speaker is silent until you intervene" in the same bucket
+    as advisory drift.
+
+    The record's own ``action=`` and ``re_arm=`` text is surfaced verbatim
+    rather than restated here — the writer picks a LANE-SPECIFIC remedy
+    (active vs passive), and a second copy of that prose in Python is a
+    guaranteed drift site.
+    """
+    label = "outputd content lane"
+
+    from ...control import content_lane_state
+
+    state = content_lane_state.snapshot()
+    status = state.get("status")
+
+    if status == "absent":
+        return CheckResult(
+            label, "ok", "no content-lane failure record this boot"
+        )
+
+    if status == "unreadable":
+        return CheckResult(
+            label,
+            "warn",
+            f"content-lane record at {state.get('path')} exists but could not "
+            f"be read ({state.get('error')}) — a park cannot be ruled out. "
+            "The record is written root:jasper 0660 by jasper-outputd's "
+            "ExecStopPost; check that the reader is in group jasper.",
+        )
+
+    if status == "unintelligible":
+        return CheckResult(
+            label,
+            "warn",
+            f"content-lane record at {state.get('path')} is present but its "
+            "count/timestamp do not parse (a truncated write) — a park cannot "
+            "be ruled out from it. Check jasper-outputd's recent starts "
+            "directly; the record is cleared on the next clean stop.",
+        )
+
+    if state.get("parked"):
+        lane = state.get("lane") or "unknown"
+        count = state.get("count")
+        parts = [
+            f"PARKED — jasper-outputd stopped after {count} consecutive "
+            f"{lane}-lane open failures",
+        ]
+        parked_utc = state.get("parked_utc")
+        if parked_utc:
+            parts.append(f"at {parked_utc}")
+        action = state.get("action")
+        if action:
+            parts.append(f"ACTION: {action}")
+        re_arm = state.get("re_arm")
+        if re_arm:
+            parts.append(f"RE-ARM: {re_arm}")
+        return CheckResult(label, "fail", ". ".join(parts))
+
+    count = state.get("count")
+    if state.get("streak_live"):
+        return CheckResult(
+            label,
+            "warn",
+            f"content-lane open is failing: {count} consecutive failure(s) "
+            "recorded within the streak window, below the park threshold. "
+            "Usually a transient wait for CamillaDSP to open its half of the "
+            "pair at boot; persistent means the lane will park.",
+        )
+    return CheckResult(
+        label,
+        "ok",
+        f"content lane recovered — a stale record of {count} failure(s) "
+        f"remains ({state.get('age_sec')}s old, outside the streak window); "
+        "it is cleared on the next clean stop",
     )

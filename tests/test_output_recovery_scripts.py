@@ -396,6 +396,11 @@ def test_outputd_failure_reconcile_parks_repeated_content_lane_failures(
     assert "consecutive starts" in record["detail"]
     assert "systemctl restart jasper-outputd" in record["action"]
     assert record["parked_utc"].endswith("Z")
+    # The lane is in the RECORD, not only the journal line: jasper-doctor's
+    # check_outputd_content_lane_park and /state.resilience.content_lane read
+    # this file, and inferring the lane by string-matching the remedy prose
+    # would break the moment that prose is reworded.
+    assert record["lane"] == "passive"
 
 
 def _park_with(harness: "_FailureReconcileHarness", journal: str):
@@ -418,7 +423,11 @@ def test_active_lane_park_names_the_ring_not_a_width(tmp_path: Path) -> None:
     assert "event=outputd.failure_reconcile.park" in result.stderr
     assert "lane=active" in result.stderr
 
-    action = harness.state_record()["action"]
+    record = harness.state_record()
+    # Record and journal line derive from ONE expression (content_lane_name),
+    # so they cannot disagree about which lane parked.
+    assert record["lane"] == "active"
+    action = record["action"]
     assert "baseline-reemit --endpoint ring" in action
     assert "jasper-fanin-coupling-reconcile shm_ring" in action
     # The falsified remedy must be absent, not merely out-ranked.

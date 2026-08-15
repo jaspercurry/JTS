@@ -147,8 +147,9 @@ The honest framing: today's shipped resilience is **Tier 1, Tier 2, Tier 3 (shai
 
 Current production observability for this ladder lives under
 `/state.resilience`: `shairport`, `grouping_supervisor`,
-`system_supervisor`, `wifi_guardian`, `bootloop_guard`, `identity`,
-`disk`, and `multiroom_cascade`. The first three are resident supervisor
+`system_supervisor`, `wifi_guardian`, `bootloop_guard`, `content_lane`,
+`identity`, `disk`, `multiroom_cascade`, and `active_speaker_parked`.
+The first three are resident supervisor
 snapshots; `jasper-doctor` now reads them through its `supervisor runtime
 snapshots` check so a supervisor that is kicking, rate-limited, or failing
 to converge is visible in one-shot diagnostics. `multiroom_cascade` is a
@@ -1312,7 +1313,13 @@ For anyone touching the resilience code:
   failures still restart, because on the passive lane that open is how outputd
   waits for CamillaDSP's half of the snd-aloop pair. On the ACTIVE lane the
   failure is permanent (P9-C deleted its pair-5 PCMs), and the park's record
-  says so, naming the ring re-arm rather than a width fix. Details in
+  says so, naming the ring re-arm rather than a width fix. That record
+  (`/run/jasper-outputd-content-lane.state`, which also carries a `lane=`
+  token) is read by `jasper/control/content_lane_state.py` — ONE reader with
+  two surfaces, so they cannot disagree: `/state.resilience.content_lane` and
+  `jasper-doctor`'s `check_outputd_content_lane_park`, which fails on a park
+  (the speaker emits nothing and no automatic path re-arms it) and surfaces
+  the record's own lane-specific `action` verbatim. Details in
   [docs/HANDOFF-hotplug-resilience.md](HANDOFF-hotplug-resilience.md).
 - `deploy/systemd/jasper-dongle-recover.service` — `Type=oneshot`
   unit that `reset-failed`s the audio daemons, restarts the output graph
