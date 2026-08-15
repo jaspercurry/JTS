@@ -471,9 +471,11 @@ def test_assemble_args_leader_strips_binary_name_from_client():
 
     d = _assemble_args(_leader())
     assert not d[CLIENT_KEY].split()[0] == "snapclient"
-    # An active member's client ALWAYS carries the round-trip file player
-    # (Increment 5): never an ALSA sink, which would fight outputd for
-    # the DAC.
+    # A DUMB member's client (the default, active_endpoint=False) carries
+    # the round-trip file player (Increment 5) and not an ALSA sink, which
+    # on this path would fight outputd for the DAC. NOT "always": an
+    # active-speaker endpoint gets `--player alsa` instead — pinned by
+    # test_assemble_args_active_endpoint_writes_loopback_not_fifo below.
     assert d[CLIENT_KEY] == " ".join(
         snapclient_argv(_leader(), player_fifo=MEMBER_CONTENT_FIFO)[1:]
     )
