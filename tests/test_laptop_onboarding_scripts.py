@@ -78,6 +78,9 @@ case "$cmd" in
     [[ "${FAKE_METADATA_PROBES_FAIL:-0}" == "1" ]] && exit 1
     printf '%s\n' "${FAKE_OUTPUT_STATUS:-ready}"
     ;;
+  *\/deploy\/install.sh*)
+    exit "${FAKE_INSTALL_SSH_RC:-0}"
+    ;;
   sudo\ -n*)
     exit 0
     ;;
@@ -389,6 +392,47 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         self.assertNotIn("mkdir\\ -p", calls)
         self.assertNotIn("RSYNC", calls)
         self.assertNotIn("deploy/install.sh", calls)
+
+    def test_deploy_preserves_ssh_status_255_and_reports_unknown_outcome(self):
+        fake = FakeRemote(self)
+        result = self.run_deploy(
+            fake,
+            env_local=None,
+            PI_HOST="jts3.local",
+            PI_USER="pi",
+            JASPER_HOSTNAME="jts3.local",
+            FAKE_INSTALL_SSH_RC="255",
+        )
+
+        combined = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 255, combined)
+        self.assertIn("DEPLOY OUTCOME UNKNOWN", result.stderr)
+        self.assertIn("ssh exited 255 while install.sh was", result.stderr)
+        self.assertIn("no trustworthy remote completion", result.stderr)
+        self.assertIn("build manifest was not verified", result.stderr)
+        self.assertNotIn("build manifest was NOT advanced", result.stderr)
+        self.assertNotIn("==> Done.", combined)
+
+    def test_deploy_preserves_ordinary_install_failure(self):
+        fake = FakeRemote(self)
+        result = self.run_deploy(
+            fake,
+            env_local=None,
+            PI_HOST="jts3.local",
+            PI_USER="pi",
+            JASPER_HOSTNAME="jts3.local",
+            FAKE_INSTALL_SSH_RC="42",
+        )
+
+        combined = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 42, combined)
+        self.assertIn(
+            "DEPLOY FAILED: install.sh exited 42 on jts3.local.",
+            result.stderr,
+        )
+        self.assertIn("build manifest was NOT advanced", result.stderr)
+        self.assertNotIn("DEPLOY OUTCOME UNKNOWN", result.stderr)
+        self.assertNotIn("==> Done.", combined)
 
     def test_passwordless_sudo_uses_noninteractive_sudo_and_remote_home(self):
         fake = FakeRemote(self)

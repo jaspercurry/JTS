@@ -734,15 +734,25 @@ if [[ "$install_rc" -ne 0 ]]; then
     finish_airplay_health_maintenance
     trap - EXIT
     echo "─────────────────────────────────────────────────────────────" >&2
-    echo " DEPLOY FAILED: install.sh exited ${install_rc} on ${PI_HOST}." >&2
-    if [[ "$OOM_PRODUCTION_HIT" == "1" ]]; then
-        echo " A live production daemon was OOM-killed during the build"   >&2
-        echo " (see above) — the build is unbounded for this box's RAM."   >&2
-        echo " Workstream A bounds it; for now free RAM and re-deploy."     >&2
+    if [[ "$install_rc" == "255" ]]; then
+        echo " DEPLOY OUTCOME UNKNOWN: ssh exited 255 while install.sh was" >&2
+        echo " running on ${PI_HOST}. That status can signal an SSH"         >&2
+        echo " transport failure, so no trustworthy remote completion"     >&2
+        echo " status was received. install.sh may still be running, or"    >&2
+        echo " may complete after this SSH session ended."                  >&2
+        echo " The build manifest was not verified. Reconnect to the Pi"    >&2
+        echo " before deciding whether to re-deploy."                       >&2
+    else
+        echo " DEPLOY FAILED: install.sh exited ${install_rc} on ${PI_HOST}." >&2
+        if [[ "$OOM_PRODUCTION_HIT" == "1" ]]; then
+            echo " A live production daemon was OOM-killed during the build"   >&2
+            echo " (see above) — the build is unbounded for this box's RAM."   >&2
+            echo " Workstream A bounds it; for now free RAM and re-deploy."     >&2
+        fi
+        echo " The build manifest was NOT advanced, so the Pi still"           >&2
+        echo " advertises its prior good build to the next deploy (no"         >&2
+        echo " half-updated lie). Diagnose on the Pi:"                         >&2
     fi
-    echo " The build manifest was NOT advanced, so the Pi still"           >&2
-    echo " advertises its prior good build to the next deploy (no"         >&2
-    echo " half-updated lie). Diagnose on the Pi:"                         >&2
     echo "   sudo /opt/jasper/.venv/bin/jasper-doctor"                     >&2
     echo "   journalctl -u jasper-control -n 120 --no-pager"               >&2
     echo "─────────────────────────────────────────────────────────────" >&2
