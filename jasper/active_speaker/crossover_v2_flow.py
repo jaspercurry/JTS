@@ -4170,8 +4170,10 @@ def carve_outs_by_band(
     render "nothing carved here" without having to infer it from an absence.
 
     A record is included in a band when its interval OVERLAPS the band's
-    ``[f_lo_hz, f_hi_hz)`` span, so a null straddling a band edge appears under
-    both bands it actually carves — it removes bins from both.
+    ``[graded_lo_hz, f_hi_hz)`` span — the span actually graded, not the
+    nominal row — so a null straddling a band edge appears under both bands it
+    actually carves, and one sitting entirely below the session's trusted floor
+    appears under none, because it removed no bin any verdict was taken from.
 
     **What this does NOT include: the gate's trusted-floor clamp.** Bins
     below the group's ``trusted_floor_hz`` also leave the spec evaluation,
@@ -4189,10 +4191,19 @@ def carve_outs_by_band(
     out: list[dict[str, Any]] = []
     for band in spec_report.bands:
         f_lo, f_hi = float(band.f_lo_hz), float(band.f_hi_hz)
+        # Overlap is tested against the edge this band was GRADED from, not
+        # its nominal row: a null below the trusted floor carved nothing out
+        # of this band's grading, because those bins were never in it. That
+        # is what makes the equality claimed above ("n_excluded is exactly
+        # what these records cover") true rather than approximate. `band_hz`
+        # below stays the nominal pair, since it is the join key a consumer
+        # uses against ``spec["bands"]`` — which carries `graded_lo_hz`
+        # itself, so this payload does not copy it and cannot drift from it.
+        graded_lo = f_lo if band.graded_lo_hz is None else float(band.graded_lo_hz)
         in_band = [
             record
             for record in records
-            if record["f_lo_hz"] < f_hi and record["f_hi_hz"] > f_lo
+            if record["f_lo_hz"] < f_hi and record["f_hi_hz"] > graded_lo
         ]
         out.append(
             {

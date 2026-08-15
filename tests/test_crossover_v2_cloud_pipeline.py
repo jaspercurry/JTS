@@ -1044,6 +1044,54 @@ def test_the_gate_trusted_floor_clamp_never_appears_as_a_carve_out():
     assert clamped["merged_excluded_bands_hz"] == unclamped["merged_excluded_bands_hz"]
 
 
+def test_a_carve_out_below_the_trusted_floor_is_listed_under_no_band():
+    """The other half of the equality: a carved range that sits entirely
+    below the graded edge removed no bin any verdict was taken from, so
+    listing it under that band would over-report what grading lost.
+
+    `carve_outs_by_band` therefore overlaps against ``graded_lo_hz``, not the
+    nominal ``f_lo_hz``. Driven through a hand-built spec report rather than
+    the assembler, because the synthetic cloud's own screen does not happen to
+    carve below 250 Hz — an argument that it cannot is not a guard."""
+    from jasper.active_speaker.crossover_v2_flow import carve_outs_by_band
+    from jasper.active_speaker.flat_spec import BandResult, FlatSpecReport
+
+    def _band(graded_lo_hz):
+        return BandResult(
+            f_lo_hz=250.0, f_hi_hz=2000.0, tolerance_db=1.5,
+            max_deviation_db=0.0, max_deviation_hz=1000.0,
+            rms_deviation_db=0.0, n_bins=1, n_excluded=0,
+            evaluable=True, passed=True, graded_lo_hz=graded_lo_hz,
+        )
+
+    null_report = SimpleNamespace(nulls=(), reason="", excluded_bands_hz=())
+    # One screen interval at 260-300 Hz: inside the nominal band, below a
+    # 357.14 Hz trusted floor.
+    screen_bands = [[260.0, 300.0]]
+
+    unclamped = carve_outs_by_band(
+        FlatSpecReport(
+            reference_db=0.0, bands=(_band(250.0),), overall_passed=True,
+            excluded_intervals=(), best_effort_above_hz=16000.0,
+            smoothing_fraction=3,
+        ),
+        null_report, screen_bands,
+    )
+    clamped = carve_outs_by_band(
+        FlatSpecReport(
+            reference_db=0.0, bands=(_band(357.1425),), overall_passed=True,
+            excluded_intervals=(), best_effort_above_hz=16000.0,
+            smoothing_fraction=3, trusted_floor_hz=357.1425,
+        ),
+        null_report, screen_bands,
+    )
+    assert len(unclamped[0]["intervals"]) == 1
+    assert clamped[0]["intervals"] == []
+    # The join key stays the NOMINAL row either way, so a consumer can still
+    # match this entry to ``spec["bands"]`` by ``band_hz``.
+    assert clamped[0]["band_hz"] == unclamped[0]["band_hz"] == [250.0, 2000.0]
+
+
 def test_carve_outs_survive_a_registry_that_identified_nothing():
     """A report whose ``reason`` is non-empty has no nulls at all. The payload
     must still be complete (one entry per band) rather than absent — an absent
