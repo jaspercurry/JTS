@@ -3461,7 +3461,9 @@ def test_anchor_and_driver_commission_refusals_use_DISTINCT_reason_strings(
     assert payload["reason"] == "commission_load_active", payload
     # The sibling's token, read from its own source rather than retyped, so this
     # pin tracks a rename instead of going quietly vacuous after one.
-    sibling = Path("jasper/cli/active_speaker.py").read_text(encoding="utf-8")
+    sibling = (
+        Path(__file__).resolve().parents[1] / "jasper/cli/active_speaker.py"
+    ).read_text(encoding="utf-8")
     assert '"reason": "commission_load_already_active",' in sibling, (
         "the sibling refusal's token changed; re-derive whether these two are "
         "still meant to be distinct"
