@@ -6332,6 +6332,22 @@ def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
 #: to https://github.com/jaspercurry/JTS/issues/2506.
 REMOTE_POSITION_HOLD_BUDGET_S = 600.0
 
+#: Headroom added to a remote stage's own wall-clock ceiling when its relay link
+#: is minted (issue #2509).
+#:
+#: The ceiling bounds the WALK. The link has to outlive it, for two reasons that
+#: both sit outside the walk: the TTL clock starts at mint, a few seconds before
+#: the measurement volume opens and the ceiling's clock starts; and the ceiling
+#: drains the volume rather than ending the session, so the final blob pull, its
+#: analysis, and the purge all happen on the far side of it.
+#:
+#: 300 s is deliberately coarse — nothing has timed those tails, and this is a
+#: BUDGET ALLOWANCE, not a measurement. It is chosen at the same magnitude as
+#: the longest single pause the flow already admits (``V2_FIRST_BEGIN_TIMEOUT_S``
+#: — a reference point, not a derivation), because being generous costs only a
+#: dead link sitting in relay storage a few minutes longer than it had to.
+REMOTE_RELAY_TTL_MARGIN_S = 300
+
 #: Machine reasons the gate answers a begin with. Stable strings: a driver
 #: branches on these, and the phone renders the message beside them.
 #:
@@ -6354,6 +6370,39 @@ POSITION_GATE_TERMINAL_CODES = frozenset(
 
 #: The endpoint an external driver POSTs to report the microphone in place.
 POSITION_READY_ENDPOINT = "/correction/crossover/v2/position-ready"
+
+
+def relay_link_ttl_s(plan_shape: Any, wall_clock_ceiling_s: float) -> int:
+    """The relay link TTL a stage about to be minted should ask for (#2509).
+
+    ``capture_relay.session.DEFAULT_TTL_S`` (900 s) is an ABSOLUTE clock —
+    ``TIME_BUDGET_LINK``, counted from the mint and refreshed by nothing. A
+    hand-walked stage finishes well inside it. A REMOTE stage does not fit: its
+    own wall-clock ceiling is 2520 s (stage 1) / 2040 s (stage 2) at the shipped
+    shape, and a single stalled position may spend
+    :data:`REMOTE_POSITION_HOLD_BUDGET_S` of that on its own. The first real
+    remote run died at ~890 s with the phone still posting, on a 404 from a link
+    that had run out under it (issue #2509).
+
+    So a remote stage sizes its link from the ceiling it is already arming —
+    ``wall_clock_ceiling_s``, the caller's own
+    :func:`~jasper.active_speaker.crossover_v2_flow.session_wall_clock_ceiling_s`
+    value, passed in rather than recomputed so the link and the volume can never
+    describe different sessions — plus :data:`REMOTE_RELAY_TTL_MARGIN_S`, and
+    clamped at what the Worker grants.
+
+    Hand-walked shapes (and the tier-less recovery re-arm, ``plan_shape=None``)
+    keep the default, which is the scope of the observed failure: no
+    hand-walked run has been observed to reach 900 s. This is the seam a
+    hand-walked shape would be widened at.
+    """
+    from jasper.capture_relay.session import DEFAULT_TTL_S, MAX_TTL_S
+
+    if plan_shape is None or not plan_shape.externally_positioned:
+        return DEFAULT_TTL_S
+    return min(
+        MAX_TTL_S, math.ceil(wall_clock_ceiling_s) + REMOTE_RELAY_TTL_MARGIN_S
+    )
 
 
 class PositionGate:
@@ -6949,12 +6998,18 @@ def prepare_v2_session(
             include_entry_baseline=include_entry_baseline,
             default_setup_calibration=default_setup_calibration_for_v2(),
         ).with_return_url(return_url)
+        # This stage's own wall-clock budget, read ONCE off the plan it just
+        # emitted: the relay link is minted against it below and the walked-away
+        # volume ceiling is armed from it further down, and those two must
+        # describe the same session (issue #2509).
+        ceiling_s = session_wall_clock_ceiling_s(spec.capture_plan)
         rc = correction_adapter.open_capture(
             client,
             spec,
             relay_base=base,
             capture_origin=capture_origin,
             return_url=return_url,
+            ttl_s=relay_link_ttl_s(plan_shape, ceiling_s),
         )
         # The conductor + publishers bind to the MINTED relay session id.
         relay_session_id = rc.pi_session.session_id
@@ -6965,9 +7020,7 @@ def prepare_v2_session(
         # ceiling; scale it from the plan this session actually emitted (never
         # from the constants, so a caller-configured cloud is covered too) and
         # arm it BEFORE the volume opens.
-        session_volume_plan().set_wall_clock_ceiling_s(
-            session_wall_clock_ceiling_s(spec.capture_plan)
-        )
+        session_volume_plan().set_wall_clock_ceiling_s(ceiling_s)
         # One signal per session, shared by the play seam (which fires it) and
         # the runner (which installs the armed capture's phase ladder on it).
         playback_started = PlaybackStartSignal()
@@ -7259,12 +7312,17 @@ def prepare_v2_verify(
             plan_shape=plan_shape,
             default_setup_calibration=default_setup_calibration_for_v2(),
         ).with_return_url(return_url)
+        # Stage 2's own budget, read once off its own plan — the link below and
+        # the ceiling further down size from the same number, exactly as stage 1
+        # does (issue #2509).
+        ceiling_s = session_wall_clock_ceiling_s(spec.capture_plan)
         rc = correction_adapter.open_capture(
             client,
             spec,
             relay_base=base,
             capture_origin=capture_origin,
             return_url=return_url,
+            ttl_s=relay_link_ttl_s(plan_shape, ceiling_s),
         )
         relay_session_id = rc.pi_session.session_id
         # Re-arm the walked-away ceiling from THIS plan (1 entry ⇒ the plain
@@ -7272,9 +7330,7 @@ def prepare_v2_verify(
         # The volume plan is process-global, so a preceding cloud session would
         # otherwise leave its own longer ceiling in force for a measurement
         # that cannot possibly need it.
-        session_volume_plan().set_wall_clock_ceiling_s(
-            session_wall_clock_ceiling_s(spec.capture_plan)
-        )
+        session_volume_plan().set_wall_clock_ceiling_s(ceiling_s)
         _publish_check, publish_candidate, refs = bind_evidence_publishers(
             evidence_store, relay_session_id
         )

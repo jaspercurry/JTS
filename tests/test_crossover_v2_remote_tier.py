@@ -783,3 +783,83 @@ def test_a_hand_walked_session_registers_no_gate_at_all():
         assert "position_pending" not in relay
     finally:
         correction_setup._set_relay_capture(None)
+
+
+# --------------------------------------------------------------------------- #
+# the link
+# --------------------------------------------------------------------------- #
+
+
+def test_a_remote_stages_link_outlives_the_stage_it_hosts():
+    """Issue #2509: the relay link is an ABSOLUTE clock, so it has to be minted
+    long enough for the walk it is hosting.
+
+    The first real remote run died at ~890 s of a stage whose own ceiling is
+    2520 s — the phone was still posting, and the relay answered the Pi's next
+    status poll with 404. Both stages are pinned, because stage 2 mints its own
+    link across the apply boundary and would have died the same way.
+    """
+    from jasper.capture_relay.session import MAX_TTL_S
+    from jasper.web.correction_crossover_v2 import relay_link_ttl_s
+
+    shape = resolve_plan_shape(TIER_REMOTE)
+    for plan in (_stage1(TIER_REMOTE), _stage2(TIER_REMOTE)):
+        ceiling = flow.session_wall_clock_ceiling_s(plan)
+        ttl = relay_link_ttl_s(shape, ceiling)
+        assert ttl >= ceiling, (
+            f"a remote stage whose ceiling is {ceiling} s would be hosted on a "
+            f"{ttl} s link — the link expires mid-walk"
+        )
+        assert ttl <= MAX_TTL_S, (
+            "the worker clamps above MAX_TTL_S, so an unclamped request would "
+            "publish a link lifetime the relay never granted"
+        )
+
+
+def test_the_biggest_plan_the_ceiling_allows_still_asks_a_grantable_link():
+    """The clamp binds rather than the margin, and it binds SAFELY.
+
+    ``session_wall_clock_ceiling_s`` is itself capped at
+    ``MAX_WALL_CLOCK_CEILING_S``, which is exactly the Worker's ``MAX_TTL_S``.
+    So at the largest plan the ceiling admits, the margin is entirely clamped
+    away and the link is the ceiling — still covering it, with nothing to
+    spare. Pinned because the day those two constants stop being equal is the
+    day this tier silently goes back to expiring mid-walk.
+    """
+    from jasper.active_speaker.session_volume_plan import MAX_WALL_CLOCK_CEILING_S
+    from jasper.capture_relay.session import MAX_TTL_S
+    from jasper.web.correction_crossover_v2 import relay_link_ttl_s
+
+    shape = resolve_plan_shape(TIER_REMOTE)
+    assert relay_link_ttl_s(shape, MAX_WALL_CLOCK_CEILING_S) == MAX_TTL_S
+    assert MAX_WALL_CLOCK_CEILING_S <= MAX_TTL_S
+
+
+def test_a_hand_walked_stage_keeps_the_default_link():
+    """Scoped to the observed-broken path. A hand-walked walk is a person
+    tapping through, and no run of one has been observed to reach 900 s; the
+    tier-less recovery re-arm (``plan_shape=None``) is one sweep."""
+    from jasper.capture_relay.session import DEFAULT_TTL_S
+    from jasper.web.correction_crossover_v2 import relay_link_ttl_s
+
+    for tier in HAND_WALKED:
+        shape = resolve_plan_shape(tier)
+        for plan in (_stage1(tier), _stage2(tier)):
+            ceiling = flow.session_wall_clock_ceiling_s(plan)
+            assert relay_link_ttl_s(shape, ceiling) == DEFAULT_TTL_S, tier
+    assert relay_link_ttl_s(None, 2520.0) == DEFAULT_TTL_S
+
+
+def test_both_preparers_mint_their_link_from_the_ceiling_they_arm():
+    """The two are one decision: a stage that armed a 2520 s ceiling and minted
+    a 900 s link is exactly the failure. Read out of each preparer's source,
+    the same way the ceiling re-arm itself is pinned."""
+    import inspect
+
+    from jasper.web import correction_crossover_v2 as v2host
+
+    for fn in (v2host.prepare_v2_session, v2host.prepare_v2_verify):
+        source = inspect.getsource(fn)
+        assert "ttl_s=relay_link_ttl_s(plan_shape, ceiling_s)" in source, (
+            f"{fn.__name__} must mint its relay link from the ceiling it arms"
+        )

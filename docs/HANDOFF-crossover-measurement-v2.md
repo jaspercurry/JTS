@@ -275,6 +275,20 @@ Observability: `event=correction.crossover_v2_remote_session_open`,
 `…_position_pending` (with `degrees`), `…_position_released`,
 `…_position_hold_expired`, `…_geometry_retake_unreachable`.
 
+**The link is minted to outlive the stage.** A relay link is an absolute clock
+(`TIME_BUDGET_LINK` — minted once, refreshed by nothing), and the shared
+default is shorter than either remote ceiling above, so a remote stage sizes
+its own: `relay_link_ttl_s` asks for that stage's ceiling plus
+`REMOTE_RELAY_TTL_MARGIN_S`, clamped at what the relay Worker grants
+(`capture_relay.session.MAX_TTL_S`, mirrored from `relay/src/worker.js`, which
+clamps rather than refuses). Each stage mints its own link, so stage 2 gets a
+fresh one across the apply boundary. Hand-walked tiers keep the default. Read
+the numbers off those constants, not from here. Symptom when this is wrong: the
+capture page is alive and re-posting, and the Pi's own status poll takes a
+`404 not_found` mid-walk — recorded as
+[issue #2509](https://github.com/jaspercurry/JTS/issues/2509), which killed the
+first remote run at ~890 s of a 2520 s stage.
+
 **What it cannot say.** A remote walk samples one axis, so its post-apply group
 carries no `xovr` role at all. The done screen discloses that once
 (`crossover_v2_remote_horizontal_only`, severity `info`) and recommends a Full
