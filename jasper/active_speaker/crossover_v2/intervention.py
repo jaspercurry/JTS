@@ -955,9 +955,16 @@ def plan_linearization(
     # bounds the knee, where a branch is 6 dB down BY DESIGN and a fit reaching
     # it boosts that back.
     #
-    # It bounds LIFT and nothing else in the SHAPE layer. Cuts still run to the
-    # fit band's own edge — leakage past the handoff still reaches the summed
-    # response and removing it spends no headroom.
+    # LIFT is bounded at the band ITSELF. The SOLVE — cuts included — is bounded
+    # at the band WIDENED by half an octave (#2523,
+    # ``linearization_fit._solve_band_mask``), which is a looser bound and not
+    # this one. #1809's asymmetry stands where it was measured: leakage past the
+    # handoff still reaches the summed response and removing it spends no
+    # headroom, so a shoulder cut is kept. What #1809 never had to answer is how
+    # far past, and against R10a's ideal-crossover target the answer used to be
+    # "to the fit band's own edge", which put the branch's deep stopband — where
+    # a real driver's breakup and the capture's noise floor sit tens of dB above
+    # any ideal rolloff — into the objective as demand no cascade can realize.
     #
     # The band ALSO bounds one LEVEL question, and only one (#1929): the
     # core-level median the frame is built from, below. The 2026-07-30 JTS3

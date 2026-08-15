@@ -223,10 +223,17 @@ class BranchTarget:
         )
 
 
-def _octave_scaled(hz: float, octaves: float) -> float:
+def octave_scaled(hz: float, octaves: float) -> float:
     """``hz`` moved ``octaves`` octaves (signed). 0 and inf are fixed points —
     a branch with no low-pass has no upper gain bound to widen, and one with no
-    high-pass has no lower bound."""
+    high-pass has no lower bound.
+
+    Public because :mod:`jasper.active_speaker.linearization_fit` widens the
+    same radiating band by the same margin to bound its SOLVE (#2523), and a
+    second copy of the 0/inf fixed-point rule is exactly the drift this module
+    exists to remove — the two bands are built by one function or they are two
+    bands.
+    """
     if hz <= 0.0 or math.isinf(hz):
         return hz
     return hz * (2.0 ** octaves)
@@ -290,8 +297,8 @@ def branch_target(
             shape_db = raw_shape_db - float(np.median(raw_shape_db[mask]))
 
     lo_hz, hi_hz = radiating_band_hz(sections)
-    gain_lo_hz = _octave_scaled(lo_hz, -gain_margin_octaves)
-    gain_hi_hz = _octave_scaled(hi_hz, gain_margin_octaves)
+    gain_lo_hz = octave_scaled(lo_hz, -gain_margin_octaves)
+    gain_hi_hz = octave_scaled(hi_hz, gain_margin_octaves)
     gain_permitted = (freqs >= gain_lo_hz) & (freqs <= gain_hi_hz)
 
     for array in (shape_db, contribution, gain_permitted):
