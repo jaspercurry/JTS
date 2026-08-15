@@ -143,7 +143,11 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 __all__ = [
     "ADOPTION_MEASURED_REGRESSION",
     "ADOPTION_NO_ROLLBACK_ANCHOR",
+    "ADOPTION_REALIZATION_FAILED",
+    "ADOPTION_REALIZATION_UNAVAILABLE",
+    "ADOPTION_REALIZED_AND_IMPROVED",
     "ADOPTION_RESTORE_FAILED",
+    "ADOPTION_UNPROVEN",
     "ADOPTION_UNPROVEN_BOOST",
     "BENEFIT_BASELINE_UNAVAILABLE",
     "BENEFIT_GRID_MISMATCH",
@@ -160,9 +164,6 @@ __all__ = [
     "CAPTURE_INTEGRITY_UNAVAILABLE",
     "CLIPPED_RUN_CHECK",
     "MeasurementComparand",
-    "QUALITY_MEASURED_REGRESSION",
-    "QUALITY_TARGETS_OUTSTANDING",
-    "QUALITY_TARGET_MET",
     "REALIZATION_NO_COMPARATOR",
     "REALIZATION_NO_TRACKING",
     "REALIZATION_OUT_OF_TOLERANCE",
@@ -884,14 +885,67 @@ def evaluate_applied_safety(
 # 7. quality — what the next round is for
 # --------------------------------------------------------------------------
 
-#: Every question this round asked came back the way it wanted.
-QUALITY_TARGET_MET = "measured_target_met"
-#: The round did not hit its target, and no better MEASURED state is known.
-QUALITY_TARGETS_OUTSTANDING = "measured_targets_outstanding"
-#: A better measured state IS known — the entry baseline. Same literal as
-#: :data:`ADOPTION_MEASURED_REGRESSION`, and the same fact: the two named it
-#: separately before #2537 and there is no reason for two words.
-QUALITY_MEASURED_REGRESSION = "measured_regression"
+ADOPTION_MEASURED_REGRESSION = "measured_regression"
+ADOPTION_REALIZED_AND_IMPROVED = "realized_and_improved"
+ADOPTION_REALIZATION_FAILED = "realization_failed"
+ADOPTION_UNPROVEN = "benefit_unproven"
+#: Distinct from :data:`ADOPTION_UNPROVEN` because the benefit in that one
+#: cell was *improved* — what is missing is the evidence that the graph we
+#: applied is why. A receipt saying "benefit unproven" there would be false.
+ADOPTION_REALIZATION_UNAVAILABLE = "realization_unavailable"
+
+#: #2291's adoption table, transcribed — **the same nine cells, keyed on the
+#: same two statuses, carrying the same nine causes.** What #2537 changed is
+#: what the non-keep cells RESOLVE TO, not what they are keyed on.
+#:
+#: All nine pairs exist here so a combination cannot fall through to a default,
+#: and a new enum member fails the exhaustiveness test rather than silently
+#: landing on one. Read against the issue's rows:
+#:
+#: * ``matched | improved`` — the one PASSED row.
+#: * ``any | clearly regressed`` — REGRESSED, the only quality answer that
+#:   restores. All three carry the regression as their cause rather than the
+#:   realization failure the pre-#2537 table preferred for ``failed |
+#:   regressed``: a realization failure is no longer a restore trigger, so the
+#:   cause that actually takes the graph off is the measured regression.
+#: * everything else — MISSED, keeping its original cause verbatim, because the
+#:   cause was always right and only the consequence was wrong.
+#:
+#: ``unavailable | improved`` is MISSED rather than PASSED because the pass row
+#: names ``matched`` and this table does not widen it: the speaker measured
+#: better, but with no realization evidence the round cannot say the graph it
+#: applied is why.
+_QUALITY_TABLE: Mapping[
+    tuple[RealizationStatus, BenefitStatus], tuple[QualityStatus, str]
+] = {
+    (RealizationStatus.MATCHED, BenefitStatus.IMPROVED): (
+        QualityStatus.PASSED, ADOPTION_REALIZED_AND_IMPROVED,
+    ),
+    (RealizationStatus.MATCHED, BenefitStatus.REGRESSED): (
+        QualityStatus.REGRESSED, ADOPTION_MEASURED_REGRESSION,
+    ),
+    (RealizationStatus.MATCHED, BenefitStatus.INDETERMINATE): (
+        QualityStatus.MISSED, ADOPTION_UNPROVEN,
+    ),
+    (RealizationStatus.UNAVAILABLE, BenefitStatus.IMPROVED): (
+        QualityStatus.MISSED, ADOPTION_REALIZATION_UNAVAILABLE,
+    ),
+    (RealizationStatus.UNAVAILABLE, BenefitStatus.REGRESSED): (
+        QualityStatus.REGRESSED, ADOPTION_MEASURED_REGRESSION,
+    ),
+    (RealizationStatus.UNAVAILABLE, BenefitStatus.INDETERMINATE): (
+        QualityStatus.MISSED, ADOPTION_UNPROVEN,
+    ),
+    (RealizationStatus.FAILED, BenefitStatus.IMPROVED): (
+        QualityStatus.MISSED, ADOPTION_REALIZATION_FAILED,
+    ),
+    (RealizationStatus.FAILED, BenefitStatus.REGRESSED): (
+        QualityStatus.REGRESSED, ADOPTION_MEASURED_REGRESSION,
+    ),
+    (RealizationStatus.FAILED, BenefitStatus.INDETERMINATE): (
+        QualityStatus.MISSED, ADOPTION_REALIZATION_FAILED,
+    ),
+}
 
 
 def evaluate_round_quality(
@@ -906,44 +960,41 @@ def evaluate_round_quality(
 
     The adoption table's third axis (#2537), and the one the owner's ruling is
     actually about: *the first application is not the end point, it is just the
-    start. The plan is to iterate and learn.* So this does not reduce to
-    pass/fail — it produces the **target list** a chained round is driven from.
+    start. The plan is to iterate and learn.*
 
-    Three answers:
+    **The STATUS is #2291's own table, unchanged in what it reads.**
+    :data:`_QUALITY_TABLE` is keyed on ``(realization, benefit)`` — the same two
+    statuses, the same nine cells, the same nine causes. #2537 changes what a
+    non-keep cell resolves to (``keep_for_iteration`` rather than ``restore`` or
+    a ``user_decision`` nobody rendered), not what decides it.
 
-    * :attr:`~.contracts.QualityStatus.REGRESSED` — the benefit verdict measured
-      the speaker as *clearly worse* than the entry baseline, past the margin.
-      This is the one quality answer that restores, because it is the one where
-      a better measured state is known. It outranks the target list: a round
-      that made the speaker worse has nothing to hand the next one.
-    * :attr:`~.contracts.QualityStatus.PASSED` — nothing is outstanding.
-    * :attr:`~.contracts.QualityStatus.MISSED` — something is, and the evidence
-      names it.
+    **The TARGETS are disclosure, and they are a strictly separate question.**
+    Spec verdicts, each failing spec band, and the delta probe's own reason ride
+    in ``evidence`` for the next round to chase. **None of them moves the
+    status**, and for two independent reasons that must both be stated:
 
-    **A target is anything short of the answer this round wanted**, from all
-    four instruments: realization short of MATCHED, benefit short of IMPROVED,
-    spec short of PASSED (plus each failing band, by its own edges and its own
-    measured deviation), and a delta-probe verdict short of MATCHED. That is a
-    strictly wider net than the pre-#2537 keep row, and deliberately: the old
-    row could only say keep or not-keep, so anything it noticed had to become a
-    reason to revert. A target costs nothing to carry and is the entire point of
-    a round that ends by handing work forward.
+    * *Spec is an outcome, not a proxy for benefit.* Every row of #2291's table
+      reads "any" for spec, because "improved and still out of spec" is an
+      honest first pass. A test pins that permuting spec changes no adoption
+      decision, and that pin is load-bearing.
+    * *The spec verdicts available today are not yet honest enough to decide
+      on.* They are computed over the raw 250 Hz-2 kHz band with **no
+      intersection against the session's own trusted floor** (357.1 Hz on a 7 ms
+      gate), so a best-of-N series keyed on them would rank rounds partly on
+      sub-trusted-floor evidence the same session's delta probe already refuses
+      to grade — and which the E4 sweep measured moving ~2 dB with gate length
+      alone. That intersection is a separate filed fix, and it must land before
+      any axis is allowed to DECIDE on a spec verdict. Carrying spec as
+      disclosure costs nothing and inherits none of it.
 
-    **An unavailable probe or an indeterminate benefit are targets, not
-    failures.** They mean the round could not confirm something, so it cannot
-    call itself PASSED — but neither is evidence against the graph, and neither
-    restores. That distinction is the same one
-    :data:`~jasper.active_speaker.delta_probe.VERDICT_UNAVAILABLE` already
-    draws: "no evidence to refuse on, and no permission granted either."
+    So a round can be PASSED with targets outstanding, and that is not a
+    contradiction: the status answers "did this round realize and improve the
+    speaker", the targets answer "what should the next one chase". They are
+    different questions, and #2291's whole design is about not letting one
+    answer stand in for another.
     """
 
-    if benefit.status is BenefitStatus.REGRESSED:
-        return Verdict(
-            QualityStatus.REGRESSED,
-            QUALITY_MEASURED_REGRESSION,
-            dict(benefit.evidence),
-        )
-
+    quality, reason = _QUALITY_TABLE[(realization.status, benefit.status)]
     targets: list[str] = []
     if realization.status is not RealizationStatus.MATCHED:
         targets.append(f"realization:{realization.reason}")
@@ -957,13 +1008,10 @@ def evaluate_round_quality(
             f"delta_probe:{str(getattr(probe, 'reason', '') or probe_verdict)}"
         )
 
-    evidence: dict[str, Any] = {
+    return Verdict(quality, reason, {
         "targets": targets,
         "spec_bands": _failing_spec_bands(spec_report),
-    }
-    if not targets:
-        return Verdict(QualityStatus.PASSED, QUALITY_TARGET_MET, evidence)
-    return Verdict(QualityStatus.MISSED, QUALITY_TARGETS_OUTSTANDING, evidence)
+    })
 
 
 def _failing_spec_bands(report: FlatSpecReport | None) -> list[dict[str, Any]]:
@@ -1002,7 +1050,6 @@ def _failing_spec_bands(report: FlatSpecReport | None) -> list[dict[str, Any]]:
 # 8. adoption — the three axes, as a table
 # --------------------------------------------------------------------------
 
-ADOPTION_MEASURED_REGRESSION = "measured_regression"
 #: The one cause that survives the #2537 rewrite unchanged, and only on
 #: :data:`~.contracts.ADOPTION_ROW_RESTORE_UNTRUSTED`. Before #2537 a boosted
 #: intervention failed closed whenever the BENEFIT was indeterminate, which is

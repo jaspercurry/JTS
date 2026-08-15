@@ -71,10 +71,11 @@ from jasper.active_speaker.crossover_v2.verification import (
     CAPTURE_INTEGRITY_CLEAN,
     CAPTURE_INTEGRITY_FAILED,
     CAPTURE_INTEGRITY_UNAVAILABLE,
+    ADOPTION_REALIZATION_FAILED,
+    ADOPTION_REALIZATION_UNAVAILABLE,
+    ADOPTION_REALIZED_AND_IMPROVED,
+    ADOPTION_UNPROVEN,
     CLIPPED_RUN_CHECK,
-    QUALITY_MEASURED_REGRESSION,
-    QUALITY_TARGET_MET,
-    QUALITY_TARGETS_OUTSTANDING,
     REALIZATION_NO_COMPARATOR,
     REALIZATION_NO_TRACKING,
     REALIZATION_OUT_OF_TOLERANCE,
@@ -93,6 +94,7 @@ from jasper.active_speaker.crossover_v2.verification import (
     MeasurementComparand,
     Verdict,
     _QUALITY_ROWS,
+    _QUALITY_TABLE,
     decide_adoption,
     evaluate_applied_safety,
     evaluate_benefit,
@@ -992,7 +994,7 @@ def _quality(**overrides):
 def test_everything_the_round_wanted_is_a_pass_with_no_targets():
     verdict = _quality()
     assert verdict.status is QualityStatus.PASSED
-    assert verdict.reason == QUALITY_TARGET_MET
+    assert verdict.reason == ADOPTION_REALIZED_AND_IMPROVED
     assert verdict.evidence["targets"] == []
 
 
@@ -1004,7 +1006,7 @@ def test_a_measured_regression_outranks_the_target_list():
         spec=_spec(SpecStatus.FAILED, SPEC_BAND_OUT_OF_TOLERANCE),
     )
     assert verdict.status is QualityStatus.REGRESSED
-    assert verdict.reason == QUALITY_MEASURED_REGRESSION
+    assert verdict.reason == ADOPTION_MEASURED_REGRESSION
 
 
 @pytest.mark.parametrize(
@@ -1038,10 +1040,14 @@ def test_a_measured_regression_outranks_the_target_list():
 def test_each_instrument_short_of_its_answer_becomes_a_named_target(
     overrides, target
 ):
-    verdict = _quality(**overrides)
-    assert verdict.status is QualityStatus.MISSED
-    assert verdict.reason == QUALITY_TARGETS_OUTSTANDING
-    assert target in verdict.evidence["targets"]
+    """Every instrument contributes a TARGET; only two contribute a STATUS.
+
+    The target list is what the next round chases, so it is drawn from all four
+    instruments. The status is #2291's table, keyed on ``(realization,
+    benefit)`` alone — see the spec/probe pins below for why the other two are
+    deliberately excluded from the decision.
+    """
+    assert target in _quality(**overrides).evidence["targets"]
 
 
 def test_an_ungraded_probe_cannot_make_a_round_pass_and_cannot_fail_it():
@@ -1052,43 +1058,143 @@ def test_an_ungraded_probe_cannot_make_a_round_pass_and_cannot_fail_it():
     assert not any(t.startswith("delta_probe:") for t in verdict.evidence["targets"])
 
 
+@pytest.mark.parametrize("spec_status", list(SpecStatus))
+def test_the_spec_verdict_never_moves_the_quality_STATUS(spec_status):
+    """Two independent reasons, and both have to hold.
+
+    *Spec is an outcome, not a proxy for benefit* — every row of #2291's table
+    reads "any" for spec, and the permutation pin on ``decide_adoption`` is
+    load-bearing. AND the spec verdicts available today are computed over the
+    raw 250 Hz-2 kHz band with no intersection against the session's own trusted
+    floor (357.1 Hz on a 7 ms gate), so deciding on them would key a series on
+    sub-trusted-floor evidence the same session's delta probe refuses to grade —
+    a term the E4 sweep measured moving ~2 dB with gate length alone. That
+    intersection is a separate filed fix and must land before any axis decides
+    on a spec verdict.
+
+    So it rides as DISCLOSURE, and this is the pin that keeps it there.
+    """
+    statuses = {
+        _quality(spec=_spec(status, f"reason_{status.value}")).status
+        for status in SpecStatus
+    }
+    assert len(statuses) == 1
+    # …while still reaching the target list, so the next round can chase it.
+    missed = _quality(spec=_spec(SpecStatus.FAILED, SPEC_BAND_OUT_OF_TOLERANCE))
+    assert f"spec:{SPEC_BAND_OUT_OF_TOLERANCE}" in missed.evidence["targets"]
+    del spec_status
+
+
+def test_the_delta_probe_verdict_never_moves_the_quality_STATUS():
+    """Its rollback verdicts have their own path; the rest are non-rollback by
+    a standing ruling, so neither belongs in this status either."""
+    graded = _quality(probe=_Probe())
+    band_scoped = _quality(probe=_Probe(
+        verdict=DELTA_VERDICT_LEVEL_MISMATCH,
+        reason=REASON_UNCOMMANDED_LEVEL_SHIFT_OUTSIDE_BAND,
+    ))
+    assert graded.status is band_scoped.status
+    assert graded.reason == band_scoped.reason
+    assert any(
+        t.startswith("delta_probe:") for t in band_scoped.evidence["targets"]
+    )
+
+
+def test_the_quality_status_is_2291s_own_table_unchanged_in_what_it_reads():
+    """The nine cells, keyed on the same two statuses, with the same causes.
+
+    #2537 changed what a non-keep cell RESOLVES TO, not what decides it. A
+    lookup with no default is what makes a tenth combination impossible.
+    """
+    assert set(_QUALITY_TABLE) == {
+        (realization, benefit)
+        for realization in RealizationStatus
+        for benefit in BenefitStatus
+    }
+    assert _QUALITY_TABLE[
+        (RealizationStatus.MATCHED, BenefitStatus.IMPROVED)
+    ] == (QualityStatus.PASSED, ADOPTION_REALIZED_AND_IMPROVED)
+    # Every REGRESSED cell carries the regression as its cause, including the
+    # one the pre-#2537 table gave to ``realization_failed``: a realization
+    # failure no longer takes a graph off, so it cannot be the restoring cause.
+    for realization in RealizationStatus:
+        quality, reason = _QUALITY_TABLE[(realization, BenefitStatus.REGRESSED)]
+        assert quality is QualityStatus.REGRESSED
+        assert reason == ADOPTION_MEASURED_REGRESSION
+    # And the causes that survive verbatim, on cells that used to restore or
+    # ask and now keep-for-iteration.
+    assert _QUALITY_TABLE[
+        (RealizationStatus.FAILED, BenefitStatus.IMPROVED)
+    ] == (QualityStatus.MISSED, ADOPTION_REALIZATION_FAILED)
+    assert _QUALITY_TABLE[
+        (RealizationStatus.UNAVAILABLE, BenefitStatus.IMPROVED)
+    ] == (QualityStatus.MISSED, ADOPTION_REALIZATION_UNAVAILABLE)
+    assert _QUALITY_TABLE[
+        (RealizationStatus.MATCHED, BenefitStatus.INDETERMINATE)
+    ] == (QualityStatus.MISSED, ADOPTION_UNPROVEN)
+
+
 def test_each_failing_spec_band_rides_the_receipt_as_its_own_target():
-    """"250-2000 Hz missed by 0.8 dB at 331.8 Hz" is an instruction.
+    """"250-2000 Hz, +4.70 dB against a 1.5 dB tolerance" is an instruction.
 
     "spec failed" is only a mood, and the receipt is what the NEXT round reads.
+    The fixture is cycle 4's own shape: TWO bands failed, and the second is
+    nowhere near any gate floor — which is why the per-band list is worth
+    carrying even while the spec verdict itself is not yet trusted enough to
+    decide on (see ``test_the_spec_verdict_never_moves_the_quality_STATUS``).
     """
 
-    report = _report_with_one_failing_band()
     verdict = _quality(
         spec=_spec(SpecStatus.FAILED, SPEC_BAND_OUT_OF_TOLERANCE),
-        spec_report=report,
+        spec_report=_report_with_two_failing_bands(),
     )
     bands = verdict.evidence["spec_bands"]
-    assert len(bands) == 1
-    assert bands[0]["f_lo_hz"] == 250.0
-    assert bands[0]["f_hi_hz"] == 2000.0
-    assert bands[0]["max_deviation_db"] == pytest.approx(2.286)
-    assert bands[0]["max_deviation_hz"] == pytest.approx(331.8)
-    # A band that PASSED is not a target, and an unevaluable one is not either
-    # — it was not measured, so there is nothing to aim at.
-    assert all(band["f_lo_hz"] == 250.0 for band in bands)
+
+    assert [(b["f_lo_hz"], b["f_hi_hz"]) for b in bands] == [
+        (250.0, 2000.0), (8000.0, 16000.0),
+    ]
+    assert bands[0]["max_deviation_db"] == pytest.approx(4.70)
+    assert bands[0]["tolerance_db"] == pytest.approx(1.5)
+    # Signed, because "too loud" and "too quiet" call for opposite corrections.
+    assert bands[1]["max_deviation_db"] == pytest.approx(-2.63)
+    assert bands[1]["max_deviation_hz"] == pytest.approx(14072.0)
 
 
-def _report_with_one_failing_band():
-    """One failing band, one passing, one unevaluable — the cycle-4 shape."""
+def test_a_passing_or_unevaluable_band_is_not_a_target():
+    """A band that passed has nothing to aim at, and one that could not be
+    measured has nothing to aim WITH — ``passed=False, evaluable=False`` means
+    "not measured", not "failed"."""
+
+    verdict = _quality(spec_report=_report_with_two_failing_bands())
+    named = {(b["f_lo_hz"], b["f_hi_hz"]) for b in verdict.evidence["spec_bands"]}
+    assert (2000.0, 8000.0) not in named   # passed
+    assert (20.0, 250.0) not in named      # unevaluable
+
+
+def _report_with_two_failing_bands():
+    """Cycle 4's shape: two failing bands, one passing, one unevaluable.
+
+    The numbers are that round's own, from the receipt: band 1 measured
+    **+4.70 dB** against a 1.5 dB tolerance (3.1x over), and band 3 measured
+    **-2.63 dB at 14,072 Hz**. Grading is MAX deviation, not RMS.
+    """
 
     return types.SimpleNamespace(bands=(
         types.SimpleNamespace(
-            f_lo_hz=250.0, f_hi_hz=2000.0, tolerance_db=1.5, evaluable=True,
-            passed=False, max_deviation_db=2.286, max_deviation_hz=331.8,
+            f_lo_hz=20.0, f_hi_hz=250.0, tolerance_db=3.0, evaluable=False,
+            passed=None, max_deviation_db=None, max_deviation_hz=None,
         ),
         types.SimpleNamespace(
-            f_lo_hz=2000.0, f_hi_hz=10000.0, tolerance_db=2.0, evaluable=True,
+            f_lo_hz=250.0, f_hi_hz=2000.0, tolerance_db=1.5, evaluable=True,
+            passed=False, max_deviation_db=4.70, max_deviation_hz=331.8,
+        ),
+        types.SimpleNamespace(
+            f_lo_hz=2000.0, f_hi_hz=8000.0, tolerance_db=2.0, evaluable=True,
             passed=True, max_deviation_db=0.4, max_deviation_hz=4000.0,
         ),
         types.SimpleNamespace(
-            f_lo_hz=20.0, f_hi_hz=250.0, tolerance_db=3.0, evaluable=False,
-            passed=None, max_deviation_db=None, max_deviation_hz=None,
+            f_lo_hz=8000.0, f_hi_hz=16000.0, tolerance_db=2.0, evaluable=True,
+            passed=False, max_deviation_db=-2.63, max_deviation_hz=14072.0,
         ),
     ))
 
@@ -1103,7 +1209,7 @@ def _adopt(*, trust=None, safety=None, quality=None, **overrides):
         "trust": trust or Verdict(EvidenceTrust.TRUSTED, TRUST_MEASURED, {}),
         "safety": safety or Verdict(SafetyStatus.SAFE, SAFETY_NO_FINDING, {}),
         "quality": quality or Verdict(
-            QualityStatus.PASSED, QUALITY_TARGET_MET, {}
+            QualityStatus.PASSED, ADOPTION_REALIZED_AND_IMPROVED, {}
         ),
         "boosted": False,
         "rollback_available": True,
@@ -1116,7 +1222,7 @@ def test_row1_trusted_safe_passed_keeps():
     decision = _adopt()
     assert decision.outcome is AdoptionOutcome.KEEP
     assert decision.row == ADOPTION_ROW_KEEP
-    assert decision.reason == QUALITY_TARGET_MET
+    assert decision.reason == ADOPTION_REALIZED_AND_IMPROVED
 
 
 def test_row2_trusted_safe_missed_keeps_for_iteration():
@@ -1130,13 +1236,13 @@ def test_row2_trusted_safe_missed_keeps_for_iteration():
 
     decision = _adopt(
         quality=Verdict(
-            QualityStatus.MISSED, QUALITY_TARGETS_OUTSTANDING,
+            QualityStatus.MISSED, ADOPTION_UNPROVEN,
             {"targets": [f"spec:{SPEC_BAND_OUT_OF_TOLERANCE}"]},
         ),
     )
     assert decision.outcome is AdoptionOutcome.KEEP_FOR_ITERATION
     assert decision.row == ADOPTION_ROW_KEEP_FOR_ITERATION
-    assert decision.reason == QUALITY_TARGETS_OUTSTANDING
+    assert decision.reason == ADOPTION_UNPROVEN
 
 
 def test_row3_unsafe_restores_under_the_hazards_own_name():
@@ -1173,7 +1279,7 @@ def test_row5_a_measured_regression_restores():
 
     decision = _adopt(
         quality=Verdict(
-            QualityStatus.REGRESSED, QUALITY_MEASURED_REGRESSION, {}
+            QualityStatus.REGRESSED, ADOPTION_MEASURED_REGRESSION, {}
         ),
     )
     assert decision.outcome is AdoptionOutcome.RESTORE
@@ -1201,7 +1307,7 @@ def test_trust_outranks_quality():
     decision = _adopt(
         trust=Verdict(EvidenceTrust.UNTRUSTED, REALIZATION_NO_TRACKING, {}),
         quality=Verdict(
-            QualityStatus.REGRESSED, QUALITY_MEASURED_REGRESSION, {}
+            QualityStatus.REGRESSED, ADOPTION_MEASURED_REGRESSION, {}
         ),
     )
     assert decision.row == ADOPTION_ROW_RESTORE_UNTRUSTED
@@ -1238,11 +1344,11 @@ def test_a_boost_never_changes_a_trusted_rounds_answer(quality_status):
     """
 
     reason = (
-        QUALITY_MEASURED_REGRESSION
+        ADOPTION_MEASURED_REGRESSION
         if quality_status is QualityStatus.REGRESSED
-        else QUALITY_TARGETS_OUTSTANDING
+        else ADOPTION_UNPROVEN
         if quality_status is QualityStatus.MISSED
-        else QUALITY_TARGET_MET
+        else ADOPTION_REALIZED_AND_IMPROVED
     )
     quality = Verdict(quality_status, reason, {})
     without = _adopt(quality=quality, boosted=False)
@@ -1303,8 +1409,8 @@ def test_a_restore_with_no_anchor_escalates_and_keeps_its_row(
 @pytest.mark.parametrize("rollback", [True, False])
 def test_a_keeping_row_never_needs_a_rollback_anchor(rollback):
     for quality_status, reason in (
-        (QualityStatus.PASSED, QUALITY_TARGET_MET),
-        (QualityStatus.MISSED, QUALITY_TARGETS_OUTSTANDING),
+        (QualityStatus.PASSED, ADOPTION_REALIZED_AND_IMPROVED),
+        (QualityStatus.MISSED, ADOPTION_UNPROVEN),
     ):
         decision = _adopt(
             quality=Verdict(quality_status, reason, {}),
@@ -1410,7 +1516,7 @@ def test_no_axis_combination_can_keep_a_graph_that_measured_worse():
             trust=Verdict(trust, "t", {}),
             safety=Verdict(safety, "s", {}),
             quality=Verdict(
-                QualityStatus.REGRESSED, QUALITY_MEASURED_REGRESSION, {}
+                QualityStatus.REGRESSED, ADOPTION_MEASURED_REGRESSION, {}
             ),
         )
         assert decision.outcome is not AdoptionOutcome.KEEP

@@ -714,18 +714,15 @@ def _failing_spec_report(analysis):
 
 
 def test_realized_and_improved_keeps_even_with_a_failing_spec():
-    """"Improved and still out of spec" keeps the graph — #2160's boundary.
+    """"Improved and still out of spec" is a valid keep — #2160's boundary.
 
     The post-cloud spec verdict is wired in as an ANSWER, not a gate. If it
     were a gate, a first pass that honestly moved the speaker forward would be
     thrown away for not being perfect.
 
-    Since #2537 the keeping outcome is ``KEEP_FOR_ITERATION`` rather than
-    ``KEEP``, and the distinction is the point rather than a rename: the graph
-    stays on the speaker either way, and the failing band travels on the
-    receipt as the next round's target. ``KEEP`` is now reserved for a round
-    with nothing outstanding, so it cannot be claimed while the spec is out of
-    tolerance.
+    #2537 left this cell exactly where it was — a realized, improved round is
+    still a plain ``KEEP`` — and put the failing band on the receipt as the next
+    round's target beside it.
     """
 
     rough_baseline = _baseline_from(_flatter(_post(), factor=6.0))
@@ -737,8 +734,8 @@ def test_realized_and_improved_keeps_even_with_a_failing_spec():
 
     assert evaluation.benefit.status is BenefitStatus.IMPROVED
     assert evaluation.spec.status is SpecStatus.FAILED
-    assert evaluation.adoption.outcome is AdoptionOutcome.KEEP_FOR_ITERATION
-    assert evaluation.adoption.row == ADOPTION_ROW_KEEP_FOR_ITERATION
+    assert evaluation.adoption.outcome is AdoptionOutcome.KEEP
+    assert evaluation.adoption.row == ADOPTION_ROW_KEEP
     assert any(
         target.startswith("spec:")
         for target in evaluation.quality.evidence["targets"]
@@ -850,19 +847,19 @@ def test_an_unusable_capture_still_fails_a_boost_closed():
     assert boosted.adoption.outcome is AdoptionOutcome.RESTORE
 
 
-def test_the_spec_answer_never_takes_a_graph_off_the_speaker():
-    """Spec decides keep-vs-iterate, and can never decide restore (#2537).
+def test_the_spec_answer_never_changes_the_adoption():
+    """Spec is "any" in every row of the issue's table; pinned by permutation.
 
-    #2160's wire made spec an ANSWER rather than a gate, and this test is what
-    keeps it one. What #2537 changed is the resolution of "not a gate": spec now
-    does move the adoption, between ``keep`` and ``keep_for_iteration``, because
-    a failing band is exactly the kind of outstanding target the next round
-    exists to chase. What it still cannot do is pull the graph off — spec sits
-    on the quality axis, whose only restoring value is a MEASURED REGRESSION,
-    and a band out of tolerance is not one.
+    #2160's wire adds an answer to the receipt. If it ever adds a gate, that
+    is a table change with evidence attached — and this test is what makes
+    that a deliberate act rather than a quiet one.
 
-    Pinned by permutation over all three spec answers, so a future edit that
-    promoted spec to a restore trigger has to delete this test to ship.
+    #2537 kept this pin intact and gained a second reason to: the spec verdicts
+    available today are computed over the raw 250 Hz-2 kHz band with no
+    intersection against the session's own trusted floor, so a decision keyed on
+    them would inherit a gate-length-dependent term no round can control. Spec
+    reaches the receipt as a next-round TARGET (asserted below) and nothing
+    more.
     """
     from jasper.active_speaker.flat_spec import evaluate_flat_spec
 
@@ -880,23 +877,20 @@ def test_the_spec_answer_never_takes_a_graph_off_the_speaker():
         for report in reports
     ]
     outcomes = {evaluation.adoption.outcome for evaluation in evaluations}
+    rows = {evaluation.adoption.row for evaluation in evaluations}
     statuses = {evaluation.spec.status for evaluation in evaluations}
 
-    assert outcomes <= {
-        AdoptionOutcome.KEEP, AdoptionOutcome.KEEP_FOR_ITERATION
-    }, "spec must never take the graph off the speaker"
+    assert len(outcomes) == 1, "spec must not move the adoption"
+    assert len(rows) == 1, "…nor the row it fired"
     assert len(statuses) == 3, "…while still producing three different answers"
-    # And it is not inert either: the passing report is the only KEEP.
-    passing = [
+    # Not inert, though: it reaches the receipt as a target for the next round.
+    failing = next(
         evaluation for evaluation in evaluations
-        if evaluation.spec.status is SpecStatus.PASSED
-    ]
-    assert len(passing) == 1
-    assert passing[0].adoption.row == ADOPTION_ROW_KEEP
-    assert all(
-        evaluation.adoption.row == ADOPTION_ROW_KEEP_FOR_ITERATION
-        for evaluation in evaluations
-        if evaluation.spec.status is not SpecStatus.PASSED
+        if evaluation.spec.status is SpecStatus.FAILED
+    )
+    assert any(
+        target.startswith("spec:")
+        for target in failing.quality.evidence["targets"]
     )
 
 

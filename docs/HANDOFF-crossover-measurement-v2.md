@@ -1976,12 +1976,12 @@ defect these keys close.
 
 Since #2291 Phase 3c that spatial report is also the SPEC verdict's input on
 the round receipt (see "The round, graded" below), so the failure is recorded
-as one of four graded answers rather than as disclosure alone. It still does not
-take the graph off the speaker: spec sits on the QUALITY axis, whose only
-restoring value is a measured regression. Since #2537 it does decide between
-`keep` and `keep_for_iteration`, and each failing band rides the receipt as a
-next-round target — a first pass may honestly be improved and out of spec, and
-saying which band is out is what the next round is driven from.
+as one of four graded answers rather than as disclosure alone. It still does
+not gate: spec reads "any" in every row of the adoption table, because a first
+pass may honestly be improved and out of spec — and since #2537 there is a
+second reason it must not (the trusted-floor intersection, described below).
+What #2537 added is that each failing band rides the receipt as a next-round
+target, which is disclosure and not a gate.
 
 **`/state.crossover_v2.prediction`** (two-stage commission work order D4,
 issue #1806) carries the PREDICTED post-apply response and the spec verdict it
@@ -2099,11 +2099,27 @@ overwritten, so the journal cannot show a benefit no usable capture supports.
 *evidence*; the three axes are the questions a decision is actually made on, and
 each has its own evaluator in `verification.py`:
 
-| axis | asks | reads |
-|---|---|---|
-| `evaluate_evidence_trust` | did we measure the state we applied? | capture validity, realization availability |
-| `evaluate_applied_safety` | is that state safe to leave on? | the delta probe's directional findings, capture integrity |
-| `evaluate_round_quality` | how good is it, and what is left to fix? | realization, benefit, spec (per band), the probe's verdict |
+| axis | asks | DECIDES on | discloses |
+|---|---|---|---|
+| `evaluate_evidence_trust` | did we measure the state we applied? | capture validity, realization availability | — |
+| `evaluate_applied_safety` | is that state safe to leave on? | the delta probe's directional findings, capture integrity | which instruments looked |
+| `evaluate_round_quality` | how good is it, and what is left to fix? | **`(realization, benefit)` only** | spec, each failing band, the probe's reason |
+
+**The quality axis's STATUS is #2291's own table, unchanged in what it reads.**
+Same two statuses, same nine cells, same nine causes. What #2537 changed is what
+a non-keep cell resolves to, not what decides it.
+
+**Spec is still deliberately not a decision factor**, and there are now two
+independent reasons, both of which have to hold. It is an *outcome, not a proxy
+for benefit* — every row reads "any" for spec, and the permutation pin is
+load-bearing. AND the spec verdicts available today are computed over the raw
+250 Hz-2 kHz band with **no intersection against the session's own trusted
+floor** (357.1 Hz on a 7 ms gate), so a series keyed on them would rank rounds
+partly on sub-trusted-floor evidence the same session's delta probe refuses to
+grade — a term the E4 sweep measured moving ~2 dB with gate length alone. That
+intersection is a **separate filed fix and must land before any axis is allowed
+to decide on a spec verdict.** Spec and the per-band deviations ride the receipt
+as next-round TARGETS, which costs nothing and inherits none of it.
 
 `decide_adoption` selects one of five rows. Every row id is on the decision, the
 `…_round_graded` journal line, and the receipt, so a driver chaining rounds
