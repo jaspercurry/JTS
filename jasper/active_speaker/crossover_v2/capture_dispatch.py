@@ -598,6 +598,32 @@ def _gate_floor_source(response: Any) -> str | None:
     return str(source) if isinstance(source, str) else None
 
 
+def _gate_trusted_band_hz(response: Any) -> tuple[float, float] | None:
+    """The band this capture's own gate says it can be judged over (#2521).
+
+    Read, never derived here: the band POLICY has one owner,
+    ``jasper.audio_measurement.gate_disclosure.evaluation_band_hz`` — the
+    capture's gate-derived trusted floor intersected with the band its
+    stimulus actually radiated — and ``build_gate_disclosure`` is the single
+    typed reader of the block that owner writes into. This function only
+    picks that pair off the typed record, so no consumer can recompute a
+    second opinion about which bins a capture supports.
+
+    ``None`` for an ungateable capture, a capture whose program declared no
+    sweep bounds, or an empty intersection: there is no band this capture can
+    be judged over, and that is the finding. A caller must NOT substitute the
+    raw grid edges — doing exactly that is what let the delta probe grade
+    22,480 Hz on a capture trusted only to 20,000 (#2521).
+
+    Imported inside the function, matching ``_gate_disclosure`` below.
+    """
+    if response is None or not getattr(response, "gating", None):
+        return None
+    from jasper.audio_measurement import gate_disclosure
+
+    return gate_disclosure.build_gate_disclosure(response.gating).delta_band_hz
+
+
 def _gate_disclosure(response: Any) -> str | None:
     """``_gate_floor_source`` and its floors, rendered as one sentence.
 

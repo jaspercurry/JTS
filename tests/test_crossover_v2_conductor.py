@@ -61,6 +61,7 @@ from jasper.active_speaker.attempts_loop import (
 from jasper.active_speaker.delta_probe import (
     DELTA_PROBE_ROLLBACK_VERDICTS,
     DELTA_PROBE_VERDICTS,
+    VERDICT_FRAME_MISMATCH,
     VERDICT_LEVEL_MISMATCH,
     VERDICT_MATCHED,
     VERDICT_MODEL_ERROR,
@@ -9245,6 +9246,97 @@ def test_delta_probe_without_a_tracking_curve_is_unavailable_not_a_rollback():
     assert c.delta_probe is None
 
 
+def test_delta_probe_grades_the_bands_the_captures_gate_trusts(caplog):
+    """**#2521 wiring.** The probe's band is the capture's own gate-derived
+    trusted band, threaded from the gating block the analysis carries — not the
+    grid edges, and not a floor this flow derives a second time.
+
+    Driven by a fixture whose gate trusts only part of its grid, with a large
+    error placed OUTSIDE that part. A probe reading the grid edges rolls this
+    back; a probe reading the gate's band passes it and says which band it
+    graded.
+    """
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    c = _probed_conductor(fakes)
+    trusted_hi_hz = 8_000.0
+    fakes.verify = lambda program: dataclasses.replace(
+        _verify_analysis(program, trusted_band_hz=(300.0, trusted_hi_hz)),
+        verify_tracking_curve=_tracking_curve(
+            c, lambda f: np.where(f > trusted_hi_hz, 20.0, 0.0),
+        ),
+    )
+    verdict = _run_phase(c, 3, 3)
+    assert verdict["accepted"] is True
+    assert c.delta_probe.rollback is False
+    assert c.delta_probe.requested_band_hz == (300.0, trusted_hi_hz)
+    assert c.delta_probe.probe_band_hz[1] <= trusted_hi_hz
+    # The band is on the journal line too, beside the band it actually graded —
+    # a disputed verdict should be self-describing (#2521).
+    assert f'trusted_band_hz="(300.0, {trusted_hi_hz})"' in caplog.text
+
+
+def test_a_capture_with_no_trusted_band_leaves_the_probe_unavailable(caplog):
+    """An ungateable capture has no band this probe can be honest over, and
+    there is deliberately no fallback (#2521).
+
+    Falling back to the raw grid edges would apply the widest possible band to
+    the LEAST trustworthy capture — the exact inversion the trusted band
+    exists to prevent. ``unavailable`` is not a pass: it refuses nothing and
+    permits nothing, which is what every other honesty instrument in this flow
+    does with an unknown.
+    """
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    c = _probed_conductor(fakes)
+    fakes.verify = lambda program: dataclasses.replace(
+        _verify_analysis(program, trusted_band_hz=None),
+        verify_tracking_curve=_tracking_curve(
+            c, lambda f: np.where(f > 4000.0, 5.0, -5.0),
+        ),
+    )
+    verdict = _run_phase(c, 3, 3)
+    assert verdict["accepted"] is True
+    assert c.delta_probe is None
+    assert "event=correction.crossover_v2_delta_probe_no_trusted_band" in caplog.text
+
+
+def test_a_frame_carrying_capture_is_disclosed_rather_than_rolled_back(caplog):
+    """**#2521's policy half, wired end to end.**
+
+    A broadband tilt between the in-room capture and the on-axis prediction is
+    the ordinary state of this comparison, and before this it rolled healthy
+    corrections back. The session now passes, the household is told, and the
+    journal carries the tilt that was removed and the grade that survived it.
+    """
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    c = _probed_conductor(fakes)
+    fakes.verify = lambda program: dataclasses.replace(
+        _verify_analysis(program),
+        verify_tracking_curve=_tracking_curve(
+            c, lambda f: -0.9 * np.log2(f / 1_000.0),
+        ),
+    )
+    verdict = _run_phase(c, 3, 3)
+    assert verdict["accepted"] is True
+    assert c.verify_outcome == "pass"
+    assert c.delta_probe.verdict == VERDICT_FRAME_MISMATCH
+    assert c.delta_probe.rollback is False
+    assert "frame_removed=true" in caplog.text
+    assert "frame_tilt_db_per_octave=-0.9" in caplog.text
+    # A non-rollback finding on an otherwise-passing session rides WARNING, or
+    # nobody sweeping the journal ever sees it (the #1811 argument, one verdict
+    # over).
+    probe_lines = [
+        r for r in caplog.records
+        if "event=correction.crossover_v2_delta_probe " in r.getMessage()
+        and "verdict=frame_mismatch" in r.getMessage()
+    ]
+    assert probe_lines, "the probe must log its verdict"
+    assert all(r.levelno >= logging.WARNING for r in probe_lines)
+
+
 def test_delta_probe_runs_only_after_tracking_has_passed():
     """A session that already failed at the handoff band does not need a
     second verdict about the same capture, and its retry budget still means
@@ -9637,6 +9729,11 @@ def test_every_non_matched_verdict_reaches_a_household_surface():
         # ``test_a_level_mismatch_caveats_the_pass_screen`` in
         # tests/test_crossover_envelope_v2.py.
         VERDICT_LEVEL_MISMATCH,
+        # The tilt-carrying sibling of the one above (#2521), on the same
+        # surface and by the same route — see
+        # ``test_a_frame_mismatch_caveats_the_pass_screen`` in
+        # tests/test_crossover_envelope_v2.py.
+        VERDICT_FRAME_MISMATCH,
     }
     assert set(DELTA_PROBE_REASON_BY_VERDICT) == non_matched - surfaced_without_refusal
     assert set(DELTA_PROBE_REASON_BY_VERDICT) == set(DELTA_PROBE_ROLLBACK_VERDICTS)

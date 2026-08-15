@@ -932,6 +932,42 @@ def test_a_level_mismatch_rides_beside_an_out_of_spec_badge_too():
     }
 
 
+def test_a_frame_mismatch_caveats_the_pass_screen():
+    """#2521: the tilt-carrying sibling of the caveat above, on the same screen.
+
+    ``frame_mismatch`` is deliberately NOT a rollback — a level offset plus a
+    broadband tilt between an in-room capture and an on-axis model is a
+    property of the comparison, not a claim about the correction — but it means
+    the probe never answered the shape question, while every other word on this
+    screen says "Verified." A demotion that rendered as a clean pass would be
+    the silence the whole ruling was written against.
+    """
+    env = build_crossover_envelope_v2(_status(
+        phase="done",
+        verify={
+            "outcome": "pass",
+            "delta_probe": {
+                "verdict": "frame_mismatch",
+                "reason": "uncommanded_frame_shift",
+                "frame": {"offset_db": -2.39, "tilt_db_per_octave": -0.916},
+            },
+        },
+        candidate=_candidate_summary(),
+    ))
+    codes = {n["code"] for n in env["nudges"]}
+    assert codes == {"crossover_v2_verified", "crossover_v2_frame_mismatch"}
+    caveat = next(
+        n for n in env["nudges"] if n["code"] == "crossover_v2_frame_mismatch"
+    )
+    assert caveat["severity"] == "warn"
+    assert "could not confirm" in caveat["text"]
+    # No hardware noun — the same copy rule the refusal reasons carry.
+    assert not any(
+        word in caveat["text"].lower()
+        for word in ("tweeter", "woofer", "amplifier", "horn")
+    )
+
+
 def test_a_matched_probe_adds_no_caveat():
     env = build_crossover_envelope_v2(_status(
         phase="done",

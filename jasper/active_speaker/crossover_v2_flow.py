@@ -144,6 +144,7 @@ from jasper.active_speaker.attempts_loop import (
 )
 from jasper.active_speaker.delta_probe import (
     DELTA_PROBE_ROLLBACK_VERDICTS,
+    VERDICT_FRAME_MISMATCH,
     VERDICT_LEVEL_MISMATCH,
     DeltaProbeMap,
     classify_delta_probe,
@@ -1921,6 +1922,7 @@ from jasper.active_speaker.crossover_v2.capture_dispatch import (
     _gate_disclosure as _gate_disclosure,
     _gate_floor_source as _gate_floor_source,
     _gate_record as _gate_record,
+    _gate_trusted_band_hz as _gate_trusted_band_hz,
     _gate_window_ms as _gate_window_ms,
     _pilot_by_role as _pilot_by_role,
     _pilot_diag_fields as _pilot_diag_fields,
@@ -5200,11 +5202,17 @@ class CrossoverV2Session:
         # position group closes (which adds the spatial arm). ``None`` until
         # VERIFY is consumed.
         self._delta_probe: DeltaProbeMap | None = None
-        # VERIFY's own measured-vs-predicted curve pair and gated validity
-        # floor, held so the post-apply group's close can re-run the probe with
-        # the spatial arm without re-analyzing a capture.
+        # VERIFY's own measured-vs-predicted curve pair and the band that
+        # capture's own gate says it can be judged over, held so the post-apply
+        # group's close can re-run the probe with the spatial arm without
+        # re-analyzing a capture.
+        #
+        # The band is the gate disclosure's, never a floor this file derives
+        # (#2521): one owner for "which bins is this capture a measurement in",
+        # and ``None`` when that owner has no answer — which leaves the probe
+        # unavailable rather than falling back to the raw grid edges.
         self._verify_tracking_curve: Any = None
-        self._verify_validity_floor_hz: float | None = None
+        self._verify_trusted_band_hz: tuple[float, float] | None = None
         # Each cloud group's across-position level spread, the spatial arm's
         # two inputs. Keyed by phase; absent for a group that never closed and
         # empty for one with fewer than two positions (the express tier's
@@ -5846,6 +5854,33 @@ class CrossoverV2Session:
         """This session's realized-vs-commanded verdict (PR-L5), or ``None``
         when no post-apply capture has been consumed yet."""
         return self._delta_probe
+
+    @property
+    def verify_tracking_curve(self) -> Any:
+        """The VERIFY capture's ``(freqs_hz, measured_db, predicted_db)``, or
+        ``None`` (#2522).
+
+        The pair :meth:`_run_delta_probe` graded, exposed so the host can
+        persist it beside the priors it was graded against. Before that, a
+        disputed verdict could only be re-examined by measuring the speaker
+        again: the commanded and predicted curves were durable and the MEASURED
+        one was not, so no grading change could be tested against the evidence
+        that produced the complaint.
+
+        Both curves travel, not just the measured one, because the graded error
+        is their difference (``realized − commanded == measured − predicted``)
+        and reconstructing ``predicted_db`` from the persisted ``predicted_sum``
+        would mean re-running the analysis's own interpolation and smoothing on
+        an already-decimated curve — a second derivation of a number this one
+        can simply carry.
+
+        Returned as held, uncopied: the arrays are read-only evidence and the
+        host serializes them immediately. The band and the offset the probe used
+        are NOT restated here — they are already on the persisted
+        ``delta_probe`` record (``requested_band_hz`` / ``expected_offset_db``),
+        and a second copy is a second thing to keep true.
+        """
+        return self._verify_tracking_curve
 
     @property
     def measure_gate_window_ms(self) -> float | None:
@@ -9639,7 +9674,7 @@ class CrossoverV2Session:
         self._verify_tracking_curve = analysis.verify_tracking_curve
         summed = analysis.summed_response
         if summed is not None:
-            self._verify_validity_floor_hz = summed.validity_floor_hz
+            self._verify_trusted_band_hz = _gate_trusted_band_hz(summed)
         refusal = self._delta_probe_refusal(self._run_delta_probe())
         if refusal is not None:
             self._set_verify_outcome("fail", refusal, gate_record)
@@ -9751,14 +9786,34 @@ class CrossoverV2Session:
         ``[Fc/2, 2·Fc]`` window tracking looks at, and is where the 2026-07-27
         shelf-realization defect lived.
 
-        Returns ``None`` when the tracking curve or the commanded delta is
-        missing. ``None`` is the same thing :data:`~jasper.active_speaker.
-        delta_probe.VERDICT_UNAVAILABLE` is: no evidence to refuse on, and no
-        permission granted either.
+        **The band is the capture's own trusted band, and there is no
+        fallback** (#2521). It comes from the gate disclosure
+        (:func:`_gate_trusted_band_hz`) — this capture's gate-derived trusted
+        floor intersected with the band its stimulus actually radiated — and
+        the raw grid edges this used to pass instead were wider at BOTH ends:
+        on the first remote JTS3 session the disclosure said 357-20,000 Hz and
+        the probe graded 325-22,480, then rolled the correction back with its
+        whole headline — ``worst_hz=21,266``, ``max_error_db=23.4`` — sitting
+        above that ceiling, at a frequency nothing had measured. A capture with no
+        trusted band leaves the probe unavailable, which is the same answer
+        ``_verify_absolute_result`` gives (``no_trusted_crossover_region``) for
+        the same missing fact.
+
+        Returns ``None`` when the tracking curve, the commanded delta, or the
+        trusted band is missing. ``None`` is the same thing
+        :data:`~jasper.active_speaker.delta_probe.VERDICT_UNAVAILABLE` is: no
+        evidence to refuse on, and no permission granted either.
         """
         tracked = self._verify_tracking_curve
         commanded = self._measure_commanded_delta
+        band_hz = self._verify_trusted_band_hz
         if tracked is None or commanded is None:
+            return None
+        if band_hz is None:
+            log_event(
+                logger, "correction.crossover_v2_delta_probe_no_trusted_band",
+                level=logging.WARNING, session_id=self.session_id,
+            )
             return None
         try:
             freqs, measured_s, predicted_s = tracked
@@ -9781,12 +9836,6 @@ class CrossoverV2Session:
         # prediction cancels), so the realized curve is reconstructed from the
         # three quantities this session actually holds.
         realized_db = (measured_s - predicted_s) + commanded_db
-        floor_hz = self._verify_validity_floor_hz
-        band_hz = (
-            float(floor_hz) if floor_hz is not None and math.isfinite(floor_hz)
-            else float(freqs[0]),
-            float(freqs[-1]),
-        )
         probe = classify_delta_probe(
             freqs, realized_db, commanded_db, band_hz=band_hz,
             spatial=spatial_cost_from_group_spreads(
@@ -9798,27 +9847,75 @@ class CrossoverV2Session:
         self._delta_probe = probe
         log_event(
             logger, "correction.crossover_v2_delta_probe",
-            # ``level_mismatch`` produces no refusal by design, so WARNING is
-            # the only thing that puts it in front of anyone reading the
-            # journal for a session that otherwise "passed" (#1811).
+            # The two non-rollback findings produce no refusal by design, so
+            # WARNING is the only thing that puts them in front of anyone
+            # reading the journal for a session that otherwise "passed"
+            # (#1811, #2521).
             level=(
                 logging.WARNING
-                if probe.rollback or probe.verdict == VERDICT_LEVEL_MISMATCH
+                if probe.rollback
+                or probe.verdict in (VERDICT_LEVEL_MISMATCH, VERDICT_FRAME_MISMATCH)
                 else logging.INFO
             ),
             session_id=self.session_id,
             verdict=probe.verdict,
             reason=probe.reason,
             rollback=probe.rollback,
+            # Both bands, because they answer different questions: the trusted
+            # one is what this capture supports, the probe one is what cleared
+            # the commanded floor inside it. A disputed verdict should not need
+            # a second session to establish which bins it was reached over
+            # (#2521).
+            trusted_band_hz=tuple(round(v, 1) for v in probe.requested_band_hz),
             probe_band_hz=tuple(round(v, 1) for v in probe.probe_band_hz),
             n_bins=probe.n_bins,
             max_error_db=round(probe.max_error_db, 3),
             rms_error_db=round(probe.rms_error_db, 3),
             worst_hz=round(probe.worst_hz, 1),
             exceedance_octaves=round(probe.exceedance_octaves, 3),
+            # Was the frame removed at all, and if so what it was and what the
+            # grade became without it — the demotion in #2521's policy turns on
+            # exactly these, so they travel with the verdict that used them.
+            frame_removed=probe.frame.fitted,
+            frame_offset_db=(
+                None if probe.frame.offset_db is None
+                else round(probe.frame.offset_db, 3)
+            ),
+            frame_tilt_db_per_octave=(
+                None if probe.frame.tilt_db_per_octave is None
+                else round(probe.frame.tilt_db_per_octave, 4)
+            ),
+            # ``frame_fit``'s own ill-conditioning defence, and it has to travel
+            # with the two terms it qualifies: a tilt fitted over a narrow quiet
+            # span is free to be large and mean nothing (measured over 200 seeds
+            # of a 10-bin quiet region, p95 |tilt| 10.5 dB/octave). It cannot
+            # wrongly demote — the gate only narrows — but it does set the
+            # ``frame_removed_*`` numbers a reader quotes, so the span they were
+            # taken over belongs beside them.
+            frame_n_bins=probe.frame.n_bins,
+            frame_band_hz=(
+                None if probe.frame.band_hz is None
+                else tuple(round(v, 1) for v in probe.frame.band_hz)
+            ),
+            frame_removed_max_db=(
+                None if probe.frame_removed_max_db is None
+                else round(probe.frame_removed_max_db, 3)
+            ),
+            frame_removed_rms_db=(
+                None if probe.frame_removed_rms_db is None
+                else round(probe.frame_removed_rms_db, 3)
+            ),
+            frame_removed_exceedance_octaves=(
+                None if probe.frame_removed_exceedance_octaves is None
+                else round(probe.frame_removed_exceedance_octaves, 3)
+            ),
             gain_factor=(
                 round(probe.gain_factor, 4)
                 if probe.gain_factor is not None else None
+            ),
+            gain_intercept_db=(
+                round(probe.gain_intercept_db, 3)
+                if probe.gain_intercept_db is not None else None
             ),
             expected_offset_db=round(probe.expected_offset_db, 3),
             residual_offset_db=(

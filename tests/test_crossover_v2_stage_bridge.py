@@ -59,6 +59,7 @@ context resolver behind both preparers. This module owns the STAGE BOUNDARY.
 from __future__ import annotations
 
 import importlib
+import math
 import sys
 from types import SimpleNamespace
 from typing import Any
@@ -139,17 +140,24 @@ def _install_commanded_delta(conductor: Any, commanded: Any) -> None:
 
 
 def _delta_probe_given_a_tracking_curve(conductor: Any, tracked: Any) -> Any:
-    """Run the delta probe with its OTHER precondition already satisfied.
+    """Run the delta probe with its OTHER preconditions already satisfied.
 
-    ``_run_delta_probe`` needs two inputs: a VERIFY tracking curve (produced by
-    a post-apply capture) and the commanded delta (the stage-1 fact this
-    module is about). A conductor fresh out of ``prepare_v2_verify`` has
-    neither, so asserting "the probe is unavailable" on it would pass for the
-    wrong reason and keep passing even if the bridge started carrying the
-    commanded delta. Installing the tracking curve isolates the one input the
-    bridge is responsible for, so the assertion fails the moment that changes.
+    ``_run_delta_probe`` needs three inputs: a VERIFY tracking curve and the
+    band that capture's own gate trusts (both produced by a post-apply capture)
+    and the commanded delta (the stage-1 fact this module is about). A
+    conductor fresh out of ``prepare_v2_verify`` has none of them, so asserting
+    "the probe is unavailable" on it would pass for the wrong reason and keep
+    passing even if the bridge started carrying the commanded delta. Installing
+    the two capture-side inputs isolates the one input the bridge is
+    responsible for, so the assertion fails the moment that changes.
+
+    The band spans the whole fixture grid, which is what the pre-#2521 code
+    effectively graded — this helper is about the bridge, not about the clamp.
     """
     conductor._verify_tracking_curve = tracked
+    conductor._verify_trusted_band_hz = (
+        float(min(tracked[0])), float(max(tracked[0])),
+    )
     return conductor._run_delta_probe()
 
 
@@ -473,8 +481,8 @@ def _seed_applied_stage_1_state() -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
-def test_persisted_verify_priors_carries_exactly_the_seven_bridge_keys(monkeypatch):
-    """The write side of the bridge: ``verify_priors`` has SEVEN keys.
+def test_persisted_verify_priors_carries_exactly_the_eight_bridge_keys(monkeypatch):
+    """The write side of the bridge: ``verify_priors`` has EIGHT keys.
 
     Named exhaustively rather than checked for presence, because a new key is a
     deliberate widening of the contract and not an incidental one.
@@ -496,7 +504,16 @@ def test_persisted_verify_priors_carries_exactly_the_seven_bridge_keys(monkeypat
     fingerprint rather than the proposal because a proposal reassembled from
     the decimated priors around it would digest to a different value.
 
-    The top-level payload is unchanged by all three widenings — each new key is
+    **Deliberate widening (#2522): ``verify_measured``.** The eighth, and the
+    MEASURED side of the comparison whose other two sides — predicted and
+    commanded — this bridge already carried. Without it a disputed delta-probe
+    verdict could only be re-examined by measuring the speaker again, because
+    the evidence that produced it lived in one process's memory and died with
+    it. Unlike its seven neighbours this one is written by the stage that
+    VERIFIES rather than the stage that fits, so a stage-1 persist writes
+    ``None`` here and the key is still present.
+
+    The top-level payload is unchanged by all four widenings — each new key is
     nested inside ``verify_priors``, so
     ``test_persisted_payload_top_level_keys_are_the_whole_bridge`` below still
     pins the same set.
@@ -511,6 +528,7 @@ def test_persisted_verify_priors_carries_exactly_the_seven_bridge_keys(monkeypat
         "commanded_delta",
         "entry_baseline",
         "proposal_fingerprint",
+        "verify_measured",
     }
 
 
@@ -708,6 +726,150 @@ def test_the_commanded_delta_survives_a_real_stage_1_persist_into_stage_2(monkey
     freqs, delta = stage_2_conductor.measure_commanded_delta
     assert list(freqs) == _COMMANDED_FREQS_HZ
     assert list(delta) == _COMMANDED_DELTA_DB
+
+
+# --------------------------------------------------------------------------- #
+# 2b. the MEASURED curve, retained so a verdict can be re-graded (#2522)
+#
+# The bridge above carries what the correction PREDICTED and COMMANDED. Until
+# this landed the third side of the comparison — what the speaker actually did —
+# lived in one process's memory and died with it, so a disputed ``model_error``
+# could only be re-examined by measuring the speaker again.
+# --------------------------------------------------------------------------- #
+
+
+def _regradable_fixture() -> tuple[Any, Any, Any]:
+    """``(freqs, commanded, error)`` on a grid dense enough to be decimated.
+
+    2,048 bins against the 512-point persist ceiling, so the round-trip below
+    really exercises the block average rather than passing through untouched.
+    The error is a localized bump — a shape no fitted frame can absorb — so the
+    live verdict is a rollback and a re-grade that quietly lost the evidence
+    would show up as a changed verdict, not merely a changed decimal.
+    """
+    import numpy as np
+
+    freqs = np.logspace(math.log10(100.0), math.log10(20_000.0), 2048)
+    commanded = np.full_like(freqs, 6.0)
+    error = np.where((freqs >= 2_000.0) & (freqs <= 3_000.0), 6.0, 0.0)
+    return freqs, commanded, error
+
+
+def test_the_measured_verify_curve_is_persisted_beside_the_priors(monkeypatch):
+    """The write side: the pair the probe graded reaches durable state.
+
+    Both curves, not just the measured one — the graded error is their
+    difference, and a record carrying one of them could not reproduce it.
+    """
+    import numpy as np
+
+    conductor, _state = _stage_1(monkeypatch)
+    freqs, commanded, error = _regradable_fixture()
+    predicted = np.zeros_like(freqs)
+    conductor._verify_tracking_curve = (freqs, predicted + error, predicted)
+
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    record = (v2host.load_v2_state() or {})["verify_priors"]["verify_measured"]
+
+    assert set(record) == {"freqs_hz", "measured_db", "predicted_db"}
+    n = len(record["freqs_hz"])
+    assert 0 < n <= v2host.MAX_PERSISTED_SUM_POINTS
+    assert len(record["measured_db"]) == n
+    assert len(record["predicted_db"]) == n
+    # Decimated in dB, which is linear — so the difference of the two persisted
+    # curves is the decimated difference, exactly the quantity that gets graded.
+    persisted_error = np.asarray(record["measured_db"]) - np.asarray(
+        record["predicted_db"]
+    )
+    assert float(np.max(persisted_error)) == pytest.approx(6.0, abs=1e-9)
+    assert float(np.min(persisted_error)) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_a_session_with_no_verify_capture_persists_no_measured_curve(monkeypatch):
+    """Absent means "not re-gradable offline", which is the honest reading for
+    a stage-1 persist — and for every state file written before this key
+    shipped. It is never a fabricated empty curve."""
+    conductor, _state = _stage_1(monkeypatch)
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    priors = (v2host.load_v2_state() or {})["verify_priors"]
+    assert priors["verify_measured"] is None
+    assert v2host.verify_measured_curve_from_state({"verify_priors": priors}) is None
+
+
+def test_a_verdict_can_be_re_graded_from_the_store_alone(monkeypatch):
+    """**#2522's whole point.** The persisted record reproduces the live
+    verdict without the speaker.
+
+    Everything the re-grade needs is now durable: the measured/predicted pair
+    from this key, the commanded axis from its neighbour, and the band and the
+    declared offset from the ``delta_probe`` record itself. The re-grade below
+    reads all of it back off disk and re-runs the SAME classifier the session
+    ran, and lands on the same verdict — through the 2048 → 512 decimation.
+    """
+    import numpy as np
+
+    conductor, _state = _stage_1(monkeypatch)
+    freqs, commanded, error = _regradable_fixture()
+    predicted = np.zeros_like(freqs)
+    _install_commanded_delta(conductor, (freqs, commanded))
+    live = _delta_probe_given_a_tracking_curve(
+        conductor, (freqs, predicted + error, predicted),
+    )
+    assert live is not None
+    assert live.rollback is True
+
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    state = v2host.load_v2_state() or {}
+
+    stored_freqs, stored_measured, stored_predicted = (
+        v2host.verify_measured_curve_from_state(state)
+    )
+    # The decimation really happened — otherwise this test would be pinning a
+    # pass-through and would keep passing if the block average broke.
+    assert stored_freqs.size < freqs.size
+    stored_commanded = v2host.commanded_delta_prior_from_state(state)
+    commanded_on_grid = np.interp(
+        stored_freqs, stored_commanded[0], stored_commanded[1]
+    )
+    regraded = delta_probe.classify_delta_probe(
+        stored_freqs,
+        (stored_measured - stored_predicted) + commanded_on_grid,
+        commanded_on_grid,
+        band_hz=live.requested_band_hz,
+        expected_offset_db=live.expected_offset_db,
+    )
+
+    assert regraded.verdict == live.verdict
+    assert regraded.reason == live.reason
+    assert regraded.rollback == live.rollback
+    # …and the numbers behind it survive the decimation, not merely the label.
+    assert regraded.max_error_db == pytest.approx(live.max_error_db, abs=0.05)
+    assert regraded.exceedance_octaves == pytest.approx(
+        live.exceedance_octaves, abs=0.05
+    )
+
+
+def test_a_truncated_measured_record_reads_as_absent_not_as_a_curve(monkeypatch):
+    """Three arrays that are not one curve are an absence, not a grid mismatch.
+
+    The same rule ``commanded_delta_prior_from_state`` applies to its own pair,
+    and for the same reason: a hand-edited or truncated record must not reach
+    the classifier wearing the clothes of a measurement.
+    """
+    import numpy as np
+
+    conductor, _state = _stage_1(monkeypatch)
+    freqs, _commanded, error = _regradable_fixture()
+    predicted = np.zeros_like(freqs)
+    conductor._verify_tracking_curve = (freqs, predicted + error, predicted)
+    v2host.persist_conductor_state(conductor, failure_code=None)
+
+    state = v2host.load_v2_state() or {}
+    assert v2host.verify_measured_curve_from_state(state) is not None
+    state["verify_priors"]["verify_measured"]["measured_db"] = (
+        state["verify_priors"]["verify_measured"]["measured_db"][:-3]
+    )
+    assert v2host.verify_measured_curve_from_state(state) is None
 
 
 # --------------------------------------------------------------------------- #

@@ -53,11 +53,28 @@ show the residual both ways.
 
 What this does NOT do
 ---------------------
-* **It never replaces a raw grade.** Every call site keeps its existing number
-  byte-identical and adds the frame-removed one beside it. A tilt is evidence,
-  not a licence to re-grade — attributing it (directivity? mic? sitting?) needs
-  more than this fit can see, and until it is attributed the raw number is
-  still the honest one to gate on.
+* **It never replaces a REPORTED grade.** Every call site keeps its existing
+  number byte-identical and adds the frame-removed one beside it. A tilt is
+  evidence, not a licence to restate a measurement.
+
+  **What a call site may GATE on is its own decision, and one of them now
+  differs** (owner ruling 2026-08-15, recorded in issue #2521). This module's
+  original doctrine said the raw number was always the honest one to gate on,
+  on the reasoning that an unattributed tilt could be model error as easily as
+  instrument. That reasoning still holds — this fit does not attribute anything
+  — but it settles the question the other way for a consumer whose verdict
+  REVERTS a household's tuning. :func:`jasper.active_speaker.delta_probe.
+  classify_delta_probe` therefore splits the two questions: the raw grade
+  decides whether there is a finding at all, and the ROLLBACK question is
+  re-asked with the frame removed, because refusing a correction on evidence
+  that cannot be told apart from the microphone is the worse error of the two.
+  Its frame is fitted over its own quiet bins, not over a graded band, which is
+  what keeps a defect from removing itself; the verdict it demotes to is
+  disclosed rather than silent.
+
+  The tracking check in ``program_analysis._analyze_verify`` is unchanged and
+  still gates on its raw number: it refuses a capture, not a correction, and a
+  refused capture costs a re-measure rather than a tuning.
 * **It does not attribute the tilt.** A smooth monotonic ramp across several
   octaves is *consistent with* a directivity/spatial-frame difference; it is
   also consistent with a mis-modelled broad filter. This module measures; it
