@@ -47,10 +47,19 @@ pub struct DirectObservability {
     /// Cumulative successful opens of the gadget capture (climbs on first open
     /// and on every reopen after an unplug/loss).
     pub opens: Arc<AtomicU64>,
-    /// Cumulative reopen attempts made while Absent (a growing value with
+    /// Cumulative reopen attempts QUEUED while Absent (a growing value with
     /// `present=false` means the gadget is not attachable — bridge holding it,
-    /// or no host).
+    /// or no host). Since #2533 an attempt is counted when it is handed to the
+    /// `fanin-direct-opener` thread rather than when it runs, and the handover
+    /// that retires a dead handle counts as one — so a recovery contributes its
+    /// immediate attempt here, and the ~2 s latch governs the next one.
     pub retries: Arc<AtomicU64>,
+    /// Whether a device open is currently QUEUED on the `fanin-direct-opener`
+    /// thread (#2533). Since the open no longer runs in the render loop, this is
+    /// how an operator sees one in progress — and a value stuck `true` alongside
+    /// a climbing `retries` says the open itself is hanging, which now costs
+    /// silence on this lane rather than glitches on the speaker.
+    pub reopen_pending: Arc<AtomicBool>,
     /// Cumulative ZOMBIE-handle forced reopens (C, defect 2026-07-05): a run of
     /// `DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS` consecutive zero-avail drains while
     /// Present tripped a close + bounded re-open of the gadget capture. A growing
@@ -183,6 +192,177 @@ pub(super) enum DirectCapture {
     Absent { periods_until_retry: u64 },
 }
 
+/// One open (and, when a handle is being retired, one close) for the
+/// `fanin-direct-opener` thread to perform OFF the render thread.
+struct DirectOpenRequest {
+    /// The dead handle to close. `Drop` on a `PCM` is `snd_pcm_close`, a real
+    /// blocking device call, so the retiring lane hands it over rather than
+    /// dropping it inside `step()`.
+    retire: Option<PCM>,
+    device: String,
+    open_period: u32,
+}
+
+/// The result of one queued open: the live PCM and its negotiated buffer, or the
+/// errno + rendered detail the lane logs. `alsa::Error` is not carried across the
+/// channel — only the two fields the caller actually reports.
+enum DirectOpenOutcome {
+    Opened { pcm: PCM, negotiated_buffer: u32 },
+    Failed { errno: i32, detail: String },
+}
+
+/// The DIRECT lane's deferred device-open channel (#2533).
+///
+/// **Why this exists.** `snd_pcm_open` + `hw_params` + `prepare` + `start` on the
+/// UAC2 gadget — and the `snd_pcm_close` that retires a dead handle — used to run
+/// INLINE in the mixer's render loop, on three paths that are anything but rare:
+/// the `Absent` retry fires every `DIRECT_REOPEN_RETRY_PERIODS` (~2 s) for as long
+/// as the gadget is unattachable, and the zombie / card-generation recoveries
+/// close-and-reopen on the spot. The render loop's budget is one period
+/// (5.33 ms at the shipped 256 frames) and the downstream pipeline holds two
+/// 128-frame slots of cushion, so a device open that takes longer than ~2.7 ms
+/// costs a whole slot: CamillaDSP reads an empty Ring A (a 128-frame silence
+/// INSERTION) or fan-in free-run-drops a slot it could not publish in time (a
+/// 128-frame DELETION). Both signs were measured in the field, on builds with
+/// and without a host-compliance proof on disk — the common factor is a USB host
+/// attached and blocking device calls on the audio thread.
+///
+/// The lane now hands opens and closes to a dedicated thread and keeps rendering
+/// silence until a handle comes back. One `Sender::send` and one `try_recv` per
+/// affected period; nothing blocks.
+pub(super) struct DirectOpener {
+    req_tx: Sender<DirectOpenRequest>,
+    res_rx: std::sync::mpsc::Receiver<DirectOpenOutcome>,
+    /// A request is queued and its result has not been collected. At most one is
+    /// ever outstanding, so a slow/hung open cannot build a backlog.
+    in_flight: bool,
+    /// The STATUS mirror of `in_flight` (`direct.reopen_pending`), shared with the
+    /// state-server thread. A value stuck at `true` means the device open itself
+    /// is hanging — which no longer costs audio, which is the point of deferring it.
+    pending_gauge: Arc<AtomicBool>,
+    /// Retired handles this opener could not hand over yet. `Drop` on a `PCM` is
+    /// `snd_pcm_close` — a blocking device call — so a handle that cannot be
+    /// queued is PARKED here rather than dropped on the render thread; the next
+    /// successful request carries one away.
+    ///
+    /// In practice this is empty or holds one: a handle is only ever retired on a
+    /// `Present` → `Absent` transition, and `Present` implies no open is in
+    /// flight (an open is requested only from the `Absent` arm, and adopting its
+    /// result is what makes the lane `Present` again), so a live opener always
+    /// accepts a retiring handle. It is a `Vec` rather than an `Option` precisely
+    /// so that parking can never displace — and therefore never silently close —
+    /// a handle already parked, even if that reasoning is one day wrong. If the
+    /// opener thread is gone entirely these live until the daemon exits: one or
+    /// two descriptors, never a stall.
+    parked: Vec<PCM>,
+}
+
+impl DirectOpener {
+    /// Spawn the opener thread. Called at lane construction (`Mixer::new`, which
+    /// `main` runs before `mlockall`, like every other fan-in helper thread).
+    pub(super) fn spawn(pending_gauge: Arc<AtomicBool>) -> std::io::Result<Self> {
+        let (req_tx, req_rx) = std::sync::mpsc::channel::<DirectOpenRequest>();
+        let (res_tx, res_rx) = std::sync::mpsc::channel::<DirectOpenOutcome>();
+        std::thread::Builder::new()
+            .name("fanin-direct-opener".to_string())
+            .spawn(move || {
+                while let Ok(req) = req_rx.recv() {
+                    // Close the retired handle FIRST: reopening the same gadget
+                    // while the old fd is still open is what the inline path did
+                    // too (the assignment dropped it before `maybe_reopen_direct`
+                    // ran), and some gadget rebuilds refuse a second open.
+                    drop(req.retire);
+                    let outcome = match open_direct_capture(&req.device, req.open_period) {
+                        Ok((pcm, negotiated_buffer)) => DirectOpenOutcome::Opened {
+                            pcm,
+                            negotiated_buffer,
+                        },
+                        Err(e) => DirectOpenOutcome::Failed {
+                            errno: errno_of(&e),
+                            detail: format!("{e:#}"),
+                        },
+                    };
+                    if res_tx.send(outcome).is_err() {
+                        break;
+                    }
+                }
+            })?;
+        Ok(Self {
+            req_tx,
+            res_rx,
+            in_flight: false,
+            pending_gauge,
+            parked: Vec::new(),
+        })
+    }
+
+    /// Mirror `in_flight` into the STATUS gauge. One relaxed store.
+    fn publish_pending(&self) {
+        self.pending_gauge.store(self.in_flight, Ordering::Relaxed);
+    }
+
+    /// Queue one retire+open. Returns whether it was queued: `false` when a
+    /// request is already outstanding or the thread is gone.
+    ///
+    /// **Never drops a `PCM`.** A handle it cannot hand over is parked (see
+    /// [`parked`](Self::parked)) and offered again on the next call — dropping it
+    /// here would run `snd_pcm_close` on the render thread, which is the whole
+    /// class of call this type exists to move away. Never blocks.
+    fn request(&mut self, retire: Option<PCM>, device: &str, open_period: u32) -> bool {
+        if let Some(pcm) = retire {
+            self.parked.push(pcm);
+        }
+        if self.in_flight {
+            return false;
+        }
+        // Carry one parked handle per request; any second one waits for the next.
+        let carried = self.parked.pop();
+        match self.req_tx.send(DirectOpenRequest {
+            retire: carried,
+            device: device.to_string(),
+            open_period,
+        }) {
+            Ok(()) => {
+                self.in_flight = true;
+                self.publish_pending();
+                true
+            }
+            Err(std::sync::mpsc::SendError(request)) => {
+                // The thread is gone and `SendError` owns the request — take the
+                // handle back out and re-park it rather than letting the returned
+                // request drop it here.
+                if let Some(pcm) = request.retire {
+                    self.parked.push(pcm);
+                }
+                self.publish_pending();
+                false
+            }
+        }
+    }
+
+    /// Collect a finished open, if one is ready. Never blocks.
+    fn poll(&mut self) -> Option<DirectOpenOutcome> {
+        if !self.in_flight {
+            return None;
+        }
+        let collected = match self.res_rx.try_recv() {
+            Ok(outcome) => {
+                self.in_flight = false;
+                Some(outcome)
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                // The opener thread is gone; stop expecting a result so the lane
+                // can re-request (which will fail fast) rather than waiting forever.
+                self.in_flight = false;
+                None
+            }
+        };
+        self.publish_pending();
+        collected
+    }
+}
+
 /// Read the USB DIRECT lane (C1/C3/C4): drain everything the gadget capture
 /// reports ready into the lane resampler (narrowing S32→S16 on a narrow wire and
 /// tapping the converted slice on the way; carrying the gadget's i32 untouched
@@ -228,6 +408,24 @@ pub(super) fn read_direct_and_render(
                 ring_fill_before,
                 xrun_tx,
             );
+            // Every non-`Ok` outcome retires this handle. Take it OUT of the state
+            // machine so the opener thread performs the `snd_pcm_close` (#2533);
+            // dropping it here would run a blocking device call in the render loop.
+            let retire = match outcome {
+                DirectDrainOutcome::Ok => None,
+                _ => match std::mem::replace(
+                    &mut direct,
+                    DirectCapture::Absent {
+                        periods_until_retry: 0,
+                    },
+                ) {
+                    DirectCapture::Present(pcm) => Some(pcm),
+                    absent => {
+                        direct = absent;
+                        None
+                    }
+                },
+            };
             match outcome {
                 DirectDrainOutcome::Ok => {}
                 DirectDrainOutcome::DeviceLost => {
@@ -248,6 +446,7 @@ pub(super) fn read_direct_and_render(
                     direct = DirectCapture::Absent {
                         periods_until_retry: DIRECT_REOPEN_RETRY_PERIODS,
                     };
+                    hand_retired_handle_to_opener(input, retire);
                 }
                 DirectDrainOutcome::ZombieReopen => {
                     // Zombie handle (C): Present but deaf for ~2 s (gadget rebuilt
@@ -273,6 +472,7 @@ pub(super) fn read_direct_and_render(
                     direct = DirectCapture::Absent {
                         periods_until_retry: 0,
                     };
+                    hand_retired_handle_to_opener(input, retire);
                 }
                 DirectDrainOutcome::CardGenerationReopen => {
                     // Card-generation rebuild (C, defect 2026-07-06): the ~1 s
@@ -304,11 +504,12 @@ pub(super) fn read_direct_and_render(
                     direct = DirectCapture::Absent {
                         periods_until_retry: 0,
                     };
+                    hand_retired_handle_to_opener(input, retire);
                 }
             }
         }
         DirectCapture::Absent { .. } => {
-            // Try to reopen at most once per retry window (period-counted).
+            // Collect a finished open / queue the next attempt. Never blocks.
             direct = maybe_reopen_direct(direct, input);
         }
     }
@@ -680,11 +881,63 @@ fn recover_direct_xrun(
     }
 }
 
-/// While `Absent`, count down the period-based retry latch and attempt a reopen
-/// when it reaches 0 (C3). No wall clock — the countdown is one decrement per
-/// render period. A successful reopen transitions to `Present` and re-primes the
-/// resampler from fresh input; a failed reopen re-arms the latch (one retry per
-/// ~2 s) and stays Absent. Exactly one `present`/`absent` transition log line.
+/// Hand a retired gadget handle to the opener thread, which closes it and
+/// immediately attempts the replacement open (#2533). Both are blocking device
+/// calls and neither may run in the render loop — a `PCM`'s `Drop` IS
+/// `snd_pcm_close`, so the handle has to travel rather than fall out of scope.
+///
+/// With no opener at all (spawn failed at construction — logged once there) the
+/// handle is dropped here: a close on the render thread, which is the pre-#2533
+/// behaviour and the only alternative to leaking the descriptor on a lane that
+/// has no worker to hand it to. With an opener present the handle is always
+/// taken — queued, or parked for the next request — and never closed here.
+fn hand_retired_handle_to_opener(input: &mut Input, retire: Option<PCM>) {
+    let device = direct_device(input);
+    let open_period = direct_open_period(input);
+    let queued = match input.direct_opener.as_mut() {
+        Some(opener) => opener.request(retire, &device, open_period),
+        None => {
+            drop(retire);
+            false
+        }
+    };
+    if queued {
+        if let Some(obs) = &input.direct_obs {
+            obs.retries.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+/// The device this lane opens, from the ONE place it is recorded (the lane's
+/// observability, seeded at construction), so a reopen uses the same geometry as
+/// the initial open rather than a hardcoded default.
+fn direct_device(input: &Input) -> String {
+    input
+        .direct_obs
+        .as_ref()
+        .map(|o| o.device.clone())
+        .unwrap_or_default()
+}
+
+/// The open period this lane negotiated at construction.
+fn direct_open_period(input: &Input) -> u32 {
+    input
+        .direct_obs
+        .as_ref()
+        .map(|o| o.period_frames)
+        .unwrap_or(DIRECT_PERIOD_FRAMES)
+}
+
+/// While `Absent`: adopt a finished open if the opener thread has one ready, else
+/// count the period-based retry latch down and QUEUE the next attempt when it
+/// reaches 0 (C3). No wall clock — the countdown is one decrement per render
+/// period — and, since #2533, no blocking: the `snd_pcm_open` runs on
+/// `fanin-direct-opener`, so an unattachable gadget costs this loop one
+/// non-blocking `try_recv` per period instead of a full open attempt every ~2 s
+/// inside the period budget. A successful reopen transitions to `Present` and
+/// re-primes the resampler from fresh input; a failed one re-arms the latch (one
+/// retry per ~2 s) and stays Absent. Exactly one `present`/`absent` transition
+/// log line.
 fn maybe_reopen_direct(direct: DirectCapture, input: &mut Input) -> DirectCapture {
     let DirectCapture::Absent {
         periods_until_retry,
@@ -692,29 +945,44 @@ fn maybe_reopen_direct(direct: DirectCapture, input: &mut Input) -> DirectCaptur
     else {
         return direct;
     };
+    // 1. Did a queued open finish? One non-blocking `try_recv`.
+    if let Some(outcome) = input.direct_opener.as_mut().and_then(|o| o.poll()) {
+        return adopt_open_outcome(outcome, input);
+    }
+    // 2. Nothing ready: count down, then queue one attempt.
     if periods_until_retry > 0 {
         return DirectCapture::Absent {
             periods_until_retry: periods_until_retry - 1,
         };
     }
-    // Retry window elapsed: attempt one reopen. The open period is the one this
-    // lane negotiated at construction (stashed in direct_obs) so a reopen uses
-    // the same geometry as the initial open, not a hardcoded default.
-    let device = input
-        .direct_obs
-        .as_ref()
-        .map(|o| o.device.clone())
-        .unwrap_or_default();
-    let open_period = input
-        .direct_obs
-        .as_ref()
-        .map(|o| o.period_frames)
-        .unwrap_or(DIRECT_PERIOD_FRAMES);
-    if let Some(obs) = &input.direct_obs {
-        obs.retries.fetch_add(1, Ordering::Relaxed);
+    let device = direct_device(input);
+    let open_period = direct_open_period(input);
+    // A `None` opener (spawn failed) cannot self-heal without blocking the render
+    // loop, and blocking it is the defect: stay Absent (silence) with the latch
+    // re-armed. `request` is also a no-op while one is already in flight, so a
+    // slow open can never be re-queued into a backlog.
+    let queued = match input.direct_opener.as_mut() {
+        Some(opener) => opener.request(None, &device, open_period),
+        None => false,
+    };
+    if queued {
+        if let Some(obs) = &input.direct_obs {
+            obs.retries.fetch_add(1, Ordering::Relaxed);
+        }
     }
-    match open_direct_capture(&device, open_period) {
-        Ok((pcm, negotiated_buffer)) => {
+    DirectCapture::Absent {
+        periods_until_retry: DIRECT_REOPEN_RETRY_PERIODS,
+    }
+}
+
+/// Adopt (or discard) one finished open from the opener thread. Pure bookkeeping
+/// plus the two transition log lines — no device calls of its own.
+fn adopt_open_outcome(outcome: DirectOpenOutcome, input: &mut Input) -> DirectCapture {
+    match outcome {
+        DirectOpenOutcome::Opened {
+            pcm,
+            negotiated_buffer,
+        } => {
             if let Some(r) = input.resampler.as_mut() {
                 r.reset();
             }
@@ -757,9 +1025,21 @@ fn maybe_reopen_direct(direct: DirectCapture, input: &mut Input) -> DirectCaptur
             }
             DirectCapture::Present(pcm)
         }
-        Err(_) => {
+        DirectOpenOutcome::Failed { errno, detail } => {
             // Still absent — re-arm the retry latch. No per-retry log (only the
-            // present/absent transitions log, C3).
+            // present/absent transitions log, C3); the errno and detail are kept
+            // at debug so a persistent open failure is diagnosable without
+            // per-2 s journal spam on an unplugged host.
+            if let Some(obs) = &input.direct_obs {
+                log::debug!(
+                    "event=fanin.usb_direct.reopen_failed device={} errno={} detail={} \
+                     (still absent; retrying ~every {} periods)",
+                    obs.device,
+                    errno,
+                    detail,
+                    DIRECT_REOPEN_RETRY_PERIODS,
+                );
+            }
             DirectCapture::Absent {
                 periods_until_retry: DIRECT_REOPEN_RETRY_PERIODS,
             }

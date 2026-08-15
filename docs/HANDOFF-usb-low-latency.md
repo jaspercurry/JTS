@@ -789,18 +789,22 @@ paid at EVERY session start, because priming always begins at the full ceiling.
 Host-compliance persistence removes that recurring cost: once a session **proves**
 the host and the decay has **landed at the floor cleanly**, the proof is written to
 `/var/lib/jasper/fanin/host_compliance.json`, and every subsequent session (whether
-across a reboot OR later in the SAME daemon lifetime) primes the resampler AT the
-decay floor — the descent is skipped. There is **no new top-level flag**: this
+across a reboot OR later in the SAME daemon lifetime) starts the resampler AT the
+decay floor as soon as the host sends its first frames — the descent is skipped.
+There is **no new top-level flag**: this
 extends `JASPER_FANIN_RESAMPLER_CUSHION_DECAY` (it is inert on a decay-off box).
 Path override: `JASPER_FANIN_HOST_COMPLIANCE_PATH`.
 
 > **The prime is PER-SESSION, not construction-only (fixed 2026-07-03).** The
 > common real-world case is a Mac that sleeps nightly and wakes to a NEW session
 > with the fan-in daemon up for months. That every-morning session must prime at
-> the floor, not pay the ~110 s descent again. The prime is therefore seeded at
+> the floor, not pay the ~110 s descent again. The prime is therefore armed at
 > BOTH lane construction AND at every session boundary: the session-end snap-back
-> (`snap_decay_back_honoring_proof`) re-primes at the floor when a live, unrevoked
-> proof is present, and at the ceiling otherwise. See "Prime-at-floor" and
+> (`snap_decay_back_honoring_proof`) arms a floor re-prime when a live, unrevoked
+> proof is present, and snaps to the ceiling otherwise. Since #2533 the armed
+> prime engages on the session's first frames rather than at the boundary itself,
+> so between sessions — Mac asleep, host attached and silent — the lane holds the
+> ceiling like an unprimed one. See "Prime-at-floor" and
 > "session-boundary snap" below. (Before this fix the prime ran only in
 > `Mixer::new`; session B in one daemon lifetime silently descended from the
 > ceiling — hardware-diagnosed on jts.local, two sessions in one daemon lifetime.)
@@ -817,8 +821,8 @@ re-arms the window. Owned by the pure `ComplianceProof` state machine in
 `rust/jasper-fanin/src/host_compliance.rs`, ticked once per render
 period by `mixer::step`.
 
-**Prime-at-floor (per session).** The prime is seeded at the floor
-(`CushionDecay::prime_at_floor`) at TWO points: (1) at lane build time
+**Prime-at-floor (per session, ARMED then ENGAGED).** The prime is ARMED
+(`CushionDecay::arm_prime_at_floor`) at TWO points: (1) at lane build time
 (`build_host_compliance_state` → `resampler.prime_decay_at_floor`) if a valid proof
 is on disk whose `floor_frames` equals the live decay floor (a floor retune between
 sessions invalidates it — descend normally); and (2) at every **session boundary**
@@ -826,10 +830,36 @@ within the daemon lifetime, via `snap_decay_back_honoring_proof` — the primiti
 `reset()` (idle/host-pause/device-loss/xrun-recovery — the aloop and usb-direct
 xrun-recovery paths `recover_resampler_input_xrun` / `recover_direct_xrun` call it
 too) and `unlock_for_underfill()` (starvation = the natural session end, e.g. the
-Mac stops streaming) both call. In both cases the held target starts at the floor
-and a `floor_prime_pending` latch holds it there across the not-yet-locked prime
-periods so `try_lock` seats the cursor AT the floor (the deep-prefill arm). The
-ceiling is unchanged, so a REVOKE still snaps all the way back to it.
+Mac stops streaming) both call.
+
+An armed prime changes **nothing** until the lane's first pushed frames ENGAGE it
+(`push_input` / `push_input_wide` → `CushionDecay::engage_armed_prime`): until then
+the held target is the acquisition ceiling, `floor_prime_pending` is false, and
+`decay_at_floor()` is false, so a proof-carrying lane whose host is attached but
+silent is indistinguishable from a lane with no proof at all (#2533 — the proof is
+evidence about a host that STREAMED, and applying it to a lane with no data both
+lowered the lock threshold to the floor and reported a descent that never ran to
+the write gate in front of an fsync). Engaging is strictly before any lock can
+seat — seating needs a whole cushion buffered, the engage needs one frame — so a
+really-streaming host still skips the ~2.5-min descent exactly as before. Once
+engaged, the held target is the floor and the `floor_prime_pending` latch holds it
+there across the not-yet-locked prime periods so `try_lock` seats the cursor AT the
+floor (the deep-prefill arm). The ceiling is unchanged, so a REVOKE still snaps all
+the way back to it. STATUS shows the armed state as `resampler.decay.prime_armed`.
+
+**An arm WAITS; retiring it is explicit.** `CushionDecay::tick` snaps back on every
+unlocked period and the mixer ticks every period, so `snap_back` must NOT clear the
+arm — an arm cleared there is destroyed in the same render period it is created,
+which makes the prime dead code and silently loses the per-session descent skip
+(shipped, briefly, in the first cut of #2533 and caught by the fan-in Rust suite —
+`per_session_reset_path_also_honours_the_live_proof` and
+`per_session_hardware_scenario_session_b_seats_at_floor_in_same_lane` are the
+guards). `snap_back` therefore clears only the ENGAGED latch
+(`floor_prime_pending`), and two callers positively retire an arm via
+`CushionDecay::disarm_prime`: the revalidation escape (`snap_decay_to_ceiling` — a
+distrusted proof must not be resurrected by the next frame) and a session boundary
+that finds no live proof. That pair is what keeps a revoke landing *while an arm
+waits* from being undone later.
 
 **Session-boundary snap destination (the single source of truth).** At a session
 boundary the snap goes to the FLOOR iff a live, unrevoked proof is present, else the
@@ -1281,7 +1311,7 @@ truth for the checklist.
 
 - Fan-in STATUS (`/run/jasper-fanin/control.sock` `STATUS`, surfaced on `/state`):
   every input gains `"source":"lane"|"direct"`; the direct lane also gains
-  `"direct":{"device","present","health","opens","retries","reopens","card_gen_reopens"}`.
+  `"direct":{"device","present","health","opens","retries","reopen_pending","reopens","card_gen_reopens"}`.
   `health` is the coarse capture classification for fan-in's local recovery —
   `"capturing"` (present + flowing), `"idle"` (no host / attached-but-silent /
   (re)opening — never a failure), or `"broken"` (the flowing→dead zombie signature)
@@ -1324,6 +1354,20 @@ truth for the checklist.
 - Transition logs: `event=fanin.usb_direct.present` / `.absent` (one line per
   presence change, device + errno + cumulative retries), `event=fanin.usb_direct.armed`
   at config load.
+- **Every gadget open and close runs on the `fanin-direct-opener` thread, never in
+  the render loop (#2533).** The lane queues a retire+open request and keeps
+  rendering silence until a handle comes back; `direct.reopen_pending` is `true`
+  while one is outstanding. This covers all three recovery paths (device loss,
+  zombie handle, card generation) AND the `Absent` retry, which used to attempt a
+  full `snd_pcm_open` inside the period budget every ~2 s for as long as the gadget
+  was unattachable. The budget is `period_frames / 48 kHz` (5.33 ms at the shipped
+  256) and both Ring A and Ring B hold two 128-frame slots, so a block over ~2.7 ms
+  costs exactly one slot of audio — a silence insertion when CamillaDSP reads an
+  empty Ring A, a deletion when fan-in cannot publish in time. Both signs were
+  measured in the field; fan-in's ring-stall detector has a 1 s floor and cannot
+  see them. A spawn failure at construction logs
+  `event=fanin.usb_direct.opener_unavailable` and leaves the lane without reopen
+  self-heal (silence) rather than restoring the inline open.
   `event=fanin.usb_direct.reopen reason=zombie_handle` fires when a Present handle
   that had been feeding the lane goes deaf — `avail_update()` returns exactly 0 for
   ~2 s **after** frames had flowed on that handle (the gadget was rebuilt underneath
@@ -2171,7 +2215,15 @@ re-introduce false-triggers on healthy AirPlay burst+stall transients (~12.4-per
 peak) — trading latency for drops on every source. The lean-fifo gets low latency
 *without* that tradeoff because it removes the sawtooth mechanism entirely.
 
-Last verified: 2026-07-23 (the coordinated combo restart's soft AEC-bridge
+Last verified: 2026-08-15 for the host-compliance prime and the direct lane's
+device-open lifecycle ONLY (#2533): the prime is now ARMED at build/session
+boundaries and ENGAGED by the lane's first frames, and every proof write, revoke,
+gadget `snd_pcm_open` and `snd_pcm_close` moved off the render thread onto the
+`fanin-compliance-writer` / `fanin-direct-opener` threads; the "Prime-at-floor",
+per-session callout, and Observability sections were rewritten against
+`rust/jasper-fanin/src/{lane_resampler,host_compliance,mixer,mixer/direct_capture}.rs`.
+The rest of this file was NOT re-verified in that pass and keeps its prior date.
+Prior 2026-07-23 (the coordinated combo restart's soft AEC-bridge
 lifecycle boundary was rechecked against the #1264 hardware failure and
 HANDOFF-aec.md; direct-health and reopen fields were rechecked as
 fan-in recovery observability only, with no health-driven USB lifecycle action;

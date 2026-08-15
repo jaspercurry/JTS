@@ -1004,8 +1004,17 @@ pub struct Mixer {
 /// reason for STATUS.
 struct HostComplianceState {
     /// The on-disk persistence path (`JASPER_FANIN_HOST_COMPLIANCE_PATH` or the
-    /// default under the fan-in state dir).
+    /// default under the fan-in state dir). Kept for the boot-time load and for
+    /// STATUS/diagnostics; the render thread never opens it — see `writer`.
     path: PathBuf,
+    /// The DEFERRED persistence handle (#2533). Every proof write and the revoke
+    /// go through this non-blocking queue to the `fanin-compliance-writer`
+    /// thread; the render thread does no filesystem work at all. `None` only if
+    /// the writer thread could not be spawned at construction, in which case
+    /// persistence is simply off for this run (logged once) — the fail direction
+    /// this feature already had, and never an inline fallback: an fsync on the
+    /// audio thread is precisely the defect.
+    writer: Option<crate::host_compliance::ComplianceWriter>,
     /// The pure per-session proof machine. Reset on every lock edge so a fresh
     /// session re-earns the proof.
     proof: crate::host_compliance::ComplianceProof,
@@ -1034,6 +1043,18 @@ struct HostComplianceState {
     /// counter=0 record exactly once, not every settled period. Reset on each lock
     /// edge (mirrors the tracker's per-lock latches).
     pass_reset_done_this_lock: bool,
+}
+
+impl HostComplianceState {
+    /// Queue one persistence request. A `None` writer (spawn failed at
+    /// construction) drops it silently — the "persistence is off this run"
+    /// state was already logged once, and repeating it per request would be
+    /// journal spam on the audio thread. Never blocks, never touches disk.
+    fn request_write(&self, write: crate::host_compliance::ComplianceWrite) {
+        if let Some(writer) = &self.writer {
+            writer.request(write);
+        }
+    }
 }
 
 /// Per-lane AUTO-TRIM bookkeeping. Tracks the cumulative `frames_read` value
@@ -1471,6 +1492,12 @@ pub struct Input {
     /// `None` (and `pcm.is_some()`) on every other lane and on this lane when
     /// the flag is off.
     direct: Option<DirectCapture>,
+    /// The DIRECT lane's deferred device-open channel (#2533). `Some` alongside
+    /// `direct` (spawned at lane construction); `None` on every other lane and on
+    /// the direct lane only if the opener thread could not be spawned. The render
+    /// loop hands every `snd_pcm_open` / `snd_pcm_close` to it instead of running
+    /// one inside the period budget.
+    direct_opener: Option<direct_capture::DirectOpener>,
     /// DEFAULT-EMPTY renderer-ingress ring capture (U3 / P6). `Some` only on a
     /// lane whose label is in `JASPER_FANIN_RENDERER_RING_LANES`; the lane then
     /// reads `/dev/shm/jts-ring/lane-<label>.ring` instead of its aloop substream,
@@ -2310,18 +2337,26 @@ impl Mixer {
     /// 2. TICK the pure proof machine; on its `Write` outcome, persist a fresh
     ///    record (atomic tempfile+rename). Written at most once per session.
     ///
-    /// RENDER-THREAD I/O CAVEAT. The three `HostCompliance::store` paths here (the
-    /// settle-write in (2), plus the two-strike `strike_retained` retain-write and
-    /// the `pass_reset` clear-write in (1)) each do a synchronous
-    /// `File::create`+`sync_all`+`rename` on THIS render thread — SD-card I/O inside
-    /// the ~5.3 ms period budget. Each is bounded to at most once per lock (settle
-    /// once per descent; strike/pass-reset gated by `pass_reset_done_this_lock` and
-    /// the strike edge), so the steady-state period does ZERO proof I/O, and a slow
-    /// fsync only risks a self-inflicted underfill at the exact rare moment the
-    /// machinery is judging underfills. Acceptable for now (same class as the
-    /// pre-existing settle-write, kept pattern-consistent); hoisting proof I/O onto a
-    /// dedicated writer thread is a clean follow-up if a slow-fsync underfill is ever
-    /// observed.
+    /// NO RENDER-THREAD I/O (#2533). The four persistence outcomes — the settle
+    /// write in (2), and the two-strike `strike_retained` retain-write, the
+    /// `pass_reset` clear-write and the `revoked` delete in (1) — are QUEUED to the
+    /// `fanin-compliance-writer` thread, which performs the
+    /// `File::create`+`sync_all`+`rename` (or the `remove_file`) and logs the
+    /// outcome. This method does one non-blocking channel `send` per decision.
+    ///
+    /// It used to do that I/O inline, "bounded to at most once per lock" and
+    /// therefore judged acceptable. It was not: the period budget is
+    /// `period_frames / 48 kHz` — 5.33 ms at the shipped 256 — and BOTH downstream
+    /// rings hold two 128-frame slots, so any block over ~2.7 ms costs exactly one
+    /// slot of audio (a silence insertion when CamillaDSP reads an empty Ring A, a
+    /// deletion when fan-in cannot publish in time). An SD-card fsync clears that
+    /// bar easily, and fan-in's ring-stall detector has a 1 s floor, so nothing
+    /// counted it. Field measurement: #2533.
+    ///
+    /// The mixer's in-memory `record` / `obs` advance OPTIMISTICALLY on queueing —
+    /// the same fail direction the inline `*_io_failed` branches already had (an
+    /// unpersisted proof costs the next session the ~2.5-min descent, never audio),
+    /// and the boot-time `load` remains the only authority on what is really on disk.
     ///
     /// Uses `Option::take` on `self.host_compliance` so it can freely borrow
     /// `self.inputs` (the resampler lane) without a double-mutable-borrow; the
@@ -2335,7 +2370,9 @@ impl Mixer {
         probe_code: u64,
         probe_response_ratio: Option<f64>,
     ) {
-        use crate::host_compliance::{classify_strike, HostCompliance, ProofOutcome, ProofSignals};
+        use crate::host_compliance::{
+            classify_strike, ComplianceWrite, HostCompliance, ProofOutcome, ProofSignals,
+        };
         let Some(mut hc) = self.host_compliance.take() else {
             return;
         };
@@ -2416,56 +2453,27 @@ impl Mixer {
                     // First probe-fail strike: keep the proof, persist the bumped
                     // counter, and leave `flag_present` TRUE so the NEXT session
                     // still primes at the floor.
+                    //
+                    // Queue the retain write; the writer thread does the I/O and
+                    // logs BOTH outcomes (`strike_retained` /
+                    // `strike_write_io_failed`). The in-memory record advances
+                    // optimistically — exactly as it did on the old inline
+                    // failure path, which also kept the updated record so
+                    // `flag_present` and the in-memory proof stayed coherent
+                    // (fail toward "keep priming", matching the retain intent).
                     let updated = rec.with_consecutive_failures(consecutive_failures);
-                    match updated.store(&hc.path) {
-                        Ok(()) => {
-                            hc.obs.on_strike_retained(reason, consecutive_failures);
-                            hc.record = Some(updated);
-                            warn!(
-                                "event=fanin.host_compliance.strike_retained reason={} \
-                                 consecutive_failures={} path={} — snapped held target back to \
-                                 the ceiling for THIS session; proof RETAINED (one bad \
-                                 measurement does not cost the floor), next session still primes",
-                                reason.as_str(),
-                                consecutive_failures,
-                                hc.path.display(),
-                            );
-                        }
-                        Err(e) => {
-                            // The retain write failed. The proof on disk is
-                            // unchanged (still the pre-strike counter), and
-                            // `flag_present` stays true, so the next session still
-                            // primes — the strike is simply not recorded this time.
-                            // Audio is unaffected (this session already snapped to
-                            // the ceiling). Keep the record so `flag_present` and
-                            // the in-memory proof stay coherent (fail toward "keep
-                            // priming", matching the retain intent).
-                            hc.record = Some(updated);
-                            warn!(
-                                "event=fanin.host_compliance.strike_write_io_failed reason={} \
-                                 path={} detail={} — strike not persisted (proof retained at the \
-                                 prior counter; audio unaffected)",
-                                reason.as_str(),
-                                hc.path.display(),
-                                e,
-                            );
-                        }
-                    }
+                    hc.obs.on_strike_retained(reason, consecutive_failures);
+                    hc.request_write(ComplianceWrite::StrikeRetained {
+                        record: updated.clone(),
+                        reason,
+                    });
+                    hc.record = Some(updated);
                 }
                 // Every other case is a DELETE revoke: a `Revoke` action (DLL
                 // demotion, confirmed churn, or the 2nd consecutive probe fail), or
                 // the defensive `None`-record path. `hc.record` was already taken
                 // (left `None`), which is exactly the post-delete state.
                 (_, _record) => {
-                    match HostCompliance::revoke(&hc.path) {
-                        Ok(()) => {}
-                        Err(e) => warn!(
-                            "event=fanin.host_compliance.revoke_io_failed reason={} path={} detail={}",
-                            reason.as_str(),
-                            hc.path.display(),
-                            e,
-                        ),
-                    }
                     hc.obs.on_revoked(reason);
                     // `consecutive_failures` in this log is the PROBE-FAIL counter,
                     // which only `ProbeFail` increments. A `ProbeFail` delete is the
@@ -2484,14 +2492,15 @@ impl Mixer {
                         crate::host_compliance::RevokeReason::DllDemotion
                         | crate::host_compliance::RevokeReason::EarlyUnlock => current_failures,
                     };
-                    warn!(
-                        "event=fanin.host_compliance.revoked reason={} consecutive_failures={} \
-                         path={} — deleted the proof, snapped held target back to the ceiling; \
-                         the normal descent will re-prove",
-                        reason.as_str(),
-                        logged_consecutive_failures,
-                        hc.path.display(),
-                    );
+                    // Queue the delete; the writer thread unlinks and logs
+                    // (`revoked` / `revoke_io_failed`). `flag_present` is already
+                    // cleared above, so this session's next boundary snap lands at
+                    // the ceiling whether or not the unlink itself lands — the
+                    // same fail direction the inline `revoke_io_failed` path had.
+                    hc.request_write(ComplianceWrite::Revoked {
+                        reason,
+                        consecutive_failures: logged_consecutive_failures,
+                    });
                 }
             }
         } else if hc.record.is_some()
@@ -2521,24 +2530,19 @@ impl Mixer {
                 .filter(|r| r.consecutive_failures != 0)
                 .map(|r| r.with_consecutive_failures(0));
             match cleared {
-                Some(cleared) => match cleared.store(&hc.path) {
-                    Ok(()) => {
-                        hc.obs.on_pass_reset();
-                        hc.record = Some(cleared);
-                        hc.pass_reset_done_this_lock = true;
-                        info!(
-                            "event=fanin.host_compliance.pass_reset path={} — live probe pass on \
-                             a floor-primed session cleared the strike counter to 0",
-                            hc.path.display(),
-                        );
-                    }
-                    Err(e) => warn!(
-                        "event=fanin.host_compliance.pass_reset_io_failed path={} detail={} — \
-                         strike counter not cleared this session (proof otherwise intact)",
-                        hc.path.display(),
-                        e,
-                    ),
-                },
+                Some(cleared) => {
+                    // Queue the clear; the writer thread persists and logs
+                    // (`pass_reset` / `pass_reset_io_failed`). The latch is set
+                    // either way so a settled L0 session cannot re-queue every
+                    // period — a stuck writer must never turn into a growing
+                    // queue of identical requests.
+                    hc.obs.on_pass_reset();
+                    hc.request_write(ComplianceWrite::PassReset {
+                        record: cleared.clone(),
+                    });
+                    hc.record = Some(cleared);
+                    hc.pass_reset_done_this_lock = true;
+                }
                 None => {
                     // Counter already 0 — nothing to persist, but mark done so we
                     // do not re-check every settled period.
@@ -2574,28 +2578,18 @@ impl Mixer {
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
             let rec = HostCompliance::new(now_epoch_s, probe_response_ratio, floor);
-            match rec.store(&hc.path) {
-                Ok(()) => {
-                    hc.obs.on_written(now_epoch_s);
-                    // Track the fresh clean proof (counter 0) as the believed
-                    // on-disk record so a later probe-fail RETAIN write re-serialises
-                    // THIS proof's evidence with a bumped counter.
-                    hc.record = Some(rec);
-                    info!(
-                        "event=fanin.host_compliance.written path={} floor_frames={} \
-                         probe_response_ratio={:.3} — future sessions prime at the floor",
-                        hc.path.display(),
-                        floor,
-                        probe_response_ratio,
-                    );
-                }
-                Err(e) => warn!(
-                    "event=fanin.host_compliance.write_io_failed path={} detail={} — proof not \
-                     persisted this session (audio unaffected; descent already ran)",
-                    hc.path.display(),
-                    e,
-                ),
-            }
+            hc.obs.on_written(now_epoch_s);
+            // Queue the write; the writer thread persists and logs (`written` /
+            // `write_io_failed`). `ComplianceProof` latches `written_this_session`
+            // on the same tick that produced this outcome, so exactly one request
+            // is queued per session no matter how long the writer takes.
+            hc.request_write(ComplianceWrite::Written {
+                record: rec.clone(),
+            });
+            // Track the fresh clean proof (counter 0) as the believed on-disk
+            // record so a later probe-fail RETAIN write re-serialises THIS proof's
+            // evidence with a bumped counter.
+            hc.record = Some(rec);
         }
 
         self.host_compliance = Some(hc);
@@ -3496,19 +3490,44 @@ fn build_host_compliance_state(
         config.period_frames,
         config.sample_rate,
     );
+    // The DEFERRED writer (#2533). Spawned here — `Mixer::new`'s only caller is
+    // `main`, which runs it well before `mlockall`, satisfying fan-in's
+    // spawn-threads-before-the-lock rule. A spawn failure turns persistence off
+    // for this run rather than falling back to inline I/O: a `sync_all` on the
+    // render thread against a 5.33 ms period budget and a two-slot ring is the
+    // defect being fixed, so there is no safe inline fallback.
+    let writer = match crate::host_compliance::spawn_writer(path.clone()) {
+        Ok((writer, _handle)) => Some(writer),
+        Err(e) => {
+            warn!(
+                "event=fanin.host_compliance.writer_unavailable path={} detail={} — proof \
+                 persistence is OFF this run (audio unaffected; sessions descend from the \
+                 ceiling as if no proof existed)",
+                path.display(),
+                e,
+            );
+            None
+        }
+    };
     // STATUS observability: `flag_present` reflects whether a VALID proof primed
     // this session (a present-but-stale file is not an authority, so it reads as
     // absent for STATUS purposes). `consecutive_failures` seeds from the loaded
-    // proof (0 unless a prior spurious probe fail retained a strike). Inject a
-    // clone into the resampler so `resampler.compliance` renders.
+    // proof (0 unless a prior spurious probe fail retained a strike); the writer's
+    // own counter backs `pending_writes`. Inject a clone into the resampler so
+    // `resampler.compliance` renders.
     let obs = crate::host_compliance::HostComplianceObservability::new(
         floor_primed,
         proved_at_epoch_s,
         consecutive_failures,
     );
+    let obs = match &writer {
+        Some(w) => obs.with_pending_handle(w.pending_handle()),
+        None => obs,
+    };
     resampler.set_compliance_observability(obs.clone_handles());
     HostComplianceState {
         path,
+        writer,
         proof: crate::host_compliance::ComplianceProof::new(settle_periods),
         revalidation: crate::host_compliance::RevalidationTracker::new(
             floor_primed,
@@ -3542,6 +3561,7 @@ fn open_input(
     Ok(Input {
         pcm: Some(pcm),
         direct: None,
+        direct_opener: None,
         ring: None,
         label: label.to_string(),
         pcm_name: pcm_name.to_string(),
@@ -3643,11 +3663,30 @@ fn open_direct_input(
     } else {
         Vec::new()
     };
+    // The deferred device-open channel (#2533). Spawned at construction, before
+    // `main` calls `mlockall`, like every other fan-in helper thread. A spawn
+    // failure leaves the lane WITHOUT self-heal rather than restoring the inline
+    // open: an `snd_pcm_open` inside the render loop's 5.33 ms period budget,
+    // against a two-slot downstream ring, is the defect being fixed.
+    let reopen_pending = Arc::new(AtomicBool::new(false));
+    let direct_opener = match direct_capture::DirectOpener::spawn(Arc::clone(&reopen_pending)) {
+        Ok(opener) => Some(opener),
+        Err(e) => {
+            warn!(
+                "event=fanin.usb_direct.opener_unavailable device={} detail={} — the gadget \
+                 capture will NOT be reopened after a loss until fan-in restarts (audio \
+                 unaffected; the lane renders silence)",
+                device, e,
+            );
+            None
+        }
+    };
     Input {
         // The direct lane does NOT open its aloop substream — its only source
         // is the gadget capture in `direct` (C6).
         pcm: None,
         direct: Some(direct),
+        direct_opener,
         ring: None,
         label: label.to_string(),
         pcm_name: pcm_name.to_string(),
@@ -3673,6 +3712,7 @@ fn open_direct_input(
             notify_failures: Arc::new(AtomicU64::new(0)),
             opens,
             retries,
+            reopen_pending,
             reopens: Arc::new(AtomicU64::new(0)),
             zero_avail_streak: Arc::new(AtomicU64::new(0)),
             frames_flowed_since_open: Arc::new(AtomicBool::new(false)),

@@ -54,9 +54,23 @@
 //!
 //! Zero allocation in the steady path: [`read_ring_and_render`] consumes directly
 //! into the lane's existing `read_buf`, and the retry path formats no strings
-//! (the detach reason is a `&'static str` on a copy `enum`). Nothing blocks —
-//! `try_consume_slot` is a non-blocking memcpy-or-zero-fill. The only syscalls on
-//! the attached path are the ones `jasper_ring` makes on the mapping itself.
+//! (the detach reason is a `&'static str` on a copy `enum`). The ATTACHED path
+//! does not block — `try_consume_slot` is a non-blocking memcpy-or-zero-fill, and
+//! the only syscalls are the ones `jasper_ring` makes on the mapping itself.
+//!
+//! **The DETACHED path does block, and that is a known open defect (issue #2538,
+//! carved out of #2533).** [`maybe_reattach_ring`] runs
+//! `RingReader::create_or_attach` INLINE on the render thread once per
+//! [`RING_REATTACH_RETRY_PERIODS`] (≈2 s) per detached lane, and that call takes
+//! an inter-process `flock` bounded at `OPEN_LOCK_WAIT_TIMEOUT_MS` = 500 ms
+//! (`jasper-ring/src/lib.rs`). The render period is 5.33 ms and the downstream
+//! rings hold two 128-frame slots, so the worst case is ~187 slots of audio —
+//! the same class of defect #2533 fixed for the compliance writer and the gadget
+//! opener, on a path those two fixes do not cover. Detached is also the ORDINARY
+//! idle state (no renderer publishing), not an error state. It is NOT fixed
+//! here; see #2538 for the `fanin-ring-attacher` sibling worker and the per-lane
+//! latch jitter (every lane decrements the same constant in lockstep today, so
+//! all of them retry in the same render period).
 
 use super::*;
 
@@ -128,7 +142,7 @@ impl RingDetachReason {
     /// Classify an attach failure. `jasper_ring` surfaces a geometry mismatch as
     /// [`io::ErrorKind::InvalidData`] and a self-invalid geometry request as
     /// [`io::ErrorKind::InvalidInput`] (the same two kinds `Mixer::new` treats as
-    /// CONFIG-class for Ring A — see `ring_attach_failure_is_config_class`), and a
+    /// CONFIG-class for Ring A —  `ring_attach_failure_is_config_class`), and a
     /// missing file as [`io::ErrorKind::NotFound`]. Everything else is a refusal.
     fn classify(err: &std::io::Error) -> Self {
         match err.kind() {
@@ -163,7 +177,7 @@ pub struct RingLaneObservability {
     pub attached: Arc<AtomicBool>,
     /// Why the lane is detached, as a [`RingDetachReason`] token index. Only
     /// meaningful while `attached` is false; retained across a reattach so an
-    /// operator reading `/state` after a self-heal can still see what it healed
+    /// operator reading `/state` after a self-heal can still  what it healed
     /// FROM.
     pub detach_reason: Arc<AtomicU64>,
     /// Cumulative successful attaches (climbs on the first attach and on every
@@ -240,11 +254,10 @@ impl RingLaneObservability {
 }
 
 /// One renderer-ingress lane's runtime state. See the module docs for the
-/// presence model; see [`RingDetachReason`] for what each detached state means.
+/// presence model;  [`RingDetachReason`] for what each detached state means.
 pub(super) enum RingCapture {
     /// The ring is mapped; the lane consumes one slot per render period.
-    /// `periods_until_check` counts down to the next orphaned-inode probe (see
-    /// [`RingDetachReason::Orphaned`]); it shares the reattach cadence, because
+    /// `periods_until_check` counts down to the next orphaned-inode probe (    /// [`RingDetachReason::Orphaned`]); it shares the reattach cadence, because
     /// both are "sample something slow, not every period".
     Attached {
         reader: Box<RingReader>,
@@ -352,6 +365,7 @@ pub(super) fn open_ring_input(
         // SHM ring, the same way the DIRECT lane's only source is the gadget.
         pcm: None,
         direct: None,
+        direct_opener: None,
         ring: Some(ring),
         label: label.to_string(),
         // STATUS's `pcm` for this lane is the ring PATH, not an ALSA name: it is
@@ -359,7 +373,7 @@ pub(super) fn open_ring_input(
         // would tell an operator the opposite of the truth.
         pcm_name: path,
         read_buf: vec![0i16; period_samples],
-        // A renderer ring lane is S16 at its wire (see `renderer_ring_geometry`),
+        // A renderer ring lane is S16 at its wire ( `renderer_ring_geometry`),
         // so it has no spine-scale period to hold at any box width.
         read_buf_wide: Vec::new(),
         xrun_count: Arc::new(AtomicU64::new(0)),
@@ -450,7 +464,7 @@ pub(super) fn read_ring_and_render(input: &mut Input, period_frames: usize) -> u
                         period_frames
                     }
                     // The ring zero-filled the buffer for us; the lane contributes
-                    // silence. NOT a fault and NOT a reattach trigger — see the
+                    // silence. NOT a fault and NOT a reattach trigger —  the
                     // module docs on why the retry latch is armed only by an attach
                     // failure.
                     SlotRead::Empty => 0,
@@ -616,6 +630,7 @@ mod tests {
         Input {
             pcm: None,
             direct: None,
+            direct_opener: None,
             ring: Some(ring),
             label: "spotify".to_string(),
             pcm_name: path.to_string(),
@@ -818,7 +833,7 @@ mod tests {
             !obs.writer_alive.load(Ordering::Relaxed),
             "a dead writer must READ as dead in /state — `writer_alive` is the \
              observability half of the split (the flock owns exclusivity), and \
-             an operator seeing attached=true needs this to tell a silent lane \
+             an operator ing attached=true needs this to tell a silent lane \
              from a live one"
         );
 
@@ -1071,13 +1086,13 @@ mod tests {
             RingDetachReason::Refused,
             RingDetachReason::Orphaned,
         ];
-        let mut seen = std::collections::BTreeSet::new();
+        let mut n = std::collections::BTreeSet::new();
         for reason in all {
             obs.detach_reason.store(reason as u64, Ordering::Relaxed);
             assert_eq!(obs.detach_reason_str(), reason.as_str());
-            assert!(seen.insert(reason.as_str()), "duplicate token {reason:?}");
+            assert!(n.insert(reason.as_str()), "duplicate token {reason:?}");
         }
-        assert_eq!(seen.len(), all.len());
+        assert_eq!(n.len(), all.len());
     }
 
     /// The classifier maps the ring's own error vocabulary onto the three

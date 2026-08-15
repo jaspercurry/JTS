@@ -897,6 +897,17 @@ impl StateServer {
                         r.decay_frozen_reason.load(Ordering::Relaxed),
                     ),
                 );
+                buf.push(',');
+                // prime_armed = a persisted compliance proof is live and waiting
+                // for this host to stream before it seeds the floor (#2533). With
+                // `compliance.flag_present=true` and this true, a ceiling
+                // `held_target_frames` is the CORRECT reading, not drift: the
+                // proof only touches the held target once frames actually flow.
+                push_kv_bool(
+                    buf,
+                    "prime_armed",
+                    r.decay_prime_armed.load(Ordering::Relaxed),
+                );
                 buf.push('}');
                 buf.push(',');
                 push_kv_u64(buf, "lock_count", r.lock_count.load(Ordering::Relaxed));
@@ -934,6 +945,16 @@ impl StateServer {
                         buf,
                         "consecutive_failures",
                         c.consecutive_failures.load(Ordering::Relaxed),
+                    );
+                    buf.push(',');
+                    // pending_writes = deferred proof writes the
+                    // `fanin-compliance-writer` thread has not finished (#2533).
+                    // Steady state 0; a stuck value means the filesystem is slow,
+                    // which no longer reaches the render thread.
+                    push_kv_u64(
+                        buf,
+                        "pending_writes",
+                        c.pending_writes.load(Ordering::Relaxed),
                     );
                     buf.push('}');
                 }
@@ -983,6 +1004,17 @@ impl StateServer {
                 push_kv_u64(buf, "opens", d.opens.load(Ordering::Relaxed));
                 buf.push(',');
                 push_kv_u64(buf, "retries", d.retries.load(Ordering::Relaxed));
+                buf.push(',');
+                // reopen_pending = a device open is QUEUED on the
+                // `fanin-direct-opener` thread (#2533). The open no longer runs in
+                // the render loop, so this is how one in progress is visible;
+                // stuck-true alongside a climbing `retries` means the open itself
+                // is hanging (this lane goes silent, the speaker does not glitch).
+                push_kv_bool(
+                    buf,
+                    "reopen_pending",
+                    d.reopen_pending.load(Ordering::Relaxed),
+                );
                 buf.push(',');
                 // Zombie-handle forced reopens (C): a growing value means the
                 // flowing→dead zero-avail latch caught a gadget rebuild — the handle
@@ -1442,6 +1474,7 @@ mod tests {
                         decay_active: Arc::new(AtomicBool::new(false)),
                         decay_floor_frames: 0,
                         decay_frozen_reason: Arc::new(AtomicU64::new(0)),
+                        decay_prime_armed: Arc::new(AtomicBool::new(false)),
                         // No compliance persistence on this (non-direct) fixture
                         // lane — the block is absent, matching a decay-off lane.
                         compliance: None,
@@ -1471,6 +1504,7 @@ mod tests {
                         notify_failures: Arc::new(AtomicU64::new(0)),
                         opens: Arc::new(AtomicU64::new(1)),
                         retries: Arc::new(AtomicU64::new(0)),
+                        reopen_pending: Arc::new(AtomicBool::new(false)),
                         reopens: Arc::new(AtomicU64::new(0)),
                         zero_avail_streak: Arc::new(AtomicU64::new(0)),
                         frames_flowed_since_open: Arc::new(AtomicBool::new(true)),
@@ -1515,6 +1549,7 @@ mod tests {
                         decay_active: Arc::new(AtomicBool::new(true)),
                         decay_floor_frames: 544,
                         decay_frozen_reason: Arc::new(AtomicU64::new(0)),
+                        decay_prime_armed: Arc::new(AtomicBool::new(false)),
                         // Host-compliance persistence ARMED fixture: a proof is
                         // present (proved_at set, no revoke yet, clean strike
                         // counter), exercising the STATUS `compliance` block's
@@ -1730,7 +1765,7 @@ mod tests {
         // Every armed lane carries a decay block (inert when off). The airplay
         // fixture is not decaying: active:false, empty frozen_reason.
         assert!(
-            j.contains(r#""decay":{"active":false,"floor_frames":0,"frozen_reason":""}"#),
+            j.contains(r#""decay":{"active":false,"floor_frames":0,"frozen_reason":"","prime_armed":false}"#),
             "missing inactive decay block on the airplay fixture: {j}"
         );
         // The direct fixture is ACTIVELY DECAYING: the held target (1024) sits
@@ -1744,7 +1779,7 @@ mod tests {
             "missing the direct fixture's live (decayed) held target: {j}"
         );
         assert!(
-            j.contains(r#""decay":{"active":true,"floor_frames":544,"frozen_reason":""}"#),
+            j.contains(r#""decay":{"active":true,"floor_frames":544,"frozen_reason":"","prime_armed":false}"#),
             "missing active decay block on the direct fixture: {j}"
         );
         assert!(
