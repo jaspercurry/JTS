@@ -749,6 +749,13 @@ def issue_protection_evidence(
         # other pair keeps the verdict the constant gave it, because a non-ring
         # sink still expects ``DEFAULT_CAPTURE_DEVICE``.
         #
+        # WHAT THE NEW CELL PROVES IS COHERENCE, NOT LIVENESS, and the gap is
+        # deliberate: this reads no env, so it cannot know the box's coupling —
+        # a ring/ring graph on a LOOPBACK-coupled box is self-consistent, passes
+        # here, and still captures a ring nobody writes. Teaching this check the
+        # box would make a protection check read reconciler env; the liveness
+        # conjunct belongs to the load preflight's armed-transport gate instead.
+        #
         # The samplerate conjunct is a separate axis and is unchanged — the
         # ring does not alter the graph's sample rate.
         "capture_route_current": (

@@ -1051,11 +1051,14 @@ def test_capture_route_current_accepts_ring_playback_with_ring_capture(
 ):
     """T1 — the ring's own coherent pair passes.
 
-    Guards the "ring can never pass" regression: an armed roleful box's
-    commissioning graph names the ACTIVE ring on the sink and Ring A on the
-    source, and before this wave that pair failed on every driver capture while
-    the arm gate (``ring_endpoint_anchor_converged``) demanded exactly it — the
-    two pointed in opposite directions on the same box.
+    Guards the "ring can never pass" regression. The pair is constructed
+    SYNTHETICALLY here, because no box emits this graph at this commit: the
+    shipped transport gate still refuses every ring device, and a later wave is
+    what makes the emit reachable. What this pins is that the admission gate
+    will not be the thing standing in its way. The pair is not arbitrary — it
+    is exactly the one ``fanin.coupling_reconcile.ring_endpoint_anchor_converged``
+    demands of an armed roleful box's staged anchor, which is why the arm gate
+    and this one used to point in opposite directions on the same box.
     """
     report = _report_for_devices(
         tmp_path,
