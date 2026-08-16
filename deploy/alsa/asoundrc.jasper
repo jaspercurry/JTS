@@ -160,12 +160,11 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #   5 — UNALLOCATED. This was the outputd active-speaker N-channel content
 #       lane (Camilla -> outputd); its PCM definitions were deleted once the
 #       ACTIVE ring became the roleful transport. A roleful box reaches its
-#       DAC over `jts_ring_active_playback`, never over snd-aloop. The names
-#       `outputd_active_content_playback` / `_capture` survive in the endpoint
-#       vocabulary so `baseline-reemit --endpoint aloop` still resolves — it
-#       now moves the anchor onto a transport that does not exist, and outputd
-#       parks (see deploy/bin/jasper-outputd-failure-reconcile). Re-arm the
-#       ring to recover.
+#       DAC over `jts_ring_active_playback`, never over snd-aloop. The endpoint
+#       vocabulary has since dropped this lane too: `jts_ring_active_playback`
+#       is the ONE legal ACTIVE endpoint, so there is no `--endpoint aloop` to
+#       resolve and no way to point a graph back here. Recovery from a parked
+#       roleful box is forward only — re-arm the ring.
 #   6 — outputd post-DSP content lane (Camilla -> outputd, passive box) AND
 #       the active-follower grouping round-trip (snapclient -> the follower's
 #       CamillaDSP; distributed-active Slice 3). Mutually exclusive by hardware
