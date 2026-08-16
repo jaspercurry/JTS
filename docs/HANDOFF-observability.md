@@ -137,7 +137,11 @@ doc's "Runtime surface"; detailed curves and bundle paths stay out of `/state`
 by design. [#2412](https://github.com/jaspercurry/JTS/issues/2412)'s Wave 4 adds
 one more key, `transport` (`ring` / `alsa`, `null` when the topology cannot be
 read or resolves to no device — **not** a rolefulness test: a passive box
-resolves the active outputd lane and reports `alsa`): a commissioning graph can
+resolves the active outputd lane and follows the marker like any other, `alsa`
+unarmed and `ring` armed. What decides both questions is the DAC profile —
+`resolve_output_layout` consults the marker only when the profile declares an
+active outputd lane, and a box failing that condition is the `no device` case):
+a commissioning graph can
 name the ACTIVE lane and reach it over either snd-aloop or the ring, and only
 one of those is fed by fan-in under `shm_ring`, so a device reported without its
 transport is a half-fact. It shares one derivation

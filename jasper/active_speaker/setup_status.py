@@ -418,11 +418,25 @@ def _commissioning_transport(topology: Any) -> str | None:
     ``None`` when the topology **cannot be read** or resolves to **no device**.
     Rolefulness is deliberately NOT the discriminator, and saying it was would
     mislead the reader this field exists to help: a PASSIVE box resolves the
-    active outputd lane like any other and reports ``alsa``. What rolefulness
-    gates is whether ``resolve_output_layout`` consults the ring marker at all —
-    which decides ring-vs-alsa, not named-vs-null. Fail-soft like every other
-    field here: the derivation reaches the topology layer, and a box whose route
-    cannot be read reports no transport rather than failing ``/state``.
+    active outputd lane like any other, and follows the marker exactly as a
+    roleful one does — ``alsa`` unarmed, ``ring`` armed.
+
+    **The gate is the DAC PROFILE, measured rather than assumed.**
+    ``resolve_output_layout`` consults the ring marker only when the profile
+    declares an active outputd lane (``supports_active_outputd_lane`` and
+    ``active_outputd_lane_channels``); a box failing that condition falls through
+    to ``playback_device=None``, which is the ``no device`` half above. So one
+    profile condition decides both questions this docstring answers, and
+    rolefulness decides neither — verified with a spy on
+    ``ring_active_endpoint_armed``: the repo's non-roleful fixture consults it
+    and reports ``ring`` when armed. (An earlier version of this paragraph named
+    rolefulness as the consult gate. That was a second false sentence in place of
+    the first — the failure mode this campaign named in its own Wave 1 — so the
+    replacement was measured before it was written.)
+
+    Fail-soft like every other field here: the derivation reaches the topology
+    layer, and a box whose route cannot be read reports no transport rather than
+    failing ``/state``.
 
     ``AttributeError`` joins ``_READINESS_DERIVATION_ERRORS`` for this call only.
     The shared tuple is the set the OTHER derivations here can raise; this one
