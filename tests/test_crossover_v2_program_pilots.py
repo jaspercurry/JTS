@@ -603,12 +603,12 @@ def test_measure_courtesy_prelude_sweep_residuals_match_no_prelude_capture():
     cap_plain = _synthesize(plain, seed=7)
     cap_prelude = _synthesize(prelude, seed=7)
 
-    off_plain, _first_plain, stim_plain = _global_offset(plain, cap_plain, SR)
+    off_plain, _first_plain, stim_plain, _amb = _global_offset(plain, cap_plain, SR)
     locs_plain = {
         loc.segment_id: loc
         for loc in _locate_segments(plain, cap_plain, SR, off_plain, stim_plain)
     }
-    off_prelude, _first_prelude, stim_prelude = _global_offset(prelude, cap_prelude, SR)
+    off_prelude, _first_prelude, stim_prelude, _amb = _global_offset(prelude, cap_prelude, SR)
     locs_prelude = {
         loc.segment_id: loc
         for loc in _locate_segments(prelude, cap_prelude, SR, off_prelude, stim_prelude)
@@ -635,7 +635,7 @@ def test_measure_courtesy_prelude_tone_segments_located_like_silence():
     because they are never in STIMULUS_KINDS."""
     prog = _measure_program(courtesy_prelude=True)
     cap = _synthesize(prog)
-    global_offset, _first, stimuli = _global_offset(prog, cap, SR)
+    global_offset, _first, stimuli, _amb = _global_offset(prog, cap, SR)
     locations = _locate_segments(prog, cap, SR, global_offset, stimuli)
     by_id = {loc.segment_id: loc for loc in locations}
     for seg_id in ("courtesy_tone_ch0", "courtesy_tone_ch1"):
@@ -653,7 +653,7 @@ def test_measure_courtesy_prelude_first_stimulus_is_still_the_leading_pilot():
     scheduled position once the correlation is resolved."""
     prog = _measure_program(courtesy_prelude=True)
     cap = _synthesize(prog)
-    global_offset, first, _stimuli = _global_offset(prog, cap, SR)
+    global_offset, first, _stimuli, _amb = _global_offset(prog, cap, SR)
     assert first.segment_id == "pilot_woofer_lo"
     assert first.kind == KIND_PILOT
 

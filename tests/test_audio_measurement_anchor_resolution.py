@@ -176,7 +176,7 @@ def _located_arrival(program, capture) -> int:
     The fix changed only which SEGMENT this sample is taken to be, never the
     sample, so this is also exactly the pre-#2093 arrival.
     """
-    offset, anchor, _stimuli = _global_offset(program, capture, SR)
+    offset, anchor, _stimuli, _amb = _global_offset(program, capture, SR)
     return offset + anchor.start_sample
 
 
@@ -253,7 +253,7 @@ def test_pre_fix_offset_would_have_failed_this_capture():
     assert confidence < SWEEP_LOCATE_CONFIDENCE_FLOOR
 
     # And the repaired offset on the SAME capture is a different timeline.
-    repaired_offset, anchor, _stimuli = _global_offset(prog, cap, SR)
+    repaired_offset, anchor, _stimuli, _amb = _global_offset(prog, cap, SR)
     assert repaired_offset != pre_fix_offset
     assert anchor.segment_id == "pilot_summed_hi"
 
@@ -295,7 +295,7 @@ def test_repaired_anchor_puts_the_sweep_back_at_its_true_position():
     """
     prog = _verify_program()
     cap = _knife_edge(prog)
-    offset, _anchor, stimuli = _global_offset(prog, cap, SR)
+    offset, _anchor, stimuli, _amb = _global_offset(prog, cap, SR)
     locations = _locate_segments(prog, cap, SR, offset, stimuli)
     sweep = next(loc for loc in locations if loc.kind == KIND_SUMMED_SWEEP)
     true_start = GLOBAL_OFFSET + prog.segment(sweep.segment_id).start_sample
@@ -317,7 +317,7 @@ def test_garbage_capture_still_fails_and_the_anchor_does_not_move():
     garbage = np.random.default_rng(4).normal(
         0.0, 1e-2, prog.total_samples + GLOBAL_OFFSET + 20_000
     )
-    offset, anchor, _stimuli = _global_offset(prog, garbage, SR)
+    offset, anchor, _stimuli, _amb = _global_offset(prog, garbage, SR)
 
     assert anchor.segment_id == "pilot_summed_lo"
     assert offset == _located_arrival(prog, garbage) - anchor.start_sample
@@ -352,7 +352,7 @@ def test_witness_that_never_played_cannot_move_the_anchor():
     cap = np.concatenate([np.zeros(500), pcm[:, 0], np.zeros(5000)])
     cap = cap + np.random.default_rng(5).normal(0.0, 3e-5, cap.size)
 
-    _offset, anchor, _stimuli = _global_offset(chk, cap, SR)
+    _offset, anchor, _stimuli, _amb = _global_offset(chk, cap, SR)
     assert anchor.segment_id == "pilot_woofer_lo"
 
 
@@ -420,7 +420,7 @@ def test_program_without_shape_siblings_is_left_exactly_alone():
     prog = _verify_program(with_pilots=False)
     first = next(s for s in prog.segments if s.kind == KIND_SUMMED_SWEEP)
 
-    offset, anchor, _stimuli = _global_offset(prog, _pristine(prog), SR)
+    offset, anchor, _stimuli, _amb = _global_offset(prog, _pristine(prog), SR)
     assert anchor.segment_id == first.segment_id
     assert abs(offset - GLOBAL_OFFSET) < 0.030 * SR
 

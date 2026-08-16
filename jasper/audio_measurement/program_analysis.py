@@ -217,6 +217,35 @@ DISCONTINUITY_RSS_RATIO = 0.25
 # "was this sweep even heard".
 SWEEP_LOCATE_CONFIDENCE_FLOOR = 0.3
 
+# How much better than its runner-up the winning anchor hypothesis must score
+# before `_resolve_anchor` is allowed to call the anchor RESOLVED. A separate
+# judgment from the floor above — that one asks "was the witness heard at all",
+# this one asks "did hearing it tell the two readings apart" — and a capture can
+# pass the first and fail this one, which is precisely issue #2644.
+#
+# Derived from the two measured populations, which do not overlap by two orders
+# of magnitude rather than by a hair:
+#
+#   * ATTRIBUTED captures (the witness landed on a real stimulus under ONE
+#     reading and on nothing under the other): 2026-08-16's accepted round 2
+#     separated its candidates by 0.818; this repo's reconstruction of the same
+#     program in a quiet room measures 0.849. #2093's VERIFY captures are the
+#     same shape — the summed sweep is unique, so the rival window holds
+#     silence.
+#   * UN-ATTRIBUTED captures (both readings land the witness on a pilot of the
+#     same shape): 2026-08-16's refused round 3 separated its candidates by
+#     0.0034; the two CHECK fixtures quoted in `_resolve_anchor`'s
+#     witness-ordering comment measured 0.000 and 0.0001; the reconstruction in
+#     `tests/test_audio_measurement_anchor_resolution.py` measures 0.0006.
+#
+# 0.05 sits ~16x under the smallest attributed gap and ~15x over the largest
+# un-attributed one — a decade of headroom on both sides, which is why it is a
+# round number and not a fitted one. PROVISIONAL in the same sense as the
+# constants above: a bench population that lands a genuine capture inside it
+# would move it, and the `ambiguous=` field on the `program_analysis.anchor`
+# event is what that population would be counted from.
+ANCHOR_DISCRIMINATION_MARGIN = 0.05
+
 # `crossover_v2.capture_dispatch.SWEEP_SCHEDULE_RESIDUAL_CEILING_MS`'s twin
 # (#1971) — the G2 xrun detector's ceiling, duplicated here for the same
 # provisional-numbers reason as the floor above and pinned against it by the
@@ -1643,6 +1672,20 @@ class ProgramAnalysis:
     # ``None`` only on analyses built directly rather than through
     # ``analyze_program_capture`` (test doubles, replay fixtures).
     frame_ledger: FrameLedger | None = None
+    # True when `_resolve_anchor` could not tell this capture's competing
+    # timeline interpretations apart (issue #2644) — every number below was
+    # computed at windows the anchor may have placed a whole pilot spacing from
+    # where the drivers actually played, so none of them attributes energy to a
+    # driver reliably. Set on EVERY phase by ``analyze_program_capture``, for
+    # ``frame_ledger``'s reason: the fact belongs to the capture, not to the
+    # phase that happened to expose it. Today only CHECK reads it, because CHECK
+    # is the phase whose pilots re-locate onto EACH OTHER under the shift and so
+    # produce a confident-looking wiring verdict instead of an honest "not
+    # found" (MEASURE/VERIFY search a sweep that is not there and refuse as
+    # ``locate_failed`` already). ``False`` — not ``None`` — is the default: a
+    # capture nothing arbitrated (one candidate, or no witness) is unambiguous
+    # by construction, not un-evidenced.
+    anchor_ambiguous: bool = False
 
 
 # --------------------------------------------------------------------------- #
@@ -1957,7 +2000,12 @@ def _band_average_db(freqs: np.ndarray, magnitude_db: np.ndarray, lo: float, hi:
 
 
 def _earliest_strong_peak(
-    capture: np.ndarray, stimulus: np.ndarray, *, frac: float = 0.6
+    capture: np.ndarray,
+    stimulus: np.ndarray,
+    *,
+    frac: float = 0.6,
+    band_hz: tuple[float | None, float | None] | None = None,
+    sample_rate: int | None = None,
 ) -> int:
     """Index of the EARLIEST normalized-correlation peak within ``frac`` of max.
 
@@ -1969,6 +2017,22 @@ def _earliest_strong_peak(
     scores the same as a louder later one; taking the earliest lag within
     ``frac`` of the max then picks the true first occurrence, while an
     out-of-band interloper stays below the fraction.
+
+    ``band_hz`` (with ``sample_rate``) restricts that similarity to the
+    stimulus's OWN declared band — the ``(f1_hz, f2_hz)`` its
+    :class:`~jasper.audio_measurement.program.ProgramSegment` carries, which is
+    the same declaration `_channel_map_ok` and `_band_power` read, not a second
+    statement of what a pilot contains. Without it the denominator is the
+    capture's TOTAL local energy, so room noise the stimulus never occupied
+    suppresses the score of a quiet member: on 2026-08-16's round-3 CHECK the
+    quiet ``pilot_woofer_lo`` scored 0.3932 against a 0.4176 gate (missed by
+    0.024) while its IN-BAND SNR, 27.6 dB, was slightly BETTER than the round
+    that had passed two hours earlier at 26.9 dB. The gate then latched onto
+    ``pilot_woofer_hi``, slid every analysis window one pilot spacing, and the
+    household was told to check its speaker wiring (issue #2644). Band-limiting
+    both sides makes the score track the in-band evidence the rest of this
+    module already grades on; a caller with no band to declare (or one whose
+    band survives no FFT bin at this rate) keeps the full-band behavior exactly.
     """
     from scipy.signal import correlate
 
@@ -1979,6 +2043,19 @@ def _earliest_strong_peak(
     L = stim.size
     if cap.size < L or L == 0:
         return 0
+    if (
+        band_hz is not None
+        and sample_rate
+        and band_hz[0] is not None
+        and band_hz[1] is not None
+    ):
+        cap_b = _bandlimit(cap, sample_rate, band_hz[0], band_hz[1])
+        stim_b = _bandlimit(stim, sample_rate, band_hz[0], band_hz[1])
+        # A band that survives no bin at this rate (entirely above Nyquist at
+        # the downsampled locate, or an inverted schedule) zeroes both sides;
+        # fall back rather than correlate silence against silence.
+        if float(np.linalg.norm(stim_b)) > 0.0 and float(np.linalg.norm(cap_b)) > 0.0:
+            cap, stim = cap_b, stim_b
     stim_norm = float(np.linalg.norm(stim))
     if stim_norm <= 0.0:
         return 0
@@ -2016,8 +2093,9 @@ def _resolve_anchor(
     arrival: int,
     first: ProgramSegment,
     stimuli: dict[str, np.ndarray],
-) -> tuple[ProgramSegment, int]:
-    """Decide WHICH shape-identical stimulus the located ``arrival`` really is.
+) -> tuple[ProgramSegment, int, bool]:
+    """Decide WHICH shape-identical stimulus the located ``arrival`` really is,
+    and say so when the evidence cannot decide.
 
     ``_earliest_strong_peak`` answers "where is a stimulus of this shape?" but
     not "which occurrence is it?" — and it is level-blind by construction (see
@@ -2061,6 +2139,22 @@ def _resolve_anchor(
     first stimulus has no shape-sibling (legacy pilot-less VERIFY, where the
     unique summed sweep is the anchor) has nothing to arbitrate, and one with
     no non-sibling stimulus has no independent witness to arbitrate WITH.
+
+    **When the witness cannot tell them apart, this says so** (issue #2644).
+    The witness discriminates only while the rival timelines put its search
+    window somewhere the witness's own shape does NOT recur — and on CHECK that
+    holds in exactly one of the two shift directions (see the witness-ordering
+    comment below). In the other, both hypotheses land the window on a real
+    pilot and score alike: 2026-08-16's round 3 separated its two candidates by
+    **0.0034** (0.9007 vs 0.8973), where the round that passed two hours earlier
+    on the same unchanged speaker separated its own by 0.818. An argmax over
+    that pair is a coin flip, and losing it slid every per-driver window one
+    pilot spacing — so the analysis reported energy in the wrong driver's band
+    and CHECK told the household to check its speaker wiring. Below
+    :data:`ANCHOR_DISCRIMINATION_MARGIN` the third return value is True: the
+    committed anchor is unchanged (these numbers are still the measured ones)
+    but the capture is declared un-attributed, and the CHECK ladder refuses it
+    as retriable rather than reading a wiring verdict off a coin flip.
     """
     shape = _stimulus_shape(first)
     candidates = [
@@ -2080,12 +2174,24 @@ def _resolve_anchor(
     # measured 0.968 vs 0.968 and 0.9927 vs 0.9926 on two CHECK fixtures): a
     # coin flip that shifts the timeline a full pilot spacing, and the reason
     # the margin is a BOUND here rather than one quoted pair — it varies with
-    # the capture. Taking the EARLIEST of a tied pair avoids it, because nothing
-    # of the same shape sits one gap BEFORE a pair's `lo` member, and
+    # the capture. Taking the EARLIEST of a tied pair avoids THAT pair, because
+    # nothing of the same shape sits one gap BEFORE a pair's `lo` member, and
     # `_append_leading_pilot_pair` always appends lo-then-hi. The property is
     # asserted on the witness actually chosen, for every shipping program, by
     # `test_chosen_witness_is_never_confusable_with_itself_under_the_shift` —
     # rather than re-derived as a runtime filter no shipping program exercises.
+    #
+    # It buys ONE of the two shift directions, though, and issue #2644 is the
+    # other one. That test asserts the rival window lands one gap BEFORE the
+    # witness — the geometry when the coarse locate was RIGHT and the rival
+    # hypothesis reads the anchor as the later sibling. When the coarse locate
+    # is itself one spacing LATE, both hypotheses shift the other way and the
+    # chosen witness `pilot_tweeter_lo` has its own twin `pilot_tweeter_hi`
+    # sitting exactly one gap AFTER it. No witness choice fixes that, because
+    # the ONLY non-sibling stimuli CHECK owns are the other role's pair; the
+    # near-tie guard below is what covers it, and
+    # `test_witness_is_confusable_one_gap_LATER_which_the_near_tie_guard_covers`
+    # pins both halves of that statement.
     witness = max(
         (seg for seg in program.segments
          if seg.kind in STIMULUS_KINDS and _stimulus_shape(seg) != shape),
@@ -2093,7 +2199,7 @@ def _resolve_anchor(
         default=None,
     )
     if len(candidates) < 2 or witness is None:
-        return first, arrival - first.start_sample
+        return first, arrival - first.start_sample, False
 
     witness_stim = stimuli.get(witness.segment_id)
     if witness_stim is None:
@@ -2123,6 +2229,19 @@ def _resolve_anchor(
     corroborated = best_confidence >= SWEEP_LOCATE_CONFIDENCE_FLOOR
     if not corroborated:
         best_seg, best_offset = first, arrival - first.start_sample
+    # ...and when it IS corroborated, corroboration alone is not discrimination.
+    # Two candidates BOTH clearing the "was this heard" floor, separated by less
+    # than :data:`ANCHOR_DISCRIMINATION_MARGIN`, means the witness landed on a
+    # real stimulus under either reading and the argmax between them carries no
+    # information (issue #2644). The commitment below is left exactly as it was
+    # — a near-tie is not a reason to pick the OTHER one — but the capture is
+    # flagged un-attributed so a consuming phase refuses it as retriable instead
+    # of grading per-driver windows the anchor may have slid a whole pilot apart.
+    ambiguous = (
+        corroborated
+        and runner_up >= SWEEP_LOCATE_CONFIDENCE_FLOOR
+        and (best_confidence - runner_up) < ANCHOR_DISCRIMINATION_MARGIN
+    )
     corrected = best_seg.segment_id != first.segment_id
     # One line per analyzed capture (this runs once per capture, never in a
     # loop). It exists because on 2026-08-03 the anchor decision was the single
@@ -2132,7 +2251,7 @@ def _resolve_anchor(
     log_event(
         logger,
         "program_analysis.anchor",
-        level=logging.WARNING if corrected else logging.INFO,
+        level=logging.WARNING if (corrected or ambiguous) else logging.INFO,
         phase=program.phase,
         program_id=program.program_id,
         anchor=best_seg.segment_id,
@@ -2142,29 +2261,35 @@ def _resolve_anchor(
         runner_up=round(runner_up, 4),
         corroborated=corroborated,
         corrected=corrected,
+        ambiguous=ambiguous,
         shift_ms=round(
             (best_offset - (arrival - first.start_sample)) / sample_rate * 1000.0, 1
         ),
     )
-    return best_seg, best_offset
+    return best_seg, best_offset, ambiguous
 
 
 def _global_offset(
     program: ExcitationProgram, capture: np.ndarray, sample_rate: int
-) -> tuple[int, ProgramSegment, dict[str, np.ndarray]]:
+) -> tuple[int, ProgramSegment, dict[str, np.ndarray], bool]:
     """Locate the anchor stimulus → integer global offset G. Caches stimuli.
 
     The whole-capture matched filter runs at :data:`LOCATOR_RATE_HZ` (mirrors
     ``driver_acoustics._capture_to_magnitude``'s 16 kHz downsampled locate) so
     the largest correlation is over a 3× smaller array; the coarse arrival is
     then refined at the full rate inside a tiny window around it, so the
-    returned offset is still full-rate-exact.
+    returned offset is still full-rate-exact. Both passes score inside the
+    anchor stimulus's OWN declared band (issue #2644 — see
+    :func:`_earliest_strong_peak`), each at the rate its own array is sampled
+    at.
 
     That locate answers WHERE a first-stimulus-shaped waveform is, but not
     WHICH occurrence of it — :func:`_resolve_anchor` arbitrates that against
     the rest of the program and owns the returned segment, which is therefore
     the anchor the offset is pinned to (the program's first stimulus on every
-    capture where that reading holds).
+    capture where that reading holds). The fourth return value is that
+    arbitration's own honesty flag: True when the evidence could not tell the
+    interpretations apart (see :data:`ANCHOR_DISCRIMINATION_MARGIN`).
     """
     from scipy.signal import resample_poly
 
@@ -2178,6 +2303,7 @@ def _global_offset(
         raise ValueError("program has no stimulus segment to locate against")
     stim = segment_stimulus(first)
     stimuli[first.segment_id] = stim
+    band_hz = (first.f1_hz, first.f2_hz)
 
     down = max(1, int(round(sample_rate / LOCATOR_RATE_HZ)))
     if down > 1:
@@ -2186,7 +2312,9 @@ def _global_offset(
     else:
         capture_lo = capture
         stim_lo = np.asarray(stim, dtype=np.float64)
-    coarse = _earliest_strong_peak(capture_lo, stim_lo) * down
+    coarse = _earliest_strong_peak(
+        capture_lo, stim_lo, band_hz=band_hz, sample_rate=sample_rate // down
+    ) * down
 
     # Full-rate refinement in a ±4·down window around the coarse arrival —
     # bounded cost (one small correlate), full-rate precision.
@@ -2195,13 +2323,15 @@ def _global_offset(
     hi = min(capture.size, coarse + stim.size + margin)
     window = capture[lo:hi]
     if window.size >= stim.size:
-        arrival = lo + _earliest_strong_peak(window, stim)
+        arrival = lo + _earliest_strong_peak(
+            window, stim, band_hz=band_hz, sample_rate=sample_rate
+        )
     else:
         arrival = coarse
-    anchor, global_offset = _resolve_anchor(
+    anchor, global_offset, ambiguous = _resolve_anchor(
         program, capture, sample_rate, arrival, first, stimuli
     )
-    return global_offset, anchor, stimuli
+    return global_offset, anchor, stimuli, ambiguous
 
 
 def _locate_in_window(
@@ -5354,7 +5484,9 @@ def analyze_program_capture(
     geometry = geometry or MeasurementGeometry()
     priors = priors or MeasurementPriors()
 
-    global_offset, _first, stimuli = _global_offset(program, capture, sample_rate)
+    global_offset, _first, stimuli, anchor_ambiguous = _global_offset(
+        program, capture, sample_rate
+    )
     locations = _locate_segments(program, capture, sample_rate, global_offset, stimuli)
 
     if program.phase == PHASE_CHECK:
@@ -5376,8 +5508,11 @@ def analyze_program_capture(
     # Attached HERE rather than inside each phase analyzer so there is one
     # assignment site for one fact — the same discipline ``glitch_detected``
     # follows — and so a phase that grows its own analyzer later cannot ship
-    # without it.
-    return replace(analysis, frame_ledger=frame_ledger)
+    # without it. Same argument for ``anchor_ambiguous``, which is a property of
+    # the capture's timeline rather than of any one phase's reading of it.
+    return replace(
+        analysis, frame_ledger=frame_ledger, anchor_ambiguous=anchor_ambiguous
+    )
 
 
 def _analyze_check(

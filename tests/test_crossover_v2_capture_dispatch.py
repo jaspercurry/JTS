@@ -27,6 +27,7 @@ from jasper.active_speaker.crossover_v2 import spatial
 def _check(**overrides) -> cd.CheckScreens:
     base = dict(
         stimulus_located=True,
+        anchor_ambiguous=False,
         channel_map_ok=True,
         pilot_snr_ok=True,
         linearity_ok=True,
@@ -86,6 +87,7 @@ def test_check_accepts_a_clean_capture():
     ("override", "expected"),
     [
         ({"stimulus_located": False}, cd.SCREEN_LOCATE_FAILED),
+        ({"anchor_ambiguous": True}, cd.SCREEN_ANCHOR_AMBIGUOUS),
         ({"channel_map_ok": False}, cd.SCREEN_CHANNEL_MAP_MISMATCH),
         ({"pilot_snr_ok": False}, cd.SCREEN_SNR_FLOOR),
         ({"gain_plan_present": False}, cd.SCREEN_SNR_FLOOR),
@@ -141,8 +143,46 @@ def test_the_pilot_is_asked_before_linearity():
 
 def test_the_stimulus_is_asked_before_everything():
     assert cd.check_screens(
-        _check(stimulus_located=False, channel_map_ok=False, pilot_snr_ok=False)
+        _check(stimulus_located=False, anchor_ambiguous=True,
+               channel_map_ok=False, pilot_snr_ok=False)
     ) == cd.SCREEN_LOCATE_FAILED
+
+
+def test_an_unattributed_anchor_is_asked_before_the_wiring_verdict():
+    """Issue #2644's ordering, stated as the two-fact discriminator.
+
+    A capture the analyzer could not pin reads every per-driver window one
+    pilot spacing from where that driver played, so ``channel_map_ok=False``
+    beside it is a statement about WHERE the analyzer looked, not about how the
+    speaker is wired.  On 2026-08-16 exactly this pair sent a household to
+    check the wiring of a speaker that had passed the identical program two
+    hours earlier.  Swapping the two rungs turns this green→red.
+    """
+    assert cd.check_screens(
+        _check(anchor_ambiguous=True, channel_map_ok=False)
+    ) == cd.SCREEN_ANCHOR_AMBIGUOUS
+
+
+def test_an_unattributed_anchor_is_retriable_and_never_a_wiring_instruction():
+    """The point of the rung, at the copy layer rather than the ladder layer.
+
+    ``channel_map_mismatch`` is a HARD STOP with a zero retry budget whose
+    sentence tells the household to open its speaker.  The kind this rung
+    returns must be neither of those things — otherwise the ladder change is
+    cosmetic.
+    """
+    from jasper.active_speaker.crossover_v2 import vocabulary as vocab
+
+    code = vocab.SCREEN_KIND_REASONS[cd.SCREEN_ANCHOR_AMBIGUOUS]
+    spec = vocab.REASON_REGISTRY[code]
+    assert spec.retry_budget > 0, "an un-attributed capture is fixed by retaking it"
+    assert code not in vocab.NON_RETRIABLE_CODES
+    assert spec.template != vocab.TEMPLATE_HARD_STOP
+    sentence = f"{spec.message} {spec.banner}".lower()
+    for forbidden in ("wiring", "wire", "rewire", "speaker wiring"):
+        assert forbidden not in sentence, (
+            f"anchor-ambiguous copy must not mention {forbidden!r}: {sentence!r}"
+        )
 
 
 # --------------------------------------------------------------------------- #
