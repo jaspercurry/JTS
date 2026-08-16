@@ -2918,9 +2918,8 @@ def fit_driver_linearization(
     :func:`measurement_hole_bands_hz`. A peaking filter may not be CENTRED in
     one without being NAMED for it — see :func:`_blind_zone_placements` for
     what that disclosure is for, and for the measured reason it reports rather
-    than refuses. Empty (the default, every
-    caller before #2599, and every session with fewer than two readable core
-    bands) refuses nothing.
+    than refuses. Empty (the default, every caller before #2599, and every
+    session with fewer than two readable core bands) names nothing.
 
     ``target_level_db`` staying whole-region is a POSITIVE choice, not an
     oversight. It is the LEVEL every stage here grades against — the shelf's
