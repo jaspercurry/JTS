@@ -2105,7 +2105,8 @@ def prepare_driver_commissioning_config(
                 "commissioning does not measure through. The de-arm that used to "
                 "precede commissioning no longer exists — the ACTIVE ring is the "
                 "one legal endpoint, so there is no aloop transport to release "
-                "onto. Commission a speaker BEFORE arming it."
+                "onto. Commissioning runs BEFORE a speaker is armed; "
+                "commissioning through the ring transport is tracked in #2412."
             ),
         ))
 
