@@ -1352,3 +1352,111 @@ async def test_boot_anchor_refuses_a_typod_ring_wire_instead_of_tracebacking(
         run_config_check=False,
     )
     assert alsa["status"] == "staged", alsa["issues"]
+
+
+# --------------------------------------------------------------------------
+# THE AUDIBLE EMIT'S DEVICE BLOCK (#2412).
+#
+# `prepare_driver_commissioning_config` is the anchor's twin: same module, same
+# emitter, same seven-field device contract — and it forwarded only the device
+# NAME. It now derives that block through `active_emit_devices` like every other
+# forwarding site, which `test_ring_active_endpoint.py`'s field walk enumerates.
+#
+# The blast radius of that derivation is what this file owns, and it is ZERO:
+# `active_emit_devices` hands back the emitter's own defaults for every non-ring
+# device, and this builder's `commissioning_transport_supported` gate refuses
+# every ring device before the emitter is reached. So every box the fleet
+# actually has emits the same bytes it emitted before, and that is provable
+# rather than asserted.
+# --------------------------------------------------------------------------
+
+
+def _commissioning_yaml(topology, preset, out_dir, device):
+    """Prepare the per-driver commissioning graph at ``device``; return the YAML."""
+    from jasper.active_speaker.staging import prepare_driver_commissioning_config
+
+    payload = prepare_driver_commissioning_config(
+        topology,
+        speaker_group_id="mono",
+        role="woofer",
+        preset=preset,
+        playback_device=device,
+        config_dir=out_dir,
+        run_config_check=False,
+    )
+    blockers = [
+        i for i in payload.get("issues") or [] if i.get("severity") == "blocker"
+    ]
+    assert payload["status"] == "prepared" and not blockers, payload
+    return Path(payload["config"]["path"]).read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "device",
+    [OUTPUTD_ACTIVE_PLAYBACK_DEVICE, "hw:CARD=Lab,DEV=0"],
+    ids=["aloop_active_lane", "lab_override"],
+)
+async def test_driver_commissioning_is_byte_identical_on_every_non_ring_device(
+    tmp_path, monkeypatch, device
+):
+    """Off the ring, the derived block reproduces the PRE-CHANGE bytes exactly.
+
+    This is the blast-radius bound for #2412's device block, and it is the whole
+    safety argument for landing it ahead of any transport decision: the emit it
+    touches is the AUDIBLE one, every roleful box reaches it through the same
+    call, and ``commissioning_transport_supported`` refuses every ring device
+    before the derivation runs — so the ring branch is unreachable here and this
+    non-ring path is the only one any box takes. "Nothing moved" therefore has
+    to be provable, not asserted.
+
+    Proven the same way the boot anchor's twin is — by REPLAYING the exact emit
+    this call just made, minus the seven device kwargs, which is literally the
+    pre-change call shape, and comparing bytes. The replay reuses the recorded
+    BOUND preset rather than the raw one, because staging binds the preset to
+    the topology (which relabels the outputs); a replay from the unbound preset
+    differs for reasons that have nothing to do with this change. A hand-copied
+    table of the old defaults would rot the moment the emitter's own defaults
+    changed; this cannot, because the defaults are re-read from the emitter's
+    own signature.
+    """
+    import dataclasses
+
+    from jasper.active_speaker import staging as staging_mod
+    from jasper.active_speaker.camilla_yaml import (
+        ActiveEmitDevices,
+        emit_active_speaker_commissioning_config,
+    )
+
+    device_fields = {f.name for f in dataclasses.fields(ActiveEmitDevices)}
+    assert device_fields, "ActiveEmitDevices lost its fields; this test is vacuous"
+
+    seen: dict = {}
+    real = staging_mod.emit_active_speaker_commissioning_config
+
+    def recording(preset_arg, **kwargs):
+        seen["preset"] = preset_arg
+        seen["kwargs"] = dict(kwargs)
+        return real(preset_arg, **kwargs)
+
+    monkeypatch.setattr(
+        staging_mod, "emit_active_speaker_commissioning_config", recording
+    )
+
+    topology, preset = _commissioning_box()
+    derived = _commissioning_yaml(topology, preset, tmp_path / "derived", device)
+    assert seen, "staging never reached the emitter; this test proves nothing"
+
+    # The pre-change call shape: same everything, minus the device block.
+    replay_kwargs = {
+        key: value
+        for key, value in seen["kwargs"].items()
+        if key not in device_fields
+    }
+    replay_kwargs["out_path"] = tmp_path / "replay.yml"
+    pre_change = emit_active_speaker_commissioning_config(
+        seen["preset"], **replay_kwargs
+    )
+    assert derived == pre_change, (
+        "the derived device block changed a NON-ring audible emit; #2412's Wave-1 "
+        "blast radius was supposed to be nothing at all"
+    )

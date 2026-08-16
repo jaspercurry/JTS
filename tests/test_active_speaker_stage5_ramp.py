@@ -520,6 +520,16 @@ def test_ramp_tweeter_accepts_durable_woofer_confirmation(monkeypatch, tmp_path)
 
 
 def test_ramp_step_then_pending_blocks_a_second_step(monkeypatch, tmp_path):
+    """The ack gate, polarity 1: no ``auto_retry_pending``, no second step.
+
+    This and ``test_auto_retry_pending_replaces_same_driver_pending_step`` below
+    are the two halves of the sentence ``commission_ramp.py``'s ramp-progress
+    comment states — that a second step waits on the last one's ACK unless the
+    caller passes ``auto_retry_pending`` for the same target. That comment used
+    to assert the refusal without the exception, which the branch it describes
+    has never honoured. Both directions are guarded here so the corrected
+    sentence cannot drift from the branch again in either direction.
+    """
     step, cam, staged_path, state_path, common = _ramp_step(
         tmp_path, monkeypatch, role="woofer"
     )
@@ -533,6 +543,15 @@ def test_ramp_step_then_pending_blocks_a_second_step(monkeypatch, tmp_path):
 
 
 def test_auto_retry_pending_replaces_same_driver_pending_step(monkeypatch, tmp_path):
+    """The ack gate, polarity 2: the flag steps the SAME target with no ACK.
+
+    The waiver half of the sentence pinned by the test above: nothing
+    acknowledges the pending step here, the caller passes ``auto_retry_pending``
+    for the same group and role, and the ramp advances one bounded step louder.
+    The waiver moves the pace, not the ceiling — ``next_gain_db`` is asserted
+    against the same ``MIN_TEST_LEVEL_DBFS + AUDIBLE_RAMP_STEP_DB`` an
+    acknowledged step would have reached.
+    """
     async def _tone(**kwargs):
         return {
             "status": "completed",
@@ -574,6 +593,61 @@ def test_auto_retry_pending_replaces_same_driver_pending_step(monkeypatch, tmp_p
     assert quiet["status"] == "floor_pending_operator"
     assert quiet["pending_playback_id"] == louder["ramp"]["pending"]["playback_id"]
     assert load_ramp_state(state_path=tmp_path / "ramp.json")["pending"] is not None
+
+
+@pytest.mark.parametrize("mismatch", ["role", "group"])
+def test_auto_retry_pending_does_not_waive_a_different_targets_pending(
+    monkeypatch, tmp_path, mismatch
+):
+    """The ack gate, polarity 2's BOUND: the waiver is target-scoped.
+
+    The test above proves the flag waives the ack for the SAME target. Without
+    this one the words "for the same target" are prose only — the two conjuncts
+    that carry them (``pending_role == role`` and ``pending_group == group_id``)
+    can both be deleted and no test notices.
+
+    What deleting them does, stated as measured rather than dramatised: the
+    mismatched pending is adopted here and the refusal MOVES downstream to
+    ``_pending_step_still_current``, which re-applies the same two conjuncts
+    immediately before the hardware load and returns ``stale_retry``. No new
+    audible level is loaded on either path. So what this pin guards is the
+    sentence and WHICH guard answers it, not a hearing exposure — which is why
+    it asserts the issue code and not merely that something refused.
+
+    Isolated so the refusal is genuinely THIS bound and not the earlier
+    ``commission_target_mismatch`` one: the requested role still matches the
+    LOADED commission target, and only the recorded ramp state's pending is
+    moved off it — the stale-pending state, reached by re-arming another driver
+    without clearing the ramp. One parameter per conjunct.
+    """
+    step, cam, staged_path, state_path, common = _ramp_step(
+        tmp_path, monkeypatch, role="woofer"
+    )
+    assert step["status"] == "stepped"
+    assert step["ramp"]["pending"]["role"] == "woofer"
+    loads_after_first = len(cam.loaded_paths)
+
+    ramp_path = tmp_path / "ramp.json"
+    state = load_ramp_state(state_path=ramp_path)
+    if mismatch == "role":
+        state["pending"] = {**state["pending"], "role": "tweeter"}
+    else:
+        state["speaker_group_id"] = "other-cabinet"
+    commission_ramp_mod._record_ramp_state(state, state_path=ramp_path)
+
+    again = asyncio.run(
+        ramp_audible_step(
+            _topology(),
+            role="woofer",
+            auto_retry_pending=True,
+            **common,
+        )
+    )
+
+    assert again["status"] == "blocked", again
+    assert {i["code"] for i in again["issues"]} == {"ramp_step_awaiting_ack"}
+    # The hearing-relevant half: a refused step emits no new audible level.
+    assert len(cam.loaded_paths) == loads_after_first
 
 
 def test_auto_retry_pending_superseded_before_load_does_not_touch_camilla(

@@ -1733,6 +1733,39 @@ def _startup_anchor_site(topology, out_dir, *, playback_device=None):
     return call_site
 
 
+def _driver_commissioning_site(topology, out_dir, *, playback_device):
+    """Drive ``prepare_driver_commissioning_config``'s emit at ``playback_device``.
+
+    The AUDIBLE per-driver emit (#2412), and the seventh site in the walk. It
+    forwarded only the device NAME, so every other half of its device contract
+    — the capture lane, the two formats, the chunk/target/queue geometry — took
+    the emitter's snd-aloop defaults.
+
+    ``playback_device`` is REQUIRED here rather than defaulted to the ring, and
+    that is the one way this entry differs from its six siblings: this builder
+    carries the ``commissioning_transport_supported`` gate, which refuses every
+    member of ``RING_PCM_DEVICES`` before the emitter is reached, so the ring
+    would record no kwargs at all. The walk drives it on the ALSA active lane
+    instead, where the derivation answers the emitter's own defaults — which
+    makes the FORWARDING half of the walk (every field named at the call site)
+    the half that bites here, and it is the half the subset-forwarding defect
+    lives in.
+    """
+    from jasper.active_speaker.staging import prepare_driver_commissioning_config
+
+    def call_site():
+        prepare_driver_commissioning_config(
+            topology,
+            speaker_group_id="mono",
+            role="woofer",
+            playback_device=playback_device,
+            config_dir=out_dir,
+            run_config_check=False,
+        )
+
+    return call_site
+
+
 def _recorded_emit_kwargs(
     monkeypatch, call_site, emitter="emit_active_speaker_baseline_config"
 ):
@@ -2046,6 +2079,13 @@ def test_every_emit_devices_field_reaches_the_emitter(tmp_path, monkeypatch):
     is the value the derivation produced. Same shape as
     ``test_every_active_lane_write_site_writes_the_pair`` — enumerate the sites,
     do not assert "the helper exists".
+
+    Each entry names the DEVICE it is driven at, and the expectation is derived
+    per site from that device rather than once for all of them. Six sites run at
+    the ring, where every field's answer differs from the emitter's default. The
+    seventh cannot: ``prepare_driver_commissioning_config`` refuses the ring
+    up front, so it is driven on the ALSA active lane and its bite is the
+    forwarding half — see ``_driver_commissioning_site``.
     """
     import dataclasses
 
@@ -2059,7 +2099,6 @@ def test_every_emit_devices_field_reaches_the_emitter(tmp_path, monkeypatch):
     assert fields, "ActiveEmitDevices lost its fields; this guard is now vacuous"
 
     topology, applied = _applied_ring_baseline(tmp_path)
-    expected = active_emit_devices(RING_ACTIVE_PLAYBACK_DEVICE, topology=topology)
 
     sites = {
         "recompose_applied_baseline_yaml": (
@@ -2069,6 +2108,7 @@ def test_every_emit_devices_field_reaches_the_emitter(tmp_path, monkeypatch):
                 playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
             ),
             "emit_active_speaker_baseline_config",
+            RING_ACTIVE_PLAYBACK_DEVICE,
         ),
         "tests._emit_active_baseline": (
             lambda: _emit_active_baseline(
@@ -2077,14 +2117,17 @@ def test_every_emit_devices_field_reaches_the_emitter(tmp_path, monkeypatch):
                 topology=topology,
             ),
             "emit_active_speaker_baseline_config",
+            RING_ACTIVE_PLAYBACK_DEVICE,
         ),
         "build_baseline_profile_candidate": (
             _ring_candidate_site(topology, tmp_path),
             "emit_active_speaker_baseline_config",
+            RING_ACTIVE_PLAYBACK_DEVICE,
         ),
         "build_baseline_profile_candidate(driver_domain)": (
             _ring_candidate_site(topology, tmp_path, driver_domain=True),
             "emit_active_speaker_driver_domain_config",
+            RING_ACTIVE_PLAYBACK_DEVICE,
         ),
         # Issue #2450 — the fifth instance, and the first outside the
         # baseline/driver-domain family: crossover-v2's Stage 1 emit. It is in
@@ -2095,6 +2138,7 @@ def test_every_emit_devices_field_reaches_the_emitter(tmp_path, monkeypatch):
         "bind_production_play(crossover_v2 CHECK/MEASURE)": (
             _crossover_v2_program_site(topology, tmp_path / "v2", monkeypatch),
             "emit_active_speaker_program_config",
+            RING_ACTIVE_PLAYBACK_DEVICE,
         ),
         # Issue #2364 — the sixth instance, and the one the arm ladder walks
         # over: the all-muted durable BOOT anchor. It forwarded only the device
@@ -2105,9 +2149,25 @@ def test_every_emit_devices_field_reaches_the_emitter(tmp_path, monkeypatch):
         "stage_protected_startup_config(boot anchor)": (
             _startup_anchor_site(topology, tmp_path / "anchor"),
             "emit_active_speaker_commissioning_config",
+            RING_ACTIVE_PLAYBACK_DEVICE,
+        ),
+        # Issue #2412 — the seventh instance, and the anchor's own twin: the
+        # AUDIBLE per-driver commissioning emit, in the same module, calling the
+        # same emitter. It forwarded only the device NAME, so a caller re-pointed
+        # at any ring PCM got a sink there over the snd-aloop tap. It is the one
+        # entry driven off the ring, for the reason its helper states.
+        "prepare_driver_commissioning_config(audible emit)": (
+            _driver_commissioning_site(
+                topology,
+                tmp_path / "commission",
+                playback_device=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+            ),
+            "emit_active_speaker_commissioning_config",
+            OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
         ),
     }
-    for label, (call_site, emitter) in sites.items():
+    for label, (call_site, emitter, device) in sites.items():
+        expected = active_emit_devices(device, topology=topology)
         seen = _recorded_emit_kwargs(monkeypatch, call_site, emitter)
         missing = [name for name in fields if name not in seen]
         assert not missing, (

@@ -20,11 +20,16 @@ The model (the design-of-record, HANDOFF-active-speaker-dsp.md "Stage 5"):
        -> safe_playback ``floor_pending_operator`` (driver unmuted, awaiting ACK)
        -> operator ACK "heard_correct_driver" -> ``floor_confirmed``
     -> bounded ramp: +AUDIBLE_RAMP_STEP_DB per step toward
-       COMMISSION_RAMP_MAX_LEVEL_DBFS (each louder step requires the driver to
-       be floor-confirmed first)
+       COMMISSION_RAMP_MAX_LEVEL_DBFS (each louder step requires the operator
+       to have handled the last one — confirmed it, or called it silent and
+       asked to retry louder — unless the caller passes auto_retry_pending
+       for the same target)
   woofer before tweeter (a driver is ramped only after its lower-frequency
-  siblings are floor-confirmed), and before ANY tweeter step the protective
-  high-pass is re-asserted against the RUNNING graph, not just the file.
+  siblings are floor-confirmed, unless the caller passes gate-only ordering
+  evidence in role_order_confirmed_roles — the web route's identity audition
+  counts every lower role present in the group as confirmed, the CLI passes
+  only real ones), and before ANY tweeter step the protective high-pass is
+  re-asserted against the RUNNING graph, not just the file.
 
 The gate's "subsonic/DC protection present" requirement is satisfied by the
 protections that already exist in the active graph — the bounded commissioning
@@ -117,10 +122,11 @@ def next_ramp_gain_db(current_gain_db: float) -> float:
 # Small and group-scoped: which roles have been floor-confirmed (the
 # woofer-before-tweeter memory the per-target safe_playback tri-state cannot
 # carry across drivers), plus the one step currently awaiting an operator ACK
-# (so a second step cannot be taken before the last one is acknowledged). The
-# authoritative per-driver floor confirmation lives in safe_playback's
-# tri-state; the loaded gain lives in the commission-load state. This file holds
-# only what neither of those can.
+# (so a second step cannot be taken before the last one is acknowledged, unless
+# the caller passes `auto_retry_pending` for the same target — the web
+# auto-ramp does, the CLI does not). The authoritative per-driver floor
+# confirmation lives in safe_playback's tri-state; the loaded gain lives in the
+# commission-load state. This file holds only what neither of those can.
 
 
 def ramp_state_path(path: str | Path | None = None) -> Path:
