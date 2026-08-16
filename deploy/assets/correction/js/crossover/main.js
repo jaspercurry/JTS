@@ -187,6 +187,17 @@ const LINEARIZATION_OUTCOME_TEXT = {
   fit_failed: 'driver linearization: skipped — fit engine error',
 };
 
+// The one octave-band reason code this module reads (#2638): the fit engine's
+// verdict that an octave sits outside the driver's own radiating band, where
+// the per-octave residual is the crossover's rolloff rather than anything the
+// driver did. The vocabulary is Python's
+// (jasper.active_speaker.linearization_envelope.ReasonCode.OUT_OF_BAND); a
+// browser module cannot import it, so this literal is a second copy — and
+// tests/test_crossover_envelope_v2.py compares the two, exactly as it already
+// does for the declared-polarity objective list. Renderer use is at the
+// octave rows in renderCandidateReview().
+const OCTAVE_REASON_OUT_OF_BAND = 'envelope_out_of_band';
+
 // The measured-crossover candidate the household reviews before applying
 // (crossover_envelope_v2._candidate_review_payload — trims / delay / polarity,
 // derived from the conductor's _candidate_summary). W6.10 blocker #2: the prior
@@ -301,9 +312,9 @@ function renderCandidateReview(review) {
   // every other screen looks the same.
   const outcomeText = LINEARIZATION_OUTCOME_TEXT[review.linearization_outcome];
   if (outcomeText) details.push(outcomeText);
-  // Gauge fix (2026-07-24): per-role top-octave deficits (achieved minus fit
+  // Gauge fix (2026-07-24): per-role top-octave residuals (achieved minus fit
   // target, dB) — the number that says "the top octave is 9 dB down and
-  // nothing corrected it." Uncorrected regions show their natural deficit
+  // nothing corrected it." Uncorrected regions show their natural response
   // here, never a pass/fail.
   //
   // Relabelled by the flat-linearization plan's PR-5: these are per-driver
@@ -313,16 +324,44 @@ function renderCandidateReview(review) {
   // crossover_envelope_v2._flatness_details_lines). The earlier wording
   // "measured vs fit target" led with "measured", which reads as the
   // measurement — the frame the two constructions must not share.
+  //
+  // #2638: an octave past the driver's own band is NOT a deficit and its
+  // number is not a performance figure. The residual runs to 20 kHz, so
+  // where the crossover target dives at 24 dB/oct against a measurement
+  // floor that stays put, the subtraction returns a large POSITIVE number —
+  // "+23.0 dB" on a healthy 2026-08-16 candidate whose largest filter gain
+  // anywhere was +2.5 dB, which read on this very line as a runaway boost.
+  // So those octaves are NAMED and not numbered: nothing is hidden, and no
+  // stopband arithmetic is presented as passband performance. The verdict is
+  // the fit engine's (server-side `reason`), never re-derived here from the
+  // frequency — this module knows one code, and Python pins that literal
+  // against the ReasonCode enum
+  // (tests/test_crossover_envelope_v2.py::
+  //  test_the_browser_and_python_agree_on_the_out_of_band_octave_code).
+  // Every other reason code describes a band the driver DOES radiate, where
+  // the number is a real residual, and renders unchanged.
   const octaveRows = Array.isArray(review.linearization_octaves) ?
     review.linearization_octaves : [];
+  const octaveLabel = (band) => `${Math.round(Number(band.hz) / 1000)}k`;
   octaveRows.forEach((row) => {
     const bands = Array.isArray(row && row.bands) ? row.bands : [];
     if (!bands.length) return;
-    const parts = bands.map((band) =>
-      `${Math.round(Number(band.hz) / 1000)}k ${Number(band.delta_db).toFixed(1)} dB`);
-    details.push(
-      `${row.role} fit residual vs target (design-axis capture, not the ` +
-      `spatial measurement): ${parts.join(', ')}`);
+    const radiated = bands.filter(
+      (band) => band.reason !== OCTAVE_REASON_OUT_OF_BAND);
+    const outOfBand = bands.filter(
+      (band) => band.reason === OCTAVE_REASON_OUT_OF_BAND);
+    if (radiated.length) {
+      const parts = radiated.map((band) =>
+        `${octaveLabel(band)} ${Number(band.delta_db).toFixed(1)} dB`);
+      details.push(
+        `${row.role} fit residual vs target (design-axis capture, not the ` +
+        `spatial measurement): ${parts.join(', ')}`);
+    }
+    if (outOfBand.length) {
+      details.push(
+        `${row.role} ${outOfBand.map(octaveLabel).join(', ')}: outside this ` +
+        'driver’s band — not corrected');
+    }
   });
   if (details.length) {
     rows.push(el('details', {class: 'candidate-provenance'}, [
