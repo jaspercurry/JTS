@@ -2266,18 +2266,28 @@ def _boost_evidence_verdicts(
     :func:`reduce_cuts_for_lift`'s ``headroom_db`` argument is derived from —
     which is exactly the array the boost path never received.
 
-    **What it replaces is a gate that could not fire.** The realization gate
-    below grades the emitted cascade against ``envelope.allowed_depth_db``,
-    which is :data:`~jasper.active_speaker.linearization_envelope.
-    ENVELOPE_CEILING_SENTINEL_DB` (24.0 dB) at every bin whose envelope reason
-    is FITTED — i.e. across the whole core passband. Its test reads
-    ``realized > 24.5``, which no cascade this module can emit reaches: the
-    per-filter boost cap is far below it and the stage's own request is
-    bounded by the same array. So in the band that matters the gate is
-    vacuous, and the ONLY thing standing between a manufactured deficit and an
-    emitted boost was the manufactured deficit itself. That gate is kept (it
-    still binds wherever the envelope actually tapers, which is what it was
-    written for); this adds the per-bin evidence it never had.
+    **What it adds to a gate that grades against a not-a-limit.** The
+    realization gate below grades the emitted cascade against
+    ``envelope.allowed_depth_db``, which across the whole core passband is
+    :data:`~jasper.active_speaker.linearization_envelope.
+    ENVELOPE_CEILING_SENTINEL_DB` — the 24.0 dB CEILING SENTINEL, i.e. the
+    marker for "this bin expresses no limit". So in the core band its test
+    reads ``realized > 24.5``: a threshold carrying no information about what
+    the measurement there supports.
+
+    Two honest qualifications, because the stronger claim is tempting and
+    wrong. It is not *unreachable* — eight stacked bells at the 12.0 dB
+    per-filter cap could clear 24.5 in principle — so this is a statement
+    about what the threshold MEANS, not a proof that it never fires. And it
+    is not the same question either way: ``allowed_depth_db`` is a
+    direction-agnostic correction-DEPTH ceiling, so even when it does fire it
+    answers "is this correction deeper than the measurement supports", never
+    "is there anything here to lift". For the ~2 dB boost this bound exists
+    for it is simply inert.
+
+    That gate is kept — it still binds wherever the envelope actually tapers,
+    which is what it was written for. This adds the per-bin, directional
+    evidence it never had.
     """
     kept: list[LinearizationFilter] = []
     dropped: list[BoostEvidenceDrop] = []
@@ -2622,12 +2632,11 @@ def _lift_stage(
     MEASUREMENT is already at or above target is dropped, its siblings
     survive, and only an empty result carries
     ``"boost_above_measured_target"``. It exists because the realization gate
-    below is vacuous across the core passband — it grades against
-    ``envelope.allowed_depth_db``, which is the 24.0 dB ceiling SENTINEL
-    wherever the envelope reason is FITTED, so its ``realized > 24.5`` test
-    can never fire there — and because a cut's skirts can manufacture a
-    working-curve deficit the driver does not have. See
-    :func:`_boost_evidence_verdicts`.
+    below grades against ``envelope.allowed_depth_db``, which across the core
+    passband is the 24.0 dB ceiling SENTINEL — a "no limit expressed" marker,
+    not a measured allowance, and direction-agnostic besides — and because a
+    cut's skirts can manufacture a working-curve deficit the driver does not
+    have. See :func:`_boost_evidence_verdicts`.
 
     **The boost-evidence bound (#1967)** runs last, per filter, on the
     emitted response. ``vocabulary.boost_excluded_bands_hz`` carries the bands
