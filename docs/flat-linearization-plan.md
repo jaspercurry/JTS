@@ -55,7 +55,9 @@ reference and the deviation metric:
 > for its own reflection-free window `T` (~357 Hz at the JTS3 room's 7 ms).
 > `evaluate_flat_spec` raises every band's lower edge — and the reference
 > band's — to `max(f_lo, 2.5/T)`, publishing the edge it graded from as each
-> band's `graded_lo_hz`. A band left entirely below the floor is
+> band's `graded_lo_hz`, and flagging `max_at_graded_edge` when the reported
+> extremum landed on that edge with the band still trending into the ungraded
+> remainder below (#2599). A band left entirely below the floor is
 > **unevaluable, never failed**. This is an instrument-honesty layer on the
 > table, not a revision of it: the tolerances and the nominal edges are
 > unchanged, and grading 250 Hz at the code's own 2.5-cycle rule would need

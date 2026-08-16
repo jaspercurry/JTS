@@ -1449,7 +1449,9 @@ def plan_linearization(
     #    evidence states; ``cloud_phase_planned`` is what tells them apart.
     #
     # What bounds a boost once permitted, on EITHER path: the envelope's own
-    # depth limits, the realized-cascade stopband-gain guard, the headroom
+    # depth limits, the realized-cascade stopband-gain guard, #2599's
+    # measured-target bound (no boost where the MEASUREMENT is already at or
+    # above target, however the post-cut working curve reads), the headroom
     # charge, post-apply VERIFY, and Undo. The gate grants a vocabulary, never a
     # filter.
     vocabulary = FitVocabulary(
