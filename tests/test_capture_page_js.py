@@ -244,8 +244,10 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
     #
     # Bumped again for phase B: the module now also owns the predicate that
     # decides whether a witnessed run is the SPLICE worth spending an attempt
-    # on. A warm-cache phone holding the old module exports no such predicate,
-    # so main.js would fail to import and the page would not boot at all.
+    # on. Had this stamp not moved, a warm-cache phone would pair the NEW
+    # main.js with the OLD module, which exports no such predicate — a module
+    # resolution error, so the page would not boot at all rather than merely
+    # losing a feature.
     assert 'from "./capture-integrity.js?v=20260815-5"' in main_js
     # Bumped with #1941 R4: constraints.js's realized-constraint describe()
     # feeds household copy, so a warm-cache browser holding the old module
