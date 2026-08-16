@@ -559,19 +559,25 @@ def test_capture_page_auto_retake_is_page_only_and_bounded():
 
     # No Pi reads the disclosure. The page-posted report is stored verbatim
     # (jasper/web/correction_crossover_v2.py writes the whole dict into the
-    # operator sidecar), so a reader is a BRANCH on the key, which is what
-    # would give this page a release order it does not have.
-    py_readers = subprocess.run(
-        ["git", "grep", "-l", "auto_retake", "--", "jasper/"],
-        capture_output=True,
-        text=True,
-        cwd=_REPO,
-    )
-    assert py_readers.stdout.strip() == "", (
+    # operator sidecar), so naming the key on the Pi side is a BRANCH on it,
+    # which is what would give this page a release order it does not have.
+    def _naming(key: str) -> list[str]:
+        return sorted(
+            str(path.relative_to(_REPO))
+            for path in (_REPO / "jasper").rglob("*.py")
+            if key in path.read_text(encoding="utf-8")
+        )
+
+    # The instrument first: a null from a walk that cannot see anything is not
+    # evidence. `capture_integrity` IS named on the Pi side, so a search that
+    # finds it proves this one is looking where it claims to.
+    assert _naming("capture_integrity"), "the Pi-side walk found nothing at all"
+    readers = _naming("auto_retake")
+    assert readers == [], (
         "a Pi-side reader of capture_integrity.auto_retake appeared: the page's "
         "disclosure has become something the speaker depends on, so it needs a "
         "release order in capture-page/README.md rather than the either-order "
-        f"class it claims today.\n{py_readers.stdout}"
+        f"class it claims today. {readers}"
     )
 
 
