@@ -2710,12 +2710,27 @@ def _verify_frame_from_tracking(
 
 
 
-def _driver_snr_fields(resp: Any | None) -> tuple[float | None, str | None]:
-    """``(estimated_snr_db, verdict)`` from a driver's worst-relevant SNR band."""
+def _driver_snr_fields(
+    resp: Any | None,
+) -> tuple[float | None, str | None, str | None]:
+    """``(estimated_snr_db, verdict, band_id)`` from a driver's worst SNR band.
+
+    The band identity travels because the number and the verdict alone cannot
+    say WHICH band produced them (#2613): fourteen consecutive jts3 rounds
+    logged ``tweeter_snr_db=-1.2 tweeter_snr_verdict=insufficient`` and the
+    band that actually limited them — one the tweeter sweep never entered —
+    had to be re-derived from the crossover frequency and the declared driver
+    bands instead of read off the line. ``band_id`` stays ``None`` when
+    ``worst_band_verdict`` selected a band carrying no id (it filters on
+    overlap and verdict rank, never on identity), so a real band is never
+    confused with an absent one.
+    """
     if resp is None or resp.snr is None:
-        return None, None
+        return None, None, None
     worst = resp.snr.get("worst_relevant") or {}
-    return worst.get("estimated_snr_db"), worst.get("verdict")
+    return (
+        worst.get("estimated_snr_db"), worst.get("verdict"), worst.get("band_id"),
+    )
 
 
 
@@ -10303,10 +10318,10 @@ class CrossoverV2Session:
         delay_us, delay_role, polarity = alignment_to_candidate_fields(
             analysis, woofer_role=self._woofer.role, tweeter_role=self._tweeter.role,
         )
-        woofer_snr_db, woofer_snr_verdict = _driver_snr_fields(
+        woofer_snr_db, woofer_snr_verdict, woofer_snr_band = _driver_snr_fields(
             _driver_response_by_role(analysis, self._woofer.role)
         )
-        tweeter_snr_db, tweeter_snr_verdict = _driver_snr_fields(
+        tweeter_snr_db, tweeter_snr_verdict, tweeter_snr_band = _driver_snr_fields(
             _driver_response_by_role(analysis, self._tweeter.role)
         )
         sweep_residual_ms_worst, sweep_locate_confidence_min = _sweep_schedule_diag_fields(
@@ -10410,8 +10425,10 @@ class CrossoverV2Session:
             snap_found=(bool(cand.snap_found) if cand else None),
             woofer_snr_db=woofer_snr_db,
             woofer_snr_verdict=woofer_snr_verdict,
+            woofer_snr_band=woofer_snr_band,
             tweeter_snr_db=tweeter_snr_db,
             tweeter_snr_verdict=tweeter_snr_verdict,
+            tweeter_snr_band=tweeter_snr_band,
             sweep_residual_ms_worst=(
                 round(sweep_residual_ms_worst, 3)
                 if sweep_residual_ms_worst is not None else None

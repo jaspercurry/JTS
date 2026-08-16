@@ -6416,6 +6416,11 @@ def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
             worst = resp.snr.get("worst_relevant") or {}
             out[f"{role}_snr_db"] = worst.get("estimated_snr_db")
             out[f"{role}_snr_verdict"] = driver_snr_verdict(resp)
+            # WHICH band produced that pair (#2613) — without it a retained
+            # clip records a limiting SNR whose band has to be re-derived from
+            # the crossover frequency and the declared driver bands. ``None``
+            # when the selected band carried no id: never a stand-in label.
+            out[f"{role}_snr_band"] = worst.get("band_id")
 
     for pilot in getattr(analysis, "pilots", None) or ():
         role = pilot.role
