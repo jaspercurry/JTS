@@ -333,7 +333,7 @@ def test_the_digest_covers_the_shared_module_the_build_copies_in():
 # The published state of capture-page/js/**, paired with the build stamp it
 # ships under. See the test below for why a digest rather than a rule.
 _CAPTURE_PAGE_JS_DIGEST = (
-    "8b733456d2001780a584df35544b1a2c14595ea9e1e241ae892b3ddfaf9df43b"
+    "a7319c908991e37f28a3fd381c52ad3c6ca71ee13382340518120600a73d6ba6"
 )
 _CAPTURE_PAGE_JS_DIGEST_BUILD = "20260815.5"
 
@@ -909,9 +909,18 @@ def test_capture_page_pre_arm_failure_never_strands_a_fatal_affordance():
     # than on a next-measurement screen the held set has no next entry for.
     assert main_js.count("if (ctx.retakeAwaitingConfirm) {") == 2
     # The no-affordance repair drops back to the manual screen the countdown's
-    # own Cancel produces, which has one.
-    assert "if (!hasBegin && index > 1) {" in main_js
+    # own Cancel produces, which has one…
+    assert "if (!hasBegin) {" in main_js
     assert "renderPlanNext(ctx, { index: index - 1, attempt: attempt - 1, target });" in main_js
+    # …and has a FLOOR at the first measurement, where there is no earlier
+    # position to drop back to (#2557 phase B gate blocker B1: the auto-retake
+    # is the first affordance-free begin reachable at index 1, and the
+    # `index > 1` drop-back rendered nothing at all there — heading, copy naming
+    # a button, and no button). The retry screen for that same measurement is
+    # the floor; its primary re-posts the pair that just failed.
+    assert "if (index > 1) {" in main_js
+    assert "reason: PRE_ARM_NOT_STARTED_NOTE," in main_js
+    assert 'const PRE_ARM_NOT_STARTED_NOTE = "That measurement didn\'t start.";' in main_js
 
 
 def test_capture_page_verify_confirms_after_the_hold_before_the_tone():

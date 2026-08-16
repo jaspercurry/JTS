@@ -245,18 +245,31 @@ device for the first ~30 seconds of every remote session.
 
 **A REJECTED capture ends an unattended run — watch for it.** When a capture is
 rejected (clipped, too quiet, locate failed, …) the capture page renders a
-human **"Try again"** affordance and nothing auto-fires it: `auto_advance`
-governs the transition after an *accepted* capture only. A remote session with
+human **"Try again"** affordance and — with the one exception below — nothing
+auto-fires it: `auto_advance` governs the transition after an *accepted*
+capture only. A remote session with
 nobody at the device therefore stops there and eventually dies on the runner's
 inactivity budget. **The driver should detect the stall from the envelope
 rather than wait it out** — a `relay` block that stays in flight while
 `position_pending` is absent and no new capture is accepted is the signature —
-and report it for a human. There is no auto-retry path today
-([issue #2506](https://github.com/jaspercurry/JTS/issues/2506)), and the gap is
+and report it for a human. The gap #2506 describes is still open
+([issue #2506](https://github.com/jaspercurry/JTS/issues/2506)), and it is
 about a CLASS, not a run count: a genuinely transient rejection — the
 `silent_auto_retry` vocabulary, `clipped` and `drift_baselines_disagree` — is
 one the same spot would clear on the next take, and it routes to a button no
 unattended session can press.
+
+**The exception, since capture-page build `20260815.5`
+([#2557](https://github.com/jaspercurry/JTS/issues/2557) phase B).** One
+rejection retakes itself: a take whose OWN pre-upload scan found a
+block-aligned render quantum of digital zeros inside the recording — the
+browser capture-FIFO splice, present in the phone's `Float32Array` before it
+uploads. The page then presses its own **Try again** once for that measurement,
+inside the extra-try budget the host already minted, and declares the automatic
+round with `capture_integrity.auto_retake`. It is not a class filter and it
+does not close #2506: it fires only on the page's own measured evidence, so
+every other rejection — including a `drift_baselines_disagree` with no such
+evidence — still waits for a thumb.
 
 **Do not size that gap from the 2026-08-15 remote deaths.** Those sessions died
 on rejected lateral captures, but the cause was located and it was not
@@ -277,18 +290,50 @@ from the Pi.** The relay protocol has the phone
 initiate every capture (`begin_capture {index, attempt}`), and the host→phone
 vocabulary — `capture_authorized` / `capture_deferred` / `capture_refused` /
 `capture_result` / `capture_set_complete` / `capture_set_exhausted` — carries no
-"record now". The page's only two begins that need no thumb are
-`advanceAfterAccepted` (an *accepted* verdict) and the `capture_deferred`
+"record now". The page's begins that need no thumb are
+`advanceAfterAccepted` (an *accepted* verdict), the `capture_deferred`
 re-post loop (which re-posts the identical begin, and only inside the
-begin→authorize exchange, before anything is recorded). A rejected verdict
-reaches neither. So the fire is the page's; what the Pi already publishes is the
+begin→authorize exchange, before anything is recorded), and — since #2557
+phase B — the witness-triggered auto-retake above. Only that third one is
+reachable from a rejected verdict, and only on the page's own capture-time
+evidence. So the fire is the page's; what the Pi already publishes is the
 **decision** — `PhaseVerdict.to_relay_dict()` puts `template` and `auto_retry`
 (`spec.template == TEMPLATE_SILENT_AUTO_RETRY`, today `clipped` and
 `drift_baselines_disagree`) on the wire beside `attempts`, and the page reads
-neither field. Keep the class filter on the Pi when that lands: `auto_retry` is
-already the machine-readable "safe to retry from the same spot", and the
-geometry ask (`cloud_geometry_locked`, or remote's own
-`geometry_retake_unreachable`) is deliberately not in it.
+neither field.
+
+**Where the class filter belongs, revised by what #2557 phase B measured.** The
+earlier ruling here was "keep the class filter on the Pi when that lands —
+`auto_retry` is already the machine-readable *safe to retry from the same
+spot*". That still holds for the #2506 CLASS case, and the geometry ask
+(`cloud_geometry_locked`, or remote's own `geometry_retake_unreachable`) is
+deliberately not in `auto_retry`, which is what makes it usable as that filter.
+It is the wrong filter for the glitch trigger that actually shipped, and the
+re-derivation is worth recording because the two look interchangeable:
+
+* A glitched capture's reason code IS in `auto_retry`. `program_analysis`'s
+  glitch inputs (`epsilon_out_of_bound` / `residual_desync` /
+  `repeat_level_disagree`) are telemetry disambiguators, not codes; the verdict
+  is one code, and `spatial`'s `SCREEN_CAPTURE_GLITCH` maps to
+  `drift_baselines_disagree`, whose template is `silent_auto_retry`. So a
+  Pi-side `auto_retry` filter would have fired on every one of the 13 events of
+  the 2026-08-15 campaign — **and equally on every other glitch-class
+  rejection, whatever caused it**.
+* That is the wrong side of the line this section already draws two paragraphs
+  up. The 2026-08-15 remote deaths were rejected as glitches by a
+  *deterministic* Pi-side playback insertion (#2533), against which an
+  auto-retake is actively harmful — and an `auto_retry` filter cannot tell
+  those from a browser hiccup, because both carry the same code.
+* The page's witness can. A Pi-side insertion into the played stimulus leaves
+  the phone recording a live room; the zeros #2557 detects are in the phone's
+  own buffer and are produced by the browser's capture FIFO. Filtering on
+  *evidence measured in this take* rather than on *the class of the rejection*
+  is what makes the automatic retake safe to spend an attempt on.
+
+So the trigger is page-side; the geometry exclusion is page-side too, and the
+`prompt` field it reads is safe as a proxy only while every geometry rejection
+is prompted or terminal (pinned in
+`tests/test_capture_page_js.py::test_capture_page_auto_retake_never_answers_a_geometry_ask`).
 
 **A transient relay failure is NOT that stall — the page recovers on its own.**
 A network blip on the begin exchange used to land in the same
