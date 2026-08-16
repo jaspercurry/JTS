@@ -770,8 +770,24 @@ def test_rollback_reloads_the_staged_all_muted_config(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize(
     "playback_device, arm, expect_transport",
-    [(None, False, "alsa"), (RING_ACTIVE_PLAYBACK_DEVICE, True, "ring")],
-    ids=["aloop_active_lane", "ring"],
+    [
+        # The LAB/CI OVERRIDE route — `resolve_output_layout` case 1, which
+        # honours any explicit device. It is the only way an `alsa` transport is
+        # still reachable after #2285 P2 (post-seal correction 9). The device is
+        # this campaign's established lab idiom rather than the retired
+        # `outputd_active_content_playback`: re-pointing onto deleted vocabulary
+        # would keep the removed world alive for a test's benefit, which is the
+        # thing correction 9 rules out. It is also NOT one of
+        # `FORBIDDEN_ACTIVE_PLAYBACK_TOKENS` — `outputd_content_playback` is,
+        # being the CONTENT lane, so it cannot stand in here.
+        ("hw:CARD=Lab,DEV=0", False, "alsa"),
+        # The PRODUCTION route — no override, so this walks case 2, the chooser
+        # P2 made unconditional. Previously this row passed the ring device
+        # explicitly and so also went through case 1; routing it through the
+        # chooser is what makes the pair cover both resolution paths.
+        (None, True, "ring"),
+    ],
+    ids=["explicit_lab_lane", "production_chooser_ring"],
 )
 def test_the_load_line_names_the_transport_on_both_polarities(
     monkeypatch, tmp_path, caplog, playback_device, arm, expect_transport
@@ -782,6 +798,13 @@ def test_the_load_line_names_the_transport_on_both_polarities(
     line without this field, and the second is the one new failure mode
     commissioning-on-the-ring introduces. Both polarities, because one would
     pass against a line that hard-coded either answer.
+
+    The polarity pair SURVIVES #2285 P2 while `/state`'s narrows to ring/`null`
+    (post-seal correction 9), and the asymmetry is deliberate: `transport_label`
+    keeps its `alsa` branch because it labels whatever device string it is
+    handed, and this line reports the device the load actually used — including
+    one an operator overrode. Only the `/state` SURFACE contract went
+    single-valued.
 
     The ring arm is also the PROOF that `arm_ring_transport` does something —
     the reason #2412 can ship that helper for P2 to call rather than shipping an

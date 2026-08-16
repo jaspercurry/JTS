@@ -1230,26 +1230,27 @@ async def test_the_transport_gate_invents_no_failure_when_no_graph_was_emitted(
     assert gate["passed"] is True, gate
 
 
-@pytest.mark.xfail(reason="#2412", strict=False)
 async def test_driver_commissioning_still_emits_on_an_unarmed_box(
     tmp_path, monkeypatch,
 ):
-    """CONTROL: the refusal is keyed on the ring, not on commissioning at all.
+    """CONTROL: the refusal is keyed on the graph's coherence, not on the marker.
 
     Without this, a gate that refused every box would satisfy the assertions
-    above. The unarmed path must still reach the emitter on the ALSA lane.
+    above. The unarmed path must still reach the emitter — and since #2285 P2 it
+    reaches it naming the ACTIVE RING, because ``resolve_output_layout`` case 2
+    no longer reads the endpoint marker to choose a transport.
 
-    XFAIL (#2412), and NOT a #2285-P2 regression. Commissioning was already
-    load-broken before P2: at merge-base ``1a4a7c092`` an unarmed roleful box's
-    commissioning emit named ``outputd_active_content_playback``, and
-    ``git grep -nE 'pcm\\.outputd_active_content' 1a4a7c092 -- deploy/`` returns
-    NO definition (positive control: ``pcm.outputd_content_playback`` IS found
-    at ``deploy/alsa/asoundrc.jasper:244``). The device the "control" proved
-    reachable was never openable. P2 only changed WHICH way it fails: the
-    chooser now answers the ring, so the ring-transport gate blocks the emit
-    instead of a missing PCM failing the load. Ring-transport commissioning is
-    tracked in #2412; this stays here, non-strict, as the marker for the
-    successor rather than being deleted.
+    THIS TEST CARRIED AN ``xfail(reason="#2412")`` AND NO LONGER NEEDS ONE. It
+    was marked when the emit was genuinely unreachable: before #2412's waves an
+    unarmed roleful box's commissioning emit named
+    ``outputd_active_content_playback``, a PCM whose definition #2534 had
+    deleted (positive control: ``pcm.outputd_content_playback`` IS still found
+    in ``deploy/alsa/asoundrc.jasper``), so the device the "control" proved
+    reachable was never openable. #2412 Waves 1-3 made ring commissioning work
+    and P2 makes the chooser name the ring, so the emit is now both reachable
+    and coherent. The marker is REMOVED rather than left non-strict — sealed
+    §3.4 rule 3 admits zero xfails, and a passing test wearing an xfail hides
+    the very repair it should be reporting (post-seal correction 9).
     """
     from jasper.active_speaker.staging import prepare_driver_commissioning_config
 
@@ -1270,7 +1271,10 @@ async def test_driver_commissioning_still_emits_on_an_unarmed_box(
 
     assert payload["status"] == "prepared", payload
     assert len(emits) == 1, emits
-    assert emits[0]["playback_device"] == OUTPUTD_ACTIVE_PLAYBACK_DEVICE
+    # The RING, on an UNARMED box — that is the post-P2 meaning of this control.
+    # The marker is false above and the emit still names the ring, which is the
+    # observable consequence of deleting case 2's marker read.
+    assert emits[0]["playback_device"] == RING_ACTIVE_PLAYBACK_DEVICE
     gate = next(
         g
         for g in payload["required_gates"]

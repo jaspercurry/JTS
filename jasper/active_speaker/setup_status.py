@@ -418,21 +418,33 @@ def _commissioning_transport(topology: Any) -> str | None:
     ``None`` when the topology **cannot be read** or resolves to **no device**.
     Rolefulness is deliberately NOT the discriminator, and saying it was would
     mislead the reader this field exists to help: a PASSIVE box resolves the
-    active outputd lane like any other, and follows the marker exactly as a
-    roleful one does — ``alsa`` unarmed, ``ring`` armed.
+    active outputd lane like any other, and reports ``ring`` exactly as a
+    roleful one does.
+
+    **SINGLE-TRANSPORT since #2285 P2** (post-seal correction 9). On a production
+    box this field is ``ring`` or ``None`` — never ``alsa``. P2 deleted
+    ``resolve_output_layout`` case 2's marker read, so the ACTIVE-endpoint marker
+    takes no part in this derivation at all: spied across both the roleful and
+    the passive fixture, ``ring_active_endpoint_armed`` is consulted ZERO times
+    and both polarities report ``ring``. ``alsa`` survives only for a device
+    string that is not the ring, which this path reaches only through an explicit
+    lab/CI override (``resolve_output_layout``'s case 1 — the ``playback_device``
+    argument or ``JASPER_ACTIVE_SPEAKER_PLAYBACK_DEVICE``). ``transport_label``
+    keeps that branch and labels such a device honestly; only this SURFACE
+    narrowed.
 
     **The gate is the DAC PROFILE, measured rather than assumed.**
-    ``resolve_output_layout`` consults the ring marker only when the profile
-    declares an active outputd lane (``supports_active_outputd_lane`` and
+    ``resolve_output_layout`` names the ring when the profile declares an active
+    outputd lane (``supports_active_outputd_lane`` and
     ``active_outputd_lane_channels``); a box failing that condition falls through
-    to ``playback_device=None``, which is the ``no device`` half above. So one
-    profile condition decides both questions this docstring answers, and
-    rolefulness decides neither — verified with a spy on
-    ``ring_active_endpoint_armed``: the repo's non-roleful fixture consults it
-    and reports ``ring`` when armed. (An earlier version of this paragraph named
-    rolefulness as the consult gate. That was a second false sentence in place of
-    the first — the failure mode this campaign named in its own Wave 1 — so the
-    replacement was measured before it was written.)
+    to ``playback_device=None``, which is the ``no device`` half above. All five
+    registered ``DacProfile``s declare such a lane, so that fall-through is not
+    reachable from any shipped profile today — the two tests covering it stub the
+    collaborator rather than build a lane-less topology. (Two earlier versions of
+    this paragraph were false in turn: the first named rolefulness as the consult
+    gate, the second kept saying the marker was consulted at all. Each was
+    replaced only after measurement — which is why this one states a spy count
+    rather than a mechanism.)
 
     Fail-soft like every other field here: the derivation reaches the topology
     layer, and a box whose route cannot be read reports no transport rather than

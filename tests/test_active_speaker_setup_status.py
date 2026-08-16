@@ -1252,35 +1252,56 @@ def test_commissioning_summary_idle_with_no_evidence() -> None:
 @pytest.mark.parametrize(
     "topology_factory, armed, expected",
     [
-        (_active_topology, False, "alsa"),
+        # THE MARKER IS NO LONGER THE DISCRIMINATOR, and these four rows are
+        # what say so. Both polarities of the reconciler's real ACTIVE-endpoint
+        # marker are still driven, and both now answer `ring`: #2285 P2 deleted
+        # `resolve_output_layout` case 2's marker read, so a box that resolves
+        # the active outputd lane names the ring unconditionally.
+        (_active_topology, False, "ring"),
         (_active_topology, True, "ring"),
-        # ROLEFULNESS IS NOT THE DISCRIMINATOR, and this PAIR is what says so.
-        # A passive box resolves the active outputd lane like any other and
-        # follows the marker exactly as a roleful one does; only an unreadable
-        # topology or a route with no device reports null. The docstring and
-        # the observability HANDOFF both used to name "a passive box" as a null
-        # case — false, and these are the pins that keep the corrected sentence
-        # true.
-        (_passive_topology, False, "alsa"),
-        # The ARMED half, and the row that makes "not a rolefulness test" mean
-        # something: a non-roleful box reaching `ring`. Its absence is what let
-        # a second false sentence ("rolefulness gates whether the marker is
-        # consulted at all") survive the first fix round — a spy shows the
-        # passive fixture consults the marker and lands here.
+        # ROLEFULNESS IS NOT THE DISCRIMINATOR EITHER, and this pair keeps
+        # saying so: a passive box resolves the active outputd lane like any
+        # other. Only an unreadable topology or a route with no device reports
+        # null. The docstring and the observability HANDOFF both used to name
+        # "a passive box" as a null case — false, and these are the pins that
+        # keep the corrected sentence true.
+        (_passive_topology, False, "ring"),
         (_passive_topology, True, "ring"),
     ],
-    ids=["active_aloop", "active_ring", "passive_aloop", "passive_ring"],
+    ids=["active_unarmed", "active_armed", "passive_unarmed", "passive_armed"],
 )
 def test_commissioning_summary_transport_follows_the_box(
     monkeypatch, topology_factory, armed, expected
 ) -> None:
-    """`/state` names the transport, on both polarities (#2412 Wave 4).
+    """`/state` names the transport of the box it is asked about (#2412 Wave 4).
 
     `curl /state | jq .` is this campaign's standing probe, and a commissioning
     block that reported a device without its transport is the exact half-fact
-    that produced #2412 — a graph can name the ACTIVE lane and reach it over
-    either snd-aloop or the ring, and only one of those is fed by fan-in under
-    `shm_ring`.
+    that produced #2412.
+
+    **The production contract is SINGLE-TRANSPORT since #2285 P2** (post-seal
+    correction 9). Wave 4 shipped this field as marker-following — `alsa`
+    unarmed, `ring` armed — and P2's deletion of case 2's marker read made that
+    unreachable: `/state.transport` is `ring` or `null` on a production box, and
+    the `alsa` value survives only for a device string that is not the ring
+    (the explicit lab/CI override route, pinned at the derivation by
+    `test_commissioning_summary_transport_is_null_when_no_device_resolves`'s
+    neighbours in `test_fanin_coupling`). Both marker polarities are still
+    driven here precisely BECAUSE the answer no longer depends on them — a row
+    pair that agrees is the evidence for the deletion, not a redundant case.
+
+    NON-CONSTANCY lives on the ring/`null` axis now, and its rows are the two
+    dedicated siblings below — `test_state_reports_null_when_the_chooser_answers_no_device`
+    (the surface honours a no-device answer; it is the one that kills
+    `transport_label(device) or TRANSPORT_ALSA`) and
+    `test_commissioning_summary_transport_is_null_on_an_unreadable_topology`.
+    They are NOT folded in as rows here: a null row cannot be driven from a
+    topology — every registered `DacProfile` declares an active outputd lane, so
+    `resolve_output_layout`'s no-device fall-through is unreachable by fixture
+    and both siblings must stub a collaborator to reach it. Duplicating that
+    stub as a fifth row would be a second owner of one fact. Verified by
+    mutation instead: a constant `return TRANSPORT_RING` in
+    `_commissioning_transport` is killed by this module.
 
     Driven through the reconciler's real ACTIVE-endpoint marker rather than by
     stubbing the answer, so this also pins that `/state` reads the SAME chooser
