@@ -7560,8 +7560,9 @@ def test_linearized_ripple_polish_is_skipped_on_a_one_sided_band(caplog, monkeyp
     it therefore REFUSES, and a refused session stashes no candidate for the
     arithmetic below to read.
 
-    That flip is real and is pinned as its own claim, with these numbers, in
-    ``tests/test_crossover_v2_level_frame_dispute.py`` — it is not hidden here.
+    That flip is real and is pinned as its own claim, with these numbers, by
+    ``test_a_disputed_frame_can_cost_a_session_that_used_to_ship`` directly
+    below — it is not hidden here.
     It is held off THIS test because it is not this test's subject: the subject
     is that a one-sided band skips the scan and leaves the anchor standing,
     which is upstream of every gate and is measured identically either way.
@@ -7661,6 +7662,82 @@ def test_linearized_ripple_polish_is_skipped_on_a_one_sided_band(caplog, monkeyp
     assert (
         "event=correction.crossover_v2_linearization_trim_rejected" not in caplog.text
     )
+
+
+def test_a_disputed_frame_can_cost_a_session_that_used_to_ship(caplog):
+    """**#2599's named cost, pinned with the numbers rather than described.**
+
+    The same one-sided fixture as the test above, run end to end with nothing
+    supplied. Its two level estimators disagree by 5.799 dB, so since #2599 the
+    frame is disputed and does not place the anchor — which moves the anchored
+    tweeter from −2.161 to −7.960 dB and the realized inter-driver level from
+    **+2.758** to **−3.042** dB. Against a 3.0 dB tolerance this session used to
+    clear by 0.242 dB and now misses by 0.042 dB, so it REFUSES where it used to
+    ship.
+
+    **This is the trade, and it is deliberate.** The realized-level gate is not
+    new and its threshold did not move; what changed is that it is now grading a
+    pair placed by the estimator that is NOT in dispute. A session whose
+    undisputed placement cannot realize level within tolerance is one whose two
+    instruments disagree AND whose trim-solve placement mislevels — the honest
+    answer to which is the refusal the household already has copy for, not a
+    tune hung off a number the same session flagged ``unsure``/``refit``.
+
+    **Why a scan usually absorbs it, and why this fixture cannot.** The planner
+    grades the anchor AND the ripple scan's polish and commits whichever levels
+    better, so an anchor pushed past tolerance is normally rescued — that is
+    exactly what happens in
+    ``test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds``
+    (anchor −4.295, committed −1.195). A ONE-SIDED ripple band skips the scan
+    entirely, so the anchor is the only pair there is. The population this costs
+    is therefore narrow: disputed frame AND one-sided band AND an undisputed
+    placement within a few tenths of the tolerance.
+
+    **The proper fix is not this.** Neither estimator is known wrong; they
+    disagree, and the realized check cannot referee them ("One estimator, not a
+    second opinion"). Settling it needs a third, broadband arbitration
+    instrument — named as the follow-up on #2599, not built here. Until then
+    this refusal is the available correctness.
+    """
+    caplog.set_level(logging.WARNING, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    _one_sided_tweeter_db = 8.0 * np.exp(
+        -0.5 * ((np.log2(_LINEARIZABLE_FREQS_HZ / 2500.0) / 0.3) ** 2)
+    )
+    fakes.measure = lambda program: _eligible_measure_analysis(
+        program, tweeter_db=_one_sided_tweeter_db,
+    )
+    c = _one_sided_conductor(fakes)
+
+    with pytest.MonkeyPatch.context() as mp:
+        plans = _plan_spy(mp)
+        _run_phase(c, 1, 1)
+        with pytest.raises(CaptureBeginRefused) as excinfo:
+            _run_phase(c, 2, 2)
+
+    assert excinfo.value.code == REASON_DRIVER_LEVELS_DISAGREE
+    assert c.candidate is None
+    assert fakes.published_candidates == []
+
+    plan = plans[-1]
+    assert plan.level_frame_disagreement_db == pytest.approx(5.799, abs=0.02)
+    assert plan.level_frame_admission.admitted is False
+    assert plan.trim.anchored_db["tweeter"] == pytest.approx(-7.960, abs=0.02)
+    # The margin, both ways, so the knife edge is a number a reader can check
+    # rather than a claim in prose.
+    assert plan.realized_level_match.difference_db == pytest.approx(
+        -3.042, abs=0.02
+    )
+    assert plan.realized_level_match.matched is False
+    assert plan.level_frame_admission.anchor_delta_db["tweeter"] == pytest.approx(
+        -5.799, abs=0.02
+    )
+    # …and the household is told WHY, not just that something failed.
+    assert (
+        "event=correction.crossover_v2_linearization_level_frame_excluded"
+        in caplog.text
+    )
+    assert "reason=frame_disagreement_unadjudicated" in caplog.text
 
 
 def test_straddling_band_still_runs_the_linearized_ripple_polish(caplog):
