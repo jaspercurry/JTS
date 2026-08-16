@@ -250,10 +250,18 @@ def _active_graph_env(
         topology = _active_topology("mono", "active_2_way")
         preset = ActiveSpeakerPreset.from_mapping(_two_way_preset("mono"))
 
+    # #2285 P2: staged at the ACTIVE RING, the one legal ACTIVE endpoint. This
+    # used to stage `outputd_active_content_playback`; a graph naming that lane
+    # is no longer a legal active graph, so the reconciler declines to arm and
+    # falls through to the passive branch — which is the correct forward-only
+    # behaviour for a box left on the retired lane, and the wrong INPUT for a
+    # fixture whose whole subject is the armed path.
+    from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
+
     active_config = tmp_path / "active_speaker_baseline.yml"
     active_text = emit_active_speaker_baseline_config(
         preset,
-        playback_device="outputd_active_content_playback",
+        playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
         baseline_id=f"test-{channels}",
     )
     if channels not in {2, 4, 6}:
@@ -261,8 +269,8 @@ def _active_graph_env(
             "channels: { in: 2, out: 2 }",
             f"channels: {{ in: 2, out: {channels} }}",
         ).replace(
-            "channels: 2\n    device: \"outputd_active_content_playback\"",
-            f"channels: {channels}\n    device: \"outputd_active_content_playback\"",
+            f'channels: 2\n    device: "{RING_ACTIVE_PLAYBACK_DEVICE}"',
+            f'channels: {channels}\n    device: "{RING_ACTIVE_PLAYBACK_DEVICE}"',
         )
     active_config.write_text(active_text, encoding="utf-8")
     topology_path = tmp_path / "output_topology.json"
@@ -286,6 +294,38 @@ def _active_graph_env(
     if write_topology:
         out["JASPER_OUTPUT_TOPOLOGY_PATH"] = str(topology_path)
     return out
+
+
+def _half_moved_graph_env(tmp_path: Path) -> dict[str, str]:
+    """Stage a HALF-moved graph: Ring A capture, passive-lane playback.
+
+    The capture half moved to the ring and the playback half did not, which is
+    what an interrupted re-emit or a hand-edit leaves behind. Deliberately not
+    an active-endpoint playback device: that class is DEMOTED to the passive
+    fail-closed route by ``outputd_active_lane_decision`` before the coherence
+    report ever sees it, so a fixture built on one cannot reach an exit 1.
+    """
+    from jasper.camilla_config_contract import (
+        DEFAULT_CAPTURE_DEVICE,
+        DEFAULT_PLAYBACK_DEVICE,
+    )
+    from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE, RING_CAPTURE_DEVICE
+
+    env = _active_graph_env(tmp_path, channels=2)
+    statefile = Path(env["JASPER_CAMILLA_STATEFILE"])
+    active_config = Path(
+        statefile.read_text(encoding="utf-8").split("config_path:", 1)[1].strip()
+    )
+    text = active_config.read_text(encoding="utf-8")
+    assert RING_ACTIVE_PLAYBACK_DEVICE in text, text
+    assert DEFAULT_CAPTURE_DEVICE in text, text
+    active_config.write_text(
+        text.replace(RING_ACTIVE_PLAYBACK_DEVICE, DEFAULT_PLAYBACK_DEVICE).replace(
+            DEFAULT_CAPTURE_DEVICE, RING_CAPTURE_DEVICE
+        ),
+        encoding="utf-8",
+    )
+    return env
 
 
 def _active_leader_graph_env(
@@ -324,11 +364,16 @@ def _active_leader_graph_env(
         ),
         encoding="utf-8",
     )
+    # #2285 P2: camilla#2's endpoint is the ACTIVE RING, for the same reason
+    # `_active_graph_env` stages it there — a graph naming the retired snd-aloop
+    # lane is no longer a legal active graph and the gate declines to arm it.
+    from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
+
     crossover_config = tmp_path / "grouping_active_leader_crossover.yml"
     crossover_config.write_text(
         emit_active_speaker_driver_domain_config(
             preset,
-            playback_device="outputd_active_content_playback",
+            playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
             program_channel="mono",
         ),
         encoding="utf-8",
@@ -745,7 +790,13 @@ def test_reconcile_innomaker_arms_the_width_two_lane_on_a_legal_active_graph(
     assert result.returncode == 0, result.stderr
     outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
     assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
-    assert "JASPER_OUTPUTD_CONTENT_PCM=outputd_active_content_capture" in outputd_env
+    # #2285 P2 (A6): a ROLEFUL box reaches outputd over the ACTIVE RING, which
+    # outputd reads as a FILE — it opens no content PCM at all. This used to
+    # name the snd-aloop ACTIVE capture half, a PCM #2534 deleted. Written
+    # EXPLICIT-EMPTY rather than omitted, so a box carrying the old value
+    # converges instead of keeping it; the retired name is asserted ABSENT.
+    assert "JASPER_OUTPUTD_CONTENT_PCM=''" in outputd_env
+    assert "outputd_active_content_capture" not in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=2" in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_LANE=1" in outputd_env
     # The declared final-edge format is unchanged by arming the lane.
@@ -1155,8 +1206,18 @@ def test_reconcile_dual_apple_pins_pcm_order_from_saved_topology(
     assert "JASPER_OUTPUTD_DAC_FORMAT=S24_3LE" not in outputd_env
     # A wide composite sink (4ch) is already fenced off outputd's stereo-only
     # features by its channel width, so the reconciler does NOT set the 2-ch
-    # active-lane marker here — it stays cleared.
-    assert "JASPER_OUTPUTD_ACTIVE_LANE=''" in outputd_env
+    # WIDTH knob here — it stays cleared.
+    assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=''" in outputd_env
+    # #2285 P2: the lane PAIR is staged, because the accepted graph now names
+    # the ACTIVE RING. This used to assert the pair stayed cleared, which was
+    # only true while the fixture staged the snd-aloop composite — the shape the
+    # reconciler's own comment calls "an ALOOP composite keeps the unconditional
+    # clear". That shape no longer exists: the aloop ACTIVE endpoint is retired,
+    # so a composite with a legal active graph is a RING composite (jts.local,
+    # armed 2026-08-15). The two markers are one fact, so both are asserted —
+    # outputd bails at startup on an incoherent pair.
+    assert "JASPER_OUTPUTD_ACTIVE_LANE=1" in outputd_env
+    assert "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT=1" in outputd_env
     template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
     assert "pcm.outputd_dac" in template
     assert "type null" in template
@@ -1745,7 +1806,13 @@ def test_reconcile_dac8x_active_graph_wide_profile_emits_that_width(tmp_path: Pa
     outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
     assert "JASPER_OUTPUTD_BACKEND=alsa" in outputd_env
     assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
-    assert "JASPER_OUTPUTD_CONTENT_PCM=outputd_active_content_capture" in outputd_env
+    # #2285 P2 (A6): a ROLEFUL box reaches outputd over the ACTIVE RING, which
+    # outputd reads as a FILE — it opens no content PCM at all. This used to
+    # name the snd-aloop ACTIVE capture half, a PCM #2534 deleted. Written
+    # EXPLICIT-EMPTY rather than omitted, so a box carrying the old value
+    # converges instead of keeping it; the retired name is asserted ABSENT.
+    assert "JASPER_OUTPUTD_CONTENT_PCM=''" in outputd_env
+    assert "outputd_active_content_capture" not in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=6" in outputd_env
     assert "JASPER_OUTPUTD_DAC_PCM=outputd_dac" in outputd_env
     assert "JASPER_OUTPUTD_DUAL_DAC_A_PCM=''" in outputd_env
@@ -1772,7 +1839,13 @@ def test_reconcile_dac8x_active_graph_two_way_drives_only_two(tmp_path: Path):
     assert result.returncode == 0, result.stderr
     outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
     assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
-    assert "JASPER_OUTPUTD_CONTENT_PCM=outputd_active_content_capture" in outputd_env
+    # #2285 P2 (A6): a ROLEFUL box reaches outputd over the ACTIVE RING, which
+    # outputd reads as a FILE — it opens no content PCM at all. This used to
+    # name the snd-aloop ACTIVE capture half, a PCM #2534 deleted. Written
+    # EXPLICIT-EMPTY rather than omitted, so a box carrying the old value
+    # converges instead of keeping it; the retired name is asserted ABSENT.
+    assert "JASPER_OUTPUTD_CONTENT_PCM=''" in outputd_env
+    assert "outputd_active_content_capture" not in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=2" in outputd_env
     # A 2-ch active sink is the case channel width can't distinguish from a
     # full-range stereo L/R sink, so the reconciler marks it explicitly; outputd
@@ -1781,13 +1854,16 @@ def test_reconcile_dac8x_active_graph_two_way_drives_only_two(tmp_path: Path):
     # ITS PAIR, end-to-end through the real script. The lane marker and the
     # ring-endpoint marker are one fact with two consumers — outputd bails at
     # startup on an incoherent pair — so the same helper states both from the
-    # same decision. Here the accepted endpoint is the ALSA active lane, so the
-    # ring marker must be explicitly EMPTY: positive equality against the ring
-    # device, never "not the ALSA lane".
-    assert "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT=''" in outputd_env
+    # same decision.
+    #
+    # #2285 P2: the accepted endpoint is now the ACTIVE RING, the one legal
+    # ACTIVE endpoint, so this marker is SET rather than empty. It used to be
+    # explicitly empty here because the accepted endpoint was the snd-aloop
+    # ALSA lane, which no longer resolves.
+    assert "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT=1" in outputd_env
     assert (
         "mode=single_alsa_active active_channels=2 active_lane_cap=8 "
-        "active_endpoint=outputd_active_content_playback" in result.stderr
+        "active_endpoint=jts_ring_active_playback" in result.stderr
     )
 
 
@@ -1808,7 +1884,13 @@ def test_reconcile_single_apple_active_graph_drives_width_two(tmp_path: Path):
     assert "JASPER_AUDIO_DAC_ID=apple_usb_c_dongle" in env_text
     outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
     assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
-    assert "JASPER_OUTPUTD_CONTENT_PCM=outputd_active_content_capture" in outputd_env
+    # #2285 P2 (A6): a ROLEFUL box reaches outputd over the ACTIVE RING, which
+    # outputd reads as a FILE — it opens no content PCM at all. This used to
+    # name the snd-aloop ACTIVE capture half, a PCM #2534 deleted. Written
+    # EXPLICIT-EMPTY rather than omitted, so a box carrying the old value
+    # converges instead of keeping it; the retired name is asserted ABSENT.
+    assert "JASPER_OUTPUTD_CONTENT_PCM=''" in outputd_env
+    assert "outputd_active_content_capture" not in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=2" in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_LANE=1" in outputd_env
     assert "mode=single_alsa_active active_channels=2 active_lane_cap=2" in result.stderr
@@ -1833,19 +1915,28 @@ def test_reconcile_active_leader_program_bake_uses_crossover_endpoint(
     assert result.returncode == 0, result.stderr
     outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
     assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
-    assert "JASPER_OUTPUTD_CONTENT_PCM=outputd_active_content_capture" in outputd_env
+    # #2285 P2 (A6): a ROLEFUL box reaches outputd over the ACTIVE RING, which
+    # outputd reads as a FILE — it opens no content PCM at all. This used to
+    # name the snd-aloop ACTIVE capture half, a PCM #2534 deleted. Written
+    # EXPLICIT-EMPTY rather than omitted, so a box carrying the old value
+    # converges instead of keeping it; the retired name is asserted ABSENT.
+    assert "JASPER_OUTPUTD_CONTENT_PCM=''" in outputd_env
+    assert "outputd_active_content_capture" not in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=2" in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_LANE=1" in outputd_env
     # ITS PAIR, end-to-end through the real script. The lane marker and the
     # ring-endpoint marker are one fact with two consumers — outputd bails at
     # startup on an incoherent pair — so the same helper states both from the
-    # same decision. Here the accepted endpoint is the ALSA active lane, so the
-    # ring marker must be explicitly EMPTY: positive equality against the ring
-    # device, never "not the ALSA lane".
-    assert "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT=''" in outputd_env
+    # same decision.
+    #
+    # #2285 P2: the accepted endpoint is now the ACTIVE RING, the one legal
+    # ACTIVE endpoint, so this marker is SET rather than empty. It used to be
+    # explicitly empty here because the accepted endpoint was the snd-aloop
+    # ALSA lane, which no longer resolves.
+    assert "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT=1" in outputd_env
     assert (
         "mode=single_alsa_active active_channels=2 active_lane_cap=8 "
-        "active_endpoint=outputd_active_content_playback" in result.stderr
+        "active_endpoint=jts_ring_active_playback" in result.stderr
     )
 
 
@@ -1916,7 +2007,13 @@ def test_reconcile_active_graph_does_not_render_route_aliases(tmp_path: Path):
 
     assert result.returncode == 0, result.stderr
     outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
-    assert "JASPER_OUTPUTD_CONTENT_PCM=outputd_active_content_capture" in outputd_env
+    # #2285 P2 (A6): a ROLEFUL box reaches outputd over the ACTIVE RING, which
+    # outputd reads as a FILE — it opens no content PCM at all. This used to
+    # name the snd-aloop ACTIVE capture half, a PCM #2534 deleted. Written
+    # EXPLICIT-EMPTY rather than omitted, so a box carrying the old value
+    # converges instead of keeping it; the retired name is asserted ABSENT.
+    assert "JASPER_OUTPUTD_CONTENT_PCM=''" in outputd_env
+    assert "outputd_active_content_capture" not in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=2" in outputd_env
     template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
     assert "pcm.outputd_dac {\n    type hw\n    card sndrpihifiberry\n" in template
@@ -2500,13 +2597,31 @@ def test_the_note_prefix_the_script_matches_is_the_one_the_cli_prints(
     assert out.startswith("ok note="), out
 
 
-def test_outputd_env_validation_rejects_active_writer_passive_reader(
+def test_outputd_env_validation_rejects_a_half_moved_graph(
     tmp_path: Path,
     capsys,
 ) -> None:
+    """The CLI's exit-1 path, on the contradiction that still reaches it.
+
+    #2285 P2 renamed and re-pointed this from
+    ``..._rejects_active_writer_passive_reader``. Both of that title's shapes
+    stopped reaching an exit 1, for two DIFFERENT reasons, and neither is a
+    regression:
+
+      * the ACTIVE RING under a loopback plan is the documented mid-arm
+        WAYPOINT — a note at rc 0 on purpose, because reporting it as an error
+        deadlocked the arm ladder on jts3 (2026-08-11);
+      * the RETIRED snd-aloop ACTIVE lane is in ``_ACTIVE_ENDPOINT_DEVICES``, so
+        a graph naming it fails ``outputd_active_lane_decision`` and is DEMOTED
+        to ``devices=None`` before the coherence report runs — the fail-closed
+        demotion, which this command has always had.
+
+    What still reaches the report is a graph whose halves disagree, which is why
+    this drives that instead. Nothing else pins this command's rc-1 path.
+    """
     from jasper.cli.audio_config import main as audio_config_main
 
-    graph_env = _active_graph_env(tmp_path, channels=2)
+    graph_env = _half_moved_graph_env(tmp_path)
     base_env = tmp_path / "jasper.env"
     base_env.write_text("JASPER_AUDIO_DAC_ID=hifiberry_dac8x\n", encoding="utf-8")
     outputd_env = tmp_path / "outputd.env"
@@ -2539,7 +2654,7 @@ def test_outputd_env_validation_rejects_active_writer_passive_reader(
     )
 
     assert result == 1
-    assert "post-DSP route disconnected" in capsys.readouterr().out
+    assert "HALF-moved graph" in capsys.readouterr().out
 
 
 def _outputd_env_key_present(outputd_env: str, key: str) -> bool:

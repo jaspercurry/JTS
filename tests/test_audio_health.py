@@ -278,10 +278,14 @@ def test_failed_inactive_renderer_is_not_disguised_as_idle() -> None:
 # already detected it for doctor; these pin that /state stops calling it ready.
 
 _PARKED_HEADLINE = "Speaker is parked — audio cannot reach the drivers"
+# #2285 P2 (A6) retired the snd-aloop ACTIVE lane's outputd capture PAIRING
+# along with the endpoint, so this shape no longer reports a capture MISMATCH —
+# there is no registered capture to mismatch against. The unpaired-device arm of
+# `transport_coherence_errors` reports it instead. Same box, same verdict
+# (parked), different sentence.
 _ROUTE_DISCONNECTED = (
-    "post-DSP route disconnected: Camilla playback="
-    "'outputd_active_content_playback' requires outputd capture="
-    "'outputd_active_content_capture', got 'outputd_content_capture'"
+    "post-DSP route has no registered outputd capture for "
+    "Camilla playback='outputd_active_content_playback'"
 )
 
 
@@ -534,7 +538,7 @@ def test_transport_coherence_error_is_not_disguised_as_audio_is_ready() -> None:
 
     assert health["signal_path"]["status"] == "issue"
     assert health["signal_path"]["headline"] == _PARKED_HEADLINE
-    assert "post-DSP route disconnected" in health["signal_path"]["detail"]
+    assert _ROUTE_DISCONNECTED in health["signal_path"]["detail"]
     assert health["overall"]["status"] == "issue"
     assert health["overall"]["headline"] == _PARKED_HEADLINE
     assert health["overall"]["headline"] != "Audio is ready"
@@ -586,7 +590,7 @@ def test_parked_detail_names_the_dac_that_cannot_drive_an_active_layout() -> Non
     })
 
     detail = health["signal_path"]["detail"]
-    assert "post-DSP route disconnected" in detail
+    assert _ROUTE_DISCONNECTED in detail
     assert "InnoMaker HiFi AMP Pro" in detail
     assert "/sound/setup/" in detail
     # Passive is not a free remedy: it sends full-range into every assigned
@@ -631,8 +635,7 @@ def test_transport_state_pairs_the_route_error_with_the_dac_capability_reason(
     )
 
     assert any(
-        "post-DSP route disconnected" in error
-        for error in state["coherence_errors"]
+        _ROUTE_DISCONNECTED in error for error in state["coherence_errors"]
     )
     assert state["capability_gap"] == {
         "device_id": PASSIVE_ONLY_DAC_ID,
