@@ -3254,9 +3254,11 @@ alone:
   would each be a claim in the state frame, where the residual is the
   chained-round contaminant #2611 removed;
 - the safety evidence carries `probe_shape_graded: false` beside `probe_graded`,
-  and the done screen shows a third caveat ("this round changed the crossover
-  point, so this check could compare loudness but not the correction's shape")
-  beside the Verified badge.
+  and the done screen shows a third caveat ("This check could compare loudness
+  but not the correction's shape this round.") beside the Verified badge. That
+  copy names no CAUSE on purpose: four paths reach this verdict — corner moved,
+  applied record displaced, record names no graph, record names no corner — and
+  the journal is where the specific one is named.
 
 With neither axis the probe is absent exactly as before, and
 `event=correction.crossover_v2_declared_transfer_unavailable` names why.

@@ -1789,13 +1789,23 @@ def _done_nudges(
             # rules: no hardware noun, no instruction to act, a statement about
             # what the check could and could not confirm (#2614). This one is
             # not a finding about the speaker at all — the shape check simply
-            # did not run, because this round changed the crossover point and
-            # there is no like-for-like comparison to make against the previous
-            # sound. The loudness half DID run, and it found nothing, which is
-            # why the badge beside this still says Verified.
+            # did not run. The loudness half DID run, and it found nothing,
+            # which is why the badge beside this still says Verified.
+            #
+            # **No cause clause, deliberately.** FOUR paths reach this verdict —
+            # the crossover corner moved, the applied record was displaced, it
+            # named no graph, or it is era-older and names no corner — and the
+            # first draft's "this round changed the crossover point" was true
+            # for one of them and false on the screen for the other three. The
+            # journal already names the specific reason on
+            # ``…previous_graph_unavailable``, so the household copy says the
+            # part that is true every time and nothing else. Reason-aware copy
+            # is available here (``_level_mismatch_text``'s #2537 precedent one
+            # function down) and is not worth four sentences for a caveat whose
+            # action is identical in every case.
             "text": (
-                "This round changed the crossover point, so this check could "
-                "compare loudness but not the correction's shape."
+                "This check could compare loudness but not the correction's "
+                "shape this round."
             ),
         })
     return nudges
