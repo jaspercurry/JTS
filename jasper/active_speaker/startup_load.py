@@ -1486,6 +1486,81 @@ def build_driver_commission_load_preflight(
         bool(transport_gate.get("passed")) if transport_gate else True
     )
 
+    # THE RING THIS GRAPH NAMES IS FED AND READ (#2412). The gate above is a
+    # MIRROR of Gate 1, which proves the emitted graph's two ends name one
+    # transport. Gate 1 lives in a PURE BUILDER and deliberately reads no daemon
+    # env, so it proves coherence and not liveness: a ring/ring graph on a box
+    # whose fan-in is still loopback-coupled, or whose outputd endpoint was
+    # never armed, is self-consistent and passes it. That graph then loads
+    # cleanly and plays to nobody — the sweep excites Ring A while nothing fills
+    # it and nothing reads it, with every daemon healthy. This is the live half,
+    # and it stands HERE because a config prepared on an unarmed box is
+    # harmless while a LOAD on one is the silent sweep, and this preflight is
+    # the last thing that runs before an audible load.
+    #
+    # TWO CONJUNCTS, TWO OWNERS, TWO REMEDIES, deliberately not collapsed into
+    # one "transport not ready" blocker: three causes behind one string is how
+    # an operator learns to ignore the string. The coupling lives in
+    # `fanin.env`, whose single writer is `jasper-fanin-coupling-reconcile`; the
+    # ACTIVE-endpoint marker lives in `outputd.env`, whose single writer is
+    # `jasper-audio-hardware-reconcile`. Two files, two reconcilers, two facts.
+    # Both are read through the terms that already own them in
+    # `jasper.fanin_coupling`, and both read their FILE FRESH rather than
+    # `os.environ`: this preflight runs inside the long-lived control daemon and
+    # the socket-activated wizards, which never `EnvironmentFile=`d either file
+    # and stay alive across a reconcile, so `os.environ` is a stale reader of
+    # both keys.
+    #
+    # NOT the doctor's `check_active_ring_split_transport`, and no helper is
+    # extracted to make it look like one: that check is a different predicate —
+    # the graph names the ACTIVE ring AND the coupling is not `shm_ring`, with
+    # no marker term and a docstring that forbids adding one. What the two share
+    # is a single-owner sub-expression, which is the property that matters, not
+    # one predicate with two readers.
+    #
+    # Off the ring there is nothing to arm: a non-ring sink is carried by the
+    # snd-aloop tap fan-in feeds under every coupling, so this passes and an
+    # unarmed box behaves exactly as it did before.
+    from jasper.fanin_coupling import (
+        RING_PCM_DEVICES,
+        is_shm_ring_coupling,
+        ring_active_endpoint_armed,
+    )
+
+    candidate_playback_device = candidate.get("playback_device")
+    transport_is_ring = candidate_playback_device in RING_PCM_DEVICES
+    ring_feed_armed = True
+    ring_endpoint_armed = True
+    if transport_is_ring:
+        # Lazy import, and NOT because a top-level one would be circular from
+        # here — it would not; `jasper.fanin.coupling_reconcile` imports
+        # `jasper.fanin_coupling`, and this module is in neither direction of
+        # that pair. It is lazy because that module is ~5k lines and this one is
+        # imported by the socket-activated wizards, which reach this branch only
+        # on a ring box. The PATH is passed rather than defaulted because
+        # `read_persisted_coupling`'s default argument binds the constant at
+        # import time, so passing it is what makes the read follow the module
+        # constant at CALL time — and what makes the freshness contract testable
+        # against a real file.
+        from jasper.fanin.coupling_reconcile import (
+            FANIN_ENV_PATH,
+            read_persisted_coupling,
+        )
+
+        ring_feed_armed = is_shm_ring_coupling(
+            read_persisted_coupling(FANIN_ENV_PATH)
+        )
+        ring_endpoint_armed = ring_active_endpoint_armed()
+    transport_armed = ring_feed_armed and ring_endpoint_armed
+    unarmed_conjuncts = [
+        text
+        for armed, text in (
+            (ring_feed_armed, "fan-in is not coupled to it"),
+            (ring_endpoint_armed, "the output endpoint is not armed onto it"),
+        )
+        if not armed
+    ]
+
     gates = [
         _gate(
             "speaker_ready_for_active_load",
@@ -1543,6 +1618,24 @@ def build_driver_commission_load_preflight(
                 or "Commissioning emits on the active ALSA lane"
             ),
         ),
+        _gate(
+            "commissioning_transport_armed",
+            label="The transport this commissioning graph names is fed and read",
+            passed=transport_armed,
+            message=(
+                (
+                    "The ring this graph plays into is fed by fan-in and read "
+                    "by the output daemon"
+                    if transport_is_ring
+                    else "Commissioning loads onto the active ALSA lane"
+                )
+                if transport_armed
+                else (
+                    "This graph plays into the ring, but "
+                    + " and ".join(unarmed_conjuncts)
+                )
+            ),
+        ),
     ]
     issues: list[dict[str, str]] = []
     issues.extend(
@@ -1555,6 +1648,27 @@ def build_driver_commission_load_preflight(
         for issue in prepare.get("issues", [])
         if isinstance(issue, dict)
     )
+    # One issue per FAILED conjunct, each carrying its OWN reconciler's remedy.
+    # The household copy behind the two codes is the same sentence, but the
+    # operator's two remedies are not interchangeable and a box can need both.
+    if not ring_feed_armed:
+        issues.append(_issue(
+            "blocker",
+            "commissioning_ring_feed_unarmed",
+            "this speaker's driver test plays into the ring, but fan-in is not "
+            "coupled to it, so nothing fills it and the test would measure "
+            "silence. Arm the coupling with `sudo /opt/jasper/.venv/bin/"
+            "jasper-fanin-coupling-reconcile shm_ring`.",
+        ))
+    if not ring_endpoint_armed:
+        issues.append(_issue(
+            "blocker",
+            "commissioning_active_endpoint_unarmed",
+            "this speaker's driver test plays into the ring, but the output "
+            "endpoint is not armed onto it, so nothing reads it and the test "
+            "would measure silence. Arm the endpoint with `sudo systemctl "
+            "start jasper-audio-hardware-reconcile`, then re-arm the speaker.",
+        ))
     load_allowed = (
         speaker_ready
         and prepared

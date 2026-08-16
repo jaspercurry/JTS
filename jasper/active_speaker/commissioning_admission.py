@@ -754,7 +754,9 @@ def issue_protection_evidence(
         # a ring/ring graph on a LOOPBACK-coupled box is self-consistent, passes
         # here, and still captures a ring nobody writes. Teaching this check the
         # box would make a protection check read reconciler env; the liveness
-        # conjunct belongs to the load preflight's armed-transport gate instead.
+        # conjunct belongs to the load preflight's armed-transport gate instead
+        # — shipped as `commissioning_transport_armed` in
+        # `startup_load.build_driver_commission_load_preflight` (#2412 Wave 3).
         #
         # The samplerate conjunct is a separate axis and is unchanged — the
         # ring does not alter the graph's sample rate.

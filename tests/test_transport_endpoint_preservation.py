@@ -951,43 +951,41 @@ def _recorded_commissioning_emit(monkeypatch):
     return calls
 
 
-@pytest.mark.parametrize("route", ["marker", "explicit", "second_ring_member"])
-async def test_driver_commissioning_refuses_the_ring_before_it_emits(
+@pytest.mark.parametrize("route", ["marker", "explicit"])
+async def test_driver_commissioning_emits_a_coherent_graph_on_the_active_ring(
     tmp_path, monkeypatch, route,
 ):
-    """An armed box gets a LOUD refusal, not a half-moved graph.
+    """THE CAPABILITY (#2412 Wave 3): a ring box commissions, and both ends agree.
 
-    ``resolve_active_playback_device`` is already ring-aware, so this emitter
-    resolved the ring by NAME while forwarding none of the rest of
-    ``active_emit_devices`` — no ring capture lane, no resolved wire format, no
-    certified chunk/target/queue geometry. The emitted graph therefore had a ring
-    sink over ``plug:jasper_capture``, the tap fan-in stops feeding under
-    ``shm_ring``: the sweep excites a device nobody reads and the capture records
-    silence with every daemon healthy.
+    This test asserted the opposite until Wave 3. The gate here used to be
+    ``resolved_playback_device not in RING_PCM_DEVICES`` — a refusal of the ring
+    outright, shipped by #2344 on the owner's 2026-08-12 #2254 ruling and
+    superseded by the owner's re-opening in #2412 — and the refusal was correct
+    for the emitter as it then stood: ``resolve_active_playback_device`` is
+    ring-aware, so the emit resolved the ring by NAME while forwarding none of
+    the rest of ``active_emit_devices``. The emitted graph had a ring sink over
+    ``plug:jasper_capture``, the tap fan-in stops feeding under ``shm_ring``, and
+    the sweep would have excited a device nobody reads.
 
-    The refusal is asserted BEFORE the emit, not merely on the returned status —
-    a blocker that still wrote a candidate would leave the half-moved graph on
-    disk for the next reader.
+    Wave 1 closed the forwarding half, so the graph a ring box emits is now
+    coherent end to end, and the gate proves that rather than refusing the
+    transport. What replaces "nothing was emitted" as the safety assertion is
+    the PAIR: the sink is the ring the caller asked for AND the source is Ring A,
+    the device fan-in fills under that same coupling.
 
-    Three routes to a ring device, and the third is the one that keeps the guard
-    honest. The production marker and an explicit lab override both land on the
-    ACTIVE ring, so a guard keyed on that single name would pass them — the
-    `second_ring_member` case drives a DIFFERENT member of `RING_PCM_DEVICES`,
-    which only a set-membership test refuses. That is the difference between
-    reading `active_emit_devices`' owner of "is this a ring device" and becoming
-    a second place that knows one name.
+    Two routes to the ACTIVE ring — the production marker and an explicit lab
+    override — because the marker route is what a fleet box takes and the
+    explicit route is what a bench does. The third member of
+    ``RING_PCM_DEVICES`` has its own test below: it is refused before the gate
+    by a guard that is not this one.
     """
     from jasper.active_speaker.staging import prepare_driver_commissioning_config
-    from jasper.fanin_coupling import RING_PCM_DEVICES, RING_PLAYBACK_DEVICE
-
-    assert RING_PLAYBACK_DEVICE in RING_PCM_DEVICES
-    assert RING_PLAYBACK_DEVICE != RING_ACTIVE_PLAYBACK_DEVICE
 
     explicit_device = {
         "marker": None,
         "explicit": RING_ACTIVE_PLAYBACK_DEVICE,
-        "second_ring_member": RING_PLAYBACK_DEVICE,
     }[route]
+    expected_device = RING_ACTIVE_PLAYBACK_DEVICE
     topology, preset = _commissioning_box()
     emits = _recorded_commissioning_emit(monkeypatch)
     monkeypatch.setattr(
@@ -1005,23 +1003,195 @@ async def test_driver_commissioning_refuses_the_ring_before_it_emits(
         run_config_check=False,
     )
 
-    assert payload["status"] == "blocked", payload
-    assert emits == [], "the commissioning graph was emitted anyway"
-    codes = {issue.get("code") for issue in payload.get("issues") or []}
-    assert "commissioning_ring_transport_unsupported" in codes, payload
+    assert payload["status"] == "prepared", payload
+    assert len(emits) == 1, emits
+    assert emits[0]["playback_device"] == expected_device
+    assert emits[0]["capture_device"] == RING_CAPTURE_DEVICE
     gate = next(
         g
         for g in payload.get("required_gates") or []
         if g.get("id") == "commissioning_transport_supported"
     )
-    assert gate["passed"] is False
-    # The operator has to be told the way OUT, not just that they are stuck.
-    message = next(
-        issue["message"]
-        for issue in payload["issues"]
-        if issue.get("code") == "commissioning_ring_transport_unsupported"
+    assert gate["passed"] is True, gate
+    # THE RETIRED RUNG IS ASSERTED ABSENT. Asserting the new contract alone
+    # would pass over a partial re-point that left the old refusal reachable.
+    codes = {issue.get("code") for issue in payload.get("issues") or []}
+    assert "commissioning_ring_transport_unsupported" not in codes, payload
+    assert not [
+        i for i in payload.get("issues") or [] if i.get("severity") == "blocker"
+    ], payload
+    # And the artifact ON DISK carries the pair, because that is what the gate
+    # re-reads and what CamillaDSP will open.
+    written = Path(payload["config"]["path"]).read_text(encoding="utf-8")
+    devices = parse_camilla_devices_config(written)
+    assert devices.get("playback_device") == expected_device, written
+    assert devices.get("capture_device") == RING_CAPTURE_DEVICE, written
+
+
+async def test_the_stereo_ring_is_refused_by_the_emitter_not_by_the_transport_gate(
+    tmp_path, monkeypatch,
+):
+    """The third ring PCM, and the guard that actually owns it.
+
+    The refusal this wave lifts was keyed on set membership over
+    ``RING_PCM_DEVICES``, and the parametrised test above used to drive a SECOND
+    member through it to prove the guard was not keyed on one name. That
+    property did not disappear with the refusal — it moved to the derivation:
+    ``capture_device_for_playback`` answers Ring A for EVERY member of the set,
+    so the pair a ring emit declares is coherent whichever member it names.
+
+    What refuses the stereo ring is a different, pre-existing guard — the
+    emitter's own forbidden-active-sink token — and it fires before any graph is
+    written. Recorded here rather than assumed, so a later change that lifts
+    THAT guard meets a test that says what it was doing.
+    """
+    from jasper.active_speaker.camilla_yaml import capture_device_for_playback
+    from jasper.active_speaker.staging import prepare_driver_commissioning_config
+    from jasper.fanin_coupling import RING_PCM_DEVICES, RING_PLAYBACK_DEVICE
+
+    assert RING_PLAYBACK_DEVICE in RING_PCM_DEVICES
+    assert RING_PLAYBACK_DEVICE != RING_ACTIVE_PLAYBACK_DEVICE
+    for member in RING_PCM_DEVICES:
+        assert capture_device_for_playback(member) == RING_CAPTURE_DEVICE, member
+
+    topology, preset = _commissioning_box()
+    payload = prepare_driver_commissioning_config(
+        topology,
+        speaker_group_id="mono",
+        role="woofer",
+        preset=preset,
+        playback_device=RING_PLAYBACK_DEVICE,
+        config_dir=tmp_path / "stereo_ring",
+        run_config_check=False,
     )
-    assert "baseline-reemit --endpoint aloop" in message
+
+    assert payload["status"] == "blocked", payload
+    codes = {issue.get("code") for issue in payload.get("issues") or []}
+    assert "commissioning_config_generation_failed" in codes, payload
+    # Not this wave's gates, and not the retired rung: the emitter owns this one.
+    assert "commissioning_transport_ends_disagree" not in codes, payload
+    assert "commissioning_ring_transport_unsupported" not in codes, payload
+
+
+async def test_a_half_forwarded_device_block_is_refused_by_the_transport_gate(
+    tmp_path, monkeypatch,
+):
+    """THE PIN the lifted gate exists for: six of seven fields is still a defect.
+
+    Wave 1 made the device block a derivation, and
+    ``tests/test_ring_active_endpoint.py::test_every_emit_devices_field_reaches_the_emitter``
+    walks ``dataclasses.fields(ActiveEmitDevices)`` at every forwarding site so a
+    field added there cannot be dropped by one of them. That walk reads the
+    kwargs the CALL SITE hands the emitter. This reads the graph that came OUT.
+
+    Neither implies the other, which is why both are required: the walk cannot
+    see a field that is forwarded and then lost between the call site and the
+    file, and this cannot see a field that never affects the two device names.
+    The mutation below is deliberately of the shape the walk is blind to — the
+    call site still names every field, and the capture is dropped downstream —
+    so a reviewer can see the two guards are not one guard twice.
+
+    The refusal is at the gate, not before the write. The old predicate could
+    refuse ahead of the emit because it only had to look at a device name; a
+    re-read proof cannot prove anything about a file that was never written. The
+    property that replaces "nothing was written" is that nothing LOADS it: the
+    blocker fails ``status``, which fails the load preflight's ``prepared`` gate,
+    and the preflight re-runs this builder rather than trusting a candidate on
+    disk.
+    """
+    from jasper.active_speaker import staging as staging_mod
+    from jasper.active_speaker.staging import prepare_driver_commissioning_config
+
+    real = staging_mod.emit_active_speaker_commissioning_config
+
+    def half_forwarding(preset_arg, **kwargs):
+        # The pre-Wave-1 defect, reproduced downstream of the call site: the
+        # sink stays the ring, the capture falls back to the emitter's snd-aloop
+        # tap default. Under `shm_ring` fan-in stops feeding that tap.
+        kwargs.pop("capture_device", None)
+        return real(preset_arg, **kwargs)
+
+    monkeypatch.setattr(
+        staging_mod, "emit_active_speaker_commissioning_config", half_forwarding
+    )
+
+    topology, preset = _commissioning_box()
+    payload = prepare_driver_commissioning_config(
+        topology,
+        speaker_group_id="mono",
+        role="woofer",
+        preset=preset,
+        playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+        config_dir=tmp_path / "half",
+        run_config_check=False,
+    )
+
+    assert payload["status"] == "blocked", payload
+    codes = {issue.get("code") for issue in payload.get("issues") or []}
+    assert "commissioning_transport_ends_disagree" in codes, payload
+    gate = next(
+        g
+        for g in payload["required_gates"]
+        if g.get("id") == "commissioning_transport_supported"
+    )
+    assert gate["passed"] is False, gate
+    # The graph that reached disk really is the silent-sweep pair — without this
+    # the assertions above would also pass if the mutation had broken the emit.
+    devices = parse_camilla_devices_config(
+        Path(payload["config"]["path"]).read_text(encoding="utf-8")
+    )
+    assert devices.get("playback_device") == RING_ACTIVE_PLAYBACK_DEVICE
+    assert devices.get("capture_device") != RING_CAPTURE_DEVICE
+    # CONTROL: the same call with the mutation LIFTED prepares. Without it, a
+    # gate that refused every ring box would satisfy every assertion above, and
+    # the refusal would not be attributable to the half-forward.
+    monkeypatch.undo()
+    unmutated = prepare_driver_commissioning_config(
+        topology,
+        speaker_group_id="mono",
+        role="woofer",
+        preset=preset,
+        playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+        config_dir=tmp_path / "unmutated",
+        run_config_check=False,
+    )
+    assert unmutated["status"] == "prepared", unmutated
+
+
+async def test_the_transport_gate_invents_no_failure_when_no_graph_was_emitted(
+    tmp_path,
+):
+    """A gate about a graph that does not exist must not refuse the transport.
+
+    The proof is a re-read, so when an earlier blocker stops the emit there are
+    no ends to disagree. Reporting a transport failure there would misdiagnose a
+    box no owner refused — the same rule the load preflight's mirror follows for
+    an absent gate. Pinned in both directions: the gate passes, AND the vacuous
+    pass cannot make the box loadable, because the earlier blocker still fails
+    ``status`` and therefore the preflight's ``prepared``.
+    """
+    from jasper.active_speaker.staging import prepare_driver_commissioning_config
+
+    topology, preset = _commissioning_box()
+    payload = prepare_driver_commissioning_config(
+        topology,
+        speaker_group_id="mono",
+        role="nosuchrole",
+        preset=preset,
+        config_dir=tmp_path / "norole",
+        run_config_check=False,
+    )
+
+    assert payload["status"] == "blocked", payload
+    codes = {issue.get("code") for issue in payload.get("issues") or []}
+    assert "commissioning_target_role_unknown" in codes, payload
+    assert "commissioning_transport_ends_disagree" not in codes, payload
+    gate = next(
+        g
+        for g in payload["required_gates"]
+        if g.get("id") == "commissioning_transport_supported"
+    )
+    assert gate["passed"] is True, gate
 
 
 async def test_driver_commissioning_still_emits_on_an_unarmed_box(
@@ -1060,13 +1230,180 @@ async def test_driver_commissioning_still_emits_on_an_unarmed_box(
     assert gate["passed"] is True
 
 
-async def test_the_refusal_reaches_the_guarded_load_preflight(tmp_path, monkeypatch):
-    """The blocker is RENDERABLE, not just returned to the builder's caller.
+# --------------------------------------------------------------------------
+# GATE 2 — THE ARMED-TRANSPORT GATE AT THE LOAD ALTITUDE (#2412 Wave 3).
+#
+# Gate 1 (above) proves the emitted graph's two ends name one transport. It is a
+# PURE BUILDER and reads no daemon env, so it proves COHERENCE and not LIVENESS:
+# a ring/ring graph on a box whose fan-in is still loopback-coupled, or whose
+# outputd endpoint was never armed, is self-consistent and passes it. That graph
+# loads cleanly and plays to nobody.
+#
+# The two conjuncts have two OWNERS — the coupling lives in `fanin.env`, the
+# ACTIVE-endpoint marker in `outputd.env`, one reconciler each — so each is
+# refuted by a scenario that isolates it, with the other one armed. A crossed
+# mutant-to-test mapping is how a campaign invents a survival; the scenario
+# names below and the codes they assert are written to read the same way round.
+# --------------------------------------------------------------------------
 
-    A refusal the operator never sees is the silent failure again wearing a
-    different hat. This walks the real gate that stands in front of the guarded
-    commissioning load and asserts the message — with the release command in it —
-    is in the payload a caller renders, and that the load is not allowed.
+
+def _ring_transport_state(monkeypatch, tmp_path, *, coupling: str, marker: str):
+    """Point BOTH reconciler-owned files at ``tmp_path`` and write the state.
+
+    Real files rather than stubbed predicates: the gate's contract is that it
+    reads each file FRESH on every call, and a monkeypatched predicate cannot
+    fail that way. Both module constants are imported inside the reader
+    functions, so rebinding them here redirects the real read.
+    """
+    from jasper.fanin_coupling import (
+        COUPLING_ENV_VAR,
+        OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR,
+    )
+
+    fanin_env = Path(tmp_path) / "fanin.env"
+    outputd_env = Path(tmp_path) / "outputd.env"
+    fanin_env.write_text(f"{COUPLING_ENV_VAR}={coupling}\n", encoding="utf-8")
+    outputd_env.write_text(
+        f"{OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR}={marker}\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.FANIN_ENV_PATH", str(fanin_env)
+    )
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH", str(outputd_env)
+    )
+    return fanin_env, outputd_env
+
+
+def _ring_load_preflight(topology, preset, out_dir):
+    from jasper.active_speaker.startup_load import (
+        build_driver_commission_load_preflight,
+    )
+
+    return build_driver_commission_load_preflight(
+        topology,
+        speaker_group_id="mono",
+        role="woofer",
+        preset=preset,
+        playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+        config_dir=out_dir,
+        require_physical_identity=False,
+    )
+
+
+def _transport_armed_gate(preflight):
+    return next(
+        g
+        for g in preflight["required_gates"]
+        if g.get("id") == "commissioning_transport_armed"
+    )
+
+
+async def test_the_guarded_load_refuses_a_ring_graph_nothing_fills(
+    tmp_path, monkeypatch,
+):
+    """COUPLING conjunct, isolated: the endpoint IS armed, fan-in is not coupled.
+
+    Under `loopback` fan-in writes the snd-aloop substream and nothing fills
+    Ring A, so a ring-capture graph sweeps into digital silence with every
+    daemon healthy. The marker is armed here on purpose: only the coupling term
+    can produce this refusal, so a mutation of the OTHER term cannot be scored
+    against this test.
+    """
+    topology, preset = _commissioning_box()
+    _ring_transport_state(monkeypatch, tmp_path, coupling="loopback", marker="1")
+
+    preflight = _ring_load_preflight(topology, preset, tmp_path / "unfed")
+
+    assert preflight["load_allowed"] is False
+    assert _transport_armed_gate(preflight)["passed"] is False
+    codes = {issue.get("code") for issue in preflight["issues"]}
+    assert "commissioning_ring_feed_unarmed" in codes, preflight["issues"]
+    assert "commissioning_active_endpoint_unarmed" not in codes, preflight["issues"]
+    assert "commissioning_ring_transport_unsupported" not in codes, preflight["issues"]
+    refusal = next(
+        issue
+        for issue in preflight["issues"]
+        if issue.get("code") == "commissioning_ring_feed_unarmed"
+    )
+    assert refusal["severity"] == "blocker"
+    # The OPERATOR surface names the executable remedy; the household surfaces
+    # never do, which is what the copy guards in tests/test_sound_setup.py pin.
+    assert "jasper-fanin-coupling-reconcile shm_ring" in refusal["message"]
+
+
+async def test_the_guarded_load_refuses_a_ring_graph_nothing_reads(
+    tmp_path, monkeypatch,
+):
+    """MARKER conjunct, isolated: fan-in IS coupled, the endpoint is not armed.
+
+    Post-arm the graph names the ring unconditionally; the marker is what says
+    whether outputd reads it. Without this conjunct a ring-sink graph on an
+    unarmed box loads cleanly and plays to nobody. The coupling is armed here on
+    purpose, for the same isolation reason as its sibling above.
+    """
+    topology, preset = _commissioning_box()
+    _ring_transport_state(monkeypatch, tmp_path, coupling="shm_ring", marker="0")
+
+    preflight = _ring_load_preflight(topology, preset, tmp_path / "unread")
+
+    assert preflight["load_allowed"] is False
+    assert _transport_armed_gate(preflight)["passed"] is False
+    codes = {issue.get("code") for issue in preflight["issues"]}
+    assert "commissioning_active_endpoint_unarmed" in codes, preflight["issues"]
+    assert "commissioning_ring_feed_unarmed" not in codes, preflight["issues"]
+    assert "commissioning_ring_transport_unsupported" not in codes, preflight["issues"]
+    refusal = next(
+        issue
+        for issue in preflight["issues"]
+        if issue.get("code") == "commissioning_active_endpoint_unarmed"
+    )
+    assert refusal["severity"] == "blocker"
+    assert "jasper-audio-hardware-reconcile" in refusal["message"]
+
+
+async def test_the_guarded_load_admits_a_ring_graph_on_a_fully_armed_box(
+    tmp_path, monkeypatch,
+):
+    """THE CAPABILITY: both conjuncts hold, so the transport stops blocking.
+
+    The positive control for both tests above — without it, a gate that refused
+    every ring box would satisfy each of their assertions. This asserts the two
+    TRANSPORT gates and the absence of every transport blocker rather than
+    `load_allowed`, because a bench topology has no path-safety evidence and no
+    calibration floor and is blocked on those for reasons this wave does not
+    touch.
+    """
+    topology, preset = _commissioning_box()
+    _ring_transport_state(monkeypatch, tmp_path, coupling="shm_ring", marker="1")
+
+    preflight = _ring_load_preflight(topology, preset, tmp_path / "armed")
+
+    assert _transport_armed_gate(preflight)["passed"] is True, preflight[
+        "required_gates"
+    ]
+    mirrored = next(
+        g
+        for g in preflight["required_gates"]
+        if g.get("id") == "commissioning_transport_supported"
+    )
+    assert mirrored["passed"] is True, mirrored
+    codes = {issue.get("code") for issue in preflight["issues"]}
+    assert "commissioning_ring_feed_unarmed" not in codes, preflight["issues"]
+    assert "commissioning_active_endpoint_unarmed" not in codes, preflight["issues"]
+    assert "commissioning_transport_ends_disagree" not in codes, preflight["issues"]
+    assert "commissioning_ring_transport_unsupported" not in codes, preflight["issues"]
+
+
+async def test_the_guarded_load_reads_no_transport_state_off_the_ring(
+    tmp_path, monkeypatch,
+):
+    """SCOPE: a non-ring graph needs no ring armed, and consults neither file.
+
+    Both files are pointed at paths that do not exist, so both readers would
+    fail SAFE — loopback, marker false — and refuse if they were consulted at
+    all. The gate passes, which is the proof that an unarmed fleet box on the
+    ALSA active lane behaves exactly as it did before this wave.
     """
     from jasper.active_speaker.startup_load import (
         build_driver_commission_load_preflight,
@@ -1074,7 +1411,12 @@ async def test_the_refusal_reaches_the_guarded_load_preflight(tmp_path, monkeypa
 
     topology, preset = _commissioning_box()
     monkeypatch.setattr(
-        "jasper.fanin_coupling.ring_active_endpoint_armed", lambda env=None: True
+        "jasper.fanin.coupling_reconcile.FANIN_ENV_PATH",
+        str(tmp_path / "absent" / "fanin.env"),
+    )
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH",
+        str(tmp_path / "absent" / "outputd.env"),
     )
 
     preflight = build_driver_commission_load_preflight(
@@ -1082,18 +1424,66 @@ async def test_the_refusal_reaches_the_guarded_load_preflight(tmp_path, monkeypa
         speaker_group_id="mono",
         role="woofer",
         preset=preset,
-        config_dir=tmp_path / "armed",
+        playback_device=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+        config_dir=tmp_path / "alsa",
         require_physical_identity=False,
     )
 
-    assert preflight["load_allowed"] is False
-    refusal = next(
-        issue
-        for issue in preflight["issues"]
-        if issue.get("code") == "commissioning_ring_transport_unsupported"
+    assert _transport_armed_gate(preflight)["passed"] is True
+    codes = {issue.get("code") for issue in preflight["issues"]}
+    assert "commissioning_ring_feed_unarmed" not in codes, preflight["issues"]
+    assert "commissioning_active_endpoint_unarmed" not in codes, preflight["issues"]
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "code"),
+    [
+        pytest.param(
+            ("loopback", "1"),
+            ("shm_ring", "1"),
+            "commissioning_ring_feed_unarmed",
+            id="coupling",
+        ),
+        pytest.param(
+            ("shm_ring", "0"),
+            ("shm_ring", "1"),
+            "commissioning_active_endpoint_unarmed",
+            id="marker",
+        ),
+    ],
+)
+async def test_the_guarded_load_re_reads_the_transport_state_every_call(
+    tmp_path, monkeypatch, first, second, code,
+):
+    """R-3: the state is read FRESH per call, never cached from the first one.
+
+    The hazard this pins is the one the voice-provider reader learned the hard
+    way and `ring_active_endpoint_armed`'s docstring documents: this preflight
+    runs inside the long-lived control daemon and the socket-activated wizards,
+    which never `EnvironmentFile=`d either file and stay alive across a
+    reconcile. A reader that resolved once at import — or cached on first call —
+    would keep refusing a box an operator had just armed.
+
+    The file is mutated BETWEEN two calls in one process, once per conjunct, so
+    a cache on either read is caught by its own case rather than by its sibling.
+    """
+    topology, preset = _commissioning_box()
+    fanin_env, outputd_env = _ring_transport_state(
+        monkeypatch, tmp_path, coupling=first[0], marker=first[1]
     )
-    assert refusal["severity"] == "blocker"
-    assert "baseline-reemit --endpoint aloop" in refusal["message"]
+
+    blocked = _ring_load_preflight(topology, preset, tmp_path / "before")
+    assert code in {issue.get("code") for issue in blocked["issues"]}, blocked["issues"]
+    assert _transport_armed_gate(blocked)["passed"] is False
+
+    _ring_transport_state(monkeypatch, tmp_path, coupling=second[0], marker=second[1])
+    assert fanin_env.exists() and outputd_env.exists()
+
+    rearmed = _ring_load_preflight(topology, preset, tmp_path / "after")
+    assert _transport_armed_gate(rearmed)["passed"] is True, rearmed["required_gates"]
+    assert code not in {issue.get("code") for issue in rearmed["issues"]}, rearmed[
+        "issues"
+    ]
 
 
 async def test_the_durable_boot_anchor_is_not_refused_on_an_armed_box(
@@ -1362,12 +1752,14 @@ async def test_boot_anchor_refuses_a_typod_ring_wire_instead_of_tracebacking(
 # NAME. It now derives that block through `active_emit_devices` like every other
 # forwarding site, which `test_ring_active_endpoint.py`'s field walk enumerates.
 #
-# The blast radius of that derivation is what this file owns, and it is ZERO:
-# `active_emit_devices` hands back the emitter's own defaults for every non-ring
-# device, and this builder's `commissioning_transport_supported` gate refuses
-# every ring device before the emitter is reached. So every box the fleet
-# actually has emits the same bytes it emitted before, and that is provable
-# rather than asserted.
+# The blast radius of that derivation OFF THE RING is what this file owns, and
+# it is ZERO: `active_emit_devices` hands back the emitter's own defaults for
+# every non-ring device, so every box on the ALSA active lane emits the same
+# bytes it emitted before, and that is provable rather than asserted. When these
+# tests were written the ring arm was unreachable here — the transport gate
+# refused every ring device before the emitter — and #2412's Wave 3 lifted that.
+# The ring arm's own coverage is the coherent-graph tests above; this pair stays
+# scoped to the non-ring bytes, which is the whole of what it ever proved.
 # --------------------------------------------------------------------------
 
 
@@ -1401,13 +1793,14 @@ async def test_driver_commissioning_is_byte_identical_on_every_non_ring_device(
 ):
     """Off the ring, the derived block reproduces the PRE-CHANGE bytes exactly.
 
-    This is the blast-radius bound for #2412's device block, and it is the whole
-    safety argument for landing it ahead of any transport decision: the emit it
-    touches is the AUDIBLE one, every roleful box reaches it through the same
-    call, and ``commissioning_transport_supported`` refuses every ring device
-    before the derivation runs — so the ring branch is unreachable here and this
-    non-ring path is the only one any box takes. "Nothing moved" therefore has
-    to be provable, not asserted.
+    This is the blast-radius bound for #2412's device block, and it was the
+    whole safety argument for landing Wave 1 ahead of any transport decision:
+    the emit it touches is the AUDIBLE one and every roleful box reaches it
+    through the same call, so "nothing moved" had to be provable rather than
+    asserted. Wave 1 could lean on the ring branch being unreachable — the
+    transport gate refused every ring device before the derivation ran. Wave 3
+    lifted that, so the bound this test states is now the narrower and permanent
+    one: OFF the ring, the derivation reproduces the pre-change bytes exactly.
 
     Proven the same way the boot anchor's twin is — by REPLAYING the exact emit
     this call just made, minus the seven device kwargs, which is literally the

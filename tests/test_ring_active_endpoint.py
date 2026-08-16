@@ -1741,15 +1741,17 @@ def _driver_commissioning_site(topology, out_dir, *, playback_device):
     — the capture lane, the two formats, the chunk/target/queue geometry — took
     the emitter's snd-aloop defaults.
 
-    ``playback_device`` is REQUIRED here rather than defaulted to the ring, and
-    that is the one way this entry differs from its six siblings: this builder
-    carries the ``commissioning_transport_supported`` gate, which refuses every
-    member of ``RING_PCM_DEVICES`` before the emitter is reached, so the ring
-    would record no kwargs at all. The walk drives it on the ALSA active lane
-    instead, where the derivation answers the emitter's own defaults — which
-    makes the FORWARDING half of the walk (every field named at the call site)
-    the half that bites here, and it is the half the subset-forwarding defect
-    lives in.
+    ``playback_device`` is REQUIRED here rather than defaulted, which is the one
+    way this entry differs from its six siblings, and the reason is historical:
+    this builder used to carry a ``commissioning_transport_supported`` gate that
+    refused every member of ``RING_PCM_DEVICES`` before the emitter was reached,
+    so the ring would have recorded no kwargs at all and the walk drove it on
+    the ALSA active lane. #2412's Wave 3 replaced that refusal with a both-ends
+    coherence proof, so the ring is reachable here and the walk drives it there
+    like its siblings — the arm where every field's answer differs from the
+    emitter's default, which is what makes a dropped field visible. The explicit
+    parameter stays because a caller passing the device it means is clearer than
+    one relying on the marker, and because the ALSA arm is still worth driving.
     """
     from jasper.active_speaker.staging import prepare_driver_commissioning_config
 
@@ -2081,11 +2083,11 @@ def test_every_emit_devices_field_reaches_the_emitter(tmp_path, monkeypatch):
     do not assert "the helper exists".
 
     Each entry names the DEVICE it is driven at, and the expectation is derived
-    per site from that device rather than once for all of them. Six sites run at
-    the ring, where every field's answer differs from the emitter's default. The
-    seventh cannot: ``prepare_driver_commissioning_config`` refuses the ring
-    up front, so it is driven on the ALSA active lane and its bite is the
-    forwarding half — see ``_driver_commissioning_site``.
+    per site from that device rather than once for all of them. Every site runs
+    at the ring, where every field's answer differs from the emitter's default —
+    including the seventh, which could not until #2412's Wave 3 replaced
+    ``prepare_driver_commissioning_config``'s blanket ring refusal with a
+    both-ends coherence proof (see ``_driver_commissioning_site``).
     """
     import dataclasses
 
@@ -2154,16 +2156,16 @@ def test_every_emit_devices_field_reaches_the_emitter(tmp_path, monkeypatch):
         # Issue #2412 — the seventh instance, and the anchor's own twin: the
         # AUDIBLE per-driver commissioning emit, in the same module, calling the
         # same emitter. It forwarded only the device NAME, so a caller re-pointed
-        # at any ring PCM got a sink there over the snd-aloop tap. It is the one
-        # entry driven off the ring, for the reason its helper states.
+        # at any ring PCM got a sink there over the snd-aloop tap. Driven at the
+        # ring since Wave 3 lifted the refusal that kept it off — see its helper.
         "prepare_driver_commissioning_config(audible emit)": (
             _driver_commissioning_site(
                 topology,
                 tmp_path / "commission",
-                playback_device=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+                playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
             ),
             "emit_active_speaker_commissioning_config",
-            OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+            RING_ACTIVE_PLAYBACK_DEVICE,
         ),
     }
     for label, (call_site, emitter, device) in sites.items():

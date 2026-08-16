@@ -1230,8 +1230,19 @@ _COMMISSION_CODE_MODULES = (
 
 # An operator remedy: a sudo/systemctl invocation, a `jasper-*` binary, or a
 # long CLI flag. Household surfaces must never carry one.
+#
+# THE LEFT BOUNDARY ADMITS A BACKTICK AND A SLASH, not whitespace alone, and
+# that was a hole rather than a nicety. Backend prose spells a remedy as
+# "Arm it with `sudo /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile …`",
+# where `sudo` follows a BACKTICK and the binary follows a SLASH — so neither
+# token had a whitespace boundary and the whole sentence scanned as
+# command-free. #2344's own blocker only tripped this by accident, on the space
+# before its `--endpoint` flag. Proved by mutation at #2412 Wave 3: misspelling
+# a new blocker's code left both guards below green while its message still
+# named a root command. Widened rather than reworded, because rewording the
+# message to suit the regex is gaming the guard.
 _OPERATOR_COMMAND_RE = re.compile(
-    r"(?:^|\s)(?:sudo\s|systemctl\s|jasper-[a-z-]+|--[a-z][a-z-]+)"
+    r"(?:^|[\s`/])(?:sudo\s|systemctl\s|jasper-[a-z-]+|--[a-z][a-z-]+)"
 )
 
 
@@ -1412,32 +1423,76 @@ def test_every_preflight_gate_id_has_household_copy():
     )
 
 
-def test_the_ring_transport_blocker_is_registered_on_every_household_surface():
-    """The instance #2344 shipped without: all three renderer surfaces carry it."""
+def test_the_transport_blockers_are_registered_on_every_household_surface():
+    """The instance #2344 shipped without, re-pointed by #2412 Wave 3.
+
+    The retired rung named a capability that no longer exists; its two map
+    entries were re-pointed rather than deleted, because the codes that replace
+    it carry the operator's reconciler commands — exactly what these maps exist
+    to intercept. Both directions are asserted: each new code present on both
+    surfaces, and the retired one absent from both. Asserting only the first
+    half would pass over a partial re-point that left the dead rung reachable.
+    """
     from jasper.active_speaker.commissioning_coordinator import (
         _SUMMED_TEST_FAILURE_COPY,
     )
     from jasper.active_speaker.staging import COMMISSIONING_TRANSPORT_GATE_ID
 
     helper_js = _ACTIVE_SPEAKER_UI_MODULE.read_text()
-    # EXACT tokens, not substrings: `..._unsupported_X` contains
-    # `..._unsupported`, so a substring assertion passes over a misspelled rung —
-    # proved by mutation, which is why the ladder's real coverage is asserted
-    # BEHAVIOURALLY in tests/js/active_speaker_ui_test.mjs. This is the cheap
-    # second layer, not the guarantee.
-    assert "'commissioning_ring_transport_unsupported'" in helper_js, (
-        "the /sound/ issue ladder does not name the ring-transport blocker"
+    mapped = {code for code, _ in _SUMMED_TEST_FAILURE_COPY}
+    # The codes the BUILDERS actually raise, so a map entry cannot outlive a
+    # renamed emitter. Only the two that carry an operator command are held to
+    # the mapping by the command guard above; the ends-disagree code carries no
+    # command, so without this a misspelling in the emitter would leave its copy
+    # mapped to a code nothing raises and every guard green (proved by mutation).
+    emitted = {code for code, _, _ in _commission_blocker_pairs()}
+    # EXACT tokens, not substrings: `..._unarmed_X` contains `..._unarmed`, so a
+    # substring assertion passes over a misspelled rung — proved by mutation,
+    # which is why the ladder's real coverage is asserted BEHAVIOURALLY in
+    # tests/js/active_speaker_ui_test.mjs. This is the cheap second layer, not
+    # the guarantee.
+    for code in (
+        "commissioning_transport_ends_disagree",
+        "commissioning_ring_feed_unarmed",
+        "commissioning_active_endpoint_unarmed",
+    ):
+        assert code in emitted, f"no commissioning builder raises {code}"
+        assert f"'{code}'" in helper_js, (
+            f"the /sound/ issue ladder does not name {code}"
+        )
+        assert code in mapped, f"the combined-test card has no copy for {code}"
+    # Correction 4's pin: mapped in the coordinator since #2364 and absent from
+    # the ladder until the gate lifted. The ladder falls through to written copy
+    # rather than leaking, so this is advice precision, not a prose leak — owed
+    # at the lift because the ring is now a transport a household can be on.
+    assert "'ring_wire_declaration_invalid'" in helper_js, (
+        "the /sound/ issue ladder does not name the unresolvable-wire blocker"
     )
+    assert "ring_wire_declaration_invalid" in mapped
+    # The transport gates the preflight publishes both key household copy on
+    # their ids (the closed-set guard below walks the builder for these).
     assert f"\n    {COMMISSIONING_TRANSPORT_GATE_ID}:" in helper_js, (
         "the /sound/ gate map does not name the transport gate"
     )
-    assert "commissioning_ring_transport_unsupported" in {
-        code for code, _ in _SUMMED_TEST_FAILURE_COPY
-    }, "the combined-test card has no copy for the ring-transport blocker"
-    # And none of that copy may carry the operator's command.
-    assert "baseline-reemit" not in helper_js, (
-        "a household surface carries the operator remedy verbatim"
+    assert "\n    commissioning_transport_armed:" in helper_js, (
+        "the /sound/ gate map does not name the armed-transport gate"
     )
+    # THE RETIRED RUNG, ABSENT FROM BOTH SURFACES.
+    assert "commissioning_ring_transport_unsupported" not in helper_js, (
+        "the /sound/ ladder still carries the retired ring-transport blocker"
+    )
+    assert "commissioning_ring_transport_unsupported" not in mapped, (
+        "the combined-test card still maps the retired ring-transport blocker"
+    )
+    # And none of the copy may carry an operator command — the retired one's
+    # `baseline-reemit`, or either new reconciler invocation.
+    for command in ("baseline-reemit", "jasper-fanin-coupling-reconcile", "systemctl"):
+        assert command not in helper_js, (
+            f"a household surface carries the operator remedy verbatim: {command}"
+        )
+        assert not [
+            message for _, message in _SUMMED_TEST_FAILURE_COPY if command in message
+        ], f"the combined-test copy carries the operator remedy verbatim: {command}"
 
 
 def test_active_speaker_setup_copy_has_no_backend_jargon():

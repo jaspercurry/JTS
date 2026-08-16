@@ -123,18 +123,32 @@ _SUMMED_TEST_FAILURE_FAMILIES: tuple[tuple[tuple[str, ...], str], ...] = (
         ("summed_test_already_active",),
         "A combined speaker test is already running. Stop it, then try again.",
     ),
-    # The speaker is armed on the ring transport, which commissioning does not
-    # measure through (#2344). MUST be mapped rather than left to fall through:
-    # the blocker's own prose carries the operator's `baseline-reemit` command,
-    # and `_household_safe_reason` would NOT strip it — no absolute path, no
-    # exception class, no underscore — so an unmapped code would print a shell
-    # command to a household. The operator remedy stays on the CLI and journal
-    # surfaces that already carry it.
+    # The graph the test would play names one output connection where it plays
+    # out and a different one where it captures (#2412's Gate 1). Nothing a
+    # household sets produces this — it is an internal defect — so the copy
+    # routes to the one screen that shows the speaker's own state rather than
+    # asking for an action that does not exist.
     (
-        ("commissioning_ring_transport_unsupported",),
-        "The combined test can’t run while this speaker is in ring output "
-        "mode. Switch it back to the standard output path, then retry the "
-        "combined test.",
+        ("commissioning_transport_ends_disagree",),
+        "JTS could not prepare the combined test for this speaker’s output "
+        "connection. Open System status.",
+    ),
+    # The speaker's output path is ringed but not yet armed end to end — either
+    # nothing fills the ring or nothing reads it (#2412's Gate 2). MUST be
+    # mapped rather than left to fall through: each blocker's own prose carries
+    # the operator's reconciler command, and `_household_safe_reason` would NOT
+    # strip it — no absolute path, no exception class, no underscore — so an
+    # unmapped code would print a shell command to a household. The two codes
+    # share one sentence because the household ACTION is the same for both; the
+    # two operator remedies are what differ, and they stay on the CLI and
+    # journal surfaces that already carry them.
+    (
+        (
+            "commissioning_ring_feed_unarmed",
+            "commissioning_active_endpoint_unarmed",
+        ),
+        "This speaker’s output path isn’t finished setting up, so the combined "
+        "test can’t run yet. Open System status.",
     ),
     # The box declares a ring wire nothing can resolve — an operator-set override
     # that no longer parses. Mapped for the same reason as the code above: the
