@@ -49,6 +49,8 @@ suites co-run green in either order.
 
 from __future__ import annotations
 
+import itertools
+
 import dataclasses
 import json
 import logging
@@ -67,7 +69,11 @@ from jasper.active_speaker.delta_probe import (
 )
 from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
 from jasper.active_speaker.crossover_v2 import coordinator
-from jasper.active_speaker.crossover_v2.contracts import AdoptionOutcome
+from jasper.active_speaker.crossover_v2.contracts import (
+    ADOPTION_ROW_KEEP_ITERATING,
+    AdoptionOutcome,
+    IterationHeadroom,
+)
 from jasper.active_speaker.crossover_v2.round_evidence import (
     EntryBaseline,
     measured_response_from_analysis,
@@ -80,6 +86,8 @@ from jasper.active_speaker.crossover_v2.contracts import (
 from jasper.active_speaker.crossover_v2.verification import (
     ADOPTION_MEASURED_REGRESSION,
     ADOPTION_REALIZED_AND_IMPROVED,
+    HEADROOM_NO_OBJECTIVES,
+    HEADROOM_REACHABLE,
     ADOPTION_UNPROVEN,
     ADOPTION_UNPROVEN_BOOST,
     CAPTURE_INTEGRITY_FAILED,
@@ -420,7 +428,11 @@ def test_a_measurably_improved_round_keeps_the_graph_and_the_verdict(monkeypatch
     assert verdict.accepted is True
     evaluation = conductor.round_evaluation
     assert evaluation.adoption.outcome is AdoptionOutcome.KEEP
-    assert evaluation.adoption.reason == ADOPTION_REALIZED_AND_IMPROVED
+    # #2602: a tier that walks no post-apply cloud has no spec report, so
+    # the fourth axis cannot see whether a flatter result is reachable and
+    # stops the series fail-closed. The graph is still KEPT — only the
+    # reason names the ending now.
+    assert evaluation.adoption.reason == HEADROOM_NO_OBJECTIVES
     # The disclosure target list still names the unwalked spatial arm — spec
     # not deciding the status is not spec vanishing from the receipt.
     assert evaluation.quality.evidence["targets"] == ["spec:no_spec_report"]
@@ -723,7 +735,11 @@ def test_the_retry_after_a_rejected_verify_is_the_capture_that_gets_graded(
 
     assert retry.accepted is True
     assert conductor.round_evaluation.adoption.outcome is AdoptionOutcome.KEEP
-    assert conductor.round_evaluation.adoption.reason == ADOPTION_REALIZED_AND_IMPROVED
+    # #2602: a tier that walks no post-apply cloud has no spec report, so
+    # the fourth axis cannot see whether a flatter result is reachable and
+    # stops the series fail-closed. The graph is still KEPT — only the
+    # reason names the ending now.
+    assert conductor.round_evaluation.adoption.reason == HEADROOM_NO_OBJECTIVES
     assert conductor.round_receipt_identity is not None
     assert attempts == []
 
@@ -1137,7 +1153,11 @@ def test_the_round_receipt_lands_in_the_bundle_fingerprinted_and_readable(
 
     assert receipt["round_id"] == _MINTED_RELAY_SESSION_ID
     assert receipt["adoption"]["outcome"] == AdoptionOutcome.KEEP.value
-    assert receipt["adoption"]["reason"] == ADOPTION_REALIZED_AND_IMPROVED
+    # #2602: a tier that walks no post-apply cloud has no spec report, so
+    # the fourth axis cannot see whether a flatter result is reachable and
+    # stops the series fail-closed. The graph is still KEPT — only the
+    # reason names the ending now.
+    assert receipt["adoption"]["reason"] == HEADROOM_NO_OBJECTIVES
     assert receipt["entry_baseline"]["program_id"] == (
         conductor.measure_entry_baseline.program_id
     )
@@ -1939,11 +1959,19 @@ def test_every_restore_the_table_can_ask_for_has_its_own_household_code():
                 (QualityStatus.MISSED, ADOPTION_UNPROVEN),
                 (QualityStatus.REGRESSED, ADOPTION_MEASURED_REGRESSION),
             ):
-                for boosted in (True, False):
+                # #2602's axis is walked too: it cannot produce a restore
+                # (both its answers keep), and walking it is what PROVES that
+                # rather than assuming it — a headroom value that did reach a
+                # restoring row would surface here as a reason with no
+                # household code.
+                for boosted, headroom_status in itertools.product(
+                    (True, False), IterationHeadroom
+                ):
                     decision = coordinator.decide_adoption(
                         trust=Verdict(trust_status, trust_reason, {}),
                         safety=Verdict(safety_status, safety_reason, {}),
                         quality=Verdict(quality_status, quality_reason, {}),
+                        headroom=Verdict(headroom_status, "h", {}),
                         boosted=boosted, rollback_available=True,
                     )
                     if decision.outcome is AdoptionOutcome.RESTORE:
@@ -2175,8 +2203,18 @@ def test_the_full_tier_grades_its_round_at_the_post_apply_cloud_close(
     assert verdict.payload["group_complete"] == flow.PHASE_CLOUD_VERIFY
     evaluation = conductor.round_evaluation
     assert evaluation is not None, "the cloud close did not grade the round"
-    assert evaluation.adoption.outcome is AdoptionOutcome.KEEP
-    assert evaluation.adoption.reason == ADOPTION_REALIZED_AND_IMPROVED
+    # #2602's HEADLINE CASE, end to end: the Full tier walks a post-apply
+    # cloud, so the fourth axis can see this result still has tilt and ripple
+    # left in it. The graph is KEPT exactly as before — ``KEEP_FOR_ITERATION``
+    # leaves the speaker in the same state ``KEEP`` does — and the round now
+    # says another one is worth running instead of declaring the series over.
+    assert evaluation.adoption.outcome is AdoptionOutcome.KEEP_FOR_ITERATION
+    assert evaluation.adoption.row == ADOPTION_ROW_KEEP_ITERATING
+    assert evaluation.adoption.reason == HEADROOM_REACHABLE
+    assert evaluation.quality.status is QualityStatus.PASSED, (
+        "the round still PASSED on quality — #2602 changed the stop "
+        "condition, not the grade"
+    )
     # Spec still names its own miss on the target list — it just does not
     # move the outcome off KEEP.
     assert any(
@@ -2190,8 +2228,12 @@ def test_the_full_tier_grades_its_round_at_the_post_apply_cloud_close(
     assert identity is not None
     receipt = _round_receipt_json(real_bundle, _MINTED_RELAY_SESSION_ID)
     assert receipt["round_id"] == _MINTED_RELAY_SESSION_ID
-    assert receipt["adoption"]["outcome"] == AdoptionOutcome.KEEP.value
-    assert receipt["adoption"]["reason"] == ADOPTION_REALIZED_AND_IMPROVED
+    # The receipt records the same answer the evaluation reached — #2602's
+    # row 6, not row 1. A receipt that still said "keep" here would be the
+    # banked artifact disagreeing with the screen.
+    assert receipt["adoption"]["outcome"] == AdoptionOutcome.KEEP_FOR_ITERATION.value
+    assert receipt["adoption"]["row"] == ADOPTION_ROW_KEEP_ITERATING
+    assert receipt["adoption"]["reason"] == HEADROOM_REACHABLE
     # Fingerprinted by the contract, not merely stamped — the same re-hash the
     # Express receipt pin makes, so a Full round's receipt is held to it too.
     core = {key: value for key, value in receipt.items() if key != "fingerprint"}

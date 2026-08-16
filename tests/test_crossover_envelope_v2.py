@@ -1005,7 +1005,14 @@ def test_a_kept_for_iteration_round_says_so_rather_than_only_verified():
         phase="done",
         verify={"outcome": "pass"},
         candidate=_candidate_summary(),
-        round_receipt={"round_id": "s1", "adoption": "keep_for_iteration"},
+        round_receipt={
+            "round_id": "s1",
+            "adoption": "keep_for_iteration",
+            # #2602 keys this caveat on the ROW, because row 2 and row 6 now
+            # share the ``keep_for_iteration`` outcome and carry opposite news.
+            # The coordinator has always stamped a row beside the outcome.
+            "row": "row2_trusted_safe_missed",
+        },
     ))
     codes = {n["code"] for n in env["nudges"]}
     assert "crossover_v2_keep_for_iteration" in codes
@@ -1025,12 +1032,31 @@ def test_a_kept_for_iteration_round_says_so_rather_than_only_verified():
 
 @pytest.mark.parametrize(
     "receipt",
-    [None, {}, {"round_id": "s1"}, {"round_id": "s1", "adoption": "keep"}],
-    ids=["absent", "empty", "no_adoption", "plain_keep"],
+    [
+        None,
+        {},
+        {"round_id": "s1"},
+        {"round_id": "s1", "adoption": "keep"},
+        # #2602's row 6: also ``keep_for_iteration``, and it must NOT get row
+        # 2's copy — an in-tolerance speaker told "some of what was measured is
+        # still off target" would be told something false. This is the case the
+        # row-keyed dispatch exists for.
+        {
+            "round_id": "s1",
+            "adoption": "keep_for_iteration",
+            "row": "row6_trusted_safe_passed_reachable",
+            "reason": "flatter_result_reachable",
+        },
+    ],
+    ids=["absent", "empty", "no_adoption", "plain_keep", "passed_but_iterating"],
 )
 def test_only_a_kept_for_iteration_round_gets_that_caveat(receipt):
-    """A ``keep`` round has nothing outstanding to disclose, and a round that
-    restored or escalated never reaches this screen at all."""
+    """Row 2's caveat belongs to row 2 alone.
+
+    A round that restored or escalated never reaches this screen at all; a
+    round with no row cannot be told apart from one that never graded; and
+    since #2602 a round that PASSED gets its own sentence rather than this one.
+    """
     env = build_crossover_envelope_v2(_status(
         phase="done",
         verify={"outcome": "pass"},

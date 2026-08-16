@@ -34,11 +34,17 @@ from jasper.active_speaker.crossover_v2 import round_evidence
 from jasper.active_speaker.crossover_v2.contracts import (
     ADOPTION_ROW_KEEP,
     ADOPTION_ROW_KEEP_FOR_ITERATION,
+    ADOPTION_ROW_KEEP_ITERATING,
+    ADOPTION_ROW_RESTORE_FAILED,
+    ADOPTION_ROW_RESTORE_REGRESSION,
+    ADOPTION_ROW_RESTORE_UNSAFE,
+    ADOPTION_ROW_RESTORE_UNTRUSTED,
     AdoptionOutcome,
     BenefitStatus,
     CaptureValidity,
     CrossoverV2ContractError,
     EvidenceTrust,
+    QualityStatus,
     RealizationStatus,
     SpecStatus,
 )
@@ -723,6 +729,15 @@ def test_realized_and_improved_keeps_even_with_a_failing_spec():
     #2537 left this cell exactly where it was — a realized, improved round is
     still a plain ``KEEP`` — and put the failing band on the receipt as the next
     round's target beside it.
+
+    **AMENDED BY #2602.** The graph is still kept, which is the whole claim of
+    this test and of #2160's boundary. What changed is that this round no
+    longer *ends the series*: the report it failed against still measures real
+    tilt and ripple, so the fourth axis says a flatter result is reachable and
+    the round lands on row 6 instead of row 1. The assertion is written as
+    "keeps, and specifically keeps-while-iterating" rather than loosened to
+    "some keeping outcome", so a regression that stopped iterating here would
+    still fail.
     """
 
     rough_baseline = _baseline_from(_flatter(_post(), factor=6.0))
@@ -734,8 +749,9 @@ def test_realized_and_improved_keeps_even_with_a_failing_spec():
 
     assert evaluation.benefit.status is BenefitStatus.IMPROVED
     assert evaluation.spec.status is SpecStatus.FAILED
-    assert evaluation.adoption.outcome is AdoptionOutcome.KEEP
-    assert evaluation.adoption.row == ADOPTION_ROW_KEEP
+    assert evaluation.quality.status is QualityStatus.PASSED
+    assert evaluation.adoption.outcome is AdoptionOutcome.KEEP_FOR_ITERATION
+    assert evaluation.adoption.row == ADOPTION_ROW_KEEP_ITERATING
     assert any(
         target.startswith("spec:")
         for target in evaluation.quality.evidence["targets"]
@@ -847,19 +863,42 @@ def test_an_unusable_capture_still_fails_a_boost_closed():
     assert boosted.adoption.outcome is AdoptionOutcome.RESTORE
 
 
-def test_the_spec_answer_never_changes_the_adoption():
+def test_the_spec_answer_never_changes_whether_the_graph_is_kept():
     """Spec is "any" in every row of the issue's table; pinned by permutation.
 
     #2160's wire adds an answer to the receipt. If it ever adds a gate, that
     is a table change with evidence attached — and this test is what makes
     that a deliberate act rather than a quiet one.
 
-    #2537 kept this pin intact and gained a second reason to: the spec verdicts
-    available today are computed over the raw 250 Hz-2 kHz band with no
-    intersection against the session's own trusted floor, so a decision keyed on
-    them would inherit a gate-length-dependent term no round can control. Spec
-    reaches the receipt as a next-round TARGET (asserted below) and nothing
-    more.
+    **AMENDED BY #2602, and narrowed to the half that is actually the
+    invariant.** This used to assert ``len(outcomes) == 1`` and
+    ``len(rows) == 1``. It cannot, now, and the reason is the ruling itself:
+    the fourth axis reads the post-apply report's measured tilt and ripple to
+    decide whether another round is worth running, so a report with 2 dB of
+    tilt left and a report that is already flat MUST reach different rows.
+    Demanding one row would be demanding that the series cannot iterate toward
+    flat, which is the behaviour #2602 exists to add.
+
+    What was always the point of the pin — and what is asserted below,
+    unweakened — is that **spec cannot take a graph off a speaker**. Every
+    permutation still lands on a keeping outcome, none restores, and none
+    escalates. That is the "improved and still out of spec is an honest first
+    pass" guarantee, and it does not depend on the row being constant.
+
+    Two further protections stay in force, neither of them this test's:
+
+    * The spec VERDICT still moves nothing. ``evaluate_round_quality``'s own
+      permutation pin (``test_the_spec_answer_never_changes_the_quality``, in
+      the verification suite) is untouched — ``decide_adoption`` never reads
+      ``SpecStatus``, and the fourth axis reads measured dB rather than a
+      pass/fail against a tolerance row.
+    * #2537's second reason for the pin — that spec numbers were computed with
+      no intersection against the session's trusted floor, so a decision keyed
+      on them would inherit a gate-length term — **was a precondition, and it
+      has since been met.** #2551 landed that intersection (``BandResult``
+      carries ``graded_lo_hz``; ``FlatSpecReport`` carries
+      ``trusted_floor_hz``), which is what makes an axis reading these numbers
+      admissible now and would not have then.
     """
     from jasper.active_speaker.flat_spec import evaluate_flat_spec
 
@@ -880,9 +919,20 @@ def test_the_spec_answer_never_changes_the_adoption():
     rows = {evaluation.adoption.row for evaluation in evaluations}
     statuses = {evaluation.spec.status for evaluation in evaluations}
 
-    assert len(outcomes) == 1, "spec must not move the adoption"
-    assert len(rows) == 1, "…nor the row it fired"
+    assert outcomes <= {
+        AdoptionOutcome.KEEP, AdoptionOutcome.KEEP_FOR_ITERATION
+    }, "spec must never take the graph off the speaker"
+    assert not rows & {
+        ADOPTION_ROW_RESTORE_UNSAFE,
+        ADOPTION_ROW_RESTORE_UNTRUSTED,
+        ADOPTION_ROW_RESTORE_REGRESSION,
+        ADOPTION_ROW_RESTORE_FAILED,
+    }, "…nor route a permutation onto a restoring row"
     assert len(statuses) == 3, "…while still producing three different answers"
+    # And the rows that DO differ differ only in whether another round runs —
+    # both of them keep. Without this, "outcomes are all keeping" could be
+    # satisfied by a table that had quietly stopped distinguishing them.
+    assert rows <= {ADOPTION_ROW_KEEP, ADOPTION_ROW_KEEP_ITERATING}
     # Not inert, though: it reaches the receipt as a target for the next round.
     failing = next(
         evaluation for evaluation in evaluations

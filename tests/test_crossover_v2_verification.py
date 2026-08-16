@@ -31,6 +31,7 @@ import pytest
 from jasper.active_speaker.crossover_v2.contracts import (
     ADOPTION_ROW_KEEP,
     ADOPTION_ROW_KEEP_FOR_ITERATION,
+    ADOPTION_ROW_KEEP_ITERATING,
     ADOPTION_ROW_RESTORE_FAILED,
     ADOPTION_ROW_RESTORE_REGRESSION,
     ADOPTION_ROW_RESTORE_UNSAFE,
@@ -41,6 +42,7 @@ from jasper.active_speaker.crossover_v2.contracts import (
     CaptureValidity,
     CrossoverV2ContractError,
     EvidenceTrust,
+    IterationHeadroom,
     QualityStatus,
     RealizationStatus,
     ResponseCurve,
@@ -76,6 +78,14 @@ from jasper.active_speaker.crossover_v2.verification import (
     ADOPTION_REALIZED_AND_IMPROVED,
     ADOPTION_UNPROVEN,
     CLIPPED_RUN_CHECK,
+    HEADROOM_CAP_REACHED,
+    HEADROOM_NO_OBJECTIVES,
+    HEADROOM_PLATEAUED,
+    HEADROOM_REACHABLE,
+    HEADROOM_WITHIN_PLATEAU,
+    FlatnessObjectives,
+    evaluate_iteration_headroom,
+    flatness_objectives,
     REALIZATION_NO_COMPARATOR,
     REALIZATION_NO_TRACKING,
     REALIZATION_OUT_OF_TOLERANCE,
@@ -93,6 +103,7 @@ from jasper.active_speaker.crossover_v2.verification import (
     TRUST_MEASURED,
     MeasurementComparand,
     Verdict,
+    _PASSED_ROWS,
     _QUALITY_ROWS,
     _QUALITY_TABLE,
     decide_adoption,
@@ -1200,16 +1211,29 @@ def _report_with_two_failing_bands():
 
 
 # --------------------------------------------------------------------------
-# 6. adoption — the five rows (#2537)
+# 6. adoption — the six rows (#2537, #2602)
 # --------------------------------------------------------------------------
 
 
-def _adopt(*, trust=None, safety=None, quality=None, **overrides):
+def _adopt(*, trust=None, safety=None, quality=None, headroom=None, **overrides):
+    """Default axes: trusted, safe, passed, and NO headroom left.
+
+    ``headroom`` defaults to EXHAUSTED so every row this helper predates keeps
+    asking the question it was written to ask. #2602 split the passing cell on
+    this axis, and an EXHAUSTED default is the half that behaves exactly as the
+    pre-#2602 table did — so a test about trust, safety, or a regression is
+    still testing only the thing it names. The rows that ARE about headroom
+    pass it explicitly.
+    """
+
     kwargs = {
         "trust": trust or Verdict(EvidenceTrust.TRUSTED, TRUST_MEASURED, {}),
         "safety": safety or Verdict(SafetyStatus.SAFE, SAFETY_NO_FINDING, {}),
         "quality": quality or Verdict(
             QualityStatus.PASSED, ADOPTION_REALIZED_AND_IMPROVED, {}
+        ),
+        "headroom": headroom or Verdict(
+            IterationHeadroom.EXHAUSTED, HEADROOM_WITHIN_PLATEAU, {}
         ),
         "boosted": False,
         "rollback_available": True,
@@ -1219,10 +1243,22 @@ def _adopt(*, trust=None, safety=None, quality=None, **overrides):
 
 
 def test_row1_trusted_safe_passed_keeps():
+    """The terminal keep — and since #2602, the HEADROOM axis names why.
+
+    Amended from ``reason == ADOPTION_REALIZED_AND_IMPROVED``. Row 1 no longer
+    means only "this round was good"; it means "this round was good AND the
+    series is over", and the reason has to say which of those endings it was so
+    the done screen can tell a household "as flat as measuring can show" apart
+    from "that was the third round". Quality's own reason did not go anywhere —
+    it rides on the quality axis, which the receipt records beside this
+    decision. The OUTCOME and the ROW, which are what every other consumer
+    keys on, are unchanged.
+    """
+
     decision = _adopt()
     assert decision.outcome is AdoptionOutcome.KEEP
     assert decision.row == ADOPTION_ROW_KEEP
-    assert decision.reason == ADOPTION_REALIZED_AND_IMPROVED
+    assert decision.reason == HEADROOM_WITHIN_PLATEAU
 
 
 def test_row2_trusted_safe_missed_keeps_for_iteration():
@@ -1429,19 +1465,24 @@ def test_every_axis_combination_lands_on_exactly_one_known_row():
     """
 
     seen = set()
-    for trust, safety, quality, boosted, rollback in itertools.product(
-        EvidenceTrust, SafetyStatus, QualityStatus, (False, True), (False, True)
+    for trust, safety, quality, headroom, boosted, rollback in itertools.product(
+        EvidenceTrust, SafetyStatus, QualityStatus, IterationHeadroom,
+        (False, True), (False, True),
     ):
         decision = _adopt(
             trust=Verdict(trust, "t", {}),
             safety=Verdict(safety, "s", {}),
             quality=Verdict(quality, "q", {}),
+            headroom=Verdict(headroom, "h", {}),
             boosted=boosted,
             rollback_available=rollback,
         )
         assert decision.row in ADOPTION_ROWS
         assert decision.row != ADOPTION_ROW_RESTORE_FAILED
         seen.add(decision.row)
+    # #2602 widened this from four reachable rows to five: the walk now covers
+    # the fourth axis, so row 6 is reachable and must be REACHED — an
+    # unreachable row in the table is a row nothing tests.
     assert seen == ADOPTION_ROWS - {ADOPTION_ROW_RESTORE_FAILED}
 
 
@@ -1466,6 +1507,12 @@ def test_a_fourth_quality_member_would_raise_rather_than_fall_through():
     body = source.split("def decide_adoption(", 1)[1].split("\ndef ", 1)[0]
     assert "_QUALITY_ROWS[quality.status]" in body
     assert "is QualityStatus." not in body
+    # #2602's second mapping, held to the same rule: the passing cell's split
+    # is a lookup with no default, so a third ``IterationHeadroom`` member
+    # raises rather than landing on whichever branch came last.
+    assert set(_PASSED_ROWS) == set(IterationHeadroom)
+    assert "_PASSED_ROWS[headroom.status]" in body
+    assert "is IterationHeadroom." not in body
 
 
 @pytest.mark.parametrize(
@@ -1475,6 +1522,8 @@ def test_a_fourth_quality_member_would_raise_rather_than_fall_through():
         ("safety", Verdict(EvidenceTrust.TRUSTED, "t", {})),
         ("quality", Verdict(SafetyStatus.SAFE, "s", {})),
         ("trust", EvidenceTrust.TRUSTED),
+        ("headroom", Verdict(SafetyStatus.SAFE, "s", {})),
+        ("headroom", IterationHeadroom.REACHABLE),
     ],
 )
 def test_adoption_refuses_an_axis_that_is_not_the_typed_one(field_name, value):
@@ -1482,6 +1531,7 @@ def test_adoption_refuses_an_axis_that_is_not_the_typed_one(field_name, value):
         "trust": Verdict(EvidenceTrust.TRUSTED, "t", {}),
         "safety": Verdict(SafetyStatus.SAFE, "s", {}),
         "quality": Verdict(QualityStatus.PASSED, "q", {}),
+        "headroom": Verdict(IterationHeadroom.EXHAUSTED, "h", {}),
         "boosted": False,
         "rollback_available": True,
         field_name: value,
