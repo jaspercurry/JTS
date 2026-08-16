@@ -4,7 +4,14 @@
 
 from __future__ import annotations
 
+import fcntl
+import logging
+import os
 import re
+import signal
+import subprocess
+import sys
+import time
 from pathlib import Path
 
 import yaml as yaml_lib
@@ -1144,3 +1151,222 @@ def test_software_guard_evidence_blocks_when_tweeter_protection_unwired() -> Non
     assert evidence["checks"]["tweeter_pipeline_guarded"] is False
     assert evidence["checks"]["startup_muted"] is True  # mutes untouched
     assert evidence["passed"] is False
+
+
+# --------------------------------------------------------------------------
+# #2518 — the staged startup anchor PAIR has one lock, taken by both writers.
+#
+# The pair is the all-muted startup graph plus the staged metadata that LOCATES
+# it. Neither writer publishes both halves in one filesystem operation, so
+# without mutual exclusion an interleaved run can leave one graph's metadata
+# over another's bytes. #2285's convergence design would add unattended
+# invocations of the CLI writer, turning a human-vs-human race into a
+# human-vs-machine one — which is why it names this lock its prerequisite
+# rather than a nicety.
+#
+# The CLI writer's half of the same promise — including the claim that BOTH
+# writers take the SAME file — is pinned in tests/test_ring_active_endpoint.py.
+# --------------------------------------------------------------------------
+
+
+def _probe_anchor_lock(lock_path: Path) -> bool:
+    """True when some open file description already holds ``lock_path``.
+
+    A second descriptor on the same file is a faithful probe even inside the
+    writer's own process — flock(2): "If a process uses open(2) ... to obtain
+    more than one file descriptor for the same file, these file descriptors are
+    treated independently by flock()."
+    """
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(fd)
+
+
+def test_stage_protected_startup_config_holds_the_lock_across_both_halves(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The lock spans the graph write AND the metadata write, not one of them.
+
+    A hold covering only one half would leave exactly the window #2518
+    describes: one writer's bytes on disk under the other's metadata. So the
+    probe runs AT each write — the graph emit and the metadata publish — and
+    both must find the pair's lock already held. The post-call probe is the
+    positive control: it proves the probe can report `free`, so the two `True`s
+    are evidence of a hold rather than of a probe that always says yes.
+    """
+    out = tmp_path / "active_staged.yml"
+    meta = tmp_path / "active_staged.json"
+    lock_path = staging_mod.staged_anchor_lock_path(out)
+    held_at: dict[str, bool] = {}
+
+    real_emit = staging_mod.emit_active_speaker_commissioning_config
+    real_write_json = staging_mod.atomic_write_json
+
+    def _emit(*args, **kwargs):
+        held_at["graph"] = _probe_anchor_lock(lock_path)
+        return real_emit(*args, **kwargs)
+
+    def _write_json(path, payload, **kwargs):
+        if Path(path) == meta:
+            held_at["metadata"] = _probe_anchor_lock(lock_path)
+        return real_write_json(path, payload, **kwargs)
+
+    monkeypatch.setattr(
+        staging_mod, "emit_active_speaker_commissioning_config", _emit
+    )
+    monkeypatch.setattr(staging_mod, "atomic_write_json", _write_json)
+
+    payload = stage_protected_startup_config(
+        _topology(),
+        config_path=out,
+        metadata_path=meta,
+        validate=_valid_config,
+    )
+
+    assert payload["status"] == "staged"
+    assert held_at == {"graph": True, "metadata": True}, held_at
+    # Positive control: released on the way out, so the probe is discriminating.
+    assert _probe_anchor_lock(lock_path) is False
+
+
+def test_stage_protected_startup_config_refuses_a_held_anchor_and_writes_nothing(
+    monkeypatch, tmp_path: Path, caplog
+) -> None:
+    """A contending stage waits a BOUNDED time, then refuses without writing.
+
+    Bounded because this call sits on a /sound/ web request, where an
+    open-ended block is a hung page. Writing nothing because a refusal that
+    published a blocked payload over the live metadata would BE the corruption
+    the lock exists to prevent.
+    """
+    out = tmp_path / "active_staged.yml"
+    meta = tmp_path / "active_staged.json"
+    meta.write_text('{"status": "previous"}', encoding="utf-8")
+    lock_path = staging_mod.staged_anchor_lock_path(out)
+    monkeypatch.setattr(staging_mod, "STAGED_ANCHOR_LOCK_TIMEOUT_SEC", 0.2)
+
+    holder = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        os.write(holder, b"pid 4242 the-other-writer\n")
+        started = time.monotonic()
+        with caplog.at_level(logging.WARNING, logger=staging_mod.logger.name):
+            payload = stage_protected_startup_config(
+                _topology(),
+                config_path=out,
+                metadata_path=meta,
+                validate=_valid_config,
+            )
+        waited = time.monotonic() - started
+    finally:
+        os.close(holder)
+
+    assert payload["status"] == "blocked"
+    assert [issue["code"] for issue in payload["issues"]] == [
+        "staged_config_anchor_lock_contended"
+    ]
+    # Bounded: the wait is the configured timeout, not the caller's patience.
+    assert waited < 5.0, waited
+    # Neither half moved.
+    assert not out.exists()
+    assert meta.read_text(encoding="utf-8") == '{"status": "previous"}'
+    # Loud: one stable event naming the holder and the bound it exceeded.
+    contended = [
+        rec.getMessage()
+        for rec in caplog.records
+        if "staged_anchor_lock_contended" in rec.getMessage()
+    ]
+    assert len(contended) == 1, caplog.text
+    assert "the-other-writer" in contended[0]
+    assert "timeout_ms=200" in contended[0]
+
+
+def test_staged_anchor_lock_is_released_when_its_holder_is_killed(
+    tmp_path: Path,
+) -> None:
+    """flock is dropped by the kernel on process death — the reason it is flock.
+
+    Both writers run in short-lived contexts that can be killed mid-write: a
+    CLI invocation inside a deploy, a web request, either OOM-killed on a
+    1 GB Pi. A lock that outlived its holder would strand the anchor and leave
+    the box unable to stage a boot graph at all, which is strictly worse than
+    the stale evidence #2518 bounds. The live-holder assertion is the positive
+    control: it proves the acquisition below succeeds because the lock was
+    RELEASED, not because it was never taken.
+    """
+    anchor = tmp_path / "anchor.yml"
+    lock_path = staging_mod.staged_anchor_lock_path(anchor)
+    child = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import fcntl,os,sys,time\n"
+            "fd=os.open(sys.argv[1], os.O_RDWR|os.O_CREAT, 0o600)\n"
+            "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+            "sys.stdout.write('locked\\n'); sys.stdout.flush()\n"
+            "time.sleep(120)\n",
+            str(lock_path),
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert child.stdout is not None
+        assert child.stdout.readline().strip() == "locked"
+        assert _probe_anchor_lock(lock_path) is True  # positive control
+        child.send_signal(signal.SIGKILL)
+        child.wait(timeout=30)
+        # The kernel drops the flock with the dying process's descriptor. Poll
+        # briefly: the drop is not synchronous with `wait()` returning.
+        deadline = time.monotonic() + 5.0
+        while _probe_anchor_lock(lock_path) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert _probe_anchor_lock(lock_path) is False
+        # ...and a real writer can take it again.
+        with staging_mod.staged_anchor_lock(anchor, source="test", timeout_sec=1.0):
+            assert _probe_anchor_lock(lock_path) is True
+    finally:
+        if child.poll() is None:  # pragma: no cover - only after a failed assert
+            child.kill()
+            child.wait(timeout=30)
+        if child.stdout is not None:
+            child.stdout.close()
+
+
+def test_staged_anchor_lock_fails_open_when_the_lock_file_cannot_be_opened(
+    tmp_path: Path, caplog
+) -> None:
+    """An unopenable lock path must not brick staging — warn and proceed.
+
+    Mirrors `jasper.fanin.coupling_reconcile._acquire_entry_lock`. The
+    asymmetry decides it: proceeding unserialized costs at worst the stale
+    evidence #2518 already bounds, while refusing costs the box its ability to
+    stage a boot anchor at all.
+    """
+    out = tmp_path / "active_staged.yml"
+    meta = tmp_path / "active_staged.json"
+    # A directory at the lock path makes `os.open(..., O_RDWR|O_CREAT)` raise
+    # EISDIR — the shape a provisioning fault takes.
+    staging_mod.staged_anchor_lock_path(out).mkdir()
+
+    with caplog.at_level(logging.WARNING, logger=staging_mod.logger.name):
+        payload = stage_protected_startup_config(
+            _topology(),
+            config_path=out,
+            metadata_path=meta,
+            validate=_valid_config,
+        )
+
+    assert payload["status"] == "staged"
+    assert out.exists() and meta.exists()
+    assert any(
+        "staged_anchor_lock_unavailable" in rec.getMessage()
+        for rec in caplog.records
+    ), caplog.text
