@@ -566,18 +566,19 @@ class BoostEvidenceDrop:
 
 
 @dataclass(frozen=True)
-class PlacementRefusal:
-    """One peaking filter refused because its CENTRE landed in a span no
-    branch's own measurement covers (#2599).
+class BlindZonePlacement:
+    """One peaking filter the fit CENTRED in a span no branch's own
+    measurement covers (#2599). A disclosure, not a refusal — the filter ships.
 
-    ``blind_band_hz`` is the hole it fell in —
+    ``blind_band_hz`` is the hole it landed in —
     :func:`measurement_hole_bands_hz` over the session's per-branch core
-    bands. ``measured_excess_db`` is ``smoothed - target`` at the refused
-    centre: what THIS branch believed it was removing, disclosed so a large
-    refused feature is actionable (change Fc, change order, or let the
-    alignment layer own it) rather than invisible. It does NOT gate the
-    refusal — see :func:`_placement_verdicts` for why no magnitude exemption
-    was invented.
+    bands. ``measured_excess_db`` is ``smoothed - target`` at that centre:
+    what THIS branch believed it was removing, which is the number that makes
+    the record actionable. A large excess is a real driver feature the
+    crossover is not hiding (act on Fc or order); a small one, like the 1.7577
+    dB cut at 1404.4032 Hz on the 2026-08-16 jts3 run, is the fit shaping a
+    blend it cannot see. See :func:`_blind_zone_placements` for why this layer
+    reports rather than refuses.
     """
 
     freq_hz: float
@@ -954,12 +955,13 @@ class LinearizationFit:
     # partial one deliberately does not, for #1967's reason exactly (a lift
     # did happen).
     #
-    # ``placement_refused`` is one record per PEAKING filter the loop wanted
-    # centred inside a span no branch's own capture covers. Empty for every
-    # caller that declares no such span, which is every one-way box and every
-    # caller before #2599.
+    # ``blind_zone_placements`` is one record per PEAKING filter the loop
+    # centred inside a span no branch's own capture covers. Unlike the drops
+    # above it removes nothing — the filter ships and is NAMED, which is the
+    # #2600 disclosure class. Empty for every caller that declares no such
+    # span, which is every one-way box and every caller before #2599.
     lift_boost_evidence_drops: tuple[BoostEvidenceDrop, ...] = ()
-    placement_refused: tuple[PlacementRefusal, ...] = ()
+    blind_zone_placements: tuple[BlindZonePlacement, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -998,7 +1000,9 @@ class LinearizationFit:
             "lift_boost_evidence_drops": [
                 d.to_dict() for d in self.lift_boost_evidence_drops
             ],
-            "placement_refused": [r.to_dict() for r in self.placement_refused],
+            "blind_zone_placements": [
+                p.to_dict() for p in self.blind_zone_placements
+            ],
         }
 
 
@@ -2444,87 +2448,61 @@ def measurement_hole_bands_hz(
     return tuple(holes)
 
 
-def _placement_verdicts(
+def _blind_zone_placements(
     peqs: Sequence[PEQ],
     grid_hz: np.ndarray,
     measured_excess_db: np.ndarray,
     blind_bands_hz: Sequence[tuple[float, float]],
-) -> tuple[list[PEQ], list[PlacementRefusal]]:
-    """Refuse any peaking prescription CENTRED in a span no branch measured
-    (#2599). Returns ``(kept, refused)``.
+) -> tuple[BlindZonePlacement, ...]:
+    """Name every peaking prescription CENTRED in a span no branch measured
+    (#2599). Reports; refuses nothing.
 
-    A filter centred outside every ``blind_bands_hz`` span is never touched. A
-    filter centred inside one is REFUSED and disclosed. It is never moved to
-    the nearest measured bin, because a filter silently re-sited is a
-    different prescription wearing the same one's name, and the fit would then
-    report having corrected something it did not. ``measured_excess_db`` rides
-    on the refusal — ``smoothed - target`` at the refused centre — so a reader
-    sees exactly what the fit believed it was removing.
+    **What the disclosure is for.** A filter centred inside a hole is one
+    branch acting alone on a region where the per-branch instrument is silent
+    for EVERY branch, while the summed response there is the phase-sensitive
+    blend of both. The branch's own capture reports its own excess and is
+    structurally mute about what removing that excess does to the sum. On the
+    2026-08-16 round-3 jts3 run the woofer took a -1.7577 dB cut centred at
+    1404.4032 Hz, inside the 1291.4104-2077.2412 Hz hole and inside the
+    824-3297 Hz blend window #2600 item 1 says the null detector is
+    uncalibrated across; it landed on the blend dip and deepened it, for a net
+    woofer EQ of -4.27 dB against a measured worst ripple of -4.33 dB at 1408
+    Hz. Nothing in the receipt said a filter had been placed where no
+    measurement reached. Now something does, which is precisely the "cheap
+    persistence change that would have named the defect a round earlier" that
+    #2600 asks for.
 
-    **Why a HOLE and not the branch's own core edge.** Clamping each filter
-    inside its own branch's core band was tried first, and it is wrong
-    measurably rather than theoretically: it reverses #1809's ruling that a
-    CUT past the handoff is ordinary useful work, and it breaks four pinned
-    promises this repo backs with fixtures — the 8 dB resonance 0.17 octaves
-    past a woofer's declared edge, the conductor fixture's tweeter bump 0.39
-    octaves inside its high-pass edge whose refusal "turned a passing
-    correction into a refused one", the in-band-drift laundering guard, and
-    the demand straddling the solve edge. Every one of those is a case where
-    ONE branch is measured and radiating and no partner is anywhere near: the
-    branch is acting alone on its own leakage, exactly what #1809 blessed, and
-    its own capture can see the feature it is removing.
+    **Why this REPORTS instead of refusing, which was tried first.** A refusal
+    needs a rule that separates this cut from legitimate work, and no band
+    criterion does. Measured on the repo's own conductor fixture, whose hole is
+    1255.8-2020.0 Hz: refusing every centre inside it drops a **-7.821 dB**
+    woofer cut at 1708.0 Hz sitting on **+7.821 dB** of the branch's own
+    measured excess, a -3.406 dB cut at 1365.7 Hz on +6.28 dB, and the
+    tweeter's -2.286 dB cut at 1570.6 Hz — and turns that fixture's PASSING
+    correction into ``correction_not_an_improvement`` (before 2.233 dB rms,
+    after 2.377, improvement -0.144 against 0.5 required). Clamping to each
+    branch's own core band instead is the same rule wearing a different band
+    and additionally reverses #1809's measured ruling that a cut past the
+    handoff is ordinary useful work: it breaks four further pinned promises,
+    among them an 8 dB resonance 0.17 octaves past a woofer's edge.
 
-    A hole is the different thing. It is a span where the per-branch
-    instrument is silent for EVERY branch while the summed response is a live
-    two-branch blend — so a per-driver filter there is one branch acting alone
-    on an interference pattern it structurally cannot observe. Refusing
-    placement inside a hole leaves every leakage cut #1809 protects untouched,
-    because a leakage cut sits in a band its own branch measured.
+    The one thing that WOULD separate the two populations is magnitude — this
+    defect sat at ~1.76 dB of centre excess and the protected cuts at 2.29,
+    6.28 and 7.82 — and inventing a dB threshold in that gap is exactly the
+    "constant borrowed across two different geometries" that
+    :func:`_boost_exclusion_verdicts` documents as the bug in BOTH directions.
+    There is no population behind such a number.
 
-    **The session that found it.** The 2026-08-16 round-3 jts3 run produced a
-    -1.7577 dB cut centred at 1404.4032 Hz, inside the 1291.4104-2077.2412 Hz
-    hole above, and inside the 824-3297 Hz blend window that #2600 item 1 says
-    the null detector is uncalibrated across. It landed on the blend dip and
-    deepened it: net woofer EQ -4.27 dB there, against a measured worst ripple
-    of -4.33 dB at 1408 Hz. The branch's own evidence said "excess, cut it";
-    the sum said the opposite, and only the sum was right. Refusing the
-    placement does not fix the blend dip and is not meant to — the alignment
-    solve owns that, being the only layer that sees both branches and their
-    phase. What this stops is one layer making another layer's problem worse
-    while reporting that it corrected something.
-
-    **No magnitude exemption, deliberately.** A "keep it if the measured
-    excess is large enough" clause would need a dB threshold, and the two
-    populations sit at ~1.76 dB (this defect) and 3.6 dB and above (the
-    protected resonances), so any number in between separates them and none of
-    them is derived from anything. That is precisely the "constant borrowed
-    across two different geometries" that :func:`_boost_exclusion_verdicts`
-    documents as the bug in BOTH directions. The band criterion needs no such
-    number: inside a hole there is no evidence at any magnitude.
-
-    **Peaking only, and deliberately.** A shelf's ``freq`` is a CORNER, not a
-    placement: its authority is the whole band to one side of it, so asking
-    whether that one frequency sits inside a band is a category error. The
-    peaking loop is also where the defect was measured, and scoping a fix to
-    the observed-broken path rather than to every structurally-similar one is
-    this repo's standing rule. The lift stage's boosts are separately bounded
-    to the radiating band by #1809 and to the measured target by
-    :func:`_boost_evidence_verdicts`; the CD-horn stage is a top-octave
-    give-back construct with its own eligibility gate.
-
-    **Drop-only, no refit, and the direction is safe.** ``design_peq`` is
-    greedy — filters after a refused one were designed against a residual that
-    included it — so the survivors are a subset of a cascade designed for more
-    correction than it now applies. That direction only ever removes
-    correction and only ever lowers the headroom charge; it can neither add
-    gain nor deepen a cut. The residual the fit reports is rebuilt from the
-    filters actually emitted (the claim seam), so a refusal shows up as a
-    larger honest residual rather than a smaller dishonest one.
+    So the honest separator is not available from inside a single-branch fit:
+    it needs the SUM, which only the alignment/crossover layer sees. Until
+    that layer owns the blend window, this makes the placement visible rather
+    than guessing at it — the disclosure-class posture #2600 itself takes, and
+    the "disclose and recommend, never block" ethos ruled 2026-08-14. Hard
+    stops stay reserved for the safety class, which a 1.76 dB cut is not.
     """
     if not blind_bands_hz:
-        return list(peqs), []
-    kept: list[PEQ] = []
-    refused: list[PlacementRefusal] = []
+        return ()
+    placements: list[BlindZonePlacement] = []
     for peq in peqs:
         hole = next(
             (
@@ -2535,15 +2513,14 @@ def _placement_verdicts(
             None,
         )
         if hole is None:
-            kept.append(peq)
             continue
         idx = int(np.argmin(np.abs(grid_hz - peq.freq)))
-        refused.append(PlacementRefusal(
+        placements.append(BlindZonePlacement(
             freq_hz=float(peq.freq), q=float(peq.q), gain_db=float(peq.gain),
             blind_band_hz=hole,
             measured_excess_db=float(measured_excess_db[idx]),
         ))
-    return kept, refused
+    return tuple(placements)
 
 
 def _lift_stage(
@@ -2939,9 +2916,9 @@ def fit_driver_linearization(
     ``blind_bands_hz`` (#2599) is the separate, cross-branch statement: spans
     NO branch's own measured core band covers, from
     :func:`measurement_hole_bands_hz`. A peaking filter may not be CENTRED in
-    one — see :func:`_placement_verdicts` for why that is a different question
-    from ``radiating_band_hz`` and why it does not disturb #1809's ruling that
-    a cut past the handoff is ordinary useful work. Empty (the default, every
+    one without being NAMED for it — see :func:`_blind_zone_placements` for
+    what that disclosure is for, and for the measured reason it reports rather
+    than refuses. Empty (the default, every
     caller before #2599, and every session with fewer than two readable core
     bands) refuses nothing.
 
@@ -3004,10 +2981,10 @@ def fit_driver_linearization(
       5. Peaking loop: ``jasper.correction.peq.design_peq`` on the
          post-shelf residual, cuts-only, capped per-bin by
          ``min(PER_FILTER_CUT_CAP_DB, envelope.allowed_depth_db)``, then
-         PLACEMENT-checked (#2599, :func:`_placement_verdicts`): a filter
-         centred inside a ``blind_bands_hz`` span — a region no branch's
-         own capture covers — is refused into
-         :attr:`~LinearizationFit.placement_refused` rather than moved.
+         PLACEMENT-disclosed (#2599, :func:`_blind_zone_placements`): a
+         filter centred inside a ``blind_bands_hz`` span — a region no
+         branch's own capture covers — is named in
+         :attr:`~LinearizationFit.blind_zone_placements`. It still ships.
       6. CD-horn compensation stage (``_hf_continuation_stage``, #1668): for a
          driver whose fit band reaches the confidence ceiling, a measured-
          inverse top-octave lift realized cut-only via give-back (a Lowshelf
@@ -3158,7 +3135,7 @@ def fit_driver_linearization(
     fit_hi_hz = float(grid_hz[fit_hi_idx])
 
     filters: list[LinearizationFilter] = []
-    placement_refused: list[PlacementRefusal] = []
+    blind_zone_placements: tuple[BlindZonePlacement, ...] = ()
     working_db = smoothed_db.copy()
     remaining_filters = MAX_FILTERS_PER_DRIVER
 
@@ -3194,14 +3171,12 @@ def fit_driver_linearization(
             min_filter_gain_db=_MIN_FILTER_GAIN_DB,
         )
         # THE #2599 PLACEMENT SITE. A prescription centred in a span NO
-        # branch's own capture covers is refused and disclosed — never
-        # silently re-sited. It is applied here, on the prescriptions
-        # themselves,
-        # rather than on the assembled cascade later, so ``working_db``, the
-        # CD-horn stage's deficit, the lift stage's residue and every reported
-        # claim all see the filters that will actually be emitted. See
-        # :func:`_placement_verdicts`.
-        peqs, placement_refused = _placement_verdicts(
+        # branch's own capture covers is NAMED here. It still ships — see
+        # :func:`_blind_zone_placements` for the measured reason refusing it
+        # is not available from inside a single-branch fit — so this reads
+        # the prescriptions without filtering them, and the cascade below is
+        # exactly the pre-#2599 one.
+        blind_zone_placements = _blind_zone_placements(
             peqs, grid_hz, smoothed_db - target_curve_db, blind_bands_hz,
         )
         if peqs:
@@ -3444,5 +3419,5 @@ def fit_driver_linearization(
         lift_boost_excluded_drops=lift.boost_excluded_drops,
         lift_boost_excluded_residual=lift.boost_excluded_residual,
         lift_boost_evidence_drops=lift.boost_evidence_drops,
-        placement_refused=tuple(placement_refused),
+        blind_zone_placements=blind_zone_placements,
     )
