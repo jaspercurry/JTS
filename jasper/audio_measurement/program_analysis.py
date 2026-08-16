@@ -2875,6 +2875,7 @@ def _driver_snr_block(
     mag_db: np.ndarray,
     capture_segment: np.ndarray | None,
     sample_rate: int,
+    radiated_band_hz: tuple[float, float] | None,
 ) -> dict[str, Any] | None:
     """The per-driver SC-1 magnitude SNR verdict, read in ONE domain.
 
@@ -2955,6 +2956,15 @@ def _driver_snr_block(
     offset immediately. Pinned by
     ``test_raw_sweep_segment_returns_the_whole_scheduled_segment``.
 
+    ``radiated_band_hz`` scopes the verdict to the band this branch's stimulus
+    actually drove — see :func:`branch_snr_band_hz`, which owns that policy and
+    carries the #2613 diagnosis. BOTH decision classes below take the same
+    window, because "a row the sweep never entered is not evidence" is a
+    statement about the MEASUREMENT, not about which law reads it; the level
+    solve this block grades already clips its own demand to the sweep
+    (:func:`_band_required_snr_db`), so reading the answer back over
+    unswept rows was the same category error in either class.
+
     Fails closed: a raw report with no captured segment to pair it against
     produces no verdict at all rather than a cross-domain one. "Not
     measured" is honest; a number in the wrong units is not. A segment that
@@ -2982,7 +2992,7 @@ def _driver_snr_block(
         band_method = "fft_band_power_difference"
     else:
         return None
-    relevant_hz = (fc_hz / OVERLAP_OCTAVE_RATIO, fc_hz * OVERLAP_OCTAVE_RATIO)
+    relevant_hz = branch_snr_band_hz(fc_hz, radiated_band_hz)
     block = snr_policy.band_snr_verdicts(
         decision_class=snr_policy.DECISION_CLASS_MAGNITUDE,
         capture_bands=capture_bands,
@@ -3035,7 +3045,11 @@ def _driver_response(
     rather than guessed downstream because guessing it is precisely the
     over-report E5 measured (see
     :mod:`jasper.audio_measurement.gate_disclosure`). Absent, the delta is
-    simply not reported — never defaulted.
+    simply not reported — never defaulted. It has a SECOND reader since
+    #2613: :func:`_driver_snr_block` scopes the capture-SNR verdict to the
+    same band, so a row this stimulus deliberately left empty cannot veto it
+    (:func:`branch_snr_band_hz`). One declared fact, two consumers — neither
+    re-derives the sweep's edges.
 
     ``capture_segment`` is the RAW captured samples of this role's sweep —
     the signal side of the SNR verdict whenever the noise report is a raw
@@ -3073,6 +3087,7 @@ def _driver_response(
         mag_db=mag_db,
         capture_segment=capture_segment,
         sample_rate=sample_rate,
+        radiated_band_hz=radiated_band_hz,
     )
     return DriverResponse(
         role=role,
@@ -3155,6 +3170,129 @@ def overlap_band_hz(
     if woofer_sweep_hi_hz is not None:
         hi = min(hi, float(woofer_sweep_hi_hz))
     return lo, hi
+
+
+def branch_snr_band_hz(
+    fc_hz: float,
+    radiated_band_hz: tuple[float, float] | None,
+) -> tuple[float, float]:
+    """The band ONE branch's capture-SNR verdict may be judged over.
+
+    ``[Fc/ρ, Fc·ρ]`` intersected with the band THIS branch's stimulus actually
+    radiated — the same clamp :func:`overlap_band_hz` applies for the
+    two-branch alignment math, stated for a single branch that does not know
+    whether it is the woofer or the tweeter. Whichever edge binds, binds: a
+    tweeter swept from above ``Fc/ρ`` raises ``lo``, a woofer swept to below
+    ``Fc·ρ`` lowers ``hi``.
+
+    **Why it exists (issue #2613).** The nominal band was passed straight to
+    :func:`~jasper.audio_measurement.snr_policy.band_snr_verdicts` as its
+    ``relevant_hz``, and that window admits any ``CROSSOVER_SNR_BANDS_HZ`` row
+    that merely OVERLAPS it — however little of the row the sweep entered.
+
+    On jts3's commissioned geometry (the 2026-08-15/16 rounds; ``Fc =
+    1648.7``, tweeter declared ``[1600, 20000]``, woofer ``[45, 4000]`` swept
+    from the 150 Hz MEASURE floor) that made the tweeter's refusal
+    unconditional. The nominal window is ``[824.35, 3297.4]``; the
+    ``transition`` row is ``[350, 1000]`` and ``1000 > 824.35``, so the row
+    was enfranchised — into 650 Hz of which the tweeter sweep, starting at
+    1600 Hz, sends nothing BY DESIGN. Its "signal" is the room's own noise, so
+    its SNR is the ratio of the room to itself: the box read **-1.2 dB**
+    there (-0.4 dB on five of six captures in the 2026-08-10 dump) and
+    verdicted ``insufficient`` on arithmetic no room, no night, and no drive
+    level could change. Via :func:`driver_alignment_snr_verdict` ->
+    :data:`ALIGNMENT_SNR_REFUSAL_VERDICT` that fired #2607's declared-design
+    fail-safe on 14 of 14 rounds.
+
+    **The woofer is the control, and a geometric one.** Its sweep spans the
+    whole nominal window, so no row inside it is empty, this clamp is a no-op
+    for it, and it verdicted ``ok`` at **44.0 dB** on those same captures.
+    Tweeter refusing while woofer passes, on one capture, is what a broadband
+    noise floor cannot explain and the sweep edges can.
+
+    Replayed through this analyzer on that geometry with synthetic IRs: the
+    ``transition`` row reads -2.6 dB and vetoes, the ``mid`` row where the
+    decision actually lives reads 66.4 dB, and the refused branch commits the
+    declared polarity at 45.47 dB ripple against a 2.25 dB flat-sum answer it
+    never got to score. The 35 dB alignment law was never wrong; the window
+    handed to it was.
+
+    **Named residual — row width, erring CONSERVATIVE.** Clamping the window
+    stops a wholly-unexcited row from voting, but a row the window keeps can
+    still be WIDER than the sweep's coverage of it: jts3's tweeter leaves
+    1000-1600 Hz of the 1000-4000 Hz ``mid`` row empty while the paired
+    ambient row still reports noise across all of it. Under a flat noise floor
+    that understates SNR by exactly ``10*log10(row_width / covered_width)`` —
+    always toward REFUSING, which is the fail-safe direction #2607 chose.
+
+    **That residual is NOT bounded by a small constant, and quoting one would
+    be the over-claim this file has been burned by before.** It is set by how
+    deep inside a wide row the sweep's edge lands, so it grows without a
+    natural ceiling as the edge moves in. On jts3 it is 0.97 dB for the
+    tweeter and 0.00 dB for the woofer (whose sweep covers both its rows
+    outright) — but the same formula gives 4.77 dB for a woofer swept only to
+    2000 Hz, and 14.77 dB for one whose ceiling sits just above ``mid``'s
+    1000 Hz floor. It stays acceptable because of WHERE the margin is, not
+    because the number is small: on jts3's geometry the occupied row clears
+    the 35 dB law by roughly 30 dB.
+
+    **That margin figure is the SYNTHETIC REPLAY's (66.4 dB), not a hardware
+    reading, and no hardware one exists.** ``worst_relevant`` carries a
+    ``band_id`` but ``_driver_snr_fields`` drops it before logging, so no jts3
+    artifact records a PER-ROW SNR at all — only the worst-relevant scalar
+    (tweeter -1.2 dB, woofer 44.0 dB) with its row unrecorded. The hardware
+    evidence is therefore that the tweeter refused and the woofer did not; WHICH
+    row produced either number is derived from the geometry, and the 66.4 dB
+    the residual is judged against comes from replaying that geometry through
+    this analyzer on synthetic IRs. Persisting ``band_id`` would make the next
+    such argument readable off a log instead of re-derived.
+
+    Removing it outright would mean re-computing the ambient report on a
+    sweep-derived band table (what
+    :func:`~jasper.audio_measurement.snr_policy.sweep_excitation_bands` does
+    for the summed capture), and this function's consumer receives the ambient
+    REPORT rather than the ambient samples — a threading change through
+    ``MeasurementPriors`` for an error that can only refuse a capture, never
+    clear a bad one. Deliberately not taken; revisit if a real session is ever
+    refused with a wide row's dilution as the named reason.
+
+    ``radiated_band_hz`` of ``None`` leaves the nominal band untouched —
+    byte-identical to the pre-#2613 window, matching :func:`overlap_band_hz`'s
+    own treatment of an absent bound. A stimulus ``ProgramSegment`` always
+    declares ``f1_hz``/``f2_hz`` (its ``__post_init__`` raises otherwise), so
+    no production sweep reaches that arm.
+
+    An EMPTY intersection (``lo >= hi``) is returned as-is rather than widened
+    back to a nominal band this function exists to stop trusting. It takes a
+    tweeter swept entirely above ``Fc·ρ`` (or a woofer entirely below
+    ``Fc/ρ``) to produce one, which is not a crossover.
+
+    **Do not read "empty" as "no verdict".** An inverted window still admits a
+    row through
+    :func:`~jasper.audio_measurement.snr_policy.worst_band_verdict`, whose
+    ``_band_overlaps`` tests ``row_hi > lo`` and ``row_lo < hi``
+    INDEPENDENTLY — so a row spanning the whole inverted interval satisfies
+    both and is enfranchised. ``Fc = 1000`` with a stimulus radiating
+    ``[3000, 20000]`` gives the window ``(3000, 2000)`` and still returns a
+    real ``mid`` verdict: ``ok`` on a clean capture, ``insufficient`` on a
+    buried one. An earlier draft of this docstring claimed such a window always
+    reports ``"unknown"`` and can never refuse. That is false, and the test
+    pinning it only held for the one geometry it used.
+
+    The guarantee that actually matters survives, and it is the stronger one:
+    **whatever a window admits — empty or not — still overlaps the radiated
+    band**, because admission needs ``row_hi > lo >= radiated_lo`` and
+    ``row_lo < hi <= radiated_hi``. So the fail-safe can never turn on a row
+    this stimulus did not enter, which is the whole point of the clamp; an
+    empty window narrows what may vote rather than disenfranchising every row.
+    Pinned by
+    ``test_branch_snr_band_hz_never_admits_a_row_outside_the_radiated_band``.
+    """
+    lo = fc_hz / OVERLAP_OCTAVE_RATIO
+    hi = fc_hz * OVERLAP_OCTAVE_RATIO
+    if radiated_band_hz is None:
+        return lo, hi
+    return max(lo, float(radiated_band_hz[0])), min(hi, float(radiated_band_hz[1]))
 
 
 def crossover_region_band_hz(
