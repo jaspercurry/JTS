@@ -2844,6 +2844,20 @@ async function waitForCaptureSetComplete(client, spec, isAborted) {
 //    re-measuring from the same spot is the one thing that cannot answer it —
 //    see waitForCaptureResult's note on the same field. Those wait for a thumb,
 //    whatever this page's scan saw.
+//
+//    THE `prompt` PROXY RESTS ON A HOST-SIDE INVARIANT, named here because it
+//    is not this file's to keep: every geometry rejection either CARRIES a
+//    prompt (`cloud_geometry_locked`, the wider-spot ask) or is TERMINAL
+//    (`geometry_retake_unreachable` — the remote positioner that cannot reach
+//    the pose — whose `retry_budget` of 0 puts it in the host's
+//    `NON_RETRIABLE_CODES`, so `verdict.terminal` returns above long before
+//    this branch). A future geometry reason that is retriable AND prompt-less
+//    would fall through to the page as an ordinary rejection and could be
+//    auto-retaken from a spot the host just said was wrong. That is why the
+//    invariant is pinned host-side rather than assumed:
+//    `test_capture_page_auto_retake_never_answers_a_geometry_ask` in
+//    tests/test_capture_page_js.py fails the moment a geometry reason is
+//    neither prompted nor terminal.
 //  - THE REJECTION STAYS HONEST. Every path that does not fire falls through to
 //    `renderPlanRetry` unchanged, so a spent budget, a second witness, or a
 //    geometry prompt renders the refusal the household would have seen anyway.

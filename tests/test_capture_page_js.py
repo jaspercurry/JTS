@@ -18,6 +18,7 @@ page covered by the existing Python CI matrix with no extra CI wiring.
 """
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -581,6 +582,88 @@ def test_capture_page_auto_retake_is_page_only_and_bounded():
         "release order in capture-page/README.md rather than the either-order "
         f"class it claims today. {readers}"
     )
+
+
+def test_capture_page_auto_retake_never_answers_a_geometry_ask():
+    """#2557 phase B, gate S3a: the page's `prompt` filter rests on THIS.
+
+    The page declines to auto-retake a rejection carrying a ``prompt``, because
+    a geometry ask is answered by MOVING, not by re-measuring the same spot.
+    That filter is complete only while every geometry rejection is one of two
+    shapes:
+
+    * **prompted** — ``cloud_geometry_locked``'s wider-spot ask, which the
+      page's filter sees; or
+    * **terminal** — ``geometry_retake_unreachable`` (a remote positioner that
+      cannot reach the pose) carries no prompt at all, and is safe only because
+      its ``retry_budget`` of 0 puts it in ``NON_RETRIABLE_CODES``, so the page
+      returns at ``verdict.terminal`` long before the auto-retake branch.
+
+    A third geometry reason that was retriable AND prompt-less would reach the
+    page as an ordinary rejection and could be auto-retaken from the spot the
+    host just said was wrong. Asserted over the reason names rather than a
+    hand-listed pair, so that third one is covered the day it is written —
+    and it is the *grant of a retry budget* that would trip this, which is the
+    edit least likely to be made by someone thinking about the capture page.
+    """
+    from jasper.active_speaker.crossover_v2 import vocabulary as _vocab
+
+    flow_src = (
+        _REPO / "jasper/active_speaker/crossover_v2_flow.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(flow_src)
+
+    def _is_geometry_reason(name: str) -> bool:
+        return name.startswith("REASON_") and "GEOMETRY" in name
+
+    # Every rejection verdict the flow builds for a geometry reason, with the
+    # payload keys it carries.
+    built: dict[str, set[str]] = {}
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "PhaseVerdict"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Name)
+            and _is_geometry_reason(node.args[1].id)
+        ):
+            continue
+        keys: set[str] = set()
+        for keyword in node.keywords:
+            if keyword.arg != "payload" or not isinstance(keyword.value, ast.Dict):
+                continue
+            keys |= {
+                k.value
+                for k in keyword.value.keys
+                if isinstance(k, ast.Constant) and isinstance(k.value, str)
+            }
+        built[node.args[1].id] = keys
+
+    # The instrument first (half-guarded-sites rule): a walk that found no
+    # geometry verdicts would assert nothing at all in the loop below and still
+    # report green. These two are the shipped pair, one of each shape.
+    assert set(built) == {
+        "REASON_CLOUD_GEOMETRY_LOCKED",
+        "REASON_GEOMETRY_RETAKE_UNREACHABLE",
+    }, f"the geometry-verdict walk found {sorted(built)}"
+
+    for name, payload_keys in sorted(built.items()):
+        code = getattr(_vocab, name)
+        prompted = "prompt" in payload_keys
+        terminal = code in _vocab.NON_RETRIABLE_CODES
+        assert prompted or terminal, (
+            f"{name} is a geometry rejection that is neither prompted nor "
+            "terminal, so the capture page's auto-retake (#2557 phase B) would "
+            "treat it as an ordinary glitch and re-measure from the spot the "
+            "speaker just said was wrong. Give it a prompt, or keep its "
+            "retry_budget at 0."
+        )
+
+    # …and membership DISCRIMINATES: the prompted one is genuinely retriable,
+    # so `in NON_RETRIABLE_CODES` above is not a set that swallows everything.
+    assert _vocab.REASON_CLOUD_GEOMETRY_LOCKED not in _vocab.NON_RETRIABLE_CODES
+    assert _vocab.REASON_GEOMETRY_RETAKE_UNREACHABLE in _vocab.NON_RETRIABLE_CODES
 
 
 def test_capture_page_beep_copy_matches_the_composed_beep_count():
