@@ -415,9 +415,42 @@ impl Config {
             "JASPER_OUTPUTD_CHIP_REF_PERIOD_FRAMES",
         )?;
 
-        let default_content_pcm = match sink_mode {
-            SinkMode::SingleAlsa => "outputd_content_capture",
-            SinkMode::Composite => "outputd_active_content_capture",
+        // The Composite arm used to default to `outputd_active_content_capture`,
+        // the snd-aloop ACTIVE lane's capture half. That PCM no longer exists:
+        // #2534 deleted its definitions, and the ACTIVE ring is now the one
+        // legal ACTIVE endpoint, so nothing can ever create it again. A default
+        // naming it was a permanently-broken guess that failed only later, at
+        // the sink open, and misdiagnosed itself on the way out —
+        // `jasper-outputd-failure-reconcile` matches the lane by name, so the
+        // park record would have named the deleted lane as if it were expected.
+        //
+        // SCOPED TO Direct, deliberately. Under `ShmRing` outputd reads the ring
+        // FILE and never opens a content PCM at all (`content_pcm_skipped`), so
+        // a ring-armed composite box legitimately has no content PCM to declare
+        // — bailing there would refuse to start the very topology this campaign
+        // is converging boxes onto.
+        //
+        // Failing HERE rather than at the open is the whole point: a
+        // `Config::from_env` error exits 78 (EX_CONFIG) before any ALSA device
+        // is touched, so the box parks immediately with the reason named
+        // instead of running on a guess it can never satisfy.
+        let default_content_pcm = match (sink_mode, content_bridge_mode) {
+            (SinkMode::SingleAlsa, _) => "outputd_content_capture",
+            (SinkMode::Composite, ContentBridgeMode::ShmRing) => "",
+            (SinkMode::Composite, ContentBridgeMode::Direct) => {
+                if env_str("JASPER_OUTPUTD_CONTENT_PCM", "").trim().is_empty() {
+                    anyhow::bail!(
+                        "JASPER_OUTPUTD_CONTENT_PCM must be set explicitly on a \
+                         composite sink using the direct content bridge: the \
+                         snd-aloop ACTIVE lane it used to default to was deleted \
+                         (#2534) and the ACTIVE ring is the one legal ACTIVE \
+                         endpoint. Arm the ring \
+                         (jasper-fanin-coupling-reconcile shm_ring), or name a \
+                         content PCM this box actually defines."
+                    );
+                }
+                ""
+            }
         };
         let default_dac_pcm = match sink_mode {
             SinkMode::SingleAlsa => "outputd_dac",
@@ -1727,17 +1760,52 @@ mod tests {
     }
 
     #[test]
+    fn a_composite_sink_on_the_direct_bridge_refuses_an_undeclared_content_pcm() {
+        // The snd-aloop ACTIVE lane this arm used to default to was deleted
+        // (#2534) and cannot come back, so guessing it is a permanently-broken
+        // config. Refusing at PARSE time is what turns it into an immediate,
+        // correctly-labelled park (exit 78) instead of a later sink-open
+        // failure that misnames itself in the park record.
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_SINK", Some("dual_apple")),
+                ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
+                ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
+                ("JASPER_OUTPUTD_CONTENT_PCM", None),
+            ],
+            || {
+                let err = Config::from_env().expect_err(
+                    "a composite sink on the direct bridge with no declared \
+                     content PCM must refuse, not guess a deleted lane",
+                );
+                let msg = format!("{err:#}");
+                assert!(msg.contains("JASPER_OUTPUTD_CONTENT_PCM"), "{msg}");
+                // The remedy must point FORWARD at the arm; there is no
+                // rollback endpoint left to send an operator to.
+                assert!(msg.contains("shm_ring"), "{msg}");
+            },
+        );
+    }
+
+    #[test]
     fn parses_dual_apple_sink_contract() {
         with_env(
             &[
                 ("JASPER_OUTPUTD_SINK", Some("dual_apple")),
                 ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
                 ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
+                // Declared explicitly since the composite default was retired
+                // with the lane it named; the rest of this contract is
+                // unchanged by that.
+                (
+                    "JASPER_OUTPUTD_CONTENT_PCM",
+                    Some("outputd_declared_content"),
+                ),
             ],
             || {
                 let cfg = Config::from_env().unwrap();
                 assert_eq!(cfg.sink_mode, SinkMode::Composite);
-                assert_eq!(cfg.content_pcm, "outputd_active_content_capture");
+                assert_eq!(cfg.content_pcm, "outputd_declared_content");
                 assert_eq!(cfg.content_channels, 4);
                 assert_eq!(cfg.dac_pcm, "dual_apple_usb_c_dac_4ch");
                 assert_eq!(cfg.dual_dac_a_pcm.as_deref(), Some("hw:CARD=A,DEV=0"));
