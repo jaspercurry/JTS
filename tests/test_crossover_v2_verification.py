@@ -54,6 +54,11 @@ from jasper.active_speaker.delta_probe import (
     VERDICT_LEVEL_MISMATCH as DELTA_VERDICT_LEVEL_MISMATCH,
     VERDICT_MATCHED as DELTA_VERDICT_MATCHED,
 )
+from jasper.active_speaker.flat_spec import (
+    BandResult,
+    FlatSpecReport,
+    spec_band_tilt,
+)
 from jasper.active_speaker.crossover_v2 import verification as verification_module
 from jasper.active_speaker.crossover_v2.verification import (
     ADOPTION_MEASURED_REGRESSION,
@@ -1211,6 +1216,359 @@ def _report_with_two_failing_bands():
 
 
 # --------------------------------------------------------------------------
+# 6b. headroom — is a flatter result still reachable? (#2602)
+# --------------------------------------------------------------------------
+
+
+def _headroom_band(*, lo, hi, level_db=None, ripple_db=None, evaluable=True):
+    """One graded band carrying only the two fields #2602's axis reads.
+
+    Built directly rather than measured, because this section is about the
+    DECISION the numbers drive. That the numbers themselves are the shipped
+    evaluator's is a separate claim, and
+    ``test_the_objectives_are_the_shipped_reductions_not_a_second_copy``
+    below is what holds it.
+    """
+
+    return BandResult(
+        f_lo_hz=lo, f_hi_hz=hi, tolerance_db=3.0,
+        max_deviation_db=None if level_db is None else level_db,
+        max_deviation_hz=None, rms_deviation_db=None,
+        n_bins=10, n_excluded=0, evaluable=evaluable, passed=True,
+        level_deviation_db=level_db, max_ripple_db=ripple_db,
+    )
+
+
+def _headroom_report(*bands):
+    return FlatSpecReport(
+        reference_db=0.0, bands=tuple(bands), overall_passed=True,
+        excluded_intervals=(), best_effort_above_hz=16000.0,
+        smoothing_fraction=3,
+    )
+
+
+#: The owner's own round-3 numbers: 250-2000 Hz sitting 2.37 dB above
+#: 8000-16000 Hz, with real ripple inside each band. The case the ruling was
+#: written from, so the table below is anchored to a measurement rather than
+#: to a number chosen to make a test pass.
+def _round_three_report():
+    return _headroom_report(
+        _headroom_band(lo=250.0, hi=2000.0, level_db=1.185, ripple_db=0.9),
+        _headroom_band(lo=8000.0, hi=16000.0, level_db=-1.185, ripple_db=0.6),
+    )
+
+
+def _flat_report():
+    """Both objectives inside the plateau — nothing left worth a round."""
+
+    return _headroom_report(
+        _headroom_band(lo=250.0, hi=2000.0, level_db=0.05, ripple_db=0.1),
+        _headroom_band(lo=8000.0, hi=16000.0, level_db=-0.05, ripple_db=0.1),
+    )
+
+
+def _headroom(*, report=None, previous=None, ordinal=1, cap=3, plateau=0.25):
+    return evaluate_iteration_headroom(
+        objectives=flatness_objectives(report),
+        previous=previous,
+        round_ordinal=ordinal,
+        round_cap=cap,
+        plateau_db=plateau,
+    )
+
+
+def test_the_objectives_are_the_shipped_reductions_not_a_second_copy():
+    """Tilt IS ``spec_band_tilt``; ripple IS the report's own band field.
+
+    Asserted against the owner itself rather than against a baked number, so
+    the pin follows ``spec_band_tilt`` if it changes and fails if this module
+    stops using it. #1857 exists precisely because a frame-dependent reading
+    and a frame-free one disagree — a second copy here would be free to drift
+    back to the wrong one.
+    """
+
+    report = _round_three_report()
+    objectives = flatness_objectives(report)
+
+    assert objectives.tilt_db == spec_band_tilt(report).step_db
+    assert objectives.tilt_db == pytest.approx(2.37)
+    assert objectives.ripple_db == pytest.approx(0.9)
+
+
+def test_the_worst_objective_is_a_max_so_a_large_tilt_cannot_hide():
+    """Flat bands sitting at different levels is still a speaker to fix.
+
+    Pooling the two objectives would let 2.37 dB of tilt average away behind
+    tidy in-band ripple, which is the exact result the owner was looking at
+    when the ruling was written.
+    """
+
+    assert FlatnessObjectives(tilt_db=2.37, ripple_db=0.1).worst_db == 2.37
+    assert FlatnessObjectives(tilt_db=0.1, ripple_db=2.37).worst_db == 2.37
+    # Sign is not the question — how far from flat is.
+    assert FlatnessObjectives(tilt_db=-2.37, ripple_db=None).worst_db == 2.37
+    assert FlatnessObjectives(tilt_db=None, ripple_db=None).worst_db is None
+
+
+@pytest.mark.parametrize(
+    ("case", "kwargs", "status", "reason"),
+    [
+        (
+            "round 1 with the owner's own tilt still on the speaker",
+            {"report": _round_three_report()},
+            IterationHeadroom.REACHABLE, HEADROOM_REACHABLE,
+        ),
+        (
+            "already flat and level on both objectives",
+            {"report": _flat_report()},
+            IterationHeadroom.EXHAUSTED, HEADROOM_WITHIN_PLATEAU,
+        ),
+        (
+            "still 2.37 dB out, but the last round moved it 0.03 dB",
+            {
+                "report": _round_three_report(),
+                "previous": FlatnessObjectives(tilt_db=2.40, ripple_db=0.9),
+                "ordinal": 2,
+            },
+            IterationHeadroom.EXHAUSTED, HEADROOM_PLATEAUED,
+        ),
+        (
+            "still 2.37 dB out and the last round moved it 1.6 dB",
+            {
+                "report": _round_three_report(),
+                "previous": FlatnessObjectives(tilt_db=4.0, ripple_db=0.9),
+                "ordinal": 2,
+            },
+            IterationHeadroom.REACHABLE, HEADROOM_REACHABLE,
+        ),
+        (
+            "round 3 of 3, with plenty still left to chase",
+            {"report": _round_three_report(), "ordinal": 3},
+            IterationHeadroom.EXHAUSTED, HEADROOM_CAP_REACHED,
+        ),
+        (
+            "no post-apply cloud, so nothing to grade",
+            {"report": None},
+            IterationHeadroom.EXHAUSTED, HEADROOM_NO_OBJECTIVES,
+        ),
+        (
+            "a report whose every band fell below the trusted floor",
+            {"report": _headroom_report(_headroom_band(lo=250.0, hi=2000.0, evaluable=False))},
+            IterationHeadroom.EXHAUSTED, HEADROOM_NO_OBJECTIVES,
+        ),
+    ],
+    ids=[
+        "reachable_first_round", "flat_enough", "plateaued", "still_moving",
+        "round_cap", "no_report", "nothing_gradable",
+    ],
+)
+def test_the_headroom_table(case, kwargs, status, reason):
+    """Every way a series continues, and every way it ends. (#2602)"""
+
+    verdict = _headroom(**kwargs)
+    assert verdict.status is status, case
+    assert verdict.reason == reason, case
+
+
+def test_the_cap_outranks_every_other_ending():
+    """A third round is over because it is the third, not because it stalled.
+
+    Order matters for the SENTENCE, not just the status: telling a household
+    "more rounds are unlikely to help" when the truth is "we are only allowed
+    three" would claim the measurement said something it did not.
+    """
+
+    verdict = _headroom(
+        report=_flat_report(),
+        previous=FlatnessObjectives(tilt_db=0.1, ripple_db=0.1),
+        ordinal=3,
+    )
+    assert verdict.status is IterationHeadroom.EXHAUSTED
+    assert verdict.reason == HEADROOM_CAP_REACHED
+
+
+def test_a_first_round_cannot_be_called_plateaued():
+    """No previous round means no movement to judge, never zero movement.
+
+    A round 1 that resolved "the objectives moved 0 dB" would end every series
+    at its first round — the pre-#2602 behaviour, restored by a missing record.
+    """
+
+    verdict = _headroom(report=_round_three_report(), previous=None, ordinal=1)
+    assert verdict.status is IterationHeadroom.REACHABLE
+    assert verdict.evidence["movement_db"] is None
+
+
+def test_the_headroom_verdict_shows_the_numbers_it_decided_on():
+    """A support read needs the tilt, not just the word."""
+
+    verdict = _headroom(
+        report=_round_three_report(),
+        previous=FlatnessObjectives(tilt_db=4.0, ripple_db=0.9),
+        ordinal=2,
+    )
+    evidence = verdict.evidence
+    assert evidence["round_ordinal"] == 2
+    assert evidence["round_cap"] == 3
+    assert evidence["plateau_db"] == 0.25
+    assert evidence["objectives"] == {"tilt_db": pytest.approx(2.37), "ripple_db": 0.9}
+    assert evidence["previous_objectives"] == {"tilt_db": 4.0, "ripple_db": 0.9}
+    assert evidence["worst_db"] == pytest.approx(2.37)
+    # Positive means "got flatter", the same direction ``improvement_db`` uses.
+    assert evidence["movement_db"] == pytest.approx(1.63)
+
+
+def test_a_movement_that_went_BACKWARDS_is_not_a_plateau_here():
+    """Getting worse is the BENEFIT axis's business, not this one.
+
+    A negative movement is below the plateau bar arithmetically, and it must
+    still read as EXHAUSTED rather than as headroom — but the round that
+    measured worse is restored by row 5 long before this verdict is consulted,
+    so this axis never has to be the thing that catches it. Pinned so the two
+    responsibilities stay separate.
+    """
+
+    verdict = _headroom(
+        report=_round_three_report(),
+        previous=FlatnessObjectives(tilt_db=1.0, ripple_db=0.5),
+        ordinal=2,
+    )
+    assert verdict.status is IterationHeadroom.EXHAUSTED
+    assert verdict.reason == HEADROOM_PLATEAUED
+    assert verdict.evidence["movement_db"] < 0
+
+
+def test_the_plateau_bar_must_be_a_positive_db():
+    with pytest.raises(CrossoverV2ContractError, match="plateau_db"):
+        _headroom(report=_round_three_report(), plateau=0.0)
+
+
+# --------------------------------------------------------------------------
+# 6c. the passing cell, split (#2602)
+# --------------------------------------------------------------------------
+
+
+def test_a_passing_round_with_headroom_left_keeps_going():
+    """#2602's headline row: in tolerance, still improving, another round.
+
+    The graph is KEPT — ``KEEP_FOR_ITERATION`` leaves the speaker in exactly
+    the state ``KEEP`` does — and the round says the series is not over.
+    """
+
+    decision = _adopt(
+        headroom=Verdict(IterationHeadroom.REACHABLE, HEADROOM_REACHABLE, {}),
+    )
+    assert decision.outcome is AdoptionOutcome.KEEP_FOR_ITERATION
+    assert decision.row == ADOPTION_ROW_KEEP_ITERATING
+    assert decision.reason == HEADROOM_REACHABLE
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [HEADROOM_WITHIN_PLATEAU, HEADROOM_PLATEAUED, HEADROOM_CAP_REACHED,
+     HEADROOM_NO_OBJECTIVES],
+)
+def test_a_passing_round_with_no_headroom_left_ends_the_series(reason):
+    """Row 1 stays row 1, and now names WHICH ending it was."""
+
+    decision = _adopt(
+        headroom=Verdict(IterationHeadroom.EXHAUSTED, reason, {}),
+    )
+    assert decision.outcome is AdoptionOutcome.KEEP
+    assert decision.row == ADOPTION_ROW_KEEP
+    assert decision.reason == reason
+
+
+@pytest.mark.parametrize(
+    "headroom_status", list(IterationHeadroom), ids=lambda s: s.value
+)
+def test_headroom_never_moves_a_round_that_did_not_pass(headroom_status):
+    """The split is confined to the one cell that used to be terminal.
+
+    A MISSED round iterates whatever the headroom says — it has outstanding
+    targets by construction — and a REGRESSED one restores. If headroom leaked
+    into either, "keep going" and "put the old sound back" would start
+    depending on how flat the speaker happens to be.
+    """
+
+    headroom = Verdict(headroom_status, "h", {})
+
+    missed = _adopt(
+        quality=Verdict(QualityStatus.MISSED, ADOPTION_UNPROVEN, {}),
+        headroom=headroom,
+    )
+    assert missed.outcome is AdoptionOutcome.KEEP_FOR_ITERATION
+    assert missed.row == ADOPTION_ROW_KEEP_FOR_ITERATION
+    assert missed.reason == ADOPTION_UNPROVEN
+
+    regressed = _adopt(
+        quality=Verdict(
+            QualityStatus.REGRESSED, ADOPTION_MEASURED_REGRESSION, {}
+        ),
+        headroom=headroom,
+    )
+    assert regressed.outcome is AdoptionOutcome.RESTORE
+    assert regressed.row == ADOPTION_ROW_RESTORE_REGRESSION
+    assert regressed.reason == ADOPTION_MEASURED_REGRESSION
+
+
+@pytest.mark.parametrize(
+    "headroom_status", list(IterationHeadroom), ids=lambda s: s.value
+)
+def test_headroom_can_never_keep_a_graph_the_other_axes_took_off(
+    headroom_status,
+):
+    """The safety claim, stated as a test rather than as a docstring.
+
+    Whatever the fourth axis says, an unsafe result, an unmeasured one, and a
+    failed restore all still come off or escalate. This is the property that
+    makes a bug in the headroom evaluator a cosmetic defect rather than a
+    hardware one.
+    """
+
+    headroom = Verdict(headroom_status, "h", {})
+
+    unsafe = _adopt(
+        safety=Verdict(SafetyStatus.UNSAFE, SAFETY_CLIPPED_CAPTURE, {}),
+        headroom=headroom,
+    )
+    assert unsafe.outcome is AdoptionOutcome.RESTORE
+    assert unsafe.row == ADOPTION_ROW_RESTORE_UNSAFE
+
+    untrusted = _adopt(
+        trust=Verdict(EvidenceTrust.UNTRUSTED, "no_evidence", {}),
+        headroom=headroom,
+    )
+    assert untrusted.outcome is AdoptionOutcome.RESTORE
+    assert untrusted.row == ADOPTION_ROW_RESTORE_UNTRUSTED
+
+    failed = _adopt(headroom=headroom, restore_failed=True)
+    assert failed.outcome is AdoptionOutcome.RECOVERY_REQUIRED
+    assert failed.row == ADOPTION_ROW_RESTORE_FAILED
+
+
+def test_a_round_at_the_cap_stops_even_with_everything_left_to_fix():
+    """The end-to-end "round 3 of 3" row, through the real evaluator.
+
+    Not ``_adopt`` with a hand-made verdict: the point is that a genuine
+    report with 2.37 dB of tilt still on it reaches row 1 when the ordinal
+    says there is no fourth round to spend it on.
+    """
+
+    decision = decide_adoption(
+        trust=Verdict(EvidenceTrust.TRUSTED, TRUST_MEASURED, {}),
+        safety=Verdict(SafetyStatus.SAFE, SAFETY_NO_FINDING, {}),
+        quality=Verdict(QualityStatus.PASSED, ADOPTION_REALIZED_AND_IMPROVED, {}),
+        headroom=_headroom(report=_round_three_report(), ordinal=3),
+        boosted=False,
+        rollback_available=True,
+    )
+    assert decision.outcome is AdoptionOutcome.KEEP
+    assert decision.row == ADOPTION_ROW_KEEP
+    assert decision.reason == HEADROOM_CAP_REACHED
+
+
+# --------------------------------------------------------------------------
 # 6. adoption — the six rows (#2537, #2602)
 # --------------------------------------------------------------------------
 
@@ -1610,5 +1968,5 @@ def test_the_evaluator_is_pure():
         entry_baseline=baseline, post=post, margin_db=MARGIN_DB
     )
     assert first == second
-    assert evaluate_spec(_report()) == evaluate_spec(_report())
+    assert evaluate_spec(_headroom_report()) == evaluate_spec(_headroom_report())
     assert _adopt() == _adopt()
