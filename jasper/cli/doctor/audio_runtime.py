@@ -1629,9 +1629,7 @@ def check_fanin_coupling() -> CheckResult:
                 "the ACTIVE-ring ladder, in order: sudo /opt/jasper/.venv/bin/"
                 "jasper-active-speaker baseline-reemit --endpoint ring && sudo "
                 "systemctl start jasper-audio-hardware-reconcile && sudo "
-                "/opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile shm_ring "
-                "(to roll back, the same three with --endpoint aloop and "
-                "`loopback`)"
+                "/opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile shm_ring"
             )
         else:
             recovery = (
@@ -1645,20 +1643,13 @@ def check_fanin_coupling() -> CheckResult:
         # A ROLEFUL box that is still ARMED here cannot be told apart, by this
         # check alone, from the CANONICAL rollback-ladder step-2 refusal
         # (owner-ruled 2026-08-12, #2332): jasper-audio-hardware-reconcile
-        # refuses the aloop-rollback candidate with a ring-plan endpoint
-        # mismatch and exits 78 without touching the marker, so an armed box
-        # mid-rollback lands in exactly this warn. That refusal is expected,
-        # not a second symptom to chase — the way out is step 3
-        # (jasper-fanin-coupling-reconcile loopback), not re-running step 2, and
-        # a later hardware reconcile clears the stale marker once step 3 lands.
-        if roleful and armed:
-            cause += (
-                ", or an EXPECTED rollback-ladder step-2 refusal (#2332) if "
-                "jasper-audio-hardware-reconcile already exited 78 here after "
-                "baseline-reemit --endpoint aloop — normal on an armed box: skip "
-                "straight to jasper-fanin-coupling-reconcile loopback (step 3) "
-                "rather than re-running step 2"
-            )
+        # The rollback direction this branch used to explain is GONE: the ring is
+        # the one legal ACTIVE endpoint, so there is no aloop candidate to refuse
+        # and no `loopback` step 3 to skip to. Naming that route here would be
+        # worse than silence — for a ROLEFUL box `loopback` is now the park
+        # (pair 5's PCMs are deleted), so the old text sent an armed box to a
+        # dead transport. Recovery is forward, and `recovery` above already
+        # carries the one ladder that converges.
         return CheckResult(
             label,
             "warn",
@@ -1693,14 +1684,20 @@ def check_fanin_coupling() -> CheckResult:
         # exactly as the shm_ring branch above already spells out for its own
         # direction.
         if _requires_roleful_graph():
+            # A ROLEFUL box has no loopback destination to be sent to any more.
+            # This used to print the rollback ladder; both of its premises died —
+            # `baseline-reemit` no longer accepts an aloop endpoint, and a roleful
+            # box on `loopback` coupling has no content transport at all (pair 5's
+            # PCMs are deleted), which is the park, not a recovery. So the honest
+            # remediation is the forward one: converge onto the ACTIVE ring.
             recovery = (
-                "this box is ROLEFUL, so the coupling reconciler cannot move its "
-                "graph (it declines to host a transient active graph and reports "
-                "success without converging). Run the ROLLBACK ladder, in order: "
-                "sudo /opt/jasper/.venv/bin/jasper-active-speaker baseline-reemit "
-                "--endpoint aloop && sudo systemctl start "
+                "this box is ROLEFUL, so a loopback coupling leaves it with no "
+                "content transport (snd-aloop pair 5 is deleted) — that is a "
+                "park, not a rollback. Converge it forward onto the ACTIVE ring, "
+                "in order: sudo /opt/jasper/.venv/bin/jasper-active-speaker "
+                "baseline-reemit --endpoint ring && sudo systemctl start "
                 "jasper-audio-hardware-reconcile && sudo /opt/jasper/.venv/bin/"
-                "jasper-fanin-coupling-reconcile loopback"
+                "jasper-fanin-coupling-reconcile shm_ring"
             )
         else:
             recovery = (

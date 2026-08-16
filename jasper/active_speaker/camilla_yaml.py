@@ -420,8 +420,8 @@ def active_emit_devices(
       arm's width gate only holds ring-NAMED lanes to the wire, so a tap capture
       is not-inspected rather than refused. Moving both halves together is what
       makes it unreachable, and once the capture names a ring PCM the width gate
-      holds it to the wire for free. ``--endpoint aloop`` restores the tap by the
-      same derivation, in reverse.
+      holds it to the wire for free. There is no reverse: the ring is the one
+      legal ACTIVE endpoint, so no derivation restores the tap.
     - ``capture_format`` / ``playback_format`` —
       :func:`~jasper.fanin_coupling.resolve_ring_wire`, the one per-box
       resolution EVERY declaring end reads. ONE format for both, because the

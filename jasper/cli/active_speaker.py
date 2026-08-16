@@ -809,13 +809,14 @@ def _cmd_baseline_reemit(args: argparse.Namespace) -> int:
     healthy.
 
     AND IT IS THE BOOTSTRAP. The endpoint marker derives from the loaded graph;
-    the graph's device derives from the marker. That is a fixed point: at
-    marker-absent the pair can only reproduce itself, in BOTH directions — a box
-    can neither arm nor release. ``--endpoint`` is the explicit operator act
-    that breaks it by moving the GRAPH first, which is why the arm ladder is
+    the graph's device derives from the marker. That was a fixed point: at
+    marker-absent the pair could only reproduce itself, so a box could neither
+    arm nor release. ``resolve_output_layout`` no longer reads the marker, which
+    removes the circle; ``--endpoint ring`` remains the explicit re-emit-now verb
+    that moves the GRAPH first, which is why the arm ladder is
     ``baseline-reemit --endpoint ring`` -> ``jasper-audio-hardware-reconcile``
-    (the marker derives 1) -> ``jasper-fanin-coupling-reconcile shm_ring``, and
-    the rollback is its mirror through ``--endpoint aloop``.
+    (the marker derives 1) -> ``jasper-fanin-coupling-reconcile shm_ring``. It
+    has no mirror: the release direction was retired with the aloop endpoint.
 
     ON THE APPLIED PATH it is a pure re-emit from the IMMUTABLE applied snapshot
     — the same seam ``/sound`` and the commissioning host use — so Layer A is
@@ -1567,9 +1568,9 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "re-emit this box's roleful boot graph against a playback endpoint, "
             "publishing it over the live artifact and repointing the statefile. "
-            "This is the FIRST step of the active-ring arm (--endpoint ring) and "
-            "of its rollback (--endpoint aloop): the reconciler derives its "
-            "endpoint marker from the loaded graph, so the graph must move first. "
+            "This is the FIRST step of the active-ring arm (--endpoint ring), "
+            "which has no rollback: the reconciler derives its endpoint marker "
+            "from the loaded graph, so the graph must move first. "
             "Accepts either roleful boot graph — an APPLIED baseline "
             "(approved_active_runtime) on a commissioned box, or the all-muted "
             "startup anchor (all_muted_active_startup) on a mid-commission one, "

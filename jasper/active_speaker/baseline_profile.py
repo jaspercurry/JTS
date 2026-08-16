@@ -2748,9 +2748,9 @@ def recompose_applied_baseline_yaml(
     # stops feeding the moment the coupling arms — silence with every daemon
     # healthy, and quiet, because the plan compares capture CHANNELS (2 == 2) and
     # the width gate only holds ring-NAMED lanes to the wire. Non-ring devices
-    # answer the emitter's own defaults, so this is byte-identical on every box
-    # that is not armed, and `--endpoint aloop` restores the tap by the same
-    # derivation. The topology goes in because the ring's resolution is per-box.
+    # answer the emitter's own defaults. Nothing restores the tap: the ring is
+    # the one legal ACTIVE endpoint, so there is no reverse derivation to run.
+    # The topology goes in because the ring's resolution is per-box.
     #
     # The ring branch resolves the box's DECLARED wire, which FAILS LOUD on a
     # token neither language recognizes (a typo in
