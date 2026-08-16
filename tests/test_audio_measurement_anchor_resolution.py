@@ -881,6 +881,78 @@ def test_a_genuinely_miswired_capture_still_gets_the_wiring_verdict(miswired):
     assert by_role["woofer"].channel_map_ok is True
 
 
+@pytest.mark.parametrize(
+    ("witness_scores", "ambiguous"),
+    [
+        # The incident: both readings put the witness on a real pilot.
+        ((0.9007, 0.8973), True),
+        # Only the WINNER clears "was this even heard". The evidence is thin,
+        # but it did discriminate -- one reading found the witness and the
+        # other did not -- so this is not an un-attributed capture, and calling
+        # it one would hand a household a retake where the capture's own gates
+        # have the honest finding.
+        ((0.32, 0.29), False),
+        # Neither clears it: no corroboration at all, the pre-#2093 reading
+        # stands, and the capture keeps failing on its own merits.
+        ((0.29, 0.28), False),
+        # The healthy shape, for contrast.
+        ((0.99, 0.10), False),
+    ],
+)
+def test_ambiguity_needs_BOTH_readings_corroborated(
+    monkeypatch, witness_scores, ambiguous
+):
+    """The floor half of the guard, at a boundary no fixture can reach.
+
+    A near-tie ABOVE the floor and a near-tie STRADDLING it are different
+    findings, and the sliver where they differ (winner in [0.30, 0.35),
+    runner-up just under 0.30) is too narrow to synthesise a room for. The
+    witness confidences are therefore scripted directly onto
+    ``_locate_in_window`` -- the one call ``_resolve_anchor`` makes per
+    candidate -- so the condition is asserted rather than argued.
+    """
+    scores = iter(witness_scores)
+    monkeypatch.setattr(
+        "jasper.audio_measurement.program_analysis._locate_in_window",
+        lambda capture, stim, scheduled, n, *, sample_rate: (
+            scheduled, next(scores)
+        ),
+    )
+    prog = _incident_program()
+    _offset, _anchor, _stimuli, resolved_ambiguous = _global_offset(
+        prog, _incident_room(prog, tone_rms=QUIET_TONE_RMS), SR
+    )
+    assert resolved_ambiguous is ambiguous
+
+
+def test_the_margin_brackets_the_two_measured_populations(monkeypatch):
+    """The constant's derivation, as an assertion rather than a comment.
+
+    ``ANCHOR_DISCRIMINATION_MARGIN`` is not fitted -- it is a round number
+    chosen because the two populations it separates do not overlap by two
+    orders of magnitude: a capture the witness ATTRIBUTES separates its
+    candidates by ~0.8 (2026-08-16's accepted round: 0.818), and one it cannot
+    separates them by ~0.001 (that day's refused round: 0.0034). Both ends are
+    measured HERE, on this suite's own fixtures, so moving the constant into
+    either population fails -- which nothing else does, because there is no
+    fixture in between to fail on and, per the field data, no capture either.
+    """
+    prog = _incident_program()
+    healthy = _anchor_margin(prog, _incident_room(prog, tone_rms=QUIET_TONE_RMS))
+    monkeypatch.setattr(
+        "jasper.audio_measurement.program_analysis._earliest_strong_peak",
+        _full_band_locate,
+    )
+    unattributed = _anchor_margin(
+        prog, _incident_room(prog, tone_rms=INCIDENT_TONE_RMS)
+    )
+    assert unattributed < ANCHOR_DISCRIMINATION_MARGIN < healthy
+    # ...and with room to spare on BOTH sides, which is the actual claim. A
+    # margin that merely squeaks between them is a fitted number, not a floor.
+    assert unattributed * 10 < ANCHOR_DISCRIMINATION_MARGIN
+    assert ANCHOR_DISCRIMINATION_MARGIN * 10 < healthy
+
+
 def test_the_anchor_event_reports_the_ambiguity_it_found(monkeypatch):
     """The margin was already logged; whether it was judged SMALL was not. A
     population of near-ties is the only way the constant gets re-derived from
