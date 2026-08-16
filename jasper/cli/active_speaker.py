@@ -388,26 +388,25 @@ def _baseline_reemit_endpoint(
 ) -> tuple[str | None, str]:
     """Which playback endpoint this re-emit targets, and where that came from.
 
-    ``--endpoint`` is what makes this command the ARM/ROLLBACK entry point
-    rather than a tidy-up. The reconciler derives its ring marker FROM the
-    loaded graph, and the graph's device derives from that marker, so an
-    auto-resolving re-emit can only ever reproduce the state the box is already
-    in — it cannot bootstrap either direction. Naming the endpoint explicitly is
-    the operator act that breaks that circle: the GRAPH moves first, the marker
-    then derives from it, and the coupling follows.
+    ``--endpoint ring`` is the explicit RE-EMIT-NOW verb: it moves the GRAPH
+    onto the ACTIVE ring, after which the marker derives from the graph and the
+    coupling follows. It is no longer a choice BETWEEN transports — the ring is
+    the only legal endpoint (``OUTPUTD_LEGAL_ENDPOINT_DEVICES``) — so there is
+    no ``aloop`` rollback arm to name. That direction was retired with the
+    snd-aloop ACTIVE lane's PCM definitions (#2534): naming it moved the anchor
+    onto a transport that does not exist, so the only thing it could still
+    produce was a park. Recovery is forward, by re-arming the ring.
 
     Omitting it keeps the auto answer (``resolve_output_layout``, the single
-    chooser, reading the marker) — correct for a plain refresh, and never able
-    to change which lane the box is on.
+    chooser). Since that chooser now returns the ring unconditionally, omitting
+    and passing ``ring`` agree on the device and differ only in provenance —
+    which is why this still reports WHERE the answer came from.
     """
     from jasper.active_speaker.playback_route import resolve_active_playback_device
-    from jasper.active_speaker.runtime_contract import OUTPUTD_ACTIVE_PLAYBACK_DEVICE
     from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 
     if endpoint == "ring":
         return RING_ACTIVE_PLAYBACK_DEVICE, "explicit_endpoint_ring"
-    if endpoint == "aloop":
-        return OUTPUTD_ACTIVE_PLAYBACK_DEVICE, "explicit_endpoint_aloop"
     return resolve_active_playback_device(topology)
 
 
@@ -1611,13 +1610,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     reemit.add_argument(
         "--endpoint",
-        choices=("ring", "aloop"),
+        choices=("ring",),
         help=(
-            "playback endpoint to emit against: 'ring' = the ACTIVE ring "
-            "(jts_ring_active_playback, the arm), 'aloop' = the ALSA active lane "
-            "(outputd_active_content_playback, the rollback). Omit to keep the "
-            "endpoint the box already resolves, which can refresh a graph but "
-            "never move a box between lanes"
+            "playback endpoint to emit against. 'ring' (the ACTIVE ring, "
+            "jts_ring_active_playback) is the only legal endpoint and so the "
+            "only choice: pass it to re-emit the graph onto the ring now. Omit "
+            "to keep the endpoint the box already resolves"
         ),
     )
     reemit.add_argument(

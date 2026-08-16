@@ -38,7 +38,6 @@ from .audio_hardware.dac import (
     label_for as _dac_label_for,
     physical_output_count_for as _dac_physical_output_count_for,
 )
-from .camilla_config_contract import ACTIVE_OUTPUTD_PLAYBACK_DEVICE
 from .camilla_emit import (
     BASS_MANAGEMENT_CORNER_HZ_HI,
     BASS_MANAGEMENT_CORNER_HZ_LO,
@@ -1896,17 +1895,23 @@ def resolve_output_layout(
         and profile.active_outputd_lane_channels
     ):
         # Lazy import: fanin_coupling is import-cheap but this module is on the
-        # topology layer, and the marker read is a file read on the default path.
-        from jasper.fanin_coupling import (
-            RING_ACTIVE_PLAYBACK_DEVICE,
-            ring_active_endpoint_armed,
-        )
+        # topology layer.
+        from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 
-        active_device = (
-            RING_ACTIVE_PLAYBACK_DEVICE
-            if ring_active_endpoint_armed()
-            else ACTIVE_OUTPUTD_PLAYBACK_DEVICE
-        )
+        # The ACTIVE ring, unconditionally — there is no second legal endpoint
+        # to choose between (OUTPUTD_LEGAL_ENDPOINT_DEVICES is one member).
+        #
+        # This used to read `ring_active_endpoint_armed()` and fall back to the
+        # snd-aloop active lane, which made this chooser a FIXED POINT: the
+        # marker derives from the loaded graph and the graph's device derived
+        # from the marker, so no automated pass could move a box between
+        # transports — only a human passing `--endpoint`. Deleting that one
+        # branch is what makes the roleful path convergent rather than manual.
+        #
+        # The marker itself SURVIVES and is unaffected: it is outputd's own
+        # JASPER_OUTPUTD_ACTIVE_LANE biconditional, read by the Rust daemon and
+        # by `active_ring_endpoint_proof`. Only this chooser stops reading it.
+        active_device = RING_ACTIVE_PLAYBACK_DEVICE
         return OutputLayout(
             device_id=hardware.device_id,
             card_id=hardware.card_id,
