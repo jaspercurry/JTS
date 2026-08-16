@@ -104,6 +104,7 @@ from ..linearization_fit import (
     core_level_band_hz,
     driver_core_level_db,
     fit_driver_linearization,
+    measurement_hole_bands_hz,
     solve_shared_level_frame,
 )
 from jasper.audio_measurement.program_analysis import (
@@ -1370,22 +1371,51 @@ def plan_linearization(
     #
     # BOTH bands are reported, and that is the point. ``radiating_band_hz`` is
     # the bound this gate asked for; ``band_hz`` is the span the median was
-    # actually taken over. They differ exactly when the bound was refused for
-    # leaving too little band — the case where a reader diagnosing a refusal
-    # would otherwise be shown a band the number in front of them was never
-    # computed over.
+    # actually taken over. The interesting divergence is the width floor
+    # REFUSING the bound for leaving too little band — the case where a reader
+    # diagnosing a refusal would otherwise be shown a band the number in front
+    # of them was never computed over. They also differ by a grid snap in the
+    # ordinary case, always: ``band_hz`` is resolved onto the envelope's own
+    # bins, so its edges are the outermost bins inside the declared span (on
+    # the 2026-08-16 jts3 woofer, 1291.4105 against a declared 1321.3 — bin 77,
+    # with bin 78 at 1328.0267 already outside). Equality is therefore the
+    # exception rather than the rule, and it is inequality of MORE than a bin
+    # that means the floor fired.
+    #
+    # ONE read per role, shared by the journal line below and by the
+    # measurement-hole derivation after it, so "the band a filter is named
+    # against and the band a reader is shown cannot drift" is structural
+    # rather than a promise that two identical call sites stay identical.
+    core_bands_hz = {
+        role: core_level_band_hz(
+            envelopes[role], radiating_band_hz=radiating_bands[role]
+        )
+        for role in (woofer_role, tweeter_role)
+    }
     level_frame_cores = {
         role: {
             "level_db": round(float(level), 3),
-            "band_hz": rounded_band_hz(
-                core_level_band_hz(
-                    envelopes[role], radiating_band_hz=radiating_bands[role]
-                )
-            ),
+            "band_hz": rounded_band_hz(core_bands_hz[role]),
             "radiating_band_hz": rounded_band_hz(radiating_bands[role]),
         }
         for role, level in core_levels_db.items()
     }
+    # The per-branch MEASUREMENT HOLE (#2599, #2600 item 4). Each branch's
+    # core band stops where its own crossover hands off, so between the
+    # woofer's top and the tweeter's bottom there is a span NEITHER capture
+    # covers while the summed response there is a live two-branch blend. A
+    # hole is a property of the PAIR, so it is derived here — the composer is
+    # the only layer holding both roles — and handed to each fit as a band,
+    # keeping ``fit_driver_linearization`` a single-branch function that is
+    # told things rather than one that knows about crossovers.
+    #
+    # Full precision, not the journal's rounded copy. On the 2026-08-16
+    # round-3 jts3 session this is (1291.4104, 2077.2412) — the hole a
+    # -1.7577 dB woofer cut at 1404.4032 Hz was placed inside.
+    blind_bands_hz = measurement_hole_bands_hz(
+        [core_bands_hz[role] for role in (woofer_role, tweeter_role)]
+    )
+
     # The OTHER estimator, for the #1866 finding. Restricted to the roles the
     # frame was actually solved over, so the banked pair is the pair that
     # disagreed rather than every role the trim solve happened to return.
@@ -1426,7 +1456,9 @@ def plan_linearization(
     #    evidence states; ``cloud_phase_planned`` is what tells them apart.
     #
     # What bounds a boost once permitted, on EITHER path: the envelope's own
-    # depth limits, the realized-cascade stopband-gain guard, the headroom
+    # depth limits, the realized-cascade stopband-gain guard, #2599's
+    # measured-target bound (no boost where the MEASUREMENT is already at or
+    # above target, however the post-cut working curve reads), the headroom
     # charge, post-apply VERIFY, and Undo. The gate grants a vocabulary, never a
     # filter.
     vocabulary = FitVocabulary(
@@ -1447,6 +1479,10 @@ def plan_linearization(
             vocabulary=vocabulary,
             level_frame=level_frame,
             radiating_band_hz=radiating_bands[role],
+            # #2599: the spans no branch measured. Same list for both roles —
+            # a hole belongs to the pair, not to whichever branch happens to
+            # be fitting when it is reached.
+            blind_bands_hz=blind_bands_hz,
             # The branch's own committed crossover as the fit's target SHAPE
             # (#1817, R10a) — built from the SAME ``sections`` the radiating
             # band above and the emitter's own filters come from, so the shape
@@ -1473,6 +1509,53 @@ def plan_linearization(
                     "lift_suppressed_reason": fit.lift_suppressed_reason,
                 },
                 logging.WARNING if fit.lift_boost_excluded_drops else logging.INFO,
+            )
+        # #2599's two verdicts, disclosed the same way and for the same reason
+        # — the fit owns no logger, so a decision it made is only visible if
+        # this loop says it out loud. Without this the two are JSON keys inside
+        # a candidate blob nothing reads: a refusal nobody hears, and a
+        # "disclose rather than refuse" ruling that discloses to no one.
+        #
+        # Two events rather than one, because they are different verbs and a
+        # reader filtering the journal wants them apart: the first REFUSED
+        # something, the second let something ship and named it.
+        if fit.lift_boost_evidence_drops:
+            emit(
+                "correction.crossover_v2_boost_measured_target_verdicts",
+                {
+                    "role": role,
+                    # Each boost refused because its whole action region sat
+                    # where the MEASUREMENT is already at or above target.
+                    "dropped": [d.to_dict() for d in fit.lift_boost_evidence_drops],
+                    # Set only when EVERY boost was refused; a partial refusal
+                    # leaves it empty because a lift still happened.
+                    "lift_suppressed_reason": fit.lift_suppressed_reason,
+                },
+                # Always WARNING: unlike the #1967 block above there is no
+                # accepted-remainder case here. A record exists only when a
+                # boost was refused, which is always worth hearing.
+                logging.WARNING,
+            )
+        if fit.blind_zone_placements:
+            emit(
+                "correction.crossover_v2_blind_zone_placements",
+                {
+                    "role": role,
+                    # Every EMITTED Peaking filter — cut or lift boost — whose
+                    # centre landed where no branch's own capture reaches.
+                    "placed": [p.to_dict() for p in fit.blind_zone_placements],
+                    # The session's holes themselves, so the record is
+                    # self-contained rather than needing the level-frame line
+                    # beside it to be interpretable.
+                    "blind_bands_hz": [list(band) for band in blind_bands_hz],
+                },
+                # WARNING when a filter ADDS level into a blend nothing
+                # measured (the class the gate's probe found shipping
+                # unnamed), INFO when they only remove it. Both ship either
+                # way; this is the severity of the disclosure, not a gate.
+                logging.WARNING if any(
+                    p.gain_db > 0.0 for p in fit.blind_zone_placements
+                ) else logging.INFO,
             )
         # COMPLEX (minimum-phase) correction, not a zero-phase magnitude scale
         # (#1667). The emitted biquads rotate phase near their corners and the

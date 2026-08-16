@@ -464,6 +464,9 @@ def test_to_dict_round_trip_stability_keys_and_types():
             "max_ripple_hz",
             # #2551: the edge these numbers came from, beside the nominal one.
             "graded_lo_hz",
+            # #2599: whether that edge is where the reported extremum landed,
+            # making it a lower bound on the band's real worst deviation.
+            "max_at_graded_edge",
         }
         for key in (
             "f_lo_hz",
@@ -482,6 +485,12 @@ def test_to_dict_round_trip_stability_keys_and_types():
             assert type(band_dict[key]) is int, key
         assert type(band_dict["evaluable"]) is bool
         assert type(band_dict["passed"]) is bool
+        # A real `bool`, not `np.bool_` -- the latter passes `isinstance` and
+        # then breaks `json.dumps`, which is the trap this whole block exists
+        # for. No floor was supplied to this report, so every band is
+        # untruncated and the honest value is False rather than None.
+        assert type(band_dict["max_at_graded_edge"]) is bool
+        assert band_dict["max_at_graded_edge"] is False
 
     assert d["excluded_intervals"] == [[5000.0, 5000.0]]
     assert isinstance(d["excluded_intervals"], list)
@@ -1070,3 +1079,99 @@ def s0_combined():
     combined = combine_positions(s0_position_captures(S0_MAIN))
     # The band the S0 report grades the 8-16 kHz family in (REPORT.md Q1/Q2).
     return combined, identify_interference_nulls(combined, band_hz=(5000.0, 19_000.0))
+
+
+# --------------------------------------------------------------------------- #
+# #2599 -- an extremum sitting on the trusted floor's own cut edge
+# --------------------------------------------------------------------------- #
+
+# The round-3 shape, on an axis dense enough below 400 Hz to carry it: the
+# 250-2000 Hz band graded from 357.14 Hz reported +4.49 dB @ 358, its FIRST
+# graded bin, while the ungraded region below continued to +5.08 dB @ 329.
+# Both numbers honest; only one reported, and nothing said it was an edge.
+_EDGE_FREQS_HZ = np.array(
+    [
+        280.0, 329.0, 358.0, 420.0, 600.0, 1000.0, 1500.0,  # band1
+        2000.0, 3000.0, 5000.0, 7000.0,                     # band2
+        8000.0, 10000.0, 12000.0, 15000.0,                  # band3
+    ],
+    dtype=np.float64,
+)
+_ROUND3_FLOOR_HZ = 357.1425
+
+
+def _rising_into_the_floor_db() -> np.ndarray:
+    """A curve whose LF rise keeps climbing below the trusted floor, so the
+    worst GRADED bin is the lowest graded bin and the true extremum is not
+    graded at all."""
+    db = np.zeros_like(_EDGE_FREQS_HZ)
+    db[0] = 5.6   # 280 Hz -- ungraded
+    db[1] = 5.1   # 329 Hz -- ungraded, and the curve's real maximum region
+    db[2] = 4.5   # 358 Hz -- the FIRST graded bin, and the reported extremum
+    db[3] = 3.0   # 420 Hz
+    return db
+
+
+def test_an_extremum_on_the_graded_edge_is_disclosed():
+    """#2599 rule 3. The reported maximum is a maximum over the GRADED bins,
+    so when it lands on the LOWEST of them it is a lower bound on the band's
+    real worst deviation -- and the report now says which case it is. Note
+    what is NOT claimed: the flag tests two conjuncts and no slope, so it
+    licenses "it may well be worse below", never "it is still rising"."""
+    report = evaluate_flat_spec(
+        _EDGE_FREQS_HZ, _rising_into_the_floor_db(),
+        trusted_floor_hz=_ROUND3_FLOOR_HZ,
+    )
+    low = report.bands[0]
+
+    assert low.evaluable is True
+    assert low.f_lo_hz == SPEC_BANDS[0][0]
+    assert low.graded_lo_hz == pytest.approx(_ROUND3_FLOOR_HZ)
+    assert low.max_deviation_hz == 358.0
+    assert low.max_at_graded_edge is True
+    # The tell is load-bearing: the ungraded region really does continue
+    # higher, which is exactly what the flag warns the reader about.
+    below = _EDGE_FREQS_HZ < low.graded_lo_hz
+    assert float(np.max(_rising_into_the_floor_db()[below])) > low.max_deviation_db
+    # Disclosure only -- the verdict is untouched.
+    assert low.passed is (abs(low.max_deviation_db) <= low.tolerance_db)
+    assert report.to_dict()["bands"][0]["max_at_graded_edge"] is True
+
+
+def test_an_extremum_inside_a_truncated_band_is_not_disclosed_as_an_edge():
+    """Truncation alone is not the warning. The flag fires only when the
+    extremum ALSO sits on the cut edge -- otherwise the graded span contains
+    its own worst bin and there is nothing an unseen remainder could add."""
+    db = _rising_into_the_floor_db()
+    db[4] = 6.0  # 600 Hz -- well inside the graded span, and now the worst
+    report = evaluate_flat_spec(
+        _EDGE_FREQS_HZ, db, trusted_floor_hz=_ROUND3_FLOOR_HZ,
+    )
+    low = report.bands[0]
+    assert low.graded_lo_hz == pytest.approx(_ROUND3_FLOOR_HZ)
+    assert low.max_deviation_hz == 600.0
+    assert low.max_at_graded_edge is False
+
+
+def test_an_untruncated_bands_lowest_bin_is_not_an_edge_extremum():
+    """The other conjunct. With no floor the band starts where the table says
+    it does, so its first bin has no ungraded remainder beneath it and a
+    maximum landing there warns of nothing."""
+    report = evaluate_flat_spec(_EDGE_FREQS_HZ, _rising_into_the_floor_db())
+    low = report.bands[0]
+    assert low.graded_lo_hz == low.f_lo_hz == SPEC_BANDS[0][0]
+    # 280 Hz IS the band's lowest bin and IS the worst -- and that is fine.
+    assert low.max_deviation_hz == 280.0
+    assert low.max_at_graded_edge is False
+
+
+def test_an_unevaluable_band_states_no_edge_verdict():
+    """No bins, no extremum, so no claim about where one sat -- `None`, never
+    a fabricated `False`, exactly like every other metric on the band."""
+    report = evaluate_flat_spec(
+        _EDGE_FREQS_HZ, _rising_into_the_floor_db(), trusted_floor_hz=2500.0,
+    )
+    low = report.bands[0]
+    assert low.evaluable is False
+    assert low.max_at_graded_edge is None
+    assert report.to_dict()["bands"][0]["max_at_graded_edge"] is None

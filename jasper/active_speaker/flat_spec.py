@@ -54,7 +54,11 @@ own gate cannot support. A band left entirely below the floor is
 ``evaluable=False`` with its ``graded_lo_hz`` sitting above its own top
 edge, never ``passed=False``: there is no evidence there, which is not the
 same as failing. This module still holds no gate policy -- it takes the
-floor as a number from a caller that measured it.
+floor as a number from a caller that measured it. A band the floor cut but
+did not swallow reports :attr:`BandResult.max_at_graded_edge` when its
+extremum landed on the cut edge, which is the case where the reported number
+is a LOWER BOUND on the band's real worst deviation rather than the thing
+itself -- told to the reader rather than left to be derived.
 
 **The tolerances are S0-contingent, not final.** The plan doc is explicit
 that this table is provisional pending the S0 validation session's hardware
@@ -210,6 +214,37 @@ class BandResult:
         rather than "the axis never reached it" or "the screen took every
         bin". ``None`` on a report built before this field existed; read
         ``f_lo_hz`` then, since nothing clamped in that era.
+      max_at_graded_edge: whether this band was floor-truncated
+        (``graded_lo_hz > f_lo_hz``) **and** ``max_deviation_hz`` is its
+        LOWEST graded bin. Read it as: *extremum at the graded edge -- the
+        band continues below the floor, ungraded.* ``False`` on a band whose
+        worst bin sits inside the graded span, and on an untruncated band
+        (there is no ungraded remainder to warn about). ``None`` when the
+        band is unevaluable, or on a report built before this field existed.
+
+        **What it does and does not claim.** The flag is exactly its two
+        conjuncts: the floor cut this band, and the worst graded bin is the
+        lowest one. It tests no SLOPE and makes no claim that the curve keeps
+        rising below the floor -- what follows from it is weaker and provable,
+        namely that ``max_deviation_db`` is a maximum over a SUBSET of the
+        band and so a LOWER BOUND on the band's real worst deviation. "It may
+        well be worse below" is the licensed reading; "it is still rising" is
+        not, and the two are easy to conflate.
+
+        **Why it earns a field rather than a reader's inference.** On
+        the 2026-08-16 round-3 jts3 session the 250-2000 Hz band was graded
+        from 357.14 Hz and reported ``+4.49 dB @ 358``, its first graded bin,
+        while the ungraded region below it continued to ``+5.08 dB @ 329``.
+        Both numbers are honest; only one was reported, and nothing in the
+        report said the reported one sat on an edge. A reader COULD derive it
+        from ``graded_lo_hz`` and ``max_deviation_hz`` -- but deriving a
+        caveat is not being told one, and a derivable caveat is exactly the
+        kind that goes underived.
+
+        **Disclosure only**, like the #1857 split: ``passed`` is unchanged by
+        its presence and is not computed from it. An edge extremum is still a
+        real graded bin and still grades. What this bounds is the INFERENCE
+        drawn from the number, not the verdict taken on it.
 
     **The split, and the identity that makes it exact.** For every
     non-excluded bin ``i`` in the band::
@@ -249,6 +284,7 @@ class BandResult:
     max_ripple_db: float | None = None
     max_ripple_hz: float | None = None
     graded_lo_hz: float | None = None
+    max_at_graded_edge: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -271,6 +307,10 @@ class BandResult:
             # one above. Disclosure of a clamp that DID move the graded
             # numbers -- unlike the split, which moves none.
             "graded_lo_hz": self.graded_lo_hz,
+            # ...and whether that clamp left the reported extremum sitting on
+            # its own edge, making it a lower bound on the band's real worst
+            # deviation. Disclosure only; `passed` does not read it.
+            "max_at_graded_edge": self.max_at_graded_edge,
         }
 
 
@@ -585,6 +625,17 @@ def evaluate_flat_spec(
         band_deviation_db = deviation_db[band_indices]
         worst = int(band_indices[np.argmax(np.abs(band_deviation_db))])
         max_deviation_db = float(deviation_db[worst])
+        # Did the trusted floor cut this band, and did the extremum land on
+        # the cut edge? Both halves are needed: an untruncated band's first
+        # bin IS the band's own start, with nothing ungraded below it to
+        # warn about, so `worst == band_indices[0]` alone would fire on
+        # every band whose worst bin happens to be its lowest. The
+        # comparison is against the LOWEST INCLUDED bin, not `f_lo_hz`:
+        # exclusion can take the graded edge itself, and what matters is
+        # where the evidence actually starts.
+        max_at_graded_edge = bool(
+            f_lo_hz > nominal_lo_hz and worst == int(band_indices[0])
+        )
         rms_deviation_db = float(np.sqrt(np.mean(np.square(band_deviation_db))))
         # The #1857 attribution split -- the band's own level, and what the
         # curve does relative to THAT rather than to the pooled frame. Same
@@ -609,6 +660,7 @@ def evaluate_flat_spec(
                 max_ripple_db=float(spec_smoothed_db[worst_ripple] - band_level_db),
                 max_ripple_hz=float(freqs_hz[worst_ripple]),
                 graded_lo_hz=f_lo_hz,
+                max_at_graded_edge=max_at_graded_edge,
             )
         )
 

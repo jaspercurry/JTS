@@ -12046,3 +12046,258 @@ def test_verify_diag_names_every_claim_and_the_crossover_region_numbers(caplog):
     assert "absolute_worst_hz=1700.0" in line
     assert "absolute_tolerance_db=2.0" in line
     assert "absolute_band_lo_hz=1000.0" in line
+
+
+def _walk_a_session_whose_filters_reach_the_blind_zone(caplog):
+    """The #2523 two-branch fixture, which places real filters inside its own
+    per-branch measurement hole (1255.8-2020.0 Hz).
+
+    Shares its shape with
+    ``test_prediction_gate_logs_the_improved_path_with_both_terms`` — an 8 dB
+    peak on a 5 dB comb, each branch carrying its own half of a matched LR4 —
+    because that is a fixture already established to drive real filters into
+    the crossover region rather than one built to make this emit fire.
+    """
+    from jasper.active_speaker.branch_chain import (
+        CrossoverSection, crossover_response_db,
+    )
+
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    freqs = _LINEARIZABLE_FREQS_HZ
+    peak_db = 8.0 * np.exp(-0.5 * ((np.log2(freqs / _FIXTURE_FC_HZ) / 0.4) ** 2))
+    comb_db = 5.0 * np.sin(2.0 * np.pi * np.log2(freqs / 200.0) * 5.0)
+    shape_db = peak_db + comb_db
+    lowpass = (CrossoverSection(fc_hz=_FIXTURE_FC_HZ, order=4, highpass=False),)
+    highpass = (CrossoverSection(fc_hz=_FIXTURE_FC_HZ, order=4, highpass=True),)
+    woofer_db = crossover_response_db(freqs, lowpass) + shape_db
+    tweeter_db = crossover_response_db(freqs, highpass) + shape_db
+    trim_w, trim_t, _lw, _lt = solve_branch_trims(
+        freqs,
+        (10.0 ** (woofer_db / 20.0)).astype(complex),
+        (10.0 ** (tweeter_db / 20.0)).astype(complex),
+        _FIXTURE_FC_HZ,
+    )
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(
+        program, woofer_db=woofer_db, tweeter_db=tweeter_db,
+        trim_db={
+            "woofer": round(float(trim_w), 3), "tweeter": round(float(trim_t), 3),
+        },
+    )
+    c = _cloud_conductor(fakes)
+    _walk_measure_cloud_to_close(c)
+    return c
+
+
+def _records(caplog, event: str):
+    return [
+        r for r in caplog.records if f"event={event}" in r.getMessage()
+    ]
+
+
+def test_blind_zone_placements_reach_the_journal(caplog):
+    """#2599 SF1. ``linearization_fit`` owns no logger, so a verdict it makes
+    is only a verdict if this loop says it out loud.
+
+    The adversarial gate's words: "the verb only differs from silence if
+    something emits it." Rule 2 deliberately DISCLOSES rather than refuses, so
+    a disclosure nothing surfaces makes the whole adjudication empty — the
+    filter ships and no one is told, which is exactly the pre-#2599 state the
+    round-3 receipt was in.
+    """
+    c = _walk_a_session_whose_filters_reach_the_blind_zone(caplog)
+
+    records = _records(caplog, "correction.crossover_v2_blind_zone_placements")
+    assert records, "the blind-zone placements never reached the journal"
+    message = records[0].getMessage()
+    # Self-contained: what was placed, and the hole it was placed in, so a
+    # reader needs no second journal line to interpret it.
+    assert "role=" in message
+    assert "placed=" in message
+    assert "measured_excess_db" in message
+    assert "freq_hz" in message
+    # The TOP-LEVEL ``blind_bands_hz`` must carry the session's holes, and
+    # this is asserted on that field's own rendered value rather than on the
+    # message as a whole. Every hole's edges also appear inside each
+    # ``placed`` record, so a substring search over the line passes with the
+    # top-level field emptied -- it is the one field that makes the record
+    # self-contained (and that lists holes no filter landed in), so it needs
+    # its own assertion.
+    field = message.split("blind_bands_hz=", 1)[1].strip().strip('"')
+    assert field not in ("[]", ""), f"blind_bands_hz carried nothing: {field!r}"
+    holes = {
+        tuple(placement["blind_band_hz"])
+        for fit in c.candidate.linearization.values()
+        for placement in (fit.get("blind_zone_placements") or [])
+    }
+    assert holes
+    for lo_hz, hi_hz in holes:
+        assert str(lo_hz) in field and str(hi_hz) in field
+
+
+def test_the_blind_zone_emit_severity_tracks_whether_level_was_added(caplog):
+    """Severity carries the distinction the disclosure exists to make.
+
+    A cut in a hole removes level on evidence no branch has; a BOOST adds
+    level into the phase-sensitive blend on the same absent evidence — the
+    class the gate's 400-fit probe found shipping unnamed. Cuts-only is INFO,
+    any positive gain is WARNING. Neither gates anything; both ship.
+    """
+    c = _walk_a_session_whose_filters_reach_the_blind_zone(caplog)
+
+    records = _records(caplog, "correction.crossover_v2_blind_zone_placements")
+    assert records
+    # Re-derive the expectation from the CANDIDATE rather than by parsing the
+    # log line, so this pins the emit's rule and not its formatting.
+    by_role = {
+        role: fit["blind_zone_placements"]
+        for role, fit in c.candidate.linearization.items()
+        if fit.get("blind_zone_placements")
+    }
+    assert by_role, "the candidate carried no placements to emit"
+    assert len(records) == len(by_role)
+    for record in records:
+        message = record.getMessage()
+        role = next(r for r in by_role if f"role={r}" in message)
+        added_level = any(p["gain_db"] > 0.0 for p in by_role[role])
+        assert record.levelno == (
+            logging.WARNING if added_level else logging.INFO
+        ), message[:200]
+
+
+def test_a_refused_boost_reaches_the_journal_as_a_warning(caplog):
+    """#2599 SF1, rule-1 half. A refusal nothing emits is a SILENT refusal —
+    the failure mode this whole area exists to avoid, and the one the #1967
+    block beside it was written for.
+
+    The fit is wrapped rather than coaxed. Probed 2026-08-16: no conductor
+    fixture in this suite tripped the measured-target bound — every role
+    reported zero drops — so a test that merely walked one would have asserted
+    ``0 == 0`` and passed while the emit was deleted. That is the vacuity trap
+    this repo has been bitten by, so the drop is INJECTED into an otherwise
+    real fit and the assertion is that the conductor SAYS it. Should a fixture
+    later trip the bound for real, this test keeps working and
+    ``test_the_new_verdict_events_stay_silent_on_an_ordinary_session`` is what
+    tracks the count. The bound's own behaviour — when a drop is produced at
+    all — is pinned in
+    ``tests/test_active_speaker_linearization_fit.py``; this pins the wiring.
+    """
+    from dataclasses import replace
+
+    from jasper.active_speaker.linearization_fit import BoostEvidenceDrop
+
+    injected = BoostEvidenceDrop(
+        freq_hz=434.01678699822264, q=1.0, gain_db=2.0149,
+        action_band_hz=(301.8, 472.0), measured_excess_db=2.7819,
+    )
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    real_fit = iv.fit_driver_linearization
+
+    def _with_a_refused_boost(resp, envelope, **kwargs):
+        return replace(
+            real_fit(resp, envelope, **kwargs),
+            lift_boost_evidence_drops=(injected,),
+            lift_suppressed_reason="boost_above_measured_target",
+        )
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(iv, "fit_driver_linearization", _with_a_refused_boost)
+        c = _cloud_conductor(fakes)
+        _walk_measure_cloud_to_close(c)
+
+    records = _records(
+        caplog, "correction.crossover_v2_boost_measured_target_verdicts"
+    )
+    assert records, "a refused boost never reached the journal"
+    assert len(records) == len(c.candidate.linearization)
+    for record in records:
+        message = record.getMessage()
+        # A refusal narrows a correction, so it is always a WARNING -- unlike
+        # the #1967 block, this event has no accepted-remainder case.
+        assert record.levelno == logging.WARNING
+        # The arithmetic that caused it, so a reader re-derives rather than
+        # trusts: which filter, over what span, against what evidence.
+        assert "434.0167" in message
+        assert "action_band_hz" in message
+        assert "measured_excess_db" in message
+        assert "boost_above_measured_target" in message
+
+
+def test_the_new_verdict_events_stay_silent_on_an_ordinary_session(caplog):
+    """The other direction, so neither emit becomes journal spam.
+
+    A session where the bound refused nothing and no filter landed in a hole
+    must add no lines at all. Asserted against the CANDIDATE's own fields, so
+    this cannot pass by the events being unreachable — it fails if the fields
+    are populated and the emits are missing, and it fails if the emits fire
+    when the fields are empty.
+    """
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    c = _cloud_conductor(fakes)
+    _walk_measure_cloud_to_close(c)
+
+    for field, event in (
+        ("lift_boost_evidence_drops",
+         "correction.crossover_v2_boost_measured_target_verdicts"),
+        ("blind_zone_placements",
+         "correction.crossover_v2_blind_zone_placements"),
+    ):
+        populated = [
+            role for role, fit in c.candidate.linearization.items()
+            if fit.get(field)
+        ]
+        assert len(_records(caplog, event)) == len(populated), field
+
+
+def test_a_hole_centred_BOOST_makes_the_blind_zone_emit_a_warning(caplog):
+    """The severity rule's other half — the one the shipped fixtures cannot
+    reach, so it is injected rather than left unpinned.
+
+    Every conductor fixture that reaches the blind zone places only CUTS
+    there (probed), so a test that merely walked one would exercise the INFO
+    branch and pass with the ``WARNING if any(gain > 0)`` conjunct deleted.
+    That is the half-guarded-site trap. A boost in a hole is the class the
+    gate's 400-fit probe found shipping unnamed and the one this disclosure
+    most exists for — adding level into a phase-sensitive blend on evidence
+    no branch has — so it gets the louder level, and that has to be pinned by
+    something.
+
+    The fit-side behaviour (a hole-centred boost really is named) is pinned
+    for real in ``test_a_hole_centred_lift_boost_is_named_too``; this pins the
+    emit's severity rule given such a placement.
+    """
+    from dataclasses import replace
+
+    from jasper.active_speaker.linearization_fit import BlindZonePlacement
+
+    injected = BlindZonePlacement(
+        freq_hz=1404.4032452955714, q=2.0, gain_db=+1.5,
+        blind_band_hz=(1291.4104702195973, 2077.2411784104297),
+        measured_excess_db=-2.0,
+    )
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    real_fit = iv.fit_driver_linearization
+
+    def _with_a_hole_centred_boost(resp, envelope, **kwargs):
+        return replace(
+            real_fit(resp, envelope, **kwargs),
+            blind_zone_placements=(injected,),
+        )
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(iv, "fit_driver_linearization", _with_a_hole_centred_boost)
+        c = _cloud_conductor(fakes)
+        _walk_measure_cloud_to_close(c)
+
+    records = _records(caplog, "correction.crossover_v2_blind_zone_placements")
+    assert records, "a hole-centred boost never reached the journal"
+    assert len(records) == len(c.candidate.linearization)
+    for record in records:
+        assert record.levelno == logging.WARNING, record.getMessage()[:200]
+        assert "1404.4032" in record.getMessage()
