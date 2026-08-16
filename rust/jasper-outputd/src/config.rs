@@ -1018,6 +1018,28 @@ mod tests {
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+    /// What a composite fixture must declare since #2285 P2 retired the default.
+    ///
+    /// `default_content_pcm`'s `(Composite, Direct)` arm used to guess
+    /// `outputd_active_content_capture`; #2534 deleted that PCM, so the arm now
+    /// REFUSES rather than guessing (the refusal is pinned by
+    /// `a_composite_sink_on_the_direct_bridge_refuses_an_undeclared_content_pcm`).
+    ///
+    /// **Why so many fixtures need it, and why setting it is not papering over
+    /// anything.** That refusal is the FIRST composite guard — line order puts it
+    /// ahead of the child-PCM, distinct-PCM, delay-budget, active-channel-width,
+    /// TTS-socket and dac-content-lane guards. So a composite fixture that
+    /// declares no content PCM now trips this refusal BEFORE reaching the guard
+    /// it exists to exercise, and its assertion reads a message about the wrong
+    /// thing. Declaring the PCM restores each test to the path it was written
+    /// for; every one of them keeps its ORIGINAL assertion, so a target guard
+    /// that stopped biting would still fail its own test.
+    ///
+    /// The value is deliberately a name no ALSA config defines: nothing here
+    /// opens a PCM, and a plausible-looking real name would invite a reader to
+    /// think the lane is resolved rather than merely declared.
+    const DECLARED_CONTENT_PCM: &str = "outputd_declared_content";
+
     fn with_env<F: FnOnce()>(vars: &[(&str, Option<&str>)], f: F) {
         let _guard = ENV_LOCK
             .lock()
@@ -1289,6 +1311,12 @@ mod tests {
                 ("JASPER_OUTPUTD_SINK", Some("dual_apple")),
                 ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
                 ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
+                // SHADOW GUARD (#2285 P2): the content-PCM refusal precedes the
+                // dac-content-lane fence. This is the test whose own assertion
+                // reported the shadowing verbatim in CI ("guard should name the
+                // required mode, got: JASPER_OUTPUTD_CONTENT_PCM must be set…").
+                // Assertion unchanged, so the fence must still bite.
+                ("JASPER_OUTPUTD_CONTENT_PCM", Some(DECLARED_CONTENT_PCM)),
             ],
             || {
                 let err = Config::from_env().unwrap_err();
@@ -1318,6 +1346,10 @@ mod tests {
                 ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
                 ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
                 // No JASPER_OUTPUTD_DAC_CONTENT_FIFO — camilla owns the round-trip.
+                // Declared since #2285 P2: this fixture is a LEGAL bonded-member
+                // shape and must still parse, so it declares the content PCM the
+                // composite/direct arm no longer defaults (DECLARED_CONTENT_PCM).
+                ("JASPER_OUTPUTD_CONTENT_PCM", Some(DECLARED_CONTENT_PCM)),
             ],
             || {
                 let cfg = Config::from_env().unwrap();
@@ -1801,15 +1833,12 @@ mod tests {
                 // Declared explicitly since the composite default was retired
                 // with the lane it named; the rest of this contract is
                 // unchanged by that.
-                (
-                    "JASPER_OUTPUTD_CONTENT_PCM",
-                    Some("outputd_declared_content"),
-                ),
+                ("JASPER_OUTPUTD_CONTENT_PCM", Some(DECLARED_CONTENT_PCM)),
             ],
             || {
                 let cfg = Config::from_env().unwrap();
                 assert_eq!(cfg.sink_mode, SinkMode::Composite);
-                assert_eq!(cfg.content_pcm, "outputd_declared_content");
+                assert_eq!(cfg.content_pcm, DECLARED_CONTENT_PCM);
                 assert_eq!(cfg.content_channels, 4);
                 assert_eq!(cfg.dac_pcm, "dual_apple_usb_c_dac_4ch");
                 assert_eq!(cfg.dual_dac_a_pcm.as_deref(), Some("hw:CARD=A,DEV=0"));
@@ -1831,6 +1860,9 @@ mod tests {
                 ("JASPER_OUTPUTD_SINK", Some("composite")),
                 ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
                 ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
+                // Declared since #2285 P2 — both spellings must reach the SAME
+                // legal shape, so both arms of this equivalence declare it.
+                ("JASPER_OUTPUTD_CONTENT_PCM", Some(DECLARED_CONTENT_PCM)),
             ],
             || {
                 let cfg = Config::from_env().unwrap();
@@ -2028,6 +2060,12 @@ mod tests {
                 ("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some("8")),
                 ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
                 ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
+                // SHADOW GUARD (#2285 P2): without this the composite/direct
+                // content-PCM refusal fires first and this test asserts against
+                // ITS message instead of the width guard's. Declaring it puts the
+                // test back on its own path; the assertion below is unchanged, so
+                // the width guard still has to bite for this to pass.
+                ("JASPER_OUTPUTD_CONTENT_PCM", Some(DECLARED_CONTENT_PCM)),
             ],
             || {
                 let err = Config::from_env().unwrap_err().to_string();
@@ -2091,6 +2129,11 @@ mod tests {
                 ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
                 ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
                 ("JASPER_OUTPUTD_TTS_SOCKET", Some("/run/x.sock")),
+                // SHADOW GUARD (#2285 P2) — this arm leaves the bridge at its
+                // `direct` default, so the content-PCM refusal preceded the
+                // TTS-socket guard. The arm ABOVE sets `shm_ring` and so never
+                // reached the refusal; only this one needed the declaration.
+                ("JASPER_OUTPUTD_CONTENT_PCM", Some(DECLARED_CONTENT_PCM)),
             ],
             || {
                 let err = Config::from_env().unwrap_err().to_string();
@@ -2101,10 +2144,20 @@ mod tests {
 
     #[test]
     fn dual_apple_sink_requires_both_child_pcms() {
-        with_env(&[("JASPER_OUTPUTD_SINK", Some("dual_apple"))], || {
-            let err = Config::from_env().unwrap_err();
-            assert!(err.to_string().contains("JASPER_OUTPUTD_DUAL_DAC_A_PCM"));
-        });
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_SINK", Some("dual_apple")),
+                // SHADOW GUARD (#2285 P2): the content-PCM refusal precedes the
+                // child-PCM guard, so without this the assertion below read the
+                // wrong message. Unchanged otherwise — the child-PCM guard must
+                // still bite for this to pass.
+                ("JASPER_OUTPUTD_CONTENT_PCM", Some(DECLARED_CONTENT_PCM)),
+            ],
+            || {
+                let err = Config::from_env().unwrap_err();
+                assert!(err.to_string().contains("JASPER_OUTPUTD_DUAL_DAC_A_PCM"));
+            },
+        );
     }
 
     #[test]
@@ -2114,6 +2167,9 @@ mod tests {
                 ("JASPER_OUTPUTD_SINK", Some("dual_apple")),
                 ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
                 ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=A,DEV=0")),
+                // SHADOW GUARD (#2285 P2): the content-PCM refusal precedes the
+                // distinct-children guard. Assertion unchanged.
+                ("JASPER_OUTPUTD_CONTENT_PCM", Some(DECLARED_CONTENT_PCM)),
             ],
             || {
                 let err = Config::from_env().unwrap_err();
@@ -2130,6 +2186,9 @@ mod tests {
                 ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
                 ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
                 ("JASPER_OUTPUTD_DUAL_MAX_DELAY_DELTA_FRAMES", Some("-1")),
+                // SHADOW GUARD (#2285 P2): the content-PCM refusal precedes the
+                // delay-budget guard. Assertion unchanged.
+                ("JASPER_OUTPUTD_CONTENT_PCM", Some(DECLARED_CONTENT_PCM)),
             ],
             || {
                 let err = Config::from_env().unwrap_err();
