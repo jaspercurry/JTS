@@ -105,6 +105,12 @@ class FcCandidateEvaluation:
     predicted_sum: tuple[np.ndarray, np.ndarray] | None = None
     predicted_spec_report: Mapping[str, Any] | None = None
     commanded_delta: tuple[np.ndarray, np.ndarray] | None = None
+    #: The delta probe's STATE axis for THIS candidate (#2614): the applied
+    #: graph's own transfer against the uncorrected crossover, which is what the
+    #: two directional safety rules mask on. Carried beside ``commanded_delta``
+    #: and in the same already-decimated-at-persist shape, because the stage
+    #: that grades is not the stage that fit.
+    declared_transfer: tuple[np.ndarray, np.ndarray] | None = None
     level_frame_finding: Mapping[str, Any] | None = None
     realized_branch_level: Mapping[str, Any] | None = None
     """THIS candidate's own realized inter-driver level verdict, serialized.

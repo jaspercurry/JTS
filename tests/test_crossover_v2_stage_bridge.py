@@ -487,8 +487,8 @@ def _seed_applied_stage_1_state() -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
-def test_persisted_verify_priors_carries_exactly_the_eight_bridge_keys(monkeypatch):
-    """The write side of the bridge: ``verify_priors`` has EIGHT keys.
+def test_persisted_verify_priors_carries_exactly_the_nine_bridge_keys(monkeypatch):
+    """The write side of the bridge: ``verify_priors`` has NINE keys.
 
     Named exhaustively rather than checked for presence, because a new key is a
     deliberate widening of the contract and not an incidental one.
@@ -519,7 +519,14 @@ def test_persisted_verify_priors_carries_exactly_the_eight_bridge_keys(monkeypat
     VERIFIES rather than the stage that fits, so a stage-1 persist writes
     ``None`` here and the key is still present.
 
-    The top-level payload is unchanged by all four widenings — each new key is
+    **Deliberate widening (#2614): ``declared_transfer``.** The ninth, and the
+    delta probe's STATE axis beside the CHANGE axis the fifth carries: what the
+    applied graph itself declares against the uncorrected crossover, which is
+    the mask the two directional safety rules read. Same producer, same
+    consumer, same reason as the fifth — without it a stage-2 probe stops
+    watching every band a repeat round left alone.
+
+    The top-level payload is unchanged by all five widenings — each new key is
     nested inside ``verify_priors``, so
     ``test_persisted_payload_top_level_keys_are_the_whole_bridge`` below still
     pins the same set.
@@ -532,6 +539,7 @@ def test_persisted_verify_priors_carries_exactly_the_eight_bridge_keys(monkeypat
         "gate_window_ms",
         "pilot_transfer_reference",
         "commanded_delta",
+        "declared_transfer",
         "entry_baseline",
         "proposal_fingerprint",
         "verify_measured",
@@ -606,6 +614,56 @@ def test_a_commanded_delta_is_persisted_by_the_bridge(monkeypatch):
         "freqs_hz": [500.0, 4000.0],
         "delta_db": [0.25, -1.75],
     }
+
+
+def test_the_state_axis_crosses_the_bridge_beside_the_commanded_one(monkeypatch):
+    """#2614: ``declared_transfer`` makes the same round trip, values and all.
+
+    The delta probe's two directional safety rules mask on this curve, and the
+    stage that grades is not the stage that fit — so without a durable channel
+    a stage-2 probe stops watching every band a repeat round left alone, which
+    is the hole this key closes. Absent stays absent for
+    ``commanded_delta``'s reason: a manufactured empty curve would claim the fit
+    produced a state axis it never did.
+    """
+    conductor, _state = _stage_1(monkeypatch)
+    conductor._measure_declared_transfer = ([500.0, 4000.0], [3.5, -0.25])
+    assert conductor.measure_declared_transfer is not None
+
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    assert (v2host.load_v2_state() or {})["verify_priors"]["declared_transfer"] == {
+        "freqs_hz": [500.0, 4000.0],
+        "delta_db": [3.5, -0.25],
+    }
+
+    # ...and the read half, on a fresh stage-2 conductor.
+    state = _seed_applied_stage_1_state()
+    state["verify_priors"]["declared_transfer"] = {
+        "freqs_hz": list(_COMMANDED_FREQS_HZ),
+        "delta_db": [v * 2.0 for v in _COMMANDED_DELTA_DB],
+    }
+    v2host.save_v2_state(state)
+    stage_2, _ = _stage_2(monkeypatch)
+    freqs, declared = stage_2.measure_declared_transfer
+    assert list(freqs) == _COMMANDED_FREQS_HZ
+    assert list(declared) == [v * 2.0 for v in _COMMANDED_DELTA_DB]
+
+
+def test_a_conductor_with_no_state_axis_rehydrates_none(monkeypatch):
+    """The control: a state written before #2614 has no key, and none is invented.
+
+    ``None`` narrows the two directional safety rules to the change axis — the
+    pre-#2614 behaviour — and the probe's caller names that on the journal
+    rather than a fabricated flat curve silently standing in for the answer.
+    """
+    _seed_applied_stage_1_state()
+    conductor, _state = _stage_2(monkeypatch)
+    assert conductor.measure_declared_transfer is None
+
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    assert (
+        (v2host.load_v2_state() or {})["verify_priors"]["declared_transfer"] is None
+    )
 
 
 def test_a_conductor_with_no_commanded_delta_persists_none(monkeypatch):

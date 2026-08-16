@@ -9599,6 +9599,60 @@ def test_entry_graph_fingerprint_names_the_applied_profile(monkeypatch):
     assert v2host._active_graph_fingerprint() == ""
 
 
+def test_the_commanded_axis_seam_refuses_a_displaced_applied_record(
+    monkeypatch, caplog,
+):
+    """#2614: the previous-graph seam applies its sibling's displacement guard.
+
+    A record is only an answer to "which graph is on the speaker" while it is
+    still the graph on the speaker. An out-of-band reconcile changes the RUNNING
+    config without touching the record — the 2026-08-15 cycle-4 shape — and
+    ``_active_graph_fingerprint`` has refused a displaced record since #2537 for
+    exactly that reason. This seam makes the same record ROLLBACK-DECIDING, so
+    it must refuse it too, and the surface is named on the journal so the two
+    refusals are told apart.
+
+    Only a POSITIVE displacement refuses. The other two codes mean the
+    comparison could not be made, and an absent measurement is not evidence of a
+    defect — a box with no readable statefile would otherwise lose its commanded
+    axis forever.
+    """
+    import logging
+
+    from jasper.active_speaker.baseline_profile import (
+        APPLIED_PROFILE_DISPLACED,
+        APPLIED_PROFILE_RUNNING_UNKNOWN,
+    )
+
+    record = {"candidate_fingerprint": "fp-live-graph", "status": "applied"}
+    monkeypatch.setattr(
+        "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
+        lambda: record,
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.baseline_profile.applied_profile_displacement",
+        lambda applied, **kwargs: "",
+    )
+    assert v2host._applied_profile_now() == record
+
+    monkeypatch.setattr(
+        "jasper.active_speaker.baseline_profile.applied_profile_displacement",
+        lambda applied, **kwargs: APPLIED_PROFILE_RUNNING_UNKNOWN,
+    )
+    assert v2host._applied_profile_now() == record, (
+        "an unreadable statefile is 'we could not check', not 'it moved'"
+    )
+
+    monkeypatch.setattr(
+        "jasper.active_speaker.baseline_profile.applied_profile_displacement",
+        lambda applied, **kwargs: APPLIED_PROFILE_DISPLACED,
+    )
+    with caplog.at_level(logging.WARNING):
+        assert v2host._applied_profile_now() is None
+    assert "event=correction.crossover_v2_applied_profile_displaced" in caplog.text
+    assert "surface=commanded_axis" in caplog.text
+
+
 def test_undo_declaration_restore_writes_durably(monkeypatch, tmp_path):
     """#2292 scope 2 SF2: apply_measured_crossover_frequency has TWO
     production callers -- handle_v2_apply's accept (pinned by

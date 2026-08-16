@@ -478,7 +478,15 @@ def test_the_walk_route_carries_its_builds_own_realized_level_verdict():
     built = SpeculativeClose(
         candidate=candidate,
         predicted_sum=None,
-        analysis=SimpleNamespace(predicted_sum=None),
+        # The three fields the commit reads off an analysis. ``driver_responses``
+        # and ``alignment`` joined ``predicted_sum`` with #2611's commanded axis,
+        # which models the graph an apply replaces on this capture's own branch
+        # pair; a real ``ProgramAnalysis`` always carries both (they are declared
+        # fields with defaults), so naming them here keeps the stand-in the same
+        # shape as the thing it stands in for.
+        analysis=SimpleNamespace(
+            predicted_sum=None, driver_responses=(), alignment=None,
+        ),
         cloud=None,
         level_frame_finding=None,
         linearization=LinearizationState(

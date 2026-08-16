@@ -2253,7 +2253,9 @@ tolerance (unstructured, so one bin withholds the deferral),
 seam rollback in the first place. The measurement behind it is
 `DeltaProbeMap.realized_louder_than_commanded` / `max_signed_error_db`, taken on
 the RAW realized curve for `boost_overshoot`'s reason: this asks how much energy
-reached the driver, not whether the shape is right. A deferral is never silent —
+reached the driver, not whether the shape is right. Both are measured over the
+probe's SAFETY bins since #2614 — this apply's graded changes UNION the applied
+graph's own declared transfer — for the same reason. A deferral is never silent —
 it journals `event=correction.crossover_v2_delta_probe_seam_deferred` (WARNING)
 and rides the safety axis's evidence as `seam_deferred`, so the receipt records
 the restore that did **not** happen.
@@ -3128,6 +3130,38 @@ a 5–12 kHz shelf-realization defect and not: 2026-07-27's lived an octave and 
 half above tracking's band and no tolerance there could have caught it. Design
 and the verdict-priority rule: `jasper/active_speaker/delta_probe.py`.
 
+**The commanded axis is the applied graph minus the graph it REPLACES** (#2611).
+Every element of an apply is on it — the emitted filters, the per-role gains,
+the polarity and the delay — because the two sides are the same measured branch
+pair evaluated under two different graphs. It used to be the linearized branch
+prediction minus the raw one with BOTH sides at the applied candidate's own
+polarity, delay and gains, so those three cancelled by construction and the
+curve carried the filters alone. On 2026-08-16 that cost a household a tune the
+room had measured better: a commanded +3.3209 dB tweeter step (−10.2141 →
+−6.8932) landed in bins the axis called quiet and was reported as
+`residual_offset_db = +3.2198`, and the frame that decides the rollback question
+was fitted entirely ABOVE the band it was then applied to. Owner:
+`jasper/active_speaker/crossover_v2/commanded.py`. The pre-split program
+headroom is the one level term that axis cannot carry — it is applied before
+the branch split — and it stays where it was, as `expected_offset_db`.
+
+**A commanded CHANGE is not a declared STATE, and the two directional safety
+rules need the second one** (#2614). `boost_over_declared_bound` and
+`realized_louder_than_commanded` ask *is the speaker putting more energy into a
+driver than the applied graph declares, anywhere* — including bands this apply
+did not touch. A repeat round commands ~0 across every such band, so masking
+those two rules on the change axis alone left an untouched +5 dB boost realized
+4 dB hot reading `matched` / `boost_overshoot_db=None`. `classify_delta_probe`
+therefore takes a second, optional `declared_transfer_db` — the applied graph's
+own predicted transfer against the uncorrected crossover, which is what the
+retired axis was — and masks those two rules on the UNION of the two axes'
+graded bins. Everything else the probe measures is untouched, because
+`realized − commanded` is `measured_post − predicted_post` whichever graph the
+two sides are stated against. The curve crosses the stage bridge beside the
+commanded one as `verify_priors.declared_transfer`; its absence narrows those
+two rules back to the change axis and says so on the journal
+(`event=correction.crossover_v2_declared_transfer_unavailable`).
+
 **That band is intersected with the capture's own TRUSTED band, and there is no
 fallback** (#2521). The band comes from
 `gate_disclosure.evaluation_band_hz` — this capture's gate-derived trusted floor
@@ -3171,24 +3205,73 @@ exactly `expected_offset_db`'s "nothing known" rule. The decomposition is an
 identity the record carries: `residual_offset_db == frame.offset_db −
 entry_anchor_offset_db`.
 
-**Its one known incompleteness is NOT bounded, and it bites on chained rounds.**
-`commanded_delta` is the new correction's transfer relative to the RAW crossover,
-while the entry capture rides whatever graph was active. On a first apply that
-graph carries no linearization and the two agree exactly. On a REPEAT round the
-residual carries `−mean(previous round's commanded curve over this round's quiet
-bins)` — zero when that round commanded nothing there, and otherwise unbounded,
-because the previous round's curve is not an input to the probe and nothing in it
-can see, disclose, or bound the term. It can **fabricate** a shift (a previous
-round correcting out to 20 kHz against a new one stopping at 8 kHz measures a
-+6.000 dB phantom) and it can **mask** one (a genuine −2.2 dB uncommanded shift
-re-grading to residual 0.000 and `frame_mismatch`). Both shapes were constructed
-by the adversarial gate on PR #2545 and are pinned by
+**Both curves are stated against the ENTRY graph, which is what makes the
+subtraction an identity** (#2611 closed the #2545 chained-round hazard).
+`commanded_delta` is the applied graph's predicted sum minus **the predicted sum
+of the graph it replaces**, and the entry capture is a measurement of that same
+graph, so the model term cancels and the residual is
+`mean(measured_post − measured_pre − commanded)` over the quiet bins.
+
+It did not always. While `commanded_delta` was the new correction's transfer
+relative to the RAW crossover, a REPEAT round's residual carried
+`−mean(previous round's commanded curve over this round's quiet bins)` — zero
+when that round commanded nothing there, otherwise unbounded, and invisible to
+the probe. It could **fabricate** a shift (a previous round correcting out to
+20 kHz against a new one stopping at 8 kHz measured a +6.000 dB phantom) and it
+could **mask** one (a genuine −2.2 dB uncommanded shift re-grading to residual
+0.000 and `frame_mismatch`). Both shapes were constructed by the adversarial
+gate on PR #2545; neither is reachable through the production caller now,
+because the previous GRAPH is an explicit input to the axis. The classifier's
+behaviour on a mismatched pair is still pinned — it is a public function and a
+direct caller can hand it one — by
 `test_a_repeat_round_carries_the_previous_rounds_command_into_the_residual`.
 
-**Operationally: keep a chained round's commanded band from retreating out of the
-previous round's.** That empties the overlap by construction, which is the only
-thing that makes the term zero. `entry_anchor_offset_db` discloses what was
+**What the caller still owes** is that its previous side describe the graph the
+entry capture actually went through, and the crossover corner is the part of
+that which is CHECKED rather than assumed (#2614). The branches are composed
+through whichever crossover the capture was analysed at, so a previous graph
+modelled on the wrong corner omits a term measured at up to 5.88 dB against a
+1.5 dB tolerance. **Two doors reach it, not one** — an earlier revision of this
+section named only the first and called the second benign:
+
+1. the household edits Fc in `/sound` between rounds;
+2. the alternative-Fc sweep, where `priors.candidate_priors` re-points the
+   composition at every SWEPT corner, so each non-configured candidate's
+   branches carry a crossover the applied profile never ran.
+
+`commanded.profile_crossover_fc_hz` reads the applied graph's own corner off its
+snapshot preset and `CrossoverV2Session._previous_graph_predicted_sum` refuses
+the previous side on a mismatch — `event=…previous_graph_unavailable
+reason=crossover_corner_moved`, and `reason=applied_profile_names_no_corner` for
+an era-older record that cannot say. `entry_anchor_offset_db` discloses what was
 removed and is **not** a warrant that the residual beside it is clean.
+
+**A refused change axis costs the SHAPE grade, never the hearing-safety one**
+(#2614). Every committed alternative-Fc candidate hits that refusal by
+construction, and while `_run_delta_probe` bailed on it the two directional
+findings never ran at all: `evaluate_applied_safety` answered SAFE on a round
+where nothing had looked, and no surface said so. The STATE axis needs no corner
+match — both of its sides are the candidate's own — so it is computed and
+persisted at every swept corner, and the probe now runs its safety half on that
+alone:
+
+- verdict `safety_only`, reason `commanded_axis_unavailable`
+  (`delta_probe.VERDICT_SAFETY_ONLY`), journalled at WARNING;
+- `boost_over_declared_bound` / `realized_louder_than_commanded` are real, so a
+  state-axis overshoot still reaches the adoption table's hard stop and
+  restores;
+- **no shape or level scalar at all** — residual, gain, frame and exceedance
+  would each be a claim in the state frame, where the residual is the
+  chained-round contaminant #2611 removed;
+- the safety evidence carries `probe_shape_graded: false` beside `probe_graded`,
+  and the done screen shows a third caveat ("This check could compare loudness
+  but not the correction's shape this round.") beside the Verified badge. That
+  copy names no CAUSE on purpose: four paths reach this verdict — corner moved,
+  applied record displaced, record names no graph, record names no corner — and
+  the journal is where the specific one is named.
+
+With neither axis the probe is absent exactly as before, and
+`event=correction.crossover_v2_declared_transfer_unavailable` names why.
 
 The two conditions that reach the verdict subtract **different** numbers, and
 have to: (a) "did the level move" is a change question and reads the anchored
@@ -5126,6 +5209,8 @@ was measured on this branch. **The date below is deliberately NOT bumped**, for
 the same reason as the two addenda above.
 
 Last verified: 2026-08-16 (#2602 — the live spine's adoption-axis count, row
-count, and file-map rows re-read against `decide_adoption`; the historical
+count, and file-map rows re-read against `decide_adoption`; plus #2611 — the
+delta-probe section's commanded-axis and chained-round paragraphs re-read
+against `crossover_v2.commanded` and `classify_delta_probe`. The historical
 appendix was NOT re-verified and still shows the pre-#2602 five-row table, as
 its own status callout says it will)

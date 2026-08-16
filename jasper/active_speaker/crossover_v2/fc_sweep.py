@@ -555,7 +555,8 @@ def evaluate_candidate(
     sweep_bounds: Callable[[], tuple[float | None, float | None]],
     predicted_spec_report: Callable[[], Mapping[str, Any] | None],
     ineligible_reason: Callable[[Any], str | None],
-    commanded_delta: Callable[[Any, Any], Any],
+    commanded_delta: Callable[[Any, Any, float], Any],
+    declared_transfer: Callable[[Any, Any], Any],
     configured_fc_hz: float,
     preset: Any,
     tweeter_role: str,
@@ -654,8 +655,23 @@ def evaluate_candidate(
                        np.asarray(built.predicted_sum[1]).copy()),
         predicted_spec_report=(dict(spec_report)
             if spec_report is not None else None),
-        commanded_delta=commanded_delta(analysis.predicted_sum,
-                                        built.predicted_sum),
+        # THIS corner's own analysis, not its ``predicted_sum``: since #2611 the
+        # commanded axis is the applied graph minus the graph it REPLACES, and
+        # the previous graph is modelled on the branches this corner's analysis
+        # measured. Handing over the analysis is what keeps both sides of the
+        # subtraction on one branch pair per candidate.
+        #
+        # ``fc_hz`` — THIS corner, not ``configured_fc_hz`` — because
+        # ``candidate_priors`` re-composed those branches through it, and the
+        # applied profile only ran the corner it was built at. Every swept
+        # corner that is not the applied one therefore has no nameable previous
+        # graph, and the seam says so rather than modelling one on a crossover
+        # the speaker never played (#2614).
+        commanded_delta=commanded_delta(analysis, built.predicted_sum, fc_hz),
+        # The STATE axis (#2614), which needs no corner: both of ITS sides are
+        # this candidate's own — the applied graph and the same branches with no
+        # correction — so it is well-defined at every swept corner.
+        declared_transfer=declared_transfer(analysis, built.predicted_sum),
         level_frame_finding=built.level_frame_finding,
         # THIS candidate's realized inter-driver level, which the sweep can
         # carry since the cutover (#2307 gate note N6): the verdict is a
