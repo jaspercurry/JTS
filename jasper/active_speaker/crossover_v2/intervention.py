@@ -104,6 +104,7 @@ from ..linearization_fit import (
     core_level_band_hz,
     driver_core_level_db,
     fit_driver_linearization,
+    measurement_hole_bands_hz,
     solve_shared_level_frame,
 )
 from jasper.audio_measurement.program_analysis import (
@@ -1386,6 +1387,28 @@ def plan_linearization(
         }
         for role, level in core_levels_db.items()
     }
+    # The per-branch MEASUREMENT HOLE (#2599, #2600 item 4). Each branch's
+    # core band stops where its own crossover hands off, so between the
+    # woofer's top and the tweeter's bottom there is a span NEITHER capture
+    # covers while the summed response there is a live two-branch blend. A
+    # hole is a property of the PAIR, so it is derived here — the composer is
+    # the only layer holding both roles — and handed to each fit as a band,
+    # keeping ``fit_driver_linearization`` a single-branch function that is
+    # told things rather than one that knows about crossovers.
+    #
+    # Computed from the SAME ``core_level_band_hz`` the journal line above
+    # discloses, at full precision rather than from its rounded copy, so the
+    # band a filter is refused against and the band a reader is shown cannot
+    # drift. On the 2026-08-16 round-3 jts3 session this is
+    # (1291.4104, 2077.2412) — the hole a -1.7577 dB woofer cut at 1404.4032
+    # Hz was placed inside.
+    blind_bands_hz = measurement_hole_bands_hz([
+        core_level_band_hz(
+            envelopes[role], radiating_band_hz=radiating_bands[role]
+        )
+        for role in (woofer_role, tweeter_role)
+    ])
+
     # The OTHER estimator, for the #1866 finding. Restricted to the roles the
     # frame was actually solved over, so the banked pair is the pair that
     # disagreed rather than every role the trim solve happened to return.
@@ -1447,6 +1470,10 @@ def plan_linearization(
             vocabulary=vocabulary,
             level_frame=level_frame,
             radiating_band_hz=radiating_bands[role],
+            # #2599: the spans no branch measured. Same list for both roles —
+            # a hole belongs to the pair, not to whichever branch happens to
+            # be fitting when it is reached.
+            blind_bands_hz=blind_bands_hz,
             # The branch's own committed crossover as the fit's target SHAPE
             # (#1817, R10a) — built from the SAME ``sections`` the radiating
             # band above and the emitter's own filters come from, so the shape

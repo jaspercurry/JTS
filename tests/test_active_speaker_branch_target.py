@@ -395,6 +395,11 @@ def _run_lift(*, guarded: bool):
     return grid_hz, target, band_mask, _lift_stage(
         grid_hz, working_db, target.target_curve_db(0.0), env,
         band_mask, (), FitVocabulary(allow_boost=True),
+        # No cut stage ran in this fixture, so the working curve IS the
+        # measurement — #2599's measured-target bound sees exactly the
+        # deficit the stage does and abstains, which is what keeps this
+        # test about the guard it is actually pinning.
+        measured_db=working_db,
         lift_mask=lift_mask,
         contribution=target.contribution,
         gain_permitted=target.gain_permitted if guarded else None,
@@ -511,6 +516,8 @@ def _lift_with(*, deficit_hz: float, contribution: bool):
     return _lift_stage(
         grid_hz, shape_db + dip, target.target_curve_db(0.0), _Env(),
         band_mask, (), FitVocabulary(allow_boost=True),
+        # As above: no cut stage ran, so the measurement is the working curve.
+        measured_db=shape_db + dip,
         lift_mask=band_mask,
         contribution=target.contribution if contribution else None,
         gain_permitted=target.gain_permitted,

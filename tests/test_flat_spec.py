@@ -464,6 +464,9 @@ def test_to_dict_round_trip_stability_keys_and_types():
             "max_ripple_hz",
             # #2551: the edge these numbers came from, beside the nominal one.
             "graded_lo_hz",
+            # #2599: whether that edge is where the reported extremum landed,
+            # with the band still trending into the ungraded remainder below.
+            "max_at_graded_edge",
         }
         for key in (
             "f_lo_hz",
@@ -482,6 +485,12 @@ def test_to_dict_round_trip_stability_keys_and_types():
             assert type(band_dict[key]) is int, key
         assert type(band_dict["evaluable"]) is bool
         assert type(band_dict["passed"]) is bool
+        # A real `bool`, not `np.bool_` -- the latter passes `isinstance` and
+        # then breaks `json.dumps`, which is the trap this whole block exists
+        # for. No floor was supplied to this report, so every band is
+        # untruncated and the honest value is False rather than None.
+        assert type(band_dict["max_at_graded_edge"]) is bool
+        assert band_dict["max_at_graded_edge"] is False
 
     assert d["excluded_intervals"] == [[5000.0, 5000.0]]
     assert isinstance(d["excluded_intervals"], list)
