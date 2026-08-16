@@ -68,7 +68,11 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
 
-from jasper.audio_measurement.program_analysis import ALIGNMENT_OK, ProgramAnalysis
+from jasper.audio_measurement.program_analysis import (
+    ALIGNMENT_OK,
+    ProgramAnalysis,
+    polarity_label,
+)
 from jasper.log_event import log_event
 
 from ..branch_chain import CrossoverSection, sections_by_role
@@ -249,6 +253,24 @@ def analysis_json(analysis: ProgramAnalysis) -> dict[str, Any]:
             if align and align.seed_delay_us is not None else None
         ),
         "polarity": align.polarity if align else None,
+        # The committed polarity above is now a SELECTION, not the correlation's
+        # answer (issue #2598), so the candidate that authorized an apply has to
+        # freeze what chose it, what correlation said, and whether the two
+        # agreed — the same seed-vs-committed pair ``delay_us`` /
+        # ``alignment_seed_delay_us`` already carry for the delay.
+        "alignment_objective": cand.alignment_objective if cand else None,
+        "seed_polarity": (
+            None if cand is None or cand.seed_polarity_sign is None
+            else polarity_label(int(cand.seed_polarity_sign))
+        ),
+        "polarity_agrees_with_sum": (
+            align.polarity_agrees_with_sum if align else None
+        ),
+        # The wrong-lobe disclosure travels with the candidate that authorized
+        # the apply, not just the journal: the mode it names is magnitude-flat
+        # and time-wrong, so an on-axis VERIFY cannot contradict it and the
+        # receipt is the only place a later reader can find it (#2607 S2).
+        "left_anchor_lobe": bool(cand.left_anchor_lobe) if cand else None,
         "alignment_confidence": round(float(align.confidence), 4) if align else None,
         "alignment_confidence_source": align.confidence_source if align else None,
         "trim_db": (

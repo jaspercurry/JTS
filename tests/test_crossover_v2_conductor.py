@@ -6826,6 +6826,8 @@ def test_measure_diag_logs_full_numbers_on_accept(caplog):
             delay_us=150.0, predicted_ripple_db=1.23, confidence=0.9,
             alignment_seed_ripple_db=4.56, flatness_improvement_db=3.33,
             anchor_delay_us=145.0, snap_delta_us=5.0, snap_found=True,
+            alignment_objective="flat_sum_committed", seed_polarity_sign=-1,
+            left_anchor_lobe=True,
         ),
         linearity_ok=True,
         predicted_sum=(np.linspace(100.0, 20000.0, 64), np.zeros(64)),
@@ -6862,6 +6864,16 @@ def test_measure_diag_logs_full_numbers_on_accept(caplog):
     assert "woofer_snr_verdict=ok" in caplog.text
     assert "tweeter_snr_db=8.0" in caplog.text
     assert "tweeter_snr_verdict=insufficient" in caplog.text
+    # #2598 / #2607 S2: WHICH objective committed the (polarity, delay) pair,
+    # what correlation answered, whether the two agreed, and whether the
+    # committed delay left the comb lobe its anchor owns. The lobe flag is the
+    # compensating control for the ±1-period search — a wrong-lobe commit is
+    # magnitude-flat, so an on-axis VERIFY cannot contradict it and the journal
+    # and the receipt are where it has to be legible.
+    assert "alignment_objective=flat_sum_committed" in caplog.text
+    assert "seed_polarity=inverted" in caplog.text
+    assert "polarity_agrees_with_sum=true" in caplog.text
+    assert "left_anchor_lobe=true" in caplog.text
     evidence = _analysis_json(fakes.measure(c.program_for_phase(PHASE_MEASURE)))
     assert evidence["alignment_confidence_source"] == "gcc_phat_seed"
     assert evidence["alignment_seed_delay_us"] == 120.0
@@ -6870,6 +6882,10 @@ def test_measure_diag_logs_full_numbers_on_accept(caplog):
     assert evidence["anchor_delay_us"] == 145.0
     assert evidence["snap_delta_us"] == 5.0
     assert evidence["snap_found"] is True
+    assert evidence["alignment_objective"] == "flat_sum_committed"
+    assert evidence["seed_polarity"] == "inverted"
+    assert evidence["polarity_agrees_with_sum"] is True
+    assert evidence["left_anchor_lobe"] is True
 
 
 def test_measure_diag_logs_per_role_repeat_epsilon_ppm(caplog):

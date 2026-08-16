@@ -375,6 +375,12 @@ def _candidate_review_payload(
         "trims": trims,
         "delay": delay,
         "polarity": polarity_str,
+        # WHERE the polarity above came from (#2607 S3). The renderer needs it
+        # because one commitment — the declared design, taken when the capture
+        # cannot support a polarity decision — must not be worded as a measured
+        # result. Carried as the enum rather than pre-rendered prose, matching
+        # how ``linearization_outcome`` reaches the same renderer.
+        "alignment_objective": str(candidate.get("alignment_objective") or ""),
         "confidence": _finite(candidate.get("alignment_confidence")),
         "ripple_db": _finite(candidate.get("predicted_ripple_db")),
         "fingerprint": str(candidate.get("fingerprint") or ""),

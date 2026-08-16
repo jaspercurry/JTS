@@ -463,9 +463,12 @@ create a second retention system.
   conductor W1: the excitation-program schedule dataclasses + CHECK/MEASURE/
   VERIFY composers, and the pure `(program, capture) → ProgramAnalysis`
   locator / clock-drift ε / GCC-PHAT polarity-and-confidence seed +
-  anchor-primary delay pipeline: the comb lobe is the drift-corrected physical
-  peak gap, snapped to the nearest local GCC-PHAT peak within ±(period/6) at Fc,
-  with summed flatness demoted to evidence. VERIFY plays one mono summed
+  flat-sum (polarity, delay) selection: the drift-corrected physical peak gap,
+  snapped to the nearest local GCC-PHAT peak within ±(period/6) at Fc, is the
+  SEED pair, and `_select_alignment_pair` then commits whichever polarity and
+  delay sum flattest through the blend (issue #2598 — the canonical write-up is
+  [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md)
+  "(Polarity, delay) selection"). VERIFY plays one mono summed
   sweep, so none of MEASURE's repeat-pair drift checks exists there;
   `_verify_capture_integrity` gives it its own shaped record
   (`CaptureIntegrity`: heard / on-schedule / unclipped) in which a check that

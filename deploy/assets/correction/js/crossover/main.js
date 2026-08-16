@@ -229,9 +229,18 @@ function renderCandidateReview(review) {
     ]));
   }
   if (hasPolarity) {
-    const polarityText = review.polarity === 'invert'
-      ? 'Inverted (measured)'
-      : 'Kept as set';
+    // WHERE the polarity came from, not just what it is (#2607 S3). The
+    // measurement can decline to decide this: when the capture's SNR is below
+    // the law a polarity decision is held to, the flow commits the polarity the
+    // PRESET declares and says so. The page must not call that "measured" — it
+    // is the one word a household would read as "we checked".
+    const declaredByDesign =
+      review.alignment_objective === 'declared_committed_after_low_snr';
+    const polarityText = declaredByDesign
+      ? 'As designed — this measurement could not check it'
+      : review.polarity === 'invert'
+        ? 'Inverted (measured)'
+        : 'Kept as set';
     rows.push(el('div', {class: 'measurement-row'}, [
       el('div', {}, [
         el('p', {class: 'measurement-row__title', text: 'Polarity'}),

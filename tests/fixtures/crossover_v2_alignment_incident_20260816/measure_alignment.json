@@ -1,0 +1,56 @@
+{
+ "_provenance": {
+  "candidate_fingerprint": "85a83ace1eaefb92838161f3f0676752937764a19f316334dc3827c1fff36375",
+  "captured_on": "2026-08-15/16",
+  "derived_by": "one-off extraction from the sources below, read-only over ssh. No re-derivation script ships and none can: the sources are a LIVE box's runtime state, not a retained capture bundle, so a --check mode would be diffing against a file that keeps moving. These sha256s are the audit trail instead. See the test module docstring.",
+  "derived_on": "2026-08-16",
+  "incident": "crossover polarity/delay alignment commits a commanded null",
+  "issue": 2598,
+  "measure_session_id": "0768f64e9b10",
+  "sources": [
+   {
+    "path": "/var/lib/jasper/active_speaker/sessions/0768f64e9b10/evidence/v1/artifacts/crossover_v2/cap_5mdHqOAjTg_de3QtBIo11Q/candidate.json",
+    "sha256": "d0cfb99170e4dc92acab704694cb1baaa7874c09c480fc47c911defbfb454635"
+   },
+   {
+    "path": "/var/lib/jasper/xover-capture-dump/1786848233703139_measure_UMIK-2__2752_002b_.json",
+    "sha256": "f3d9b75f85531644bfe296dbf09777ec72381f5739c50a8ec16ac60b660c0825"
+   }
+  ],
+  "speaker": "jts3 (192.168.1.92)",
+  "speaker_build_sha": "58a8ac28b",
+  "verify_session_id": "bc56a92734b5"
+ },
+ "applied_candidate": {
+  "alignment_confidence": 0.7561,
+  "alignment_seed_delay_us": -291.996,
+  "alignment_seed_ripple_db": 14.1323,
+  "anchor_delay_us": 61.87,
+  "delay_role": "tweeter",
+  "delay_us": 95.997,
+  "flatness_improvement_db": 3.6732,
+  "polarity": "inverted",
+  "predicted_ripple_db": 14.1323,
+  "snap_delta_us": 34.128,
+  "snap_found": true,
+  "trim_band_average_db": {
+   "tweeter": -10.8564,
+   "woofer": 0.0
+  },
+  "trim_db": {
+   "tweeter": -10.8564,
+   "woofer": 0.0
+  }
+ },
+ "one_more_round": {
+  "alignment_confidence": 0.7325,
+  "alignment_refinement_delta_us": 356.143,
+  "alignment_seed_delay_us": -292.185,
+  "alignment_status": "ok",
+  "anchor_delay_us": 41.036,
+  "delay_us": 63.958,
+  "polarity": "inverted",
+  "predicted_ripple_db": 13.0222,
+  "snap_delta_us": 22.922
+ }
+}

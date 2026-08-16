@@ -482,9 +482,9 @@ def build_session_runs(
     branch sum and asks a *capture-quality* question ("how coherently can these
     two branches sum at all"), per ``CrossoverCandidate``'s own docstring — it
     would grade the microphone, not the tune. ``flatness_improvement_db`` is
-    ``anchor_ripple − selected_ripple``, evidence for a delay snap already
-    taken, so it is backward-looking and belongs nowhere near a
-    "what is left to win" input.
+    ``seed_ripple − committed_ripple``, what the (polarity, delay) objective
+    bought over the correlation seed on a decision already taken, so it is
+    backward-looking and belongs nowhere near a "what is left to win" input.
 
     Every grade here is **model-graded**: a fit residual is what the model
     predicts about itself. No VERIFY analysis survived in either bundle, so

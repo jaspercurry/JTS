@@ -446,9 +446,10 @@ class AttemptRecord:
         *grown* denominator only makes an improvement harder to win.
       predicted_remaining_improvement_db: what this attempt's fit says is still
         available to win. **Not** ``CrossoverCandidate.flatness_improvement_db``
-        — that one is ``anchor_ripple − selected_ripple``, evidence for a delay
-        snap already taken, and plugging it in here would read a backward-
-        looking number as a forward-looking one.
+        — that one is ``seed_ripple − committed_ripple``, what the (polarity,
+        delay) objective bought over the correlation seed on a decision already
+        taken, and plugging it in here would read a backward-looking number as
+        a forward-looking one.
       in_spec: the fit is already inside spec; nothing left to chase.
       curve_refs: opaque pointers to per-band curves for the report. The kernel
         never dereferences them — it performs no I/O.
