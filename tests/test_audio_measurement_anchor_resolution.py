@@ -589,7 +589,7 @@ def _check_screen(analysis, *, honour_ambiguity: bool = True) -> str | None:
     ))
 
 
-def _anchor_margin(program, capture, monkeypatch=None) -> float:
+def _anchor_margin(program, capture) -> float:
     """The winning anchor's lead over its runner-up, read off the event line
     rather than recomputed -- a second derivation of the margin here would keep
     passing while the real one drifted."""
