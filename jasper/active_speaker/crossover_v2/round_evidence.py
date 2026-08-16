@@ -594,7 +594,7 @@ def evaluate_round(
     round_cap: int = ROUND_SERIES_CAP,
     plateau_db: float = ITERATION_PLATEAU_DB,
 ) -> RoundEvaluation:
-    """Grade one round: the four questions, the three axes, then the table.
+    """Grade one round: the four questions, the four axes, then the table.
 
     The composition #2291 Phase 3b left for its caller, taken here once so
     every surface that grades a round grades it the same way. It decides

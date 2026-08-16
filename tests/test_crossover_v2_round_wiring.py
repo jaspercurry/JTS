@@ -2452,17 +2452,38 @@ def test_a_poisoned_objective_reads_as_absent_not_as_a_number():
     assert position.previous_objectives.ripple_db is None
 
 
-def test_the_reader_never_clamps_the_cap_itself():
+@pytest.mark.parametrize(
+    ("case", "receipt"),
+    [
+        ("objectives absent", {"round_ordinal": 9}),
+        # The branch EVERY real round after the first takes — a banked receipt
+        # always carries objectives beside its ordinal. The reader returns from
+        # two different places depending on this key, and a clamp added to only
+        # the second one is invisible to the case above. (Found by the #2602
+        # gate: a clamp mutation on this branch survived all 637 tests.)
+        (
+            "objectives present",
+            {
+                "round_ordinal": 9,
+                "objectives": {"tilt_db": 2.37, "ripple_db": 0.9},
+            },
+        ),
+    ],
+    ids=["objectives_absent", "objectives_present"],
+)
+def test_the_reader_never_clamps_the_cap_itself(case, receipt):
     """One enforcer. The headroom axis is where the cap lives.
 
     A reader that quietly clamped at 3 would be a second owner of the rule,
     and the two could disagree about what "the last round" means.
+
+    Both return paths are exercised, because "the reader does not clamp" is a
+    property of the FUNCTION and the function has two exits.
     """
 
-    position = coordinator.series_position_from_state(
-        {"round_receipt": {"round_ordinal": 9}}
-    )
-    assert position.ordinal == 10
+    position = coordinator.series_position_from_state({"round_receipt": receipt})
+
+    assert position.ordinal == 10, case
 
 
 def test_a_graded_round_banks_what_the_next_one_needs_to_read(

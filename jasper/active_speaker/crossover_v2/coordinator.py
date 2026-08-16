@@ -448,10 +448,11 @@ def _log_round(evaluation: RoundEvaluation, *, session_id: str) -> None:
         logger, "correction.crossover_v2_round_graded",
         session_id=session_id,
         adoption=evaluation.adoption.outcome.value,
-        # WHICH rule fired, beside what it decided (#2537). Three of the five
-        # rows restore and two keep, so ``adoption`` alone cannot say, and the
-        # reason travels from whichever axis spoke — the row is the stable
-        # thing to grep a journal for.
+        # WHICH rule fired, beside what it decided (#2537). Three of the six
+        # rows restore and three keep — and since #2602 two of those three
+        # keeping rows share one outcome — so ``adoption`` alone cannot say,
+        # and the reason travels from whichever axis spoke. The row is the
+        # stable thing to grep a journal for.
         row=evaluation.adoption.row,
         reason=evaluation.adoption.reason,
         capture=record["verdicts"]["capture"]["status"],
@@ -672,11 +673,29 @@ def _write_round_receipt(
     speaker state, and a receipt that could be amended would not be a receipt.
 
     **Fail-soft, deliberately and in both directions.** A receipt that could not
-    be built or written is a journal line and nothing more; it never reverses a
-    verdict, never refuses a capture, and never crashes the capture path. The
-    verdict is what protects the household's speaker; the receipt is what lets
-    someone reconstruct why afterwards, and losing the second must not cost the
-    first.
+    be built or written never reverses a verdict, never refuses a capture, and
+    never crashes the capture path. The verdict is what protects the
+    household's speaker; the receipt is what lets someone reconstruct why
+    afterwards, and losing the second must not cost the first.
+
+    **Since #2602 it is no longer "a journal line and nothing more", and the
+    difference is worth stating exactly.** This identity is also the series'
+    only memory: :func:`series_position_from_state` reads ``round_ordinal`` and
+    ``objectives`` back off it. So a receipt write that fails *persistently*
+    pins the ordinal at 1 and leaves the next round with no previous objectives
+    — which disables both the round-cap stop and the plateau stop, and the
+    series then ends only when the measurement itself says "flat enough" or
+    "nothing gradable".
+
+    That is bounded rather than dangerous, and the bound is structural: the
+    fourth axis can only ever KEEP (see :func:`~.verification.decide_adoption`),
+    so the worst case is a household repeatedly invited to measure again — and
+    each of those rounds needs a human to walk a cloud, so nothing runs away on
+    its own. It is still a stop condition riding a path designed to be lossy.
+    Banking the ordinal outside the fail-soft write is
+    `#2609 <https://github.com/jaspercurry/JTS/issues/2609>`_; a single failed
+    write is already harmless, because the identity the host carries forward is
+    the previous round's rather than nothing.
     """
     seam = ports.publish_round_receipt
     if seam is None:
@@ -827,8 +846,19 @@ def series_position_from_state(raw: Any) -> SeriesPosition:
     history is gone, and the two possible defaults are not symmetric: starting
     over offers a household up to three more rounds it might not need, while
     assuming the cap was reached would silently refuse to iterate at all — the
-    exact behaviour #2602 exists to remove, restored by a bad byte on disk. The
-    cap still bounds what follows either way.
+    exact behaviour #2602 exists to remove, restored by a bad byte on disk.
+
+    **What that costs, stated rather than glossed.** A ONE-OFF unreadable
+    receipt is cheap: the host carries the previous round's identity forward, so
+    the next round resumes the count. But if the receipt write fails
+    *persistently* — see :func:`_write_round_receipt`'s own note — every round
+    reads as round 1, and the cap never bites. So the cap does NOT bound the
+    series unconditionally; it bounds it whenever the series can remember
+    itself, which is every path except a durably broken receipt write. The
+    remaining bound in that case is structural rather than counted: the fourth
+    axis can only KEEP, and every round needs a human-walked cloud.
+    `#2609 <https://github.com/jaspercurry/JTS/issues/2609>`_ is the fix that
+    would make the cap unconditional.
 
     A previous ordinal at or past the cap still returns ``ordinal + 1``, not a
     clamp: the headroom axis is the one place the cap is enforced, and a reader

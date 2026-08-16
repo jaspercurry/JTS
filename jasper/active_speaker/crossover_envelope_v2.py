@@ -2498,10 +2498,13 @@ def _envelope(
         "progress": _progress(active_step),
         "applied": _applied_chip(status),
         # WHICH adoption row the last graded round fired, for a driver chaining
-        # rounds (#2537). Three of the five rows restore and two keep, so the
+        # rounds (#2537). Three of the six rows restore and three keep, so the
         # outcome alone cannot say which rule applied, and the reason travels
         # from whichever axis decided — the row is the stable thing to branch
-        # on. ``None`` until a round has been graded.
+        # on. Since #2602 that is load-bearing on this very screen rather than
+        # only for a driver: rows 2 and 6 share the ``keep_for_iteration``
+        # outcome and carry opposite news, so the copy keys on the row.
+        # ``None`` until a round has been graded.
         #
         # Machine data on a household surface, deliberately: the alternative is
         # a series driver fetching an evidence-bundle artifact to learn what the

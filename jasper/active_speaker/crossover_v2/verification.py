@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Four verification verdicts, three adoption axes, and the table (#2291, #2537).
+"""Four verification verdicts, four adoption axes, and the table (#2291, #2537, #2602).
 
 **The defect this module exists to make impossible.** On 2026-08-10 a jts3
 round reported VERIFY tracking the model to within 1.291 dB (tolerance
@@ -31,13 +31,18 @@ capture, could not compare it to a before, carried a boost, and was therefore
 reverted to a state nobody had measured at all. The owner's ruling that day:
 *we're looking for the least bad MEASURED tune. reverting to an unknown
 measured state seems dumb… the first application is not the end point, it is
-just the start.* So the four verdicts now compose into **three adoption axes**
+just the start.* So the four verdicts now compose into **four adoption axes**
 — :func:`evaluate_evidence_trust`, :func:`evaluate_applied_safety`,
-:func:`evaluate_round_quality` — and :func:`decide_adoption` selects one of
-five rows from those. Keeping an imperfect measured result and handing its
+:func:`evaluate_round_quality`, and (since #2602)
+:func:`evaluate_iteration_headroom` — and :func:`decide_adoption` selects one of
+six rows from those. Keeping an imperfect measured result and handing its
 misses forward is a first-class outcome
 (:attr:`~.contracts.AdoptionOutcome.KEEP_FOR_ITERATION`); the hard stops are
 reserved for the safety class and for evidence that does not exist.
+
+#2602's axis is the newest and the narrowest: it decides only whether a round
+that PASSED ends the series or runs another, so it can keep a graph on and it
+can never take one off — *in-tolerance is not done*.
 
 **This module invents no DSP and owns no threshold.** Every number it
 reports is lifted from a shipped primitive:
@@ -1123,6 +1128,24 @@ class FlatnessObjectives:
     inventing 0 dB would read as perfect alignment. The same unknown-vs-zero
     rule :func:`~jasper.active_speaker.flat_spec.spec_band_tilt` already
     follows for the band levels it skips.
+
+    **Residual assumption, stated because the plateau stop rests on it:
+    frame-invariance is necessary for cross-round differencing but not
+    sufficient.** Both numbers are invariant to the reference *level*, and
+    neither is invariant to which BINS were graded. The session's trusted floor
+    sets each band's ``graded_lo_hz``, so a round whose gate came out shorter
+    re-scopes the lowest band and moves both objectives with no acoustic change
+    at all — the same mechanism
+    :func:`~jasper.active_speaker.crossover_v2_flow.cloud_trusted_floor_hz`
+    documents for the 1-4 kHz band across 3/5/7/10 ms gates. Measured on an
+    UNCHANGED curve, a 7↔10 ms gate change alone produces ±0.518 dB of spurious
+    movement here, which is 2.1× :data:`~.round_evidence.ITERATION_PLATEAU_DB`
+    — enough to mask a plateau or invent one. Bounded, because a wrong answer
+    here can only add or withhold a round and never take a graph off a speaker;
+    the fix is to bank ``trusted_floor_hz`` beside these numbers so a later
+    round can refuse a cross-floor comparison outright, filed as
+    `#2609 <https://github.com/jaspercurry/JTS/issues/2609>`_ and deliberately
+    not done here.
     """
 
     #: Largest level step between two graded bands — the owner's 2.37 dB.

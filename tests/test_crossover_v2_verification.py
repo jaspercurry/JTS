@@ -1964,5 +1964,5 @@ def test_the_evaluator_is_pure():
         entry_baseline=baseline, post=post, margin_db=MARGIN_DB
     )
     assert first == second
-    assert evaluate_spec(_headroom_report()) == evaluate_spec(_headroom_report())
+    assert evaluate_spec(_report()) == evaluate_spec(_report())
     assert _adopt() == _adopt()
