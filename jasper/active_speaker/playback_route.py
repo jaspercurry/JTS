@@ -245,8 +245,10 @@ def resolve_live_active_endpoint(
         named = device.strip()
         if named in OUTPUTD_LEGAL_ENDPOINT_DEVICES:
             return named, LOADED_GRAPH_SOURCE
-        # The graph names a sink that is not one of the active lane's two
-        # transports — a stale stereo lane, a lab PCM, a pipe. Declining it is
+        # The graph names a sink that is not the active lane's transport (ONE
+        # since #2285 P2 retired the snd-aloop ACTIVE endpoint; the retired name
+        # now falls here like any other stranger) — a stale stereo lane, a lab
+        # PCM, a pipe, or that retired lane. Declining it is
         # correct (see above), but the moment of observation should be visible:
         # the doctor's coupling check will report the incoherence later, and a
         # journal line here is what says the endpoint derivation SAW it and

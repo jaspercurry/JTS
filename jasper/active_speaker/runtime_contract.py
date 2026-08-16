@@ -244,10 +244,21 @@ CONTRACT_UNKNOWN_OR_INVALID = "unknown_or_invalid"
 # deleted its PCM definitions; this change deletes its MEMBERSHIP below, so no
 # graph naming it can be a legal outputd endpoint any more.
 #
-# The name survives deliberately, because rejecting a thing requires naming it:
-# a graph persisted before the retirement, or a stale hand-rolled asoundrc, can
-# still spell this device, and the guards that refuse it read this constant
-# rather than an inline literal. A negative guard is the only reader left.
+# The name survives for the TESTS, and that is the whole reason — measured, not
+# assumed. Production readers of this constant: ZERO (the only other mention in
+# `jasper/` is the comment below). The refusal is a SET-COMPLEMENT —
+# `resolve_live_active_endpoint` asks `named in OUTPUTD_LEGAL_ENDPOINT_DEVICES`
+# and declines everything else — so no guard names this device at all; an
+# earlier version of this comment claimed one did, which was the opposite of
+# what the code does.
+#
+# What still reads it is the suite: 39 references across five modules pin that a
+# graph persisted before the retirement, or a stale hand-rolled asoundrc, is
+# REFUSED by name. Deleting the constant would make those tests spell the retired
+# device as a bare literal, which is strictly worse than one named constant.
+# Deleting it would also not remove the string from the tree: the sibling
+# `jasper.camilla_config_contract.ACTIVE_OUTPUTD_PLAYBACK_DEVICE` holds the same
+# literal and does have live production readers.
 OUTPUTD_ACTIVE_PLAYBACK_DEVICE = "outputd_active_content_playback"
 # Every playback device a legal outputd ENDPOINT graph may name. ONE member:
 # the ACTIVE RING is now the only transport carrying POST-crossover per-driver
