@@ -3219,20 +3219,37 @@ def _outputd_transport_health(
     # have FAILED every armed composite box in the fleet against a name nothing
     # can produce.
     #
-    # Under the ring the check is ASSERT-ABSENT rather than compare-to-a-name:
-    # there is no correct value, so any value is the fault. A name here means
-    # something still believes a snd-aloop content lane is in play.
+    # Under the ring the check therefore stops comparing to a name and instead
+    # REJECTS THE ONE NAME THAT MEANS SOMETHING IS STALE — the retired snd-aloop
+    # ACTIVE capture lane. Not "any value is the fault": under the ring the
+    # declaration is inert (nothing opens it), and the values a healthy box
+    # actually declares differ by shape rather than by health —
+    #
+    #   * roleful (composite, or active single-ALSA): the reconciler writes
+    #     explicit-EMPTY (`jasper-audio-hardware-reconcile`), and outputd keeps
+    #     it, since `env_str` defaults only when a variable is UNSET
+    #     (`rust/jasper-env/src/lib.rs`);
+    #   * flat/passive single-ALSA — the campaign's most common ring box: the
+    #     same reconciler writes the surviving PASSIVE lane, `jasper-outputd.service`
+    #     carries it as a unit default, and `Config::from_env`'s `SingleAlsa` arm
+    #     defaults to it too. That name is a live asoundrc declaration
+    #     (`deploy/alsa/asoundrc.jasper`) which the ring simply never opens.
+    #
+    # Failing on any value would have failed every flat ring box in the fleet,
+    # which is the same defect in the opposite direction from the sink-keyed
+    # expectation this replaced.
     live_content_pcm = str(content.get("pcm") or "")
     if actual_content_source == "shm_ring":
-        if live_content_pcm:
+        if live_content_pcm == _OUTPUTD_EXPECTED_ACTIVE_CONTENT_PCM:
             return CheckResult(
                 "jasper-outputd",
                 "fail",
                 f"content.pcm={live_content_pcm!r} but content.source="
-                f"{actual_content_source!r}: a ring-coupled outputd reads the "
-                "ring FILE and opens NO content PCM, so it must declare none. "
-                "A name here means a stale snd-aloop content lane survives in "
-                "outputd.env — run: sudo systemctl start "
+                f"{actual_content_source!r}: that is the snd-aloop ACTIVE "
+                "capture lane, which #2534 deleted — no box can open it and no "
+                "reconcile writes it. A ring-coupled outputd reads the ring "
+                "FILE and opens no content PCM at all, so this is a stale value "
+                "surviving in outputd.env — run: sudo systemctl start "
                 "jasper-audio-hardware-reconcile",
             )
     elif live_content_pcm != expected_content_pcm:
@@ -3312,10 +3329,12 @@ def check_outputd_service() -> CheckResult:
     active_channels = _outputd_active_channels_from_env(outputd_env)
     active_single_alsa = sink_mode == "single_alsa" and active_channels is not None
     # The DIRECT-bridge expectation only. A ring-coupled box is handled by the
-    # assert-absent branch in the helper, which reads content.source — the
-    # bridge, not the sink, is what decides whether a content PCM exists.
+    # stale-name branch in the helper, which reads content.source — the bridge,
+    # not the sink, is what decides whether a content PCM is opened at all.
     # sink_mode no longer selects a content PCM: the ACTIVE spelling it used to
-    # select was the deleted snd-aloop lane.
+    # select was the deleted snd-aloop lane. Composite is not a case here
+    # either — a composite sink on the DIRECT bridge refuses at parse
+    # (`Config::from_env`, EX_CONFIG) rather than reaching this comparison.
     expected_content_pcm = _OUTPUTD_EXPECTED_CONTENT_PCM
     expected_dac_pcm = (
         _OUTPUTD_EXPECTED_DUAL_DAC_PCM
