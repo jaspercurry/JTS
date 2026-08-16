@@ -46,6 +46,24 @@ sweep sitting untouched in the capture.
 kept permanently in the suite: it recomputes the offset the pre-#2093 way and
 asserts that timeline DOES fail, so the repair tests can never pass vacuously
 on a fixture that quietly stopped reproducing the bug.
+
+**Issue #2644 is the same defect one layer down, and the last section of this
+file owns it.** #2093 fixed WHICH occurrence a located arrival is taken to be;
+it left untouched the question of whether the locate found the right occurrence
+in the first place, and left the arbitration itself unguarded in one of its two
+shift directions. On 2026-08-16 a CHECK capture hit both gaps at once: the
+quiet ``pilot_woofer_lo`` scored 0.3932 against a 0.4176 gate on a FULL-BAND
+correlation whose denominator the room's out-of-band noise dominated -- its
+IN-BAND SNR, 27.6 dB, was BETTER than the 26.9 dB of the round that had passed
+two hours earlier on the same unchanged speaker. The anchor snapped to
+``pilot_woofer_hi``; the arbitration that exists to catch exactly that lost by
+**0.0034** (0.9007 vs 0.8973) because CHECK's witness has a same-shape twin one
+gap LATER; every per-driver window slid one pilot spacing; and the verdict --
+a HARD STOP with no retry -- told the household to check its speaker wiring.
+Those captures are on a lab Pi this checkout cannot reach, so the last section
+reconstructs the decision geometry the same way the #2093 fixtures above do,
+and pins BOTH production verdicts: the shipped analyzer's
+``channel_map_mismatch`` on a 0.0006 anchor gap, and this branch's.
 """
 from __future__ import annotations
 
@@ -56,6 +74,7 @@ import pytest
 from scipy.signal import fftconvolve, resample_poly
 
 from jasper.audio_measurement.program import (
+    AMBIENT_SEGMENT_ID,
     KIND_SUMMED_SWEEP,
     STIMULUS_KINDS,
     RoleBand,
@@ -67,10 +86,13 @@ from jasper.audio_measurement.program import (
 )
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program_analysis import (
+    ANCHOR_DISCRIMINATION_MARGIN,
+    CHANNEL_MAP_TARGET_RISE_DB,
     INTEGRITY_CHECK_SWEEP_HEARD,
     LOCATOR_RATE_HZ,
     SEGMENT_SEARCH_S,
     SWEEP_LOCATE_CONFIDENCE_FLOOR,
+    _band_rms_dbfs,
     _earliest_strong_peak,
     _global_offset,
     _locate_segments,
@@ -204,6 +226,23 @@ def _witness_chosen_for(program) -> str:
 def _sweep_confidence(analysis) -> float:
     return min(loc.confidence for loc in analysis.locations
                if loc.kind == KIND_SUMMED_SWEEP)
+
+
+#: Every program shape that ships, in the one place both witness-confusability
+#: tests read it from -- the two directions of one claim must be asked of the
+#: same programs or the pair proves nothing about either.
+_SHIPPING_PROGRAMS = {
+    "check": lambda: build_check_program(
+        _check_roles(), ambient_s=1.0, pilot_duration_s=0.5
+    ),
+    "measure": lambda: build_measure_program(
+        {"woofer": -11.0, "tweeter": -13.0}, _check_roles(),
+        sweep_durations={"woofer": 1.0, "tweeter": 0.8},
+        leading_pilot_gains_db=(-22.0, -12.0), pilot_duration_s=0.5,
+        courtesy_prelude=True,
+    ),
+    "verify": _verify_program,
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -376,19 +415,12 @@ def test_chosen_witness_is_never_confusable_with_itself_under_the_shift(phase):
     composer's ordering and this selection rule, so it is asserted here
     directly on the witness actually chosen -- for every shipping program --
     instead of trusted. Change either side and this fails.
+
+    It is ONE of the two shift directions. The other -- one gap LATER, where
+    CHECK's witness does have a twin -- is issue #2644's, and
+    ``test_the_witness_is_confusable_one_gap_LATER_and_only_on_check`` owns it.
     """
-    program = {
-        "check": lambda: build_check_program(
-            _check_roles(), ambient_s=1.0, pilot_duration_s=0.5
-        ),
-        "measure": lambda: build_measure_program(
-            {"woofer": -11.0, "tweeter": -13.0}, _check_roles(),
-            sweep_durations={"woofer": 1.0, "tweeter": 0.8},
-            leading_pilot_gains_db=(-22.0, -12.0), pilot_duration_s=0.5,
-            courtesy_prelude=True,
-        ),
-        "verify": _verify_program,
-    }[phase]()
+    program = _SHIPPING_PROGRAMS[phase]()
 
     stimuli = [s for s in program.segments if s.kind in STIMULUS_KINDS]
     first = stimuli[0]
@@ -462,3 +494,418 @@ def test_no_anchor_event_when_there_is_nothing_to_arbitrate(caplog):
     with caplog.at_level(logging.INFO, logger=_ANALYSIS_LOGGER):
         _global_offset(prog, _pristine(prog), SR)
     assert "event=program_analysis.anchor" not in caplog.text
+
+
+# --------------------------------------------------------------------------- #
+# issue #2644 -- the 2026-08-16 CHECK capture that was called a wiring fault
+#
+# Two defects, one capture. The reconstruction below is synthetic for the same
+# reason every fixture above it is (``tests/`` carries no binary fixtures, and
+# the retained WAVs sit on a lab Pi this checkout has no key for), and it is
+# built to reproduce the two things the session records name: the SHIPPED
+# analyzer's ``channel_map_mismatch`` verdict, and the coin-flip anchor gap
+# underneath it. Where it is deliberately NOT faithful is stated on each
+# helper.
+# --------------------------------------------------------------------------- #
+
+
+def _incident_program():
+    """The 2026-08-16 CHECK program shape: two roles, the session's own per-role
+    bases (-12.0 woofer / -45.01 tweeter), full-length pilots and gaps so the
+    pilot spacing is the session's 1.310 s.
+
+    The ambient window is 2 s rather than the shipped 12 s -- it feeds the
+    channel-map rise test and the gain solve, both of which only need a floor
+    estimate, and 10 s of silence per fixture capture is runtime this suite
+    does not need to spend. ``build_check_program`` clamps a role band up to
+    ``MEASURE_SWEEP_F_LO_HZ``, so the woofer's declared 60 Hz becomes a 150 Hz
+    pilot band; that clamp is production behaviour and the session's own
+    program carried it too.
+    """
+    return build_check_program(
+        [
+            RoleBand("woofer", 0, FrequencyBand(60.0, 4000.0)),
+            RoleBand("tweeter", 1, FrequencyBand(1600.0, 18000.0)),
+        ],
+        ambient_s=2.0,
+        role_base_peak_dbfs={"woofer": -12.0, "tweeter": -45.01},
+    )
+
+
+def _incident_room(program, *, tone_rms: float, seed: int = 7) -> np.ndarray:
+    """A CHECK capture through two band-passed drivers, in a room with a floor.
+
+    ``tone_rms`` is a 20-100 Hz rumble -- OUTSIDE both pilots' declared bands,
+    so it is invisible to every band-limited judgment this module makes and can
+    only reach a verdict through a FULL-BAND correlation. That is the whole
+    mechanism of #2644, isolated: turn it up and the quiet pilot's full-band
+    score collapses while its in-band SNR does not move.
+    """
+    pcm = render_program_pcm(program)
+    irs = [
+        _band_impulse(180, 150.0, 4000.0, 1.0),
+        _band_impulse(150, 1600.0, 18000.0, 1.0),
+    ]
+    mono = np.zeros(pcm.shape[0])
+    for ch in range(pcm.shape[1]):
+        mono += fftconvolve(pcm[:, ch], irs[ch])[: pcm.shape[0]]
+    cap = np.concatenate([np.zeros(GLOBAL_OFFSET), mono, np.zeros(20_000)])
+    cap = cap + _band_noise(cap.size, 20.0, 100.0, tone_rms, seed)
+    return cap + _band_noise(cap.size, 20.0, 20_000.0, 2e-4, seed + 1)
+
+
+#: The rumble level at which the reconstruction reproduces the incident. Below
+#: ~0.10 the full-band gate still finds the quiet pilot; the value is a plateau
+#: (0.10 through 0.25 all mis-lock), not an edge fitted to one number.
+INCIDENT_TONE_RMS = 0.13
+#: The same room without the rumble -- the "two hours earlier" round that passed.
+QUIET_TONE_RMS = 3e-3
+
+
+def _full_band_locate(capture, stimulus, *, frac=0.6, band_hz=None, sample_rate=None):
+    """``_earliest_strong_peak`` as it scored before #2644: band argument dropped."""
+    return _earliest_strong_peak(capture, stimulus, frac=frac)
+
+
+def _check_screen(analysis, *, honour_ambiguity: bool = True) -> str | None:
+    """CHECK's real ladder over a real analysis -- the household-facing answer.
+
+    ``honour_ambiguity=False`` feeds the ladder the pre-#2644 fact set (there
+    was no such field), so one call site can ask both "what did the shipped
+    build say" and "what does this one say" without a second copy of the ladder.
+    """
+    from jasper.active_speaker.crossover_v2 import capture_dispatch as _dispatch
+    from jasper.active_speaker.crossover_v2_flow import _stimulus_locate_ok
+
+    plan = analysis.gain_plan
+    return _dispatch.check_screens(_dispatch.CheckScreens(
+        stimulus_located=_stimulus_locate_ok(analysis),
+        anchor_ambiguous=analysis.anchor_ambiguous and honour_ambiguity,
+        channel_map_ok=analysis.channel_map_ok,
+        pilot_snr_ok=analysis.pilot_snr_ok,
+        linearity_ok=analysis.linearity_ok,
+        gain_plan_present=plan is not None,
+        gain_plan_snr_floor_ok=bool(plan.snr_floor_ok) if plan is not None else False,
+    ))
+
+
+def _anchor_margin(program, capture, monkeypatch=None) -> float:
+    """The winning anchor's lead over its runner-up, read off the event line
+    rather than recomputed -- a second derivation of the margin here would keep
+    passing while the real one drifted."""
+    records: list[logging.LogRecord] = []
+    handler = logging.Handler()
+    handler.emit = records.append
+    log = logging.getLogger(_ANALYSIS_LOGGER)
+    log.addHandler(handler)
+    level = log.level
+    log.setLevel(logging.INFO)
+    try:
+        _global_offset(program, capture, SR)
+    finally:
+        log.removeHandler(handler)
+        log.setLevel(level)
+    line = next(r.getMessage() for r in records
+                if "event=program_analysis.anchor" in r.getMessage())
+    tokens = dict(tok.split("=", 1) for tok in line.split() if "=" in tok)
+    return float(tokens["confidence"]) - float(tokens["runner_up"])
+
+
+def test_the_witness_is_confusable_one_gap_LATER_and_only_on_check():
+    """The direction ``test_chosen_witness_is_never_confusable_with_itself...``
+    does not assert, and the reason the near-tie guard has to exist.
+
+    That test checks the rival window landing one gap BEFORE the witness --
+    the geometry when the coarse locate was RIGHT. When the coarse locate is
+    itself one spacing LATE (the #2644 shape) both hypotheses shift the OTHER
+    way, and CHECK's chosen witness ``pilot_tweeter_lo`` has its own twin
+    ``pilot_tweeter_hi`` sitting one gap after it -- inside
+    ``SEGMENT_SEARCH_S``, so both readings land the witness on a real pilot and
+    score alike. No witness CHOICE fixes that: the only non-sibling stimuli
+    CHECK owns are the other role's pair, and both members are twins.
+
+    Asserted as an exact map rather than "at least CHECK", so gaining the
+    exposure on MEASURE or VERIFY -- or losing it on CHECK, which would make
+    the guard dead code -- both fail here.
+    """
+    exposed_later = {}
+    for phase, build in _SHIPPING_PROGRAMS.items():
+        program = build()
+        stimuli = [s for s in program.segments if s.kind in STIMULUS_KINDS]
+        first = stimuli[0]
+        shape = _stimulus_shape(first)
+        candidates = [s for s in stimuli if _stimulus_shape(s) == shape]
+        witness = program.segment(_witness_chosen_for(program))
+        search = SEGMENT_SEARCH_S * SR
+        shifts = {s.start_sample - first.start_sample for s in candidates} - {0}
+        twins = [s.start_sample for s in stimuli
+                 if _stimulus_shape(s) == _stimulus_shape(witness)]
+        # The direction the witness ORDERING already buys, restated here so the
+        # two halves of the claim sit together.
+        for shift in shifts:
+            for twin in twins:
+                assert abs((witness.start_sample - shift) - twin) > search, (
+                    f"{phase}: the EARLIER direction regressed"
+                )
+        exposed_later[phase] = any(
+            abs((witness.start_sample + shift) - twin) <= search
+            for shift in shifts for twin in twins
+        )
+    assert exposed_later == {"check": True, "measure": False, "verify": False}
+
+
+def test_the_incident_capture_really_mis_locks_the_full_band_gate():
+    """The precondition every #2644 test below rests on, kept permanently:
+    scoring FULL BAND lands the anchor on the loud pilot, scoring in the
+    pilot's OWN band lands it on the quiet one -- on the same samples.
+
+    The two locates are the only difference. If this fixture ever stops
+    reproducing the mis-lock, this fails and the repair tests below stop being
+    able to pass vacuously.
+    """
+    prog = _incident_program()
+    cap = _incident_room(prog, tone_rms=INCIDENT_TONE_RMS)
+    stim = np.asarray(segment_stimulus(prog.segment("pilot_woofer_lo")), np.float64)
+    down = max(1, int(round(SR / LOCATOR_RATE_HZ)))
+    cap_lo = resample_poly(cap, 1, down)
+    stim_lo = resample_poly(stim, 1, down)
+
+    true_lo = GLOBAL_OFFSET + prog.segment("pilot_woofer_lo").start_sample
+    spacing = (prog.segment("pilot_woofer_hi").start_sample
+               - prog.segment("pilot_woofer_lo").start_sample)
+    # The session's own 1.310 s spacing, which is what the timeline slid by.
+    assert abs(spacing / SR - 1.310) < 0.001
+
+    full_band = _earliest_strong_peak(cap_lo, stim_lo) * down
+    in_band = _earliest_strong_peak(
+        cap_lo, stim_lo,
+        band_hz=(prog.segment("pilot_woofer_lo").f1_hz,
+                 prog.segment("pilot_woofer_lo").f2_hz),
+        sample_rate=SR // down,
+    ) * down
+    assert abs(full_band - (true_lo + spacing)) < 0.030 * SR, "no mis-lock to repair"
+    assert abs(in_band - true_lo) < 0.030 * SR
+
+
+def test_the_quiet_pilots_in_band_snr_never_moved():
+    """The falsifying fact, and the reason a full-band score is the wrong
+    instrument: the noisy capture's quiet pilot is as far above the room IN ITS
+    OWN BAND as the accepted round's is. The session measured 27.6 dB against
+    26.9 dB and refused the better one.
+    """
+    prog = _incident_program()
+    seg = prog.segment("pilot_woofer_lo")
+    ambient = prog.segment(AMBIENT_SEGMENT_ID)
+    snrs = []
+    for tone in (INCIDENT_TONE_RMS, QUIET_TONE_RMS):
+        cap = _incident_room(prog, tone_rms=tone)
+        pilot = cap[GLOBAL_OFFSET + seg.start_sample:
+                    GLOBAL_OFFSET + seg.start_sample + seg.n_samples]
+        room = cap[GLOBAL_OFFSET + ambient.start_sample:
+                   GLOBAL_OFFSET + ambient.start_sample + ambient.n_samples]
+        snrs.append(
+            _band_rms_dbfs(pilot, SR, seg.f1_hz, seg.f2_hz)
+            - _band_rms_dbfs(room, SR, seg.f1_hz, seg.f2_hz)
+        )
+    noisy, quiet = snrs
+    assert noisy > 25.0
+    assert abs(noisy - quiet) < 1.0, (
+        f"the rumble must be out-of-band: {noisy:.1f} vs {quiet:.1f} dB"
+    )
+
+
+def test_the_shipped_analyzer_called_this_capture_a_wiring_fault(monkeypatch):
+    """The incident, end to end: with the pre-#2644 full-band locate AND the
+    pre-#2644 fact set, CHECK answers ``channel_map_mismatch`` -- a hard stop
+    with no retry whose sentence tells the household to check its wiring --
+    and the anchor it rests on is a coin flip.
+
+    This is the mutation guard for the whole section. Revert either half of the
+    fix and the tests below stop describing a repair; this one keeps describing
+    the bug, so the pair cannot both stay green.
+    """
+    monkeypatch.setattr(
+        "jasper.audio_measurement.program_analysis._earliest_strong_peak",
+        _full_band_locate,
+    )
+    prog = _incident_program()
+    cap = _incident_room(prog, tone_rms=INCIDENT_TONE_RMS)
+
+    margin = _anchor_margin(prog, cap)
+    assert margin < ANCHOR_DISCRIMINATION_MARGIN
+    assert margin < 0.01, f"the coin flip is the point: margin {margin:.4f}"
+
+    analysis = analyze_program_capture(prog, cap, SR)
+    assert analysis.channel_map_ok is False
+    assert _check_screen(analysis, honour_ambiguity=False) == "channel_map_mismatch"
+    # ...and the numbers that verdict rested on are physically impossible for
+    # ANY wiring: the program commanded +10 dB between the two pilots.
+    woofer = next(p for p in analysis.pilots if p.role == "woofer")
+    assert woofer.programmed_delta_db == pytest.approx(10.0)
+    assert woofer.captured_delta_db < -50.0
+
+
+def test_the_near_tie_guard_alone_turns_that_verdict_into_a_retake(monkeypatch):
+    """Half the fix, in isolation. Keep the pre-#2644 locate, so the anchor is
+    still wrong and the channel map still reads False -- the guard alone must
+    already make the wiring copy unreachable, because a capture the analyzer
+    could not attribute is not evidence about how a speaker is wired.
+    """
+    monkeypatch.setattr(
+        "jasper.audio_measurement.program_analysis._earliest_strong_peak",
+        _full_band_locate,
+    )
+    prog = _incident_program()
+    analysis = analyze_program_capture(
+        prog, _incident_room(prog, tone_rms=INCIDENT_TONE_RMS), SR
+    )
+    assert analysis.anchor_ambiguous is True
+    assert analysis.channel_map_ok is False, "the guard must not repair the map"
+    assert _check_screen(analysis) == "anchor_ambiguous"
+
+
+def test_the_band_limited_locate_puts_the_whole_timeline_back():
+    """The other half, and the flip proof restated: on the SAME samples, with
+    nothing monkeypatched, the anchor is the quiet pilot, the two hypotheses
+    are two orders of magnitude apart, and the channel map -- the thing the
+    household was refused on -- passes.
+    """
+    prog = _incident_program()
+    cap = _incident_room(prog, tone_rms=INCIDENT_TONE_RMS)
+
+    _offset, anchor, _stimuli, ambiguous = _global_offset(prog, cap, SR)
+    assert anchor.segment_id == "pilot_woofer_lo"
+    assert ambiguous is False
+    assert _anchor_margin(prog, cap) > 0.5
+
+    analysis = analyze_program_capture(prog, cap, SR)
+    assert analysis.channel_map_ok is True
+    assert analysis.anchor_ambiguous is False
+    # Every per-driver window is back where its driver actually played.
+    for pilot in analysis.pilots:
+        assert pilot.captured_delta_db == pytest.approx(10.0, abs=0.5)
+    # The room in this reconstruction is genuinely loud, so the gain solve may
+    # still refuse it -- as a RETRIABLE room finding. What must be gone is the
+    # wiring instruction, which is the claim this issue is about; asserting an
+    # acceptance here would claim more than the original session ever reached
+    # (its ladder stopped at the channel-map rung).
+    screen = _check_screen(analysis)
+    assert screen != "channel_map_mismatch"
+    if screen is not None:
+        from jasper.active_speaker.crossover_v2 import vocabulary as _vocab
+        code = _vocab.SCREEN_KIND_REASONS[screen]
+        assert code not in _vocab.NON_RETRIABLE_CODES
+
+
+def test_the_quiet_room_sibling_is_untouched_by_both_halves():
+    """The accepted round, before and after. A capture the shipped build read
+    correctly must read identically here -- same anchor, same wide margin, same
+    acceptance -- or the fix bought its repair with a regression.
+    """
+    prog = _incident_program()
+    cap = _incident_room(prog, tone_rms=QUIET_TONE_RMS)
+
+    _offset, anchor, _stimuli, ambiguous = _global_offset(prog, cap, SR)
+    assert anchor.segment_id == "pilot_woofer_lo"
+    assert ambiguous is False
+    assert _anchor_margin(prog, cap) > 0.5
+
+    analysis = analyze_program_capture(prog, cap, SR)
+    assert analysis.channel_map_ok is True
+    assert _check_screen(analysis) is None
+
+
+@pytest.mark.parametrize("miswired", [False, True])
+def test_a_genuinely_miswired_capture_still_gets_the_wiring_verdict(miswired):
+    """The regression the guard must not buy its repair with, plus its control.
+
+    A quiet room, a confidently-resolved anchor, and one lead landed on the
+    wrong terminal for real: the tweeter's channel drives the woofer's cone, so
+    the tweeter's own band never rises. CHECK must still reach the hard stop
+    and still tell the household to check the wiring -- the ambiguity rung sits
+    ABOVE that one, so an over-eager guard would swallow a real fault, and this
+    is what would catch it.
+
+    ONE lead rather than both, deliberately. Cross both and the woofer's own
+    pilots -- the timeline anchor -- go inaudible too, and production answers
+    the honest ``locate_failed`` instead; there would be no wiring verdict left
+    to regress. Crossing one leaves the anchor pristine and puts the fault
+    exactly where ``_channel_map_ok`` can see it. The arm that fires is
+    asserted below by name so this cannot quietly start passing for another
+    reason.
+
+    ``miswired=False`` is the no-op control on the identical fixture: same
+    program, same room, same noise seed, leads correct, accepted. Without it a
+    fixture that refused everything would read as a pass.
+    """
+    program = build_check_program(
+        [
+            RoleBand("woofer", 0, FrequencyBand(60.0, 1000.0)),
+            RoleBand("tweeter", 1, FrequencyBand(4000.0, 18000.0)),
+        ],
+        ambient_s=2.0,
+    )
+    # Exact spectral masking rather than the 4096-tap ``_band_impulse`` the
+    # fixtures above convolve with: an ideal-rect IR of that length leaks its
+    # own sidelobes about 25 dB down, which is enough to keep a silent driver's
+    # band "risen" and would make this pass for a reason unrelated to wiring.
+    def radiate(signal, f_lo, f_hi):
+        spectrum = np.fft.rfft(signal)
+        freqs = np.fft.rfftfreq(signal.size, 1.0 / SR)
+        spectrum[(freqs < f_lo) | (freqs > f_hi)] = 0.0
+        return np.fft.irfft(spectrum, signal.size)
+
+    woofer_cone, tweeter_dome = (150.0, 1000.0), (4000.0, 18000.0)
+    pcm = render_program_pcm(program)
+    mono = radiate(pcm[:, 0], *woofer_cone)
+    mono += radiate(pcm[:, 1], *(woofer_cone if miswired else tweeter_dome))
+    cap = np.concatenate([np.zeros(GLOBAL_OFFSET), mono, np.zeros(20_000)])
+    cap = cap + _band_noise(cap.size, 20.0, 20_000.0, 2e-4, seed=3)
+
+    _offset, anchor, _stimuli, ambiguous = _global_offset(program, cap, SR)
+    assert anchor.segment_id == "pilot_woofer_lo"
+    assert ambiguous is False, "a mis-wired capture is not an un-attributed one"
+
+    analysis = analyze_program_capture(program, cap, SR)
+    assert analysis.anchor_ambiguous is False
+    if not miswired:
+        assert analysis.channel_map_ok is True
+        assert _check_screen(analysis) is None
+        return
+    assert analysis.channel_map_ok is False
+    assert _check_screen(analysis) == "channel_map_mismatch"
+    # Named: the TARGET arm on the tweeter (its own band never rose over the
+    # room), with the woofer -- still correctly wired -- passing beside it.
+    by_role = {p.role: p for p in analysis.pilots}
+    assert by_role["tweeter"].channel_map_target_rise_db < CHANNEL_MAP_TARGET_RISE_DB
+    assert by_role["woofer"].channel_map_ok is True
+
+
+def test_the_anchor_event_reports_the_ambiguity_it_found(monkeypatch):
+    """The margin was already logged; whether it was judged SMALL was not. A
+    population of near-ties is the only way the constant gets re-derived from
+    the field rather than from this fixture, so the judgment has to be on the
+    line -- at WARNING, like a correction, because both mean the timeline is
+    not what the locate said it was.
+    """
+    monkeypatch.setattr(
+        "jasper.audio_measurement.program_analysis._earliest_strong_peak",
+        _full_band_locate,
+    )
+    prog = _incident_program()
+    records: list[logging.LogRecord] = []
+    handler = logging.Handler()
+    handler.emit = records.append
+    log = logging.getLogger(_ANALYSIS_LOGGER)
+    log.addHandler(handler)
+    level = log.level
+    log.setLevel(logging.INFO)
+    try:
+        _global_offset(prog, _incident_room(prog, tone_rms=INCIDENT_TONE_RMS), SR)
+    finally:
+        log.removeHandler(handler)
+        log.setLevel(level)
+    line = next(r.getMessage() for r in records
+                if "event=program_analysis.anchor" in r.getMessage())
+    assert "ambiguous=true" in line
+    assert any(r.levelno == logging.WARNING for r in records)
