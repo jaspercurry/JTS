@@ -135,14 +135,19 @@ session/fingerprint ids, the newest capture's SNR/verdict/clipping, and the
 last failure code — for the household/operator summary described in the design
 doc's "Runtime surface"; detailed curves and bundle paths stay out of `/state`
 by design. [#2412](https://github.com/jaspercurry/JTS/issues/2412)'s Wave 4 adds
-one more key, `transport` (`ring` / `alsa`, `null` when no roleful topology
-resolves): a commissioning graph can name the ACTIVE lane and reach it over
-either snd-aloop or the ring, and only one of those is fed by fan-in under
-`shm_ring`, so a device reported without its transport is a half-fact. It shares
-one derivation (`jasper.fanin_coupling.transport_label`) with the `transport=`
-field the same wave puts on the `driver_commission_prepared` and
-`driver_commission_load` journal lines, so `/state` and the journal cannot
-answer differently for one box.
+one more key, `transport` (`ring` / `alsa`, `null` when the topology cannot be
+read or resolves to no device — **not** a rolefulness test: a passive box
+resolves the active outputd lane and reports `alsa`): a commissioning graph can
+name the ACTIVE lane and reach it over either snd-aloop or the ring, and only
+one of those is fed by fan-in under `shm_ring`, so a device reported without its
+transport is a half-fact. It shares one derivation
+(`jasper.fanin_coupling.transport_label`) with the `transport=` field the same
+wave puts on the `driver_commission_prepared` and `driver_commission_load`
+journal lines, so the two surfaces cannot disagree about a device they both
+resolve the same way. That is a shared *derivation*, not an enforced one: the
+prepare path accepts a caller-supplied `playback_device=` override, and no
+production caller passes one today (call-site audit, PR #2643), so the agreement
+rests on that convention rather than on a guard in the API.
 
 Lane D adds `correction.crossover_repeat_attempt` once per reserved attempt
 (including transport failures),

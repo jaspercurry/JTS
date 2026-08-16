@@ -261,10 +261,14 @@ def _load(
     # OPT-IN, and defaulting OFF is the whole finding (#2412 Wave 6). Arming
     # is NOT inert on this tree: the ACTIVE-endpoint marker is read by
     # `resolve_output_layout` as well as by the load gate, so arming it
-    # unconditionally here would move all 34 tests that funnel through this
-    # helper off the snd-aloop path they were written to cover. It defaults off
-    # so those keep their coverage, and the ring-polarity tests below ask for it
-    # explicitly. See `tests/_armed_transport.py`.
+    # unconditionally here would move all 37 tests that funnel through this
+    # helper — 17 in this module plus the 20 that reach it through
+    # `test_active_speaker_stage5_ramp.py::_ramp_step` — off the snd-aloop path
+    # they were written to cover. (37 is the CARRIAGE, measured by AST; the 34
+    # this comment used to claim was the enumerator's RED count for the two
+    # modules, which is a different set.) It defaults off so those keep their
+    # coverage, and the ring-polarity tests below ask for it explicitly. See
+    # `tests/_armed_transport.py`.
     if arm_transport:
         arm_ring_transport(monkeypatch)
     staged = _staged(tmp_path)

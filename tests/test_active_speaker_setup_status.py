@@ -1250,10 +1250,22 @@ def test_commissioning_summary_idle_with_no_evidence() -> None:
 
 
 @pytest.mark.parametrize(
-    "armed, expected", [(False, "alsa"), (True, "ring")], ids=["aloop", "ring"]
+    "topology_factory, armed, expected",
+    [
+        (_active_topology, False, "alsa"),
+        (_active_topology, True, "ring"),
+        # ROLEFULNESS IS NOT THE DISCRIMINATOR, and this row is the one that
+        # says so. A passive box resolves the active outputd lane like any
+        # other and reports `alsa`; only an unreadable topology or a route
+        # with no device reports null. The docstring and the observability
+        # HANDOFF both used to name "a passive box" as a null case — false,
+        # and this is the pin that keeps the corrected sentence true.
+        (_passive_topology, False, "alsa"),
+    ],
+    ids=["active_aloop", "active_ring", "passive_aloop"],
 )
 def test_commissioning_summary_transport_follows_the_box(
-    monkeypatch, armed, expected
+    monkeypatch, topology_factory, armed, expected
 ) -> None:
     """`/state` names the transport, on both polarities (#2412 Wave 4).
 
@@ -1273,12 +1285,28 @@ def test_commissioning_summary_transport_follows_the_box(
         "jasper.fanin_coupling.ring_active_endpoint_armed", lambda env=None: armed
     )
     result = setup_mod.commissioning_summary(
-        _active_topology(),
+        topology_factory(),
         profile=None,
         applied_profile=None,
         measurements=None,
     )
     assert result["transport"] == expected
+
+
+def test_commissioning_summary_transport_is_null_when_no_device_resolves() -> None:
+    """The OTHER half of the null condition, pinned at the derivation.
+
+    `null` has exactly two causes: the topology cannot be read (the test below)
+    and the route resolves to no device — `resolve_output_layout`'s case 3,
+    where a profile declares no active outputd lane. This half is pinned on
+    `transport_label` directly rather than by constructing a lane-less roleful
+    topology, because the derivation is where the rule lives and a hand-built
+    fixture would be pinning the fixture.
+    """
+    from jasper.fanin_coupling import transport_label
+
+    assert transport_label(None) is None
+    assert transport_label("") is None
 
 
 def test_commissioning_summary_transport_is_null_on_an_unreadable_topology() -> None:

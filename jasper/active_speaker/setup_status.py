@@ -406,13 +406,23 @@ def _commissioning_transport(topology: Any) -> str | None:
 
     ONE derivation with the two ``driver_commission_*`` journal lines
     (:func:`jasper.fanin_coupling.transport_label`), reading the same chooser
-    commissioning itself reads (``resolve_active_playback_device``) so ``/state``
-    and the journal cannot answer differently for one box.
+    commissioning itself reads (``resolve_active_playback_device``), so the two
+    surfaces cannot disagree about a device they both resolve the same way.
+    Stated that way on purpose rather than as "they can never differ": the
+    shared thing is the DERIVATION, not the input. ``prepare`` accepts a
+    caller-supplied ``playback_device=`` override, so a caller that passed one
+    could be described by a journal line this function would not reproduce. No
+    production caller passes one (call-site audit, PR #2643) — the agreement is
+    a convention this API does not enforce.
 
-    ``None`` when no roleful topology resolves — a passive box, an unreadable
-    one, or a route that resolves to no device at all. Fail-soft like every
-    other field here: the derivation reaches the topology layer, and a box whose
-    route cannot be read reports no transport rather than failing ``/state``.
+    ``None`` when the topology **cannot be read** or resolves to **no device**.
+    Rolefulness is deliberately NOT the discriminator, and saying it was would
+    mislead the reader this field exists to help: a PASSIVE box resolves the
+    active outputd lane like any other and reports ``alsa``. What rolefulness
+    gates is whether ``resolve_output_layout`` consults the ring marker at all —
+    which decides ring-vs-alsa, not named-vs-null. Fail-soft like every other
+    field here: the derivation reaches the topology layer, and a box whose route
+    cannot be read reports no transport rather than failing ``/state``.
 
     ``AttributeError`` joins ``_READINESS_DERIVATION_ERRORS`` for this call only.
     The shared tuple is the set the OTHER derivations here can raise; this one

@@ -2417,3 +2417,35 @@ async def test_the_ramp_comment_states_the_waiver_the_branch_actually_honours():
             f"{name} asserts an ack requirement without naming the "
             f"auto_retry_pending waiver the branch actually honours: {prose}"
         )
+
+    # THE SECOND WAIVER, AND WHY IT NEEDS ITS OWN GUARD. Wave 1 corrected THREE
+    # sentences here, not two: the ack pair above, plus the woofer-first
+    # ORDERING sentence, whose waiver is a different token
+    # (`role_order_confirmed_roles` — the web route's identity audition supplies
+    # gate-only ordering evidence, flipping `role_order_woofer_first` True with
+    # nothing confirmed). Because the ordering sentence shares the docstring
+    # with the ack one, `"auto_retry_pending" in prose` is satisfied by the ack
+    # sentence alone — so the ordering sentence could revert to its false
+    # pre-Wave-1 form with this test green. Measured, not supposed: reverting it
+    # left the guard passing until this block existed.
+    #
+    # Written as a CONDITIONAL over the same two sites rather than as a bare
+    # docstring assertion, so it stays correct if the sentence ever moves
+    # between them: whichever site makes the ordering claim must name the
+    # evidence that waives it. Only the docstring makes it today; the comment
+    # block does not, and this is vacuous there by design.
+    ordering_claimants = {
+        name: prose for name, prose in sites.items() if "lower-frequency" in prose
+    }
+    # ...and it cannot go vacuous everywhere: deleting the claim from both sites
+    # fails here rather than silently disarming the guard below.
+    assert ordering_claimants, (
+        "no prose site makes the woofer-first ordering claim any more; either it "
+        "moved somewhere this test does not slice, or the guard is now inert"
+    )
+    for name, prose in ordering_claimants.items():
+        assert "role_order_confirmed_roles" in prose, (
+            f"{name} asserts a floor-confirmation ORDER without naming the "
+            f"gate-only ordering evidence (`role_order_confirmed_roles`) that the "
+            f"web route's identity audition supplies to waive it: {prose}"
+        )
