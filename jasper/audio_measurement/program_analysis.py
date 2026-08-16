@@ -3188,40 +3188,52 @@ def branch_snr_band_hz(
     **Why it exists (issue #2613).** The nominal band was passed straight to
     :func:`~jasper.audio_measurement.snr_policy.band_snr_verdicts` as its
     ``relevant_hz``, and that window admits any ``CROSSOVER_SNR_BANDS_HZ`` row
-    that merely OVERLAPS it. A production tweeter is swept from ~1500 Hz
-    (``_intersect_band(driver_band, MEASURE_SWEEP_F_LO_HZ, …)``), so at
-    ``Fc = 1600`` the nominal ``[800, 3200]`` window admitted the
-    ``transition`` row (350-1000 Hz) — 650 Hz of band into which this
-    stimulus, BY DESIGN, sent nothing. That row therefore read the room's own
-    noise as its signal, verdicted ``insufficient`` on arithmetic no room and
-    no drive level could change, and (via
-    :func:`driver_alignment_snr_verdict` ->
-    :data:`ALIGNMENT_SNR_REFUSAL_VERDICT`) fired #2607's declared-design
-    fail-safe on EVERY jts3 round — 14 of 14 — while the same capture's
-    ``mid`` row, where the decision actually lives, read a clean 66.6 dB.
-    Reproduced on a production-shaped synthetic two-way: the refused branch
-    committed the declared polarity at 29.21 dB ripple where the flat-sum
-    answer it never got to score was 3.15 dB. The 35 dB alignment law was
-    never wrong; the window handed to it was.
+    that merely OVERLAPS it — however little of the row the sweep entered.
+
+    On jts3's commissioned geometry (the 2026-08-15/16 rounds; ``Fc =
+    1648.7``, tweeter declared ``[1600, 20000]``, woofer ``[45, 4000]`` swept
+    from the 150 Hz MEASURE floor) that made the tweeter's refusal
+    unconditional. The nominal window is ``[824.35, 3297.4]``; the
+    ``transition`` row is ``[350, 1000]`` and ``1000 > 824.35``, so the row
+    was enfranchised — into 650 Hz of which the tweeter sweep, starting at
+    1600 Hz, sends nothing BY DESIGN. Its "signal" is the room's own noise, so
+    its SNR is the ratio of the room to itself: the box read **-1.2 dB**
+    there (-0.4 dB on five of six captures in the 2026-08-10 dump) and
+    verdicted ``insufficient`` on arithmetic no room, no night, and no drive
+    level could change. Via :func:`driver_alignment_snr_verdict` ->
+    :data:`ALIGNMENT_SNR_REFUSAL_VERDICT` that fired #2607's declared-design
+    fail-safe on 14 of 14 rounds.
+
+    **The woofer is the control, and a geometric one.** Its sweep spans the
+    whole nominal window, so no row inside it is empty, this clamp is a no-op
+    for it, and it verdicted ``ok`` at **44.0 dB** on those same captures.
+    Tweeter refusing while woofer passes, on one capture, is what a broadband
+    noise floor cannot explain and the sweep edges can.
+
+    Replayed through this analyzer on that geometry with synthetic IRs: the
+    ``transition`` row reads -2.6 dB and vetoes, the ``mid`` row where the
+    decision actually lives reads 66.4 dB, and the refused branch commits the
+    declared polarity at 45.47 dB ripple against a 2.25 dB flat-sum answer it
+    never got to score. The 35 dB alignment law was never wrong; the window
+    handed to it was.
 
     **Named residual — row width, erring CONSERVATIVE.** Clamping the window
     stops a wholly-unexcited row from voting, but a row the window keeps can
-    still be WIDER than the sweep's coverage of it: a tweeter swept from
-    1500 Hz leaves 1000-1500 Hz of the 1000-4000 Hz ``mid`` row empty while
-    the paired ambient row still reports noise across all of it. Under a flat
-    noise floor that understates SNR by exactly
-    ``10*log10(row_width / covered_width)`` — always toward REFUSING, which is
-    the fail-safe direction #2607 chose.
+    still be WIDER than the sweep's coverage of it: jts3's tweeter leaves
+    1000-1600 Hz of the 1000-4000 Hz ``mid`` row empty while the paired
+    ambient row still reports noise across all of it. Under a flat noise floor
+    that understates SNR by exactly ``10*log10(row_width / covered_width)`` —
+    always toward REFUSING, which is the fail-safe direction #2607 chose.
 
     **That residual is NOT bounded by a small constant, and quoting one would
     be the over-claim this file has been burned by before.** It is set by how
     deep inside a wide row the sweep's edge lands, so it grows without a
-    natural ceiling as the edge moves in. On the two shapes reproduced for
-    #2613 it is 0.79 dB (tweeter ``mid``, swept 1500-20000) and 4.77 dB
-    (woofer ``mid``, swept 150-2000 at Fc = 1600) — but a woofer whose sweep
-    ceiling sits just above ``mid``'s 1000 Hz floor reaches 14.77 dB by the
-    same formula. It stays acceptable because of WHERE the margin is, not
-    because the number is small: those same captures read 66.6 and 70.2 dB
+    natural ceiling as the edge moves in. On jts3 it is 0.97 dB for the
+    tweeter and 0.00 dB for the woofer (whose sweep covers both its rows
+    outright) — but the same formula gives 4.77 dB for a woofer swept only to
+    2000 Hz, and 14.77 dB for one whose ceiling sits just above ``mid``'s
+    1000 Hz floor. It stays acceptable because of WHERE the margin is, not
+    because the number is small: jts3's own captures read 66.4 and 44.0 dB
     against a 35 dB law.
 
     Removing it outright would mean re-computing the ambient report on a

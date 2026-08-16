@@ -4013,22 +4013,29 @@ segments rather than re-deriving the nominal edges.
 **The per-driver capture-SNR verdict takes the same clamp, per branch**
 (`branch_snr_band_hz`, #2613). `_driver_snr_block` used to hand
 `band_snr_verdicts` the bare nominal window, and that window enfranchises any
-`CROSSOVER_SNR_BANDS_HZ` row it merely *overlaps* — so a tweeter swept from
-1.5 kHz at Fc = 1.6 kHz let the `transition` row (350-1000 Hz), into which its
-stimulus sends nothing by design, read the room against itself and verdict
-`insufficient` on arithmetic no room and no drive level could change. That
-fired the declared-design commitment below on every jts3 round while the `mid`
-row carrying the decision read a clean 66.6 dB. The clamp is stated for one
-branch that does not know its role (whichever edge binds, binds) and applies to
-BOTH decision classes; the 35 dB law and the fail-safe are untouched — only the
-window they read. Named residual, always erring toward refusal: a row the
-window keeps can still be wider than the sweep's coverage of it, understating
-SNR by `10*log10(row_width / covered_width)` — 0.79 dB and 4.77 dB on the two
-shapes reproduced, but **not** bounded by a small constant, since it grows as
-the sweep edge lands deeper inside a wide row. It is tolerable because of where
-the margin sits (those captures read 66.6 and 70.2 dB against a 35 dB law), not
-because the number is small. See the function's docstring for what removing it
-would cost.
+`CROSSOVER_SNR_BANDS_HZ` row it merely *overlaps*. On the geometry of the
+2026-08-15/16 rounds above — Fc 1648.7, tweeter declared `[1600, 20000]` —
+the nominal window is `[824.35, 3297.4]`, so the `transition` row `[350, 1000]`
+was enfranchised (1000 > 824.35) into 650 Hz the tweeter sweep never enters.
+That row read the room against itself, the box recorded **−1.2 dB** there, and
+it verdicted `insufficient` on arithmetic no room and no drive level could
+change — firing the declared-design commitment below on 14 of 14 rounds while
+the `mid` row carrying the decision read a clean 66.4 dB. The **woofer is the
+geometric control**: its `[150, 4000]` sweep spans the whole window, no row is
+empty for it, the clamp is a no-op, and it read **44.0 dB / `ok`** on those same
+captures — an asymmetry a broadband noise floor cannot produce.
+
+The clamp is stated for one branch that does not know its role (whichever edge
+binds, binds) and applies to BOTH decision classes; the 35 dB law and the
+fail-safe are untouched — only the window they read. Named residual, always
+erring toward refusal: a row the window keeps can still be wider than the
+sweep's coverage of it, understating SNR by
+`10*log10(row_width / covered_width)` — 0.97 dB for jts3's tweeter and 0.00 dB
+for its woofer, but **not** bounded by a small constant, since it grows as the
+sweep edge lands deeper inside a wide row (14.77 dB for a woofer ceasing just
+above `mid`'s 1000 Hz floor). It is tolerable because of where the margin sits,
+not because the number is small. See the function's docstring for what removing
+it would cost.
 
 #### (Polarity, delay) selection — one objective, correlation as seed
 
