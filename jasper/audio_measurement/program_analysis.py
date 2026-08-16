@@ -3208,15 +3208,30 @@ def branch_snr_band_hz(
     stops a wholly-unexcited row from voting, but a row the window keeps can
     still be WIDER than the sweep's coverage of it: a tweeter swept from
     1500 Hz leaves 1000-1500 Hz of the 1000-4000 Hz ``mid`` row empty while
-    the paired ambient row still reports noise across all of it. That
-    understates SNR by ``10*log10(row_width / covered_width)`` — 0.79 dB in
-    that case, under 5 dB for any shipped crossover — i.e. it errs toward
-    REFUSING, the fail-safe direction #2607 chose. Removing it outright would
-    mean re-computing the ambient report on a sweep-derived band table (what
+    the paired ambient row still reports noise across all of it. Under a flat
+    noise floor that understates SNR by exactly
+    ``10*log10(row_width / covered_width)`` — always toward REFUSING, which is
+    the fail-safe direction #2607 chose.
+
+    **That residual is NOT bounded by a small constant, and quoting one would
+    be the over-claim this file has been burned by before.** It is set by how
+    deep inside a wide row the sweep's edge lands, so it grows without a
+    natural ceiling as the edge moves in. On the two shapes reproduced for
+    #2613 it is 0.79 dB (tweeter ``mid``, swept 1500-20000) and 4.77 dB
+    (woofer ``mid``, swept 150-2000 at Fc = 1600) — but a woofer whose sweep
+    ceiling sits just above ``mid``'s 1000 Hz floor reaches 14.77 dB by the
+    same formula. It stays acceptable because of WHERE the margin is, not
+    because the number is small: those same captures read 66.6 and 70.2 dB
+    against a 35 dB law.
+
+    Removing it outright would mean re-computing the ambient report on a
+    sweep-derived band table (what
     :func:`~jasper.audio_measurement.snr_policy.sweep_excitation_bands` does
     for the summed capture), and this function's consumer receives the ambient
-    REPORT rather than the ambient samples, so that is a threading change for
-    a sub-decibel conservative residual. Deliberately not taken.
+    REPORT rather than the ambient samples — a threading change through
+    ``MeasurementPriors`` for an error that can only refuse a capture, never
+    clear a bad one. Deliberately not taken; revisit if a real session is ever
+    refused with a wide row's dilution as the named reason.
 
     ``radiated_band_hz`` of ``None`` leaves the nominal band untouched —
     byte-identical to the pre-#2613 window, matching :func:`overlap_band_hz`'s

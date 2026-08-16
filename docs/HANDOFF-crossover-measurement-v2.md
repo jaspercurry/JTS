@@ -4021,9 +4021,14 @@ fired the declared-design commitment below on every jts3 round while the `mid`
 row carrying the decision read a clean 66.6 dB. The clamp is stated for one
 branch that does not know its role (whichever edge binds, binds) and applies to
 BOTH decision classes; the 35 dB law and the fail-safe are untouched — only the
-window they read. Residual, erring toward refusal: a row the window keeps can
-still be wider than the sweep's coverage of it (under 1 dB for a shipped
-crossover) — see the function's docstring.
+window they read. Named residual, always erring toward refusal: a row the
+window keeps can still be wider than the sweep's coverage of it, understating
+SNR by `10*log10(row_width / covered_width)` — 0.79 dB and 4.77 dB on the two
+shapes reproduced, but **not** bounded by a small constant, since it grows as
+the sweep edge lands deeper inside a wide row. It is tolerable because of where
+the margin sits (those captures read 66.6 and 70.2 dB against a 35 dB law), not
+because the number is small. See the function's docstring for what removing it
+would cost.
 
 #### (Polarity, delay) selection — one objective, correlation as seed
 
