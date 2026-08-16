@@ -482,21 +482,48 @@ const STEREO_WITH_SUB_UNSET_FC = {
   assert.equal(dirty.label, "Save");
 }
 
-// #2344 — the armed-box refusal has to REACH the household, from every array the
-// backend can park it in. Behavioural, not a substring check on the source: a
-// rung whose code is misspelled still contains the code as a substring, and a
-// walker that dropped an array still mentions it in a comment.
+// #2344, re-pointed by #2412 Wave 3 — the ring refusal is retired, and what has
+// to REACH the household now is the two arming states and the ends-disagree
+// defect, from every array the backend can park them in. Behavioural, not a
+// substring check on the source: a rung whose code is misspelled still contains
+// the code as a substring, and a walker that dropped an array still mentions it
+// in a comment.
 {
-  const RING = "commissioning_ring_transport_unsupported";
-  const expected =
-    "Driver tests can’t run while this speaker is in ring output mode. " +
-    "Switch it back to the standard output path first, then test the drivers again.";
+  const FEED = "commissioning_ring_feed_unarmed";
+  const ENDPOINT = "commissioning_active_endpoint_unarmed";
+  const ENDS = "commissioning_transport_ends_disagree";
+  const WIRE = "ring_wire_declaration_invalid";
+  const RETIRED = "commissioning_ring_transport_unsupported";
+  const unarmed =
+    "This speaker’s output path isn’t finished setting up, so driver tests " +
+    "can’t run yet. Open System status.";
+  const ends =
+    "JTS could not prepare the driver test for this speaker’s output " +
+    "connection. Open System status.";
+  const wire =
+    "This speaker’s output connection is set to something JTS doesn’t " +
+    "recognise, so driver tests can’t run. Open System status.";
 
   // The blocked driver-test payload: the preflight's issues are copied into
-  // `load.issues` by load_driver_commissioning_config.
+  // `load.issues` by load_driver_commissioning_config. Both arming codes reach
+  // the same sentence because the household ACTION is the same for both; the
+  // two operator remedies differ and belong to two different reconcilers.
+  for (const code of [FEED, ENDPOINT]) {
+    assert.equal(
+      commissionPayloadFailure({ status: "blocked", load: { issues: [{ code }] } }),
+      unarmed,
+    );
+  }
   assert.equal(
-    commissionPayloadFailure({ status: "blocked", load: { issues: [{ code: RING }] } }),
-    expected,
+    commissionPayloadFailure({ status: "blocked", load: { issues: [{ code: ENDS }] } }),
+    ends,
+  );
+  // Mapped at the gate lift (#2412 correction 4): it was mapped in the Python
+  // coordinator and absent from this ladder, so the household fell through to
+  // written copy while the operator's daemon name sat one code away.
+  assert.equal(
+    commissionPayloadFailure({ status: "blocked", load: { issues: [{ code: WIRE }] } }),
+    wire,
   );
 
   // A blocked RAMP step reports `ramp_prepare_failed` at the top level and parks
@@ -506,39 +533,59 @@ const STEREO_WITH_SUB_UNSET_FC = {
     commissionPayloadFailure({
       status: "blocked",
       issues: [{ code: "ramp_prepare_failed" }],
-      prepare_issues: [{ code: RING }],
+      prepare_issues: [{ code: FEED }],
     }),
-    expected,
+    unarmed,
   );
 
-  // It outranks step-level advice: while the speaker is in ring mode, "start the
-  // tone again" is true-but-useless for something a retry cannot fix.
+  // They outrank step-level advice: while the output path is unfinished, "start
+  // the tone again" is true-but-useless for something a retry cannot fix.
   assert.equal(
     commissionPayloadFailure({
       status: "blocked",
-      issues: [{ code: "commission_not_loaded" }, { code: RING }],
+      issues: [{ code: "commission_not_loaded" }, { code: ENDPOINT }],
     }),
-    expected,
+    unarmed,
   );
 
-  // No household surface may carry the operator's shell command.
-  assert.ok(!expected.includes("baseline-reemit"));
-
-  // The gate path: when no issue code matched, the lifted preflight gate is what
-  // the renderer falls back to, and it must not degrade to the generic sentence.
-  const gateOnly = commissionPayloadFailure({
+  // THE RETIRED RUNG IS ASSERTED ABSENT, behaviourally: it no longer produces
+  // copy of its own. Asserting the new rungs present is only half a re-point.
+  const retiredOnly = commissionPayloadFailure({
     status: "blocked",
-    preflight: {
-      required_gates: [
-        { id: "commissioning_transport_supported", passed: false },
-      ],
-    },
+    load: { issues: [{ code: RETIRED }] },
   });
-  assert.ok(
-    gateOnly.includes("ring output mode"),
-    `transport gate rendered the generic fallback: ${gateOnly}`,
+  assert.equal(
+    retiredOnly,
+    "This driver can’t be tested yet — finish the earlier setup steps first.",
   );
-  assert.ok(!gateOnly.includes("baseline-reemit"));
+  assert.ok(!retiredOnly.includes("ring output mode"));
+
+  // No household surface may carry an operator's shell command — not the
+  // retired `baseline-reemit`, and not either new reconciler invocation.
+  for (const copy of [unarmed, ends, wire]) {
+    assert.ok(!copy.includes("baseline-reemit"));
+    assert.ok(!copy.includes("jasper-"));
+    assert.ok(!copy.includes("systemctl"));
+    assert.ok(!copy.includes("sudo"));
+  }
+
+  // The gate path: when no issue code matched, the preflight gates are what the
+  // renderer falls back to, and neither may degrade to the generic sentence.
+  for (const [id, marker] of [
+    ["commissioning_transport_supported", "output connection"],
+    ["commissioning_transport_armed", "output path isn’t finished"],
+  ]) {
+    const gateOnly = commissionPayloadFailure({
+      status: "blocked",
+      preflight: { required_gates: [{ id, passed: false }] },
+    });
+    assert.ok(
+      gateOnly.includes(marker) && !gateOnly.includes("finish the earlier setup"),
+      `${id} rendered the generic fallback: ${gateOnly}`,
+    );
+    assert.ok(!gateOnly.includes("ring output mode"));
+    assert.ok(!gateOnly.includes("baseline-reemit"));
+  }
 }
 
 console.log(JSON.stringify({ ok: true }));

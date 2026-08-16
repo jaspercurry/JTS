@@ -431,15 +431,38 @@ function commissionIssueCodes(payload) {
 }
 
 function commissionIssueReason(codes) {
-  // First in the ladder on purpose: this is a whole-speaker state, not a step
-  // that failed. While it holds, every later reason below would be true-but-
-  // useless advice ("try again", "finish the earlier step") for something the
-  // household cannot fix by retrying. Names the state and the way out WITHOUT
-  // the operator's shell command — that remedy lives on the CLI and journal
-  // surfaces, never here (#2344).
-  if (codes.indexOf('commissioning_ring_transport_unsupported') >= 0) {
-    return 'Driver tests can’t run while this speaker is in ring output mode. ' +
-      'Switch it back to the standard output path first, then test the drivers again.';
+  // First in the ladder on purpose: these are whole-speaker output-path states,
+  // not steps that failed. While one holds, every later reason below would be
+  // true-but-useless advice ("try again", "finish the earlier step") for
+  // something the household cannot fix by retrying. Each names the state and
+  // where to look WITHOUT the operator's shell command — those remedies live on
+  // the CLI and journal surfaces, never here (#2344, #2412).
+  //
+  // The two arming codes share one sentence because the household ACTION is the
+  // same for both; the two operator remedies are what differ, and they belong
+  // to two different reconcilers.
+  if (
+    codes.indexOf('commissioning_ring_feed_unarmed') >= 0 ||
+    codes.indexOf('commissioning_active_endpoint_unarmed') >= 0
+  ) {
+    return 'This speaker’s output path isn’t finished setting up, so driver ' +
+      'tests can’t run yet. Open System status.';
+  }
+  // An internal defect, not a setting: the graph would play out of one output
+  // connection and capture from another. Do not offer an action that does not
+  // exist — point at the screen that shows the speaker's own state.
+  if (codes.indexOf('commissioning_transport_ends_disagree') >= 0) {
+    return 'JTS could not prepare the driver test for this speaker’s output ' +
+      'connection. Open System status.';
+  }
+  // An operator-set output-connection override that no longer parses. Mapped
+  // here for the same reason as the codes above: the backend sentence names the
+  // daemon that owns the other half, which reads as a command. The household
+  // cannot fix an override from this card, so the copy sends them to the one
+  // place that shows it.
+  if (codes.indexOf('ring_wire_declaration_invalid') >= 0) {
+    return 'This speaker’s output connection is set to something JTS doesn’t ' +
+      'recognise, so driver tests can’t run. Open System status.';
   }
   if (codes.indexOf('commission_live_state_stale') >= 0) {
     return 'The previous tone session expired safely. Start the tone again so JTS can reopen it quietly.';
@@ -510,8 +533,11 @@ export function commissionGateReason(gateId) {
     commissioning_candidate_present:
       'JTS couldn’t build this driver’s test setup — refresh the page and try again.',
     commissioning_transport_supported:
-      'This speaker is in ring output mode, which driver tests can’t measure ' +
-      'through. Switch it back to the standard output path first.'
+      'JTS couldn’t prepare this driver’s test for the speaker’s output ' +
+      'connection. Open System status.',
+    commissioning_transport_armed:
+      'This speaker’s output path isn’t finished setting up, so driver tests ' +
+      'can’t run yet. Open System status.'
   }[gateId] || 'A setup step still needs finishing before this driver can be tested.';
 }
 

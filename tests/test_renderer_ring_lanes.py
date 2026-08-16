@@ -1971,23 +1971,28 @@ def test_the_arm_cli_handles_the_unitless_lane(tmp_path, monkeypatch, capsys):
 
 # --- #2344 fourth state: ingress-armed + active-endpoint-unarmed -----------
 #
-# The commissioning transport gate (jasper.active_speaker.staging) keys on
-# RING_PCM_DEVICES membership of the graph's resolved PLAYBACK device — the
-# CamillaDSP-endpoint axis. The correction lane arms the INGRESS axis: what
-# measurement spawns OPEN, never what the graph plays out of. The two tests
-# below pin that independence from both directions, so the fourth state
-# (ingress armed, endpoint still aloop) cannot trip the gate.
+# "Is this end of the graph a ring end?" is answered by RING_PCM_DEVICES
+# membership of the graph's resolved PLAYBACK device — the CamillaDSP-endpoint
+# axis, read by the emit derivation and by the arm's width gate. The correction
+# lane arms the INGRESS axis: what measurement spawns OPEN, never what the graph
+# plays out of. The two tests below pin that independence from both directions,
+# so the fourth state (ingress armed, endpoint still aloop) cannot be mistaken
+# for an armed endpoint.
 
 
 def test_ingress_lane_devices_are_never_camilla_endpoint_rings():
     """Neither of the correction lane's devices may join RING_PCM_DEVICES.
 
-    Set-membership there IS the commissioning gate's predicate
-    (`resolved_playback_device not in RING_PCM_DEVICES`, staging's
-    COMMISSIONING_TRANSPORT_GATE_ID) and the CamillaDSP-endpoint guard's
-    (`ring_edge_width_ready`). Adding an ingress device to that set would
-    make arming ingress read as "the active graph plays out of a ring" —
-    the exact conflation #2344's fourth state exists to rule out.
+    Set-membership there is what the emit derivation keys on
+    (`active_emit_devices` / `capture_device_for_playback`: "is this end of the
+    graph a ring end?") and what the CamillaDSP-endpoint guard keys on
+    (`ring_edge_width_ready`). Adding an ingress device to that set would make
+    arming ingress read as "the active graph plays out of a ring" — the exact
+    conflation #2344's fourth state exists to rule out. Until #2412's Wave 3 it
+    was also the commissioning gate's own predicate
+    (`resolved_playback_device not in RING_PCM_DEVICES`); that gate now proves
+    both ends of the emitted graph agree, which reads the same set through the
+    derivation rather than beside it.
     """
     from jasper.fanin_coupling import RING_PCM_DEVICES
 
@@ -2006,12 +2011,12 @@ def test_ingress_arming_and_endpoint_transport_are_independent_axes(
     answers from its own source, unmoved by the other.
 
     The endpoint answer is RING_PCM_DEVICES membership of the resolved
-    playback device (the gate's exact predicate — the resolved device comes
-    from the CamillaDSP statefile, which the lane map never feeds); the
-    ingress answer is the transport reader over the lane map (which the
-    statefile never feeds). The fourth state — ingress armed while the
-    endpoint is still the aloop tap — must therefore keep the
-    commissioning gate OPEN while the measurement spawns move to the ring.
+    playback device (the resolved device comes from the CamillaDSP statefile,
+    which the lane map never feeds); the ingress answer is the transport reader
+    over the lane map (which the statefile never feeds). The fourth state —
+    ingress armed while the endpoint is still the aloop tap — must therefore
+    still read as a NON-ring endpoint while the measurement spawns move to the
+    ring, so nothing downstream treats an armed ingress as an armed endpoint.
     """
     from jasper.audio_measurement.correction_lane import (
         CORRECTION_SUBSTREAM,
@@ -2033,10 +2038,10 @@ def test_ingress_arming_and_endpoint_transport_are_independent_axes(
         playback_device = (
             RING_PLAYBACK_DEVICE if endpoint_ringed else "jasper_out"
         )
-        gate_open = playback_device not in RING_PCM_DEVICES
+        endpoint_is_ring = playback_device in RING_PCM_DEVICES
 
         # The endpoint axis answers from the playback device alone.
-        assert gate_open == (not endpoint_ringed)
+        assert endpoint_is_ring == endpoint_ringed
         # The ingress axis answers from the lane map alone.
         expected_device = (
             lane.ring_device if ingress_armed else CORRECTION_SUBSTREAM

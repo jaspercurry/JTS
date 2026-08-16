@@ -22,7 +22,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 from jasper.atomic_io import advisory_file_lock, atomic_write_json
-from jasper.camilla_config_contract import DEFAULT_VOLUME_LIMIT_DB
+from jasper.camilla_config_contract import (
+    DEFAULT_VOLUME_LIMIT_DB,
+    read_camilla_devices_config,
+)
 from jasper.dsp_apply import CamillaConfigValidationResult, validate_camilla_config
 from jasper.output_topology import (
     OutputTopology,
@@ -42,6 +45,7 @@ from .camilla_yaml import (
     STARTUP_MUTE_GAIN_DB,
     active_emit_devices,
     audible_outputs_for_role,
+    capture_device_for_playback,
     emit_active_speaker_commissioning_config,
 )
 from .crossover_preview import CROSSOVER_PREVIEW_KIND
@@ -2045,69 +2049,6 @@ def prepare_driver_commissioning_config(
         ),
     ))
 
-    # FAIL CLOSED ON AN ARMED BOX (#2344). This emit is the AUDIBLE one — the
-    # per-driver and summed commissioning graphs are loaded into CamillaDSP and
-    # swept — and it forwards only the device NAME to the emitter, so every other
-    # half of the device contract (`active_emit_devices`: the ring capture lane,
-    # the resolved wire format, the certified chunk/target/queue geometry) stays
-    # at the emitter's snd-aloop defaults. On a ring-armed box that emits a graph
-    # whose sink is the ring while its source is `plug:jasper_capture` — the tap
-    # fan-in stops feeding under `shm_ring` — so the sweep excites a device
-    # nobody reads and the measurement records silence with every daemon healthy.
-    #
-    # Refusing here rather than teaching this emitter the ring is the PERMANENT
-    # contract, not a stopgap awaiting a braver implementation. The owner's
-    # 2026-08-12 ruling on #2254 fixes the corpus-exit shape as de-arm ->
-    # chip-AEC commission on the aloop path -> re-arm, so commissioning never
-    # has to learn the ring: an armed box asking to commission is always
-    # redirected to de-arm first, which is exactly what the blocker below says.
-    #
-    # The supporting facts still hold and are why the ruling is the cheap answer
-    # as well as the settled one — the ring geometry under sustained excitation
-    # is a hardware claim, and the live protection admission report asserts the
-    # tap capture route (`commissioning_admission`'s `capture_route_current`
-    # check), so moving this lane would be a hearing-safety-adjacent change
-    # needing its own evidence and its own review panel.
-    #
-    # Scoped to THIS builder, not the shared context: `stage_protected_startup_config`
-    # emits the all-muted durable BOOT anchor through the same context, and an
-    # armed box must keep being able to refresh that anchor. The two builders
-    # answer the ring differently ON PURPOSE, and the difference is audibility:
-    # the anchor is all-muted and DERIVES its device block (#2364), so it can
-    # name the ring coherently; this emit is swept at level, so it refuses the
-    # ring outright and sends the operator through de-arm instead.
-    #
-    # Membership is over ALL ring PCMs, the same set `active_emit_devices` keys
-    # on, so this reads the one owner of "is this a ring device" instead of
-    # becoming a second place that knows a name.
-    from jasper.fanin_coupling import RING_PCM_DEVICES
-
-    commissioning_transport_supported = resolved_playback_device not in RING_PCM_DEVICES
-    gates.append(_gate(
-        COMMISSIONING_TRANSPORT_GATE_ID,
-        label="Commissioning emits on a transport this graph can carry",
-        passed=commissioning_transport_supported,
-        message=(
-            "Commissioning emits on the active ALSA lane"
-            if commissioning_transport_supported
-            else (
-                f"This speaker's active graph is on {resolved_playback_device}; "
-                "driver commissioning does not run on the ring transport"
-            )
-        ),
-    ))
-    if not commissioning_transport_supported:
-        issues.append(_issue(
-            "blocker",
-            "commissioning_ring_transport_unsupported",
-            (
-                "This speaker is armed on the ring transport, which driver "
-                "commissioning does not measure through. Release it first with "
-                "`jasper-active-speaker baseline-reemit --endpoint aloop`, "
-                "commission, then re-arm."
-            ),
-        ))
-
     out_path = commissioning_config_path(config_dir=config_dir, path=config_path)
     validation: dict[str, Any] = {"status": "skipped", "reason": "not_generated"}
     classification: dict[str, Any] = {}
@@ -2123,12 +2064,14 @@ def prepare_driver_commissioning_config(
     # the same one derivation — `active_emit_devices` owns "what does an emit
     # against THIS device have to declare" for every device, ring or not.
     #
-    # THE BYTES DO NOT MOVE. `active_emit_devices` hands back the emitter's own
-    # defaults for every non-ring device, and the transport gate above refuses
-    # every ring device before this runs, so every box emits what it emitted
-    # before. Deriving the device contract and deciding the transport policy are
-    # two questions, and this is only the first one.
+    # OFF THE RING THE BYTES DO NOT MOVE. `active_emit_devices` hands back the
+    # emitter's own defaults for every non-ring device, so every box that is not
+    # armed emits what it emitted before. On a ring device it answers the ring
+    # capture lane, the resolved wire format and the certified ring geometry —
+    # which is the whole of what makes a ring emit carryable, and what the
+    # transport gate below then proves over the artifact.
     devices = None
+    emitted_config: str | None = None
     if blocker_count == 0 and bound_preset is not None and resolved_playback_device:
         # A ring wire token neither jasper-fanin nor JTS can resolve must reach
         # the operator as this function's ordinary blocker, not as a traceback
@@ -2223,6 +2166,81 @@ def prepare_driver_commissioning_config(
                 "commissioning_config_generation_failed",
                 f"could not generate commissioning config: {type(exc).__name__}",
             ))
+
+    # BOTH ENDS OF THIS GRAPH NAME ONE TRANSPORT (#2412). The gate id and its
+    # label are unchanged, and so is the invariant they state; the predicate
+    # that was supposed to test it is what changes. It used to be
+    # `resolved_playback_device not in RING_PCM_DEVICES` — a refusal of the ring
+    # outright, shipped by #2344 as a permanent contract on the owner's
+    # 2026-08-12 #2254 ruling, and superseded by the owner's re-opening in
+    # #2412. That predicate never tested the property its label names, and the
+    # property is the one whose absence is the hazard: a graph whose SINK is the
+    # ring while its SOURCE is still the snd-aloop tap. Under `shm_ring` fan-in
+    # stops feeding that tap, so such a graph sweeps a device nobody writes and
+    # the measurement records silence with every daemon healthy — "everything
+    # green" being exactly what an operator cannot tell from success, which is
+    # why this is a blocker and not a warning.
+    #
+    # A RE-READ PROOF, not a restatement. Both device fields came from ONE
+    # `active_emit_devices` call above, so agreement is true by construction and
+    # re-deriving it here would be a tautology. Reading the FILE back is what
+    # makes it a proof about the artifact the loader will open, and it
+    # complements — never replaces — `tests/test_ring_active_endpoint.py`'s
+    # `dataclasses.fields(ActiveEmitDevices)` walk: the walk catches a call site
+    # that DROPS a field, this catches one that forwards six of seven. Neither
+    # implies the other, so both are required.
+    #
+    # THIS PROVES COHERENCE, NOT LIVENESS, and the gap is owned one altitude up.
+    # A ring/ring graph on a loopback-coupled or unarmed box is self-consistent
+    # and passes here. This function is a PURE BUILDER — it reads no daemon env,
+    # and teaching it to would put a reconciler read inside a builder — while
+    # `startup_load.build_driver_commission_load_preflight`'s
+    # `commissioning_transport_armed` gate reads the live coupling and marker.
+    # A config prepared on an unarmed box is harmless; a LOAD on one is the
+    # silent sweep, so the live half stands where the load does.
+    #
+    # NO GRAPH, NO ENDS TO DISAGREE. When an earlier blocker stopped the emit
+    # this passes rather than inventing a transport failure for a box no owner
+    # refused — the same rule the preflight's mirror follows for an absent gate.
+    # It cannot make an unproven graph loadable: that earlier blocker already
+    # fails `status`, which fails the preflight's own `prepared` gate.
+    if emitted_config is None:
+        transport_ends_agree = True
+        transport_message = "No commissioning graph was generated"
+    else:
+        emitted_devices = read_camilla_devices_config(out_path) or {}
+        emitted_playback = emitted_devices.get("playback_device")
+        emitted_capture = emitted_devices.get("capture_device")
+        expected_capture = (
+            capture_device_for_playback(emitted_playback)
+            if isinstance(emitted_playback, str) and emitted_playback
+            else None
+        )
+        transport_ends_agree = (
+            expected_capture is not None and emitted_capture == expected_capture
+        )
+        transport_message = (
+            f"Commissioning captures {emitted_capture} into {emitted_playback}"
+            if transport_ends_agree
+            else (
+                f"This graph plays out of {emitted_playback} while capturing "
+                f"{emitted_capture}; that output is carried by {expected_capture}"
+            )
+        )
+    gates.append(_gate(
+        COMMISSIONING_TRANSPORT_GATE_ID,
+        label="Commissioning emits on a transport this graph can carry",
+        passed=transport_ends_agree,
+        message=transport_message,
+    ))
+    if not transport_ends_agree:
+        issues.append(_issue(
+            "blocker",
+            "commissioning_transport_ends_disagree",
+            "the commissioning graph names one transport where it plays out and "
+            "a different one where it captures, so the sweep would excite a "
+            "device nothing reads; no operator setting fixes this",
+        ))
 
     _record_camilla_validation(
         validation,
