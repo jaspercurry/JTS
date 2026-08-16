@@ -249,57 +249,53 @@ def applied_profile_delay_us(
 
     **Its one consumer** (issue #2617) is
     :class:`~jasper.audio_measurement.program_analysis.MeasurementPriors`'s
-    ``applied_alignment_delay_us``, which the low-SNR alignment refusal commits
-    instead of a delay read off the capture it just called unusable. Nothing
-    else reads it, and in particular the scored path never does — a capture
-    good enough to score must not be pulled toward the answer the speaker
-    already has.
+    ``applied_alignment``, which the low-SNR alignment refusal commits instead
+    of a delay read off the capture it just called unusable. Nothing else reads
+    it, and in particular the scored path never does — a capture good enough to
+    score must not be pulled toward the answer the speaker already has.
 
-    **Which copy.** ``recomposition_snapshot["corrections"]``, the immutable
-    Layer-A input every production recompose re-emits the graph from — the same
-    copy :func:`~jasper.active_speaker.baseline_profile._profile_branch_context`
-    reads, and NOT the top-level ``corrections`` convenience mirror beside it,
-    whose own comment warns it is not what the emitter consumes. Reading the
-    mirror would make this "the delay the record advertises"; reading the
-    snapshot makes it "the delay the graph plays", which is the only version of
-    the fact worth holding.
+    **Which copy is not decided here.**
+    :func:`~jasper.active_speaker.baseline_profile.profile_driver_corrections`
+    owns that: snapshot-authoritative with the top-level mirror as the
+    era-older fallback, the same rule
+    :func:`~jasper.active_speaker.baseline_profile.profile_linearization` and
+    :func:`~jasper.active_speaker.crossover_v2.commanded.profile_graph_summation`
+    already read through. This function once traversed the snapshot itself and
+    returned ``None`` on a mirror-only profile: a second implementation with
+    STRICTER era semantics than the owner's, which made a legacy speaker's
+    held delay unreadable and committed no delay in its place (#2622 safety
+    lens, S-SF1/S-n5). It is now a consumer, and adding an era to that reader
+    reaches every consumer at once.
 
-    The subtraction is symmetric across the two roles rather than keyed on
-    ``delay_target_driver``: a measured apply writes the magnitude on one role
-    and an explicit ``0.0`` on the other
-    (``MeasuredCrossoverCandidate.driver_corrections``), so the difference IS
-    the relative delay, and a profile that somehow carries both stays correctly
-    described instead of silently reporting one leg.
+    The subtraction mirrors ``commanded.profile_graph_summation``'s, including
+    why an absent ``delay_ms`` is a ZERO rather than a gap: the profile records
+    a magnitude only on whichever role is delayed
+    (``MeasuredCrossoverCandidate.driver_corrections``), so its absence on the
+    other role is a statement. What is NOT tolerated is a role the corrections
+    do not mention at all, or a non-finite value — those are profiles that do
+    not say, and the ``None`` they earn is a different commitment downstream
+    from a readable ``0.0``.
 
-    ``None`` — never a guessed ``0.0`` — when there is no applied profile, no
-    recomposition snapshot, or either role's ``delay_ms`` is missing or
-    non-finite. The caller decides what an unreadable applied alignment means;
-    conflating "nothing is applied" with "zero is applied" here would take that
-    decision away from it.
+    ``None`` — never a guessed ``0.0`` — when there is no applied profile, when
+    the authoritative corrections name neither/only one of the two roles, or
+    when the arithmetic is not finite. Conflating "nothing is applied" with
+    "zero is applied" here would take that decision away from the caller, which
+    discloses the two as different objectives.
     """
-    if not isinstance(applied_profile, Mapping):
-        return None
-    snapshot = applied_profile.get("recomposition_snapshot")
-    if not isinstance(snapshot, Mapping):
-        return None
-    corrections = snapshot.get("corrections")
-    if not isinstance(corrections, Mapping):
-        return None
+    from jasper.active_speaker.baseline_profile import profile_driver_corrections
 
-    def _delay_ms(role: str) -> float | None:
-        entry = corrections.get(role)
-        if not isinstance(entry, Mapping):
-            return None
-        raw = entry.get("delay_ms")
-        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
-            return None
-        value = float(raw)
-        return value if math.isfinite(value) else None
-
-    tweeter_ms, woofer_ms = _delay_ms(tweeter_role), _delay_ms(woofer_role)
-    if tweeter_ms is None or woofer_ms is None:
+    corrections = profile_driver_corrections(applied_profile)
+    woofer, tweeter = corrections.get(woofer_role), corrections.get(tweeter_role)
+    if not isinstance(woofer, Mapping) or not isinstance(tweeter, Mapping):
         return None
-    return (tweeter_ms - woofer_ms) * 1000.0
+    try:
+        delay_us = 1000.0 * (
+            float(tweeter.get("delay_ms") or 0.0)
+            - float(woofer.get("delay_ms") or 0.0)
+        )
+    except (TypeError, ValueError):
+        return None
+    return delay_us if math.isfinite(delay_us) else None
 
 
 def analysis_json(analysis: ProgramAnalysis) -> dict[str, Any]:

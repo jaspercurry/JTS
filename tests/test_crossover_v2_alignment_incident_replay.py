@@ -73,6 +73,7 @@ from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_FLAT_MINIMUM_EPSILON_DB,
     ALIGNMENT_OK,
     AlignmentEstimate,
+    AppliedAlignment,
     _build_candidate,
     _ripple_db,
     _select_alignment_pair,
@@ -355,7 +356,7 @@ def test_a_delay_alone_cannot_rescue_the_inverted_pair():
     assert abs(at_inverted - ANCHOR_DELAY_US) > 200.0
 
 
-def _refused_selection(freqs, W, T, *, applied_delay_us=None):
+def _refused_selection(freqs, W, T, *, applied_alignment=None):
     """The incident's own inputs, with its own tweeter verdict refusing."""
     lo, hi = SESSION_CONTEXT["crossover_region_hz"]
     return _select_alignment_pair(
@@ -367,7 +368,7 @@ def _refused_selection(freqs, W, T, *, applied_delay_us=None):
         seed_polarity_sign=SEED_POLARITY_SIGN,
         delay_bounds_us=DELAY_BOUNDS_US,
         branch_snr_insufficient=True,
-        applied_delay_us=applied_delay_us,
+        applied_alignment=applied_alignment,
     )
 
 
@@ -411,11 +412,25 @@ def test_a_refused_capture_holds_the_delay_this_speaker_already_plays():
     evidence, per the roadmap's ethos — is the commitment; the anchor this
     capture produced is reported as declined evidence and never becomes the
     delay. The polarity half is unchanged from #2607.
+
+    **What this banked fixture CANNOT discriminate, stated so it is not
+    misread** (#2622 correctness lens, C-n3): on this round the applied delay
+    and the correlation SEED are the same number — 95.997 µs, because the seed
+    is what the previous round committed — so an implementation that committed
+    ``seed_delay_us`` here would leave this test green. It discriminates
+    against the ANCHOR (61.87 µs, asserted below), which is the value #2617
+    removed, and that is the whole of what it proves. The seed half of the
+    invariant is pinned on a synthetic fixture where the two differ:
+    ``test_select_alignment_pair_holds_the_applied_delay_on_an_unmeasurable_branch``
+    in ``tests/test_audio_measurement_program_analysis.py`` (seed 90 µs,
+    anchor 25 µs, held −140 µs — three distinguishable numbers).
     """
     freqs, W, T = _declared_branches()
     applied_us = APPLIED["delay_us"]
 
-    selection = _refused_selection(freqs, W, T, applied_delay_us=applied_us)
+    selection = _refused_selection(
+        freqs, W, T, applied_alignment=AppliedAlignment(applied_us),
+    )
     assert selection is not None
     assert selection.objective == ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR
     assert selection.delay_us == pytest.approx(applied_us)

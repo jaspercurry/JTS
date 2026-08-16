@@ -170,7 +170,7 @@ def measure_priors(
     protection_sections_by_role: Mapping[str, Sequence[Any]] | None,
     ambient_report: Any,
     alignment_delay_bounds_us: tuple[float, float] | None,
-    applied_alignment_delay_us: float | None = None,
+    applied_alignment: Any,
 ) -> MeasurementPriors:
     """MEASURE's priors — the widest set, and the only §4.2 de-embedding.
 
@@ -179,18 +179,19 @@ def measure_priors(
     is not a priors concern, and splitting that helper across a module boundary
     would put two readers of one declaration in two places.
 
-    ``applied_alignment_delay_us`` — the delay this speaker's applied graph
-    already carries — arrives as an argument for the same reason plus a
-    stronger one: reading it means reading the applied Layer-A profile off
-    disk, and this module states its inputs rather than reaching for them.
-    MEASURE is the only phase that gets it, and that withholding is the point.
-    It licenses exactly one claim — "commit the alignment already applied
-    rather than one read off a capture the SNR verdict refused" (issue #2617) —
-    and MEASURE is the only phase that commits an alignment at all. Handing it
-    to VERIFY or a cloud pose would put the speaker's current answer inside a
-    comparison whose whole job is to be independent of it. ``None`` (every
-    other phase, and a speaker with nothing commissioned yet) means the refusal
-    commits ``0.0``, never a guess.
+    ``applied_alignment`` — what this speaker's applied graph already plays —
+    arrives as an argument for the same reason plus a stronger one: reading it
+    means reading the applied Layer-A profile off disk, and this module states
+    its inputs rather than reaching for them. MEASURE is the only phase that
+    gets it, and that withholding is the point. It licenses exactly one claim —
+    "commit the alignment already applied rather than one read off a capture
+    the SNR verdict refused" (issue #2617) — and MEASURE is the only phase that
+    commits an alignment at all. Handing it to VERIFY or a cloud pose would put
+    the speaker's current answer inside a comparison whose whole job is to be
+    independent of it. **Required and undefaulted**, like its five siblings: a
+    future caller that simply forgets it would silently downgrade every held
+    alignment to "commit no delay", which is a wrong tune with no failure to
+    notice.
 
     ``ambient_report`` is CHECK's measured room floor, carried forward so MEASURE
     can grade its own per-driver SNR (issue #1830). Without it
@@ -213,7 +214,7 @@ def measure_priors(
     return MeasurementPriors(
         crossover_fc_hz=fc_hz,
         alignment_delay_bounds_us=alignment_delay_bounds_us,
-        applied_alignment_delay_us=applied_alignment_delay_us,
+        applied_alignment=applied_alignment,
         ambient_report=ambient_report,
         measurement_protection_response_by_role=role_transfers(
             protection_sections_by_role

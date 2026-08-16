@@ -234,6 +234,7 @@ from jasper.audio_measurement.program import (
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_OK,
     INTEGRITY_CHECK_SWEEP_HEARD,
+    AppliedAlignment,
     CaptureIntegrity,
     GainPlan,
     MeasurementGeometry,
@@ -5676,20 +5677,43 @@ class CrossoverV2Session:
             # ``_declared_alignment_delay_range_ms`` with the plausibility gate,
             # which is not a priors concern.
             alignment_delay_bounds_us=alignment_delay_search_bounds_us(self._preset),
-            applied_alignment_delay_us=self._applied_alignment_delay_us(),
+            applied_alignment=self._applied_alignment(),
         )
 
-    def _applied_alignment_delay_us(self) -> float | None:
-        """The inter-driver delay this speaker's applied graph already carries.
+    def _applied_alignment(self) -> AppliedAlignment | None:
+        """What this speaker's applied graph plays, for the low-SNR refusal.
 
         The only prior that comes from the SPEAKER rather than the session, and
         the only one that reads a file, so it is read HERE and handed down: the
         analysis is a pure function of (program, WAV, priors) and must not
         acquire a side channel to Layer-A state (issue #2617's architecture
-        constraint). ``None`` on anything unreadable — nothing commissioned
-        yet, a pre-snapshot profile, a hand-edited state file — because the
-        consumer's fail-safe is "commit no delay", and a crash here would take
-        down a MEASURE analysis over a fact only one refusal path consults.
+        constraint).
+
+        Three answers, and the middle one is why this returns a wrapper rather
+        than a bare float: ``None`` is "no graph is applied", an
+        :class:`AppliedAlignment` carrying a delay is "hold this", and one
+        carrying ``None`` is "a graph IS applied and its record does not say
+        what it plays". The refusal commits no delay for the last two, but only
+        the second may be disclosed as the design's own answer.
+
+        **How reachable is that third answer?** Narrowly, and the honest bound
+        is worth stating rather than assuming away.
+        ``baseline_profile.persist_applied_baseline_profile`` REFUSES to write
+        a profile without a ``recomposition_snapshot`` mapping, and
+        ``build_baseline_profile_candidate`` always puts ``corrections`` in it,
+        so no machine-written profile lands here unreadable. What can is a
+        hand-edited or truncated state file, or a record from an era before
+        those keys — and since #2617 routes through
+        ``baseline_profile.profile_driver_corrections``, the older top-level
+        mirror is read too, so an era gap is no longer one of them. It is a
+        fail-safe with a disclosure rather than a path with a frequency.
+
+        Never raises. A missing or unparseable state file is already ``None``
+        from the reader; this also catches one that is valid JSON but
+        structurally wrong (hand-edited), which must read as "nothing applied"
+        rather than crash a MEASURE analysis over a fact one refusal path
+        consults — the same posture ``resolve_applied_speaker_evidence`` takes
+        on the same read.
 
         Read per MEASURE analysis rather than cached at session open, since
         that is the moment the answer has to be true: one small JSON read a
@@ -5703,16 +5727,15 @@ class CrossoverV2Session:
         try:
             applied = load_applied_baseline_profile_state()
         except (OSError, TypeError, ValueError):
-            # The reader already tolerates a missing/unparseable file; this
-            # catches a state file that is valid JSON but structurally wrong,
-            # which must read as "nothing applied" rather than a crashed
-            # capture (the same posture `resolve_applied_speaker_evidence`
-            # takes on the same read).
             return None
-        return _planning.applied_profile_delay_us(
-            applied,
-            woofer_role=self._woofer.role,
-            tweeter_role=self._tweeter.role,
+        if applied is None:
+            return None
+        return AppliedAlignment(
+            delay_us=_planning.applied_profile_delay_us(
+                applied,
+                woofer_role=self._woofer.role,
+                tweeter_role=self._tweeter.role,
+            ),
         )
 
     def _lateral_priors(self) -> MeasurementPriors:

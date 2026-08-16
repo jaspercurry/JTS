@@ -4229,11 +4229,15 @@ negative), and the selection log line is a WARNING.
 > number off the capture the verdict had just refused, which is exactly the
 > quantity a low-SNR capture gets wrong (#2611: six of nine jts3 positions
 > read ≈ −211 µs against a true +59.6). It now holds the delay the applied
-> graph already carries, or commits none when there is nothing to hold, and
-> the two are different `alignment_objective` values. The contract, the
-> priors seam it arrives through, and the disclosure are **code-owned**: read
-> `_select_alignment_pair`'s docstring and `MeasurementPriors.
-> applied_alignment_delay_us` in
+> graph already carries, or commits none when there is nothing to hold or
+> nothing readable, and those are three different `alignment_objective`
+> values. The summed model that round ships also stops carrying
+> `committed − anchor`, so an anchor the capture disowned cannot refuse a
+> candidate through the accountability gate or fail a round through VERIFY
+> tracking — while every MEASURED-vs-spec verdict stays live. The contract,
+> the priors seam it arrives through, and the disclosure are **code-owned**:
+> read `_select_alignment_pair`'s and `summed_model_residual_delay_us`'s
+> docstrings and `MeasurementPriors.applied_alignment` in
 > [`program_analysis.py`](../jasper/audio_measurement/program_analysis.py),
 > not a restatement here.
 
