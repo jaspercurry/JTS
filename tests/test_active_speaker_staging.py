@@ -28,7 +28,7 @@ from jasper.active_speaker import (
 )
 from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, build_design_draft
 from jasper.active_speaker.path_safety import _startup_muted_by_candidate
-from jasper.camilla_config_contract import ACTIVE_OUTPUTD_PLAYBACK_DEVICE
+from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 from jasper.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
 from jasper.output_topology import OutputTopology
 from tests.active_speaker_fixtures import (
@@ -340,8 +340,11 @@ def test_stage_protected_startup_config_writes_muted_candidate(
     assert payload["preset"]["preset_id"] == "epique-e150he44-eminence-f110m8-safe-v1"
     # Stage 2: the DAC8x declares an active outputd lane, so staging resolves to
     # that lane (not a direct-DAC route) — staging never silently defaults to
-    # hw:<card>,0 on outputd-owned hardware.
-    assert payload["config"]["playback_device"] == ACTIVE_OUTPUTD_PLAYBACK_DEVICE
+    # hw:<card>,0 on outputd-owned hardware. #2285 P2 retired the snd-aloop
+    # ACTIVE endpoint, so the lane is reached over the ACTIVE RING; the SOURCE
+    # is deliberately unchanged, because it names the lane ROLE and not the
+    # transport, and re-pointing it would drop a genuinely invariant property.
+    assert payload["config"]["playback_device"] == RING_ACTIVE_PLAYBACK_DEVICE
     assert payload["config"]["playback_device_source"] == "outputd_active_lane"
     assert payload["config"]["playback_channels"] == 2
     assert payload["config"]["validation"]["status"] == "valid"
@@ -743,7 +746,9 @@ def test_stage_protected_startup_config_supports_stereo_three_way_on_dac8x(
     assert payload["status"] == "staged"
     # Stage 2: a stereo 3-way (6 lanes) fits within the DAC8x active outputd
     # lane (width 8), so staging resolves to it rather than a direct-DAC route.
-    assert payload["config"]["playback_device"] == ACTIVE_OUTPUTD_PLAYBACK_DEVICE
+    # The lane is reached over the ACTIVE RING since #2285 P2; the SOURCE is
+    # invariant across that change and is asserted unchanged on purpose.
+    assert payload["config"]["playback_device"] == RING_ACTIVE_PLAYBACK_DEVICE
     assert payload["config"]["playback_device_source"] == "outputd_active_lane"
     assert payload["config"]["playback_channels"] == 6
     capacity_gate = next(
@@ -797,9 +802,12 @@ def test_stage_protected_startup_config_uses_outputd_active_lane_for_dual_apple(
     )
 
     assert payload["status"] == "staged"
-    assert payload["config"]["playback_device"] == ACTIVE_OUTPUTD_PLAYBACK_DEVICE
+    # The lane is reached over the ACTIVE RING since #2285 P2. The SOURCE is
+    # invariant and stays asserted; the emitted YAML names the same device, so
+    # the text assertion re-points with the payload rather than being dropped.
+    assert payload["config"]["playback_device"] == RING_ACTIVE_PLAYBACK_DEVICE
     assert payload["config"]["playback_device_source"] == "outputd_active_lane"
-    assert f'device: "{ACTIVE_OUTPUTD_PLAYBACK_DEVICE}"' in out.read_text(
+    assert f'device: "{RING_ACTIVE_PLAYBACK_DEVICE}"' in out.read_text(
         encoding="utf-8"
     )
 
