@@ -155,6 +155,8 @@ from jasper.active_speaker.delta_probe import (
     spatial_cost_from_group_spreads,
 )
 from jasper.active_speaker.branch_chain import CrossoverSection
+from jasper.active_speaker.camilla_yaml import role_polarity
+from jasper.active_speaker.profile import ActiveSpeakerConfigError
 from jasper.active_speaker.crossover_v2 import accountability as _accountability
 from jasper.active_speaker.crossover_v2 import admission as _admission
 from jasper.active_speaker.crossover_v2 import attempt_grading as _grading
@@ -2951,10 +2953,14 @@ class V2FlowSeams:
     # as ``residual_offset_db`` instead of being silently claimed as accounted.
     applied_offset_db: Callable[[], float] | None = None
     # #2611: the Layer-A profile the speaker is playing RIGHT NOW — the graph an
-    # apply would replace. Read once per committed candidate, at MEASURE-commit
-    # time (the apply has not happened yet, so "currently applied" IS the
-    # previous graph), and turned into the PREVIOUS side of the commanded axis
-    # by :meth:`CrossoverV2Session._previous_graph_predicted_sum`.
+    # apply would replace. Read once per candidate EVALUATED, which is once on
+    # the configured walk and once per swept corner on the alternative-Fc sweep
+    # (so up to six times in one session), always at MEASURE time — the apply
+    # has not happened yet, so "currently applied" IS the previous graph — and
+    # turned into the PREVIOUS side of the commanded axis by
+    # :meth:`CrossoverV2Session._previous_graph_predicted_sum`. The answer does
+    # not change between corners; the repeat reads are a cheap durable-state
+    # load, and the disclosure they produce is deduplicated at that method.
     #
     # Optional, and its absence is NOT a fallback to the old raw-crossover axis:
     # a session that cannot learn what the speaker is playing cannot state what
@@ -4864,9 +4870,12 @@ def _commanded_delta(previous_predicted_sum: Any, predicted_sum: Any) -> Any:
     The applied graph's predicted sum minus **the predicted sum of the graph it
     replaces**, both built from the SAME measured branches with the SAME
     summation model (``program_analysis.predicted_branch_sum``) against the SAME
-    alignment anchor, so the branch measurements, the summation model, and the
-    anchor all divide out and what is left is every element the apply commands:
-    the emitted filters, the role gains, the polarity, and the delay.
+    alignment anchor, so the branch measurements and the summation model divide
+    out and what is left is every element the apply commands: the emitted
+    filters, the role gains, the polarity, and the delay. The anchor does NOT
+    divide out and is not meant to — it is shared so both graphs are stated in
+    one phasing frame; see
+    :func:`jasper.active_speaker.crossover_v2.commanded.graph_predicted_sum`.
 
     The previous side is built by
     :meth:`CrossoverV2Session._previous_graph_predicted_sum`; this function is
@@ -4876,10 +4885,35 @@ def _commanded_delta(previous_predicted_sum: Any, predicted_sum: Any) -> Any:
     crossover (#2611).
 
     ``None`` — the probe reports ``unavailable``, which is not a pass — when
-    either curve is missing or the two cannot be put on one grid. The caller
-    names the reason on the journal.
+    either curve is missing or the two cannot be put on one grid. A MISSING
+    curve is already named on the journal by whoever failed to build it. The
+    other case is this function's own to name, and it does: two curves that both
+    arrived and still would not subtract is a defect in one of them, and it used
+    to disappear silently here.
     """
-    return _commanded.commanded_delta(previous_predicted_sum, predicted_sum)
+    delta = _commanded.commanded_delta(previous_predicted_sum, predicted_sum)
+    if delta is None and None not in (previous_predicted_sum, predicted_sum):
+        log_event(
+            logger, "correction.crossover_v2_commanded_delta_failed",
+            level=logging.WARNING,
+            previous_points=_curve_points(previous_predicted_sum),
+            applied_points=_curve_points(predicted_sum),
+        )
+    return delta
+
+
+def _curve_points(curve: Any) -> int | None:
+    """How many points a ``(freqs, values)`` pair carries, or ``None``.
+
+    Only ever a log field, so it answers rather than raises: the one thing a
+    reader of ``crossover_v2_commanded_delta_failed`` wants first is whether the
+    two curves were even the same length, and a diagnostic that could itself
+    throw inside a failure path would be worse than no diagnostic.
+    """
+    try:
+        return int(np.asarray(curve[1], dtype=float).size)
+    except (ValueError, TypeError, IndexError, AttributeError):
+        return None
 
 
 # --------------------------------------------------------------------------- #
@@ -4934,6 +4968,7 @@ class CrossoverV2Session:
         measure_predicted_sum: Any = None,
         measure_predicted_spec_report: Mapping[str, Any] | None = None,
         measure_commanded_delta: Any = None,
+        measure_declared_transfer: Any = None,
         measure_entry_baseline: "EntryBaseline | None" = None,
         measure_gate_window_ms: float | None = None,
         measure_proposal_fingerprint: str = "",
@@ -5247,6 +5282,17 @@ class CrossoverV2Session:
         # for the same reason and by the same route — the delta probe runs at
         # VERIFY, which a re-arm reaches with a freshly constructed session.
         self._measure_commanded_delta: Any = measure_commanded_delta
+        # #2614: the applied graph's OWN transfer against the uncorrected
+        # crossover — the STATE axis, beside the CHANGE axis above. The delta
+        # probe's two directional safety rules read it, because since #2611 the
+        # commanded axis is a change and a repeat round therefore commands ~0
+        # across every band it leaves alone, including one the applied graph
+        # still boosts. Same two routes and same reason as the field above.
+        self._measure_declared_transfer: Any = measure_declared_transfer
+        # What ``_previous_graph_predicted_sum``'s INFO line last disclosed, so
+        # one applied profile read once per swept corner is one journal line
+        # rather than six identical ones.
+        self._previous_graph_disclosed: tuple[Any, ...] | None = None
         # #2291's "before" measurement. WRITTEN by stage 1, whose
         # ``PHASE_ENTRY_BASELINE`` capture reduces it (``_consume_entry_baseline``);
         # PASSED IN on stage 2, which never captures one and rehydrates it from
@@ -5892,6 +5938,17 @@ class CrossoverV2Session:
     @property
     def measure_commanded_delta(self) -> Any:
         return self._measure_commanded_delta
+
+    @property
+    def measure_declared_transfer(self) -> Any:
+        """The applied graph's own transfer against the raw crossover (#2614).
+
+        The delta probe's STATE axis, on exactly
+        :attr:`measure_commanded_delta`'s two routes and for its reason: the
+        stage that grades is not the stage that fit, so durable state is the
+        only channel it has.
+        """
+        return self._measure_declared_transfer
 
     @property
     def measure_proposal_fingerprint(self) -> str:
@@ -7399,6 +7456,7 @@ class CrossoverV2Session:
             predicted_spec_report=lambda: self._measure_predicted_spec_report,
             ineligible_reason=self._linearization_ineligible_reason,
             commanded_delta=self._commanded_delta_for,
+            declared_transfer=self._declared_transfer_for,
             configured_fc_hz=self._fc_hz,
             preset=self._preset,
             tweeter_role=self._tweeter.role,
@@ -8309,7 +8367,7 @@ class CrossoverV2Session:
             linearization=linearization,
         )
 
-    def _previous_graph_predicted_sum(self, analysis: Any) -> Any:
+    def _previous_graph_predicted_sum(self, analysis: Any, capture_fc_hz: float) -> Any:
         """The graph an apply REPLACES, modelled on this capture's branches (#2611).
 
         The PREVIOUS side of the commanded axis: the currently-applied Layer-A
@@ -8319,6 +8377,16 @@ class CrossoverV2Session:
         :mod:`jasper.active_speaker.crossover_v2.commanded` for why that — and
         not the raw crossover at the applied candidate's own parameters — is
         what the probe's measured side is a change against.
+
+        ``capture_fc_hz`` is the crossover corner THIS candidate's branches were
+        composed at — the session's own corner on the configured walk, and the
+        SWEPT corner for an alternative-Fc candidate, because
+        ``crossover_v2.priors.candidate_priors`` re-points the composition at
+        each one. The applied profile's graph only ran the corner it was built
+        at, so the model below describes the speaker's actual previous graph
+        only while the two agree, and the guard is why this is a parameter
+        rather than a read of ``self._fc_hz``: on the sweep those two are
+        different numbers on purpose.
 
         ``None`` whenever the previous graph cannot be named, with the reason on
         the journal. Every ``None`` here becomes an ``unavailable`` delta probe
@@ -8340,9 +8408,37 @@ class CrossoverV2Session:
             profile = seam()
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             return _absent("applied_profile_unreadable", error=str(exc))
+        # The corner check, BEFORE the model is built: a previous graph modelled
+        # on branches composed through a crossover it never ran is wrong by up
+        # to 5.88 dB against this probe's 1.5 dB tolerance (adversarial panel,
+        # PR #2614), and the two doors that reach it — a ``/sound`` corner edit
+        # between rounds, and every alternative-Fc candidate — are both live.
+        applied_fc_hz = _commanded.profile_crossover_fc_hz(profile)
+        if applied_fc_hz is None:
+            return _absent("applied_profile_names_no_corner")
+        # A relative tolerance, not equality: both numbers are floats that have
+        # been through a JSON round trip, and the case this refuses is 1500 vs
+        # 1800, never 1500 vs 1500.0000001.
+        if not math.isclose(applied_fc_hz, float(capture_fc_hz), rel_tol=1e-6):
+            return _absent(
+                "crossover_corner_moved",
+                applied_fc_hz=round(applied_fc_hz, 3),
+                capture_fc_hz=round(float(capture_fc_hz), 3),
+            )
         woofer_role, tweeter_role = self._woofer.role, self._tweeter.role
+        # The DRAFT's declared per-role polarity, which the measured branches
+        # already carry (``program_analysis._compose_configured_path_ir``). The
+        # profile records absolute flags, so without this the previous side is
+        # stated in a different frame from the applied side's
+        # ``alignment.polarity_sign`` on any speaker whose draft declares an
+        # inverted branch.
+        try:
+            draft_inverted = role_polarity(self._preset)
+        except ActiveSpeakerConfigError as exc:
+            return _absent("draft_polarity_unreadable", error=str(exc))
         graph = _commanded.profile_graph_summation(
             profile, woofer_role=woofer_role, tweeter_role=tweeter_role,
+            draft_inverted_by_role=draft_inverted,
         )
         if graph is None:
             return _absent("applied_profile_names_no_graph")
@@ -8378,30 +8474,75 @@ class CrossoverV2Session:
         # INFO, and it carries the four numbers the model turned on: a disputed
         # rollback should never need a second session to establish which graph
         # the round was graded against.
-        log_event(
-            logger, "correction.crossover_v2_previous_graph",
-            level=logging.INFO, session_id=self.session_id,
-            trim_db={r: round(v, 4) for r, v in graph.trim_db.items()},
-            delay_us=round(graph.delay_us, 3),
-            polarity_sign=graph.polarity_sign,
-            linearization_filters={
-                role: len(entries) for role, entries in graph.linearization.items()
-            },
+        #
+        # ONCE per distinct answer, not once per call. This runs for every swept
+        # corner, and the applied profile does not change between them, so the
+        # unguarded version put six identical lines in the journal for one fact
+        # (adversarial panel, PR #2614). The guard is the fields themselves, so
+        # a graph that genuinely differs still gets its own line.
+        disclosed = (
+            tuple(sorted((r, round(v, 4)) for r, v in graph.trim_db.items())),
+            round(graph.delay_us, 3),
+            graph.polarity_sign,
+            tuple(sorted(
+                (role, len(entries))
+                for role, entries in graph.linearization.items()
+            )),
         )
+        if disclosed != self._previous_graph_disclosed:
+            self._previous_graph_disclosed = disclosed
+            log_event(
+                logger, "correction.crossover_v2_previous_graph",
+                level=logging.INFO, session_id=self.session_id,
+                trim_db={r: round(v, 4) for r, v in graph.trim_db.items()},
+                delay_us=round(graph.delay_us, 3),
+                polarity_sign=graph.polarity_sign,
+                linearization_filters={
+                    role: len(entries)
+                    for role, entries in graph.linearization.items()
+                },
+            )
         return predicted
 
-    def _commanded_delta_for(self, analysis: Any, predicted_sum: Any) -> Any:
+    def _commanded_delta_for(
+        self, analysis: Any, predicted_sum: Any, capture_fc_hz: float,
+    ) -> Any:
         """This candidate's commanded axis: applied graph minus previous graph.
 
         The one place the two halves meet, so the configured-Fc walk and the
         alternative-Fc sweep cannot build the axis differently. ``analysis`` is
         the candidate's OWN analysis — the sweep re-analyses at each corner, and
         the previous graph has to be modelled on the same branches the applied
-        side was, or the branch measurement stops cancelling.
+        side was, or the branch measurement stops cancelling. ``capture_fc_hz``
+        is the corner those branches were composed at, and it travels for the
+        same reason: on the sweep it is the SWEPT corner, not the session's, and
+        the previous graph is only nameable while it matches the corner the
+        applied profile ran.
         """
         return _commanded_delta(
-            self._previous_graph_predicted_sum(analysis), predicted_sum,
+            self._previous_graph_predicted_sum(analysis, capture_fc_hz),
+            predicted_sum,
         )
+
+    @staticmethod
+    def _declared_transfer_for(analysis: Any, predicted_sum: Any) -> Any:
+        """This candidate's STATE axis: applied graph minus the RAW crossover.
+
+        What the applied graph declares it does, as opposed to what this apply
+        changes — the delta probe's two directional safety rules need the first
+        question and ``_commanded_delta_for`` above answers the second (#2614).
+        A repeat round that leaves an existing boost band exactly as it was
+        commands nothing there and still declares a boost there, and the
+        speaker can over-realize it either way.
+
+        The same subtraction, through the same owner, against the same applied
+        side — only the reference graph differs, and here it is
+        ``analysis.predicted_sum``: this capture's branches summed at the
+        applied candidate's own polarity, delay and trims, with no correction.
+        That is the axis the probe had before #2611, kept for exactly the one
+        question it was right for.
+        """
+        return _commanded_delta(getattr(analysis, "predicted_sum", None), predicted_sum)
 
     def commit_intervention_proposal(
         self,
@@ -8411,6 +8552,7 @@ class CrossoverV2Session:
         commanded_delta: Any,
         level_frame_finding: Mapping[str, Any] | None,
         realized_branch_level: Mapping[str, Any] | None = None,
+        declared_transfer: Any = None,
     ) -> None:
         """The ONE seam through which a planned candidate becomes real (#2291).
 
@@ -8470,6 +8612,11 @@ class CrossoverV2Session:
         self._candidate = candidate
         self._measure_predicted_sum = predicted_sum
         self._measure_commanded_delta = commanded_delta
+        # #2614's STATE axis, written here for the CHANGE axis's reason and by
+        # the same two sites. It is deliberately NOT part of the proposal: the
+        # proposal states what the round asks for, and this states what the
+        # graph declares — the delta probe's safety mask is its only reader.
+        self._measure_declared_transfer = declared_transfer
         planned = plan_intervention_proposal(
             candidate,
             session_id=self.session_id,
@@ -8504,6 +8651,7 @@ class CrossoverV2Session:
             candidate,
             predicted_sum=evaluation.predicted_sum,
             commanded_delta=evaluation.commanded_delta,
+            declared_transfer=evaluation.declared_transfer,
             level_frame_finding=evaluation.level_frame_finding,
             # #2392 re-supplies what 5c-iii removed. The selection's copy is the
             # one the sweep retained on the evaluation — read from there rather
@@ -8541,7 +8689,13 @@ class CrossoverV2Session:
         self.commit_intervention_proposal(
             candidate,
             predicted_sum=predicted_sum,
-            commanded_delta=self._commanded_delta_for(analysis, predicted_sum),
+            # The configured walk's branches are composed at the session's own
+            # corner, which is the corner the guard checks the applied profile
+            # against.
+            commanded_delta=self._commanded_delta_for(
+                analysis, predicted_sum, self._fc_hz,
+            ),
+            declared_transfer=self._declared_transfer_for(analysis, predicted_sum),
             level_frame_finding=built.level_frame_finding,
             # #2392's other half of the same one-line re-supply: the walk reads
             # the verdict off its own build's state, the same accessor
@@ -9977,6 +10131,43 @@ class CrossoverV2Session:
             return 0.0
         return value if math.isfinite(value) else 0.0
 
+    def _declared_transfer_db(self, freqs: Any) -> Any | None:
+        """The applied graph's own declared transfer, on the VERIFY grid (#2614).
+
+        The delta probe's STATE axis — what the graph on the speaker declares it
+        does against the uncorrected crossover — interpolated onto the probe's
+        grid exactly as ``commanded_db`` is beside the call, so the two masks the
+        probe builds from them are bin-for-bin comparable.
+
+        Returns ``None`` when the axis never crossed into this stage or cannot
+        be put on the grid, and says so on the journal rather than degrading
+        quietly: the probe then falls back to the CHANGE axis alone for its two
+        directional safety rules, which on a repeat round stops watching every
+        band the apply left alone. That is a real narrowing of a hearing-safety
+        finding, so it belongs in front of whoever reads the round.
+        """
+        declared = self._measure_declared_transfer
+        if declared is None:
+            log_event(
+                logger, "correction.crossover_v2_declared_transfer_unavailable",
+                level=logging.WARNING, session_id=self.session_id,
+                reason="no_declared_transfer",
+            )
+            return None
+        try:
+            return np.interp(
+                np.asarray(freqs, dtype=float),
+                np.asarray(declared[0], dtype=float),
+                np.asarray(declared[1], dtype=float),
+            )
+        except (ValueError, TypeError, IndexError, AttributeError) as exc:
+            log_event(
+                logger, "correction.crossover_v2_declared_transfer_unavailable",
+                level=logging.WARNING, session_id=self.session_id,
+                reason="declared_transfer_ungriddable", error=str(exc),
+            )
+            return None
+
     def _entry_delta_db(
         self, freqs: Any, predicted_s: Any, commanded_db: Any,
     ) -> Any | None:
@@ -10107,6 +10298,7 @@ class CrossoverV2Session:
         realized_db = (measured_s - predicted_s) + commanded_db
         probe = classify_delta_probe(
             freqs, realized_db, commanded_db, band_hz=band_hz,
+            declared_transfer_db=self._declared_transfer_db(freqs),
             spatial=spatial_cost_from_group_spreads(
                 {"band_spread": self._group_band_spread.get(PHASE_CLOUD_MEASURE, ())},
                 {"band_spread": self._group_band_spread.get(PHASE_CLOUD_VERIFY, ())},

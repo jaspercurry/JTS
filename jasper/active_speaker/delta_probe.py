@@ -796,32 +796,35 @@ class DeltaProbeMap:
     #: residual was measured, or when the graded band spans no octaves at all
     #: for a coverage to be a fraction OF.
     quiet_probe_coverage: float | None = None
-    #: Did a commanded BOOST realize more lift than it declared, structurally?
-    #: (#2537) The adoption table's one delta-probe-sourced hard stop — see
-    #: :func:`boost_overshoot` for the rule and why it is the one directional
-    #: exceedance in this module. ``False`` both when nothing overshot and when
-    #: no graded bin commanded a boost; the two are told apart by
-    #: :attr:`boost_overshoot_db`, which is ``None`` only in the second case.
+    #: Did a BOOST realize more lift than the applied graph declared,
+    #: structurally? (#2537) The adoption table's one delta-probe-sourced hard
+    #: stop — see :func:`boost_overshoot` for the rule, why it is the one
+    #: directional exceedance in this module, and why since #2614 it is asked
+    #: over the SAFETY bins (this apply's changes UNION the applied graph's own
+    #: declared transfer) rather than the graded ones alone. ``False`` both when
+    #: nothing overshot and when no safety bin carried a boost; the two are told
+    #: apart by :attr:`boost_overshoot_db`, ``None`` only in the second case.
     boost_over_declared_bound: bool = False
-    #: The worst signed ``realized − commanded``, dB, over the graded bins where
-    #: the correction commanded a boost. Positive is over-realized. ``None``
-    #: when no graded bin commanded one — "not measured", never 0.0.
+    #: The worst signed ``realized − commanded``, dB, over the safety bins where
+    #: a boost was on the table. Positive is over-realized. ``None`` when none
+    #: was — "not measured", never 0.0.
     boost_overshoot_db: float | None = None
     #: The widest contiguous run, in octaves, over which that excess cleared
     #: this probe's per-bin tolerance. ``0.0`` means nothing cleared it.
     boost_overshoot_octaves: float = 0.0
-    #: Did ANY graded bin realize LOUDER than commanded, past that bin's own
+    #: Did ANY safety bin realize LOUDER than commanded, past that bin's own
     #: tolerance? (#2559) The direction of the shape miss, measured over every
-    #: graded bin rather than only the boosted ones — see
-    #: :func:`louder_than_commanded` for why it is unstructured and why it is
-    #: taken on the raw realized curve. ``False`` on an unavailable map, where
-    #: :attr:`max_signed_error_db` is ``None`` to say nothing was measured.
+    #: safety bin rather than only the boosted ones — see
+    #: :func:`louder_than_commanded` for why it is unstructured, why it is
+    #: taken on the raw realized curve, and which mask reaches it. ``False`` on
+    #: an unavailable map, where :attr:`max_signed_error_db` is ``None`` to say
+    #: nothing was measured.
     realized_louder_than_commanded: bool = False
-    #: The most POSITIVE ``realized − commanded`` over the graded bins, dB.
+    #: The most POSITIVE ``realized − commanded`` over the safety bins, dB.
     #: Negative on a map whose every bin realized quieter than commanded — which
     #: is a measurement, and the one :attr:`realized_louder_than_commanded`
     #: reduces to a finding against the per-bin tolerance. ``None`` when no bin
-    #: was graded, never 0.0 (``gain_factor``'s distinction).
+    #: was in the safety mask, never 0.0 (``gain_factor``'s distinction).
     max_signed_error_db: float | None = None
 
     @property
@@ -1015,14 +1018,28 @@ def boost_overshoot(
     commanded_db: np.ndarray,
     tolerance_db: np.ndarray,
     probe_mask: np.ndarray,
+    declared_db: np.ndarray | None = None,
 ) -> tuple[bool, float | None, float]:
-    """Did a commanded BOOST realize MORE lift than it asked for? (#2537)
+    """Did a BOOST realize MORE lift than the graph declared? (#2537)
 
     ``(over the declared bound, worst signed excess in dB, widest run in
-    octaves)``, measured only in graded bins where the correction commanded a
-    **boost** — ``commanded > 0``. Every array is on the full grid, exactly as
-    :func:`_structured_exceedance` requires and for the same run-contiguity
-    reason.
+    octaves)``, measured only in graded bins where a **boost** is on the table.
+    Every array is on the full grid, exactly as :func:`_structured_exceedance`
+    requires and for the same run-contiguity reason.
+
+    **Two axes select those bins, and the second one is what makes this a STATE
+    question** (#2614). ``commanded_db`` is a CHANGE — what this apply asks the
+    summed response to do relative to the graph it replaces — so on a repeat
+    round it is ~0 across every band the apply leaves alone, including a band
+    the applied graph still boosts by 5 dB. ``declared_db`` is that graph's own
+    predicted transfer against the uncorrected crossover, so it is where the
+    standing boosts are, and a bin qualifies when EITHER curve boosts. The
+    union is deliberate: the hearing-safety question is "is the speaker putting
+    more energy into a driver than the applied graph declares, ANYWHERE", and
+    a band this apply did not touch is exactly as able to be over-realized as
+    one it did. ``None`` falls back to ``commanded_db`` alone, which is both
+    the pre-#2614 behaviour and exactly right for a first-ever apply — there
+    the graph being replaced is the raw crossover, so the two curves are one.
 
     **Directional, where every other exceedance rule here is not.** The rest of
     this module asks "did realized and commanded disagree", takes ``abs``, and
@@ -1040,13 +1057,14 @@ def boost_overshoot(
     other one here (:data:`DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES`), so a single
     noisy bin cannot pull a household's correction off the speaker.
 
-    The middle value is ``None`` when no graded bin commanded a boost — "not
-    measured", never 0.0, which would read as "measured, and it did not
-    overshoot" (the distinction ``gain_factor`` and ``residual_offset_db`` both
-    draw). A cut-only correction reaches that, and so does a boost whose bins
+    The middle value is ``None`` when no graded bin carried a boost on either
+    axis — "not measured", never 0.0, which would read as "measured, and it did
+    not overshoot" (the distinction ``gain_factor`` and ``residual_offset_db``
+    both draw). A cut-only graph reaches that, and so does a boost whose bins
     all fell under the graded floor.
     """
-    boosted = probe_mask & (commanded_db > 0.0)
+    declared = commanded_db if declared_db is None else declared_db
+    boosted = probe_mask & ((commanded_db > 0.0) | (declared > 0.0))
     if not bool(boosted.any()):
         return False, None, 0.0
     excess = realized_db - commanded_db
@@ -1089,10 +1107,18 @@ def louder_than_commanded(
     a fitted offset first would hide exactly the whole-band overshoot the
     lenience must not be granted for.
 
+    ``probe_mask`` is :func:`classify_delta_probe`'s SAFETY mask, not its graded
+    one (#2614): every bin this apply changed, PLUS every bin the applied graph
+    itself declares a transfer in. Same reason :func:`boost_overshoot` takes a
+    second axis — the lenience is withheld on evidence about how much energy
+    reached the driver, and a band a repeat round left alone still has a driver
+    in it.
+
     ``None`` for the scalar only when the mask selects nothing — "not measured",
     never 0.0. ``classify_delta_probe`` never reaches here with an empty mask
-    (:data:`DELTA_PROBE_MIN_BINS` is checked first), so this arm serves a direct
-    caller rather than a production path.
+    (:data:`DELTA_PROBE_MIN_BINS` is checked on the graded mask, which the
+    safety mask contains), so this arm serves a direct caller rather than a
+    production path.
     """
     if not bool(probe_mask.any()):
         return False, None
@@ -1142,6 +1168,7 @@ def classify_delta_probe(
     spatial: SpatialCost = SPATIAL_COST_UNAVAILABLE,
     expected_offset_db: float = 0.0,
     entry_delta_db: Any | None = None,
+    declared_transfer_db: Any | None = None,
 ) -> DeltaProbeMap:
     """Classify one applied correction's realized-vs-commanded map.
 
@@ -1171,8 +1198,8 @@ def classify_delta_probe(
     in ``residual_offset_db`` rather than pretending it was accounted for.
 
     ``entry_delta_db`` is the PRE-apply capture in the same frame as
-    ``realized_delta_db`` — ``measured_pre − predicted_raw``, on the same grid —
-    and it exists so ``residual_offset_db`` can be a CHANGE (#2533). Optional,
+    ``realized_delta_db`` — ``measured_pre − predicted_previous``, on the same
+    grid — so ``residual_offset_db`` can be a CHANGE (#2533). Optional,
     and governed by exactly ``expected_offset_db``'s rule: an unsupplied curve,
     one whose length disagrees, or one that is non-finite across the quiet bins
     all mean "nothing known", so nothing is removed and the standing offset
@@ -1180,6 +1207,22 @@ def classify_delta_probe(
     absence here rather than the ``grid_mismatch`` the three graded arrays get,
     for ``verify_measured_curve_from_state``'s reason: a truncated optional
     record should read as "no anchor", not reach the classifier as a bad grid.
+
+    ``declared_transfer_db`` is the STATE axis the two directional safety rules
+    read, and it exists because ``commanded_delta_db`` stopped being one (#2614).
+    It is the applied graph's OWN predicted transfer against the uncorrected
+    crossover — what the graph declares it does, not what this apply changes —
+    on the same grid. :func:`boost_overshoot` and
+    :func:`louder_than_commanded` are then measured over the UNION of the two
+    axes' graded bins, so a repeat round that leaves an existing boost band
+    untouched still has that band watched. Optional, on the same rule as
+    ``entry_delta_db``: unsupplied or length-disagreeing means "nothing known"
+    and the graded mask alone is used, which is the pre-#2614 behaviour and an
+    identity on a first-ever apply. Everything else this function measures —
+    the error curve, the statistics, the exceedance width, the gain fit, the
+    frame, the quiet residual — is untouched by it, because ``realized −
+    commanded`` is ``measured_post − predicted_post`` whichever graph the two
+    sides are stated against.
 
     **CHAINED ROUNDS: the reference graph is shared, and that is what makes the
     residual meaningful** (#2611 closed the #2545 hazard). ``commanded_delta_db``
@@ -1229,11 +1272,40 @@ def classify_delta_probe(
         & np.isfinite(realized)
         & np.isfinite(commanded)
     )
-    mask = in_band & (np.abs(commanded) >= graded_command_floor_db(freqs))
+    floor = graded_command_floor_db(freqs)
+    mask = in_band & (np.abs(commanded) >= floor)
     if int(mask.sum()) < DELTA_PROBE_MIN_BINS:
         return _unavailable(
             "nothing_commanded", spatial, expected_offset_db=offset,
             requested_band_hz=requested_band_hz,
+        )
+
+    # The STATE axis, and the two directional safety rules are the only things
+    # that read it (#2614). ``commanded`` is a CHANGE — since #2611 it is the
+    # applied graph minus the graph it replaces — so on a repeat round it is ~0
+    # everywhere the apply left alone, and the graded ``mask`` above therefore
+    # stops covering a band the applied graph still boosts by 5 dB. The
+    # hearing-safety question is not "did the change realize", it is *is the
+    # speaker putting more energy into a driver than the applied graph
+    # declares, anywhere*, so those two rules watch the UNION: every bin this
+    # apply changed, plus every bin the applied graph declares a transfer in.
+    #
+    # A union rather than a swap, deliberately. The graded mask is what the
+    # model_error axis is measured over and it stays exactly as it is; and no
+    # bin watched before this change stops being watched, so the fix can only
+    # add coverage. ``None`` — a caller that cannot state the applied graph's
+    # own transfer — degrades to the graded mask alone, which is both the
+    # pre-#2614 behaviour and an identity on a first-ever apply (the graph
+    # being replaced IS the raw crossover there, so the two axes coincide).
+    declared: np.ndarray | None = None
+    if declared_transfer_db is not None:
+        candidate_declared = np.asarray(declared_transfer_db, dtype=np.float64)
+        if candidate_declared.shape == freqs.shape:
+            declared = candidate_declared
+    safety_mask = mask
+    if declared is not None:
+        safety_mask = mask | (
+            in_band & np.isfinite(declared) & (np.abs(declared) >= floor)
         )
 
     f = freqs[mask]
@@ -1447,14 +1519,19 @@ def classify_delta_probe(
     # this asks how much energy actually reached the driver. Subtracting a
     # fitted offset first would hide exactly the whole-band overshoot the
     # adoption table's hard stop exists for.
+    #
+    # On the SAFETY mask, not the graded one (#2614) — see its construction
+    # above: a repeat round's graded mask does not contain the bands the apply
+    # left alone, and an untouched boost is still a boost.
     boost_over_bound, boost_overshoot_db, boost_overshoot_octaves = boost_overshoot(
-        freqs, realized, commanded, tolerance_full, mask,
+        freqs, realized, commanded, tolerance_full, safety_mask,
+        declared_db=declared,
     )
-    # WHICH WAY the graded bins missed (#2559), on the raw curve for the same
+    # WHICH WAY the safety bins missed (#2559), on the raw curve for the same
     # reason the boost finding above is: this asks how much energy reached the
     # driver, not whether the shape is right.
     realized_louder, max_signed_error_db = louder_than_commanded(
-        realized, commanded, tolerance_full, mask,
+        realized, commanded, tolerance_full, safety_mask,
     )
 
     def _map(verdict: str, reason: str) -> DeltaProbeMap:

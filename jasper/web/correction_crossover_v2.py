@@ -2574,10 +2574,37 @@ def commanded_delta_prior_from_state(
     disagreement — makes the capability line true by construction, for the cost
     of one comparison.
     """
+    return _delta_prior_from_state(state, "commanded_delta")
+
+
+def declared_transfer_prior_from_state(
+    state: Mapping[str, Any] | None,
+) -> tuple[Any, Any] | None:
+    """The stage-1 STATE axis, as the conductor's ctor takes it (#2614).
+
+    The applied graph's own transfer against the uncorrected crossover — the
+    axis the delta probe's two directional safety rules mask on. The exact twin
+    of :func:`commanded_delta_prior_from_state` above, through the same reader,
+    and it degrades the same way: ``None`` means the probe falls back to the
+    CHANGE axis alone for those two rules, which is the pre-#2614 behaviour and
+    an identity on a first-ever apply.
+    """
+    return _delta_prior_from_state(state, "declared_transfer")
+
+
+def _delta_prior_from_state(
+    state: Mapping[str, Any] | None, key: str,
+) -> tuple[Any, Any] | None:
+    """One ``verify_priors`` curve record, rehydrated — the shared reader.
+
+    Both delta axes persist through :func:`_decimate_delta` and rehydrate
+    through here, so the length check the docstring above argues for cannot end
+    up applied to one axis and not the other.
+    """
     import numpy as np
 
     priors = (state or {}).get("verify_priors")
-    record = priors.get("commanded_delta") if isinstance(priors, Mapping) else None
+    record = priors.get(key) if isinstance(priors, Mapping) else None
     if not isinstance(record, Mapping):
         return None
     freqs, delta = record.get("freqs_hz"), record.get("delta_db")
@@ -2586,7 +2613,7 @@ def commanded_delta_prior_from_state(
     if len(freqs) != len(delta):
         log_event(
             logger, "correction.crossover_v2_commanded_delta_malformed",
-            level=logging.WARNING,
+            level=logging.WARNING, prior=key,
             n_freqs=len(freqs), n_delta=len(delta),
         )
         return None
@@ -3282,6 +3309,15 @@ def persist_conductor_state(
             # the key's own absence already means downstream.
             "commanded_delta": _decimate_delta(
                 getattr(conductor, "measure_commanded_delta", None)
+            ),
+            # The delta probe's STATE axis beside its CHANGE axis (#2614): what
+            # the applied graph declares it does against the uncorrected
+            # crossover. It crosses for exactly ``commanded_delta``'s reason and
+            # is read the same way — a stand-in without the property means "no
+            # state axis", which downstream degrades to the change axis alone
+            # for the two directional safety rules.
+            "declared_transfer": _decimate_delta(
+                getattr(conductor, "measure_declared_transfer", None)
             ),
             # The MEASURED side of the same comparison (#2522). Its two
             # neighbours above are what the correction PREDICTED and COMMANDED;
@@ -7102,13 +7138,31 @@ def _applied_graph_boosts() -> bool:
 def _applied_profile_now() -> Mapping[str, Any] | None:
     """The Layer-A profile the speaker is playing right now, or ``None`` (#2611).
 
-    The conductor's PREVIOUS-graph seam. Read at MEASURE-commit time, when the
-    apply has not happened yet, so "currently applied" and "the graph this apply
-    would replace" are the same profile — and read through the same SSOT
-    (:func:`~jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state`)
-    ``_applied_graph_boosts`` and ``_applied_offset_gate`` already read, so the
-    commanded axis, the boost predicate and the declared level move all describe
-    one graph.
+    The conductor's PREVIOUS-graph seam. Read at MEASURE time, when the apply
+    has not happened yet, so "currently applied" and "the graph this apply would
+    replace" are the same profile — and read through the same
+    :func:`~jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state`
+    record ``_applied_graph_boosts`` and :func:`_active_graph_fingerprint` read,
+    so the commanded axis, the boost predicate and the entry identity all
+    describe one graph.
+
+    **``_applied_offset_gate`` is a DIFFERENT source, and saying otherwise was
+    wrong.** That seam reads ``expected_post_apply_offset_db`` off the v2
+    durable state (``load_v2_state``), written at Apply time by
+    :func:`observe_apply_success` from the two profiles' program headrooms. It
+    is a number about an apply, banked once; this is a record about a graph,
+    re-read live. They are two accounts of one apply that are meant to be
+    disjoint (per-role gains on the commanded axis, the common pre-split gain in
+    the offset) and they are not one SSOT with two readers.
+
+    **The displaced-record guard, the same one
+    :func:`_active_graph_fingerprint` applies** (#2537's 2026-08-15 cycle-4
+    shape). An out-of-band reconcile changes the RUNNING config without
+    touching this record, so a displaced record no longer answers "which graph
+    is on the speaker" — and this PR makes that record rollback-DECIDING, which
+    is a stronger claim than the fingerprint it was first refused for. Only a
+    POSITIVE displacement refuses: the other two codes mean the comparison could
+    not be made, and an absent measurement is not evidence of a defect.
 
     **Fails to ``None``, and that is not the fail-closed direction here — it is
     the honest one.** ``None`` makes the commanded axis unavailable and the delta
@@ -7117,11 +7171,24 @@ def _applied_profile_now() -> Mapping[str, Any] | None:
     defect #2611 records.
     """
     from jasper.active_speaker.baseline_profile import (
+        APPLIED_PROFILE_DISPLACED,
+        applied_profile_displacement,
         load_applied_baseline_profile_state,
     )
 
     try:
-        return load_applied_baseline_profile_state()
+        applied = load_applied_baseline_profile_state()
+        if applied is not None and (
+            applied_profile_displacement(applied) == APPLIED_PROFILE_DISPLACED
+        ):
+            log_event(
+                logger,
+                "correction.crossover_v2_applied_profile_displaced",
+                level=logging.WARNING,
+                surface="commanded_axis",
+            )
+            return None
+        return applied
     except (OSError, RuntimeError, TypeError, ValueError, KeyError):
         log_event(
             logger,
@@ -7634,6 +7701,11 @@ def prepare_v2_verify(
     # stays ``VERDICT_UNAVAILABLE`` — no evidence to refuse on, and no
     # permission granted either.
     commanded_delta = commanded_delta_prior_from_state(state)
+    # The probe's STATE axis, rehydrated on exactly the same route and for the
+    # same reason (#2614). ``None`` narrows the two directional safety rules to
+    # the change axis alone, which the probe's own caller names on the journal
+    # rather than letting a hearing-safety mask quietly shrink.
+    declared_transfer = declared_transfer_prior_from_state(state)
     # What stage 1 proposed, rehydrated (#2392) — the identity the round
     # receipt names. Stage 2 plans nothing, so this is the only channel, and an
     # absent key (a state written before #2392, or a stage 1 whose proposal
@@ -7778,6 +7850,7 @@ def prepare_v2_verify(
             measure_predicted_sum=predicted_sum,
             measure_predicted_spec_report=predicted_spec,
             measure_commanded_delta=commanded_delta,
+            measure_declared_transfer=declared_transfer,
             measure_proposal_fingerprint=proposal_fingerprint,
             measure_entry_baseline=entry_baseline,
             measure_gate_window_ms=(

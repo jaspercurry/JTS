@@ -281,6 +281,13 @@ def test_the_new_axis_leaves_no_uncommanded_level_at_all():
     "field,value",
     [
         ("trim_db", {"woofer": 0.0, "tweeter": PREVIOUS_TWEETER_TRIM_DB}),
+        # The WOOFER's own role gain, alone (#2614). The incident moved the
+        # tweeter's, so every case above holds the woofer at 0.0 and a previous
+        # side that dropped the woofer gain entirely still passed all of them
+        # (adversarial panel, mutation: 500/500 green). A non-zero woofer trim
+        # is ordinary production output — ``anchor_trims``' normalize step
+        # shifts every branch — so this is a live element, not a symmetry.
+        ("trim_db", {"woofer": -2.5, "tweeter": APPLIED_TWEETER_TRIM_DB}),
         ("polarity_sign", PREVIOUS_POLARITY_SIGN),
         ("delay_us", PREVIOUS_DELAY_US),
     ],
@@ -292,7 +299,7 @@ def test_each_commanded_element_moves_the_new_axis_and_moved_neither_the_retired
 
     Take the RETIRED previous side (the applied candidate's own parameters) and
     change exactly one element to the previous profile's. The retired axis is
-    bit-identical for all three, because it never evaluated the previous graph
+    bit-identical for all of them, because it never evaluated the previous graph
     at all; the new axis moves for every one, because it does.
     """
     import dataclasses
@@ -405,6 +412,16 @@ def test_an_uncommanded_shape_change_still_rolls_back_under_the_new_axis():
 
     A 3 dB step across 6-11 kHz that no graph asked for. The instrument is not
     quieter after this fix — it is only correct about what was asked.
+
+    **What this is and is not sensitive to.** It guards the PROBE, not the axis.
+    ``realized − commanded`` is ``measured_post − predicted_post`` whichever
+    graph the two sides are stated against, so the graded error curve is
+    invariant to any additive change in the commanded axis and this assertion
+    cannot detect one (mutation-verified, adversarial panel PR #2614). What it
+    does detect is the probe going blind to an injected shape defect — the
+    regression the fix above must not buy. The axis's own contents are pinned by
+    the element-by-element cases in channel 2, and WHERE the axis is graded by
+    channel 3.
     """
     post, pre = _capture(
         curvature_db_per_octave2=_DISPUTED_CURVATURE, injection_db=3.0,
@@ -419,7 +436,13 @@ def test_an_uncommanded_shape_change_still_rolls_back_under_the_new_axis():
 # --------------------------------------------------------------------------- #
 
 
-def _incident_profile() -> dict[str, object]:
+#: The draft declares both branches non-inverted, which is jts3's own state and
+#: the case where the profile's ABSOLUTE flags and the branch frame agree. The
+#: inverted-draft case — where they do not — has its own test below.
+DRAFT_UPRIGHT = {"woofer": False, "tweeter": False}
+
+
+def _incident_profile(*, fc_hz: float = FC_HZ) -> dict[str, object]:
     """The round-3 applied profile, in the shape the reader consumes.
 
     Written in the emitter's own vocabulary — a non-negative delay magnitude on
@@ -427,10 +450,21 @@ def _incident_profile() -> dict[str, object]:
     summed model's, because translating between the two is exactly what
     :func:`~jasper.active_speaker.crossover_v2.commanded.profile_graph_summation`
     is being asked to do here.
+
+    ``fc_hz`` is the corner the graph was built at, which
+    :func:`~jasper.active_speaker.crossover_v2.commanded.profile_crossover_fc_hz`
+    reads off the snapshot preset and the session checks the capture against.
     """
+    from tests.test_active_speaker_profile import _two_way_preset
+
+    preset = _two_way_preset()
+    preset["crossover_regions"] = [
+        {**region, "fc_hz": float(fc_hz)} for region in preset["crossover_regions"]
+    ]
     return {
         "status": "applied",
         "recomposition_snapshot": {
+            "preset": preset,
             "corrections": {
                 "woofer": {"gain_db": 0.0, "delay_ms": 0.0, "inverted": False},
                 "tweeter": {
@@ -445,7 +479,9 @@ def _incident_profile() -> dict[str, object]:
 
 
 def test_the_profile_reader_recovers_the_graph_the_speaker_was_playing():
-    graph = cmd.profile_graph_summation(_incident_profile(), **ROLES)
+    graph = cmd.profile_graph_summation(
+        _incident_profile(), draft_inverted_by_role=DRAFT_UPRIGHT, **ROLES,
+    )
     assert graph is not None
     assert graph.trim_db["tweeter"] == pytest.approx(PREVIOUS_TWEETER_TRIM_DB)
     assert graph.delay_us == pytest.approx(PREVIOUS_DELAY_US)
@@ -472,7 +508,9 @@ def test_the_previous_graphs_own_correction_filters_enter_the_previous_side():
             {"biquad_type": "Peaking", "freq": 4000.0, "q": 1.5, "gain": -2.0},
         ],
     }
-    graph = cmd.profile_graph_summation(profile, **ROLES)
+    graph = cmd.profile_graph_summation(
+        profile, draft_inverted_by_role=DRAFT_UPRIGHT, **ROLES,
+    )
     assert graph is not None
     assert len(graph.linearization["tweeter"]) == 1
 
@@ -485,6 +523,12 @@ def test_the_previous_graphs_own_correction_filters_enter_the_previous_side():
     assert corrected[at_4k] - uncorrected[at_4k] == pytest.approx(-2.0, abs=0.15)
 
 
+def _read(profile, draft=None):
+    return cmd.profile_graph_summation(
+        profile, draft_inverted_by_role=draft or DRAFT_UPRIGHT, **ROLES,
+    )
+
+
 def test_a_profile_that_names_no_graph_is_an_absence_not_a_unity_graph():
     """``None``, never a fabricated flat graph.
 
@@ -492,11 +536,90 @@ def test_a_profile_that_names_no_graph_is_an_absence_not_a_unity_graph():
     whole of the previous profile's trim — the same class of wrong answer this
     module exists to remove, pointing the other way.
     """
-    assert cmd.profile_graph_summation(None, **ROLES) is None
-    assert cmd.profile_graph_summation({}, **ROLES) is None
-    assert cmd.profile_graph_summation(
+    assert _read(None) is None
+    assert _read({}) is None
+    assert _read(
         {"recomposition_snapshot": {"corrections": {"woofer": {"gain_db": 0.0}}}},
-        **ROLES,
+    ) is None
+
+
+def test_a_role_named_without_a_gain_is_an_absence_not_unity():
+    """``gain_db`` missing is "this profile does not say", never 0 dB (#2614).
+
+    The module's own absence-never-unity rule, which ``float(x or 0.0)`` broke
+    for exactly this field: a role whose trim is unstated would have modelled
+    the previous graph at unity and put the whole of the real trim on the
+    commanded axis as something the apply asked for. An absent ``delay_ms`` is
+    deliberately NOT the same — the profile records a magnitude only on the
+    delayed role, so its absence there is a statement.
+    """
+    profile = _incident_profile()
+    corrections = profile["recomposition_snapshot"]["corrections"]  # type: ignore[index]
+    assert _read(profile) is not None
+
+    without_gain = {**corrections["tweeter"]}
+    without_gain.pop("gain_db")
+    profile["recomposition_snapshot"]["corrections"] = {  # type: ignore[index]
+        **corrections, "tweeter": without_gain,
+    }
+    assert _read(profile) is None
+
+    # ...while the delay's absence keeps its meaning.
+    undelayed = _incident_profile()
+    tweeter = {**undelayed["recomposition_snapshot"]["corrections"]["tweeter"]}  # type: ignore[index]
+    tweeter.pop("delay_ms")
+    undelayed["recomposition_snapshot"]["corrections"]["tweeter"] = tweeter  # type: ignore[index]
+    graph = _read(undelayed)
+    assert graph is not None
+    assert graph.delay_us == pytest.approx(0.0)
+
+
+def test_the_previous_sides_polarity_is_stated_in_the_branches_own_frame():
+    """An inverted DRAFT must not read as an inverted previous graph (#2614).
+
+    The measured branches already carry the draft's declared polarity
+    (``program_analysis._compose_configured_path_ir``), so the applied side's
+    ``alignment.polarity_sign`` is a flip RELATIVE TO the draft: ``+1`` means
+    "as the preset declares". Taking the profile's ABSOLUTE per-role flags as
+    the sign put the two sides of the subtraction in different frames on every
+    speaker whose draft declares an inverted branch — reachable from ``/sound``
+    Alignment.
+
+    Both halves are asserted, because only the pair shows it is a FRAME and not
+    an offset: a profile that agrees with an inverted draft is ``+1``, and one
+    that disagrees with it is ``−1``.
+    """
+    agrees = _incident_profile()
+    agrees["recomposition_snapshot"]["corrections"]["tweeter"]["inverted"] = True  # type: ignore[index]
+    # Draft: tweeter inverted too. The profile matches the draft, so in the
+    # branches' own frame nothing is flipped.
+    assert _read(
+        agrees, {"woofer": False, "tweeter": True},
+    ).polarity_sign == 1
+    # Draft upright, profile inverted: a real flip relative to the branches.
+    assert _read(agrees, DRAFT_UPRIGHT).polarity_sign == -1
+
+    # And the reverse pairing, so the rule is not "the draft wins".
+    upright = _incident_profile()
+    upright["recomposition_snapshot"]["corrections"]["tweeter"]["inverted"] = False  # type: ignore[index]
+    assert _read(upright, DRAFT_UPRIGHT).polarity_sign == 1
+    assert _read(upright, {"woofer": False, "tweeter": True}).polarity_sign == -1
+
+
+def test_the_snapshot_preset_names_the_corner_the_graph_was_built_at():
+    """The corner reader, and its "cannot say" (#2614).
+
+    ``None`` for a profile with no snapshot preset — an era-older record — so
+    the session refuses rather than affirming a previous graph whose crossover
+    it cannot check.
+    """
+    assert cmd.profile_crossover_fc_hz(
+        _incident_profile(fc_hz=1234.0),
+    ) == pytest.approx(1234.0)
+    assert cmd.profile_crossover_fc_hz(None) is None
+    assert cmd.profile_crossover_fc_hz({"status": "applied"}) is None
+    assert cmd.profile_crossover_fc_hz(
+        {"recomposition_snapshot": {"corrections": {}}},
     ) is None
 
 
@@ -563,7 +686,7 @@ def test_the_session_builds_its_previous_side_from_the_applied_profile():
     fakes = FakeSeams(applied_profile_state=_incident_profile())
     session = _session(fakes.seams())
 
-    built = session._previous_graph_predicted_sum(_incident_analysis())
+    built = session._previous_graph_predicted_sum(_incident_analysis(), FC_HZ)
     assert built is not None
     np.testing.assert_allclose(built[0], FREQS_HZ)
     np.testing.assert_allclose(built[1], _summed(PREVIOUS_GRAPH)[1])
@@ -571,6 +694,76 @@ def test_the_session_builds_its_previous_side_from_the_applied_profile():
     # ...and it is NOT the retired axis's previous side, which is what the
     # session used to subtract.
     assert not np.allclose(built[1], _summed(RETIRED_PREVIOUS_GRAPH)[1])
+
+
+def test_a_capture_composed_at_another_corner_has_no_nameable_previous_graph(caplog):
+    """The corner guard, and it is the SWEEP's door as much as ``/sound``'s.
+
+    The branches are composed through whichever crossover the capture was
+    analysed at (``priors.candidate_priors`` re-points that at every swept
+    corner), while the applied profile only ever ran the corner it was built
+    at. Modelling the previous graph on the wrong ``C`` omits a term measured at
+    up to 5.88 dB against a 1.5 dB tolerance, so the axis is refused and the
+    probe reports ``unavailable`` — no rollback, no pass.
+    """
+    import logging
+
+    from tests.crossover_v2_fixtures import FakeSeams
+
+    session = _session(
+        FakeSeams(applied_profile_state=_incident_profile(fc_hz=FC_HZ)).seams()
+    )
+    # Same corner: nameable.
+    assert session._previous_graph_predicted_sum(_incident_analysis(), FC_HZ) is not None
+
+    with caplog.at_level(logging.WARNING):
+        moved = session._previous_graph_predicted_sum(
+            _incident_analysis(), FC_HZ * 1.2,
+        )
+    assert moved is None
+    assert "reason=crossover_corner_moved" in caplog.text
+    assert session._commanded_delta_for(
+        _incident_analysis(), _summed(APPLIED_GRAPH), FC_HZ * 1.2,
+    ) is None
+
+
+def test_a_profile_that_cannot_name_its_corner_is_refused_too(caplog):
+    """An era-older record with no snapshot preset is "cannot check", and the
+    axis declines rather than affirming a graph whose crossover is unknown."""
+    import logging
+
+    from tests.crossover_v2_fixtures import FakeSeams
+
+    profile = _incident_profile()
+    profile["recomposition_snapshot"].pop("preset")  # type: ignore[union-attr]
+    session = _session(FakeSeams(applied_profile_state=profile).seams())
+    with caplog.at_level(logging.WARNING):
+        assert session._previous_graph_predicted_sum(
+            _incident_analysis(), FC_HZ,
+        ) is None
+    assert "reason=applied_profile_names_no_corner" in caplog.text
+
+
+def test_one_applied_profile_is_disclosed_once_across_a_sweeps_corners(caplog):
+    """Six swept corners read one profile; the journal says so once (#2614).
+
+    The disclosure is per distinct ANSWER, not per call, so a session does not
+    put six identical ``previous_graph`` lines in front of a reader for one
+    fact — while a graph that genuinely differs still gets its own line.
+    """
+    import logging
+
+    from tests.crossover_v2_fixtures import FakeSeams
+
+    session = _session(
+        FakeSeams(applied_profile_state=_incident_profile()).seams()
+    )
+    with caplog.at_level(logging.INFO):
+        for _ in range(6):
+            assert session._previous_graph_predicted_sum(
+                _incident_analysis(), FC_HZ,
+            ) is not None
+    assert caplog.text.count("event=correction.crossover_v2_previous_graph ") == 1
 
 
 def test_an_unbound_applied_profile_seam_leaves_the_commanded_axis_unavailable(caplog):
@@ -589,10 +782,265 @@ def test_an_unbound_applied_profile_seam_leaves_the_commanded_axis_unavailable(c
         dataclasses.replace(FakeSeams().seams(), applied_profile=None)
     )
     with caplog.at_level(logging.WARNING):
-        assert session._previous_graph_predicted_sum(_incident_analysis()) is None
+        assert session._previous_graph_predicted_sum(
+            _incident_analysis(), FC_HZ,
+        ) is None
     assert "event=correction.crossover_v2_previous_graph_unavailable" in caplog.text
     assert "reason=no_applied_profile_seam" in caplog.text
 
     assert session._commanded_delta_for(
-        _incident_analysis(), _summed(APPLIED_GRAPH),
+        _incident_analysis(), _summed(APPLIED_GRAPH), FC_HZ,
     ) is None
+
+
+# --------------------------------------------------------------------------- #
+# channel 4 — the STATE axis, and what the CHANGE axis alone stops watching
+# --------------------------------------------------------------------------- #
+#
+# #2614's blocker. Everything above is about the CHANGE the apply commands,
+# which is the right axis for "did the correction realize what it asked for".
+# It is the wrong axis for the one hearing-safety question this probe asks —
+# *is the speaker putting more energy into a driver than the applied graph
+# declares* — because a REPEAT round changes nothing in the bands it leaves
+# alone, and a band it leaves alone still has a driver in it.
+
+#: A repeat round that touches ONLY the woofer band. The +5 dB tweeter boost at
+#: 5.2 kHz is in both graphs, byte-identical, so this apply commands nothing
+#: there — and the applied graph still declares it.
+_STANDING_BOOST = (
+    {"biquad_type": "Peaking", "freq": 5200.0, "q": 1.2, "gain": 5.0},
+)
+_NEW_WOOFER_CUT = (
+    {"biquad_type": "Peaking", "freq": 600.0, "q": 1.0, "gain": -3.0},
+)
+_REPEAT_TRIMS = {"woofer": 0.0, "tweeter": -6.9}
+_BOOST_BAND_HZ = (4200.0, 6400.0)
+
+
+def _repeat_round_graphs():
+    """``(applied, previous, raw)`` for the repeat round described above."""
+    import dataclasses
+
+    applied = cmd.GraphSummation(
+        trim_db=_REPEAT_TRIMS, delay_us=60.0, polarity_sign=1,
+        linearization={"woofer": _NEW_WOOFER_CUT, "tweeter": _STANDING_BOOST},
+    )
+    return (
+        applied,
+        dataclasses.replace(
+            applied, linearization={"woofer": (), "tweeter": _STANDING_BOOST},
+        ),
+        dataclasses.replace(applied, linearization={"woofer": (), "tweeter": ()}),
+    )
+
+
+def _repeat_round_axes():
+    """``(applied_db, commanded_db, declared_db, boost_band_mask)`` for that round."""
+    applied, previous, raw = _repeat_round_graphs()
+    _f, applied_db = _summed(applied)
+    commanded = cmd.commanded_delta(_summed(previous), (FREQS_HZ, applied_db))
+    declared = cmd.commanded_delta(_summed(raw), (FREQS_HZ, applied_db))
+    assert commanded is not None and declared is not None
+    band = (FREQS_HZ >= _BOOST_BAND_HZ[0]) & (FREQS_HZ <= _BOOST_BAND_HZ[1])
+    return applied_db, commanded[1], declared[1], band
+
+
+def _repeat_round_probe(*, hot_db: float, state_axis: bool):
+    """The probe for a speaker realizing ``hot_db`` more than declared, at 5.2 kHz.
+
+    ``state_axis`` is the fix: whether the classifier is told what the applied
+    graph DECLARES, or only what this apply CHANGES.
+    """
+    _applied, previous, _raw = _repeat_round_graphs()
+    applied_db, commanded_db, declared_db, band = _repeat_round_axes()
+    standing = -1.0 - 0.2 * np.log2(FREQS_HZ / 1000.0)
+    measured_post = applied_db + standing + np.where(band, hot_db, 0.0)
+    measured_pre = _summed(previous)[1] + standing
+    return classify_delta_probe(
+        FREQS_HZ,
+        (measured_post - applied_db) + commanded_db,
+        commanded_db,
+        band_hz=TRUSTED_BAND_HZ,
+        expected_offset_db=0.0,
+        entry_delta_db=(measured_pre - applied_db) + commanded_db,
+        declared_transfer_db=declared_db if state_axis else None,
+    )
+
+
+def test_the_repeat_rounds_untouched_boost_band_commands_nothing():
+    """The fixture's own guard: this apply really does leave that band alone.
+
+    Both assertions below rest on the boost being invisible to the CHANGE axis
+    and plain on the STATE one, so both facts are pinned before they are used.
+
+    "Invisible" is stated against the probe's own graded floor rather than
+    against zero, because it is the floor that decides which bins get graded —
+    and the woofer's new cut does leak a few thousandths of a dB up here through
+    its own stopband, which is physics rather than a commanded change.
+    """
+    from jasper.active_speaker.delta_probe import graded_command_floor_db
+
+    _applied_db, commanded_db, declared_db, band = _repeat_round_axes()
+    floor = graded_command_floor_db(FREQS_HZ)
+    assert bool(np.all(np.abs(commanded_db[band]) < floor[band]))
+    assert float(np.max(np.abs(commanded_db[band]))) < 0.05
+    assert float(np.max(declared_db[band])) == pytest.approx(5.0, abs=0.1)
+
+
+def test_an_untouched_boost_realized_hot_still_reaches_the_hard_stop():
+    """The blocker (#2614): the adoption table's hard stop fires again.
+
+    An existing +5 dB tweeter boost this apply does not change, realized 4 dB
+    hotter than the graph declares. With only the CHANGE axis the probe grades
+    that band as commanding nothing, reports ``boost_overshoot_db=None``, and a
+    correction putting 4 dB of unasked-for energy into a tweeter stays on the
+    speaker. With the STATE axis it is measured and the hard stop fires.
+    """
+    from jasper.active_speaker.crossover_v2.contracts import SafetyStatus
+    from jasper.active_speaker.crossover_v2.verification import (
+        SAFETY_BOOST_OVER_DECLARED_BOUND,
+        evaluate_applied_safety,
+    )
+
+    without = _repeat_round_probe(hot_db=4.0, state_axis=False)
+    assert without.boost_over_declared_bound is False
+    assert without.boost_overshoot_db is None
+    assert without.realized_louder_than_commanded is False
+    assert evaluate_applied_safety(
+        probe=without, integrity=None,
+    ).status is not SafetyStatus.UNSAFE
+
+    probe = _repeat_round_probe(hot_db=4.0, state_axis=True)
+    assert probe.boost_over_declared_bound is True
+    assert probe.boost_overshoot_db is not None
+    assert probe.boost_overshoot_db > 1.5
+    assert probe.realized_louder_than_commanded is True
+    # ...and it is the ADOPTION TABLE's hard stop this feeds, so the seam that
+    # reads the probe has to see it too.
+    safety = evaluate_applied_safety(probe=probe, integrity=None)
+    assert safety.status is SafetyStatus.UNSAFE
+    assert safety.reason == SAFETY_BOOST_OVER_DECLARED_BOUND
+
+
+def test_the_negative_control_measures_the_untouched_band_and_finds_nothing():
+    """Same round, same fixture, a speaker that realized what was declared.
+
+    The control that makes the test above a measurement rather than a tripwire:
+    ``boost_overshoot_db`` is a NUMBER — the band was looked at — and no finding
+    fires. ``None`` here would mean the mask had simply gone empty again.
+    """
+    probe = _repeat_round_probe(hot_db=0.0, state_axis=True)
+    assert probe.boost_overshoot_db is not None
+    assert probe.boost_overshoot_db < 0.0
+    assert probe.boost_over_declared_bound is False
+    assert probe.realized_louder_than_commanded is False
+    assert probe.rollback is False
+
+
+def test_the_state_axis_adds_bins_and_changes_nothing_else():
+    """It is a MASK, not a second error curve.
+
+    The graded statistics, the exceedance width, the gain fit and the quiet
+    residual are all algebraically independent of which graph the two sides are
+    stated against (``realized − commanded == measured_post − predicted_post``
+    either way), so supplying the state axis must move the two directional
+    findings and nothing else.
+    """
+    without = _repeat_round_probe(hot_db=4.0, state_axis=False)
+    with_state = _repeat_round_probe(hot_db=4.0, state_axis=True)
+    for field in (
+        "verdict", "reason", "rollback", "max_error_db", "rms_error_db",
+        "worst_hz", "exceedance_octaves", "gain_factor", "residual_offset_db",
+        "probe_band_hz", "n_bins", "quiet_n_bins",
+    ):
+        assert getattr(without, field) == getattr(with_state, field), field
+
+
+def test_a_malformed_state_axis_is_an_absence_not_a_grid_error():
+    """A wrong-length curve means "nothing known", exactly like ``entry_delta_db``.
+
+    It must not become a ``grid_mismatch`` refusal: the three graded arrays are
+    what that verdict is about, and an optional record that arrived truncated
+    should narrow the safety mask honestly rather than void the whole probe.
+    """
+    _applied, previous, _raw = _repeat_round_graphs()
+    applied_db, commanded_db, _declared_db, band = _repeat_round_axes()
+    standing = -1.0 - 0.2 * np.log2(FREQS_HZ / 1000.0)
+    measured_post = applied_db + standing + np.where(band, 4.0, 0.0)
+    measured_pre = _summed(previous)[1] + standing
+
+    def _probe_with(declared):
+        return classify_delta_probe(
+            FREQS_HZ,
+            (measured_post - applied_db) + commanded_db,
+            commanded_db,
+            band_hz=TRUSTED_BAND_HZ,
+            expected_offset_db=0.0,
+            entry_delta_db=(measured_pre - applied_db) + commanded_db,
+            declared_transfer_db=declared,
+        )
+
+    truncated = _probe_with(np.zeros(7))
+    absent = _probe_with(None)
+    assert truncated.verdict == absent.verdict
+    assert truncated.reason == absent.reason
+    assert truncated.boost_overshoot_db is absent.boost_overshoot_db
+
+
+def test_the_session_hands_the_state_axis_to_the_probe_on_both_commit_paths():
+    """The wiring: the STATE axis is built from the candidate's own RAW sum.
+
+    Its previous side is ``analysis.predicted_sum`` — this capture's branches at
+    the applied candidate's own polarity, delay and trims, with no correction —
+    which is what the retired commanded axis was, kept for the one question it
+    was right for. Unlike the CHANGE axis it needs no applied profile and no
+    corner check, so it survives every door that makes the change axis
+    unavailable.
+    """
+    import dataclasses
+
+    from tests.crossover_v2_fixtures import FakeSeams
+
+    session = _session(
+        dataclasses.replace(FakeSeams().seams(), applied_profile=None)
+    )
+    analysis = _incident_analysis()
+    raw_sum = _summed(RETIRED_PREVIOUS_GRAPH)
+    analysis = dataclasses.replace(analysis, candidate=None)
+    object.__setattr__(analysis, "predicted_sum", raw_sum)
+
+    declared = session._declared_transfer_for(analysis, _summed(APPLIED_GRAPH))
+    assert declared is not None
+    expected = cmd.commanded_delta(raw_sum, _summed(APPLIED_GRAPH))
+    assert expected is not None
+    np.testing.assert_allclose(declared[1], expected[1])
+    # The change axis is unavailable on this same session; the state axis is not.
+    assert session._commanded_delta_for(
+        analysis, _summed(APPLIED_GRAPH), FC_HZ,
+    ) is None
+
+
+def test_two_present_curves_that_will_not_subtract_are_named_on_the_journal(caplog):
+    """The swallow path says so (#2614). It used to disappear silently.
+
+    A MISSING curve is already named by whoever failed to build it. Two curves
+    that both arrived and still would not subtract is a defect in one of them,
+    and the wrapper's own docstring claimed "the caller names the reason" while
+    the named WARNING that used to carry it had been deleted.
+    """
+    import logging
+
+    from jasper.active_speaker.crossover_v2_flow import _commanded_delta
+
+    good = _summed(APPLIED_GRAPH)
+    with caplog.at_level(logging.WARNING):
+        assert _commanded_delta((np.zeros(4), "not a curve"), good) is None
+    assert "event=correction.crossover_v2_commanded_delta_failed" in caplog.text
+    assert "applied_points=2048" in caplog.text
+
+    # ...and a MISSING curve stays silent here, because it is not this
+    # function's fact to report.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        assert _commanded_delta(None, good) is None
+    assert "crossover_v2_commanded_delta_failed" not in caplog.text

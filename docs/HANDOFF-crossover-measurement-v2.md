@@ -2243,7 +2243,9 @@ tolerance (unstructured, so one bin withholds the deferral),
 seam rollback in the first place. The measurement behind it is
 `DeltaProbeMap.realized_louder_than_commanded` / `max_signed_error_db`, taken on
 the RAW realized curve for `boost_overshoot`'s reason: this asks how much energy
-reached the driver, not whether the shape is right. A deferral is never silent —
+reached the driver, not whether the shape is right. Both are measured over the
+probe's SAFETY bins since #2614 — this apply's graded changes UNION the applied
+graph's own declared transfer — for the same reason. A deferral is never silent —
 it journals `event=correction.crossover_v2_delta_probe_seam_deferred` (WARNING)
 and rides the safety axis's evidence as `seam_deferred`, so the receipt records
 the restore that did **not** happen.
@@ -3129,10 +3131,26 @@ room had measured better: a commanded +3.3209 dB tweeter step (−10.2141 →
 −6.8932) landed in bins the axis called quiet and was reported as
 `residual_offset_db = +3.2198`, and the frame that decides the rollback question
 was fitted entirely ABOVE the band it was then applied to. Owner:
-`jasper/active_speaker/crossover_v2/commanded.py`, which also carries the one
-known incompleteness. The pre-split program headroom is the one level term that
-axis cannot carry — it is applied before the branch split — and it stays where
-it was, as `expected_offset_db`.
+`jasper/active_speaker/crossover_v2/commanded.py`. The pre-split program
+headroom is the one level term that axis cannot carry — it is applied before
+the branch split — and it stays where it was, as `expected_offset_db`.
+
+**A commanded CHANGE is not a declared STATE, and the two directional safety
+rules need the second one** (#2614). `boost_over_declared_bound` and
+`realized_louder_than_commanded` ask *is the speaker putting more energy into a
+driver than the applied graph declares, anywhere* — including bands this apply
+did not touch. A repeat round commands ~0 across every such band, so masking
+those two rules on the change axis alone left an untouched +5 dB boost realized
+4 dB hot reading `matched` / `boost_overshoot_db=None`. `classify_delta_probe`
+therefore takes a second, optional `declared_transfer_db` — the applied graph's
+own predicted transfer against the uncorrected crossover, which is what the
+retired axis was — and masks those two rules on the UNION of the two axes'
+graded bins. Everything else the probe measures is untouched, because
+`realized − commanded` is `measured_post − predicted_post` whichever graph the
+two sides are stated against. The curve crosses the stage bridge beside the
+commanded one as `verify_priors.declared_transfer`; its absence narrows those
+two rules back to the change axis and says so on the journal
+(`event=correction.crossover_v2_declared_transfer_unavailable`).
 
 **That band is intersected with the capture's own TRUSTED band, and there is no
 fallback** (#2521). The band comes from
@@ -3199,11 +3217,24 @@ direct caller can hand it one — by
 `test_a_repeat_round_carries_the_previous_rounds_command_into_the_residual`.
 
 **What the caller still owes** is that its previous side describe the graph the
-entry capture actually went through. One reachable way for it not to: the
-branches are composed through the CURRENT design draft's crossover, so a
-household that edits Fc in `/sound` between rounds leaves the previous graph
-modelled with a corner it never ran. Named in `crossover_v2.commanded`'s "known
-incompleteness". `entry_anchor_offset_db` discloses what was removed and is
+entry capture actually went through, and the crossover corner is the part of
+that which is CHECKED rather than assumed (#2614). The branches are composed
+through whichever crossover the capture was analysed at, so a previous graph
+modelled on the wrong corner omits a term measured at up to 5.88 dB against a
+1.5 dB tolerance. **Two doors reach it, not one** — an earlier revision of this
+section named only the first and called the second benign:
+
+1. the household edits Fc in `/sound` between rounds;
+2. the alternative-Fc sweep, where `priors.candidate_priors` re-points the
+   composition at every SWEPT corner, so each non-configured candidate's
+   branches carry a crossover the applied profile never ran.
+
+`commanded.profile_crossover_fc_hz` reads the applied graph's own corner off its
+snapshot preset and `CrossoverV2Session._previous_graph_predicted_sum` refuses
+the previous side on a mismatch — `event=…previous_graph_unavailable
+reason=crossover_corner_moved`, and `reason=applied_profile_names_no_corner` for
+an era-older record that cannot say. The probe then reports `unavailable`: no
+rollback, no pass. `entry_anchor_offset_db` discloses what was removed and is
 **not** a warrant that the residual beside it is clean.
 
 The two conditions that reach the verdict subtract **different** numbers, and

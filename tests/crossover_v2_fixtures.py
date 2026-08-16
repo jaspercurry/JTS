@@ -471,21 +471,36 @@ def _fixture_applied_profile(
     linearization: dict[str, Any] | None = None,
     delay_ms: dict[str, float] | None = None,
     inverted: dict[str, bool] | None = None,
+    fc_hz: float = FC_HZ,
 ) -> dict[str, Any]:
     """An applied Layer-A profile in the shape the commanded axis reads (#2611).
 
-    Only the two fields
-    :func:`~jasper.active_speaker.crossover_v2.commanded.profile_graph_summation`
-    consults — ``recomposition_snapshot['corrections']`` and
-    ``recomposition_snapshot['linearization']`` — because a fixture that
-    fabricated a whole profile would be asserting the profile schema rather than
-    the axis. The defaults describe the graph
+    Only the fields the commanded axis consults —
+    ``recomposition_snapshot['corrections']`` and ``['linearization']`` for
+    :func:`~jasper.active_speaker.crossover_v2.commanded.profile_graph_summation`,
+    and ``['preset']`` for
+    :func:`~jasper.active_speaker.crossover_v2.commanded.profile_crossover_fc_hz`
+    — because a fixture that fabricated a whole profile would be asserting the
+    profile schema rather than the axis. The defaults describe the graph
     :func:`_eligible_measure_analysis` was measured through in these fixtures:
-    the raw trim, no correction, no delay, no inversion.
+    the raw trim, no correction, no delay, no inversion, at the session's own
+    corner.
+
+    ``fc_hz`` is the corner this profile's graph was BUILT at (#2614). It
+    defaults to the session's, which is the ordinary case; passing a different
+    one is how a test reaches the corner-mismatch refusal, and it is a
+    parameter because that refusal is a hearing-safety-adjacent door rather
+    than an unreachable branch.
     """
+    preset = _two_way_preset()
+    preset["crossover_regions"] = [
+        {**region, "fc_hz": float(fc_hz)}
+        for region in preset["crossover_regions"]
+    ]
     return {
         "status": "applied",
         "recomposition_snapshot": {
+            "preset": preset,
             "corrections": {
                 role: {
                     "gain_db": float((trim_db or _FIXTURE_RAW_TRIM_DB)[role]),
