@@ -975,7 +975,16 @@ original combined Sound page was the first wizard on this system; see AGENTS.md
 4. Skips `sound_audition.yml` so an unsaved preview stays reversible.
 5. Skips unknown/custom/non-hostable graphs with a structured reason instead
    of overwriting them.
-6. Skips unchanged or flat no-op current graphs.
+6. Skips unchanged or flat no-op current graphs. "Unchanged" compares the saved
+   intent against the config CamillaDSP is **running**, whatever that config is
+   named — not only against `sound_current.yml`. This is what lets a kept
+   active-crossover candidate
+   (`active_speaker_baseline_candidate_<hash>.yml`) stay the running config
+   across a deploy: the active carrier recomposes it from the immutable applied
+   record, so the bytes are identical and there is nothing to refresh. Writing
+   them under a second filename would move only the NAME, which is enough to
+   displace the applied-profile record from the statefile and cost a
+   measurement round its entry-graph identity (#2572).
 7. Re-emits `sound_current.yml` through the same validation/reload/rollback
    transaction as `/sound/apply`, but does not persist profile JSON.
 8. On a roleful (active-crossover) box, re-emits through the playback endpoint
@@ -1020,8 +1029,12 @@ rate-limited so a broken live-upload environment does not spam the
 journal while the user drags a slider.
 
 Deploy/startup reconciliation emits `event=sound.reconcile_current_dsp` for
-every outcome: `result=reconciled`, `result=unchanged`, or
-`result=skipped reason=<code>`. CLI fail-open failures emit the same event with
+every outcome: `result=reconciled`,
+`result=unchanged reason=running_config_matches_intent`, or
+`result=skipped reason=<code>`. On the `unchanged` line, `current=` and
+`candidate=` name the running config and the file that was not written — they
+differ exactly when a non-`sound_current.yml` graph was deliberately left in
+place (see step 6 above). CLI fail-open failures emit the same event with
 `result=failed`, and install.sh prints the command output into the deploy
 transcript. This is the first place to look when a deploy did or did not refresh
 the audible sound profile.

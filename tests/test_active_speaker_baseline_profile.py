@@ -2515,6 +2515,63 @@ def test_recompose_baseline_yaml_matches_durable_builder_when_flat(
     assert flat_yaml == durable_yaml
 
 
+def test_recompose_applied_baseline_yaml_matches_the_durable_candidate_it_records(
+    tmp_path: Path,
+) -> None:
+    """The twin of the pin above, for the IMMUTABLE-snapshot recompose (#2572).
+
+    The sibling above pins the mutable-evidence seam
+    (``recompose_baseline_yaml``, off a live crossover preview). This pins the
+    production one — ``recompose_applied_baseline_yaml``, off the applied
+    record's frozen ``recomposition_snapshot`` — which is what the graph carrier
+    calls on every ``/sound`` save and every deploy reconcile. Nothing pinned it,
+    so the two halves of "the record can reproduce its own graph" were an
+    untested assumption.
+
+    WHY THIS IS LOAD-BEARING NOW. It is the premise under the reconcile's
+    content-aware no-op (``jasper.sound.runtime._running_config_is_intent``,
+    ``tests/test_reconcile_adoption_durability.py``): a kept correction survives
+    a deploy only because re-deriving it from the record reproduces the exact
+    bytes already on disk. If that ever stops holding, the no-op silently stops
+    firing — the reconcile falls back to write-and-apply, the applied record is
+    displaced from the statefile again, and mid-series adoption breaks the same
+    way it did on jts3. A degradation with no failing test is the shape this
+    guards against, which is why the assertion is byte equality and not a
+    weaker "both are approved graphs".
+    """
+    from jasper.active_speaker.baseline_profile import (
+        recompose_applied_baseline_yaml,
+    )
+
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    built = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=_measurements(topology, tmp_path),
+        write=True,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+    )
+    # #1666: the candidate lands on its own source-fingerprinted sibling, and
+    # THAT path is what the applied record carries — the name the reconcile then
+    # finds as the running config.
+    durable_path = Path(built["config"]["path"])
+    assert durable_path.name.startswith("active_speaker_baseline_candidate_")
+    durable_yaml = durable_path.read_text(encoding="utf-8")
+
+    built["status"] = "applied"
+    recomposed, issues = recompose_applied_baseline_yaml(
+        topology, applied_profile=built
+    )
+
+    assert issues == []
+    assert recomposed == durable_yaml
+
+
 def test_recompose_baseline_yaml_inserts_preference_eq_and_stays_approved(
     tmp_path: Path,
 ) -> None:

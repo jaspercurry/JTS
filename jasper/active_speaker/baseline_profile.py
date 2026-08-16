@@ -3087,6 +3087,16 @@ def _prune_baseline_candidate_siblings(
     mtime once ~K newer candidates accumulate — silently breaking Undo. A
     protected sibling costs one of the K slots rather than adding to K, so the
     on-disk total stays at K.
+
+    BLAST RADIUS, stated because the code cannot show it: since #2572 the
+    CamillaDSP statefile may durably name a candidate sibling. A deploy's
+    reconcile no longer rewrites a content-identical graph to
+    ``sound_current.yml``, so a kept correction stays the running config under
+    its own candidate name — and pruning that file would leave the statefile
+    pointing at nothing, i.e. CamillaDSP failing to start. Safe today only
+    because the one caller is the promote path, which always passes the live
+    anchor as ``protect``. A future caller, or a prune that stops honouring
+    ``protect``, inherits "CamillaDSP starts" as a consequence.
     """
 
     pattern = f"{canonical.stem}_candidate_*{canonical.suffix}"

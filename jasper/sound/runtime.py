@@ -54,6 +54,46 @@ def _config_without_id_header(text: str) -> str:
     return _CONFIG_ID_HEADER_RE.sub(r"\1.", text)
 
 
+def _running_config_is_intent(current_path: str | Path, dry_yaml: str) -> bool:
+    """Does the config CamillaDSP is RUNNING already carry ``dry_yaml``'s DSP?
+
+    The question this asks is deliberately about the running config and not
+    about ``sound_current.yml``, the file the reconcile would write. Those are
+    the same file on an ordinary stereo box and are NOT the same file on a
+    speaker running a kept active-crossover candidate
+    (``active_speaker_baseline_candidate_<hash>.yml``) — and asking the
+    narrower question there is the #2572 defect:
+
+    The active carrier recomposes from the immutable applied-profile record, so
+    the CONTENT survives a reconcile; only the NAME moves. The old check was
+    gated on the running config being the write target, which a candidate never
+    is, so identical bytes were written under a second filename and CamillaDSP's
+    statefile stopped naming the candidate. From there the applied record and the
+    statefile disagree on a pure path compare
+    (:func:`~jasper.active_speaker.baseline_profile.applied_profile_displacement`),
+    the record reads as DISPLACED, and the crossover-v2 round loses its entry
+    graph identity — a kept correction stops chaining into the next round even
+    though the speaker never stopped playing it. Observed on jts3 2026-08-15:
+    post-deploy ``sound_current.yml`` and the kept candidate had the same
+    sha256. An identity move, not a content move.
+
+    Compared modulo the cosmetic ``(id=...)`` header (see
+    :data:`_CONFIG_ID_HEADER_RE`) exactly as the same-path comparison always
+    was; this is that comparison with its path precondition dropped, so a box
+    where the two paths DO match answers identically to before.
+
+    FAIL-SAFE: an unreadable or undecodable running config answers ``False`` and
+    falls through to the ordinary write-and-apply path. A comparison that cannot
+    be made is never read as "nothing to do".
+    """
+
+    try:
+        running = Path(current_path).read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return False
+    return _config_without_id_header(running) == _config_without_id_header(dry_yaml)
+
+
 def _log_reconcile_result(payload: dict[str, Any]) -> dict[str, Any]:
     fields: dict[str, Any] = {
         "result": payload.get("status"),
@@ -300,25 +340,27 @@ async def reconcile_current_dsp(
                     "room_peq_count": dry.room_peq_count,
                 }
             )
-        if not force and _paths_match(current_path, out_path):
-            try:
-                on_disk = _config_without_id_header(
-                    out_path.read_text(encoding="utf-8")
-                )
-                if on_disk == _config_without_id_header(dry.yaml):
-                    return _log_reconcile_result(
-                        {
-                            "status": "unchanged",
-                            "carrier_kind": carrier.kind,
-                            "current_config_path": str(current_path),
-                            "candidate_config_path": str(out_path),
-                            "output_trim_db": trim_db,
-                            "sound_filter_count": sound_filter_count,
-                            "room_peq_count": dry.room_peq_count,
-                        }
-                    )
-            except OSError:
-                pass
+        # The saved intent is ALREADY what the speaker is playing, whatever that
+        # config is named — so there is nothing to refresh. Returning here is
+        # what keeps a kept active-crossover candidate the running config
+        # instead of re-writing its own bytes under ``sound_current.yml`` and
+        # displacing the applied-profile record from the statefile (#2572; see
+        # ``_running_config_is_intent``). ``current=`` and ``candidate=`` on the
+        # journal line below name both paths, so an operator can see when this
+        # left a NON-``sound_current.yml`` graph in place.
+        if not force and _running_config_is_intent(current_path, dry.yaml):
+            return _log_reconcile_result(
+                {
+                    "status": "unchanged",
+                    "reason": "running_config_matches_intent",
+                    "carrier_kind": carrier.kind,
+                    "current_config_path": str(current_path),
+                    "candidate_config_path": str(out_path),
+                    "output_trim_db": trim_db,
+                    "sound_filter_count": sound_filter_count,
+                    "room_peq_count": dry.room_peq_count,
+                }
+            )
 
         apply_state, applied_path, _ = await load_profile_config(
             profile,
