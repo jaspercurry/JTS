@@ -254,6 +254,15 @@ export function containsAlignedQuantum(run, quantum = ZERO_RUN_QUANTUM) {
 // `encoded_frames` to place a run inside both answer false: "not scanned" must
 // never read as "scanned and found", and this answer spends a household's
 // attempt.
+//
+// The two early returns are not equals, and saying so is cheaper than letting
+// a reader assume. The `quantum` check DECIDES the unscanned case. The `frames`
+// check RESTATES one: `x < undefined` and `x < NaN` are both false, so an
+// absent or unparseable frame count already fails the interior test below on
+// its own — the line is here so the requirement is legible at the point of
+// decision, not because the answer depends on it. A mutation deleting it stays
+// green, deliberately, and the test says so; what is pinned is the BEHAVIOUR
+// (`testAnUnscannedOrUncountedReportNeverTriggers`), which is the promise.
 export function witnessedZeroFillSplice(report) {
   if (!report || typeof report !== "object") return false;
   const quantum = Number(report.zero_run_quantum);

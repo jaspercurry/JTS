@@ -262,7 +262,11 @@ budget, one automatic retake per measurement, glitch-only (a geometry `prompt`
 always waits for a thumb), and an honest rejection screen on every path that does
 not fire — live beside the mechanism in `js/capture-integrity.js` and
 `autoRetakeWitnessedSplice` in `js/main.js`, and are pinned in
-`tests/js/capture_plan_loop_test.mjs`.
+`tests/js/capture_plan_loop_test.mjs`. One consequence worth knowing before you
+read a session: a rejected *voluntary* retake auto-fires like any other, which
+DEFERS the household's "keep the earlier measurement and continue" choice by one
+round — the escape reappears on the next rejection, and the earlier accepted take
+is never at risk in the meantime (a rejected retake leaves it standing).
 
 The one thing that is NOT optional in either direction: the field must ride a
 repeat of the WHOLE armed payload, never a partial event. The relay's

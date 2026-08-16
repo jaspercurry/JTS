@@ -593,6 +593,14 @@ function testSubQuantumAndMisalignedRunsDoNotTrigger() {
 // FAIL-CLOSED ON A REPORT THAT DID NOT MEASURE. "Not scanned" must never read
 // as "scanned and found" — this answer spends a household's attempt — and a
 // report with no frame count cannot place a run INSIDE anything.
+//
+// WHAT THIS DOES AND DOES NOT COVER, since the difference is invisible from the
+// assertions. Every case below pins the ANSWER. Only the missing-`zero_runs`
+// and missing-`zero_run_quantum` cases also pin a LINE: deleting the predicate's
+// `Number.isFinite(frames)` guard leaves this test green, because a comparison
+// against an absent count is false anyway (verified by mutation, 2026-08-15).
+// That guard is a restatement of the rule for a reader, not the thing enforcing
+// it; the promise these cases hold is the behaviour.
 function testAnUnscannedOrUncountedReportNeverTriggers() {
   const capture = ambientCapture(64 * ZERO_RUN_QUANTUM);
   silence(capture, 20 * ZERO_RUN_QUANTUM, ZERO_RUN_QUANTUM);
