@@ -466,6 +466,9 @@ def test_a_pose_is_analyzed_neutrally_while_the_anchor_is_composed():
         "candidate_required_band_hz_by_role",
         "predicted_sum",
         "alignment_delay_bounds_us",
+        # A pose commits no alignment, so it is never told the one the speaker
+        # already plays (#2617) — the same withholding, one field over.
+        "applied_alignment_delay_us",
     ):
         assert getattr(pose, field) is None, field
     # Still MEASURE-shaped in every other respect: the analyzer needs the Fc

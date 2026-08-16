@@ -159,21 +159,31 @@ check(polarityRowText() === "Kept as set",
 // The low-SNR path always commits "keep", but the assertion is written against
 // the OBJECTIVE and not the polarity string: the copy must be safe whatever
 // polarity a future declared commitment carries.
-for (const polarity of ["keep", "invert"]) {
-  render({
-    ...baseEnvelope,
-    candidate_review: candidateReview({
-      polarity,
-      alignment_objective: "declared_committed_after_low_snr",
-    }),
-  });
-  const text = polarityRowText();
-  check(text === "As designed — this measurement could not check it",
-    `a declared-design commitment (${polarity}) says it was not checked`,
-    { got: text });
-  check(!/measured/i.test(text),
-    `a declared-design commitment (${polarity}) never says "measured"`,
-    { got: text });
+// Every member of the refusal's objective set, not just the first one: the
+// delay half of the same refusal commits a DIFFERENT objective when the
+// speaker already carries an applied alignment to hold (#2617), and its
+// polarity is just as unmeasured. A one-string check here is what would let
+// that second commitment reach a household as "Inverted (measured)".
+for (const objective of [
+  "declared_committed_after_low_snr",
+  "applied_alignment_held_after_low_snr",
+]) {
+  for (const polarity of ["keep", "invert"]) {
+    render({
+      ...baseEnvelope,
+      candidate_review: candidateReview({
+        polarity,
+        alignment_objective: objective,
+      }),
+    });
+    const text = polarityRowText();
+    check(text === "As designed — this measurement could not check it",
+      `${objective} (${polarity}) says it was not checked`,
+      { got: text });
+    check(!/measured/i.test(text),
+      `${objective} (${polarity}) never says "measured"`,
+      { got: text });
+  }
 }
 
 // --- 4. A payload with NO objective renders exactly as before -------------

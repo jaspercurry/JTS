@@ -5676,6 +5676,43 @@ class CrossoverV2Session:
             # ``_declared_alignment_delay_range_ms`` with the plausibility gate,
             # which is not a priors concern.
             alignment_delay_bounds_us=alignment_delay_search_bounds_us(self._preset),
+            applied_alignment_delay_us=self._applied_alignment_delay_us(),
+        )
+
+    def _applied_alignment_delay_us(self) -> float | None:
+        """The inter-driver delay this speaker's applied graph already carries.
+
+        The only prior that comes from the SPEAKER rather than the session, and
+        the only one that reads a file, so it is read HERE and handed down: the
+        analysis is a pure function of (program, WAV, priors) and must not
+        acquire a side channel to Layer-A state (issue #2617's architecture
+        constraint). ``None`` on anything unreadable — nothing commissioned
+        yet, a pre-snapshot profile, a hand-edited state file — because the
+        consumer's fail-safe is "commit no delay", and a crash here would take
+        down a MEASURE analysis over a fact only one refusal path consults.
+
+        Read per MEASURE analysis rather than cached at session open, since
+        that is the moment the answer has to be true: one small JSON read a
+        few times per session, against a stale field that would silently
+        outlive an out-of-band reconcile.
+        """
+        from jasper.active_speaker.baseline_profile import (
+            load_applied_baseline_profile_state,
+        )
+
+        try:
+            applied = load_applied_baseline_profile_state()
+        except (OSError, TypeError, ValueError):
+            # The reader already tolerates a missing/unparseable file; this
+            # catches a state file that is valid JSON but structurally wrong,
+            # which must read as "nothing applied" rather than a crashed
+            # capture (the same posture `resolve_applied_speaker_evidence`
+            # takes on the same read).
+            return None
+        return _planning.applied_profile_delay_us(
+            applied,
+            woofer_role=self._woofer.role,
+            tweeter_role=self._tweeter.role,
         )
 
     def _lateral_priors(self) -> MeasurementPriors:

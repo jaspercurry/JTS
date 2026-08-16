@@ -98,6 +98,7 @@ __all__ = [
     "FailureRecord",
     "alignment_to_candidate_fields",
     "analysis_json",
+    "applied_profile_delay_us",
     "build_candidate",
     "exclusion_evidence_json",
     "ineligible_reason",
@@ -229,6 +230,76 @@ def alignment_to_candidate_fields(
         role, magnitude = woofer_role, -delay_us
     polarity = POLARITY_INVERT if est.polarity == "inverted" else POLARITY_KEEP
     return magnitude, role, polarity
+
+
+def applied_profile_delay_us(
+    applied_profile: Mapping[str, Any] | None,
+    *,
+    woofer_role: str,
+    tweeter_role: str,
+) -> float | None:
+    """The inter-driver delay the APPLIED graph carries, in the analysis frame.
+
+    The inverse of :func:`alignment_to_candidate_fields`, and deliberately its
+    neighbour: that function folds a signed ``(D_woofer − D_tweeter)`` into
+    ``(magnitude, delayed role)`` on the way OUT to a candidate, and this one
+    unfolds the per-role magnitudes an applied profile stores back into the
+    signed frame on the way IN. One module owns both directions of that fold,
+    so a sign convention cannot drift between them.
+
+    **Its one consumer** (issue #2617) is
+    :class:`~jasper.audio_measurement.program_analysis.MeasurementPriors`'s
+    ``applied_alignment_delay_us``, which the low-SNR alignment refusal commits
+    instead of a delay read off the capture it just called unusable. Nothing
+    else reads it, and in particular the scored path never does — a capture
+    good enough to score must not be pulled toward the answer the speaker
+    already has.
+
+    **Which copy.** ``recomposition_snapshot["corrections"]``, the immutable
+    Layer-A input every production recompose re-emits the graph from — the same
+    copy :func:`~jasper.active_speaker.baseline_profile._profile_branch_context`
+    reads, and NOT the top-level ``corrections`` convenience mirror beside it,
+    whose own comment warns it is not what the emitter consumes. Reading the
+    mirror would make this "the delay the record advertises"; reading the
+    snapshot makes it "the delay the graph plays", which is the only version of
+    the fact worth holding.
+
+    The subtraction is symmetric across the two roles rather than keyed on
+    ``delay_target_driver``: a measured apply writes the magnitude on one role
+    and an explicit ``0.0`` on the other
+    (``MeasuredCrossoverCandidate.driver_corrections``), so the difference IS
+    the relative delay, and a profile that somehow carries both stays correctly
+    described instead of silently reporting one leg.
+
+    ``None`` — never a guessed ``0.0`` — when there is no applied profile, no
+    recomposition snapshot, or either role's ``delay_ms`` is missing or
+    non-finite. The caller decides what an unreadable applied alignment means;
+    conflating "nothing is applied" with "zero is applied" here would take that
+    decision away from it.
+    """
+    if not isinstance(applied_profile, Mapping):
+        return None
+    snapshot = applied_profile.get("recomposition_snapshot")
+    if not isinstance(snapshot, Mapping):
+        return None
+    corrections = snapshot.get("corrections")
+    if not isinstance(corrections, Mapping):
+        return None
+
+    def _delay_ms(role: str) -> float | None:
+        entry = corrections.get(role)
+        if not isinstance(entry, Mapping):
+            return None
+        raw = entry.get("delay_ms")
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            return None
+        value = float(raw)
+        return value if math.isfinite(value) else None
+
+    tweeter_ms, woofer_ms = _delay_ms(tweeter_role), _delay_ms(woofer_role)
+    if tweeter_ms is None or woofer_ms is None:
+        return None
+    return (tweeter_ms - woofer_ms) * 1000.0
 
 
 def analysis_json(analysis: ProgramAnalysis) -> dict[str, Any]:

@@ -1552,6 +1552,36 @@ def test_done_candidate_review_carries_the_alignment_objective():
     assert plain["candidate_review"]["alignment_objective"] == ""
 
 
+def test_the_browser_and_python_agree_on_which_objectives_are_unmeasured():
+    """The one cross-language list, pinned (#2617).
+
+    The wording decision lives in a browser module, which cannot import
+    ``ALIGNMENT_DECLARED_POLARITY_OBJECTIVES`` — so it carries a literal list,
+    and a literal list is a second source of truth unless something compares
+    them. What a drift would cost is exactly #2607 S3 reopened: a commitment
+    whose polarity nothing checked, rendered to a household as "Inverted
+    (measured)". Adding a refusal objective in Python and forgetting the
+    renderer is the failure this fails on.
+    """
+    import re
+    from pathlib import Path
+
+    from jasper.audio_measurement.program_analysis import (
+        ALIGNMENT_DECLARED_POLARITY_OBJECTIVES,
+    )
+
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "deploy/assets/correction/js/crossover/main.js"
+    ).read_text(encoding="utf-8")
+    match = re.search(
+        r"const declaredByDesign = \[(.*?)\]\.includes\(", source, re.DOTALL,
+    )
+    assert match, "the renderer no longer branches on a literal objective list"
+    in_browser = set(re.findall(r"'([a-z0-9_]+)'", match.group(1)))
+    assert in_browser == set(ALIGNMENT_DECLARED_POLARITY_OBJECTIVES)
+
+
 def test_done_candidate_review_omits_linearization_fields_when_absent():
     """A candidate with no linearization at all (ineligible / plain trims)
     renders an empty outcome string and no octave rows — never a phantom

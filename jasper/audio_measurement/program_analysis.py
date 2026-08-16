@@ -395,22 +395,46 @@ ALIGNMENT_FLAT_MINIMUM_EPSILON_DB = 0.25
 #: qualifier ("after low SNR") rides a commitment rather than replacing it.
 ALIGNMENT_COMMITTED_FLAT_SUM = "flat_sum_committed"
 ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR = "declared_committed_after_low_snr"
+#: The same refusal as the line above, on a speaker that already runs a
+#: commissioned inter-driver delay: the pair committed is the DECLARED polarity
+#: at the delay the applied graph already carries (issue #2617). Its own value
+#: rather than a qualifier on the one above, because "we held the alignment
+#: this speaker already plays" and "the design asks for none" are different
+#: products, and a forensic reader of a persisted candidate must be able to
+#: tell them apart. Both are declared-POLARITY commitments, so both belong to
+#: :data:`ALIGNMENT_DECLARED_POLARITY_OBJECTIVES` below.
+ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR = "applied_alignment_held_after_low_snr"
 ALIGNMENT_COMMITTED_SEED_NO_SCORING_BAND = "seed_committed_no_scoring_band"
 ALIGNMENT_COMMITTED_SEED_ALIGNMENT_REFUSED = "seed_committed_alignment_refused"
 ALIGNMENT_COMMITMENTS = frozenset({
     ALIGNMENT_COMMITTED_FLAT_SUM,
     ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR,
+    ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR,
     ALIGNMENT_COMMITTED_SEED_NO_SCORING_BAND,
     ALIGNMENT_COMMITTED_SEED_ALIGNMENT_REFUSED,
 })
-#: The two commitments the selector itself made — as opposed to the two where
-#: it could not run and the seed simply stood. Only these answer
+#: The commitments where the POLARITY is the preset's declaration rather than a
+#: measured result — the low-SNR refusal, whichever delay it committed. The
+#: household surface words these as "As designed — this measurement could not
+#: check it" (#2607 S3); "measured" is the one word a household reads as "we
+#: checked", and on this path nothing checked. Public because that wording is
+#: chosen in a browser module, which cannot import a Python constant: this is
+#: the named thing its literal list mirrors, and
+#: ``tests/test_crossover_envelope_v2.py`` fails when the two disagree. The
+#: payload layer (``crossover_envelope_v2``) deliberately does NOT branch — it
+#: carries the enum, exactly as it carries ``linearization_outcome``.
+ALIGNMENT_DECLARED_POLARITY_OBJECTIVES = frozenset({
+    ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR,
+    ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR,
+})
+#: The commitments the selector itself made — as opposed to the two where it
+#: could not run and the seed simply stood. Only these answer
 #: ``polarity_agrees_with_sum``: on the others no flat sum was ever computed,
 #: and recording "correlation agreed" because nothing disagreed with it is the
 #: exact shape of dishonesty this issue is about.
 _SELECTOR_COMMITTED_OBJECTIVES = frozenset({
     ALIGNMENT_COMMITTED_FLAT_SUM,
-    ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR,
+    *ALIGNMENT_DECLARED_POLARITY_OBJECTIVES,
 })
 
 #: The verdict at which a branch stops being evidence a polarity flip may rest
@@ -866,6 +890,21 @@ class MeasurementPriors:
     signed lobe inside it. GCC remains the confidence/polarity seed and the
     fallback estimate. ``None`` keeps GCC as the applied-delay estimate.
 
+    ``applied_alignment_delay_us`` is the inter-driver delay THIS SPEAKER
+    ALREADY PLAYS, in the same signed frame as
+    :class:`AlignmentEstimate`'s ``delay_us`` — read off the applied Layer-A
+    profile by the session and handed in, never reached for from here (issue
+    #2617; this module is a pure function of program + WAV + priors). It is
+    read on EXACTLY ONE path: the low-SNR refusal, where
+    :func:`_select_alignment_pair` commits it instead of a fresh number from
+    the capture the SNR verdict just called unusable for alignment. It is not
+    a seed, a bound, or a prior on the search — the scored path never sees it,
+    because a capture good enough to score must not be pulled toward the answer
+    the speaker already has. ``None`` means "no applied inter-driver delay to
+    hold" (nothing commissioned yet, or the record cannot be read), and the
+    refusal then commits ``0.0``, which IS the declared design when nothing
+    declares otherwise.
+
     ``mic_tier`` (#1668 PR-C) is the correction-envelope trust tier
     (``jasper.active_speaker.linearization_envelope.MIC_TIERS`` — "reference"
     / "consumer" / "phone") the measurement mic resolved to, threaded in by
@@ -884,6 +923,7 @@ class MeasurementPriors:
     measure_tweeter_sweep_lo_hz: float | None = None
     measure_woofer_sweep_hi_hz: float | None = None
     alignment_delay_bounds_us: tuple[float, float] | None = None
+    applied_alignment_delay_us: float | None = None
     mic_tier: str | None = None
     # Host-evaluated transfers, NOT product objects: the kernel may not import
     # jasper.active_speaker, so it is handed `freqs -> complex response`.
@@ -3648,6 +3688,7 @@ def _select_alignment_pair(
     seed_polarity_sign: int,
     delay_bounds_us: tuple[float, float] | None = None,
     branch_snr_insufficient: bool = False,
+    applied_delay_us: float | None = None,
 ) -> AlignmentPairSelection | None:
     """Commit the (polarity, delay) pair whose predicted blend sums flattest.
 
@@ -3692,11 +3733,29 @@ def _select_alignment_pair(
     COMMITTED to the declared design (relative polarity ``+1``: the branch
     transfer functions are already in the configured-polarity frame, so ``+1``
     means "the relative polarity the preset declares", which is also the target
-    VERIFY grades against) at the physical peak-gap anchor, and the objective
-    string says so. Not a hard stop and not a silent estimate: the household
-    still gets an alignment, it is the one the design asks for rather than one
-    read off noise, and the reason travels with the candidate. The seed pair is
-    still scored so the record shows what was declined.
+    VERIFY grades against) at a delay THIS CAPTURE DID NOT SUPPLY, and the
+    objective string says which. Not a hard stop and not a silent estimate: the
+    household still gets an alignment, it is the one the design asks for rather
+    than one read off noise, and the reason travels with the candidate. The
+    seed pair is still scored so the record shows what was declined.
+
+    **The delay half of that refusal (issue #2617).** It used to commit the
+    physical peak-gap anchor — a fresh number read off the very capture the
+    verdict had just refused, and the anchor is exactly the quantity a low-SNR
+    capture gets wrong: across nine jts3 positions on 2026-08-16 it read
+    +59.6 µs on-axis (the shipped, correct value) against six clustered near
+    −211 µs and two wild, and a wrong commit computes a deep commanded null
+    (−36 dB @ 1885 Hz on the worked example). So the delay now comes from
+    ``applied_delay_us`` — what the speaker is ALREADY playing, per the ethos's
+    best-available rule (``docs/audio-commissioning-roadmap.md``) — and from
+    ``0.0`` when there is none to hold, which is the declared design on a
+    speaker that declares no inter-driver delay. Never the anchor, and never
+    the GCC seed: both are this capture's own answer, and the capture was
+    refused. ``left_anchor_lobe`` is still evaluated against the anchor and can
+    now be ``True`` here, where it used to be ``False`` by construction
+    (committed == anchor); that is the disclosure working — it says the held
+    delay and this capture's anchor disagree by more than half a period at Fc,
+    which is the #2611 signature — and it raises the selection log to WARNING.
 
     Returns ``None`` when the objective cannot be evaluated at all — no
     frequency bin inside ``[lo_hz, hi_hz]``, or no candidate with a finite score
@@ -3728,8 +3787,10 @@ def _select_alignment_pair(
     seed_ripple_db = _ripple_at(seed_polarity_sign, seed_delay_us)
 
     if branch_snr_insufficient:
+        # Neither `anchor_delay_us` nor `seed_delay_us` may be read here: both
+        # are THIS capture's own answer, and this capture was refused (#2617).
         committed_delay_us = (
-            anchor_delay_us if anchor_delay_us is not None else seed_delay_us
+            float(applied_delay_us) if applied_delay_us is not None else 0.0
         )
         return AlignmentPairSelection(
             polarity_sign=1,
@@ -3738,7 +3799,11 @@ def _select_alignment_pair(
             seed_polarity_sign=seed_polarity_sign,
             seed_delay_us=seed_delay_us,
             seed_ripple_db=seed_ripple_db,
-            objective=ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR,
+            objective=(
+                ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR
+                if applied_delay_us is None
+                else ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR
+            ),
             grid_points=1,
             grid_step_us=0.0,
             left_anchor_lobe=_left_anchor_lobe(committed_delay_us),
@@ -5496,6 +5561,7 @@ def _analyze_measure(
         woofer_sweep_lo_hz=seg_w.f1_hz, tweeter_sweep_hi_hz=seg_t.f2_hz,
         alignment_delay_bounds_us=priors.alignment_delay_bounds_us,
         branch_snr_insufficient=branch_snr_insufficient,
+        applied_alignment_delay_us=priors.applied_alignment_delay_us,
     )
     # `_build_candidate` owns the selection; the estimate published here is the
     # one every downstream consumer reads (`alignment_to_candidate_fields`
@@ -5567,6 +5633,7 @@ def _build_candidate(
     tweeter_sweep_hi_hz: float | None = None,
     alignment_delay_bounds_us: tuple[float, float] | None = None,
     branch_snr_insufficient: bool = False,
+    applied_alignment_delay_us: float | None = None,
 ) -> tuple[CrossoverCandidate, tuple[np.ndarray, np.ndarray]]:
     freqs, W, gate_w = _aligned_branch_tf(woofer_full_ir, sample_rate, n_fft, calibration=calibration)
     _f2, T, gate_t = _aligned_branch_tf(tweeter_full_ir, sample_rate, n_fft, calibration=calibration)
@@ -5687,6 +5754,7 @@ def _build_candidate(
             seed_polarity_sign=alignment.polarity_sign,
             delay_bounds_us=alignment_delay_bounds_us,
             branch_snr_insufficient=branch_snr_insufficient,
+            applied_delay_us=applied_alignment_delay_us,
         )
         if alignment.status == ALIGNMENT_OK
         else None
@@ -5749,6 +5817,21 @@ def _build_candidate(
             grid_points=selection.grid_points,
             grid_step_us=round(float(selection.grid_step_us), 3),
             branch_snr_insufficient=bool(branch_snr_insufficient),
+            # The #2617 disclosure, and the whole reason a refused capture's
+            # delay commitment is now readable rather than inferable: the
+            # number that WAS held (the applied graph's own delay, or None
+            # when there was nothing to hold) beside the anchor that was
+            # DECLINED. On every other objective these are context — the
+            # anchor is the frame the grid was centred on, and the applied
+            # delay is not consulted at all.
+            applied_delay_us=(
+                None if applied_alignment_delay_us is None
+                else round(float(applied_alignment_delay_us), 3)
+            ),
+            anchor_delay_us=(
+                None if anchor_delay_us is None
+                else round(float(anchor_delay_us), 3)
+            ),
             # The one thing the 2026-07-22 methodology decision asked the
             # ANCHOR to own: which comb lobe. Owned by the selection (which has
             # the anchor and Fc) so the candidate, the journal and the receipt

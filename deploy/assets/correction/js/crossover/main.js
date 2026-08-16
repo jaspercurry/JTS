@@ -234,8 +234,18 @@ function renderCandidateReview(review) {
     // the law a polarity decision is held to, the flow commits the polarity the
     // PRESET declares and says so. The page must not call that "measured" — it
     // is the one word a household would read as "we checked".
-    const declaredByDesign =
-      review.alignment_objective === 'declared_committed_after_low_snr';
+    // A SET, not one string: the refusal has two commitments — the design's
+    // own alignment, and the alignment this speaker already plays, held rather
+    // than replaced by a delay read off the refused capture (#2617). They
+    // differ in the DELAY they commit and agree exactly here, on the polarity
+    // being declared rather than measured. Mirrors
+    // `program_analysis.ALIGNMENT_DECLARED_POLARITY_OBJECTIVES`, which the
+    // Python side branches on; a module cannot import that constant, so
+    // `tests/js/crossover_polarity_provenance_test.mjs` covers every member.
+    const declaredByDesign = [
+      'declared_committed_after_low_snr',
+      'applied_alignment_held_after_low_snr',
+    ].includes(review.alignment_objective);
     const polarityText = declaredByDesign
       ? 'As designed — this measurement could not check it'
       : review.polarity === 'invert'
