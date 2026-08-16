@@ -827,9 +827,18 @@ def anchor_trims(
     now REFUSES where it previously banked the disagreement and shipped a pair
     placed by the disputed estimator. That is the same gate on an undisputed
     pair, not a new stop — and an honest refusal beats a tune whose reference
-    the system had already flagged as unresolved. On the #1866 session fixture
-    the trim-solve placement realizes ``+2.535`` dB against a 3.0 dB tolerance,
-    so that session still proceeds.
+    the system had already flagged as unresolved.
+
+    **Usually the two-pair grading absorbs it, measured rather than assumed.**
+    :func:`decide_trim` grades the anchor AND the ripple scan's polish and
+    commits whichever levels better. On the #1866 tilted-woofer fixture the
+    excluded anchor realizes ``−4.295`` dB — past the 3.0 dB tolerance on its
+    own — and the scan's pair realizes ``−1.195`` and ships, so that session
+    still proceeds. The shape that has no such rescue is a ONE-SIDED ripple
+    band, where the scan is skipped and the anchor is the only pair there is;
+    the one-sided conductor fixture moves from ``+2.758`` to ``−3.042`` dB and
+    refuses. Both are pinned end to end in
+    ``tests/test_crossover_v2_conductor.py``.
 
     **Not implemented here, and named so it is not mistaken for done:** the
     proper fix is a third instrument that can referee the two estimators — a
