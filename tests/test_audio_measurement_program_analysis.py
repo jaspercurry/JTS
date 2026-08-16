@@ -71,6 +71,7 @@ from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_FLATNESS_MAX_STEPS,
     ALIGNMENT_FLATNESS_STEP_US,
     ALIGNMENT_OK,
+    ALIGNMENT_SNR_REFUSAL_VERDICT,
     AMBIENT_MIN_USABLE_FRACTION,
     AMBIENT_NONSTATIONARITY_DB,
     CAPTURE_BOUND_MARGIN_S,
@@ -133,6 +134,7 @@ from jasper.audio_measurement.program_analysis import (
     driver_snr_verdict,
     REALIZED_LEVEL_MATCH_TOLERANCE_DB,
     branch_level_bands_hz,
+    branch_snr_band_hz,
     overlap_band_hz,
     predicted_branch_sum,
     realized_branch_level_match,
@@ -2636,6 +2638,240 @@ def test_measure_analysis_refuses_the_flip_when_a_branch_snr_is_insufficient(
     # (None) on the refusal, which never put a flat sum on the polarity axis.
     assert res.candidate.seed_polarity_sign == -1
     assert res.alignment.polarity_agrees_with_sum is expected_cross_check
+
+
+# --------------------------------------------------------------------------- #
+# the SNR verdict is scoped to the band the stimulus occupies (#2613)
+# --------------------------------------------------------------------------- #
+
+
+# The band table `_driver_snr_block` reads its signal side over — six canonical
+# acoustic rows, and the shape of the #2613 defect: a row is admitted to the
+# veto if it merely OVERLAPS the decision window, however little of it the
+# sweep entered. Spelled here (rather than imported) so the ambient report a
+# test builds and the rows a test names cannot drift apart silently.
+_SNR_ROWS_HZ = (
+    ("sub_bass", 20.0, 80.0),
+    ("bass", 80.0, 160.0),
+    ("upper_bass", 160.0, 350.0),
+    ("transition", 350.0, 1000.0),
+    ("mid", 1000.0, 4000.0),
+    ("treble", 4000.0, 12000.0),
+)
+
+# A quiet, FLAT room: every row at the same level, so a row's SNR is decided
+# purely by whether the stimulus put energy in it. A sloped ambient would
+# confound "the sweep never went here" with "the room is loud here".
+_FLAT_AMBIENT = {
+    "schema_version": 1,
+    "bands": [
+        {"band_id": band_id, "band_hz": [lo, hi], "level_dbfs": -90.0}
+        for band_id, lo, hi in _SNR_ROWS_HZ
+    ],
+}
+
+
+def _band_limited_two_way(
+    *, fc_hz, woofer_band, tweeter_band, tweeter_drive_db=-13.0,
+):
+    """Analyze a two-way whose drivers are swept over THEIR OWN declared bands.
+
+    The repo's other MEASURE fixtures declare a 300 Hz tweeter, which is swept
+    across the whole nominal ``[Fc/2, Fc*2]`` window and so cannot express
+    #2613 at all. A shipped two-way does not look like that:
+    ``build_measure_program`` sweeps each driver over
+    ``_intersect_band(declared_band, 150 Hz, 23 kHz)``, so a real tweeter
+    starts near 1.5 kHz and a real woofer stops near Fc — each leaving canonical
+    SNR rows inside the nominal window that its own stimulus never entered.
+
+    Each branch's synthetic IR is band-limited to the same declared band, so
+    "no signal in that row" is a property of the STIMULUS plan, not an
+    artefact of an unrealistically narrow driver.
+    """
+    prog = build_measure_program(
+        {"woofer": -11.0, "tweeter": tweeter_drive_db},
+        [
+            RoleBand("woofer", 0, FrequencyBand(*woofer_band)),
+            RoleBand("tweeter", 1, FrequencyBand(*tweeter_band)),
+        ],
+        sweep_durations={"woofer": 0.8, "tweeter": 0.6},
+    )
+    cap = _synthesize(
+        prog,
+        woofer_ir=_band_impulse(200, woofer_band[0], woofer_band[1], 1.0),
+        tweeter_ir=_band_impulse(225, tweeter_band[0], tweeter_band[1], -0.7),
+    )
+    return prog, analyze_program_capture(
+        prog, cap, SR,
+        priors=MeasurementPriors(
+            crossover_fc_hz=fc_hz, ambient_report=_FLAT_AMBIENT,
+        ),
+        geometry=MeasurementGeometry(),
+    )
+
+
+def _alignment_rows(response):
+    """``{band_id: (estimated_snr_db, verdict)}`` for a branch's ALIGNMENT block."""
+    block = (response.snr or {}).get("alignment") or {}
+    return (
+        block.get("relevant_hz"),
+        block.get("worst_relevant") or {},
+        {b["band_id"]: (b["estimated_snr_db"], b["verdict"]) for b in block["bands"]},
+    )
+
+
+def test_branch_snr_band_hz_clamps_the_window_to_the_stimulus_own_edges():
+    """``[Fc/ρ, Fc·ρ]`` ∩ the radiated band, whichever edge binds.
+
+    One branch, so the function cannot know which role it is holding: a
+    tweeter's low edge and a woofer's high edge both have to clamp through the
+    same call. The nominal band is preserved exactly when the stimulus spans
+    it, and when no bounds are declared at all.
+    """
+    # Tweeter shape: swept from above Fc/2, so `lo` clamps up.
+    assert branch_snr_band_hz(1600.0, (1500.0, 20000.0)) == (1500.0, 3200.0)
+    # Woofer shape: swept to below Fc*2, so `hi` clamps down.
+    assert branch_snr_band_hz(1600.0, (150.0, 2000.0)) == (800.0, 2000.0)
+    # A stimulus that spans the nominal window changes nothing…
+    assert branch_snr_band_hz(1600.0, (150.0, 20000.0)) == (800.0, 3200.0)
+    # …and neither does an undeclared band: byte-identical to the pre-#2613
+    # window, the same way overlap_band_hz treats an absent bound.
+    assert branch_snr_band_hz(1600.0, None) == (800.0, 3200.0)
+
+
+def test_branch_snr_band_hz_reports_an_empty_window_rather_than_widening_it():
+    """A branch that radiates nothing in the crossover region gets NO window.
+
+    Returned inverted (``lo >= hi``) on purpose: ``band_snr_verdicts`` finds no
+    overlapping row for such a window and reports ``"unknown"``, which is not
+    :data:`ALIGNMENT_SNR_REFUSAL_VERDICT`. So this degenerate case yields "no
+    evidence" rather than either a refusal on arithmetic or a silent widening
+    back to the nominal band the fix exists to stop trusting.
+    """
+    lo, hi = branch_snr_band_hz(1600.0, (8000.0, 20000.0))
+    assert lo >= hi
+    block = snr_policy.band_snr_verdicts(
+        decision_class=snr_policy.DECISION_CLASS_ALIGNMENT,
+        capture_bands=[
+            {"band_id": band_id, "band_hz": [row_lo, row_hi], "level_dbfs": -20.0}
+            for band_id, row_lo, row_hi in _SNR_ROWS_HZ
+        ],
+        noise_bands=_FLAT_AMBIENT["bands"],
+        noise_floor_dbfs_scalar=None,
+        relevant_hz=(lo, hi),
+        model=DRIVER,
+        band_method="fft_band_power_difference",
+    )
+    assert block["worst_relevant"] is None
+    assert block["verdict"] == "unknown"
+    assert block["verdict"] != ALIGNMENT_SNR_REFUSAL_VERDICT
+
+
+def test_measure_snr_verdict_ignores_a_row_the_tweeter_sweep_never_entered():
+    """#2613: a deliberately empty row must not veto a clean capture.
+
+    THE incident, end to end on the production stimulus shape. A tweeter
+    declared from 1.5 kHz at Fc = 1.6 kHz leaves the ``transition`` row
+    (350-1000 Hz) inside the nominal ``[800, 3200]`` window with nothing in it
+    but room noise, so that row reads ~0 dB SNR on arithmetic **no room and no
+    drive level can change** — it is the ratio of the room to itself. Before
+    the fix that row was the ``worst_relevant`` entry, the ALIGNMENT verdict
+    read ``insufficient``, and #2607's declared-design fail-safe fired on every
+    round (14 of 14 on jts3) while the ``mid`` row where the decision actually
+    lives read a clean 66.6 dB.
+
+    Each assertion below is a separate claim, and each one FAILS on the
+    pre-fix code: the window is clamped, the veto comes from an occupied row,
+    the verdict passes, and the flat-sum selector therefore gets to run at all
+    (``grid_points > 1`` — pre-fix it committed the declared design on a
+    single-point grid).
+
+    The empty row's evidence is still REPORTED, just not admitted: the
+    per-band table is diagnostics, ``relevant_hz`` is the franchise.
+    """
+    _prog, res = _band_limited_two_way(
+        fc_hz=1600.0, woofer_band=(150.0, 2000.0), tweeter_band=(1500.0, 20000.0),
+    )
+    tweeter = next(r for r in res.driver_responses if r.role == "tweeter")
+    window, worst, rows = _alignment_rows(tweeter)
+
+    # The window no longer reaches below the tweeter's own sweep floor.
+    assert window == [1500.0, 3200.0]
+    # The row that used to veto is still measured, still damning, still shown…
+    assert rows["transition"][1] == "insufficient"
+    assert rows["transition"][0] < 10.0
+    # …and no longer decides anything: the veto is scoped to an OCCUPIED row.
+    assert worst["band_id"] == "mid"
+    assert worst["verdict"] == "ok"
+    assert rows["mid"][0] > DRIVER.alignment_snr_ok_db
+    assert driver_alignment_snr_verdict(tweeter) == "ok"
+    assert driver_snr_verdict(tweeter) == "ok"
+
+    # …so the flat-sum selector actually scores the pair instead of the
+    # declared-design fail-safe committing on a one-point grid.
+    assert res.candidate.alignment_objective == ALIGNMENT_COMMITTED_FLAT_SUM
+    assert res.alignment.polarity_agrees_with_sum is not None
+
+
+def test_measure_snr_verdict_ignores_a_row_above_the_woofer_sweep():
+    """The woofer mirror: the same clamp, from the other edge.
+
+    A woofer declared to 4 kHz at Fc = 2.5 kHz leaves the ``treble`` row
+    (4-12 kHz) inside the nominal ``[1250, 5000]`` window carrying only the
+    100 Hz sliver the sweep reaches — the same "row the stimulus never
+    entered" shape as the tweeter's ``transition``, arriving from above
+    instead of below. Pinned because the fix is stated for ONE branch that
+    does not know its role, so both edges must be exercised: a clamp written
+    only for a tweeter would leave this half broken.
+    """
+    _prog, res = _band_limited_two_way(
+        fc_hz=2500.0, woofer_band=(150.0, 4000.0), tweeter_band=(1500.0, 20000.0),
+    )
+    woofer = next(r for r in res.driver_responses if r.role == "woofer")
+    window, worst, rows = _alignment_rows(woofer)
+
+    assert window == [1250.0, 4000.0]
+    assert rows["treble"][1] == "insufficient"
+    assert worst["band_id"] == "mid"
+    assert driver_alignment_snr_verdict(woofer) == "ok"
+    assert res.candidate.alignment_objective == ALIGNMENT_COMMITTED_FLAT_SUM
+
+
+@pytest.mark.parametrize(
+    "tweeter_drive_db,expected_magnitude_verdict",
+    [
+        # The 15 dB window #2607 opened the alignment class for: the magnitude
+        # law (25/20 dB) is satisfied and the 35 dB alignment law is not.
+        (-48.0, "ok"),
+        (-70.0, "insufficient"),
+    ],
+)
+def test_measure_snr_verdict_still_refuses_a_noisy_occupied_row(
+    tweeter_drive_db, expected_magnitude_verdict,
+):
+    """Scoping the window is not weakening the law.
+
+    Same production stimulus shape as the passing case — the ``transition``
+    row is still empty and still excluded — but the tweeter is driven so
+    quietly that the OCCUPIED ``mid`` row is itself buried. The 35 dB
+    alignment threshold is unchanged, the veto now comes from a row that
+    carries real signal, and #2607's declared-design fail-safe fires exactly
+    as it should. A genuinely noisy capture must still refuse.
+    """
+    _prog, res = _band_limited_two_way(
+        fc_hz=1600.0, woofer_band=(150.0, 2000.0), tweeter_band=(1500.0, 20000.0),
+        tweeter_drive_db=tweeter_drive_db,
+    )
+    tweeter = next(r for r in res.driver_responses if r.role == "tweeter")
+    _window, worst, rows = _alignment_rows(tweeter)
+
+    assert worst["band_id"] == "mid"
+    assert rows["mid"][0] < DRIVER.alignment_snr_ok_db
+    assert driver_alignment_snr_verdict(tweeter) == ALIGNMENT_SNR_REFUSAL_VERDICT
+    assert driver_snr_verdict(tweeter) == expected_magnitude_verdict
+    assert res.candidate.alignment_objective == (
+        ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR
+    )
 
 
 # --------------------------------------------------------------------------- #
