@@ -1398,7 +1398,7 @@ def plan_linearization(
     #
     # Computed from the SAME ``core_level_band_hz`` the journal line above
     # discloses, at full precision rather than from its rounded copy, so the
-    # band a filter is refused against and the band a reader is shown cannot
+    # band a filter is NAMED against and the band a reader is shown cannot
     # drift. On the 2026-08-16 round-3 jts3 session this is
     # (1291.4104, 2077.2412) — the hole a -1.7577 dB woofer cut at 1404.4032
     # Hz was placed inside.
