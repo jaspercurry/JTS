@@ -401,9 +401,10 @@ pub struct Config {
     /// snd-aloop substream; instead the mixer opens `usb_direct_device`
     /// (`hw:UAC2Gadget`) as an S32_LE capture and feeds the SAME
     /// `LaneResampler` — narrowing to S16 first only on a NARROW wire, which
-    /// is the fleet default; since U2 PR-1 a wide-wire box hands the
-    /// resampler the gadget's `i32` untouched — deleting the usbsink bridge
-    /// hop + the aloop cable
+    /// since the wide-wire flip means a box an operator has PINNED narrow (see
+    /// [`Config::ring_wire_format`]'s default, which is `S32Le`); since U2 PR-1
+    /// a wide-wire box hands the resampler the gadget's `i32` untouched —
+    /// deleting the usbsink bridge hop + the aloop cable
     /// (~25 ms measured) from the USB path. Direct mode IMPLIES a resampler on
     /// that lane regardless of `input_resampler_enabled` (see
     /// [`Config::lane_wants_resampler`]). Fail-safe: only the exact literal

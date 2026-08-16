@@ -1247,9 +1247,12 @@ def reconcile_auto(
     is by design (an operator choice is not the auto pass's to re-litigate), but
     it means "the fleet's fail-closed wire gates protect this box" is FALSE for
     every pinned box, and all three armed fleet boxes are pinned. jts4 is the
-    worked example and it is NOT the streambox-profile no-op an earlier version
-    of this docstring called it: it is a FLAT box, armed ``shm_ring``, pinned
-    ``operator``, so it reaches here and returns before any gate.
+    worked example, and the earlier "streambox, no fan-in stack" claim was wrong
+    about the CONSEQUENCE rather than about the profile: its ``install_profile``
+    IS streambox. What does not follow is the no-op. Its output TOPOLOGY is flat,
+    it is armed ``shm_ring``, and it is pinned ``operator`` — so it reaches this
+    function and returns HERE, before any gate, rather than being filtered out
+    upstream by its profile.
     ``gadget_present`` / ``usb_intent_enabled`` / ``restart_*`` / ``stop_camilla`` /
     ``start_camilla`` / ``reconcile_camilla`` / ``kick_hardware_reconcile`` /
     ``active_leader_check`` are injectable for tests; ``gadget_present=None`` reads

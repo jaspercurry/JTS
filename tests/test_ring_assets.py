@@ -290,8 +290,11 @@ def test_read_ring_header_reads_every_declared_geometry_field(tmp_path):
     would report a coherent ring for a file that shears on rate, channels, or
     format — which is the shape that plays wrong audio instead of failing loud.
     Distinct values are what makes a swapped-offset bug fail here: with the
-    shipped 2-channel / S16 pair, `channels` and `sample_format` are 2 and 1 at
-    adjacent offsets, and several wrong wirings would still "pass".
+    shipped 2-channel / S32 pair, `channels` and `sample_format` are 2 and 2 at
+    adjacent offsets — literally indistinguishable — so a swapped wiring would
+    read straight through. (Before the ring-wire default flip the pair was 2 and
+    1, which was already too close to catch several wrong wirings; it is now
+    exactly equal.)
     """
     ring = tmp_path / "wide.ring"
     _write_ring_header(

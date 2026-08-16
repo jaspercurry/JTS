@@ -13,9 +13,12 @@ record on every path where the deploy did not produce the installed file.
 
 Two contracts live here:
 
-* the Python reader / capability gate (``jasper.ring_assets``), including the
-  dormancy that keeps every box on the shipped wire from consulting the record
-  at all; and
+* the Python reader / capability gate (``jasper.ring_assets``). That gate was
+  DORMANT while the shipped wire was the ioplug's own — no box consulted the
+  record at all. The ring-wire default flip inverted that: an undeclared box now
+  forces a ``format`` key and needs the ``wire_format`` capability, so the gate
+  is a live record compare wherever it runs, and the one wire that still
+  short-circuits is an operator's narrow pin; and
 * the cross-language pins — the record path, its key names, the capability
   tokens, and the marker strings the installer greps for — against
   ``deploy/lib/install/ring-platform.sh`` and the C source those markers come

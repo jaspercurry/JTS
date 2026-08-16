@@ -1238,11 +1238,29 @@ def check_camilla_playback_format() -> CheckResult:
     healthy or as broken depending on which source won, when the honest answer is
     determined by the config in front of it. It also keeps the check a pure read
     of one file, matching every sibling here.
+
+    THIS CHECK FAILS OPEN ON A CONFIG IT CANNOT READ, and that bound has to be
+    stated because the check is cited elsewhere as the detector for a suppressed
+    DSP reconcile (PR #2601). An unreadable / absent statefile, an unresolvable
+    ``config_path``, or a config with no ``devices.playback.format`` field all
+    return ``ok`` here — deliberately, because "I could not read it" is not
+    evidence of a mismatch, and a second reason for one absent file would bury
+    the check that names the fix. So this catches a config that is present and
+    WRONG, never a config that is missing.
+
+    The unreadable half is owned by ``check_correction_current_config``
+    (``jasper/cli/doctor/correction.py``), which reads the statefile through the
+    SAME :func:`_active_camilla_config_path` helper and is the one that speaks:
+    ``warn`` when ``config_path`` cannot be read out of the statefile, ``fail``
+    when the statefile points at a config that does not exist. So the pair
+    covers both states between them, and neither restates the other's verdict.
     See ``captures/PLAN-wide-output-path-2026-08-07.md`` PR-1, PR-6, D4, D5.
     """
     label = "camilla playback format"
     _, config_path = _active_camilla_config_path()
     if config_path is None:
+        # FAIL-OPEN, disclosed in the docstring above: no readable config is not
+        # a mismatch, and a sibling check owns the absent-statefile verdict.
         return CheckResult(label, "ok", "no loaded config to compare")
     path = Path(config_path)
     loaded_format = _loaded_playback_format(path)

@@ -27,13 +27,17 @@ pub const VERSION: u32 = 1;
 /// mmap base is page-aligned, so every atomic field is naturally aligned.
 pub const HEADER_BYTES: usize = 128;
 
-/// `sample_format` = 1: interleaved signed 16-bit little-endian (S16LE). The
-/// ring wire ships this format because `resolve_ring_wire` (the Python
-/// control plane) holds it narrow by policy — NOT because it matches the
-/// box's general ALSA playback lane, which is wide
-/// (`DEFAULT_PLAYBACK_FORMAT = "S32_LE"` since the wide-output-path program).
-/// The narrow peer it does agree with is the pipe/File sink
-/// (`DEFAULT_PIPE_SINK_FORMAT = "S16_LE"`).
+/// `sample_format` = 1: interleaved signed 16-bit little-endian (S16LE).
+///
+/// This is a header VOCABULARY id, not the wire a box carries. Which of the two
+/// ids a ring actually declares is `resolve_ring_wire`'s answer (the Python
+/// control plane), and since the wide-wire flip that answer is
+/// [`SAMPLE_FORMAT_S32LE`] on any box that has not been pinned narrow — the same
+/// width the general ALSA playback lane already had
+/// (`DEFAULT_PLAYBACK_FORMAT = "S32_LE"`). So a ring reaching this id today is
+/// either an operator's `JASPER_FANIN_RING_WIRE_FORMAT=S16_LE` rollback pin or a
+/// pre-flip file still on disk. The narrow peer that genuinely stays narrow by
+/// policy is the pipe/File sink (`DEFAULT_PIPE_SINK_FORMAT = "S16_LE"`).
 pub const SAMPLE_FORMAT_S16LE: u32 = 1;
 
 /// `sample_format` = 2: interleaved signed 32-bit little-endian (S32LE).

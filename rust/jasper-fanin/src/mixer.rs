@@ -5564,9 +5564,11 @@ mod tests {
         cleanup_ring(&path);
     }
 
-    // --- Ring A wide (S32LE) wire. The wide path is INERT unless the ring's
-    // own attached header says S32LE, so these tests build such a ring
-    // explicitly; everything above still exercises the narrow default.
+    // --- Ring A wide (S32LE) wire. The wide path keys on the ring's own
+    // ATTACHED header, never on a config default, so these tests build such a
+    // ring explicitly; everything above builds a narrow one just as explicitly.
+    // (The resolver's default is wide since the wide-wire flip — these fixtures
+    // do not inherit it either way, which is what keeps both paths covered.)
 
     /// A period's worth of NARROW-scale mix sum, spanning the values the narrow
     /// path has to get right: silence, both i16 rails, the 65534
@@ -5868,7 +5870,10 @@ mod tests {
     }
 
     /// A narrow ring stays on the typed publish and reports itself narrow, so
-    /// the wide branch is unreachable on the default wire.
+    /// the wide branch is unreachable on a narrow ring — whatever the box's
+    /// resolver would have answered. The header is the authority here, and
+    /// since the wide-wire flip that distinction is the whole point: a narrow
+    /// ring is now an operator's pin (or a pre-flip file), not the default.
     #[test]
     fn narrow_ring_reports_its_wire_and_takes_the_typed_publish() {
         let (ring, path) = tmp_ring_output(2, "wire_default");
@@ -5876,7 +5881,8 @@ mod tests {
         assert_eq!(
             ring.writer.geometry().sample_format,
             SAMPLE_FORMAT_S16LE,
-            "the default wire is the narrow one"
+            "this fixture builds a NARROW ring explicitly; the writer must \
+             report the header it attached, not a resolved default"
         );
         cleanup_ring(&path);
     }
@@ -6522,10 +6528,11 @@ mod tests {
     }
 
     /// The width mapping itself: one boolean in, one scale out. The boolean's
-    /// own derivation (ring transport AND S32LE wire, default narrow) is pinned
-    /// where it lives, next to the env parse — see config.rs
+    /// own derivation (ring transport AND S32LE wire — the FORMAT half is now
+    /// true by default, so the transport is what gates it) is pinned where it
+    /// lives, next to the env parse — see config.rs
     /// `the_program_width_needs_both_the_ring_transport_and_the_wide_format`
-    /// and `the_shipped_default_leaves_the_wide_program_path_inert`.
+    /// and `the_wide_program_path_follows_the_transport_not_a_declaration`.
     #[test]
     fn the_program_width_maps_the_one_resolved_wire_boolean() {
         assert_eq!(ProgramWidth::from_wire_is_wide(true), ProgramWidth::Wide);
