@@ -54,6 +54,7 @@ from jasper.active_speaker.linearization_fit import (
     _boost_exclusion_verdicts,
     _core_or_fallback_mask,
     _highshelf_response_db,
+    _lift_stage,
     _ladder_smooth,
     _power_band_average_db,
     _shelf_stage,
@@ -63,6 +64,7 @@ from jasper.active_speaker.linearization_fit import (
     driver_core_level_db,
     fit_driver_linearization,
     linearization_filters_by_role,
+    measurement_hole_bands_hz,
     reduce_cuts_for_lift,
     solve_shared_level_frame,
 )
@@ -3397,3 +3399,281 @@ def test_the_disclosed_band_is_the_one_the_median_actually_used():
     assert driver_core_level_db(
         ordinary_resp, ordinary_env, radiating_band_hz=ordinary_band,
     ) == pytest.approx(-0.585, abs=0.01)
+
+
+# --------------------------------------------------------------------------- #
+# #2599 -- the boost's MEASURED-target bound, and the blind-zone disclosure
+# --------------------------------------------------------------------------- #
+#
+# Both anchored on the 2026-08-16 round-3 jts3 session. One number recurs and
+# is worth naming once: every frequency asserted below is a bin of
+# DEFAULT_ENVELOPE_GRID_HZ (176 log bins, 150 Hz-20 kHz), because
+# `design_peq` picks each filter's centre with `band_freqs[peak_idx]` -- an
+# argmax over the grid, never an interpolation. So 434.0168 Hz is
+# `150 * (20000/150) ** (38/175)` exactly, 897.8664 is bin 64, 1291.4105 is
+# bin 77, 1404.4032 is bin 80 and 2077.2412 is bin 94. That is what makes a
+# centre frequency bit-identical across two rounds: the same bin won, not the
+# same measurement. See `test_a_filter_centre_is_a_grid_bin_not_a_measurement`.
+
+
+def _measured_hot_lf_woofer():
+    """The entry curve's shape, reconstructed: a broad LF rise carrying one
+    narrow peak the fit's Q cap cannot match.
+
+    Round 3's combined entry curve ran +3..+5 dB HIGH across 280-700 Hz
+    (+3.87 @ 282, +4.92 @ 329, +3.98 @ 376, +3.02 @ 423), and the woofer fit
+    nonetheless emitted a +2.0149 dB Peaking BOOST at 434.0168 Hz -- into the
+    excess. The mechanism reproduced here is why that is possible at all: the
+    peaking loop cuts the narrow peak with the widest bell its Q cap allows,
+    that bell's SKIRTS drag the WORKING curve below target either side of the
+    peak, and the lift stage then designs a boost to fill a deficit the
+    MEASUREMENT does not have.
+    """
+    hot = _bell(_NATIVE_FREQS_HZ, 430.0, 4.0, 0.75)
+    spike = _bell(_NATIVE_FREQS_HZ, 340.0, 14.0, 0.05)
+    resp = _driver_response("woofer", hot + spike)
+    return resp, _envelope("woofer", resp, excited_band_hz=(150.0, 4000.0))
+
+
+def test_a_boost_into_a_measured_excess_is_refused_and_named():
+    """#2599 rule 1. The lift stage may not add level where the MEASUREMENT
+    already sits at or above target, however convincing the post-cut working
+    curve looks.
+
+    The refusal is attributed, not merely observed: `lift_requested_db` proves
+    a lift was wanted, the reason is `boost_above_measured_target` rather than
+    `no_realizable_boost`, and the drop record carries the arithmetic.
+    """
+    resp, envelope = _measured_hot_lf_woofer()
+    fit = fit_driver_linearization(
+        resp, envelope, vocabulary=FitVocabulary(allow_boost=True),
+    )
+
+    grid_hz = envelope.freqs_hz
+    anchor = 434.01678699822264
+    idx = int(np.argmin(np.abs(grid_hz - anchor)))
+    smoothed_db = _ladder_smooth(
+        grid_hz, np.interp(grid_hz, resp.freqs_hz, resp.magnitude_db)
+    )
+    # The premise: at the anchor bin the measurement is HOT, like the session's.
+    assert float(smoothed_db[idx] - fit.target_level_db) == pytest.approx(
+        2.844, abs=0.01,
+    )
+
+    # A boost WAS designed -- so this is a refusal, not an absence.
+    assert fit.lift_requested_db > _MIN_FILTER_GAIN_DB
+    assert fit.lift_suppressed_reason == "boost_above_measured_target"
+    assert fit.lift_from_boost_db == 0.0
+    assert [f for f in fit.filters if f.gain > 0.0] == []
+
+    (drop,) = fit.lift_boost_evidence_drops
+    assert drop.gain_db == pytest.approx(2.4467, abs=0.01)
+    # Its action region spans the anchor bin, and the measurement is above
+    # target across ALL of it -- the least-hot bin included.
+    assert drop.action_band_hz[0] < anchor < drop.action_band_hz[1]
+    assert drop.measured_excess_db == pytest.approx(2.7819, abs=0.01)
+    assert drop.measured_excess_db > 0.0
+
+
+def test_a_boost_into_a_genuine_measured_deficit_still_ships():
+    """The other half of #2599 rule 1, and the reason it is a bound and not a
+    ban. PR-L5's boost capability is correct where the MEASUREMENT itself is
+    short of target; only a manufactured deficit is refused.
+
+    Same envelope shape and same vocabulary as the refused case above, so the
+    two differ in the evidence and in nothing else.
+    """
+    dip = -_bell(_NATIVE_FREQS_HZ, 430.0, 5.0, 0.35)
+    resp = _driver_response("woofer", dip)
+    envelope = _envelope("woofer", resp, excited_band_hz=(150.0, 4000.0))
+    fit = fit_driver_linearization(
+        resp, envelope, vocabulary=FitVocabulary(allow_boost=True),
+    )
+
+    assert fit.lift_suppressed_reason == ""
+    assert fit.lift_boost_evidence_drops == ()
+    boosts = [f for f in fit.filters if f.gain > 0.0]
+    assert boosts, "a measured deficit must still attract a boost"
+    assert fit.lift_from_boost_db > _MIN_FILTER_GAIN_DB
+
+
+def test_the_measured_target_bound_reads_the_measurement_not_the_working_curve():
+    """The distinction the whole bound rests on, isolated.
+
+    `_lift_stage` is handed a working curve with a deficit and a measurement
+    without one -- exactly what a cut's skirts produce. Grading against
+    `working_db` (what the stage's own request is derived from) can never
+    refuse this, because by construction the working curve agrees the deficit
+    is real. Only the measurement disagrees.
+    """
+    grid_hz = np.asarray(DEFAULT_ENVELOPE_GRID_HZ, dtype=np.float64)
+    band_mask = (grid_hz >= 200.0) & (grid_hz <= 1000.0)
+    target_db = np.zeros_like(grid_hz)
+    deficit = -_bell(grid_hz, 434.01678699822264, 3.0, 0.3)
+
+    class _Env:
+        allowed_depth_db = np.full_like(grid_hz, 12.0)
+
+    honest = _lift_stage(
+        grid_hz, target_db + deficit, target_db, _Env(),
+        band_mask, (), FitVocabulary(allow_boost=True),
+        measured_db=target_db + deficit,
+    )
+    assert honest.suppressed_reason == ""
+    assert honest.from_boost_db > _MIN_FILTER_GAIN_DB
+
+    # Same working curve, same request, same designed cascade -- and a
+    # measurement that is 3 dB ABOVE target right where the boost would land.
+    manufactured = _lift_stage(
+        grid_hz, target_db + deficit, target_db, _Env(),
+        band_mask, (), FitVocabulary(allow_boost=True),
+        measured_db=target_db - deficit,
+    )
+    assert manufactured.requested_db == honest.requested_db
+    assert manufactured.suppressed_reason == "boost_above_measured_target"
+    assert manufactured.from_boost_db == 0.0
+    assert len(manufactured.boost_evidence_drops) >= 1
+
+
+def test_boost_above_measured_target_is_an_enumerated_suppression_reason():
+    """A new suppression path may not ship an un-enumerated reason string --
+    the same contract `HF_SUPPRESSION_REASONS` holds for its own stage."""
+    assert "boost_above_measured_target" in LIFT_SUPPRESSION_REASONS
+
+
+def test_a_filter_centre_is_a_grid_bin_not_a_measurement():
+    """Why 434.0168 Hz was bit-identical across rounds 2 and 3, pinned.
+
+    `design_peq` sets each filter's centre to `band_freqs[peak_idx]` -- an
+    element of the envelope grid -- so the digits after the decimal come from
+    `150 * (20000/150) ** (k/175)` and carry no information about the
+    measurement. Two rounds agreeing to ten digits means the same BIN won,
+    which is a statement about the grid's geometry, not evidence that the two
+    captures agreed.
+    """
+    grid_hz = np.asarray(DEFAULT_ENVELOPE_GRID_HZ, dtype=np.float64)
+    closed_form = 150.0 * (20000.0 / 150.0) ** (np.arange(176) / 175.0)
+    assert grid_hz == pytest.approx(closed_form, rel=1e-12)
+    for bin_index, frequency_hz in (
+        (38, 434.01678699822264),
+        (64, 897.8663826879772),
+        (77, 1291.4104702195973),
+        (80, 1404.4032452955714),
+        (94, 2077.2411784104297),
+    ):
+        assert grid_hz[bin_index] == pytest.approx(frequency_hz, rel=1e-12)
+
+    # ...and a fit's emitted centre really is one of those bins.
+    resp, envelope = _measured_hot_lf_woofer()
+    fit = fit_driver_linearization(resp, envelope)
+    assert fit.filters
+    for emitted in fit.filters:
+        assert np.min(np.abs(grid_hz - emitted.freq)) < 1e-9
+
+
+def test_measurement_hole_bands_are_the_gaps_between_measured_core_bands():
+    """#2599 rule 2's input. A hole is a property of the SET of branches."""
+    # The session's own pair.
+    assert measurement_hole_bands_hz([
+        (150.0, 1291.4104702195973), (2077.2411784104297, 16000.0),
+    ]) == ((1291.4104702195973, 2077.2411784104297),)
+    # Order of the roles cannot matter.
+    assert measurement_hole_bands_hz([
+        (2077.2411784104297, 16000.0), (150.0, 1291.4104702195973),
+    ]) == ((1291.4104702195973, 2077.2411784104297),)
+    # Overlapping and merely touching bands leave no gap.
+    assert measurement_hole_bands_hz([(150.0, 2100.0), (2077.2, 16000.0)]) == ()
+    assert measurement_hole_bands_hz([(150.0, 2077.2), (2077.2, 16000.0)]) == ()
+    # A gap can only be named between bands that exist: a role whose core
+    # level could not be read is skipped, and fewer than two leaves nothing.
+    assert measurement_hole_bands_hz([(150.0, 1291.4), None]) == ()
+    assert measurement_hole_bands_hz([None, None]) == ()
+    assert measurement_hole_bands_hz([]) == ()
+    # An enclosed band does not manufacture a hole behind the outer one.
+    assert measurement_hole_bands_hz([(150.0, 16000.0), (900.0, 1200.0)]) == ()
+
+
+def _blind_zone_woofer():
+    """A woofer with two peaks: one at 897.8664 Hz, deep inside its own
+    measured core band, and one at 1404.4032 Hz, inside the session's
+    1291.4105-2077.2412 Hz per-branch measurement hole (#2600 item 4).
+    """
+    measured_db = (
+        _bell(_NATIVE_FREQS_HZ, 897.8663826879772, 5.0, 0.12)
+        + _bell(_NATIVE_FREQS_HZ, 1404.4032452955714, 4.0, 0.12)
+    )
+    resp = _driver_response("woofer", measured_db)
+    return resp, _envelope("woofer", resp, excited_band_hz=(150.0, 4000.0))
+
+
+_SESSION_HOLE_HZ = (1291.4104702195973, 2077.2411784104297)
+
+
+def test_a_filter_centred_in_a_measurement_hole_is_named():
+    """#2599 rule 2. The blend window is a region NO branch's own capture
+    covers while the summed response there is a live two-branch blend, so a
+    per-driver filter placed in it is acting on something it cannot observe.
+    The fit now says so.
+    """
+    resp, envelope = _blind_zone_woofer()
+    fit = fit_driver_linearization(
+        resp, envelope, blind_bands_hz=(_SESSION_HOLE_HZ,),
+    )
+
+    centres = sorted(round(f.freq, 4) for f in fit.filters)
+    assert 1404.4032 in centres, "the fixture must place a filter in the hole"
+    assert 897.8664 in centres, "...and one well inside the measured core band"
+
+    (named,) = fit.blind_zone_placements
+    assert named.freq_hz == pytest.approx(1404.4032452955714)
+    assert named.blind_band_hz == _SESSION_HOLE_HZ
+    assert named.gain_db < 0.0
+    # The branch's own evidence rides along, because that is what makes the
+    # record actionable rather than merely alarming.
+    assert named.measured_excess_db > 0.0
+
+
+def test_an_in_core_filter_is_not_named_by_the_blind_zone_disclosure():
+    """The legitimate cut tonight -- 897.8664 Hz, deep inside the woofer's own
+    measured core band -- must not be swept up by the disclosure."""
+    resp, envelope = _blind_zone_woofer()
+    fit = fit_driver_linearization(
+        resp, envelope, blind_bands_hz=(_SESSION_HOLE_HZ,),
+    )
+    assert [
+        round(p.freq_hz, 4) for p in fit.blind_zone_placements
+    ] == [1404.4032]
+
+
+def test_the_blind_zone_disclosure_changes_no_emitted_filter():
+    """It REPORTS. Declaring a hole must leave the cascade, the claims and the
+    headroom charge bit-identical -- otherwise it is a refusal wearing a
+    disclosure's name.
+
+    Refusing instead was tried and is measurably wrong from inside a
+    single-branch fit: on the repo's conductor fixture the hole
+    (1255.8-2020.0 Hz) contains a -7.821 dB cut sitting on +7.821 dB of that
+    branch's OWN measured excess, and dropping it turns a passing correction
+    into `correction_not_an_improvement`. See `_blind_zone_placements`.
+    """
+    resp, envelope = _blind_zone_woofer()
+    silent = fit_driver_linearization(resp, envelope)
+    named = fit_driver_linearization(
+        resp, envelope, blind_bands_hz=(_SESSION_HOLE_HZ,),
+    )
+    assert named.blind_zone_placements, "the disclosure must actually fire"
+    assert silent.blind_zone_placements == ()
+    assert {
+        k: v for k, v in named.to_dict().items() if k != "blind_zone_placements"
+    } == {
+        k: v for k, v in silent.to_dict().items() if k != "blind_zone_placements"
+    }
+
+
+def test_declaring_no_hole_is_the_pre_2599_fit_exactly():
+    """Every one-way box, every session with fewer than two readable core
+    bands, and every caller written before #2599."""
+    resp, envelope = _blind_zone_woofer()
+    assert fit_driver_linearization(
+        resp, envelope, blind_bands_hz=(),
+    ).to_dict() == fit_driver_linearization(resp, envelope).to_dict()
