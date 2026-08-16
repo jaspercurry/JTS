@@ -1025,11 +1025,15 @@ def test_the_stale_active_ring_file_is_deleted_like_the_other_two(
     import jasper.fanin.coupling_reconcile as cr
     import jasper.ring_assets as ra
     paths = _point_all_ring_files_at(monkeypatch, tmp_path)
-    _ring_file(paths["a"], sample_format=ra.RING_SAMPLE_FORMAT_S16LE)
-    _ring_file(paths["b"], sample_format=ra.RING_SAMPLE_FORMAT_S16LE)
+    # S32_LE — every block in the shipped conf.d now DECLARES `format S32_LE`
+    # explicitly (the ring-wire default flip), so a "coherent" fixture file must
+    # carry it too; S16_LE here would itself be a format-axis mismatch and get
+    # deleted, defeating "the other two files are coherent" below.
+    _ring_file(paths["a"], sample_format=ra.RING_SAMPLE_FORMAT_S32LE)
+    _ring_file(paths["b"], sample_format=ra.RING_SAMPLE_FORMAT_S32LE)
     # The conf.d's active block declares the ioplug default (2); this file says 6.
     _ring_file(
-        paths["active"], sample_format=ra.RING_SAMPLE_FORMAT_S16LE, channels=6
+        paths["active"], sample_format=ra.RING_SAMPLE_FORMAT_S32LE, channels=6
     )
 
     cr._delete_stale_ring_files("t", "")
@@ -1056,17 +1060,22 @@ def test_the_confirm_predicate_escalates_on_a_stale_active_ring_file(
     import jasper.fanin.coupling_reconcile as cr
     import jasper.ring_assets as ra
     paths = _point_all_ring_files_at(monkeypatch, tmp_path)
-    _ring_file(paths["a"], sample_format=ra.RING_SAMPLE_FORMAT_S16LE)
-    _ring_file(paths["b"], sample_format=ra.RING_SAMPLE_FORMAT_S16LE)
+    # S32_LE — every block in the shipped conf.d now DECLARES `format S32_LE`
+    # explicitly, so a "coherent" fixture file must carry it too (see the
+    # sibling delete test above for the same reasoning).
+    _ring_file(paths["a"], sample_format=ra.RING_SAMPLE_FORMAT_S32LE)
+    _ring_file(paths["b"], sample_format=ra.RING_SAMPLE_FORMAT_S32LE)
 
     # Positive control: all three coherent -> stay lightweight.
-    _ring_file(paths["active"], sample_format=ra.RING_SAMPLE_FORMAT_S16LE)
+    _ring_file(paths["active"], sample_format=ra.RING_SAMPLE_FORMAT_S32LE)
     needed, detail = cr._ring_confirm_needs_self_heal("")
     assert needed is False, detail
 
-    # Only the ACTIVE file drifts -> escalate.
+    # Only the ACTIVE file drifts -> escalate. Format stays S32_LE (coherent)
+    # so the mismatch below is provably on the CHANNELS axis alone — the axis
+    # the "channels" substring below asserts.
     _ring_file(
-        paths["active"], sample_format=ra.RING_SAMPLE_FORMAT_S16LE, channels=6
+        paths["active"], sample_format=ra.RING_SAMPLE_FORMAT_S32LE, channels=6
     )
     needed, detail = cr._ring_confirm_needs_self_heal("")
     assert needed is True
@@ -1079,24 +1088,34 @@ def test_the_confirm_predicate_escalates_on_a_stale_active_ring_file(
 # --------------------------------------------------------------------------
 
 
-def test_the_shipped_conf_d_declares_the_active_block_at_the_ioplug_defaults():
-    """The third block ships STATIC and inert.
+def test_the_shipped_conf_d_declares_the_active_block_wide_but_its_channels_at_the_ioplug_default():
+    """The third block ships STATIC, split across its two geometry axes.
 
-    ``format``/``channels`` are omitted exactly as in the other two blocks, so
-    the block declares the ioplug's own defaults — a complete wire that no box
-    has to render. That is what lets ``render_ring_conf_wire`` only ever
-    SUBSTITUTE inside an existing block, never append one to a file every ALSA
-    client parses.
+    CHANNELS is still OMITTED exactly as in the other two blocks, so it
+    declares the ioplug's own default (2) — a box with no active ring never
+    has to render this block, and that omission is what lets
+    ``render_ring_conf_wire`` only ever SUBSTITUTE inside an existing block,
+    never append one to a file every ALSA client parses.
+
+    FORMAT is no longer omitted. Since the ring-wire default flip, an omitted
+    key would declare the C ioplug's compiled-in S16_LE — the OPPOSITE of what
+    every OTHER ring end resolves on an undeclared box — so all three blocks,
+    this one included, now spell ``format S32_LE`` explicitly (see the conf.d's
+    own "WIRE FORMAT" header comment). The literal is still fixed rather than
+    per-box rendered, so the block stays exactly as STATIC as the channels axis.
     """
     conf = RING_CONF.read_text(encoding="utf-8")
     body = conf.split(f"pcm.{RING_ACTIVE_PLAYBACK_DEVICE} {{", 1)[1].split("}", 1)[0]
-    assert "format" not in body
+    assert "format S32_LE" in body
     assert "channels" not in body
     assert "period_frames 128" in body
     assert "n_slots 2" in body
     assert ring_assets.ring_conf_channels(
         ring_assets.RING_ACTIVE_CONF_PCM, str(RING_CONF)
     ) == ring_assets.RING_CONF_DEFAULT_CHANNELS
+    assert ring_assets.ring_conf_format(
+        ring_assets.RING_ACTIVE_CONF_PCM, str(RING_CONF)
+    ) == "S32_LE"
 
 
 def test_a_fourth_ring_block_must_render_or_fail_loud(monkeypatch, tmp_path):
@@ -1114,9 +1133,13 @@ def test_a_fourth_ring_block_must_render_or_fail_loud(monkeypatch, tmp_path):
 
     conf = tmp_path / "60-jts-ring.conf"
     conf.write_text(RING_CONF.read_text(encoding="utf-8"), encoding="utf-8")
+    # S32_LE matches the shipped conf.d's own explicit `format S32_LE` (every
+    # block declares it since the ring-wire default flip) — S16_LE here would
+    # make the "control" render below a REAL rewrite, not the no-op the
+    # comment underneath it depends on.
     wire = RingWire(
         period_frames=ra.RING_SLOT_FRAMES,
-        sample_format="S16_LE",
+        sample_format="S32_LE",
         ring_a_channels=2,
         ring_b_channels=2,
         ring_active_channels=None,

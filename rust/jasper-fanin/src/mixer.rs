@@ -1521,7 +1521,9 @@ pub struct Input {
     /// Per-input SPINE-SCALE read buffer (i32 interleaved stereo), allocated
     /// ONLY for the USB DIRECT lane on a wide wire (U2 / #2223). EMPTY — and so
     /// zero heap, a `Vec` with no capacity does not allocate — on every other
-    /// lane and on every narrow-wire box.
+    /// lane, on every `loopback` box, and on a box an operator has pinned to the
+    /// narrow wire. Since the ring wire's resolver defaults wide, an armed
+    /// `shm_ring` box allocates this without declaring anything.
     ///
     /// Non-empty is the lane's OWN width switch, and the mixer reads it exactly
     /// that way (`read_buf_wide.is_empty()` picks the sum entry). One allocation

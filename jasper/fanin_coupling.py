@@ -112,8 +112,13 @@ RING_CAPTURE_DEVICE = "jts_ring_capture"
 #
 # ``RING_WIRE_FORMAT`` is the NARROW token specifically, not "the ring's
 # format": which of the two a box carries is :func:`resolve_ring_wire`'s answer.
-# It stays a named constant because it is also the ioplug conf.d default and the
-# shipped wire, so "narrow" has one spelling.
+# It stays a named constant because it is still the C ioplug's compiled-in
+# default (``jasper.ring_assets.RING_CONF_DEFAULT_FORMAT``, which mirrors it) and
+# the operator's rollback token, so "narrow" has one spelling.
+#
+# It is NO LONGER the resolver's default: :func:`resolve_ring_wire_format`
+# answers :data:`RING_WIRE_FORMAT_WIDE` for an undeclared box, and the shipped
+# conf.d declares that token explicitly in every block.
 RING_WIRE_FORMAT = "S16_LE"
 RING_WIRE_FORMAT_WIDE = "S32_LE"
 RING_WIRE_FORMATS = (RING_WIRE_FORMAT, RING_WIRE_FORMAT_WIDE)
@@ -134,6 +139,16 @@ RING_WIRE_FORMATS = (RING_WIRE_FORMAT, RING_WIRE_FORMAT_WIDE)
 # playback ``format:``. They are compared anyway
 # (``ring_edge_width_ready``) because they land in files written at DIFFERENT
 # times — a half-applied render is exactly what that comparison catches.
+#
+# THE KEY HAS NO WRITER, AND THAT IS WHAT MAKES IT A ROLLBACK LEVER. Since the
+# resolver's default went wide (convergence design §3.2/B3), the only reason to
+# set this key is to pin a box NARROW — and a lever a reconciler could rewrite on
+# the next boot, deploy or udev pass would not be one. So nothing in this repo
+# writes it: every production site under jasper/, deploy/ and scripts/ that
+# names the key is a READ, a gate's error string, or prose. Adding a writer
+# would silently destroy the fleet's only way back to the narrow wire, so
+# ``tests/test_ring_wire_format_contract.py`` pins the empty writer set by
+# asserting no such line also names an env-write primitive.
 RING_WIRE_FORMAT_ENV_VAR = "JASPER_FANIN_RING_WIRE_FORMAT"
 
 # Ring A's channel count. Everything upstream of CamillaDSP is a stereo program
@@ -298,9 +313,16 @@ def resolve_ring_wire_format(raw: str | None) -> str:
     (``rust/jasper-fanin/src/config.rs``) and this must classify every input the
     same way, because the two resolve the SAME box's wire from the SAME file:
 
-    - unset, or empty after trimming → :data:`RING_WIRE_FORMAT` (narrow). Empty
+    - unset, or empty after trimming → :data:`RING_WIRE_FORMAT_WIDE`. Empty
       is how this repo's env-file writers CLEAR a key, so a cleared key and an
-      absent key mean one thing;
+      absent key mean one thing. The default is WIDE because narrow is a width
+      REGRESSION on the hop the ring replaces: the loopback CamillaDSP→outputd
+      hop already carries
+      :data:`~jasper.camilla_config_contract.DEFAULT_PLAYBACK_FORMAT` (S32_LE),
+      so arming a ring at S16_LE would narrow a hop that was wide before the arm
+      (convergence design §3.2). Nothing in this repo WRITES this key — see
+      :data:`RING_WIRE_FORMAT_ENV_VAR` — so an operator's ``S16_LE`` is a
+      rollback lever no boot, deploy or udev pass can overwrite;
     - exactly ``S16_LE`` / ``S32_LE`` after trimming → that token. The match is
       case-SENSITIVE because the C ioplug's own ``strcmp`` is: accepting a
       spelling the ioplug rejects would resolve a wire no reader can open;
@@ -314,10 +336,10 @@ def resolve_ring_wire_format(raw: str | None) -> str:
     source so the two normalizers cannot drift apart silently.
     """
     if raw is None:
-        return RING_WIRE_FORMAT
+        return RING_WIRE_FORMAT_WIDE
     value = raw.strip()
     if not value:
-        return RING_WIRE_FORMAT
+        return RING_WIRE_FORMAT_WIDE
     if value in RING_WIRE_FORMATS:
         return value
     raise ValueError(
@@ -364,7 +386,7 @@ def read_declared_ring_wire_format(
         raw = read_value(text, RING_WIRE_FORMAT_ENV_VAR)
         if raw is not None:
             return resolve_ring_wire_format(raw)
-    return RING_WIRE_FORMAT
+    return RING_WIRE_FORMAT_WIDE
 
 
 def assistant_wire_is_wide(
@@ -430,15 +452,18 @@ def resolve_ring_wire(topology: Any = None) -> RingWire:
     - ``sample_format`` — the box's own declaration, through
       :func:`read_declared_ring_wire_format`: the one
       :data:`RING_WIRE_FORMAT_ENV_VAR` value ``jasper-fanin`` resolves from the
-      same chain, defaulting to :data:`RING_WIRE_FORMAT` (narrow) when the box
+      same chain, defaulting to :data:`RING_WIRE_FORMAT_WIDE` when the box
       declares nothing. The layout's accept-set is wider (S16LE and S32LE, both
       ends of the ring already parse both), so which one a box carries is a
       DECLARATION, not a policy constant — until 2026-08-11 this axis was
       pinned narrow here with no input at all, which meant an operator could
       declare a wide wire to fan-in and every Python end would still emit and
-      render narrow (jts3's blocked wide arm). The ioplug conf.d default is the
-      narrow token, which is why an unrendered conf.d and an undeclared box
-      agree without the file saying so.
+      render narrow (jts3's blocked wide arm). The shipped conf.d DECLARES the
+      wide token in every block rather than omitting the key, so an unrendered
+      conf.d and an undeclared box agree because the file says so — the C
+      ioplug's own default is still the narrow token
+      (:data:`~jasper.ring_assets.RING_CONF_DEFAULT_FORMAT`), so silence would
+      now mean the opposite of what the resolver answers.
     - ``ring_a_channels`` — :data:`RING_A_CHANNELS` on every box. Not a
       per-topology axis: the program upstream of CamillaDSP is stereo and
       fan-in's mixer is not configurable.

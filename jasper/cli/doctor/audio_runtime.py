@@ -1173,7 +1173,10 @@ def _expected_playback_format(
     # resolved ring WIRE format — that axis is one per box, shared by all three
     # ring ends — so a device-specific answer would be wrong, while omitting the
     # active ring would fall through to DEFAULT_PLAYBACK_FORMAT and red-line a
-    # perfectly healthy armed box whenever the wire is the narrow S16_LE.
+    # perfectly healthy armed box whenever the two differ. Since the ring wire's
+    # resolver defaults wide they no longer differ on an undeclared box; an
+    # operator's narrow pin is what separates them, and this branch is what
+    # keeps such a box green.
     if playback_device in (RING_PLAYBACK_DEVICE, RING_ACTIVE_PLAYBACK_DEVICE):
         # Named for the RESOLVER, not for a constant: the ring's width is a
         # per-box resolution, and a detail line citing a constant would send a
@@ -1740,9 +1743,11 @@ def _jts_ring_probe_wire(pcm: str) -> tuple[int, str] | None:
     ``format``/``channels`` key means the ioplug default
     (:data:`~jasper.ring_assets.RING_CONF_DEFAULT_FORMAT` /
     :data:`~jasper.ring_assets.RING_CONF_DEFAULT_CHANNELS`), which both parsers
-    already encode, so this answers the shipped, never-rendered file correctly
-    too — no separate "unrendered" branch needed. The ring PCMs can
-    legitimately differ on channels, hence the per-PCM lookup.
+    already encode, so this answers a never-rendered file correctly too — no
+    separate "unrendered" branch needed. That path now carries only
+    ``channels``: the shipped conf.d SPELLS ``format S32_LE`` in every block, so
+    the format axis is read from the file rather than inferred. The ring PCMs
+    can legitimately differ on channels, hence the per-PCM lookup.
     """
     channels = ring_assets.ring_conf_channels(pcm, _JTS_RING_CONF_D)
     sample_format = ring_assets.ring_conf_format(pcm, _JTS_RING_CONF_D)
@@ -2005,13 +2010,15 @@ def check_ring_ioplug_provenance() -> CheckResult:
       would bury the one verdict that predicts a disarm.
 
     WHAT THE PREDICATE COVERS, so this does not over-promise:
-    ``ring_wire_capabilities`` reads the sample format and the Ring A / Ring B
-    channel counts. The ACTIVE block's ``channels`` key — which
-    ``render_ring_conf_wire`` writes whenever ``ring_active_channels`` differs
-    from the conf.d default — is outside it, so a wire widening only that axis
-    renders a field this verdict does not weigh. That axis is tracked with the
-    ring-wire default flip (P5 of the convergence design); the format axis is
-    what is covered here.
+    ``ring_wire_capabilities`` reads the sample format, the Ring A / Ring B
+    channel counts, and — since the ring-wire default flip — the ACTIVE block's
+    own ``channels`` axis, so a roleful box whose post-crossover width forces
+    that key is weighed here too. What stays outside it is the FILE: the
+    predicate answers "which keys does this wire force onto the conf.d", not
+    "which keys does the conf.d on disk declare", and the shipped conf.d now
+    spells ``format`` explicitly. So a box an operator has pinned narrow
+    resolves an empty capability set while its rendered conf.d still carries a
+    ``format`` line — see ``ring_wire_capabilities``' own note, and #2597.
 
     The escalation asks :func:`jasper.ring_assets.ring_ioplug_wire_supported` —
     the gate's own predicate, remediation text included — rather than restating

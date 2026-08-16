@@ -1754,8 +1754,17 @@ def _block_unsupported_coupling(
 # the defaults are the daemon's own (``config.rs``): an empty/unset
 # CONTENT_FORMAT resolves ``SampleFormat::S16Le``, and an unset ACTIVE_CHANNELS
 # resolves 2 on a single-ALSA sink. Reading an absent key as "unknown" would
-# refuse the arm on every box whose hardware reconciler has not written the key
-# yet, for a wire the daemon would in fact have declared correctly.
+# refuse the arm for a wire the daemon has in fact declared, which is the wrong
+# refusal — the right one is a COMPARISON against the resolved wire.
+#
+# THE FORMAT DEFAULT IS THE DAEMON'S AND DOES NOT FOLLOW THE RESOLVER, exactly
+# like ``RING_CONF_DEFAULT_FORMAT``. Since the ring wire's resolver went wide,
+# an ARMED box whose outputd.env is missing this key genuinely IS sheared —
+# outputd would read S16 slots out of a wide ring — so this gate refusing it is
+# the correct, loud verdict, not a false alarm. The remedy is the hardware
+# reconciler, which is this key's single writer and re-derives it from the
+# coupling on every pass. Moving this constant to match the resolver would
+# silence a real shear.
 _OUTPUTD_CONTENT_FORMAT_ENV_VAR = "JASPER_OUTPUTD_CONTENT_FORMAT"
 _OUTPUTD_ACTIVE_CHANNELS_ENV_VAR = "JASPER_OUTPUTD_ACTIVE_CHANNELS"
 _OUTPUTD_DEFAULT_CONTENT_CHANNELS = 2
@@ -1946,10 +1955,25 @@ def resolve_effective_fanin_wire_format(fanin_text: str) -> tuple[str, str]:
     (:func:`_effective_env_value`, shared with
     :func:`resolve_effective_fanin_ring_slots`): looking only at
     ``fanin.env`` would report the default while an operator's value in the
-    earlier system env still controls the next daemon start. An unset value
-    declares the narrow default, which is what the Rust daemon resolves.
+    earlier system env still controls the next daemon start.
 
-    THIS END IS NOW THE RESOLVER'S INPUT, and the width gate says so rather than
+    THE UNSET CASE GOES THROUGH THE RESOLVER'S OWN NORMALIZER, never a default
+    restated here. ``resolve_ring_wire_format`` is what both languages classify
+    this key with, so calling it is what keeps this end honest across a change to
+    the default — and the default HAS changed (narrow → wide). A restated
+    ``RING_WIRE_FORMAT`` here would have made every undeclared box declare narrow
+    at this end while the conf.d, the emitted stanzas and the resolver all
+    answered wide: a self-shear that refuses the arm fleet-wide, invented by the
+    gate rather than found by it.
+
+    An unrecognized token is returned VERBATIM rather than raised on: this
+    function reports what an end declares, and
+    :func:`ring_edge_width_ready`'s comparison against the resolved wire is what
+    turns a bad token into a refusal (``resolve_wire_for_gate`` owns the parse
+    refusal itself, with the parser's own sentence). Raising here would throw
+    mid-arm from a reader whose whole job is to describe.
+
+    THIS END IS THE RESOLVER'S INPUT, and the width gate says so rather than
     pretending otherwise: since ``resolve_ring_wire`` reads the same key off the
     same chain, a live comparison of this end against the resolved wire agrees by
     construction. It stays a declaration because this reader takes the caller's
@@ -1959,13 +1983,16 @@ def resolve_effective_fanin_wire_format(fanin_text: str) -> tuple[str, str]:
     conf.d, outputd's env and the loaded graph, each written by a different
     writer at a different time.
     """
-    from jasper.fanin_coupling import RING_WIRE_FORMAT, RING_WIRE_FORMAT_ENV_VAR
+    from jasper.fanin_coupling import (
+        RING_WIRE_FORMAT_ENV_VAR,
+        resolve_ring_wire_format,
+    )
 
     raw, source = _effective_env_value(
         fanin_text, RING_WIRE_FORMAT_ENV_VAR, later_path=FANIN_ENV_PATH
     )
     if raw is None or not raw.strip():
-        return RING_WIRE_FORMAT, "default"
+        return resolve_ring_wire_format(None), "default"
     return raw.strip(), source
 
 
@@ -2260,10 +2287,14 @@ def ring_edge_width_ready(
     ``DEFAULT_PLAYBACK_FORMAT``, the box-wide program-lane default. That was
     correct while the two were equal, but once PR-6 widened the default it would
     have refused the ring on EVERY ring-eligible box — including jts.local,
-    whose armed ring stays coherently narrow through the kwargs override and
-    which carries a CERTIFIED USB-route latency artifact measured on that ring.
-    Ring-coupled boxes keep the ring at its own resolved wire; the wide lane is
-    the LOOPBACK path's property.
+    whose armed ring was coherently narrow through the kwargs override and which
+    carries a CERTIFIED USB-route latency artifact measured on that ring.
+    Ring-coupled boxes keep the ring at its own RESOLVED wire, whatever that
+    resolves to — which is the property that survived the resolver's default
+    going wide: the two values coincide again on an undeclared box, and this
+    gate did not have to move, because it never compared against a policy
+    constant in the first place. An operator's narrow pin separates them again,
+    and the gate handles that the same way.
 
     ``fanin_text`` / ``outputd_text`` / ``graph`` default to reading their
     sources, so the gate stays callable with no arguments from
@@ -2389,12 +2420,19 @@ def ring_wire_caps_ready() -> tuple[bool, str]:
     and CamillaDSP cannot start against the ring — on an ALREADY-armed box that
     is a crash loop the CONFIRM path used to watch without acting.
 
-    DORMANT ON AN UNDECLARED BOX, BY CONSTRUCTION: the shipped wire renders no
-    conf.d field beyond the ioplug's own defaults, so the needed capability set
-    is empty and this returns ok WITHOUT reading the record or hashing anything.
-    A box with no provenance record is unaffected — until it DECLARES a
-    non-default wire (``JASPER_FANIN_RING_WIRE_FORMAT``), which is exactly when
-    the record starts to matter and this gate starts to refuse without one.
+    LIVE ON EVERY BOX THAT HAS NOT PINNED ITSELF NARROW. The ring wire's
+    resolver defaults WIDE (``jasper.fanin_coupling.resolve_ring_wire_format``)
+    while the ioplug's compiled-in conf.d default stayed ``S16_LE``, so an
+    undeclared box needs the ``wire_format`` capability and this gate performs a
+    real record compare — hashing the ``.so`` and reading
+    ``RING_IOPLUG_PROVENANCE`` — on every pass. A box whose last deploy took the
+    ioplug-build WARN is therefore REFUSED here (loopback on a flat box, the
+    parked content lane on a roleful one) rather than arming into a CamillaDSP
+    that cannot open the ring. ``jasper-doctor``'s ``ring ioplug provenance``
+    check reports that state with the redeploy remedy BEFORE this gate acts on
+    it. The short-circuit arm survives for one shape only: a box an operator has
+    pinned to ``S16_LE`` through ``JASPER_FANIN_RING_WIRE_FORMAT`` (the rollback
+    lever; nothing in the repo writes that key).
 
     An unparseable declaration is refused here rather than raised — see
     :func:`resolve_wire_for_gate` for why a gate must not throw mid-arm.
@@ -2851,12 +2889,18 @@ def composite_ring_wire_ready(topology: Any) -> tuple[bool, str]:
     CamillaDSP→outputd content hop takes its format from
     :func:`jasper.fanin_coupling.content_lane_format_for_coupling`: under
     ``loopback`` that is ``DEFAULT_PLAYBACK_FORMAT`` (**S32_LE**), under
-    ``shm_ring`` it is ``resolve_ring_wire().sample_format`` — which defaults to
-    the NARROW ``S16_LE`` unless the box declares otherwise. So moving a
-    composite from its aloop lane onto the ring, changing nothing else, would
-    narrow the POST-crossover per-driver program from 32 to 16 bits. That is the
-    exact quantization class the wide-output-path program exists to remove,
-    arriving through a transport change nobody would look at for it.
+    ``shm_ring`` it is ``resolve_ring_wire().sample_format``. Moving a composite
+    from its aloop lane onto a NARROW ring, changing nothing else, would narrow
+    the POST-crossover per-driver program from 32 to 16 bits. That is the exact
+    quantization class the wide-output-path program exists to remove, arriving
+    through a transport change nobody would look at for it.
+
+    WHAT REACHES THIS REFUSAL NOW. The ring wire's resolver defaults WIDE, so an
+    undeclared composite converges with no declaration at all and passes here —
+    that generalization of this gate's own sentence is why the default moved
+    (convergence design §3.2). The one shape left is a box an operator has
+    PINNED to ``S16_LE``: this gate refuses to ride its rollback lever onto a
+    composite's per-driver program, and says so.
 
     ``ring_edge_width_ready`` cannot catch it: that gate proves every declaring
     end states the SAME wire, and a narrow composite arm is perfectly
@@ -2879,9 +2923,10 @@ def composite_ring_wire_ready(topology: Any) -> tuple[bool, str]:
     measured on a composite.
 
     NOT a policy override of the operator's declaration: the wire stays the
-    box's own ``JASPER_FANIN_RING_WIRE_FORMAT`` (one writer, one source of
-    truth). This refuses the unsafe COMBINATION and names the remedy, rather
-    than silently rewriting the operator's file.
+    box's own ``JASPER_FANIN_RING_WIRE_FORMAT``, whose writer set is EMPTY — no
+    boot, deploy or udev pass can overwrite a pin, which is what makes it a real
+    rollback lever. This refuses the unsafe COMBINATION and names the remedy,
+    rather than silently rewriting the operator's file.
 
     THE REMEDY NAMES ALL THREE RUNGS, and that is a correction. It used to say
     "set the key, re-run ``jasper-audio-hardware-reconcile``, then re-arm" —
@@ -2929,9 +2974,10 @@ def composite_ring_wire_ready(topology: Any) -> tuple[bool, str]:
             f"S32_LE, so arming the ring narrow would quantize every driver's "
             f"signal from 32 to 16 bits — a width REGRESSION disguised as a "
             f"transport change, which the every-end wire gate cannot see "
-            f"(a narrow arm is perfectly self-consistent). Set "
-            f"{RING_WIRE_FORMAT_ENV_VAR}={RING_WIRE_FORMAT_WIDE} in "
-            f"/var/lib/jasper/fanin.env, then re-run the WHOLE three-step arm "
+            f"(a narrow arm is perfectly self-consistent). An undeclared box "
+            f"resolves the wide wire, so this is a deliberate pin: remove "
+            f"{RING_WIRE_FORMAT_ENV_VAR} (or set it to {RING_WIRE_FORMAT_WIDE}) "
+            f"in /var/lib/jasper/fanin.env, then re-run the WHOLE three-step arm "
             f"ladder in order: `sudo /opt/jasper/.venv/bin/jasper-active-speaker "
             f"baseline-reemit --endpoint ring && sudo systemctl start "
             f"jasper-audio-hardware-reconcile && sudo /opt/jasper/.venv/bin/"
@@ -3824,7 +3870,9 @@ def _arm_ring(
     # device at open() with -EINVAL and CamillaDSP cannot start against the ring.
     # A RECORD compare (installer-written provenance vs the .so on disk), never
     # an open-probe: probing a ring PCM from the reconciler would disturb a live
-    # arm. No-op on the shipped wire, which renders no such key.
+    # arm. LIVE on every box since the ring wire's default went wide — the only
+    # wire that still short-circuits without reading a record is an operator's
+    # `JASPER_FANIN_RING_WIRE_FORMAT=S16_LE` pin.
     caps_ok, caps_detail = ring_wire_caps_ready()
     if not caps_ok:
         return _fail_ring_arm(

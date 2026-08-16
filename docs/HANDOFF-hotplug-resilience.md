@@ -450,7 +450,15 @@ The repaired output ladder is:
    **The recorded fix is lane-specific**, because the two lanes take opposite
    remedies: the passive lane (pair 6) still has both halves, so its fix is
    the width; the ACTIVE lane has no snd-aloop transport at all, so its only
-   fix is re-arming the ring. The helper picks between them on the PCM NAME in
+   fix is re-arming the ring. **Since 2026-08-15 that re-arm has a
+   precondition**: the ring wire's default went wide, and a roleful graph's
+   capture/playback formats are baked at EMIT time (`active_emit_devices`), so
+   a boot graph older than the flip still declares `S16_LE` and
+   `ring_edge_width_ready` refuses the re-arm until
+   `jasper-active-speaker baseline-reemit --endpoint ring` has re-baked it. The
+   remedy class is unchanged; the ladder is graph first, and
+   [HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md)
+   spells it. The helper picks between them on the PCM NAME in
    the failing context — both outputd sinks carry the name, but only the
    composite sink spells `active` in its context prefix, so a prefix-keyed
    selector would miss the roleful single-DAC shape entirely.
@@ -708,7 +716,15 @@ session):**
 - [`deploy/systemd/jasper-wiim-remote-mic.service`](../deploy/systemd/jasper-wiim-remote-mic.service) — optional BLE remote mic adapter
 - [`deploy/systemd/jasper-wiim-remote-ce.service`](../deploy/systemd/jasper-wiim-remote-ce.service) + [`jasper/cli/wiim_remote_ce.py`](../jasper/cli/wiim_remote_ce.py) — per-connection BLE connection-event reservation, re-requested on every reconnect
 
-Last verified: 2026-08-07 (Layer 1 re-derived against the reconcilers and units
+Last verified: 2026-08-15 (scoped: only the outputd content-lane park's
+lane-specific-fix paragraph was re-verified, after the ring wire's default
+sample format flipped narrow → wide. The recorded ACTIVE-lane remedy
+"re-arm the ring" gained a precondition — a roleful graph emitted before the
+flip still declares `S16_LE`, so `ring_edge_width_ready` refuses the re-arm
+until `baseline-reemit --endpoint ring` re-bakes it; re-derived against
+`jasper/fanin/coupling_reconcile.py` and
+`jasper.active_speaker.camilla_yaml.active_emit_devices`. No box was probed,
+and nothing else in this file was re-read. Prior 2026-08-07: Layer 1 re-derived against the reconcilers and units
 for the voice-input-gate OR, issue #2205, including which install profiles
 reach `refresh_voice_input` — read from `deploy/lib/install/systemd-units.sh`
 — and `try-restart`'s no-op behaviour measured on jts4. The "which half

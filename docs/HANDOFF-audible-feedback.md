@@ -30,11 +30,18 @@ short earcons are rendered by `jasper/voice/earcons.py` and cached by
 not phrases worth caching through `jasper/cues/`.
 
 They are rendered in float and baked ONCE, at the sample width the box's
-wire declares (U2 PR-2): 24 kHz mono S16 on a narrow box —
-byte-identical to every earcon the fleet has played — and 24 kHz mono
-S32 at the i32 spine scale on a box whose
-`JASPER_FANIN_RING_WIRE_FORMAT` is `S32_LE`, so the recipe's own detail
-is not flattened onto the 16-bit grid before the wire could carry it.
+wire declares (U2 PR-2): 24 kHz mono S16 on a narrow box, 24 kHz mono S32
+at the i32 spine scale on a wide one, so the recipe's own detail is not
+flattened onto the 16-bit grid before the wire could carry it. Which one a
+box takes is `jasper.fanin_coupling.assistant_wire_is_wide`'s answer — a
+CONJUNCTION of the ring wire's format and the `shm_ring` coupling; read the
+rule there rather than a copy here. **Since 2026-08-15 the format half is
+true by default**, so an armed `shm_ring` box bakes the wide earcon with no
+declaration at all and the coupling is the only remaining gate. A `loopback`
+box still bakes narrow, and so does a box an operator has pinned back with
+`JASPER_FANIN_RING_WIRE_FORMAT=S16_LE`. That narrow bake was byte-identical
+to every earcon the fleet had played while the wire's default was narrow; it
+is the unarmed box's path now, not the fleet's.
 `measure_pcm_24k_mono` takes the same width and normalizes it out, so an
 earcon's source-loudness profile is identical either way. Spoken cue
 WAVs are NOT affected: their source is a 16-bit provider TTS render on
@@ -349,4 +356,4 @@ failures on the affected paths, but every other path works.
 
 ---
 
-Last verified: 2026-08-08 (accepted-PCM duck/output ownership re-verified for both `FanInDucker` and local-outputd `CueDuck`; registry table re-diffed on 2026-08-07 for the `no_room_microphone` row; the remaining sections retain their 2026-07-11 verification)
+Last verified: 2026-08-15 (scoped: only the "Generated feedback sounds" earcon-bake-width paragraph was re-verified, against `jasper.fanin_coupling.assistant_wire_is_wide` and `jasper.audio_io.tts_wire_is_wide` after the ring wire's default format went wide — the earcon width no longer needs a per-box declaration, only the `shm_ring` coupling; accepted-PCM duck/output ownership was last re-verified 2026-08-08 for both `FanInDucker` and local-outputd `CueDuck`; registry table re-diffed on 2026-08-07 for the `no_room_microphone` row; the remaining sections retain their 2026-07-11 verification)

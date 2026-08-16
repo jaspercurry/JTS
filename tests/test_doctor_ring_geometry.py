@@ -300,20 +300,31 @@ def _buffer_health(data, *, period=128):
 
 
 def test_buffer_health_passes_when_the_attached_wire_matches():
-    """POSITIVE CONTROL. On the shipped wire the comparison is silent, so the two
-    failure pins below are proving a branch rather than a broken happy path."""
-    result = _buffer_health(_outputd_ring_status())
+    """POSITIVE CONTROL. On the box's default (undeclared) wire the comparison
+    is silent, so the two failure pins below are proving a branch rather than a
+    broken happy path.
+
+    ``fmt="S32_LE"`` because the resolver's default went WIDE
+    (``jasper.fanin_coupling.resolve_ring_wire_format``): an undeclared box —
+    this test stubs neither the wire nor the env chain — now resolves S32_LE,
+    not the C ioplug's compiled-in S16_LE.
+    """
+    result = _buffer_health(_outputd_ring_status(fmt="S32_LE"))
     assert isinstance(result, str), result
-    assert "shm_ring_wire=S16_LE/2ch" in result
+    assert "shm_ring_wire=S32_LE/2ch" in result
     assert "shm_ring_attached=True" in result
 
 
 def test_buffer_health_fails_on_an_attached_format_the_box_does_not_declare():
-    """outputd attached to a Ring B FORMAT nobody declared."""
-    result = _buffer_health(_outputd_ring_status(fmt="S32_LE"))
+    """outputd attached to a Ring B FORMAT nobody declared.
+
+    S16_LE is the mismatching token now: the resolver's default went WIDE, so
+    an undeclared box's wire IS S32_LE and S16_LE is what nobody declares.
+    """
+    result = _buffer_health(_outputd_ring_status(fmt="S16_LE"))
     assert not isinstance(result, str), "a wire shear must be a CheckResult, not detail"
     assert result.status == "fail"
-    assert "shm_ring.format='S32_LE'" in result.detail
+    assert "shm_ring.format='S16_LE'" in result.detail
     assert "nobody declared" in result.detail
     # The remedy must name the reconcile that CLEARS the mismatched file — a bare
     # "redeploy" leaves the stale ring in place and the box parks again.
@@ -321,8 +332,13 @@ def test_buffer_health_fails_on_an_attached_format_the_box_does_not_declare():
 
 
 def test_buffer_health_fails_on_an_attached_channel_count_the_box_does_not_declare():
-    """The channels axis has teeth independently of the format axis."""
-    result = _buffer_health(_outputd_ring_status(channels=6))
+    """The channels axis has teeth independently of the format axis.
+
+    ``fmt="S32_LE"`` pins the format to the box's default so that axis stays
+    silent — an unpinned S16_LE default would (now) ALSO mismatch the format
+    axis, and this test would no longer isolate the channels comparison.
+    """
+    result = _buffer_health(_outputd_ring_status(fmt="S32_LE", channels=6))
     assert not isinstance(result, str)
     assert result.status == "fail"
     assert "shm_ring.channels=6" in result.detail

@@ -1249,10 +1249,25 @@ def outputd_content_format_change(
       the persisted coupling — the exact value the reconciler is about to write.
 
     Deliberately an EQUALITY check, never a width ranking — see
-    ``jasper.fanin.coupling_reconcile.ring_edge_width_ready``. A ring-coupled box
-    answers ``None`` on both sides of the flip (the coupling forces the ring's own
-    narrow width, and such a box's outputd never opens an ALSA content lane at
-    all), so it pays no churn.
+    ``jasper.fanin.coupling_reconcile.ring_edge_width_ready``.
+
+    WHICH RING-COUPLED BOXES PAY CHURN, and why the answer moved. This used to
+    answer ``None`` for every ring-coupled box, because the coupling resolved the
+    ring's own narrow width and the wide-output-path lane was the only thing
+    moving. Since the ring wire's resolver defaults WIDE
+    (:func:`jasper.fanin_coupling.resolve_ring_wire_format`), an ALREADY-ARMED
+    box that never declared a wire has ``S16_LE`` in ``outputd.env`` and an
+    upcoming ``S32_LE``, so it reports a change and the installer releases the
+    lane before the reconciler restarts outputd.
+
+    That release is REDUNDANT rather than wrong on such a box — its outputd
+    reads the SHM ring and never opens an ALSA content lane, so there is no
+    aloop pair to be locked at the old width — and it is redundant in the SAFE
+    direction: the installer already bounces the core audio graph on every
+    deploy, so the extra camilla stop/start costs nothing a deploy was not
+    already paying. Narrowing the probe to skip a ``shm_ring`` box is a separate
+    decision with its own evidence; it is not made here, because a spurious
+    release is cheap and a missed one reaches ``StartLimitAction=reboot``.
     """
 
     from jasper.fanin.coupling_reconcile import read_persisted_coupling

@@ -369,6 +369,24 @@ def _stub_ring_gates(monkeypatch, *, eligible: bool):
     monkeypatch.setattr(cr, "ring_assets_ready", lambda: (eligible, "assets"))
     monkeypatch.setattr(cr, "ring_topology_ready_strict", lambda: (eligible, "topology"))
     monkeypatch.setattr(cr, "_delete_stale_ring_files", lambda reason, fanin_text="": None)
+    # THE IOPLUG CAPABILITY GATE. Since the ring wire's default went wide, an
+    # undeclared box now needs the `wire_format` ioplug capability
+    # (`ring_wire_capabilities`), and a dev host carries no provenance record —
+    # so the real `ring_wire_caps_ready` would refuse every arm this helper's
+    # ``eligible=True`` callers exercise, for a reason unrelated to the
+    # eligibility/combo logic those tests are actually about. Only reached when
+    # the coupling actually arms (``eligible=False`` callers never call
+    # ``_arm_ring``), so it is a no-op for the loopback-resolving tests. Mirrors
+    # the stub inside ``force_ring_gates_pass`` in test_fanin_coupling_reconcile.py.
+    monkeypatch.setattr(
+        ra,
+        "ring_ioplug_wire_supported",
+        lambda wire, **kw: ra.RingIoplugWireSupport(
+            ok=True,
+            needed=ra.ring_wire_capabilities(wire),
+            detail="stubbed: the installed ioplug vouches for this wire",
+        ),
+    )
 
 
 def _auto(

@@ -100,31 +100,79 @@ def test_no_change_once_the_box_already_requests_the_wide_width(tmp_path):
     [None, f"JASPER_OUTPUTD_CONTENT_FORMAT={RING_WIRE_FORMAT}\n"],
     ids=["pre_flip", "post_flip"],
 )
-def test_no_change_on_an_armed_ring_box_either_side_of_the_flip(tmp_path, outputd):
-    """An armed shm_ring box keeps the coupling-forced narrow width (the PR-6 ring
-    ruling), so nothing about it changes across the flip and it pays no churn.
-    Such a box's outputd never opens an ALSA content lane at all."""
+def test_no_change_on_a_narrow_pinned_ring_box_either_side_of_the_flip(
+    tmp_path, monkeypatch, outputd
+):
+    """RENAMED and RE-POINTED (jasper.fanin_coupling.resolve_ring_wire_format's
+    own default flip, 2026-08-11 — a SECOND, LATER flip than the one this
+    module's docstring describes). The old test kept this name across the PR-6
+    (loopback) flip because shm_ring FORCED the narrow width regardless of what
+    that flip did to loopback's own default, so an armed ring box was narrow
+    both before and after it, paying no churn either way.
+
+    Now the ring wire's OWN resolver defaults WIDE too, so an UNPINNED armed
+    ring box no longer "keeps the coupling-forced narrow width" at all — see
+    tests/test_fanin_coupling.py::test_content_lane_format_is_one_definition_for_both_ends_of_the_hop.
+    What survives is the coarser invariant this decision function actually
+    promises: a box already sitting at the width its coupling will request pays
+    no churn. Reproducing THAT now needs an explicit operator narrow pin
+    (JASPER_FANIN_RING_WIRE_FORMAT=S16_LE).
+
+    outputd_content_format_change's own fanin_env_path only threads through to
+    read_persisted_coupling (the COUPLING token) — content_lane_format_for_coupling's
+    ring-wire read (jasper.fanin_coupling.read_declared_ring_wire_format) is
+    FILE-FRESH against the module-level FANIN_ENV_PATH /
+    var/lib/jasper/fanin.env constant instead, so writing the pin into this
+    test's own fanin.env has no effect unless that constant is ALSO patched
+    onto the same file — the established pattern this repo already uses
+    everywhere else the ring wire format needs a hermetic env (e.g.
+    tests/test_doctor_usbsink.py, tests/test_ring_gates_recovery.py).
+    """
+    from jasper.fanin import coupling_reconcile as cr
+
+    monkeypatch.setattr(cr, "FANIN_ENV_PATH", str(tmp_path / "fanin.env"))
     assert (
         outputd_content_format_change(
             **_envs(
                 tmp_path,
                 outputd=outputd,
-                fanin="JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n",
+                fanin=(
+                    "JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n"
+                    "JASPER_FANIN_RING_WIRE_FORMAT=S16_LE\n"
+                ),
             )
         )
         is None
     )
 
 
-def test_change_reported_when_a_wide_box_arms_the_ring(tmp_path):
-    """The other direction is a change too: a flipped box whose coupling has moved
-    to shm_ring will request the narrow ring width, so the lane's lock has to be
-    released just the same. The check is an equality, never a width ranking."""
+def test_change_reported_when_a_wide_box_arms_a_narrow_pinned_ring(
+    tmp_path, monkeypatch
+):
+    """The other direction is a change too: a wide box whose coupling moves to a
+    NARROW-PINNED shm_ring will request that pin's width, so the lane's lock has
+    to be released just the same. The check is an equality, never a width
+    ranking.
+
+    RE-POINTED (see the sibling test above for the full account): arming
+    shm_ring UNPINNED no longer diverges from a wide box's current width — both
+    now resolve S32_LE, which is byte-identical no-change rather than the
+    divergence this test exists to demonstrate. Reproducing a genuine
+    divergence needs the same explicit operator narrow pin, with FANIN_ENV_PATH
+    patched onto this test's own fanin.env for the same file-fresh-vs-real-path
+    reason.
+    """
+    from jasper.fanin import coupling_reconcile as cr
+
+    monkeypatch.setattr(cr, "FANIN_ENV_PATH", str(tmp_path / "fanin.env"))
     change = outputd_content_format_change(
         **_envs(
             tmp_path,
             outputd=f"JASPER_OUTPUTD_CONTENT_FORMAT={DEFAULT_PLAYBACK_FORMAT}\n",
-            fanin="JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n",
+            fanin=(
+                "JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n"
+                "JASPER_FANIN_RING_WIRE_FORMAT=S16_LE\n"
+            ),
         )
     )
     assert change == (DEFAULT_PLAYBACK_FORMAT, RING_WIRE_FORMAT)

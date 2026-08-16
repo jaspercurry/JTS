@@ -101,7 +101,11 @@ if [[ "${RING_MODE}" == "ring_a" ]]; then
     # embedded Python below asserts they match capture_kwargs_for_coupling so a
     # drift fails loud.
     # CamillaDSP capture format uses the underscore form (the live config
-    # captures S32_LE), matching jasper.fanin_coupling.RING_WIRE_FORMAT="S16_LE".
+    # captures S32_LE). This lab prototype pins the NARROW TOKEN
+    # (jasper.fanin_coupling.RING_WIRE_FORMAT="S16_LE"), which is no longer the
+    # product resolver's default — the product path resolves the wide wire
+    # through resolve_ring_wire. Override with JASPER_RING_PROTO_CAPTURE_FORMAT
+    # when reproducing a wide box.
     RING_DEVICE="${JASPER_RING_PROTO_ALSA_DEVICE:-jts_ring_capture}"
     RING_CAPTURE_FORMAT="${JASPER_RING_PROTO_CAPTURE_FORMAT:-S16_LE}"
     OUT_CONFIG_REMOTE="${JASPER_RING_PROTO_CAMILLA_CONFIG:-/var/lib/camilladsp/ring_proto_a.yml}"

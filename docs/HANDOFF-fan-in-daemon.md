@@ -475,10 +475,12 @@ perceived loudness during simultaneous renderers, which mux is supposed
 to prevent anyway.
 
 The accumulator is `i64` and carries the numeric scale the box's resolved
-output wire names (`ProgramWidth` in `rust/jasper-fanin/src/mixer.rs`).
-`Narrow` — the shipped default, and every box until a per-box flip — is the
-S16 numeric scale described above, unchanged. `Wide` (an `S32_LE` ring wire)
-is the i32 spine scale: each `i16` lane is promoted by `widen_i16_to_i32` at
+output wire names (`ProgramWidth` in `rust/jasper-fanin/src/mixer.rs`, off the
+same `Config::program_wire_is_wide` conjunction the assistant lane resolves
+below). `Narrow` is the S16 numeric scale described above, unchanged — what a
+`loopback` box takes, and what every box took while the ring wire's default was
+narrow. `Wide` (an `S32_LE` ring wire) is the i32 spine scale: each `i16` lane
+is promoted by `widen_i16_to_i32` at
 its own sum entry, the USB DIRECT lane contributes its gadget samples
 untouched, and S16 consumers narrow once with `narrow_i32_to_i16_round`.
 `i64` rather than `i32` so the mix keeps real headroom above full scale at
@@ -499,9 +501,17 @@ consumer's job.
 self-describing payload verbs — `AUDIO` (S16LE) and `AUDIO32` (S32LE at spine
 scale) — and `jasper-voice` speaks whichever this box's declaration resolves to,
 so nothing is negotiated. That declaration is a CONJUNCTION, not the wire-format
-token alone: `JASPER_FANIN_RING_WIRE_FORMAT=S32_LE` **and**
+token alone: an `S32_LE` ring wire **and**
 `JASPER_FANIN_CAMILLA_COUPLING=shm_ring`, because fan-in's aloop write is
-pinned narrow (`mixer::FORMAT`) however the box spelled its format. One rule decides it —
+pinned narrow (`mixer::FORMAT`) however the box spelled its format.
+**Since 2026-08-15 the format half is satisfied by default** —
+`jasper.fanin_coupling.resolve_ring_wire_format` answers `S32_LE` for a box that
+has declared nothing, and `deploy/alsa/conf.d/60-jts-ring.conf` spells that token
+in every block — so the COUPLING is the only half a box still has to reach: an
+armed `shm_ring` box speaks `AUDIO32` with no `JASPER_FANIN_RING_WIRE_FORMAT`
+line anywhere, and a `loopback` box stays on `AUDIO` however it is deployed.
+Pinning that key to `S16_LE` is the operator's rollback lever back to `AUDIO`,
+and nothing in this repo writes it. One rule decides it —
 `jasper_tts_protocol::TtsWireWidth::from_box_declaration`, which
 `Config::program_wire_is_wide` calls and
 `jasper.fanin_coupling.assistant_wire_is_wide` mirrors — and
@@ -1527,7 +1537,16 @@ follow-on if/when warranted.
   capabilities of the Raspberry Pi 5" — the scheduling-latency numbers
   driving the SCHED_FIFO + PREEMPT_RT-gated design.
 
-Last verified: 2026-08-15 for the renderer ring lane's REATTACH path ONLY
+Last verified: 2026-08-15 for the mixer's PROGRAM-WIDTH and assistant-payload
+paragraphs ONLY (the ring wire's default sample format flipped narrow → wide):
+`ProgramWidth`'s "shipped default" and the `AUDIO`/`AUDIO32` conjunction were
+re-read against `jasper.fanin_coupling.resolve_ring_wire_format`,
+`Config::program_wire_is_wide`, and
+`deploy/alsa/conf.d/60-jts-ring.conf` — the format half of the conjunction is
+now true by default, so the `shm_ring` coupling is the only remaining gate and
+`JASPER_FANIN_RING_WIRE_FORMAT=S16_LE` became a writer-less operator rollback
+pin. Nothing else in that pass. Prior 2026-08-15 for the renderer ring lane's
+REATTACH path ONLY
 (#2538): `RingReader::create_or_attach` and its 500 ms-bounded `flock` moved off
 the render thread onto per-lane `fanin-ring-attacher-<label>` threads, the retry
 latches gained per-lane phase seeding, and `/state`'s ring block gained

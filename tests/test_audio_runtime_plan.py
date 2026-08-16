@@ -1615,13 +1615,28 @@ def test_transport_topology_for_shm_ring_names_both_ring_devices():
 # --- D5 (wide-output-path program): shm_ring format-coherence axis -----------
 
 
-def test_transport_coherence_shm_ring_accepts_the_narrow_ring_on_a_wide_box():
-    """An ARMED ring on a post-PR-6 box: the box-wide program lane is S32_LE but
-    the shm_ring coupling forces the emitted lane to RING_WIRE_FORMAT, so a
-    coherent ring pair produces NO format-axis error. Compared against the
-    box-wide default instead, this axis would red-line every healthy armed ring
-    box (jts.local included) in doctor, /state, and audio_health — the mistake
-    the PR-6 ruling exists to prevent."""
+def test_transport_coherence_shm_ring_format_axis_is_quiet_with_no_outputd_evidence():
+    """RENAMED (was ..._accepts_the_narrow_ring_on_a_wide_box) and RE-POINTED.
+
+    Discovered while fixing this file's ring-default-flip fallout: the old
+    docstring claimed this proved "the shm_ring coupling forces the emitted
+    lane to RING_WIRE_FORMAT [narrow], so a coherent ring pair produces NO
+    format-axis error [against the box-wide S32_LE default]." That was never
+    actually exercised by the body below — ``outputd_env`` declares no
+    ``JASPER_OUTPUTD_CONTENT_FORMAT`` at all, so the missing-evidence doctrine
+    ("an end this function cannot see is not a contradiction",
+    ``transport_coherence_report``'s own docstring) is what silences the format
+    axis here, on every box, narrow-pinned or not — true both before and after
+    ``resolve_ring_wire_format``'s default flipped WIDE (2026-08-11). This is
+    now the SAME scenario as
+    ``test_shm_ring_format_axis_is_quiet_when_outputd_declares_nothing`` above;
+    kept as its own case rather than merged, since nothing here is actually
+    broken — flagged as a near-duplicate rather than restructured, per the
+    surgical-changes rule. The genuine "an armed ring tolerates a differing
+    box-wide default" case this docstring meant to describe is now pinned by
+    ``test_shm_ring_format_axis_is_quiet_when_the_declaration_agrees`` above
+    (an explicit operator narrow pin against a wide box's own declaration).
+    """
     from jasper.camilla_config_contract import DEFAULT_PLAYBACK_FORMAT
     from jasper.fanin_coupling import RING_WIRE_FORMAT
 
@@ -1742,7 +1757,7 @@ def test_shm_ring_transport_reports_the_resolved_wire_not_a_literal(monkeypatch)
     assert topo["camilla_to_outputd"]["channels"] == 6
 
 
-def test_shm_ring_format_axis_fails_on_a_sheared_outputd_declaration():
+def test_shm_ring_format_axis_fails_on_a_sheared_outputd_declaration(monkeypatch):
     """The format axis compares the wire against OUTPUTD'S OWN declaration.
 
     It used to compare two derivations of one constant, so it could not fail:
@@ -1750,7 +1765,29 @@ def test_shm_ring_format_axis_fails_on_a_sheared_outputd_declaration():
     JASPER_OUTPUTD_CONTENT_FORMAT is a per-box env value that decides which
     sample_format its attach demands, so a box where it drifted is a real,
     detectable shear.
+
+    The resolved wire is PINNED via monkeypatch rather than left to
+    resolve_ring_wire()'s ambient file-fresh read: since the resolver's default
+    flipped WIDE (2026-08-11), an unpinned box's resolved format now equals
+    S32_LE too, which would make outputd's OWN 'S32_LE' declaration agree rather
+    than shear — the opposite of what this test demonstrates. Pinning the
+    resolved wire narrow (S16_LE, the ioplug's own compiled-in default) keeps
+    this test's shape — and its exact original assertions — unchanged, matching
+    test_shm_ring_transport_reports_the_resolved_wire_not_a_literal's existing
+    pattern above.
     """
+    import jasper.fanin_coupling as fc
+
+    monkeypatch.setattr(
+        fc,
+        "resolve_ring_wire",
+        lambda topology=None: fc.RingWire(
+            sample_format="S16_LE",
+            ring_a_channels=2,
+            ring_b_channels=2,
+            period_frames=fc.RING_SLOT_FRAMES,
+        ),
+    )
     errors = transport_coherence_errors(
         coupling=COUPLING_SHM_RING,
         outputd_env={
@@ -1767,7 +1804,21 @@ def test_shm_ring_format_axis_fails_on_a_sheared_outputd_declaration():
     assert "S16_LE" in errors[0]
 
 
-def test_shm_ring_format_axis_is_quiet_when_the_declaration_agrees():
+def test_shm_ring_format_axis_is_quiet_when_the_declaration_agrees(monkeypatch):
+    """Sibling of the shear test above: same pinned wire, an outputd declaration
+    that agrees with it instead of shearing."""
+    import jasper.fanin_coupling as fc
+
+    monkeypatch.setattr(
+        fc,
+        "resolve_ring_wire",
+        lambda topology=None: fc.RingWire(
+            sample_format="S16_LE",
+            ring_a_channels=2,
+            ring_b_channels=2,
+            period_frames=fc.RING_SLOT_FRAMES,
+        ),
+    )
     assert (
         transport_coherence_errors(
             coupling=COUPLING_SHM_RING,
@@ -1800,9 +1851,27 @@ def test_shm_ring_format_axis_is_quiet_when_outputd_declares_nothing():
     )
 
 
-def test_shm_ring_channel_axis_fails_on_a_sheared_camilla_config():
+def test_shm_ring_channel_axis_fails_on_a_sheared_camilla_config(monkeypatch):
     # The ring header's channel count is compared field-by-field at attach, so a
     # Camilla config declaring another width fails the ioplug open.
+    #
+    # The resolved wire is PINNED (same technique and reason as the format-axis
+    # tests above) so the FORMAT axis stays quiet here — this test's subject is
+    # the channel axis alone, and an unpinned resolve_ring_wire() would now
+    # ALSO shear on format (its default flipped WIDE 2026-08-11), reporting two
+    # errors instead of the one this test means to isolate.
+    import jasper.fanin_coupling as fc
+
+    monkeypatch.setattr(
+        fc,
+        "resolve_ring_wire",
+        lambda topology=None: fc.RingWire(
+            sample_format="S16_LE",
+            ring_a_channels=2,
+            ring_b_channels=2,
+            period_frames=fc.RING_SLOT_FRAMES,
+        ),
+    )
     errors = transport_coherence_errors(
         coupling=COUPLING_SHM_RING,
         outputd_env={
@@ -1821,7 +1890,21 @@ def test_shm_ring_channel_axis_fails_on_a_sheared_camilla_config():
     assert "declares 6" in errors[0]
 
 
-def test_shm_ring_channel_axis_is_quiet_when_camilla_agrees():
+def test_shm_ring_channel_axis_is_quiet_when_camilla_agrees(monkeypatch):
+    # Same pinned-wire reasoning as the sheared-config test above: keep the
+    # format axis quiet so this proves the channel axis alone is quiet too.
+    import jasper.fanin_coupling as fc
+
+    monkeypatch.setattr(
+        fc,
+        "resolve_ring_wire",
+        lambda topology=None: fc.RingWire(
+            sample_format="S16_LE",
+            ring_a_channels=2,
+            ring_b_channels=2,
+            period_frames=fc.RING_SLOT_FRAMES,
+        ),
+    )
     assert (
         transport_coherence_errors(
             coupling=COUPLING_SHM_RING,

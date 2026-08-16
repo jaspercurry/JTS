@@ -2901,7 +2901,7 @@ def test_reconcile_apple_leaves_the_shipped_ring_conf_byte_identical(
     assert (
         "event=audio_hardware_reconcile.ring_conf reason=test "
         "result=unchanged output_dac_id=apple_usb_c_dongle period_frames=128 "
-        "previous_period_frames=128 sample_format=S16_LE ring_a_channels=2 "
+        "previous_period_frames=128 sample_format=S32_LE ring_a_channels=2 "
         "ring_b_channels=2 ring_active_channels=2 topology="
     ) in result.stderr
     assert conf.read_bytes() == before_bytes
@@ -2965,7 +2965,7 @@ def test_reconcile_leaves_the_shipped_ring_conf_byte_identical_for_dac8x(
     assert (
         "event=audio_hardware_reconcile.ring_conf reason=test "
         "result=unchanged output_dac_id=hifiberry_dac8x period_frames=128 "
-        "previous_period_frames=128 sample_format=S16_LE ring_a_channels=2 "
+        "previous_period_frames=128 sample_format=S32_LE ring_a_channels=2 "
         "ring_b_channels=2 ring_active_channels=2 topology="
     ) in result.stderr
     assert conf.read_bytes() == before_bytes
@@ -3430,11 +3430,40 @@ def test_reconcile_emits_the_wide_content_format_on_a_loopback_box(tmp_path: Pat
     assert "content_format=S32_LE" in result.stderr
 
 
-def test_reconcile_emits_the_narrow_content_format_on_a_ring_box(tmp_path: Path):
-    """An armed shm_ring box keeps the content hop at the ring's wire format —
-    the belt to ring_edge_width_ready's suspender (the PR-6 ring ruling). Its
-    outputd must request what the ring actually carries, not the box-wide
-    program-lane default."""
+def test_reconcile_emits_the_wide_content_format_on_an_armed_ring_box(
+    tmp_path: Path,
+):
+    """An armed shm_ring box's content hop now matches the box-wide default too —
+    RENAMED and RE-POINTED from ..._narrow_content_format...: the ring wire's
+    resolver default flipped WIDE (jasper.fanin_coupling.resolve_ring_wire_format,
+    2026-08-11), so an UNDECLARED box's shm_ring answer now equals loopback's
+    S32_LE (see test_reconcile_emits_the_wide_content_format_on_a_loopback_box
+    above). The "shm_ring forces the content lane narrow" asymmetry this test
+    used to demonstrate is gone.
+
+    An explicit OPERATOR narrow pin (JASPER_FANIN_RING_WIRE_FORMAT=S16_LE) would
+    reproduce that asymmetry deliberately, but it is NOT reachable from this
+    subprocess-level test: content_format_for_coupling() (the reconciler's own
+    bash helper) calls content_lane_format_for_coupling, whose ring-wire read
+    (jasper.fanin_coupling.read_declared_ring_wire_format) is FILE-FRESH against
+    the REAL /etc/jasper/jasper.env and /var/lib/jasper/fanin.env — not this
+    script's own $JASPER_ENV_FILE / $FANIN_ENV_FILE overrides, which only thread
+    through to the COUPLING token here (read via env_file_value_from). On a real
+    Pi those two path pairs are literally the same files, so an operator's pin
+    genuinely reaches this probe in production; only this hermetic tmp_path
+    harness diverges them, and there is no test-only override to close that gap
+    without touching real system paths. The pin is exercised instead at the
+    direct-call level, where the resolver (or its file inputs) can be
+    monkeypatched: tests/test_fanin_coupling.py,
+    tests/test_audio_runtime_plan.py's shm_ring transport-coherence tests
+    (monkeypatch jasper.fanin_coupling.resolve_ring_wire), and
+    tests/test_install_content_lane_format_flip.py (monkeypatches
+    jasper.fanin.coupling_reconcile.FANIN_ENV_PATH onto its own tmp fanin.env).
+
+    What this test still proves: the reconciler correctly PLUMBS
+    content_lane_format_for_coupling's answer into
+    JASPER_OUTPUTD_CONTENT_FORMAT for an armed ring box — the belt to
+    ring_edge_width_ready's suspender (the PR-6 ring ruling)."""
     result = _run_reconcile(
         tmp_path,
         APPLE_LISTING,
@@ -3449,8 +3478,8 @@ def test_reconcile_emits_the_narrow_content_format_on_a_ring_box(tmp_path: Path)
 
     assert result.returncode == 0, result.stderr
     outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
-    assert "JASPER_OUTPUTD_CONTENT_FORMAT=S16_LE" in outputd_env
-    assert "content_format=S16_LE" in result.stderr
+    assert "JASPER_OUTPUTD_CONTENT_FORMAT=S32_LE" in outputd_env
+    assert "content_format=S32_LE" in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -3764,7 +3793,7 @@ def test_render_subcommand_reports_the_full_wire_it_resolved(
 
     assert _render_ring_conf(conf) == 0
     out = capsys.readouterr().out
-    assert "sample_format S16_LE" in out
+    assert "sample_format S32_LE" in out
     assert "ring_a_channels 2" in out
     assert "ring_b_channels 2" in out
     assert "topology " in out
@@ -3797,14 +3826,14 @@ def test_render_subcommand_fails_safe_on_a_corrupt_topology(
     assert _render_ring_conf_with_topology(conf, corrupt) == 0
     out = capsys.readouterr().out
     assert "topology topology_unreadable" in out
-    assert "sample_format S16_LE" in out
+    assert "sample_format S32_LE" in out
     assert "ring_b_channels 2" in out
 
     from jasper import ring_assets
 
     assert ring_assets.ring_conf_period_frames(str(conf)) == RING_SLOT_FRAMES
     for pcm in (ring_assets.RING_A_CONF_PCM, ring_assets.RING_B_CONF_PCM):
-        assert ring_assets.ring_conf_format(pcm, str(conf)) == "S16_LE"
+        assert ring_assets.ring_conf_format(pcm, str(conf)) == "S32_LE"
         assert ring_assets.ring_conf_channels(pcm, str(conf)) == 2
 
 

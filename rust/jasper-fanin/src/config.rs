@@ -280,7 +280,9 @@ pub struct Config {
     pub ring_slots: u32,
 
     /// The sample format Ring A's wire carries under `Coupling::ShmRing`.
-    /// Unused for `Loopback`. Default [`RingWireFormat::S16Le`]. Env:
+    /// Unused for `Loopback`. Default [`RingWireFormat::S32Le`] — narrow is a
+    /// width regression on the hop the ring replaces, so the wide wire is what
+    /// an undeclared box gets and `S16_LE` is an operator's rollback pin. Env:
     /// `JASPER_FANIN_RING_WIRE_FORMAT` (`S16_LE` | `S32_LE`); a present but
     /// unrecognized value fails loud in `Config::from_env` as a config-class
     /// fault (exit 78, the unit parks) rather than resolving to a default the
@@ -587,16 +589,25 @@ pub enum RingWireFormat {
 impl RingWireFormat {
     /// Normalize a raw `JASPER_FANIN_RING_WIRE_FORMAT` value.
     ///
-    /// Unset or empty resolves to [`RingWireFormat::S16Le`] — empty is how the
+    /// Unset or empty resolves to [`RingWireFormat::S32Le`] — empty is how the
     /// env-file writers in this repo clear a key (disable-clears-stale), so a
     /// cleared key and an absent key mean the same thing. A present but
     /// unrecognized value is a config-class fault and FAILS LOUD: silently
     /// resolving a typo to the default would arm a wire the operator did not
     /// ask for, and the ring's own attach-time validation could not tell the
     /// difference.
+    ///
+    /// THE DEFAULT IS WIDE because narrow is a width REGRESSION on the hop the
+    /// ring replaces: the loopback CamillaDSP -> outputd hop already carries
+    /// S32_LE, so arming a ring at S16_LE would narrow a hop that was wide
+    /// before the arm (convergence design §3.2). Nothing WRITES
+    /// `JASPER_FANIN_RING_WIRE_FORMAT`, so an operator's `S16_LE` is a rollback
+    /// lever no boot, deploy or udev pass can overwrite. Python's
+    /// `jasper.fanin_coupling.resolve_ring_wire_format` defaults identically and
+    /// `tests/test_ring_wire_format_contract.py` reads this arm to pin it.
     pub fn from_env_value(raw: Option<&str>) -> Result<Self> {
         match raw.map(str::trim) {
-            None | Some("") => Ok(RingWireFormat::S16Le),
+            None | Some("") => Ok(RingWireFormat::S32Le),
             Some("S16_LE") => Ok(RingWireFormat::S16Le),
             Some("S32_LE") => Ok(RingWireFormat::S32Le),
             Some(other) => Err(anyhow::anyhow!(
@@ -653,10 +664,11 @@ impl Config {
     /// same config and fails the open on a mismatch, and `Mixer::new`
     /// cross-checks them explicitly before mixing a single period.
     ///
-    /// False unless a box explicitly opts in: `JASPER_FANIN_RING_WIRE_FORMAT`
-    /// unset is the shipped default, and [`RingWireFormat::from_env_value`]
-    /// resolves that to `S16_LE`. Arming a box is a per-box configuration
-    /// change, never a code default.
+    /// The FORMAT half is now true by default: `JASPER_FANIN_RING_WIRE_FORMAT`
+    /// unset resolves to `S32_LE` ([`RingWireFormat::from_env_value`]). So what
+    /// still gates a wide box is the TRANSPORT half — the `shm_ring` coupling,
+    /// which the coupling reconciler arms per box and refuses on anything it
+    /// cannot prove. A box on `loopback` stays narrow whatever it declared.
     ///
     /// THE CONJUNCTION ITSELF LIVES IN THE SHARED CRATE
     /// ([`jasper_tts_protocol::TtsWireWidth::from_box_declaration`]) and this
@@ -2938,27 +2950,38 @@ mod tests {
         );
     }
 
-    /// INERTNESS BAR: with `JASPER_FANIN_RING_WIRE_FORMAT` unset the resolved
-    /// wire is the narrow one — the same geometry fan-in built before the key
-    /// existed. Cleared-to-empty means the same thing (that is how this repo's
-    /// env-file writers disable a key).
+    /// DEFAULT BAR: with `JASPER_FANIN_RING_WIRE_FORMAT` unset the resolved wire
+    /// is the WIDE one. Narrow is a width regression on the hop the ring
+    /// replaces (the loopback CamillaDSP -> outputd hop already carries S32_LE),
+    /// so the fleet converges without declaring anything and `S16_LE` becomes an
+    /// operator's rollback pin. Cleared-to-empty means the same as unset (that
+    /// is how this repo's env-file writers disable a key).
+    ///
+    /// Python's `resolve_ring_wire_format` must answer identically —
+    /// `tests/test_ring_wire_format_contract.py` reads this arm to pin it.
     #[test]
-    fn ring_wire_format_defaults_to_narrow() {
+    fn ring_wire_format_defaults_to_wide() {
         assert_eq!(
             RingWireFormat::from_env_value(None).unwrap(),
-            RingWireFormat::S16Le
+            RingWireFormat::S32Le
         );
         assert_eq!(
             RingWireFormat::from_env_value(Some("")).unwrap(),
-            RingWireFormat::S16Le
+            RingWireFormat::S32Le
         );
         assert_eq!(
             RingWireFormat::from_env_value(Some("  ")).unwrap(),
-            RingWireFormat::S16Le
+            RingWireFormat::S32Le
         );
         assert_eq!(
-            RingWireFormat::S16Le.sample_format_id(),
-            jasper_ring::SAMPLE_FORMAT_S16LE
+            RingWireFormat::S32Le.sample_format_id(),
+            jasper_ring::SAMPLE_FORMAT_S32LE
+        );
+        // The narrow token still resolves to the narrow variant — the flip moved
+        // the DEFAULT, it did not retire the rollback pin's spelling.
+        assert_eq!(
+            RingWireFormat::from_env_value(Some("S16_LE")).unwrap(),
+            RingWireFormat::S16Le
         );
     }
 
@@ -3031,6 +3054,16 @@ mod tests {
             ],
             || {
                 let cfg = Config::from_env().expect("unset wire format must parse");
+                assert_eq!(cfg.ring_wire_format, RingWireFormat::S32Le);
+            },
+        );
+        with_env(
+            &[
+                ("JASPER_FANIN_CAMILLA_COUPLING", Some("shm_ring")),
+                ("JASPER_FANIN_RING_WIRE_FORMAT", Some("S16_LE")),
+            ],
+            || {
+                let cfg = Config::from_env().expect("the operator's narrow pin must parse");
                 assert_eq!(cfg.ring_wire_format, RingWireFormat::S16Le);
             },
         );
@@ -3242,14 +3275,22 @@ mod tests {
         }
     }
 
-    /// INERTNESS BAR for the widened source path: with
-    /// `JASPER_FANIN_RING_WIRE_FORMAT` unset — the shipped default on every box
-    /// in the fleet — the program width resolves NARROW, so the DIRECT lane
-    /// keeps its capture narrowing, the sum keeps its i16 scale, and no lane
-    /// allocates a spine-scale period buffer. A default that resolved wide would
-    /// arm the entire widened route with nobody asking for it.
+    /// THE TRANSPORT IS NOW THE ONLY GATE on the widened source path, and this
+    /// pins both halves of that.
+    ///
+    /// Before the ring wire's default went wide this asserted the opposite —
+    /// that an unset key left the widened route inert — because the FORMAT half
+    /// of `program_wire_is_wide`'s conjunction was false by default. It is true
+    /// by default now, so a `shm_ring` box arms the widened route (spine-scale
+    /// lane buffers, the `AUDIO32` assistant verb, the wide earcon bake) with no
+    /// declaration at all. That is the flip's point, not a side effect.
+    ///
+    /// What still holds it back is the COUPLING: fan-in's aloop write is pinned
+    /// narrow by `mixer::FORMAT` however the box spelled its format, so a
+    /// `loopback` box stays narrow. Pinning that half is what keeps the
+    /// conjunction from quietly collapsing into a single-input check.
     #[test]
-    fn the_shipped_default_leaves_the_wide_program_path_inert() {
+    fn the_wide_program_path_follows_the_transport_not_a_declaration() {
         with_env(
             &[
                 ("JASPER_FANIN_CAMILLA_COUPLING", Some("shm_ring")),
@@ -3258,12 +3299,14 @@ mod tests {
             || {
                 let cfg = Config::from_env().expect("defaults must parse");
                 assert!(
-                    !cfg.program_wire_is_wide(),
-                    "an unset wire format must leave the widened source path inert",
+                    cfg.program_wire_is_wide(),
+                    "an undeclared shm_ring box resolves the wide wire, so the \
+                     widened source path is armed without a declaration",
                 );
             },
         );
-        // ...and so does a loopback box, which is the other shipped default.
+        // A loopback box stays narrow whatever the format half says — the aloop
+        // write is pinned narrow by `mixer::FORMAT`.
         with_env(
             &[
                 ("JASPER_FANIN_CAMILLA_COUPLING", None),
@@ -3272,6 +3315,21 @@ mod tests {
             || {
                 let cfg = Config::from_env().expect("defaults must parse");
                 assert!(!cfg.program_wire_is_wide());
+            },
+        );
+        // ...and neither half alone is enough: the operator's narrow pin on a
+        // ring box is the other way the conjunction fails.
+        with_env(
+            &[
+                ("JASPER_FANIN_CAMILLA_COUPLING", Some("shm_ring")),
+                ("JASPER_FANIN_RING_WIRE_FORMAT", Some("S16_LE")),
+            ],
+            || {
+                let cfg = Config::from_env().expect("the narrow pin must parse");
+                assert!(
+                    !cfg.program_wire_is_wide(),
+                    "an operator's S16_LE pin must still narrow the program wire",
+                );
             },
         );
     }

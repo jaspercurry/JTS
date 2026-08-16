@@ -529,15 +529,16 @@ pub struct AlsaBackend {
     /// ends is upstream of both:
     /// `jasper.fanin.coupling_reconcile.ring_edge_width_ready` (wide-output-path PR-1,
     /// #2226) runs FIRST in both the unattended auto-arm gate list
-    /// (`default_ring_gates()`) and the manual-arm chain. Reworked by PR-6 when
-    /// the box-wide default widened — comparing `RING_WIRE_FORMAT` against that
-    /// default directly would have refused the ring on every eligible box,
-    /// including the certified-latency jts.local canary — it now verifies the
-    /// coupling-kwargs OVERRIDE CONTRACT instead: arming `shm_ring` forces both
-    /// ring ends to `RING_WIRE_FORMAT`, and the audio-hardware reconciler emits
-    /// outputd's matching `JASPER_OUTPUTD_CONTENT_FORMAT` from that same
-    /// source, so a ring box gets a coherent narrow lane automatically — no
-    /// hand-set config needed. `content.source` sits immediately before
+    /// (`default_ring_gates()`) and the manual-arm chain. It verifies that every
+    /// declaring end states the SAME wire — it is a coherence gate, not a width
+    /// policy. Arming `shm_ring` puts both ring ends on
+    /// `resolve_ring_wire().sample_format`, and the audio-hardware reconciler
+    /// emits outputd's matching `JASPER_OUTPUTD_CONTENT_FORMAT` from that same
+    /// source, so a ring box gets a coherent lane automatically — no hand-set
+    /// config needed. Since the ring wire's resolver defaults WIDE that lane is
+    /// `S32_LE` on an undeclared box, which is the same width the `loopback`
+    /// lane already carried; an operator's `JASPER_FANIN_RING_WIRE_FORMAT=S16_LE`
+    /// pin is what makes it narrow. `content.source` sits immediately before
     /// `content.format` in STATUS so a reader can always see which source the
     /// format describes.
     content_format: Option<SampleFormat>,

@@ -17,11 +17,16 @@ claim only through measured route-latency evidence.
 `usb_low_latency_48k` is the claiming profile. On a ring-eligible USB gadget
 box, the product default is the shm-ring path. Since the aloop solo capture
 path was deleted (2026-07-10), `jasper-fanin` DIRECT-captures the gadget as the
-sole USB ingress — no `jasper-usbsink-audio` bridge hop, no `usbsink_substream`:
+sole USB ingress — no `jasper-usbsink-audio` bridge hop, no `usbsink_substream`. The capture is `S32_LE` at the gadget either way; whether
+fan-in narrows it depends on the box's program wire
+(`Config::program_wire_is_wide`), whose format half has defaulted WIDE since
+2026-08-15 — so on a ring-armed box the gadget's `i32` now reaches the summed
+write intact. Canonical:
+[HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md).
 
 ```
 UAC2 gadget capture
-  → jasper-fanin DIRECT capture (hw:UAC2Gadget, period 256 / buffer 768, S32_LE→S16_LE high-word truncation)
+  → jasper-fanin DIRECT capture (hw:UAC2Gadget, period 256 / buffer 768; S32_LE straight through on a wide program wire, S32_LE→S16_LE high-word truncation on a narrow one)
   → jasper-fanin USB input resampler (target 512 + warm-up cushion 2048, ring 4096)
   → Ring A program.ring (jts_ring_capture, 2 slots × 128 frames)
   → CamillaDSP protection/correction (chunk 128 / target 128 / queue 1, rate_adjust off)
@@ -345,8 +350,10 @@ deltas and decide.
 
 `JASPER_FANIN_USB_DIRECT=enabled` removes the retired usbsink **bridge hop + the
 snd-aloop cable** (~25 ms measured) from the USB path:
-fan-in captures `hw:UAC2Gadget` **directly** and narrows S32→S16 itself, feeding
-the SAME per-input `LaneResampler` the aloop path used. The bridge process was
+fan-in captures `hw:UAC2Gadget` **directly**, feeding the SAME per-input
+`LaneResampler` the aloop path used. Whether it narrows S32→S16 itself follows
+the box's program wire (see the Current Production Route above): it does on a
+narrow one, and passes the gadget's `i32` through on a wide one. The bridge process was
 deleted; `jasper-usbsink.service` is now only a process-free readiness marker,
 so the DSP /
 crossover / correction / protection chain downstream of fan-in is unchanged. The
@@ -355,7 +362,7 @@ arbitration caveat below the flag matrix.
 
 ```
 UAC2 gadget capture
-  → jasper-fanin DIRECT capture (hw:UAC2Gadget, S32_LE→S16 high-word truncation, period 256/buffer 768)
+  → jasper-fanin DIRECT capture (hw:UAC2Gadget, period 256/buffer 768; narrows S32_LE→S16 only on a narrow program wire — see the route above)
   → jasper-fanin USB input resampler (same target/cushion/ring)  ← bridge hop + aloop cable GONE
   → fan-in output → CamillaDSP → outputd  (unchanged)
 ```
@@ -1470,7 +1477,9 @@ Correct + observable + flag-gated default-off; **hardware-validated on
 jts.local 2026-07-02** (Apple dongle, electrical `:9891` reference mode).
 Conversion parity with the bridge is by construction (both consume
 `jasper_resampler::s32_high_word_to_s16`, pinned by an identical sign-boundary
-vector in all three crates). The direct open uses the bridge's proven envelope
+vector in all three crates) — a 2026-07-02 statement, and doubly dated now: the
+bridge was deleted, and on a wide program wire the direct lane calls no
+narrowing at all (see the Current Production Route). The direct open uses the bridge's proven envelope
 (S32LE/2ch/48k, period 256, buffer-near 768). Gadget absence/unplug is
 silent-idle with a bounded ~2 s reopen retry (period-counted, never a daemon
 error). Hardening (deploy wiring, doctor surface, wizard toggle) comes next.
@@ -2215,7 +2224,15 @@ re-introduce false-triggers on healthy AirPlay burst+stall transients (~12.4-per
 peak) — trading latency for drops on every source. The lean-fifo gets low latency
 *without* that tradeoff because it removes the sawtooth mechanism entirely.
 
-Last verified: 2026-08-15 for the host-compliance prime and the direct lane's
+Last verified: 2026-08-15 for the DIRECT lane's capture WIDTH, in a separate
+pass after the ring wire's default sample format flipped narrow → wide: three
+sites stated the S32→S16 high-word truncation as unconditional, but it is
+gated on `Config::program_wire_is_wide` (`lane_wants_spine_buffer` →
+`direct_capture::push_capture_chunk`), whose format half now defaults wide —
+re-derived against `rust/jasper-fanin/src/{mixer,mixer/direct_capture}.rs` and
+`jasper.fanin_coupling.resolve_ring_wire_format`. Nothing else in that pass;
+no box was probed. Prior 2026-08-15 for the host-compliance prime and the
+direct lane's
 device-open lifecycle ONLY (#2533): the prime is now ARMED at build/session
 boundaries and ENGAGED by the lane's first frames, and every proof write, revoke,
 gadget `snd_pcm_open` and `snd_pcm_close` moved off the render thread onto the
