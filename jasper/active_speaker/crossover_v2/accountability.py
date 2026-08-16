@@ -359,36 +359,43 @@ def assess_accountability(
     # Refusing that is a false negative on a good tune, and the diagnosis
     # the gate already computed reached no artifact at all.
     #
-    # **What "proceeds" commits, stated precisely — because the obvious
-    # reading is wrong.** The ruling's own wording is "proceeds on the
-    # near-Fc anchor (the trim solve)", and that describes an outcome the
-    # code does not produce. Proceeding changes NOTHING about the trims:
-    # the fit commits the anchor it always computed, and in
+    # **What "proceeds" commits.** The ruling's own wording is "proceeds on
+    # the near-Fc anchor (the trim solve)", and since #2599 that is what
+    # the pipeline does: a frame disputed past this same tolerance no
+    # longer places the trim anchor, so the committed inter-driver
+    # placement is the TRIM SOLVE's — the estimator that is not in dispute.
+    # :func:`~.intervention.anchor_trims` owns that rule and this record
+    # carries its named reason and per-role dB consequence.
+    #
+    # **It did not always, and the history is why this block is long.**
+    # Before #2599 proceeding changed NOTHING about the trims: the fit
+    # committed the anchor it always computed, and in
     # ``anchor_base + giveback + level_frame_offset`` the trim term
     # CANCELS — ``offset = system − trim − core``, leaving
     # ``giveback + system − core`` (the cancellation is derived in
-    # ``anchor_base_db``'s own comment). So the committed inter-driver
-    # placement is set by the CORE-MEDIAN frame — the disputed estimator —
-    # not by the trim solve. On the session fixture: committed −0.674,
-    # which is the core-median value to 4 dp; anchoring on the trim solve's
-    # placement instead would give +2.535; the two differ by 3.209, exactly
-    # the banked disagreement, which is not a coincidence but the identity
-    # ``placement_trim − placement_core = −offset``.
+    # ``anchor_base_db``'s own comment). So the committed placement was set
+    # by the CORE-MEDIAN frame — the DISPUTED estimator. On the session
+    # fixture: committed −0.674, the core-median value to 4 dp; the trim
+    # solve's placement gives +2.535; the two differ by 3.209, exactly the
+    # banked disagreement, by the identity
+    # ``placement_trim − placement_core = −offset``. That identity is also
+    # the size of the correction #2599 makes, per candidate.
     #
-    # The honest description of this branch is therefore: **the pipeline
-    # commits the anchor it always computed (which embeds the disputed
-    # estimator); proceeding is the same tune, not refused; the realized
-    # check gates the OUTCOME rather than selecting an estimator.** That is
-    # a weaker claim than "we proceed on the corroborated estimator" and it
-    # is the true one — the realized check's pass is evidence that the
-    # shipped pair is level, not evidence about which estimator was right.
+    # **RATIFIED, and the ratified description is what changed.** The
+    # pre-#2599 account above differs from the ruling's original wording,
+    # so it was put to the owner rather than merged under the inverted
+    # account; the owner confirmed it on 2026-07-30 (#1866 comment
+    # 5137494519) as "the ruling's operative form". #2599 closed the gap
+    # from the other side — by making the code do what the ruling said —
+    # after the 2026-08-15 jts3 run shipped a tweeter 3.264 dB quieter than
+    # the undisputed arithmetic gives, on a frame the same session had
+    # already marked ``unsure``/``refit``.
     #
-    # **RATIFIED.** This description differs from the ruling's original
-    # wording, so it was put to the owner rather than merged under the
-    # inverted account; the owner confirmed it on 2026-07-30 (#1866 comment
-    # 5137494519) as "the ruling's operative form". The two phrases above
-    # are retired: anything still asserting them is describing a mechanism
-    # this code does not implement.
+    # What still does NOT hold is the ruling's second phrase, "the
+    # estimator the realized check corroborates": the realized check grades
+    # the OUTCOME and cannot referee two frames against each other (below).
+    # The trim solve is anchored on because the other estimator is
+    # disputed, not because this check endorsed it.
     #
     # **What the realized check is, and is not.** It is a CLOSED-LOOP
     # check, not cross-band arbitration: its own docstring says "One
