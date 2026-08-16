@@ -1818,49 +1818,46 @@ def _jts_ring_pcm_resolves(pcm: str, tool: str) -> tuple[bool, str]:
 @doctor_check(order=51.8, group="audio", exclusive_group="audio-probe")
 def check_ring_platform_assets() -> CheckResult:
     """Verify the jts_ring transport platform assets are present and the
-    ioplug actually dlopens (audio-graph consolidation P1).
+    ioplug actually dlopens.
 
-    Three assets ship INERT in P1: the compiled ioplug .so, the conf.d
-    PCM definitions (jasper.ring_assets.RING_CONF_PCMS), and
-    the /dev/shm/jts-ring directory. Nothing opens them yet — the default
-    coupling is still loopback — but the platform must be correctly staged
-    for P2 to arm it, and a broken .so (the -DPIC registration class) or a
-    missing asset should surface here rather than at first arm.
+    Three assets: the compiled ioplug .so, the conf.d PCM definitions
+    (jasper.ring_assets.RING_CONF_PCMS), and the /dev/shm/jts-ring directory.
+    On a box whose coupling is ARMED they are load-bearing — CamillaDSP's
+    capture and post-DSP playback resolve through them — so what a missing or
+    broken asset COSTS is what this check's severity tracks.
 
     Statuses:
-      ok    — .so + conf.d + shm dir present, every PCM open-probes cleanly.
-              CAVEAT: this cannot distinguish a freshly-built .so from a STALE
-              one left by a failed rebuild (the 2026-07-02 class) — a stale but
-              structurally-valid .so open-probes fine and reads ok here. The
-              install transcript's build-failure WARN is the signal for that;
-              ioplug-vs-Rust protocol-drift detection is P2's job (when the .so
-              becomes load-bearing). See ring-platform.sh.
-      warn  — an asset is MISSING (a first-ever build failed, or drift). P1 is
-              inert and loopback remains the transport, so a missing .so is
-              degraded, not broken — the next deploy rebuilds. (This flips to
-              fail after P9, when the ioplug becomes load-bearing.)
-      fail  — the .so is installed but a PCM fails to open. In the inert
-              phase that is a real defect (bad registration / arch mismatch,
-              e.g. the -DPIC class), which would break P2's arm. The EBUSY
-              exception is called out below.
+      ok    — .so + conf.d + shm dir present, and (on an unarmed box) every PCM
+              open-probes cleanly.
+              CAVEAT: presence and the open-probe both pass on a STALE .so left
+              by a failed rebuild (the 2026-07-02 class) — it is structurally
+              valid, so it dlopens and registers. `check_ring_ioplug_provenance`
+              is the check that separates the two, by comparing the installer's
+              record against the plugin on disk. See ring-platform.sh.
+      warn  — an asset is MISSING while the ring is NOT armed. Loopback carries
+              audio in that state, so the box is degraded rather than broken and
+              the next deploy rebuilds.
+      fail  — an asset is missing while shm_ring IS armed (the armed graph
+              cannot resolve its ring devices), or the .so is installed but a
+              PCM fails to open — a bad registration / arch mismatch, e.g. the
+              -DPIC class. The EBUSY exception is called out below.
 
     Probe leaves no residue: it opens each device for 1 s against an absent
     ring, exercising only the writer-dead / no-reader silence path (feeds or
     discards silence). Because the ioplug open path is create-or-attach, the
     probe would create the ring file; _jts_ring_pcm_resolves snapshots and
-    unlinks only what it created, so P1's "no ring file until P2 arms"
-    invariant holds after every deploy.
+    unlinks only what it created, so an unarmed box still carries no ring file
+    after a doctor run.
 
-    Armed-state aware (P2): when a coupling is ARMED (the persisted
+    Armed-state aware: when a coupling is ARMED (the persisted
     JASPER_FANIN_CAMILLA_COUPLING is shm_ring) the ring has a live reader/writer,
     so the ioplug's SPSC guard EBUSYs the open-probe — which is NOT a defect. In
     that state this check does NOT open-probe (the live ring must not be
     disturbed); it verifies asset PRESENCE only and defers the "is the armed ring
     coherent + alive" verdict to `check_fanin_coupling` (intent vs the loaded
     config) and `check_ring_geometry_coherence` (env vs conf.d vs the on-disk
-    header). The open-probe path
-    below runs only in the INERT phase (loopback default), where an EBUSY genuinely
-    would indicate a stray lab arm or a stuck ring.
+    header). The open-probe path below runs only on an UNARMED box, where an
+    EBUSY genuinely would indicate a stray lab arm or a stuck ring.
     """
     label = "ring platform"
     # Pass the module-level constants (which tests monkeypatch, and which alias the
@@ -1958,6 +1955,31 @@ def check_ring_platform_assets() -> CheckResult:
     )
 
 
+def _resolved_ring_wire():
+    """The ring wire an arm would render into the conf.d, or ``None``.
+
+    The same two calls the arm's own capability gate makes
+    (:func:`jasper.fanin.coupling_reconcile.ring_wire_caps_ready`), so the doctor
+    weighs a provenance record against the wire the RECONCILER will use rather
+    than deriving a second answer to the same question.
+
+    ``None`` when the box declares a wire neither language recognizes: that
+    refusal belongs to ``resolve_wire_for_gate``, which already names it in the
+    arm's own log, and restating it as a provenance verdict would give one
+    failure two reasons.
+    """
+    try:
+        from ...fanin.coupling_reconcile import (
+            load_topology_for_wire,
+            resolve_wire_for_gate,
+        )
+
+        wire, _problem = resolve_wire_for_gate(load_topology_for_wire())
+    except (ImportError, OSError):
+        return None
+    return wire
+
+
 @doctor_check(order=51.85, group="audio")
 def check_ring_ioplug_provenance() -> CheckResult:
     """Is the INSTALLED ioplug the one the installer built, and what can it parse?
@@ -1971,11 +1993,32 @@ def check_ring_ioplug_provenance() -> CheckResult:
     that record on every path where it did NOT produce the installed file, so
     this check can say "stale" where it used to say nothing.
 
-    ``warn``, not ``fail``, for both unvouched shapes: the shipped wire renders
-    no conf.d field beyond the ioplug's own defaults, so a stale plugin still
-    opens today's ring — the record matters at the moment a box's wire needs a
-    capability, which is where the coupling reconciler's own gate fails closed
-    and refuses the arm. Warning is the honest weight for "cannot vouch".
+    THE VERDICT IS WEIGHED BY THE BOX'S OWN WIRE, because that is what decides
+    whether an unvouched plugin costs anything:
+
+    * a wire that renders no conf.d field beyond the ioplug's own defaults opens
+      on ANY installed plugin, so "cannot vouch" is a ``warn`` — real, but
+      nothing is refused on such a box;
+    * a wire that declares a non-default sample FORMAT is refused at the arm by
+      ``ring_wire_caps_ready``, which is a ``fail``: the box drops to loopback,
+      and a roleful box parks its content lane. Reporting that as a warning
+      would bury the one verdict that predicts a disarm.
+
+    WHAT THE PREDICATE COVERS, so this does not over-promise:
+    ``ring_wire_capabilities`` reads the sample format and the Ring A / Ring B
+    channel counts. The ACTIVE block's ``channels`` key — which
+    ``render_ring_conf_wire`` writes whenever ``ring_active_channels`` differs
+    from the conf.d default — is outside it, so a wire widening only that axis
+    renders a field this verdict does not weigh. That axis is tracked with the
+    ring-wire default flip (P5 of the convergence design); the format axis is
+    what is covered here.
+
+    The escalation asks :func:`jasper.ring_assets.ring_ioplug_wire_supported` —
+    the gate's own predicate, remediation text included — rather than restating
+    its rule, and that call SHORT-CIRCUITS to ok before reading the record or
+    hashing the plugin when the wire needs nothing. So on every box carrying a
+    wire that declares no extra field this branch is inert and the verdicts
+    below are exactly what they were.
 
     Skips when the ``.so`` is absent: that is ``check_ring_platform_assets``'s
     missing-asset verdict, and one absent file should produce one reason.
@@ -1986,6 +2029,25 @@ def check_ring_ioplug_provenance() -> CheckResult:
         return CheckResult(
             label, "ok", f"skipped — {so_path} absent (see 'ring platform')"
         )
+    wire = _resolved_ring_wire()
+    if wire is not None:
+        # A capability-needing wire hashes the .so here and again in the
+        # record-compare below. Left as two reads rather than threading a
+        # digest between the layers: the plugin is tens of KB, and the gate
+        # owning its own comparison end-to-end is what makes the verdict
+        # quotable rather than reassembled.
+        support = ring_assets.ring_ioplug_wire_supported(
+            wire, plugin_dir=_JTS_RING_ALSA_PLUGIN_DIR
+        )
+        if not support.ok:
+            return CheckResult(
+                label,
+                "fail",
+                "the ring arm will be REFUSED on this box: "
+                f"{support.detail}. Cost until then: loopback on a flat box, a "
+                "parked content lane on a roleful one. Command: bash "
+                "scripts/deploy-to-pi.sh",
+            )
     record = ring_assets.read_ring_ioplug_provenance()
     if not record.recorded:
         return CheckResult(

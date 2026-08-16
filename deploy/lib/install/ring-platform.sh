@@ -6,21 +6,20 @@
 
 # JTS Ring platform install helpers for deploy/install.sh.
 #
-# Ships the SHM slot-ring transport primitive as PRODUCT assets, but
-# INERT: after this runs every box carries the `jts_ring` ALSA ioplug,
-# its conf.d device definitions, and the /dev/shm/jts-ring directory,
-# yet NOTHING opens them. The default coupling stays `loopback` and the
-# default content bridge stays `direct`; audio behaviour is byte-identical
-# to a box without these files. This is P1 of the audio-graph
-# consolidation campaign — see
-# docs/HANDOFF-audio-graph-consolidation.md (phase map row P1, section I).
+# Ships the SHM slot-ring transport primitive as PRODUCT assets: after this
+# runs every box carries the `jts_ring` ALSA ioplug, its conf.d device
+# definitions, and the /dev/shm/jts-ring directory. Installing them opens
+# nothing by itself — a PCM definition is not an open — but they are not
+# spare parts either: on a box whose coupling is ARMED they carry the audio,
+# so this helper stages what the arm depends on. Whether a box arms is the
+# coupling reconciler's decision, not this file's. Campaign context:
+# docs/HANDOFF-audio-graph-consolidation.md.
 #
 # Three assets, all installed here:
 #   1. libasound_module_pcm_jts_ring.so — compiled on the Pi from
 #      c/jts-ring-ioplug via `make plugin`, installed to the arch ALSA
 #      plugin dir. sha256-compared like the Rust daemons so an unchanged
-#      build does not churn (no restart is triggered — nothing runs it
-#      yet in P1).
+#      build does not churn.
 #   2. /etc/alsa/conf.d/60-jts-ring.conf — the system-wide (0644,
 #      renderer-user resolvable) pcm.jts_ring_capture / pcm.jts_ring_playback /
 #      pcm.jts_ring_active_playback definitions. Shipped from
@@ -49,15 +48,35 @@ JTS_RING_IOPLUG_PROVENANCE="${JTS_RING_IOPLUG_PROVENANCE:-/var/lib/jasper/ring-i
 # Compile + install the jts_ring ALSA ioplug from the on-Pi checkout.
 #
 # Degrade-to-warn contract (campaign risk #5): a build failure MUST NOT
-# fail the install. In P1 the ring platform is inert and loopback remains
-# the transport, so a missing/stale .so changes nothing operationally. This
-# is deliberately the OPPOSITE of build_install_rust_daemon's required=1
-# fatal path; after P9 (when the ioplug becomes load-bearing) this gate
-# flips to fatal, tracked in the campaign done-criteria.
+# fail the install, and this is deliberately the OPPOSITE of
+# build_install_rust_daemon's required=1 fatal path. The ring is load-bearing
+# on an armed box, so the reason is no longer "nothing uses it" — it is that
+# an aborted install is the one outcome a box cannot deploy its way out of.
+# `run_contained_build` runs this cc with a soft `MemoryHigh` throttle and a
+# `choom -n 900` OOM bias (a hard `MemoryMax` is opt-in), which is what makes
+# the kernel pick the compile over a live daemon under pressure — so a failed
+# build is a routinely TRANSIENT condition on a 1 GB Pi. Failing the install
+# on it would strand the box on its previous manifest, unable to take the very
+# deploy that carries the fix.
+#
+# So the loudness lives in state that OUTLIVES this transcript rather than in
+# an exit code: every non-producing path revokes the provenance record, and
+# `jasper-doctor`'s `ring ioplug provenance` check then weighs that revocation
+# against the wire the box actually resolves —
+#   - a wire that renders no conf.d field beyond the ioplug's own defaults
+#     opens on the stale plugin, so the verdict is `warn`;
+#   - a wire declaring a non-default sample FORMAT is refused at the arm by
+#     `ring_wire_caps_ready`, so the verdict is `fail`, and install.sh's
+#     closing `run_doctor_summary` prints its failure banner on this same
+#     deploy. (The capability predicate reads the format plus the Ring A/B
+#     channel counts; the ACTIVE block's own `channels` key sits outside it
+#     and is tracked with the ring-wire default flip.)
 #
 # Two build-failure shapes, and what the doctor sees for each:
 #   - First-ever build fails (no prior .so): so_dest is absent, so the
-#     doctor's `ring platform` check goes `warn` (asset missing). Honest.
+#     doctor's `ring platform` check reports the missing asset — `warn` while
+#     the box is on loopback, `fail` once a ring coupling is armed. Honest
+#     either way.
 #   - Rebuild fails on a box with a prior good deploy: the pre-build rm -f
 #     below only cleans the CACHE copy, so the PREVIOUS .so stays installed
 #     at so_dest and still open-probes fine. What separates it from a fresh
@@ -123,7 +142,7 @@ build_install_jts_ring_ioplug() {
     if ! run_contained_build "jts-ring-ioplug" -- \
         sudo -u "${BUILD_USER}" -H bash -c "cd '${cache_dir}' && make plugin"; then
         echo "  WARN: jts_ring ioplug build failed; ring platform unavailable this deploy" >&2
-        echo "  WARN: loopback coupling remains the transport (inert phase) — doctor 'ring platform' will warn" >&2
+        echo "  WARN: the ring arm's capability gate now has nothing vouching for the installed plugin — doctor 'ring ioplug provenance' carries the verdict (fail on a box whose wire declares a non-default ring sample format, warn otherwise)" >&2
         # STALE-BINARY HAZARD (the 2026-07-02 class): the pre-build rm -f above
         # only cleans the CACHE copy, so on a box with a prior good deploy the
         # PREVIOUS .so is still installed at so_dest. We do NOT remove the stale
@@ -153,9 +172,12 @@ build_install_jts_ring_ioplug() {
     fi
 
     # sha256-compare so an unchanged .so is reported as such (honest install
-    # log; matches the rust-daemons.sh idiom). In P1 nothing runs the plugin,
-    # so a content change triggers no restart — the comparison is purely
-    # informational until a consumer exists (P2+).
+    # log; matches the rust-daemons.sh idiom). No restart is triggered from
+    # here even when the content changed: the plugin is dlopen()ed by whatever
+    # opens a ring PCM, and the core audio graph is bounced later in the
+    # install by its own ordered step. The comparison is the transcript's
+    # answer to "did this deploy replace the plugin", and the sha it produces
+    # is what the provenance record binds its claim to.
     local pre_sha="" new_sha
     if [[ -e "${so_dest}" ]]; then
         pre_sha="$(sha256sum "${so_dest}" | awk '{print $1}')"
@@ -253,12 +275,12 @@ revoke_ring_ioplug_provenance() {
 }
 
 # Install the product conf.d device definitions + the /dev/shm/jts-ring
-# directory lifecycle. Both are pure static files (no compile), and both
-# are INERT in P1: the PCMs resolve but nothing opens them, and the
-# directory exists but no ring file is created until a coupling arms in
-# P2+. Kept separate from the build so the conf/tmpfiles land even on a
-# box where the C build failed (the doctor can then still report exactly
-# which of the three assets is missing).
+# directory lifecycle. Both are pure static files (no compile). Placing them
+# opens nothing on its own — the PCMs resolve, and the directory holds no ring
+# file until a coupling arms — but on an armed box both are load-bearing.
+# Kept separate from the build so the conf/tmpfiles land even on a box where
+# the C build failed (the doctor can then still report exactly which of the
+# three assets is missing).
 install_jts_ring_conf_assets() {
     # 1. conf.d device definitions (system-wide, 0644, renderer-user
     #    resolvable — the PR #214 class). install_alsa already created
@@ -267,7 +289,7 @@ install_jts_ring_conf_assets() {
     if [[ -f "${conf_src}" ]]; then
         install -d -m 0755 /etc/alsa/conf.d
         install -m 0644 "${conf_src}" /etc/alsa/conf.d/60-jts-ring.conf
-        echo "  Installed /etc/alsa/conf.d/60-jts-ring.conf (pcm.jts_ring_capture + pcm.jts_ring_playback + pcm.jts_ring_active_playback; inert)"
+        echo "  Installed /etc/alsa/conf.d/60-jts-ring.conf (pcm.jts_ring_capture + pcm.jts_ring_playback + pcm.jts_ring_active_playback)"
     else
         echo "  WARN: ${conf_src} missing; jts_ring PCM definitions not installed" >&2
     fi
@@ -310,7 +332,7 @@ install_jts_ring_conf_assets() {
             tmpfiles_err="${tmpfiles_err//$'\n'/ }"
             echo "  WARN: systemd-tmpfiles --create for /dev/shm/jts-ring deferred to next boot${tmpfiles_err:+: ${tmpfiles_err}}" >&2
         fi
-        echo "  Installed /etc/tmpfiles.d/jts-ring.conf and applied /dev/shm/jts-ring (inert)"
+        echo "  Installed /etc/tmpfiles.d/jts-ring.conf and applied /dev/shm/jts-ring"
     else
         echo "  WARN: ${tmpfiles_src} missing; /dev/shm/jts-ring lifecycle not installed" >&2
     fi

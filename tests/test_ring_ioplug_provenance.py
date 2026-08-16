@@ -286,10 +286,19 @@ def test_every_non_producing_install_path_revokes_the_record():
 # disk the one the installer built". It has four verdicts and each is a distinct
 # operator instruction, so each is pinned: an absent .so defers to the
 # missing-asset check, no record and a sha mismatch both WARN (with different
-# remedies), and a match reports the capability set. `warn` rather than `fail`
-# for the two unvouched shapes is itself a decision — the shipped wire opens on
-# a stale plugin, so the record matters at the moment a box's wire needs a
-# capability, which is where the coupling reconciler's gate fails closed.
+# remedies), and a match reports the capability set.
+#
+# WHICH WEIGHT a verdict carries is decided by the box's own wire, and the tests
+# below pin both halves. On a wire that renders no conf.d field beyond the
+# ioplug's own defaults an unvouched plugin costs that box nothing, so `warn`
+# is the honest weight. On a wire declaring a non-default sample FORMAT the SAME
+# record state makes `ring_wire_caps_ready` refuse the arm — loopback on a flat
+# box, a parked content lane on a roleful one — so it is a `fail`.
+#
+# The format axis is what these exercise. `ring_wire_capabilities` also reads
+# the Ring A/B channel counts, while the ACTIVE block's own `channels` key is
+# outside the predicate — an axis tracked with the ring-wire default flip, not
+# something these pins claim coverage of.
 
 
 def _doctor_env(monkeypatch, tmp_path, *, so_bytes=None, record=None):
@@ -419,3 +428,231 @@ def test_provenance_check_reports_a_vouched_plugin_with_no_capabilities(
     res = audio.check_ring_ioplug_provenance()
     assert res.status == "ok"
     assert "[none]" in res.detail
+
+
+# --- the wire-weighted verdict ----------------------------------------------
+#
+# The record only costs a box something when the wire it resolves renders a
+# conf.d field the plugin must parse. These pin that the check reports the
+# decision `ring_wire_caps_ready` will actually make, rather than a fixed
+# severity that is either alarmist on a narrow box or silent on a wide one.
+
+
+@pytest.fixture
+def _declared_wire(tmp_path, monkeypatch):
+    """Declare the box's ring wire the way a real box does, and only that.
+
+    Two things are held still so the assertions are about the wire and nothing
+    else. The env chain is isolated because ``resolve_ring_wire`` reads the
+    developer host's real ``jasper.env`` -> ``fanin.env`` pair otherwise, and
+    the saved output topology is stubbed to absent because a host that ever ran
+    the installer carries one whose channel axes would reach these tests. The
+    FORMAT axis — the one a declaration moves — stays fully real.
+    """
+    from jasper.fanin_coupling import RING_WIRE_FORMAT_ENV_VAR
+
+    from tests.test_fanin_coupling_reconcile import isolate_base_jasper_env
+
+    isolate_base_jasper_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.load_topology_for_wire", lambda: None
+    )
+
+    def declare(value: str | None) -> None:
+        import jasper.fanin.coupling_reconcile as cr
+
+        text = "" if value is None else f"{RING_WIRE_FORMAT_ENV_VAR}={value}\n"
+        Path(cr.FANIN_ENV_PATH).write_text(text, encoding="utf-8")
+
+    return declare
+
+
+def _resolved_capabilities():
+    from jasper.cli.doctor import audio_runtime as audio
+
+    return ring_assets.ring_wire_capabilities(audio._resolved_ring_wire())
+
+
+def test_the_wire_is_resolved_through_the_arm_gates_own_two_calls(monkeypatch):
+    """The doctor must ask the question the way the gate asks it.
+
+    `ring_wire_caps_ready` resolves its wire as
+    `resolve_wire_for_gate(load_topology_for_wire())`. Dropping the topology
+    argument does not raise and does not return nothing — `resolve_ring_wire`
+    answers the shipped stereo geometry for `None` — so the two spellings agree
+    on every box whose topology happens to be stereo and diverge silently on
+    exactly the roleful ones this verdict matters most for. Identity of the
+    object handed across is therefore the assertion, not the shape of the call.
+    """
+    from jasper.cli.doctor import audio_runtime as audio
+
+    topology = object()
+    passed = []
+
+    def _spy(arg=None):
+        passed.append(arg)
+        return "RESOLVED-WIRE", ""
+
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.load_topology_for_wire", lambda: topology
+    )
+    monkeypatch.setattr("jasper.fanin.coupling_reconcile.resolve_wire_for_gate", _spy)
+    assert audio._resolved_ring_wire() == "RESOLVED-WIRE"
+    assert passed == [topology]
+
+
+def test_an_undeclared_box_needs_no_capability_so_the_verdict_stays_warn(
+    monkeypatch, tmp_path, _declared_wire
+):
+    """The inertness half, and the tripwire for the ring-wire default flip.
+
+    A box that declares nothing resolves the conf.d default wire, which forces
+    no field onto the conf.d, so an unvouched plugin still opens its ring and
+    `warn` is the whole truth. Both halves are asserted together on purpose:
+    when the resolver's default goes wide, the capability set stops being empty
+    and this verdict becomes `fail` on every box carrying no record — which is
+    the fleet cost of that flip, and it should surface as a failing pin rather
+    than as a silent disarm.
+    """
+    from jasper.cli.doctor import audio_runtime as audio
+
+    _declared_wire(None)
+    _doctor_env(monkeypatch, tmp_path, so_bytes=b"\x7fELF plugin")
+    assert _resolved_capabilities() == frozenset()
+    res = audio.check_ring_ioplug_provenance()
+    assert res.status == "warn"
+    assert "UNVOUCHED" in res.detail
+
+
+def test_a_declared_wide_wire_with_no_record_is_a_failure(
+    monkeypatch, tmp_path, _declared_wire
+):
+    """The refusing class of the wire flip, seen from the doctor.
+
+    Same box, same absent record as the `warn` case above — only the
+    declaration differs. The arm is refused from here on, so the check must say
+    so with the gate's own sentence plus the command that fixes it.
+    """
+    from jasper.cli.doctor import audio_runtime as audio
+
+    _declared_wire("S32_LE")
+    _doctor_env(monkeypatch, tmp_path, so_bytes=b"\x7fELF plugin")
+    assert _resolved_capabilities() == {ring_assets.RING_CAP_WIRE_FORMAT}
+    res = audio.check_ring_ioplug_provenance()
+    assert res.status == "fail"
+    assert "REFUSED" in res.detail
+    assert "no provenance record" in res.detail
+    assert "scripts/deploy-to-pi.sh" in res.detail
+
+
+def test_a_declared_wide_wire_with_a_stale_record_is_a_failure(
+    monkeypatch, tmp_path, _declared_wire
+):
+    from jasper.cli.doctor import audio_runtime as audio
+
+    _declared_wire("S32_LE")
+    _doctor_env(
+        monkeypatch,
+        tmp_path,
+        so_bytes=b"\x7fELF the plugin actually on disk",
+        record=_record_text(
+            _sha_of(b"\x7fELF a different plugin"),
+            ring_assets.RING_CAP_WIRE_FORMAT,
+        ),
+    )
+    res = audio.check_ring_ioplug_provenance()
+    assert res.status == "fail"
+    assert "STALE ioplug" in res.detail
+
+
+def test_a_vouched_plugin_that_cannot_parse_the_wire_is_a_failure(
+    monkeypatch, tmp_path, _declared_wire
+):
+    """The shape a severity keyed on the RECORD alone cannot see.
+
+    This plugin is genuinely the one the last deploy installed — nothing is
+    stale and nothing is unvouched — it simply predates the conf.d field the
+    declared wire renders. The record-compare branches all pass it, so before
+    the wire was consulted this box read `ok` while its arm was refused.
+    """
+    from jasper.cli.doctor import audio_runtime as audio
+
+    so_bytes = b"\x7fELF an old but freshly-installed plugin"
+    _declared_wire("S32_LE")
+    _doctor_env(
+        monkeypatch,
+        tmp_path,
+        so_bytes=so_bytes,
+        record=_record_text(_sha_of(so_bytes), ring_assets.RING_CAP_WIRE_CHANNELS),
+    )
+    res = audio.check_ring_ioplug_provenance()
+    assert res.status == "fail"
+    assert "cannot parse [wire_format]" in res.detail
+
+
+def test_a_declared_wide_wire_the_record_covers_is_ok(
+    monkeypatch, tmp_path, _declared_wire
+):
+    """The armed wide box (jts.local's shape): the escalation must not fire on
+    a plugin whose record vouches for exactly this wire."""
+    from jasper.cli.doctor import audio_runtime as audio
+
+    so_bytes = b"\x7fELF the real plugin"
+    _declared_wire("S32_LE")
+    _doctor_env(
+        monkeypatch,
+        tmp_path,
+        so_bytes=so_bytes,
+        record=_record_text(_sha_of(so_bytes), ring_assets.RING_CAP_WIRE_FORMAT),
+    )
+    res = audio.check_ring_ioplug_provenance()
+    assert res.status == "ok"
+    assert "matches the installer's record" in res.detail
+
+
+def test_an_illegal_wire_declaration_is_not_reported_as_a_provenance_fault(
+    monkeypatch, tmp_path, _declared_wire
+):
+    """ONE failure, ONE reason. A wire neither language recognizes already
+    refuses the arm through ``resolve_wire_for_gate``, with the parser's own
+    sentence. Restating that here would give the operator two remedies for one
+    fault, so the check falls back to weighing the record alone."""
+    from jasper.cli.doctor import audio_runtime as audio
+
+    _declared_wire("S24_3LE")
+    _doctor_env(monkeypatch, tmp_path, so_bytes=b"\x7fELF plugin")
+    assert audio._resolved_ring_wire() is None
+    res = audio.check_ring_ioplug_provenance()
+    assert res.status == "warn"
+    assert "UNVOUCHED" in res.detail
+
+
+def test_an_absent_so_still_defers_even_when_the_wire_is_wide(
+    monkeypatch, tmp_path, _declared_wire
+):
+    """The missing-asset deferral stays ahead of the wire escalation: one absent
+    file must not also produce a capability verdict about the file that is not
+    there."""
+    from jasper.cli.doctor import audio_runtime as audio
+
+    _declared_wire("S32_LE")
+    _doctor_env(monkeypatch, tmp_path)
+    res = audio.check_ring_ioplug_provenance()
+    assert res.status == "ok"
+    assert "skipped" in res.detail
+
+
+def test_the_build_failure_warn_hands_off_to_the_check_by_its_real_name(
+    monkeypatch, tmp_path
+):
+    """One fact, one spelling, across the installer and the doctor.
+
+    A failed build's transcript scrolls away, so the WARN's job is to name the
+    surface that outlives it. Pinning the installer's string against the label
+    the check actually reports keeps a rename from sending an operator to a
+    heading `jasper-doctor` no longer prints.
+    """
+    from jasper.cli.doctor import audio_runtime as audio
+
+    _doctor_env(monkeypatch, tmp_path, so_bytes=b"\x7fELF plugin")
+    assert f"'{audio.check_ring_ioplug_provenance().name}'" in _sh_text()

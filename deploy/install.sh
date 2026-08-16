@@ -55,9 +55,8 @@ source "${REPO_DIR}/deploy/lib/install/web-assets.sh"
 source "${REPO_DIR}/deploy/lib/install/model-staging.sh"
 source "${REPO_DIR}/deploy/lib/install/first-party-runtime.sh"
 source "${REPO_DIR}/deploy/lib/install/rust-daemons.sh"
-# Ring platform (audio-graph consolidation P1): builds the jts_ring ALSA
-# ioplug + ships its conf.d/tmpfiles assets INERT. Sourced after
-# build-sandbox.sh (uses run_contained_build).
+# Ring platform: builds the jts_ring ALSA ioplug + ships its conf.d/tmpfiles
+# assets. Sourced after build-sandbox.sh (uses run_contained_build).
 source "${REPO_DIR}/deploy/lib/install/ring-platform.sh"
 source "${REPO_DIR}/deploy/lib/install/python-runtime.sh"
 source "${REPO_DIR}/deploy/lib/install/systemd-units.sh"
@@ -420,12 +419,15 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      owns the sole USB DIRECT data plane and systemd keeps only a readiness marker.
    - jts_ring ALSA ioplug from c/jts-ring-ioplug with make plugin
      (needs libasound2-dev), installed to the arch ALSA plugin dir,
-     sha256-compared like the Rust daemons. Audio-graph consolidation
-     P1: shipped INERT (nothing opens the ring); a build failure never
-     fails the install. On a first-ever build failure the .so is absent
-     and the doctor 'ring platform' check warns; on a REBUILD failure a
-     prior good .so stays installed and the doctor reads ok (stale-binary
-     class) — the build-failure WARN in the transcript is the only signal.
+     sha256-compared like the Rust daemons. Installing it opens nothing by
+     itself, but on a box whose coupling is armed the ring carries the
+     audio. A build failure never fails the install. On a first-ever build
+     failure the .so is absent and the doctor 'ring platform' check warns
+     (fails if the ring is armed); on a REBUILD failure a prior good .so
+     stays installed and the deploy REVOKES the installer's provenance
+     record, so the doctor's 'ring ioplug provenance' check reports an
+     unvouched plugin — warn, or fail on a box whose wire needs a conf.d
+     field only a vouched plugin is known to parse.
    - The shairport-sync/nqptp source builds and Rust daemon builds
      run RAM-bounded and cgroup-contained via
      deploy/lib/install/build-sandbox.sh, so an OOM kills only the build,
@@ -444,10 +446,10 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      docs, Avahi service templates, systemd units, renderer configs,
      udev rules, ALSA templates, and helper binaries.
    - Render /etc/asound.conf through /usr/local/sbin/jasper-render-asound-conf.
-   - Install the inert jts_ring device definitions
+   - Install the jts_ring device definitions
      (/etc/alsa/conf.d/60-jts-ring.conf) and the /dev/shm/jts-ring
-     directory lifecycle (/etc/tmpfiles.d/jts-ring.conf). Nothing opens
-     them in P1.
+     directory lifecycle (/etc/tmpfiles.d/jts-ring.conf). Placing them
+     opens nothing; the coupling reconciler decides whether this box arms.
    - Write output hardware state before Camilla statefile seed.
    - Render outputd flat startup config with active DAC latency floor.
    - Move HA/Spotify integration secrets into
@@ -580,12 +582,15 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      owns the sole USB DIRECT data plane and systemd keeps only a readiness marker.
    - jts_ring ALSA ioplug from c/jts-ring-ioplug with make plugin
      (needs libasound2-dev), installed to the arch ALSA plugin dir,
-     sha256-compared like the Rust daemons. Audio-graph consolidation
-     P1: shipped INERT (nothing opens the ring; loopback stays the
-     coupling). A build failure never fails the install: a first-ever
-     failure leaves the .so absent (doctor warns); a REBUILD failure
-     leaves the prior .so installed and the doctor reads ok (stale-binary
-     class) — the transcript build-failure WARN is the only signal.
+     sha256-compared like the Rust daemons. Installing it opens nothing by
+     itself, but on a box whose coupling is armed the ring carries the
+     audio. A build failure never fails the install: a first-ever failure
+     leaves the .so absent (doctor warns, or fails if the ring is armed); a
+     REBUILD failure leaves the prior .so installed and REVOKES the
+     installer's provenance record, so the doctor's 'ring ioplug
+     provenance' check reports an unvouched plugin — warn, or fail on a box
+     whose wire needs a conf.d field only a vouched plugin is known to
+     parse.
    - All heavy source builds above (jasper_aec3 v1, the Rust daemons,
      shairport-sync, nqptp) run RAM-bounded and cgroup-contained
      via deploy/lib/install/build-sandbox.sh, so an OOM during an
@@ -609,12 +614,12 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      nginx config, Avahi service templates, systemd
      units, udev rules, ALSA templates, and helper binaries.
    - Render /etc/asound.conf through /usr/local/sbin/jasper-render-asound-conf.
-   - Install the inert jts_ring device definitions
+   - Install the jts_ring device definitions
      (/etc/alsa/conf.d/60-jts-ring.conf, pcm.jts_ring_capture +
      pcm.jts_ring_playback + pcm.jts_ring_active_playback) and the
      /dev/shm/jts-ring directory lifecycle
-     (/etc/tmpfiles.d/jts-ring.conf, applied immediately). Nothing opens
-     them in P1.
+     (/etc/tmpfiles.d/jts-ring.conf, applied immediately). Placing them
+     opens nothing; the coupling reconciler decides whether this box arms.
    - Write output hardware state before Camilla statefile seed.
    - Render outputd flat startup config with active DAC latency floor.
 
@@ -2261,7 +2266,7 @@ main() {
         build_install_jasper_fanin
         build_install_jasper_outputd
         retire_jasper_usbsink_audio
-        install_jts_ring_platform  # P1: jts_ring ioplug + conf.d + shm dir (INERT; nothing arms)
+        install_jts_ring_platform  # jts_ring ioplug + conf.d + shm dir (staging only; arming is the coupling reconciler's)
         install_streambox_systemd_units
         retire_audio_topology_switch
         migrate_wifi_guardian
@@ -2308,7 +2313,7 @@ main() {
     build_install_jasper_fanin    # Rust daemon binary; enabled by install_systemd_units
     build_install_jasper_outputd  # Rust mainline final-output owner
     retire_jasper_usbsink_audio   # fan-in owns USB DIRECT; remove retired helper/cache
-    install_jts_ring_platform     # P1: jts_ring ioplug + conf.d + shm dir (INERT; nothing arms)
+    install_jts_ring_platform     # jts_ring ioplug + conf.d + shm dir (staging only; arming is the coupling reconciler's)
     install_systemd_units
     retire_audio_topology_switch # Remove stale dmix/fanin state; fanin is canonical
     migrate_memory_resilience   # Stage 1 OOM protection: sysctl + MGLRU + zram
