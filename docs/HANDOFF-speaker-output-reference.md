@@ -49,9 +49,10 @@ ASSISTANT AUDIO
 quantization on the output path: at the DAC edge.** The content lane reaches that
 spine at its own declared width: on the snd-aloop lanes it is `S32_LE`
 (`DEFAULT_PLAYBACK_FORMAT`, so CamillaDSP's float math never narrows on the way
-in), and on the `S16_LE` wires that remain — an armed SHM ring, the snapclient
-round-trip — ingest widens as it reads (left-justified, `<< 16` — exact and
-reversible); the mixer, the reference folds, the round-trip `ChannelPick`, and
+in); an armed SHM ring resolves `S32_LE` too unless an operator has pinned it
+narrow (**Ingress** below); and on the `S16_LE` wires that remain — the
+snapclient round-trip, plus a narrow-pinned ring — ingest widens as it reads
+(left-justified, `<< 16` — exact and reversible); the mixer, the reference folds, the round-trip `ChannelPick`, and
 the TTS gain all work at i32 (float math in **f64**, because f32's 24-bit
 mantissa cannot carry an i32 sample); and the final sink converts once, to
 whatever width the DAC registry declared. An `S32_LE` edge converts nothing at
@@ -98,17 +99,22 @@ at `S24_3LE`. What collapses the divergence is a packed-24 child write path in
 the paired sink; until then the invariant the registry enforces is the narrower
 one — no composite declares a width its transport refuses.
 
-**Ingress** widens whatever arrives narrow: the SHM ring (`S16_LE` on every box
-today because `jasper.fanin_coupling.resolve_ring_wire` holds that wire narrow
-by policy — `content_lane_format_for_coupling` only delegates to it for the
-`shm_ring` coupling — since ring v2's R1 the *layout* accepts `S32LE` too, so
-the pin is the resolver's, not
-`jasper_ring::Geometry::validate_self`'s), the snapclient round-trip
+**Ingress** widens whatever arrives narrow: the snapclient round-trip
 FIFO (a *source* — snapclient writes it, outputd reads it), and the bonded-member
 TTS socket, whose `jasper-tts-protocol` wire stays S16 and is widened at the gain
 application in `assistant_source::read_period_into` rather than at enqueue, so a
-queued reply does not double its resident bytes under `mlockall`. The snd-aloop
-content lane no longer needs widening — it arrives at spine width.
+queued reply does not double its resident bytes under `mlockall`. **Neither
+content-lane transport is on that list.** The snd-aloop lane arrives at spine
+width, and so does the SHM ring: `content_lane_format_for_coupling` answers
+`jasper.fanin_coupling.resolve_ring_wire`'s `sample_format` for the `shm_ring`
+coupling, and that resolver — which owns the rule; read it there rather than a
+copy here — defaults `S32_LE` on a box that has declared nothing. The ring
+reaches this hop narrow only under the operator rollback pin
+`JASPER_FANIN_RING_WIRE_FORMAT=S16_LE`, which is why the widening path stays.
+(This sentence read "`S16_LE` on every box" until 2026-08-15 — first because the
+resolver took no per-box input at all, then because its default was narrow. Ring
+v2's R1 had already widened what the *layout* accepts, so the narrowness was
+never `jasper_ring::Geometry::validate_self`'s.)
 
 The production paths converge inside `jasper-fanin`, pass through
 CamillaDSP, then enter `jasper-outputd`, which is the only normal writer
@@ -1667,8 +1673,9 @@ together.
   `jasper-audio-hardware-reconcile` emits from the same coupling-aware
   function that decides what CamillaDSP writes. (It was `S16_LE` through
   2026-08-07; the wide-output-path program widened it so the one output
-  quantization happens at the DAC edge. An armed SHM ring keeps this hop at
-  `S16_LE` instead — the ring's own wire format.)
+  quantization happens at the DAC edge. An armed SHM ring takes the ring's own
+  wire format instead — `jasper.fanin_coupling.resolve_ring_wire`, which
+  defaults `S32_LE` since 2026-08-15 and read `S16_LE` before it.)
 - Ownership: Camilla is the only writer; `jasper-outputd` is the only
   reader. No `dsnoop` on this lane.
 
@@ -2078,7 +2085,24 @@ re-touched since carries forward from its most recent entry below.
   `__OUTPUTD_DAC_CTL_BLOCK__`); added pointer notes to the design-of-record
   sections that still describe the deleted raw-hw-aloop shape. See
   [HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md).
+- **2026-08-15 (ring wire default → wide).** Re-verified only the width claims
+  the SHM ring's default-format flip falsified, against
+  `jasper.fanin_coupling.resolve_ring_wire_format` /
+  `content_lane_format_for_coupling` and
+  `deploy/alsa/conf.d/60-jts-ring.conf`. The **Ingress** paragraph claimed the
+  ring was "`S16_LE` on every box today because
+  `jasper.fanin_coupling.resolve_ring_wire` holds that wire narrow by policy" —
+  false in both halves, and the policy half had already been false since
+  2026-08-11 gave the resolver a per-box input. The ring now defaults `S32_LE`,
+  so it left the "arrives narrow" list, and the Current Operational Truth
+  paragraph's "`S16_LE` wires that remain" list lost it too; both now name the
+  operator rollback pin (`JASPER_FANIN_RING_WIRE_FORMAT=S16_LE`, which nothing
+  in the repo writes) as the only narrow route. The `content_in` port note in
+  the design-of-record section drops the stale token for a pointer at the
+  resolver. **Nothing else in this pass** — the DAC-edge table, the rollback
+  runbook, barge-in, and multiroom stand as last verified.
+  Canonical: [HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md).
 
-Last verified: 2026-08-15 (scoped pass — see the 2026-08-15 entry above for
-what was re-verified; prior 2026-08-08 was the last full-document pass,
-against `f78dcd597`; revision log above)
+Last verified: 2026-08-15 (two scoped passes — see the two 2026-08-15 entries
+above for what each re-verified; prior 2026-08-08 was the last full-document
+pass, against `f78dcd597`; revision log above)

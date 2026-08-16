@@ -511,13 +511,30 @@ def test_probe_sources_the_conf_declared_wire_not_the_resolver(monkeypatch, tmp_
 
 
 def test_probe_asks_for_the_shipped_wire_today(monkeypatch, tmp_path):
-    """DORMANCY: on the REAL shipped (never-rendered) conf.d, the probe still
-    asks for 2 channels / S16_LE — reached via the ioplug's absent-key
-    default (both parsers' `absent=` contract), not a literal and not the
-    resolver. Cross-checked against `resolve_ring_wire`'s answer for the
-    shipped topology, which still coincides today (a drift between the two
-    independent policies would show up here as a failing cross-check, not as
-    the probe's own source)."""
+    """On the REAL shipped (never-rendered) conf.d, the probe asks for 2
+    channels / S32_LE.
+
+    THE FORMAT AXIS NO LONGER REACHES THIS VIA DORMANCY. Every block now
+    DECLARES ``format S32_LE`` EXPLICITLY (see
+    ``deploy/alsa/conf.d/60-jts-ring.conf``'s own "WIRE FORMAT" header comment)
+    — the probe reads a LITERAL in the file, not the ioplug's absent-key
+    default. The shipped file changed to spell the token because the
+    resolver's default went wide while the C ioplug's compiled-in default
+    (mirrored by ``jasper.ring_assets.RING_CONF_DEFAULT_FORMAT``) stayed
+    S16_LE: an omitted ``format`` key would now declare the OPPOSITE of what
+    every other end of the ring resolves. That same disagreement is what makes
+    the ioplug capability gate LIVE fleet-wide now (``ring_wire_caps_ready`` /
+    ``ring_ioplug_wire_supported``) rather than dormant — see
+    :data:`~jasper.ring_assets.RING_CONF_DEFAULT_FORMAT`'s own docstring.
+
+    THE CHANNELS AXIS IS UNCHANGED: no block declares ``channels``, so it
+    still answers via the ioplug's absent-key default (2), not a literal and
+    not the resolver.
+
+    Cross-checked against ``resolve_ring_wire``'s answer for the shipped
+    topology, which still coincides today — both land on S32_LE/2ch/2ch now —
+    a drift between the two independent policies would show up here as a
+    failing cross-check, not as the probe's own source."""
     from jasper.fanin_coupling import resolve_ring_wire
 
     shipped = (
@@ -532,9 +549,9 @@ def test_probe_asks_for_the_shipped_wire_today(monkeypatch, tmp_path):
     for pcm in ("jts_ring_capture", "jts_ring_playback"):
         channels, sample_format = audio._jts_ring_probe_wire(pcm)
         assert channels == 2
-        assert sample_format == "S16_LE"
+        assert sample_format == "S32_LE"
     assert (wire.sample_format, wire.ring_a_channels, wire.ring_b_channels) == (
-        "S16_LE",
+        "S32_LE",
         2,
         2,
     )

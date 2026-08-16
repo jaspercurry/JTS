@@ -707,6 +707,17 @@ def force_ring_gates_pass(monkeypatch):
     Claiming assets are present while leaving the path at a location that does
     not exist would make the spine tests exercise a torn-conf.d refusal instead
     of the spine.
+
+    THE IOPLUG CAPABILITY GATE IS STUBBED HERE TOO, and it did not need to be
+    until the ring wire's default went wide. While the shipped wire was the
+    plugin's own, ``ring_wire_caps_ready`` short-circuited to ok on every box and
+    these spine tests never reached a record. Now an undeclared box needs the
+    ``wire_format`` capability, and a dev host has neither the ``.so`` nor a
+    provenance record — so every arm here would refuse for a reason that is
+    correct and is not what these tests are about. What is stubbed is
+    ``ring_ioplug_wire_supported`` (the RECORD compare), not
+    ``ring_wire_caps_ready`` itself, so the gate still resolves the box's wire
+    and still refuses an illegal declaration inside these tests.
     """
     import jasper.ring_assets as ra
     import jasper.fanin.coupling_reconcile as cr
@@ -733,9 +744,62 @@ def force_ring_gates_pass(monkeypatch):
             ok=True, fanin_n_slots=fanin_n_slots, conf_n_slots=fanin_n_slots
         ),
     )
+    monkeypatch.setattr(
+        ra,
+        "ring_ioplug_wire_supported",
+        lambda wire, **kw: ra.RingIoplugWireSupport(
+            ok=True,
+            needed=ra.ring_wire_capabilities(wire),
+            detail="stubbed: the installed ioplug vouches for this wire",
+        ),
+    )
     # The stale-file guard reads /dev/shm; stub it to a no-op for spine tests.
     monkeypatch.setattr(
         cr, "_delete_stale_ring_files", lambda reason, fanin_text="": None
+    )
+
+
+def _stub_ring_ioplug_wire_supported(monkeypatch) -> None:
+    """The one stub `force_ring_gates_pass` carries, for a test that builds its
+    OWN inline `ring_asset_presence` / `RING_CONF_D` stubs instead of using the
+    `_ring_assets_present` fixture.
+
+    Since the ring wire's resolver default went wide, every UNDECLARED box now
+    needs the ioplug's `wire_format` capability (`ring_wire_capabilities`), and a
+    dev host carries no provenance record — so the real `ring_wire_caps_ready`
+    refuses before these tests ever reach the axis (geometry, slots, ...) they
+    are actually isolating. Vouching for whatever wire is asked keeps that gate
+    out of their way, same as it is for the spine tests above.
+    """
+    import jasper.ring_assets as ra
+
+    monkeypatch.setattr(
+        ra,
+        "ring_ioplug_wire_supported",
+        lambda wire, **kw: ra.RingIoplugWireSupport(
+            ok=True,
+            needed=ra.ring_wire_capabilities(wire),
+            detail="stubbed: the installed ioplug vouches for this wire",
+        ),
+    )
+
+
+def _pin_narrow_ring_wire() -> None:
+    """Declare this box's ring wire NARROW via the isolated FANIN_ENV_PATH.
+
+    :data:`~jasper.fanin_coupling.RING_WIRE_FORMAT_ENV_VAR` is the operator's
+    rollback lever — nothing in the repo writes it in production (see its module
+    docstring in ``jasper/fanin_coupling.py``); the only way a box carries it is
+    a human decision. Writing it here reproduces exactly that decision for a test
+    whose SUBJECT is the resolved wire itself, called with no fanin.env of its
+    own to declare it in. Mirrors ``_declared_wire`` in
+    ``tests/test_ring_ioplug_provenance.py``.
+    """
+    import jasper.fanin.coupling_reconcile as cr
+    from jasper.fanin_coupling import RING_WIRE_FORMAT, RING_WIRE_FORMAT_ENV_VAR
+
+    Path(cr.FANIN_ENV_PATH).write_text(
+        f"{RING_WIRE_FORMAT_ENV_VAR}={RING_WIRE_FORMAT}\n", encoding="utf-8"
     )
 
 
@@ -887,13 +951,8 @@ def test_arm_shm_ring_refused_on_geometry_mismatch_recovers(tmp_path, monkeypatc
     monkeypatch.setattr(
         ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
     )
-    conf = tmp_path / "60-jts-ring.conf"
-    conf.write_text(
-        "pcm.jts_ring_capture {\n    period_frames 128\n    n_slots 2\n}\n"
-        "pcm.jts_ring_playback {\n    period_frames 128\n    n_slots 2\n}\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(ra, "RING_CONF_D", str(conf))
+    monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path)))
+    _stub_ring_ioplug_wire_supported(monkeypatch)
 
     fanin_env = _write(tmp_path / "fanin.env", "")
     # outputd.env carries no period -> resolves to the packaged default 1024.
@@ -930,13 +989,8 @@ def test_arm_shm_ring_succeeds_when_geometry_matches(tmp_path, monkeypatch):
     monkeypatch.setattr(
         ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
     )
-    conf = tmp_path / "60-jts-ring.conf"
-    conf.write_text(
-        "pcm.jts_ring_capture {\n    period_frames 128\n    n_slots 2\n}\n"
-        "pcm.jts_ring_playback {\n    period_frames 128\n    n_slots 2\n}\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(ra, "RING_CONF_D", str(conf))
+    monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path)))
+    _stub_ring_ioplug_wire_supported(monkeypatch)
 
     fanin_env = _write(tmp_path / "fanin.env", "")
     outputd_env = _write(tmp_path / "outputd.env", "JASPER_OUTPUTD_PERIOD_FRAMES=128\n")
@@ -985,16 +1039,26 @@ def _break_ring_kwargs_override(monkeypatch, *, playback_format: str | None):
     monkeypatch.setattr(coupling, "capture_kwargs_for_coupling", broken)
 
 
-def test_ring_edge_width_ready_passes_on_a_wide_box_because_the_coupling_narrows():
-    """THE RULING (wide-output-path PR-6): a ring-coupled box keeps its ring at
-    coherent S16 even though the box-wide program lane is now S32, because the
-    shm_ring coupling's kwargs FORCE the emitted lane to RING_WIRE_FORMAT. So
-    the gate must PASS with the two constants genuinely different — the state
-    the pre-PR-6 constant comparison would have refused on every ring-eligible
-    box, including jts.local and its certified USB-route latency artifact."""
+def test_ring_edge_width_ready_passes_on_an_operator_narrow_pinned_box_because_the_coupling_narrows():
+    """THE RULING (wide-output-path PR-6), re-pointed at its post-flip subject.
+
+    A ring-coupled box can keep its ring at coherent S16 even though the box-wide
+    program lane is S32, because the shm_ring coupling's kwargs FORCE the emitted
+    lane to whatever :func:`resolve_ring_wire` resolves. That resolver's DEFAULT
+    went wide too (2026-08-11), so an UNDECLARED box no longer demonstrates the
+    ruling — its ring resolves S32_LE right along with the box-wide lane, and
+    nothing narrows. The one shape left where the two constants are genuinely
+    different is an operator's narrow pin
+    (``JASPER_FANIN_RING_WIRE_FORMAT=S16_LE`` — the rollback lever; nothing in
+    the repo writes it). Pinning it here is what still exercises the ruling: the
+    gate must PASS with ``DEFAULT_PLAYBACK_FORMAT`` and the pinned wire genuinely
+    different, the state the pre-PR-6 constant comparison would have refused on
+    every ring-eligible box, including jts.local and its certified USB-route
+    latency artifact."""
     import jasper.camilla_config_contract as contract
     from jasper.fanin_coupling import RING_WIRE_FORMAT
 
+    _pin_narrow_ring_wire()
     assert contract.DEFAULT_PLAYBACK_FORMAT == "S32_LE"
     assert RING_WIRE_FORMAT == "S16_LE"
     assert contract.DEFAULT_PLAYBACK_FORMAT != RING_WIRE_FORMAT
@@ -1010,7 +1074,17 @@ def test_ring_edge_width_ready_refuses_when_the_coupling_stops_narrowing(
     """The invariant the gate now guards: if the coupling ever stops forcing the
     ring's own wire format — the key dropped, or repointed at a wider one —
     arming would mis-transcode every sample, so refuse with a reason naming both
-    widths AND the function that must do the forcing."""
+    widths AND the function that must do the forcing.
+
+    Pinned NARROW first (see
+    ``test_ring_edge_width_ready_passes_on_an_operator_narrow_pinned_box...``):
+    on an undeclared box the coupling's kwargs override and the box-wide default
+    it falls back to are the SAME wide token now, so breaking the override would
+    leave every declaring end agreeing by accident and this test would prove
+    nothing. The pin is what makes "the override stopped forcing narrow" and
+    "the box is wide anyway" two different, distinguishable states again.
+    """
+    _pin_narrow_ring_wire()
     _break_ring_kwargs_override(monkeypatch, playback_format=broken_format)
     ok, detail = ring_edge_width_ready()
     assert ok is False
@@ -1050,7 +1124,33 @@ def test_arm_shm_ring_refused_on_broken_narrowing_recovers_to_loopback(
     """The manual-arm chain wiring: a coupling that has lost its narrow-lane
     override refuses the arm BEFORE any daemon is bounced and recovers to
     loopback — the belt to the coupling_auto default-resolution suspender
-    covered above."""
+    covered above.
+
+    OPERATOR NARROW PIN, not an undeclared box: since the ring wire resolver's
+    default went wide, an undeclared box's kwargs override and the wide default
+    it would fall back to are the SAME token, so "the override stopped forcing
+    narrow" is invisible there — see
+    ``test_ring_edge_width_ready_refuses_when_the_coupling_stops_narrowing``.
+    Pinning the box narrow (via the isolated JASPER_ENV_PATH, which both
+    :func:`resolve_ring_wire` and the "fan-in" declaring end's fallback read)
+    plus a conf.d that ALSO spells the narrow token — matching what a real
+    narrow-pinned box's re-rendered conf.d would say, unlike the shipped file
+    ``_ring_assets_present`` points at, which spells S32_LE unconditionally —
+    reproduces the box this test is actually about.
+    """
+    from jasper.fanin_coupling import RING_WIRE_FORMAT, RING_WIRE_FORMAT_ENV_VAR
+
+    jasper_env = _write(
+        tmp_path / "jasper.env", f"{RING_WIRE_FORMAT_ENV_VAR}={RING_WIRE_FORMAT}\n"
+    )
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.JASPER_ENV_PATH", str(jasper_env)
+    )
+    import jasper.ring_assets as ra
+
+    monkeypatch.setattr(
+        ra, "RING_CONF_D", str(_ring_conf(tmp_path, sample_format=RING_WIRE_FORMAT))
+    )
     _break_ring_kwargs_override(monkeypatch, playback_format=None)
     fanin_env = _write(tmp_path / "fanin.env", "")
     outputd_env = _write(tmp_path / "outputd.env", "")
@@ -1080,19 +1180,36 @@ def test_arm_shm_ring_refused_on_broken_narrowing_recovers_to_loopback(
 # --- defect A: Ring-A slot-count coherence + stale-file guard + migration -----
 
 
-def _ring_conf(tmp_path, *, capture_n_slots: int = 2, period_frames: int = 128):
+def _ring_conf(
+    tmp_path,
+    *,
+    capture_n_slots: int = 2,
+    period_frames: int = 128,
+    sample_format: str = "S32_LE",
+):
     """Write a ring conf.d with a configurable jts_ring_capture n_slots.
 
     period_frames stays 128 (the Apple-dongle floor) so the SEPARATE period gate
     passes when outputd's env carries JASPER_OUTPUTD_PERIOD_FRAMES=128; these tests
     isolate the slot axis.
+
+    ``sample_format`` defaults to ``S32_LE`` — the token the SHIPPED conf.d now
+    spells explicitly in every block (``deploy/alsa/conf.d/60-jts-ring.conf``).
+    Without a ``format`` line here, an UNDECLARED box's ground-truth wire
+    (``resolve_ring_wire_format``, wide by default) would disagree with this
+    hand-rolled conf.d's implicit ioplug-default declaration — an omitted
+    ``format`` key still declares a wire, just the narrow one
+    (``jasper.ring_assets.ring_conf_format``'s absent-means-default contract) —
+    tripping ``ring_edge_width_ready`` for a reason unrelated to whatever axis
+    (slots/period) the calling test actually isolates. Pass ``"S16_LE"`` for a
+    test that means to reproduce an operator's narrow-pinned box instead.
     """
     conf = tmp_path / "60-jts-ring.conf"
     conf.write_text(
         f"pcm.jts_ring_capture {{\n    period_frames {period_frames}\n"
-        f"    n_slots {capture_n_slots}\n}}\n"
+        f"    n_slots {capture_n_slots}\n    format {sample_format}\n}}\n"
         f"pcm.jts_ring_playback {{\n    period_frames {period_frames}\n"
-        "    n_slots 2\n}\n",
+        f"    n_slots 2\n    format {sample_format}\n}}\n",
         encoding="utf-8",
     )
     return conf
@@ -1338,6 +1455,7 @@ def test_geometry_gate_honours_an_outputd_period_from_the_jasper_env_position(
     monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path)))
     monkeypatch.setattr(ra, "RING_A_PROGRAM_FILE", str(tmp_path / "program.ring"))
     monkeypatch.setattr(ra, "RING_B_CONTENT_FILE", str(tmp_path / "content.ring"))
+    _stub_ring_ioplug_wire_supported(monkeypatch)
     jasper_env = _write(
         tmp_path / "jasper.env",
         "JASPER_OUTPUTD_PERIOD_FRAMES=128\nJASPER_OUTPUTD_DAC_BUFFER_FRAMES=512\n",
@@ -1381,6 +1499,7 @@ def test_geometry_gate_prefers_outputd_env_over_the_jasper_env_position(
     monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path)))
     monkeypatch.setattr(ra, "RING_A_PROGRAM_FILE", str(tmp_path / "program.ring"))
     monkeypatch.setattr(ra, "RING_B_CONTENT_FILE", str(tmp_path / "content.ring"))
+    _stub_ring_ioplug_wire_supported(monkeypatch)
     jasper_env = _write(tmp_path / "jasper.env", "JASPER_OUTPUTD_PERIOD_FRAMES=128\n")
     monkeypatch.setattr(
         "jasper.fanin.coupling_reconcile.JASPER_ENV_PATH", str(jasper_env)
@@ -1419,6 +1538,7 @@ def test_arm_shm_ring_refused_on_slot_mismatch_recovers(tmp_path, monkeypatch):
     # conf.d pins n_slots 4; fan-in env resolves to the product default 2, a
     # genuine custom-conf mismatch that the stale-env migration cannot repair.
     monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=4)))
+    _stub_ring_ioplug_wire_supported(monkeypatch)
 
     fanin_env = _write(tmp_path / "fanin.env", "")
     outputd_env = _write(tmp_path / "outputd.env", "JASPER_OUTPUTD_PERIOD_FRAMES=128\n")
@@ -1460,6 +1580,7 @@ def test_arm_shm_ring_migrates_stale_ring_slots_then_arms(tmp_path, monkeypatch)
     # an absent file). The migration is the axis under test.
     monkeypatch.setattr(ra, "RING_A_PROGRAM_FILE", str(tmp_path / "program.ring"))
     monkeypatch.setattr(ra, "RING_B_CONTENT_FILE", str(tmp_path / "content.ring"))
+    _stub_ring_ioplug_wire_supported(monkeypatch)
 
     fanin_env = _write(tmp_path / "fanin.env", "JASPER_FANIN_RING_SLOTS=8\n")
     outputd_env = _write(tmp_path / "outputd.env", "JASPER_OUTPUTD_PERIOD_FRAMES=128\n")
@@ -1495,6 +1616,7 @@ def test_arm_shm_ring_overrides_stale_base_ring_slots_then_arms(tmp_path, monkey
     monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=2)))
     monkeypatch.setattr(ra, "RING_A_PROGRAM_FILE", str(tmp_path / "program.ring"))
     monkeypatch.setattr(ra, "RING_B_CONTENT_FILE", str(tmp_path / "content.ring"))
+    _stub_ring_ioplug_wire_supported(monkeypatch)
     jasper_env = _write(tmp_path / "jasper.env", "JASPER_FANIN_RING_SLOTS=8\n")
     monkeypatch.setattr(
         "jasper.fanin.coupling_reconcile.JASPER_ENV_PATH", str(jasper_env)
@@ -1532,6 +1654,7 @@ def test_arm_shm_ring_keeps_matching_operator_ring_slots(tmp_path, monkeypatch):
     monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=4)))
     monkeypatch.setattr(ra, "RING_A_PROGRAM_FILE", str(tmp_path / "program.ring"))
     monkeypatch.setattr(ra, "RING_B_CONTENT_FILE", str(tmp_path / "content.ring"))
+    _stub_ring_ioplug_wire_supported(monkeypatch)
 
     fanin_env = _write(tmp_path / "fanin.env", "JASPER_FANIN_RING_SLOTS=4\n")
     outputd_env = _write(tmp_path / "outputd.env", "JASPER_OUTPUTD_PERIOD_FRAMES=128\n")
@@ -1566,6 +1689,7 @@ def test_arm_shm_ring_deletes_stale_on_disk_ring_before_arming(tmp_path, monkeyp
         ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
     )
     monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=2)))
+    _stub_ring_ioplug_wire_supported(monkeypatch)
     program = tmp_path / "program.ring"
     content = tmp_path / "content.ring"
     monkeypatch.setattr(ra, "RING_A_PROGRAM_FILE", str(program))
@@ -1580,7 +1704,10 @@ def test_arm_shm_ring_deletes_stale_on_disk_ring_before_arming(tmp_path, monkeyp
         # format shear rather than as the coherent ring these tests mean.
         struct.pack_into("<I", hdr, 8, 48000)  # rate
         struct.pack_into("<I", hdr, 12, 2)  # channels
-        struct.pack_into("<I", hdr, 16, 1)  # sample_format = S16LE
+        struct.pack_into("<I", hdr, 16, 2)  # sample_format = S32LE — the resolver's
+        # default since the ring-wire flip; a hardcoded S16LE here would make
+        # EVERY ring file these helpers write read as a format shear against the
+        # now-wide resolved wire, regardless of the slots/period axis under test.
         struct.pack_into("<I", hdr, 20, 128)  # period_frames
         struct.pack_into("<I", hdr, 24, n_slots)  # n_slots
         path.write_bytes(bytes(hdr) + b"\x00" * 512)
@@ -1621,6 +1748,7 @@ def test_arm_shm_ring_refused_on_invalid_ring_slots_value(tmp_path, monkeypatch)
     monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=2)))
     monkeypatch.setattr(ra, "RING_A_PROGRAM_FILE", str(tmp_path / "program.ring"))
     monkeypatch.setattr(ra, "RING_B_CONTENT_FILE", str(tmp_path / "content.ring"))
+    _stub_ring_ioplug_wire_supported(monkeypatch)
 
     fanin_env = _write(tmp_path / "fanin.env", "JASPER_FANIN_RING_SLOTS=99\n")
     outputd_env = _write(tmp_path / "outputd.env", "JASPER_OUTPUTD_PERIOD_FRAMES=128\n")
@@ -1649,6 +1777,15 @@ def _coherent_shm_ring_outputd_text(*, period_frames: int = 128) -> str:
     Matches exactly what ``_outputd_actions(shm_ring)`` writes, so a reconcile with
     the fanin.env already at shm_ring sees ``changed=False`` and takes the CONFIRM
     path — the branch the defect-A CONFIRM-path fix exercises.
+
+    ALSO carries ``JASPER_OUTPUTD_CONTENT_FORMAT=S32_LE`` — the key
+    ``jasper-audio-hardware-reconcile`` (the key's single writer) would have
+    already re-derived on a genuinely armed box. Without it, ``ring_edge_width_ready``
+    reads outputd's declaration as its own stale default (``S16_LE`` — see
+    ``_OUTPUTD_DEFAULT_CONTENT_FORMAT`` in coupling_reconcile.py, which does NOT
+    follow the ring wire resolver by design), which now disagrees with the
+    resolved wire's wide default and refuses every CONFIRM-path test here for a
+    reason unrelated to whatever axis (slots/period) it is isolating.
     """
     from jasper.fanin_coupling import (
         DEFAULT_OUTPUTD_RING_PATH,
@@ -1664,6 +1801,7 @@ def _coherent_shm_ring_outputd_text(*, period_frames: int = 128) -> str:
         f"{OUTPUTD_RING_PATH_ENV_VAR}={DEFAULT_OUTPUTD_RING_PATH}\n"
         f"{OUTPUTD_RING_SLOTS_ENV_VAR}={DEFAULT_OUTPUTD_RING_SLOTS}\n"
         f"JASPER_OUTPUTD_PERIOD_FRAMES={period_frames}\n"
+        "JASPER_OUTPUTD_CONTENT_FORMAT=S32_LE\n"
     )
 
 
@@ -1683,6 +1821,7 @@ def test_confirm_shm_ring_migrates_old_eight_slot_ring_file_to_default_two_slot(
         ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
     )
     monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=2)))
+    _stub_ring_ioplug_wire_supported(monkeypatch)
     program = tmp_path / "program.ring"
     content = tmp_path / "content.ring"
     monkeypatch.setattr(ra, "RING_A_PROGRAM_FILE", str(program))
@@ -1697,7 +1836,10 @@ def test_confirm_shm_ring_migrates_old_eight_slot_ring_file_to_default_two_slot(
         # format shear rather than as the coherent ring these tests mean.
         struct.pack_into("<I", hdr, 8, 48000)  # rate
         struct.pack_into("<I", hdr, 12, 2)  # channels
-        struct.pack_into("<I", hdr, 16, 1)  # sample_format = S16LE
+        struct.pack_into("<I", hdr, 16, 2)  # sample_format = S32LE — the resolver's
+        # default since the ring-wire flip; a hardcoded S16LE here would make
+        # EVERY ring file these helpers write read as a format shear against the
+        # now-wide resolved wire, regardless of the slots/period axis under test.
         struct.pack_into("<I", hdr, 20, period_frames)
         struct.pack_into("<I", hdr, 24, n_slots)
         path.write_bytes(bytes(hdr) + b"\x00" * 512)
@@ -1771,6 +1913,7 @@ def test_confirm_shm_ring_self_heals_stale_ring_slots(tmp_path, monkeypatch):
     monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=2)))
     monkeypatch.setattr(ra, "RING_A_PROGRAM_FILE", str(tmp_path / "program.ring"))
     monkeypatch.setattr(ra, "RING_B_CONTENT_FILE", str(tmp_path / "content.ring"))
+    _stub_ring_ioplug_wire_supported(monkeypatch)
 
     # ALREADY armed shm_ring + the stale =8 residue → CONFIRM path (changed=False).
     fanin_env = _write(
@@ -1811,6 +1954,7 @@ def test_confirm_shm_ring_self_heals_stale_base_ring_slots(tmp_path, monkeypatch
     monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=2)))
     monkeypatch.setattr(ra, "RING_A_PROGRAM_FILE", str(tmp_path / "program.ring"))
     monkeypatch.setattr(ra, "RING_B_CONTENT_FILE", str(tmp_path / "content.ring"))
+    _stub_ring_ioplug_wire_supported(monkeypatch)
     jasper_env = _write(tmp_path / "jasper.env", "JASPER_FANIN_RING_SLOTS=8\n")
     monkeypatch.setattr(
         "jasper.fanin.coupling_reconcile.JASPER_ENV_PATH", str(jasper_env)
@@ -1851,6 +1995,7 @@ def test_confirm_shm_ring_coherent_stays_lightweight(tmp_path, monkeypatch):
         ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
     )
     monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=2)))
+    _stub_ring_ioplug_wire_supported(monkeypatch)
     program = tmp_path / "program.ring"
     content = tmp_path / "content.ring"
     monkeypatch.setattr(ra, "RING_A_PROGRAM_FILE", str(program))
@@ -1867,7 +2012,10 @@ def test_confirm_shm_ring_coherent_stays_lightweight(tmp_path, monkeypatch):
         # format shear rather than as the coherent ring these tests mean.
         struct.pack_into("<I", hdr, 8, 48000)  # rate
         struct.pack_into("<I", hdr, 12, 2)  # channels
-        struct.pack_into("<I", hdr, 16, 1)  # sample_format = S16LE
+        struct.pack_into("<I", hdr, 16, 2)  # sample_format = S32LE — the resolver's
+        # default since the ring-wire flip; a hardcoded S16LE here would make
+        # EVERY ring file these helpers write read as a format shear against the
+        # now-wide resolved wire, regardless of the slots/period axis under test.
         struct.pack_into("<I", hdr, 20, 128)
         struct.pack_into("<I", hdr, 24, n_slots)
         path.write_bytes(bytes(hdr) + b"\x00" * 512)
@@ -1923,6 +2071,7 @@ def test_confirm_shm_ring_self_heals_stale_on_disk_period(tmp_path, monkeypatch)
         "RING_CONF_D",
         str(_ring_conf(tmp_path, capture_n_slots=2, period_frames=128)),
     )
+    _stub_ring_ioplug_wire_supported(monkeypatch)
     program = tmp_path / "program.ring"
     content = tmp_path / "content.ring"
     monkeypatch.setattr(ra, "RING_A_PROGRAM_FILE", str(program))
@@ -1937,7 +2086,10 @@ def test_confirm_shm_ring_self_heals_stale_on_disk_period(tmp_path, monkeypatch)
         # format shear rather than as the coherent ring these tests mean.
         struct.pack_into("<I", hdr, 8, 48000)  # rate
         struct.pack_into("<I", hdr, 12, 2)  # channels
-        struct.pack_into("<I", hdr, 16, 1)  # sample_format = S16LE
+        struct.pack_into("<I", hdr, 16, 2)  # sample_format = S32LE — the resolver's
+        # default since the ring-wire flip; a hardcoded S16LE here would make
+        # EVERY ring file these helpers write read as a format shear against the
+        # now-wide resolved wire, regardless of the slots/period axis under test.
         struct.pack_into("<I", hdr, 20, period_frames)
         struct.pack_into("<I", hdr, 24, n_slots)
         path.write_bytes(bytes(hdr) + b"\x00" * 512)
@@ -2916,13 +3068,18 @@ def test_outputd_actions_unset_legacy_local_content_pipe(tmp_path):
 
 @pytest.fixture
 def _wide_arm_gates_pass(monkeypatch, _ring_assets_present):
-    """Assets + geometry (from `_ring_assets_present`) plus the two WIDE gates.
+    """Assets + geometry (from `_ring_assets_present`) plus the two WIDTH gates.
 
-    A declared-wide box fails `ring_edge_width_ready` against this repo's
-    shipped narrow conf.d, and `ring_wire_caps_ready` against a dev host with no
-    ioplug installed. Both refusals are correct and both have dedicated tests;
-    stubbing them here keeps these tests about the assistant-width transition
-    instead of re-testing the arm preflight.
+    A declared-WIDE box agrees with the shipped conf.d (it now spells `format
+    S32_LE` explicitly), but still needs `ring_wire_caps_ready` — a dev host
+    carries no ioplug provenance record. An OPERATOR-NARROW-PINNED box is the
+    opposite shape: it disagrees with that same unconditionally-wide shipped
+    conf.d, so `ring_edge_width_ready` genuinely refuses it there (correctly —
+    see the dedicated ``test_ring_edge_width_ready_*`` tests, which build their
+    own conf.d rather than use this fixture). Both refusals are real and both
+    have their own tests; stubbing the two gates here keeps THESE tests about
+    the assistant-width TRANSITION — narrow-declared or wide-declared — instead
+    of re-testing the arm preflight.
     """
     import jasper.fanin.coupling_reconcile as cr
 
@@ -2990,16 +3147,32 @@ def test_disarming_a_declared_wide_box_restarts_voice_once(tmp_path):
 
 
 def test_a_narrow_box_flipping_coupling_does_not_restart_voice(
-    tmp_path, _ring_assets_present
+    tmp_path, _wide_arm_gates_pass
 ):
-    """THE PRECISION OF THE TRIGGER.
+    """THE PRECISION OF THE TRIGGER, on the box that still demonstrates it.
 
-    Almost every coupling flip in the fleet is on a narrow-declared box, where
-    the assistant width is S16_LE on both sides of the flip. Restarting voice
-    there would cut a reply for nothing — and would make this a per-flip bounce
-    rather than a per-transition one.
+    An OPERATOR-NARROW-PINNED box (``JASPER_FANIN_RING_WIRE_FORMAT=S16_LE``) is
+    narrow on BOTH sides of a loopback -> shm_ring flip, so restarting voice there
+    would cut a reply for nothing — and would make this a per-flip bounce rather
+    than a per-transition one. This is no longer "almost every box in the
+    fleet": since the ring wire resolver's default went wide, an UNDECLARED box
+    genuinely changes width across this same flip — see
+    ``test_an_undeclared_box_flipping_coupling_does_restart_voice`` right below,
+    the complement this test used to (wrongly) claim to cover.
+
+    ``_wide_arm_gates_pass`` bypasses `ring_edge_width_ready`/`ring_wire_caps_ready`
+    despite its name — the two gates it stubs are coupling/width-agnostic, and a
+    narrow pin disagrees with the shipped (unconditionally wide) conf.d
+    `_ring_assets_present` points at, which would refuse the arm for a reason
+    unrelated to what this test is about.
     """
-    fanin_env = _write(tmp_path / "fanin.env", f"{COUPLING_ENV_VAR}={COUPLING_LOOPBACK}\n")
+    from jasper.fanin_coupling import RING_WIRE_FORMAT, RING_WIRE_FORMAT_ENV_VAR
+
+    fanin_env = _write(
+        tmp_path / "fanin.env",
+        f"{COUPLING_ENV_VAR}={COUPLING_LOOPBACK}\n"
+        f"{RING_WIRE_FORMAT_ENV_VAR}={RING_WIRE_FORMAT}\n",
+    )
     outputd_env = _write(tmp_path / "outputd.env", "")
     calls = []
 
@@ -3015,6 +3188,43 @@ def test_a_narrow_box_flipping_coupling_does_not_restart_voice(
 
     assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
     assert calls == [], "the assistant width never moved; voice had nothing to re-read"
+
+
+def test_an_undeclared_box_flipping_coupling_does_restart_voice(
+    tmp_path, _ring_assets_present
+):
+    """THE FLIP'S CONSEQUENCE, from the other side of the pair above.
+
+    Every box that has not pinned itself narrow resolves the ring wire resolver's
+    WIDE default (`resolve_ring_wire_format`), so an undeclared box crossing
+    loopback -> shm_ring moves BOTH halves of `assistant_wire_is_wide`'s
+    conjunction (coupling AND format) to true — the width genuinely changes, so
+    voice must be told. `_ring_assets_present` alone (no width-gate bypass) is
+    enough here: the shipped conf.d spells S32_LE explicitly, matching what this
+    undeclared box resolves, so `ring_edge_width_ready`/`ring_wire_caps_ready`
+    pass on their own merits rather than needing to be stubbed out of the way.
+    """
+    fanin_env = _write(tmp_path / "fanin.env", f"{COUPLING_ENV_VAR}={COUPLING_LOOPBACK}\n")
+    outputd_env = _write(tmp_path / "outputd.env", "")
+    calls = []
+
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=lambda: (True, ""),
+        restart_fanin=lambda: (True, ""),
+        reconcile_camilla=lambda _c: (True, ""),
+        active_leader_check=lambda: False,
+        restart_voice=lambda: (calls.append("voice") or (True, "")),
+    )
+
+    assert result.ok, result.detail
+    assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
+    assert calls == ["voice"], (
+        "an undeclared box's assistant width moves from S16_LE to S32_LE across "
+        "this flip; voice resolves that once at start"
+    )
 
 
 def test_a_confirm_pass_on_an_armed_wide_box_does_not_restart_voice(
@@ -3177,10 +3387,18 @@ def test_the_default_voice_restart_wiring_is_not_reached_without_a_transition(
     """The same join, from the other side.
 
     Without this, a default wired to fire unconditionally would still satisfy
-    the test above. Same setup, same absent injection, narrow box: the broker
-    must see nothing at all.
+    the test above. Same setup, same absent injection, an OPERATOR-NARROW-PINNED
+    box this time (see ``test_a_narrow_box_flipping_coupling_does_not_restart_voice``
+    for why an undeclared box no longer demonstrates "narrow on both sides"): the
+    broker must see nothing at all.
     """
-    fanin_env = _write(tmp_path / "fanin.env", f"{COUPLING_ENV_VAR}={COUPLING_LOOPBACK}\n")
+    from jasper.fanin_coupling import RING_WIRE_FORMAT, RING_WIRE_FORMAT_ENV_VAR
+
+    fanin_env = _write(
+        tmp_path / "fanin.env",
+        f"{COUPLING_ENV_VAR}={COUPLING_LOOPBACK}\n"
+        f"{RING_WIRE_FORMAT_ENV_VAR}={RING_WIRE_FORMAT}\n",
+    )
     outputd_env = _write(tmp_path / "outputd.env", "")
     broker_calls = []
 

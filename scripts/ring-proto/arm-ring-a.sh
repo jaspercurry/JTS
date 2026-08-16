@@ -63,8 +63,9 @@
 #      heartbeat). This is the EACCES class the outputd fix round hit.
 #   6. Build + load the Ring A hand Camilla config (make-camilla-ring-config.sh
 #      --ring-a: devices.capture -> {type Alsa, device jts_ring_capture,
-#      format S16_LE}), point the statefile at it, restart jasper-camilla
-#      (ordered).
+#      format S32_LE by default, matching the product resolver — see that
+#      script's own header for the narrow-pin override}), point the
+#      statefile at it, restart jasper-camilla (ordered).
 #   7. Final verify + next steps.
 #
 # Usage:
@@ -279,8 +280,12 @@ echo "--- Step 3/7: resolvability probe (arecord -D ${CAPTURE_DEVICE}) ---"
 # fan-in's writer is NOT arming the ring yet, so the reader's writer-dead
 # timer-paced silence path is what makes this terminate (it captures 1 s of
 # silence and exits 0). A hang here would mean the ioplug's writer-dead
-# detection is broken — exactly what this probe exists to catch.
-if ! ssh_ok "arecord -D ${CAPTURE_DEVICE} -c 2 -r 48000 -f S16_LE -d 1 /dev/null" >/dev/null 2>&1; then
+# detection is broken — exactly what this probe exists to catch. The ring
+# layout accepts S16LE and S32LE either way (resolve_ring_wire decides which
+# one is live); S32_LE here just matches the format Step 6 will declare by
+# default, so nothing in this arm reads as narrow unless the operator asked
+# for it.
+if ! ssh_ok "arecord -D ${CAPTURE_DEVICE} -c 2 -r 48000 -f S32_LE -d 1 /dev/null" >/dev/null 2>&1; then
     fail_and_rollback "step 3 (arecord resolvability probe against ${CAPTURE_DEVICE})"
 fi
 echo "  OK   arecord opened ${CAPTURE_DEVICE} and completed (writer-dead silence path, as expected)"

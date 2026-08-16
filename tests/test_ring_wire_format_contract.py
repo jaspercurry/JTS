@@ -125,17 +125,29 @@ def test_both_languages_accept_exactly_the_same_wire_tokens() -> None:
         assert resolve_ring_wire_format(token) == token
 
 
-def test_both_languages_default_an_absent_or_cleared_key_to_narrow() -> None:
+def test_both_languages_default_an_absent_or_cleared_key_to_wide() -> None:
+    """The flip, pinned in both languages at once.
+
+    An undeclared box resolves the WIDE wire. Narrow was a width REGRESSION on
+    the hop the ring replaces — the loopback CamillaDSP -> outputd hop already
+    carries S32_LE — so the default moved rather than every box being asked to
+    declare. If only one language moved, the box would declare one wire to
+    ``jasper-fanin`` and another to every end that derives from the resolver:
+    the sheared attach this file exists to prevent.
+    """
     body = _from_env_value_body(_config_rs())
-    assert re.search(r"None \| Some\(\"\"\)\s*=>\s*Ok\(RingWireFormat::S16Le\)", body), (
-        "the Rust default arm no longer maps unset/empty to the narrow wire"
+    assert re.search(r"None \| Some\(\"\"\)\s*=>\s*Ok\(RingWireFormat::S32Le\)", body), (
+        "the Rust default arm no longer maps unset/empty to the wide wire"
     )
-    assert resolve_ring_wire_format(None) == RING_WIRE_FORMAT
-    assert resolve_ring_wire_format("") == RING_WIRE_FORMAT
+    assert resolve_ring_wire_format(None) == RING_WIRE_FORMAT_WIDE
+    assert resolve_ring_wire_format("") == RING_WIRE_FORMAT_WIDE
     # Empty is how this repo's env-file writers CLEAR a key, and both sides trim
     # before matching, so a whitespace-only value is the same fact.
-    assert resolve_ring_wire_format("   ") == RING_WIRE_FORMAT
+    assert resolve_ring_wire_format("   ") == RING_WIRE_FORMAT_WIDE
     assert resolve_ring_wire_format(" S32_LE ") == RING_WIRE_FORMAT_WIDE
+    # The narrow token still round-trips — it is the operator's rollback pin,
+    # not a spelling the flip retired.
+    assert resolve_ring_wire_format(" S16_LE ") == RING_WIRE_FORMAT
     # The Rust half of the trim can only be READ from here, never executed, so
     # this accepts either spelling of it and tolerates rustfmt's whitespace —
     # it fires when the trim is REMOVED, not when it is reformatted or rewritten
@@ -193,9 +205,14 @@ def test_the_resolver_answers_the_declared_wire_not_a_policy_constant(
     """
     import jasper.fanin_coupling as fc
 
+    assert fc.read_declared_ring_wire_format(env={}) == RING_WIRE_FORMAT_WIDE, (
+        "an undeclared box must resolve WIDE — the resolver's default is the "
+        "whole mechanism by which the fleet converges without declaring"
+    )
     assert (
-        fc.read_declared_ring_wire_format(env={}) == RING_WIRE_FORMAT
-    ), "an undeclared box must stay narrow — that is the fleet's inertness bar"
+        fc.read_declared_ring_wire_format(env={RING_WIRE_FORMAT_ENV_VAR: "S16_LE"})
+        == RING_WIRE_FORMAT
+    ), "an operator's narrow pin must survive the resolver's wide default"
     assert (
         fc.read_declared_ring_wire_format(
             env={RING_WIRE_FORMAT_ENV_VAR: RING_WIRE_FORMAT_WIDE}
@@ -212,6 +229,111 @@ def test_the_resolver_answers_the_declared_wire_not_a_policy_constant(
     )
     assert fc.resolve_ring_wire().sample_format == RING_WIRE_FORMAT
 
+
+
+def test_the_shipped_conf_d_declares_the_same_default_the_resolvers_answer() -> None:
+    """THREE declarers of one default, not two.
+
+    The resolver pair above answers what an undeclared box's wire IS. The ALSA
+    conf.d is the third end — it is what the ioplug attaches with — and it is the
+    only one that can be read on a box whose reconciler never ran. It must
+    therefore SPELL the token rather than omit the key, because an omitted
+    ``format`` declares the C plugin's own compiled-in default
+    (``RING_CONF_DEFAULT_FORMAT``), which the flip deliberately left narrow.
+
+    Omitting it would make a never-rendered conf.d declare the OPPOSITE of what
+    both resolvers answer — the exact shear this file exists to prevent, reached
+    through the one end that has no env chain to read.
+    """
+    from jasper.ring_assets import (
+        RING_CONF_D,
+        RING_CONF_DEFAULT_FORMAT,
+        RING_CONF_PCMS,
+        ring_conf_format,
+    )
+
+    shipped = _REPO / RING_CONF_D.lstrip("/").replace(
+        "etc/alsa/conf.d", "deploy/alsa/conf.d"
+    )
+    assert shipped.exists(), shipped
+    for pcm in RING_CONF_PCMS:
+        assert ring_conf_format(pcm, str(shipped)) == RING_WIRE_FORMAT_WIDE, pcm
+    # The plugin's own default is still narrow, and that gap is deliberate: it is
+    # what keeps the ioplug capability gate live instead of dormant.
+    assert RING_CONF_DEFAULT_FORMAT == RING_WIRE_FORMAT
+
+
+def test_the_wire_key_has_no_writer_so_the_rollback_lever_survives() -> None:
+    """The narrow pin is only a lever if nothing can overwrite it.
+
+    Since the default went wide, the sole reason to set
+    ``JASPER_FANIN_RING_WIRE_FORMAT`` is to roll a box BACK to the narrow wire —
+    and a reconciler that rewrote the key on the next boot, deploy or udev pass
+    would silently destroy the fleet's one way back (convergence design §3.2/B3).
+    So the key's writer set must stay EMPTY.
+
+    Scoped to what actually executes on a box: production Python, the installer
+    and its libraries, the deploy bins, and the systemd units. ``tests/`` is
+    excluded on purpose — a fixture writing the key is how the narrow path is
+    exercised at all.
+
+    HOW IT DECIDES, and the bound. Prose may name the key freely, so this does
+    not count mentions; it asserts that no line naming the key ALSO names one of
+    this repo's env-write primitives (:data:`_WRITE_PRIMITIVES`). Every current
+    writer of a ``fanin.env`` / ``outputd.env`` key spells the key and the
+    primitive on one line (``RuntimeEnvAction("set", KEY, …)``,
+    ``upsert(text, KEY, …)``, ``os.environ[KEY] = …``, a shell heredoc line), so
+    that is the shape this catches.
+
+    TWO BOUNDS, both stated rather than implied. A writer that split the key
+    across lines would evade the primitive test. And the search is scoped to
+    :data:`_WRITER_DIRS` — ``jasper``, ``deploy``, ``scripts`` — which excludes
+    ``rust/`` and ``c/``: neither language writes env files in this repo (the
+    Rust daemons and the C ioplug READ their config and never author
+    ``fanin.env``), so including them would only add prose hits. A future Rust
+    env writer would need this list widened.
+    """
+    import subprocess
+
+    hits: list[str] = []
+    for pattern in (RING_WIRE_FORMAT_ENV_VAR, "RING_WIRE_FORMAT_ENV_VAR"):
+        proc = subprocess.run(
+            ["git", "grep", "-n", "-e", pattern, "--", *_WRITER_DIRS],
+            cwd=_REPO,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert proc.returncode in (0, 1), proc.stderr
+        hits.extend(proc.stdout.splitlines())
+    # The grep must actually be finding the key, or an empty result would read as
+    # a pass. This is the positive control for the search itself.
+    assert hits, f"no production site names {RING_WIRE_FORMAT_ENV_VAR} at all"
+
+    offenders = [
+        line for line in hits if any(tok in line for tok in _WRITE_PRIMITIVES)
+    ]
+    assert offenders == [], (
+        "JASPER_FANIN_RING_WIRE_FORMAT gained a writer; it is the operator's "
+        "only rollback lever off the wide ring wire and must have none "
+        "(convergence design §3.2/B3):\n" + "\n".join(offenders)
+    )
+
+
+# Where a real writer could live.
+_WRITER_DIRS = ("jasper", "deploy", "scripts")
+
+# This repo's env-write primitives, in both languages that write env files.
+_WRITE_PRIMITIVES = (
+    "RuntimeEnvAction(",
+    "upsert(",
+    "os.environ[",
+    "atomic_write_text(",
+    "write_env_value(",
+    "printf",
+    "echo ",
+    ">>",
+)
 
 
 # ---------------------------------------------------------------------------

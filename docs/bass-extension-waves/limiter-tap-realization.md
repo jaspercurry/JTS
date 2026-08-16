@@ -160,10 +160,13 @@ retained only as a validation input (compared against the artifact header
 before any render starts) and recorded in the derivation receipt — never
 emitted as a derived config key. The artifact header's rate and channel
 count must equal `devices.samplerate` and the live `devices.capture.channels`
-value, and its sample format must be 16-bit PCM per R6a(iv) — the live
-`format: S32_LE` on `plug:jasper_capture` is an ALSA-plug widening of
-fan-in's S16 mix, not independent geometry, so a 16-bit artifact is the
-bit-exact equivalent. Any mismatch refuses before the render starts. The
+value, and its sample format must be 16-bit PCM per R6a(iv) — a 16-bit
+artifact is the bit-exact equivalent because the stimulus LANE is 16-bit, per
+that rule. (The reason originally given here — that the live
+`format: S32_LE` on `plug:jasper_capture` is an ALSA-plug widening of fan-in's
+S16 mix — holds only on a `loopback` box; a ring-armed box captures
+`jts_ring_capture` at a genuinely wide `S32_LE`. R6a(iv) carries the correction
+and the surviving reason.) Any mismatch refuses before the render starts. The
 playback swap sets `type`/`filename` to the bundle sink and deletes the live
 `device` key; it sets `format` to the derivation receipt's recorded
 processing precision — **`devices.playback.format` is ADDED to R3's
@@ -302,12 +305,22 @@ claims only the fan-in counter evidence above. Mux-gate isolation (element
 failure cancels the in-flight play task, which the pass observes as a
 cancellation and refuses.
 
-(iv) **Bit-width/geometry.** Fan-in narrows every input to S16 at the mix
-(`rust/jasper-fanin/src/mixer.rs`'s module docstring, "Inputs are S16_LE
-interleaved stereo," and its `pub const FORMAT: Format = Format::S16LE` /
-`pub const CHANNELS: u32 = 2`),
-so the stimulus artifact MUST be 16-bit PCM at the lane's configured rate
-and channel count; a wider or differently-clocked artifact refuses.
+(iv) **Bit-width/geometry.** The stimulus artifact MUST be 16-bit PCM at the
+lane's configured rate and channel count; a wider or differently-clocked
+artifact refuses. **The requirement stands; its stated reason has narrowed
+since this amendment was accepted.** "Fan-in narrows every input to S16 at the
+mix" is no longer true of the box: `mixer::FORMAT` is fan-in's snd-aloop WRITE,
+not a fleet-wide mix width, and a box whose program wire resolves wide sums at
+the i32 spine scale — which is every ring-armed box since the ring wire's
+default went wide on 2026-08-15
+([HANDOFF-audio-graph-consolidation.md](../HANDOFF-audio-graph-consolidation.md)
+owns that rule). What still carries this requirement is the BENCH LANE, which
+is narrow by its own decision: the renderer-ingress lanes in
+[`61-jts-renderer-lanes.conf`](../../deploy/alsa/conf.d/61-jts-renderer-lanes.conf)
+omit `format` deliberately, unlike the program ring's conf.d, so the stimulus
+path stays 48 kHz S16_LE whether it rides snd-aloop or a ring. The module
+docstring quoted here has been re-worded to match ("Renderer lane inputs are
+S16_LE interleaved stereo; the USB DIRECT lane …").
 
 Fan-in exposes no per-lane gain knob, so "unity lane gain" is not an
 assertable element — transparency rests on (i)-(iv). Any unproved element

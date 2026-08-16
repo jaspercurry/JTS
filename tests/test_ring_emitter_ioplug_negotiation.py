@@ -137,8 +137,12 @@ def test_ioplug_pinned_period_bytes_scale_with_the_wire_not_only_the_frames():
     assert narrow.buffer_bytes == narrow.period_bytes * DEFAULT_FANIN_RING_SLOTS
     assert wide.buffer_bytes == 2 * narrow.buffer_bytes
 
-    # The shipped wire is still the default, so every caller that passes neither
-    # axis gets the S16_LE/2ch geometry unchanged.
+    # narrow is ioplug_constraints()'s fixed compiled-in baseline (mirrors
+    # jasper.ring_assets.RING_CONF_DEFAULT_FORMAT), NOT what an undeclared box's
+    # resolve_ring_wire() answers any more — that resolver defaults WIDE since
+    # 2026-08-11 (test_fanin_coupling.py pins the resolver side of this). Every
+    # caller here that passes neither axis still gets the S16_LE/2ch geometry
+    # unchanged, because this model's default is fixed, not resolver-derived.
     assert narrow.ok
     assert narrow == ioplug_constraints(
         sample_format=RING_WIRE_FORMAT, channels=RING_A_CHANNELS

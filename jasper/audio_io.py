@@ -946,11 +946,35 @@ def tts_wire_is_wide() -> bool:
     CACHED so the process has exactly ONE answer. Two callers ask — the playout
     (which quantizes provider TTS) and the daemon (which bakes earcons) — and a
     second file read between them could return a second answer, which is the
-    drift this campaign exists to remove. A coupling flip that changes this
-    answer restarts ``jasper-voice`` (``coupling_reconcile``), so a per-process
-    answer is also a bounded-staleness one. Tests reset it with
-    ``tts_wire_is_wide.cache_clear()``; ``tests/conftest.py`` does it
-    automatically around every test.
+    drift this campaign exists to remove.
+
+    WHAT BOUNDS THE STALENESS, stated as the THREE ways the answer can move
+    rather than the one this used to name:
+
+    * a COUPLING flip — ``coupling_reconcile``'s transition path ``try-restart``s
+      ``jasper-voice`` when the verdict changes, so the process is replaced;
+    * the RESOLVER'S DEFAULT moving (the ring wire's narrow→wide flip is one),
+      which changes the answer with no coupling flip and no reconciler
+      transition. Nothing in ``coupling_reconcile`` covers that — but such a move
+      only ever arrives in a DEPLOY, and a deploy parks ``jasper-voice``
+      (``park_audio_clients_for_core_graph_restart``) and restarts it through
+      ``jasper-aec-reconcile``, so the cache is rebuilt in the same operation
+      that moved the default;
+    * an operator hand-editing ``JASPER_FANIN_RING_WIRE_FORMAT`` on a live box.
+      That is NOT covered and never was: the documented per-box move is "set it,
+      run the hardware reconciler, then arm", and the arm is what restarts the
+      daemons. Until then this process keeps its old answer.
+
+    A STALE ANSWER IS A WIDTH DISAGREEMENT, NEVER A LEVEL ERROR. The IPC verb is
+    self-describing (``AUDIO`` vs ``AUDIO32``), so fan-in converts exactly
+    whichever it receives and logs
+    ``event=fanin.tts_wire_width_mismatch action=converted``; the failure
+    direction is an unnecessary conversion and a warn, not a scale error. The
+    ``except`` below resolves NARROW for the same reason — the conservative
+    width every unarmed box uses.
+
+    Tests reset it with ``tts_wire_is_wide.cache_clear()``;
+    ``tests/conftest.py`` does it automatically around every test.
     """
     from .fanin_coupling import assistant_wire_is_wide
 

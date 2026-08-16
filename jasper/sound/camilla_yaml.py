@@ -531,8 +531,11 @@ def emit_flat_ring_config(*, out_path: str | Path | None = None) -> str:
 
     Identical to :func:`emit_flat_outputd_cutover_config` except the CamillaDSP
     capture device is ``jts_ring_capture`` (Ring A) and the playback device is
-    ``jts_ring_playback`` (Ring B), both S16_LE — the end-to-end ring topology the
-    ``shm_ring`` coupling arms. The ring graph uses the hardware-validated
+    ``jts_ring_playback`` (Ring B) — the end-to-end ring topology the
+    ``shm_ring`` coupling arms. Both lanes carry the box's RESOLVED ring wire
+    (:func:`jasper.fanin_coupling.resolve_ring_wire`), which is ``S32_LE`` unless
+    an operator has pinned the box narrow; naming a literal here would be a
+    second answer to a per-box question. The ring graph uses the hardware-validated
     low-latency geometry (chunk 128 / target 128 / queue 1 / rate_adjust off).
     This is the config the statefile seeder re-seeds on a ring-armed box so a
     deploy / camilla restart keeps the rings instead of reverting to loopback.

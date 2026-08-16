@@ -369,6 +369,55 @@ def _stub_ring_gates(monkeypatch, *, eligible: bool):
     monkeypatch.setattr(cr, "ring_assets_ready", lambda: (eligible, "assets"))
     monkeypatch.setattr(cr, "ring_topology_ready_strict", lambda: (eligible, "topology"))
     monkeypatch.setattr(cr, "_delete_stale_ring_files", lambda reason, fanin_text="": None)
+    _stub_ioplug_caps(monkeypatch)
+
+
+def _armed_outputd_env() -> str:
+    """The ``outputd.env`` an ALREADY-ARMED ring box actually carries.
+
+    An EMPTY file is not that box: an absent ``JASPER_OUTPUTD_CONTENT_FORMAT``
+    declares the outputd daemon's own compiled-in ``S16_LE`` default, which
+    ``ring_edge_width_ready`` correctly refuses against a wide resolved wire —
+    so a fixture that writes nothing here is testing a genuinely sheared box
+    while claiming to test a healthy one. ``jasper-audio-hardware-reconcile`` is
+    that key's single writer and derives it from the coupling, so the fixture
+    derives it the same way rather than naming a literal that could drift.
+    """
+    from jasper.fanin_coupling import content_lane_format_for_coupling
+
+    return (
+        "JASPER_OUTPUTD_CONTENT_FORMAT="
+        f"{content_lane_format_for_coupling(COUPLING_SHM_RING)}\n"
+    )
+
+
+def _stub_ioplug_caps(monkeypatch):
+    """Make the ioplug CAPABILITY gate admit whatever wire the box resolves.
+
+    Since the ring wire's default went wide, an undeclared box needs the
+    ``wire_format`` ioplug capability (``ring_wire_capabilities``) and a dev host
+    carries no provenance record — so the real ``ring_wire_caps_ready`` refuses
+    every arm, for a reason unrelated to the eligibility/combo/slot logic these
+    tests are about.
+
+    ITS OWN FUNCTION because it is needed by callers that do NOT use
+    :func:`_stub_ring_gates` — the F6 slot tests build their own gate set so they
+    can exercise the REAL slot self-heal, and inheriting this stub by copy is how
+    they came to be missing it. Stubs the RECORD compare, never
+    ``ring_wire_caps_ready`` itself, so the gate still resolves the box's wire.
+    Mirrors ``force_ring_gates_pass`` in test_fanin_coupling_reconcile.py.
+    """
+    import jasper.ring_assets as ra
+
+    monkeypatch.setattr(
+        ra,
+        "ring_ioplug_wire_supported",
+        lambda wire, **kw: ra.RingIoplugWireSupport(
+            ok=True,
+            needed=ra.ring_wire_capabilities(wire),
+            detail="stubbed: the installed ioplug vouches for this wire",
+        ),
+    )
 
 
 def _auto(
@@ -931,14 +980,25 @@ def test_ring_topology_strict_fails_closed_on_unreadable(monkeypatch):
 def test_auto_stale_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypatch):
     """F6: a box armed with a stale JASPER_FANIN_RING_SLOTS=8 line must NOT be
     disarmed to loopback — the auto pass runs the SAME slot self-heal a manual arm
-    does before the slot gate, so the residue is overridden and the ring resolves."""
+    does before the slot gate, so the residue is overridden and the ring resolves.
+
+    ``r.coupling`` ALONE DOES NOT PROVE THAT, and for a while this test believed
+    it did. That field is the auto pass's DECISION; the arm that follows it can
+    still refuse and roll the persisted coupling back to loopback underneath a
+    green assertion. That is exactly what happened once the ioplug capability
+    gate went live on an undeclared box (the ring wire's wide default) and this
+    test — which builds its own gate set so it can exercise the REAL slot
+    self-heal — did not inherit ``_stub_ioplug_caps``. So the persisted
+    ``fanin.env`` coupling is asserted too: the decision and the outcome are two
+    facts, and only the second one is what the box wakes up on.
+    """
     fanin = tmp_path / "fanin.env"
     outputd = tmp_path / "outputd.env"
     fanin.write_text(
         "JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n"
         "JASPER_FANIN_RING_SLOTS=8\n"
     )
-    outputd.write_text("")
+    outputd.write_text(_armed_outputd_env())
 
     # Assets/topology/route/geometry eligible; conf.d says n_slots=2 so the stale
     # `=8` is shear-prone and self-heals. Use the REAL slot gate + migration so the
@@ -962,6 +1022,7 @@ def test_auto_stale_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypatch):
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
     # conf.d Ring-A n_slots = 2 (the pinned default); the on-disk `=8` disagrees.
     monkeypatch.setattr(ra, "ring_conf_n_slots", lambda pcm, conf_d=None: 2)
+    _stub_ioplug_caps(monkeypatch)
 
     restarts: list[str] = []
     r = _auto(fanin, outputd, gadget=False, restarts=restarts)
@@ -970,6 +1031,8 @@ def test_auto_stale_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypatch):
     # disarmed to loopback.
     assert r.coupling == COUPLING_SHM_RING
     assert read_value(fanin.read_text(), "JASPER_FANIN_RING_SLOTS") == "2"
+    # ...and the box is ACTUALLY left on the ring, not merely decided onto it.
+    assert cr.read_persisted_coupling(fanin) == COUPLING_SHM_RING
 
 
 def test_auto_stale_base_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypatch):
@@ -978,12 +1041,15 @@ def test_auto_stale_base_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypa
     A stale ``JASPER_FANIN_RING_SLOTS=8`` in /etc/jasper/jasper.env is still the
     effective fan-in value when fanin.env has no later override. The auto pass must
     write the coherent fanin.env override before its slot gate runs.
+
+    Asserts the PERSISTED coupling as well as the decision, and stubs the ioplug
+    capability gate, for the reasons its sibling above spells out.
     """
     fanin = tmp_path / "fanin.env"
     outputd = tmp_path / "outputd.env"
     jasper_env = tmp_path / "jasper.env"
     fanin.write_text("JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n", encoding="utf-8")
-    outputd.write_text("", encoding="utf-8")
+    outputd.write_text(_armed_outputd_env(), encoding="utf-8")
     jasper_env.write_text("JASPER_FANIN_RING_SLOTS=8\n", encoding="utf-8")
     monkeypatch.setattr(cr, "JASPER_ENV_PATH", str(jasper_env))
 
@@ -1005,6 +1071,7 @@ def test_auto_stale_base_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypa
     # instead of the eligibility path under test.
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
     monkeypatch.setattr(ra, "ring_conf_n_slots", lambda pcm, conf_d=None: 2)
+    _stub_ioplug_caps(monkeypatch)
 
     restarts: list[str] = []
     r = _auto(fanin, outputd, gadget=False, restarts=restarts)
@@ -1012,6 +1079,7 @@ def test_auto_stale_base_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypa
     assert r.owned is True
     assert r.coupling == COUPLING_SHM_RING
     assert read_value(fanin.read_text(), "JASPER_FANIN_RING_SLOTS") == "2"
+    assert cr.read_persisted_coupling(fanin) == COUPLING_SHM_RING
 
 
 # --------------------------------------------------------------------------

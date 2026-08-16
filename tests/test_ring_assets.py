@@ -16,7 +16,12 @@ from pathlib import Path
 import pytest
 
 from jasper import ring_assets
-from jasper.fanin_coupling import RING_SLOT_FRAMES, RingWire, resolve_ring_wire
+from jasper.fanin_coupling import (
+    RING_SLOT_FRAMES,
+    RING_WIRE_FORMAT_WIDE,
+    RingWire,
+    resolve_ring_wire,
+)
 
 
 def _shipped_wire(**overrides) -> RingWire:
@@ -285,8 +290,11 @@ def test_read_ring_header_reads_every_declared_geometry_field(tmp_path):
     would report a coherent ring for a file that shears on rate, channels, or
     format — which is the shape that plays wrong audio instead of failing loud.
     Distinct values are what makes a swapped-offset bug fail here: with the
-    shipped 2-channel / S16 pair, `channels` and `sample_format` are 2 and 1 at
-    adjacent offsets, and several wrong wirings would still "pass".
+    shipped 2-channel / S32 pair, `channels` and `sample_format` are 2 and 2 at
+    adjacent offsets — literally indistinguishable — so a swapped wiring would
+    read straight through. (Before the ring-wire default flip the pair was 2 and
+    1, which was already too close to catch several wrong wirings; it is now
+    exactly equal.)
     """
     ring = tmp_path / "wide.ring"
     _write_ring_header(
@@ -590,19 +598,28 @@ def test_render_ring_conf_wire_raises_on_a_missing_conf(tmp_path):
 # "indeterminate" for a block that omits the key.
 
 
-def test_shipped_conf_declares_the_wire_by_omission(tmp_path):
-    """The shipped file names neither key, and still declares a complete wire."""
+def test_shipped_conf_spells_format_and_declares_channels_by_omission(tmp_path):
+    """The shipped file SPELLS the wide format and still omits `channels`.
+
+    The two keys are deliberately asymmetric now. `channels` is omitted because
+    the shipped stereo width IS the ioplug's compiled-in default, so silence
+    declares it. `format` is spelled because the resolver's default went wide
+    (`resolve_ring_wire_format`) while the plugin's own default stayed `S16_LE`
+    — silence there would declare the OPPOSITE of what every other end of the
+    ring resolves, on any box whose conf.d is never re-rendered.
+    """
     conf = _shipped_conf_copy(tmp_path)
     text = conf.read_text(encoding="utf-8")
-    assert "\n    format " not in text
+    assert text.count("\n    format S32_LE") == len(ring_assets.RING_CONF_PCMS)
     assert "\n    channels " not in text
-    for pcm in (ring_assets.RING_A_CONF_PCM, ring_assets.RING_B_CONF_PCM):
-        assert ring_assets.ring_conf_format(pcm, str(conf)) == (
-            ring_assets.RING_CONF_DEFAULT_FORMAT
-        )
+    for pcm in ring_assets.RING_CONF_PCMS:
+        assert ring_assets.ring_conf_format(pcm, str(conf)) == RING_WIRE_FORMAT_WIDE
         assert ring_assets.ring_conf_channels(pcm, str(conf)) == (
             ring_assets.RING_CONF_DEFAULT_CHANNELS
         )
+    # The spelled token is NOT the ioplug's default, and that gap is what makes
+    # the capability gate live — see `test_conf_defaults_match_the_c_ioplug`.
+    assert RING_WIRE_FORMAT_WIDE != ring_assets.RING_CONF_DEFAULT_FORMAT
 
 
 def test_conf_defaults_match_the_c_ioplug():
@@ -670,9 +687,10 @@ def test_render_writes_only_the_axes_that_leave_the_ioplug_default(tmp_path):
     Ring A stays stereo, so its `channels` line is still absent (2 IS the
     default); Ring B is 6, so it gains one. The ACTIVE ring resolves no width on
     this (non-roleful) wire, so its block keeps the default and gains no
-    `channels` line either. All THREE gain `format` — the wire's format axis is
-    one per box and every ring end declares it. Everything else in the file —
-    comments, path, n_slots, indentation — survives verbatim.
+    `channels` line either. All three already SPELL `format S32_LE` — the wire's
+    format axis is one per box, the shipped file declares it, and a render at
+    the same token substitutes it in place rather than adding a line. Everything
+    else in the file — comments, path, n_slots, indentation — survives verbatim.
     """
     conf = _shipped_conf_copy(tmp_path)
     before = conf.read_text(encoding="utf-8")
@@ -690,22 +708,16 @@ def test_render_writes_only_the_axes_that_leave_the_ioplug_default(tmp_path):
         ring_assets.ring_conf_channels(ring_assets.RING_ACTIVE_CONF_PCM, str(conf)) == 2
     )
     after = conf.read_text(encoding="utf-8")
-    # Every block gained format; only Ring B gained channels.
+    # Every block still declares format exactly once; only Ring B gained
+    # channels.
     assert after.count("    format S32_LE") == len(ring_assets.RING_CONF_PCMS)
     assert after.count("    channels 6") == 1
     assert "    channels 2" not in after
-    # Nothing but the two new key kinds appeared, in file order. Within a block
-    # `format` precedes `channels`: each insert anchors immediately after
-    # `n_slots`, and the renderer writes channels first, so the later `format`
-    # insert lands above it.
+    # ONE new line, and it is the only difference: the format lines were already
+    # there, so this render's whole effect is Ring B's width.
     assert [
         line for line in after.splitlines() if line not in before.splitlines()
-    ] == [
-        "    format S32_LE",  # Ring A
-        "    format S32_LE",  # Ring B
-        "    channels 6",  # Ring B
-        "    format S32_LE",  # ACTIVE
-    ]
+    ] == ["    channels 6"]
 
 
 def test_render_writes_the_active_block_only_for_a_roleful_wire(tmp_path):
@@ -823,19 +835,30 @@ def test_render_converges_a_wide_conf_back_to_the_narrow_wire(tmp_path):
     A present key is rewritten to the explicit default rather than deleted, so
     the file stops declaring the stale wire — leaving a stale `format S32_LE`
     behind would shear the ends the moment the resolver answered narrow.
+
+    NARROW IS NOW THE OPERATOR'S PIN, not the resolver's answer, so the target
+    wire is spelled explicitly here: `_shipped_wire()` resolves S32_LE like every
+    undeclared box does.
     """
     conf = _shipped_conf_copy(tmp_path)
     ring_assets.render_ring_conf_wire(
         _shipped_wire(sample_format="S32_LE", ring_b_channels=6), conf_d=str(conf)
     )
 
-    outcome = ring_assets.render_ring_conf_wire(_shipped_wire(), conf_d=str(conf))
+    outcome = ring_assets.render_ring_conf_wire(
+        _shipped_wire(sample_format="S16_LE"), conf_d=str(conf)
+    )
 
     assert outcome.changed is True
     after = conf.read_text(encoding="utf-8")
-    assert "S32_LE" not in after
-    assert "channels 6" not in after
-    for pcm in (ring_assets.RING_A_CONF_PCM, ring_assets.RING_B_CONF_PCM):
+    # Scoped to the PCM BLOCKS: the file's own header prose names both tokens
+    # while explaining why the wide one is spelled, so a whole-file scan would
+    # assert about a comment rather than about the wire.
+    for pcm in ring_assets.RING_CONF_PCMS:
+        body = ring_assets._ring_conf_block_body(after, pcm)
+        assert body is not None, pcm
+        assert "S32_LE" not in body, pcm
+        assert "channels 6" not in body, pcm
         assert ring_assets.ring_conf_format(pcm, str(conf)) == "S16_LE"
         assert ring_assets.ring_conf_channels(pcm, str(conf)) == 2
 

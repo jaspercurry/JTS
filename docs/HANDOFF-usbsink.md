@@ -193,9 +193,16 @@ fallback.
 > USB-audio intent; it publishes `state.json` and satisfies its
 > `Type=notify` watchdog, but opens no PCM. **`jasper-fanin`
 > DIRECT-captures S32_LE stereo/48 kHz from `hw:UAC2Gadget`** into its
-> `usbsink` input lane, narrowing deterministically to S16_LE by signed
-> high-word truncation, then sums that lane with AirPlay, Spotify,
-> Bluetooth, TTS, and correction audio before CamillaDSP/AEC. When USB
+> `usbsink` input lane, then sums that lane with AirPlay, Spotify,
+> Bluetooth, TTS, and correction audio before CamillaDSP/AEC. **Whether
+> that lane narrows on the way in follows the box's program wire**
+> (`Config::program_wire_is_wide`, the conjunction of an `S32_LE` ring wire
+> and the `shm_ring` coupling): a narrow box truncates deterministically to
+> S16_LE by signed high word, a wide one hands the gadget's `i32` through
+> untouched. Since the ring wire's default went wide on 2026-08-15 the wide
+> route is what a ring-armed box takes with no declaration —
+> [HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md)
+> owns that rule. When USB
 > Audio Input is off, fan-in opens `hw:Loopback,1,3` as that lane's idle
 > fallback (nobody writes it). Diagrams below that show the bridge
 > capturing the gadget or writing `usbsink_substream`, direct writes to
@@ -2366,7 +2373,14 @@ includes `tap` and `host_clock`, both pointed at
 [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md) as their single
 source of truth per the documentation paradigm.)
 
-Last verified: 2026-07-28 (the USB volume bridge's startup-snapshot metadata
+Last verified: 2026-08-15 (scoped: only the Current-operational-truth banner's
+DIRECT-capture width sentence was re-verified, after the ring wire's default
+sample format flipped narrow → wide. The high-word truncation it stated
+unconditionally is gated on `Config::program_wire_is_wide`
+(`rust/jasper-fanin/src/mixer.rs`'s `lane_wants_spine_buffer` →
+`mixer/direct_capture.rs`'s `push_capture_chunk`), whose format half now
+defaults wide, so a ring-armed box passes the gadget's `i32` through. No box
+was probed. Prior 2026-07-28: the USB volume bridge's startup-snapshot metadata
 and retry/acknowledgement path were rechecked against
 `jasper/usbsink/volume_bridge.py`, `jasper/control/client.py`, and the central
 coordinator mute policy. Prior 2026-07-24: live UAC2 volume evidence confirmed

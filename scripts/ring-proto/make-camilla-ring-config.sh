@@ -8,16 +8,23 @@
 # for the SHM ring prototype. Two modes:
 #
 #   default (Ring B): swap ONLY devices.playback.device -> jts_ring_playback
-#     (CamillaDSP writes the ring, outputd reads). Output S16LE is implicit —
-#     the playback device string is the only edit.
+#     (CamillaDSP writes the ring, outputd reads). Output format is whatever
+#     the live config being copied already declares — the playback device
+#     string is the only edit — and that declared format has been S32_LE for
+#     a while now (DEFAULT_PLAYBACK_FORMAT), not the S16LE this comment used
+#     to assume.
 #
 #   --ring-a (Ring A): swap ONLY devices.capture -> {type: Alsa, device:
-#     jts_ring_capture, format: S16_LE} (fan-in writes the ring, CamillaDSP
-#     reads). The capture format is pinned to S16_LE (the SHM ring's wire
-#     format — fan-in is S16 native, no widening) which is a delta from the
-#     box's current S32 dsnoop capture; CamillaDSP floats internally so there
-#     is no downstream effect. The device name + format are the SSOT shared
-#     with jasper.fanin_coupling.capture_kwargs_for_coupling("shm_ring").
+#     jts_ring_capture, format: <ring_capture_format>} (fan-in writes the
+#     ring, CamillaDSP reads). The capture format defaults to S32_LE now —
+#     the ring wire's resolver defaults wide, the same width as the box's
+#     current S32 dsnoop capture, so there is ordinarily no delta at either
+#     end; CamillaDSP floats internally regardless. Set
+#     JASPER_RING_PROTO_CAPTURE_FORMAT=S16_LE to reproduce an operator's
+#     narrow rollback pin (JASPER_FANIN_RING_WIRE_FORMAT) instead. The device
+#     name + format default are the SSOT shared with
+#     jasper.fanin_coupling.capture_kwargs_for_coupling("shm_ring") — the
+#     embedded Python below cross-checks both and fails loud on drift.
 #
 # This NEVER touches the product emitters (jasper/camilla_emit.py,
 # jasper/active_speaker/camilla_yaml.py, etc.) or any packaged config
@@ -96,14 +103,20 @@ done
 
 if [[ "${RING_MODE}" == "ring_a" ]]; then
     # Ring A capture-swap: the SSOT capture device + format are duplicated here
-    # from jasper.fanin_coupling (RING_CAPTURE_DEVICE / RING_WIRE_FORMAT) because
-    # this bash runs the config surgery on the Pi before importing Python; the
-    # embedded Python below asserts they match capture_kwargs_for_coupling so a
-    # drift fails loud.
+    # from jasper.fanin_coupling (RING_CAPTURE_DEVICE / resolve_ring_wire)
+    # because this bash runs the config surgery on the Pi before importing
+    # Python; the embedded Python below asserts they match
+    # capture_kwargs_for_coupling so a drift fails loud — which is why the
+    # default below tracks the resolver's default, not the narrow constant.
     # CamillaDSP capture format uses the underscore form (the live config
-    # captures S32_LE), matching jasper.fanin_coupling.RING_WIRE_FORMAT="S16_LE".
+    # captures S32_LE). This lab prototype now defaults to that SAME WIDE
+    # token: resolve_ring_wire resolves wide for an undeclared box, so pinning
+    # narrow here would fail the SSOT assertion below on every ordinary Pi.
+    # Override with JASPER_RING_PROTO_CAPTURE_FORMAT=S16_LE (the
+    # jasper.fanin_coupling.RING_WIRE_FORMAT rollback token) to reproduce a
+    # box with JASPER_FANIN_RING_WIRE_FORMAT pinned narrow instead.
     RING_DEVICE="${JASPER_RING_PROTO_ALSA_DEVICE:-jts_ring_capture}"
-    RING_CAPTURE_FORMAT="${JASPER_RING_PROTO_CAPTURE_FORMAT:-S16_LE}"
+    RING_CAPTURE_FORMAT="${JASPER_RING_PROTO_CAPTURE_FORMAT:-S32_LE}"
     OUT_CONFIG_REMOTE="${JASPER_RING_PROTO_CAMILLA_CONFIG:-/var/lib/camilladsp/ring_proto_a.yml}"
 else
     RING_DEVICE="${JASPER_RING_PROTO_ALSA_DEVICE:-jts_ring_playback}"
@@ -218,7 +231,10 @@ if not isinstance(devices, dict):
 
 if ring_mode == "ring_a":
     # RING A capture-swap. THE ONLY EDIT: point devices.capture at the ring
-    # ioplug as an Alsa device with the pinned S16_LE format. Everything else —
+    # ioplug as an Alsa device, format ring_capture_format (S32_LE by
+    # default, matching the product resolver; JASPER_RING_PROTO_CAPTURE_FORMAT
+    # can pin it narrow to reproduce an operator-rolled-back box). Everything
+    # else —
     # samplerate, chunksize, target_level, the playback block, every
     # filter/mixer/pipeline entry, volume_limit — is preserved byte-for-byte.
     if "capture" not in devices:

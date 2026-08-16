@@ -648,9 +648,10 @@ impl TtsMixer {
                  action=converted note=jasper-voice and jasper-fanin disagree on \
                  this box's assistant width; either the coupling/wire-format \
                  declaration changed without restarting jasper-voice, or the box \
-                 declares a wide wire it has not armed (a declared-wide loopback \
-                 box is narrow, and restarting voice will not change that) — \
-                 compare JASPER_FANIN_RING_WIRE_FORMAT and \
+                 resolves a wide wire it has not armed (the wire format defaults \
+                 WIDE, so a loopback box is still narrow on the transport half \
+                 and restarting voice will not change that) — compare \
+                 JASPER_FANIN_RING_WIRE_FORMAT and \
                  JASPER_FANIN_CAMILLA_COUPLING in fanin.env",
                 declared.verb(),
                 expected.verb(),

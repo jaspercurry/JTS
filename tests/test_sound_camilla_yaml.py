@@ -616,19 +616,40 @@ def test_solo_default_uses_alsa_capture_without_resampler():
 # --- ring flat config emitter (shm_ring statefile seed, P2) -------------------
 
 
-def test_emit_flat_ring_config_names_both_ring_devices_s16le():
+def test_emit_flat_ring_config_names_both_ring_devices_s32le(monkeypatch):
+    # RENAMED from ..._s16le: jasper.fanin_coupling.resolve_ring_wire()'s
+    # default flipped WIDE 2026-08-11, and emit_flat_ring_config() has no way
+    # to take an explicit wire — it always resolves through that function
+    # (unlike jasper.ring_assets.render_ring_conf_wire, which takes a RingWire
+    # parameter directly). The resolved wire is PINNED here via monkeypatch
+    # rather than left to the ambient default: resolve_ring_wire() reads
+    # /etc/jasper/jasper.env and /var/lib/jasper/fanin.env file-fresh, and a
+    # real one of either on the host running the suite (a Pi, or a dev laptop
+    # that ever ran the installer) would reach this test — the same hazard
+    # tests/test_fanin_coupling_reconcile.py's setup fixture documents.
+    import jasper.fanin_coupling as fc
     from jasper.sound.camilla_yaml import emit_flat_ring_config
 
+    monkeypatch.setattr(
+        fc,
+        "resolve_ring_wire",
+        lambda topology=None: fc.RingWire(
+            sample_format=fc.RING_WIRE_FORMAT_WIDE,
+            ring_a_channels=2,
+            ring_b_channels=2,
+            period_frames=fc.RING_SLOT_FRAMES,
+        ),
+    )
     yaml = emit_flat_ring_config()
     # Capture = Ring A (jts_ring_capture), playback = Ring B (jts_ring_playback),
-    # both S16_LE ALSA devices — the end-to-end ring topology.
+    # both S32_LE ALSA devices — the end-to-end ring topology.
     capture = yaml.split("  capture:\n", 1)[1].split("\n  playback:\n", 1)[0]
     playback = yaml.split("\n  playback:\n", 1)[1].split("\nfilters:\n", 1)[0]
     assert 'device: "jts_ring_capture"' in capture
-    assert "format: S16_LE" in capture
+    assert "format: S32_LE" in capture
     assert "type: Alsa" in capture
     assert 'device: "jts_ring_playback"' in playback
-    assert "format: S16_LE" in playback
+    assert "format: S32_LE" in playback
     assert "type: Alsa" in playback
     # Ring graph geometry is the hardware-validated low-latency shape.
     assert "chunksize: 128" in yaml

@@ -13,9 +13,12 @@ record on every path where the deploy did not produce the installed file.
 
 Two contracts live here:
 
-* the Python reader / capability gate (``jasper.ring_assets``), including the
-  dormancy that keeps every box on the shipped wire from consulting the record
-  at all; and
+* the Python reader / capability gate (``jasper.ring_assets``). That gate was
+  DORMANT while the shipped wire was the ioplug's own — no box consulted the
+  record at all. The ring-wire default flip inverted that: an undeclared box now
+  forces a ``format`` key and needs the ``wire_format`` capability, so the gate
+  is a live record compare wherever it runs, and the one wire that still
+  short-circuits is an operator's narrow pin; and
 * the cross-language pins — the record path, its key names, the capability
   tokens, and the marker strings the installer greps for — against
   ``deploy/lib/install/ring-platform.sh`` and the C source those markers come
@@ -45,12 +48,21 @@ _CAP_MARKERS = {
 }
 
 
-def _wire(sample_format="S16_LE", ring_a=2, ring_b=2) -> RingWire:
+def _wire(sample_format="S16_LE", ring_a=2, ring_b=2, ring_active=None) -> RingWire:
+    """A wire with every axis at the ioplug's default unless overridden.
+
+    ``sample_format`` defaults NARROW deliberately: it is the ioplug's own
+    compiled-in token, so a bare ``_wire()`` is the zero-capability baseline each
+    axis below is measured against. It is no longer what an undeclared box
+    RESOLVES — the resolver's default went wide — so it is now the shape of an
+    operator's narrow pin.
+    """
     return RingWire(
         sample_format=sample_format,
         ring_a_channels=ring_a,
         ring_b_channels=ring_b,
         period_frames=128,
+        ring_active_channels=ring_active,
     )
 
 
@@ -60,26 +72,26 @@ def _sh_text() -> str:
     return _RING_PLATFORM_SH.read_text(encoding="utf-8")
 
 
-# --- the shipped-wire dormancy that makes this whole layer inert today -------
+# --- the ioplug-default wire, which needs nothing ---------------------------
 
 
-def test_shipped_wire_needs_no_capability():
-    """The shipped wire renders no conf.d field beyond the ioplug's defaults.
+def test_the_ioplug_default_wire_needs_no_capability():
+    """A wire at every one of the plugin's own defaults forces no conf.d field.
 
-    This is the entire dormancy argument: the capability a wire needs IS the set
-    of keys it forces onto the conf.d, and the shipped wire forces none. Every
-    box in the fleet is on that wire, so none of them consults a record.
+    The capability a wire needs IS the set of keys it forces onto the conf.d,
+    and this wire forces none. Since the resolver's default went wide this is no
+    longer the fleet's shape — it is an operator's narrow pin — which is why the
+    gate is live everywhere else.
     """
     assert ring_assets.ring_wire_capabilities(_wire()) == frozenset()
 
 
-def test_shipped_wire_is_supported_without_any_record(tmp_path):
-    """No record + no plugin on disk still passes on the shipped wire.
+def test_the_ioplug_default_wire_is_supported_without_any_record(tmp_path):
+    """No record + no plugin on disk still passes on the plugin's own wire.
 
     The short-circuit must happen BEFORE the record is read and before the
-    plugin is hashed, or every box would refuse to arm until its next deploy.
-    Pointing both at paths that do not exist is how this test proves neither was
-    consulted rather than asserting it in prose.
+    plugin is hashed. Pointing both at paths that do not exist is how this test
+    proves neither was consulted rather than asserting it in prose.
     """
     support = ring_assets.ring_ioplug_wire_supported(
         _wire(),
@@ -91,13 +103,96 @@ def test_shipped_wire_is_supported_without_any_record(tmp_path):
 
 
 @pytest.mark.parametrize(
+    "call",
+    [
+        lambda: ring_assets.ring_ioplug_so_sha256(),
+        lambda: ring_assets.ring_ioplug_so_path(),
+        lambda: ring_assets.ring_asset_presence().so_present,
+    ],
+    ids=["sha256", "so_path", "presence"],
+)
+def test_the_plugin_dir_is_resolved_at_call_time_not_bound_at_import(
+    call, monkeypatch, tmp_path
+):
+    """A repointed :data:`RING_ALSA_PLUGIN_DIR` must actually be read.
+
+    THE RULE THIS MODULE STATES ABOUT ITSELF, made falsifiable. Every ``None``
+    default here is documented as resolving its module constant at CALL time,
+    because a default bound at import captures the constant forever: a caller
+    that repoints the module attribute is then silently ignored while every
+    message still names the constant — one fact, two answers. That is not
+    hypothetical; the doctor's provenance check shipped with exactly that bug,
+    naming ``RING_IOPLUG_PROVENANCE`` in its own text while reading a path
+    nothing could redirect.
+
+    ``ring_ioplug_so_sha256`` and ``ring_ioplug_wire_supported`` had ``plugin_dir``
+    bound at def time and no test noticed, so this is the guard, not a
+    restatement: it fails if either signature goes back to a bound default.
+    """
+    plugin_dir = tmp_path / "elsewhere"
+    plugin_dir.mkdir()
+    (plugin_dir / ring_assets.RING_IOPLUG_SO).write_bytes(b"\x7fELF repointed")
+    monkeypatch.setattr(ring_assets, "RING_ALSA_PLUGIN_DIR", str(plugin_dir))
+
+    result = call()
+
+    assert result not in (None, False), (
+        "the repointed plugin dir was not read — the constant is bound at import"
+    )
+    if isinstance(result, str) and result.startswith("/"):
+        assert str(plugin_dir) in result
+
+
+def test_the_wire_support_predicate_also_resolves_the_plugin_dir_at_call_time(
+    monkeypatch, tmp_path
+):
+    """The same rule at the predicate that HASHES the plugin.
+
+    ``ring_ioplug_wire_supported`` reports the stale/absent verdicts by path, so
+    a def-time binding would hash one file and name another. Driven through a
+    wire that needs a capability, because the no-capability arm short-circuits
+    before any path is touched.
+    """
+    plugin_dir = tmp_path / "elsewhere"
+    plugin_dir.mkdir()
+    so_bytes = b"\x7fELF repointed"
+    (plugin_dir / ring_assets.RING_IOPLUG_SO).write_bytes(so_bytes)
+    provenance = tmp_path / "record"
+    provenance.write_text(
+        _record_text(_sha_of(so_bytes), ring_assets.RING_CAP_WIRE_FORMAT),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ring_assets, "RING_ALSA_PLUGIN_DIR", str(plugin_dir))
+
+    support = ring_assets.ring_ioplug_wire_supported(
+        _wire(sample_format="S32_LE"), provenance_path=str(provenance)
+    )
+
+    # It hashed the plugin in the REPOINTED dir; a def-time binding would have
+    # hashed the real system path (absent here) and reported "could not be read".
+    assert support.ok is True, support.detail
+
+
+@pytest.mark.parametrize(
     ("wire", "expected"),
     [
         (_wire(sample_format="S32_LE"), {ring_assets.RING_CAP_WIRE_FORMAT}),
         (_wire(ring_b=6), {ring_assets.RING_CAP_WIRE_CHANNELS}),
         (_wire(ring_a=4), {ring_assets.RING_CAP_WIRE_CHANNELS}),
+        # THE ACTIVE AXIS. Each disjunct alone must be sufficient, or the
+        # predicate reads as covered while one block's `channels` key is
+        # unweighed — which is exactly the state this axis was added to fix.
+        (_wire(ring_active=4), {ring_assets.RING_CAP_WIRE_CHANNELS}),
+        (_wire(ring_active=8), {ring_assets.RING_CAP_WIRE_CHANNELS}),
         (
             _wire(sample_format="S32_LE", ring_b=8),
+            {
+                ring_assets.RING_CAP_WIRE_FORMAT,
+                ring_assets.RING_CAP_WIRE_CHANNELS,
+            },
+        ),
+        (
+            _wire(sample_format="S32_LE", ring_active=4),
             {
                 ring_assets.RING_CAP_WIRE_FORMAT,
                 ring_assets.RING_CAP_WIRE_CHANNELS,
@@ -107,6 +202,53 @@ def test_shipped_wire_is_supported_without_any_record(tmp_path):
 )
 def test_off_default_wires_need_the_matching_capability(wire, expected):
     assert ring_assets.ring_wire_capabilities(wire) == frozenset(expected)
+
+
+@pytest.mark.parametrize("ring_active", [None, 2])
+def test_a_stereo_or_absent_active_ring_forces_no_channels_key(ring_active):
+    """The ACTIVE axis must not fire on the two shapes that declare nothing.
+
+    ``None`` is every non-roleful box and ``2`` is jts3's 2-way shape; both
+    leave the ACTIVE block exactly as shipped (``render_ring_conf_wire``
+    coerces ``None`` to the default and writes nothing at the default), so
+    neither forces a key. Without this the new axis would demand
+    ``wire_channels`` from the whole fleet and refuse every box whose plugin
+    predates that field — a fleet-wide disarm dressed as a fix.
+    """
+    assert ring_assets.ring_wire_capabilities(_wire(ring_active=ring_active)) == (
+        frozenset()
+    )
+
+
+def test_the_active_axis_is_read_from_the_block_the_renderer_writes():
+    """The axis and the renderer must agree on WHICH boxes force the key.
+
+    Derived rather than asserted: render a wire whose ACTIVE width is off the
+    default into a real conf.d, then check the predicate demanded the capability
+    for the same wire. A predicate keyed on a different rule than the renderer's
+    is the defect this closes — the ACTIVE block gets `channels` from
+    ``ring_active_channels`` while a roleful box's Ring A/B stay structurally 2,
+    so no Ring A/B comparison can stand in for it.
+    """
+    import shutil
+    import tempfile
+
+    wire = _wire(sample_format="S32_LE", ring_active=4)
+    tmp = Path(tempfile.mkdtemp()) / "60-jts-ring.conf"
+    shutil.copy(
+        _REPO_ROOT / "deploy" / "alsa" / "conf.d" / "60-jts-ring.conf", tmp
+    )
+
+    ring_assets.render_ring_conf_wire(wire, conf_d=str(tmp))
+
+    # The renderer put `channels` in the ACTIVE block and NOWHERE else...
+    assert ring_assets.ring_conf_channels(ring_assets.RING_ACTIVE_CONF_PCM, str(tmp)) == 4
+    assert ring_assets.ring_conf_channels(ring_assets.RING_A_CONF_PCM, str(tmp)) == 2
+    assert ring_assets.ring_conf_channels(ring_assets.RING_B_CONF_PCM, str(tmp)) == 2
+    # ...so the predicate must demand the capability that block now needs.
+    assert ring_assets.RING_CAP_WIRE_CHANNELS in ring_assets.ring_wire_capabilities(
+        wire
+    )
 
 
 # --- the three fail-closed shapes -------------------------------------------
@@ -295,10 +437,17 @@ def test_every_non_producing_install_path_revokes_the_record():
 # record state makes `ring_wire_caps_ready` refuse the arm — loopback on a flat
 # box, a parked content lane on a roleful one — so it is a `fail`.
 #
-# The format axis is what these exercise. `ring_wire_capabilities` also reads
-# the Ring A/B channel counts, while the ACTIVE block's own `channels` key is
-# outside the predicate — an axis tracked with the ring-wire default flip, not
-# something these pins claim coverage of.
+# SINCE THE RING-WIRE DEFAULT FLIP, the `warn` half is reached only by a box an
+# operator has PINNED to S16_LE: an undeclared box resolves the wide wire and
+# needs the `wire_format` capability like any other. So the three record-compare
+# branches below declare that pin explicitly rather than inheriting a narrow
+# default that no longer exists. Their subject is unchanged — which sentence
+# each record state produces — but the box that reaches them is now named.
+#
+# `ring_wire_capabilities` reads three axes: the sample format, the Ring A/B
+# channel counts, and (since the same flip) the ACTIVE block's own `channels`
+# key. The format axis is what these exercise; the ACTIVE axis has its own
+# per-conjunct pins above.
 
 
 def _doctor_env(monkeypatch, tmp_path, *, so_bytes=None, record=None):
@@ -349,12 +498,15 @@ def test_provenance_check_skips_when_the_so_is_absent(monkeypatch, tmp_path):
     assert "ring platform" in res.detail
 
 
-def test_provenance_check_warns_when_the_plugin_is_unvouched(monkeypatch, tmp_path):
+def test_provenance_check_warns_when_the_plugin_is_unvouched(
+    monkeypatch, tmp_path, _declared_wire
+):
     """Installed but no record — the shape a REVOKING deploy leaves behind, and
     also the shape of every box that predates the recording. The detail must
     cover both readings and name the redeploy."""
     from jasper.cli.doctor import audio_runtime as audio
 
+    _declared_wire("S16_LE")
     _doctor_env(monkeypatch, tmp_path, so_bytes=b"\x7fELF plugin")
     res = audio.check_ring_ioplug_provenance()
     assert res.status == "warn"
@@ -363,13 +515,16 @@ def test_provenance_check_warns_when_the_plugin_is_unvouched(monkeypatch, tmp_pa
     assert "scripts/deploy-to-pi.sh" in res.detail
 
 
-def test_provenance_check_warns_when_the_installed_so_is_stale(monkeypatch, tmp_path):
+def test_provenance_check_warns_when_the_installed_so_is_stale(
+    monkeypatch, tmp_path, _declared_wire
+):
     """THE HOLE THIS CHECK CLOSES. The build degrades to a WARN, so a failed
     rebuild leaves the PREVIOUS .so beside new daemons — structurally valid, so
     the presence check and the open-probe both pass. The sha is what separates
     it from a fresh build."""
     from jasper.cli.doctor import audio_runtime as audio
 
+    _declared_wire("S16_LE")
     _doctor_env(
         monkeypatch,
         tmp_path,
@@ -408,7 +563,7 @@ def test_provenance_check_reports_the_caps_when_the_record_matches(
 
 
 def test_provenance_check_reports_a_vouched_plugin_with_no_capabilities(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, _declared_wire
 ):
     """A pre-ring-v2 plugin THIS deploy built is vouched and capability-less.
 
@@ -419,6 +574,7 @@ def test_provenance_check_reports_a_vouched_plugin_with_no_capabilities(
     from jasper.cli.doctor import audio_runtime as audio
 
     so_bytes = b"\x7fELF an old but freshly-installed plugin"
+    _declared_wire("S16_LE")
     _doctor_env(
         monkeypatch,
         tmp_path,
@@ -501,27 +657,106 @@ def test_the_wire_is_resolved_through_the_arm_gates_own_two_calls(monkeypatch):
     assert passed == [topology]
 
 
-def test_an_undeclared_box_needs_no_capability_so_the_verdict_stays_warn(
+def test_an_undeclared_box_now_needs_the_capability_so_the_verdict_is_a_failure(
     monkeypatch, tmp_path, _declared_wire
 ):
-    """The inertness half, and the tripwire for the ring-wire default flip.
+    """THE TRIPWIRE, FIRED AND RE-POINTED. This is the flip's fleet cost.
 
-    A box that declares nothing resolves the conf.d default wire, which forces
-    no field onto the conf.d, so an unvouched plugin still opens its ring and
-    `warn` is the whole truth. Both halves are asserted together on purpose:
-    when the resolver's default goes wide, the capability set stops being empty
-    and this verdict becomes `fail` on every box carrying no record — which is
-    the fleet cost of that flip, and it should surface as a failing pin rather
-    than as a silent disarm.
+    Its predecessor asserted the opposite — that a box declaring nothing needs
+    no capability, so an unvouched plugin was only a `warn` — and it said in its
+    own docstring why: *"when the resolver's default goes wide, the capability
+    set stops being empty and this verdict becomes `fail` on every box carrying
+    no record — which is the fleet cost of that flip, and it should surface as a
+    failing pin rather than as a silent disarm."* The flip landed, the pin
+    failed exactly as written, and this is the contract it was pointed at.
+
+    What is now true: a box that declares nothing resolves the WIDE wire, which
+    differs from the C ioplug's compiled-in conf.d default, so its conf.d
+    carries a `format` line and the capability set is `{wire_format}`. An
+    unvouched plugin therefore cannot be shown to parse that field, the arm is
+    REFUSED by `ring_wire_caps_ready`, and the honest weight is `fail` — the
+    box drops to loopback (a working transport on a flat box, a parked content
+    lane on a roleful one) rather than crashing CamillaDSP at open().
+
+    The gate is dormant on no box now except an operator's narrow pin; the
+    §10.5(1) fleet provenance audit is what made that safe to land.
     """
     from jasper.cli.doctor import audio_runtime as audio
 
     _declared_wire(None)
     _doctor_env(monkeypatch, tmp_path, so_bytes=b"\x7fELF plugin")
+    assert _resolved_capabilities() == {ring_assets.RING_CAP_WIRE_FORMAT}
+    res = audio.check_ring_ioplug_provenance()
+    assert res.status == "fail"
+    assert "REFUSED" in res.detail
+    assert "no provenance record" in res.detail
+    assert "scripts/deploy-to-pi.sh" in res.detail
+
+
+def test_an_operator_narrow_pin_is_the_one_shape_the_gate_still_exempts(
+    monkeypatch, tmp_path, _declared_wire
+):
+    """The other side of the same flip, and the rollback lever's cost.
+
+    Pinning `JASPER_FANIN_RING_WIRE_FORMAT=S16_LE` resolves the token the ioplug
+    compiles in, so the wire forces no `format` key by the predicate's own rule
+    and the capability set is empty — the short-circuit arm survives for exactly
+    this one shape. Asserted beside the tripwire so "the gate is live fleet-wide"
+    cannot quietly become "the gate is live everywhere, no exceptions".
+    """
+    from jasper.cli.doctor import audio_runtime as audio
+
+    _declared_wire("S16_LE")
+    _doctor_env(monkeypatch, tmp_path, so_bytes=b"\x7fELF plugin")
     assert _resolved_capabilities() == frozenset()
     res = audio.check_ring_ioplug_provenance()
     assert res.status == "warn"
     assert "UNVOUCHED" in res.detail
+
+
+def test_the_arm_gate_itself_refuses_an_undeclared_box_with_no_record(
+    monkeypatch, tmp_path, _declared_wire
+):
+    """§10.4(13): the capability gate is LIVE, asserted at the gate, not the doctor.
+
+    The doctor only reports what `ring_wire_caps_ready` will decide. This drives
+    the decision itself, so "the flip promotes a dormant gate to load-bearing" is
+    a tested property of the arm path rather than an inference from a check that
+    quotes it.
+    """
+    import jasper.fanin.coupling_reconcile as cr
+    from jasper.cli.doctor import audio_runtime as audio
+
+    _declared_wire(None)
+    so_path = _doctor_env(monkeypatch, tmp_path, so_bytes=b"\x7fELF plugin")
+    monkeypatch.setattr(
+        ring_assets, "RING_ALSA_PLUGIN_DIR", str(so_path.parent)
+    )
+
+    ok, detail = cr.ring_wire_caps_ready()
+
+    assert ok is False
+    assert "no provenance record" in detail
+    # The gate's own remediation, not a second sentence written for the doctor.
+    assert detail in audio.check_ring_ioplug_provenance().detail
+
+    # A stale record is the other refusing shape, and it names a different fix.
+    (tmp_path / "ring-ioplug.provenance").write_text(
+        _record_text(_sha_of(b"\x7fELF a different plugin"), "wire_format"),
+        encoding="utf-8",
+    )
+    ok, detail = cr.ring_wire_caps_ready()
+    assert ok is False
+    assert "STALE ioplug" in detail
+
+    # And a record that vouches for THIS plugin with the capability admits it —
+    # the positive control, so the two refusals above are not just "always False".
+    (tmp_path / "ring-ioplug.provenance").write_text(
+        _record_text(_sha_of(b"\x7fELF plugin"), ring_assets.RING_CAP_WIRE_FORMAT),
+        encoding="utf-8",
+    )
+    ok, detail = cr.ring_wire_caps_ready()
+    assert ok is True, detail
 
 
 def test_a_declared_wide_wire_with_no_record_is_a_failure(
@@ -651,8 +886,20 @@ def test_the_build_failure_warn_hands_off_to_the_check_by_its_real_name(
     surface that outlives it. Pinning the installer's string against the label
     the check actually reports keeps a rename from sending an operator to a
     heading `jasper-doctor` no longer prints.
+
+    AND THE AXIS IT CLAIMS. The WARN tells the operator WHICH boxes the doctor
+    will call a `fail`, and that claim is only as narrow as the predicate: the
+    escalation fires on the SAMPLE FORMAT axis (plus the channel axes), not on
+    "the wire" or "the geometry" generally. An earlier form over-claimed, and
+    nothing pinned the correction — so the wording is asserted here rather than
+    left to survive on care.
     """
     from jasper.cli.doctor import audio_runtime as audio
 
     _doctor_env(monkeypatch, tmp_path, so_bytes=b"\x7fELF plugin")
-    assert f"'{audio.check_ring_ioplug_provenance().name}'" in _sh_text()
+    sh = _sh_text()
+    assert f"'{audio.check_ring_ioplug_provenance().name}'" in sh
+    assert "non-default ring sample format" in sh, (
+        "the ioplug-build WARN stopped naming the FORMAT axis its verdict is "
+        "keyed on; a broader claim over-promises what the capability gate weighs"
+    )

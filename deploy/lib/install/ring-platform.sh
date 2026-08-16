@@ -64,13 +64,16 @@ JTS_RING_IOPLUG_PROVENANCE="${JTS_RING_IOPLUG_PROVENANCE:-/var/lib/jasper/ring-i
 # `jasper-doctor`'s `ring ioplug provenance` check then weighs that revocation
 # against the wire the box actually resolves —
 #   - a wire that renders no conf.d field beyond the ioplug's own defaults
-#     opens on the stale plugin, so the verdict is `warn`;
+#     opens on the stale plugin, so the verdict is `warn`. Since the ring-wire
+#     default went WIDE that is now only a box an operator has PINNED to
+#     S16_LE, not the fleet;
 #   - a wire declaring a non-default sample FORMAT is refused at the arm by
 #     `ring_wire_caps_ready`, so the verdict is `fail`, and install.sh's
 #     closing `run_doctor_summary` prints its failure banner on this same
-#     deploy. (The capability predicate reads the format plus the Ring A/B
-#     channel counts; the ACTIVE block's own `channels` key sits outside it
-#     and is tracked with the ring-wire default flip.)
+#     deploy. An UNDECLARED box is in this class: it resolves S32_LE while the
+#     plugin's compiled-in default is S16_LE. (The capability predicate reads
+#     the format, the Ring A/B channel counts, and the ACTIVE block's own
+#     `channels` key.)
 #
 # Two build-failure shapes, and what the doctor sees for each:
 #   - First-ever build fails (no prior .so): so_dest is absent, so the
@@ -142,7 +145,7 @@ build_install_jts_ring_ioplug() {
     if ! run_contained_build "jts-ring-ioplug" -- \
         sudo -u "${BUILD_USER}" -H bash -c "cd '${cache_dir}' && make plugin"; then
         echo "  WARN: jts_ring ioplug build failed; ring platform unavailable this deploy" >&2
-        echo "  WARN: the ring arm's capability gate now has nothing vouching for the installed plugin — doctor 'ring ioplug provenance' carries the verdict (fail on a box whose wire declares a non-default ring sample format, warn otherwise)" >&2
+        echo "  WARN: the ring arm's capability gate now has nothing vouching for the installed plugin — doctor 'ring ioplug provenance' carries the verdict (fail on a box whose wire declares a non-default ring sample format, which since the wide-wire default is every box that has not pinned itself narrow; warn otherwise)" >&2
         # STALE-BINARY HAZARD (the 2026-07-02 class): the pre-build rm -f above
         # only cleans the CACHE copy, so on a box with a prior good deploy the
         # PREVIOUS .so is still installed at so_dest. We do NOT remove the stale

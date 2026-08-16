@@ -1173,7 +1173,10 @@ def _expected_playback_format(
     # resolved ring WIRE format — that axis is one per box, shared by all three
     # ring ends — so a device-specific answer would be wrong, while omitting the
     # active ring would fall through to DEFAULT_PLAYBACK_FORMAT and red-line a
-    # perfectly healthy armed box whenever the wire is the narrow S16_LE.
+    # perfectly healthy armed box whenever the two differ. Since the ring wire's
+    # resolver defaults wide they no longer differ on an undeclared box; an
+    # operator's narrow pin is what separates them, and this branch is what
+    # keeps such a box green.
     if playback_device in (RING_PLAYBACK_DEVICE, RING_ACTIVE_PLAYBACK_DEVICE):
         # Named for the RESOLVER, not for a constant: the ring's width is a
         # per-box resolution, and a detail line citing a constant would send a
@@ -1215,9 +1218,18 @@ def check_camilla_playback_format() -> CheckResult:
     that regenerates the identical config: without the File split, every
     pipe-sink leader and parked box; without the ring split, every armed-ring box
     (including the certified-latency USB box), whose canary criterion is
-    literally "doctor green". All three constants now genuinely differ in force
-    (loopback lane ``S32_LE``, pipe/File sink and SHM ring ``S16_LE``), so both
-    splits are load-bearing rather than latent.
+    literally "doctor green". The pipe/File sink stays pinned narrow
+    (``DEFAULT_PIPE_SINK_FORMAT`` ``S16_LE``) regardless of the ring wire flip,
+    so it still diverges in force from the loopback lane's
+    ``DEFAULT_PLAYBACK_FORMAT`` (``S32_LE``). The ring split no longer buys a
+    THIRD distinct value on an undeclared box — the ring wire's resolver
+    defaults wide too now, so an unpinned ring box's expected format equals
+    the loopback lane's — but the split stays load-bearing because the ring's
+    expected value is a per-box RESOLUTION (``resolve_ring_wire``), not a
+    constant: an operator's narrow rollback pin
+    (``JASPER_FANIN_RING_WIRE_FORMAT=S16_LE``) is exactly the box this check
+    must still catch, and reading it off ``DEFAULT_PLAYBACK_FORMAT`` instead
+    would miss that box entirely.
 
     Keyed on the LOADED CONFIG's own ``device``/``type``, not on the persisted
     coupling: this check's one job is "does the config on disk match what its own
@@ -1226,11 +1238,29 @@ def check_camilla_playback_format() -> CheckResult:
     healthy or as broken depending on which source won, when the honest answer is
     determined by the config in front of it. It also keeps the check a pure read
     of one file, matching every sibling here.
+
+    THIS CHECK FAILS OPEN ON A CONFIG IT CANNOT READ, and that bound has to be
+    stated because the check is cited elsewhere as the detector for a suppressed
+    DSP reconcile (PR #2601). An unreadable / absent statefile, an unresolvable
+    ``config_path``, or a config with no ``devices.playback.format`` field all
+    return ``ok`` here — deliberately, because "I could not read it" is not
+    evidence of a mismatch, and a second reason for one absent file would bury
+    the check that names the fix. So this catches a config that is present and
+    WRONG, never a config that is missing.
+
+    The unreadable half is owned by ``check_correction_current_config``
+    (``jasper/cli/doctor/correction.py``), which reads the statefile through the
+    SAME :func:`_active_camilla_config_path` helper and is the one that speaks:
+    ``warn`` when ``config_path`` cannot be read out of the statefile, ``fail``
+    when the statefile points at a config that does not exist. So the pair
+    covers both states between them, and neither restates the other's verdict.
     See ``captures/PLAN-wide-output-path-2026-08-07.md`` PR-1, PR-6, D4, D5.
     """
     label = "camilla playback format"
     _, config_path = _active_camilla_config_path()
     if config_path is None:
+        # FAIL-OPEN, disclosed in the docstring above: no readable config is not
+        # a mismatch, and a sibling check owns the absent-statefile verdict.
         return CheckResult(label, "ok", "no loaded config to compare")
     path = Path(config_path)
     loaded_format = _loaded_playback_format(path)
@@ -1740,9 +1770,11 @@ def _jts_ring_probe_wire(pcm: str) -> tuple[int, str] | None:
     ``format``/``channels`` key means the ioplug default
     (:data:`~jasper.ring_assets.RING_CONF_DEFAULT_FORMAT` /
     :data:`~jasper.ring_assets.RING_CONF_DEFAULT_CHANNELS`), which both parsers
-    already encode, so this answers the shipped, never-rendered file correctly
-    too — no separate "unrendered" branch needed. The ring PCMs can
-    legitimately differ on channels, hence the per-PCM lookup.
+    already encode, so this answers a never-rendered file correctly too — no
+    separate "unrendered" branch needed. That path now carries only
+    ``channels``: the shipped conf.d SPELLS ``format S32_LE`` in every block, so
+    the format axis is read from the file rather than inferred. The ring PCMs
+    can legitimately differ on channels, hence the per-PCM lookup.
     """
     channels = ring_assets.ring_conf_channels(pcm, _JTS_RING_CONF_D)
     sample_format = ring_assets.ring_conf_format(pcm, _JTS_RING_CONF_D)
@@ -2005,13 +2037,15 @@ def check_ring_ioplug_provenance() -> CheckResult:
       would bury the one verdict that predicts a disarm.
 
     WHAT THE PREDICATE COVERS, so this does not over-promise:
-    ``ring_wire_capabilities`` reads the sample format and the Ring A / Ring B
-    channel counts. The ACTIVE block's ``channels`` key — which
-    ``render_ring_conf_wire`` writes whenever ``ring_active_channels`` differs
-    from the conf.d default — is outside it, so a wire widening only that axis
-    renders a field this verdict does not weigh. That axis is tracked with the
-    ring-wire default flip (P5 of the convergence design); the format axis is
-    what is covered here.
+    ``ring_wire_capabilities`` reads the sample format, the Ring A / Ring B
+    channel counts, and — since the ring-wire default flip — the ACTIVE block's
+    own ``channels`` axis, so a roleful box whose post-crossover width forces
+    that key is weighed here too. What stays outside it is the FILE: the
+    predicate answers "which keys does this wire force onto the conf.d", not
+    "which keys does the conf.d on disk declare", and the shipped conf.d now
+    spells ``format`` explicitly. So a box an operator has pinned narrow
+    resolves an empty capability set while its rendered conf.d still carries a
+    ``format`` line — see ``ring_wire_capabilities``' own note, and #2597.
 
     The escalation asks :func:`jasper.ring_assets.ring_ioplug_wire_supported` —
     the gate's own predicate, remediation text included — rather than restating

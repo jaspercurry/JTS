@@ -95,25 +95,30 @@ Every music lane enters at 48 kHz `S16_LE` except one: a USB DIRECT lane on a
 box that is both wide-wired and USB-enabled. On every other lane the `S32`
 container CamillaDSP captures does not describe surviving precision. The one
 lane with a wide route built (USB DIRECT, since U2 PR-1) needs **two** things
-to use it, and that pairing is the durable statement: the box's wire must
-resolve `S32_LE` **and** its USB DIRECT lane must be on. Either alone leaves
-the lane narrow. As
-of 2026-08-11 jts3 is the only box that is both — armed wide, then USB-enabled
-the same day (`captures/usb-enable-jts3-20260811T191749Z`). The exception
+to use it, and that pairing is the durable statement: the box's program wire
+must resolve wide — `Config::program_wire_is_wide`, the conjunction of an
+`S32_LE` ring wire **and** the `shm_ring` coupling — and its USB DIRECT lane must
+be on. Either alone leaves the lane narrow. **Since 2026-08-15 the format half
+is met by default** ([the ring wire section](#the-ring-wire-is-s32-unless-an-operator-pins-it-back)
+owns why), so the pairing reduces to *armed on the ring* plus *USB DIRECT on*,
+with no per-box declaration. As
+of 2026-08-11 — under the narrow default that then applied — jts3 was the only
+box that was both, armed wide and then USB-enabled the same day
+(`captures/usb-enable-jts3-20260811T191749Z`). The exception
 stopped being theoretical that same day: a 24-bit probe played from a Mac
 survived jts3's chain end to end, measured at the fan-in lane, at Ring A, and
 past CamillaDSP. That clears the width half of U2's exit gate; the U2 arc row
 carries the numbers, the evidence, and what the arc still owes.
 
-| Boundary | Position at 2026-08-10 (the USB row re-dated inline) |
+| Boundary | Position at 2026-08-10 (the USB, TTS, and fan-in-core rows re-dated inline) |
 |---|---|
 | AirPlay | shairport-sync configured 44.1 kHz `S32`; its private aloop lane is a `plug:` wrapper pinned 48 kHz `S16_LE` |
 | Spotify Connect | librespot requests `S24_3` with its own TPDF dither; the lane is pinned 48 kHz `S16_LE` |
 | Bluetooth | bluealsa-aplay's negotiated PCM is adapted by the `plug:` lane to 48 kHz `S16_LE` |
-| USB Audio Input | fan-in DIRECT opens `hw:UAC2Gadget` at `S32`. On a narrow wire — the shipped fleet default — `s32_high_word_to_s16` (bare arithmetic `>>16`, no rounding, no dither) still discards the low word before resample and mix. A wide route exists since U2 PR-1 ([#2223](https://github.com/jaspercurry/JTS/issues/2223)): when the box's wire resolves `S32_LE`, `push_capture_chunk` hands the resampler the gadget's `i32` untouched and it reaches the summed write intact. As of 2026-08-11 jts3 alone satisfies both conditions — wide wire and DIRECT lane on — and on that day the route carried a 24-bit probe end to end with its test step intact (numbers and evidence in the U2 arc row). It stays **dormant** on every narrow-wire box. Arming it is the per-box flip, not this row |
-| Provider TTS | 24 kHz mono S16 in, resampled through float. Since U2 PR-2 the float survives to the IPC write and is quantized at the box's own wire scale: `AUDIO` (S16LE) on a narrow box — byte-identical to before — and `AUDIO32` (S32LE at the i32 spine scale) on a wide one. The verb IS the declaration, so no format is negotiated; both ends derive the width from the same CONJUNCTION of the box's two declared halves — `JASPER_FANIN_RING_WIRE_FORMAT=S32_LE` **and** the `shm_ring` coupling, since fan-in's aloop write is pinned narrow (`mixer::FORMAT`) however the box spelled its format — through one rule (`jasper_tts_protocol::TtsWireWidth::from_box_declaration`, which `Config::program_wire_is_wide` calls and `jasper.fanin_coupling.assistant_wire_is_wide` mirrors). fan-in's assistant gain is `apply_gain_i16` on a narrow sum and widen-then-`apply_gain`-in-f64 on a wide one, which is what stops a deep assistant attenuation from rounding the reply onto the S16 grid (`rust/jasper-fanin/src/tts.rs`) |
+| USB Audio Input | fan-in DIRECT opens `hw:UAC2Gadget` at `S32`. On a narrow program wire — a `loopback` box, or a ring box an operator has pinned back to `S16_LE` — `s32_high_word_to_s16` (bare arithmetic `>>16`, no rounding, no dither) still discards the low word before resample and mix. A wide route exists since U2 PR-1 ([#2223](https://github.com/jaspercurry/JTS/issues/2223)): when the box's program wire resolves wide, `push_capture_chunk` hands the resampler the gadget's `i32` untouched and it reaches the summed write intact. As of 2026-08-11, under the then-narrow default, jts3 alone satisfied both conditions — wide wire and DIRECT lane on — and on that day the route carried a 24-bit probe end to end with its test step intact (numbers and evidence in the U2 arc row). **Since 2026-08-15 the wire half is default-true**, so the route is live on any ring-armed box with DIRECT on and dormant only on a `loopback` or narrow-pinned box; arming the ring, not declaring a format, is the per-box act |
+| Provider TTS | 24 kHz mono S16 in, resampled through float. Since U2 PR-2 the float survives to the IPC write and is quantized at the box's own wire scale: `AUDIO` (S16LE) on a narrow box — byte-identical to before — and `AUDIO32` (S32LE at the i32 spine scale) on a wide one. The verb IS the declaration, so no format is negotiated; both ends derive the width from the same CONJUNCTION — an `S32_LE` ring wire **and** the `shm_ring` coupling, since fan-in's aloop write is pinned narrow (`mixer::FORMAT`) however the box spelled its format — through one rule (`jasper_tts_protocol::TtsWireWidth::from_box_declaration`, which `Config::program_wire_is_wide` calls and `jasper.fanin_coupling.assistant_wire_is_wide` mirrors). **Since 2026-08-15 the format half is true by default**, so the coupling is the only remaining gate: a ring-armed box speaks `AUDIO32` with no declaration at all, and `JASPER_FANIN_RING_WIRE_FORMAT=S16_LE` is the writer-less operator pin back to `AUDIO`. fan-in's assistant gain is `apply_gain_i16` on a narrow sum and widen-then-`apply_gain`-in-f64 on a wide one, which is what stops a deep assistant attenuation from rounding the reply onto the S16 grid (`rust/jasper-fanin/src/tts.rs`) |
 | Generated earcons | rendered in float, then baked once at daemon startup at the box's wire scale — `_to_pcm16` (24 kHz mono S16, byte-identical to before) or `_to_pcm32` (spine scale) in `jasper/voice/earcons.py`, both packing one shared normalization and tail fade. The wide bake's full scale is `32767 << 16`, not `i32::MAX`, so the two are the same sound at the same level |
-| fan-in core | accumulates into an i64 scratch at the scale the box's wire names (`ProgramWidth`). Narrow — the shipped default — is the **S16 numeric scale** exactly as before, with `saturate_to_i16` at the summed write. Wide is the i32 spine scale, promoting each `i16` lane at its own sum entry (`rust/jasper-fanin/src/mixer.rs`). Since U2 PR-2 the program duck is width-dispatched too: narrow keeps its `f32` multiply and its (unreachable) `i32` clamp, wide computes in `f64` and keeps the `i64` headroom the duck exists to recover |
+| fan-in core | accumulates into an i64 scratch at the scale the box's wire names (`ProgramWidth`, off the same conjunction). Narrow — a `loopback` box, and every box until 2026-08-15 — is the **S16 numeric scale** exactly as before, with `saturate_to_i16` at the summed write. Wide is the i32 spine scale, promoting each `i16` lane at its own sum entry (`rust/jasper-fanin/src/mixer.rs`). Since U2 PR-2 the program duck is width-dispatched too: narrow keeps its `f32` multiply and its (unreachable) `i32` clamp, wide computes in `f64` and keeps the `i64` headroom the duck exists to recover |
 | fan-in → CamillaDSP | `jasper_capture` is a 48 kHz stereo `S16_LE` dsnoop; CamillaDSP's capture side already requests `S32` (`DEFAULT_CAPTURE_FORMAT`), so ALSA widens an already-narrow signal and restores nothing. **Narrow by declaration, not by driver** — the post-DSP content lane ROLE runs `S32_LE` on every box, on an snd-aloop substream pair (`hw:Loopback,0/1,6`) on the same card. Role-first on purpose: that pair also carries the mutually-exclusive bonded active-follower round-trip, which opens the raw device at `S16_LE`, so the bare device name proves nothing either way. Three places declare this lane's width and U2 PR-3 pinned them as one fact (`tests/test_aloop_program_lane_width.py`): fan-in's `mixer::FORMAT` (the writer, previously untested), the dsnoop slave, and the doctor's pin. There were four — `aec_tune`'s RAW dsnoop open could not absorb a move because dsnoop does not convert — and P7-2 retired it, so widening is cheaper by exactly that item. It is the last narrow hop on a `loopback` box and it is **P7/P9's to delete, not U2's to widen** — the per-box width capability is the ring's |
 
 Three consequences: a later `S32` container is not proof of a wide path;
@@ -121,7 +126,7 @@ narrowing before attenuation lifts the effective quantization floor
 relative to quiet tails; and an S16 source gains nothing from promotion
 but stops losing the precision that resample and gain create.
 
-### The ring wire is S16 unless a box declares otherwise
+### The ring wire is S32 unless an operator pins it back
 
 The **layout** is no longer the constraint. Since R1
 ([#2297](https://github.com/jaspercurry/JTS/pull/2297), merged),
@@ -132,8 +137,7 @@ The **layout** is no longer the constraint. Since R1
 does and does not arm; wide is a value-space widening of existing header
 fields, so ring `VERSION` stays 1.
 
-The **wire** is still S16 on every box that has not said otherwise, and by a
-different mechanism than the layout: the resolver answers it.
+The **wire** is resolved per box, by a different mechanism than the layout.
 `jasper.fanin_coupling.resolve_ring_wire` is the one per-box resolution every
 declaring end reads, for every ring end and for outputd's
 `JASPER_OUTPUTD_CONTENT_FORMAT` — so a ring-armed box is coherent at the wire it
@@ -141,33 +145,71 @@ resolves, whatever its program-lane default is (see
 [Where this corrects #2285](#where-this-corrects-2285)). Because the accept-set
 is wider than the wire, the attach can no longer
 be relied on to refuse a drift *inside* it: the ends are compared rather than
-assumed. The C ioplug takes `format`/`channels` from its conf.d block, but
-[`deploy/alsa/conf.d/60-jts-ring.conf`](../deploy/alsa/conf.d/60-jts-ring.conf)
-declares neither on any of its three PCM blocks, so all of them open at the
-`S16_LE`/2ch defaults (`JTS_RING_RATE = 48000` stays pinned) until
-`jasper-audio-hardware-reconcile` renders the box's resolved wire into them.
+assumed.
 
-**"Coherently narrow" is the resolver's DEFAULT, not a fleet-wide law** (E7,
-2026-08-11 — the ruling record is `captures/PLAN-ring-v2-rulings-2026-08-10.md`;
-do not re-derive it here). The format axis has exactly one input,
-`JASPER_FANIN_RING_WIRE_FORMAT`, which `jasper-fanin` and
-`resolve_ring_wire_format` classify identically
+**Its default went WIDE on 2026-08-15.** `resolve_ring_wire_format` answers
+`S32_LE` for an unset or cleared `JASPER_FANIN_RING_WIRE_FORMAT`, and
+`jasper-fanin`'s `RingWireFormat::from_env_value` classifies the same input
+identically
 ([`tests/test_ring_wire_format_contract.py`](../tests/test_ring_wire_format_contract.py)
-pins that against the Rust source); unset means narrow, which is why the fleet
-is. A box whose live post-DSP path is already **wide** declares the wide wire
-and re-runs the hardware reconciler BEFORE it arms, so the ring joins the
-one-quantization invariant instead of adding a second reduction inside it.
-**As of 2026-08-11 exactly one box has said otherwise: jts3 declares
-`JASPER_FANIN_RING_WIRE_FORMAT=S32_LE` and is armed wide** (see the Fleet table
-and the arm/rollback lifecycle below for the procedure); every other box leaves
-the key unset and is therefore narrow, byte-identically to before the mechanism
-existed.
-Until 2026-08-11 the Python resolver took no input at all and pinned the wire
-narrow by policy, so such a box could not arm coherently in either direction —
-found when jts3's arm halted on the format shear
-(`captures/r7b-jts3-arm2-20260811T132227Z`). Arming wide also needs the
-installer's ioplug provenance record, because a non-default wire renders a
-conf.d `format` key an older `.so` cannot parse (`ring_wire_caps_ready`).
+pins that against the Rust source). Narrow was a width REGRESSION on the hop the
+ring replaces — the loopback CamillaDSP→outputd hop already carries `S32_LE` — so
+an undeclared arm inserted a second reduction inside the one-quantization
+invariant, which is what E7 forbids. The full argument lives with the code; read
+`resolve_ring_wire_format` rather than a copy here.
+
+**NARROW is now an operator rollback pin, and it has no writer.**
+`JASPER_FANIN_RING_WIRE_FORMAT=S16_LE` is the only route to a narrow ring, and
+nothing in this repo writes that key — a lever a reconciler could overwrite on
+the next boot, deploy, or udev pass would not be one, so the empty writer set is
+pinned by test.
+
+**The shipped conf.d now DECLARES the token.** The C ioplug takes
+`format`/`channels` from its conf.d block, and
+[`deploy/alsa/conf.d/60-jts-ring.conf`](../deploy/alsa/conf.d/60-jts-ring.conf)
+spells `format S32_LE` in all three PCM blocks rather than omitting the key.
+Omission declares the *ioplug's* compiled-in default, which is still `S16_LE`
+(`JTS_RING_DEFAULT_FORMAT`, mirrored by
+`jasper.ring_assets.RING_CONF_DEFAULT_FORMAT`, which deliberately did NOT follow
+the resolver), so silence would now declare the opposite of what every other end
+resolves. `channels` stays omitted at the 2ch default, `JTS_RING_RATE = 48000`
+stays pinned, and `jasper-audio-hardware-reconcile` still substitutes the
+per-box values in place.
+
+**That disagreement made the ioplug capability gate LIVE fleet-wide, where it
+had been dormant.** A wire needs whatever conf.d keys it forces past the ioplug's
+own defaults, so an undeclared box now forces `format` and
+`ring_wire_caps_ready` / `ring_ioplug_wire_supported` (`jasper/ring_assets.py`)
+demand the `wire_format` capability plus a valid
+`/var/lib/jasper/ring-ioplug.provenance` record before an arm. A box whose
+ioplug predates that capability is REFUSED the arm — `loopback` on a flat box, a
+parked content lane on a roleful one — instead of crashing CamillaDSP at
+`open()`. A fleet ioplug-provenance audit was run before the flip landed and
+PASSED on all three plugged boxes. The same change gave the predicate a third
+axis, the ACTIVE block's `ring_active_channels`, which it had been blind to on
+exactly the roleful boxes with the widest ACTIVE ring.
+
+**A roleful graph emitted before the flip still declares `S16_LE`**, because a
+CamillaDSP graph's capture/playback formats are frozen at EMIT time and a box's
+boot graph can be older than its resolver. `ring_edge_width_ready` refuses that
+arm (fail-closed to loopback) until a
+`jasper-active-speaker baseline-reemit --endpoint ring` re-bakes the graph — the
+step-3 refusal described in the arm/rollback lifecycle below, now reachable
+without any operator declaration.
+
+**History, so the dated claims elsewhere in this file stay readable.** Through
+2026-08-11 the Python resolver took no per-box input at all and pinned the wire
+narrow by policy, so a box whose live post-DSP path was already wide could not
+arm coherently in either direction — found when jts3's arm halted on the format
+shear (`captures/r7b-jts3-arm2-20260811T132227Z`), fixed by
+[#2335](https://github.com/jaspercurry/JTS/pull/2335), and ruled by E7
+(2026-08-11; the record is `captures/PLAN-ring-v2-rulings-2026-08-10.md` — do not
+re-derive it here). From then until 2026-08-15 the resolver read the key but
+still DEFAULTED narrow, and exactly one box had said otherwise: **jts3 declared
+`JASPER_FANIN_RING_WIRE_FORMAT=S32_LE` and was armed wide 2026-08-11** (see the
+Fleet table and the arm/rollback lifecycle below for the procedure). Every
+"narrow fleet" or "dormant on every narrow-wire box" claim in this file dated on
+or before 2026-08-11 describes that window, not today.
 
 So ring v2 was never a layout redesign: it is a transport + reader/writer +
 emitter + resolver problem. The transport layer (R1's crate, R2's ioplug),
@@ -209,11 +251,13 @@ R5a repointed both sides at `resolve_ring_wire`). The planning
 consequence: the box-wide `S32` default does **not** disarm rings. A
 ring-armed box installs the coupling's own CamillaDSP kwargs, which force
 both ring ends to the ring's **resolved** wire — so a ring box is coherent
-at whatever wire it resolves, and the fleet default resolves narrow, which
-is how ring boxes held their certified S16 latency across the whole
-R-ladder. Ring v2 changed which wire a box may resolve, not that mechanism:
-since 2026-08-11 jts3 resolves `S32_LE` and both its ring ends follow
-through the same kwargs path (E7 above).
+at whatever wire it resolves. Through 2026-08-11 that resolution defaulted
+narrow, which is how ring boxes held their certified S16 latency across the
+whole R-ladder, and jts3 was the first box to resolve `S32_LE` — by
+declaration, both ring ends following through the same kwargs path (E7 above).
+Ring v2 changed which wire a box *may* resolve; the 2026-08-15 flip changed
+which one it resolves when it declares nothing. Neither touched the kwargs
+mechanism.
 
 #2285's banner is corrected: an earlier draft said the plan owns "U0–U9
 sequencing", but the sequencing this plan actually ships is **U0–U4**
@@ -226,8 +270,8 @@ sequencing", but the sequencing this plan actually ships is **U0–U4**
 | Box | Hardware / role | State (dated) |
 |---|---|---|
 | **jts3** | Pi 5 + DAC8x + XVF3800, active 2-way, the horn | **ARMED WIDE 2026-08-11** — the campaign's first wide ring box. Installed `7afec75d8` (armed at `5dcd872a4`, then **proven to survive a deploy and two `/sound/` saves** the same day — see below); coupling `shm_ring` + `shm_ring` with `choice=operator`; wire `S32_LE` on both ends; `JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT=1` against `active-content.ring`. DAC8x `LatencyFloor` live (outputd period/DAC buffer 128/256; DAC presentation **5.167 ms**), ring runtime chunk/target 128/128. `jasper-doctor` exit 0 with no failures; the arm-signature plan warn is expected and permanent. `aec-init` runs in **CORPUS mode** — no alignment artifact, so no commissioned identity ([#2254](https://github.com/jaspercurry/JTS/issues/2254); corpus exit is an owner decision, out of campaign scope). **The arm changed how the box sounds**, and that is its largest user-visible consequence: the re-emit published jts3's own adopted-but-never-published profile for the first time (treble −5.536 dB, crossover Fc 2000 → 1649 Hz, broadband within 0.24 dB), because the live graph had been ~22 h staler than the profile the box had already adopted. Not a ring artifact and not a volume bug — measurements and gain structures in `captures/endpoint-deploy-jts3-20260811T185255Z` (files 21, 24). [#2291](https://github.com/jaspercurry/JTS/issues/2291) owns the voicing question and identifies that profile as its 2026-08-10 incident-era artifact (the −13 dB tweeter trim being defect-downstream); the owner reviewed the change on 2026-08-11 and elected to **keep the current voicing** (recorded in [#2348](https://github.com/jaspercurry/JTS/issues/2348), which is scoped around that decision). USB Audio Input was enabled here later the same day, with the arm preserved (`captures/usb-enable-jts3-20260811T191749Z`), and the arm then survived an **unclean power pull** — EXT4 orphan-cleanup fingerprint on the way back, and every armed-state field byte-identical across the cycle (post-cycle readback in `captures/usb-hires-jts3-20260811T194132Z`, against the pre-cycle close-out in the enable capture), which is a stronger result than a graceful reboot would have given. The box had been up **21 days** when power was cut, and that figure's raw reading is in the enable capture, not the hi-res one: `captures/usb-enable-jts3-20260811T191749Z/00-pin-and-build.txt` line 11, `uptime: up 3 weeks, 7 hours, 5 minutes`, read about 20 minutes before the pull. The hi-res capture cannot show it — its persistent-journal boot list starts where the journal's retained window does, five days back. Arm evidence `captures/r7b-jts3-arm3-20260811T162742Z` |
-| **jts.local** | Pi + single Apple dongle (card `A`), passive, USB-in box | Narrow, unchanged, **re-validated 2026-08-11**. Installed `5dcd872a4`; coupling `shm_ring` + `shm_ring`; combo ARMED; the ring header stayed byte-identical `S16_LE` across the deploy and doctor was check-for-check identical pre/post, with ~5 min of real USB DIRECT playback at zero xruns / clips / drops (`captures/u2-jtslocal-regression-20260811T162805Z`). Still owed and unchanged by that pass: voice INACTIVE (parked; **commission owed**), the live dongle edge unconfirmed against the registry's `S24_3LE`, and the **route-latency revalidation artifact** (stale and failing both before and after) |
-| **jts4** | Zero 2 W streambox + InnoMaker, loopback | Not probed since 2026-08-10. Zero-class validation target for U1 |
+| **jts.local** | Pi + single Apple dongle (card `A`), passive, USB-in box | **DECLARED WIDE and coherent** — read on hardware 2026-08-16 during PR [#2601](https://github.com/jaspercurry/JTS/pull/2601)'s adversarial panel: `JASPER_FANIN_RING_WIRE_FORMAT=S32_LE` in `fanin.env`, coupling `shm_ring` + `shm_ring`, `choice=operator`, every declaring end agreeing. **This corrects this row's own earlier claim that the box left the key unset** — it does not, so the 2026-08-15 wire-default flip changes nothing here and it needs no `baseline-reemit`. History, unchanged: at its 2026-08-11 re-validation (installed `5dcd872a4`) the ring header stayed byte-identical `S16_LE` across a deploy with doctor check-for-check identical pre/post and ~5 min of real USB DIRECT playback at zero xruns / clips / drops (`captures/u2-jtslocal-regression-20260811T162805Z`); the declaration moved after that. Still owed and unchanged: voice INACTIVE (parked; **commission owed**), the live dongle edge unconfirmed against the registry's `S24_3LE`, and the **route-latency revalidation artifact** (stale and failing both before and after) |
+| **jts4** | Zero 2 W + InnoMaker — **FLAT and ring-ARMED**, not the loopback streambox this row used to call it | **UNDECLARED + armed `shm_ring` + `choice=operator`** — read on hardware 2026-08-16 during PR [#2601](https://github.com/jaspercurry/JTS/pull/2601)'s panel. It is the one fleet box the 2026-08-15 wire-default flip moves: leaving the key unset, it resolves `S32_LE` on its next build and becomes a wide ring box without declaring anything. Because it is operator-pinned, `resolve_auto_decision` returns before the gate set is built, so **neither `ring_wire_caps_ready` nor `ring_edge_width_ready` runs on it** — the fail-closed wire gates are not what protects this box, and the same is true of every pinned box (all three armed ones are). What converges it is the install's own `reconcile_sound_dsp_state`; see PR #2601 for the ordering fix that made that reachable. Owed: the post-deploy ring-geometry + `check_fanin_coupling` read |
 | **jts5** | InnoMaker HAT, S32 edge live, composite/active testbox | Not probed since 2026-08-10. **Parked by owner intent — do not commission or play it for tests** |
 
 **What is and is not safe on jts3 while it is armed** (2026-08-11). Deploys and
@@ -327,7 +371,11 @@ live post-DSP path is already wide arms its ring **wide**; arming it at the
 resolver's narrow default would insert a second quantization inside the
 one-reduction invariant. Rationale and the arm that forced it are in
 `captures/PLAN-ring-v2-rulings-2026-08-10.md` (search `E7`) — do not re-derive
-here; the mechanism is the wire-resolution section above.
+here; the mechanism is the wire-resolution section above. **Mechanism superseded
+2026-08-15, ruling unchanged:** the resolver's default is now wide, so "arms
+wide" is what a box that declares nothing already does. E7's hazard is closed by
+the default rather than by a per-box declaration, and what an executor must do to
+satisfy the ruling shrinks to arming.
 
 **R-POPS — parked, with a resurrection trigger.** The 2026-08-08 owner
 report of new very-high-frequency pops after the flip is parked: the owner
@@ -370,7 +418,7 @@ continuity — issues and PRs reference them) and the width workstream.
 |---|---|---|---|
 | **U0 — stabilize + replan** — **COMPLETE** | this document (PR [#2293](https://github.com/jaspercurry/JTS/pull/2293), merged, gate 0/0 after fix round); the P5c deletion (PR [#2302](https://github.com/jaspercurry/JTS/pull/2302), merged, gate 0/0 after fix round); PR [#2281](https://github.com/jaspercurry/JTS/pull/2281), merged, gate 0/0 after delta | P5c | doc merged; `rate_match` + adaptive-buffer + stale cushion prose gone. jts.local commission + route-latency revalidation no longer gates U0 — it now proceeds under U1's R6 rung below, since ring v2 width activation needs exactly that fresh artifact and a bare pre-ring-v2 commission would be thrown away |
 | **U1 — ring v2** | the R-RING2 design, build, and per-box activation (design ratified 2026-08-10 — see [Ring v2 design outcome](#ring-v2-design-outcome-u1) below) | P8 | R1–R5 ladder complete, R7a and R7b merged, and **jts3 ARMED WIDE 2026-08-11** — the campaign's first wide ring box, delivered at the third arm attempt (per-rung state in [Ring v2 design outcome](#ring-v2-design-outcome-u1)). The measured ~17.5-minute content-fill splice class is **dead on jts3** — structurally, because the aloop content hop that produced it is gone. The first armed window **corroborates that rather than proving it**: 755 s is about 72% of one ~1050 s fill period, so clean counters across it are consistent with the phenomenon, not a refutation of it. What the window did record: ring `frames_read` +36.2 M dead-flat at 47986–48070 frames/s, `empty_reads` 0 in every sample, zero DAC xruns, zero clipped samples, and a clean MEASURE-lane sweep across the armed ring (`captures/r7b-jts3-arm3-20260811T162742Z`). The standing watch is what makes this more than one sub-period observation, and it is a **conjunction, not a single counter**: `empty_reads` rising while `epoch_resets` stays **flat** is a drain/splice; **both** rising is a restart artifact. `epoch_resets` is the discriminator, not the alarm — a writer reattach's own drain gap also lands in `empty_reads`, because the reader's first-filled-slot latch is never reset for the life of the reader, so a bare `empty_reads` alarm would fire on every deploy. The same capture's durability test is the worked benign case: a deliberate CamillaDSP restart took `empty_reads` 0 → 24 with `epoch_resets` 1 → 2 (file 30). The erratum and its refinement are both on the record (`captures/PLAN-ring-v2-rulings-2026-08-10.md`). Remaining: jts.local's R6 activation, separately owner-gated (home box, not yet granted); then jts4 Zero-class validation; jts5 / bonded per the P8 scope ruling |
-| **U2 — source width** | #2223's 3-PR ladder plus its Step 0 descriptor check; the TTS/earcon tail | width workstream | Step 0 is **fully answered as of 2026-08-11**: the USB gadget was already wide at the wire, the only narrowing on that lane was one fan-in call (`s32_high_word_to_s16`), and a real host does deliver the low bits — macOS applied no CoreAudio truncation. **PR-1 merged 2026-08-11** (PR [#2330](https://github.com/jaspercurry/JTS/pull/2330); three review rounds — 5 SF + 8 nits, then one convergent blocker the fix round itself introduced, both closing deltas 0/0), so the wide DIRECT lane ships **dormant on every narrow-wire box** and correct on a wide one; jts3 is the first live wide box, so "dormant everywhere" now reads "dormant on all narrow-wire boxes". jts.local took the same build and had its narrow path re-validated — ring header byte-identical, doctor check-for-check identical (`captures/u2-jtslocal-regression-20260811T162805Z`, 2026-08-11). **PR-2** (TTS / earcon / gain tail) carries the assistant half: the assistant IPC wire gains a second, self-describing payload verb (`AUDIO32`, S32LE at spine scale) that a box speaks only when BOTH halves of its declaration are wide — `JASPER_FANIN_RING_WIRE_FORMAT=S32_LE` **and** the `shm_ring` coupling, since fan-in's aloop write is pinned narrow (`mixer::FORMAT`) however the box spelled its format. One rule decides that (`TtsWireWidth::from_box_declaration`, which `Config::program_wire_is_wide` calls and `assistant_wire_is_wide` mirrors), and a coupling flip that changes the verdict `try-restart`s `jasper-voice` so the two ends cannot sit disagreeing; earcons bake at that same scale; fan-in's assistant gain moves to widen-then-gain-in-f64 on a wide sum; and PR-1's deferred correctness-n5 closes — the program duck's `i32` rails and `f32` mantissa become width-dispatched, so a spine-scale sum is no longer clamped at the `i32` rail before the duck can recover it. Every narrow-wire byte is unchanged, pinned end to end against goldens captured by running `origin/main`'s own tree (`tests/test_tts_wire_width.py`, `tests/test_earcons_wire_width.py`, and the narrow golden in `rust/jasper-fanin/src/tts.rs`). **This is NOT dormant on jts3, and that is the one box it is not dormant on**: jts3 declares `S32_LE` and is coupled `shm_ring`, which is exactly the conjunction the assistant width requires, so the deploy that carries PR-2 there activates the `AUDIO32` verb, the wide earcon bake, the f64 assistant gain, and the reworked program duck in the same step — no separate flip, no PR-3 gate. Every other box is narrow on the coupling half alone and takes the byte-identical path. The jts3 deploy therefore carries a listen check in the regime the change actually touches — assistant speech over hot program material, where the duck's rails moved — plus a `clipped_samples` watch across that window; forward-only, so the exposure is stated rather than deferred. **PR-3 closes the ladder, and it closes it by NOT building what its name suggested.** The per-box program-lane width capability already exists and is complete: `JASPER_FANIN_RING_WIRE_FORMAT` plus the `shm_ring` coupling, resolved by `resolve_ring_wire` and read by every declaring end, with PR-1 and PR-2 widening the source and assistant halves into it. A SECOND width mechanism on the snd-aloop `loopback` transport was scoped and declined on evidence: it would have to width-dispatch fan-in's realtime output write, teach the asound.conf render path a per-box format it does not carry (its whole dynamic surface is three placeholders — two DAC identity, one ALSA rate converter, none of them a lane format), break `jasper/cli/aec_tune.py`'s RAW dsnoop open (dsnoop does not convert, unlike the `plug:` wrapper every other consumer uses), and reopen PR-2's panel-ratified conjunction — with **no box to validate it on**: jts3 and jts.local are both `shm_ring`, jts4 is floorless and unprobed, jts5 is owner-parked. So the aloop lane stays narrow and its width becomes ONE pinned fact across its three declarers (`tests/test_aloop_program_lane_width.py`) — four when U2 PR-3 pinned them, until P7-2 retired `aec_tune`'s RAW open; fan-in's `mixer::FORMAT`, the writer the other two follow, had no test of any kind in either language before this. What PR-3 DOES build is the flip's missing precondition, banked by PR-2's resilience lens: a fan-in binary predating `AUDIO32` does not mis-read it — `read_command` returns `unknown TTS command`, the connection task logs `event=fanin.tts_socket.protocol_error` and drops the stream — and because cues share that socket the box goes **fully silent including the failure cue**. That is reproduced in-tree against a rejecting peer, with a narrow control proving the peer works, and the two orderings that make a stale peer unreachable are asserted instead of inherited: `After=jasper-fanin.service` at boot, and the installer parking `jasper-voice` (first entry of the canonical park set) before it restarts fan-in, checked per shell function so a new restart site cannot hide behind an unrelated earlier park. A capability handshake was considered and declined — R-WIDTH forbids cross-daemon negotiation, both orderings already close the window, and a fan-in STATUS read at voice startup would add a runtime dependency whose own failure mode silently narrows the fleet's one wide box. **Zero boxes change behaviour and no declaration moves.** With it the ladder is complete and the arc is exitable on merge; what was already settled is the gate's **width half — met on hardware 2026-08-11**. Two instruments carry that half and they are not interchangeable. The **standing** one is the bit-pattern fixture the gate named, in-tree since PR-1 and re-run by the Rust test lane: `U2_HIRES_VECTORS` (a 24-bit sample plus both 24-bit rails) drives `a_hi_res_direct_lane_keeps_its_low_bits_all_the_way_to_the_wide_payload` through the real sum entry and payload fill, asserting the exact bits each route keeps — wide publishes the sample bit for bit, narrow keeps the high word and nothing below it (`rust/jasper-fanin/src/mixer.rs`; the lane-level pattern is in `lane_resampler.rs`). The dated hardware probe **corroborates that on a real box; it does not replace the regression pin**: a 24-bit −30 / −110 / −30 dBFS probe played from the owner's Mac reproduced its 80 dB step to within **0.03 dB** at all three taps — the fan-in lane gauge, the Ring A capture, and post-DSP playback, where the probe still resolved at −125.09 dBFS on the far side of CamillaDSP's volume, correction, and active crossover. The probe tone read −107.21 dBFS (sd 0.15), ~11 dB below the 16-bit floor, with `epoch_resets` constant, `empty_reads` 0, and zero xruns or clipped samples across the window (`captures/usb-hires-jts3-20260811T194132Z`). Per-box flips stay the per-box acts they were, and a `loopback` box's route to wide is the ring's — arm, then declare, the ladder jts3 walked — not a second mechanism on the lane P7/P9 delete |
+| **U2 — source width** | #2223's 3-PR ladder plus its Step 0 descriptor check; the TTS/earcon tail | width workstream | Step 0 is **fully answered as of 2026-08-11**: the USB gadget was already wide at the wire, the only narrowing on that lane was one fan-in call (`s32_high_word_to_s16`), and a real host does deliver the low bits — macOS applied no CoreAudio truncation. **PR-1 merged 2026-08-11** (PR [#2330](https://github.com/jaspercurry/JTS/pull/2330); three review rounds — 5 SF + 8 nits, then one convergent blocker the fix round itself introduced, both closing deltas 0/0), so the wide DIRECT lane ships **dormant on every narrow-wire box** and correct on a wide one; jts3 is the first live wide box, so "dormant everywhere" now reads "dormant on all narrow-wire boxes". jts.local took the same build and had its narrow path re-validated — ring header byte-identical, doctor check-for-check identical (`captures/u2-jtslocal-regression-20260811T162805Z`, 2026-08-11). **PR-2** (TTS / earcon / gain tail) carries the assistant half: the assistant IPC wire gains a second, self-describing payload verb (`AUDIO32`, S32LE at spine scale) that a box speaks only when BOTH halves of its declaration are wide — `JASPER_FANIN_RING_WIRE_FORMAT=S32_LE` **and** the `shm_ring` coupling, since fan-in's aloop write is pinned narrow (`mixer::FORMAT`) however the box spelled its format. One rule decides that (`TtsWireWidth::from_box_declaration`, which `Config::program_wire_is_wide` calls and `assistant_wire_is_wide` mirrors), and a coupling flip that changes the verdict `try-restart`s `jasper-voice` so the two ends cannot sit disagreeing; earcons bake at that same scale; fan-in's assistant gain moves to widen-then-gain-in-f64 on a wide sum; and PR-1's deferred correctness-n5 closes — the program duck's `i32` rails and `f32` mantissa become width-dispatched, so a spine-scale sum is no longer clamped at the `i32` rail before the duck can recover it. Every narrow-wire byte is unchanged, pinned end to end against goldens captured by running `origin/main`'s own tree (`tests/test_tts_wire_width.py`, `tests/test_earcons_wire_width.py`, and the narrow golden in `rust/jasper-fanin/src/tts.rs`). **This is NOT dormant on jts3, and that is the one box it is not dormant on**: jts3 declares `S32_LE` and is coupled `shm_ring`, which is exactly the conjunction the assistant width requires, so the deploy that carries PR-2 there activates the `AUDIO32` verb, the wide earcon bake, the f64 assistant gain, and the reworked program duck in the same step — no separate flip, no PR-3 gate. Every other box is narrow on at least one half — jts.local on the format half, a `loopback` box such as jts4 on the coupling half — and takes the byte-identical path. The jts3 deploy therefore carries a listen check in the regime the change actually touches — assistant speech over hot program material, where the duck's rails moved — plus a `clipped_samples` watch across that window; forward-only, so the exposure is stated rather than deferred. **PR-3 closes the ladder, and it closes it by NOT building what its name suggested.** The per-box program-lane width capability already exists and is complete: `JASPER_FANIN_RING_WIRE_FORMAT` plus the `shm_ring` coupling, resolved by `resolve_ring_wire` and read by every declaring end, with PR-1 and PR-2 widening the source and assistant halves into it. A SECOND width mechanism on the snd-aloop `loopback` transport was scoped and declined on evidence: it would have to width-dispatch fan-in's realtime output write, teach the asound.conf render path a per-box format it does not carry (its whole dynamic surface is three placeholders — two DAC identity, one ALSA rate converter, none of them a lane format), break `jasper/cli/aec_tune.py`'s RAW dsnoop open (dsnoop does not convert, unlike the `plug:` wrapper every other consumer uses), and reopen PR-2's panel-ratified conjunction — with **no box to validate it on**: jts3 and jts.local are both `shm_ring`, jts4 is floorless and unprobed, jts5 is owner-parked. So the aloop lane stays narrow and its width becomes ONE pinned fact across its three declarers (`tests/test_aloop_program_lane_width.py`) — four when U2 PR-3 pinned them, until P7-2 retired `aec_tune`'s RAW open; fan-in's `mixer::FORMAT`, the writer the other two follow, had no test of any kind in either language before this. What PR-3 DOES build is the flip's missing precondition, banked by PR-2's resilience lens: a fan-in binary predating `AUDIO32` does not mis-read it — `read_command` returns `unknown TTS command`, the connection task logs `event=fanin.tts_socket.protocol_error` and drops the stream — and because cues share that socket the box goes **fully silent including the failure cue**. That is reproduced in-tree against a rejecting peer, with a narrow control proving the peer works, and the two orderings that make a stale peer unreachable are asserted instead of inherited: `After=jasper-fanin.service` at boot, and the installer parking `jasper-voice` (first entry of the canonical park set) before it restarts fan-in, checked per shell function so a new restart site cannot hide behind an unrelated earlier park. A capability handshake was considered and declined — R-WIDTH forbids cross-daemon negotiation, both orderings already close the window, and a fan-in STATUS read at voice startup would add a runtime dependency whose own failure mode silently narrows the fleet's one wide box. **Zero boxes change behaviour and no declaration moves.** With it the ladder is complete and the arc is exitable on merge; what was already settled is the gate's **width half — met on hardware 2026-08-11**. Two instruments carry that half and they are not interchangeable. The **standing** one is the bit-pattern fixture the gate named, in-tree since PR-1 and re-run by the Rust test lane: `U2_HIRES_VECTORS` (a 24-bit sample plus both 24-bit rails) drives `a_hi_res_direct_lane_keeps_its_low_bits_all_the_way_to_the_wide_payload` through the real sum entry and payload fill, asserting the exact bits each route keeps — wide publishes the sample bit for bit, narrow keeps the high word and nothing below it (`rust/jasper-fanin/src/mixer.rs`; the lane-level pattern is in `lane_resampler.rs`). The dated hardware probe **corroborates that on a real box; it does not replace the regression pin**: a 24-bit −30 / −110 / −30 dBFS probe played from the owner's Mac reproduced its 80 dB step to within **0.03 dB** at all three taps — the fan-in lane gauge, the Ring A capture, and post-DSP playback, where the probe still resolved at −125.09 dBFS on the far side of CamillaDSP's volume, correction, and active crossover. The probe tone read −107.21 dBFS (sd 0.15), ~11 dB below the 16-bit floor, with `epoch_resets` constant, `empty_reads` 0, and zero xruns or clipped samples across the window (`captures/usb-hires-jts3-20260811T194132Z`). Per-box flips stay the per-box acts they were, and a `loopback` box's route to wide is the ring's — arm, then declare, the ladder jts3 walked — not a second mechanism on the lane P7/P9 delete. **Superseded 2026-08-15, one half only:** the wire resolver's default went `S32_LE`, so every "dormant on every narrow-wire box" and "arm, then declare" statement in this cell is dated to the narrow-default window that ran through 2026-08-14. The mechanism is unchanged — same conjunction, same one rule — but the format half no longer needs a declaration, so a `loopback` box's route to wide is *arm*, full stop, and a ring-armed box picks up the wide DIRECT lane, the `AUDIO32` verb, the wide earcon bake, and the f64 assistant gain on its next deploy. [The ring wire section](#the-ring-wire-is-s32-unless-an-operator-pins-it-back) owns the new default and the ioplug-capability gate it makes live |
 | **U3 — renderer ring ingress** | P6a–d, one lane at a time, **AirPlay LAST** with offset re-derivation. **ARC COMPLETE 2026-08-13: all four lanes are on rings** — librespot (P6a [#2389](https://github.com/jaspercurry/JTS/pull/2389)), bluealsa (P6b [#2393](https://github.com/jaspercurry/JTS/pull/2393)), correction (P6c, five PRs — see the P-row), airplay (P6d [#2409](https://github.com/jaspercurry/JTS/pull/2409)) — all default-empty | P6 | per-lane source pass (all OWED — no box armed); AirPlay adds a Music.app local-track loop + resync-log watch + bonded A/V spot-check |
 | ↳ **P6a (Spotify) — MERGED 2026-08-13** ([#2389](https://github.com/jaspercurry/JTS/pull/2389), three review rounds, all lenses 0/0) | Built the seam the other three lanes re-point through: fan-in's third `Input` variant with the DIRECT lane's silent-idle/bounded-retry presence model, `source:"ring"` + a `ring{}` block in `/state`, the librespot ring PCM in conf.d, and the lane map (`jasper/renderer_lanes.py`) as the single writer of both ends of a flip. **Ships DEFAULT-EMPTY**: no box is armed, and every unarmed box is byte-identical. Two things it added beyond the Appendix-A sketch, each argued in the PR body: a dedicated `jts-ring` group + `UMask=0007` on the renderer unit (the setgid bit fixes a new ring file's group, only the umask fixes its mode, and both ends write the ring header), and the ioplug's **writer-side SPSC guard** — without it the doctor's own `aplay -D` probe would open a second writer and interleave slots into live music instead of taking EBUSY as it does on an aloop lane. **What it does NOT have: the on-box source pass.** No armed box exists yet, so "Spotify plays through the ring" is unproven on hardware and rides a coordinated jts3 window (the box is shared with [#2291](https://github.com/jaspercurry/JTS/issues/2291)) | | |
 | **U4 — delete** | P7 dsnoop re-points, P9 snd-aloop removal after fleet burn-in, P10 polish + `audio-paths.md` rewrite | P7, P9, P10 | full-fleet deploy + doctor + every-source pass; reboot test per box |
@@ -428,11 +476,17 @@ at them rather than restating them.
 | R7b | jts3 active-half | **DONE** — PR [#2326](https://github.com/jaspercurry/JTS/pull/2326) merged 2026-08-11, fix round + three same-lens deltas 0/0. jts3 **ARMED WIDE 2026-08-11** at the third attempt: attempt 1 halted on a validator/reconciler deadlock at the documented mid-arm waypoint (`captures/r7b-jts3-arm-20260811T111338Z`, fixed by PR [#2329](https://github.com/jaspercurry/JTS/pull/2329)); attempt 2 halted read-only on a wire shear plus a width gate that proved two of three declaring ends and claimed three (`captures/r7b-jts3-arm2-20260811T132227Z`, fixed by PR [#2335](https://github.com/jaspercurry/JTS/pull/2335), which also built the per-box wire mechanism E7 needs and moved the capture half); attempt 3 completed the ladder and passed 12/12 (`captures/r7b-jts3-arm3-20260811T162742Z`). Each halt rolled the box back to entry with the dead-man armed and never fired. The mechanics of all three live in the arm/rollback lifecycle below |
 
 R1 and R2 land the ring transport layer v2-capable in both languages —
-wide/N-channel geometry is accepted and byte-copyable end to end — and it
-stays inert on any box until that box is armed: a conf.d block declares a
-non-default format/channels only where `jasper-audio-hardware-reconcile` has
-rendered the box's resolved wire into it. As of 2026-08-11 that is jts3 alone
-(`S32_LE`); every other box still opens S16/stereo.
+wide/N-channel geometry is accepted and byte-copyable end to end. Through
+2026-08-14 it stayed inert on any box until that box was armed AND had a
+non-default wire rendered into its conf.d by `jasper-audio-hardware-reconcile`;
+as of 2026-08-11 that was jts3 alone (`S32_LE`), and every other box still
+opened S16/stereo. **That changed on 2026-08-15**: the shipped
+[`60-jts-ring.conf`](../deploy/alsa/conf.d/60-jts-ring.conf) declares
+`format S32_LE` in all three blocks STATICALLY, so the wide format is no longer
+something the reconciler has to render — `channels` still is. The consequence of
+that static declaration is the ioplug capability gate going live fleet-wide;
+[the ring wire section](#the-ring-wire-is-s32-unless-an-operator-pins-it-back)
+above owns it.
 CI hardening (PR [#2300](https://github.com/jaspercurry/JTS/pull/2300),
 merged) closes a gap R2's review surfaced: the ioplug's `.so` now
 compiles in the `rust` CI job's C step, contract-pinned so the check
@@ -1054,7 +1108,13 @@ Owned elsewhere; listed so no arc can claim to be done without them.
    and closed by PR
    [#2335](https://github.com/jaspercurry/JTS/pull/2335) before any audio
    moved — the arm/rollback lifecycle section above names what sheared and
-   which end the gate could not see.
+   which end the gate could not see. **Its live shape since 2026-08-15 is a
+   stale GRAPH rather than a stale declaration**: a roleful graph emitted
+   before the wire default went wide still declares `S16_LE`, because a
+   graph's formats are frozen at emit time, so `ring_edge_width_ready`
+   refuses the arm and the box fails closed to loopback until a
+   `baseline-reemit --endpoint ring`. The belt working — and now reachable
+   on a box that declared nothing.
 4. **Fleet box wedged mid-migration.** Coupling transitions are owned by
    the ordered reconciler with fail-safe-to-loopback, and camilla's
    ExecStartPre statefile re-seed means any restart reverts to the
@@ -1338,8 +1398,9 @@ as last verified above. A third same-day pass (R4's fix round,
 ring-wire section against `rust/jasper-ring/src/layout.rs` and
 `jasper/fanin_coupling.py` and rewrote it: R1 falsified its
 "`validate_self` hard-rejects any other format / `S32LE` is Reserved"
-claim, and the wire's narrowness now comes from the resolver, not the
-layout. Nothing else in this pass. A fourth pass (2026-08-11) verified
+claim, and the wire's narrowness came from the resolver rather than the
+layout (the resolver's default has since gone wide — see the 2026-08-15
+entry below). Nothing else in this pass. A fourth pass (2026-08-11) verified
 the R-ladder's remaining PR states live via `gh` — R3
 [#2308](https://github.com/jaspercurry/JTS/pull/2308), R4
 [#2310](https://github.com/jaspercurry/JTS/pull/2310), R5a
@@ -1485,4 +1546,42 @@ lifeline's 2026-08-15 "jts.local ARMED-CLEAN" entry. Everything else,
 including both appendices and the P6/P7 rows, was not re-read and stands as
 last verified above.
 
-Last verified: 2026-08-15
+2026-08-15 (ring wire default: narrow → WIDE): a second same-day pass,
+re-verifying only the surfaces that flip falsified, each against the changed
+source rather than against the flip's description of itself —
+`jasper.fanin_coupling.resolve_ring_wire_format` /
+`read_declared_ring_wire_format`, `RingWireFormat::from_env_value`,
+`jasper.ring_assets` (`RING_CONF_DEFAULT_FORMAT`, `ring_wire_capabilities`,
+`ring_ioplug_wire_supported`), and
+[`60-jts-ring.conf`](../deploy/alsa/conf.d/60-jts-ring.conf). The
+wire-resolution section is rewritten and retitled — an undeclared box now
+resolves `S32_LE`, the shipped conf.d DECLARES that token in all three blocks
+instead of omitting the key, `JASPER_FANIN_RING_WIRE_FORMAT=S16_LE` became a
+writer-less operator rollback pin, and the ioplug capability gate went from
+dormant to LIVE fleet-wide because the resolved wire no longer matches the C
+ioplug's own compiled-in default (which deliberately stayed `S16_LE`). The
+only hardware fact added is that a fleet ioplug-provenance audit was run
+before the flip and PASSED on all three plugged boxes; **no box was re-probed
+in this pass**, which is why jts.local's Fleet row states its post-flip
+resolution as a consequence and marks the on-box readback owed. Also trued up:
+the source-half section's two-condition pairing, three boundary-table rows
+(USB / provider TTS / fan-in core), the #2285 correction's "fleet default
+resolves narrow", E7's mechanism sentence (the RULING is untouched), the U2
+arc row's dormancy and "arm, then declare" claims, the R1/R2 inertness
+paragraph, and risk 3 — whose live shape is now a graph emitted before the
+flip, since a CamillaDSP graph's formats are frozen at emit time. One
+pre-existing error was corrected while re-reading the U2 arc row: "every other
+box is narrow on the coupling half alone" was false for jts.local, which was
+`shm_ring`-coupled and narrow on the FORMAT half. Everything else — both
+appendices, the P6/P7 rows, the egress facts, and the arm/rollback lifecycle's
+step mechanics — was not re-read and stands as last verified above.
+
+**2026-08-16 (PR [#2601](https://github.com/jaspercurry/JTS/pull/2601)'s
+adversarial panel):** the **Fleet table's jts.local and jts4 rows only** were
+re-verified, against a live hardware read rather than inference. Both were
+wrong: jts.local DOES declare `S32_LE` (this file had said it left the key
+unset), and jts4 is a flat, ring-ARMED, operator-pinned box, not the loopback
+streambox this table called it. Both rows are corrected and dated in place.
+Nothing else in this file was re-read on that pass.
+
+Last verified: 2026-08-16

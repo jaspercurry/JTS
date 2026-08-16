@@ -108,10 +108,18 @@ RING_CONF_PCMS = (RING_A_CONF_PCM, RING_B_CONF_PCM, RING_ACTIVE_CONF_PCM)
 # What a conf.d PCM block declares when it omits ``format`` / ``channels``.
 # Mirrors the C ioplug's ``JTS_RING_DEFAULT_FORMAT`` / ``JTS_RING_DEFAULT_CHANNELS``
 # (``c/jts-ring-ioplug/pcm_jts_ring.c``), which reproduce the pre-ring-v2 pinned
-# wire exactly. They are what makes an UNRENDERED conf.d byte-identical to the
-# shipped file while still declaring a complete wire: the renderer writes a key
-# only where the resolved wire differs from these, so a box on the shipped wire
-# never gains a line.
+# wire exactly. The renderer writes a key only where the resolved wire differs
+# from these, so a block whose value equals one never gains a line.
+#
+# ``RING_CONF_DEFAULT_FORMAT`` MIRRORS THE C IOPLUG AND DOES NOT FOLLOW THE
+# RESOLVER. The ring wire's resolver now defaults WIDE
+# (``jasper.fanin_coupling.resolve_ring_wire_format``) while the compiled-in
+# ioplug default stayed ``S16_LE``, and moving this constant to match the
+# resolver would make Python believe a stale ``.so`` parses a ``format`` field it
+# cannot — precisely the walk :func:`ring_ioplug_wire_supported` exists to catch.
+# The disagreement is the point: it is what makes the capability gate live.
+# ``deploy/alsa/conf.d/60-jts-ring.conf`` therefore DECLARES ``format S32_LE``
+# explicitly rather than relying on an omitted key.
 RING_CONF_DEFAULT_FORMAT = "S16_LE"
 RING_CONF_DEFAULT_CHANNELS = 2
 
@@ -269,11 +277,15 @@ def read_ring_ioplug_provenance(
     return RingIoplugProvenance(recorded=True, sha256=sha, caps=caps)
 
 
-def ring_ioplug_so_sha256(*, plugin_dir: str = RING_ALSA_PLUGIN_DIR) -> str | None:
+def ring_ioplug_so_sha256(*, plugin_dir: str | None = None) -> str | None:
     """SHA-256 of the installed ioplug ``.so``, or ``None`` if unreadable.
 
     Chunked read (the ``.so`` is small, but streaming keeps the reconciler's
     memory bounded on a 1 GB box regardless of what ships there later).
+
+    ``plugin_dir=None`` resolves :data:`RING_ALSA_PLUGIN_DIR` at CALL time — the
+    rule :func:`ring_ioplug_so_path` states and this signature used to break by
+    binding the constant as a default at import.
     """
     import hashlib
 
@@ -294,11 +306,40 @@ def ring_wire_capabilities(wire: RingWire) -> frozenset[str]:
     resolved wire differs from :data:`RING_CONF_DEFAULT_FORMAT` /
     :data:`RING_CONF_DEFAULT_CHANNELS` (see :func:`render_ring_conf_wire`), and
     an omitted key is what a pre-ring-v2 ioplug expects. So the capability a wire
-    needs is exactly the set of keys it forces onto the conf.d — which is EMPTY
-    for the shipped wire, i.e. for every box that has not DECLARED a different
-    one through ``JASPER_FANIN_RING_WIRE_FORMAT``. That emptiness is the whole
-    dormancy story: a narrow box's capability gate short-circuits before it ever
-    looks at a record, so a box with no record behaves exactly as it did before.
+    needs is the set of keys it forces onto the conf.d — and it is now NON-EMPTY
+    on every box that has not pinned itself narrow, because the ring wire's
+    resolver defaults WIDE (``jasper.fanin_coupling.resolve_ring_wire_format``)
+    while :data:`RING_CONF_DEFAULT_FORMAT` stays the C ioplug's own ``S16_LE``.
+    This gate was dormant while those two agreed; it is live fleet-wide now, and
+    a box whose ioplug build failed is refused the arm rather than crashing
+    CamillaDSP at ``open()``.
+
+    THREE AXES, one per conf.d key the renderer can write:
+
+    * ``format`` — every block shares one token, so one comparison covers all
+      three;
+    * ``channels`` on Ring A / Ring B — the full-range stereo pair;
+    * ``channels`` on the ACTIVE block — the post-crossover per-driver width, a
+      SEPARATE axis because :func:`render_ring_conf_wire` writes that block from
+      ``ring_active_channels`` and a roleful box's Ring A/B stay structurally 2.
+      Without it the predicate was blind on exactly the boxes with the widest
+      ACTIVE ring: a roleful box driving 4+ channels renders ``channels 4`` into
+      a block this function never read, so a pre-ring-v2 ioplug that cannot parse
+      ``channels`` at all was admitted. The coercion mirrors the renderer's own
+      (``ring_active_channels or RING_CONF_DEFAULT_CHANNELS``) so "which boxes
+      force the key" has one answer, not two.
+
+    WHAT THIS DOES NOT WEIGH, so it does not over-promise: the axes above answer
+    "which keys does this WIRE force onto the conf.d", not "which keys does the
+    conf.d on disk DECLARE". Since the shipped conf.d now spells ``format``
+    explicitly, a box pinned narrow by an operator resolves an empty format axis
+    while its rendered conf.d still carries a ``format`` line — so a pre-ring-v2
+    ioplug would refuse it at ``open()`` with this predicate reporting nothing
+    needed. That shape predates this flip (any box rolled back from a declared
+    wide wire had it), it needs an operator pin AND an unvouched plugin to bite,
+    and closing it means keying the predicate on the FILE rather than the wire —
+    a contract change to a safety-adjacent gate, so it is issue #2597 rather
+    than a silent widening here.
     """
     needed: set[str] = set()
     if wire.sample_format != RING_CONF_DEFAULT_FORMAT:
@@ -306,6 +347,8 @@ def ring_wire_capabilities(wire: RingWire) -> frozenset[str]:
     if (
         wire.ring_a_channels != RING_CONF_DEFAULT_CHANNELS
         or wire.ring_b_channels != RING_CONF_DEFAULT_CHANNELS
+        or (wire.ring_active_channels or RING_CONF_DEFAULT_CHANNELS)
+        != RING_CONF_DEFAULT_CHANNELS
     ):
         needed.add(RING_CAP_WIRE_CHANNELS)
     return frozenset(needed)
@@ -323,7 +366,7 @@ class RingIoplugWireSupport:
 def ring_ioplug_wire_supported(
     wire: RingWire,
     *,
-    plugin_dir: str = RING_ALSA_PLUGIN_DIR,
+    plugin_dir: str | None = None,
     provenance_path: str | None = None,
 ) -> RingIoplugWireSupport:
     """Can the installed ioplug ``.so`` parse the conf.d this wire renders?
@@ -340,11 +383,13 @@ def ring_ioplug_wire_supported(
       cannot parse a field the wire needs.
 
     Short-circuits to ``ok`` when the wire needs nothing (:func:`ring_wire_capabilities`
-    is empty), which is every box on the shipped wire — no file is read and no
-    hash is computed on that path.
+    is empty) — no file is read and no hash is computed on that path. Since the
+    wire resolver's default went wide that arm is reached only by a box an
+    operator has pinned narrow; on every other box this is a live record compare.
 
-    ``provenance_path=None`` resolves the module constant at CALL time — see
-    :func:`read_ring_ioplug_provenance` for why a bound default is wrong here.
+    ``provenance_path=None`` and ``plugin_dir=None`` resolve their module
+    constants at CALL time — see :func:`read_ring_ioplug_provenance` for why a
+    bound default is wrong here.
     """
     provenance_path = (
         RING_IOPLUG_PROVENANCE if provenance_path is None else provenance_path
@@ -356,8 +401,10 @@ def ring_ioplug_wire_supported(
             needed=needed,
             detail=(
                 f"wire {wire.sample_format}/{wire.ring_a_channels}ch:"
-                f"{wire.ring_b_channels}ch declares no conf.d field beyond the "
-                "ioplug's own defaults, so any installed ioplug can open it"
+                f"{wire.ring_b_channels}ch forces no conf.d field beyond the "
+                "ioplug's own defaults, so this predicate has nothing to weigh "
+                "(it answers for the WIRE, not for the conf.d on disk, which "
+                "since the wide-wire flip spells `format` on every box — #2597)"
             ),
         )
     wanted = ", ".join(sorted(needed))
@@ -667,8 +714,15 @@ def ring_conf_format(pcm_name: str, conf_d: str | None = None) -> str | None:
 
     Same absent-means-default contract as :func:`ring_conf_channels`: the C
     ioplug defaults an undeclared ``format`` to
-    :data:`RING_CONF_DEFAULT_FORMAT`, so an unmodified shipped conf.d declares
-    that wire even though the token appears nowhere in it.
+    :data:`RING_CONF_DEFAULT_FORMAT`, so a block that omits the key still
+    declares a complete wire.
+
+    The SHIPPED conf.d does not rely on that for this key — it spells
+    ``format S32_LE`` in every block, because the resolver's default went wide
+    while the plugin's compiled-in default stayed narrow, so silence here would
+    declare the opposite of what every other end resolves. The absent-key branch
+    remains live for a hand-edited or foreign file, and for ``channels``, which
+    the shipped file does still omit.
     """
     return _single_block_value(
         _RING_CONF_FORMAT_RE, pcm_name, conf_d, absent=RING_CONF_DEFAULT_FORMAT
@@ -681,8 +735,9 @@ class RingConfWireRender:
 
     ``changed`` is False for the no-write outcome — the conf already declares the
     target wire, which is the golden case on a box running the shipped geometry
-    (a box whose declared floor equals the shipped 128, on the shipped S16_LE /
-    2-channel wire).
+    (a box whose declared floor equals the shipped 128, on the shipped
+    ``S32_LE`` / 2-channel wire the conf.d spells and an undeclared box
+    resolves).
 
     ``previous_period_frames`` is ``None`` for a TORN conf.d whose PCM blocks
     disagreed, because there was no single previous value to report.
@@ -794,10 +849,12 @@ def render_ring_conf_wire(
     **Write-on-change only.** When the conf already declares exactly this wire
     the file is left GENUINELY untouched — no rewrite, no mtime churn — so a box
     that renders to the shipped values is byte-identical to one that never
-    rendered. Because an omitted ``format``/``channels`` key already declares
-    the ioplug's default (:data:`RING_CONF_DEFAULT_FORMAT` /
-    :data:`RING_CONF_DEFAULT_CHANNELS`), a box on the shipped wire never gains a
-    line either. Otherwise the whole file is published through
+    rendered. A box on the shipped wire never gains a line either, by two
+    different routes: the shipped ``format`` line is already the resolved token
+    so it is SUBSTITUTED in place with the same value, and an omitted
+    ``channels`` key already declares
+    :data:`RING_CONF_DEFAULT_CHANNELS` so nothing is inserted. Otherwise the
+    whole file is published through
     :func:`jasper.atomic_io.atomic_write_text` (``preserve_target_stat``), so a
     reader never observes a half-written conf.d and the installed file's
     uid/gid/mode survive the replace.

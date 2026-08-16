@@ -1249,22 +1249,55 @@ def outputd_content_format_change(
       the persisted coupling — the exact value the reconciler is about to write.
 
     Deliberately an EQUALITY check, never a width ranking — see
-    ``jasper.fanin.coupling_reconcile.ring_edge_width_ready``. A ring-coupled box
-    answers ``None`` on both sides of the flip (the coupling forces the ring's own
-    narrow width, and such a box's outputd never opens an ALSA content lane at
-    all), so it pays no churn.
+    ``jasper.fanin.coupling_reconcile.ring_edge_width_ready``.
+
+    **A ``shm_ring`` box answers ``None`` UNCONDITIONALLY, and that is a
+    precondition of the install, not a cheap optimisation.** The hazard above is
+    snd-aloop's first-opener parameter lock. A ring-coupled box's outputd reads
+    the SHM ring and never opens an ALSA content lane at all, so there is no
+    substream pair for a stale CamillaDSP to pin — and the ring's own version of
+    the hazard (a header geometry mismatch) is already closed a step earlier by a
+    different owner: ``install_jts_ring_platform``
+    (``deploy/lib/install/ring-platform.sh``) ``rm -f``s ``program.ring`` and
+    ``content.ring`` UNCONDITIONALLY, before ``install_systemd_units`` runs, so
+    fan-in's restart creates them fresh at the resolved wire. Releasing a lane
+    that does not exist adds nothing to that.
+
+    Answering a change there is actively HARMFUL, which is why this is a guard
+    rather than a filter. ``release_camilla_content_lane_for_format_flip``
+    STOPS CamillaDSP, and the very next install step —
+    ``reconcile_sound_dsp_state`` → ``jasper-sound reconcile-current-dsp`` —
+    reads the loaded graph over CamillaDSP's websocket
+    (``reconcile_current_dsp`` opens with
+    ``cam.get_config_file_path(best_effort=False)``). With CamillaDSP stopped
+    that raises ``CamillaUnavailable``, the CLI's ``--fail-open`` turns it into
+    ``status=failed`` with exit 0, and the re-emit NEVER RUNS. The install then
+    restarts CamillaDSP onto the graph it failed to refresh. So a spurious
+    release does not cost "one extra stop/start" — it silently suppresses the
+    one step that converges a box whose ring wire moved underneath it.
+
+    This became reachable when the ring wire's resolver default went wide: an
+    already-armed box that never declared a wire carries ``S16_LE`` in
+    ``outputd.env`` against an upcoming ``S32_LE``. Before that, every
+    ring-coupled box compared equal here by accident of the narrow default, so
+    the ring branch was never exercised and the suppression never fired.
     """
 
     from jasper.fanin.coupling_reconcile import read_persisted_coupling
-    from jasper.fanin_coupling import content_lane_format_for_coupling
+    from jasper.fanin_coupling import (
+        COUPLING_SHM_RING,
+        content_lane_format_for_coupling,
+        resolve_coupling,
+    )
 
+    coupling = read_persisted_coupling(fanin_env_path)
+    if resolve_coupling(coupling) == COUPLING_SHM_RING:
+        return None
     outputd = read_env_file_state(outputd_env_path)
     current = str(outputd.values.get(OUTPUTD_CONTENT_FORMAT_KEY, "") or "").strip()
     if not current:
         current = OUTPUTD_DEFAULT_CONTENT_FORMAT
-    upcoming = content_lane_format_for_coupling(
-        read_persisted_coupling(fanin_env_path)
-    )
+    upcoming = content_lane_format_for_coupling(coupling)
     if current == upcoming:
         return None
     return (current, upcoming)

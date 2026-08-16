@@ -149,9 +149,20 @@ def ioplug_constraints(
     CHANNELS are pinned to single values in the same call, which is what lets the
     one pinned byte count name one frame count: the frames that follow from
     PERIOD_BYTES depend on the wire, and an S32_LE/8ch ring is 8x an S16_LE/2ch
-    ring in bytes at identical frames. The defaults are the shipped wire. These
-    values are not CamillaDSP choices; they are the device space that CamillaDSP
-    negotiates against.
+    ring in bytes at identical frames. These values are not CamillaDSP choices;
+    they are the device space that CamillaDSP negotiates against.
+
+    THE DEFAULTS ARE THE IOPLUG'S OWN COMPILED-IN TOKENS, NOT THE SHIPPED WIRE.
+    ``sample_format``/``channels`` default to :data:`RING_WIRE_FORMAT` (narrow)
+    and :data:`RING_A_CHANNELS` — the C plugin's own hard-coded defaults,
+    mirroring ``jasper.ring_assets.RING_CONF_DEFAULT_FORMAT`` — because they are
+    a fixed test baseline every byte-math assertion in this suite is measured
+    against, not a claim about what a real box carries. Since
+    :func:`jasper.fanin_coupling.resolve_ring_wire_format`'s default flipped
+    WIDE (2026-08-11, convergence design §3.2/B3), an undeclared box no longer
+    resolves this default — it resolves :data:`RING_WIRE_FORMAT_WIDE`. A caller
+    modelling that box passes ``sample_format=RING_WIRE_FORMAT_WIDE`` explicitly,
+    the same way the product resolver now does.
     """
 
     return IoplugConstraints(
@@ -181,7 +192,15 @@ def negotiate(
     sample_format: str = RING_WIRE_FORMAT,
     channels: int = RING_A_CHANNELS,
 ) -> NegotiationOutcome:
-    """Model ALSA ``*_near`` negotiation against the jts_ring fixed space."""
+    """Model ALSA ``*_near`` negotiation against the jts_ring fixed space.
+
+    ``sample_format``/``channels`` share :func:`ioplug_constraints`'s fixed
+    narrow-baseline defaults, not the resolver's per-box answer — see that
+    function's docstring for why. Every caller in this suite that omits both is
+    exercising pure frame-count negotiation math (buffer/period frames, never
+    bytes), which is identical on either wire: see :attr:`IoplugConstraints.ok`
+    and the frame properties it depends on.
+    """
 
     constraints = ioplug_constraints(
         slot_frames=slot_frames,

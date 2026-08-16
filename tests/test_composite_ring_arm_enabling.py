@@ -340,9 +340,13 @@ RING_CONF_D_SOURCE = REPO_ROOT / "deploy" / "alsa" / "conf.d" / "60-jts-ring.con
 def test_a_composite_may_not_arm_the_ring_at_the_narrow_wire(monkeypatch):
     """The width REGRESSION refusal.
 
-    ``content_lane_format_for_coupling`` answers S32_LE under ``loopback`` and
-    ``resolve_ring_wire().sample_format`` under ``shm_ring`` — narrow by
-    default. So a composite arm that did not also declare the wide wire would
+    ``content_lane_format_for_coupling`` answers S32_LE under ``loopback``, and
+    since the ring-wire default flip ``resolve_ring_wire().sample_format``
+    under ``shm_ring`` now answers S32_LE too — so an UNDECLARED composite
+    converges with no declaration at all and this gate never fires for it. The
+    one shape that still reaches the refusal is an operator's explicit narrow
+    PIN (``JASPER_FANIN_RING_WIRE_FORMAT=S16_LE``, the rollback lever): a
+    composite arm that rode such a pin onto the ring, without this gate, would
     quantize the post-crossover per-driver program from 32 to 16 bits.
     """
     from jasper.fanin import coupling_reconcile
@@ -353,7 +357,10 @@ def test_a_composite_may_not_arm_the_ring_at_the_narrow_wire(monkeypatch):
     ok, detail = coupling_reconcile.composite_ring_wire_ready(_composite_active_2way())
     assert ok is False
     assert "S16_LE" in detail
-    assert "JASPER_FANIN_RING_WIRE_FORMAT=S32_LE" in detail
+    # The remedy text: "remove JASPER_FANIN_RING_WIRE_FORMAT (or set it to
+    # S32_LE)" — the two tokens are separate mentions in the sentence, not one
+    # concatenated "KEY=S32_LE" literal.
+    assert "remove JASPER_FANIN_RING_WIRE_FORMAT (or set it to S32_LE)" in detail
 
 
 def test_the_narrow_wire_remedy_names_the_WHOLE_three_step_ladder(monkeypatch):

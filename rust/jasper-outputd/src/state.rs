@@ -148,9 +148,10 @@ pub struct OutputdState {
     /// outputd should ask CamillaDSP's snd-aloop lane for (`Config::
     /// content_format`, set from `config.content_format.as_str()`). The
     /// reconciler (`jasper-audio-hardware-reconcile`) emits this key per
-    /// coupling now — `S32_LE` on `loopback`, `S16_LE` on `shm_ring` — so
-    /// `S16_LE` remains the value here for an unreconciled box or the ring,
-    /// not "today always". It
+    /// coupling now — `S32_LE` on `loopback`, and `S32_LE` on `shm_ring` too
+    /// by default since the ring wire's resolver defaults wide. `S16_LE`
+    /// remains the value here for an unreconciled box, or a ring box pinned
+    /// narrow (`JASPER_FANIN_RING_WIRE_FORMAT=S16_LE`), not "today always". It
     /// is what `content.format` reports only UNTIL outputd opens that lane;
     /// the fake backend and the SHM-ring source never do, so there it is the
     /// whole answer.
