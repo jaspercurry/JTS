@@ -24,6 +24,7 @@ the apply path already records, ``source.measured_candidate_fingerprint``.
 """
 from __future__ import annotations
 
+import ast
 import json
 from pathlib import Path
 
@@ -369,6 +370,33 @@ def test_artifact_scan_is_bounded_and_keeps_the_newest(tmp_path):
     assert found[0].parent.name == f"s{overflow:03d}"
 
 
+#: The seam this file's last test pins as unconsumed.
+_SEAM_MODULE = "jasper.correction.applied_speaker_evidence"
+
+
+def _imported_modules(tree: ast.Module, *, package: str) -> set[str]:
+    """Every module ``tree`` imports, absolute and relative alike, resolved.
+
+    ``package`` is the dotted package the file lives in, which is what a
+    relative import is resolved against — ``from . import x`` inside
+    ``jasper/correction/`` names ``jasper.correction.x``.
+    """
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            found.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                parts = package.split(".")
+                base = ".".join(parts[: len(parts) - (node.level - 1)] or parts[:1])
+                root = f"{base}.{node.module}" if node.module else base
+            else:
+                root = node.module or ""
+            found.add(root)
+            found.update(f"{root}.{alias.name}" for alias in node.names)
+    return found
+
+
 def test_nothing_consumes_the_seam_yet():
     """Pins this module's own claim that the seam is not yet wired.
 
@@ -376,14 +404,37 @@ def test_nothing_consumes_the_seam_yet():
     gating and disclosure (missing evidence disables Tier B — it must never
     fall back to correcting the raw in-room curve), so this assertion is meant
     to be updated deliberately at that point, not deleted quietly.
+
+    **The detector matches that semantic: it finds IMPORTERS.** It used to grep
+    raw file text for the substring ``applied_speaker_evidence``, which is a
+    different question — on 2026-08-16 a prose cross-reference in
+    ``crossover_v2_flow``'s docstring ("the same posture
+    ``resolve_applied_speaker_evidence`` takes on the same read") failed this
+    pin while the seam still had zero consumers. Naming a function in a comment
+    is not wiring it, and the repair is the detector rather than a whitelist:
+    "mentions minus known mentions" is a weaker pin than "importers", and it
+    would have pushed the next author to rename accurate prose to dodge a grep.
+
+    Parsed rather than pattern-matched, so an import written inside a string,
+    a comment, or a docstring example cannot be mistaken for one the module
+    executes — the same class of false positive, one level down. Relative
+    imports are resolved and counted too: a sibling in ``jasper/correction/``
+    writing ``from .applied_speaker_evidence import …`` is the most likely
+    first consumer, and it is a consumer.
+
+    The expected set is EMPTY. The seam's own module appeared in the substring
+    era only because it contains its own name; nothing imports it, including
+    itself.
     """
     repo = Path(__file__).resolve().parents[1]
-    importers = sorted(
-        str(path.relative_to(repo))
-        for path in (repo / "jasper").rglob("*.py")
-        if "applied_speaker_evidence" in path.read_text(encoding="utf-8")
-    )
-    assert importers == ["jasper/correction/applied_speaker_evidence.py"], (
+    importers = []
+    for path in sorted((repo / "jasper").rglob("*.py")):
+        relative = path.relative_to(repo)
+        package = ".".join(relative.parts[:-1])
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        if _SEAM_MODULE in _imported_modules(tree, package=package):
+            importers.append(str(relative))
+    assert importers == [], (
         "a consumer of the applied-speaker evidence seam appeared: "
         f"{importers}. Confirm it discloses absent evidence rather than "
         "falling back to the raw in-room curve, then update this pin."
