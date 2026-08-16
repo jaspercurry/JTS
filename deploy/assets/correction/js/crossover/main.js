@@ -204,6 +204,25 @@ function renderCandidateReview(review) {
     return;
   }
 
+  // WHERE the alignment came from, not just what it is (#2607 S3, extended to
+  // the DELAY row by #2617). The measurement can decline to decide either half:
+  // when the capture's SNR is below the law an alignment decision is held to,
+  // the flow commits the polarity the PRESET declares and a delay this capture
+  // did not supply — the one the speaker already plays, or none. The page must
+  // not call either "measured", the one word a household reads as "we checked".
+  //
+  // A SET, not one string: that refusal has three commitments, differing in the
+  // DELAY they commit and agreeing exactly here. Mirrors
+  // `program_analysis.ALIGNMENT_DECLARED_POLARITY_OBJECTIVES`; a browser module
+  // cannot import a Python constant, so `tests/test_crossover_envelope_v2.py`
+  // fails when the two lists disagree and
+  // `tests/js/crossover_polarity_provenance_test.mjs` covers every member here.
+  const declaredByDesign = [
+    'declared_committed_after_low_snr',
+    'applied_alignment_held_after_low_snr',
+    'no_delay_committed_after_unreadable_apply',
+  ].includes(review.alignment_objective);
+
   const rows = [];
   trims.forEach((trim) => {
     rows.push(el('div', {class: 'measurement-row'}, [
@@ -223,19 +242,13 @@ function renderCandidateReview(review) {
         el('p', {
           class: 'measurement-row__meta',
           text: `${Number(review.delay.delay_ms).toFixed(3)} ms on the ` +
-            `${review.delay.role}`,
+            `${review.delay.role}` +
+            (declaredByDesign ? ' — kept as set, not measured this time' : ''),
         }),
       ]),
     ]));
   }
   if (hasPolarity) {
-    // WHERE the polarity came from, not just what it is (#2607 S3). The
-    // measurement can decline to decide this: when the capture's SNR is below
-    // the law a polarity decision is held to, the flow commits the polarity the
-    // PRESET declares and says so. The page must not call that "measured" — it
-    // is the one word a household would read as "we checked".
-    const declaredByDesign =
-      review.alignment_objective === 'declared_committed_after_low_snr';
     const polarityText = declaredByDesign
       ? 'As designed — this measurement could not check it'
       : review.polarity === 'invert'

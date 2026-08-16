@@ -123,6 +123,16 @@ function candidateReview(overrides) {
   }, overrides || {});
 }
 
+function rowText(title) {
+  const list = elements.get("crossover-review-body").children[0];
+  const row = list.children.find((child) => {
+    const heading = child.children && child.children[0] && child.children[0].children[0];
+    return heading && heading.textContent === title;
+  });
+  assert.ok(row, `a ${title} row rendered`);
+  return row.children[0].children[1].textContent;
+}
+
 function polarityRowText() {
   const list = elements.get("crossover-review-body").children[0];
   const row = list.children.find((child) => {
@@ -159,22 +169,64 @@ check(polarityRowText() === "Kept as set",
 // The low-SNR path always commits "keep", but the assertion is written against
 // the OBJECTIVE and not the polarity string: the copy must be safe whatever
 // polarity a future declared commitment carries.
-for (const polarity of ["keep", "invert"]) {
+// Every member of the refusal's objective set, not just the first one: the
+// delay half of the same refusal commits a DIFFERENT objective when the
+// speaker already carries an applied alignment to hold (#2617), and its
+// polarity is just as unmeasured. A one-string check here is what would let
+// that second commitment reach a household as "Inverted (measured)".
+for (const objective of [
+  "declared_committed_after_low_snr",
+  "applied_alignment_held_after_low_snr",
+  "no_delay_committed_after_unreadable_apply",
+]) {
+  for (const polarity of ["keep", "invert"]) {
+    render({
+      ...baseEnvelope,
+      candidate_review: candidateReview({
+        polarity,
+        alignment_objective: objective,
+      }),
+    });
+    const text = polarityRowText();
+    check(text === "As designed — this measurement could not check it",
+      `${objective} (${polarity}) says it was not checked`,
+      { got: text });
+    check(!/measured/i.test(text),
+      `${objective} (${polarity}) never says "measured"`,
+      { got: text });
+  }
+}
+
+// --- 3b. The DELAY row does not read as measured either (#2617 S-SF3) -----
+// The refusal commits a delay this capture did not supply — the one the
+// speaker already plays, or none. Rendering it as a bare number is the same
+// "we checked" the polarity row was fixed for: a household reading
+// "0.037 ms on the woofer" beside "this measurement could not check it" would
+// take the number as the half that WAS measured.
+for (const objective of [
+  "declared_committed_after_low_snr",
+  "applied_alignment_held_after_low_snr",
+  "no_delay_committed_after_unreadable_apply",
+]) {
   render({
     ...baseEnvelope,
-    candidate_review: candidateReview({
-      polarity,
-      alignment_objective: "declared_committed_after_low_snr",
-    }),
+    candidate_review: candidateReview({polarity: "keep", alignment_objective: objective}),
   });
-  const text = polarityRowText();
-  check(text === "As designed — this measurement could not check it",
-    `a declared-design commitment (${polarity}) says it was not checked`,
-    { got: text });
-  check(!/measured/i.test(text),
-    `a declared-design commitment (${polarity}) never says "measured"`,
-    { got: text });
+  const text = rowText("Alignment delay");
+  check(text === "0.037 ms on the woofer — kept as set, not measured this time",
+    `${objective} says the delay was not measured this time`, { got: text });
 }
+
+// …and a MEASURED round's delay row is untouched.
+render({
+  ...baseEnvelope,
+  candidate_review: candidateReview({
+    polarity: "keep",
+    alignment_objective: "flat_sum_committed",
+  }),
+});
+check(rowText("Alignment delay") === "0.037 ms on the woofer",
+  "a flat-sum delay row is unchanged", { got: rowText("Alignment delay") });
 
 // --- 4. A payload with NO objective renders exactly as before -------------
 // Older candidates carry no objective; the row must not change for them.

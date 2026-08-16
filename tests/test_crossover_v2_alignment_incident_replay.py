@@ -67,11 +67,13 @@ from jasper.active_speaker.branch_chain import (
     sections_by_role,
 )
 from jasper.audio_measurement.program_analysis import (
+    ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR,
     ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR,
     ALIGNMENT_COMMITTED_FLAT_SUM,
     ALIGNMENT_FLAT_MINIMUM_EPSILON_DB,
     ALIGNMENT_OK,
     AlignmentEstimate,
+    AppliedAlignment,
     _build_candidate,
     _ripple_db,
     _select_alignment_pair,
@@ -354,20 +356,10 @@ def test_a_delay_alone_cannot_rescue_the_inverted_pair():
     assert abs(at_inverted - ANCHOR_DELAY_US) > 200.0
 
 
-def test_insufficient_branch_snr_commits_the_declared_design():
-    """The precondition. With the incident's own tweeter verdict, the pair is
-    not searched at all: it is committed to the declared design at the physical
-    peak-gap anchor, and the objective string says which commitment that is.
-
-    Disclosed, not blocked (the never-nanny rule): the household still gets an
-    alignment, and it is the one the preset asks for rather than one read off a
-    -1.2 dB capture.
-    """
-    freqs, W, T = _declared_branches()
+def _refused_selection(freqs, W, T, *, applied_alignment=None):
+    """The incident's own inputs, with its own tweeter verdict refusing."""
     lo, hi = SESSION_CONTEXT["crossover_region_hz"]
-    assert SESSION_CONTEXT["capture_snr"]["tweeter"]["verdict"] == "insufficient"
-
-    selection = _select_alignment_pair(
+    return _select_alignment_pair(
         freqs, W, T,
         fc_hz=FC_HZ, lo_hz=lo, hi_hz=hi,
         trim_w_db=TRIM_W_DB, trim_t_db=TRIM_T_DB,
@@ -376,11 +368,33 @@ def test_insufficient_branch_snr_commits_the_declared_design():
         seed_polarity_sign=SEED_POLARITY_SIGN,
         delay_bounds_us=DELAY_BOUNDS_US,
         branch_snr_insufficient=True,
+        applied_alignment=applied_alignment,
     )
+
+
+def test_insufficient_branch_snr_commits_the_declared_design():
+    """The precondition. With the incident's own tweeter verdict, the pair is
+    not searched at all: it is committed to the declared design — declared
+    polarity, and no delay, because this speaker has none applied to hold — and
+    the objective string says which commitment that is.
+
+    Disclosed, not blocked (the never-nanny rule): the household still gets an
+    alignment, and it is the one the preset asks for rather than one read off a
+    -1.2 dB capture.
+    """
+    freqs, W, T = _declared_branches()
+    assert SESSION_CONTEXT["capture_snr"]["tweeter"]["verdict"] == "insufficient"
+
+    selection = _refused_selection(freqs, W, T)
     assert selection is not None
     assert selection.objective == ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR
     assert selection.polarity_sign == +1
-    assert selection.delay_us == pytest.approx(ANCHOR_DELAY_US)
+    # Neither the anchor nor the seed — both are this refused capture's own
+    # answer (#2617), and the anchor is exactly the quantity a low-SNR capture
+    # gets wrong.
+    assert selection.delay_us == 0.0
+    assert selection.delay_us != pytest.approx(ANCHOR_DELAY_US)
+    assert selection.delay_us != pytest.approx(SEED_DELAY_US)
     assert selection.grid_points == 1
     # The declined pair is still scored, so the record shows what was refused —
     # and the cross-check says NOT-ASKED rather than claiming a disagreement no
@@ -388,6 +402,47 @@ def test_insufficient_branch_snr_commits_the_declared_design():
     assert selection.seed_polarity_sign == SEED_POLARITY_SIGN
     assert selection.seed_ripple_db > 10.0
     assert selection.polarity_agrees_with_sum is None
+
+
+def test_a_refused_capture_holds_the_delay_this_speaker_already_plays():
+    """Issue #2617, on the incident's own branches.
+
+    The box had already applied 96.0 µs on the tweeter when this capture came
+    back refused. Holding that — the best configuration available given the
+    evidence, per the roadmap's ethos — is the commitment; the anchor this
+    capture produced is reported as declined evidence and never becomes the
+    delay. The polarity half is unchanged from #2607.
+
+    **What this banked fixture CANNOT discriminate, stated so it is not
+    misread** (#2622 correctness lens, C-n3): on this round the applied delay
+    and the correlation SEED are the same number — 95.997 µs, because the seed
+    is what the previous round committed — so an implementation that committed
+    ``seed_delay_us`` here would leave this test green. It discriminates
+    against the ANCHOR (61.87 µs, asserted below), which is the value #2617
+    removed, and that is the whole of what it proves. The seed half of the
+    invariant is pinned on a synthetic fixture where the two differ:
+    ``test_select_alignment_pair_holds_the_applied_delay_on_an_unmeasurable_branch``
+    in ``tests/test_audio_measurement_program_analysis.py`` (seed 90 µs,
+    anchor 25 µs, held −140 µs — three distinguishable numbers).
+    """
+    freqs, W, T = _declared_branches()
+    applied_us = APPLIED["delay_us"]
+
+    selection = _refused_selection(
+        freqs, W, T, applied_alignment=AppliedAlignment(applied_us),
+    )
+    assert selection is not None
+    assert selection.objective == ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR
+    assert selection.delay_us == pytest.approx(applied_us)
+    assert selection.delay_us != pytest.approx(ANCHOR_DELAY_US)
+    assert selection.polarity_sign == +1
+    assert selection.grid_points == 1
+    assert selection.polarity_agrees_with_sum is None
+    # The declined anchor is still scored beside it, exactly as on the
+    # no-applied-delay path — declining evidence is not discarding it.
+    assert selection.seed_ripple_db == pytest.approx(
+        _refused_selection(freqs, W, T).seed_ripple_db
+    )
 
 
 def test_the_production_candidate_build_ships_the_committed_pair():

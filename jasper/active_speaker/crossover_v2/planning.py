@@ -98,6 +98,7 @@ __all__ = [
     "FailureRecord",
     "alignment_to_candidate_fields",
     "analysis_json",
+    "applied_profile_delay_us",
     "build_candidate",
     "exclusion_evidence_json",
     "ineligible_reason",
@@ -229,6 +230,72 @@ def alignment_to_candidate_fields(
         role, magnitude = woofer_role, -delay_us
     polarity = POLARITY_INVERT if est.polarity == "inverted" else POLARITY_KEEP
     return magnitude, role, polarity
+
+
+def applied_profile_delay_us(
+    applied_profile: Mapping[str, Any] | None,
+    *,
+    woofer_role: str,
+    tweeter_role: str,
+) -> float | None:
+    """The inter-driver delay the APPLIED graph carries, in the analysis frame.
+
+    The inverse of :func:`alignment_to_candidate_fields`, and deliberately its
+    neighbour: that function folds a signed ``(D_woofer − D_tweeter)`` into
+    ``(magnitude, delayed role)`` on the way OUT to a candidate, and this one
+    unfolds the per-role magnitudes an applied profile stores back into the
+    signed frame on the way IN. One module owns both directions of that fold,
+    so a sign convention cannot drift between them.
+
+    **Its one consumer** (issue #2617) is
+    :class:`~jasper.audio_measurement.program_analysis.MeasurementPriors`'s
+    ``applied_alignment``, which the low-SNR alignment refusal commits instead
+    of a delay read off the capture it just called unusable. Nothing else reads
+    it, and in particular the scored path never does — a capture good enough to
+    score must not be pulled toward the answer the speaker already has.
+
+    **Which copy is not decided here.**
+    :func:`~jasper.active_speaker.baseline_profile.profile_driver_corrections`
+    owns that: snapshot-authoritative with the top-level mirror as the
+    era-older fallback, the same rule
+    :func:`~jasper.active_speaker.baseline_profile.profile_linearization` and
+    :func:`~jasper.active_speaker.crossover_v2.commanded.profile_graph_summation`
+    already read through. This function once traversed the snapshot itself and
+    returned ``None`` on a mirror-only profile: a second implementation with
+    STRICTER era semantics than the owner's, which made a legacy speaker's
+    held delay unreadable and committed no delay in its place (#2622 safety
+    lens, S-SF1/S-n5). It is now a consumer, and adding an era to that reader
+    reaches every consumer at once.
+
+    The subtraction mirrors ``commanded.profile_graph_summation``'s, including
+    why an absent ``delay_ms`` is a ZERO rather than a gap: the profile records
+    a magnitude only on whichever role is delayed
+    (``MeasuredCrossoverCandidate.driver_corrections``), so its absence on the
+    other role is a statement. What is NOT tolerated is a role the corrections
+    do not mention at all, or a non-finite value — those are profiles that do
+    not say, and the ``None`` they earn is a different commitment downstream
+    from a readable ``0.0``.
+
+    ``None`` — never a guessed ``0.0`` — when there is no applied profile, when
+    the authoritative corrections name neither/only one of the two roles, or
+    when the arithmetic is not finite. Conflating "nothing is applied" with
+    "zero is applied" here would take that decision away from the caller, which
+    discloses the two as different objectives.
+    """
+    from jasper.active_speaker.baseline_profile import profile_driver_corrections
+
+    corrections = profile_driver_corrections(applied_profile)
+    woofer, tweeter = corrections.get(woofer_role), corrections.get(tweeter_role)
+    if not isinstance(woofer, Mapping) or not isinstance(tweeter, Mapping):
+        return None
+    try:
+        delay_us = 1000.0 * (
+            float(tweeter.get("delay_ms") or 0.0)
+            - float(woofer.get("delay_ms") or 0.0)
+        )
+    except (TypeError, ValueError):
+        return None
+    return delay_us if math.isfinite(delay_us) else None
 
 
 def analysis_json(analysis: ProgramAnalysis) -> dict[str, Any]:

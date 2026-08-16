@@ -65,14 +65,18 @@ from jasper.audio_measurement.program import (
     render_program_pcm,
 )
 from jasper.audio_measurement.program_analysis import (
+    ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR,
     ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR,
+    ALIGNMENT_COMMITTED_NONE_AFTER_UNREADABLE_APPLY,
     ALIGNMENT_COMMITTED_FLAT_SUM,
+    ALIGNMENT_DECLARED_POLARITY_OBJECTIVES,
     ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
     ALIGNMENT_FLATNESS_MAX_STEPS,
     ALIGNMENT_FLATNESS_STEP_US,
     ALIGNMENT_OK,
     ALIGNMENT_SNR_REFUSAL_VERDICT,
     AMBIENT_MIN_USABLE_FRACTION,
+    AppliedAlignment,
     AMBIENT_NONSTATIONARITY_DB,
     CAPTURE_BOUND_MARGIN_S,
     GAIN_MAX_DIGITAL_PEAK_DBFS,
@@ -2589,8 +2593,9 @@ def test_select_alignment_pair_refuses_to_flip_on_an_unmeasurable_branch():
 
     The same inputs that make the objective flip the sign above are handed to
     it again with the capture calling one branch unmeasurable. It commits the
-    DECLARED design at the physical anchor instead of a sign read off noise,
-    scores the declined seed anyway, and names which commitment it made.
+    DECLARED design — polarity AND, with nothing applied to hold, no delay —
+    instead of a pair read off noise, scores the declined seed anyway, and
+    names which commitment it made.
     """
     freqs, W, T = _lr4_branches()
     kwargs = dict(
@@ -2605,9 +2610,11 @@ def test_select_alignment_pair_refuses_to_flip_on_an_unmeasurable_branch():
     assert trusted is not None and refused is not None
     assert trusted.objective == ALIGNMENT_COMMITTED_FLAT_SUM
     assert refused.objective == ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR
-    # Declared polarity, physical anchor, no search.
+    # Declared polarity, no search — and no delay, because neither the anchor
+    # (25.0) nor the seed (90.0) may be committed here: both are this refused
+    # capture's own answer (#2617).
     assert refused.polarity_sign == 1
-    assert refused.delay_us == pytest.approx(25.0)
+    assert refused.delay_us == 0.0
     assert refused.grid_points == 1
     # Disclosed, not silent: the refused pair is still scored and reported.
     assert refused.seed_polarity_sign == -1
@@ -2617,6 +2624,79 @@ def test_select_alignment_pair_refuses_to_flip_on_an_unmeasurable_branch():
     # never happened.
     assert refused.polarity_agrees_with_sum is None
     assert trusted.polarity_agrees_with_sum is False
+
+
+def test_select_alignment_pair_holds_the_applied_delay_on_an_unmeasurable_branch():
+    """Issue #2617: the refusal's delay half.
+
+    A speaker that already runs a commissioned alignment gets that alignment
+    HELD — the ethos's best-available rule — rather than a fresh number read
+    off the capture the SNR verdict just refused. The anchor and the seed are
+    both offered and both declined, and the objective says which commitment
+    this is, so a persisted candidate distinguishes "we held what this speaker
+    plays" from "the design asks for none".
+    """
+    freqs, W, T = _lr4_branches()
+    kwargs = dict(
+        fc_hz=2000.0, lo_hz=1000.0, hi_hz=4000.0,
+        trim_w_db=0.0, trim_t_db=0.0,
+        anchor_delay_us=25.0, seed_delay_us=90.0, seed_polarity_sign=-1,
+        branch_snr_insufficient=True,
+    )
+    held = _select_alignment_pair(
+        freqs, W, T, **kwargs, applied_alignment=AppliedAlignment(-140.0),
+    )
+    assert held is not None
+    assert held.objective == ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR
+    assert held.delay_us == pytest.approx(-140.0)
+    assert held.polarity_sign == 1
+    assert held.grid_points == 1
+    assert held.polarity_agrees_with_sum is None
+    # An applied delay of exactly zero is still a READ applied alignment, not
+    # an absent one: the objective, not the value, is what says a prior existed.
+    zero = _select_alignment_pair(
+        freqs, W, T, **kwargs, applied_alignment=AppliedAlignment(0.0),
+    )
+    assert zero is not None
+    assert zero.objective == ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR
+    assert zero.delay_us == 0.0
+    # THIRD arm: a graph IS applied and its record does not say what it plays.
+    # Same 0.0 as the no-profile arm, but "the design asks for none" would be a
+    # claim about this speaker that nothing checked, so the record says which.
+    unreadable = _select_alignment_pair(
+        freqs, W, T, **kwargs, applied_alignment=AppliedAlignment(None),
+    )
+    assert unreadable is not None
+    assert unreadable.objective == ALIGNMENT_COMMITTED_NONE_AFTER_UNREADABLE_APPLY
+    assert unreadable.delay_us == 0.0
+    assert unreadable.polarity_sign == 1
+    # All three commit the DECLARED polarity, so all three must be in the set
+    # the estimate-publish gate and the household copy branch on.
+    assert {held.objective, zero.objective, unreadable.objective} <= (
+        ALIGNMENT_DECLARED_POLARITY_OBJECTIVES
+    )
+
+
+def test_the_applied_delay_never_reaches_a_capture_good_enough_to_score():
+    """The prior is scoped to the refusal and nothing else.
+
+    Handing the same applied delay to a TRUSTED capture must change nothing:
+    a capture the SNR policy accepted is graded on its own evidence, and a
+    selector that could be nudged toward the answer the speaker already has
+    would make every re-measurement partly a copy of the last one.
+    """
+    freqs, W, T = _lr4_branches()
+    kwargs = dict(
+        fc_hz=2000.0, lo_hz=1000.0, hi_hz=4000.0,
+        trim_w_db=0.0, trim_t_db=0.0,
+        anchor_delay_us=25.0, seed_delay_us=90.0, seed_polarity_sign=-1,
+    )
+    blind = _select_alignment_pair(freqs, W, T, **kwargs)
+    told = _select_alignment_pair(
+        freqs, W, T, **kwargs, applied_alignment=AppliedAlignment(-140.0),
+    )
+    assert blind is not None and told is not None
+    assert told == blind
 
 
 @pytest.mark.parametrize(
@@ -2694,6 +2774,313 @@ def test_measure_analysis_refuses_the_flip_when_a_branch_snr_is_insufficient(
     # (None) on the refusal, which never put a flat sum on the polarity axis.
     assert res.candidate.seed_polarity_sign == -1
     assert res.alignment.polarity_agrees_with_sum is expected_cross_check
+
+
+def _refused_two_way_analysis(applied_alignment=None, *, ambient=None):
+    """A MEASURE analysis whose tweeter branch the ALIGNMENT law refuses.
+
+    The -48 dB row of the parametrization above — inside the 15 dB window
+    where the magnitude law passes and the alignment law does not — so the
+    refusal is produced by the production SNR policy rather than asserted.
+    """
+    ambient = ambient or {
+        "schema_version": 1,
+        "bands": [
+            {"band_id": "low", "band_hz": [150.0, 1000.0], "level_dbfs": -90.0},
+            {"band_id": "mid", "band_hz": [1000.0, 4000.0], "level_dbfs": -90.0},
+            {"band_id": "high", "band_hz": [4000.0, 16000.0], "level_dbfs": -90.0},
+        ],
+    }
+    prog = build_measure_program(
+        {"woofer": -11.0, "tweeter": -48.0}, _roles(),
+        sweep_durations={"woofer": 0.8, "tweeter": 0.6},
+    )
+    cap = _synthesize(
+        prog,
+        woofer_ir=_band_impulse(200, 150.0, 6000.0, 1.0),
+        tweeter_ir=_band_impulse(225, 300.0, 20000.0, -0.7),
+        epsilon=80e-6,
+    )
+    return analyze_program_capture(
+        prog, cap, SR,
+        priors=MeasurementPriors(
+            crossover_fc_hz=FC_HZ, ambient_report=ambient,
+            applied_alignment=applied_alignment,
+        ),
+        geometry=MeasurementGeometry(),
+    )
+
+
+def test_measure_analysis_holds_the_applied_delay_when_a_branch_is_unmeasurable(
+    caplog,
+):
+    """Issue #2617, end to end through ``analyze_program_capture``.
+
+    Same refused capture twice: told what the speaker already plays, and not.
+    Told, it commits exactly that — on the CANDIDATE and on the published
+    ``AlignmentEstimate`` that ``alignment_to_candidate_fields`` turns into the
+    apply — and never the anchor this capture produced. Not told, it commits no
+    delay. The polarity is the declared design either way (#2607, unchanged),
+    which is what makes this the delay HALF of one refusal rather than a
+    second, competing one.
+    """
+    caplog.set_level(logging.INFO)
+    held = _refused_two_way_analysis(AppliedAlignment(59.6))
+    assert held.candidate.alignment_objective == (
+        ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR
+    )
+    assert held.candidate.delay_us == pytest.approx(59.6)
+    assert held.alignment.delay_us == pytest.approx(59.6)
+    # The anchor is REPORTED (it is evidence) and DECLINED (it is this
+    # capture's own answer). Those must be two different numbers, or the fix
+    # is not doing anything.
+    assert held.candidate.anchor_delay_us is not None
+    assert held.candidate.anchor_delay_us != pytest.approx(59.6)
+    # #2607's half, unchanged: the polarity is the preset's declaration, and
+    # nothing claims a flat sum answered it.
+    assert held.candidate.polarity == "normal"
+    assert held.alignment.polarity == "normal"
+    assert held.alignment.polarity_agrees_with_sum is None
+    # The reason is readable in one line, with both numbers on it.
+    line = next(
+        rec.getMessage() for rec in caplog.records
+        if "program_analysis.alignment_selection" in rec.getMessage()
+    )
+    assert "objective=applied_alignment_held_after_low_snr" in line
+    assert "applied_delay_us=59.6" in line
+    assert "branch_snr_insufficient=true" in line
+    assert "anchor_delay_us=" in line
+
+    none_applied = _refused_two_way_analysis()
+    assert none_applied.candidate.alignment_objective == (
+        ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR
+    )
+    assert none_applied.candidate.delay_us == 0.0
+    assert none_applied.alignment.delay_us == 0.0
+    assert none_applied.candidate.polarity == "normal"
+
+
+def test_the_2611_anchor_outlier_never_becomes_the_commitment():
+    """The measured hazard, as a scenario (2026-08-16 jts3, issue #2611).
+
+    Nine positions read the anchor: +59.6 µs on-axis — the shipped, correct
+    value — against six clustered near -211 µs. The GOOD anchor was the
+    outlier, so a refused capture that commits its own anchor re-rolls that
+    die every round. Here the capture's anchor is forced to the -211 µs
+    cluster while the speaker already plays +59.6: the commitment must be
+    +59.6, and the roughly -270 µs of commanded correction that would have
+    computed a deep null must never enter the candidate.
+    """
+    fc_hz, lo_hz, hi_hz = 1885.0, 942.5, 3770.0
+    #: The gap this speaker's drivers really have — the on-axis anchor, and the
+    #: value the shipped tune carried. A refused capture cannot see it.
+    true_gap_us = 59.6
+    #: What SIX of the nine positions read instead.
+    outlier_anchor_us = -211.0
+    freqs, W, T = _lr4_branches(fc_hz=fc_hz)
+    kwargs = dict(
+        fc_hz=fc_hz, lo_hz=lo_hz, hi_hz=hi_hz,
+        trim_w_db=0.0, trim_t_db=0.0,
+        anchor_delay_us=outlier_anchor_us, seed_delay_us=outlier_anchor_us,
+        seed_polarity_sign=-1,
+        branch_snr_insufficient=True,
+    )
+    held = _select_alignment_pair(
+        freqs, W, T, **kwargs, applied_alignment=AppliedAlignment(true_gap_us),
+    )
+    assert held is not None
+    assert held.delay_us == pytest.approx(true_gap_us)
+    assert held.objective == ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR
+    # The compensating disclosure: 270.6 µs is more than half a period at
+    # 1885 Hz (265.3 µs), so the record says the held delay and this capture's
+    # anchor disagree by more than the lobe the anchor owns — and that raises
+    # the selection log to WARNING.
+    assert held.left_anchor_lobe is True
+
+    # What each candidate commitment does to the SPEAKER — scored against the
+    # TRUE gap, which is the frame the emitted graph actually runs in and the
+    # one no refused capture can supply. This is the -36 dB-hole class of
+    # commanded null in first-principles form.
+    band = (freqs >= lo_hz) & (freqs <= hi_hz)
+
+    def emitted_ripple_db(committed_us: float) -> float:
+        summed = predicted_branch_sum(
+            W[band], T[band], 0.0, 0.0, 1, freqs_hz=freqs[band],
+            residual_delay_us=summed_model_residual_delay_us(
+                true_gap_us, committed_us,
+            ),
+        )
+        return _ripple_db(freqs[band], summed, lo_hz, hi_hz)
+
+    assert emitted_ripple_db(outlier_anchor_us) > 30.0, (
+        "the pre-#2617 commitment — this capture's own anchor — commands a null"
+    )
+    assert emitted_ripple_db(held.delay_us) < 0.01
+    # And the degraded commitment, for a speaker with nothing to hold: a mild
+    # penalty, not a null. That is the whole defence of committing 0.0 rather
+    # than parking the alignment (never-nanny: best available, disclosed).
+    none_applied = _select_alignment_pair(freqs, W, T, **kwargs)
+    assert none_applied is not None
+    assert none_applied.delay_us == 0.0
+    assert emitted_ripple_db(none_applied.delay_us) < 1.0
+
+
+#: The 2026-08-16 jts3 numbers, as the two models one held round can ship: the
+#: applied graph's own +59.6 us commitment against a refused capture's -211 us
+#: anchor is a 270.6 us disagreement, and half a period at 1885 Hz is 265.3 us.
+HELD_ROUND_FC_HZ = 1885.0
+HELD_ROUND_RESIDUAL_US = 270.6
+
+
+def _held_round_models():
+    """The shipped and the pre-#2617-scoping summed models of ONE held round.
+
+    The same branches under the same commitment, differing only in whether the
+    refused capture's anchor is allowed to phase the curve — which is exactly
+    the difference ``summed_model_residual_delay_us`` now withholds.
+    """
+    freqs, W, T = _lr4_branches(fc_hz=HELD_ROUND_FC_HZ)
+
+    def _curve(residual_us):
+        summed = predicted_branch_sum(
+            W, T, 0.0, 0.0, 1, freqs_hz=freqs, residual_delay_us=residual_us,
+        )
+        return freqs, 20.0 * np.log10(np.maximum(np.abs(summed), 1e-12))
+
+    return _curve(0.0), _curve(HELD_ROUND_RESIDUAL_US)
+
+
+def test_a_held_rounds_model_does_not_carry_the_refused_anchors_residual():
+    """#2617 safety lens S-SF2, at the source, end to end.
+
+    ``predicted_sum`` is not a drawing: the accountability gate can refuse a
+    candidate on it and VERIFY tracking can fail a round on it. On the refused
+    path the committed delay came from the applied graph and the anchor came
+    from a capture the SNR policy called unusable FOR ALIGNMENT, so phasing the
+    model by their difference fabricates a comb the emitted graph need not
+    have.
+
+    Pinned through the two numbers the analysis publishes rather than by
+    rebuilding the branches: ``predicted_ripple_db`` is BY CONSTRUCTION the
+    zero-residual ripple, so the shipped ``predicted_sum`` matching it IS the
+    statement that no residual phased it. The disagreement is still recorded on
+    ``snap_delta_us`` — withheld from the model, not from the receipt.
+    """
+    res = _refused_two_way_analysis(AppliedAlignment(59.6))
+    assert res.candidate.alignment_objective == (
+        ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR
+    )
+    withheld_us = summed_model_residual_delay_us(
+        res.candidate.anchor_delay_us, res.candidate.delay_us,
+    )
+    assert abs(withheld_us) > 100.0, "the fixture must produce a large residual"
+
+    freqs, predicted_db = res.predicted_sum
+    lo, hi = overlap_band_hz(FC_HZ)
+    band = (freqs >= lo) & (freqs <= hi)
+    shipped_ripple = float(
+        np.max(predicted_db[band]) - np.min(predicted_db[band])
+    )
+    assert shipped_ripple == pytest.approx(res.candidate.predicted_ripple_db, abs=1e-9)
+    assert res.candidate.snap_delta_us == pytest.approx(withheld_us)
+
+
+def test_a_held_round_is_not_refused_by_the_accountability_prediction_gate():
+    """Drive both models through the gate that can KILL a candidate.
+
+    Design constraint (#2622 panel): a predicted-vs-spec comparison leaning on
+    the UNTRUSTED anchor must not refuse a held round. The evaluator and the
+    gate are the production ones; only the curve differs.
+    """
+    from jasper.active_speaker.crossover_v2 import accountability
+    from jasper.active_speaker.crossover_v2.candidates import LinearizationState
+    from jasper.active_speaker.crossover_v2_flow import (
+        LEVEL_FRAME_AGREEMENT_TOLERANCE_DB,
+        PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
+        spec_report_for_predicted_sum,
+    )
+
+    shipped, combed = _held_round_models()
+
+    def _decide(predicted):
+        # The FITTED arm — the one that can refuse. A pre-fit curve barely
+        # worse than the post-fit one is what puts the improvement comparison
+        # under its material threshold, so the verdict turns entirely on
+        # whether the post-fit curve met the spec on its own.
+        freqs, db = predicted
+        raw = (freqs, db - 0.05)
+        return accountability.assess_accountability(
+            predicted_sum=predicted,
+            raw_predicted_sum=raw,
+            state=LinearizationState(outcome="fitted", linearized_predicted_sum=predicted),
+            grade_prediction=spec_report_for_predicted_sum,
+            level_frame_tolerance_db=LEVEL_FRAME_AGREEMENT_TOLERANCE_DB,
+            material_improvement_db=PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
+            reason_levels_disagree="driver_levels_disagree",
+            reason_not_an_improvement="correction_not_an_improvement",
+        )
+
+    # The held round survives its own gate…
+    assert _decide(shipped).refusal_reason is None
+    # …and would NOT have, on the curve the refused anchor phased. This is the
+    # kill S-SF2 named: a correctly-aligned speaker refused by arithmetic over
+    # an anchor its own capture disowned.
+    assert _decide(combed).refusal_reason == "correction_not_an_improvement"
+    # The evaluator's own read of the two, so the mechanism is visible and not
+    # merely the verdict.
+    shipped_report = spec_report_for_predicted_sum(shipped)
+    combed_report = spec_report_for_predicted_sum(combed)
+    assert shipped_report is not None and combed_report is not None
+    assert shipped_report.overall_passed
+    assert not combed_report.overall_passed
+
+
+def test_verify_tracking_passes_a_held_round_and_still_fails_a_real_comb():
+    """Drive both models through the gate that can FAIL a round.
+
+    Three cases, one grader (``verification.evaluate_realization`` at the
+    shipped ``VERIFY_TOLERANCE_DB``): a correctly-aligned speaker measured
+    against the SHIPPED model MATCHES; measured against the model the refused
+    anchor would have phased it FAILS — a round rolled back by arithmetic; and
+    a speaker that REALLY combs still FAILS against the shipped model, which is
+    the half of the constraint that must not be bought with leniency.
+    """
+    from jasper.active_speaker.crossover_v2 import verification
+    from jasper.active_speaker.crossover_v2.contracts import RealizationStatus
+    from jasper.active_speaker.crossover_v2_flow import VERIFY_TOLERANCE_DB
+
+    shipped, combed = _held_round_models()
+
+    def _tracking(measured_ir, predicted):
+        prog = build_verify_program(FC_HZ, sweep_s=1.5)
+        pcm = render_program_pcm(prog)
+        mono = fftconvolve(pcm[:, 0], measured_ir)[: pcm.shape[0]]
+        cap = np.concatenate([np.zeros(800), mono, np.zeros(5000)])
+        cap = cap + np.random.default_rng(11).normal(0.0, 1e-4, cap.size)
+        return analyze_program_capture(
+            prog, cap, SR,
+            priors=MeasurementPriors(
+                crossover_fc_hz=FC_HZ, predicted_sum=predicted,
+            ),
+        ).verify_tracking
+
+    def _verdict(tracking):
+        return verification.evaluate_realization(
+            tracking=tracking, tolerance_db=VERIFY_TOLERANCE_DB,
+        ).status
+
+    # A speaker whose emitted graph is correct: one clean arrival.
+    aligned_ir = _band_impulse(200, 150.0, 20000.0, 1.0, n=8192)
+    # A speaker that really combs: the same arrival plus a delayed copy, which
+    # is what a WRONG alignment sounds like.
+    combed_ir = aligned_ir.copy()
+    combed_ir[200 + int(round(270e-6 * SR)):] += aligned_ir[
+        200:len(aligned_ir) - int(round(270e-6 * SR))
+    ]
+
+    assert _verdict(_tracking(aligned_ir, shipped)) is RealizationStatus.MATCHED
+    assert _verdict(_tracking(aligned_ir, combed)) is RealizationStatus.FAILED
+    assert _verdict(_tracking(combed_ir, shipped)) is RealizationStatus.FAILED
 
 
 # --------------------------------------------------------------------------- #

@@ -1129,6 +1129,227 @@ def test_measure_priors_thread_declared_delay_magnitudes_without_applied_target(
     assert alignment_delay_search_bounds_us(fresh) == expected
 
 
+def _applied_profile(*, woofer_delay_ms, tweeter_delay_ms, in_snapshot=True):
+    """An applied Layer-A record carrying one per-role delay pair."""
+    corrections = {
+        "woofer": {"gain_db": -3.0, "delay_ms": woofer_delay_ms, "inverted": False},
+        "tweeter": {"gain_db": 0.0, "delay_ms": tweeter_delay_ms, "inverted": False},
+    }
+    profile = {"status": "applied", "corrections": corrections}
+    if in_snapshot:
+        profile["recomposition_snapshot"] = {"corrections": corrections}
+    return profile
+
+
+@pytest.mark.parametrize(
+    ("woofer_ms", "tweeter_ms", "expected_us"),
+    [
+        # Positive ⇒ the tweeter is the delayed role, matching
+        # `alignment_to_candidate_fields`'s own fold in the other direction.
+        (0.0, 0.0596, 59.6),
+        (0.211, 0.0, -211.0),
+        (0.0, 0.0, 0.0),
+    ],
+    ids=["tweeter_delayed", "woofer_delayed", "no_delay_applied"],
+)
+def test_applied_profile_delay_reads_back_in_the_analysis_sign_frame(
+    woofer_ms, tweeter_ms, expected_us,
+):
+    """#2617's carry-forward value, and the sign contract it shares.
+
+    The applied profile stores a non-negative magnitude per role; the analysis
+    speaks one signed ``(D_woofer - D_tweeter)``. This reader is the inverse of
+    ``alignment_to_candidate_fields``, so a round trip through both must be the
+    identity — that is what stops the two halves of one convention drifting.
+    """
+    got = planning.applied_profile_delay_us(
+        _applied_profile(woofer_delay_ms=woofer_ms, tweeter_delay_ms=tweeter_ms),
+        woofer_role="woofer", tweeter_role="tweeter",
+    )
+    assert got == pytest.approx(expected_us)
+
+    # The round trip, against the forward fold this is the inverse of.
+    analysis = types.SimpleNamespace(
+        alignment=types.SimpleNamespace(
+            delay_us=got, status=ALIGNMENT_OK, polarity="normal",
+        ),
+    )
+    magnitude, role, _polarity = alignment_to_candidate_fields(
+        analysis, woofer_role="woofer", tweeter_role="tweeter",
+    )
+    assert magnitude == pytest.approx(abs(expected_us))
+    assert role == ("tweeter" if expected_us >= 0.0 else "woofer")
+
+
+def test_a_mirror_only_profile_still_yields_the_delay_it_plays():
+    """S-SF1: the era rule is the OWNER's, not a second stricter one.
+
+    A profile whose corrections live only in the top-level mirror — the older
+    on-disk era — is still a speaker with a delay in its graph. This reader
+    once traversed ``recomposition_snapshot`` itself and returned ``None``
+    here, which committed no delay on a speaker that plays one and labelled it
+    "the design asks for none". It now consumes
+    ``baseline_profile.profile_driver_corrections``, so it inherits the mirror
+    fallback ``profile_linearization`` and ``commanded.profile_graph_summation``
+    already read through, and a future era reaches all three at once.
+    """
+    mirror_only = _applied_profile(
+        woofer_delay_ms=0.0, tweeter_delay_ms=0.0596, in_snapshot=False,
+    )
+    assert "recomposition_snapshot" not in mirror_only
+    assert planning.applied_profile_delay_us(
+        mirror_only, woofer_role="woofer", tweeter_role="tweeter",
+    ) == pytest.approx(59.6)
+
+
+def test_the_snapshot_wins_when_a_profile_carries_both_copies():
+    """Authoritative, not merely present — the owner's preference, inherited.
+
+    A profile written by the current era carries both copies; the snapshot is
+    what ``recompose_applied_baseline_yaml`` re-emits from, so it is the delay
+    the speaker plays. Pinned with the two copies DISAGREEING, which is the
+    only shape in which the preference is observable.
+    """
+    profile = _applied_profile(woofer_delay_ms=0.0, tweeter_delay_ms=0.0596)
+    profile["corrections"] = {
+        "woofer": {"gain_db": -3.0, "delay_ms": 0.5, "inverted": False},
+        "tweeter": {"gain_db": 0.0, "delay_ms": 0.0, "inverted": False},
+    }
+    assert planning.applied_profile_delay_us(
+        profile, woofer_role="woofer", tweeter_role="tweeter",
+    ) == pytest.approx(59.6)
+
+
+@pytest.mark.parametrize(
+    ("profile", "why"),
+    [
+        (None, "nothing has been commissioned"),
+        ({"status": "applied"}, "no corrections in either copy"),
+        (
+            {"recomposition_snapshot": {"corrections": {
+                "tweeter": {"gain_db": 0.0, "delay_ms": 0.0596, "inverted": False},
+            }}},
+            "a role the corrections never mention is unreadable, not zero",
+        ),
+        (
+            {"recomposition_snapshot": {"corrections": {
+                "woofer": {"delay_ms": float("nan")},
+                "tweeter": {"delay_ms": 0.0596},
+            }}},
+            "a non-finite delay is not a delay",
+        ),
+    ],
+    ids=["absent", "no_corrections", "missing_role", "non_finite"],
+)
+def test_an_unreadable_applied_delay_is_none_and_never_a_guessed_zero(profile, why):
+    """``None`` and ``0.0`` are different facts and must stay different.
+
+    ``0.0`` is "this speaker plays no relative delay"; ``None`` is "nobody can
+    say what it plays". The low-SNR refusal commits the same number either way
+    and records a DIFFERENT objective, so collapsing them here would make a
+    persisted candidate claim the design asks for no delay on a speaker nobody
+    could read.
+
+    A role present without ``delay_ms`` is deliberately NOT in this list: the
+    profile records a magnitude only on whichever role is delayed, so its
+    absence there is a statement of zero — the same reading
+    ``commanded.profile_graph_summation`` takes of the same field.
+    """
+    assert planning.applied_profile_delay_us(
+        profile, woofer_role="woofer", tweeter_role="tweeter",
+    ) is None, why
+
+
+def test_a_role_named_without_a_delay_reads_as_zero_not_unreadable():
+    """The counterpart of the row above, stated rather than implied."""
+    assert planning.applied_profile_delay_us(
+        {"recomposition_snapshot": {"corrections": {
+            "woofer": {"gain_db": -3.0, "inverted": False},
+            "tweeter": {"gain_db": 0.0, "delay_ms": 0.0596, "inverted": False},
+        }}},
+        woofer_role="woofer", tweeter_role="tweeter",
+    ) == pytest.approx(59.6)
+
+
+def test_measure_priors_carry_the_applied_alignment_and_no_other_phase_does(
+    monkeypatch,
+):
+    """The seam: the session reads Layer-A state, the analysis is handed it.
+
+    Contract #4 — the analysis is a pure function of (program, WAV, priors) —
+    is what makes this a prior rather than a read from inside the analyzer.
+    And MEASURE is the only phase that commits an alignment, so it is the only
+    phase told what the speaker already plays: handing it to VERIFY would put
+    the current answer inside the comparison meant to be independent of it.
+    """
+    monkeypatch.setattr(
+        "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
+        lambda *a, **k: _applied_profile(
+            woofer_delay_ms=0.0, tweeter_delay_ms=0.0596,
+        ),
+    )
+    c = _conductor(FakeSeams())
+
+    applied = c._measure_priors().applied_alignment
+    assert applied is not None and applied.delay_us == pytest.approx(59.6)
+    for factory in (
+        c._check_priors, c._verify_priors, c._cloud_priors,
+        c._lateral_priors, c._entry_baseline_priors,
+    ):
+        assert factory().applied_alignment is None, factory.__name__
+
+
+@pytest.mark.parametrize(
+    ("loader", "expected_present", "why"),
+    [
+        (lambda *a, **k: None, False, "nothing applied ⇒ the design's own answer"),
+        (
+            lambda *a, **k: {"status": "applied", "recomposition_snapshot": {}},
+            True,
+            "a graph IS applied and its record does not say what it plays",
+        ),
+    ],
+    ids=["nothing_applied", "applied_but_unreadable"],
+)
+def test_the_session_separates_nothing_applied_from_unreadably_applied(
+    monkeypatch, loader, expected_present, why,
+):
+    """S-SF1's disclosure: the two cases commit the same delay, not the same claim.
+
+    Both end at "commit no delay", and the selector gives them different
+    objectives — but only if the seam preserves the distinction on the way in.
+    ``None`` says the design's answer stands; an ``AppliedAlignment`` with no
+    delay says something is playing that nobody could read.
+    """
+    monkeypatch.setattr(
+        "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
+        loader,
+    )
+    applied = _conductor(FakeSeams())._measure_priors().applied_alignment
+
+    assert (applied is not None) is expected_present, why
+    if applied is not None:
+        assert applied.delay_us is None
+
+
+def test_an_unreadable_applied_profile_never_fails_a_measure_analysis(monkeypatch):
+    """A structurally-wrong state file reads as "nothing applied", not a crash.
+
+    The consumer's fail-safe is "commit no delay", which is a worse tune and a
+    working speaker; raising here would lose the whole capture over a fact one
+    refusal path consults.
+    """
+    def _raise(*_a, **_k):
+        raise ValueError("hand-edited state file")
+
+    monkeypatch.setattr(
+        "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
+        _raise,
+    )
+    c = _conductor(FakeSeams())
+    assert c._measure_priors().applied_alignment is None
+
+
 def test_measure_priors_compose_configured_path_from_ssots_and_freeze_input():
     raw = _two_way_preset()
     raw["crossover_regions"][0]["upper_polarity"] = "inverted"

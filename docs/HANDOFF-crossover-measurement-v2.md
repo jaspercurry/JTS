@@ -4219,11 +4219,27 @@ branch feeding the alignment carries an `insufficient` verdict from the
 rung, per-band evidence required), the pair is not searched. It is COMMITTED to
 the declared design — relative polarity `+1`, which in the configured-polarity
 frame the branch TFs already carry means "the polarity the preset declares",
-the same target VERIFY grades against — at the physical anchor. Disclosed,
-never a hard stop: the household still gets an alignment,
-`alignment_objective` is `declared_committed_after_low_snr`, the declined seed
-is still scored (so `flatness_improvement_db` goes honestly negative), and the
-selection log line is a WARNING.
+the same target VERIFY grades against — at a delay this capture did not supply.
+Disclosed, never a hard stop: the household still gets an alignment, the
+declined seed is still scored (so `flatness_improvement_db` goes honestly
+negative), and the selection log line is a WARNING.
+
+> **Superseded on the DELAY half by issue #2617 (2026-08-16), after this
+> entry was written.** It used to commit the physical anchor here — a fresh
+> number off the capture the verdict had just refused, which is exactly the
+> quantity a low-SNR capture gets wrong (#2611: six of nine jts3 positions
+> read ≈ −211 µs against a true +59.6). It now holds the delay the applied
+> graph already carries, or commits none when there is nothing to hold or
+> nothing readable, and those are three different `alignment_objective`
+> values. The summed model that round ships also stops carrying
+> `committed − anchor`, so an anchor the capture disowned cannot refuse a
+> candidate through the accountability gate or fail a round through VERIFY
+> tracking — while every MEASURED-vs-spec verdict stays live. The contract,
+> the priors seam it arrives through, and the disclosure are **code-owned**:
+> read `_select_alignment_pair`'s and `summed_model_residual_delay_us`'s
+> docstrings and `MeasurementPriors.applied_alignment` in
+> [`program_analysis.py`](../jasper/audio_measurement/program_analysis.py),
+> not a restatement here.
 
 `_driver_snr_block` computes BOTH classes off one set of band measurements and
 files the alignment one under `DRIVER_SNR_ALIGNMENT_KEY`; the magnitude verdict
@@ -4236,9 +4252,10 @@ off a capture the repo's own law calls unusable shipped unrefused (#2607 S1).
 computed, ordinary for a session whose CHECK carried no ambient window.
 
 **What the candidate records.** `alignment_objective` (one of
-`ALIGNMENT_COMMITMENTS`: `flat_sum_committed`,
-`declared_committed_after_low_snr`, `seed_committed_no_scoring_band`,
-`seed_committed_alignment_refused`), `seed_polarity_sign` and
+`ALIGNMENT_COMMITMENTS` — the set is code-owned and gained
+`applied_alignment_held_after_low_snr` in #2617; read the constants block in
+[`program_analysis.py`](../jasper/audio_measurement/program_analysis.py) rather
+than this list), `seed_polarity_sign` and
 `left_anchor_lobe`, plus `AlignmentEstimate.polarity_agrees_with_sum` — the
 cross-check that had no production reader before #2598 and now travels in
 `analysis_json`, the retention sidecar's `analysis_diagnostic_summary`, and

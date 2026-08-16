@@ -395,22 +395,69 @@ ALIGNMENT_FLAT_MINIMUM_EPSILON_DB = 0.25
 #: qualifier ("after low SNR") rides a commitment rather than replacing it.
 ALIGNMENT_COMMITTED_FLAT_SUM = "flat_sum_committed"
 ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR = "declared_committed_after_low_snr"
+#: The same refusal as the line above, on a speaker that already runs a
+#: commissioned inter-driver delay: the pair committed is the DECLARED polarity
+#: at the delay the applied graph already carries (issue #2617). Its own value
+#: rather than a qualifier on the one above, because "we held the alignment
+#: this speaker already plays" and "the design asks for none" are different
+#: products, and a forensic reader of a persisted candidate must be able to
+#: tell them apart. Both are declared-POLARITY commitments, so both belong to
+#: :data:`ALIGNMENT_DECLARED_POLARITY_OBJECTIVES` below.
+ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR = "applied_alignment_held_after_low_snr"
+#: The third arm of the same refusal: a graph IS applied, but what it says
+#: about its own inter-driver delay could not be read (a partial or hand-edited
+#: profile). No delay is committed — the same number the arm above commits —
+#: but "the design asks for none" would be a claim about this speaker that
+#: nothing checked, so it gets its own value. Same standard the two arms above
+#: are held to: a forensic reader of a persisted candidate must be able to tell
+#: which fact produced the commitment.
+ALIGNMENT_COMMITTED_NONE_AFTER_UNREADABLE_APPLY = (
+    "no_delay_committed_after_unreadable_apply"
+)
 ALIGNMENT_COMMITTED_SEED_NO_SCORING_BAND = "seed_committed_no_scoring_band"
 ALIGNMENT_COMMITTED_SEED_ALIGNMENT_REFUSED = "seed_committed_alignment_refused"
 ALIGNMENT_COMMITMENTS = frozenset({
     ALIGNMENT_COMMITTED_FLAT_SUM,
     ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR,
+    ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR,
+    ALIGNMENT_COMMITTED_NONE_AFTER_UNREADABLE_APPLY,
     ALIGNMENT_COMMITTED_SEED_NO_SCORING_BAND,
     ALIGNMENT_COMMITTED_SEED_ALIGNMENT_REFUSED,
 })
-#: The two commitments the selector itself made — as opposed to the two where
-#: it could not run and the seed simply stood. Only these answer
+#: The commitments where the POLARITY is the preset's declaration rather than a
+#: measured result — the low-SNR refusal, whichever delay it committed. The
+#: household surface words these as "As designed — this measurement could not
+#: check it" (#2607 S3); "measured" is the one word a household reads as "we
+#: checked", and on this path nothing checked. Public because that wording is
+#: chosen in a browser module, which cannot import a Python constant: this is
+#: the named thing its literal list mirrors, and
+#: ``tests/test_crossover_envelope_v2.py`` fails when the two disagree. The
+#: payload layer (``crossover_envelope_v2``) deliberately does NOT branch — it
+#: carries the enum, exactly as it carries ``linearization_outcome``.
+#:
+#: **It has a SECOND job, and it is numeric** (#2617): ``_build_candidate``
+#: gates the anchor withdrawal on membership here, so a commitment in this set
+#: also ships a summed model that carries NO residual — a decision that reaches
+#: the accountability gate, which can refuse a candidate. The membership rule
+#: that makes both jobs one question: a commitment belongs here when THE
+#: CAPTURE'S ALIGNMENT EVIDENCE WAS WHOLLY UNTRUSTED, so neither its polarity
+#: (the wording job) nor its anchor (the withdrawal job) may be spoken for.
+#: Do not add an objective here to borrow the household copy alone — a
+#: commitment whose polarity is declared but whose anchor IS trustworthy needs
+#: its own set, or it silently loses its residual too.
+ALIGNMENT_DECLARED_POLARITY_OBJECTIVES = frozenset({
+    ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR,
+    ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR,
+    ALIGNMENT_COMMITTED_NONE_AFTER_UNREADABLE_APPLY,
+})
+#: The commitments the selector itself made — as opposed to the two where it
+#: could not run and the seed simply stood. Only these answer
 #: ``polarity_agrees_with_sum``: on the others no flat sum was ever computed,
 #: and recording "correlation agreed" because nothing disagreed with it is the
 #: exact shape of dishonesty this issue is about.
 _SELECTOR_COMMITTED_OBJECTIVES = frozenset({
     ALIGNMENT_COMMITTED_FLAT_SUM,
-    ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR,
+    *ALIGNMENT_DECLARED_POLARITY_OBJECTIVES,
 })
 
 #: The verdict at which a branch stops being evidence a polarity flip may rest
@@ -834,6 +881,28 @@ class MeasurementGeometry:
 
 
 @dataclass(frozen=True)
+class AppliedAlignment:
+    """What the APPLIED graph says about its own inter-driver delay (#2617).
+
+    ``delay_us`` is that delay in :class:`AlignmentEstimate`'s signed frame, or
+    ``None`` when a graph is applied but its record does not say — a partial or
+    hand-edited profile.
+
+    One field and a wrapper rather than a bare ``float | None`` because the
+    question has THREE answers and the third one is a different commitment:
+    absent (``MeasurementPriors.applied_alignment is None``) is "nothing is
+    commissioned, so the design's own answer stands", while
+    ``AppliedAlignment(None)`` is "something IS playing and we cannot say what".
+    Collapsing them would let a persisted candidate claim the design asks for
+    no delay on a speaker nobody checked. Same argument, same shape, as
+    :class:`IntegrityCheck`'s ``reason``: a ``dict[str, bool]`` in which "did
+    not run" and "ran and passed" are one value is the bug, not the economy.
+    """
+
+    delay_us: float | None
+
+
+@dataclass(frozen=True)
 class MeasurementPriors:
     """Per-analysis priors the program itself does not carry.
 
@@ -866,6 +935,21 @@ class MeasurementPriors:
     signed lobe inside it. GCC remains the confidence/polarity seed and the
     fallback estimate. ``None`` keeps GCC as the applied-delay estimate.
 
+    ``applied_alignment`` is what THIS SPEAKER ALREADY PLAYS
+    (:class:`AppliedAlignment`) — read off the applied Layer-A profile by the
+    session and handed in, never reached for from here (issue #2617; this
+    module is a pure function of program + WAV + priors). It is read on EXACTLY
+    ONE path: the low-SNR refusal, where :func:`_select_alignment_pair` commits
+    it instead of a fresh number from the capture the SNR verdict just called
+    unusable for alignment. It is not a seed, a bound, or a prior on the search
+    — the scored path never sees it, because a capture good enough to score
+    must not be pulled toward the answer the speaker already has. ``None``
+    (every phase but MEASURE, and a speaker with nothing commissioned) means
+    the refusal commits ``0.0``, which IS the declared design when nothing
+    declares otherwise; an ``AppliedAlignment`` with no ``delay_us`` commits
+    the same ``0.0`` under a different objective, because that number is then
+    a fallback rather than the design's answer.
+
     ``mic_tier`` (#1668 PR-C) is the correction-envelope trust tier
     (``jasper.active_speaker.linearization_envelope.MIC_TIERS`` — "reference"
     / "consumer" / "phone") the measurement mic resolved to, threaded in by
@@ -884,6 +968,7 @@ class MeasurementPriors:
     measure_tweeter_sweep_lo_hz: float | None = None
     measure_woofer_sweep_hi_hz: float | None = None
     alignment_delay_bounds_us: tuple[float, float] | None = None
+    applied_alignment: AppliedAlignment | None = None
     mic_tier: str | None = None
     # Host-evaluated transfers, NOT product objects: the kernel may not import
     # jasper.active_speaker, so it is handed `freqs -> complex response`.
@@ -1095,9 +1180,16 @@ class AlignmentEstimate:
     delayed by that amount** to time-align the crossover.
 
     T2 keeps GCC as the capture-quality seed: ``seed_delay_us`` records that
-    corrected delay, while ``delay_us`` becomes the anchor-primary,
-    gated-local-peak-snapped selection. ``confidence`` therefore remains
-    explicitly ``confidence_source='gcc_phat_seed'``; the selection's own
+    corrected delay, while ``delay_us`` becomes whatever
+    :func:`_select_alignment_pair` COMMITTED — the flattest-summing grid point
+    on a trusted capture (#2598), or, when the capture's SNR was refused for
+    alignment, a delay that capture did not supply at all (#2617). The
+    anchor-primary gated-local-peak snap this sentence used to describe is the
+    SEED's construction, not the commitment's, and has been since #2598.
+    ``confidence`` therefore remains explicitly
+    ``confidence_source='gcc_phat_seed'`` — the label warns that the confidence
+    belongs to the seed rather than to whatever was committed, which is what
+    keeps it accurate on every one of those paths; the selection's own
     ripple/snap evidence is stored separately on :class:`CrossoverCandidate`.
     After refinement, ``raw_delay_us`` is the selected delay in the
     pre-parallax coordinate, preserving
@@ -1192,10 +1284,13 @@ class CrossoverCandidate:
     than a fault: the branch that would have argued for the seed is the one the
     capture called unmeasurable, so the commitment is the declared design and
     this number says what declining a noise-derived flatness claim cost on
-    paper. Since ``snap_delta_us`` is
-    ``committed − anchor``, it is also exactly the residual delay the model
-    carries on this path (:func:`summed_model_residual_delay_us`) — one number,
-    not two.
+    paper — scored, like the seed, against this capture's own anchor.
+    ``snap_delta_us`` is always ``committed − anchor``, but on THAT path it
+    records the disagreement and is NOT the residual the model carries: since
+    #2617 the shipped model withdraws the refused anchor and stays in the
+    independently-aligned frame, so a timing claim the capture withdrew cannot
+    phase the curve that refuses candidates and fails rounds
+    (:func:`summed_model_residual_delay_us`).
 
     ``predicted_ripple_db`` is measured on the INDEPENDENTLY ALIGNED
     (zero-residual) branch sum **at the committed POLARITY**, and is the one
@@ -3543,6 +3638,21 @@ def summed_model_residual_delay_us(
     independently-aligned frame it is already in and returns ``0.0`` — a
     fabricated gap from an estimate the aligner itself refused would be worse
     than none.
+
+    **Callers pass ``None`` for a SECOND refusal, one level up (issue #2617).**
+    The low-SNR arm of :func:`_select_alignment_pair` commits a delay this
+    capture did not supply, so ``committed − anchor`` there is not a fact about
+    the speaker: it is the disagreement between an untrusted anchor and a
+    trusted applied delay, and it can be most of a period. Phasing the shipped
+    model by it fabricates a comb the emitted graph need not have — and that
+    model is read by ``crossover_v2.accountability``'s prediction gate (which
+    can REFUSE a candidate) and becomes VERIFY's tracking reference (which can
+    FAIL a round). Exactly the same argument as the paragraph above, so exactly
+    the same answer: the model keeps the independently-aligned frame, and the
+    comparison it feeds grades the branches rather than a timing claim the
+    capture already withdrew. What is lost is nothing the capture had; what
+    stays live is every MEASURED-vs-spec verdict, including VERIFY's absolute
+    claim — a speaker that really combs still fails honestly.
     """
     if anchor_delay_us is None:
         return 0.0
@@ -3648,6 +3758,7 @@ def _select_alignment_pair(
     seed_polarity_sign: int,
     delay_bounds_us: tuple[float, float] | None = None,
     branch_snr_insufficient: bool = False,
+    applied_alignment: AppliedAlignment | None = None,
 ) -> AlignmentPairSelection | None:
     """Commit the (polarity, delay) pair whose predicted blend sums flattest.
 
@@ -3692,11 +3803,41 @@ def _select_alignment_pair(
     COMMITTED to the declared design (relative polarity ``+1``: the branch
     transfer functions are already in the configured-polarity frame, so ``+1``
     means "the relative polarity the preset declares", which is also the target
-    VERIFY grades against) at the physical peak-gap anchor, and the objective
-    string says so. Not a hard stop and not a silent estimate: the household
-    still gets an alignment, it is the one the design asks for rather than one
-    read off noise, and the reason travels with the candidate. The seed pair is
-    still scored so the record shows what was declined.
+    VERIFY grades against) at a delay THIS CAPTURE DID NOT SUPPLY, and the
+    objective string says which. Not a hard stop and not a silent estimate: the
+    household still gets an alignment, it is the one the design asks for rather
+    than one read off noise, and the reason travels with the candidate. The
+    seed pair is still scored so the record shows what was declined.
+
+    **The delay half of that refusal (issue #2617).** It used to commit the
+    physical peak-gap anchor — a fresh number read off the very capture the
+    verdict had just refused, and the anchor is exactly the quantity a low-SNR
+    capture gets wrong: across nine jts3 positions on 2026-08-16 it read
+    +59.6 µs on-axis (the shipped, correct value) against six clustered near
+    −211 µs and two wild, and a wrong commit computes a deep commanded null
+    (−36 dB @ 1885 Hz on the worked example). So the delay now comes from
+    ``applied_alignment`` — what the speaker is ALREADY playing, per the
+    ethos's best-available rule (``docs/audio-commissioning-roadmap.md``) — and
+    from ``0.0`` when there is none to hold. Never the anchor, and never the
+    GCC seed: both are this capture's own answer, and the capture was refused.
+    The three arms are three objectives, because they are three different
+    facts about the speaker: the applied alignment held, the declared design
+    committed where nothing is applied, and no delay committed where something
+    is applied but unreadable.
+
+    ``left_anchor_lobe`` is still evaluated against the anchor and can now be
+    ``True`` here, where it used to be ``False`` by construction (committed ==
+    anchor): it fires when the committed delay and this capture's anchor
+    disagree by more than half a period at Fc, which is the #2611 signature,
+    and raises the selection log to WARNING. It is a ONE-DIRECTIONAL tripwire
+    and must not be read as this path's disclosure — it is silent whenever the
+    two happen to agree, and silent by construction on the ``0.0`` arms
+    whenever the anchor is small. The reliable disclosure is the pair the
+    record always carries: ``objective`` (one of
+    :data:`ALIGNMENT_DECLARED_POLARITY_OBJECTIVES`, which names WHICH fact
+    produced the commitment) beside the ``applied_delay_us`` /
+    ``anchor_delay_us`` fields on ``event=program_analysis.alignment_selection``
+    (the held number and the declined one).
 
     Returns ``None`` when the objective cannot be evaluated at all — no
     frequency bin inside ``[lo_hz, hi_hz]``, or no candidate with a finite score
@@ -3728,9 +3869,18 @@ def _select_alignment_pair(
     seed_ripple_db = _ripple_at(seed_polarity_sign, seed_delay_us)
 
     if branch_snr_insufficient:
-        committed_delay_us = (
-            anchor_delay_us if anchor_delay_us is not None else seed_delay_us
+        # Neither `anchor_delay_us` nor `seed_delay_us` may be read here: both
+        # are THIS capture's own answer, and this capture was refused (#2617).
+        held_delay_us = (
+            None if applied_alignment is None else applied_alignment.delay_us
         )
+        committed_delay_us = 0.0 if held_delay_us is None else float(held_delay_us)
+        if held_delay_us is not None:
+            objective = ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR
+        elif applied_alignment is None:
+            objective = ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR
+        else:
+            objective = ALIGNMENT_COMMITTED_NONE_AFTER_UNREADABLE_APPLY
         return AlignmentPairSelection(
             polarity_sign=1,
             delay_us=committed_delay_us,
@@ -3738,7 +3888,7 @@ def _select_alignment_pair(
             seed_polarity_sign=seed_polarity_sign,
             seed_delay_us=seed_delay_us,
             seed_ripple_db=seed_ripple_db,
-            objective=ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR,
+            objective=objective,
             grid_points=1,
             grid_step_us=0.0,
             left_anchor_lobe=_left_anchor_lobe(committed_delay_us),
@@ -5496,6 +5646,7 @@ def _analyze_measure(
         woofer_sweep_lo_hz=seg_w.f1_hz, tweeter_sweep_hi_hz=seg_t.f2_hz,
         alignment_delay_bounds_us=priors.alignment_delay_bounds_us,
         branch_snr_insufficient=branch_snr_insufficient,
+        applied_alignment=priors.applied_alignment,
     )
     # `_build_candidate` owns the selection; the estimate published here is the
     # one every downstream consumer reads (`alignment_to_candidate_fields`
@@ -5567,6 +5718,7 @@ def _build_candidate(
     tweeter_sweep_hi_hz: float | None = None,
     alignment_delay_bounds_us: tuple[float, float] | None = None,
     branch_snr_insufficient: bool = False,
+    applied_alignment: AppliedAlignment | None = None,
 ) -> tuple[CrossoverCandidate, tuple[np.ndarray, np.ndarray]]:
     freqs, W, gate_w = _aligned_branch_tf(woofer_full_ir, sample_rate, n_fft, calibration=calibration)
     _f2, T, gate_t = _aligned_branch_tf(tweeter_full_ir, sample_rate, n_fft, calibration=calibration)
@@ -5687,6 +5839,7 @@ def _build_candidate(
             seed_polarity_sign=alignment.polarity_sign,
             delay_bounds_us=alignment_delay_bounds_us,
             branch_snr_insufficient=branch_snr_insufficient,
+            applied_alignment=applied_alignment,
         )
         if alignment.status == ALIGNMENT_OK
         else None
@@ -5749,6 +5902,24 @@ def _build_candidate(
             grid_points=selection.grid_points,
             grid_step_us=round(float(selection.grid_step_us), 3),
             branch_snr_insufficient=bool(branch_snr_insufficient),
+            # The #2617 disclosure, and the whole reason a refused capture's
+            # delay commitment is now readable rather than inferable: the
+            # number that WAS held (the applied graph's own delay, or None
+            # when there was nothing to hold) beside the anchor that was
+            # DECLINED, and whether a graph was applied at all — which is what
+            # separates "the design asks for none" from "we could not read what
+            # this speaker plays". On every other objective these are context:
+            # the anchor is the frame the grid was centred on, and the applied
+            # alignment is not consulted.
+            applied_delay_us=(
+                None if applied_alignment is None or applied_alignment.delay_us is None
+                else round(float(applied_alignment.delay_us), 3)
+            ),
+            applied_alignment_present=applied_alignment is not None,
+            anchor_delay_us=(
+                None if anchor_delay_us is None
+                else round(float(anchor_delay_us), 3)
+            ),
             # The one thing the 2026-07-22 methodology decision asked the
             # ANCHOR to own: which comb lobe. Owned by the selection (which has
             # the anchor and Fc) so the candidate, the journal and the receipt
@@ -5856,8 +6027,9 @@ def _build_candidate(
     # The term is the RESIDUAL relative to the argmax-referenced frame, never
     # the applied delay itself — `summed_model_residual_delay_us` owns that
     # derivation and its docstring carries the double-count hazard. On the
-    # anchor-primary path this is exactly `snap_delta_us`; at the bare anchor
-    # it is 0.0 and this call is bit-identical to `predicted_aligned`.
+    # anchor-primary path this is exactly `snap_delta_us`; at the bare anchor,
+    # and on the SNR-refused path below, it is 0.0 and this call is
+    # bit-identical to `predicted_aligned`.
     #
     # Read off `alignment` rather than the local `anchor_delay_us`, and gated
     # on the aligner's own status rather than the snap block's condition: a
@@ -5870,8 +6042,27 @@ def _build_candidate(
     # what keeps a direct caller's hand-built refused estimate — which
     # `crossover_v2.planning.alignment_to_candidate_fields` turns into a
     # trims-only, NO-delay apply — from being modelled as though a delay ran.
+    #
+    # The SNR refusal withdraws the anchor for the same reason (#2617, safety
+    # lens S-SF2). On that path the committed delay came from the applied graph
+    # and the anchor came from a capture the SNR policy called unusable FOR
+    # ALIGNMENT, so `committed − anchor` measures their disagreement, not the
+    # speaker — and this model is not a drawing: it is graded by
+    # `accountability.assess_accountability` (which can REFUSE the candidate)
+    # and persisted as VERIFY's tracking reference (which can FAIL the round).
+    # Phasing it by that difference would let an untrusted number kill a
+    # correctly-aligned speaker. Withheld here rather than special-cased in
+    # those two gates: they must keep grading whatever model they are handed,
+    # and the honest model of a round whose timing evidence was refused is the
+    # independently-aligned one. `snap_delta_us` still RECORDS the
+    # disagreement — it just no longer phases anything.
+    _alignment_unmeasured = (
+        alignment_objective in ALIGNMENT_DECLARED_POLARITY_OBJECTIVES
+    )
     residual_delay_us = summed_model_residual_delay_us(
-        alignment.anchor_delay_us if alignment.status == ALIGNMENT_OK else None,
+        alignment.anchor_delay_us
+        if alignment.status == ALIGNMENT_OK and not _alignment_unmeasured
+        else None,
         delay_us,
     )
     predicted_applied = predicted_branch_sum(
