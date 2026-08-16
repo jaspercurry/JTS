@@ -459,7 +459,11 @@ Captured so they're off the table for the landing work:
   deferring. Dispositions of the two paused items:
   - **Fix 4 (widen tweeter sweep to declared safe-low): SHELVED with a named
     revival trigger.** Its original purpose — uniquifying the flatness
-    minimum — is moot (flatness no longer selects anything). Its residual
+    minimum — is moot (flatness no longer selects anything). *(Superseded
+    2026-08-16 by issue #2598, which makes summed flatness the selector for the
+    polarity/delay pair; this clause is the 2026-07-22 record. Current state:
+    [HANDOFF-crossover-measurement-v2.md](../HANDOFF-crossover-measurement-v2.md)
+    "(Polarity, delay) selection".)* Its residual
     value (more correlation bandwidth → sharper snap peaks at low SNR) is
     real physics but unneeded at the measured margins (1.22 µs selection
     span vs a ±20.8 µs budget at 22–29 dB woofer SNR). Revive only if

@@ -236,6 +236,7 @@ from jasper.audio_measurement.program_analysis import (
     MeasurementPriors,
     ProgramAnalysis,
     REALIZED_LEVEL_MATCH_TOLERANCE_DB,
+    polarity_label,
 )
 from jasper.capture_relay.session import CaptureBeginDeferred, CaptureBeginRefused
 from jasper.log_event import log_event
@@ -2060,6 +2061,19 @@ ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS = 0.1
 # because a bad ripple describes how well two branches can sum in this room on
 # this rig — a thing the household cannot act on by moving anything — and not
 # a defect in the capture that measuring again would fix.
+#
+# THE FRAME THIS NUMBER IS CALIBRATED IN, named because a corpus threshold is
+# only comparable to captures measured the same way: the zero-residual summed
+# branch sum at the polarity the candidate SHIPS. The delay stays pinned at
+# zero residual — that is the documented evasion channel, since a candidate's
+# own alignment could otherwise lower its own disclosure. Polarity is not a
+# continuum a capture can shop along, and since #2598 it is a SELECTED
+# quantity, so scoring coherence at a polarity the candidate does not ship
+# would make a fine capture read as an incoherent one (the 2026-08-15 inverted
+# rounds reported 14.13 dB for a pair that sums to a fraction of a dB the right
+# way round). The 2026-07-22 corpus predates that selection, but every capture
+# in it was graded at the polarity its own candidate shipped, so the frame is
+# the same one.
 #
 # PROVISIONAL pending W6 bench validation, same status as every other
 # MEASURE-phase threshold in this block.
@@ -10341,6 +10355,21 @@ class CrossoverV2Session:
             delay_us=round(delay_us, 3) if delay_us is not None else None,
             delay_role=delay_role,
             polarity=polarity,
+            # The (polarity, delay) pair is one selection on one objective
+            # (#2598). ``polarity`` above is what shipped; these three say who
+            # chose it, what the GCC correlation answered, and whether the two
+            # agreed. A disagreement is ordinary operation — the flat-sum
+            # objective outranking a correlation sign is the fix — so this line
+            # is where it is legible rather than a refusal.
+            alignment_objective=(cand.alignment_objective if cand else None),
+            seed_polarity=(
+                None if cand is None or cand.seed_polarity_sign is None
+                else polarity_label(int(cand.seed_polarity_sign))
+            ),
+            polarity_agrees_with_sum=(
+                align.polarity_agrees_with_sum if align else None
+            ),
+            left_anchor_lobe=(bool(cand.left_anchor_lobe) if cand else None),
             predicted_ripple_db=(
                 round(float(cand.predicted_ripple_db), 4) if cand else None
             ),

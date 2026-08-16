@@ -1165,6 +1165,39 @@ shaping them until it does. Copy the shape, not the contents:
   else-branch never runs. Both are named in the test's docstring, because a
   half-guarded site otherwise reads as covered.
 
+The second member of the family is the 2026-08-16 alignment incident (#2598):
+[`tests/fixtures/crossover_v2_alignment_incident_20260816/`](../tests/fixtures/crossover_v2_alignment_incident_20260816/)
+plus
+[`tests/test_crossover_v2_alignment_incident_replay.py`](../tests/test_crossover_v2_alignment_incident_replay.py),
+where a crossover shipped with one branch inverted and the summed blend nulled.
+It follows the shape above with two deliberate differences, both worth knowing
+before copying either one:
+
+* **No re-derivation script, because there is no bank.** Its sources are a LIVE
+  speaker's runtime state (`/var/lib/jasper/active_speaker_crossover_v2_state.json`
+  and two session artifacts on jts3, read-only over ssh), not a retained
+  capture bundle — a `--check` mode would be re-reading a file that keeps
+  changing. Each source's absolute path and sha256 ride in the fixture's
+  `_provenance` instead, which is the audit trail a reader gets.
+* **The branch pair is BUILT from the declared design, not banked.** The
+  retained evidence holds summed magnitude curves, and the selector reads
+  complex per-branch transfers. So the test builds the preset's own
+  Linkwitz-Riley filters at the banked corner and earns that substitution with
+  an assertion rather than a claim — but the assertion is about SCALE, not
+  precision: in the frame the box shipped, the model says 14.2 dB of blend
+  ripple and the box said 10.5, and both dwarf the sub-dB the declared
+  polarity leaves. Injection surface is otherwise NONE — no seam, stub or
+  monkeypatch.
+* **A matched frame is part of "derive, never hand-copy."** The first cut of
+  that assertion claimed 0.10 dB agreement and was CROSS-FRAME: it compared a
+  model carrying +34.1 us of residual against `predicted_ripple_db`, which is
+  the box's ZERO-RESIDUAL quantity. Matched properly the two disagree by
+  +3.8 dB at the committed delay and +46 dB at zero residual — the tight
+  tolerance was pinning +/-0.63 us of delay, not model fidelity. When a fixture
+  quotes a banked number, name the frame it was computed in beside it; a
+  derived comparand (here `BOX_COMMITTED_RIPPLE_DB`, reconstructed from the
+  banked pair's own anchor-ripple and improvement) is worth the extra line.
+
 ---
 
 ## Offline emit loop

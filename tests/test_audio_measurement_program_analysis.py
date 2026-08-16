@@ -65,7 +65,11 @@ from jasper.audio_measurement.program import (
     render_program_pcm,
 )
 from jasper.audio_measurement.program_analysis import (
+    ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR,
+    ALIGNMENT_COMMITTED_FLAT_SUM,
     ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
+    ALIGNMENT_FLATNESS_MAX_STEPS,
+    ALIGNMENT_FLATNESS_STEP_US,
     ALIGNMENT_OK,
     AMBIENT_MIN_USABLE_FRACTION,
     AMBIENT_NONSTATIONARITY_DB,
@@ -115,6 +119,7 @@ from jasper.audio_measurement.program_analysis import (
     _n_fft_for,
     _peak_dbfs,
     _ripple_db,
+    _select_alignment_pair,
     _snr_floor_ok,
     _solve_gain_plan,
     _sweep_occurrence_index,
@@ -124,6 +129,8 @@ from jasper.audio_measurement.program_analysis import (
     analysis_diagnostic_summary,
     analyze_program_capture,
     crossover_region_band_hz,
+    driver_alignment_snr_verdict,
+    driver_snr_verdict,
     REALIZED_LEVEL_MATCH_TOLERANCE_DB,
     branch_level_bands_hz,
     overlap_band_hz,
@@ -2003,9 +2010,16 @@ def test_gcc_local_peak_snap_falls_back_when_no_local_max_in_radius():
 
 def test_build_candidate_falls_back_to_anchor_when_snap_absent():
     """When the aligner found no local peak in the snap radius
-    (``snapped_delay_us is None``), ``_build_candidate`` selects the bare anchor
-    and records ``snap_found=False`` / ``snap_delta_us=0`` — the physical
-    plausibility rail then still gates that anchor downstream (Fix 3).
+    (``snapped_delay_us is None``), the SEED is the bare anchor and
+    ``snap_found`` records that — the physical plausibility rail then still
+    gates the committed delay downstream (Fix 3).
+
+    ``snap_found`` and ``snap_delta_us`` are asserted as the INDEPENDENT facts
+    they are (#2607 review nit): the first is the seed's provenance, the second
+    is ``committed − anchor``, and since #2598 an absent snap no longer implies
+    a zero delta — the objective is free to commit away from the anchor. They
+    coincide here because this fixture's flattest pair IS the anchor, which the
+    test says out loud rather than treating one as evidence of the other.
     """
     woofer_ir = np.zeros(8192)
     tweeter_ir = np.zeros(8192)
@@ -2024,10 +2038,16 @@ def test_build_candidate_falls_back_to_anchor_when_snap_absent():
         woofer_ir, tweeter_ir, SR, 16_384, 2000.0, "woofer", "tweeter",
         alignment, None, alignment_delay_bounds_us=(0.0, 1000.0),
     )
+    # The seed's provenance: the aligner offered no local snap peak.
     assert candidate.snap_found is False
-    assert candidate.snap_delta_us == pytest.approx(0.0, abs=1e-9)
     assert candidate.anchor_delay_us == pytest.approx(-physical_gap_us, abs=1e-9)
+    # The commitment, and its residual — a separate fact, equal to zero here
+    # only because the objective agreed with the anchor.
     assert candidate.delay_us == pytest.approx(-physical_gap_us, abs=1e-9)
+    assert candidate.snap_delta_us == pytest.approx(
+        candidate.delay_us - candidate.anchor_delay_us, abs=1e-9,
+    )
+    assert candidate.snap_delta_us == pytest.approx(0.0, abs=1e-9)
 
 
 def test_build_candidate_anchor_overrides_wrong_periodic_gcc_lobe():
@@ -2075,11 +2095,547 @@ def test_build_candidate_anchor_overrides_wrong_periodic_gcc_lobe():
     assert candidate.delay_us == pytest.approx(-physical_gap_us, abs=1e-9)
     assert candidate.anchor_delay_us == pytest.approx(-physical_gap_us, abs=1e-9)
     assert candidate.snap_found is False  # aligner reported no local snap peak
+    # Independent of the line above (#2607 nit): the delta is
+    # ``committed − anchor``, which an absent snap does not by itself pin.
+    assert candidate.snap_delta_us == pytest.approx(
+        candidate.delay_us - candidate.anchor_delay_us, abs=1e-9,
+    )
     assert candidate.snap_delta_us == pytest.approx(0.0, abs=1e-9)
     assert candidate.alignment_seed_ripple_db is not None
-    # Flatness is evidence only: anchor == selection ⇒ zero improvement.
+    # The bare anchor IS the seed here, and it is already the flattest pair, so
+    # the selector commits it unchanged: zero improvement.
     assert candidate.flatness_improvement_db == pytest.approx(0.0, abs=1e-9)
     assert candidate.predicted_ripple_db < 0.1
+
+
+# --------------------------------------------------------------------------- #
+# the joint (polarity, delay) selector — issue #2598
+# --------------------------------------------------------------------------- #
+
+
+def _lr4_branches(fc_hz=2000.0, n_bins=4097, f_max_hz=24_000.0):
+    """A complementary 4th-order Linkwitz-Riley pair — two cascaded 2nd-order
+    Butterworths per branch — which sums FLAT in matched polarity and nulls at
+    the corner in reverse. The shape every 2-way crossover is trying to be, and
+    the shape the selector has to be able to tell apart.
+    """
+    freqs = np.linspace(0.0, f_max_hz, n_bins)
+    s = 1j * freqs / fc_hz
+    butter2 = s * s + np.sqrt(2.0) * s + 1.0
+    W = (1.0 / butter2) ** 2
+    T = ((s * s) / butter2) ** 2
+    return freqs, W, T
+
+
+def _flat_branches(n_bins=4097, f_max_hz=24_000.0):
+    """Two flat, full-range, identical branches. Not a crossover — the
+    degenerate pair whose reverse-polarity sum is UNIFORM silence.
+    """
+    freqs = np.linspace(0.0, f_max_hz, n_bins)
+    return freqs, np.ones(n_bins, dtype=np.complex128), np.ones(n_bins, dtype=np.complex128)
+
+
+def test_select_alignment_pair_keeps_the_seed_inside_the_flat_basin():
+    """The no-op control. When flatness cannot separate the candidates, the
+    committed pair is the SEED — correlation's own answer, byte-identical —
+    which is what keeps this change from perturbing captures it has nothing to
+    say about.
+
+    A matched-polarity LR4 pair at its own corner is already flat, so every
+    nearby pair of the same sign sums within the flat-minimum epsilon, the
+    regularization decides, and it decides for the seed.
+    """
+    freqs, W, T = _lr4_branches()
+    seed_delay_us = 40.0
+    selection = _select_alignment_pair(
+        freqs, W, T, fc_hz=2000.0, lo_hz=1000.0, hi_hz=4000.0,
+        trim_w_db=0.0, trim_t_db=0.0,
+        anchor_delay_us=40.0, seed_delay_us=seed_delay_us, seed_polarity_sign=1,
+    )
+    assert selection is not None
+    assert selection.polarity_sign == 1
+    assert selection.delay_us == pytest.approx(seed_delay_us, abs=1e-12)
+    assert selection.flatness_improvement_db == pytest.approx(0.0, abs=1e-12)
+    assert selection.polarity_agrees_with_sum is True
+    assert selection.objective == ALIGNMENT_COMMITTED_FLAT_SUM
+
+
+def test_select_alignment_pair_overrides_a_correlation_sign_that_nulls():
+    """The whole point, in the smallest honest fixture: a complementary LR4
+    pair whose seed sign is inverted commands a null at its own corner, and the
+    objective flips it and says correlation disagreed.
+    """
+    freqs, W, T = _lr4_branches()
+    selection = _select_alignment_pair(
+        freqs, W, T, fc_hz=2000.0, lo_hz=1000.0, hi_hz=4000.0,
+        trim_w_db=0.0, trim_t_db=0.0,
+        anchor_delay_us=0.0, seed_delay_us=0.0, seed_polarity_sign=-1,
+    )
+    assert selection is not None
+    assert selection.polarity_sign == 1
+    assert selection.polarity_agrees_with_sum is False
+    assert selection.flatness_improvement_db > 10.0
+    assert selection.objective == ALIGNMENT_COMMITTED_FLAT_SUM
+
+
+def test_select_alignment_pair_is_indifferent_to_a_uniform_cancellation():
+    """A known and deliberate bound on the objective, pinned so nobody has to
+    rediscover it: RIPPLE IS A SHAPE METRIC. Two identical full-range branches
+    in reverse polarity cancel UNIFORMLY, and a uniformly-silent sum has zero
+    ripple — the flattest curve there is.
+
+    That degenerate pair is not a crossover (a real one hands complementary
+    filters to the two branches, so its reverse-polarity sum is a notch and not
+    a floor), and the fallback is the safe one: with both signs scoring equally
+    the flat-minimum regularization keeps the SEED, so on this input the
+    selector commits exactly what correlation alone would have. It cannot make
+    such a capture worse than the path it replaced.
+    """
+    freqs, W, T = _flat_branches()
+    for seed_sign in (1, -1):
+        selection = _select_alignment_pair(
+            freqs, W, T, fc_hz=2000.0, lo_hz=1000.0, hi_hz=4000.0,
+            trim_w_db=0.0, trim_t_db=0.0,
+            anchor_delay_us=0.0, seed_delay_us=0.0, seed_polarity_sign=seed_sign,
+        )
+        assert selection is not None
+        assert selection.polarity_sign == seed_sign
+        assert selection.polarity_agrees_with_sum is True
+
+
+def test_select_alignment_pair_never_proposes_a_delay_past_the_declared_bound():
+    """The declared |delay| range bounds the SEARCH, not just the verdict.
+
+    A grid point outside it would be refused by the downstream plausibility
+    screen, taking the whole capture with it — so the search never offers one.
+    The seed is deliberately exempt: it is what the pre-#2598 path would have
+    applied anyway, and excluding it would hide the comparison.
+
+    The fixture puts the UNBOUNDED optimum outside the bound on purpose (#2607
+    review C3): a matched LR4 pair sums flattest time-aligned, so the anchor is
+    the global optimum, and the anchor here is four times the declared ceiling.
+    Delete the filter and the search commits 400 us — which is what makes this
+    a guard and not an assertion the fixture satisfies by accident.
+    """
+    freqs, W, T = _lr4_branches()
+    bound_us = 100.0
+    unbounded_optimum_us = 400.0
+    selection = _select_alignment_pair(
+        freqs, W, T, fc_hz=2000.0, lo_hz=1000.0, hi_hz=4000.0,
+        trim_w_db=0.0, trim_t_db=0.0,
+        anchor_delay_us=unbounded_optimum_us,
+        # An admissible seed, so the exemption cannot be the escape hatch that
+        # keeps the assertion true.
+        seed_delay_us=50.0, seed_polarity_sign=1,
+        delay_bounds_us=(0.0, bound_us),
+    )
+    assert selection is not None
+    assert abs(selection.delay_us) <= bound_us
+    assert abs(selection.delay_us - unbounded_optimum_us) > bound_us
+
+
+def test_select_alignment_pair_bounds_its_grid_at_a_low_corner():
+    """Bounded CPU. The span is one period at Fc, so a low corner would make
+    the point count scale as 1/Fc; the cap widens the step instead.
+    """
+    freqs, W, T = _lr4_branches()
+    high = _select_alignment_pair(
+        freqs, W, T, fc_hz=2000.0, lo_hz=1000.0, hi_hz=4000.0,
+        trim_w_db=0.0, trim_t_db=0.0,
+        anchor_delay_us=0.0, seed_delay_us=0.0, seed_polarity_sign=1,
+    )
+    low = _select_alignment_pair(
+        freqs, W, T, fc_hz=80.0, lo_hz=40.0, hi_hz=160.0,
+        trim_w_db=0.0, trim_t_db=0.0,
+        anchor_delay_us=0.0, seed_delay_us=0.0, seed_polarity_sign=1,
+    )
+    assert high is not None and low is not None
+    # At 2 kHz the cap is inactive and the step is the declared one.
+    assert high.grid_step_us == pytest.approx(ALIGNMENT_FLATNESS_STEP_US, rel=0.02)
+    # At 80 Hz (a 12.5 ms period) it is active: the grid stays bounded and the
+    # step widens to cover the same +/- one period.
+    assert low.grid_points <= 2 * ALIGNMENT_FLATNESS_MAX_STEPS + 2
+    assert low.grid_step_us > ALIGNMENT_FLATNESS_STEP_US
+    assert low.grid_step_us * ALIGNMENT_FLATNESS_MAX_STEPS == pytest.approx(
+        1e6 / 80.0, rel=1e-6,
+    )
+
+
+def test_selector_scores_the_shipped_frame_without_declared_bounds():
+    """The objective must grade the curve the speaker EMITS, on every path.
+
+    The frame (`anchor_delay_us`) and the delay ESTIMATOR (anchor-primary vs
+    the bare GCC seed) are different questions, and the shipped model has
+    always gated its residual on the aligner's STATUS alone. While the selector
+    additionally required declared bounds, a preset without a
+    ``delay_range_ms`` made it score at residual 0 while the emitted model
+    carried ``committed − anchor`` — so the pair, polarity included, was chosen
+    on a curve nothing plays (#2607 review C1; the reviewer measured a 20.37 dB
+    penalty on a constructed case).
+
+    The invariant, stated so it cannot be satisfied by coincidence: the ripple
+    the selector reports for its commitment IS the ripple of the persisted
+    model curve. The seed's own ripple is asserted to differ, so the equality
+    is not two identical curves agreeing trivially.
+    """
+    fc_hz = 2000.0
+    n_fft = 16_384
+    freqs_full = np.fft.rfftfreq(n_fft, 1.0 / SR)
+    s = 1j * freqs_full / fc_hz
+    butter2 = s * s + np.sqrt(2.0) * s + 1.0
+    phase = np.exp(-1j * 2.0 * np.pi * freqs_full * 0.02)
+    woofer_ir = np.fft.irfft((1.0 / butter2) ** 2 * phase, n=n_fft)
+    tweeter_ir = np.fft.irfft(((s * s) / butter2) ** 2 * phase, n=n_fft)
+
+    anchor_us = 40.0
+    alignment = AlignmentEstimate(
+        # A GCC seed far from the anchor — the incident's own shape (-292 us
+        # seed against a +62 us anchor).
+        delay_us=-300.0, raw_delay_us=-300.0, parallax_us=0.0,
+        polarity="normal", polarity_sign=1, confidence=0.9, status=ALIGNMENT_OK,
+        anchor_delay_us=anchor_us, snapped_delay_us=None,
+    )
+    candidate, (freqs, pred_db) = _build_candidate(
+        woofer_ir, tweeter_ir, SR, n_fft, fc_hz, "woofer", "tweeter",
+        alignment, None,
+        alignment_delay_bounds_us=None,  # the preset declares no delay range
+    )
+    # The frame exists without declared bounds, and it is the aligner's anchor.
+    assert candidate.anchor_delay_us == pytest.approx(anchor_us)
+
+    lo, hi = overlap_band_hz(fc_hz)
+    shipped_ripple_db = _ripple_db(
+        freqs, 10.0 ** (pred_db / 20.0), lo, hi,
+    )
+    committed_ripple_db = (
+        candidate.alignment_seed_ripple_db - candidate.flatness_improvement_db
+    )
+    assert committed_ripple_db == pytest.approx(shipped_ripple_db, abs=1e-9)
+    # Live: the pair the old path would have shipped scores differently, so the
+    # equality above is a frame check and not two copies of one curve.
+    assert candidate.alignment_seed_ripple_db - shipped_ripple_db > 1.0
+    # This capture's commitment DID leave the anchor's comb lobe (half a period
+    # at 2 kHz is 250 us; it committed 260 us away), so the compensating
+    # control the #2607 panel required in exchange for the +/-1-period span is
+    # exercised here on a candidate `_build_candidate` actually produced —
+    # never a hand-set field.
+    assert abs(candidate.delay_us - anchor_us) > 0.5e6 / fc_hz
+    assert candidate.left_anchor_lobe is True
+
+
+def _alignment_selection_records(caplog):
+    return [
+        record for record in caplog.records
+        if "event=program_analysis.alignment_selection" in record.getMessage()
+    ]
+
+
+def test_a_lobe_hop_raises_the_selection_log_to_warning(caplog):
+    """The compensating control has to be LOUD, not merely present.
+
+    The #2607 panel let the ±1-period span stand on two conditions: the
+    lobe-leaving commitment rides the candidate, and it raises this line to
+    WARNING. The second half is a log LEVEL, which no assertion covered — and a
+    disclosure nobody's filter surfaces is the journald equivalent of a field
+    nobody reads (#2607 delta review D1b).
+    """
+    fc_hz = 2000.0
+    n_fft = 16_384
+    freqs_full = np.fft.rfftfreq(n_fft, 1.0 / SR)
+    s = 1j * freqs_full / fc_hz
+    butter2 = s * s + np.sqrt(2.0) * s + 1.0
+    phase = np.exp(-1j * 2.0 * np.pi * freqs_full * 0.02)
+    woofer_ir = np.fft.irfft((1.0 / butter2) ** 2 * phase, n=n_fft)
+    tweeter_ir = np.fft.irfft(((s * s) / butter2) ** 2 * phase, n=n_fft)
+    alignment = AlignmentEstimate(
+        delay_us=-300.0, raw_delay_us=-300.0, parallax_us=0.0,
+        polarity="normal", polarity_sign=1, confidence=0.9, status=ALIGNMENT_OK,
+        anchor_delay_us=40.0, snapped_delay_us=None,
+    )
+    with caplog.at_level(
+        logging.INFO, logger="jasper.audio_measurement.program_analysis",
+    ):
+        candidate, _predicted = _build_candidate(
+            woofer_ir, tweeter_ir, SR, n_fft, fc_hz, "woofer", "tweeter",
+            alignment, None, alignment_delay_bounds_us=None,
+        )
+    assert candidate.left_anchor_lobe is True
+    records = _alignment_selection_records(caplog)
+    assert len(records) == 1
+    assert records[0].levelno == logging.WARNING
+    assert "left_anchor_lobe=true" in records[0].getMessage()
+
+
+def test_an_ordinary_selection_stays_at_info(caplog):
+    """The negative control: if every selection logged at WARNING the level
+    would carry no information. A flat-sum commitment that agreed with
+    correlation and stayed inside the anchor's lobe is routine, and routine is
+    INFO.
+    """
+    woofer_ir, tweeter_ir = _impulse_branches()
+    alignment = AlignmentEstimate(
+        delay_us=_IMPULSE_ANCHOR_US, raw_delay_us=_IMPULSE_ANCHOR_US,
+        parallax_us=0.0, polarity="normal", polarity_sign=1,
+        confidence=0.9, status=ALIGNMENT_OK,
+        anchor_delay_us=_IMPULSE_ANCHOR_US, snapped_delay_us=None,
+    )
+    with caplog.at_level(
+        logging.INFO, logger="jasper.audio_measurement.program_analysis",
+    ):
+        candidate, _predicted = _build_candidate(
+            woofer_ir, tweeter_ir, SR, 16_384, 2000.0, "woofer", "tweeter",
+            alignment, None, alignment_delay_bounds_us=(0.0, 1000.0),
+        )
+    assert candidate.left_anchor_lobe is False
+    assert candidate.alignment_objective == ALIGNMENT_COMMITTED_FLAT_SUM
+    records = _alignment_selection_records(caplog)
+    assert len(records) == 1
+    assert records[0].levelno == logging.INFO
+
+
+def test_the_selection_log_never_emits_a_bare_nan(caplog):
+    """Every measured quantity on this line survives a non-finite input as
+    ``null``, never as ``nan``.
+
+    The route is real and needs no stub: the low-SNR refusal returns BEFORE the
+    finite-score filter — it commits the declared design without searching — so
+    a branch carrying NaN reaches the COMMITTED ripple too, not just the
+    declined seed's. Doubly unreachable in production (it needs both a broken
+    transfer function and an unmeasurable branch), but the earlier comment here
+    asserted the committed score could not be non-finite, which was checkable
+    and false (#2607 delta review D3). A bare NaN reads as a number to whatever
+    parses the journal; ``null`` reads as "no number".
+    """
+    n_fft = 16_384
+    freqs_full = np.fft.rfftfreq(n_fft, 1.0 / SR)
+    s = 1j * freqs_full / 2000.0
+    butter2 = s * s + np.sqrt(2.0) * s + 1.0
+    phase = np.exp(-1j * 2.0 * np.pi * freqs_full * 0.02)
+    woofer_ir = np.fft.irfft((1.0 / butter2) ** 2 * phase, n=n_fft)
+    tweeter_ir = np.fft.irfft(((s * s) / butter2) ** 2 * phase, n=n_fft)
+    tweeter_ir = tweeter_ir.copy()
+    tweeter_ir[5] = np.nan
+
+    alignment = AlignmentEstimate(
+        delay_us=0.0, raw_delay_us=0.0, parallax_us=0.0,
+        polarity="normal", polarity_sign=1, confidence=0.9, status=ALIGNMENT_OK,
+        anchor_delay_us=40.0, snapped_delay_us=None,
+    )
+    with caplog.at_level(
+        logging.INFO, logger="jasper.audio_measurement.program_analysis",
+    ):
+        _build_candidate(
+            woofer_ir, tweeter_ir, SR, n_fft, 2000.0, "woofer", "tweeter",
+            alignment, None, alignment_delay_bounds_us=(0.0, 1000.0),
+            branch_snr_insufficient=True,
+        )
+    records = _alignment_selection_records(caplog)
+    assert len(records) == 1
+    message = records[0].getMessage()
+    assert "nan" not in message.lower()
+    # The committed score specifically — the one the deleted comment claimed
+    # could not get here.
+    assert "ripple_db=null" in message
+
+
+def test_a_commitment_inside_the_anchor_lobe_is_not_flagged():
+    """The negative control for the disclosure above: a candidate that stays in
+    the anchor's own lobe must NOT raise the flag, or the flag says nothing.
+    """
+    woofer_ir, tweeter_ir = _impulse_branches()
+    alignment = AlignmentEstimate(
+        delay_us=_IMPULSE_ANCHOR_US, raw_delay_us=_IMPULSE_ANCHOR_US,
+        parallax_us=0.0, polarity="normal", polarity_sign=1,
+        confidence=0.9, status=ALIGNMENT_OK,
+        anchor_delay_us=_IMPULSE_ANCHOR_US, snapped_delay_us=None,
+    )
+    candidate, _predicted = _build_candidate(
+        woofer_ir, tweeter_ir, SR, 16_384, 2000.0, "woofer", "tweeter",
+        alignment, None, alignment_delay_bounds_us=(0.0, 1000.0),
+    )
+    assert abs(candidate.delay_us - candidate.anchor_delay_us) <= 0.5e6 / 2000.0
+    assert candidate.left_anchor_lobe is False
+
+
+def test_select_alignment_pair_refuses_a_non_finite_score():
+    """A branch transfer function carrying NaN in-band produces no verdict.
+
+    ``_ripple_db`` is finite for any finite band, so this only happens on input
+    that is already broken — but the failure mode matters: NaN propagates
+    through the minimum, the flat-minimum comparison then rejects every pair,
+    and the selection would die on ``min()`` of an empty sequence deep inside
+    an analysis seam. The pre-#2598 code guarded exactly this before storing
+    its evidence pair; the guard has to live on the SELECTION path now that
+    flatness chooses (#2607 review nit). ``None`` here means the caller keeps
+    the correlation seed, with a WARNING naming the cause.
+    """
+    freqs, W, T = _lr4_branches()
+    W = W.copy()
+    W[np.argmin(np.abs(freqs - 2000.0))] = np.nan
+    assert _select_alignment_pair(
+        freqs, W, T, fc_hz=2000.0, lo_hz=1000.0, hi_hz=4000.0,
+        trim_w_db=0.0, trim_t_db=0.0,
+        anchor_delay_us=0.0, seed_delay_us=0.0, seed_polarity_sign=1,
+    ) is None
+
+
+def test_retention_sidecar_carries_the_alignment_decision_record():
+    """All three sinks or none: the retained capture's own sidecar has to say
+    which objective committed the pair, what correlation answered, whether the
+    two agreed, and whether the commitment left the anchor's comb lobe.
+
+    The sidecar is what a forensic reader opens months later beside the WAV; a
+    decision legible only in a live journal is not a record (#2598, #2607 S2).
+    """
+    prog = build_measure_program(
+        {"woofer": -11.0, "tweeter": -13.0}, _roles(),
+        sweep_durations={"woofer": 0.8, "tweeter": 0.6},
+    )
+    cap = _synthesize(
+        prog,
+        woofer_ir=_band_impulse(200, 150.0, 6000.0, 1.0),
+        tweeter_ir=_band_impulse(225, 300.0, 20000.0, -0.7),
+        epsilon=0.0,
+    )
+    res = analyze_program_capture(
+        prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
+        geometry=MeasurementGeometry(),
+    )
+    summary = analysis_diagnostic_summary(res)
+    assert summary["alignment_objective"] == ALIGNMENT_COMMITTED_FLAT_SUM
+    # Concrete values, not just "the summary echoes the object": these branches
+    # really are inverted, correlation read them that way, and the objective
+    # agreed — so the record has to say inverted / agreed / in-lobe.
+    assert summary["seed_polarity"] == "inverted"
+    assert summary["polarity_agrees_with_sum"] is True
+    assert summary["left_anchor_lobe"] is False
+    assert summary["polarity_agrees_with_sum"] is res.alignment.polarity_agrees_with_sum
+    assert summary["left_anchor_lobe"] is res.candidate.left_anchor_lobe
+    # The record describes THIS capture's commitment, not a default: these
+    # branches really are inverted, and the objective says so.
+    assert summary["polarity"] == "inverted"
+
+
+def test_select_alignment_pair_returns_none_without_a_scoring_band():
+    """No bin inside the band ⇒ no objective ⇒ no answer invented."""
+    freqs, W, T = _lr4_branches()
+    assert _select_alignment_pair(
+        freqs, W, T, fc_hz=2000.0, lo_hz=30_000.0, hi_hz=40_000.0,
+        trim_w_db=0.0, trim_t_db=0.0,
+        anchor_delay_us=0.0, seed_delay_us=0.0, seed_polarity_sign=1,
+    ) is None
+
+
+def test_select_alignment_pair_refuses_to_flip_on_an_unmeasurable_branch():
+    """The SNR precondition, at the function that owns it.
+
+    The same inputs that make the objective flip the sign above are handed to
+    it again with the capture calling one branch unmeasurable. It commits the
+    DECLARED design at the physical anchor instead of a sign read off noise,
+    scores the declined seed anyway, and names which commitment it made.
+    """
+    freqs, W, T = _lr4_branches()
+    kwargs = dict(
+        fc_hz=2000.0, lo_hz=1000.0, hi_hz=4000.0,
+        trim_w_db=0.0, trim_t_db=0.0,
+        anchor_delay_us=25.0, seed_delay_us=90.0, seed_polarity_sign=-1,
+    )
+    trusted = _select_alignment_pair(freqs, W, T, **kwargs)
+    refused = _select_alignment_pair(
+        freqs, W, T, **kwargs, branch_snr_insufficient=True,
+    )
+    assert trusted is not None and refused is not None
+    assert trusted.objective == ALIGNMENT_COMMITTED_FLAT_SUM
+    assert refused.objective == ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR
+    # Declared polarity, physical anchor, no search.
+    assert refused.polarity_sign == 1
+    assert refused.delay_us == pytest.approx(25.0)
+    assert refused.grid_points == 1
+    # Disclosed, not silent: the refused pair is still scored and reported.
+    assert refused.seed_polarity_sign == -1
+    assert refused.seed_ripple_db == pytest.approx(trusted.seed_ripple_db)
+    # …and the cross-check reports NOT-ASKED, not disagreement: no flat sum ran
+    # on the polarity axis here, so `False` would describe a comparison that
+    # never happened.
+    assert refused.polarity_agrees_with_sum is None
+    assert trusted.polarity_agrees_with_sum is False
+
+
+@pytest.mark.parametrize(
+    (
+        "tweeter_drive_db", "expected_magnitude_verdict",
+        "expected_alignment_verdict", "expected_objective",
+        "expected_polarity", "expected_cross_check",
+    ),
+    [
+        (-13.0, "ok", "ok", ALIGNMENT_COMMITTED_FLAT_SUM, "inverted", True),
+        # THE WINDOW the alignment decision class closes: the magnitude law
+        # (25/20 dB) is satisfied here and the alignment law (35 dB) is not.
+        # Reading the displayed magnitude verdict, as the first cut of this
+        # refusal did, would ship a polarity read off this capture.
+        (
+            -48.0, "ok", "insufficient",
+            ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR, "normal", None,
+        ),
+        (
+            -70.0, "insufficient", "insufficient",
+            ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR, "normal", None,
+        ),
+    ],
+)
+def test_measure_analysis_refuses_the_flip_when_a_branch_snr_is_insufficient(
+    tweeter_drive_db, expected_magnitude_verdict, expected_alignment_verdict,
+    expected_objective, expected_polarity, expected_cross_check,
+):
+    """The wiring: ``_measure_analysis`` reads the per-branch ALIGNMENT-class
+    capture verdict and hands the refusal to the selector.
+
+    Same genuinely-inverted branches every time; only the tweeter's DRIVE
+    changes, which is what moves its capture SNR across the policy's lines
+    against a fixed ambient report. Heard properly, the selector commits the
+    inversion it can see. Unmeasurable BY THE LAW A POLARITY DECISION IS HELD
+    TO, it commits the preset's declared design instead — the fail-safe
+    direction, since the preset is the thing VERIFY grades against, and a sign
+    read off a capture the instrument calls unusable is the defect this issue
+    is about.
+
+    Nothing is stubbed: both verdicts come from the production SNR policy
+    reading the production ambient report.
+    """
+    ambient = {
+        "schema_version": 1,
+        "bands": [
+            {"band_id": "low", "band_hz": [150.0, 1000.0], "level_dbfs": -90.0},
+            {"band_id": "mid", "band_hz": [1000.0, 4000.0], "level_dbfs": -90.0},
+            {"band_id": "high", "band_hz": [4000.0, 16000.0], "level_dbfs": -90.0},
+        ],
+    }
+    prog = build_measure_program(
+        {"woofer": -11.0, "tweeter": tweeter_drive_db}, _roles(),
+        sweep_durations={"woofer": 0.8, "tweeter": 0.6},
+    )
+    cap = _synthesize(
+        prog,
+        woofer_ir=_band_impulse(200, 150.0, 6000.0, 1.0),
+        tweeter_ir=_band_impulse(225, 300.0, 20000.0, -0.7),
+        epsilon=80e-6,
+    )
+    res = analyze_program_capture(
+        prog, cap, SR,
+        priors=MeasurementPriors(crossover_fc_hz=FC_HZ, ambient_report=ambient),
+        geometry=MeasurementGeometry(),
+    )
+    tweeter = next(r for r in res.driver_responses if r.role == "tweeter")
+    assert driver_snr_verdict(tweeter) == expected_magnitude_verdict
+    assert driver_alignment_snr_verdict(tweeter) == expected_alignment_verdict
+    assert res.candidate.alignment_objective == expected_objective
+    assert res.candidate.polarity == expected_polarity
+    assert res.alignment.polarity == expected_polarity
+    # Correlation's own answer is preserved beside the commitment either way.
+    # The cross-check is True where the objective agreed with it and NOT-ASKED
+    # (None) on the refusal, which never put a flat sum on the polarity axis.
+    assert res.candidate.seed_polarity_sign == -1
+    assert res.alignment.polarity_agrees_with_sum is expected_cross_check
 
 
 # --------------------------------------------------------------------------- #
@@ -2133,7 +2689,7 @@ def test_predicted_sum_carries_the_committed_delay_and_ripple_does_not():
     instrument the G1 capture-quality threshold was calibrated against.
 
     Both curves are rebuilt here from the same public primitives, so this pins
-    the exact residual (``selected − anchor``, i.e. ``snap_delta_us``) rather
+    the exact residual (``committed − anchor``, i.e. ``snap_delta_us``) rather
     than merely "something changed".
     """
     fc_hz = 2000.0
@@ -2141,17 +2697,25 @@ def test_predicted_sum_carries_the_committed_delay_and_ripple_does_not():
     n_fft = 16_384
     anchor_us = _IMPULSE_ANCHOR_US
     # A snap the aligner found 60 us off the anchor — inside the +/-(period/6)
-    # radius at Fc (83.3 us), so this is a reachable production selection.
+    # radius at Fc (83.3 us), so this is a reachable correlation seed.
     snapped_us = anchor_us + 60.0
     alignment = AlignmentEstimate(
         delay_us=-650.0, raw_delay_us=-650.0, parallax_us=0.0,
-        polarity="normal", polarity_sign=1, polarity_agrees_with_sum=True,
+        polarity="normal", polarity_sign=1,
         confidence=0.9, status=ALIGNMENT_OK,
         anchor_delay_us=anchor_us, snapped_delay_us=snapped_us,
     )
     candidate, (pred_freqs, pred_db) = _build_candidate(
         woofer_ir, tweeter_ir, SR, n_fft, fc_hz, "woofer", "tweeter",
-        alignment, None, alignment_delay_bounds_us=(0.0, 1000.0),
+        alignment, None,
+        # A declared |delay| ceiling BELOW the anchor's own magnitude (229 us),
+        # which is what keeps this fixture's residual large enough for (2) to
+        # be a live assertion since #2598: two ideal coincident-bandwidth
+        # impulses sum flattest time-aligned, so an unconstrained flat-sum
+        # search would commit at the anchor and the two ripple instruments
+        # would agree to 0.06 dB. Under the declared ceiling the flattest
+        # ADMISSIBLE pair is the correlation seed, and the selector commits it.
+        alignment_delay_bounds_us=(0.0, 175.0),
     )
     assert candidate.delay_us == pytest.approx(snapped_us, abs=1e-9)
     assert candidate.snap_delta_us == pytest.approx(60.0, abs=1e-9)
@@ -2236,8 +2800,14 @@ def test_committed_delay_model_tracks_the_real_applied_sum_better():
     The speaker will emit the two branches under the committed delay, in the
     ORIGINAL physical time origin. Rebuild that sum from the raw IRs and score
     both models against it on one mean-centred ruler: the applied model has to
-    be materially closer than the independently-aligned one it replaced,
-    because the aligned one describes a delay no selection realizes.
+    be materially closer than a model of a delay no selection realizes.
+
+    The comparator is the SEED delay the flat-sum selector rejected (#2598) —
+    the pair the aligner's correlation snap would have committed before it.
+    Two ideal coincident impulses sum flattest time-aligned, so the selector
+    lands near the anchor and the zero-residual curve is no longer the wrong
+    model to contrast with; the rejected seed is, and it is also the more
+    interesting one, since it is what this speaker would have shipped.
     """
     fc_hz = 2000.0
     woofer_ir, tweeter_ir = _impulse_branches()
@@ -2249,7 +2819,7 @@ def test_committed_delay_model_tracks_the_real_applied_sum_better():
     snapped_us = anchor_us + 60.0
     alignment = AlignmentEstimate(
         delay_us=-650.0, raw_delay_us=-650.0, parallax_us=0.0,
-        polarity="normal", polarity_sign=1, polarity_agrees_with_sum=True,
+        polarity="normal", polarity_sign=1,
         confidence=0.9, status=ALIGNMENT_OK,
         anchor_delay_us=anchor_us, snapped_delay_us=snapped_us,
     )
@@ -2259,8 +2829,10 @@ def test_committed_delay_model_tracks_the_real_applied_sum_better():
     )
     _f, W, _gw = _aligned_branch_tf(woofer_ir, SR, n_fft, calibration=None)
     _f2, T, _gt = _aligned_branch_tf(tweeter_ir, SR, n_fft, calibration=None)
-    aligned_model_db = 20.0 * np.log10(np.maximum(np.abs(predicted_branch_sum(
+    seed_model_db = 20.0 * np.log10(np.maximum(np.abs(predicted_branch_sum(
         W, T, candidate.trim_db["woofer"], candidate.trim_db["tweeter"], 1,
+        freqs_hz=freqs,
+        residual_delay_us=summed_model_residual_delay_us(anchor_us, snapped_us),
     )), 1e-12))
 
     # Truth: the raw branches, each delayed by the side of the committed delay
@@ -2286,14 +2858,14 @@ def test_committed_delay_model_tracks_the_real_applied_sum_better():
         return float(np.sqrt(np.mean((err - np.mean(err)) ** 2)))
 
     applied_err = _centred_rms(applied_model_db)
-    aligned_err = _centred_rms(aligned_model_db)
+    seed_err = _centred_rms(seed_model_db)
     # The loop CLOSES: on an exact frame the applied model is not merely
     # closer, it is the physical sum (0.0 dB to float precision).
     assert applied_err == pytest.approx(0.0, abs=1e-6)
-    # And the model it replaced was materially wrong about the same speaker —
-    # 0.750 dB rms here, against a VERIFY tracking tolerance of 1.5 dB. So this
-    # is a real slice of the tracking budget, not a rounding-scale change.
-    assert aligned_err > 0.5
+    # And the rejected seed was materially wrong about the same speaker,
+    # against a VERIFY tracking tolerance of 1.5 dB. So this is a real slice of
+    # the tracking budget, not a rounding-scale change.
+    assert seed_err > 0.5
 
 
 @pytest.mark.parametrize(

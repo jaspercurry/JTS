@@ -1,0 +1,61 @@
+{
+ "_provenance": {
+  "candidate_fingerprint": "85a83ace1eaefb92838161f3f0676752937764a19f316334dc3827c1fff36375",
+  "captured_on": "2026-08-15/16",
+  "derived_by": "one-off extraction from the sources below, read-only over ssh. No re-derivation script ships and none can: the sources are a LIVE box's runtime state, not a retained capture bundle, so a --check mode would be diffing against a file that keeps moving. These sha256s are the audit trail instead. See the test module docstring.",
+  "derived_on": "2026-08-16",
+  "incident": "crossover polarity/delay alignment commits a commanded null",
+  "issue": 2598,
+  "measure_session_id": "0768f64e9b10",
+  "sources": [
+   {
+    "path": "/var/lib/jasper/active_speaker/sessions/0768f64e9b10/evidence/v1/artifacts/crossover_v2/cap_5mdHqOAjTg_de3QtBIo11Q/candidate.json",
+    "sha256": "d0cfb99170e4dc92acab704694cb1baaa7874c09c480fc47c911defbfb454635"
+   },
+   {
+    "path": "/var/lib/jasper/xover-capture-dump/1786848233703139_measure_UMIK-2__2752_002b_.json",
+    "sha256": "f3d9b75f85531644bfe296dbf09777ec72381f5739c50a8ec16ac60b660c0825"
+   }
+  ],
+  "speaker": "jts3 (192.168.1.92)",
+  "speaker_build_sha": "58a8ac28b",
+  "verify_session_id": "bc56a92734b5"
+ },
+ "capture_snr": {
+  "tweeter": {
+   "snr_db": -1.2,
+   "verdict": "insufficient"
+  },
+  "woofer": {
+   "snr_db": 44.0,
+   "verdict": "ok"
+  }
+ },
+ "crossover_region": {
+  "delay_range_ms": [
+   0.0,
+   1.0
+  ],
+  "fc_hz": 1648.7,
+  "lower_driver": "woofer",
+  "lower_polarity": "non-inverted",
+  "order": 4,
+  "target_type": "LinkwitzRiley",
+  "upper_driver": "tweeter",
+  "upper_polarity": "non-inverted"
+ },
+ "crossover_region_hz": [
+  824.35,
+  3297.4
+ ],
+ "drivers": {
+  "tweeter": {
+   "model": "DE250-8",
+   "sensitivity_db": 108.5
+  },
+  "woofer": {
+   "model": "Epique E150HE-44",
+   "sensitivity_db": 83.3
+  }
+ }
+}

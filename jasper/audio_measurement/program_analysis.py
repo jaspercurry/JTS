@@ -342,6 +342,93 @@ ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW = "delay_exceeds_search_window"
 # Overlap band for trims / alignment / ripple: Fc ± 1 octave.
 OVERLAP_OCTAVE_RATIO = 2.0
 
+# --------------------------------------------------------------------------- #
+# Joint (polarity, delay) alignment selection — issue #2598
+# --------------------------------------------------------------------------- #
+#
+# The pair is scored on ONE objective: the ripple of the predicted summed blend.
+# Correlation (GCC-PHAT sign + the gated local-peak snap) is the SEED and the
+# tie-break, never the decider.
+#
+# Why the objective changed. Polarity used to be the sign of the GCC-PHAT
+# correlation peak and the delay the physical peak-gap anchor snapped to the
+# nearest correlation lobe — two correlation answers, neither of which asks the
+# question the crossover actually poses: does the pair SUM FLAT through the
+# blend? On the 2026-08-15 jts3 rounds it answered `invert` from a correlation
+# peak evaluated at -292 us while the applied delay was +96 us, on a tweeter IR
+# whose own capture verdict was `insufficient` SNR. An inverted Linkwitz-Riley
+# pair sums to a COMMANDED NULL at Fc (LR sums flat only in matched polarity),
+# delay-shifted to ~1.45 kHz — which is exactly the -3.75 dB the post-apply
+# measurement kept reporting for three rounds. The flat-sum discriminator
+# already existed (`_flatter_sum_polarity`, now removed) and was computed and
+# discarded every round. This makes it the selector and gives the delay the
+# same objective, since polarity and delay trade against each other: the pair
+# is one decision, not two.
+#
+# Search geometry: +/- one period at Fc around the anchor, which is the
+# ambiguity interval a comb lobe lives in, at a step fine enough that grid
+# quantization is never the reason a pair loses. Declaration-driven — the span
+# derives from the priors' Fc, never a hardcoded microsecond literal.
+ALIGNMENT_FLATNESS_SPAN_PERIODS = 1.0
+ALIGNMENT_FLATNESS_STEP_US = 10.0
+# Bounded CPU (the analysis runs on the speaker): a low crossover corner makes
+# the period-derived span long, so cap the per-polarity grid and widen the step
+# to fit rather than letting the point count scale as 1/Fc. At Fc >= ~500 Hz the
+# cap is inactive and the step is exactly ALIGNMENT_FLATNESS_STEP_US.
+ALIGNMENT_FLATNESS_MAX_STEPS = 200
+# Flat-minimum regularization, the same shape (and the same 0.25 dB) the
+# ripple-optimal trim search uses for the same reason — see
+# RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB. A wide, nearly-flat basin's exact argmin
+# wanders with measurement noise, and an applied alignment that shifts between
+# re-measurements is a worse product property than a fraction of a dB of
+# ripple. Among every pair within this much of the global minimum, the search
+# keeps the SEED pair — what correlation alone would have shipped — which is
+# what makes this change a no-op on captures where flatness cannot tell the two
+# answers apart, and what keeps correlation as the tie-break the campaign asked
+# for. A separate constant from the trim one on purpose: same principle, a
+# different axis, and neither should silently retune the other.
+ALIGNMENT_FLAT_MINIMUM_EPSILON_DB = 0.25
+
+#: What the candidate's (polarity, delay) pair IS — never merely why some other
+#: answer was rejected. Each value names the committed thing, following
+#: ``jasper.active_speaker.crossover_v2.contracts.TrimStrategy``'s rule that a
+#: qualifier ("after low SNR") rides a commitment rather than replacing it.
+ALIGNMENT_COMMITTED_FLAT_SUM = "flat_sum_committed"
+ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR = "declared_committed_after_low_snr"
+ALIGNMENT_COMMITTED_SEED_NO_SCORING_BAND = "seed_committed_no_scoring_band"
+ALIGNMENT_COMMITTED_SEED_ALIGNMENT_REFUSED = "seed_committed_alignment_refused"
+ALIGNMENT_COMMITMENTS = frozenset({
+    ALIGNMENT_COMMITTED_FLAT_SUM,
+    ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR,
+    ALIGNMENT_COMMITTED_SEED_NO_SCORING_BAND,
+    ALIGNMENT_COMMITTED_SEED_ALIGNMENT_REFUSED,
+})
+#: The two commitments the selector itself made — as opposed to the two where
+#: it could not run and the seed simply stood. Only these answer
+#: ``polarity_agrees_with_sum``: on the others no flat sum was ever computed,
+#: and recording "correlation agreed" because nothing disagreed with it is the
+#: exact shape of dishonesty this issue is about.
+_SELECTOR_COMMITTED_OBJECTIVES = frozenset({
+    ALIGNMENT_COMMITTED_FLAT_SUM,
+    ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR,
+})
+
+#: The verdict at which a branch stops being evidence a polarity flip may rest
+#: on — read off the ALIGNMENT decision class
+#: (:data:`~jasper.audio_measurement.snr_policy.DECISION_CLASS_ALIGNMENT`, the
+#: 35 dB ``DRIVER.alignment_snr_ok_db`` law with no ``reduced`` rung), never the
+#: magnitude class the same block also carries. ``unknown``/absent means the
+#: verdict was never computed — a session whose CHECK carried no ambient window
+#: must still get the flat-sum selector, not a silent downgrade to the
+#: correlation answer this fix exists to distrust.
+ALIGNMENT_SNR_REFUSAL_VERDICT = "insufficient"
+
+#: Where :func:`_driver_snr_block` files its ALIGNMENT-class verdict inside the
+#: per-driver SNR block. One name, one writer, one reader
+#: (:func:`driver_alignment_snr_verdict`) — the magnitude verdict keeps the
+#: block's top level, so every surface that already reads it is untouched.
+DRIVER_SNR_ALIGNMENT_KEY = "alignment"
+
 # Ripple-optimal trim POLISH (#1667, scoped by PR-L3): re-solve the tweeter
 # trim for minimum summed-response ripple, seeded by solve_branch_trims'
 # band-average level match. #1667 introduced it to absorb that level match's
@@ -704,7 +791,8 @@ VERIFY_NOTCH_EXCLUSION_DB = 12.0
 #
 # Naming note kept from #1668 PR-D: do not name anything here bare "flatness"
 # — `CrossoverCandidate.flatness_improvement_db` is an UNRELATED Layer-1b
-# metric (anchor-vs-selected-delay ripple improvement), not a spec claim.
+# metric (what the (polarity, delay) objective bought over the correlation
+# seed), not a spec claim.
 
 ANALYSIS_KIND = "jts_program_analysis"
 
@@ -1036,6 +1124,20 @@ class AlignmentEstimate:
     peak is a clamped artifact — ``status`` is
     :data:`ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW` and ``confidence`` is forced
     to 0.0; callers must not apply ``delay_us`` from such a result.
+
+    **Polarity follows the same seed-then-selection shape as the delay (issue
+    #2598).** ``polarity``/``polarity_sign`` on a FRESH estimate are the GCC
+    correlation's own answer; on the estimate ``_measure_analysis`` publishes
+    they are the pair :func:`_select_alignment_pair` committed, exactly as
+    ``delay_us`` is the committed delay and ``seed_delay_us`` the correlation
+    seed. ``polarity_agrees_with_sum`` is the cross-check that used to be
+    computed and thrown away: ``True``/``False`` once the flat-sum selection
+    has answered it, ``None`` on an estimate nothing has cross-checked yet
+    (a fresh return from :func:`_estimate_alignment`, or a hand-built one). A
+    disagreement is ordinary operation, not a fault — it is the correlation
+    losing to the objective that owns the question — so it is recorded rather
+    than raised. The correlation's own polarity answer travels beside the rest
+    of the selection evidence on :class:`CrossoverCandidate`.
     """
 
     delay_us: float
@@ -1043,38 +1145,70 @@ class AlignmentEstimate:
     parallax_us: float
     polarity: str  # "normal" | "inverted"
     polarity_sign: int  # +1 | -1
-    polarity_agrees_with_sum: bool
     confidence: float
     status: str = ALIGNMENT_OK
     seed_delay_us: float | None = None
     confidence_source: str = "gcc_phat"
     anchor_delay_us: float | None = None
     snapped_delay_us: float | None = None
+    polarity_agrees_with_sum: bool | None = None
 
 
 @dataclass(frozen=True)
 class CrossoverCandidate:
     """The proposed measured candidate (design §5.6.6).
 
-    Delay selection is anchor-primary (the drift-corrected physical peak gap)
-    with a gated local-peak snap; summed-magnitude flatness is demoted to
-    evidence and never chooses the applied delay (methodology:
-    docs/crossover-measurement-reproducibility-plan.md §10, 2026-07-22).
+    **The (polarity, delay) pair is chosen jointly, on predicted summed blend
+    flatness (issue #2598).** :func:`_select_alignment_pair` scores both
+    polarities across a delay grid centred on the drift-corrected physical
+    peak-gap anchor and commits the flattest pair; correlation — the GCC-PHAT
+    polarity sign and the gated local-peak snap — supplies the SEED pair and
+    the tie-break, and is otherwise reported evidence. ``alignment_objective``
+    names what was committed (:data:`ALIGNMENT_COMMITMENTS`) and
+    ``seed_polarity_sign`` is the correlation's own polarity answer, so a
+    disagreement between the two answers is readable off the persisted
+    candidate rather than being a thing only the selector ever knew.
+    ``left_anchor_lobe`` records that the committed delay sits outside the comb
+    lobe the anchor owns — the compensating control the #2607 panel required in
+    exchange for keeping the ±1-period search. It is on the CANDIDATE and not
+    only in the journal because a wrong-lobe commitment is magnitude-flat and
+    time-wrong: an on-axis VERIFY cannot see it, so the receipt has to. Before
+    #2598 the delay was anchor-primary with a correlation snap and flatness was
+    evidence that never selected anything (methodology:
+    docs/crossover-measurement-reproducibility-plan.md §10, 2026-07-22); that
+    methodology's insight survives as the search's geometry (the anchor centres
+    the grid, so lobe selection stays physically anchored) and as the tie-break.
+
     ``anchor_delay_us`` is the bare anchor in the signed candidate convention,
-    ``snap_delta_us`` is ``selected − anchor`` (0.0 when the snap was not taken),
-    and ``snap_found`` records whether a local correlation peak existed inside
-    the snap radius. ``alignment_seed_ripple_db`` is the summed ripple evaluated
-    AT the anchor and ``flatness_improvement_db`` is ``anchor_ripple −
-    selected_ripple`` — evidence only, so a slightly negative value is honest
-    (the snap is chosen for comb-lobe correctness, not ripple). Since
-    ``snap_delta_us`` is ``selected − anchor``, it is also exactly the residual
-    delay the model carries on this path
-    (:func:`summed_model_residual_delay_us`) — one number, not two.
+    ``snap_delta_us`` is ``committed − anchor``, and ``snap_found`` records
+    whether a local correlation peak existed inside the snap radius — the
+    seed's own provenance, not the committed delay's. ``alignment_seed_ripple_db``
+    is the summed ripple at the SEED pair (the correlation polarity at the delay
+    the pre-#2598 selector would have applied) and ``flatness_improvement_db``
+    is ``seed_ripple − committed_ripple``: what the objective bought over
+    correlation alone. On the flat-sum path it is non-negative by construction,
+    since the seed pair is always one of the scored candidates. On the
+    low-SNR path it can be NEGATIVE, and that is the disclosure working rather
+    than a fault: the branch that would have argued for the seed is the one the
+    capture called unmeasurable, so the commitment is the declared design and
+    this number says what declining a noise-derived flatness claim cost on
+    paper. Since ``snap_delta_us`` is
+    ``committed − anchor``, it is also exactly the residual delay the model
+    carries on this path (:func:`summed_model_residual_delay_us`) — one number,
+    not two.
 
     ``predicted_ripple_db`` is measured on the INDEPENDENTLY ALIGNED
-    (zero-residual) branch sum, and is the one quantity here that deliberately
+    (zero-residual) branch sum **at the committed POLARITY**, and is the one
+    quantity here that deliberately
     did NOT follow ``ProgramAnalysis.predicted_sum`` onto the committed-delay
-    model at rung P3 / R10b. It asks a capture-quality question — how
+    model at rung P3 / R10b. Zero-residual and committed-polarity is not a
+    contradiction (#2598): the delay is the axis a candidate could use to talk
+    itself under the threshold, and holding the residual at zero is what closes
+    that; polarity is not a continuum a capture can shop along, and scoring
+    coherence at a polarity the candidate does not ship makes a fine capture
+    read as an incoherent one — which is exactly what the inverted round did,
+    reporting 14.13 dB for a pair that sums to a fraction of a dB the right way
+    round. It asks a capture-quality question — how
     coherently can these two branches sum at all — which is a property of the
     measurement and not of the delay selection, and it is the sole input to
     ``crossover_v2_flow``'s G1 ``MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB``, whose
@@ -1118,6 +1252,9 @@ class CrossoverCandidate:
     snap_delta_us: float | None = None
     snap_found: bool = False
     trim_band_average_db: Mapping[str, float] | None = None
+    alignment_objective: str = ""
+    seed_polarity_sign: int | None = None
+    left_anchor_lobe: bool = False
 
 
 @dataclass(frozen=True)
@@ -2845,15 +2982,37 @@ def _driver_snr_block(
         band_method = "fft_band_power_difference"
     else:
         return None
-    return snr_policy.band_snr_verdicts(
+    relevant_hz = (fc_hz / OVERLAP_OCTAVE_RATIO, fc_hz * OVERLAP_OCTAVE_RATIO)
+    block = snr_policy.band_snr_verdicts(
         decision_class=snr_policy.DECISION_CLASS_MAGNITUDE,
         capture_bands=capture_bands,
         noise_bands=noise_bands,
         noise_floor_dbfs_scalar=None,
-        relevant_hz=(fc_hz / OVERLAP_OCTAVE_RATIO, fc_hz * OVERLAP_OCTAVE_RATIO),
+        relevant_hz=relevant_hz,
         model=DRIVER,
         band_method=band_method,
     )
+    # TWO decision classes off ONE set of measurements, because the repo's own
+    # SNR law asks two different questions of them (#2607 safety review S1).
+    # The magnitude verdict above answers "did the level solve deliver the SNR
+    # it aimed for" and grades `ok`/`reduced`/`insufficient` around 25/20 dB —
+    # it is what every existing surface reads and it is unchanged. A
+    # POLARITY/DELAY decision is held to `DRIVER.alignment_snr_ok_db` (35 dB,
+    # ok-or-insufficient with no reduced rung), which `_band_required_snr_db`
+    # already declares and the MEASURE level solve already aims at. Reading the
+    # magnitude verdict for the alignment refusal left a 15 dB window in which
+    # a polarity read off a capture the law calls unusable shipped unrefused.
+    # Same bands, same noise, same overlap-scoped window: only the law differs.
+    block[DRIVER_SNR_ALIGNMENT_KEY] = snr_policy.band_snr_verdicts(
+        decision_class=snr_policy.DECISION_CLASS_ALIGNMENT,
+        capture_bands=capture_bands,
+        noise_bands=noise_bands,
+        noise_floor_dbfs_scalar=None,
+        relevant_hz=relevant_hz,
+        model=DRIVER,
+        band_method=band_method,
+    )
+    return block
 
 
 def _driver_response(
@@ -3094,7 +3253,7 @@ def _estimate_alignment(
     parallax_us = geometry.parallax_us()
     delay_us = raw_delay_us - parallax_us
 
-    polarity = "normal" if polarity_sign >= 0 else "inverted"
+    polarity = polarity_label(polarity_sign)
 
     status = ALIGNMENT_OK
     if at_edge:
@@ -3155,19 +3314,20 @@ def _estimate_alignment(
                 snapped_tau = snapped_lag - epsilon * delta_start
                 snapped_delay_us = -snapped_tau / sample_rate * 1e6 - parallax_us
 
-    # Cross-check polarity against the flatter predicted sum.
-    agrees = _flatter_sum_polarity(
-        capture, program, sample_rate, global_offset, fc_hz, priors,
-        woofer_full_ir=woofer_full_ir, tweeter_full_ir=tweeter_full_ir,
-    )
-    polarity_agrees = agrees == polarity_sign
+    # The flat-sum cross-check that used to live here is now the SELECTOR
+    # (`_select_alignment_pair`, issue #2598), scored jointly with the delay in
+    # `_build_candidate` where the branch transfer functions and trims already
+    # exist. This estimate is therefore the correlation SEED — polarity
+    # included — and `polarity_agrees_with_sum` stays None until the selection
+    # answers it. Computing a second, delay-blind flat-sum verdict here would
+    # be a second owner of one question, which is how the discarded one came to
+    # disagree with what shipped for fourteen rounds.
     return AlignmentEstimate(
         delay_us=delay_us,
         raw_delay_us=raw_delay_us,
         parallax_us=parallax_us,
         polarity=polarity,
         polarity_sign=polarity_sign,
-        polarity_agrees_with_sum=polarity_agrees,
         confidence=confidence,
         status=status,
         anchor_delay_us=anchor_delay_us,
@@ -3258,6 +3418,271 @@ def _ripple_db(freqs: np.ndarray, magnitude: np.ndarray, lo: float, hi: float) -
     band = magnitude[mask]
     band_db = 20.0 * np.log10(np.maximum(np.abs(band), 1e-12))
     return float(np.max(band_db) - np.min(band_db))
+
+
+def _finite_or_none(value: float, ndigits: int) -> float | None:
+    """``round(value, ndigits)``, or ``None`` when it is not a finite number.
+
+    For journal fields that quote a measured quantity which CAN be non-finite:
+    ``None`` reads as "no number", where a bare NaN reads as a number and
+    survives into whatever parses the line.
+    """
+    return round(float(value), ndigits) if math.isfinite(value) else None
+
+
+def polarity_label(polarity_sign: int) -> str:
+    """``+1 -> "normal"``, ``-1 -> "inverted"``. The ONE spelling of the map."""
+    return "normal" if polarity_sign >= 0 else "inverted"
+
+
+def polarity_sign_of(polarity: str) -> int:
+    """Inverse of :func:`polarity_label`; anything but ``"inverted"`` is ``+1``."""
+    return -1 if polarity == "inverted" else 1
+
+
+@dataclass(frozen=True)
+class AlignmentPairSelection:
+    """What :func:`_select_alignment_pair` committed, and the evidence for it.
+
+    ``polarity_sign``/``delay_us`` are the committed pair; ``ripple_db`` is the
+    summed blend ripple there. ``seed_*`` is the pair correlation alone would
+    have shipped — the GCC polarity sign at the delay the anchor/snap path
+    selected — scored on the SAME objective so the two are comparable, and
+    ``objective`` names which commitment this is (:data:`ALIGNMENT_COMMITMENTS`).
+    ``grid_points``/``grid_step_us`` describe the delay grid actually searched
+    per polarity (``1``/``0.0`` when there was nothing to search: the low-SNR
+    commitment, a capture with no trustworthy anchor to centre a grid on, or a
+    declared bound that admitted no grid point at all).
+
+    ``left_anchor_lobe`` is the compensating control for the search's width:
+    True when the committed delay sits more than half a period at Fc from the
+    anchor, i.e. outside the comb lobe the 2026-07-22 methodology decision asks
+    the ANCHOR to own. Legitimate when the objective is that sure, and the exact
+    shape a fooled objective would take — so it is carried on the candidate and
+    raises the selection log to WARNING rather than living only in a delta a
+    reader would have to compute.
+    """
+
+    polarity_sign: int
+    delay_us: float
+    ripple_db: float
+    seed_polarity_sign: int
+    seed_delay_us: float
+    seed_ripple_db: float
+    objective: str
+    grid_points: int
+    grid_step_us: float
+    left_anchor_lobe: bool = False
+
+    @property
+    def polarity_agrees_with_sum(self) -> bool | None:
+        """Did correlation's polarity answer survive the flat-sum objective?
+
+        ``None`` on any commitment the flat-sum objective did not make on the
+        POLARITY axis — today the low-SNR path, where the declared design is
+        committed precisely because the evidence a flat sum would read is not
+        trustworthy. Recording ``False`` there would report a comparison that
+        never happened, which is the same dishonesty
+        :data:`_SELECTOR_COMMITTED_OBJECTIVES` refuses for the seed fallbacks.
+        """
+        if self.objective != ALIGNMENT_COMMITTED_FLAT_SUM:
+            return None
+        return self.polarity_sign == self.seed_polarity_sign
+
+    @property
+    def flatness_improvement_db(self) -> float:
+        """``seed_ripple − committed_ripple``: what the objective bought."""
+        return self.seed_ripple_db - self.ripple_db
+
+
+def _select_alignment_pair(
+    freqs: np.ndarray,
+    W: np.ndarray,
+    T: np.ndarray,
+    *,
+    fc_hz: float,
+    lo_hz: float,
+    hi_hz: float,
+    trim_w_db: float,
+    trim_t_db: float,
+    anchor_delay_us: float | None,
+    seed_delay_us: float,
+    seed_polarity_sign: int,
+    delay_bounds_us: tuple[float, float] | None = None,
+    branch_snr_insufficient: bool = False,
+) -> AlignmentPairSelection | None:
+    """Commit the (polarity, delay) pair whose predicted blend sums flattest.
+
+    ONE objective for both halves of one decision (issue #2598): the ripple of
+    ``W + s·T`` over ``[lo_hz, hi_hz]`` with the pair's own residual delay,
+    scored across ``s ∈ {+1, −1}`` and a delay grid of
+    :data:`ALIGNMENT_FLATNESS_STEP_US` steps spanning
+    ±:data:`ALIGNMENT_FLATNESS_SPAN_PERIODS` period(s) at ``fc_hz`` around
+    ``anchor_delay_us``. Polarity and delay trade against each other — a delay
+    can shift and shallow the null an inverted pair commands, which is how a
+    wrong polarity survived three rounds looking like a merely-imperfect
+    alignment — so scoring them separately can only ever compare one against a
+    guess about the other.
+
+    Correlation stays in the loop as the SEED (``seed_polarity_sign`` at
+    ``seed_delay_us`` — exactly what the pre-#2598 path would have applied) and
+    as the tie-break: the seed pair is always one of the scored candidates, and
+    among every pair within :data:`ALIGNMENT_FLAT_MINIMUM_EPSILON_DB` of the
+    global minimum the search keeps the one closest to the seed, preferring the
+    seed's own polarity first. On a capture where flatness cannot separate the
+    two answers this is therefore a byte-identical no-op.
+
+    ``trim_w_db``/``trim_t_db`` are the LEVEL-MATCH trims (``solve_branch_trims``'s
+    band-average result), not the ripple-polished tweeter trim: the polish's own
+    objective needs a polarity, so scoring the pair at the polished trim would
+    be circular. The polish is a level nudge bounded by
+    :data:`RIPPLE_TRIM_SANITY_MARGIN_DB` and does not move where a commanded
+    null falls, so the pair it is applied to is the pair chosen here.
+
+    ``delay_bounds_us`` is the preset's declared |delay| range (already
+    margin-expanded by ``crossover_v2_flow.alignment_delay_search_bounds_us``).
+    Grid points outside it are dropped rather than proposed: a delay past the
+    declared bound is refused downstream by the Fix-3 plausibility screen, and
+    a candidate that loses the whole capture to a rail is not an improvement on
+    one that is merely not-flattest. The seed pair is exempt — it is what the
+    old path would have applied anyway, so excluding it could only ever hide
+    the comparison this function exists to make.
+
+    ``branch_snr_insufficient`` is the refusal: see
+    :data:`ALIGNMENT_SNR_REFUSAL_VERDICT`. When a branch feeding the alignment
+    reports insufficient capture SNR, the pair is not searched — it is
+    COMMITTED to the declared design (relative polarity ``+1``: the branch
+    transfer functions are already in the configured-polarity frame, so ``+1``
+    means "the relative polarity the preset declares", which is also the target
+    VERIFY grades against) at the physical peak-gap anchor, and the objective
+    string says so. Not a hard stop and not a silent estimate: the household
+    still gets an alignment, it is the one the design asks for rather than one
+    read off noise, and the reason travels with the candidate. The seed pair is
+    still scored so the record shows what was declined.
+
+    Returns ``None`` when the objective cannot be evaluated at all — no
+    frequency bin inside ``[lo_hz, hi_hz]``, or no candidate with a finite score
+    — leaving the caller on the seed and saying which in a WARNING.
+    """
+    band = (freqs >= lo_hz) & (freqs <= hi_hz)
+    if not np.any(band):
+        return None
+    freqs_band = freqs[band]
+    W_band = W[band]
+    T_band = T[band]
+
+    def _ripple_at(polarity_sign: int, delay_us: float) -> float:
+        summed = predicted_branch_sum(
+            W_band, T_band, trim_w_db, trim_t_db, polarity_sign,
+            freqs_hz=freqs_band,
+            residual_delay_us=summed_model_residual_delay_us(
+                anchor_delay_us, delay_us,
+            ),
+        )
+        return _ripple_db(freqs_band, summed, lo_hz, hi_hz)
+
+    def _left_anchor_lobe(delay_us: float) -> bool:
+        """Did the commitment leave the comb lobe the anchor owns?"""
+        if anchor_delay_us is None or fc_hz <= 0.0:
+            return False
+        return abs(delay_us - anchor_delay_us) > 0.5e6 / fc_hz
+
+    seed_ripple_db = _ripple_at(seed_polarity_sign, seed_delay_us)
+
+    if branch_snr_insufficient:
+        committed_delay_us = (
+            anchor_delay_us if anchor_delay_us is not None else seed_delay_us
+        )
+        return AlignmentPairSelection(
+            polarity_sign=1,
+            delay_us=committed_delay_us,
+            ripple_db=_ripple_at(1, committed_delay_us),
+            seed_polarity_sign=seed_polarity_sign,
+            seed_delay_us=seed_delay_us,
+            seed_ripple_db=seed_ripple_db,
+            objective=ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR,
+            grid_points=1,
+            grid_step_us=0.0,
+            left_anchor_lobe=_left_anchor_lobe(committed_delay_us),
+        )
+
+    # The delay is only scorable against an anchor: with none,
+    # `summed_model_residual_delay_us` is 0.0 for every candidate delay, so the
+    # objective is blind to the axis. Search the polarity alone rather than
+    # walking a grid of identical scores and calling the winner a selection.
+    grid_step_us = 0.0
+    delays = [seed_delay_us]
+    if anchor_delay_us is not None and fc_hz > 0.0:
+        span_us = ALIGNMENT_FLATNESS_SPAN_PERIODS * 1e6 / fc_hz
+        n_steps = int(round(span_us / ALIGNMENT_FLATNESS_STEP_US))
+        n_steps = max(1, min(n_steps, ALIGNMENT_FLATNESS_MAX_STEPS))
+        step_us = span_us / n_steps
+        grid = [anchor_delay_us + i * step_us for i in range(-n_steps, n_steps + 1)]
+        if delay_bounds_us is not None:
+            lo_us, hi_us = (abs(float(b)) for b in delay_bounds_us)
+            lo_us, hi_us = min(lo_us, hi_us), max(lo_us, hi_us)
+            grid = [d for d in grid if lo_us <= abs(d) <= hi_us]
+        # A declared bound that admits no grid point at all leaves only the
+        # exempt seed, which is the same "nothing was searched" state the
+        # no-anchor path reports — so report it the same way (1 / 0.0) rather
+        # than quoting the step of a grid that ended up empty.
+        if grid:
+            grid_step_us = step_us
+        delays = [*grid, seed_delay_us]
+
+    pairs = [(sign, delay) for sign in (1, -1) for delay in delays]
+    # Non-finite scores are not candidates. `_ripple_db` is finite for any
+    # finite band (its 1e-12 magnitude clamp keeps the log bounded), so this
+    # only fires on a branch TF that already carries NaN/inf — but then
+    # `min()` below propagates the NaN, the epsilon comparison rejects every
+    # pair, and `min()` of the empty result raises ValueError. The pre-#2598
+    # code guarded exactly this before the evidence pair was stored; the guard
+    # belongs on the SELECTION path now that flatness chooses (#2607 review).
+    scored = [
+        (sign, delay, ripple)
+        for (sign, delay), ripple in (
+            (pair, _ripple_at(*pair)) for pair in pairs
+        )
+        if math.isfinite(ripple)
+    ]
+    if not scored:
+        log_event(
+            logger, "program_analysis.alignment_not_scorable",
+            level=logging.WARNING,
+            reason="no_finite_ripple",
+            fc_hz=round(float(fc_hz), 3),
+            band_hz=(round(float(lo_hz), 1), round(float(hi_hz), 1)),
+            candidates=len(pairs),
+        )
+        return None
+    best_ripple = min(ripple for _s, _d, ripple in scored)
+    # Flat-minimum regularization (see ALIGNMENT_FLAT_MINIMUM_EPSILON_DB):
+    # among everything within epsilon of the global minimum, keep the seed's
+    # polarity first and then the delay closest to the seed. A sharp minimum
+    # has one member and this is plain argmin; a shallow basin resolves toward
+    # what correlation already said.
+    committed_sign, committed_delay_us, committed_ripple_db = min(
+        (
+            item for item in scored
+            if item[2] <= best_ripple + ALIGNMENT_FLAT_MINIMUM_EPSILON_DB
+        ),
+        key=lambda item: (
+            0 if item[0] == seed_polarity_sign else 1,
+            abs(item[1] - seed_delay_us),
+        ),
+    )
+    return AlignmentPairSelection(
+        polarity_sign=committed_sign,
+        delay_us=committed_delay_us,
+        ripple_db=committed_ripple_db,
+        seed_polarity_sign=seed_polarity_sign,
+        seed_delay_us=seed_delay_us,
+        seed_ripple_db=seed_ripple_db,
+        objective=ALIGNMENT_COMMITTED_FLAT_SUM,
+        grid_points=len(delays),
+        grid_step_us=grid_step_us,
+        left_anchor_lobe=_left_anchor_lobe(committed_delay_us),
+    )
 
 
 def branch_level_bands_hz(
@@ -3513,11 +3938,12 @@ def ripple_at_trim(
     together — a gap that read as flatness thrown away was mostly the
     linearization itself, which ships either way (#2541).
 
-    It is not this module's only summed-ripple site: ``_flatter_sum_polarity``
-    composes the same two functions inline, at both polarities. That is left
-    alone deliberately — it is a different question (which SIGN sums flatter,
-    at a fixed trim), and folding it in would be a code change for a docstring's
-    convenience.
+    It is not this module's only summed-ripple site:
+    :func:`_select_alignment_pair` composes the same two functions over its own
+    (polarity, delay) grid. That is a different question — which PAIR sums
+    flatter, at a fixed trim — and it deliberately scores at the band-average
+    trim rather than through this helper, because this helper's own objective
+    takes a polarity as input and the pair search would then be circular.
 
     Masking is internal, so full-length and already-band-sliced inputs give the
     same number; the scan pre-slices only to keep its per-candidate sums cheap.
@@ -3680,27 +4106,6 @@ def solve_ripple_optimal_trim(
             best_trim = candidate_trim
             best_ripple = ripple
     return best_trim, best_ripple, seed_trim_db
-
-
-def _flatter_sum_polarity(
-    capture, program, sample_rate, global_offset, fc_hz, priors,
-    *, woofer_full_ir, tweeter_full_ir,
-) -> int:
-    n_fft = _n_fft_for(woofer_full_ir, tweeter_full_ir)
-    freqs, W, _gate_w = _aligned_branch_tf(woofer_full_ir, sample_rate, n_fft, calibration=None)
-    _f2, T, _gate_t = _aligned_branch_tf(tweeter_full_ir, sample_rate, n_fft, calibration=None)
-    trim_w, trim_t, _lw, _lt = solve_branch_trims(freqs, W, T, fc_hz)
-    # SSOT overlap band (fix 1) — clamps the nominal Fc±1-oct span to the real
-    # driver-sweep overlap so this ripple check can't drift out of sync with
-    # the alignment/trim/VERIFY bands that already use this helper.
-    lo, hi = overlap_band_hz(
-        fc_hz,
-        tweeter_sweep_lo_hz=program.segment("sweep_t").f1_hz,
-        woofer_sweep_hi_hz=program.segment("sweep_w").f2_hz,
-    )
-    ripple_pos = _ripple_db(freqs, predicted_branch_sum(W, T, trim_w, trim_t, +1), lo, hi)
-    ripple_neg = _ripple_db(freqs, predicted_branch_sum(W, T, trim_w, trim_t, -1), lo, hi)
-    return 1 if ripple_pos <= ripple_neg else -1
 
 
 def _n_fft_for(*irs: np.ndarray) -> int:
@@ -4935,14 +5340,48 @@ def _analyze_measure(
         pre_samples=pre_samples,
     )
 
+    # The alignment reads BOTH branch impulse responses, so either one's
+    # capture SNR can be the reason its (polarity, delay) answer is noise —
+    # `_select_alignment_pair` refuses on the pair, not on a named driver. The
+    # ALIGNMENT-class verdict, not the magnitude one every surface displays:
+    # this decision is the one the 35 dB law was written for.
+    alignment_roles = {seg_w.role, seg_t.role}
+    branch_snr_insufficient = any(
+        driver_alignment_snr_verdict(resp) == ALIGNMENT_SNR_REFUSAL_VERDICT
+        for resp in responses
+        if resp.role in alignment_roles
+    )
     candidate, predicted_sum = _build_candidate(
         woofer_full_ir, tweeter_full_ir, sample_rate, n_fft, fc_hz,
         seg_w.role, seg_t.role, alignment, calibration,
         tweeter_sweep_lo_hz=seg_t.f1_hz, woofer_sweep_hi_hz=seg_w.f2_hz,
         woofer_sweep_lo_hz=seg_w.f1_hz, tweeter_sweep_hi_hz=seg_t.f2_hz,
         alignment_delay_bounds_us=priors.alignment_delay_bounds_us,
+        branch_snr_insufficient=branch_snr_insufficient,
     )
-    if candidate.alignment_seed_ripple_db is not None:
+    # `_build_candidate` owns the selection; the estimate published here is the
+    # one every downstream consumer reads (`alignment_to_candidate_fields`
+    # builds the APPLIED fields from it), so it must carry what was committed,
+    # with the correlation's own answer preserved beside it as the seed.
+    if candidate.alignment_objective in _SELECTOR_COMMITTED_OBJECTIVES:
+        alignment = replace(
+            alignment,
+            polarity=candidate.polarity,
+            polarity_sign=polarity_sign_of(candidate.polarity),
+            # Only the flat-sum commitment answers the cross-check: the
+            # low-SNR path commits the declared design precisely BECAUSE the
+            # evidence a flat sum would read is untrustworthy, so it reports
+            # "not asked" rather than a comparison that never happened.
+            polarity_agrees_with_sum=(
+                polarity_sign_of(candidate.polarity) == candidate.seed_polarity_sign
+                if candidate.alignment_objective == ALIGNMENT_COMMITTED_FLAT_SUM
+                else None
+            ),
+        )
+    # The delay half keeps its own condition: the anchor path is exactly where
+    # the committed delay can differ from the estimate's GCC seed, and reading
+    # the anchor's presence says so directly.
+    if candidate.anchor_delay_us is not None:
         alignment = replace(
             alignment,
             delay_us=candidate.delay_us,
@@ -4989,6 +5428,7 @@ def _build_candidate(
     woofer_sweep_lo_hz: float | None = None,
     tweeter_sweep_hi_hz: float | None = None,
     alignment_delay_bounds_us: tuple[float, float] | None = None,
+    branch_snr_insufficient: bool = False,
 ) -> tuple[CrossoverCandidate, tuple[np.ndarray, np.ndarray]]:
     freqs, W, gate_w = _aligned_branch_tf(woofer_full_ir, sample_rate, n_fft, calibration=calibration)
     _f2, T, gate_t = _aligned_branch_tf(tweeter_full_ir, sample_rate, n_fft, calibration=calibration)
@@ -5051,6 +5491,133 @@ def _build_candidate(
         tweeter_band_hz=(round(t_band_lo, 1), round(t_band_hi, 1)),
         trim_band_average_db=round(float(trim_t_band_average), 3),
     )
+    # --- the (polarity, delay) pair, on one objective (issue #2598) ---------
+    #
+    # Runs BEFORE the trim polish below, which takes the polarity as an input:
+    # the pair is scored at the level-match trims, then the level is polished
+    # at the committed polarity. Scoring at the polished trim instead would be
+    # circular, and the polish is a bounded level nudge that cannot move where
+    # a commanded null falls — see `_select_alignment_pair`.
+    seed_delay_us = alignment.delay_us
+    anchor_delay_us = None
+    snap_found = False
+    # THE FRAME, gated on the aligner's own status and nothing else — the same
+    # gate the shipped model uses below (`residual_delay_us`). The aligner
+    # single-sourced the physical peak-gap anchor (raw argmax gap − inter-sweep
+    # drift + parallax, in the signed frame; methodology §10, 2026-07-22);
+    # everything downstream derives from it rather than re-running the argmax,
+    # which would be a parallel computation of one load-bearing frame decision.
+    #
+    # It used to additionally require declared bounds, which conflated the frame
+    # with the delay-ESTIMATOR question the comment at `residual_delay_us` warns
+    # are different (#2607 correctness review, finding C1). A capture whose
+    # preset declares no `delay_range_ms` still ships a model phased by
+    # `committed − anchor`, so a selector scoring it at residual 0 was choosing a
+    # pair on a curve nothing emits: constructed on that path, the shipped model
+    # took a 20.37 dB penalty against the one the objective graded, and the
+    # polarity was chosen at a residual the speaker never runs — the
+    # commanded-null class, on a path shipped v2 cannot currently reach.
+    if alignment.status == ALIGNMENT_OK and alignment.anchor_delay_us is not None:
+        anchor_delay_us = float(alignment.anchor_delay_us)
+    # THE SEED DELAY — a different question, and still bounds-gated. The gated
+    # local-peak snap is the seed's fine step, not the committed delay's: the
+    # aligner snapped the anchor to the nearest local maximum of the SAME
+    # GCC-PHAT correlation within ±(period/6) at Fc, or ruled one out. That pair
+    # — correlation's polarity at correlation's refined delay — is exactly what
+    # the pre-#2598 path applied, so it is what the selector scores its own
+    # answer against and falls back to on a tie. With no declared bounds the
+    # pre-#2598 path applied the bare GCC estimate instead, so that is the seed
+    # there; the objective now scores it in the honest frame and is free to
+    # prefer a grid point over it.
+    if anchor_delay_us is not None and alignment_delay_bounds_us is not None:
+        if alignment.snapped_delay_us is not None:
+            seed_delay_us = float(alignment.snapped_delay_us)
+            snap_found = True
+        else:
+            seed_delay_us = anchor_delay_us
+    # A refused estimate is not a seed to search around: nothing downstream
+    # applies its delay OR its polarity (`alignment_to_candidate_fields` returns
+    # the trims-only shape), so the objective would be grading a pair that can
+    # never ship.
+    selection = (
+        _select_alignment_pair(
+            freqs, W, T,
+            fc_hz=fc_hz, lo_hz=lo_clamped, hi_hz=hi,
+            trim_w_db=trim_w, trim_t_db=trim_t_band_average,
+            anchor_delay_us=anchor_delay_us,
+            seed_delay_us=seed_delay_us,
+            seed_polarity_sign=alignment.polarity_sign,
+            delay_bounds_us=alignment_delay_bounds_us,
+            branch_snr_insufficient=branch_snr_insufficient,
+        )
+        if alignment.status == ALIGNMENT_OK
+        else None
+    )
+    if selection is None:
+        polarity_sign = alignment.polarity_sign
+        delay_us = seed_delay_us
+        seed_ripple_db = None
+        flatness_improvement_db = None
+        left_anchor_lobe = False
+        alignment_objective = (
+            ALIGNMENT_COMMITTED_SEED_ALIGNMENT_REFUSED
+            if alignment.status != ALIGNMENT_OK
+            else ALIGNMENT_COMMITTED_SEED_NO_SCORING_BAND
+        )
+    else:
+        polarity_sign = selection.polarity_sign
+        delay_us = selection.delay_us
+        alignment_objective = selection.objective
+        left_anchor_lobe = selection.left_anchor_lobe
+        seed_ripple_db = flatness_improvement_db = None
+        if math.isfinite(selection.seed_ripple_db) and math.isfinite(selection.ripple_db):
+            seed_ripple_db = selection.seed_ripple_db
+            flatness_improvement_db = selection.flatness_improvement_db
+        log_event(
+            logger, "program_analysis.alignment_selection",
+            # Three shapes raise the level, and each is a thing a human should
+            # read: correlation losing the polarity (the subject of #2598), any
+            # commitment the flat-sum objective did not make, and a commitment
+            # that left the anchor's comb lobe (the compensating control for the
+            # ±1-period span — #2607 panel ruling: keep the span, raise this).
+            level=(
+                logging.INFO if (
+                    selection.objective == ALIGNMENT_COMMITTED_FLAT_SUM
+                    and selection.polarity_agrees_with_sum
+                    and not selection.left_anchor_lobe
+                ) else logging.WARNING
+            ),
+            woofer_role=woofer_role, tweeter_role=tweeter_role,
+            objective=selection.objective,
+            fc_hz=round(float(fc_hz), 3),
+            band_hz=(round(float(lo_clamped), 1), round(float(hi), 1)),
+            polarity=polarity_label(selection.polarity_sign),
+            delay_us=round(float(selection.delay_us), 3),
+            # BOTH ripples go through the None-safe rounder. The flat-sum path
+            # scores only finite candidates, but the low-SNR path returns before
+            # that filter — it commits the declared design without a search — so
+            # a NaN branch there reaches `ripple_db` as well as `seed_ripple_db`
+            # (doubly unreachable in production, reproduced end-to-end by the
+            # #2607 safety lens; an earlier comment here claimed the committed
+            # score could not be non-finite, which was checkable and false).
+            ripple_db=_finite_or_none(selection.ripple_db, 4),
+            seed_polarity=polarity_label(selection.seed_polarity_sign),
+            seed_delay_us=round(float(selection.seed_delay_us), 3),
+            seed_ripple_db=_finite_or_none(selection.seed_ripple_db, 4),
+            polarity_agrees_with_sum=selection.polarity_agrees_with_sum,
+            flatness_improvement_db=_finite_or_none(
+                selection.flatness_improvement_db, 4,
+            ),
+            grid_points=selection.grid_points,
+            grid_step_us=round(float(selection.grid_step_us), 3),
+            branch_snr_insufficient=bool(branch_snr_insufficient),
+            # The one thing the 2026-07-22 methodology decision asked the
+            # ANCHOR to own: which comb lobe. Owned by the selection (which has
+            # the anchor and Fc) so the candidate, the journal and the receipt
+            # all read one derivation.
+            left_anchor_lobe=selection.left_anchor_lobe,
+        )
+    snap_delta_us = None if anchor_delay_us is None else delay_us - anchor_delay_us
     # #1667: re-solve the tweeter trim for minimum summed-response ripple
     # instead of trusting the band-average level match on its own — see
     # solve_ripple_optimal_trim's docstring for why band-average is biased.
@@ -5077,7 +5644,7 @@ def _build_candidate(
             lo_hz=lo_clamped, hi_hz=hi,
             seed_trim_db=trim_t_band_average,
             trim_w_db=trim_w,
-            sign=alignment.polarity_sign,
+            sign=polarity_sign,
         )
         if abs(trim_t_ripple - trim_t_band_average) > RIPPLE_TRIM_SANITY_MARGIN_DB:
             log_event(
@@ -5101,62 +5668,6 @@ def _build_candidate(
             band_average_trim_db=round(trim_t_band_average, 3),
         )
         trim_t = trim_t_band_average
-    delay_us = alignment.delay_us
-    seed_ripple_db = None
-    flatness_improvement_db = None
-    anchor_delay_us = None
-    snap_delta_us = None
-    snap_found = False
-    if (
-        alignment.status == ALIGNMENT_OK
-        and alignment_delay_bounds_us is not None
-        and alignment.anchor_delay_us is not None
-    ):
-        # The aligner single-sourced the physical peak-gap anchor (raw argmax gap
-        # − inter-sweep drift + parallax, in the signed frame; methodology §10,
-        # 2026-07-22). Derive the applied anchor and the argmax-referenced
-        # residual base FROM it — never recompute the argmax here, which would be
-        # a parallel computation of one load-bearing frame decision.
-        anchor_delay_us = float(alignment.anchor_delay_us)
-        # Gated local-peak snap owns the fine step: the aligner already snapped
-        # this anchor to the nearest local maximum of the SAME GCC-PHAT
-        # correlation within ±(period/6) at Fc, or ruled one out. No local peak
-        # in radius ⇒ keep the bare anchor; the snap is bounded closed-form, so
-        # nothing can rail here. The declared `alignment_delay_bounds_us`
-        # plausibility rail (Fix 3) still applies to the final `delay_us`
-        # downstream in `crossover_v2_flow`.
-        if alignment.snapped_delay_us is not None:
-            delay_us = float(alignment.snapped_delay_us)
-            snap_found = True
-        else:
-            delay_us = anchor_delay_us
-        snap_delta_us = delay_us - anchor_delay_us
-        # Flatness demoted to evidence (methodology §10): the summed ripple AT
-        # the anchor and AT the snapped selection, in the argmax-referenced frame
-        # (`summed_model_residual_delay_us`; the anchor residual is exactly 0).
-        # Never a selector, so `flatness_improvement_db` can be
-        # slightly negative — the snap is chosen for lobe-correctness, not ripple.
-        band = (freqs >= lo_clamped) & (freqs <= hi)
-        if np.any(band):
-            freqs_band = freqs[band]
-            W_band = W[band]
-            T_band = T[band]
-
-            def _ripple_at(candidate_delay_us: float) -> float:
-                summed = predicted_branch_sum(
-                    W_band, T_band, trim_w, trim_t, alignment.polarity_sign,
-                    freqs_hz=freqs_band,
-                    residual_delay_us=summed_model_residual_delay_us(
-                        anchor_delay_us, candidate_delay_us,
-                    ),
-                )
-                return _ripple_db(freqs_band, summed, lo_clamped, hi)
-
-            anchor_ripple_db = _ripple_at(anchor_delay_us)
-            selected_ripple_db = _ripple_at(delay_us)
-            if math.isfinite(anchor_ripple_db) and math.isfinite(selected_ripple_db):
-                seed_ripple_db = anchor_ripple_db
-                flatness_improvement_db = anchor_ripple_db - selected_ripple_db
     # TWO sums, two questions, two owners. They were one call until rung P3
     # (R10b), which conflated a capture-quality measure with a model of the
     # speaker.
@@ -5193,7 +5704,7 @@ def _build_candidate(
         T,
         trim_w,
         trim_t,
-        alignment.polarity_sign,
+        polarity_sign,
     )
     ripple = _ripple_db(freqs, predicted_aligned, lo_clamped, hi)
     # `predicted_applied` — the same two branches under the delay this
@@ -5230,14 +5741,14 @@ def _build_candidate(
         T,
         trim_w,
         trim_t,
-        alignment.polarity_sign,
+        polarity_sign,
         freqs_hz=freqs,
         residual_delay_us=residual_delay_us,
     )
     predicted_db = 20.0 * np.log10(np.maximum(np.abs(predicted_applied), 1e-12))
     candidate = CrossoverCandidate(
         trim_db={woofer_role: trim_w, tweeter_role: trim_t},
-        polarity=alignment.polarity,
+        polarity=polarity_label(polarity_sign),
         delay_us=delay_us,
         predicted_ripple_db=ripple,
         confidence=alignment.confidence,
@@ -5247,6 +5758,9 @@ def _build_candidate(
         snap_delta_us=snap_delta_us,
         snap_found=snap_found,
         trim_band_average_db={woofer_role: trim_w, tweeter_role: trim_t_band_average},
+        alignment_objective=alignment_objective,
+        seed_polarity_sign=alignment.polarity_sign,
+        left_anchor_lobe=left_anchor_lobe,
     )
     return candidate, (freqs, predicted_db)
 
@@ -5574,6 +6088,48 @@ def _gate_window_ms_of(response: "DriverResponse | None") -> float | None:
     return float(window) if isinstance(window, (int, float)) else None
 
 
+def driver_snr_verdict(response: "DriverResponse | None") -> str | None:
+    """This branch's worst relevant MAGNITUDE-class capture-SNR verdict.
+
+    :mod:`jasper.audio_measurement.snr_policy`'s vocabulary
+    (``ok``/``reduced``/``insufficient``/``unknown``), reduced across the bands
+    the decision reads — ``snr_policy.worst_band_verdict``'s rule that one
+    ``insufficient`` band vetoes its ``ok`` siblings is already baked into
+    ``worst_relevant``. ``None`` when no verdict was computed at all, which is
+    the ordinary state for a session whose CHECK carried no ambient window.
+
+    This is the verdict every existing surface reads (the retention sidecar,
+    ``measure_diag``, the dashboards). The alignment refusal reads the OTHER
+    one — see :func:`driver_alignment_snr_verdict`.
+    """
+    return _snr_verdict_of(response.snr if response is not None else None)
+
+
+def driver_alignment_snr_verdict(response: "DriverResponse | None") -> str | None:
+    """This branch's worst relevant ALIGNMENT-class capture-SNR verdict.
+
+    The law a polarity/delay decision is held to: 35 dB
+    (``DRIVER.alignment_snr_ok_db``), ``ok`` or ``insufficient`` with no
+    ``reduced`` rung, and per-band evidence required. ``None`` when the block
+    predates this key or no verdict was computed — never a guessed verdict, so
+    a capture with no ambient window keeps the flat-sum selector rather than
+    being silently downgraded to the correlation answer.
+    """
+    snr = response.snr if response is not None else None
+    if not snr:
+        return None
+    return _snr_verdict_of(snr.get(DRIVER_SNR_ALIGNMENT_KEY))
+
+
+def _snr_verdict_of(block: Mapping[str, Any] | None) -> str | None:
+    """``block["worst_relevant"]["verdict"]`` when it is a string, else None."""
+    if not block:
+        return None
+    worst = block.get("worst_relevant") or {}
+    verdict = worst.get("verdict")
+    return verdict if isinstance(verdict, str) else None
+
+
 def _gate_floor_source_of(response: "DriverResponse | None") -> str | None:
     """WHY this capture's gate window is what it is (issue #1966).
 
@@ -5678,10 +6234,24 @@ def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
                 float(alignment.delay_us) - float(seed_delay_us), 3,
             )
         out["polarity"] = alignment.polarity
+        # The polarity half of the same seed-vs-committed pair the two lines
+        # above report for the delay (#2598). ``None`` on an estimate nothing
+        # cross-checked; the sidecar carries the tri-state rather than
+        # flattening "correlation agreed" and "nobody asked" together.
+        out["polarity_agrees_with_sum"] = getattr(
+            alignment, "polarity_agrees_with_sum", None,
+        )
 
     candidate = getattr(analysis, "candidate", None)
     if candidate is not None:
         out["predicted_ripple_db"] = round(float(candidate.predicted_ripple_db), 4)
+        out["alignment_objective"] = getattr(candidate, "alignment_objective", "")
+        seed_polarity_sign = getattr(candidate, "seed_polarity_sign", None)
+        out["seed_polarity"] = (
+            None if seed_polarity_sign is None
+            else polarity_label(int(seed_polarity_sign))
+        )
+        out["left_anchor_lobe"] = bool(getattr(candidate, "left_anchor_lobe", False))
         anchor_delay_us = getattr(candidate, "anchor_delay_us", None)
         if anchor_delay_us is not None:
             out["anchor_delay_us"] = round(float(anchor_delay_us), 3)
@@ -5707,7 +6277,7 @@ def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
         if resp.snr is not None:
             worst = resp.snr.get("worst_relevant") or {}
             out[f"{role}_snr_db"] = worst.get("estimated_snr_db")
-            out[f"{role}_snr_verdict"] = worst.get("verdict")
+            out[f"{role}_snr_verdict"] = driver_snr_verdict(resp)
 
     for pilot in getattr(analysis, "pilots", None) or ():
         role = pilot.role

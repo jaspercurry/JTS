@@ -2701,6 +2701,14 @@ def _candidate_summary(candidate: Any) -> dict[str, Any] | None:
         # RESULT-screen expert disclosure only (crossover_envelope_v2
         # ._candidate_review_payload's "ripple_db").
         "predicted_ripple_db": analysis.get("predicted_ripple_db"),
+        # WHICH objective committed this candidate's (polarity, delay) pair, and
+        # whether the committed delay left the comb lobe its physical anchor
+        # owns (#2598, and the #2607 panel's S2/S3). The objective reaches the
+        # review screen, which must not word a declared-design commitment as a
+        # measured one; the lobe flag is a receipt line, because that mode is
+        # magnitude-flat and an on-axis VERIFY cannot contradict it.
+        "alignment_objective": analysis.get("alignment_objective"),
+        "left_anchor_lobe": analysis.get("left_anchor_lobe"),
         # Gauge fix (2026-07-24): WHY Layer-1a driver linearization did or
         # didn't run this attempt — "" / "fitted" / "trim_rejected" /
         # "ineligible_mic_tier" / "ineligible_repeats" / "fit_failed".

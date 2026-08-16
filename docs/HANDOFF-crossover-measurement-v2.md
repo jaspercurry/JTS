@@ -1066,8 +1066,11 @@ prior profile). The follow-up diagnosis proved the flatness objective's comb
 basin ordering is capture-noise-dependent and replaced the selector: **the
 drift-corrected physical peak-gap anchor now owns lobe selection and the
 primary delay, refined only by a bounded nearest-GCC-local-peak snap
-(±period/6); flatness is evidence, never a selector** (see "Delay selection"
-below). The replacement cleared an independent adversarial review at
+(±period/6); flatness is evidence, never a selector**. (Superseded 2026-08-16
+by issue #2598, which makes summed flatness the selector for the polarity and
+delay PAIR with the anchor still centring the search — current state in
+"(Polarity, delay) selection" below; this paragraph is the 2026-07-22 record.)
+The replacement cleared an independent adversarial review at
 0 blockers / 0 should-fixes / 0 nits and its on-device confirmation:
 three fresh headless JTS3 flows selected 32.411 / 31.013 / 33.783 µs —
 2.77 µs total spread together with the two replayed hardware-anchored
@@ -1083,7 +1086,9 @@ uploaded, never analyzed — issue #1650); ambient-noise events measurably
 degrade VERIFY while leaving selection unaffected, and CHECK's woofer-band
 SNR predicts VERIFY health — productized as the anomaly-detection/discard-UX
 workstream, issue #1652. Final dispositions: Fix 4 shelved (revival trigger:
-phone-mic-era cluster spread or `snap_found=false`), T2-robust retired (its
+phone-mic-era cluster spread or `snap_found=false` — since #2598 that flag
+describes the SEED's provenance, not the committed delay, so read it beside
+`alignment_objective`/`left_anchor_lobe`), T2-robust retired (its
 phase-slope core rails systematically on as-crossed branches, +388 ± 38 µs
 16/16; its predictive-confidence goal lives on in #1652). The
 reproducibility working plan is archived as decision archaeology. See
@@ -4005,18 +4010,124 @@ SSOT helper, `_overlap_band_hz` in `program_analysis.py`, computes the
 clamp; every consumer reads the real sweep bounds off the program's own
 segments rather than re-deriving the nominal edges.
 
-#### Delay selection — physical anchor primary, gated local-peak snap
+#### (Polarity, delay) selection — one objective, correlation as seed
 
-**Selection is anchor-primary; summed-magnitude flatness is evidence, never a
-selector.** Methodology decision:
-[crossover-measurement-reproducibility-plan.md](historical/crossover-measurement-reproducibility-plan.md)
-§10, 2026-07-22 (bake-off verdict + methodology entries). The narrowband
-flatness objective's basin ordering is capture-noise dependent and preferred
-the wrong comb lobe on a hardware repeat, so it no longer chooses the delay.
+**The pair is chosen jointly, on predicted summed blend flatness (issue #2598,
+2026-08-16).** `_select_alignment_pair` in `program_analysis.py` scores both
+polarities across a delay grid — `ALIGNMENT_FLATNESS_STEP_US` steps spanning
+±`ALIGNMENT_FLATNESS_SPAN_PERIODS` period at Fc around the physical peak-gap
+anchor, intersected with the declared `delay_range_ms` — and commits the
+flattest pair. Correlation (the GCC-PHAT polarity sign and the gated local-peak
+snap below) supplies the SEED pair and the tie-break; it no longer decides.
+
+Why it changed: polarity was the sign of a GCC-PHAT correlation peak and the
+delay was a correlation snap — two correlation answers, neither asking whether
+the pair SUMS FLAT. On the 2026-08-15/16 jts3 rounds that shipped an LR4 at
+1648.7 Hz with the tweeter inverted, from a correlation peak read at −292 µs
+while the applied delay was +96 µs, on a tweeter IR the capture's own SNR
+policy called `insufficient` (−1.2 dB). An inverted Linkwitz-Riley pair
+commands a null; three rounds of trim and linearization then fitted around a
+dip the alignment had ordered. The flat-sum discriminator existed
+(`_flatter_sum_polarity`) and was computed and discarded every round.
+
+**What survives from the 2026-07-22 methodology decision**
+([crossover-measurement-reproducibility-plan.md](historical/crossover-measurement-reproducibility-plan.md)
+§10), which retired an earlier flatness selector because its basin ordering was
+capture-noise dependent and preferred a wrong comb lobe on a hardware repeat:
+
+- The **anchor still centres the search**, so lobe selection stays physically
+  anchored rather than starting from a correlation peak.
+- The **flat-minimum regularization** (`ALIGNMENT_FLAT_MINIMUM_EPSILON_DB`,
+  0.25 dB — the same shape and value the ripple-optimal trim search uses)
+  keeps the SEED pair whenever nothing beats it by more than epsilon. A capture
+  where flatness cannot separate the answers is therefore byte-identical to the
+  pre-#2598 path.
+- What is genuinely reopened: the grid reaches one period either side of the
+  anchor, so a committed delay CAN cross a lobe boundary (half a period at Fc)
+  when the objective is that sure. **The #2607 adversarial panel split on this
+  and the conductor ruled: KEEP ±1 period — declined on cost/benefit, NOT
+  evaluated and found harmful.** The safety lens's Monte Carlo measured
+  narrowing as a ~3% mitigation of a ~30% in-lobe ambiguity problem: about 90%
+  of the competing answers already sit INSIDE the anchor's own lobe (p50
+  209 µs against a 303 µs half-period), so a narrower span leaves the great
+  majority of them reachable and buys little. It also found the wider span
+  reaches genuinely different candidates — the redundancy hypothesis was tested
+  and refuted. The correctness lens's stated fallback, raise the disclosure,
+  was adopted alongside it. *(An earlier revision of this paragraph added
+  "sometimes worsens left-lobe rates" to that list. The lens never claimed it —
+  it was the conductor's misreading — and a follow-up 3,000-trial run across 10
+  configurations measured it FALSE: zero instances, narrowing is strictly
+  better on left-lobe rate. Deleted, because a ruling propped up by a made-up
+  harm is a ruling nobody can revisit honestly. The two reasons above are
+  genuine and sufficient on their own.)* So a lobe-leaving commitment is carried on the
+  CANDIDATE (`left_anchor_lobe`, into `analysis_json`, the retention sidecar
+  and `measure_diag`) and raises the selection log to WARNING. Candidate-level
+  and not journal-only because the mode is magnitude-flat and time-wrong: an
+  on-axis VERIFY cannot contradict it, so the receipt is the only place a later
+  reader finds it. The first post-fix round's ±22° verify positions are the
+  deliberate off-axis check.
+- The objective also differs from the retired one in scope: it is the ripple of
+  the same full overlap-band summed model `predicted_ripple_db` reads, not a
+  narrowband search.
+
+**The frame is gated on the aligner's STATUS, not on declared bounds.**
+`anchor_delay_us` — the reference the objective's residual is measured against
+— follows the same gate the shipped model uses, because they must be the same
+frame or the objective grades a curve nothing emits. Requiring declared bounds
+here (as the first cut did) meant a preset with no `delay_range_ms` scored
+every pair at residual 0 while the emitted model carried `committed − anchor`:
+a constructed case took a 20.37 dB penalty and chose its polarity at a residual
+the speaker never runs (#2607 C1). The delay ESTIMATOR question is separate and
+still bounds-gated: with no declared bounds the SEED stays the bare GCC
+estimate, exactly as before.
+
+**The SNR precondition — on the alignment law, not the magnitude one.** When a
+branch feeding the alignment carries an `insufficient` verdict from the
+**ALIGNMENT decision class** (`snr_policy.DECISION_CLASS_ALIGNMENT`:
+`DRIVER.alignment_snr_ok_db` = 35 dB, ok-or-insufficient with no `reduced`
+rung, per-band evidence required), the pair is not searched. It is COMMITTED to
+the declared design — relative polarity `+1`, which in the configured-polarity
+frame the branch TFs already carry means "the polarity the preset declares",
+the same target VERIFY grades against — at the physical anchor. Disclosed,
+never a hard stop: the household still gets an alignment,
+`alignment_objective` is `declared_committed_after_low_snr`, the declined seed
+is still scored (so `flatness_improvement_db` goes honestly negative), and the
+selection log line is a WARNING.
+
+`_driver_snr_block` computes BOTH classes off one set of band measurements and
+files the alignment one under `DRIVER_SNR_ALIGNMENT_KEY`; the magnitude verdict
+keeps the block's top level and every existing surface reads it unchanged. The
+readers are named apart: `driver_snr_verdict` (magnitude, for display) and
+`driver_alignment_snr_verdict` (the refusal). Reading the magnitude verdict for
+this decision left a **15 dB window** — 20 to 35 dB — in which a polarity read
+off a capture the repo's own law calls unusable shipped unrefused (#2607 S1).
+`unknown`/absent still does NOT refuse: it means the verdict was never
+computed, ordinary for a session whose CHECK carried no ambient window.
+
+**What the candidate records.** `alignment_objective` (one of
+`ALIGNMENT_COMMITMENTS`: `flat_sum_committed`,
+`declared_committed_after_low_snr`, `seed_committed_no_scoring_band`,
+`seed_committed_alignment_refused`), `seed_polarity_sign` and
+`left_anchor_lobe`, plus `AlignmentEstimate.polarity_agrees_with_sum` — the
+cross-check that had no production reader before #2598 and now travels in
+`analysis_json`, the retention sidecar's `analysis_diagnostic_summary`, and
+`correction.crossover_v2_measure_diag`. A disagreement between correlation and
+the objective is ordinary operation, not a fault. `polarity_agrees_with_sum` is
+`None` — not `False` — on any commitment the flat-sum objective did not make on
+the polarity axis (the low-SNR path and both seed fallbacks): reporting
+disagreement for a comparison that never ran is the same dishonesty this issue
+is about.
+
+**The household surface.** The objective reaches the review screen through
+`_candidate_summary` → `_candidate_review_payload` → the wizard's
+`renderCandidateReview`, which words a declared-design commitment as *"As
+designed — this measurement could not check it"* rather than *"Inverted
+(measured)"*. "Measured" is the one word a household reads as "we checked", and
+on that path nothing checked (#2607 S3).
 
 `_estimate_alignment` remains the coarse, drift-corrected GCC-PHAT source for
-polarity and capture-quality confidence, and now also computes the fine stage.
-Two steps:
+the seed polarity and capture-quality confidence, and computes the fine stage.
+Two steps produce the SEED delay:
 
 1. **Anchor (primary value; owns lobe selection).** The drift-corrected
    physical peak gap `(argmax|tweeter IR| − argmax|woofer IR|)/fs` with the
@@ -4036,9 +4147,10 @@ Two steps:
    and it heals the ±1–2-sample integer-argmax jitter of the bare anchor (the
    reproducibility clause — bake-off: a 44.7 µs anchor jump collapsed to 6.9 µs).
 
-`_build_candidate` selects `alignment.snapped_delay_us` when present, else the
-bare anchor; polarity/confidence machinery is unchanged. GCC's global
-correlation peak stays the polarity and capture-quality seed (`seed_delay_us`,
+The seed delay is `alignment.snapped_delay_us` when the snap found a peak, else
+the bare anchor; `_select_alignment_pair` then scores it against the grid and
+`_build_candidate` commits the winner. GCC's global correlation peak stays the
+capture-quality seed (`seed_delay_us`,
 `confidence_source='gcc_phat_seed'`) and is NOT the applied delay. The declared
 `delay_range_ms` (expanded by `ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS`) is the
 outer plausibility rail (Fix 3): a final selected value outside it routes to
@@ -4059,11 +4171,15 @@ retains the corrected GCC seed. `alignment_confidence` remains GCC seed/capture
 confidence, labelled `gcc_phat_seed` — it is not a confidence score for any
 flatness minimum.
 
-Flatness survives only as evidence on the candidate: `alignment_seed_ripple_db`
-is the summed ripple AT the anchor, `flatness_improvement_db` is
-`anchor_ripple − selected_ripple` (may be slightly negative — the snap is chosen
-for lobe-correctness, not ripple), and `anchor_delay_us` / `snap_delta_us` /
-`snap_found` record the fine step. `flatness_at_bound` is retired.
+Flatness evidence on the candidate: `alignment_seed_ripple_db` is the summed
+ripple at the SEED PAIR (correlation's polarity at the delay the pre-#2598 path
+would have applied) and `flatness_improvement_db` is
+`seed_ripple − committed_ripple` — non-negative on the flat-sum path, since the
+seed pair is always one of the scored candidates, and legitimately NEGATIVE on
+the low-SNR path, where it discloses what declining a noise-derived flatness
+claim cost on paper. `anchor_delay_us` / `snap_delta_us` / `snap_found` record
+the anchor and the committed residual (`snap_found` is the seed's provenance,
+not the commitment's). `flatness_at_bound` is retired.
 
 VERIFY compares the applied response with the summed model **at the committed
 delay** (rung P3 / R10b, 2026-08-01): the two measured branches at the trim AND
@@ -4086,16 +4202,24 @@ proposition from fix-2 (`0b7ab5eb7`, reverted 2026-07-21):
 
 1. **It is the residual, not the applied delay.** Fix-2 phased by the FULL
    `alignment.delay_us`, double-counting the peak gap `_aligned_branch_tf` had
-   already removed. The term now is `selected − anchor`
-   (`program_analysis.summed_model_residual_delay_us`), which the ±(period/6)
-   snap radius bounds structurally — a neighbouring comb lobe is a FULL period
-   away, so the model cannot reach one and cannot describe an apply that landed
-   on one.
-2. **Flatness no longer selects.** Fix-2 was contemporary with the flatness
-   search choosing the delay, so the search could pick a lobe and the
-   prediction would agree with it — a closed loop. Since #1649 the delay is
-   selected by the physical peak-gap anchor plus a gated local-peak snap, and
-   summed flatness is evidence only. The loop is gone.
+   already removed. The term now is `committed − anchor`
+   (`program_analysis.summed_model_residual_delay_us`), a residual about the
+   physically-anchored frame rather than a re-application of the measured gap.
+   *(Written when the ±(period/6) snap radius bounded that residual below one
+   lobe. Since #2598 the search spans a period either side of the anchor, so
+   the structural bound is gone and the reachable-lobe question is answered by
+   the seed-preferring regularization plus the `left_anchor_lobe` disclosure
+   above — read this clause for the frame argument, which is unchanged, not for
+   the bound.)*
+2. **The candidate cannot make its own prediction MATCH the measurement.**
+   Fix-2 was contemporary with a flatness search choosing the delay, so the
+   search could pick a lobe and the prediction would agree with it. Since #2598
+   flatness selects again — but for FLATNESS, not for agreement with what the
+   room did, and a flat prediction is the most demanding tracking reference
+   there is, not the most forgiving. VERIFY still differences measured against
+   predicted; nothing in the objective moves the measurement. The closed loop
+   fix-2 opened would need the selection to be scored on measured-vs-predicted
+   error, which no objective here is.
 3. **The number a candidate could formerly talk past is still on the old
    instrument.** `CrossoverCandidate.predicted_ripple_db` — the sole input to
    the G1 `MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB` capture-quality threshold —

@@ -1482,6 +1482,32 @@ def test_done_candidate_review_carries_linearization_outcome_and_octaves():
     ]
 
 
+def test_done_candidate_review_carries_the_alignment_objective():
+    """WHERE the polarity came from reaches the screen, not just what it is.
+
+    The measurement can decline to decide polarity — on the low-SNR path it
+    commits the polarity the PRESET declares — and the review row must not word
+    that as a measured result (#2607 S3). The renderer branches on this enum,
+    so the enum has to survive the projection from ``_candidate_summary`` into
+    ``candidate_review``; the copy itself is pinned by
+    ``tests/js/crossover_polarity_provenance_test.mjs``.
+    """
+    env = build_crossover_envelope_v2(_status(
+        phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(
+            alignment_objective="declared_committed_after_low_snr",
+        ),
+    ))
+    assert env["candidate_review"]["alignment_objective"] == (
+        "declared_committed_after_low_snr"
+    )
+    # An older candidate carries no objective, and renders the empty string
+    # rather than a missing key the renderer would have to guard.
+    plain = build_crossover_envelope_v2(_status(
+        phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(),
+    ))
+    assert plain["candidate_review"]["alignment_objective"] == ""
+
+
 def test_done_candidate_review_omits_linearization_fields_when_absent():
     """A candidate with no linearization at all (ineligible / plain trims)
     renders an empty outcome string and no octave rows — never a phantom
