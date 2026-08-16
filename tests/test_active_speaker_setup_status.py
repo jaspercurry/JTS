@@ -1249,6 +1249,54 @@ def test_commissioning_summary_idle_with_no_evidence() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    "armed, expected", [(False, "alsa"), (True, "ring")], ids=["aloop", "ring"]
+)
+def test_commissioning_summary_transport_follows_the_box(
+    monkeypatch, armed, expected
+) -> None:
+    """`/state` names the transport, on both polarities (#2412 Wave 4).
+
+    `curl /state | jq .` is this campaign's standing probe, and a commissioning
+    block that reported a device without its transport is the exact half-fact
+    that produced #2412 — a graph can name the ACTIVE lane and reach it over
+    either snd-aloop or the ring, and only one of those is fed by fan-in under
+    `shm_ring`.
+
+    Driven through the reconciler's real ACTIVE-endpoint marker rather than by
+    stubbing the answer, so this also pins that `/state` reads the SAME chooser
+    commissioning emits through: a `/state` that answered from its own
+    derivation could disagree with the journal about one box, which is the
+    second-source-of-truth failure the single helper exists to prevent.
+    """
+    monkeypatch.setattr(
+        "jasper.fanin_coupling.ring_active_endpoint_armed", lambda env=None: armed
+    )
+    result = setup_mod.commissioning_summary(
+        _active_topology(),
+        profile=None,
+        applied_profile=None,
+        measurements=None,
+    )
+    assert result["transport"] == expected
+
+
+def test_commissioning_summary_transport_is_null_on_an_unreadable_topology() -> None:
+    """An observability field must never be why `/state` stops answering.
+
+    `resolve_output_layout` walks `topology.hardware` unguarded, so a topology
+    object that cannot answer raises a class none of this module's sibling
+    derivations do. The block reports `null` and keeps its other seven keys
+    rather than propagating.
+    """
+    result = setup_mod.commissioning_summary(
+        object(), profile=None, applied_profile=None, measurements=None
+    )
+    assert result["transport"] is None
+    assert result["phase"] == "idle"
+    assert len(result) == 8
+
+
 def test_commissioning_summary_measuring_with_open_comparison_set(
     tmp_path: Path,
 ) -> None:

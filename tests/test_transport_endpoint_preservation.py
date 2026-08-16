@@ -70,8 +70,11 @@ from jasper.active_speaker.profile import ActiveSpeakerConfigError
 from jasper.active_speaker.runtime_contract import OUTPUTD_ACTIVE_PLAYBACK_DEVICE
 from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
+    DEFAULT_PLAYBACK_FORMAT,
     parse_camilla_devices_config,
 )
+from jasper.active_speaker import ActiveSpeakerPreset, audible_outputs_for_role
+from jasper.active_speaker.camilla_yaml import COMMISSIONING_HEADROOM_DB
 from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE, RING_CAPTURE_DEVICE
 from jasper.sound.profile import SimpleEq, SoundProfile, save_profile
 
@@ -1904,3 +1907,513 @@ async def test_driver_commissioning_is_byte_identical_on_every_non_ring_device(
         "the derived device block changed a NON-ring audible emit; #2412's Wave-1 "
         "blast radius was supposed to be nothing at all"
     )
+
+
+# --- #2412 Wave 4: the transport is on the journal line ----------------------
+#
+# Finding (C) — a commissioning graph whose sink was the ring while its source
+# was still the snd-aloop tap — was invisible in the field even though the
+# `driver_commission_prepared` line already named the role and the outputs. The
+# fields below are what turn that into one grep. The `load` line's twin pin
+# lives with its own harness in `tests/test_active_speaker_commission_load.py`.
+
+
+@pytest.mark.parametrize(
+    "device, expect_transport, expect_capture, expect_wire",
+    [
+        (
+            RING_ACTIVE_PLAYBACK_DEVICE,
+            "ring",
+            RING_CAPTURE_DEVICE,
+            None,  # resolved from the box's own wire below, never a literal
+        ),
+        (OUTPUTD_ACTIVE_PLAYBACK_DEVICE, "alsa", DEFAULT_CAPTURE_DEVICE, "-"),
+    ],
+    ids=["ring", "aloop_active_lane"],
+)
+async def test_the_prepared_line_names_the_transport_on_both_polarities(
+    tmp_path, monkeypatch, caplog, device, expect_transport, expect_capture, expect_wire
+):
+    """BOTH polarities, on ONE line, with every value from its owning constant.
+
+    One polarity would pass on a line that hard-coded either answer. The `wire`
+    expectation for the ring arm is read from `resolve_ring_wire`, not written
+    here, because the box's wire is per-box config an operator can roll back —
+    a literal would pin this test to today's default rather than to the
+    derivation, and would go green against a line that reported the wrong wire
+    on a narrow box.
+
+    Asserted against `lines[0]` rather than `caplog.text` so the fields must
+    ride the SAME record: four fields spread across four lines would satisfy a
+    substring check while making the one-grep property false.
+    """
+    import logging
+
+    from jasper.fanin_coupling import resolve_ring_wire
+
+    topology, preset = _commissioning_box()
+    if expect_wire is None:
+        expect_wire = resolve_ring_wire(topology).sample_format
+        assert expect_wire in ("S16_LE", "S32_LE"), expect_wire
+
+    with caplog.at_level(logging.INFO, logger="jasper.active_speaker.staging"):
+        _commissioning_yaml(topology, preset, tmp_path / "emit", device)
+
+    lines = [
+        record.message
+        for record in caplog.records
+        if "event=active_speaker.driver_commission_prepared" in record.message
+    ]
+    assert len(lines) == 1, lines
+    assert f"transport={expect_transport}" in lines[0]
+    assert f"capture={expect_capture}" in lines[0]
+    assert f"playback={device}" in lines[0]
+    assert f"wire={expect_wire}" in lines[0]
+
+
+async def test_the_prepared_line_reports_no_transport_rather_than_guessing(
+    tmp_path, monkeypatch, caplog
+):
+    """A box whose route does not resolve reports `-`, and still reports.
+
+    The failure this forbids is an observability field that either invents a
+    transport for a box that has none, or takes the line down with it. `-` is
+    the journal's "no answer" token — never an empty value, which reads as
+    `transport=` followed by whatever the next field is.
+    """
+    import logging
+
+    from jasper.active_speaker import staging as staging_mod
+
+    topology, preset = _commissioning_box()
+    # No device resolves: the chooser answers nothing, which is the shape a
+    # box with no active lane presents.
+    monkeypatch.setattr(
+        staging_mod, "resolve_active_playback_device", lambda *a, **k: (None, "missing")
+    )
+
+    with caplog.at_level(logging.INFO, logger="jasper.active_speaker.staging"):
+        staging_mod.prepare_driver_commissioning_config(
+            topology,
+            speaker_group_id="mono",
+            role="woofer",
+            preset=preset,
+            config_dir=tmp_path / "unresolved",
+            run_config_check=False,
+        )
+
+    lines = [
+        record.message
+        for record in caplog.records
+        if "event=active_speaker.driver_commission_prepared" in record.message
+    ]
+    assert len(lines) == 1, lines
+    assert "transport=-" in lines[0]
+    assert "capture=-" in lines[0]
+    assert "playback=-" in lines[0]
+    assert "wire=-" in lines[0]
+
+
+# --- #2412 Wave 5: the hearing-safety evidence, made mechanical --------------
+#
+# No production change. These turn the design's §1.6 argument — "moving
+# commissioning onto the ring changes the TRANSPORT and touches no protection"
+# — from prose a panel has to re-derive into assertions a suite re-runs. The
+# claim under all of them is the same: the ring changes where the bytes go, and
+# nothing about what is audible or how loud it can get.
+
+
+def _leaf_paths(node, prefix: str = "") -> dict[str, object]:
+    """Flatten a parsed YAML document to ``{dotted.path: scalar}``.
+
+    Over the PARSED document, not the text: comments, key order and quoting
+    style are not part of the contract, and a text diff would report all three
+    as changes while missing a value that moved between two equivalent
+    spellings.
+    """
+    out: dict[str, object] = {}
+    if isinstance(node, dict):
+        for key, value in node.items():
+            out.update(_leaf_paths(value, f"{prefix}{key}."))
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            out.update(_leaf_paths(value, f"{prefix}{index}."))
+    else:
+        out[prefix.rstrip(".")] = node
+    return out
+
+
+@pytest.mark.parametrize("wire", ["S32_LE", "S16_LE"], ids=["wide", "narrow"])
+async def test_the_ring_emit_changes_the_transport_and_nothing_else(
+    tmp_path, monkeypatch, wire
+):
+    """THE LOAD-BEARING ASSERTION: eight device fields at most, and nothing else.
+
+    Everything #2412 claims about hearing safety rests on this one sentence —
+    that pointing a commissioning emit at the ring moves the CAPTURE DEVICE, the
+    two formats and the four latency/queue knobs, and touches no filter, no
+    mixer, no pipeline step, no gain, no mute and no volume limit. §1.6's
+    boundary argument, the unchanged-protection claim, and the panel's ability
+    to review a bounded change all inherit from it.
+
+    So it is asserted as a STRUCTURAL DIFF over the two emitted graphs rather
+    than by naming the things that stay put: an enumeration of what should not
+    change cannot notice a field nobody thought to enumerate. The two documents
+    come from one preset, one topology and one role, so the playback device is
+    the only independent variable and every other difference is a consequence
+    this test either expects by name or fails on.
+
+    **BOTH WIRES, because the count is not fixed and a one-wire test would
+    report the wrong bound.** The emitter's non-ring formats are `S32_LE`, and
+    the shipped ring default is WIDE — so on an ordinary box the two format
+    fields hold the SAME value on both transports and only six fields move. They
+    move only on a box an operator rolled back to the narrow wire. The design's
+    "capture device, the two formats, and the four knobs" is therefore exact as
+    an UPPER BOUND and one field pair too many as a count, which is why the
+    bound is asserted as a subset with the six unconditional movers required
+    inside it, and the format pair asserted to move on exactly the wire where it
+    should.
+    """
+    import yaml
+
+    from jasper.fanin_coupling import (
+        RING_CAMILLA_CHUNKSIZE,
+        RING_CAMILLA_ENABLE_RATE_ADJUST,
+        RING_CAMILLA_QUEUELIMIT,
+        RING_CAMILLA_TARGET_LEVEL,
+    )
+
+    monkeypatch.setattr(
+        "jasper.fanin_coupling.read_declared_ring_wire_format", lambda env=None: wire
+    )
+    topology, preset = _commissioning_box()
+    aloop = yaml.safe_load(
+        _commissioning_yaml(
+            topology, preset, tmp_path / "aloop", OUTPUTD_ACTIVE_PLAYBACK_DEVICE
+        )
+    )
+    ring = yaml.safe_load(
+        _commissioning_yaml(
+            topology, preset, tmp_path / "ring", RING_ACTIVE_PLAYBACK_DEVICE
+        )
+    )
+
+    flat_aloop = _leaf_paths(aloop)
+    flat_ring = _leaf_paths(ring)
+    assert flat_aloop and flat_ring, "nothing was emitted; this test is vacuous"
+    assert len(flat_aloop) > 50, "the graph got small; this bound stopped meaning much"
+    changed = {
+        path
+        for path in set(flat_aloop) | set(flat_ring)
+        if flat_aloop.get(path) != flat_ring.get(path)
+    }
+
+    formats = {"devices.capture.format", "devices.playback.format"}
+    always_move = {
+        # The independent variable — what the caller asked for.
+        "devices.playback.device",
+        # The capture device, which is the whole point: under `shm_ring` fan-in
+        # fills Ring A and stops feeding the snd-aloop tap, so a ring sink over
+        # `plug:jasper_capture` would sweep a device nobody writes.
+        "devices.capture.device",
+        # The four latency/queue knobs of the certified ring geometry.
+        "devices.chunksize",
+        "devices.target_level",
+        "devices.queuelimit",
+        "devices.enable_rate_adjust",
+    }
+    # THE BOUND: nothing outside the device block moves, on either wire.
+    assert changed <= always_move | formats, changed - (always_move | formats)
+    # ...and every one of the six unconditional movers actually did.
+    assert always_move <= changed, always_move - changed
+    # ...and the format pair moves on exactly the wire where the ring's answer
+    # differs from the emitter's non-ring default, never on the other.
+    assert (formats <= changed) is (wire != DEFAULT_PLAYBACK_FORMAT), (wire, changed)
+
+    # And the direction of each, so a diff of the right SHAPE but the wrong
+    # values cannot pass. Every expectation reads from its owning constant.
+    assert flat_aloop["devices.capture.device"] == DEFAULT_CAPTURE_DEVICE
+    assert flat_ring["devices.capture.device"] == RING_CAPTURE_DEVICE
+    assert flat_ring["devices.capture.format"] == wire
+    assert flat_ring["devices.playback.format"] == wire
+    assert flat_ring["devices.chunksize"] == RING_CAMILLA_CHUNKSIZE
+    assert flat_ring["devices.target_level"] == RING_CAMILLA_TARGET_LEVEL
+    assert flat_ring["devices.queuelimit"] == RING_CAMILLA_QUEUELIMIT
+    assert flat_ring["devices.enable_rate_adjust"] is RING_CAMILLA_ENABLE_RATE_ADJUST
+
+    # The ceiling is IN the diff's complement, and named anyway because it is
+    # the one value a hearing panel will look for by eye.
+    assert flat_ring["devices.volume_limit"] == flat_aloop["devices.volume_limit"] == 0.0
+
+
+async def test_the_unattended_mute_proof_gains_no_caller():
+    """`output_terminally_muted`'s caller set is unchanged (§1.6).
+
+    The unattended-silence invariant is not weakened by one predicate, and the
+    way that could quietly stop being true is a THIRD caller — a new
+    unattended path proving itself silent with the same primitive while
+    reasoning differently about what it may then do. The two that exist are
+    both unattended proofs ("this box may boot / may arm itself, because
+    nothing can make a sound"), and #2412 adds none.
+
+    DISCOVERED by parsing, not restated: every call in `jasper/` is found, so a
+    caller added anywhere fails here rather than in a review someone has to
+    remember to do. Mirrors the AST caller-set shape this repo already uses for
+    the no-second-writer pins (#2537 / #2558).
+    """
+    import ast
+
+    repo = Path(__file__).resolve().parent.parent
+    callers: set[str] = set()
+    for path in sorted((repo / "jasper").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        functions = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        ]
+        for call in (n for n in ast.walk(tree) if isinstance(n, ast.Call)):
+            func = call.func
+            name = (
+                func.attr
+                if isinstance(func, ast.Attribute)
+                else func.id
+                if isinstance(func, ast.Name)
+                else None
+            )
+            if name != "output_terminally_muted":
+                continue
+            enclosing = [
+                fn
+                for fn in functions
+                if fn.lineno <= call.lineno <= (fn.end_lineno or call.lineno)
+            ]
+            owner = min(
+                enclosing,
+                key=lambda fn: (fn.end_lineno or fn.lineno) - fn.lineno,
+            )
+            callers.add(f"{path.relative_to(repo).as_posix()}::{owner.name}")
+
+    assert callers == {
+        # "this box may BOOT, because nothing can make a sound"
+        "jasper/active_speaker/runtime_contract.py::_flat_output_terminally_muted",
+        # "this box may ARM ITSELF onto the ring, for the same reason"
+        "jasper/fanin/coupling_reconcile.py::_anchor_is_all_muted",
+    }, callers
+
+
+async def test_the_audible_evidence_holds_identically_on_a_ring_graph(tmp_path):
+    """The attended-audible proof does not notice the transport (§1.6).
+
+    Both halves of the pair: `driver_commission_audible_evidence` off-device
+    over the emitted YAML, and `running_commission_evidence` over the graph read
+    back from CamillaDSP. Asserted as EQUALITY of the two check dicts across
+    transports rather than as "the ring one passes" — a ring graph that passed
+    for a different reason, or passed a smaller set of checks, would satisfy the
+    weaker claim.
+
+    The `driver_protection_while_audible` GATE is asserted alongside the
+    function that feeds it, because the gate id is what `/sound/` renders and
+    the function is what decides it, and this design's claim is about both.
+    """
+    import yaml
+
+    from jasper.active_speaker.staging import (
+        prepare_driver_commissioning_config,
+        running_commission_evidence,
+    )
+
+    topology, preset = _commissioning_box()
+
+    def _evidence(device, out_dir):
+        payload = prepare_driver_commissioning_config(
+            topology,
+            speaker_group_id="mono",
+            role="woofer",
+            preset=preset,
+            playback_device=device,
+            config_dir=out_dir,
+            run_config_check=False,
+        )
+        assert payload["status"] == "prepared", payload
+        # The payload's OWN evidence, not a recomputation: staging binds the
+        # preset to the topology (which relabels the outputs), so evidence built
+        # from the raw preset would answer about a different mask than the one
+        # the gate actually judged.
+        off_device = payload["audible_evidence"]
+        text = Path(payload["config"]["path"]).read_text(encoding="utf-8")
+        # CamillaDSP hands the graph back in its own YAML dialect.
+        running = running_commission_evidence(
+            yaml.safe_dump(yaml.safe_load(text), default_flow_style=False),
+            audible_outputs=off_device["audible_outputs"],
+            muted_outputs=off_device["muted_outputs"],
+            tweeter_outputs=off_device["tweeter_outputs"],
+            protective_hp_hz=off_device["protective_highpass_hz"],
+            expected_headroom_db=COMMISSIONING_HEADROOM_DB,
+        )
+        gate = next(
+            g
+            for g in payload["required_gates"]
+            if g["id"] == "driver_protection_while_audible"
+        )
+        return off_device, running, gate
+
+    aloop_off, aloop_live, aloop_gate = _evidence(
+        OUTPUTD_ACTIVE_PLAYBACK_DEVICE, tmp_path / "aloop"
+    )
+    ring_off, ring_live, ring_gate = _evidence(
+        RING_ACTIVE_PLAYBACK_DEVICE, tmp_path / "ring"
+    )
+
+    assert aloop_off["passed"] is True and aloop_live["passed"] is True
+    assert ring_off["checks"] == aloop_off["checks"], (ring_off, aloop_off)
+    assert ring_live["checks"] == aloop_live["checks"], (ring_live, aloop_live)
+    assert ring_off["audible_outputs"] == aloop_off["audible_outputs"]
+    assert ring_off["muted_outputs"] == aloop_off["muted_outputs"]
+    assert ring_gate["passed"] is aloop_gate["passed"] is True
+
+
+async def test_the_ramp_gate_holds_identically_on_a_ring_graph():
+    """All seven Stage-5 checks, same verdicts, both transports.
+
+    The ramp is the audible path — the thing that actually raises a driver's
+    gain in a room with a person in it — and its gate is where every hearing
+    protection is re-proved on the RUNNING graph. #2412's claim is that moving
+    the transport does not reach any of them. That is asserted here over the
+    WHOLE `checks` dict rather than over a chosen few, so a check that starts
+    answering differently on the ring fails even if nobody predicted it could.
+
+    `volume_ceiling_0db` is called out separately after the dict comparison, not
+    because the comparison misses it, but because it is the one an equality
+    assertion would still satisfy if BOTH sides regressed together — and it is
+    the ceiling.
+    """
+    import yaml
+
+    from jasper.active_speaker.calibration_level import MIN_TEST_LEVEL_DBFS
+    from jasper.active_speaker.camilla_yaml import (
+        STARTUP_MUTE_GAIN_DB,
+        active_emit_devices,
+        emit_active_speaker_commissioning_config,
+    )
+    from jasper.active_speaker.commission_ramp import build_stage5_ramp_gate
+    from jasper.active_speaker.staging import driver_commission_audible_evidence
+    from tests.test_active_speaker_profile import _two_way_preset
+
+    preset = ActiveSpeakerPreset.from_mapping(_two_way_preset())
+    audible = set(audible_outputs_for_role(preset, "woofer"))
+
+    def _emit_at(device: str, gain: float) -> str:
+        devices = active_emit_devices(device)
+        return emit_active_speaker_commissioning_config(
+            preset,
+            playback_device=device,
+            capture_device=devices.capture_device,
+            capture_format=devices.capture_format,
+            playback_format=devices.playback_format,
+            chunksize=devices.chunksize,
+            target_level=devices.target_level,
+            queuelimit=devices.queuelimit,
+            enable_rate_adjust=devices.enable_rate_adjust,
+            audible_outputs=audible,
+            audible_gain_db=gain,
+            startup_headroom_db=COMMISSIONING_HEADROOM_DB,
+        )
+
+    def _checks(device: str) -> dict:
+        evidence = driver_commission_audible_evidence(
+            _emit_at(device, MIN_TEST_LEVEL_DBFS),
+            preset=preset,
+            audible_outputs=audible,
+            expected_headroom_db=COMMISSIONING_HEADROOM_DB,
+        )
+        running = _emit_at(device, STARTUP_MUTE_GAIN_DB)
+        return build_stage5_ramp_gate(
+            running_config_raw=yaml.safe_dump(yaml.safe_load(running)),
+            role="woofer",
+            present_roles=frozenset({"woofer", "tweeter"}),
+            audible_outputs=evidence["audible_outputs"],
+            muted_outputs=evidence["muted_outputs"],
+            tweeter_outputs=evidence["tweeter_outputs"],
+            protective_hp_hz=evidence["protective_highpass_hz"],
+            current_gain_db=STARTUP_MUTE_GAIN_DB,
+            next_gain_db=MIN_TEST_LEVEL_DBFS,
+            confirmed_roles=frozenset(),
+            prior_step_cleared=False,
+        )
+
+    aloop = _checks(OUTPUTD_ACTIVE_PLAYBACK_DEVICE)
+    ring = _checks(RING_ACTIVE_PLAYBACK_DEVICE)
+
+    assert set(aloop["checks"]) == {
+        "gain_within_envelope",
+        "gain_step_bounded",
+        "live_mask_and_highpass",
+        "volume_ceiling_0db",
+        "driver_limiter_present",
+        "role_order_woofer_first",
+        "prior_step_acknowledged",
+    }, aloop["checks"]
+    assert ring["checks"] == aloop["checks"], (ring["checks"], aloop["checks"])
+    assert ring["passed"] is aloop["passed"] is True
+    # The ceiling, named: an equality assertion is satisfied by two wrongs.
+    assert ring["checks"]["volume_ceiling_0db"] is True
+
+
+async def test_the_ramp_comment_states_the_waiver_the_branch_actually_honours():
+    """Wave 5's seven checks read against Wave 1's CORRECTED sentence.
+
+    The ack gate is caller-bypassable by design — `auto_retry_pending` replaces
+    the pending step instead of refusing it, which is what lets the browser's
+    one-click auto-ramp take successive bounded steps. Before Wave 1 both the
+    module docstring and the ramp-progress comment asserted the opposite, and a
+    hearing panel reviewing this gate would have read a false property about the
+    exact mechanism under review.
+
+    THE RETIRED RUNG IS ASSERTED ABSENT, not merely the new one present: a
+    partial correction that added the exception in one place and left the bare
+    claim in the other would pass a presence-only check. The MECHANISM is
+    already pinned in both polarities by
+    `tests/test_active_speaker_stage5_ramp.py::test_ramp_step_then_pending_blocks_a_second_step`
+    and its `..._auto_retry_pending_replaces_same_driver_pending_step` twin —
+    referenced, deliberately not duplicated here. This guards the PROSE those
+    two make true.
+    """
+    import inspect
+
+    from jasper.active_speaker import commission_ramp
+
+    source = inspect.getsource(commission_ramp)
+    docstring = commission_ramp.__doc__ or ""
+
+    # The ramp-progress comment block: from its banner to the first line that
+    # is not a comment. Sliced rather than grepped whole-file so the two prose
+    # sites are checked as the separate claims they are — Wave 1 had to fix
+    # both, and a whole-file check passes when only one is corrected.
+    lines = source.splitlines()
+    start = next(
+        i for i, line in enumerate(lines) if line.startswith("# --- ramp progress state")
+    )
+    end = next(
+        i
+        for i in range(start + 1, len(lines))
+        if lines[i].strip() and not lines[i].lstrip().startswith("#")
+    )
+    ramp_progress_comment = "\n".join(lines[start:end])
+
+    sites = {
+        "module docstring": docstring,
+        "ramp progress state comment": ramp_progress_comment,
+    }
+    for name, prose in sites.items():
+        # Anti-vacuity: this guard means nothing if the prose stopped
+        # describing the per-step gate at all. Kept to the concept rather than
+        # one spelling — the docstring says a step must be "handled", the
+        # comment says "acknowledged", and both are the same claim.
+        assert "step" in prose.lower(), f"{name} no longer describes the ramp's steps"
+        # THE PROPERTY: any prose here that requires an ack must also name the
+        # waiver the branch honours. This is what fails on a partial correction.
+        assert "auto_retry_pending" in prose, (
+            f"{name} asserts an ack requirement without naming the "
+            f"auto_retry_pending waiver the branch actually honours: {prose}"
+        )

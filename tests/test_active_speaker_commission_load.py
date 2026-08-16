@@ -44,6 +44,8 @@ from jasper.active_speaker.staging import running_graph_matches_staged_anchor
 
 # Reuse the canonical mono DAC8x topology + passing-validation stub + path-safety
 # evidence writer from the protected-startup-load tests.
+from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
+from tests._armed_transport import arm_ring_transport
 from tests.active_speaker_fixtures import mono_output_topology as _topology
 from tests.test_active_speaker_startup_load import (
     _protected_prior,
@@ -253,7 +255,18 @@ def _load(
     camilla: FakeCommissionCamilla | None = None,
     with_path_safety: bool = True,
     reconcile_output_hardware: bool = True,
+    playback_device: str | None = None,
+    arm_transport: bool = False,
 ):
+    # OPT-IN, and defaulting OFF is the whole finding (#2412 Wave 6). Arming
+    # is NOT inert on this tree: the ACTIVE-endpoint marker is read by
+    # `resolve_output_layout` as well as by the load gate, so arming it
+    # unconditionally here would move all 34 tests that funnel through this
+    # helper off the snd-aloop path they were written to cover. It defaults off
+    # so those keep their coverage, and the ring-polarity tests below ask for it
+    # explicitly. See `tests/_armed_transport.py`.
+    if arm_transport:
+        arm_ring_transport(monkeypatch)
     staged = _staged(tmp_path)
     staged_path = staged["config"]["path"]
     statefile = _statefile(tmp_path, statefile_target or staged_path)
@@ -287,6 +300,7 @@ def _load(
             statefile_path=statefile,
             state_path=state_path,
             reconcile_output_hardware=reconcile_output_hardware,
+            playback_device=playback_device,
             validate=_valid_config,
         )
     )
@@ -727,3 +741,79 @@ def test_rollback_reloads_the_staged_all_muted_config(monkeypatch, tmp_path):
     state = load_commission_load_state(state_path=state_path)
     assert state["status"] == "rolled_back"
     assert state["rollback_available"] is False
+
+
+# --- #2412 Wave 4: the load line names the transport -------------------------
+
+
+@pytest.mark.parametrize(
+    "playback_device, arm, expect_transport",
+    [(None, False, "alsa"), (RING_ACTIVE_PLAYBACK_DEVICE, True, "ring")],
+    ids=["aloop_active_lane", "ring"],
+)
+def test_the_load_line_names_the_transport_on_both_polarities(
+    monkeypatch, tmp_path, caplog, playback_device, arm, expect_transport
+):
+    """`result=loaded` says WHICH transport the swap landed on.
+
+    "The swap failed" and "the swap failed ON THE RING" are the same journal
+    line without this field, and the second is the one new failure mode
+    commissioning-on-the-ring introduces. Both polarities, because one would
+    pass against a line that hard-coded either answer.
+
+    The ring arm is also the PROOF that `arm_ring_transport` does something —
+    the reason #2412 can ship that helper for P2 to call rather than shipping an
+    untested one. It reaches `status="loaded"` only because the transport was
+    armed, and the control below runs the same call without arming.
+    """
+    with caplog.at_level("INFO", logger=startup_load_mod.logger.name):
+        result, *_ = _load(
+            tmp_path,
+            monkeypatch,
+            role="woofer",
+            playback_device=playback_device,
+            arm_transport=arm,
+        )
+
+    assert result["load"]["status"] == "loaded", result
+    lines = [
+        record.message
+        for record in caplog.records
+        if "event=active_speaker.driver_commission_load result=loaded" in record.message
+    ]
+    assert len(lines) == 1, lines
+    assert f"transport={expect_transport}" in lines[0]
+
+
+def test_an_unarmed_ring_blocks_the_load_and_the_arming_is_what_lifts_it(
+    monkeypatch, tmp_path
+):
+    """The arming is load-bearing, not decorative — the control that proves it.
+
+    THE MUTATION, AS A TEST. Without this, `arm_ring_transport` could silently
+    stop working and the ring polarity above would be the only thing that
+    noticed — a helper whose effect is asserted by one green test and nothing
+    else. This runs the identical call with arming withheld and requires the
+    gate Wave 3 shipped to refuse it, naming BOTH conjuncts, so the helper's
+    two `setattr`s each have a failure that reaches an assertion.
+    """
+    result, *_ = _load(
+        tmp_path,
+        monkeypatch,
+        role="woofer",
+        playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+        arm_transport=False,
+    )
+
+    assert result["load"]["status"] == "blocked", result
+    gate = next(
+        g
+        for g in result["preflight"]["required_gates"]
+        if g["id"] == "commissioning_transport_armed"
+    )
+    assert gate["passed"] is False, gate
+    codes = {issue["code"] for issue in result["preflight"]["issues"]}
+    assert {
+        "commissioning_ring_feed_unarmed",
+        "commissioning_active_endpoint_unarmed",
+    } <= codes, codes
