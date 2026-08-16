@@ -1240,7 +1240,132 @@ def test_commissioning_summary_idle_with_no_evidence() -> None:
         "last_capture": None,
         "last_failure_code": None,
         "room_correction_allowed": False,
+        # #2412 Wave 4. `None` here is the derivation answering honestly, not a
+        # placeholder: this fixture's topology is a `SimpleNamespace` with only
+        # a `topology_id`, so no route resolves and there is no transport to
+        # name. The armed/unarmed polarities are pinned in
+        # `test_commissioning_summary_transport_*` below.
+        "transport": None,
     }
+
+
+@pytest.mark.parametrize(
+    "topology_factory, armed, expected",
+    [
+        (_active_topology, False, "alsa"),
+        (_active_topology, True, "ring"),
+        # ROLEFULNESS IS NOT THE DISCRIMINATOR, and this PAIR is what says so.
+        # A passive box resolves the active outputd lane like any other and
+        # follows the marker exactly as a roleful one does; only an unreadable
+        # topology or a route with no device reports null. The docstring and
+        # the observability HANDOFF both used to name "a passive box" as a null
+        # case — false, and these are the pins that keep the corrected sentence
+        # true.
+        (_passive_topology, False, "alsa"),
+        # The ARMED half, and the row that makes "not a rolefulness test" mean
+        # something: a non-roleful box reaching `ring`. Its absence is what let
+        # a second false sentence ("rolefulness gates whether the marker is
+        # consulted at all") survive the first fix round — a spy shows the
+        # passive fixture consults the marker and lands here.
+        (_passive_topology, True, "ring"),
+    ],
+    ids=["active_aloop", "active_ring", "passive_aloop", "passive_ring"],
+)
+def test_commissioning_summary_transport_follows_the_box(
+    monkeypatch, topology_factory, armed, expected
+) -> None:
+    """`/state` names the transport, on both polarities (#2412 Wave 4).
+
+    `curl /state | jq .` is this campaign's standing probe, and a commissioning
+    block that reported a device without its transport is the exact half-fact
+    that produced #2412 — a graph can name the ACTIVE lane and reach it over
+    either snd-aloop or the ring, and only one of those is fed by fan-in under
+    `shm_ring`.
+
+    Driven through the reconciler's real ACTIVE-endpoint marker rather than by
+    stubbing the answer, so this also pins that `/state` reads the SAME chooser
+    commissioning emits through: a `/state` that answered from its own
+    derivation could disagree with the journal about one box, which is the
+    second-source-of-truth failure the single helper exists to prevent.
+    """
+    monkeypatch.setattr(
+        "jasper.fanin_coupling.ring_active_endpoint_armed", lambda env=None: armed
+    )
+    result = setup_mod.commissioning_summary(
+        topology_factory(),
+        profile=None,
+        applied_profile=None,
+        measurements=None,
+    )
+    assert result["transport"] == expected
+
+
+def test_commissioning_summary_transport_is_null_when_no_device_resolves() -> None:
+    """The OTHER half of the null condition, at the DERIVATION.
+
+    `null` has exactly two causes: the topology cannot be read (the test below)
+    and the route resolves to no device — `resolve_output_layout`'s fall-through,
+    where the DAC profile declares no active outputd lane. This pins the callee.
+
+    It is deliberately NOT the whole guard: pinning `transport_label` says
+    nothing about whether `_commissioning_transport` HONOURS the answer, and the
+    test below is the half that does. Proved by mutation rather than reasoned —
+    `return transport_label(device) or TRANSPORT_ALSA` survives this test and the
+    entire affected set (110 passed) while the surface test kills it.
+    """
+    from jasper.fanin_coupling import transport_label
+
+    assert transport_label(None) is None
+    assert transport_label("") is None
+
+
+def test_state_reports_null_when_the_chooser_answers_no_device(monkeypatch) -> None:
+    """The SURFACE honours a no-device answer — the line between the two.
+
+    `_commissioning_transport` is one `try` and one `return`, and only the `try`
+    half was pinned: the unreadable-topology test returns through the `except`
+    branch and never reaches the return, while the derivation test never enters
+    the function. So the return line was unguarded, and a mutant that swallowed
+    the null (`transport_label(device) or TRANSPORT_ALSA`) passed all 110 tests
+    in the affected set. This is the case that kills it.
+
+    Stubs the COLLABORATOR'S CONTRACT (`resolve_active_playback_device` answering
+    no device) rather than building a lane-less topology: the rule under test is
+    "the surface honours a no-device answer", and a hand-built fixture would pin
+    the fixture instead. The real branch this stands in for is
+    `output_topology.resolve_output_layout`'s fall-through, which returns
+    `playback_device=None` for a profile with no active outputd lane — reachable,
+    not theoretical.
+    """
+    monkeypatch.setattr(
+        "jasper.active_speaker.playback_route.resolve_active_playback_device",
+        lambda topology, **kw: (None, "missing"),
+    )
+
+    result = setup_mod.commissioning_summary(
+        _active_topology(), profile=None, applied_profile=None, measurements=None
+    )
+
+    assert result["transport"] is None
+    # ...and the block still answers in full: a null transport is a reported
+    # value, not a truncated payload.
+    assert len(result) == 8
+
+
+def test_commissioning_summary_transport_is_null_on_an_unreadable_topology() -> None:
+    """An observability field must never be why `/state` stops answering.
+
+    `resolve_output_layout` walks `topology.hardware` unguarded, so a topology
+    object that cannot answer raises a class none of this module's sibling
+    derivations do. The block reports `null` and keeps its other seven keys
+    rather than propagating.
+    """
+    result = setup_mod.commissioning_summary(
+        object(), profile=None, applied_profile=None, measurements=None
+    )
+    assert result["transport"] is None
+    assert result["phase"] == "idle"
+    assert len(result) == 8
 
 
 def test_commissioning_summary_measuring_with_open_comparison_set(

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from jasper.camilla_config_contract import parse_camilla_devices_config
+from jasper.fanin_coupling import transport_label
 from jasper.output_topology import OutputTopologyError, load_output_topology_strict
 
 from .baseline_profile import (
@@ -392,7 +393,67 @@ def _idle_commissioning_summary() -> dict[str, Any]:
         "last_capture": None,
         "last_failure_code": None,
         "room_correction_allowed": False,
+        # No topology resolved, so no transport to name (#2412 Wave 4). `null`
+        # rather than a guess: this is the fail-soft summary, and asserting a
+        # transport for a box whose route could not be read is the half-fact
+        # the key exists to remove.
+        "transport": None,
     }
+
+
+def _commissioning_transport(topology: Any) -> str | None:
+    """Which transport this box's commissioning would emit on, or ``None``.
+
+    ONE derivation with the two ``driver_commission_*`` journal lines
+    (:func:`jasper.fanin_coupling.transport_label`), reading the same chooser
+    commissioning itself reads (``resolve_active_playback_device``), so the two
+    surfaces cannot disagree about a device they both resolve the same way.
+    Stated that way on purpose rather than as "they can never differ": the
+    shared thing is the DERIVATION, not the input. ``prepare`` accepts a
+    caller-supplied ``playback_device=`` override, so a caller that passed one
+    could be described by a journal line this function would not reproduce. No
+    production caller passes one (call-site audit, PR #2643) — the agreement is
+    a convention this API does not enforce.
+
+    ``None`` when the topology **cannot be read** or resolves to **no device**.
+    Rolefulness is deliberately NOT the discriminator, and saying it was would
+    mislead the reader this field exists to help: a PASSIVE box resolves the
+    active outputd lane like any other, and follows the marker exactly as a
+    roleful one does — ``alsa`` unarmed, ``ring`` armed.
+
+    **The gate is the DAC PROFILE, measured rather than assumed.**
+    ``resolve_output_layout`` consults the ring marker only when the profile
+    declares an active outputd lane (``supports_active_outputd_lane`` and
+    ``active_outputd_lane_channels``); a box failing that condition falls through
+    to ``playback_device=None``, which is the ``no device`` half above. So one
+    profile condition decides both questions this docstring answers, and
+    rolefulness decides neither — verified with a spy on
+    ``ring_active_endpoint_armed``: the repo's non-roleful fixture consults it
+    and reports ``ring`` when armed. (An earlier version of this paragraph named
+    rolefulness as the consult gate. That was a second false sentence in place of
+    the first — the failure mode this campaign named in its own Wave 1 — so the
+    replacement was measured before it was written.)
+
+    Fail-soft like every other field here: the derivation reaches the topology
+    layer, and a box whose route cannot be read reports no transport rather than
+    failing ``/state``.
+
+    ``AttributeError`` joins ``_READINESS_DERIVATION_ERRORS`` for this call only.
+    The shared tuple is the set the OTHER derivations here can raise; this one
+    reaches ``resolve_output_layout``, which walks ``topology.hardware``
+    unguarded, so a ``None`` or duck-typed topology — the shape the two
+    early-return call sites and every standalone caller pass — raises a class no
+    sibling does. Widening the shared tuple would loosen five other derivations
+    to buy one; catching it here does not. An observability field must never be
+    the reason ``/state`` stops answering.
+    """
+    from .playback_route import resolve_active_playback_device
+
+    try:
+        device, _source = resolve_active_playback_device(topology)
+    except (*_READINESS_DERIVATION_ERRORS, AttributeError):
+        return None
+    return transport_label(device)
 
 
 def _derive_commissioning_summary(
@@ -475,6 +536,9 @@ def _derive_commissioning_summary(
         "last_capture": _last_capture_summary(measurements),
         "last_failure_code": last_failure_code,
         "room_correction_allowed": bool(applied_state.get("valid")),
+        # `curl /state | jq .` is this campaign's standing probe, and a device
+        # name without its transport is the exact half-fact that produced #2412.
+        "transport": _commissioning_transport(topology),
     }
 
 
