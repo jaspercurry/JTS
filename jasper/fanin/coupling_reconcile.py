@@ -3693,10 +3693,11 @@ def _fail_ring_arm(
     failure that does NOT pass it: nothing is in flight there, so the rollback's
     write is the last one. See :func:`kick_timed_out`. Recovery has just
     written ``loopback`` back into fanin.env, so the same oneshot re-derives the
-    LOOPBACK lane's width from it — without this, a box recovered to loopback
-    would keep asking for the ring's narrow S16_LE while CamillaDSP emits the
-    wide program default, which the plug-wrapped passive lane silently
-    requantizes and the RAW active lane refuses at the open (an outputd park).
+    LOOPBACK lane's width from it — without this, a narrow-pinned box recovered
+    to loopback would keep asking for the ring's narrow S16_LE while CamillaDSP
+    emits the wide program default, which the plug-wrapped passive lane
+    silently requantizes and the RAW active lane refuses at the open (an
+    outputd park).
     ``_recover_to_loopback`` deliberately does not kick for the content-BUFFER
     floor (a cushion, where being wrong is safe); a content-lane WIDTH is not a
     cushion, which is why this one is reconverged and that one is not.

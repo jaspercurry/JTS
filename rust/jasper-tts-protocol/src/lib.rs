@@ -74,7 +74,7 @@ pub const CHANNELS: u16 = 2;
 /// lifetime, not a level error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TtsWireWidth {
-    /// `AUDIO` — interleaved stereo S16LE, the shipped fleet default.
+    /// `AUDIO` — interleaved stereo S16LE, the narrow wire.
     Narrow,
     /// `AUDIO32` — interleaved stereo S32LE at the i32 program-spine scale
     /// (`widen_i16_to_i32`'s scale: full scale is ±2^31, and an S16 value `s`
@@ -347,8 +347,8 @@ pub enum TtsCommand {
     /// `AUDIO <bytes>` — interleaved stereo S16LE, the narrow wire.
     Audio(Vec<i16>),
     /// `AUDIO32 <bytes>` — interleaved stereo S32LE at the i32 program-spine
-    /// scale, the wide wire. Sent only by a box whose declared ring wire
-    /// format is `S32_LE`; see [`TtsWireWidth`].
+    /// scale, the wide wire. Sent only by a box whose ring wire format
+    /// resolves to `S32_LE`; see [`TtsWireWidth`].
     AudioWide(Vec<i32>),
     SegmentEnd,
     Flush,

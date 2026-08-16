@@ -404,7 +404,7 @@ def assistant_wire_is_wide(
     by reading the Rust source rather than by trusting this docstring.
 
     **BOTH halves, and the second one is not decoration.** A wide wire needs the
-    declared ``S32_LE`` ring wire format AND the ``shm_ring`` coupling. fan-in's
+    resolved ``S32_LE`` ring wire format AND the ``shm_ring`` coupling. fan-in's
     snd-aloop write is pinned narrow (``jasper-fanin``'s ``mixer::FORMAT``, and
     the dsnoop that reads it — see
     :mod:`tests.test_aloop_program_lane_width`), so a box that declared a
@@ -455,7 +455,7 @@ def resolve_ring_wire(topology: Any = None) -> RingWire:
       same chain, defaulting to :data:`RING_WIRE_FORMAT_WIDE` when the box
       declares nothing. The layout's accept-set is wider (S16LE and S32LE, both
       ends of the ring already parse both), so which one a box carries is a
-      DECLARATION, not a policy constant — until 2026-08-11 this axis was
+      DECLARATION, not a policy constant — until PR #2335 this axis was
       pinned narrow here with no input at all, which meant an operator could
       declare a wide wire to fan-in and every Python end would still emit and
       render narrow (jts3's blocked wide arm). The shipped conf.d DECLARES the

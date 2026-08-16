@@ -1627,7 +1627,7 @@ def test_transport_coherence_shm_ring_format_axis_is_quiet_with_no_outputd_evide
     ("an end this function cannot see is not a contradiction",
     ``transport_coherence_report``'s own docstring) is what silences the format
     axis here, on every box, narrow-pinned or not — true both before and after
-    ``resolve_ring_wire_format``'s default flipped WIDE (2026-08-11). This is
+    ``resolve_ring_wire_format``'s default flipped WIDE (PR #2601). This is
     now the SAME scenario as
     ``test_shm_ring_format_axis_is_quiet_when_outputd_declares_nothing`` above;
     kept as its own case rather than merged, since nothing here is actually
@@ -1768,7 +1768,7 @@ def test_shm_ring_format_axis_fails_on_a_sheared_outputd_declaration(monkeypatch
 
     The resolved wire is PINNED via monkeypatch rather than left to
     resolve_ring_wire()'s ambient file-fresh read: since the resolver's default
-    flipped WIDE (2026-08-11), an unpinned box's resolved format now equals
+    flipped WIDE (PR #2601), an unpinned box's resolved format now equals
     S32_LE too, which would make outputd's OWN 'S32_LE' declaration agree rather
     than shear — the opposite of what this test demonstrates. Pinning the
     resolved wire narrow (S16_LE, the ioplug's own compiled-in default) keeps
@@ -1858,7 +1858,7 @@ def test_shm_ring_channel_axis_fails_on_a_sheared_camilla_config(monkeypatch):
     # The resolved wire is PINNED (same technique and reason as the format-axis
     # tests above) so the FORMAT axis stays quiet here — this test's subject is
     # the channel axis alone, and an unpinned resolve_ring_wire() would now
-    # ALSO shear on format (its default flipped WIDE 2026-08-11), reporting two
+    # ALSO shear on format (its default flipped WIDE in PR #2601), reporting two
     # errors instead of the one this test means to isolate.
     import jasper.fanin_coupling as fc
 

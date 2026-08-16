@@ -64,9 +64,9 @@ JTS_RING_IOPLUG_PROVENANCE="${JTS_RING_IOPLUG_PROVENANCE:-/var/lib/jasper/ring-i
 # `jasper-doctor`'s `ring ioplug provenance` check then weighs that revocation
 # against the wire the box actually resolves —
 #   - a wire that renders no conf.d field beyond the ioplug's own defaults
-#     opens on the stale plugin, so the verdict is `warn`. Since the ring-wire
-#     default went WIDE that is now only a box an operator has PINNED to
-#     S16_LE, not the fleet;
+#     needs nothing from the stale plugin, so the verdict is `warn`. Since the
+#     ring-wire default went WIDE that is now only a box an operator has
+#     PINNED to S16_LE, not the fleet (the residual is #2597);
 #   - a wire declaring a non-default sample FORMAT is refused at the arm by
 #     `ring_wire_caps_ready`, so the verdict is `fail`, and install.sh's
 #     closing `run_doctor_summary` prints its failure banner on this same

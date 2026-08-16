@@ -2028,9 +2028,9 @@ def check_ring_ioplug_provenance() -> CheckResult:
     THE VERDICT IS WEIGHED BY THE BOX'S OWN WIRE, because that is what decides
     whether an unvouched plugin costs anything:
 
-    * a wire that renders no conf.d field beyond the ioplug's own defaults opens
-      on ANY installed plugin, so "cannot vouch" is a ``warn`` — real, but
-      nothing is refused on such a box;
+    * a wire that renders no conf.d field beyond the ioplug's own defaults needs
+      nothing from any installed plugin, so "cannot vouch" is a ``warn`` — real,
+      but nothing is refused on such a box;
     * a wire that declares a non-default sample FORMAT is refused at the arm by
       ``ring_wire_caps_ready``, which is a ``fail``: the box drops to loopback,
       and a roleful box parks its content lane. Reporting that as a warning

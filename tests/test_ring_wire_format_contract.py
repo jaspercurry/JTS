@@ -194,7 +194,7 @@ def test_the_resolver_answers_the_declared_wire_not_a_policy_constant(
 ) -> None:
     """The R6/R7 activation path, end to end through the resolver.
 
-    Until 2026-08-11 ``resolve_ring_wire`` returned ``RING_WIRE_FORMAT`` on every
+    Until PR #2335 ``resolve_ring_wire`` returned ``RING_WIRE_FORMAT`` on every
     box with no input at all — so an operator could declare the wide wire to
     ``jasper-fanin`` and every Python end would still emit, render and gate
     narrow, and jts3's wide arm was unreachable by design nobody had noticed.

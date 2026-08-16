@@ -159,7 +159,7 @@ def ioplug_constraints(
     a fixed test baseline every byte-math assertion in this suite is measured
     against, not a claim about what a real box carries. Since
     :func:`jasper.fanin_coupling.resolve_ring_wire_format`'s default flipped
-    WIDE (2026-08-11, convergence design §3.2/B3), an undeclared box no longer
+    WIDE (PR #2601, convergence design §3.2/B3), an undeclared box no longer
     resolves this default — it resolves :data:`RING_WIRE_FORMAT_WIDE`. A caller
     modelling that box passes ``sample_format=RING_WIRE_FORMAT_WIDE`` explicitly,
     the same way the product resolver now does.
