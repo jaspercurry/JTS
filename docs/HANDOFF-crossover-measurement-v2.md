@@ -3717,8 +3717,10 @@ journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(c
   `trim_ripple_gain_db`, `alignment_seed_ripple_db`,
   `flatness_improvement_db`, `anchor_delay_us`, `snap_delta_us`,
   `snap_found`, plus
-  per-role `woofer_snr_db`/`woofer_snr_verdict`/`tweeter_snr_db`/
-  `tweeter_snr_verdict`, `sweep_residual_ms_worst`,
+  per-role `woofer_snr_db`/`woofer_snr_verdict`/`woofer_snr_band`/
+  `tweeter_snr_db`/`tweeter_snr_verdict`/`tweeter_snr_band` (WHICH band
+  produced that role's pair, `null` when the selected band carried no id —
+  see `_driver_snr_fields` for why #2613 needed it), `sweep_residual_ms_worst`,
   `sweep_locate_confidence_min`, `guard`, `pilot_snr_ok`, and `pilot_snr_db`.
   (A `linearization` field rode this line until the
   2026-07-27 timing move. The fit now runs eight captures later, so this line
@@ -4645,9 +4647,10 @@ no retries-as-bodge). Treat these as regression fences.
     verdict never computed even though CHECK had already measured the room
     floor and written it to `check.json`. `_check_verdict` now holds that
     report at CHECK's accept and `_measure_priors` passes it, so the verdict
-    populates — read it as `woofer_snr_db` / `woofer_snr_verdict` (and the
-    tweeter pair) on `correction.crossover_v2_measure_diag`, and as
-    `<role>_snr_db` / `<role>_snr_verdict` in the retained sidecar. It is a
+    populates — read it as `woofer_snr_db` / `woofer_snr_verdict` /
+    `woofer_snr_band` (and the tweeter triple) on
+    `correction.crossover_v2_measure_diag`, and as `<role>_snr_db` /
+    `<role>_snr_verdict` / `<role>_snr_band` in the retained sidecar. It is a
     REPORTED verdict, not a gate: nothing in the v2 flow fails a capture on
     it, so a session that starts saying `reduced` or `insufficient` is the
     instrument working, not a new rejection.

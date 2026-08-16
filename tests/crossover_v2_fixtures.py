@@ -1228,11 +1228,24 @@ def _pilot_obs(
 def _driver_response_diag(
     role: str, *, window_ms: float = 8.0, floor_hz: float | None = None,
     snr_db: float | None = None, snr_verdict: str | None = None,
+    snr_band: str | None = "mid",
     floor_source: str = gating.FLOOR_MEASURED,
 ) -> DriverResponse:
     freqs = np.linspace(100.0, 20000.0, 64)
+    # ``band_id`` is part of every ``worst_relevant`` ``snr_policy.
+    # band_snr_verdicts`` builds, so this fixture carries it too — a double
+    # missing it would let a consumer that drops the band identity look
+    # correct (#2613). ``snr_band=None`` is the defensive case
+    # ``worst_band_verdict`` can still select: it filters on band overlap and
+    # verdict rank, never on identity.
     snr = (
-        {"worst_relevant": {"estimated_snr_db": snr_db, "verdict": snr_verdict}}
+        {
+            "worst_relevant": {
+                "band_id": snr_band,
+                "estimated_snr_db": snr_db,
+                "verdict": snr_verdict,
+            }
+        }
         if snr_db is not None else None
     )
     return DriverResponse(

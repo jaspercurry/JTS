@@ -6888,6 +6888,88 @@ def test_measure_diag_logs_full_numbers_on_accept(caplog):
     assert evidence["left_anchor_lobe"] is True
 
 
+def _measure_snr_analysis(program, *, woofer, tweeter):
+    """A minimal accepted MEASURE whose two driver responses carry SNR blocks."""
+    return ProgramAnalysis(
+        phase="measure", program_id=program.program_id,
+        locations=(_loc("sweep_w"), _loc("sweep_t"), _loc("sweep_w_rep")),
+        drift=DriftEstimate(
+            epsilon_ppm=30.0, baselines_ppm={"woofer_repeat": 30.0},
+            max_residual_samples=0.2, glitch_detected=False,
+        ),
+        driver_responses=(woofer, tweeter),
+        alignment=_alignment(),
+        candidate=CrossoverCandidate(
+            trim_db={"woofer": -3.0, "tweeter": 0.0}, polarity="normal",
+            delay_us=150.0, predicted_ripple_db=1.23, confidence=0.9,
+        ),
+        linearity_ok=True,
+        predicted_sum=(np.linspace(100.0, 20000.0, 64), np.zeros(64)),
+        glitch_detected=False,
+    )
+
+
+def test_measure_diag_names_the_band_behind_each_driver_snr_pair(caplog):
+    """#2613: `*_snr_db` and `*_snr_verdict` say how bad and how trusted,
+    never WHICH band. Fourteen consecutive jts3 rounds logged
+    `tweeter_snr_db=-1.2 tweeter_snr_verdict=insufficient` and the band that
+    actually limited them — one the tweeter sweep never entered — had to be
+    re-derived from the crossover frequency and the declared driver bands
+    because no persisted artifact carried it. `*_snr_band` is that band,
+    read off the same `worst_relevant` entry as the pair beside it."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    woofer = _driver_response_diag(
+        "woofer", snr_db=25.0, snr_verdict="ok", snr_band="mid",
+    )
+    tweeter = _driver_response_diag(
+        "tweeter", snr_db=-1.2, snr_verdict="insufficient", snr_band="upper_bass",
+    )
+    fakes.measure = lambda program: _measure_snr_analysis(
+        program, woofer=woofer, tweeter=tweeter,
+    )
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+    assert "woofer_snr_band=mid" in caplog.text
+    assert "tweeter_snr_band=upper_bass" in caplog.text
+    # Each band is the one its OWN worst_relevant entry carries, so a
+    # role-crossed read cannot pass.
+    assert woofer.snr["worst_relevant"]["band_id"] == "mid"
+    assert tweeter.snr["worst_relevant"]["band_id"] == "upper_bass"
+    # The #2613 line, now self-describing rather than a bare number.
+    assert "tweeter_snr_db=-1.2" in caplog.text
+    assert "tweeter_snr_verdict=insufficient" in caplog.text
+
+
+def test_measure_diag_snr_band_is_null_when_the_worst_band_carries_no_id(caplog):
+    """`worst_band_verdict` filters candidates on band overlap and verdict
+    rank, never on identity, so it can select a band with no `band_id`. That
+    has to log as `null` — Python's `None` stringified into `band=None` would
+    read as a band literally named "None"."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _measure_snr_analysis(
+        program,
+        woofer=_driver_response_diag(
+            "woofer", snr_db=25.0, snr_verdict="ok", snr_band=None,
+        ),
+        tweeter=_driver_response_diag("tweeter"),  # no snr block at all
+    )
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+    assert "woofer_snr_band=null" in caplog.text
+    assert "woofer_snr_band=None" not in caplog.text
+    # The number beside it still reports, so the field says "this band has no
+    # id", not "there was no measurement".
+    assert "woofer_snr_db=25.0" in caplog.text
+    # A driver with no SNR block at all reaches the same literal.
+    assert "tweeter_snr_band=null" in caplog.text
+
+
 def test_measure_diag_logs_per_role_repeat_epsilon_ppm(caplog):
     """#1668 PR-A/PR-C: DriftEstimate.per_role_epsilon_ppm (a first-vs-last
     per-role epsilon, one entry per role with >=2 located occurrences) now

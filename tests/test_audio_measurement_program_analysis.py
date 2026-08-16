@@ -1171,6 +1171,62 @@ def test_driver_snr_verdict_is_absent_rather_than_computed_across_domains():
     assert degenerate.snr["worst_relevant"] is None
 
 
+def test_diagnostic_summary_names_the_band_behind_each_driver_snr_pair():
+    """#2613: `{role}_snr_db` and `{role}_snr_verdict` say how bad and how
+    trusted, never WHICH band. Fourteen consecutive rounds recorded
+    `tweeter_snr_db=-1.2 insufficient` and the limiting band had to be
+    re-derived from the crossover frequency and the declared driver bands
+    because no artifact carried it. `{role}_snr_band` is that band, read off
+    the same `worst_relevant` entry as the other two — checked here against
+    the real producer, not a hand-built double."""
+    ir = _band_impulse(200, 150.0, 6000.0, 1.0)
+    ambient = {"schema_version": 1, "domain": "deconvolved", "bands": [
+        {"band_id": "mid", "band_hz": [1000.0, 4000.0], "level_dbfs": -90.0},
+    ]}
+    resp = program_analysis._driver_response(
+        "woofer", ir, SR, calibration=None, ambient_report=ambient,
+        fc_hz=FC_HZ, n_fft=8192, capture_segment=None,
+    )
+    worst = resp.snr["worst_relevant"]
+    assert worst["band_id"] == "mid"
+
+    summary = analysis_diagnostic_summary(program_analysis.ProgramAnalysis(
+        phase=PHASE_MEASURE, program_id="test", locations=(),
+        driver_responses=(resp,),
+    ))
+    assert summary["woofer_snr_band"] == worst["band_id"]
+    # Beside the pair it explains, all three off the one entry.
+    assert summary["woofer_snr_db"] == worst["estimated_snr_db"]
+    assert summary["woofer_snr_verdict"] == worst["verdict"]
+
+
+def test_diagnostic_summary_snr_band_is_none_not_a_stand_in_label():
+    """`worst_band_verdict` filters candidates on band overlap and verdict
+    rank, never on identity, so it can select a band carrying no `band_id`.
+    The field then has to read `None` — a fabricated label or the string
+    "None" would be indistinguishable from a real band."""
+    resp = program_analysis.DriverResponse(
+        role="tweeter",
+        freqs_hz=np.linspace(100.0, 20000.0, 64),
+        magnitude_db=np.zeros(64),
+        complex_tf=np.ones(64, dtype=complex),
+        gating={"applied": True, "window_ms": 8.0},
+        snr={"worst_relevant": {
+            "band_id": None, "estimated_snr_db": -1.2, "verdict": "insufficient",
+        }},
+        validity_floor_hz=None,
+    )
+    summary = analysis_diagnostic_summary(program_analysis.ProgramAnalysis(
+        phase=PHASE_MEASURE, program_id="test", locations=(),
+        driver_responses=(resp,),
+    ))
+    assert summary["tweeter_snr_band"] is None
+    # Present, not merely absent: the key still reports that the pair beside
+    # it was read from a band whose identity the block did not carry.
+    assert "tweeter_snr_band" in summary
+    assert summary["tweeter_snr_verdict"] == "insufficient"
+
+
 @pytest.mark.parametrize(
     "label,capture_len,anchor,expected",
     [
