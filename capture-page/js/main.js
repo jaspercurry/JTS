@@ -3769,6 +3769,13 @@ function beginCapturePayload({ index, attempt, retake = false }) {
   return retake ? { index, attempt, retake: true } : { index, attempt };
 }
 
+// The retry screen's detail line when the repair below has to build that screen
+// for a round that never started. `renderPlanRetry`'s own default says the
+// measurement "didn't pass the speaker's quality check", which would be a claim
+// about a take that was never recorded; the specific cause rides `#status`
+// (`captureFailureMessage`), so this says only the part that is certain.
+const PRE_ARM_NOT_STARTED_NOTE = "That measurement didn't start.";
+
 // The label of the live begin affordance on the current plan screen —
 // "I'm there — play the tone" / "Try again" / the spec's own Start-button
 // label — so a pre-arm failure's retry copy names a button that actually
@@ -3809,6 +3816,19 @@ function planRetryAffordance(ctx) {
 //    the forward path, so its screen renders none; the copy would otherwise
 //    name a button that does not exist. Drop back to the manual screen the
 //    countdown's own Cancel produces, which has one.
+//
+//    …AND THAT DROP-BACK NEEDS A FLOOR AT INDEX 1 (#2557 phase B, gate B1).
+//    `renderPlanNext(index - 1, …)` is how the affordance-free case is repaired,
+//    and it has nothing to render for the FIRST measurement — there is no
+//    position before it. That was unreachable while every index-1 round was
+//    entered from a screen that already had a begin button (round 1 from the
+//    spec's own Start, a retry from `renderPlanRetry`'s). The witness-triggered
+//    auto-retake is the first affordance-free begin reachable at index 1, so the
+//    floor is now load-bearing: without it the household reads
+//    "Measuring this spot again", copy naming a button, and no button —
+//    #2090's "silence is the only wrong outcome", exactly the state this whole
+//    function exists to prevent. The retry screen for that same measurement is
+//    the right floor: its primary re-posts the pair that just failed.
 function repairPreArmAffordance(ctx, { index, attempt, target, retake }) {
   if (retake) {
     // `attempt - 1` throughout: this round is the retake, so the slot and the
@@ -3836,8 +3856,20 @@ function repairPreArmAffordance(ctx, { index, attempt, target, retake }) {
   const hasBegin = ((ctx.captureRefs && ctx.captureRefs.buttons) || []).some(
     (entry) => entry && entry.action === "begin_capture",
   );
-  if (!hasBegin && index > 1) {
-    renderPlanNext(ctx, { index: index - 1, attempt: attempt - 1, target });
+  if (!hasBegin) {
+    if (index > 1) {
+      renderPlanNext(ctx, { index: index - 1, attempt: attempt - 1, target });
+    } else {
+      // `attempt - 1` for the same reason the branch above uses it: both
+      // screens' primaries post ONE PAST what they are handed, so this is what
+      // makes the button re-post the exact pair that just failed. It needs no
+      // floor of its own — an index-1 round is only affordance-free after an
+      // earlier attempt, so `attempt` is at least 2 here, and even at 1 the
+      // resulting begin would be the correct (1, 1).
+      renderPlanRetry(ctx, {
+        index, attempt: attempt - 1, target, reason: PRE_ARM_NOT_STARTED_NOTE,
+      });
+    }
   }
   return planRetryAffordance(ctx);
 }
