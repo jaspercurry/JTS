@@ -40,7 +40,11 @@ from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from ..branch_chain import crossover_response_complex, radiating_band_hz, sections_by_role
 from ..camilla_yaml import role_polarity
-from jasper.audio_measurement.program_analysis import MeasurementPriors, overlap_band_hz
+from jasper.audio_measurement.program_analysis import (
+    AppliedAlignment,
+    MeasurementPriors,
+    overlap_band_hz,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from jasper.audio_measurement.program import ExcitationProgram
@@ -170,7 +174,7 @@ def measure_priors(
     protection_sections_by_role: Mapping[str, Sequence[Any]] | None,
     ambient_report: Any,
     alignment_delay_bounds_us: tuple[float, float] | None,
-    applied_alignment: Any,
+    applied_alignment: AppliedAlignment | None,
 ) -> MeasurementPriors:
     """MEASURE's priors — the widest set, and the only §4.2 de-embedding.
 

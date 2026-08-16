@@ -434,6 +434,17 @@ ALIGNMENT_COMMITMENTS = frozenset({
 #: ``tests/test_crossover_envelope_v2.py`` fails when the two disagree. The
 #: payload layer (``crossover_envelope_v2``) deliberately does NOT branch — it
 #: carries the enum, exactly as it carries ``linearization_outcome``.
+#:
+#: **It has a SECOND job, and it is numeric** (#2617): ``_build_candidate``
+#: gates the anchor withdrawal on membership here, so a commitment in this set
+#: also ships a summed model that carries NO residual — a decision that reaches
+#: the accountability gate, which can refuse a candidate. The membership rule
+#: that makes both jobs one question: a commitment belongs here when THE
+#: CAPTURE'S ALIGNMENT EVIDENCE WAS WHOLLY UNTRUSTED, so neither its polarity
+#: (the wording job) nor its anchor (the withdrawal job) may be spoken for.
+#: Do not add an objective here to borrow the household copy alone — a
+#: commitment whose polarity is declared but whose anchor IS trustworthy needs
+#: its own set, or it silently loses its residual too.
 ALIGNMENT_DECLARED_POLARITY_OBJECTIVES = frozenset({
     ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR,
     ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR,
