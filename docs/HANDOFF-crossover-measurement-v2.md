@@ -681,9 +681,12 @@ Reading the results:
   group**, including a retake's re-close. Seeing either twice for one phase is
   the retake contract working, not a bug. `cloud_publish_skipped` is the line
   that means "the durable artifact now lags the candidate".
-- **Triage a `locate_failed` by reading `event=program_analysis.anchor`
-  first.** A mis-anchored timeline fabricates that verdict on pristine
-  captures.
+- **Triage a `locate_failed` OR a `channel_map_mismatch` by reading
+  `event=program_analysis.anchor` first.** A mis-anchored timeline fabricates
+  both verdicts on pristine captures — `locate_failed` when the shifted
+  windows hold silence (#2093), `channel_map_mismatch` when they hold the
+  OTHER driver's pilot (#2644). `ambiguous=true` on that line means the
+  analyzer said so itself.
 - **`crossover_v2_level_frame_finding` is the banked-and-proceeded arm** — grep
   it when a session COMPLETED but the two level estimators disagreed.
 - **A failure screen has a lifetime.** The persisted `failure` record carries
@@ -3066,7 +3069,8 @@ unready setup.
 | `noisy_room_linearity` | CHECK | 1 | linearity failed *and* the ambient SNR floor failed — room, not phone |
 | `pilot_level_collapse` | MEASURE / cloud / VERIFY | 1 | the quiet pilot never cleared the room's in-band floor, so no level comparison from the pair is evidence — room too loud, or the playback level collapsed (e.g. a correction that dropped the pilot band). Checked BEFORE the linearity branch on all three phases, so a collapsed pair can never surface as the phone's fault (#1810) — and on MEASURE, before the **glitch** branch too (#1838): low SNR causes the glitch signal, so asking the glitch first reported "capture glitched" for a capture nobody could hear |
 | `snr_floor` | CHECK | 1 | room too loud / phone too far; also the quiet pilot's own in-band SNR too low to trust the linearity estimate (gotcha #16). **Third producer:** an *unusable* CHECK ambient window — below `AMBIENT_MIN_USABLE_FRACTION` (0.5) of the scheduled window, e.g. a very late capture start — degrades to an EMPTY band report, which `_snr_floor_ok` reads as False and this code then reports. That case means **"we never heard the room"**, not "the room was loud", and the two are indistinguishable in the code but not to the household; the log (`event=program_analysis.ambient_window_unusable`) carries how much window survived. Fuller explanation in the clips-not-slides section (#1818) above. CHECK-only — the other phases use `pilot_level_collapse` |
-| `channel_map_mismatch` | CHECK | 0 (hard stop) | drivers played out of order (wiring, or a very noisy/quiet room) |
+| `anchor_ambiguous` | CHECK | 1 | the analyzer could not decide WHICH scheduled tone the capture's first arrival was, so it cannot say which driver played what. Sits ABOVE `channel_map_mismatch` in the ladder (#2644): a mis-anchored capture reads every per-driver window one pilot spacing from where that driver played, which on 2026-08-16 turned a correctly-wired speaker into a rewire instruction. Fires when the top two anchor hypotheses BOTH clear the locate floor and are within `ANCHOR_DISCRIMINATION_MARGIN` (0.05) of each other; `ambiguous=true` on `event=program_analysis.anchor` is the field to read when triaging one, and the accompanying `confidence=`/`runner_up=` pair is the margin it judged. Copy names the recording, never the speaker — nothing about the hardware is known to be wrong here |
+| `channel_map_mismatch` | CHECK | 0 (hard stop) | drivers played out of order (wiring, or a very noisy/quiet room). Only reachable behind a CONFIDENTLY-anchored capture since #2644 — see the row above |
 | `clipped` | MEASURE | 1 | auto quieter retry (gain −3 dB). MEASURE-only: VERIFY replays the *identical* program on every attempt (that invariant is what makes the `verify_level_shift` baseline mean anything), so there is no quieter retry to offer — a clipped VERIFY capture is refused as a capture glitch instead (#1971). This row said "MEASURE / VERIFY" until then; no VERIFY path ever returned this code |
 | `drift_baselines_disagree` | MEASURE / VERIFY | 1 | glitch/dropped-buffer, or woofer-repeat level disagreement — auto retry. One code covers the whole capture-glitch class by design; `glitch_inputs` in the diag says which bound actually tripped on MEASURE (#1765), and `integrity=` says which check tripped on VERIFY (#1971, where the class is a spliced timeline or a clipped run). Since #1838 a merely weakly-located sweep is NOT in this class on either phase — it answers `locate_failed` ahead of this branch |
 | `delay_exceeds_search_window` | MEASURE | 1 | mic likely off the pictured spot |
@@ -3954,13 +3958,14 @@ reads as "not found."
 
 The anchor is located by `_earliest_strong_peak`, an energy-normalized
 (therefore level-blind) matched filter that takes the earliest lag within
-0.6× of its max. Level-blindness is the right call for MEASURE's
-bit-identical sweep repeats — equal-level siblings score alike, so "earliest"
-robustly picks the first. It is a **knife edge** for the v2 programs' leading
-pilot pair, whose lo member is deliberately the quietest thing in the program
-(VERIFY's `pilot_summed_lo`, 10 dB under `pilot_summed_hi`): whether the
-quiet pilot clears 0.6× is then decided by its local SNR rather than by its
-waveform.
+0.6× of its max, **scored inside the anchor stimulus's own declared
+`(f1_hz, f2_hz)` band since #2644** (below). Level-blindness is the right call
+for MEASURE's bit-identical sweep repeats — equal-level siblings score alike,
+so "earliest" robustly picks the first. It is a **knife edge** for the v2
+programs' leading pilot pair, whose lo member is deliberately the quietest
+thing in the program (VERIFY's `pilot_summed_lo`, 10 dB under
+`pilot_summed_hi`): whether the quiet pilot clears 0.6× is then decided by its
+local SNR rather than by its waveform.
 
 That fired in production on 2026-08-03 (#2093). Across 11 live cloud VERIFY
 captures of one speaker, eight cleared the gate by +0.019…+0.185 NCC and
@@ -4003,6 +4008,44 @@ Two properties this deliberately keeps:
 Programs with nothing to arbitrate (a legacy pilot-less VERIFY, whose unique
 summed sweep is the anchor) are byte-identical to the pre-#2093 path and log
 nothing.
+
+**#2644 — the witness discriminates in only one direction, and the score was
+measuring the wrong thing.** 2026-08-16's round-3 CHECK hit both gaps at once
+on a correctly-wired speaker that had passed the identical program two hours
+earlier, and the verdict it produced was `channel_map_mismatch` — a hard stop
+telling the household to check its wiring.
+
+- **The score.** The NCC denominator was the capture's TOTAL local energy, so
+  room noise the pilot never occupied suppressed it: the quiet
+  `pilot_woofer_lo` scored 0.3932 against a 0.4176 gate (missed by 0.024)
+  while its IN-BAND SNR, 27.6 dB, was *better* than the accepted round's
+  26.9 dB. Both locates (the `LOCATOR_RATE_HZ` coarse pass and the full-rate
+  refinement) now band-limit capture and stimulus to the anchor segment's own
+  declared band before correlating — the same `f1_hz`/`f2_hz` `_channel_map_ok`
+  and `_band_power` read, so there is no second statement of what a pilot
+  contains. A caller with no band, or a band that survives no FFT bin at that
+  rate, keeps the full-band behaviour exactly.
+- **The witness.** `_resolve_anchor`'s witness must not be confusable with
+  ITSELF under the shift being arbitrated, and the longest-then-**earliest**
+  witness rule buys exactly one of the two shift directions — nothing of the
+  same shape sits one gap BEFORE a pair's `lo` member. One gap AFTER, CHECK's
+  chosen witness `pilot_tweeter_lo` has its own twin `pilot_tweeter_hi`, which
+  is where a mis-located arrival puts the rival windows. Both readings then
+  land the witness on a real pilot and score alike: round 3 separated its two
+  candidates by **0.0034** (0.9007 vs 0.8973) against the accepted round's
+  0.818. No witness CHOICE fixes it — CHECK's only non-sibling stimuli are the
+  other role's pair, and both members are twins.
+
+So a third property joins the two above: **it says when it cannot tell.** Two
+candidates both clearing `SWEEP_LOCATE_CONFIDENCE_FLOOR` and separated by less
+than `ANCHOR_DISCRIMINATION_MARGIN` (0.05) leave the committed anchor exactly
+where it was — a near-tie is not a reason to pick the other one — and set
+`ProgramAnalysis.anchor_ambiguous`, which CHECK's ladder reads at a rung
+ABOVE the channel map and refuses as the retriable `anchor_ambiguous`. The
+margin is a decade clear of both measured populations: attributed captures
+separate by 0.82–0.85, un-attributed ones by 0.000–0.0034. Read `ambiguous=`
+on `event=program_analysis.anchor` when triaging one; a field population of
+near-ties is how the constant gets re-derived.
 
 **Design note, not yet a change:** the same quietest-first pilot design sits
 close to its own detection floor at real household volumes — 2026-08-03's

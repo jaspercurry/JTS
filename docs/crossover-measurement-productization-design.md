@@ -616,7 +616,8 @@ replaces only advice that is no longer available:
 | `agc_behavioral_fail` | CHECK (re-armed on stream change) | 1 | name the browser/AGC cause; retry after re-permission |
 | `noisy_room_linearity` | CHECK | 1 | same captured-vs-programmed pilot-delta symptom as `agc_behavioral_fail`, but the CHECK gain solve's own SNR-floor verdict against this capture's ambient bands is ALSO failing, so the room — not the phone's AGC — is named (W6.12: hardware round 4 proved a desk-ambient burst can trip the linearity gate with the phone's AGC verifiably off; distinguishing the two needed no new instrumentation, just reading `gain_plan.snr_floor_ok`, already computed independent of the linearity outcome) |
 | `snr_floor` | CHECK / MEASURE | 1 | "room is too loud right now" / "move the microphone closer" |
-| `channel_map_mismatch` | CHECK | 0 (hard stop) | "check speaker wiring, or if the room is noisy, quiet it" — never auto-swap |
+| `anchor_ambiguous` | CHECK | 1 | "couldn't line that recording up with the test tones — try again"; names the recording, never the speaker (#2644: the anchor's two readings were a coin flip apart, so nothing about the wiring is established) |
+| `channel_map_mismatch` | CHECK | 0 (hard stop) | "check speaker wiring, or if the room is noisy, quiet it" — never auto-swap; asked only AFTER `anchor_ambiguous` clears |
 | `clipped` | MEASURE / VERIFY | 1 (gain-adjusted) | automatic quieter retry, say so |
 | `drift_baselines_disagree` (glitch) | MEASURE | 1 | "capture glitched — retrying" |
 | `delay_exceeds_search_window` | MEASURE | 1 | re-check mic placement vs the picture |
