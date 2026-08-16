@@ -1265,7 +1265,7 @@ def outputd_content_format_change(
 
     Answering a change there is actively HARMFUL, which is why this is a guard
     rather than a filter. ``release_camilla_content_lane_for_format_flip``
-    STOPS CamillaDSP, and the very next install step —
+    STOPS CamillaDSP, and before anything restarts it —
     ``reconcile_sound_dsp_state`` → ``jasper-sound reconcile-current-dsp`` —
     reads the loaded graph over CamillaDSP's websocket
     (``reconcile_current_dsp`` opens with

@@ -91,7 +91,7 @@ def test_shm_ring_kwargs_are_full_ring_topology_capture_and_playback():
         "enable_rate_adjust": RING_CAMILLA_ENABLE_RATE_ADJUST,
     }
     # S32_LE, NOT the historical S16LE default — resolve_ring_wire_format's
-    # default flipped WIDE 2026-08-11 (convergence design §3.2/B3): narrow was a
+    # default flipped WIDE in PR #2601 (convergence design §3.2/B3): narrow was a
     # width REGRESSION on the loopback CamillaDSP->outputd hop the ring replaces,
     # which already carries DEFAULT_PLAYBACK_FORMAT (S32_LE). RING_WIRE_FORMAT
     # (S16_LE) still exists — it is now the NARROW rollback token an operator
@@ -111,7 +111,7 @@ def test_content_lane_format_is_one_definition_for_both_ends_of_the_hop():
     loopback answers the box-wide program lane (the emitters' own default, since
     loopback kwargs are deliberately empty); shm_ring answers
     resolve_ring_wire()'s resolved format for this box. Since the ring wire's
-    resolver default flipped WIDE (2026-08-11, convergence design §3.2/B3), an
+    resolver default flipped WIDE (PR #2601, convergence design §3.2/B3), an
     undeclared box's shm_ring answer now EQUALS loopback's
     DEFAULT_PLAYBACK_FORMAT — the "shm_ring coupling FORCES the lane narrow"
     asymmetry the PR-6 ring ruling used to describe is GONE; only an operator's
@@ -191,7 +191,7 @@ def test_shm_ring_armed_env_emits_ring_capture_device_s32le():
     # see test_coupling_capture_kwargs_from_env_default_is_empty.)
     #
     # Renamed from ...s16le: an undeclared box now resolves S32_LE (the
-    # resolver's default flipped WIDE 2026-08-11). S16_LE survives only as the
+    # resolver's default flipped WIDE in PR #2601). S16_LE survives only as the
     # operator's explicit JASPER_FANIN_RING_WIRE_FORMAT rollback pin — see
     # test_resolve_ring_wire_is_the_same_wide_wire_on_every_topology for the
     # per-topology walk that used to carry this test's old name.
@@ -460,7 +460,7 @@ def test_resolve_ring_wire_is_the_same_wide_wire_on_every_topology():
     """DORMANCY BAR, RE-POINTED to the new invariant.
 
     Renamed from ..._is_narrow_stereo_on_every_topology: since the resolver's
-    default flipped WIDE (2026-08-11), no topology resolves S16_LE any more —
+    default flipped WIDE (PR #2601), no topology resolves S16_LE any more —
     the invariant this walk protects was never "the wire is narrow", it was
     "the format axis is not per-topology". :func:`resolve_ring_wire`'s own
     docstring says why: ``sample_format`` comes from

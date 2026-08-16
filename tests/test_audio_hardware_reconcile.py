@@ -3436,7 +3436,7 @@ def test_reconcile_emits_the_wide_content_format_on_an_armed_ring_box(
     """An armed shm_ring box's content hop now matches the box-wide default too —
     RENAMED and RE-POINTED from ..._narrow_content_format...: the ring wire's
     resolver default flipped WIDE (jasper.fanin_coupling.resolve_ring_wire_format,
-    2026-08-11), so an UNDECLARED box's shm_ring answer now equals loopback's
+    PR #2601), so an UNDECLARED box's shm_ring answer now equals loopback's
     S32_LE (see test_reconcile_emits_the_wide_content_format_on_a_loopback_box
     above). The "shm_ring forces the content lane narrow" asymmetry this test
     used to demonstrate is gone.

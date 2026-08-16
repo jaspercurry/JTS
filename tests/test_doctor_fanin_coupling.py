@@ -402,7 +402,7 @@ def _pin_ring_wire_narrow(monkeypatch, tmp_path):
     """Pin this box's ring wire to the NARROW token via the operator lever.
 
     ``JASPER_FANIN_RING_WIRE_FORMAT`` is the only way a box declares S16_LE
-    since the resolver's default went WIDE (2026-08-11) — nothing else in the
+    since the resolver's default went WIDE (PR #2601) — nothing else in the
     repo writes it (``jasper.fanin_coupling.RING_WIRE_FORMAT_ENV_VAR``).
     Isolated to a tmp ``fanin.env``, the FIRST file the resolver's chain reads,
     so the pin neither leaks from nor needs the developer host's real

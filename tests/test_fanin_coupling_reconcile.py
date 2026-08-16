@@ -1045,7 +1045,7 @@ def test_ring_edge_width_ready_passes_on_an_operator_narrow_pinned_box_because_t
     A ring-coupled box can keep its ring at coherent S16 even though the box-wide
     program lane is S32, because the shm_ring coupling's kwargs FORCE the emitted
     lane to whatever :func:`resolve_ring_wire` resolves. That resolver's DEFAULT
-    went wide too (2026-08-11), so an UNDECLARED box no longer demonstrates the
+    went wide too (PR #2601), so an UNDECLARED box no longer demonstrates the
     ruling — its ring resolves S32_LE right along with the box-wide lane, and
     nothing narrows. The one shape left where the two constants are genuinely
     different is an operator's narrow pin

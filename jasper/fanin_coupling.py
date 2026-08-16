@@ -404,7 +404,7 @@ def assistant_wire_is_wide(
     by reading the Rust source rather than by trusting this docstring.
 
     **BOTH halves, and the second one is not decoration.** A wide wire needs the
-    declared ``S32_LE`` ring wire format AND the ``shm_ring`` coupling. fan-in's
+    resolved ``S32_LE`` ring wire format AND the ``shm_ring`` coupling. fan-in's
     snd-aloop write is pinned narrow (``jasper-fanin``'s ``mixer::FORMAT``, and
     the dsnoop that reads it — see
     :mod:`tests.test_aloop_program_lane_width`), so a box that declared a

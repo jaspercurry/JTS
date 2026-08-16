@@ -618,7 +618,7 @@ def test_solo_default_uses_alsa_capture_without_resampler():
 
 def test_emit_flat_ring_config_names_both_ring_devices_s32le(monkeypatch):
     # RENAMED from ..._s16le: jasper.fanin_coupling.resolve_ring_wire()'s
-    # default flipped WIDE 2026-08-11, and emit_flat_ring_config() has no way
+    # default flipped WIDE in PR #2601, and emit_flat_ring_config() has no way
     # to take an explicit wire — it always resolves through that function
     # (unlike jasper.ring_assets.render_ring_conf_wire, which takes a RingWire
     # parameter directly). The resolved wire is PINNED here via monkeypatch
