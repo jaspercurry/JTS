@@ -491,6 +491,37 @@ def test_the_profile_reader_recovers_the_graph_the_speaker_was_playing():
     np.testing.assert_allclose(_summed(graph)[1], _summed(PREVIOUS_GRAPH)[1])
 
 
+def test_the_reader_carries_the_woofers_own_role_gain_too():
+    """The WOOFER half of the trim, which the incident cannot pin (#2614).
+
+    The incident's round-3 profile trimmed only the tweeter, so every assertion
+    above holds the woofer at 0.0 — and a reader that dropped the woofer gain
+    entirely passed all of them (adversarial panel, mutation: 500/500 green). A
+    non-zero woofer trim is ordinary production output, because
+    ``intervention.anchor_trims``' normalize step shifts every branch, so the
+    reader is asserted on one.
+
+    Both ends are checked — the value the reader returns AND the curve the model
+    then produces — so neither a reader that drops it nor a model that ignores
+    what the reader returned can pass.
+    """
+    profile = _incident_profile()
+    profile["recomposition_snapshot"]["corrections"]["woofer"]["gain_db"] = -2.5  # type: ignore[index]
+    graph = cmd.profile_graph_summation(
+        profile, draft_inverted_by_role=DRAFT_UPRIGHT, **ROLES,
+    )
+    assert graph is not None
+    assert graph.trim_db["woofer"] == pytest.approx(-2.5)
+
+    # A 2.5 dB woofer cut is a woofer-band cut, and the woofer is the only
+    # branch playing an octave below Fc, so the summed model moved with it.
+    at_low = int(np.argmin(np.abs(FREQS_HZ - FC_HZ / 2.0)))
+    trimmed = _summed(graph)[1]
+    assert trimmed[at_low] - _summed(PREVIOUS_GRAPH)[1][at_low] == pytest.approx(
+        -2.5, abs=0.15,
+    )
+
+
 def test_the_previous_graphs_own_correction_filters_enter_the_previous_side():
     """A repeat round REPLACES a correction, it does not stack one.
 
@@ -1018,6 +1049,52 @@ def test_the_session_hands_the_state_axis_to_the_probe_on_both_commit_paths():
     assert session._commanded_delta_for(
         analysis, _summed(APPLIED_GRAPH), FC_HZ,
     ) is None
+
+
+def test_the_session_run_of_the_probe_carries_the_state_axis_to_the_classifier(caplog):
+    """The production wiring, end to end (#2614).
+
+    ``_run_delta_probe`` is what a shipped round actually calls, and it is the
+    one place the state axis could be built, persisted, rehydrated and then
+    quietly not handed over. So the repeat-round scenario is driven through the
+    session rather than through the classifier: with the axis installed the hard
+    stop fires, and with it absent the same round grades clean AND says on the
+    journal that its safety mask narrowed.
+    """
+    import logging
+
+    from tests.crossover_v2_fixtures import FakeSeams
+
+    _applied, previous, _raw = _repeat_round_graphs()
+    applied_db, commanded_db, declared_db, band = _repeat_round_axes()
+    standing = -1.0 - 0.2 * np.log2(FREQS_HZ / 1000.0)
+    measured_post = applied_db + standing + np.where(band, 4.0, 0.0)
+
+    def _probe_from_session(declared):
+        session = _session(FakeSeams().seams())
+        session._measure_commanded_delta = (FREQS_HZ, commanded_db)
+        session._measure_declared_transfer = declared
+        # ``realized − commanded == measured − predicted``, which is what
+        # ``_run_delta_probe`` reconstructs from, so the tracking curve is the
+        # measured post-apply capture against the applied model.
+        session._verify_tracking_curve = (FREQS_HZ, measured_post, applied_db)
+        session._verify_trusted_band_hz = TRUSTED_BAND_HZ
+        return session._run_delta_probe()
+
+    with_axis = _probe_from_session((FREQS_HZ, declared_db))
+    assert with_axis is not None
+    assert with_axis.boost_over_declared_bound is True
+    assert with_axis.boost_overshoot_db is not None
+
+    with caplog.at_level(logging.WARNING):
+        without = _probe_from_session(None)
+    assert without is not None
+    assert without.boost_over_declared_bound is False
+    assert without.boost_overshoot_db is None
+    assert (
+        "event=correction.crossover_v2_declared_transfer_unavailable" in caplog.text
+    )
+    assert "reason=no_declared_transfer" in caplog.text
 
 
 def test_two_present_curves_that_will_not_subtract_are_named_on_the_journal(caplog):
