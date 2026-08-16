@@ -80,6 +80,7 @@ from .contracts import (
     CaptureValidity,
     CrossoverV2ContractError,
     EvidenceTrust,
+    IterationHeadroom,
     QualityStatus,
     RealizationStatus,
     ResponseCurve,
@@ -89,7 +90,7 @@ from .contracts import (
     VerificationResult,
     _text,
 )
-from .verification import MeasurementComparand, Verdict
+from .verification import FlatnessObjectives, MeasurementComparand, Verdict
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     # Same rule as :mod:`.verification`: ``program_analysis`` is a 5,500-line
@@ -100,7 +101,9 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 __all__ = [
     "BENEFIT_CURVE_MAX_BINS",
     "ENTRY_BASELINE_KIND",
+    "ITERATION_PLATEAU_DB",
     "MEASURED_BENEFIT_MARGIN_DB",
+    "ROUND_SERIES_CAP",
     "EntryBaseline",
     "MeasuredResponse",
     "RoundEvaluation",
@@ -173,6 +176,47 @@ __all__ = [
 #: rule. Until that run exists this value is an assumption wearing its own
 #: name, which is the point of the name.
 MEASURED_BENEFIT_MARGIN_DB = 0.5
+
+#: How much the flattening series must still be moving to be worth a round.
+#:
+#: The owner's ruling (#2602, 2026-08-16) states it as "~0.25 dB/round
+#: movement", and this is that number with no arithmetic applied to it. It is
+#: read TWICE by :func:`~.verification.evaluate_iteration_headroom`, and one
+#: constant covers both because they are the same judgement asked at two
+#: distances: a round that would move the objectives less than this is not
+#: worth running, and an objective already inside this is not worth chasing.
+#: Splitting it into a movement bar and a distance bar would invent a second
+#: number nothing measured.
+#:
+#: **Half the benefit margin above, and that relationship is load-bearing.**
+#: A round only reaches :attr:`~.contracts.QualityStatus.PASSED` by improving
+#: past :data:`MEASURED_BENEFIT_MARGIN_DB` (0.5 dB), so a plateau bar at or
+#: above that could never fire on the passing row it exists for. It is set
+#: below the margin deliberately, not coincidentally — but note that both
+#: numbers are still assumptions wearing their own names, and the same
+#: hardware run that calibrates the margin is what should calibrate this.
+#:
+#: **TODO(#2602, Definition-of-Done hardware run):** the margin above owes a
+#: repeatability study (same program, unchanged graph, twice). Difference the
+#: same two objectives across those repeats and set this to the movement that
+#: study cannot distinguish from noise. Until then, 0.25 dB is the ruling's
+#: figure and nothing more.
+ITERATION_PLATEAU_DB = 0.25
+
+#: How many measurement+correction rounds one series may run.
+#:
+#: The owner's ruling (#2602): "up to three". A hard budget rather than a
+#: guide, and the FIRST stop
+#: :func:`~.verification.evaluate_iteration_headroom` checks, because no amount
+#: of remaining headroom creates a fourth round to spend it on.
+#:
+#: Deliberately NOT reusing
+#: :attr:`~jasper.active_speaker.attempts_loop.AttemptBudget.target_attempts`,
+#: which is also 3: that budget counts fitting ATTEMPTS inside one correction,
+#: and this counts measure-and-correct ROUNDS across a series. Two quantities
+#: that happen to share a value today, and folding them together would make a
+#: change to either silently move the other.
+ROUND_SERIES_CAP = 3
 
 #: Resolution of both sides of the benefit comparison.
 #:
@@ -478,13 +522,19 @@ class RoundEvaluation:
     benefit: Verdict[BenefitStatus]
     spec: Verdict[SpecStatus]
     result: VerificationResult
-    #: The three axes :func:`~.verification.decide_adoption` read (#2537),
+    #: The first three axes :func:`~.verification.decide_adoption` read
+    #: (#2537; #2602 added the fourth below),
     #: kept beside the four verdicts they compose for exactly the same reason:
     #: the adoption decision carries the row and the deciding axis's reason,
     #: and these carry the numbers all three were read from.
     trust: Verdict[EvidenceTrust]
     safety: Verdict[SafetyStatus]
     quality: Verdict[QualityStatus]
+    #: #2602's fourth axis — whether a flatter result is still reachable, and
+    #: the numbers (both objectives, this round's and the previous one's) it
+    #: was read from. Carried like the other three: the decision keeps only the
+    #: reason, and a support read needs to see the tilt that produced it.
+    headroom: Verdict[IterationHeadroom]
     adoption: AdoptionDecision
     #: The post-apply pooled spec residual, lower-is-better, or ``None``.
     #: Separated out because it has a second consumer: it is the acoustic
@@ -510,7 +560,7 @@ class RoundEvaluation:
         }
 
     def axes(self) -> dict[str, Any]:
-        """The three adoption axes alone, for the receipt's ``round_axes``.
+        """The four adoption axes alone, for the receipt's ``round_axes``.
 
         Separated from :meth:`to_dict` because the receipt carries these and
         not the four verdicts underneath them: the verdicts already ride on the
@@ -522,6 +572,7 @@ class RoundEvaluation:
             "trust": self.trust.to_dict(),
             "safety": self.safety.to_dict(),
             "quality": self.quality.to_dict(),
+            "headroom": self.headroom.to_dict(),
         }
 
 
@@ -538,6 +589,10 @@ def evaluate_round(
     delta_probe: Any | None = None,
     restore_failed: bool = False,
     margin_db: float = MEASURED_BENEFIT_MARGIN_DB,
+    previous_objectives: FlatnessObjectives | None = None,
+    round_ordinal: int = 1,
+    round_cap: int = ROUND_SERIES_CAP,
+    plateau_db: float = ITERATION_PLATEAU_DB,
 ) -> RoundEvaluation:
     """Grade one round: the four questions, the three axes, then the table.
 
@@ -590,6 +645,18 @@ def evaluate_round(
       margin_db: defaults to this module's own
         :data:`MEASURED_BENEFIT_MARGIN_DB` — the owner supplying its own
         constant, so there is no call site free to pass a different bar.
+      previous_objectives: what the PREVIOUS round of this series measured on
+        #2602's two objectives, carried forward on the durable receipt.
+        ``None`` is the first round — no movement to judge yet, which the
+        headroom axis reads as "the plateau stop cannot fire", not as "it did
+        not move".
+      round_ordinal: 1-based position in the series. Defaults to the first
+        round, which is the safe default in the direction that matters: an
+        ordinal that is too LOW can only offer another round, never suppress a
+        stop the evidence asked for. The host supplies the real one.
+      round_cap / plateau_db: series policy, same defaulted-from-this-module
+        rule as ``margin_db`` above and the same reason — one definition, no
+        call site free to pass a different budget.
     """
 
     from .verification import (
@@ -598,9 +665,11 @@ def evaluate_round(
         evaluate_benefit,
         evaluate_capture_validity,
         evaluate_evidence_trust,
+        evaluate_iteration_headroom,
         evaluate_realization,
         evaluate_round_quality,
         evaluate_spec,
+        flatness_objectives,
         verification_result,
     )
 
@@ -641,7 +710,7 @@ def evaluate_round(
     result = verification_result(
         capture=capture, realization=realization, benefit=benefit, spec=spec
     )
-    # The three axes are composed from the FOUR VERDICT OBJECTS, not from
+    # The axes are composed from the FOUR VERDICT OBJECTS, not from
     # ``result``'s collapsed statuses (#2537): a row's reason is the deciding
     # axis's reason, and ``result`` keeps only the statuses plus one joined
     # string. Reading it here would force the axes to re-derive a cause the
@@ -652,10 +721,22 @@ def evaluate_round(
         realization=realization, benefit=benefit, spec=spec,
         probe=delta_probe, spec_report=spec_report,
     )
+    # #2602's axis. Read from the SAME ``spec_report`` the spec verdict is —
+    # one report, two questions ("is it in tolerance" and "could it get
+    # flatter") — so the screen can never say a round passed a report the
+    # headroom axis graded from different evidence.
+    headroom = evaluate_iteration_headroom(
+        objectives=flatness_objectives(spec_report),
+        previous=previous_objectives,
+        round_ordinal=round_ordinal,
+        round_cap=round_cap,
+        plateau_db=plateau_db,
+    )
     adoption = decide_adoption(
         trust=trust,
         safety=safety,
         quality=quality,
+        headroom=headroom,
         boosted=boosted,
         rollback_available=rollback_available,
         restore_failed=restore_failed,
@@ -669,6 +750,7 @@ def evaluate_round(
         trust=trust,
         safety=safety,
         quality=quality,
+        headroom=headroom,
         adoption=adoption,
         post_residual_db=None if post_residual is None else post_residual[0],
         post_residual_bins=None if post_residual is None else post_residual[1],
@@ -763,7 +845,7 @@ def build_round_receipt(
         post_measurement=post_measurement,
         verification=evaluation.result,
         adoption=evaluation.adoption,
-        # The three axes the row was read off (#2537) — banked with the
+        # The axes the row was read off (#2537, #2602) — banked with the
         # decision, because a receipt saying "keep, and here is what to fix"
         # is only actionable to the NEXT round if the targets travel with it.
         round_axes=evaluation.axes(),

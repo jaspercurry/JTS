@@ -58,6 +58,7 @@ __all__ = [
     "ADOPTION_ROWS",
     "ADOPTION_ROW_KEEP",
     "ADOPTION_ROW_KEEP_FOR_ITERATION",
+    "ADOPTION_ROW_KEEP_ITERATING",
     "ADOPTION_ROW_RESTORE_FAILED",
     "ADOPTION_ROW_RESTORE_REGRESSION",
     "ADOPTION_ROW_RESTORE_UNSAFE",
@@ -71,6 +72,7 @@ __all__ = [
     "CrossoverV2ContractError",
     "EvidenceTrust",
     "InterventionProposal",
+    "IterationHeadroom",
     "NoCrossoverSectionsError",
     "PLAN_REFUSAL_REASONS",
     "PROPOSAL_FINGERPRINT_KINDS",
@@ -928,6 +930,42 @@ class QualityStatus(str, Enum):
     REGRESSED = "regressed"
 
 
+class IterationHeadroom(str, Enum):
+    """Is a flatter, more level result still plausibly reachable? (#2602)
+
+    The adoption table's FOURTH axis, and the owner's ruling it exists for:
+    *in-tolerance is not done*. Before it, :attr:`QualityStatus.PASSED` was
+    terminal — a round that realized its prediction and measured flatter ended
+    the series, whatever was left on the table. The round-3 review of
+    2026-08-16 is what that costs: a result inside every spec band, whose
+    tweeter was "largely in range but still not flat", and whose 250-2000 Hz
+    sat **2.37 dB above** 8000-16000 Hz — a tilt no reference choice moves.
+
+    Two graded objectives, both read off the post-apply spec report and both
+    frame-invariant, which is what lets them be compared across rounds at all:
+
+    * **within-band flatness** — the worst
+      :attr:`~jasper.active_speaker.flat_spec.BandResult.max_ripple_db`, each
+      band's own deviation from its OWN level.
+    * **between-band level alignment** — the largest step between two bands'
+      levels, :func:`~jasper.active_speaker.flat_spec.spec_band_tilt`.
+
+    Those two are the exact orthogonal decomposition of a band's total
+    deviation (``max_deviation_db = level_deviation_db + max_ripple_db``, the
+    identity :class:`~jasper.active_speaker.flat_spec.BandResult` states), so
+    the pair covers the whole miss without either half double-counting the
+    other.
+
+    :attr:`EXHAUSTED` is the fail-closed answer, deliberately: an unreadable or
+    ungradable report cannot show that anything is reachable, and the honest
+    response to "we cannot tell" is to stop the series rather than to spend a
+    household's evening on rounds nothing is steering.
+    """
+
+    REACHABLE = "reachable"
+    EXHAUSTED = "exhausted"
+
+
 class AdoptionOutcome(str, Enum):
     """What the round did with the intervention.
 
@@ -1025,6 +1063,13 @@ ADOPTION_ROW_KEEP_FOR_ITERATION = "row2_trusted_safe_missed"
 ADOPTION_ROW_RESTORE_UNSAFE = "row3_unsafe"
 ADOPTION_ROW_RESTORE_UNTRUSTED = "row4_untrusted_evidence"
 ADOPTION_ROW_RESTORE_REGRESSION = "row5_trusted_safe_regressed"
+#: #2602's row, and the one that made the table four-axis: a round that PASSED
+#: on quality, with a flatter result still reachable. Appended rather than
+#: folded into :data:`ADOPTION_ROW_KEEP`, per the numbering rule above — row 1
+#: still means what it meant, "this round passed and the series is over", and
+#: the two now differ in the only way that matters to a household, which is
+#: whether another round is coming.
+ADOPTION_ROW_KEEP_ITERATING = "row6_trusted_safe_passed_reachable"
 #: Outside the table: a restore was attempted and did not complete, which no
 #: row describes because it is not a decision about the evidence at all.
 ADOPTION_ROW_RESTORE_FAILED = "row0_restore_failed"
@@ -1035,6 +1080,7 @@ ADOPTION_ROWS: frozenset[str] = frozenset({
     ADOPTION_ROW_RESTORE_UNSAFE,
     ADOPTION_ROW_RESTORE_UNTRUSTED,
     ADOPTION_ROW_RESTORE_REGRESSION,
+    ADOPTION_ROW_KEEP_ITERATING,
     ADOPTION_ROW_RESTORE_FAILED,
 })
 
