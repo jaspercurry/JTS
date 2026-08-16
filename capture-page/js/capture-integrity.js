@@ -211,6 +211,86 @@ export function scanZeroFillRuns(samples, options = {}) {
   return { count: count, runs: runs, quantum: quantum };
 }
 
+// Does a reported run cover a whole BLOCK-ALIGNED render quantum?
+//
+// This is the question a consumer of `scanZeroFillRuns` must ask, and it lives
+// here beside the scan that produces the record so there is one of it. It is
+// deliberately NOT `phase === 0`: as `scanZeroFillRuns`'s own comment explains,
+// one natural ambient zero abutting a zero-filled quantum merges into a single
+// run whose phase is off the grid while the whole quantum is still inside it,
+// so containment by `offset`/`len` is the only test that does not throw those
+// events away.
+export function containsAlignedQuantum(run, quantum = ZERO_RUN_QUANTUM) {
+  if (!run || !Number.isFinite(run.offset) || !Number.isFinite(run.len)) return false;
+  if (!Number.isFinite(quantum) || quantum <= 0) return false;
+  const firstAligned = Math.ceil(run.offset / quantum) * quantum;
+  return firstAligned + quantum <= run.offset + run.len;
+}
+
+// Did THIS take witness the render-quantum SPLICE — the fault worth spending an
+// attempt on, as opposed to any run of zeros (issue #2557 phase B)?
+//
+// Reads a report built by `summarizeCaptureIntegrity` below, so a caller asks
+// one question of the object it already has rather than re-deriving the rule.
+//
+// THREE CONDITIONS, and each one narrows a benign reading OUT rather than
+// widening the trigger in:
+//
+//  1. The run covers a whole block-aligned quantum (above). That shape — 128
+//     zeros on the render grid — is what 13 of 13 testable glitch events of the
+//     2026-08-15 campaign carried and 0 of 3 clean controls did.
+//  2. It starts PAST sample 0. `scanZeroFillRuns` says so itself: a run at
+//     offset 0 has a benign reading (a graph that had not warmed up), and it
+//     sits in the pre-sweep window in any case. A capture that is silent from
+//     its first sample is a dead microphone, which is a different finding with
+//     a different answer — never a splice this page should spend an attempt on.
+//  3. It ends before the last sample. The witnessed fault is zeros SURROUNDED
+//     by a live room's noise floor; a run that reaches the end of the buffer
+//     cannot be told apart from a recorder that stopped early or padded its
+//     tail, and the tail is past the sweep in any case.
+//
+// FAIL-CLOSED EVERYWHERE ELSE. A report with no scan (an older recorder, or a
+// take that was never handed its samples) and a report with no
+// `encoded_frames` to place a run inside both answer false: "not scanned" must
+// never read as "scanned and found", and this answer spends a household's
+// attempt.
+export function witnessedZeroFillSplice(report) {
+  if (!report || typeof report !== "object") return false;
+  const quantum = Number(report.zero_run_quantum);
+  const frames = Number(report.encoded_frames);
+  if (!Number.isFinite(quantum) || quantum <= 0) return false;
+  if (!Number.isFinite(frames) || frames <= 0) return false;
+  const runs = Array.isArray(report.zero_runs) ? report.zero_runs : [];
+  return runs.some(
+    (run) =>
+      containsAlignedQuantum(run, quantum) &&
+      run.offset > 0 &&
+      run.offset + run.len < frames,
+  );
+}
+
+// Why an automatic retake fired, as one stable token on the wire. The page's
+// only trigger today, and named for the mechanism (a spliced-in quantum of
+// digital zeros) rather than for the issue number, so a sidecar reader a year
+// from now can tell what the page believed it saw.
+export const AUTO_RETAKE_ZERO_FILL_REASON = "zero_fill_splice";
+
+// What the household reads while the page retakes a measurement on its own.
+// Says what happened and what is being done about it, in that order, and names
+// no browser or platform — the same sentence is true wherever the gap came
+// from. Kept here beside the witness for the same reason the focus-loss copy
+// is: the sentence and the mechanism it describes drift apart when they live
+// in different files.
+export const AUTO_RETAKE_MESSAGE =
+  "That recording had a gap in it — JTS is taking this measurement again.";
+
+// The same fact, afterwards: shown on a later screen for a measurement whose
+// ONE automatic retake has already been spent, so a household looking at a
+// rejection knows the page already tried once on its own and is not silently
+// sitting on a spare.
+export const AUTO_RETAKE_SPENT_NOTE =
+  "JTS already retook this measurement once on its own after a gap in the recording.";
+
 // Build the wire object the page posts alongside its capture.
 //
 // FAIL-SOFT BY CONSTRUCTION: every field is omitted when its source is absent,
@@ -245,11 +325,19 @@ export function scanZeroFillRuns(samples, options = {}) {
 // rather than read off `stats` on purpose: `stats.frames` is what the WORKLET
 // assembled and this is what SURVIVED the transfer to the page, and a ledger
 // whose two ends came from the same measurement would check nothing.
+//
+// `autoRetake` is set only on a take the PAGE started by itself, after the
+// previous attempt at this measurement witnessed the splice above
+// (`{reason, after_attempt}`). It is disclosure, not a request: no host reads
+// it, and an older Pi records it in the operator sidecar with the rest of this
+// object simply because the whole report is retained verbatim. Its absence is
+// the ordinary case — a take a household started — never "unknown".
 export function summarizeCaptureIntegrity({
   watch = null,
   stats = null,
   encodedFrames = null,
   samples = null,
+  autoRetake = null,
 } = {}) {
   const summary = {};
   if (watch) {
@@ -274,6 +362,7 @@ export function summarizeCaptureIntegrity({
     summary.zero_run_count = zeroRuns.count;
     summary.zero_runs = zeroRuns.runs;
   }
+  if (autoRetake && typeof autoRetake === "object") summary.auto_retake = autoRetake;
   return summary;
 }
 
