@@ -1547,10 +1547,34 @@ def build_driver_commission_load_preflight(
             read_persisted_coupling,
         )
 
-        ring_feed_armed = is_shm_ring_coupling(
-            read_persisted_coupling(FANIN_ENV_PATH)
-        )
-        ring_endpoint_armed = ring_active_endpoint_armed()
+        # A CORRUPTED FILE IS AN UNARMED TRANSPORT, NOT A TRACEBACK. Both
+        # readers fail-safe on `OSError` (missing, unreadable) and both
+        # normalise every malformed VALUE — an empty file, a typo, garbage keys
+        # all resolve to loopback / marker-false. One input class escapes both:
+        # a non-UTF-8 byte makes `read_text` / `fh.read()` raise
+        # `UnicodeDecodeError`, which is a `ValueError` and not an `OSError`, so
+        # it would leave this function by exception. On a Pi that is the
+        # ordinary shape of SD-card corruption or a write truncated by a power
+        # cut, and the blocker it would suppress is the one naming the
+        # reconciler that REWRITES the corrupted file — crashing withholds
+        # exactly the sentence that fixes the box. Wave 1 wrote this rule down
+        # two functions over, for the same reason: a token nothing can resolve
+        # must reach the operator as this function's ordinary blocker.
+        #
+        # Caught HERE and not in the shared readers, which the doctor and the
+        # reconcilers also call: the observed-broken path is this call site.
+        # Both conjuncts fail together because a decode failure says nothing
+        # about which file was bad — so a corrupt `fanin.env` also reports the
+        # endpoint unarmed. That over-reports one remedy and is the deliberate
+        # direction: both remedies are safe to run, and inventing a per-file
+        # verdict from an exception that carries none would be the guess.
+        try:
+            ring_feed_armed = is_shm_ring_coupling(
+                read_persisted_coupling(FANIN_ENV_PATH)
+            )
+            ring_endpoint_armed = ring_active_endpoint_armed()
+        except (OSError, ValueError):
+            ring_feed_armed = ring_endpoint_armed = False
     transport_armed = ring_feed_armed and ring_endpoint_armed
     unarmed_conjuncts = [
         text

@@ -1042,8 +1042,12 @@ async def test_the_stereo_ring_is_refused_by_the_emitter_not_by_the_transport_ga
 
     What refuses the stereo ring is a different, pre-existing guard — the
     emitter's own forbidden-active-sink token — and it fires before any graph is
-    written. Recorded here rather than assumed, so a later change that lifts
-    THAT guard meets a test that says what it was doing.
+    written. Both halves are ASSERTED, not narrated: the retired parametrised
+    case pinned the ordering with ``emits == []`` under a docstring explaining
+    that a blocker which still wrote a candidate would leave a half-moved graph
+    on disk for the next reader, and that pin travels here as the no-artifact
+    assertion below. A docstring making the construction argument while claiming
+    to be the guard is the anti-pattern this design quotes at itself.
     """
     from jasper.active_speaker.camilla_yaml import capture_device_for_playback
     from jasper.active_speaker.staging import prepare_driver_commissioning_config
@@ -1066,6 +1070,13 @@ async def test_the_stereo_ring_is_refused_by_the_emitter_not_by_the_transport_ga
     )
 
     assert payload["status"] == "blocked", payload
+    # THE ORDERING, ASSERTED: the guard fires before the write, so a refused
+    # prepare leaves no half-moved graph behind. Inherited from the retired
+    # parametrised case's `emits == []`, expressed here on the artifact rather
+    # than on the emitter call, because the failure this bounds is a file the
+    # next reader would find. Discriminating, not vacuous: the same field reads
+    # True on the coherent-graph tests above, which do prepare.
+    assert payload["config"]["exists"] is False, payload["config"]
     codes = {issue.get("code") for issue in payload.get("issues") or []}
     assert "commissioning_config_generation_failed" in codes, payload
     # Not this wave's gates, and not the retired rung: the emitter owns this one.
@@ -1433,6 +1444,46 @@ async def test_the_guarded_load_reads_no_transport_state_off_the_ring(
     codes = {issue.get("code") for issue in preflight["issues"]}
     assert "commissioning_ring_feed_unarmed" not in codes, preflight["issues"]
     assert "commissioning_active_endpoint_unarmed" not in codes, preflight["issues"]
+
+
+@pytest.mark.parametrize("corrupt", ["fanin", "outputd"])
+async def test_the_guarded_load_refuses_a_ring_graph_whose_transport_state_is_corrupt(
+    tmp_path, monkeypatch, corrupt,
+):
+    """A non-UTF-8 reconciler file is an unarmed transport, not a traceback.
+
+    Both readers fail-safe on ``OSError`` and normalise every malformed VALUE,
+    so a missing file, an empty one, a typo and garbage keys all already resolve
+    to unarmed. One input class escaped both: a non-UTF-8 byte raises
+    ``UnicodeDecodeError`` — a ``ValueError``, not an ``OSError`` — and this
+    preflight is the first caller to read either file, so the exception would
+    leave it and take the blocker with it. On a Pi that is the ordinary shape of
+    SD-card corruption or a write truncated by a power cut, and the suppressed
+    blocker is the one naming the reconciler that REWRITES the corrupted file.
+
+    Parametrised per file so a fix that guards only one read is caught by the
+    other's case. Both conjuncts are asserted unarmed, which is the deliberate
+    fail-closed direction: a decode failure says nothing about which file was
+    bad, and both remedies are safe to run.
+    """
+    topology, preset = _commissioning_box()
+    fanin_env, outputd_env = _ring_transport_state(
+        monkeypatch, tmp_path, coupling="shm_ring", marker="1"
+    )
+    target = fanin_env if corrupt == "fanin" else outputd_env
+    target.write_bytes(b"JASPER_FANIN_CAMILLA_COUPLING=\xff\xfeshm_ring\n")
+    # CONTROL: the byte really is undecodable, so this test cannot pass because
+    # the file happened to stay readable.
+    with pytest.raises(UnicodeDecodeError):
+        target.read_text(encoding="utf-8")
+
+    preflight = _ring_load_preflight(topology, preset, tmp_path / f"corrupt-{corrupt}")
+
+    assert preflight["load_allowed"] is False
+    assert _transport_armed_gate(preflight)["passed"] is False
+    codes = {issue.get("code") for issue in preflight["issues"]}
+    assert "commissioning_ring_feed_unarmed" in codes, preflight["issues"]
+    assert "commissioning_active_endpoint_unarmed" in codes, preflight["issues"]
 
 
 @pytest.mark.parametrize(
