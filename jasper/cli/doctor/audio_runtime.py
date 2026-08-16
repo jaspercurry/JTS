@@ -1844,6 +1844,83 @@ def _jts_ring_pcm_resolves(pcm: str, tool: str) -> tuple[bool, str]:
     return False, err or f"{tool} exit {proc.returncode}"
 
 
+@doctor_check(order=51.72, group="audio")
+def check_active_ring_split_transport() -> CheckResult:
+    """A graph on the ACTIVE ring under a ``loopback`` coupling is SILENT.
+
+    The state this catches: the loaded CamillaDSP graph names
+    ``jts_ring_active_playback`` while the persisted coupling is ``loopback``.
+    CamillaDSP then writes the ACTIVE ring and outputd reads its ALSA content
+    lane instead — nobody consumes the ring, so the speaker is silent with
+    every daemon healthy and every other check green.
+
+    WHY THIS CHECK EXISTS AT ALL. Before the aloop ACTIVE endpoint was retired,
+    an unarmed roleful box's graph named a PCM whose definitions #2534 had
+    deleted, so CamillaDSP failed its load and the box parked LOUDLY. Now the
+    graph resolves to the ring and loads fine, so the same misconfiguration got
+    quieter. That is the wrong direction, and this check is the compensation:
+    the split state is reachable by ordinary operations (a deploy reconcile, an
+    EQ save re-emit the graph; nothing in that path moves the coupling), so it
+    must be loud on inspection until the coupling reconciler's phase 0 closes
+    it automatically.
+
+    WHY TWO TERMS AND NOT THREE — do not "helpfully" add the third back.
+    The original design specified a third conjunct, ``writer_alive:false``.
+    It is not observable in this check's own target state, and conditioning on
+    it would make the check silently never fire:
+
+    * ``writer_alive`` is a READER-REPORTED metric — ``jts_ring_shm.h:99``
+      states it is "what a reader REPORTS". Under a ``loopback`` coupling
+      NOTHING reads the ACTIVE ring, so there is no reader to report it.
+    * outputd publishes it only inside its ``shm_ring`` block, and
+      ``shm_ring_path`` is ``Some`` **iff** ``JASPER_OUTPUTD_CONTENT_BRIDGE=
+      shm_ring`` (``rust/jasper-outputd/src/state.rs:220-223``). Under
+      ``loopback`` that block is ``{"enabled": false}`` with no further fields,
+      so the key is absent exactly when this check would need it.
+
+    The two terms are together DEFINITIONAL: a graph naming the ACTIVE ring
+    plus a coupling that routes outputd elsewhere IS the split. The third
+    term's content — "nothing is consuming the ring" — is IMPLIED by the
+    second, not independent evidence.
+
+    KNOWN TRANSIENT. The arm ladder moves the graph first and the coupling
+    third, so a doctor run taken INSIDE an active arm ladder can FAIL here for
+    the seconds between those rungs. That is the ladder working, not a fault.
+    The arm's own terminal doctor pass is the authoritative read.
+    """
+    from jasper.fanin.coupling_reconcile import read_persisted_coupling
+    from jasper.fanin_coupling import COUPLING_SHM_RING, RING_ACTIVE_PLAYBACK_DEVICE
+
+    label = "active ring split transport"
+    coupling = read_persisted_coupling()
+    if coupling == COUPLING_SHM_RING:
+        return CheckResult(label, "ok", f"coupling={coupling}; ring is consumed")
+
+    _, active_path = _active_camilla_config_path()
+    config_path = Path(active_path) if active_path else Path(
+        "/var/lib/camilladsp/configs/sound_current.yml"
+    )
+    playback_device = _loaded_playback_device(config_path)
+    if playback_device != RING_ACTIVE_PLAYBACK_DEVICE:
+        return CheckResult(
+            label,
+            "ok",
+            f"coupling={coupling}; loaded graph playback="
+            f"{playback_device or '(none)'}",
+        )
+    return CheckResult(
+        label,
+        "fail",
+        f"SPLIT TRANSPORT: the loaded graph writes {RING_ACTIVE_PLAYBACK_DEVICE} "
+        f"but coupling={coupling}, so outputd reads its ALSA content lane and "
+        "nothing consumes the ring — this speaker is SILENT while every daemon "
+        "looks healthy. Complete the arm: sudo /opt/jasper/.venv/bin/"
+        "jasper-fanin-coupling-reconcile shm_ring. (Transient and expected if "
+        "an arm ladder is running right now; the ladder's own final doctor pass "
+        "is the authoritative read.)",
+    )
+
+
 @doctor_check(order=51.8, group="audio", exclusive_group="audio-probe")
 def check_ring_platform_assets() -> CheckResult:
     """Verify the jts_ring transport platform assets are present and the

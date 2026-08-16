@@ -411,9 +411,12 @@ def test_baseline_profile_compiles_durable_camilla_yaml(
     assert payload["verification"]["summed_validation_complete"] is True
     assert payload["corrections"]["tweeter"]["gain_db"] == -18.5
     assert "Source: jasper.active_speaker.camilla_yaml" in yaml
-    assert payload["config"]["playback_device"] == "outputd_active_content_playback"
+    # #2285 P2: the ACTIVE ring is the ONE legal outputd endpoint, so an
+    # active-capable topology resolves to it unconditionally. The SOURCE is
+    # unchanged (`outputd_active_lane`) — the transport moved, not the seam.
+    assert payload["config"]["playback_device"] == "jts_ring_active_playback"
     assert payload["config"]["playback_device_source"] == "outputd_active_lane"
-    assert 'device: "outputd_active_content_playback"' in yaml
+    assert 'device: "jts_ring_active_playback"' in yaml
     assert "active_baseline_headroom" in yaml
     assert (
         "  active_baseline_headroom:\n"
@@ -556,6 +559,14 @@ def test_baseline_capture_device_threads_through_surgically(tmp_path: Path) -> N
     EXACTLY the capture device line — relocating where Layer A reads its program
     never touches the crossover / per-driver limiters / tweeter HP / 0 dB ceiling
     (docs/HANDOFF-distributed-active.md gap 1).
+
+    #2285 P2: the DEFAULT is now the ring capture lane, not the snd-aloop
+    fan-in tap. An active-capable topology resolves its playback to the ACTIVE
+    ring (the one legal endpoint), and ``active_emit_devices`` moves BOTH
+    halves together — a graph sinking to the ring while sourcing the tap
+    captures a device fan-in stops feeding. What is pinned here is the
+    threading, not the name: passing the resolved default explicitly must stay
+    byte-identical to omitting it.
     """
     topology = _dual_apple_topology()
     draft = _draft(topology)
@@ -583,14 +594,14 @@ def test_baseline_capture_device_threads_through_surgically(tmp_path: Path) -> N
         return payload, Path(payload["config"]["path"]).read_text(encoding="utf-8")
 
     implicit, implicit_yaml = _emit("implicit", None)
-    explicit, explicit_yaml = _emit("explicit_default", "plug:jasper_capture")
+    explicit, explicit_yaml = _emit("explicit_default", "jts_ring_capture")
     follower, follower_yaml = _emit("follower", "hw:CARD=Loopback,DEV=1")
 
     # inv 1: passing the default explicitly is byte-identical to not passing it,
-    # and the solo baseline captures from the fan-in tap.
+    # and the solo baseline captures from Ring A.
     assert implicit_yaml == explicit_yaml
     assert implicit["config"]["sha256"] == explicit["config"]["sha256"]
-    assert 'device: "plug:jasper_capture"' in implicit_yaml
+    assert 'device: "jts_ring_capture"' in implicit_yaml
 
     # A follower's round-trip-loopback capture changes ONLY the capture line.
     assert 'device: "hw:CARD=Loopback,DEV=1"' in follower_yaml
@@ -599,7 +610,7 @@ def test_baseline_capture_device_threads_through_surgically(tmp_path: Path) -> N
     assert len(impl_lines) == len(foll_lines)
     diff = [(a, b) for a, b in zip(impl_lines, foll_lines) if a != b]
     assert len(diff) == 1
-    assert diff[0][0].strip() == 'device: "plug:jasper_capture"'
+    assert diff[0][0].strip() == 'device: "jts_ring_capture"'
     assert diff[0][1].strip() == 'device: "hw:CARD=Loopback,DEV=1"'
     assert implicit["config"]["sha256"] != follower["config"]["sha256"]
 
