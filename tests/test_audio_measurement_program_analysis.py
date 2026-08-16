@@ -2758,21 +2758,14 @@ def test_branch_snr_band_hz_clamps_the_window_to_the_stimulus_own_edges():
     assert branch_snr_band_hz(1600.0, None) == (800.0, 3200.0)
 
 
-def test_branch_snr_band_hz_reports_an_empty_window_rather_than_widening_it():
-    """A branch that radiates nothing in the crossover region gets NO window.
-
-    Returned inverted (``lo >= hi``) on purpose: ``band_snr_verdicts`` finds no
-    overlapping row for such a window and reports ``"unknown"``, which is not
-    :data:`ALIGNMENT_SNR_REFUSAL_VERDICT`. So this degenerate case yields "no
-    evidence" rather than either a refusal on arithmetic or a silent widening
-    back to the nominal band the fix exists to stop trusting.
-    """
-    lo, hi = branch_snr_band_hz(1600.0, (8000.0, 20000.0))
-    assert lo >= hi
-    block = snr_policy.band_snr_verdicts(
+def _alignment_block_for(fc_hz, radiated_band_hz, capture_dbfs):
+    """The ALIGNMENT-class block a branch gets for one window and capture level."""
+    lo, hi = branch_snr_band_hz(fc_hz, radiated_band_hz)
+    return (lo, hi), snr_policy.band_snr_verdicts(
         decision_class=snr_policy.DECISION_CLASS_ALIGNMENT,
         capture_bands=[
-            {"band_id": band_id, "band_hz": [row_lo, row_hi], "level_dbfs": -20.0}
+            {"band_id": band_id, "band_hz": [row_lo, row_hi],
+             "level_dbfs": capture_dbfs}
             for band_id, row_lo, row_hi in _SNR_ROWS_HZ
         ],
         noise_bands=_FLAT_AMBIENT["bands"],
@@ -2781,9 +2774,89 @@ def test_branch_snr_band_hz_reports_an_empty_window_rather_than_widening_it():
         model=DRIVER,
         band_method="fft_band_power_difference",
     )
-    assert block["worst_relevant"] is None
-    assert block["verdict"] == "unknown"
-    assert block["verdict"] != ALIGNMENT_SNR_REFUSAL_VERDICT
+
+
+@pytest.mark.parametrize(
+    "fc_hz,radiated_band_hz,capture_dbfs,expected_verdict,expected_band",
+    [
+        # Nothing spans the inverted interval -> genuinely no evidence.
+        (1600.0, (8000.0, 20000.0), -20.0, "unknown", None),
+        # `mid` [1000, 4000] spans the inverted (3000, 2000) interval, so it
+        # IS enfranchised and returns a real verdict either way…
+        (1000.0, (3000.0, 20000.0), -20.0, "ok", "mid"),
+        (1000.0, (3000.0, 20000.0), -88.0, ALIGNMENT_SNR_REFUSAL_VERDICT, "mid"),
+        # …and the mirror geometry (a woofer far below Fc) does the same.
+        (6000.0, (150.0, 2000.0), -20.0, "ok", "mid"),
+    ],
+)
+def test_branch_snr_band_hz_empty_window_can_still_return_a_real_verdict(
+    fc_hz, radiated_band_hz, capture_dbfs, expected_verdict, expected_band,
+):
+    """An empty window is NOT "no verdict" — the earlier claim here was false.
+
+    The first version of this test asserted ``unknown`` on ONE degenerate
+    geometry and the docstring generalized that into "an empty window can
+    never refuse". Both were wrong. ``worst_band_verdict``'s ``_band_overlaps``
+    tests ``row_hi > lo`` and ``row_lo < hi`` INDEPENDENTLY, so when the window
+    is inverted a row spanning the whole inverted interval satisfies both and
+    is enfranchised: ``Fc = 1000`` radiating ``[3000, 20000]`` gives the window
+    ``(3000, 2000)`` and returns a real ``mid`` verdict — ``ok`` clean,
+    ``insufficient`` buried. Only a window nothing spans yields ``unknown``.
+
+    Parametrized across the degenerate geometries rather than pinned to the
+    lucky one, so the FIRST row no longer stands in for a rule it does not
+    make. The property that IS universal is the next test's.
+    """
+    (lo, hi), block = _alignment_block_for(fc_hz, radiated_band_hz, capture_dbfs)
+    assert lo >= hi, "these geometries must produce an EMPTY window"
+    assert block["verdict"] == expected_verdict
+    worst = block["worst_relevant"]
+    assert (worst["band_id"] if worst else None) == expected_band
+
+
+def test_branch_snr_band_hz_never_admits_a_row_outside_the_radiated_band():
+    """The universal guarantee, empty windows included.
+
+    Admission needs ``row_hi > lo >= radiated_lo`` AND
+    ``row_lo < hi <= radiated_hi``, so every enfranchised row overlaps the
+    radiated band whether or not the window is empty. That — not "an empty
+    window returns unknown" — is what makes #2607's fail-safe unable to turn
+    on a row the stimulus never entered, and it is the whole point of the
+    clamp.
+
+    Swept rather than argued, over a grid that deliberately includes inverted
+    windows (a bare assertion on non-empty windows would miss the case the
+    false claim above was hiding in).
+    """
+    fc_values = [80.0, 250.0, 700.0, 1000.0, 1648.7, 2500.0, 6000.0, 9000.0]
+    lo_edges = [20.0, 150.0, 1600.0, 3000.0, 8000.0]
+    hi_edges = [500.0, 2000.0, 4000.0, 12000.0, 20000.0]
+    empty_windows = admitted_through_empty = 0
+
+    for fc_hz in fc_values:
+        for rad_lo in lo_edges:
+            for rad_hi in hi_edges:
+                if rad_hi <= rad_lo:
+                    continue
+                lo, hi = branch_snr_band_hz(fc_hz, (rad_lo, rad_hi))
+                if lo >= hi:
+                    empty_windows += 1
+                for band_id, row_lo, row_hi in _SNR_ROWS_HZ:
+                    if not snr_policy._band_overlaps([row_lo, row_hi], lo, hi):
+                        continue
+                    if lo >= hi:
+                        admitted_through_empty += 1
+                    assert row_hi > rad_lo and row_lo < rad_hi, (
+                        f"row {band_id} [{row_lo}, {row_hi}] was admitted for "
+                        f"fc={fc_hz} radiated=({rad_lo}, {rad_hi}) window="
+                        f"({lo}, {hi}) but the stimulus never entered it"
+                    )
+
+    # The grid has to actually exercise the hazardous shapes, or the assertion
+    # above passes by never running on one (issue #2198's "instrument silence
+    # is not evidence").
+    assert empty_windows > 0
+    assert admitted_through_empty > 0
 
 
 def test_measure_snr_verdict_ignores_a_row_the_tweeter_sweep_never_entered():
@@ -2864,12 +2937,13 @@ def test_measure_snr_verdict_ignores_a_row_above_the_woofer_sweep():
     """The woofer mirror: the same clamp, from the other edge.
 
     A woofer declared to 4 kHz at Fc = 2.5 kHz leaves the ``treble`` row
-    (4-12 kHz) inside the nominal ``[1250, 5000]`` window carrying only the
-    100 Hz sliver the sweep reaches — the same "row the stimulus never
-    entered" shape as the tweeter's ``transition``, arriving from above
-    instead of below. Pinned because the fix is stated for ONE branch that
-    does not know its role, so both edges must be exercised: a clamp written
-    only for a tweeter would leave this half broken.
+    (4-12 kHz) inside the nominal ``[1250, 5000]`` window with nothing in it:
+    the sweep stops exactly at that row's 4 kHz floor, so its coverage is
+    0 Hz — the same "row the stimulus never entered" shape as the tweeter's
+    ``transition``, arriving from above instead of below. Pinned because the
+    fix is stated for ONE branch that does not know its role, so both edges
+    must be exercised: a clamp written only for a tweeter would leave this
+    half broken.
     """
     _prog, res = _band_limited_two_way(
         fc_hz=2500.0, woofer_band=(150.0, 4000.0), tweeter_band=(1500.0, 20000.0),

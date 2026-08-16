@@ -622,6 +622,16 @@ the module, not a second copy here.
     exist and how a box gets armed are **not** this document's to state; the
     authority is
     [`HANDOFF-audio-graph-consolidation.md`](HANDOFF-audio-graph-consolidation.md).
+14. **Every band a per-driver decision is graded over is clamped to the band
+    that driver's own sweep excited.** `overlap_band_hz` does it for the GCC
+    alignment, trim solve, ripple and VERIFY tracking; `branch_snr_band_hz`
+    does it per branch for the capture-SNR verdict (issue #2613 — an
+    unclamped window let a row the tweeter sweep never entered refuse every
+    round). The clamp's contract, its named residual, and why an EMPTY window
+    still cannot enfranchise an unexcited row are **code-owned**: read
+    `branch_snr_band_hz`'s docstring in
+    [`program_analysis.py`](../jasper/audio_measurement/program_analysis.py),
+    not a restatement here.
 
 ## Debugging — where to look first
 
@@ -4017,13 +4027,22 @@ segments rather than re-deriving the nominal edges.
 2026-08-15/16 rounds above — Fc 1648.7, tweeter declared `[1600, 20000]` —
 the nominal window is `[824.35, 3297.4]`, so the `transition` row `[350, 1000]`
 was enfranchised (1000 > 824.35) into 650 Hz the tweeter sweep never enters.
-That row read the room against itself, the box recorded **−1.2 dB** there, and
-it verdicted `insufficient` on arithmetic no room and no drive level could
-change — firing the declared-design commitment below on 14 of 14 rounds while
-the `mid` row carrying the decision read a clean 66.4 dB. The **woofer is the
-geometric control**: its `[150, 4000]` sweep spans the whole window, no row is
-empty for it, the clamp is a no-op, and it read **44.0 dB / `ok`** on those same
-captures — an asymmetry a broadband noise floor cannot produce.
+That row read the room against itself and verdicted `insufficient` on
+arithmetic no room and no drive level could change — firing the declared-design
+commitment below on 14 of 14 rounds. The **woofer is the geometric control**:
+its `[150, 4000]` sweep spans the whole window, no row is empty for it, the
+clamp is a no-op, and it passed on those same captures — an asymmetry a
+broadband noise floor cannot produce.
+
+**What is hardware and what is replay, kept apart.** The box recorded only the
+worst-relevant SCALAR per branch — tweeter **−1.2 dB / `insufficient`**, woofer
+**44.0 dB / `ok`** — because `_driver_snr_fields` drops `worst_relevant`'s
+`band_id` before logging. So no jts3 artifact records a per-row SNR, and WHICH
+row produced either number is derived from the geometry above, not read off a
+log. The per-row figures (`transition` −2.6 dB, `mid` **66.4 dB**) come from
+replaying that geometry through the analyzer on synthetic IRs, and 66.4 dB is
+the margin the residual below is judged against. Persisting `band_id` would
+make the next such argument readable rather than re-derived.
 
 The clamp is stated for one branch that does not know its role (whichever edge
 binds, binds) and applies to BOTH decision classes; the 35 dB law and the

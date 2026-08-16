@@ -3233,8 +3233,19 @@ def branch_snr_band_hz(
     outright) — but the same formula gives 4.77 dB for a woofer swept only to
     2000 Hz, and 14.77 dB for one whose ceiling sits just above ``mid``'s
     1000 Hz floor. It stays acceptable because of WHERE the margin is, not
-    because the number is small: jts3's own captures read 66.4 and 44.0 dB
-    against a 35 dB law.
+    because the number is small: on jts3's geometry the occupied row clears
+    the 35 dB law by roughly 30 dB.
+
+    **That margin figure is the SYNTHETIC REPLAY's (66.4 dB), not a hardware
+    reading, and no hardware one exists.** ``worst_relevant`` carries a
+    ``band_id`` but ``_driver_snr_fields`` drops it before logging, so no jts3
+    artifact records a PER-ROW SNR at all — only the worst-relevant scalar
+    (tweeter -1.2 dB, woofer 44.0 dB) with its row unrecorded. The hardware
+    evidence is therefore that the tweeter refused and the woofer did not; WHICH
+    row produced either number is derived from the geometry, and the 66.4 dB
+    the residual is judged against comes from replaying that geometry through
+    this analyzer on synthetic IRs. Persisting ``band_id`` would make the next
+    such argument readable off a log instead of re-derived.
 
     Removing it outright would mean re-computing the ambient report on a
     sweep-derived band table (what
@@ -3251,12 +3262,31 @@ def branch_snr_band_hz(
     declares ``f1_hz``/``f2_hz`` (its ``__post_init__`` raises otherwise), so
     no production sweep reaches that arm.
 
-    An EMPTY intersection (``lo >= hi``) is returned as-is rather than
-    widened. ``band_snr_verdicts`` finds no overlapping row for such a window
-    and reports ``"unknown"`` — honest for a branch that radiates nothing in
-    the crossover region, and NOT a refusal, so #2607's fail-safe still turns
-    only on measured evidence. It takes a tweeter swept entirely above ``Fc·ρ``
-    (or a woofer entirely below ``Fc/ρ``) to reach, which is not a crossover.
+    An EMPTY intersection (``lo >= hi``) is returned as-is rather than widened
+    back to a nominal band this function exists to stop trusting. It takes a
+    tweeter swept entirely above ``Fc·ρ`` (or a woofer entirely below
+    ``Fc/ρ``) to produce one, which is not a crossover.
+
+    **Do not read "empty" as "no verdict".** An inverted window still admits a
+    row through
+    :func:`~jasper.audio_measurement.snr_policy.worst_band_verdict`, whose
+    ``_band_overlaps`` tests ``row_hi > lo`` and ``row_lo < hi``
+    INDEPENDENTLY — so a row spanning the whole inverted interval satisfies
+    both and is enfranchised. ``Fc = 1000`` with a stimulus radiating
+    ``[3000, 20000]`` gives the window ``(3000, 2000)`` and still returns a
+    real ``mid`` verdict: ``ok`` on a clean capture, ``insufficient`` on a
+    buried one. An earlier draft of this docstring claimed such a window always
+    reports ``"unknown"`` and can never refuse. That is false, and the test
+    pinning it only held for the one geometry it used.
+
+    The guarantee that actually matters survives, and it is the stronger one:
+    **whatever a window admits — empty or not — still overlaps the radiated
+    band**, because admission needs ``row_hi > lo >= radiated_lo`` and
+    ``row_lo < hi <= radiated_hi``. So the fail-safe can never turn on a row
+    this stimulus did not enter, which is the whole point of the clamp; an
+    empty window narrows what may vote rather than disenfranchising every row.
+    Pinned by
+    ``test_branch_snr_band_hz_never_admits_a_row_outside_the_radiated_band``.
     """
     lo = fc_hz / OVERLAP_OCTAVE_RATIO
     hi = fc_hz * OVERLAP_OCTAVE_RATIO
