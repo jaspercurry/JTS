@@ -601,11 +601,14 @@ pub struct PairedCompositeSink {
     /// of that decision.
     ///
     /// The transport honours that decision on its own terms rather than leaning
-    /// on `Config::from_env`, which admits a ring only on a single-ALSA sink and
-    /// so is the reason no composite reaches the skip arm. A sink that opens a
-    /// lane its run loop never reads is wrong independently of which
-    /// configurations reach it — and a gate is a far easier thing to widen than
-    /// a transport is to re-audit.
+    /// on `Config::from_env`'s gate. That independence is the whole point, and
+    /// it has already paid: the gate no longer admits a ring "only on a
+    /// single-ALSA sink" — a composite is an ACTIVE-ring endpoint since P8b
+    /// item 1, and jts.local has run armed on one since 2026-08-15 — so a
+    /// composite DOES reach the skip arm now, and this field was already right
+    /// about it. A sink that opens a lane its run loop never reads is wrong
+    /// independently of which configurations reach it, and a gate is a far
+    /// easier thing to widen than a transport is to re-audit.
     content: Option<PCM>,
     dac_a: PCM,
     dac_b: PCM,
@@ -2326,10 +2329,15 @@ fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
         // role does — and read the scope of THIS claim just as honestly, because
         // the content lane's plumbing differs per build:
         //
-        // The ACTIVE lane (`outputd_active_content_*`) is a raw `type hw`
-        // snd-aloop pair, so the client edge IS the lane: a format the lane
-        // cannot serve fails at `hw_params` install above, and this readback is
-        // a genuine second proof of what got installed.
+        // The ACTIVE lane no longer reaches this readback AT ALL. It used to be
+        // a raw `type hw` snd-aloop pair, where the client edge WAS the lane and
+        // this was a genuine second proof of what got installed; #2534 deleted
+        // those PCM definitions and #2285 P2 retired the endpoint, so an
+        // `active_content` role now arrives only over the ACTIVE RING, which
+        // opens no ALSA PCM here. The role token survives in this condition
+        // because it is outputd's LANE-ROLE vocabulary — the ring lane still
+        // carries that role — and because a future ALSA-backed active lane would
+        // want exactly this proof. Nothing today takes that arm.
         //
         // The PASSIVE lane (`outputd_content_*`) is `type plug` over a slave
         // that pins `format S32_LE` now, so this readback proves the CLIENT

@@ -109,13 +109,15 @@ def test_asoundrc_no_longer_declares_the_active_content_lane():
     """P9-C deleted the ACTIVE lane's snd-aloop transport (pair 5).
 
     A roleful box reaches its DAC over the ACTIVE ring
-    (``jts_ring_active_playback``). The NAMES survive in the endpoint
-    vocabulary so ``baseline-reemit --endpoint aloop`` still resolves — it now
-    moves the anchor onto a transport that does not exist, and jasper-outputd
-    fails its content open and parks (jasper-outputd-failure-reconcile, whose
-    active-lane remediation sends the operator back to the ring). Re-declaring
-    these PCMs would restore a SECOND transport for one lane, which is the
-    shape the no-legacy-fallback doctrine refuses.
+    (``jts_ring_active_playback``), which is now the ONE legal ACTIVE endpoint.
+    #2285 P2 finished the retirement this test's subject started: the names no
+    longer resolve as an endpoint at all — ``baseline-reemit --endpoint aloop``
+    is refused by argparse, and the chooser names the ring unconditionally. They
+    survive only where a negative guard has to NAME the thing it rejects (the
+    bare ``OUTPUTD_ACTIVE_PLAYBACK_DEVICE`` constant, the tone-injection
+    denylist, the endpoint-recognition set). Re-declaring these PCMs would
+    restore a SECOND transport for one lane, which is the shape the
+    no-legacy-fallback doctrine refuses.
     """
     rc = _non_comment((REPO / "deploy" / "alsa" / "asoundrc.jasper").read_text())
     # Read guard first: every assertion below is an ABSENCE, so an empty or
@@ -510,7 +512,15 @@ def test_outputd_dual_apple_sink_is_fail_closed_and_final_sink_only():
     assert "SinkMode::Composite" in config_rs
     assert '"composite" | "dual_apple"' in config_rs
     assert "JASPER_OUTPUTD_DUAL_DAC_A_PCM" in config_rs
-    assert "outputd_active_content_capture" in config_rs
+    # #2285 P2 (A6): the composite's content-PCM DEFAULT was the snd-aloop
+    # ACTIVE capture half; it is now a parse-time refusal on the direct bridge.
+    # This used to assert that name was present, which the commit explaining its
+    # removal would have satisfied on a COMMENT — vacuous. Pin the refusal and
+    # its scoping instead, in the CODE: the name must not come back as a value,
+    # and the ring arm must stay exempt or an armed composite cannot start.
+    assert "must be set explicitly on a \\" in config_rs
+    assert '(SinkMode::Composite, ContentBridgeMode::ShmRing) => ""' in config_rs
+    assert '"outputd_active_content_capture"' not in _non_comment_rust(config_rs)
     assert "dual_apple_requires_pre_dsp_tts" not in main_rs
     assert "run_alsa_dual_apple" not in main_rs
     assert "downmix_dual_active_reference" not in main_rs

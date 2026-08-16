@@ -196,10 +196,14 @@ def resolve_live_active_endpoint(
       converges with the next hardware reconcile, which will clear the marker
       from that same graph.
 
-    ONLY THE ACTIVE LANE'S OWN TWO TRANSPORTS are adopted from the graph
-    (:data:`~jasper.active_speaker.runtime_contract.OUTPUTD_LEGAL_ENDPOINT_DEVICES`),
-    because those two are the whole question this function exists to answer.
-    Anything else the graph might name — a stale stereo lane left in the
+    ONLY THE ACTIVE LANE'S OWN TRANSPORT is adopted from the graph
+    (:data:`~jasper.active_speaker.runtime_contract.OUTPUTD_LEGAL_ENDPOINT_DEVICES`,
+    a ONE-member set since #2285 P2 retired the snd-aloop ACTIVE endpoint),
+    because that is the whole question this function exists to answer. The set
+    is still read as a membership rather than an equality: it is the one place
+    that decides what is legal, and the legacy-mid-rollback bullet above is
+    exactly a graph naming something outside it. Anything else the graph might
+    name — a stale stereo lane left in the
     statefile, a lab PCM, a grouped pipe sink — is not a third answer to
     "which transport", and adopting it would hand the active emitter a device
     its own forbidden-token guard then refuses mid-save. Those fall through to

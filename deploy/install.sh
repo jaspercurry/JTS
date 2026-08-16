@@ -905,32 +905,11 @@ require_outputd_ready() {
     }
     python3 - <<'PY'
 import json
-import os
 import socket
 import sys
 import time
 
 path = "/run/jasper-outputd/control.sock"
-env_path = os.environ.get("JASPER_OUTPUTD_ENV_FILE", "/var/lib/jasper/outputd.env")
-
-def parse_env(path):
-    out = {}
-    try:
-        text = open(path, encoding="utf-8").read()
-    except OSError:
-        return out
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-            value = value[1:-1]
-        out[key.strip()] = value
-    return out
-
-env = parse_env(env_path)
 deadline = time.monotonic() + 3.0
 last_error = None
 while time.monotonic() < deadline:
@@ -949,12 +928,6 @@ while time.monotonic() < deadline:
         if data.get("backend") != "alsa":
             raise RuntimeError(f"backend={data.get('backend')!r}, expected 'alsa'")
         sink_mode = data.get("sink_mode") or "single_alsa"
-        active_channels = (env.get("JASPER_OUTPUTD_ACTIVE_CHANNELS") or "").strip()
-        expected_content = (
-            "outputd_active_content_capture"
-            if sink_mode == "dual_apple" or (sink_mode == "single_alsa" and active_channels)
-            else "outputd_content_capture"
-        )
         expected_dac = (
             "dual_apple_usb_c_dac_4ch"
             if sink_mode == "dual_apple"
@@ -964,12 +937,28 @@ while time.monotonic() < deadline:
             raise RuntimeError(
                 f"dac.pcm={data.get('dac', {}).get('pcm')!r}, expected {expected_dac!r}"
             )
-        if data.get("content", {}).get("pcm") != expected_content:
-            raise RuntimeError(
-                f"content.pcm={data.get('content', {}).get('pcm')!r}, "
-                f"expected {expected_content!r} "
-                f"(sink_mode={sink_mode!r}, active_channels={active_channels!r})"
-            )
+        # CONTENT PCM: keyed on the BRIDGE, never on sink_mode. This derived the
+        # expectation from sink_mode + ACTIVE_CHANNELS and demanded
+        # `outputd_active_content_capture` from a composite or active box. That
+        # lane is deleted (#2534) and the hardware reconciler now writes
+        # explicit-EMPTY for both shapes, so the old expectation would have
+        # WARNed "jasper-outputd is not ready" on every deploy to every armed
+        # roleful box in the fleet, jts.local included.
+        #
+        # Under the ring outputd reads the ring FILE and opens no content PCM at
+        # all, so there is nothing for this probe to compare; jasper-doctor's
+        # check_outputd_service owns the ring-side rule (it rejects the retired
+        # snd-aloop name) and runs later in this same install via
+        # run_doctor_summary. Keeping a second copy of that rule here is what
+        # let this one go stale in the first place.
+        content = data.get("content", {})
+        if content.get("source") != "shm_ring":
+            if content.get("pcm") != "outputd_content_capture":
+                raise RuntimeError(
+                    f"content.pcm={content.get('pcm')!r}, expected "
+                    f"'outputd_content_capture' for content.source="
+                    f"{content.get('source')!r} (sink_mode={sink_mode!r})"
+                )
         sys.exit(0)
     except Exception as e:
         last_error = e

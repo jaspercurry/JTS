@@ -2273,10 +2273,13 @@ mod tests {
             assistant_reference_path: "/var/lib/jasper/outputd_assistant_volume_reference.json"
                 .to_string(),
             active_lane: false,
-            // ACTIVE_LANE's pair. False is the passive/stereo default every box
-            // in the fleet runs; `dual_test_config` below inherits it through
-            // the struct-update, which is correct — a composite sink can never
-            // be an active-ring endpoint.
+            // ACTIVE_LANE's pair. False is the passive/stereo default a FLAT box
+            // runs. `dual_test_config` below overrides it rather than inheriting
+            // it: an earlier version of this comment said a composite sink "can
+            // never be an active-ring endpoint", which P8b item 1 made false and
+            // jts.local proved false in the fleet on 2026-08-15 by running armed
+            // on a composite ring. The fixture ENCODED the claim as well as
+            // stating it, so both moved.
             ring_active_endpoint: false,
         }
     }
@@ -2284,7 +2287,14 @@ mod tests {
     fn dual_test_config() -> Config {
         Config {
             sink_mode: SinkMode::Composite,
-            content_pcm: "outputd_active_content_capture".to_string(),
+            // The armed composite shape: the ring endpoint, and NO content PCM.
+            // This used to name `outputd_active_content_capture`, the snd-aloop
+            // ACTIVE capture half — a PCM #2534 deleted, which #2285 P2 (A6)
+            // stopped the reconciler writing and `default_content_pcm` stopped
+            // guessing. A composite on the direct bridge now refuses at parse,
+            // so a composite that is running at all is a ring composite.
+            ring_active_endpoint: true,
+            content_pcm: String::new(),
             content_channels: 4,
             dac_pcm: "dual_apple_usb_c_dac_4ch".to_string(),
             dual_dac_a_pcm: Some("hw:CARD=A,DEV=0".to_string()),
@@ -2890,11 +2900,14 @@ mod tests {
         let mut a = parse_snapshot_json(&coherent.snapshot_json())["content"].clone();
         let mut b = parse_snapshot_json(&composite.snapshot_json())["content"].clone();
 
-        // Each sink names its own lane, and that is the ONLY field allowed to
+        // Each sink declares its own lane, and that is the ONLY field allowed to
         // differ. Asserted positively first so a shape change cannot slip through
-        // as a missing key.
+        // as a missing key. The composite declares NONE (#2285 P2 A6: the
+        // reconciler writes explicit-empty, and `env_str` keeps it because it
+        // defaults only when a variable is UNSET), where it used to declare the
+        // deleted snd-aloop ACTIVE capture half.
         assert_eq!(a["pcm"], "outputd_content_capture");
-        assert_eq!(b["pcm"], "outputd_active_content_capture");
+        assert_eq!(b["pcm"], "");
         a["pcm"] = serde_json::Value::Null;
         b["pcm"] = serde_json::Value::Null;
         assert_eq!(

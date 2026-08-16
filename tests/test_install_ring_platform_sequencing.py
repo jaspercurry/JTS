@@ -37,8 +37,18 @@ def test_ring_platform_deletes_stale_tmpfs_rings_before_systemd_units():
     burns through StartLimitBurst, and jasper-fanin.service escalates to
     StartLimitAction=reboot before the install can write its build manifest. The
     ring files are tmpfs transport state, never user data, so the platform step
-    must remove the explicit program/content files before any systemd unit
-    restart can observe stale geometry.
+    must remove the explicit ring files before any systemd unit restart can
+    observe stale geometry.
+
+    #2285 P2 added the ACTIVE ring to the set. Its other deleter
+    (``_delete_stale_ring_files``, inside ``_arm_ring``) is bypassed on an
+    operator-pinned box, and every armed fleet box is pinned — so before this,
+    the one ring file a roleful box actually runs on was the one ring file no
+    deploy cleared.
+
+    The set is asserted EXACTLY, not by membership: a fourth ring must join this
+    contract deliberately rather than inherit a stale-geometry deploy by
+    omission, which is the shape of the gap this closed.
     """
 
     body = _function_body(
@@ -46,12 +56,46 @@ def test_ring_platform_deletes_stale_tmpfs_rings_before_systemd_units():
         "install_jts_ring_platform",
     )
 
-    assert "rm -f /dev/shm/jts-ring/program.ring" in body
-    assert "rm -f /dev/shm/jts-ring/content.ring" in body
+    unlinked = re.findall(r"^\s*rm -f (\S+)$", body, re.M)
+    assert unlinked == [
+        "/dev/shm/jts-ring/program.ring",
+        "/dev/shm/jts-ring/content.ring",
+        "/dev/shm/jts-ring/active-content.ring",
+    ]
     assert "/dev/shm/jts-ring/*" not in body, "ring cleanup must not use globs"
+    # RING FILES ONLY. A `.writer.lock` / `.open.lock` unlink would open a
+    # silent inode-tear window between two holders, so the deleter must never
+    # grow one.
+    assert all(path.endswith(".ring") for path in unlinked), unlinked
     assert body.index("install_jts_ring_conf_assets") < body.index(
         "rm -f /dev/shm/jts-ring/program.ring"
     )
+
+
+def test_the_installer_clears_every_ring_the_platform_knows_about():
+    """The unlink set is the ring-asset SSOT's own set, not a hand-kept list.
+
+    Derived from ``jasper.ring_assets`` rather than restated, so a ring added
+    there and not here fails HERE — the direction that matters, since the file
+    that motivated this (the ACTIVE ring) was added to the platform years after
+    the deleter was written and silently never joined it.
+    """
+    from jasper.ring_assets import (
+        RING_ACTIVE_CONTENT_FILE,
+        RING_B_CONTENT_FILE,
+        RING_A_PROGRAM_FILE,
+    )
+
+    body = _function_body(
+        RING_PLATFORM_SH.read_text(encoding="utf-8"),
+        "install_jts_ring_platform",
+    )
+    unlinked = set(re.findall(r"^\s*rm -f (\S+)$", body, re.M))
+    assert unlinked == {
+        RING_A_PROGRAM_FILE,
+        RING_B_CONTENT_FILE,
+        RING_ACTIVE_CONTENT_FILE,
+    }
 
 
 def test_full_install_runs_ring_platform_before_systemd_units():

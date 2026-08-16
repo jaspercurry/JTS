@@ -153,3 +153,44 @@ def test_recovery_surface_is_wired_after_systemd_units_in_main():
         "run_doctor_summary must run after install_systemd_units so a genuine "
         "outputd failure is surfaced through the doctor"
     )
+
+
+def test_the_readiness_probe_keys_its_content_pcm_on_the_bridge_not_the_sink():
+    """#2285 P2 (A6/A8 fallout): the probe carried a SECOND copy of doctor's rule.
+
+    It derived the expected `content.pcm` from `sink_mode` + ACTIVE_CHANNELS and
+    demanded `outputd_active_content_capture` from a composite or active box.
+    That lane is deleted (#2534) and the hardware reconciler writes
+    explicit-EMPTY for both shapes, so post-A6 the probe would have failed —
+    WARNing "jasper-outputd is not ready" on every deploy to every armed roleful
+    box, jts.local included. Non-fatal by the tests above, and therefore exactly
+    the kind of false alarm that teaches an operator to ignore the real one.
+
+    Two halves, so a partial fix cannot pass: the retired name must not be
+    DEMANDED anywhere in the installer, and the probe must gate its comparison
+    on `content.source` — the bridge is what decides whether a content PCM is
+    opened at all.
+    """
+    text = installer_text()
+
+    demands = [
+        line
+        for line in text.splitlines()
+        if "outputd_active_content_capture" in line
+        and not line.lstrip().startswith("#")
+    ]
+    assert demands == [], demands
+
+    body = _require_outputd_ready_body(text)
+    assert 'content.get("source") != "shm_ring"' in body, body
+    assert "JASPER_OUTPUTD_ACTIVE_CHANNELS" not in body, body
+
+
+def _require_outputd_ready_body(text: str) -> str:
+    match = re.search(
+        r"require_outputd_ready\(\) \{.*?python3 - <<'PY'\n(?P<body>.*?)\nPY\n",
+        text,
+        re.S,
+    )
+    assert match is not None, "could not locate the require_outputd_ready probe"
+    return match.group("body")
