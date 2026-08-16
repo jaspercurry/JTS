@@ -407,6 +407,17 @@ def _baseline_reemit_endpoint(
 
     if endpoint == "ring":
         return RING_ACTIVE_PLAYBACK_DEVICE, "explicit_endpoint_ring"
+    if endpoint:
+        # An explicit endpoint this function does not recognise must NOT fall
+        # through to the auto-resolver. Falling through would answer the ring
+        # anyway and report the provenance as auto — so a caller asking for a
+        # retired endpoint (`aloop`) would be told it got what it asked for.
+        # argparse's `choices` is the only entry point today, but proving that
+        # stays true is more expensive than refusing here.
+        raise ValueError(
+            f"unrecognised playback endpoint {endpoint!r}: "
+            f"{RING_ACTIVE_PLAYBACK_DEVICE} is the one legal ACTIVE endpoint"
+        )
     return resolve_active_playback_device(topology)
 
 
