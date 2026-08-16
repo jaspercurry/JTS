@@ -56,8 +56,9 @@ edge, never ``passed=False``: there is no evidence there, which is not the
 same as failing. This module still holds no gate policy -- it takes the
 floor as a number from a caller that measured it. A band the floor cut but
 did not swallow reports :attr:`BandResult.max_at_graded_edge` when its
-extremum landed on the cut edge, so a reader is told when the band was
-still trending into the ungraded remainder rather than left to derive it.
+extremum landed on the cut edge, which is the case where the reported number
+is a LOWER BOUND on the band's real worst deviation rather than the thing
+itself -- told to the reader rather than left to be derived.
 
 **The tolerances are S0-contingent, not final.** The plan doc is explicit
 that this table is provisional pending the S0 validation session's hardware
@@ -221,10 +222,16 @@ class BandResult:
         (there is no ungraded remainder to warn about). ``None`` when the
         band is unevaluable, or on a report built before this field existed.
 
-        **Why it earns a field rather than a reader's inference.** The
-        reported extremum is a maximum over the GRADED bins only, so when it
-        lands on the first of them the honest reading is "at least this much,
-        and still trending as the evidence runs out" -- not "this much". On
+        **What it does and does not claim.** The flag is exactly its two
+        conjuncts: the floor cut this band, and the worst graded bin is the
+        lowest one. It tests no SLOPE and makes no claim that the curve keeps
+        rising below the floor -- what follows from it is weaker and provable,
+        namely that ``max_deviation_db`` is a maximum over a SUBSET of the
+        band and so a LOWER BOUND on the band's real worst deviation. "It may
+        well be worse below" is the licensed reading; "it is still rising" is
+        not, and the two are easy to conflate.
+
+        **Why it earns a field rather than a reader's inference.** On
         the 2026-08-16 round-3 jts3 session the 250-2000 Hz band was graded
         from 357.14 Hz and reported ``+4.49 dB @ 358``, its first graded bin,
         while the ungraded region below it continued to ``+5.08 dB @ 329``.
@@ -301,8 +308,8 @@ class BandResult:
             # numbers -- unlike the split, which moves none.
             "graded_lo_hz": self.graded_lo_hz,
             # ...and whether that clamp left the reported extremum sitting on
-            # its own edge, with the band still trending into the ungraded
-            # remainder below. Disclosure only; `passed` does not read it.
+            # its own edge, making it a lower bound on the band's real worst
+            # deviation. Disclosure only; `passed` does not read it.
             "max_at_graded_edge": self.max_at_graded_edge,
         }
 

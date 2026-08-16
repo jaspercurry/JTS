@@ -2608,12 +2608,12 @@ The intersection is a band **edge**, not a mask entry, so:
   not a failure. `overall_passed` still counts it as not-passed, so nothing
   is flattered by the distinction; and
 - a band the floor CUT but did not swallow carries `max_at_graded_edge`
-  (#2599) when its reported extremum landed on the lowest graded bin. The
-  reported maximum is a maximum over the graded bins only, so an extremum on
-  that edge means "at least this much, still trending as the evidence runs
-  out". Round 3 on jts3 read `+4.49 dB @ 358` from a band graded at 357.14
-  while the ungraded region below continued to `+5.08 dB @ 329`. Disclosure
-  only — `passed` does not read it.
+  (#2599) when its reported extremum landed on the lowest graded bin. Those
+  two conjuncts are the whole test — no slope is measured — and what follows
+  from them is that the reported maximum is a maximum over a SUBSET of the
+  band, i.e. a lower bound on its real worst deviation. Round 3 on jts3 read
+  `+4.49 dB @ 358` from a band graded at 357.14 while the ungraded region
+  below held `+5.08 dB @ 329`. Disclosure only — `passed` does not read it.
 
 Measured on the S0 main leg (all pinned by
 [`tests/test_flat_spec_ssot.py`](../tests/test_flat_spec_ssot.py)): **all

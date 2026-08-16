@@ -52,6 +52,7 @@ from jasper.active_speaker.linearization_fit import (
     _HF_MIN_OCCURRENCES,
     _HIGHSHELF_Q,
     _boost_exclusion_verdicts,
+    _blind_zone_placements,
     _core_or_fallback_mask,
     _highshelf_response_db,
     _lift_stage,
@@ -3409,11 +3410,15 @@ def test_the_disclosed_band_is_the_one_the_median_actually_used():
 # is worth naming once: every frequency asserted below is a bin of
 # DEFAULT_ENVELOPE_GRID_HZ (176 log bins, 150 Hz-20 kHz), because
 # `design_peq` picks each filter's centre with `band_freqs[peak_idx]` -- an
-# argmax over the grid, never an interpolation. So 434.0168 Hz is
-# `150 * (20000/150) ** (38/175)` exactly, 897.8664 is bin 64, 1291.4105 is
-# bin 77, 1404.4032 is bin 80 and 2077.2412 is bin 94. That is what makes a
-# centre frequency bit-identical across two rounds: the same bin won, not the
-# same measurement. See `test_a_filter_centre_is_a_grid_bin_not_a_measurement`.
+# argmax over the grid, never an interpolation. So 434.0168 Hz is bin 38 of
+# `150 * (20000/150) ** (k/175)`, 897.8664 is bin 64, 1291.4105 is bin 77,
+# 1404.4032 is bin 80 and 2077.2412 is bin 94 -- agreeing with that closed
+# form to within floating-point reassociation rather than bit for bit, which
+# is why the pin below is a tolerance and not `==`. Measured here: 1.8e-15
+# relative worst case against the closed form, 7.9e-16 against the literals,
+# pinned at a deliberately loose `rel=1e-12`. That is what makes a centre
+# frequency reproduce across two rounds: the same bin won, not the same
+# measurement. See `test_a_filter_centre_is_a_grid_bin_not_a_measurement`.
 
 
 def _measured_hot_lf_woofer():
@@ -3542,7 +3547,7 @@ def test_boost_above_measured_target_is_an_enumerated_suppression_reason():
 
 
 def test_a_filter_centre_is_a_grid_bin_not_a_measurement():
-    """Why 434.0168 Hz was bit-identical across rounds 2 and 3, pinned.
+    """Why 434.0168 Hz reproduced across rounds 2 and 3, pinned.
 
     `design_peq` sets each filter's centre to `band_freqs[peak_idx]` -- an
     element of the envelope grid -- so the digits after the decimal come from
@@ -3550,6 +3555,14 @@ def test_a_filter_centre_is_a_grid_bin_not_a_measurement():
     measurement. Two rounds agreeing to ten digits means the same BIN won,
     which is a statement about the grid's geometry, not evidence that the two
     captures agreed.
+
+    The grid is asserted against a freshly written closed form rather than
+    against the shipped constant, at `rel=1e-12` -- a tolerance, not bitwise
+    equality, because the two expressions do not multiply in the same order
+    and floating-point reassociation costs a few ulp. Measured: 1.8e-15
+    relative worst case, three orders inside the pin. Far tighter than any
+    measurement question and far looser than a claim of exactness, which is
+    the honest pair.
     """
     grid_hz = np.asarray(DEFAULT_ENVELOPE_GRID_HZ, dtype=np.float64)
     closed_form = 150.0 * (20000.0 / 150.0) ** (np.arange(176) / 175.0)
@@ -3721,3 +3734,116 @@ def test_the_measured_target_bound_is_a_bound_and_not_a_ban():
     assert float(np.max(curve_db[action] - target_db[action])) > 0.0, (
         "the fixture must put hot bins inside the boost's own action region"
     )
+
+
+def test_a_hole_centred_lift_boost_is_named_too():
+    """The adversarial gate's counterexample, pinned (#2599 fix round).
+
+    The first version of this disclosure read the FLATTENING LOOP's
+    prescriptions, so it could not see the lift stage's boosts -- which are
+    built afterwards. The gate's 400-fit randomized probe found **74
+    hole-centred positive-gain Peaking boosts shipping unnamed**. That is the
+    worst class for this disclosure to miss by its own argument: a cut in a
+    hole removes level on evidence no branch has, but a BOOST adds level into
+    the phase-sensitive blend on the same absent evidence.
+
+    Reading the FINAL emitted cascade makes the universal true. This fixture
+    puts a measured dip inside the hole so the lift stage boosts there, then
+    asserts the boost is both emitted and named.
+    """
+    centre_hz = 1404.4032452955714  # grid bin 80, inside the session hole
+    measured_db = -_bell(_NATIVE_FREQS_HZ, centre_hz, 5.0, 0.14)
+    resp = _driver_response("woofer", measured_db)
+    envelope = _envelope("woofer", resp, excited_band_hz=(150.0, 4000.0))
+
+    fit = fit_driver_linearization(
+        resp, envelope, vocabulary=FitVocabulary(allow_boost=True),
+        blind_bands_hz=(_SESSION_HOLE_HZ,),
+    )
+
+    boosts_in_hole = [
+        f for f in fit.filters
+        if f.gain > 0.0 and _SESSION_HOLE_HZ[0] <= f.freq <= _SESSION_HOLE_HZ[1]
+    ]
+    assert boosts_in_hole, (
+        "the fixture must actually ship a hole-centred BOOST, or this pins "
+        "nothing -- the gate's counterexample is exactly this shape"
+    )
+
+    named = {round(p.freq_hz, 4) for p in fit.blind_zone_placements}
+    for boost in boosts_in_hole:
+        assert round(boost.freq, 4) in named, (
+            f"hole-centred boost at {boost.freq} Hz shipped unnamed"
+        )
+    # ...and the record carries its POSITIVE gain, so a reader can tell a
+    # level-ADDING placement from a level-removing one.
+    assert [p for p in fit.blind_zone_placements if p.gain_db > 0.0]
+
+
+def test_every_emitted_peaking_filter_in_a_hole_is_named():
+    """The universal itself, asserted as a property rather than as examples
+    of it, across a cut-only fit, a boost-capable one, and the measured-hot
+    shape.
+
+    Shelves are excluded BY TYPE, not by stage: a shelf's ``freq`` is a
+    corner, so the question does not apply to it.
+    """
+    cases = (
+        (*_blind_zone_woofer(), CUT_ONLY_VOCABULARY),
+        (*_blind_zone_woofer(), FitVocabulary(allow_boost=True)),
+        (*_measured_hot_lf_woofer(), FitVocabulary(allow_boost=True)),
+    )
+    reached = 0
+    for resp, envelope, vocabulary in cases:
+        fit = fit_driver_linearization(
+            resp, envelope, vocabulary=vocabulary,
+            blind_bands_hz=(_SESSION_HOLE_HZ,),
+        )
+        named = {round(p.freq_hz, 4) for p in fit.blind_zone_placements}
+        in_hole = {
+            round(f.freq, 4) for f in fit.filters
+            if f.biquad_type == "Peaking"
+            and _SESSION_HOLE_HZ[0] <= f.freq <= _SESSION_HOLE_HZ[1]
+        }
+        reached += len(in_hole)
+        assert in_hole <= named, f"unnamed hole-centred Peaking: {in_hole - named}"
+        # ...and the disclosure never invents a filter that was not emitted.
+        assert named <= {round(f.freq, 4) for f in fit.filters}
+    assert reached, "no case reached the hole -- the universal held vacuously"
+
+
+def test_a_shelf_corner_inside_a_hole_is_not_named():
+    """The type filter, pinned directly.
+
+    A shelf's ``freq`` is a CORNER, not a placement: its authority is the
+    whole band to one side of it, so "is this frequency inside the hole" is a
+    category error rather than a question with a wrong answer. Dropping the
+    type check would name shelves as though their corner were a centre, which
+    is a false positive that teaches a reader to distrust the disclosure.
+
+    Exercised on the helper directly, with a hand-built cascade, because no
+    end-to-end fixture reliably lands a shelf corner inside a hole -- and a
+    test that only passes when it happens to is not a pin.
+    """
+    grid_hz = np.asarray(DEFAULT_ENVELOPE_GRID_HZ, dtype=np.float64)
+    in_hole_hz = 1404.4032452955714
+    cascade = (
+        LinearizationFilter(
+            biquad_type="Highshelf", freq=in_hole_hz, q=_HIGHSHELF_Q, gain=-3.0,
+        ),
+        LinearizationFilter(
+            biquad_type="Lowshelf", freq=in_hole_hz, q=_HIGHSHELF_Q, gain=-2.0,
+        ),
+        LinearizationFilter(
+            biquad_type="Peaking", freq=in_hole_hz, q=2.0, gain=-1.7577,
+        ),
+    )
+    named = _blind_zone_placements(
+        cascade, grid_hz, np.zeros_like(grid_hz), (_SESSION_HOLE_HZ,),
+    )
+
+    # All three sit on the SAME frequency inside the hole, so only the type
+    # check can separate them -- which is exactly what this pins.
+    assert len(named) == 1
+    assert named[0].gain_db == pytest.approx(-1.7577)
+    assert named[0].freq_hz == pytest.approx(in_hole_hz)

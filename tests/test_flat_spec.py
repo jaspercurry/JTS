@@ -465,7 +465,7 @@ def test_to_dict_round_trip_stability_keys_and_types():
             # #2551: the edge these numbers came from, beside the nominal one.
             "graded_lo_hz",
             # #2599: whether that edge is where the reported extremum landed,
-            # with the band still trending into the ungraded remainder below.
+            # making it a lower bound on the band's real worst deviation.
             "max_at_graded_edge",
         }
         for key in (
@@ -1114,8 +1114,10 @@ def _rising_into_the_floor_db() -> np.ndarray:
 
 def test_an_extremum_on_the_graded_edge_is_disclosed():
     """#2599 rule 3. The reported maximum is a maximum over the GRADED bins,
-    so when it lands on the first of them the honest reading is "at least
-    this much, still trending" -- and the report now says which case it is."""
+    so when it lands on the LOWEST of them it is a lower bound on the band's
+    real worst deviation -- and the report now says which case it is. Note
+    what is NOT claimed: the flag tests two conjuncts and no slope, so it
+    licenses "it may well be worse below", never "it is still rising"."""
     report = evaluate_flat_spec(
         _EDGE_FREQS_HZ, _rising_into_the_floor_db(),
         trusted_floor_hz=_ROUND3_FLOOR_HZ,

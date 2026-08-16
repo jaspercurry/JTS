@@ -124,7 +124,7 @@ import numpy as np
 
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.program_analysis import DriverResponse
-from jasper.correction.peq import PEQ, design_peq, predicted_response
+from jasper.correction.peq import design_peq, predicted_response
 from jasper.sound.profile import RESPONSE_SAMPLE_RATE_HZ
 
 from .branch_chain import chain_response
@@ -955,11 +955,14 @@ class LinearizationFit:
     # partial one deliberately does not, for #1967's reason exactly (a lift
     # did happen).
     #
-    # ``blind_zone_placements`` is one record per PEAKING filter the loop
-    # centred inside a span no branch's own capture covers. Unlike the drops
-    # above it removes nothing — the filter ships and is NAMED, which is the
-    # #2600 disclosure class. Empty for every caller that declares no such
-    # span, which is every one-way box and every caller before #2599.
+    # ``blind_zone_placements`` is one record per EMITTED Peaking filter whose
+    # centre lands inside a span no branch's own capture covers — every stage's
+    # output, cuts and lift boosts alike, read off the final cascade so the
+    # "no Peaking filter is centred in a hole without being named" universal
+    # holds by construction. Unlike the drops above it removes nothing: the
+    # filter ships and is NAMED, which is the #2600 disclosure class. Empty for
+    # every caller that declares no such span, which is every one-way box and
+    # every caller before #2599.
     lift_boost_evidence_drops: tuple[BoostEvidenceDrop, ...] = ()
     blind_zone_placements: tuple[BlindZonePlacement, ...] = ()
 
@@ -1526,11 +1529,18 @@ def core_level_band_hz(
 
     Exists so a caller that discloses the band (the session's refusal
     journal) discloses the realized one rather than the bound it asked for.
-    Those differ exactly when the bound is refused by
-    :func:`_core_level_mask`'s width floor, which is precisely the case a
-    reader diagnosing a refusal needs told rather than hidden. Both functions
-    bottom out in that one helper, so the number logged and the number used
-    cannot drift.
+    The divergence that MATTERS is :func:`_core_level_mask`'s width floor
+    refusing the bound, which is precisely the case a reader diagnosing a
+    refusal needs told rather than hidden. But the two are not otherwise
+    equal: this band is resolved onto the envelope's own grid, so its edges
+    are the outermost BINS inside the requested span and a snap of up to one
+    bin is the ordinary case rather than a signal (measured on the 2026-08-16
+    jts3 woofer: 1291.4105 returned against a 1321.3 Hz declared edge — bin
+    77, with bin 78 at 1328.0267 already outside it). Read a difference wider
+    than a bin as the floor firing; read a sub-bin one as quantization.
+
+    Both functions bottom out in the one helper, so the number logged and the
+    number used cannot drift.
     """
     envelope_mask = envelope.allowed_depth_db > _ENVELOPE_NONZERO_EPS_DB
     if not envelope_mask.any():
@@ -2459,13 +2469,26 @@ def measurement_hole_bands_hz(
 
 
 def _blind_zone_placements(
-    peqs: Sequence[PEQ],
+    filters: Sequence[LinearizationFilter],
     grid_hz: np.ndarray,
     measured_excess_db: np.ndarray,
     blind_bands_hz: Sequence[tuple[float, float]],
 ) -> tuple[BlindZonePlacement, ...]:
-    """Name every peaking prescription CENTRED in a span no branch measured
+    """Name every emitted Peaking filter CENTRED in a span no branch measured
     (#2599). Reports; refuses nothing.
+
+    **Run over the FINAL cascade, cuts and lift boosts alike.** The first
+    version of this ran over the flattening loop's ``design_peq`` output only,
+    and the adversarial gate's 400-fit randomized probe found the hole it left:
+    **74 hole-centred positive-gain boosts shipped unnamed**, because the lift
+    stage builds its boosts after that point. That is the worst class to miss
+    by this function's own argument — a cut in a hole removes level on evidence
+    no branch has, but a BOOST adds level into the phase-sensitive blend on the
+    same absent evidence, and the lift stage is exactly where a manufactured
+    deficit sends one. Reading the emitted list instead of one stage's
+    prescriptions makes the universal true by construction: any Peaking filter
+    this fit ships whose centre lands in a hole is named, whichever stage
+    placed it and whatever its sign.
 
     **What the disclosure is for.** A filter centred inside a hole is one
     branch acting alone on a region where the per-branch instrument is silent
@@ -2509,24 +2532,37 @@ def _blind_zone_placements(
     than guessing at it — the disclosure-class posture #2600 itself takes, and
     the "disclose and recommend, never block" ethos ruled 2026-08-14. Hard
     stops stay reserved for the safety class, which a 1.76 dB cut is not.
+
+    **Peaking only, and that is the one scope limit left.** A shelf's ``freq``
+    is a CORNER, not a placement: its authority is the whole band to one side
+    of it, so asking whether that single frequency sits inside a hole is a
+    category error rather than a question with a wrong answer. The shelf and
+    the CD-horn Lowshelf backbone are therefore skipped by type, not by stage
+    — every Peaking filter from every stage is read.
     """
     if not blind_bands_hz:
         return ()
     placements: list[BlindZonePlacement] = []
-    for peq in peqs:
+    for emitted in filters:
+        # Peaking only. A shelf's ``freq`` is a CORNER, not a placement — see
+        # the docstring — so it is skipped rather than asked a question its
+        # geometry cannot answer.
+        if emitted.biquad_type != "Peaking":
+            continue
         hole = next(
             (
                 (float(lo_hz), float(hi_hz))
                 for lo_hz, hi_hz in blind_bands_hz
-                if lo_hz <= peq.freq <= hi_hz
+                if lo_hz <= emitted.freq <= hi_hz
             ),
             None,
         )
         if hole is None:
             continue
-        idx = int(np.argmin(np.abs(grid_hz - peq.freq)))
+        idx = int(np.argmin(np.abs(grid_hz - emitted.freq)))
         placements.append(BlindZonePlacement(
-            freq_hz=float(peq.freq), q=float(peq.q), gain_db=float(peq.gain),
+            freq_hz=float(emitted.freq), q=float(emitted.q),
+            gain_db=float(emitted.gain),
             blind_band_hz=hole,
             measured_excess_db=float(measured_excess_db[idx]),
         ))
@@ -2988,11 +3024,7 @@ def fit_driver_linearization(
          slope rises faster than the threshold, budget-clamped.
       5. Peaking loop: ``jasper.correction.peq.design_peq`` on the
          post-shelf residual, cuts-only, capped per-bin by
-         ``min(PER_FILTER_CUT_CAP_DB, envelope.allowed_depth_db)``, then
-         PLACEMENT-disclosed (#2599, :func:`_blind_zone_placements`): a
-         filter centred inside a ``blind_bands_hz`` span — a region no
-         branch's own capture covers — is named in
-         :attr:`~LinearizationFit.blind_zone_placements`. It still ships.
+         ``min(PER_FILTER_CUT_CAP_DB, envelope.allowed_depth_db)``.
       6. CD-horn compensation stage (``_hf_continuation_stage``, #1668): for a
          driver whose fit band reaches the confidence ceiling, a measured-
          inverse top-octave lift realized cut-only via give-back (a Lowshelf
@@ -3007,6 +3039,12 @@ def fit_driver_linearization(
          interference null can never be filled, and MEASURED-target bounded
          per filter (#2599), so a boost aimed only at a deficit the cut
          stages manufactured is dropped rather than emitted.
+      8. Blind-zone disclosure (#2599, :func:`_blind_zone_placements`):
+         every EMITTED Peaking filter — cuts and surviving lift boosts
+         alike — whose centre lands inside a ``blind_bands_hz`` span, a
+         region no branch's own capture covers, is named in
+         :attr:`~LinearizationFit.blind_zone_placements`. Reports only;
+         every filter still ships and no claim below moves.
 
     Returns a :class:`LinearizationFit` with zero filters (an honest no-op)
     when the envelope allows correction nowhere.
@@ -3143,7 +3181,6 @@ def fit_driver_linearization(
     fit_hi_hz = float(grid_hz[fit_hi_idx])
 
     filters: list[LinearizationFilter] = []
-    blind_zone_placements: tuple[BlindZonePlacement, ...] = ()
     working_db = smoothed_db.copy()
     remaining_filters = MAX_FILTERS_PER_DRIVER
 
@@ -3177,15 +3214,6 @@ def fit_driver_linearization(
             flatness_target_db=_PEAKING_FLATNESS_TARGET_DB,
             q_max=_PEAKING_Q_MAX,
             min_filter_gain_db=_MIN_FILTER_GAIN_DB,
-        )
-        # THE #2599 PLACEMENT SITE. A prescription centred in a span NO
-        # branch's own capture covers is NAMED here. It still ships — see
-        # :func:`_blind_zone_placements` for the measured reason refusing it
-        # is not available from inside a single-branch fit — so this reads
-        # the prescriptions without filtering them, and the cascade below is
-        # exactly the pre-#2599 one.
-        blind_zone_placements = _blind_zone_placements(
-            peqs, grid_hz, smoothed_db - target_curve_db, blind_bands_hz,
         )
         if peqs:
             working_db = working_db + predicted_response(peqs, grid_hz)
@@ -3234,6 +3262,29 @@ def fit_driver_linearization(
         ),
     )
     filters = list(lift.filters)
+
+    # THE #2599 PLACEMENT SITE. Every emitted Peaking filter whose centre lands
+    # in a span NO branch's own capture covers is NAMED here. It still ships —
+    # see :func:`_blind_zone_placements` for the measured reason a refusal is
+    # not available from inside a single-branch fit — so nothing below changes
+    # and the cascade is exactly the pre-#2599 one.
+    #
+    # Read AFTER the lift stage, on the FINAL list, and that placement is the
+    # fix for the hole the adversarial gate found: reading the flattening
+    # loop's prescriptions instead let 74 hole-centred lift BOOSTS ship unnamed
+    # across a 400-fit probe, which is the worst class to miss — a boost adds
+    # level into the blend on evidence no branch has. Reading the emitted list
+    # also reports each cut's FINAL gain, after any shrink
+    # ``reduce_cuts_for_lift`` applied, rather than the gain it was designed
+    # with.
+    #
+    # Graded against ``target_curve_db``, NOT the lift stage's give-back frame:
+    # this number answers "how far above its own target does the measurement
+    # sit here", which is the branch's own excess and is the frame the
+    # flattening loop that placed most of these filters was working in.
+    blind_zone_placements = _blind_zone_placements(
+        filters, grid_hz, smoothed_db - target_curve_db, blind_bands_hz,
+    )
 
     # THE CLAIM SEAM (R10b; first-principles panel CC-2(b), "rebuild
     # ``working_db`` from ``complex_correction_response`` unconditionally" —
