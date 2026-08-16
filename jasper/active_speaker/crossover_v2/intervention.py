@@ -739,7 +739,16 @@ class LevelFrameAdmission:
     """
 
     def to_dict(self) -> dict[str, Any]:
-        """The one serialization every disclosure surface quotes."""
+        """This verdict as the JOURNAL's payload — its only caller.
+
+        Deliberately NOT a shared serialization, and the difference matters to
+        anyone adding a field: the receipt reads ``reason`` and
+        ``anchor_delta_db`` straight off the attributes because
+        :func:`~.accountability.level_frame_finding_record` needs them flat and
+        role-suffixed, and the candidate carries the value itself. One verdict
+        owner, one adapter per surface — so a field added here changes the
+        journal line and nothing else.
+        """
 
         return {
             "admitted": bool(self.admitted),

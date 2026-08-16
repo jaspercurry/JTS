@@ -285,11 +285,21 @@ def test_the_planner_disputes_at_the_threshold_the_gate_banks_at():
     assert default == LEVEL_FRAME_AGREEMENT_TOLERANCE_DB
 
 
-def test_the_admission_serializes_once_for_every_surface():
-    """``to_dict`` is the single serialization the journal, the plan and the
-    banked record all quote. Pinned as a whole-dict equality so a field added
-    to one reader without the others is a failure here rather than a surface
-    that silently disagrees with its siblings."""
+def test_the_journal_payload_is_pinned_field_for_field():
+    """``to_dict`` is the JOURNAL's adapter — its only caller — pinned whole.
+
+    Whole-dict equality rather than key spot-checks, so adding, renaming or
+    dropping a field changes this test rather than silently changing what
+    ``event=…_level_frame_excluded`` carries.
+
+    It is NOT the other surfaces' serialization, and this test does not claim
+    to cover them: the receipt reads ``reason``/``anchor_delta_db`` off the
+    attributes (covered by
+    ``test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds``
+    and ``test_the_banked_finding_says_what_the_session_did_about_it``), and
+    the candidate carries the value object itself. What is shared is the
+    VERDICT, not its encoding.
+    """
 
     _, _, admission = _anchor()
 
