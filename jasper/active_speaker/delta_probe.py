@@ -1238,8 +1238,10 @@ def classify_delta_probe(
     against a new one stopping at 8 kHz measured a +6.000 dB phantom) and mask
     one (a genuine −2.2 dB shift re-grading to 0.000). What the caller still
     owes is that its previous side describe the graph the entry capture actually
-    went through; the one reachable way for it not to is named in
-    ``crossover_v2.commanded``'s "known incompleteness".
+    went through. The crossover corner is the part of that which can move, and
+    since #2614 both of the ways it can are checked and refused rather than
+    owed — see ``crossover_v2.commanded``'s "The corner has to match, and it is
+    CHECKED rather than assumed".
 
     Topology-agnostic by construction: this function knows about a measured
     curve, a commanded curve, and a band. It has no notion of drivers, ways,
