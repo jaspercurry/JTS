@@ -25,8 +25,11 @@ The model (the design-of-record, HANDOFF-active-speaker-dsp.md "Stage 5"):
        asked to retry louder — unless the caller passes auto_retry_pending
        for the same target)
   woofer before tweeter (a driver is ramped only after its lower-frequency
-  siblings are floor-confirmed), and before ANY tweeter step the protective
-  high-pass is re-asserted against the RUNNING graph, not just the file.
+  siblings are floor-confirmed, unless the caller passes gate-only ordering
+  evidence in role_order_confirmed_roles — the web route's identity audition
+  counts every lower role present in the group as confirmed, the CLI passes
+  only real ones), and before ANY tweeter step the protective high-pass is
+  re-asserted against the RUNNING graph, not just the file.
 
 The gate's "subsonic/DC protection present" requirement is satisfied by the
 protections that already exist in the active graph — the bounded commissioning
