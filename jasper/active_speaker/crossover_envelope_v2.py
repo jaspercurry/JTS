@@ -261,6 +261,7 @@ def _finite(value: Any) -> float | None:
 
 def _linearization_octave_rows(
     octaves: Any,
+    reasons: Any,
 ) -> list[dict[str, Any]]:
     """Gauge fix (2026-07-24): per-role top-octave rows (>= 8k/12k/16k) —
     the OBSERVE-layer honesty ladder's disclosure numbers
@@ -272,6 +273,26 @@ def _linearization_octave_rows(
     it — "uncorrected regions show their natural deficit, never a
     pass/fail" (LinearizationFit's own docstring). Empty for a role whose
     fit never ran.
+
+    **A number here is not always a deficit, which is what #2638 cost.** The
+    OBSERVE layer runs to the grid's own top, so past a driver's radiating
+    band — where the crossover target dives at 24 dB/oct while the
+    measurement floor stays put — the same subtraction returns a large
+    POSITIVE number that is the stopband's arithmetic, not performance
+    (+23.0 dB at 16k on the 2026-08-16 JTS3 candidate, whose largest filter
+    gain anywhere was +2.5 dB). ``reasons`` is the fit engine's own
+    band-for-band verdict for exactly that
+    (``_candidate_summary``'s ``linearization_octave_reasons``, projected
+    from ``LinearizationFit.reason_summary``); each band carries its code
+    through as ``reason`` so the renderer can say which kind of number it is
+    holding without re-deriving anything from frequencies. The vocabulary is
+    :class:`~jasper.active_speaker.linearization_envelope.ReasonCode`'s and
+    is owned there — this function neither reads nor interprets it.
+
+    ``reason`` is OMITTED, not empty-stringed, for a candidate persisted
+    before #2638: nothing recorded the verdict, and a row that renders
+    exactly as it did then is the honest answer. Present-and-known and
+    absent-because-unrecorded stay structurally different.
 
     **These are FIT DIAGNOSTICS, not the measurement (flat-linearization
     plan PR-5).** Every number here is per-driver, on the fit's own envelope
@@ -286,6 +307,7 @@ def _linearization_octave_rows(
     (``deploy/assets/correction/js/crossover/main.js``), so no surface
     presents a per-driver fit residual as "the measurement".
     """
+    reason_rows = _mapping(reasons)
     rows: list[dict[str, Any]] = []
     for role, per_role in sorted(
         _mapping(octaves).items(),
@@ -293,11 +315,17 @@ def _linearization_octave_rows(
     ):
         if not isinstance(per_role, Mapping):
             continue
+        per_role_reasons = _mapping(reason_rows.get(role))
         bands: list[dict[str, Any]] = []
         for hz in _TOP_OCTAVES_HZ:
             db = _finite(per_role.get(hz))
-            if db is not None:
-                bands.append({"hz": int(hz), "delta_db": db})
+            if db is None:
+                continue
+            band: dict[str, Any] = {"hz": int(hz), "delta_db": db}
+            code = per_role_reasons.get(hz)
+            if isinstance(code, str) and code:
+                band["reason"] = code
+            bands.append(band)
         if bands:
             rows.append({"role": str(role), "bands": bands})
     return rows
@@ -392,7 +420,8 @@ def _candidate_review_payload(
         "linearization_outcome": str(candidate.get("linearization_outcome") or ""),
         # Gauge fix (2026-07-24): per-role top-octave deficits.
         "linearization_octaves": _linearization_octave_rows(
-            candidate.get("linearization_octaves")
+            candidate.get("linearization_octaves"),
+            candidate.get("linearization_octave_reasons"),
         ),
         # "This correction costs N dB of maximum level" (PR-L5), reaching a
         # screen-facing payload for the first time (two-stage commission D4).

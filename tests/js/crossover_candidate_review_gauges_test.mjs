@@ -299,4 +299,116 @@ render({
   );
 }
 
+// --- 6. #2638: an out-of-band octave is NAMED, never numbered -------------
+// The residual runs to 20 kHz. Past the woofer's own band the crossover
+// target dives at 24 dB/oct while the measurement floor stays put, so the
+// subtraction returns a large POSITIVE number — stopband arithmetic, not
+// performance. On 2026-08-16 a healthy candidate (largest filter gain
+// anywhere +2.5 dB) rendered "+23.0 dB" on this line and nearly got indicted
+// for a runaway boost. The fit engine already labelled those octaves; this
+// pins that the label changes what the household reads.
+render({
+  ...baseEnvelope,
+  candidate_review: baseCandidateReview({
+    linearization_outcome: "fitted",
+    linearization_octaves: [
+      {
+        role: "woofer",
+        bands: [
+          { hz: 8000, delta_db: -0.3, reason: "envelope_fitted" },
+          { hz: 12000, delta_db: 4.1, reason: "envelope_out_of_band" },
+          { hz: 16000, delta_db: 23.0, reason: "envelope_out_of_band" },
+        ],
+      },
+    ],
+  }),
+});
+{
+  const text = technicalDetailsText();
+  check(
+    text === (
+      "alignment confidence 0.71; candidate cand-proof; " +
+      "driver linearization: fitted; " +
+      "woofer fit residual vs target (design-axis capture, not the spatial " +
+      "measurement): 8k -0.3 dB; " +
+      "woofer 12k, 16k: outside this driver’s band — not corrected."
+    ),
+    "an out-of-band octave's number never reaches the screen, and the octave " +
+    "is still named — nothing hidden, no stopband arithmetic presented as " +
+    "passband performance",
+    { got: text },
+  );
+  check(
+    !text.includes("23.0"),
+    "the +23.0 dB stopband artifact from the 2026-08-16 candidate is gone " +
+    "from the household row",
+    { got: text },
+  );
+}
+
+// A driver whose whole top ladder is out of band still discloses the octaves
+// — the row must not vanish, or "past this driver's band" and "the fit never
+// ran" become the same silence.
+render({
+  ...baseEnvelope,
+  candidate_review: baseCandidateReview({
+    linearization_octaves: [
+      {
+        role: "woofer",
+        bands: [
+          { hz: 8000, delta_db: 12.0, reason: "envelope_out_of_band" },
+          { hz: 16000, delta_db: 49.8, reason: "envelope_out_of_band" },
+        ],
+      },
+    ],
+  }),
+});
+{
+  const text = technicalDetailsText();
+  check(
+    text === (
+      "alignment confidence 0.71; candidate cand-proof; " +
+      "woofer 8k, 16k: outside this driver’s band — not corrected."
+    ),
+    "an all-out-of-band role still names its octaves and prints no residual " +
+    "line at all",
+    { got: text },
+  );
+}
+
+// Every OTHER reason code describes a band the driver does radiate, where the
+// number is a real residual — those render exactly as case 2 does, including
+// the beyond-confidence octaves of a fired CD-horn continuation stage.
+render({
+  ...baseEnvelope,
+  candidate_review: baseCandidateReview({
+    linearization_octaves: [
+      {
+        role: "tweeter",
+        bands: [
+          { hz: 8000, delta_db: -0.1, reason: "envelope_fitted" },
+          {
+            hz: 16000,
+            delta_db: -9.4,
+            reason: "envelope_beyond_measurement_confidence",
+          },
+        ],
+      },
+    ],
+  }),
+});
+{
+  const text = technicalDetailsText();
+  check(
+    text === (
+      "alignment confidence 0.71; candidate cand-proof; " +
+      "tweeter fit residual vs target (design-axis capture, not the spatial " +
+      "measurement): 8k -0.1 dB, 16k -9.4 dB."
+    ),
+    "a non-out-of-band reason code leaves the residual line untouched — the " +
+    "fix is scoped to the one code whose number is not performance",
+    { got: text },
+  );
+}
+
 console.log(JSON.stringify({ ok: true, passed }));

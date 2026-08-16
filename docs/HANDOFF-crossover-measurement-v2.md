@@ -1665,7 +1665,13 @@ OBSERVE-layer honesty-ladder field above) straight off the live session's
 rich candidate and threads the 8k/12k/16k values into the wizard's RESULT
 screen (`candidate_review.linearization_octaves`,
 `candidate_review.linearization_outcome`) — the number that says "the top
-octave is 9 dB down and nothing corrected it." That reduction is
+octave is 9 dB down and nothing corrected it." Each octave's
+`reason_summary` verdict rides alongside it since #2638
+(`candidate_review.linearization_octaves[].reason`), because the same
+subtraction past a driver's own band returns a large POSITIVE number that is
+the crossover's rolloff rather than performance; what the screen does with
+that is owned by `crossover_envelope_v2._linearization_octave_rows` and the
+renderer beside it. That reduction is
 session-scoped only (mirrors `linearization`'s own reduced applied-profile
 copy, which strips the honesty-ladder fields via
 `linearization_filters_by_role` — see that function's docstring); it does

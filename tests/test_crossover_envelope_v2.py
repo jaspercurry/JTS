@@ -1526,6 +1526,95 @@ def test_done_candidate_review_carries_linearization_outcome_and_octaves():
     ]
 
 
+def test_out_of_band_octaves_carry_the_fit_engines_reason_to_the_screen():
+    """#2638: a stopband octave's number is not passband performance.
+
+    ``observe_octave_summary`` runs to the grid's top, so past the woofer's
+    own band — target diving 24 dB/oct, measurement floor staying put — the
+    subtraction returns a large POSITIVE number. On 2026-08-16 that rendered
+    as a bare "+23.0 dB" on the review screen and nearly indicted a candidate
+    whose largest filter gain anywhere was +2.5 dB. The fit engine labels
+    every one of those octaves in the SAME pass; this asserts the label
+    reaches the band the renderer draws, so the renderer never has to
+    re-derive it from the frequency.
+    """
+    env = build_crossover_envelope_v2(_status(
+        phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(
+            linearization_outcome="fitted",
+            linearization_octaves={
+                "woofer": {"8000": -0.3, "12000": 4.1, "16000": 23.0},
+            },
+            linearization_octave_reasons={
+                "woofer": {
+                    "8000": "envelope_fitted",
+                    "12000": "envelope_out_of_band",
+                    "16000": "envelope_out_of_band",
+                    # The fit engine keys reasons over its own full octave
+                    # ladder (down to 250 Hz); the top-octave row ignores the
+                    # rest exactly as it does for the numbers.
+                    "500": "envelope_fitted",
+                },
+            },
+        ),
+    ))
+    bands = env["candidate_review"]["linearization_octaves"][0]["bands"]
+    assert bands == [
+        {"hz": 8000, "delta_db": -0.3, "reason": "envelope_fitted"},
+        {"hz": 12000, "delta_db": 4.1, "reason": "envelope_out_of_band"},
+        {"hz": 16000, "delta_db": 23.0, "reason": "envelope_out_of_band"},
+    ]
+
+
+def test_a_candidate_with_no_recorded_reasons_renders_exactly_as_before():
+    """The pre-#2638 candidate, unperturbed.
+
+    Candidates persist (``/state.crossover_v2.candidate``), so a household
+    can review one this build never fitted. Nothing recorded WHY its octaves
+    read as they do, and inventing a verdict would be worse than the defect —
+    so ``reason`` is absent rather than guessed, and the row is byte-identical
+    to what the same candidate produced before this key existed.
+    """
+    env = build_crossover_envelope_v2(_status(
+        phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(
+            linearization_outcome="fitted",
+            linearization_octaves={"woofer": {"8000": -0.3, "16000": -2.8}},
+        ),
+    ))
+    assert env["candidate_review"]["linearization_octaves"] == [
+        {
+            "role": "woofer",
+            "bands": [{"hz": 8000, "delta_db": -0.3}, {"hz": 16000, "delta_db": -2.8}],
+        },
+    ]
+
+
+def test_the_browser_and_python_agree_on_the_out_of_band_octave_code():
+    """The one cross-language reason literal, pinned (#2638).
+
+    The renderer decides whether an octave's number is a residual or stopband
+    arithmetic by comparing the band's server-supplied ``reason`` against a
+    literal it cannot import. Drift costs exactly the bug this fixed: a
+    +23.0 dB stopband artifact rendered on the review screen as if it were
+    the correction's own doing. Same guard shape, and same reason, as
+    ``test_the_browser_and_python_agree_on_which_objectives_are_unmeasured``
+    directly above.
+    """
+    import re
+    from pathlib import Path
+
+    from jasper.active_speaker.linearization_envelope import ReasonCode
+
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "deploy/assets/correction/js/crossover/main.js"
+    ).read_text(encoding="utf-8")
+    match = re.search(
+        r"const OCTAVE_REASON_OUT_OF_BAND = '([a-z0-9_]+)';", source,
+    )
+    assert match, "the renderer no longer carries a named out-of-band reason code"
+    assert match.group(1) == ReasonCode.OUT_OF_BAND.value
+
+
 def test_done_candidate_review_carries_the_alignment_objective():
     """WHERE the polarity came from reaches the screen, not just what it is.
 
