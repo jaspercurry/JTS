@@ -520,6 +520,16 @@ def test_ramp_tweeter_accepts_durable_woofer_confirmation(monkeypatch, tmp_path)
 
 
 def test_ramp_step_then_pending_blocks_a_second_step(monkeypatch, tmp_path):
+    """The ack gate, polarity 1: no ``auto_retry_pending``, no second step.
+
+    This and ``test_auto_retry_pending_replaces_same_driver_pending_step`` below
+    are the two halves of the sentence ``commission_ramp.py``'s ramp-progress
+    comment states — that a second step waits on the last one's ACK unless the
+    caller passes ``auto_retry_pending`` for the same target. That comment used
+    to assert the refusal without the exception, which the branch it describes
+    has never honoured. Both directions are guarded here so the corrected
+    sentence cannot drift from the branch again in either direction.
+    """
     step, cam, staged_path, state_path, common = _ramp_step(
         tmp_path, monkeypatch, role="woofer"
     )
@@ -533,6 +543,15 @@ def test_ramp_step_then_pending_blocks_a_second_step(monkeypatch, tmp_path):
 
 
 def test_auto_retry_pending_replaces_same_driver_pending_step(monkeypatch, tmp_path):
+    """The ack gate, polarity 2: the flag steps the SAME target with no ACK.
+
+    The waiver half of the sentence pinned by the test above: nothing
+    acknowledges the pending step here, the caller passes ``auto_retry_pending``
+    for the same group and role, and the ramp advances one bounded step louder.
+    The waiver moves the pace, not the ceiling — ``next_gain_db`` is asserted
+    against the same ``MIN_TEST_LEVEL_DBFS + AUDIBLE_RAMP_STEP_DB`` an
+    acknowledged step would have reached.
+    """
     async def _tone(**kwargs):
         return {
             "status": "completed",

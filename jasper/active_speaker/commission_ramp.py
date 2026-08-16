@@ -117,10 +117,11 @@ def next_ramp_gain_db(current_gain_db: float) -> float:
 # Small and group-scoped: which roles have been floor-confirmed (the
 # woofer-before-tweeter memory the per-target safe_playback tri-state cannot
 # carry across drivers), plus the one step currently awaiting an operator ACK
-# (so a second step cannot be taken before the last one is acknowledged). The
-# authoritative per-driver floor confirmation lives in safe_playback's
-# tri-state; the loaded gain lives in the commission-load state. This file holds
-# only what neither of those can.
+# (so a second step cannot be taken before the last one is acknowledged, unless
+# the caller passes `auto_retry_pending` for the same target — the web
+# auto-ramp does, the CLI does not). The authoritative per-driver floor
+# confirmation lives in safe_playback's tri-state; the loaded gain lives in the
+# commission-load state. This file holds only what neither of those can.
 
 
 def ramp_state_path(path: str | Path | None = None) -> Path:

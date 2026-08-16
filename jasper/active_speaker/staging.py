@@ -2114,17 +2114,59 @@ def prepare_driver_commissioning_config(
     audible_evidence: dict[str, Any] = {}
     blocker_count = sum(1 for issue in issues if issue.get("severity") == "blocker")
 
+    # THIS EMIT'S DEVICE BLOCK IS DERIVED, NOT DEFAULTED (#2412). The emitter
+    # takes seven device fields beyond the sink NAME, and forwarding only the
+    # name leaves all seven at its snd-aloop defaults: the `plug:jasper_capture`
+    # tap, the program-lane formats, and the loopback chunk/target/queue
+    # geometry. That is the subset-forwarding shape #2364 closed at the boot
+    # anchor above, on the SAME emitter with the SAME contract, so this reads
+    # the same one derivation — `active_emit_devices` owns "what does an emit
+    # against THIS device have to declare" for every device, ring or not.
+    #
+    # THE BYTES DO NOT MOVE. `active_emit_devices` hands back the emitter's own
+    # defaults for every non-ring device, and the transport gate above refuses
+    # every ring device before this runs, so every box emits what it emitted
+    # before. Deriving the device contract and deciding the transport policy are
+    # two questions, and this is only the first one.
+    devices = None
+    if blocker_count == 0 and bound_preset is not None and resolved_playback_device:
+        # A ring wire token neither jasper-fanin nor JTS can resolve must reach
+        # the operator as this function's ordinary blocker, not as a traceback
+        # out of a wizard or the CLI. Mirrors the anchor's refusal, code
+        # included, so one bad token reads the same wherever it surfaces.
+        try:
+            devices = active_emit_devices(resolved_playback_device, topology=topology)
+        except ValueError as exc:
+            issues.append(_issue(
+                "blocker",
+                "ring_wire_declaration_invalid",
+                f"this box declares a ring wire neither jasper-fanin nor JTS can "
+                f"resolve, so there is no wire to emit against: {exc}",
+            ))
+            blocker_count += 1
+
     if (
         blocker_count == 0
         and bound_preset is not None
         and resolved_playback_device
         and audible_outputs
+        and devices is not None
     ):
         try:
             out_path.parent.mkdir(parents=True, exist_ok=True)
+            # Every device field is named EXPLICITLY, like the anchor's emit: a
+            # field added to `ActiveEmitDevices` and not added here is the
+            # subset-forwarding defect this block exists to close.
             emitted_config = emit_active_speaker_commissioning_config(
                 bound_preset,
                 playback_device=resolved_playback_device,
+                capture_device=devices.capture_device,
+                capture_format=devices.capture_format,
+                playback_format=devices.playback_format,
+                chunksize=devices.chunksize,
+                target_level=devices.target_level,
+                queuelimit=devices.queuelimit,
+                enable_rate_adjust=devices.enable_rate_adjust,
                 audible_outputs=audible_outputs,
                 audible_gain_db=audible_gain_db,
                 volume_limit_db=volume_limit_db,
