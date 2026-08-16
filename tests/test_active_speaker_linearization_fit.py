@@ -3677,3 +3677,47 @@ def test_declaring_no_hole_is_the_pre_2599_fit_exactly():
     assert fit_driver_linearization(
         resp, envelope, blind_bands_hz=(),
     ).to_dict() == fit_driver_linearization(resp, envelope).to_dict()
+
+
+def test_the_measured_target_bound_is_a_bound_and_not_a_ban():
+    """A boost with real measured deficit at its centre must survive even when
+    its SKIRTS reach into a region the measurement says is hot.
+
+    This is the mirror of the refusal, and it is the difference between the
+    bound and the "ban" failure mode ``_boost_exclusion_verdicts`` documents
+    for absolute thresholds: the criterion asks whether the filter has
+    ANYTHING real to fill, not whether every bin it touches is short. A rule
+    reading the action region's WORST bin instead of its best would refuse
+    this, and every ordinary boost sitting next to a peak with it.
+    """
+    grid_hz = np.asarray(DEFAULT_ENVELOPE_GRID_HZ, dtype=np.float64)
+    band_mask = (grid_hz >= 200.0) & (grid_hz <= 2000.0)
+    target_db = np.zeros_like(grid_hz)
+    # A real dip at 434.0168 Hz sitting on the flank of a real peak close
+    # enough that any bell filling the dip necessarily acts on hot bins too.
+    curve_db = (
+        -_bell(grid_hz, 434.01678699822264, 4.0, 0.18)
+        + _bell(grid_hz, 558.1989824372294, 5.0, 0.16)
+    )
+
+    class _Env:
+        allowed_depth_db = np.full_like(grid_hz, 12.0)
+
+    lift = _lift_stage(
+        grid_hz, curve_db, target_db, _Env(),
+        band_mask, (), FitVocabulary(allow_boost=True),
+        measured_db=curve_db,
+    )
+    assert lift.suppressed_reason == ""
+    assert lift.boost_evidence_drops == ()
+    assert lift.from_boost_db > _MIN_FILTER_GAIN_DB
+
+    # The premise, so this cannot pass by the skirts never reaching the peak.
+    (boost,) = [f for f in lift.filters if f.gain > 0.0]
+    own_db = 20.0 * np.log10(np.abs(
+        complex_correction_response((boost,), grid_hz)
+    ))
+    action = (own_db >= boost.gain / 2.0) & band_mask
+    assert float(np.max(curve_db[action] - target_db[action])) > 0.0, (
+        "the fixture must put hot bins inside the boost's own action region"
+    )
