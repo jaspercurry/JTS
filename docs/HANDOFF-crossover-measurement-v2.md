@@ -3118,6 +3118,22 @@ a 5–12 kHz shelf-realization defect and not: 2026-07-27's lived an octave and 
 half above tracking's band and no tolerance there could have caught it. Design
 and the verdict-priority rule: `jasper/active_speaker/delta_probe.py`.
 
+**The commanded axis is the applied graph minus the graph it REPLACES** (#2611).
+Every element of an apply is on it — the emitted filters, the per-role gains,
+the polarity and the delay — because the two sides are the same measured branch
+pair evaluated under two different graphs. It used to be the linearized branch
+prediction minus the raw one with BOTH sides at the applied candidate's own
+polarity, delay and gains, so those three cancelled by construction and the
+curve carried the filters alone. On 2026-08-16 that cost a household a tune the
+room had measured better: a commanded +3.3209 dB tweeter step (−10.2141 →
+−6.8932) landed in bins the axis called quiet and was reported as
+`residual_offset_db = +3.2198`, and the frame that decides the rollback question
+was fitted entirely ABOVE the band it was then applied to. Owner:
+`jasper/active_speaker/crossover_v2/commanded.py`, which also carries the one
+known incompleteness. The pre-split program headroom is the one level term that
+axis cannot carry — it is applied before the branch split — and it stays where
+it was, as `expected_offset_db`.
+
 **That band is intersected with the capture's own TRUSTED band, and there is no
 fallback** (#2521). The band comes from
 `gate_disclosure.evaluation_band_hz` — this capture's gate-derived trusted floor
@@ -3161,24 +3177,34 @@ exactly `expected_offset_db`'s "nothing known" rule. The decomposition is an
 identity the record carries: `residual_offset_db == frame.offset_db −
 entry_anchor_offset_db`.
 
-**Its one known incompleteness is NOT bounded, and it bites on chained rounds.**
-`commanded_delta` is the new correction's transfer relative to the RAW crossover,
-while the entry capture rides whatever graph was active. On a first apply that
-graph carries no linearization and the two agree exactly. On a REPEAT round the
-residual carries `−mean(previous round's commanded curve over this round's quiet
-bins)` — zero when that round commanded nothing there, and otherwise unbounded,
-because the previous round's curve is not an input to the probe and nothing in it
-can see, disclose, or bound the term. It can **fabricate** a shift (a previous
-round correcting out to 20 kHz against a new one stopping at 8 kHz measures a
-+6.000 dB phantom) and it can **mask** one (a genuine −2.2 dB uncommanded shift
-re-grading to residual 0.000 and `frame_mismatch`). Both shapes were constructed
-by the adversarial gate on PR #2545 and are pinned by
+**Both curves are stated against the ENTRY graph, which is what makes the
+subtraction an identity** (#2611 closed the #2545 chained-round hazard).
+`commanded_delta` is the applied graph's predicted sum minus **the predicted sum
+of the graph it replaces**, and the entry capture is a measurement of that same
+graph, so the model term cancels and the residual is
+`mean(measured_post − measured_pre − commanded)` over the quiet bins.
+
+It did not always. While `commanded_delta` was the new correction's transfer
+relative to the RAW crossover, a REPEAT round's residual carried
+`−mean(previous round's commanded curve over this round's quiet bins)` — zero
+when that round commanded nothing there, otherwise unbounded, and invisible to
+the probe. It could **fabricate** a shift (a previous round correcting out to
+20 kHz against a new one stopping at 8 kHz measured a +6.000 dB phantom) and it
+could **mask** one (a genuine −2.2 dB uncommanded shift re-grading to residual
+0.000 and `frame_mismatch`). Both shapes were constructed by the adversarial
+gate on PR #2545; neither is reachable through the production caller now,
+because the previous GRAPH is an explicit input to the axis. The classifier's
+behaviour on a mismatched pair is still pinned — it is a public function and a
+direct caller can hand it one — by
 `test_a_repeat_round_carries_the_previous_rounds_command_into_the_residual`.
 
-**Operationally: keep a chained round's commanded band from retreating out of the
-previous round's.** That empties the overlap by construction, which is the only
-thing that makes the term zero. `entry_anchor_offset_db` discloses what was
-removed and is **not** a warrant that the residual beside it is clean.
+**What the caller still owes** is that its previous side describe the graph the
+entry capture actually went through. One reachable way for it not to: the
+branches are composed through the CURRENT design draft's crossover, so a
+household that edits Fc in `/sound` between rounds leaves the previous graph
+modelled with a corner it never ran. Named in `crossover_v2.commanded`'s "known
+incompleteness". `entry_anchor_offset_db` discloses what was removed and is
+**not** a warrant that the residual beside it is clean.
 
 The two conditions that reach the verdict subtract **different** numbers, and
 have to: (a) "did the level move" is a change question and reads the anchored
@@ -5077,6 +5103,8 @@ was measured on this branch. **The date below is deliberately NOT bumped**, for
 the same reason as the two addenda above.
 
 Last verified: 2026-08-16 (#2602 — the live spine's adoption-axis count, row
-count, and file-map rows re-read against `decide_adoption`; the historical
+count, and file-map rows re-read against `decide_adoption`; plus #2611 — the
+delta-probe section's commanded-axis and chained-round paragraphs re-read
+against `crossover_v2.commanded` and `classify_delta_probe`. The historical
 appendix was NOT re-verified and still shows the pre-#2602 five-row table, as
 its own status callout says it will)

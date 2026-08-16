@@ -1639,15 +1639,23 @@ def test_two_stray_bins_cannot_make_a_sliver_look_band_wide(grid):
 
 @pytest.mark.parametrize("grid", _GRID_SHAPES)
 def test_a_repeat_round_carries_the_previous_rounds_command_into_the_residual(grid):
-    """**The limitation, pinned rather than hidden** (#2533, adversarial gate).
+    """**What a MISMATCHED pair of references does to the residual** (#2533).
 
-    ``commanded`` is measured against the RAW crossover while the entry capture
-    rides whatever graph was active, so on a chained round the residual carries
-    ``−mean(previous round's commanded curve over this round's quiet bins)``.
-    That term is not an input to the classifier and cannot be bounded by it. Both
-    directions are reproduced here so the documented behaviour is what the code
-    actually does, and so a future change that fixes it fails this test loudly
-    instead of silently improving prose.
+    ``commanded`` and ``entry_delta_db`` must be stated against the SAME graph.
+    When they are not, the residual carries ``−mean(the other graph's command
+    over this round's quiet bins)``: a term this classifier is never given and
+    cannot bound. Both directions are reproduced here, unchanged.
+
+    **What changed is who can reach it** (#2611). This was a live production
+    hazard while the caller measured ``commanded`` against the RAW crossover and
+    the entry capture rode whatever graph was active — a REPEAT round handed the
+    two different references by construction. The caller's commanded axis is now
+    the applied graph minus the ENTRY graph
+    (:mod:`jasper.active_speaker.crossover_v2.commanded`), so the production pair
+    shares one reference and neither shape below is reachable through it. The
+    contract stays pinned because this function is public and a direct caller —
+    the offline bench, a future one — can still hand it a mismatched pair; what
+    it no longer is, is a description of what shipped rounds do.
     """
     band = (400.0, 20_000.0)
     # This round stops at 8 kHz; the previous one corrected all the way out, so
