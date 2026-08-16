@@ -1289,7 +1289,7 @@ def test_a_declared_narrow_pin_moves_the_resolver_and_the_refusal(
 ):
     """The R6/R7 activation input, walked: one env key moves the whole answer.
 
-    Before 2026-08-11 ``resolve_ring_wire`` pinned the format narrow with no
+    Before PR #2335 ``resolve_ring_wire`` pinned the format narrow with no
     input, so declaring a wire to ``jasper-fanin`` moved fan-in and nothing else
     — the arm was unreachable rather than refused. The resolver reads the same
     key the daemon does now, so the declaration moves the WHOLE answer, and the

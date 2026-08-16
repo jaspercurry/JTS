@@ -455,7 +455,7 @@ def resolve_ring_wire(topology: Any = None) -> RingWire:
       same chain, defaulting to :data:`RING_WIRE_FORMAT_WIDE` when the box
       declares nothing. The layout's accept-set is wider (S16LE and S32LE, both
       ends of the ring already parse both), so which one a box carries is a
-      DECLARATION, not a policy constant — until 2026-08-11 this axis was
+      DECLARATION, not a policy constant — until PR #2335 this axis was
       pinned narrow here with no input at all, which meant an operator could
       declare a wide wire to fan-in and every Python end would still emit and
       render narrow (jts3's blocked wide arm). The shipped conf.d DECLARES the
