@@ -5115,6 +5115,201 @@ async function testACleanRejectionAndAnUncountedBudgetBothWaitForAThumb() {
   ok();
 }
 
+// Make the Nth begin post fail. Wraps a fake client rather than teaching every
+// fake a failure mode: the plan fake's ordering contract is the thing under
+// test here, and it stays exactly as strict.
+function failNthBeginPost(client, n, error) {
+  const inner = client.postEvent;
+  let begins = 0;
+  client.postEvent = async (event) => {
+    if (event.begin_capture && !event.armed) {
+      begins += 1;
+      if (begins === n) throw error;
+    }
+    return inner(event);
+  };
+  return client;
+}
+
+// ============================================================================
+// 66 (gate B1). A begin failure DURING the auto-fired retake, at index 1.
+//
+// The auto-retake is the first affordance-free begin reachable at the FIRST
+// measurement, and `repairPreArmAffordance`'s drop-back renders the position
+// BEFORE this one — which does not exist at index 1. Without the floor the
+// household is left reading "Measuring this spot again" under status copy that
+// names a button, with no button on the screen and Stop the only tap left.
+// #2090's rule: silence is the only wrong outcome.
+// ============================================================================
+async function testABeginFailureDuringTheAutoRetakeLeavesALiveAffordance() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeSplicingRecorder([1]);
+  installDocument(makeStatusEl());
+
+  const spec = planSpec({ target: 1, maxAttempts: 4 });
+  const fake = makeFakePlanClient({
+    target: 1,
+    maxAttempts: 4,
+    resultFor: (index, attempt) =>
+      attempt === 1
+        ? {
+          accepted: false,
+          reason: "The capture glitched.",
+          attempts: { used: 0, allowed: 3, left: 3 },
+        }
+        : { accepted: true },
+  });
+  // Non-connectivity (`relay 500`), so the begin ladder does not re-send it —
+  // this lands in the pre-arm repair rather than recovering on its own.
+  failNthBeginPost(fake.client, 2, new Error("relay 500"));
+  const ctx = makeCtx(spec, fake.client);
+
+  await onPlanStart(ctx);
+  // The affordance-free window the repair has to survive.
+  assert.deepEqual(actionButtons(ctx.screenEl), []);
+
+  await waitFor(
+    () => actionButtons(ctx.screenEl).length > 0,
+    "a live affordance after the auto-fired round failed to begin",
+  );
+
+  const primary = primaryButton(ctx);
+  assert.ok(primary, "the repaired screen registers a begin affordance");
+  const status = statusHistory[statusHistory.length - 1];
+  assert.ok(status.includes("relay 500"), `the cause is named: ${status}`);
+  assert.ok(
+    status.includes(`Tap ${primary.textContent} to try again`),
+    `the copy names a button that is on the screen, got: ${status}`,
+  );
+  // Honest about what happened: a round that never started is not a take that
+  // failed a quality check, and the automatic try is disclosed as spent.
+  assert.ok(noteTexts(ctx.screenEl).includes("That measurement didn't start."));
+  assert.ok(noteTexts(ctx.screenEl).includes(AUTO_RETAKE_SPENT_NOTE));
+
+  // …and the button re-posts the pair that failed, which the runner admits.
+  await fire(primary);
+  assert.equal(headingText(ctx.screenEl), "All measurements done");
+  assert.deepEqual(
+    fake.posted
+      .filter((e) => e.begin_capture && !e.armed)
+      .map((e) => [e.begin_capture.index, e.begin_capture.attempt]),
+    [[1, 1], [1, 2]],
+    "the failed begin never reached the fake, and the repair re-posts it",
+  );
+  ok();
+}
+
+// ============================================================================
+// 67 (gate S2). The auto-retake of a rejected VOLUNTARY retake keeps the
+// `retake` marker.
+//
+// The runner admits a re-measure of an already-accepted slot ONLY when the
+// begin is marked (`_poll_capture_plan`'s one extra shape); an unmarked one is
+// refused as `begin_out_of_order`, which ends the whole session. So dropping
+// the marker on the auto-fired path would turn a browser glitch into a dead
+// session — the fake enforces exactly that rule, which is what makes this
+// scenario a test rather than a demonstration.
+// ============================================================================
+async function testTheAutoRetakeOfARejectedRetakeKeepsTheMarker() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  // Round 1 is clean and accepted; the household's voluntary retake (round 2)
+  // is the spliced one.
+  globalThis.__recorder = makeSplicingRecorder([2]);
+  installDocument(makeStatusEl());
+
+  const spec = guidedPlanSpec();
+  const { client, posted } = makeFakePlanClient({
+    target: 3,
+    maxAttempts: 6,
+    resultFor: (index, attempt) =>
+      attempt === 2
+        ? {
+          accepted: false,
+          reason: "The capture glitched.",
+          attempts: { used: 1, allowed: 3, left: 2 },
+        }
+        : { accepted: true },
+  });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  await fire(actionButtons(ctx.screenEl)[1]); // "Retake this measurement"
+
+  // The rejected retake auto-fires, with no tap and no household screen.
+  assert.ok(noteTexts(ctx.screenEl).includes(AUTO_RETAKE_MESSAGE));
+  await waitFor(
+    () => headingText(ctx.screenEl) === CLOUD_HEADLINE,
+    "the marked auto-retake being admitted and accepted",
+  );
+
+  assert.deepEqual(
+    posted
+      .filter((e) => e.begin_capture && !e.armed)
+      .map((e) => [
+        e.begin_capture.index, e.begin_capture.attempt, e.begin_capture.retake,
+      ]),
+    [[1, 1, undefined], [1, 2, true], [1, 3, true]],
+    "the auto-fired third begin carries the marker the runner requires",
+  );
+  ok();
+}
+
+// ============================================================================
+// 68 (gate S3b). The SET-WIDE ceiling is the other half of the budget guard,
+// and it binds where the POSITION's own extras still say yes: a spot can have
+// two extras left while the plan's total attempts are spent.
+//
+// THE WINDOW IT GUARDS, stated exactly. The runner posts the rejection and
+// THEN `capture_set_exhausted`, and returns (`run_capture_plan`'s
+// `attempts_used >= plan_max_attempts` branch). A phone that polls between
+// those two posts reads the plain rejection — the exhaustion event has not
+// landed on the last-write-wins slot yet — and at that moment the page's own
+// ceiling is the only thing standing between it and a begin nobody is
+// listening to. The two `maxAttempts` below therefore differ ON PURPOSE: the
+// SPEC's is the plan's real ceiling (what the page must honour), and the
+// FAKE's is only "when does this fake publish exhaustion", raised so the
+// scenario sits in that gap rather than racing it.
+// ============================================================================
+async function testTheSetWideAttemptCeilingAlsoStopsTheAutoRetake() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeSplicingRecorder([1]);
+  installDocument(makeStatusEl());
+
+  const spec = planSpec({ target: 1, maxAttempts: 1 });
+  const { client, posted } = makeFakePlanClient({
+    target: 1,
+    maxAttempts: 2,
+    resultFor: () => ({
+      accepted: false,
+      reason: "The capture glitched.",
+      // Three extras left at this POSITION: only the plan's ceiling can be
+      // what declines the auto-retake below.
+      attempts: { used: 0, allowed: 3, left: 3 },
+    }),
+  });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+
+  // The witness fired on that take, and the position's own budget says yes —
+  // so only the set-wide ceiling can be what declined it.
+  assert.equal(integrityReports(posted)[0].zero_run_count, 1);
+  assert.equal(spec.capture_plan.max_attempts, 1, "the ceiling under test");
+  assert.equal(headingText(ctx.screenEl), "Take that measurement again");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(
+    posted
+      .filter((e) => e.begin_capture && !e.armed)
+      .map((e) => [e.begin_capture.index, e.begin_capture.attempt]),
+    [[1, 1]],
+    "nothing is posted past the plan's own attempt ceiling",
+  );
+  ok();
+}
+
 const tests = [
   testFullAcceptedRoundTripEndsAllDone,
   testFocusLossDuringRecordingIsReportedAndNamed,
@@ -5195,6 +5390,9 @@ const tests = [
   testTheAutomaticRetakeFiresOncePerMeasurement,
   testASpentBudgetRefusesRatherThanAutoRetaking,
   testACleanRejectionAndAnUncountedBudgetBothWaitForAThumb,
+  testABeginFailureDuringTheAutoRetakeLeavesALiveAffordance,
+  testTheAutoRetakeOfARejectedRetakeKeepsTheMarker,
+  testTheSetWideAttemptCeilingAlsoStopsTheAutoRetake,
 ];
 
 await runTestFunctions(tests, () => passed);
