@@ -307,8 +307,10 @@ turned out to be two different defects rather than one:
   over a `plug:jasper_capture` source — the tap fan-in stops feeding under
   `shm_ring`. It now **refuses before it emits**, naming the release command,
   because teaching that emitter the ring is a hardware claim and its
-  live-protection admission report asserts the tap capture route; the
-  forwarding itself was completed separately by #2412's Wave 1, behind that
+  live-protection admission report used to assert the tap capture route; the
+  forwarding itself was completed separately by #2412's Wave 1, and that
+  report's `capture_route_current` check learned to derive its expectation from
+  the running graph's own sink in the same design's Wave 2 — both behind that
   same refusal.
 
 **No COMMISSIONING/WIZARD sweep has been run through the armed ring**, so the
