@@ -2192,8 +2192,9 @@ def _resolve_anchor(
     # sitting exactly one gap AFTER it. No witness choice fixes that, because
     # the ONLY non-sibling stimuli CHECK owns are the other role's pair; the
     # near-tie guard below is what covers it, and
-    # `test_witness_is_confusable_one_gap_LATER_which_the_near_tie_guard_covers`
-    # pins both halves of that statement.
+    # `test_the_witness_is_confusable_one_gap_LATER_and_only_on_check` pins the
+    # exposure — as an exact per-phase map, so LOSING it on CHECK (which would
+    # make the guard dead code) fails there too.
     witness = max(
         (seg for seg in program.segments
          if seg.kind in STIMULUS_KINDS and _stimulus_shape(seg) != shape),

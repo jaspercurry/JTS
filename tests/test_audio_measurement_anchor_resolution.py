@@ -612,7 +612,8 @@ def _anchor_margin(program, capture, monkeypatch=None) -> float:
 
 
 def test_the_witness_is_confusable_one_gap_LATER_and_only_on_check():
-    """The direction ``test_chosen_witness_is_never_confusable_with_itself...``
+    """The direction
+    ``test_chosen_witness_is_never_confusable_with_itself_under_the_shift``
     does not assert, and the reason the near-tie guard has to exist.
 
     That test checks the rival window landing one gap BEFORE the witness --
