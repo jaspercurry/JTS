@@ -2364,3 +2364,161 @@ def test_a_delta_probe_refusal_at_the_cloud_close_burns_no_round(
     assert attempts == []
     with pytest.raises(FileNotFoundError):
         _round_receipt_json(real_bundle, _MINTED_RELAY_SESSION_ID)
+
+
+# --------------------------------------------------------------------------
+# the series' own memory, across rounds (#2602)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("case", "raw", "ordinal", "previous"),
+    [
+        ("no state at all", {}, 1, None),
+        ("no receipt yet", {"session_id": "s"}, 1, None),
+        ("receipt is not a mapping", {"round_receipt": "corrupt"}, 1, None),
+        (
+            "a receipt written before #2602 knew about ordinals",
+            {"round_receipt": {"row": "row1_trusted_safe_passed"}},
+            1, None,
+        ),
+        (
+            "round 1 banked its objectives",
+            {"round_receipt": {
+                "round_ordinal": 1,
+                "objectives": {"tilt_db": 2.37, "ripple_db": 0.9},
+            }},
+            2, (2.37, 0.9),
+        ),
+        (
+            "an ordinal with no objectives beside it",
+            {"round_receipt": {"round_ordinal": 2}},
+            3, None,
+        ),
+        (
+            "a bool is not an ordinal",
+            {"round_receipt": {"round_ordinal": True}},
+            1, None,
+        ),
+        (
+            "a nonsense ordinal",
+            {"round_receipt": {"round_ordinal": 0}},
+            1, None,
+        ),
+    ],
+    ids=[
+        "no_state", "no_receipt", "corrupt_receipt", "pre_2602_receipt",
+        "after_round_one", "ordinal_without_objectives", "bool_ordinal",
+        "zero_ordinal",
+    ],
+)
+def test_the_series_position_reader(case, raw, ordinal, previous):
+    """Every shape durable state can be in, and what the next round inherits.
+
+    Unreadable shapes resolve to the FIRST round, never to "the cap was
+    reached": a bad byte on disk must not be able to silently switch iteration
+    back off, which is the behaviour #2602 exists to add.
+    """
+
+    position = coordinator.series_position_from_state(raw)
+
+    assert position.ordinal == ordinal, case
+    if previous is None:
+        assert position.previous_objectives is None, case
+    else:
+        assert position.previous_objectives is not None, case
+        assert (
+            position.previous_objectives.tilt_db,
+            position.previous_objectives.ripple_db,
+        ) == previous, case
+
+
+def test_a_poisoned_objective_reads_as_absent_not_as_a_number():
+    """A NaN would sail through every comparison in the headroom axis.
+
+    ``NaN < plateau`` is ``False`` and ``NaN <= plateau`` is ``False``, so a
+    corrupt write would make a series look permanently un-plateaued AND
+    permanently un-flat — iterating to the cap every time on evidence that is
+    not evidence.
+    """
+
+    position = coordinator.series_position_from_state({"round_receipt": {
+        "round_ordinal": 1,
+        "objectives": {"tilt_db": float("nan"), "ripple_db": float("inf")},
+    }})
+
+    assert position.previous_objectives is not None
+    assert position.previous_objectives.tilt_db is None
+    assert position.previous_objectives.ripple_db is None
+
+
+def test_the_reader_never_clamps_the_cap_itself():
+    """One enforcer. The headroom axis is where the cap lives.
+
+    A reader that quietly clamped at 3 would be a second owner of the rule,
+    and the two could disagree about what "the last round" means.
+    """
+
+    position = coordinator.series_position_from_state(
+        {"round_receipt": {"round_ordinal": 9}}
+    )
+    assert position.ordinal == 10
+
+
+def test_a_graded_round_banks_what_the_next_one_needs_to_read(
+    monkeypatch, real_bundle,
+):
+    """The round-trip: what ``_write_round_receipt`` writes, the reader reads.
+
+    Writer and reader live in one module precisely so they cannot drift, and
+    this is what proves they have not. Without it a series could bank the
+    ordinal under one key and look for it under another — and every round
+    would look like round 1, forever, with nothing red.
+    """
+
+    _seed_round_state()
+    conductor, _attempts = _restoring_stage_2(monkeypatch)
+    _install_entry_baseline(conductor, scale=1.5)
+    _install_applied_graph(monkeypatch, boosts=False)
+
+    _consume_verify(conductor, _post_apply_analysis(conductor))
+
+    identity = conductor.round_receipt_identity
+    assert identity is not None
+    assert identity["round_ordinal"] == 1, "the first graded round is round 1"
+    assert "objectives" in identity, "the next round has nothing to compare to"
+
+    # Fed back exactly as the host persists it — ``state["round_receipt"]``.
+    position = coordinator.series_position_from_state({"round_receipt": identity})
+    assert position.ordinal == 2
+
+
+def test_the_status_block_forwards_the_receipt_to_the_screen():
+    """The projection without which every round sentence is dead on a real box.
+
+    ``persist_conductor_state`` has written ``state["round_receipt"]`` since
+    #2537, and ``crossover_v2_status_block`` did not forward it — so the
+    envelope read ``None`` in production and the round nudges existed only in
+    unit tests that hand-built the status dict. #2602 makes that load-bearing:
+    a series that cannot tell a household another round is coming has not
+    delivered the ruling.
+    """
+
+    receipt = {
+        "round_id": "s1",
+        "adoption": "keep_for_iteration",
+        "row": "row6_trusted_safe_passed_reachable",
+        "reason": "flatter_result_reachable",
+        "round_ordinal": 1,
+        "objectives": {"tilt_db": 2.37, "ripple_db": 0.9},
+    }
+    state = _seed_round_state()
+    state["round_receipt"] = receipt
+    v2host.save_v2_state(state)
+
+    block = v2host.crossover_v2_status_block()
+
+    assert block is not None
+    assert block["round_receipt"] == receipt, (
+        "the screen cannot name a round the status block never forwards"
+    )

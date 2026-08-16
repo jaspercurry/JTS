@@ -54,11 +54,6 @@ from jasper.active_speaker.delta_probe import (
     VERDICT_LEVEL_MISMATCH as DELTA_VERDICT_LEVEL_MISMATCH,
     VERDICT_MATCHED as DELTA_VERDICT_MATCHED,
 )
-from jasper.active_speaker.flat_spec import (
-    BandResult,
-    FlatSpecReport,
-    spec_band_tilt,
-)
 from jasper.active_speaker.crossover_v2 import verification as verification_module
 from jasper.active_speaker.crossover_v2.verification import (
     ADOPTION_MEASURED_REGRESSION,
@@ -125,6 +120,7 @@ from jasper.active_speaker.flat_spec import (
     BandResult,
     FlatSpecReport,
     evaluate_flat_spec,
+    spec_band_tilt,
     spec_convergence_residual,
 )
 from jasper.audio_measurement.program_analysis import (
