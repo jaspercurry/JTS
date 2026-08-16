@@ -48,6 +48,7 @@ from .camilla_yaml import (
     capture_device_for_playback,
     emit_active_speaker_commissioning_config,
 )
+from ..fanin_coupling import TRANSPORT_RING, transport_label
 from .crossover_preview import CROSSOVER_PREVIEW_KIND
 from .driver_protection import declared_protection_highpass_floor_hz
 from .environment import classify_camilla_config_text
@@ -2291,14 +2292,38 @@ def prepare_driver_commissioning_config(
         "required_gates": gates,
         "issues": issues,
     }
+    # THE TRANSPORT, ON THE LINE THAT NAMES THE ROLE (#2412 Wave 4). This line
+    # already carried the role and the outputs and never the transport, so
+    # Finding (C) — a commissioning graph whose sink was the ring while its
+    # source was still the snd-aloop tap — was invisible in the journal even
+    # though every fact needed to see it was in scope here. Four fields make it
+    # one grep. No new event name: the commissioning vocabulary is stable and
+    # fragmenting it would cost a line per transition.
+    #
+    # `wire` is read off the emitted block rather than re-deriving it from
+    # `resolve_ring_wire(topology)`. Identical by construction — `active_emit_devices`
+    # sets BOTH ring formats from that one call — but re-deriving would be a
+    # second call that can raise `ValueError` on a bad wire token, which is the
+    # blocker path this line has to stay readable on. The literal `-` (never an
+    # empty value, which reads as "unknown") covers a non-ring emit, which has
+    # no ring wire, and a blocked prepare, which has no emitted block at all.
+    transport = transport_label(resolved_playback_device)
     logger.info(
         "event=active_speaker.driver_commission_prepared status=%s group=%s role=%s "
-        "outputs=%s blockers=%d",
+        "outputs=%s blockers=%d transport=%s capture=%s playback=%s wire=%s",
         status,
         group_id,
         role,
         sorted(audible_outputs),
         blocker_count,
+        transport or "-",
+        devices.capture_device if devices is not None else "-",
+        resolved_playback_device or "-",
+        (
+            devices.capture_format
+            if devices is not None and transport == TRANSPORT_RING
+            else "-"
+        ),
     )
     return payload
 

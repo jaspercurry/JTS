@@ -1240,6 +1240,12 @@ def test_commissioning_summary_idle_with_no_evidence() -> None:
         "last_capture": None,
         "last_failure_code": None,
         "room_correction_allowed": False,
+        # #2412 Wave 4. `None` here is the derivation answering honestly, not a
+        # placeholder: this fixture's topology is a `SimpleNamespace` with only
+        # a `topology_id`, so no route resolves and there is no transport to
+        # name. The armed/unarmed polarities are pinned in
+        # `test_commissioning_summary_transport_*` below.
+        "transport": None,
     }
 
 

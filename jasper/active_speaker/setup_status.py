@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from jasper.camilla_config_contract import parse_camilla_devices_config
+from jasper.fanin_coupling import transport_label
 from jasper.output_topology import OutputTopologyError, load_output_topology_strict
 
 from .baseline_profile import (
@@ -392,7 +393,43 @@ def _idle_commissioning_summary() -> dict[str, Any]:
         "last_capture": None,
         "last_failure_code": None,
         "room_correction_allowed": False,
+        # No topology resolved, so no transport to name (#2412 Wave 4). `null`
+        # rather than a guess: this is the fail-soft summary, and asserting a
+        # transport for a box whose route could not be read is the half-fact
+        # the key exists to remove.
+        "transport": None,
     }
+
+
+def _commissioning_transport(topology: Any) -> str | None:
+    """Which transport this box's commissioning would emit on, or ``None``.
+
+    ONE derivation with the two ``driver_commission_*`` journal lines
+    (:func:`jasper.fanin_coupling.transport_label`), reading the same chooser
+    commissioning itself reads (``resolve_active_playback_device``) so ``/state``
+    and the journal cannot answer differently for one box.
+
+    ``None`` when no roleful topology resolves — a passive box, an unreadable
+    one, or a route that resolves to no device at all. Fail-soft like every
+    other field here: the derivation reaches the topology layer, and a box whose
+    route cannot be read reports no transport rather than failing ``/state``.
+
+    ``AttributeError`` joins ``_READINESS_DERIVATION_ERRORS`` for this call only.
+    The shared tuple is the set the OTHER derivations here can raise; this one
+    reaches ``resolve_output_layout``, which walks ``topology.hardware``
+    unguarded, so a ``None`` or duck-typed topology — the shape the two
+    early-return call sites and every standalone caller pass — raises a class no
+    sibling does. Widening the shared tuple would loosen five other derivations
+    to buy one; catching it here does not. An observability field must never be
+    the reason ``/state`` stops answering.
+    """
+    from .playback_route import resolve_active_playback_device
+
+    try:
+        device, _source = resolve_active_playback_device(topology)
+    except (*_READINESS_DERIVATION_ERRORS, AttributeError):
+        return None
+    return transport_label(device)
 
 
 def _derive_commissioning_summary(
@@ -475,6 +512,9 @@ def _derive_commissioning_summary(
         "last_capture": _last_capture_summary(measurements),
         "last_failure_code": last_failure_code,
         "room_correction_allowed": bool(applied_state.get("valid")),
+        # `curl /state | jq .` is this campaign's standing probe, and a device
+        # name without its transport is the exact half-fact that produced #2412.
+        "transport": _commissioning_transport(topology),
     }
 
 

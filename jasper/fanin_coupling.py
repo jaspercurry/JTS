@@ -529,6 +529,39 @@ RING_PCM_DEVICES = (
 )
 
 
+# The two transports a JTS graph can play over, spelled once (#2412 Wave 4).
+# Observability values, not config: nothing parses these back, so they are short
+# and stable rather than device-shaped.
+TRANSPORT_RING = "ring"
+TRANSPORT_ALSA = "alsa"
+
+
+def transport_label(playback_device: str | None) -> str | None:
+    """Which transport a graph naming ``playback_device`` plays over.
+
+    ONE derivation, three surfaces — the ``driver_commission_prepared`` and
+    ``driver_commission_load`` journal lines and ``/state``'s commissioning
+    block — because a device name reported without its transport is the exact
+    half-fact that produced #2412: a graph can name the ACTIVE lane and reach it
+    over either snd-aloop or the ring, and only one of those is fed by fan-in
+    under ``shm_ring``.
+
+    Keyed on :data:`RING_PCM_DEVICES`, the set that already owns "is this end a
+    ring end?", so this never becomes a second list of the three ring names.
+    Never returns a device name: the device is already its own field wherever
+    this is reported, and restating it here would be the second source of truth.
+
+    ``None`` for an unresolved device (an empty string, or a box whose route
+    does not resolve at all) — the caller decides how to render "no answer",
+    because the journal's convention is the literal ``-`` while ``/state``'s is
+    JSON ``null``, and inventing one of those here would force the other surface
+    to translate it back.
+    """
+    if not playback_device:
+        return None
+    return TRANSPORT_RING if playback_device in RING_PCM_DEVICES else TRANSPORT_ALSA
+
+
 def resolve_coupling(raw: str | None) -> str:
     """Normalize a raw ``JASPER_FANIN_CAMILLA_COUPLING`` value to a transport.
 

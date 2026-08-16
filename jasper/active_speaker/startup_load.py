@@ -68,6 +68,7 @@ from .graph_evidence import (
     running_commission_evidence,
     running_graph_matches_staged_anchor,
 )
+from ..fanin_coupling import transport_label
 from .safe_playback import load_safe_playback_state
 from .staging import (
     COMMISSIONING_TRANSPORT_GATE_ID,
@@ -1819,6 +1820,18 @@ async def load_driver_commissioning_config(
     candidate_path = preflight.get("candidate_config_path")
     evidence = preflight.get("audible_evidence") or {}
     staged_path = (staged.get("config") or {}).get("path") or str(staged_config_path())
+    # WHICH TRANSPORT THE SWAP LANDED ON (#2412 Wave 4), so the journal can tell
+    # "the swap failed" from "the swap failed ON THE RING" — the one new failure
+    # mode commissioning-on-the-ring introduces. Read off the candidate the
+    # preflight already resolved, which is the same field its own
+    # `commissioning_transport_armed` gate keys on, so the gate's verdict and
+    # this line can never name two different transports for one load.
+    load_transport = (
+        transport_label(
+            ((preflight.get("prepare") or {}).get("config") or {}).get("playback_device")
+        )
+        or "-"
+    )
 
     if not preflight.get("load_allowed"):
         payload = _commission_state_payload(
@@ -2081,11 +2094,12 @@ async def load_driver_commissioning_config(
         reason = exc.state.persist_error or exc.state.load_error or str(exc)
         logger.warning(
             "event=active_speaker.driver_commission_load result=failed candidate=%s anchor=%s "
-            "rolled_back=%s reason=%s",
+            "rolled_back=%s reason=%s transport=%s",
             candidate_path,
             staged_path,
             getattr(exc.state, "rollback_succeeded", None),
             reason,
+            load_transport,
         )
         return {"preflight": preflight, "load": payload}
 
@@ -2118,11 +2132,12 @@ async def load_driver_commissioning_config(
         )
         logger.info(
             "event=active_speaker.driver_commission_load result=loaded candidate=%s anchor=%s "
-            "durable_intact=%s op_id=%s",
+            "durable_intact=%s op_id=%s transport=%s",
             candidate_path,
             staged_path,
             captured.get("durable_intact"),
             apply_state.op_id,
+            load_transport,
         )
         return {"preflight": preflight, "load": payload}
 
@@ -2157,10 +2172,11 @@ async def load_driver_commissioning_config(
         _record_commission_state(payload, state_path=state_path)
         logger.warning(
             "event=active_speaker.driver_commission_load result=failed candidate=%s anchor=%s "
-            "reason=output_hardware_reconcile_failed op_id=%s",
+            "reason=output_hardware_reconcile_failed op_id=%s transport=%s",
             candidate_path,
             staged_path,
             apply_state.op_id,
+            load_transport,
         )
         return {"preflight": preflight, "load": payload}
     payload["output_reconcile"] = {
@@ -2170,11 +2186,12 @@ async def load_driver_commissioning_config(
     _record_commission_state(payload, state_path=state_path)
     logger.info(
         "event=active_speaker.driver_commission_load result=loaded candidate=%s anchor=%s "
-        "durable_intact=%s op_id=%s",
+        "durable_intact=%s op_id=%s transport=%s",
         candidate_path,
         staged_path,
         captured.get("durable_intact"),
         apply_state.op_id,
+        load_transport,
     )
     return {"preflight": preflight, "load": payload}
 
