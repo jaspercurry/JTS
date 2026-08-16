@@ -7465,7 +7465,9 @@ def test_fit_linearization_wires_ripple_optimal_seeded_by_anchored_giveback(
     # give-back returns a branch to its OWN pre-correction system level, and
     # the offset then places that level where the session's one frame says it
     # belongs. Read off the fit rather than recomputed, for the same reason
-    # ``giveback`` is.
+    # ``giveback`` is. Since #2599 that term is admitted only while the frame
+    # AGREES, which this fixture's does; the disputed arm is pinned in
+    # ``tests/test_crossover_v2_level_frame_dispute.py``.
     frame_offset = {
         role: c.candidate.linearization[role]["level_frame_offset_db"]
         for role in ("woofer", "tweeter")
@@ -8187,6 +8189,14 @@ def test_anchored_trim_is_raw_plus_giveback_and_normalized_non_positive():
     assert giveback["tweeter"] > 0.0
     # PR-L5's shared-level-frame offset rides the same anchor (see the
     # sibling tests). Read off the fit, never recomputed.
+    #
+    # This fixture's frame AGREES, which since #2599 is the condition for the
+    # offset to be admitted at all — the formula below is the admitted arm, not
+    # the unconditional rule it was until then. The disputed arm and its
+    # three-case table are pinned in
+    # ``tests/test_crossover_v2_level_frame_dispute.py``; the assertion that
+    # this fixture takes the admitted arm is
+    # ``test_an_agreeing_frame_banks_nothing``.
     frame_offset = {
         role: c.candidate.linearization[role]["level_frame_offset_db"]
         for role in ("woofer", "tweeter")
@@ -8221,7 +8231,11 @@ def test_anchored_normalization_shift_prevents_a_positive_trim(monkeypatch):
     ``{"woofer": 0.0, "tweeter": 0.0}`` on the reasoning that "any positive
     give-back pushes the unnormalized anchor above 0 and forces the shift" —
     but PR-L5's frame offset is ``system − trim − core``, so the raw trim
-    CANCELS out of ``raw + giveback + level_frame_offset``. Measured across a
+    CANCELS out of ``raw + giveback + level_frame_offset`` — **while the offset
+    is admitted, which since #2599 needs the frame to agree. It does on this
+    fixture.** On the disputed arm there is no offset to cancel it and the base
+    is load-bearing; see ``tests/test_crossover_v2_level_frame_dispute.py``.
+    Measured across a
     raw-tweeter-trim sweep on this fixture, the anchor and everything
     downstream of it are byte-identical at every value:
     ``unnormalized = {woofer: 3.4743, tweeter: 2.0908}``, ``shift = 3.4743``,
