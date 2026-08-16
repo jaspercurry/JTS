@@ -12170,13 +12170,16 @@ def test_a_refused_boost_reaches_the_journal_as_a_warning(caplog):
     the failure mode this whole area exists to avoid, and the one the #1967
     block beside it was written for.
 
-    The fit is wrapped rather than coaxed: no shipped conductor fixture
-    currently trips the measured-target bound (probed — every role reports
-    zero drops), so a test that merely walked one would assert ``0 == 0`` and
-    pass while the emit was deleted. That is the vacuity trap this repo has
-    been bitten by, so the drop is INJECTED into an otherwise real fit and the
-    assertion is that the conductor SAYS it. The bound's own behaviour — when
-    a drop is produced at all — is pinned in
+    The fit is wrapped rather than coaxed. Probed 2026-08-16: no conductor
+    fixture in this suite tripped the measured-target bound — every role
+    reported zero drops — so a test that merely walked one would have asserted
+    ``0 == 0`` and passed while the emit was deleted. That is the vacuity trap
+    this repo has been bitten by, so the drop is INJECTED into an otherwise
+    real fit and the assertion is that the conductor SAYS it. Should a fixture
+    later trip the bound for real, this test keeps working and
+    ``test_the_new_verdict_events_stay_silent_on_an_ordinary_session`` is what
+    tracks the count. The bound's own behaviour — when a drop is produced at
+    all — is pinned in
     ``tests/test_active_speaker_linearization_fit.py``; this pins the wiring.
     """
     from dataclasses import replace
