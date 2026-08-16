@@ -1318,9 +1318,19 @@ def test_commissioning_summary_failed_surfaces_first_blocker_code() -> None:
     assert result["last_failure_code"] == "baseline_profile_apply_failed"
 
 
-def test_commissioning_summary_last_capture_surfaces_worst_relevant_band() -> None:
-    # The newest record (by created_at) across BOTH maps wins, regardless of
-    # which map it came from.
+def test_commissioning_summary_last_capture_is_the_newest_across_both_maps() -> None:
+    """The newest record (by created_at) across BOTH maps wins, regardless of
+    which map it came from -- and the winning record's `snr_db` is read from
+    its `worst_relevant` SNR entry, not some other field.
+
+    Deliberately absent: that entry's `band_id`. `last_capture` is a compact
+    `/state` household card -- terminal display, not a forensic record -- and
+    should not grow a fifth key. The exact-dict-equality assertion below is
+    what holds that shape, so a fifth key fails here first. Band identity
+    lives on the diagnostic surfaces instead: `{role}_snr_band` on
+    `event=correction.crossover_v2_measure_diag` and in
+    `analysis_diagnostic_summary` (#2613, PR #2618).
+    """
     measurements = {
         "latest_by_target": {
             "mono:woofer": {
