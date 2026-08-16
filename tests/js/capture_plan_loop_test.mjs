@@ -30,6 +30,13 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { RelayClient } from "../../capture-page/js/relay-client.js";
+// The household sentences the auto-retake renders (#2557 phase B), imported
+// rather than retyped: a second copy of the copy is a copy that can drift, and
+// the wording itself is pinned next door in capture_integrity_test.mjs.
+import {
+  AUTO_RETAKE_MESSAGE,
+  AUTO_RETAKE_SPENT_NOTE,
+} from "../../capture-page/js/capture-integrity.js";
 import { runTestFunctions } from "./run_test_functions.mjs";
 
 // The EXACT rejection a real relay timeout raises, produced by driving the REAL
@@ -359,6 +366,10 @@ const injected = `
 import {
   createIntegrityWatch,
   summarizeCaptureIntegrity,
+  witnessedZeroFillSplice,
+  AUTO_RETAKE_MESSAGE,
+  AUTO_RETAKE_SPENT_NOTE,
+  AUTO_RETAKE_ZERO_FILL_REASON,
   INTEGRITY_LOST_FOCUS_MESSAGE,
   INTEGRITY_LOST_FOCUS_NOTE,
 } from ${JSON.stringify(CAPTURE_INTEGRITY_URL)};
@@ -4760,6 +4771,545 @@ async function testPreArmFailureDuringAFinalPositionRetakeRestoresTheConfirm() {
   ok();
 }
 
+// ============================================================================
+// 61-65 (#2557 phase B). The witness-triggered auto-retake: when a take's OWN
+// pre-upload scan found the render-quantum splice and the host refused that
+// take, the page presses its own "Try again".
+//
+// Each test below is one of the four bounds the behaviour rests on, because
+// the risk of an automatic retake is never the firing case — it is a trigger
+// wider than its evidence, or a budget the page spends on the household's
+// behalf without saying so.
+//
+// A NOTE ON THE FIXTURES. `makeRecorder()` returns 4800 zeros, which IS a zero
+// run — and the predicate declines it on BOTH of its interior bounds at once
+// (it starts at sample 0, and it reaches the last sample), because a capture
+// that is silent end to end is a dead microphone rather than a splice. That is
+// why every pre-existing test in this file still reaches its retry screen. The
+// tests below do not lean on it: they plant their splice INSIDE a never-silent
+// capture, which is the shape the campaign actually measured.
+// ============================================================================
+
+// A capture that is never exactly zero, so a planted run is the only one.
+function roomNoiseCapture(length) {
+  const out = new Float32Array(length);
+  for (let i = 0; i < length; i += 1) {
+    out[i] = (i % 2 === 0 ? 1 : -1) * (0.01 + (i % 13) * 0.001);
+  }
+  return out;
+}
+
+// The hop-A fingerprint: one whole render quantum of digital zeros, block
+// aligned, with live room either side of it.
+const SPLICE_OFFSET = 10 * 128;
+
+function spliced(capture) {
+  for (let i = SPLICE_OFFSET; i < SPLICE_OFFSET + 128; i += 1) capture[i] = 0;
+  return capture;
+}
+
+// `glitchedAttempts` names which attempts come back spliced; every other one is
+// a clean room capture. Same 4800-frame length as `makeRecorder`, so the
+// worklet counters the report also carries stay honest.
+function makeSplicingRecorder(glitchedAttempts) {
+  const recorder = makeRecorder();
+  let round = 0;
+  recorder.stop = async () => {
+    recorder.stops += 1;
+    // The ambient-noise window runs its own stop() before each recording, so
+    // count RECORDINGS, not stops: odd stops are ambient, even ones are the
+    // capture this page uploads.
+    const capture = roomNoiseCapture(4800);
+    if (recorder.stops % 2 === 0) {
+      round += 1;
+      if (glitchedAttempts.includes(round)) return spliced(capture);
+    }
+    return capture;
+  };
+  return recorder;
+}
+
+function integrityReports(posted) {
+  return posted.filter((e) => e.capture_integrity).map((e) => e.capture_integrity);
+}
+
+// ============================================================================
+// 61. THE FIRING CASE (the DoD): a refused take that witnessed the splice
+// retakes itself with ZERO human action, on the budget the button would have
+// spent, and says so on screen and on the wire.
+// ============================================================================
+async function testAWitnessedSpliceRetakesItselfWithNoTap() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeSplicingRecorder([1]);
+  installDocument(makeStatusEl());
+
+  const spec = planSpec({ target: 1, maxAttempts: 4 });
+  const { client, posted, blobPuts } = makeFakePlanClient({
+    target: 1,
+    maxAttempts: 4,
+    resultFor: (index, attempt) =>
+      attempt === 1
+        ? {
+          accepted: false,
+          reason: "The capture glitched.",
+          code: "residual_desync",
+          attempts: { used: 0, allowed: 3, left: 3 },
+        }
+        : { accepted: true },
+  });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+
+  // The instant the rejection lands the page is already retaking: the screen
+  // names the step being retaken, discloses WHY, and offers nothing to tap —
+  // the auto-begin is a macrotask, so this state is what the household sees.
+  assert.equal(headingText(ctx.screenEl), "Measuring this spot again");
+  assert.deepEqual(noteTexts(ctx.screenEl), [AUTO_RETAKE_MESSAGE]);
+  assert.deepEqual(actionLabels(ctx.screenEl), []);
+  assert.deepEqual(
+    (ctx.captureRefs.buttons || []).map((b) => b.action), [],
+    "there is no begin affordance to press — nothing waits on a thumb",
+  );
+
+  await waitFor(
+    () => headingText(ctx.screenEl) === "All measurements done",
+    "the automatic retake completing the set with no tap",
+  );
+
+  const begins = posted.filter((e) => e.begin_capture && !e.armed);
+  assert.deepEqual(
+    begins.map((e) => [e.begin_capture.index, e.begin_capture.attempt]),
+    [[1, 1], [1, 2]],
+    "the auto-retake re-measures the same slot on the next attempt",
+  );
+  assert.deepEqual(blobPuts.map((b) => b.captureIndex), [0, 1]);
+
+  const reports = integrityReports(posted);
+  assert.equal(reports.length, 2);
+  // The take that fired it carries the witness and no marker of its own…
+  assert.equal(reports[0].zero_run_count, 1);
+  assert.equal(reports[0].zero_runs[0].offset, SPLICE_OFFSET);
+  assert.equal("auto_retake" in reports[0], false);
+  // …and the round the PAGE started says so, naming the attempt it followed.
+  assert.deepEqual(reports[1].auto_retake, {
+    reason: "zero_fill_splice",
+    after_attempt: 1,
+  });
+  // …on a clean retake, which is what makes the marker the only difference.
+  assert.equal(reports[1].zero_run_count, 0);
+  ok();
+}
+
+// ============================================================================
+// 62. GLITCH ONLY, NEVER GEOMETRY. A verdict carrying a `prompt` is the host
+// asking the operator to MOVE, and re-measuring from the same spot is the one
+// thing that cannot answer it. The page's own witness does not override that,
+// even on a take that genuinely carries the splice.
+// ============================================================================
+async function testAGeometryPromptStillWaitsForAThumb() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeSplicingRecorder([1]);
+  installDocument(makeStatusEl());
+
+  const spec = planSpec({ target: 1, maxAttempts: 4 });
+  const { client, posted } = makeFakePlanClient({
+    target: 1,
+    maxAttempts: 4,
+    resultFor: (index, attempt) =>
+      attempt === 1
+        ? {
+          accepted: false,
+          reason: "The speaker could not lock this position.",
+          prompt: "Move the microphone 30 in (75 cm) to the LEFT of the mark.",
+          attempts: { used: 0, allowed: 3, left: 3 },
+        }
+        : { accepted: true },
+  });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+
+  // The witness WAS present on that take — this is the trigger being declined,
+  // not a take with nothing to decline.
+  assert.equal(integrityReports(posted)[0].zero_run_count, 1);
+  assert.equal(
+    headingText(ctx.screenEl),
+    "Move the microphone 30 in (75 cm) to the LEFT of the mark.",
+  );
+  assert.ok(primaryButton(ctx), "the household's own control is on screen");
+
+  // Drain the macrotask an auto-retake would have used: nothing fires.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(
+    posted
+      .filter((e) => e.begin_capture && !e.armed)
+      .map((e) => [e.begin_capture.index, e.begin_capture.attempt]),
+    [[1, 1]],
+    "a geometry rejection posts nothing until the operator has moved",
+  );
+  ok();
+}
+
+// ============================================================================
+// 63. ONE PER MEASUREMENT. A second witness at the same spot is a pattern the
+// household should see, not a browser hiccup to paper over — so the page falls
+// back to its ordinary screen, and says the automatic try was already spent.
+// ============================================================================
+async function testTheAutomaticRetakeFiresOncePerMeasurement() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeSplicingRecorder([1, 2]);
+  installDocument(makeStatusEl());
+
+  const spec = planSpec({ target: 1, maxAttempts: 4 });
+  const { client, posted } = makeFakePlanClient({
+    target: 1,
+    maxAttempts: 4,
+    resultFor: (index, attempt) =>
+      attempt <= 2
+        ? {
+          accepted: false,
+          reason: "The capture glitched.",
+          attempts: { used: attempt - 1, allowed: 3, left: 4 - attempt },
+        }
+        : { accepted: true },
+  });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  assert.equal(headingText(ctx.screenEl), "Measuring this spot again");
+
+  await waitFor(
+    () => headingText(ctx.screenEl) === "Take that measurement again",
+    "the second witness falling back to the household's own screen",
+  );
+  // The rejection is intact, and the disclosure rides beside it.
+  assert.ok(noteTexts(ctx.screenEl).includes("The capture glitched."));
+  assert.ok(
+    noteTexts(ctx.screenEl).includes(AUTO_RETAKE_SPENT_NOTE),
+    `expected the spent-automatic-try note, got: ${JSON.stringify(noteTexts(ctx.screenEl))}`,
+  );
+  assert.equal(integrityReports(posted)[1].zero_run_count, 1);
+
+  // Exactly one automatic begin, then a stop until the household taps.
+  assert.deepEqual(
+    posted
+      .filter((e) => e.begin_capture && !e.armed)
+      .map((e) => [e.begin_capture.index, e.begin_capture.attempt]),
+    [[1, 1], [1, 2]],
+  );
+  await fire(primaryButton(ctx));
+  assert.equal(headingText(ctx.screenEl), "All measurements done");
+  assert.deepEqual(
+    posted
+      .filter((e) => e.begin_capture && !e.armed)
+      .map((e) => [e.begin_capture.attempt]),
+    [[1], [2], [3]],
+  );
+  // …and the tapped third round is NOT marked automatic. The marker names the
+  // one round the page started, or it is worth nothing to a sidecar reader.
+  assert.equal("auto_retake" in integrityReports(posted)[2], false);
+  ok();
+}
+
+// ============================================================================
+// 64. THE REJECTION STAYS HONEST WHEN THE BUDGET IS GONE. The page spends from
+// the household's minted extras; it never mints one. With none left, the
+// witness changes nothing and the refusal is exactly the screen #2506/#2548
+// require — including the eyebrow that says there is nothing left to spend.
+// ============================================================================
+async function testASpentBudgetRefusesRatherThanAutoRetaking() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeSplicingRecorder([1]);
+  installDocument(makeStatusEl());
+
+  const spec = planSpec({ target: 1, maxAttempts: 4 });
+  const { client, posted } = makeFakePlanClient({
+    target: 1,
+    maxAttempts: 4,
+    resultFor: (index, attempt) =>
+      attempt === 1
+        ? {
+          accepted: false,
+          reason: "The capture glitched.",
+          attempts: { used: 3, allowed: 3, left: 0 },
+        }
+        : { accepted: true },
+  });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+
+  assert.equal(integrityReports(posted)[0].zero_run_count, 1);
+  assert.equal(headingText(ctx.screenEl), "Take that measurement again");
+  assert.equal(eyebrowText(ctx.screenEl), "Measurement 1 of 1 — no more tries at this spot");
+  assert.ok(
+    !noteTexts(ctx.screenEl).includes(AUTO_RETAKE_SPENT_NOTE),
+    "nothing automatic happened, so nothing claims it did",
+  );
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(
+    posted
+      .filter((e) => e.begin_capture && !e.armed)
+      .map((e) => [e.begin_capture.index, e.begin_capture.attempt]),
+    [[1, 1]],
+    "the page never spends an attempt the host did not mint",
+  );
+  ok();
+}
+
+// ============================================================================
+// 65. NO WITNESS, NO AUTOMATIC ANYTHING. An ordinary rejection of a clean take
+// waits for a thumb exactly as it did before this feature — the trigger is the
+// page's own evidence, never "the host said no".
+//
+// It also pins the OTHER half of bound one: a host that publishes no attempt
+// count at all (an older conductor) leaves the page unable to say what a spend
+// would cost, so it declines to spend. The tapped control is unchanged.
+// ============================================================================
+async function testACleanRejectionAndAnUncountedBudgetBothWaitForAThumb() {
+  const { onPlanStart } = await loadModule();
+  installDocument(makeStatusEl());
+
+  for (const attempts of [{ used: 0, allowed: 3, left: 3 }, null]) {
+    statusHistory.length = 0;
+    // Clean in the `attempts` case, spliced in the uncounted one: the first
+    // isolates "no witness", the second isolates "no published budget".
+    globalThis.__recorder = makeSplicingRecorder(attempts ? [] : [1]);
+    const spec = planSpec({ target: 1, maxAttempts: 4 });
+    const { client, posted } = makeFakePlanClient({
+      target: 1,
+      maxAttempts: 4,
+      resultFor: (index, attempt) =>
+        attempt === 1
+          ? {
+            accepted: false,
+            reason: "SNR too low.",
+            ...(attempts ? { attempts } : {}),
+          }
+          : { accepted: true },
+    });
+    const ctx = makeCtx(spec, client);
+
+    await onPlanStart(ctx);
+    assert.equal(
+      integrityReports(posted)[0].zero_run_count, attempts ? 0 : 1,
+      "the fixture is the one this case means to exercise",
+    );
+    assert.equal(headingText(ctx.screenEl), "Take that measurement again");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(
+      posted
+        .filter((e) => e.begin_capture && !e.armed)
+        .map((e) => [e.begin_capture.index, e.begin_capture.attempt]),
+      [[1, 1]],
+    );
+    // The household's own path still works from here.
+    await fire(primaryButton(ctx));
+    assert.equal(headingText(ctx.screenEl), "All measurements done");
+  }
+  ok();
+}
+
+// Make the Nth begin post fail. Wraps a fake client rather than teaching every
+// fake a failure mode: the plan fake's ordering contract is the thing under
+// test here, and it stays exactly as strict.
+function failNthBeginPost(client, n, error) {
+  const inner = client.postEvent;
+  let begins = 0;
+  client.postEvent = async (event) => {
+    if (event.begin_capture && !event.armed) {
+      begins += 1;
+      if (begins === n) throw error;
+    }
+    return inner(event);
+  };
+  return client;
+}
+
+// ============================================================================
+// 66 (gate B1). A begin failure DURING the auto-fired retake, at index 1.
+//
+// The auto-retake is the first affordance-free begin reachable at the FIRST
+// measurement, and `repairPreArmAffordance`'s drop-back renders the position
+// BEFORE this one — which does not exist at index 1. Without the floor the
+// household is left reading "Measuring this spot again" under status copy that
+// names a button, with no button on the screen and Stop the only tap left.
+// #2090's rule: silence is the only wrong outcome.
+// ============================================================================
+async function testABeginFailureDuringTheAutoRetakeLeavesALiveAffordance() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeSplicingRecorder([1]);
+  installDocument(makeStatusEl());
+
+  const spec = planSpec({ target: 1, maxAttempts: 4 });
+  const fake = makeFakePlanClient({
+    target: 1,
+    maxAttempts: 4,
+    resultFor: (index, attempt) =>
+      attempt === 1
+        ? {
+          accepted: false,
+          reason: "The capture glitched.",
+          attempts: { used: 0, allowed: 3, left: 3 },
+        }
+        : { accepted: true },
+  });
+  // Non-connectivity (`relay 500`), so the begin ladder does not re-send it —
+  // this lands in the pre-arm repair rather than recovering on its own.
+  failNthBeginPost(fake.client, 2, new Error("relay 500"));
+  const ctx = makeCtx(spec, fake.client);
+
+  await onPlanStart(ctx);
+  // The affordance-free window the repair has to survive.
+  assert.deepEqual(actionButtons(ctx.screenEl), []);
+
+  await waitFor(
+    () => actionButtons(ctx.screenEl).length > 0,
+    "a live affordance after the auto-fired round failed to begin",
+  );
+
+  const primary = primaryButton(ctx);
+  assert.ok(primary, "the repaired screen registers a begin affordance");
+  const status = statusHistory[statusHistory.length - 1];
+  assert.ok(status.includes("relay 500"), `the cause is named: ${status}`);
+  assert.ok(
+    status.includes(`Tap ${primary.textContent} to try again`),
+    `the copy names a button that is on the screen, got: ${status}`,
+  );
+  // Honest about what happened: a round that never started is not a take that
+  // failed a quality check, and the automatic try is disclosed as spent.
+  assert.ok(noteTexts(ctx.screenEl).includes("That measurement didn't start."));
+  assert.ok(noteTexts(ctx.screenEl).includes(AUTO_RETAKE_SPENT_NOTE));
+
+  // …and the button re-posts the pair that failed, which the runner admits.
+  await fire(primary);
+  assert.equal(headingText(ctx.screenEl), "All measurements done");
+  assert.deepEqual(
+    fake.posted
+      .filter((e) => e.begin_capture && !e.armed)
+      .map((e) => [e.begin_capture.index, e.begin_capture.attempt]),
+    [[1, 1], [1, 2]],
+    "the failed begin never reached the fake, and the repair re-posts it",
+  );
+  ok();
+}
+
+// ============================================================================
+// 67 (gate S2). The auto-retake of a rejected VOLUNTARY retake keeps the
+// `retake` marker.
+//
+// The runner admits a re-measure of an already-accepted slot ONLY when the
+// begin is marked (`_poll_capture_plan`'s one extra shape); an unmarked one is
+// refused as `begin_out_of_order`, which ends the whole session. So dropping
+// the marker on the auto-fired path would turn a browser glitch into a dead
+// session — the fake enforces exactly that rule, which is what makes this
+// scenario a test rather than a demonstration.
+// ============================================================================
+async function testTheAutoRetakeOfARejectedRetakeKeepsTheMarker() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  // Round 1 is clean and accepted; the household's voluntary retake (round 2)
+  // is the spliced one.
+  globalThis.__recorder = makeSplicingRecorder([2]);
+  installDocument(makeStatusEl());
+
+  const spec = guidedPlanSpec();
+  const { client, posted } = makeFakePlanClient({
+    target: 3,
+    maxAttempts: 6,
+    resultFor: (index, attempt) =>
+      attempt === 2
+        ? {
+          accepted: false,
+          reason: "The capture glitched.",
+          attempts: { used: 1, allowed: 3, left: 2 },
+        }
+        : { accepted: true },
+  });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  await fire(actionButtons(ctx.screenEl)[1]); // "Retake this measurement"
+
+  // The rejected retake auto-fires, with no tap and no household screen.
+  assert.ok(noteTexts(ctx.screenEl).includes(AUTO_RETAKE_MESSAGE));
+  await waitFor(
+    () => headingText(ctx.screenEl) === CLOUD_HEADLINE,
+    "the marked auto-retake being admitted and accepted",
+  );
+
+  assert.deepEqual(
+    posted
+      .filter((e) => e.begin_capture && !e.armed)
+      .map((e) => [
+        e.begin_capture.index, e.begin_capture.attempt, e.begin_capture.retake,
+      ]),
+    [[1, 1, undefined], [1, 2, true], [1, 3, true]],
+    "the auto-fired third begin carries the marker the runner requires",
+  );
+  ok();
+}
+
+// ============================================================================
+// 68 (gate S3b). The SET-WIDE ceiling is the other half of the budget guard,
+// and it binds where the POSITION's own extras still say yes: a spot can have
+// two extras left while the plan's total attempts are spent.
+//
+// THE WINDOW IT GUARDS, stated exactly. The runner posts the rejection and
+// THEN `capture_set_exhausted`, and returns (`run_capture_plan`'s
+// `attempts_used >= plan_max_attempts` branch). A phone that polls between
+// those two posts reads the plain rejection — the exhaustion event has not
+// landed on the last-write-wins slot yet — and at that moment the page's own
+// ceiling is the only thing standing between it and a begin nobody is
+// listening to. The two `maxAttempts` below therefore differ ON PURPOSE: the
+// SPEC's is the plan's real ceiling (what the page must honour), and the
+// FAKE's is only "when does this fake publish exhaustion", raised so the
+// scenario sits in that gap rather than racing it.
+// ============================================================================
+async function testTheSetWideAttemptCeilingAlsoStopsTheAutoRetake() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeSplicingRecorder([1]);
+  installDocument(makeStatusEl());
+
+  const spec = planSpec({ target: 1, maxAttempts: 1 });
+  const { client, posted } = makeFakePlanClient({
+    target: 1,
+    maxAttempts: 2,
+    resultFor: () => ({
+      accepted: false,
+      reason: "The capture glitched.",
+      // Three extras left at this POSITION: only the plan's ceiling can be
+      // what declines the auto-retake below.
+      attempts: { used: 0, allowed: 3, left: 3 },
+    }),
+  });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+
+  // The witness fired on that take, and the position's own budget says yes —
+  // so only the set-wide ceiling can be what declined it.
+  assert.equal(integrityReports(posted)[0].zero_run_count, 1);
+  assert.equal(spec.capture_plan.max_attempts, 1, "the ceiling under test");
+  assert.equal(headingText(ctx.screenEl), "Take that measurement again");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(
+    posted
+      .filter((e) => e.begin_capture && !e.armed)
+      .map((e) => [e.begin_capture.index, e.begin_capture.attempt]),
+    [[1, 1]],
+    "nothing is posted past the plan's own attempt ceiling",
+  );
+  ok();
+}
+
 const tests = [
   testFullAcceptedRoundTripEndsAllDone,
   testFocusLossDuringRecordingIsReportedAndNamed,
@@ -4835,6 +5385,14 @@ const tests = [
   testTheConfirmDetailSaysWhoDecidesNext,
   testARetakeRendersTheStepItIsRetakingNotTheNextOne,
   testPreArmFailureDuringAFinalPositionRetakeRestoresTheConfirm,
+  testAWitnessedSpliceRetakesItselfWithNoTap,
+  testAGeometryPromptStillWaitsForAThumb,
+  testTheAutomaticRetakeFiresOncePerMeasurement,
+  testASpentBudgetRefusesRatherThanAutoRetaking,
+  testACleanRejectionAndAnUncountedBudgetBothWaitForAThumb,
+  testABeginFailureDuringTheAutoRetakeLeavesALiveAffordance,
+  testTheAutoRetakeOfARejectedRetakeKeepsTheMarker,
+  testTheSetWideAttemptCeilingAlsoStopsTheAutoRetake,
 ];
 
 await runTestFunctions(tests, () => passed);

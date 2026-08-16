@@ -18,6 +18,7 @@ page covered by the existing Python CI matrix with no extra CI wiring.
 """
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -216,7 +217,7 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         # deployed page still advertises [1, 2, 3], so this page build must
         # publish AFTER the Pis stop emitting 1 and 2, not before.
         "supported_capture_protocol_versions": [3],
-        "capture_page_build": "20260815.4",
+        "capture_page_build": "20260815.5",
     }
     # The ?v= query is the page's ONLY cache-invalidation mechanism, and the
     # Pi's build gate checks the stamp's FORMAT, not its value — so a phone
@@ -224,7 +225,7 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
     # version.json without bumping this is therefore a shipping hazard, not a
     # cosmetic mismatch: that is what this pairing exists to catch, and what it
     # caught for the flat-linearization PR-3b page fix.
-    assert "main.js?v=20260815-4" in index_html
+    assert "main.js?v=20260815-5" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260802-1"' in main_js
     # Bumped with #2094: the recorder worklet now reports the frame count the
@@ -241,7 +242,14 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
     # zero-filled render quantum. A warm-cache phone holding the old module
     # sends no zero-run keys at all, which reads as "not scanned" and would
     # quietly turn a shipped detector back into no detector.
-    assert 'from "./capture-integrity.js?v=20260815-4"' in main_js
+    #
+    # Bumped again for phase B: the module now also owns the predicate that
+    # decides whether a witnessed run is the SPLICE worth spending an attempt
+    # on. Had this stamp not moved, a warm-cache phone would pair the NEW
+    # main.js with the OLD module, which exports no such predicate — a module
+    # resolution error, so the page would not boot at all rather than merely
+    # losing a feature.
+    assert 'from "./capture-integrity.js?v=20260815-5"' in main_js
     # Bumped with #1941 R4: constraints.js's realized-constraint describe()
     # feeds household copy, so a warm-cache browser holding the old module
     # would keep attributing the browser's own track settings to the
@@ -325,9 +333,9 @@ def test_the_digest_covers_the_shared_module_the_build_copies_in():
 # The published state of capture-page/js/**, paired with the build stamp it
 # ships under. See the test below for why a digest rather than a rule.
 _CAPTURE_PAGE_JS_DIGEST = (
-    "c4a6fb846dc7aefe051569c6b65cb0707621c4f66b99c53a09310411eea0c6ce"
+    "d354cafd3ad199eb2f6b6c8e3d1b0c5ad84e492dafdd9a0c554e3aeec6a214cc"
 )
-_CAPTURE_PAGE_JS_DIGEST_BUILD = "20260815.4"
+_CAPTURE_PAGE_JS_DIGEST_BUILD = "20260815.5"
 
 
 def test_capture_page_js_cannot_change_without_a_deliberate_build_stamp_decision():
@@ -503,6 +511,159 @@ def test_capture_page_terminal_result_202608034_rollout_order_is_pinned():
     # behavioral suite, or the unsafe half can disappear while prose passes.
     assert "legacy202608033Verdict" in harness
     assert "testTerminalResultRequiresThe202608034PageFirstRollout" in harness
+
+
+def test_capture_page_auto_retake_is_page_only_and_bounded():
+    """#2557 phase B: the page presses its own Try again, and only there.
+
+    Two claims worth a guard beyond the behavioral harness, which pins the
+    four bounds themselves (``tests/js/capture_plan_loop_test.mjs``, tests
+    61-65):
+
+    * **The release class.** Consuming the witness is page-internal — the same
+      begin the button posts, no new host event, no protocol move — plus one
+      additive key inside the report the Pi already retains verbatim. That is
+      the "degrades on its own" class, where neither order is unsafe, and it is
+      only true while no Pi branches on the key. This asserts the second half
+      mechanically: if a Pi ever starts reading ``auto_retake``, the page and
+      the speaker acquire an ordering the README does not describe.
+    * **The trigger is the page's own witness, never "the host said no."** The
+      predicate lives beside the scan that produced the evidence, and the page
+      asks it rather than re-deriving a rule of its own.
+    """
+    readme = (_REPO / "capture-page/README.md").read_text(encoding="utf-8")
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+    integrity_js = (
+        _REPO / "capture-page/js/capture-integrity.js"
+    ).read_text(encoding="utf-8")
+    harness = (
+        _REPO / "tests/js/capture_plan_loop_test.mjs"
+    ).read_text(encoding="utf-8")
+
+    assert "Build `20260815.5` is that decision" in readme
+    assert "witnessedZeroFillSplice" in integrity_js
+    assert "witnessedZeroFillSplice(integrity)" in main_js
+    # The four bounds, each named where the reader of one will look for the
+    # rest, and each behaviorally pinned next door.
+    assert "if (prompt) return false;" in main_js
+    assert "autoRetakeLedger(ctx).has(index)" in main_js
+    assert "attempts.left <= 0 || attempt + 1 > maxAttempts" in main_js
+    for test_name in (
+        "testAWitnessedSpliceRetakesItselfWithNoTap",
+        "testAGeometryPromptStillWaitsForAThumb",
+        "testTheAutomaticRetakeFiresOncePerMeasurement",
+        "testASpentBudgetRefusesRatherThanAutoRetaking",
+        "testACleanRejectionAndAnUncountedBudgetBothWaitForAThumb",
+    ):
+        assert harness.count(test_name) == 2, (
+            f"{test_name} must be defined AND registered in the harness's "
+            "`tests` array — an unregistered test never runs"
+        )
+
+    # No Pi reads the disclosure. The page-posted report is stored verbatim
+    # (jasper/web/correction_crossover_v2.py writes the whole dict into the
+    # operator sidecar), so naming the key on the Pi side is a BRANCH on it,
+    # which is what would give this page a release order it does not have.
+    def _naming(key: str) -> list[str]:
+        return sorted(
+            str(path.relative_to(_REPO))
+            for path in (_REPO / "jasper").rglob("*.py")
+            if key in path.read_text(encoding="utf-8")
+        )
+
+    # The instrument first: a null from a walk that cannot see anything is not
+    # evidence. `capture_integrity` IS named on the Pi side, so a search that
+    # finds it proves this one is looking where it claims to.
+    assert _naming("capture_integrity"), "the Pi-side walk found nothing at all"
+    readers = _naming("auto_retake")
+    assert readers == [], (
+        "a Pi-side reader of capture_integrity.auto_retake appeared: the page's "
+        "disclosure has become something the speaker depends on, so it needs a "
+        "release order in capture-page/README.md rather than the either-order "
+        f"class it claims today. {readers}"
+    )
+
+
+def test_capture_page_auto_retake_never_answers_a_geometry_ask():
+    """#2557 phase B, gate S3a: the page's `prompt` filter rests on THIS.
+
+    The page declines to auto-retake a rejection carrying a ``prompt``, because
+    a geometry ask is answered by MOVING, not by re-measuring the same spot.
+    That filter is complete only while every geometry rejection is one of two
+    shapes:
+
+    * **prompted** — ``cloud_geometry_locked``'s wider-spot ask, which the
+      page's filter sees; or
+    * **terminal** — ``geometry_retake_unreachable`` (a remote positioner that
+      cannot reach the pose) carries no prompt at all, and is safe only because
+      its ``retry_budget`` of 0 puts it in ``NON_RETRIABLE_CODES``, so the page
+      returns at ``verdict.terminal`` long before the auto-retake branch.
+
+    A third geometry reason that was retriable AND prompt-less would reach the
+    page as an ordinary rejection and could be auto-retaken from the spot the
+    host just said was wrong. Asserted over the reason names rather than a
+    hand-listed pair, so that third one is covered the day it is written —
+    and it is the *grant of a retry budget* that would trip this, which is the
+    edit least likely to be made by someone thinking about the capture page.
+    """
+    from jasper.active_speaker.crossover_v2 import vocabulary as _vocab
+
+    flow_src = (
+        _REPO / "jasper/active_speaker/crossover_v2_flow.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(flow_src)
+
+    def _is_geometry_reason(name: str) -> bool:
+        return name.startswith("REASON_") and "GEOMETRY" in name
+
+    # Every rejection verdict the flow builds for a geometry reason, with the
+    # payload keys it carries.
+    built: dict[str, set[str]] = {}
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "PhaseVerdict"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Name)
+            and _is_geometry_reason(node.args[1].id)
+        ):
+            continue
+        keys: set[str] = set()
+        for keyword in node.keywords:
+            if keyword.arg != "payload" or not isinstance(keyword.value, ast.Dict):
+                continue
+            keys |= {
+                k.value
+                for k in keyword.value.keys
+                if isinstance(k, ast.Constant) and isinstance(k.value, str)
+            }
+        built[node.args[1].id] = keys
+
+    # The instrument first (half-guarded-sites rule): a walk that found no
+    # geometry verdicts would assert nothing at all in the loop below and still
+    # report green. These two are the shipped pair, one of each shape.
+    assert set(built) == {
+        "REASON_CLOUD_GEOMETRY_LOCKED",
+        "REASON_GEOMETRY_RETAKE_UNREACHABLE",
+    }, f"the geometry-verdict walk found {sorted(built)}"
+
+    for name, payload_keys in sorted(built.items()):
+        code = getattr(_vocab, name)
+        prompted = "prompt" in payload_keys
+        terminal = code in _vocab.NON_RETRIABLE_CODES
+        assert prompted or terminal, (
+            f"{name} is a geometry rejection that is neither prompted nor "
+            "terminal, so the capture page's auto-retake (#2557 phase B) would "
+            "treat it as an ordinary glitch and re-measure from the spot the "
+            "speaker just said was wrong. Give it a prompt, or keep its "
+            "retry_budget at 0."
+        )
+
+    # …and membership DISCRIMINATES: the prompted one is genuinely retriable,
+    # so `in NON_RETRIABLE_CODES` above is not a set that swallows everything.
+    assert _vocab.REASON_CLOUD_GEOMETRY_LOCKED not in _vocab.NON_RETRIABLE_CODES
+    assert _vocab.REASON_GEOMETRY_RETAKE_UNREACHABLE in _vocab.NON_RETRIABLE_CODES
 
 
 def test_capture_page_beep_copy_matches_the_composed_beep_count():
@@ -748,9 +909,18 @@ def test_capture_page_pre_arm_failure_never_strands_a_fatal_affordance():
     # than on a next-measurement screen the held set has no next entry for.
     assert main_js.count("if (ctx.retakeAwaitingConfirm) {") == 2
     # The no-affordance repair drops back to the manual screen the countdown's
-    # own Cancel produces, which has one.
-    assert "if (!hasBegin && index > 1) {" in main_js
+    # own Cancel produces, which has one…
+    assert "if (!hasBegin) {" in main_js
     assert "renderPlanNext(ctx, { index: index - 1, attempt: attempt - 1, target });" in main_js
+    # …and has a FLOOR at the first measurement, where there is no earlier
+    # position to drop back to (#2557 phase B gate blocker B1: the auto-retake
+    # is the first affordance-free begin reachable at index 1, and the
+    # `index > 1` drop-back rendered nothing at all there — heading, copy naming
+    # a button, and no button). The retry screen for that same measurement is
+    # the floor; its primary re-posts the pair that just failed.
+    assert "if (index > 1) {" in main_js
+    assert "reason: PRE_ARM_NOT_STARTED_NOTE," in main_js
+    assert 'const PRE_ARM_NOT_STARTED_NOTE = "That measurement didn\'t start.";' in main_js
 
 
 def test_capture_page_verify_confirms_after_the_hold_before_the_tone():

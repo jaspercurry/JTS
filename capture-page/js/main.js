@@ -33,9 +33,13 @@ import {
 import {
   createIntegrityWatch,
   summarizeCaptureIntegrity,
+  witnessedZeroFillSplice,
+  AUTO_RETAKE_MESSAGE,
+  AUTO_RETAKE_SPENT_NOTE,
+  AUTO_RETAKE_ZERO_FILL_REASON,
   INTEGRITY_LOST_FOCUS_MESSAGE,
   INTEGRITY_LOST_FOCUS_NOTE,
-} from "./capture-integrity.js?v=20260815-4";
+} from "./capture-integrity.js?v=20260815-5";
 import { runLevelRampProtocol } from "./level-events.js?v=20260815-4";
 import { inferCalibrationModel } from "./calibration-model.js?v=20260712-1";
 import {
@@ -2539,7 +2543,10 @@ function retakeControl(ctx, { index, attempt, onTap = null }) {
 // hold, whose heading `advanceDeferredHoldHeading` advances to "Verifying…"
 // when the hold resolves. Handing it this heading would replace the very
 // instruction this screen exists to show.
-function renderRetakeInProgress(ctx, { index }) {
+// `note` is the WHY, for the one caller that has one: a retake this page fired
+// itself says so here rather than starting a round the household never asked
+// for and never sees explained.
+function renderRetakeInProgress(ctx, { index, note = "" }) {
   const entry = entryForIndex(ctx.spec, index);
   const screenCopy = (entry && entry.screen) || {};
   const { target } = planTargetAndAttempts(ctx.spec);
@@ -2547,6 +2554,7 @@ function renderRetakeInProgress(ctx, { index }) {
     progress: `${String(screenCopy.progress || `Measurement ${index} of ${target}`)} — again`,
     headline: String(screenCopy.title || "Measuring this spot again"),
     detail: String(screenCopy.body || ""),
+    notes: note ? [el("p", { class: "cap-note", text: note })] : [],
   });
 }
 
@@ -2799,6 +2807,101 @@ async function waitForCaptureSetComplete(client, spec, isAborted) {
   throw failure;
 }
 
+// ---------------------------------------------------------------------------
+// Witness-triggered auto-retake (issue #2557, phase B).
+//
+// WHAT THIS IS. When a take's OWN pre-upload scan witnessed the render-quantum
+// splice (`witnessedZeroFillSplice`) and the host refused that take, the page
+// presses its own "Try again" instead of waiting for a thumb. Nothing else
+// changes: it is the SAME begin the button posts, on the same budget, and the
+// host's residual-desync classifier is still what refused the take. The page
+// adds only the fact that it already knows why, at capture time, on evidence it
+// measured itself.
+//
+// WHY IT CANNOT FIRE EARLIER — before the upload, when the scan actually runs.
+// See capture-integrity.js's header: an armed capture has exactly two exits,
+// upload → verdict or a TERMINAL error, and there is no "this take is dead,
+// give me the next attempt" signal. A local abort would not return the spent
+// attempt, it would destroy the session. So the witness rides the upload, the
+// host judges, and the auto-retake happens exactly where the household's own
+// retry does.
+//
+// THE FOUR BOUNDS, all of them load-bearing:
+//
+//  - THE BUDGET IS THE HOUSEHOLD'S, and this spends from it rather than
+//    minting. It fires only while the position's published extras and the
+//    plan's own attempt ceiling both cover another try — and only when the
+//    host actually published a count, which is stricter than `armRetakeSlot`'s
+//    rule for the tapped control on purpose: a human pressing a button has
+//    declared their intent, and a page spending an attempt it cannot count has
+//    not.
+//  - ONE PER MEASUREMENT. A second witness at the same spot is not a browser
+//    hiccup to paper over; it is a pattern the household should see. The
+//    ledger below is that bound, and the same entry is what puts the
+//    disclosure note on every later screen for that measurement.
+//  - GLITCH ONLY, NEVER GEOMETRY. A verdict carrying a `prompt` is the host
+//    asking the operator to MOVE (the position-group geometry rung), and
+//    re-measuring from the same spot is the one thing that cannot answer it —
+//    see waitForCaptureResult's note on the same field. Those wait for a thumb,
+//    whatever this page's scan saw.
+//
+//    THE `prompt` PROXY RESTS ON A HOST-SIDE INVARIANT, named here because it
+//    is not this file's to keep: every geometry rejection either CARRIES a
+//    prompt (`cloud_geometry_locked`, the wider-spot ask) or is TERMINAL
+//    (`geometry_retake_unreachable` — the remote positioner that cannot reach
+//    the pose — whose `retry_budget` of 0 puts it in the host's
+//    `NON_RETRIABLE_CODES`, so `verdict.terminal` returns above long before
+//    this branch). A future geometry reason that is retriable AND prompt-less
+//    would fall through to the page as an ordinary rejection and could be
+//    auto-retaken from a spot the host just said was wrong. That is why the
+//    invariant is pinned host-side rather than assumed:
+//    `test_capture_page_auto_retake_never_answers_a_geometry_ask` in
+//    tests/test_capture_page_js.py fails the moment a geometry reason is
+//    neither prompted nor terminal.
+//  - THE REJECTION STAYS HONEST. Every path that does not fire falls through to
+//    `renderPlanRetry` unchanged, so a spent budget, a second witness, or a
+//    geometry prompt renders the refusal the household would have seen anyway.
+// ---------------------------------------------------------------------------
+
+// Which measurements have spent their one automatic retake, and the attempt
+// each one was fired FROM. One piece of state, three readers: the one-per-
+// measurement bound, the on-screen disclosure, and the wire marker below.
+function autoRetakeLedger(ctx) {
+  if (!ctx.autoRetakes) ctx.autoRetakes = new Map();
+  return ctx.autoRetakes;
+}
+
+// The disclosure the WIRE carries, set only on the round this page fired
+// itself: the ledger's entry for this measurement names the attempt the
+// witness was seen on, so the round after it — and only that one — is the
+// automatic take. Returns null everywhere else, and an absent key is the
+// ordinary "a household started this" case.
+function autoRetakeMarker(ctx, { index, attempt }) {
+  const firedFrom = autoRetakeLedger(ctx).get(index);
+  if (firedFrom !== attempt - 1) return null;
+  return { reason: AUTO_RETAKE_ZERO_FILL_REASON, after_attempt: firedFrom };
+}
+
+// Fire the page's own retake for a refused take that witnessed the splice.
+// Returns true when it fired — the caller renders the ordinary rejection
+// screen when it did not.
+function autoRetakeWitnessedSplice(
+  ctx, { index, attempt, retake, prompt, attempts, integrity },
+) {
+  if (!witnessedZeroFillSplice(integrity)) return false;
+  if (prompt) return false;
+  if (autoRetakeLedger(ctx).has(index)) return false;
+  const { maxAttempts } = planTargetAndAttempts(ctx.spec);
+  if (!attempts || attempts.left <= 0 || attempt + 1 > maxAttempts) return false;
+  autoRetakeLedger(ctx).set(index, attempt);
+  // The household is looking at the screen the moment this starts, so SAY it
+  // here — the round itself paints no screen of its own, exactly as it does
+  // not for a tapped retake (see retakeControl).
+  renderRetakeInProgress(ctx, { index, note: AUTO_RETAKE_MESSAGE });
+  scheduleAutoBegin(ctx, { index, attempt: attempt + 1, retake });
+  return true;
+}
+
 function renderPlanRetry(
   ctx,
   {
@@ -2851,6 +2954,13 @@ function renderPlanRetry(
   if (attribution) notes.push(el("p", { class: "cap-note", text: attribution }));
   if (integrity && integrity.focus_lost) {
     notes.push(el("p", { class: "cap-note", text: INTEGRITY_LOST_FOCUS_NOTE }));
+  }
+  // …and the automatic try this page already spent at this spot, if it did.
+  // Read off the ledger rather than THIS take's report: the household needs to
+  // know an attempt went that way whichever take is on screen now, and it is
+  // also why the button in front of them is the only try left to that budget.
+  if (autoRetakeLedger(ctx).has(index)) {
+    notes.push(el("p", { class: "cap-note", text: AUTO_RETAKE_SPENT_NOTE }));
   }
   renderStepScreen(ctx, {
     progress:
@@ -3030,14 +3140,20 @@ function clearAutoAdvance(ctx) {
 // Start the next capture as a FRESH runPlanCapture (a macrotask, so the current
 // round's finally cleanup has already run) — mirrors a "Next measurement" tap
 // without the tap. Used for the on_apply hold (post the begin immediately as
-// liveness) and after a countdown elapses.
-function scheduleAutoBegin(ctx, { index, attempt }) {
+// liveness), after a countdown elapses, and by the witness-triggered auto
+// retake below.
+//
+// `retake` carries the same marker the tapped controls carry, because the
+// runner admits a re-measure of an ALREADY-ACCEPTED slot only when it is
+// marked: an auto-fired round that dropped it would be refused as
+// `begin_out_of_order`, which ends the whole session.
+function scheduleAutoBegin(ctx, { index, attempt, retake = false }) {
   clearAutoAdvance(ctx);
   const controller = ctx.planController;
   ctx.autoAdvanceTimer = setTimeout(() => {
     ctx.autoAdvanceTimer = null;
     if (controller && controller.aborted) return;
-    void runPlanCapture(ctx, { index, attempt });
+    void runPlanCapture(ctx, { index, attempt, retake });
   }, 0);
 }
 
@@ -3667,6 +3783,13 @@ function beginCapturePayload({ index, attempt, retake = false }) {
   return retake ? { index, attempt, retake: true } : { index, attempt };
 }
 
+// The retry screen's detail line when the repair below has to build that screen
+// for a round that never started. `renderPlanRetry`'s own default says the
+// measurement "didn't pass the speaker's quality check", which would be a claim
+// about a take that was never recorded; the specific cause rides `#status`
+// (`captureFailureMessage`), so this says only the part that is certain.
+const PRE_ARM_NOT_STARTED_NOTE = "That measurement didn't start.";
+
 // The label of the live begin affordance on the current plan screen —
 // "I'm there — play the tone" / "Try again" / the spec's own Start-button
 // label — so a pre-arm failure's retry copy names a button that actually
@@ -3707,6 +3830,19 @@ function planRetryAffordance(ctx) {
 //    the forward path, so its screen renders none; the copy would otherwise
 //    name a button that does not exist. Drop back to the manual screen the
 //    countdown's own Cancel produces, which has one.
+//
+//    …AND THAT DROP-BACK NEEDS A FLOOR AT INDEX 1 (#2557 phase B, gate B1).
+//    `renderPlanNext(index - 1, …)` is how the affordance-free case is repaired,
+//    and it has nothing to render for the FIRST measurement — there is no
+//    position before it. That was unreachable while every index-1 round was
+//    entered from a screen that already had a begin button (round 1 from the
+//    spec's own Start, a retry from `renderPlanRetry`'s). The witness-triggered
+//    auto-retake is the first affordance-free begin reachable at index 1, so the
+//    floor is now load-bearing: without it the household reads
+//    "Measuring this spot again", copy naming a button, and no button —
+//    #2090's "silence is the only wrong outcome", exactly the state this whole
+//    function exists to prevent. The retry screen for that same measurement is
+//    the right floor: its primary re-posts the pair that just failed.
 function repairPreArmAffordance(ctx, { index, attempt, target, retake }) {
   if (retake) {
     // `attempt - 1` throughout: this round is the retake, so the slot and the
@@ -3734,8 +3870,20 @@ function repairPreArmAffordance(ctx, { index, attempt, target, retake }) {
   const hasBegin = ((ctx.captureRefs && ctx.captureRefs.buttons) || []).some(
     (entry) => entry && entry.action === "begin_capture",
   );
-  if (!hasBegin && index > 1) {
-    renderPlanNext(ctx, { index: index - 1, attempt: attempt - 1, target });
+  if (!hasBegin) {
+    if (index > 1) {
+      renderPlanNext(ctx, { index: index - 1, attempt: attempt - 1, target });
+    } else {
+      // `attempt - 1` for the same reason the branch above uses it: both
+      // screens' primaries post ONE PAST what they are handed, so this is what
+      // makes the button re-post the exact pair that just failed. It needs no
+      // floor of its own — an index-1 round is only affordance-free after an
+      // earlier attempt, so `attempt` is at least 2 here, and even at 1 the
+      // resulting begin would be the correct (1, 1).
+      renderPlanRetry(ctx, {
+        index, attempt: attempt - 1, target, reason: PRE_ARM_NOT_STARTED_NOTE,
+      });
+    }
   }
   return planRetryAffordance(ctx);
 }
@@ -3945,6 +4093,12 @@ async function runPlanCapture(ctx, { index, attempt, retake = false }) {
       // moment: the scan describes exactly the bytes this page is about to
       // upload, not a proxy for them.
       samples: samples,
+      // …and, when this round is one the PAGE started off the back of that
+      // scan, the disclosure that says so (phase B). It rides the retained
+      // operator sidecar with the rest of the report, so a session reviewed
+      // later shows the automatic try as an automatic try rather than as one
+      // more attempt nobody can account for.
+      autoRetake: autoRetakeMarker(ctx, { index, attempt }),
     });
     if (integrityWatch) integrityWatch.dispose();
     integrityWatch = null;
@@ -4064,6 +4218,23 @@ async function runPlanCapture(ctx, { index, attempt, retake = false }) {
         index, attempt, target, unresolved: verdict.unresolved,
       });
     } else {
+      // The page's own witness first (#2557 phase B): a take whose pre-upload
+      // scan found the render-quantum splice retakes itself, once, inside the
+      // budget this screen would otherwise ask the household to spend by hand.
+      // Every rejection it declines falls straight through to the screen below,
+      // unchanged.
+      if (
+        autoRetakeWitnessedSplice(ctx, {
+          index,
+          attempt,
+          retake,
+          prompt: verdict.prompt,
+          attempts: verdict.attempts,
+          integrity,
+        })
+      ) {
+        return;
+      }
       // `error` first for the legacy shape (kinds whose host sets it), then
       // the v2 conductor's `reason`/`banner`; `prompt` is the separate
       // what-to-do instruction renderPlanRetry headlines.

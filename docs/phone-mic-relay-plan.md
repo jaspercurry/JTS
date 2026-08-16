@@ -721,7 +721,9 @@ Tokens are bearer tokens in a header. Sessions + blobs auto-expire at `ttl_s`
   `block_gaps`, `block_gap_frames`, `silent_blocks`) plus the frame ledger's page
   end (`frames`, `encoded_frames`, #2094) plus a scan of the assembled capture
   for a zero-filled render quantum (`zero_run_count`, a bounded `zero_runs` log
-  of `{offset, len, phase}`, and `zero_run_quantum`, #2557). Note what
+  of `{offset, len, phase}`, and `zero_run_quantum`, #2557) plus, on a round the
+  PAGE started off the back of that scan, `auto_retake` (`{reason,
+  after_attempt}`, #2557 phase B). Note what
   `silent_blocks` is NOT: it counts render callbacks handed no input array at
   all, so it stays 0 through the zero-FILLED array an upstream FIFO resync
   delivers — the scan is what witnesses that, and it reads the data rather than
@@ -730,11 +732,17 @@ Tokens are bearer tokens in a header. Sessions + blobs auto-expire at `ttl_s`
   last-write-wins, and the runner's arm-once guard makes the repeat a no-op.
   Posting it before the blob is the ordering guarantee: the Pi reads the event
   and the blob-ready flag from the same status document, so a poll that finds
-  the blob has already carried the report. Nothing branches on it — it reaches
+  the blob has already carried the report. No HOST branches on it — it reaches
   `CaptureResult.capture_integrity` and the operator capture-ring sidecar, so a
   ±128-sample splice can be attributed to the capture side or the host side
   without re-analysing the WAV. An older page reports nothing and the field
-  stays `None`, which is distinct from a report saying the take was sound.
+  stays `None`, which is distinct from a report saying the take was sound. The
+  page DOES act on its own copy of the zero-run scan (#2557 phase B): when the
+  host refuses a take that witnessed the splice, it presses its own "Try again"
+  once, inside the household's already-minted extra-try budget, and declares the
+  automatic round with `auto_retake`. That is page-internal — the same begin the
+  button posts — and the host's residual-desync classifier stays the thing that
+  refuses the take; the bounds live in `capture-page/README.md`.
 - `GET    /sessions/:id/phone-status` — phone polls `{state, host_event}` (auth:
   upload_token) so it can wait for Pi progress, especially `sweep_complete`,
   without seeing pull-only blob/integrity fields.
