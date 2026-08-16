@@ -48,7 +48,7 @@ sanitizes it again before rendering a plain navigation link to the local Pi page
 | `js/fragment.js` | Parse `#s=&u=&k=&a=` (key/spec MAC never leave the fragment) | `capture_fragment_test.mjs` |
 | `js/constraints.js` | Realized-constraints verify/degrade per the spec's per-kind policy | `capture_constraints_test.mjs` |
 | `js/wakelock.js` | Screen Wake Lock + `visibilitychange` abort | `capture_wakelock_test.mjs` |
-| `js/capture-integrity.js` | Per-take focus/visibility log + block-accounting summary (#2151) + the page end of the host's end-to-end frame ledger (#2094) + the pre-upload scan for a zero-filled render quantum (#2557) | `capture_integrity_test.mjs`, `capture_plan_loop_test.mjs`, `capture_frame_report_emit.mjs` |
+| `js/capture-integrity.js` | Per-take focus/visibility log + block-accounting summary (#2151) + the page end of the host's end-to-end frame ledger (#2094) + the pre-upload scan for a zero-filled render quantum (#2557) + the splice predicate the auto-retake reads (#2557 phase B) | `capture_integrity_test.mjs`, `capture_plan_loop_test.mjs`, `capture_frame_report_emit.mjs` |
 | `js/level-events.js` | Batched phone-side mic-level events for the level-match ramp | `capture_level_events_test.mjs` |
 | `js/ambient-stats.js` | Per-octave-band ambient-noise stats for a driver sweep's quiet window (Wave 2) | `capture_ambient_stats_test.mjs`, `test_capture_page_ambient_stats_bridge.py` |
 | `js/config.js` | `RELAY_BASE` (one relay origin for the fleet) | — |
@@ -244,6 +244,25 @@ additions above: an older Pi ignores the keys, and an older page sends none,
 which is "not scanned" and never "scanned clean". **No Pi reads them** — the host
 refuses these takes on its own residual-desync evidence, and consuming the
 witness is a separate decision with its own release order.
+
+Build `20260815.5` is that decision, and it stays in the same class (#2557
+phase B). The page now CONSUMES its own witness: when the host refuses a take
+whose pre-upload scan found the splice, the page presses its own **Try again**
+instead of waiting for a thumb. That is page-internal — the same begin the
+button posts, no new host event, no protocol move — and the host's
+residual-desync classifier is untouched and still the thing that refuses the
+take. The only wire change is one more additive key inside the same report,
+`capture_integrity.auto_retake` (`{reason, after_attempt}`), which rides the
+retained operator sidecar so an automatic try reads as one rather than as an
+attempt nobody can account for. Both directions are safe: an older Pi ignores
+the key exactly as it ignores the zero-run keys, and an older page never sends
+it and never retakes itself, which is today's behaviour and correct on its own.
+The four bounds the behaviour rests on — the household's already-minted extra-try
+budget, one automatic retake per measurement, glitch-only (a geometry `prompt`
+always waits for a thumb), and an honest rejection screen on every path that does
+not fire — live beside the mechanism in `js/capture-integrity.js` and
+`autoRetakeWitnessedSplice` in `js/main.js`, and are pinned in
+`tests/js/capture_plan_loop_test.mjs`.
 
 The one thing that is NOT optional in either direction: the field must ride a
 repeat of the WHOLE armed payload, never a partial event. The relay's

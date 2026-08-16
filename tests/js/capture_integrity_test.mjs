@@ -16,14 +16,19 @@
 import assert from "node:assert/strict";
 
 import {
+  AUTO_RETAKE_MESSAGE,
+  AUTO_RETAKE_SPENT_NOTE,
+  AUTO_RETAKE_ZERO_FILL_REASON,
   INTEGRITY_EVENT_CAP,
   INTEGRITY_LOST_FOCUS_MESSAGE,
   INTEGRITY_LOST_FOCUS_NOTE,
   ZERO_RUN_QUANTUM,
   ZERO_RUN_RECORD_CAP,
+  containsAlignedQuantum,
   createIntegrityWatch,
   scanZeroFillRuns,
   summarizeCaptureIntegrity,
+  witnessedZeroFillSplice,
 } from "../../capture-page/js/capture-integrity.js";
 import { runTestFunctions } from "./run_test_functions.mjs";
 
@@ -291,10 +296,12 @@ function silence(buffer, offset, length) {
 // alone: does it cover a whole block-aligned quantum? Not `phase === 0` — one
 // natural ambient zero beside a zero-filled quantum merges with it and shifts
 // the phase off the grid while the quantum is still in there.
-function containsAlignedQuantum(run, quantum) {
-  const firstAligned = Math.ceil(run.offset / quantum) * quantum;
-  return firstAligned + quantum <= run.offset + run.len;
-}
+//
+// It was a local helper here while nothing consumed the scan. The page's
+// auto-retake (#2557 phase B) is that consumer, so the rule moved into the
+// module beside the scan that produces the record and this file IMPORTS it —
+// a second copy here would be a rule the production predicate could drift from
+// while these tests stayed green.
 
 // THE FINGERPRINT. One whole quantum of digital silence, block-aligned, in
 // otherwise live signal — the shape found in 13 of 13 testable glitch events.
@@ -489,6 +496,146 @@ function testSummaryCarriesTheZeroRunWitness() {
   ok();
 }
 
+// ---------------------------------------------------------------------------
+// The auto-retake's trigger (#2557 phase B). `witnessedZeroFillSplice` is the
+// one predicate the page spends a household's attempt on, so each test below
+// pins a benign reading it must decline — the whole risk of an automatic
+// retake is a trigger that is wider than its evidence.
+// ---------------------------------------------------------------------------
+
+// A report shaped exactly as the page builds it, so these tests read the same
+// object production does rather than a hand-made lookalike.
+function reportFor(capture) {
+  return summarizeCaptureIntegrity({
+    encodedFrames: capture.length,
+    samples: capture,
+  });
+}
+
+// THE FIRING CASE. An aligned quantum of digital zeros with live room either
+// side of it: the shape 13 of 13 testable glitch events carried.
+function testAnInteriorAlignedQuantumIsTheAutoRetakeTrigger() {
+  const capture = ambientCapture(64 * ZERO_RUN_QUANTUM);
+  silence(capture, 20 * ZERO_RUN_QUANTUM, ZERO_RUN_QUANTUM);
+
+  assert.equal(witnessedZeroFillSplice(reportFor(capture)), true);
+  // …and the same take with no splice does not fire, which is what makes the
+  // assertion above about the splice rather than about the fixture.
+  assert.equal(
+    witnessedZeroFillSplice(reportFor(ambientCapture(64 * ZERO_RUN_QUANTUM))),
+    false,
+  );
+  ok();
+}
+
+// A MERGED RUN STILL FIRES. One natural ambient zero abutting the quantum
+// shifts the phase off the grid (offset 2559, len 129) while the whole quantum
+// is still inside the run — the overclaim `scanZeroFillRuns` warns about, now
+// as a property of the consumer rather than of a test-local helper.
+function testAMergedRunStillTriggersTheAutoRetake() {
+  const capture = ambientCapture(64 * ZERO_RUN_QUANTUM);
+  const aligned = 20 * ZERO_RUN_QUANTUM;
+  assert.notEqual(capture[aligned - 2], 0);
+  silence(capture, aligned, ZERO_RUN_QUANTUM);
+  capture[aligned - 1] = 0;
+
+  const report = reportFor(capture);
+  assert.notEqual(report.zero_runs[0].phase, 0);
+  assert.equal(witnessedZeroFillSplice(report), true);
+  ok();
+}
+
+// A RUN AT SAMPLE 0 IS NOT THE TRIGGER. `scanZeroFillRuns` names the benign
+// reading itself — a graph that had not warmed up — and it sits before the
+// sweep in any case. A capture that is silent from its first sample is a dead
+// microphone: a real problem, and a different one, with a human answer.
+function testALeadingRunIsNotTheTrigger() {
+  const warmup = ambientCapture(64 * ZERO_RUN_QUANTUM);
+  silence(warmup, 0, ZERO_RUN_QUANTUM);
+  assert.equal(witnessedZeroFillSplice(reportFor(warmup)), false);
+
+  const deadMic = new Float32Array(64 * ZERO_RUN_QUANTUM);
+  const deadReport = reportFor(deadMic);
+  assert.equal(deadReport.zero_run_count, 1);
+  assert.equal(witnessedZeroFillSplice(deadReport), false);
+  ok();
+}
+
+// A RUN THAT REACHES THE END IS NOT THE TRIGGER either: it cannot be told from
+// a recorder that stopped early or padded its tail, and it is past the sweep.
+// The scan still REPORTS it — the record is unchanged, only the spend is
+// narrow.
+function testATrailingRunIsReportedButDoesNotTrigger() {
+  const capture = ambientCapture(64 * ZERO_RUN_QUANTUM);
+  silence(capture, capture.length - ZERO_RUN_QUANTUM, ZERO_RUN_QUANTUM);
+
+  const report = reportFor(capture);
+  assert.equal(report.zero_run_count, 1);
+  assert.equal(witnessedZeroFillSplice(report), false);
+  ok();
+}
+
+// SHORT OF A QUANTUM, AND OFF THE GRID, ARE BOTH DECLINED — the same two
+// non-fingerprints the scan distinguishes, asked of the consumer.
+function testSubQuantumAndMisalignedRunsDoNotTrigger() {
+  const short = ambientCapture(64 * ZERO_RUN_QUANTUM);
+  silence(short, 20 * ZERO_RUN_QUANTUM, ZERO_RUN_QUANTUM - 1);
+  assert.equal(witnessedZeroFillSplice(reportFor(short)), false);
+
+  const straddling = ambientCapture(64 * ZERO_RUN_QUANTUM);
+  silence(straddling, 20 * ZERO_RUN_QUANTUM + 37, ZERO_RUN_QUANTUM);
+  const report = reportFor(straddling);
+  assert.equal(report.zero_run_count, 1);
+  assert.equal(witnessedZeroFillSplice(report), false);
+  ok();
+}
+
+// FAIL-CLOSED ON A REPORT THAT DID NOT MEASURE. "Not scanned" must never read
+// as "scanned and found" — this answer spends a household's attempt — and a
+// report with no frame count cannot place a run INSIDE anything.
+function testAnUnscannedOrUncountedReportNeverTriggers() {
+  const capture = ambientCapture(64 * ZERO_RUN_QUANTUM);
+  silence(capture, 20 * ZERO_RUN_QUANTUM, ZERO_RUN_QUANTUM);
+  const full = reportFor(capture);
+
+  // The real thing fires; each removal below is the only difference.
+  assert.equal(witnessedZeroFillSplice(full), true);
+  const { encoded_frames: _frames, ...noFrames } = full;
+  assert.equal(witnessedZeroFillSplice(noFrames), false);
+  const { zero_runs: _runs, ...noRuns } = full;
+  assert.equal(witnessedZeroFillSplice(noRuns), false);
+  const { zero_run_quantum: _quantum, ...noQuantum } = full;
+  assert.equal(witnessedZeroFillSplice(noQuantum), false);
+
+  // An older page reported focus only; a caller may hand over nothing at all.
+  assert.equal(
+    witnessedZeroFillSplice(summarizeCaptureIntegrity({ encodedFrames: 4800 })),
+    false,
+  );
+  for (const bad of [null, undefined, "", 0, []]) {
+    assert.equal(witnessedZeroFillSplice(bad), false);
+  }
+  ok();
+}
+
+// The automatic retake DISCLOSES itself on the wire, and only on the round the
+// page actually fired. Absent is the ordinary "a household started this" case,
+// never "unknown" — so it is omitted rather than nulled.
+function testSummaryCarriesTheAutoRetakeDisclosure() {
+  const declared = summarizeCaptureIntegrity({
+    encodedFrames: 4800,
+    autoRetake: { reason: AUTO_RETAKE_ZERO_FILL_REASON, after_attempt: 3 },
+  });
+  assert.deepEqual(declared.auto_retake, {
+    reason: "zero_fill_splice",
+    after_attempt: 3,
+  });
+
+  const ordinary = summarizeCaptureIntegrity({ encodedFrames: 4800 });
+  assert.equal("auto_retake" in ordinary, false);
+  ok();
+}
+
 // The counter this scan exists to compensate for: a zero-FILLED input array is
 // an ordinary block to the worklet, so `silent_blocks` stays 0 through the very
 // event the capture is being refused for. Both facts ride the same report.
@@ -513,11 +660,24 @@ function testSilentBlocksStaysZeroThroughAZeroFilledQuantum() {
 // The two household-facing strings name no browser, platform, or vendor, and
 // say what will happen rather than only what went wrong.
 function testCopyIsPlainAndProviderAgnostic() {
-  for (const copy of [INTEGRITY_LOST_FOCUS_MESSAGE, INTEGRITY_LOST_FOCUS_NOTE]) {
+  for (const copy of [
+    INTEGRITY_LOST_FOCUS_MESSAGE,
+    INTEGRITY_LOST_FOCUS_NOTE,
+    AUTO_RETAKE_MESSAGE,
+    AUTO_RETAKE_SPENT_NOTE,
+  ]) {
     assert.equal(/chrome|safari|firefox|android|ios|mac|windows|tab\b/i.test(copy), false);
     assert.ok(copy.length > 30);
   }
   assert.ok(/retaken/.test(INTEGRITY_LOST_FOCUS_MESSAGE));
+  // The auto-retake copy states what happened AND what is being done about it;
+  // a sentence that only named the fault would leave the household watching an
+  // unexplained round start by itself.
+  assert.ok(/gap/.test(AUTO_RETAKE_MESSAGE));
+  assert.ok(/again/.test(AUTO_RETAKE_MESSAGE));
+  // …and the after-the-fact note says the try was already spent, which is the
+  // half a household needs to read the budget in front of them.
+  assert.ok(/already/.test(AUTO_RETAKE_SPENT_NOTE));
   ok();
 }
 
@@ -545,6 +705,13 @@ await runTestFunctions(
     testTheRunListIsBoundedButTheCountIsNot,
     testANonBufferDegradesRatherThanThrowing,
     testSummaryCarriesTheZeroRunWitness,
+    testAnInteriorAlignedQuantumIsTheAutoRetakeTrigger,
+    testAMergedRunStillTriggersTheAutoRetake,
+    testALeadingRunIsNotTheTrigger,
+    testATrailingRunIsReportedButDoesNotTrigger,
+    testSubQuantumAndMisalignedRunsDoNotTrigger,
+    testAnUnscannedOrUncountedReportNeverTriggers,
+    testSummaryCarriesTheAutoRetakeDisclosure,
     testSilentBlocksStaysZeroThroughAZeroFilledQuantum,
     testCopyIsPlainAndProviderAgnostic,
   ],
