@@ -1015,17 +1015,26 @@ def evaluate_round_quality(
 
     * *Spec is an outcome, not a proxy for benefit.* Every row of #2291's table
       reads "any" for spec, because "improved and still out of spec" is an
-      honest first pass. A test pins that permuting spec changes no adoption
-      decision, and that pin is load-bearing.
-    * *The spec verdicts available today are not yet honest enough to decide
-      on.* They are computed over the raw 250 Hz-2 kHz band with **no
-      intersection against the session's own trusted floor** (357.1 Hz on a 7 ms
-      gate), so a best-of-N series keyed on them would rank rounds partly on
-      sub-trusted-floor evidence the same session's delta probe already refuses
-      to grade — and which the E4 sweep measured moving ~2 dB with gate length
-      alone. That intersection is a separate filed fix, and it must land before
-      any axis is allowed to DECIDE on a spec verdict. Carrying spec as
-      disclosure costs nothing and inherits none of it.
+      honest first pass. ``test_the_spec_verdict_never_moves_the_quality_STATUS``
+      pins that by permutation, and that pin is load-bearing.
+    * *The spec VERDICT still decides nothing, on any axis.*
+      :func:`decide_adoption` never reads a :class:`~.contracts.SpecStatus`.
+
+    **What #2602 changed here, and what it did not.** The fourth axis
+    (:func:`evaluate_iteration_headroom`) reads the same post-apply report this
+    function is handed — but it reads *measured dB* off it (each band's own
+    ripple, and the level step between bands), never the pass/fail against a
+    tolerance row, and it can only choose whether another round runs. So the
+    sentence above holds unchanged: the spec verdict moves nothing.
+
+    That axis also required a precondition this docstring used to name as
+    outstanding — spec numbers computed with **no intersection against the
+    session's own trusted floor**, which would have made any decision keyed on
+    them inherit a gate-length term no round controls. **#2551 landed that
+    intersection**, and the post-apply cloud report is built with the floor
+    supplied (``crossover_v2_flow``'s ``cloud_trusted_floor_hz``), so the
+    numbers the fourth axis reads are already floor-intersected. An axis
+    reading them would not have been admissible before that; it is now.
 
     So a round can be PASSED with targets outstanding, and that is not a
     contradiction: the status answers "did this round realize and improve the

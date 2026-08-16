@@ -888,9 +888,9 @@ def test_the_spec_answer_never_changes_whether_the_graph_is_kept():
     Two further protections stay in force, neither of them this test's:
 
     * The spec VERDICT still moves nothing. ``evaluate_round_quality``'s own
-      permutation pin (``test_the_spec_answer_never_changes_the_quality``, in
-      the verification suite) is untouched — ``decide_adoption`` never reads
-      ``SpecStatus``, and the fourth axis reads measured dB rather than a
+      permutation pin (``test_the_spec_verdict_never_moves_the_quality_STATUS``,
+      in the verification suite) is untouched — ``decide_adoption`` never reads
+      a ``SpecStatus``, and the fourth axis reads measured dB rather than a
       pass/fail against a tolerance row.
     * #2537's second reason for the pin — that spec numbers were computed with
       no intersection against the session's trusted floor, so a decision keyed
