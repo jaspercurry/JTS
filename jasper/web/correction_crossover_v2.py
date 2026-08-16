@@ -7232,9 +7232,6 @@ def prepare_v2_session(
         session_wall_clock_ceiling_s,
     )
     from jasper.capture_relay import correction_adapter
-    from jasper.active_speaker.crossover_v2.coordinator import (
-        series_position_from_state,
-    )
 
     try:
         plan_shape = resolve_plan_shape(raw.get("tier") if raw else None)
@@ -7309,11 +7306,6 @@ def prepare_v2_session(
             applied=bool(prior_raw.get("applied")),
             gain_plan_db=prior_raw.get("gain_plan_db"),
             attempt_history=attempt_history_from_state(prior_raw),
-            # #2602: where the next round sits in the flattening series,
-            # read off the receipt the previous round banked. Carried
-            # forward across sessions like the anchor keys, because the
-            # series outlives the session that started it.
-            series_position=series_position_from_state(prior_raw),
             last_attempt_decision=(
                 dict(prior_decision)
                 if isinstance(prior_decision, Mapping)
@@ -7746,9 +7738,13 @@ def prepare_v2_verify(
             ),
             verify_pilot_transfer_prior=pilot_transfer_prior,
             attempt_history=attempt_history_from_state(state),
-            # #2602 — see the stage-1 site's note. This is the arm that
-            # actually grades a round, so an unresolved position here is
-            # what would silently pin every series to round 1.
+            # #2602: where the next round sits in the flattening series, read
+            # off the receipt the previous round banked and carried forward
+            # across sessions — the series outlives the session that started
+            # it. Wired HERE and only here because this is the stage that
+            # grades a round: stage 1 walks CHECK/MEASURE and never reaches
+            # ``_grade_round``, so a series position on its snapshot would be
+            # state nothing reads.
             series_position=series_position_from_state(state),
             attempt_floor=attempt_store.floor,
             last_attempt_decision=(
