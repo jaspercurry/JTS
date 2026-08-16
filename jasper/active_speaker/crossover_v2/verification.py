@@ -1131,13 +1131,6 @@ class FlatnessObjectives:
     ripple_db: float | None
 
     @property
-    def evaluable(self) -> bool:
-        """Did either objective grade? Neither is required; both being absent
-        is what makes the round unable to say whether anything is reachable."""
-
-        return self.tilt_db is not None or self.ripple_db is not None
-
-    @property
     def worst_db(self) -> float | None:
         """The larger of the two, or ``None`` when neither graded.
 
