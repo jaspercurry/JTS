@@ -4006,9 +4006,24 @@ overlap —
 trusting the nominal `Fc ± 1 octave` span, since a driver's MEASURE sweep
 only ever excites its own declared band (e.g. a tweeter sweep starting AT
 Fc leaves `[Fc/2, Fc)` as pure deconvolution noise for that branch). One
-SSOT helper, `_overlap_band_hz` in `program_analysis.py`, computes the
+SSOT helper, `overlap_band_hz` in `program_analysis.py`, computes the
 clamp; every consumer reads the real sweep bounds off the program's own
 segments rather than re-deriving the nominal edges.
+
+**The per-driver capture-SNR verdict takes the same clamp, per branch**
+(`branch_snr_band_hz`, #2613). `_driver_snr_block` used to hand
+`band_snr_verdicts` the bare nominal window, and that window enfranchises any
+`CROSSOVER_SNR_BANDS_HZ` row it merely *overlaps* — so a tweeter swept from
+1.5 kHz at Fc = 1.6 kHz let the `transition` row (350-1000 Hz), into which its
+stimulus sends nothing by design, read the room against itself and verdict
+`insufficient` on arithmetic no room and no drive level could change. That
+fired the declared-design commitment below on every jts3 round while the `mid`
+row carrying the decision read a clean 66.6 dB. The clamp is stated for one
+branch that does not know its role (whichever edge binds, binds) and applies to
+BOTH decision classes; the 35 dB law and the fail-safe are untouched — only the
+window they read. Residual, erring toward refusal: a row the window keeps can
+still be wider than the sweep's coverage of it (under 1 dB for a shipped
+crossover) — see the function's docstring.
 
 #### (Polarity, delay) selection — one objective, correlation as seed
 
