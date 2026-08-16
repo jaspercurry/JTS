@@ -156,47 +156,41 @@ def _both_halves(yaml_text: str) -> tuple[str | None, str | None]:
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("graph_device", "marker_armed"),
-    [
-        # Mid-arm: rung 1 has moved the graph, the hardware reconciler has not
-        # run yet. A deploy landing HERE is what used to undo rung 1.
-        (RING_ACTIVE_PLAYBACK_DEVICE, False),
-        # Mid-rollback (and the #2339 crash window): the marker still says armed
-        # while the graph has already gone back to the ALSA lane.
-        (OUTPUTD_ACTIVE_PLAYBACK_DEVICE, True),
-    ],
-)
 async def test_the_live_endpoint_follows_the_graph_not_the_marker(
-    tmp_path, monkeypatch, graph_device, marker_armed,
+    tmp_path, monkeypatch,
 ):
-    """THE GRAPH IS UPSTREAM TRUTH, and these are the states that prove it.
+    """THE GRAPH IS UPSTREAM TRUTH, and mid-arm is the state that proves it.
 
-    Both halves of the ladder pass through a window where the graph and the
-    marker disagree, in opposite directions. The marker is *derived from* the
-    graph by ``jasper-audio-hardware-reconcile``, so following the graph is
-    following the half the reconcilers are converging toward; following the
-    marker would undo the rung the operator just completed (arm) or re-arm a box
-    they just released (rollback).
+    Rung 1 has moved the graph onto the ring; the hardware reconciler has not
+    run yet, so the marker is still clear. A deploy landing HERE is what used to
+    undo rung 1. The marker is *derived from* the graph by
+    ``jasper-audio-hardware-reconcile``, so following the graph is following the
+    half the reconcilers are converging toward.
+
+    #2285 P2: the opposite window (marker armed, graph on the snd-aloop lane)
+    used to be the second half of this pair. It is no longer a disagreement this
+    function resolves by ADOPTION — the aloop endpoint was retired, so a graph
+    still naming it is DECLINED like any other non-endpoint sink and the chooser
+    answers. That direction is pinned below, in the declined-device shapes.
     """
     topology, applied = _applied_box(tmp_path, monkeypatch)
     _point_statefile_at(
         tmp_path,
         monkeypatch,
-        _graph_for(topology, applied, graph_device),
+        _graph_for(topology, applied, RING_ACTIVE_PLAYBACK_DEVICE),
         name="loaded.yml",
     )
     monkeypatch.setattr(
         "jasper.fanin_coupling.ring_active_endpoint_armed",
-        lambda env=None: marker_armed,
+        lambda env=None: False,
     )
 
     device, source = resolve_live_active_endpoint(topology)
 
-    assert device == graph_device
-    # The SOURCE is asserted, not just the device: on an unarmed box both
-    # witnesses answer the same name, so a device-only assertion would pass
-    # while the marker was the one answering.
+    assert device == RING_ACTIVE_PLAYBACK_DEVICE
+    # The SOURCE is asserted, not just the device: the chooser now answers the
+    # same name for an active-capable topology, so a device-only assertion would
+    # pass while the fall-through was the one answering.
     assert source == LOADED_GRAPH_SOURCE
 
 
@@ -207,24 +201,36 @@ async def test_the_live_endpoint_follows_the_graph_not_the_marker(
         "dangling_config_path",
         "graph_without_devices",
         "graph_on_a_non_endpoint_device",
+        "graph_on_the_retired_aloop_endpoint",
     ],
 )
-async def test_an_unreadable_graph_falls_back_to_the_marker_never_the_snapshot(
+async def test_an_unadoptable_graph_falls_back_to_the_chooser_never_the_snapshot(
     tmp_path, monkeypatch, shape,
 ):
     """DEFAULT-SAFE, deliberately, and never worse than what it replaced.
 
-    A fresh box has no statefile at all and still has to take a deploy, so an
-    unreadable graph is not a refusal. The second witness is the MARKER, not the
-    applied snapshot: on an armed box with an unreadable statefile the marker
-    still answers the ring, where the snapshot would have named the ALSA lane
-    and re-created the very clobber this fixes.
+    A fresh box has no statefile at all and still has to take a deploy, so a
+    graph this derivation cannot adopt is not a refusal. The second witness is
+    the CHOOSER (``resolve_active_playback_device``), which answers the ACTIVE
+    ring for an active-capable topology — never the applied snapshot, whose lane
+    is what re-created the #2339 clobber.
+
+    #2285 P2 renamed this: the second witness used to be the endpoint MARKER,
+    and the two marker states below used to answer different devices. The
+    chooser no longer reads the marker (there is one legal endpoint to choose),
+    so sweeping both states is now the control proving exactly that — a chooser
+    that still branched on the marker would answer the retired lane in the
+    second half.
 
     ``graph_on_a_non_endpoint_device`` is the same rule from the other side: a
-    device that is not one of the active lane's two transports is not a third
-    answer to "which transport", and adopting it would hand the active emitter a
-    device its own forbidden-token guard refuses mid-save. Here that device IS
-    the forbidden stereo lane, so the pre-emption is not theoretical.
+    device that is not the active lane's transport is not a second answer to
+    "which transport", and adopting it would hand the active emitter a device
+    its own forbidden-token guard refuses mid-save. There that device is the
+    forbidden stereo lane, so the pre-emption is not theoretical.
+    ``graph_on_the_retired_aloop_endpoint`` is the shape every box commissioned
+    before the retirement is actually in, and the reason
+    ``OUTPUTD_ACTIVE_PLAYBACK_DEVICE`` still has a name: it must be DECLINED,
+    not followed.
     """
     topology, applied = _applied_box(tmp_path, monkeypatch)
     statefile = tmp_path / "outputd-statefile.yml"
@@ -239,31 +245,29 @@ async def test_an_unreadable_graph_falls_back_to_the_marker_never_the_snapshot(
     else:
         from jasper.camilla_config_contract import DEFAULT_PLAYBACK_DEVICE
 
-        graph = tmp_path / "stereo-lane.yml"
-        graph.write_text(
-            _graph_for(topology, applied, None).replace(
-                OUTPUTD_ACTIVE_PLAYBACK_DEVICE, DEFAULT_PLAYBACK_DEVICE
-            ),
-            encoding="utf-8",
+        declined = (
+            OUTPUTD_ACTIVE_PLAYBACK_DEVICE
+            if shape == "graph_on_the_retired_aloop_endpoint"
+            else DEFAULT_PLAYBACK_DEVICE
         )
+        graph = tmp_path / f"{shape}.yml"
+        text = _graph_for(topology, applied, None).replace(
+            RING_ACTIVE_PLAYBACK_DEVICE, declined
+        )
+        assert declined in text
+        graph.write_text(text, encoding="utf-8")
         statefile.write_text(f"config_path: {graph}\n", encoding="utf-8")
     monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
 
-    monkeypatch.setattr(
-        "jasper.fanin_coupling.ring_active_endpoint_armed", lambda env=None: True
-    )
-    assert resolve_live_active_endpoint(topology) == (
-        RING_ACTIVE_PLAYBACK_DEVICE,
-        OUTPUTD_ACTIVE_LANE_SOURCE,
-    )
-
-    monkeypatch.setattr(
-        "jasper.fanin_coupling.ring_active_endpoint_armed", lambda env=None: False
-    )
-    assert resolve_live_active_endpoint(topology) == (
-        OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
-        OUTPUTD_ACTIVE_LANE_SOURCE,
-    )
+    for marker_armed in (True, False):
+        monkeypatch.setattr(
+            "jasper.fanin_coupling.ring_active_endpoint_armed",
+            lambda env=None, armed=marker_armed: armed,
+        )
+        assert resolve_live_active_endpoint(topology) == (
+            RING_ACTIVE_PLAYBACK_DEVICE,
+            OUTPUTD_ACTIVE_LANE_SOURCE,
+        ), marker_armed
 
 
 async def test_a_declined_non_endpoint_device_is_visible_in_the_journal(
@@ -286,7 +290,7 @@ async def test_a_declined_non_endpoint_device_is_visible_in_the_journal(
         tmp_path,
         monkeypatch,
         _graph_for(topology, applied, None).replace(
-            OUTPUTD_ACTIVE_PLAYBACK_DEVICE, DEFAULT_PLAYBACK_DEVICE
+            RING_ACTIVE_PLAYBACK_DEVICE, DEFAULT_PLAYBACK_DEVICE
         ),
         name="stereo-lane.yml",
     )
@@ -294,8 +298,10 @@ async def test_a_declined_non_endpoint_device_is_visible_in_the_journal(
     with caplog.at_level(_logging.DEBUG, logger="jasper.active_speaker.playback_route"):
         device, source = resolve_live_active_endpoint(topology)
 
+    # The chooser answers the same NAME the adopted case would, so the SOURCE is
+    # what says this graph was declined rather than followed.
     assert (device, source) == (
-        OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+        RING_ACTIVE_PLAYBACK_DEVICE,
         OUTPUTD_ACTIVE_LANE_SOURCE,
     )
     assert "event=active_speaker.live_endpoint" in caplog.text
