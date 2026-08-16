@@ -3233,9 +3233,33 @@ section named only the first and called the second benign:
 snapshot preset and `CrossoverV2Session._previous_graph_predicted_sum` refuses
 the previous side on a mismatch — `event=…previous_graph_unavailable
 reason=crossover_corner_moved`, and `reason=applied_profile_names_no_corner` for
-an era-older record that cannot say. The probe then reports `unavailable`: no
-rollback, no pass. `entry_anchor_offset_db` discloses what was removed and is
-**not** a warrant that the residual beside it is clean.
+an era-older record that cannot say. `entry_anchor_offset_db` discloses what was
+removed and is **not** a warrant that the residual beside it is clean.
+
+**A refused change axis costs the SHAPE grade, never the hearing-safety one**
+(#2614). Every committed alternative-Fc candidate hits that refusal by
+construction, and while `_run_delta_probe` bailed on it the two directional
+findings never ran at all: `evaluate_applied_safety` answered SAFE on a round
+where nothing had looked, and no surface said so. The STATE axis needs no corner
+match — both of its sides are the candidate's own — so it is computed and
+persisted at every swept corner, and the probe now runs its safety half on that
+alone:
+
+- verdict `safety_only`, reason `commanded_axis_unavailable`
+  (`delta_probe.VERDICT_SAFETY_ONLY`), journalled at WARNING;
+- `boost_over_declared_bound` / `realized_louder_than_commanded` are real, so a
+  state-axis overshoot still reaches the adoption table's hard stop and
+  restores;
+- **no shape or level scalar at all** — residual, gain, frame and exceedance
+  would each be a claim in the state frame, where the residual is the
+  chained-round contaminant #2611 removed;
+- the safety evidence carries `probe_shape_graded: false` beside `probe_graded`,
+  and the done screen shows a third caveat ("this round changed the crossover
+  point, so this check could compare loudness but not the correction's shape")
+  beside the Verified badge.
+
+With neither axis the probe is absent exactly as before, and
+`event=correction.crossover_v2_declared_transfer_unavailable` names why.
 
 The two conditions that reach the verdict subtract **different** numbers, and
 have to: (a) "did the level move" is a change question and reads the anchored
