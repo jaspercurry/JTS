@@ -3208,12 +3208,40 @@ def _outputd_transport_health(
         if transport_report.notes:
             transport_evidence_warning = "; ".join(transport_report.notes)
     local_pipe_detail = f"content_source={actual_content_source}"
-    if content.get("pcm") != expected_content_pcm:
+    # KEYED ON THE CONTENT BRIDGE, NOT ON sink_mode. What decides whether a
+    # content PCM exists at all is which bridge outputd runs, and only the
+    # bridge: under the ring, outputd reads the ring FILE and opens no content
+    # PCM (`content_pcm_skipped`), whatever the sink is.
+    #
+    # This used to derive the expectation from sink_mode and compare against the
+    # snd-aloop ACTIVE lane for a composite/active box. That lane is deleted
+    # (#2534) and the reconciler no longer writes it, so the comparison would
+    # have FAILED every armed composite box in the fleet against a name nothing
+    # can produce.
+    #
+    # Under the ring the check is ASSERT-ABSENT rather than compare-to-a-name:
+    # there is no correct value, so any value is the fault. A name here means
+    # something still believes a snd-aloop content lane is in play.
+    live_content_pcm = str(content.get("pcm") or "")
+    if actual_content_source == "shm_ring":
+        if live_content_pcm:
+            return CheckResult(
+                "jasper-outputd",
+                "fail",
+                f"content.pcm={live_content_pcm!r} but content.source="
+                f"{actual_content_source!r}: a ring-coupled outputd reads the "
+                "ring FILE and opens NO content PCM, so it must declare none. "
+                "A name here means a stale snd-aloop content lane survives in "
+                "outputd.env — run: sudo systemctl start "
+                "jasper-audio-hardware-reconcile",
+            )
+    elif live_content_pcm != expected_content_pcm:
         return CheckResult(
             "jasper-outputd",
             "fail",
             f"content.pcm={content.get('pcm')!r}; expected "
-            f"{expected_content_pcm!r} for sink_mode={sink_mode!r}, "
+            f"{expected_content_pcm!r} for content.source="
+            f"{actual_content_source!r}, sink_mode={sink_mode!r}, "
             f"active_channels={active_channels!r}",
         )
     if dac.get("pcm") != expected_dac_pcm:
@@ -3283,11 +3311,12 @@ def check_outputd_service() -> CheckResult:
     outputd_env = _outputd_reconciled_env()
     active_channels = _outputd_active_channels_from_env(outputd_env)
     active_single_alsa = sink_mode == "single_alsa" and active_channels is not None
-    expected_content_pcm = (
-        _OUTPUTD_EXPECTED_ACTIVE_CONTENT_PCM
-        if sink_mode == "dual_apple" or active_single_alsa
-        else _OUTPUTD_EXPECTED_CONTENT_PCM
-    )
+    # The DIRECT-bridge expectation only. A ring-coupled box is handled by the
+    # assert-absent branch in the helper, which reads content.source — the
+    # bridge, not the sink, is what decides whether a content PCM exists.
+    # sink_mode no longer selects a content PCM: the ACTIVE spelling it used to
+    # select was the deleted snd-aloop lane.
+    expected_content_pcm = _OUTPUTD_EXPECTED_CONTENT_PCM
     expected_dac_pcm = (
         _OUTPUTD_EXPECTED_DUAL_DAC_PCM
         if sink_mode == "dual_apple"
