@@ -44,6 +44,9 @@ from jasper.active_speaker.attempts_loop import (
 #: cross-sitting sentence has its own test below.
 SITTING = "sitting-1"
 from jasper.active_speaker.crossover_envelope_v2 import (
+    KEEP_FOR_ITERATION_TEXT,
+    KEEP_ITERATING_TEXT,
+    SERIES_COMPLETE_DEFAULT_TEXT,
     CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION,
     RIPPLE_RESERVATION_COPY,
     _PHASE_STEP,
@@ -1005,7 +1008,14 @@ def test_a_kept_for_iteration_round_says_so_rather_than_only_verified():
         phase="done",
         verify={"outcome": "pass"},
         candidate=_candidate_summary(),
-        round_receipt={"round_id": "s1", "adoption": "keep_for_iteration"},
+        round_receipt={
+            "round_id": "s1",
+            "adoption": "keep_for_iteration",
+            # #2602 keys this caveat on the ROW, because row 2 and row 6 now
+            # share the ``keep_for_iteration`` outcome and carry opposite news.
+            # The coordinator has always stamped a row beside the outcome.
+            "row": "row2_trusted_safe_missed",
+        },
     ))
     codes = {n["code"] for n in env["nudges"]}
     assert "crossover_v2_keep_for_iteration" in codes
@@ -1025,12 +1035,31 @@ def test_a_kept_for_iteration_round_says_so_rather_than_only_verified():
 
 @pytest.mark.parametrize(
     "receipt",
-    [None, {}, {"round_id": "s1"}, {"round_id": "s1", "adoption": "keep"}],
-    ids=["absent", "empty", "no_adoption", "plain_keep"],
+    [
+        None,
+        {},
+        {"round_id": "s1"},
+        {"round_id": "s1", "adoption": "keep"},
+        # #2602's row 6: also ``keep_for_iteration``, and it must NOT get row
+        # 2's copy — an in-tolerance speaker told "some of what was measured is
+        # still off target" would be told something false. This is the case the
+        # row-keyed dispatch exists for.
+        {
+            "round_id": "s1",
+            "adoption": "keep_for_iteration",
+            "row": "row6_trusted_safe_passed_reachable",
+            "reason": "flatter_result_reachable",
+        },
+    ],
+    ids=["absent", "empty", "no_adoption", "plain_keep", "passed_but_iterating"],
 )
 def test_only_a_kept_for_iteration_round_gets_that_caveat(receipt):
-    """A ``keep`` round has nothing outstanding to disclose, and a round that
-    restored or escalated never reaches this screen at all."""
+    """Row 2's caveat belongs to row 2 alone.
+
+    A round that restored or escalated never reaches this screen at all; a
+    round with no row cannot be told apart from one that never graded; and
+    since #2602 a round that PASSED gets its own sentence rather than this one.
+    """
     env = build_crossover_envelope_v2(_status(
         phase="done",
         verify={"outcome": "pass"},
@@ -1040,6 +1069,176 @@ def test_only_a_kept_for_iteration_round_gets_that_caveat(receipt):
     assert "crossover_v2_keep_for_iteration" not in {
         n["code"] for n in env["nudges"]
     }
+
+
+def _round_done_env(**receipt):
+    return build_crossover_envelope_v2(_status(
+        phase="done",
+        verify={"outcome": "pass"},
+        candidate=_candidate_summary(),
+        round_receipt={"round_id": "s1", **receipt},
+    ))
+
+
+def _nudge(env, code):
+    return next(n for n in env["nudges"] if n["code"] == code)
+
+
+def test_a_passing_round_that_is_still_iterating_says_so_on_the_screen():
+    """#2602's household sentence: in tolerance, and another round is coming.
+
+    The failure this replaces is silence dressed as completion — before the
+    ruling, a round with 2.37 dB of tilt left said "verified" and stopped, and
+    the household had no way to know more was available.
+    """
+
+    env = _round_done_env(
+        adoption="keep_for_iteration",
+        row="row6_trusted_safe_passed_reachable",
+        reason="flatter_result_reachable",
+    )
+    nudge = _nudge(env, "crossover_v2_keep_iterating")
+
+    assert nudge["severity"] == "info"
+    assert nudge["text"] == KEEP_ITERATING_TEXT
+    # Both halves have to be said: the pass, and the plan.
+    assert "inside the target" in nudge["text"]
+    assert "measuring again" in nudge["text"]
+    # It must NOT read as a fault — row 2's sentence would be false here.
+    assert "still off target" not in nudge["text"]
+    assert nudge["text"] != KEEP_FOR_ITERATION_TEXT
+
+
+@pytest.mark.parametrize(
+    ("reason", "phrase"),
+    [
+        ("objectives_within_plateau", "as flat and as level as measuring can show"),
+        ("improvement_plateaued", "barely moved it"),
+        ("round_cap_reached", "the last round"),
+        ("objectives_unevaluable", "not enough of a full result"),
+    ],
+)
+def test_a_series_that_ended_says_which_ending_it_was(reason, phrase):
+    """"Flat enough", "it stopped moving", and "that was the third" are three
+    different sentences, and a household told last round to measure again is
+    owed the specific one."""
+
+    env = _round_done_env(
+        adoption="keep", row="row1_trusted_safe_passed", reason=reason
+    )
+    nudge = _nudge(env, "crossover_v2_series_complete")
+
+    assert nudge["severity"] == "ok"
+    assert phrase in nudge["text"]
+    assert "inside the target" in nudge["text"]
+
+
+def test_an_unknown_ending_still_says_the_tuning_is_finished():
+    """A reason this build does not know is not a reason to say nothing.
+
+    The fallback states only what the ROW already proves — the series is over
+    — and never guesses at a cause it cannot name.
+    """
+
+    env = _round_done_env(
+        adoption="keep", row="row1_trusted_safe_passed", reason="reason_from_the_future"
+    )
+    nudge = _nudge(env, "crossover_v2_series_complete")
+
+    assert nudge["text"] == SERIES_COMPLETE_DEFAULT_TEXT
+    assert "finished" in nudge["text"]
+
+
+@pytest.mark.parametrize(
+    ("row", "code"),
+    [
+        ("row1_trusted_safe_passed", "crossover_v2_series_complete"),
+        ("row6_trusted_safe_passed_reachable", "crossover_v2_keep_iterating"),
+        ("row2_trusted_safe_missed", "crossover_v2_keep_for_iteration"),
+    ],
+)
+def test_every_round_copy_keeps_the_screens_register(row, code):
+    """No hardware noun, no instruction to press anything — the same copy rule
+    every other caveat on this screen carries."""
+
+    env = _round_done_env(adoption="keep", row=row, reason="objectives_within_plateau")
+    text = _nudge(env, code)["text"].lower()
+
+    assert not any(
+        word in text
+        for word in ("tweeter", "woofer", "amplifier", "horn", "button", "click")
+    )
+
+
+def test_exactly_one_round_sentence_is_ever_owed():
+    """The three rows are alternatives, not a stack.
+
+    A screen that rendered two of them would be telling a household both that
+    the tuning is finished and that another round is coming.
+    """
+
+    for row in (
+        "row1_trusted_safe_passed",
+        "row6_trusted_safe_passed_reachable",
+        "row2_trusted_safe_missed",
+    ):
+        env = _round_done_env(
+            adoption="keep", row=row, reason="objectives_within_plateau"
+        )
+        codes = [n["code"] for n in env["nudges"] if n["code"].startswith((
+            "crossover_v2_series_complete",
+            "crossover_v2_keep_iterating",
+            "crossover_v2_keep_for_iteration",
+        ))]
+        assert len(codes) == 1, f"{row} owes exactly one round sentence, got {codes}"
+
+
+def test_a_restoring_row_gets_no_round_sentence_at_all():
+    """Those never reach the done screen; their copy is the failure registry's."""
+
+    for row in (
+        "row3_unsafe", "row4_untrusted_evidence",
+        "row5_trusted_safe_regressed", "row0_restore_failed",
+    ):
+        env = _round_done_env(adoption="restore", row=row, reason="whatever")
+        assert not [
+            n for n in env["nudges"]
+            if n["code"] in {
+                "crossover_v2_series_complete",
+                "crossover_v2_keep_iterating",
+                "crossover_v2_keep_for_iteration",
+            }
+        ], row
+
+
+def test_no_round_copy_spells_the_cap_out_as_a_number():
+    """``ROUND_SERIES_CAP`` has one owner, and the screen is not it.
+
+    Copy reading "that was the third round" would be a second source of truth
+    for the constant — and a change to the cap would turn it into a lie on a
+    household's screen with nothing red. The sentence says "the last round"
+    instead, which stays true at any cap.
+    """
+    from jasper.active_speaker.crossover_envelope_v2 import _series_complete_text
+
+    sentences = [
+        KEEP_ITERATING_TEXT,
+        KEEP_FOR_ITERATION_TEXT,
+        SERIES_COMPLETE_DEFAULT_TEXT,
+        *(
+            _series_complete_text(reason)
+            for reason in (
+                "objectives_within_plateau", "improvement_plateaued",
+                "round_cap_reached", "objectives_unevaluable",
+            )
+        ),
+    ]
+    for text in sentences:
+        lowered = text.lower()
+        assert not any(
+            word in lowered
+            for word in ("three", "third", "3 rounds", "3 more")
+        ), text
 
 
 def test_the_envelope_names_which_adoption_row_the_round_fired():

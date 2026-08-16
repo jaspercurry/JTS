@@ -17,7 +17,8 @@ v2 measures a fully-active 2-way crossover's **level, delay, and polarity**
 from a **guided spatial cloud** — the household walks a phone microphone
 through a handful of prompted positions around one mark — then proposes a
 correction, applies it on an explicit tap, and measures again to grade what
-changed.
+changed — repeating that apply-and-re-measure round, up to three times, while
+the result is still getting flatter (#2602).
 
 - **Two tiers, chosen every session** on the `/correction/` wizard. At the
   shipped defaults `TIER_FULL` is **15 captures — 9 then 6**, and
@@ -452,13 +453,19 @@ is `not_evaluated`, never a pass. See
 for the per-hop exactness argument, including the one hop no counter can close.
 
 `verification_result` bundles them. Since #2537 they are then composed into
-**three adoption axes** — `evaluate_evidence_trust`, `evaluate_applied_safety`,
-`evaluate_round_quality` — and `decide_adoption` selects one of five rows from
-those. The four-verdict split exists because a realization answer once stood in
-for an acoustic one and a failing round read as passed; the three-axis rebuild
-exists because the table those four fed keyed on whether a round could *prove*
-it helped, and reverted a measured, safe, improving candidate that could not.
-See "The round, graded" below for the table itself.
+**adoption axes** — `evaluate_evidence_trust`, `evaluate_applied_safety`,
+`evaluate_round_quality`, and since #2602 `evaluate_iteration_headroom` — and
+`decide_adoption` selects one of six rows from those. The four-verdict split
+exists because a realization answer once stood in for an acoustic one and a
+failing round read as passed; the #2537 axis rebuild exists because the table
+those four fed keyed on whether a round could *prove* it helped, and reverted a
+measured, safe, improving candidate that could not. #2602 added the fourth axis
+and split the one row that used to be terminal: a round that passes keeps
+iterating while a flatter, more level result is still reachable, up to
+`ROUND_SERIES_CAP` rounds — *in-tolerance is not done*.
+See "The round, graded" below for the table itself; that appendix copy predates
+#2602 and still shows the five-row shape, so read `decide_adoption` for the
+current rows.
 
 The two measurements a round compares, reduced to comparands and carrying the
 margin below which a difference is not a change, are
@@ -487,8 +494,8 @@ the module, not a second copy here.
 | [`crossover_v2/intervention.py`](../jasper/active_speaker/crossover_v2/intervention.py) | The deterministic prescription planner as pure functions — assembly around existing DSP primitives, never a second fitter. |
 | [`crossover_v2/accountability.py`](../jasper/active_speaker/crossover_v2/accountability.py) | Whether a built candidate may be PROPOSED at all — three assertions, most-specific first. |
 | [`crossover_v2/proposal.py`](../jasper/active_speaker/crossover_v2/proposal.py) | One committed candidate gathered into the fingerprinted `InterventionProposal` the round receipt names. Computes nothing; refuses rather than raising. |
-| [`crossover_v2/verification.py`](../jasper/active_speaker/crossover_v2/verification.py) | The four verification verdicts, the three adoption axes they compose into, and the five-row table. |
-| [`crossover_v2/round_evidence.py`](../jasper/active_speaker/crossover_v2/round_evidence.py) | The two measurements one round compares, and the margin that makes a difference a change. |
+| [`crossover_v2/verification.py`](../jasper/active_speaker/crossover_v2/verification.py) | The four verification verdicts, the four adoption axes they compose into, and the six-row table. |
+| [`crossover_v2/round_evidence.py`](../jasper/active_speaker/crossover_v2/round_evidence.py) | The two measurements one round compares, the margin that makes a difference a change, and the series policy the headroom axis is handed (round cap, plateau margin). |
 | [`crossover_v2/round_anchor.py`](../jasper/active_speaker/crossover_v2/round_anchor.py) | What an apply displaced, what it put live, whether the running graph is still that, and whether a restore is aimed at what the round displaced. |
 | [`crossover_v2/coordinator.py`](../jasper/active_speaker/crossover_v2/coordinator.py) | The round's tail: grade, act on the adoption table, restore, bank the receipt. |
 | [`crossover_v2/attempt_grading.py`](../jasper/active_speaker/crossover_v2/attempt_grading.py) | Whether a VERIFY capture is a new tuning attempt, and how it grades against the cross-session ledger. |
@@ -4938,4 +4945,7 @@ corrections came from that gate's review of PR #2545, and every figure in them
 was measured on this branch. **The date below is deliberately NOT bumped**, for
 the same reason as the two addenda above.
 
-Last verified: 2026-08-13
+Last verified: 2026-08-16 (#2602 — the live spine's adoption-axis count, row
+count, and file-map rows re-read against `decide_adoption`; the historical
+appendix was NOT re-verified and still shows the pre-#2602 five-row table, as
+its own status callout says it will)

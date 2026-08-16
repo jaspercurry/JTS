@@ -46,6 +46,7 @@ nothing from :mod:`jasper.active_speaker.crossover_v2_flow`.
 from __future__ import annotations
 
 import logging
+import math
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Mapping
@@ -60,7 +61,7 @@ from .round_evidence import (
     build_round_receipt,
     evaluate_round,
 )
-from .verification import decide_adoption
+from .verification import FlatnessObjectives, decide_adoption
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from jasper.audio_measurement.program_analysis import ProgramAnalysis
@@ -303,6 +304,23 @@ class RoundEvidence:
     #: forgetting a keyword, which is the cheapest possible way to lose a
     #: safety check. ``None`` is a legitimate value and must be stated.
     delta_probe: Any | None
+    #: 1-based position of this round in the household's flattening series
+    #: (#2602) — what :data:`~.round_evidence.ROUND_SERIES_CAP` is checked
+    #: against.
+    #:
+    #: REQUIRED, on the same reasoning as the field above rather than a weaker
+    #: version of it: a default of 1 would be *silently wrong* on every round
+    #: after the first, so a caller that forgot the keyword would produce a
+    #: series that never reaches its cap and a household told to measure again
+    #: forever. That failure looks exactly like working software. One line at
+    #: the one call site buys the guarantee that the ordinal is always
+    #: something the host actually resolved.
+    round_ordinal: int
+    #: What the PREVIOUS round of this series measured on #2602's two
+    #: objectives, read off the durable receipt that round banked — or ``None``
+    #: for the series' first round. Required for the same reason: "there was no
+    #: previous round" and "nobody looked" must not be the same keyword.
+    previous_objectives: FlatnessObjectives | None
 
 
 @dataclass(frozen=True)
@@ -387,6 +405,14 @@ def run_round(evidence: RoundEvidence, ports: RoundPorts) -> RoundDecision:
                 ports, session_id=evidence.session_id,
             ),
             delta_probe=evidence.delta_probe,
+            # #2602's axis. The cap and the plateau bar are NOT passed: their
+            # single definitions are ``evaluate_round``'s own defaults, so
+            # there is no call site free to run a longer series than the
+            # ruling allows. What the host supplies is the two facts only it
+            # can know — where in the series this round sits, and what the
+            # previous one measured.
+            round_ordinal=evidence.round_ordinal,
+            previous_objectives=evidence.previous_objectives,
         )
     except (OSError, RuntimeError, TypeError, ValueError, KeyError,
             AttributeError, IndexError, ZeroDivisionError):
@@ -422,10 +448,11 @@ def _log_round(evaluation: RoundEvaluation, *, session_id: str) -> None:
         logger, "correction.crossover_v2_round_graded",
         session_id=session_id,
         adoption=evaluation.adoption.outcome.value,
-        # WHICH rule fired, beside what it decided (#2537). Three of the five
-        # rows restore and two keep, so ``adoption`` alone cannot say, and the
-        # reason travels from whichever axis spoke — the row is the stable
-        # thing to grep a journal for.
+        # WHICH rule fired, beside what it decided (#2537). Three of the six
+        # rows restore and three keep — and since #2602 two of those three
+        # keeping rows share one outcome — so ``adoption`` alone cannot say,
+        # and the reason travels from whichever axis spoke. The row is the
+        # stable thing to grep a journal for.
         row=evaluation.adoption.row,
         reason=evaluation.adoption.reason,
         capture=record["verdicts"]["capture"]["status"],
@@ -435,6 +462,13 @@ def _log_round(evaluation: RoundEvaluation, *, session_id: str) -> None:
         trust=record["axes"]["trust"]["status"],
         safety=record["axes"]["safety"]["status"],
         quality=record["axes"]["quality"]["status"],
+        # #2602: WHETHER another round is coming, and where this one sat in
+        # the series — the two facts a support read needs to tell "the series
+        # stopped here" apart from "the series is still going". The tilt and
+        # ripple behind them ride in ``evidence`` below like every other axis's
+        # numbers.
+        headroom=record["axes"]["headroom"]["status"],
+        round_ordinal=evaluation.headroom.evidence.get("round_ordinal"),
         post_residual_db=evaluation.post_residual_db,
         post_residual_bins=evaluation.post_residual_bins,
         evidence={**record["verdicts"], **record["axes"]},
@@ -549,6 +583,11 @@ def _regrade_after_failed_restore(
             trust=evaluation.trust,
             safety=evaluation.safety,
             quality=evaluation.quality,
+            # The SAME verdict, not a re-evaluation: a failed restore changes
+            # what the speaker is running, not how much headroom the round
+            # measured. Re-grading it here would ask the fourth axis a question
+            # no new measurement had answered.
+            headroom=evaluation.headroom,
             boosted=applied_boosts(ports, session_id=evidence.session_id),
             rollback_available=rollback_available(
                 ports, session_id=evidence.session_id,
@@ -570,6 +609,7 @@ def _regrade_after_failed_restore(
         trust=evaluation.trust,
         safety=evaluation.safety,
         quality=evaluation.quality,
+        headroom=evaluation.headroom,
         adoption=adoption,
         post_residual_db=evaluation.post_residual_db,
         post_residual_bins=evaluation.post_residual_bins,
@@ -633,11 +673,29 @@ def _write_round_receipt(
     speaker state, and a receipt that could be amended would not be a receipt.
 
     **Fail-soft, deliberately and in both directions.** A receipt that could not
-    be built or written is a journal line and nothing more; it never reverses a
-    verdict, never refuses a capture, and never crashes the capture path. The
-    verdict is what protects the household's speaker; the receipt is what lets
-    someone reconstruct why afterwards, and losing the second must not cost the
-    first.
+    be built or written never reverses a verdict, never refuses a capture, and
+    never crashes the capture path. The verdict is what protects the
+    household's speaker; the receipt is what lets someone reconstruct why
+    afterwards, and losing the second must not cost the first.
+
+    **Since #2602 it is no longer "a journal line and nothing more", and the
+    difference is worth stating exactly.** This identity is also the series'
+    only memory: :func:`series_position_from_state` reads ``round_ordinal`` and
+    ``objectives`` back off it. So a receipt write that fails *persistently*
+    pins the ordinal at 1 and leaves the next round with no previous objectives
+    — which disables both the round-cap stop and the plateau stop, and the
+    series then ends only when the measurement itself says "flat enough" or
+    "nothing gradable".
+
+    That is bounded rather than dangerous, and the bound is structural: the
+    fourth axis can only ever KEEP (see :func:`~.verification.decide_adoption`),
+    so the worst case is a household repeatedly invited to measure again — and
+    each of those rounds needs a human to walk a cloud, so nothing runs away on
+    its own. It is still a stop condition riding a path designed to be lossy.
+    Banking the ordinal outside the fail-soft write is
+    `#2609 <https://github.com/jaspercurry/JTS/issues/2609>`_; a single failed
+    write is already harmless, because the identity the host carries forward is
+    the previous round's rather than nothing.
     """
     seam = ports.publish_round_receipt
     if seam is None:
@@ -715,6 +773,19 @@ def _write_round_receipt(
         "adoption": evaluation.adoption.outcome.value,
         "row": evaluation.adoption.row,
         "reason": evaluation.adoption.reason,
+        # #2602: the series' own memory, and the reason it is HERE rather than
+        # only inside the banked artifact. The next round needs both — the
+        # ordinal to know where the cap is, the objectives to know whether the
+        # series is still moving — and it resolves them from this durable
+        # identity, which the host already carries forward across sessions.
+        # Fetching a bundle artifact to answer "should we run another round"
+        # would make the decision depend on evidence storage.
+        #
+        # Read off the headroom verdict's own evidence rather than recomputed,
+        # so the numbers banked for the next round are byte-for-byte the ones
+        # this round decided on.
+        "round_ordinal": evaluation.headroom.evidence.get("round_ordinal"),
+        "objectives": evaluation.headroom.evidence.get("objectives"),
     }
     log_event(
         logger, "correction.crossover_v2_round_receipt",
@@ -728,3 +799,109 @@ def _write_round_receipt(
         proposal_fingerprint_kind=receipt.proposal_fingerprint_kind,
     )
     return identity
+
+
+# --------------------------------------------------------------------------
+# the series' own memory (#2602)
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SeriesPosition:
+    """Where the next round sits in the household's flattening series (#2602).
+
+    The two facts :func:`~.verification.evaluate_iteration_headroom` cannot
+    derive from one round's evidence, because they are properties of the
+    SERIES: how many rounds have already run, and what the last one measured.
+
+    Deliberately a pair rather than two loose arguments threaded side by side:
+    they are read from one durable record, in one step, and an ordinal that
+    disagreed with the objectives beside it would be a series remembering two
+    different pasts.
+    """
+
+    #: 1-based position of the round about to be graded.
+    ordinal: int
+    #: What the previous round measured, or ``None`` when there was none.
+    previous_objectives: FlatnessObjectives | None
+
+    @classmethod
+    def first(cls) -> "SeriesPosition":
+        """The opening round — nothing has run, nothing was measured."""
+
+        return cls(ordinal=1, previous_objectives=None)
+
+
+def series_position_from_state(raw: Any) -> SeriesPosition:
+    """Resolve the next round's series position from durable journey state.
+
+    The READER for the two keys :func:`_write_round_receipt` writes, and it
+    lives beside that writer on purpose: the receipt identity is the only place
+    a series' history survives between sessions, so the code that parses it and
+    the code that emits it must be impossible to drift apart. A reader in
+    another module would be a second owner of this shape.
+
+    **Every unreadable shape resolves to the FIRST round**, and the direction is
+    deliberate. A corrupt, absent, or older-build receipt means the series'
+    history is gone, and the two possible defaults are not symmetric: starting
+    over offers a household up to three more rounds it might not need, while
+    assuming the cap was reached would silently refuse to iterate at all — the
+    exact behaviour #2602 exists to remove, restored by a bad byte on disk.
+
+    **What that costs, stated rather than glossed.** A ONE-OFF unreadable
+    receipt is cheap: the host carries the previous round's identity forward, so
+    the next round resumes the count. But if the receipt write fails
+    *persistently* — see :func:`_write_round_receipt`'s own note — every round
+    reads as round 1, and the cap never bites. So the cap does NOT bound the
+    series unconditionally; it bounds it whenever the series can remember
+    itself, which is every path except a durably broken receipt write. The
+    remaining bound in that case is structural rather than counted: the fourth
+    axis can only KEEP, and every round needs a human-walked cloud.
+    `#2609 <https://github.com/jaspercurry/JTS/issues/2609>`_ is the fix that
+    would make the cap unconditional.
+
+    A previous ordinal at or past the cap still returns ``ordinal + 1``, not a
+    clamp: the headroom axis is the one place the cap is enforced, and a reader
+    that quietly clamped here would be a second enforcer of the same rule.
+    """
+
+    receipt = raw.get("round_receipt") if isinstance(raw, Mapping) else None
+    if not isinstance(receipt, Mapping):
+        return SeriesPosition.first()
+    previous_ordinal = receipt.get("round_ordinal")
+    if not isinstance(previous_ordinal, int) or isinstance(previous_ordinal, bool):
+        return SeriesPosition.first()
+    if previous_ordinal < 1:
+        return SeriesPosition.first()
+    objectives = receipt.get("objectives")
+    if not isinstance(objectives, Mapping):
+        # A receipt from before #2602 knows its ordinal only if a #2602 build
+        # wrote it, so this is a partially-written or hand-edited record. The
+        # ordinal is still usable and the objectives are not: the round runs
+        # with no movement to judge, which is exactly the first-round reading
+        # of the plateau stop and never a fabricated zero.
+        return SeriesPosition(
+            ordinal=previous_ordinal + 1, previous_objectives=None
+        )
+    return SeriesPosition(
+        ordinal=previous_ordinal + 1,
+        previous_objectives=FlatnessObjectives(
+            tilt_db=_optional_db(objectives.get("tilt_db")),
+            ripple_db=_optional_db(objectives.get("ripple_db")),
+        ),
+    )
+
+
+def _optional_db(value: Any) -> float | None:
+    """A finite float from persisted JSON, or ``None``.
+
+    ``None`` for anything that is not a real number — including a NaN or an
+    infinity a corrupt write could leave behind, which would otherwise sail
+    through every comparison in the headroom axis and make a plateau look
+    unreachable forever.
+    """
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None

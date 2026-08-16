@@ -100,17 +100,16 @@ from .crossover_v2_flow import (
     tier_display_info,
     verify_inconclusive_cause,
 )
-from .crossover_v2.contracts import AdoptionOutcome
+from .crossover_v2.contracts import (
+    ADOPTION_ROW_KEEP,
+    ADOPTION_ROW_KEEP_FOR_ITERATION,
+    ADOPTION_ROW_KEEP_ITERATING,
+)
 from .delta_probe import (
     REASON_UNCOMMANDED_LEVEL_SHIFT_OUTSIDE_BAND,
     VERDICT_FRAME_MISMATCH,
     VERDICT_LEVEL_MISMATCH,
 )
-
-#: The one adoption outcome this screen has copy for, as the wire value the
-#: durable ``round_receipt`` carries. Named from the enum rather than spelled
-#: out, so the screen and the decision cannot drift apart.
-ADOPTION_KEEP_FOR_ITERATION = AdoptionOutcome.KEEP_FOR_ITERATION.value
 
 logger = logging.getLogger(__name__)
 
@@ -1852,6 +1851,82 @@ KEEP_FOR_ITERATION_TEXT = (
     "is how that gets closer."
 )
 
+#: The household copy for a round that PASSED and is iterating anyway (#2602).
+#:
+#: The sentence the owner's ruling exists to make possible: *in-tolerance is not
+#: done*. Before it, this round said "verified" and stopped, and a household
+#: reading that had no way to know the speaker still had 2.37 dB of tilt left in
+#: it. So the copy has to do two things at once — report the good news honestly,
+#: and say plainly that another round is coming — without turning either into
+#: the other. "Inside the target" is the pass; "can still get flatter" is the
+#: reason to keep going; neither is dressed as a fault.
+KEEP_ITERATING_TEXT = (
+    "Everything measured is inside the target, and it can still get flatter. "
+    "This is the best sound measured so far and it is what the speaker is "
+    "playing — measuring again is how the rest of the way gets found."
+)
+
+#: The household copy for a round that PASSED and ENDED the series (#2602).
+#:
+#: Keyed by the headroom axis's own reason, because "there is nothing left to
+#: chase", "it stopped moving", and "that was the third round" are three
+#: genuinely different endings and a household that was told last round to
+#: measure again is owed the specific one. Before #2602 this screen said nothing
+#: at all here — the series simply stopped — which is the silence the ruling
+#: names.
+#:
+#: The reasons are :mod:`~.crossover_v2.verification`'s, resolved lazily by
+#: :func:`_series_complete_text` rather than imported at module scope: that
+#: module reaches numpy through ``flat_spec``, and this one renders a
+#: household polling surface. Same rule, and the same reason, as
+#: :func:`~.crossover_v2.vocabulary.round_restore_reason`'s own lazy import.
+SERIES_COMPLETE_DEFAULT_TEXT = (
+    "Everything measured is inside the target, and the tuning is finished."
+)
+
+
+def _series_complete_text(reason: str) -> str:
+    """The ending sentence for a passing round that closed the series (#2602).
+
+    An unrecognised reason falls back to :data:`SERIES_COMPLETE_DEFAULT_TEXT`
+    rather than to silence: a household reading a done screen is owed "the
+    tuning is finished" even when this build does not know which of the
+    endings it was. The fallback states only what the ROW already proves, and
+    never guesses at a cause.
+    """
+
+    from .crossover_v2.verification import (
+        HEADROOM_CAP_REACHED,
+        HEADROOM_NO_OBJECTIVES,
+        HEADROOM_PLATEAUED,
+        HEADROOM_WITHIN_PLATEAU,
+    )
+
+    return {
+        HEADROOM_WITHIN_PLATEAU: (
+            "Everything measured is inside the target, and it is as flat and "
+            "as level as measuring can show. The tuning is finished."
+        ),
+        HEADROOM_PLATEAUED: (
+            "Everything measured is inside the target. The last round barely "
+            "moved it, so more rounds are unlikely to help — the tuning is "
+            "finished."
+        ),
+        # Deliberately does NOT say "the third round". The cap is
+        # ``ROUND_SERIES_CAP``'s to state, and spelling the number into copy
+        # would be a second source of truth that a change to the constant
+        # would silently turn into a lie on a household's screen.
+        HEADROOM_CAP_REACHED: (
+            "Everything measured is inside the target. That was the last "
+            "round of this tuning, so it is finished here."
+        ),
+        HEADROOM_NO_OBJECTIVES: (
+            "Everything measured is inside the target. There was not enough of "
+            "a full result to tell whether more rounds would help, so the "
+            "tuning stops here."
+        ),
+    }.get(reason, SERIES_COMPLETE_DEFAULT_TEXT)
+
 
 def _round_summary(status: Mapping[str, Any]) -> dict[str, str] | None:
     """The last graded round's adoption row, outcome, and reason — or ``None``.
@@ -1877,27 +1952,53 @@ def _round_summary(status: Mapping[str, Any]) -> dict[str, str] | None:
 
 
 def _round_adoption_nudges(v2: Mapping[str, Any]) -> list[dict[str, str]]:
-    """The done screen's caveat for a round that KEPT an imperfect result.
+    """What the last graded round decided, and whether another one is coming.
 
     Appended at the CALL SITE rather than inside :func:`_done_nudges`, for that
     composer's own stated reason and G1's precedent: ``_done_nudges`` answers
     "which badge did the VERIFY OUTCOME earn", and this answers what the ROUND
     decided — a different instrument, owed on this screen whichever badge won.
 
-    Reads the adoption outcome off ``round_receipt``, which the coordinator
-    stamps beside the receipt's identity. Silent for every other outcome: a
-    ``keep`` round has nothing outstanding to disclose, and a round that
-    restored or escalated never reaches the done screen at all.
+    **Keyed on the ROW, not the outcome, since #2602.** Two rows now share the
+    ``keep_for_iteration`` outcome and they are opposite pieces of news: row 2
+    kept a result that MISSED, row 6 kept one that PASSED and is chasing flatter
+    anyway. Reading the outcome alone would tell a household with an
+    in-tolerance speaker that "some of what was measured is still off target",
+    which is false. The row is the stable identifier that survives exactly this
+    kind of split — see
+    :class:`~.crossover_v2.contracts.AdoptionDecision`.
+
+    Reads off ``round_receipt``, which the coordinator stamps beside the
+    receipt's identity, and computes nothing. Silent for a round that restored
+    or escalated: those never reach the done screen at all.
     """
 
     receipt = _mapping(v2.get("round_receipt"))
-    if str(receipt.get("adoption") or "") != ADOPTION_KEEP_FOR_ITERATION:
-        return []
-    return [{
-        "code": "crossover_v2_keep_for_iteration",
-        "severity": "warn",
-        "text": KEEP_FOR_ITERATION_TEXT,
-    }]
+    row = str(receipt.get("row") or "")
+    reason = str(receipt.get("reason") or "")
+    if row == ADOPTION_ROW_KEEP:
+        return [{
+            "code": "crossover_v2_series_complete",
+            "severity": "ok",
+            "text": _series_complete_text(reason),
+        }]
+    if row == ADOPTION_ROW_KEEP_ITERATING:
+        return [{
+            "code": "crossover_v2_keep_iterating",
+            "severity": "info",
+            "text": KEEP_ITERATING_TEXT,
+        }]
+    if row == ADOPTION_ROW_KEEP_FOR_ITERATION:
+        return [{
+            "code": "crossover_v2_keep_for_iteration",
+            "severity": "warn",
+            "text": KEEP_FOR_ITERATION_TEXT,
+        }]
+    # An unrecognised or absent row, INCLUDING a pre-#2602 receipt that carries
+    # an outcome but no row. Falling back to the outcome here would resurrect
+    # exactly the ambiguity the row exists to remove, so the screen says
+    # nothing rather than guessing which of two opposite sentences applies.
+    return []
 
 
 # --- G1's ripple reservation (owner ruling 2026-08-03, issue #2087) ----------
@@ -2397,10 +2498,13 @@ def _envelope(
         "progress": _progress(active_step),
         "applied": _applied_chip(status),
         # WHICH adoption row the last graded round fired, for a driver chaining
-        # rounds (#2537). Three of the five rows restore and two keep, so the
+        # rounds (#2537). Three of the six rows restore and three keep, so the
         # outcome alone cannot say which rule applied, and the reason travels
         # from whichever axis decided — the row is the stable thing to branch
-        # on. ``None`` until a round has been graded.
+        # on. Since #2602 that is load-bearing on this very screen rather than
+        # only for a driver: rows 2 and 6 share the ``keep_for_iteration``
+        # outcome and carry opposite news, so the copy keys on the row.
+        # ``None`` until a round has been graded.
         #
         # Machine data on a household surface, deliberately: the alternative is
         # a series driver fetching an evidence-bundle artifact to learn what the

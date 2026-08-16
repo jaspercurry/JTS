@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Four verification verdicts, three adoption axes, and the table (#2291, #2537).
+"""Four verification verdicts, four adoption axes, and the table (#2291, #2537, #2602).
 
 **The defect this module exists to make impossible.** On 2026-08-10 a jts3
 round reported VERIFY tracking the model to within 1.291 dB (tolerance
@@ -31,13 +31,18 @@ capture, could not compare it to a before, carried a boost, and was therefore
 reverted to a state nobody had measured at all. The owner's ruling that day:
 *we're looking for the least bad MEASURED tune. reverting to an unknown
 measured state seems dumb… the first application is not the end point, it is
-just the start.* So the four verdicts now compose into **three adoption axes**
+just the start.* So the four verdicts now compose into **four adoption axes**
 — :func:`evaluate_evidence_trust`, :func:`evaluate_applied_safety`,
-:func:`evaluate_round_quality` — and :func:`decide_adoption` selects one of
-five rows from those. Keeping an imperfect measured result and handing its
+:func:`evaluate_round_quality`, and (since #2602)
+:func:`evaluate_iteration_headroom` — and :func:`decide_adoption` selects one of
+six rows from those. Keeping an imperfect measured result and handing its
 misses forward is a first-class outcome
 (:attr:`~.contracts.AdoptionOutcome.KEEP_FOR_ITERATION`); the hard stops are
 reserved for the safety class and for evidence that does not exist.
+
+#2602's axis is the newest and the narrowest: it decides only whether a round
+that PASSED ends the series or runs another, so it can keep a graph on and it
+can never take one off — *in-tolerance is not done*.
 
 **This module invents no DSP and owns no threshold.** Every number it
 reports is lifted from a shipped primitive:
@@ -104,12 +109,14 @@ from ..delta_probe import (
 from ..flat_spec import (
     FlatSpecReport,
     evaluate_flat_spec,
+    spec_band_tilt,
     spec_convergence_residual,
     spec_flatness_gauge,
 )
 from .contracts import (
     ADOPTION_ROW_KEEP,
     ADOPTION_ROW_KEEP_FOR_ITERATION,
+    ADOPTION_ROW_KEEP_ITERATING,
     ADOPTION_ROW_RESTORE_FAILED,
     ADOPTION_ROW_RESTORE_REGRESSION,
     ADOPTION_ROW_RESTORE_UNSAFE,
@@ -120,6 +127,7 @@ from .contracts import (
     CaptureValidity,
     CrossoverV2ContractError,
     EvidenceTrust,
+    IterationHeadroom,
     QualityStatus,
     RealizationStatus,
     ResponseCurve,
@@ -167,6 +175,12 @@ __all__ = [
     "CAPTURE_INTEGRITY_FAILED",
     "CAPTURE_INTEGRITY_UNAVAILABLE",
     "CLIPPED_RUN_CHECK",
+    "HEADROOM_CAP_REACHED",
+    "HEADROOM_NO_OBJECTIVES",
+    "HEADROOM_PLATEAUED",
+    "HEADROOM_REACHABLE",
+    "HEADROOM_WITHIN_PLATEAU",
+    "FlatnessObjectives",
     "MeasurementComparand",
     "REALIZATION_NO_COMPARATOR",
     "REALIZATION_NO_TRACKING",
@@ -189,9 +203,11 @@ __all__ = [
     "evaluate_benefit",
     "evaluate_capture_validity",
     "evaluate_evidence_trust",
+    "evaluate_iteration_headroom",
     "evaluate_realization",
     "evaluate_round_quality",
     "evaluate_spec",
+    "flatness_objectives",
     "verification_result",
 ]
 
@@ -1004,17 +1020,26 @@ def evaluate_round_quality(
 
     * *Spec is an outcome, not a proxy for benefit.* Every row of #2291's table
       reads "any" for spec, because "improved and still out of spec" is an
-      honest first pass. A test pins that permuting spec changes no adoption
-      decision, and that pin is load-bearing.
-    * *The spec verdicts available today are not yet honest enough to decide
-      on.* They are computed over the raw 250 Hz-2 kHz band with **no
-      intersection against the session's own trusted floor** (357.1 Hz on a 7 ms
-      gate), so a best-of-N series keyed on them would rank rounds partly on
-      sub-trusted-floor evidence the same session's delta probe already refuses
-      to grade — and which the E4 sweep measured moving ~2 dB with gate length
-      alone. That intersection is a separate filed fix, and it must land before
-      any axis is allowed to DECIDE on a spec verdict. Carrying spec as
-      disclosure costs nothing and inherits none of it.
+      honest first pass. ``test_the_spec_verdict_never_moves_the_quality_STATUS``
+      pins that by permutation, and that pin is load-bearing.
+    * *The spec VERDICT still decides nothing, on any axis.*
+      :func:`decide_adoption` never reads a :class:`~.contracts.SpecStatus`.
+
+    **What #2602 changed here, and what it did not.** The fourth axis
+    (:func:`evaluate_iteration_headroom`) reads the same post-apply report this
+    function is handed — but it reads *measured dB* off it (each band's own
+    ripple, and the level step between bands), never the pass/fail against a
+    tolerance row, and it can only choose whether another round runs. So the
+    sentence above holds unchanged: the spec verdict moves nothing.
+
+    That axis also required a precondition this docstring used to name as
+    outstanding — spec numbers computed with **no intersection against the
+    session's own trusted floor**, which would have made any decision keyed on
+    them inherit a gate-length term no round controls. **#2551 landed that
+    intersection**, and the post-apply cloud report is built with the floor
+    supplied (``crossover_v2_flow``'s ``cloud_trusted_floor_hz``), so the
+    numbers the fourth axis reads are already floor-intersected. An axis
+    reading them would not have been admissible before that; it is now.
 
     So a round can be PASSED with targets outstanding, and that is not a
     contradiction: the status answers "did this round realize and improve the
@@ -1076,7 +1101,213 @@ def _failing_spec_bands(report: FlatSpecReport | None) -> list[dict[str, Any]]:
 
 
 # --------------------------------------------------------------------------
-# 8. adoption — the three axes, as a table
+# 7b. headroom — is a flatter result still reachable?
+# --------------------------------------------------------------------------
+
+HEADROOM_CAP_REACHED = "round_cap_reached"
+HEADROOM_NO_OBJECTIVES = "objectives_unevaluable"
+HEADROOM_WITHIN_PLATEAU = "objectives_within_plateau"
+HEADROOM_PLATEAUED = "improvement_plateaued"
+HEADROOM_REACHABLE = "flatter_result_reachable"
+
+
+@dataclass(frozen=True)
+class FlatnessObjectives:
+    """#2602's two graded objectives, as one round measured them.
+
+    Both are **frame-invariant**, which is the property that lets them be
+    differenced across rounds at all: the spec's reference level is a mean
+    pooled across bands, so it moves when the speaker does, and two rounds'
+    frame-*dependent* numbers are not comparable even when the same speaker
+    got flatter. ``ripple_db`` is each band's deviation from its OWN level and
+    ``tilt_db`` is a difference of two levels — the shared reference cancels
+    out of both.
+
+    ``None`` on either field means "this round could not grade it", never
+    "zero": a report with fewer than two levelled bands has no tilt, and
+    inventing 0 dB would read as perfect alignment. The same unknown-vs-zero
+    rule :func:`~jasper.active_speaker.flat_spec.spec_band_tilt` already
+    follows for the band levels it skips.
+
+    **Residual assumption, stated because the plateau stop rests on it:
+    frame-invariance is necessary for cross-round differencing but not
+    sufficient.** Both numbers are invariant to the reference *level*, and
+    neither is invariant to which BINS were graded. The session's trusted floor
+    sets each band's ``graded_lo_hz``, so a round whose gate came out shorter
+    re-scopes the lowest band and moves both objectives with no acoustic change
+    at all — the same mechanism
+    :func:`~jasper.active_speaker.crossover_v2_flow.cloud_trusted_floor_hz`
+    documents for the 1-4 kHz band across 3/5/7/10 ms gates. Measured on an
+    UNCHANGED curve, a 7↔10 ms gate change alone produces ±0.518 dB of spurious
+    movement here, which is 2.1× :data:`~.round_evidence.ITERATION_PLATEAU_DB`
+    — enough to mask a plateau or invent one. Bounded, because a wrong answer
+    here can only add or withhold a round and never take a graph off a speaker;
+    the fix is to bank ``trusted_floor_hz`` beside these numbers so a later
+    round can refuse a cross-floor comparison outright, filed as
+    `#2609 <https://github.com/jaspercurry/JTS/issues/2609>`_ and deliberately
+    not done here.
+    """
+
+    #: Largest level step between two graded bands — the owner's 2.37 dB.
+    tilt_db: float | None
+    #: Worst within-band deviation from that band's own level.
+    ripple_db: float | None
+
+    @property
+    def worst_db(self) -> float | None:
+        """The larger of the two, or ``None`` when neither graded.
+
+        A MAX rather than a sum or an RMS: the two objectives are different
+        misses in the same speaker, and the series is done only when BOTH are
+        small. Pooling them would let a large tilt hide behind flat bands.
+        """
+
+        graded = [
+            abs(value)
+            for value in (self.tilt_db, self.ripple_db)
+            if value is not None
+        ]
+        return max(graded) if graded else None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"tilt_db": self.tilt_db, "ripple_db": self.ripple_db}
+
+
+def flatness_objectives(report: FlatSpecReport | None) -> FlatnessObjectives:
+    """Reduce a post-apply spec report to #2602's two objectives.
+
+    **Derived from the report, never recomputed from the curve** — the same
+    rule, and the same reason, as
+    :func:`~jasper.active_speaker.flat_spec.spec_convergence_residual` and
+    :func:`~jasper.active_speaker.flat_spec.spec_band_tilt`: band membership,
+    the exclusion mask's effect, and each band's own level are answered exactly
+    once, by ``evaluate_flat_spec``.
+
+    The tilt half IS ``spec_band_tilt`` — the shipped #1857 reduction, reused
+    rather than re-derived, so the frame-free reading the attribution surfaces
+    already render and the one the series iterates on cannot disagree. The
+    ripple half is a one-line ``max`` over the same report's bands and is kept
+    private here rather than promoted beside its sibling: it has exactly one
+    consumer. Promote it into ``flat_spec`` the moment a second surface needs
+    it, and not before.
+    """
+
+    if report is None:
+        return FlatnessObjectives(tilt_db=None, ripple_db=None)
+    tilt = spec_band_tilt(report)
+    ripples = [
+        abs(band.max_ripple_db)
+        for band in report.bands
+        if band.evaluable and band.max_ripple_db is not None
+    ]
+    return FlatnessObjectives(
+        tilt_db=tilt.step_db if tilt.evaluable else None,
+        ripple_db=max(ripples) if ripples else None,
+    )
+
+
+def evaluate_iteration_headroom(
+    *,
+    objectives: FlatnessObjectives,
+    previous: FlatnessObjectives | None,
+    round_ordinal: int,
+    round_cap: int,
+    plateau_db: float,
+) -> Verdict[IterationHeadroom]:
+    """Should the series run another round? The #2602 axis.
+
+    The owner's ruling, 2026-08-16: *in-tolerance is not done*. A round that
+    passes spec ends the series only when nothing better is plausibly within
+    reach — so this asks the question :class:`~.contracts.QualityStatus` never
+    could, because quality grades **what this round did** and this grades
+    **what a next one could still get**.
+
+    Four ways a series is over, checked most-binding first so the reason names
+    the fact that actually ended it:
+
+    1. **The round cap.** Checked first because it is the one stop no evidence
+       can argue with: at ``round_ordinal >= round_cap`` there is no next round
+       to have headroom for, however much is left on the table. Naming a
+       plateau here would imply more rounds would not have helped, which the
+       measurement did not say.
+    2. **No gradable objectives.** Fail-closed, and the direction is the whole
+       point: a tier that walked no post-apply cloud, or a report whose bands
+       all fell below the session's trusted floor, cannot show that anything is
+       reachable. "We cannot tell" stops the series — it never spends a
+       household's rounds on a target nothing is steering toward.
+    3. **Already flat enough.** Both objectives inside ``plateau_db``. There is
+       nothing left worth a round, which is a genuinely different answer from
+       "we stopped improving" and gets its own reason so the screen can say the
+       good news rather than the resigned one.
+    4. **Plateaued.** The objectives moved less than ``plateau_db`` since the
+       previous round. This is the stop the ruling names by its number, and it
+       is measured on the OBJECTIVES rather than on the pooled residual for a
+       structural reason: a round only reaches
+       :attr:`~.contracts.QualityStatus.PASSED` by improving past
+       :data:`~.round_evidence.MEASURED_BENEFIT_MARGIN_DB` (0.5 dB), which is
+       already twice this bar, so a plateau read off the benefit verdict could
+       never fire on the row that needs it. Movement toward *flat* and movement
+       of the *pooled residual* are not the same quantity, and it is the first
+       one the series is iterating on.
+
+    ``previous is None`` is the first round of a series: there is no movement
+    to judge yet, so the plateau stop cannot fire and the answer rests on
+    distance alone. That is the honest reading — a first round has not had a
+    chance to stall — and it is also why the cap is checked independently
+    rather than inferred from the absence of history.
+
+    Args:
+      objectives: this round's :func:`flatness_objectives`.
+      previous: the previous round's, carried forward on the durable receipt,
+        or ``None`` for the first round of a series.
+      round_ordinal: 1-based position of this round in the series.
+      round_cap / plateau_db: the series policy, passed rather than imported
+        for the same reason :func:`evaluate_benefit` takes ``margin_db`` — how
+        many rounds are worth running, and how much movement counts, are loop
+        policy and this module owns none. Their single definitions live in
+        :mod:`.round_evidence` beside the benefit margin.
+    """
+
+    cap = int(round_cap)
+    ordinal = int(round_ordinal)
+    plateau = _positive_db(plateau_db, field_name="plateau_db")
+    worst = objectives.worst_db
+    previous_worst = None if previous is None else previous.worst_db
+    movement_db = (
+        None if worst is None or previous_worst is None
+        else previous_worst - worst
+    )
+    evidence: dict[str, Any] = {
+        "round_ordinal": ordinal,
+        "round_cap": cap,
+        "plateau_db": plateau,
+        "objectives": objectives.to_dict(),
+        "previous_objectives": None if previous is None else previous.to_dict(),
+        "worst_db": worst,
+        "previous_worst_db": previous_worst,
+        # Signed, and positive means "got flatter" — the same lower-is-better
+        # convention ``improvement_db`` uses on the benefit verdict, so the two
+        # numbers on one journal line never read in opposite directions.
+        "movement_db": movement_db,
+    }
+
+    if ordinal >= cap:
+        return Verdict(IterationHeadroom.EXHAUSTED, HEADROOM_CAP_REACHED, evidence)
+    if worst is None:
+        return Verdict(
+            IterationHeadroom.EXHAUSTED, HEADROOM_NO_OBJECTIVES, evidence
+        )
+    if worst <= plateau:
+        return Verdict(
+            IterationHeadroom.EXHAUSTED, HEADROOM_WITHIN_PLATEAU, evidence
+        )
+    if movement_db is not None and movement_db < plateau:
+        return Verdict(IterationHeadroom.EXHAUSTED, HEADROOM_PLATEAUED, evidence)
+    return Verdict(IterationHeadroom.REACHABLE, HEADROOM_REACHABLE, evidence)
+
+
+# --------------------------------------------------------------------------
+# 8. adoption — the four axes, as a table
 # --------------------------------------------------------------------------
 
 #: The one cause that survives the #2537 rewrite unchanged, and only on
@@ -1112,17 +1343,37 @@ _QUALITY_ROWS: Mapping[QualityStatus, tuple[AdoptionOutcome, str]] = {
     ),
 }
 
+#: Where #2602 splits the table's one PASSED cell, by the fourth axis.
+#:
+#: The cell above resolves to ``KEEP`` — which used to be the end of the story
+#: — and this decides whether that keep is TERMINAL. Only the passing cell
+#: consults it: a MISSED round already iterates whatever the headroom says (it
+#: has outstanding targets by construction), and a REGRESSED one restores
+#: before this table is ever reached.
+#:
+#: A second MAPPING for the same reason the first one is one: a lookup with no
+#: default means a third :class:`~.contracts.IterationHeadroom` member raises
+#: ``KeyError`` at its first call rather than silently landing on whichever
+#: branch came last.
+_PASSED_ROWS: Mapping[IterationHeadroom, tuple[AdoptionOutcome, str]] = {
+    IterationHeadroom.EXHAUSTED: (AdoptionOutcome.KEEP, ADOPTION_ROW_KEEP),
+    IterationHeadroom.REACHABLE: (
+        AdoptionOutcome.KEEP_FOR_ITERATION, ADOPTION_ROW_KEEP_ITERATING,
+    ),
+}
+
 
 def decide_adoption(
     *,
     trust: Verdict[EvidenceTrust],
     safety: Verdict[SafetyStatus],
     quality: Verdict[QualityStatus],
+    headroom: Verdict[IterationHeadroom],
     boosted: bool,
     rollback_available: bool,
     restore_failed: bool = False,
 ) -> AdoptionDecision:
-    """Keep, keep-and-iterate, restore, or escalate — the #2537 table.
+    """Keep, keep-and-iterate, restore, or escalate — the #2537/#2602 table.
 
     **What this MODIFIES, and why.** #2291's table was keyed on
     ``(realization, benefit)`` and had one keep cell: a round had to *prove* it
@@ -1146,28 +1397,58 @@ def decide_adoption(
     * :func:`evaluate_evidence_trust` — did we measure the state we applied?
     * :func:`evaluate_applied_safety` — is that state safe to leave on?
     * :func:`evaluate_round_quality` — how good is it, and what is left to fix?
+    * :func:`evaluate_iteration_headroom` — could a next round do better?
 
-    The five rows, by their :data:`~.contracts.ADOPTION_ROWS` identifiers:
+    **What #2602 MODIFIES, and why.** The fourth axis is the owner's ruling of
+    2026-08-16: *in-tolerance is not done.* Row 1 used to be the end of every
+    good series — a round that realized its prediction and measured flatter
+    stopped, whatever was left. The round-3 review is what that costs: inside
+    every spec band, tweeter "largely in range but still not flat", and a
+    2.37 dB step between 250-2000 Hz and 8000-16000 Hz that no reference choice
+    moves. So row 1 SPLIT: it still means "passed, and the series is over", and
+    :data:`~.contracts.ADOPTION_ROW_KEEP_ITERATING` is the same passing round
+    with a flatter result still in reach.
 
-    ====================================== ================================
-    row                                    outcome
-    ====================================== ================================
-    ``row1_trusted_safe_passed``           ``KEEP``
-    ``row2_trusted_safe_missed``           ``KEEP_FOR_ITERATION``
-    ``row3_unsafe``                        ``RESTORE``
-    ``row4_untrusted_evidence``            ``RESTORE``
-    ``row5_trusted_safe_regressed``        ``RESTORE``
-    ====================================== ================================
+    **Nothing else moved.** The split is confined to the one cell
+    (:data:`_PASSED_ROWS`) that used to be unconditionally terminal, and every
+    other stop the table had is still exactly where it was: a measured
+    regression restores, an unmeasured state restores, a hazard restores, a
+    failed restore escalates, and a MISSED round keeps-for-iteration
+    regardless of headroom. In particular **headroom can never keep a graph
+    the other axes said to take off** — it is read after all three of them,
+    and only on the branch they all passed.
+
+    The six rows, by their :data:`~.contracts.ADOPTION_ROWS` identifiers:
+
+    ========================================== ============================
+    row                                        outcome
+    ========================================== ============================
+    ``row1_trusted_safe_passed``               ``KEEP``
+    ``row2_trusted_safe_missed``               ``KEEP_FOR_ITERATION``
+    ``row3_unsafe``                            ``RESTORE``
+    ``row4_untrusted_evidence``                ``RESTORE``
+    ``row5_trusted_safe_regressed``            ``RESTORE``
+    ``row6_trusted_safe_passed_reachable``     ``KEEP_FOR_ITERATION``
+    ========================================== ============================
 
     Args:
-      trust / safety / quality: the three axis verdicts. **Verdicts, not bare
-        statuses**, and that is a deliberate change from the pre-#2537
+      trust / safety / quality / headroom: the four axis verdicts. **Verdicts,
+        not bare statuses**, and that is a deliberate change from the pre-#2537
         signature. The reason a row fires under IS the deciding axis's own
         reason — "the boost realized above its declared bound", "the spec band
         is out of tolerance" — so taking statuses and minting a parallel cause
         vocabulary here would put a second owner on every one of them. This
         function still decides nothing an evaluator did not: it selects which
         axis speaks.
+
+        On both passing rows the axis that speaks is **headroom**, not quality,
+        and that is the point of the split rather than an accident of it. Row 1
+        no longer means only "this round was good" — it means "this round was
+        good AND the series is finished" — so the receipt has to carry WHICH
+        ending it was, and "the objectives are inside the plateau" and "three
+        rounds is the limit" are two very different sentences to hand a
+        household. Quality's own reason has not gone anywhere; it rides on the
+        quality axis, which the receipt records beside this decision.
       boosted: does the applied intervention contain a boost? Computed by the
         host with the shipped predicate
         (``camilla_yaml.linearization_has_boost``); this module keeps no second
@@ -1215,12 +1496,20 @@ def decide_adoption(
     * **A failed restore outranks everything.** Checked first: the speaker is
       then in neither the entry graph nor the intended one, and no later row
       can describe that better.
+    * **The fourth axis can only ever say "keep going", never "keep".** Both
+      of its answers leave the speaker on the same graph the passing cell
+      already chose; it selects the receipt and the sentence, not the DSP. A
+      headroom evaluator that returned nonsense could make the screen ask for a
+      round nobody needs — it could not leave an unsafe, unmeasured, or
+      regressed graph on a speaker, because all three of those rows return
+      before it is read.
     """
 
     for name, value, kind in (
         ("trust", trust, EvidenceTrust),
         ("safety", safety, SafetyStatus),
         ("quality", quality, QualityStatus),
+        ("headroom", headroom, IterationHeadroom),
     ):
         if not isinstance(value, Verdict) or not isinstance(value.status, kind):
             raise CrossoverV2ContractError(
@@ -1250,6 +1539,13 @@ def decide_adoption(
         return _restore_or_recover(
             quality.reason, row=row, rollback_available=rollback_available,
         )
+    if outcome is AdoptionOutcome.KEEP:
+        # #2602: the one cell that used to be terminal, asked whether it is.
+        # Keyed off the OUTCOME the table above resolved to rather than off
+        # ``quality.status`` directly, so the passing cell has exactly one
+        # definition and this branch cannot drift from it.
+        outcome, row = _PASSED_ROWS[headroom.status]
+        return AdoptionDecision(outcome=outcome, reason=headroom.reason, row=row)
     return AdoptionDecision(outcome=outcome, reason=quality.reason, row=row)
 
 

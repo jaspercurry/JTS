@@ -58,6 +58,7 @@ __all__ = [
     "ADOPTION_ROWS",
     "ADOPTION_ROW_KEEP",
     "ADOPTION_ROW_KEEP_FOR_ITERATION",
+    "ADOPTION_ROW_KEEP_ITERATING",
     "ADOPTION_ROW_RESTORE_FAILED",
     "ADOPTION_ROW_RESTORE_REGRESSION",
     "ADOPTION_ROW_RESTORE_UNSAFE",
@@ -71,6 +72,7 @@ __all__ = [
     "CrossoverV2ContractError",
     "EvidenceTrust",
     "InterventionProposal",
+    "IterationHeadroom",
     "NoCrossoverSectionsError",
     "PLAN_REFUSAL_REASONS",
     "PROPOSAL_FINGERPRINT_KINDS",
@@ -878,7 +880,7 @@ class VerificationResult:
 class EvidenceTrust(str, Enum):
     """Could this round measure the state it applied? (#2537)
 
-    The first of the adoption table's three axes. Safety and quality are both
+    The first of the adoption table's four axes. Safety and quality are both
     read off measurements, so a round that could not measure has little for
     them to read — but this does NOT gate them: safety is evaluated first and
     checked first, precisely so a hazard visible in a bad capture is named as a
@@ -928,6 +930,42 @@ class QualityStatus(str, Enum):
     REGRESSED = "regressed"
 
 
+class IterationHeadroom(str, Enum):
+    """Is a flatter, more level result still plausibly reachable? (#2602)
+
+    The adoption table's FOURTH axis, and the owner's ruling it exists for:
+    *in-tolerance is not done*. Before it, :attr:`QualityStatus.PASSED` was
+    terminal — a round that realized its prediction and measured flatter ended
+    the series, whatever was left on the table. The round-3 review of
+    2026-08-16 is what that costs: a result inside every spec band, whose
+    tweeter was "largely in range but still not flat", and whose 250-2000 Hz
+    sat **2.37 dB above** 8000-16000 Hz — a tilt no reference choice moves.
+
+    Two graded objectives, both read off the post-apply spec report and both
+    frame-invariant, which is what lets them be compared across rounds at all:
+
+    * **within-band flatness** — the worst
+      :attr:`~jasper.active_speaker.flat_spec.BandResult.max_ripple_db`, each
+      band's own deviation from its OWN level.
+    * **between-band level alignment** — the largest step between two bands'
+      levels, :func:`~jasper.active_speaker.flat_spec.spec_band_tilt`.
+
+    Those two are the exact orthogonal decomposition of a band's total
+    deviation (``max_deviation_db = level_deviation_db + max_ripple_db``, the
+    identity :class:`~jasper.active_speaker.flat_spec.BandResult` states), so
+    the pair covers the whole miss without either half double-counting the
+    other.
+
+    :attr:`EXHAUSTED` is the fail-closed answer, deliberately: an unreadable or
+    ungradable report cannot show that anything is reachable, and the honest
+    response to "we cannot tell" is to stop the series rather than to spend a
+    household's evening on rounds nothing is steering.
+    """
+
+    REACHABLE = "reachable"
+    EXHAUSTED = "exhausted"
+
+
 class AdoptionOutcome(str, Enum):
     """What the round did with the intervention.
 
@@ -963,7 +1001,8 @@ class AdoptionDecision:
     ``row`` is the decision table's own stable identifier (#2537) — one of
     :data:`ADOPTION_ROWS`.  It exists because ``outcome`` and ``reason``
     together still cannot say *which rule fired*: two rows can share an
-    outcome (three of the five restore) and a reason travels from whichever
+    outcome (three of the six restore, three keep) and a reason travels from
+    whichever
     axis decided, so a driver chaining rounds mechanically would have to
     re-derive the rule from the reason string.  The row is the thing that does
     not move when a reason's wording does.
@@ -1012,19 +1051,31 @@ class AdoptionDecision:
         }
 
 
-#: The adoption table's five rows, as stable identifiers (#2537).
+#: The adoption table's six rows, as stable identifiers (#2537, #2602).
 #:
 #: Numbered after the owner's own ruling, which named four; row 5 is the fifth
 #: the ruling's principle *requires* and did not enumerate — see
 #: :class:`QualityStatus.REGRESSED` for why a measured regression is not a
-#: "keep for iteration".  The numbers are part of the identifier so a reader
-#: can line a receipt up against the table without a lookup, and they are
-#: frozen: a future row appends, it never renumbers.
+#: "keep for iteration".  Row 6 is #2602's, and it is the rule working exactly
+#: as written below: a future row APPENDS, it never renumbers, so splitting the
+#: passing cell left row 1 meaning what it always meant.  The numbers are part
+#: of the identifier so a reader can line a receipt up against the table
+#: without a lookup.
+#:
+#: Seven identifiers for six rows: :data:`ADOPTION_ROW_RESTORE_FAILED` is row 0
+#: and sits OUTSIDE the table, for the reason its own comment gives.
 ADOPTION_ROW_KEEP = "row1_trusted_safe_passed"
 ADOPTION_ROW_KEEP_FOR_ITERATION = "row2_trusted_safe_missed"
 ADOPTION_ROW_RESTORE_UNSAFE = "row3_unsafe"
 ADOPTION_ROW_RESTORE_UNTRUSTED = "row4_untrusted_evidence"
 ADOPTION_ROW_RESTORE_REGRESSION = "row5_trusted_safe_regressed"
+#: #2602's row, and the one that made the table four-axis: a round that PASSED
+#: on quality, with a flatter result still reachable. Appended rather than
+#: folded into :data:`ADOPTION_ROW_KEEP`, per the numbering rule above — row 1
+#: still means what it meant, "this round passed and the series is over", and
+#: the two now differ in the only way that matters to a household, which is
+#: whether another round is coming.
+ADOPTION_ROW_KEEP_ITERATING = "row6_trusted_safe_passed_reachable"
 #: Outside the table: a restore was attempted and did not complete, which no
 #: row describes because it is not a decision about the evidence at all.
 ADOPTION_ROW_RESTORE_FAILED = "row0_restore_failed"
@@ -1035,6 +1086,7 @@ ADOPTION_ROWS: frozenset[str] = frozenset({
     ADOPTION_ROW_RESTORE_UNSAFE,
     ADOPTION_ROW_RESTORE_UNTRUSTED,
     ADOPTION_ROW_RESTORE_REGRESSION,
+    ADOPTION_ROW_KEEP_ITERATING,
     ADOPTION_ROW_RESTORE_FAILED,
 })
 
@@ -1119,13 +1171,16 @@ class RoundReceipt:
     post_measurement: Mapping[str, Any]
     verification: VerificationResult
     adoption: AdoptionDecision
-    #: The three axes the adoption row was read off — trust, safety, quality —
-    #: each as ``{"status": ..., "reason": ..., "evidence": {...}}`` (#2537).
+    #: The axes the adoption row was read off — trust, safety, quality, and
+    #: since #2602 headroom — each as
+    #: ``{"status": ..., "reason": ..., "evidence": {...}}`` (#2537, #2602).
     #: On the receipt rather than only in the journal because the receipt is
     #: what the NEXT round reads: "keep, and here is what to fix" is only
     #: actionable if the misses travel with it, and a journal line is not an
     #: artifact a chained driver can fetch.  ``{}`` on a round graded before
-    #: this shipped, which is an absence and not "all three passed".
+    #: this shipped, which is an absence and not "they all passed" — and a
+    #: three-key mapping is a round graded before #2602, not a headroom axis
+    #: that declined to answer.
     round_axes: Mapping[str, Any]
     restore_result: Mapping[str, Any]
     evidence_identities: Mapping[str, Any]

@@ -125,7 +125,10 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     # :mod:`jasper.active_speaker.flat_spec` through
     # :mod:`jasper.active_speaker.crossover_v2.verification`, and this module
     # already imports ``flat_spec`` lazily everywhere else for that reason.
-    from jasper.active_speaker.crossover_v2.coordinator import RoundPorts
+    from jasper.active_speaker.crossover_v2.coordinator import (
+        RoundPorts,
+        SeriesPosition,
+    )
     from jasper.active_speaker.crossover_v2.round_evidence import (
         EntryBaseline,
         MeasuredResponse,
@@ -4928,6 +4931,7 @@ class CrossoverV2Session:
         ] | None = None,
         tweeter_measurement_band_hz: tuple[float, float] | None = None,
         attempt_history: Sequence[AttemptRecord] = (),
+        series_position: "SeriesPosition | None" = None,
         attempt_floor: FloorStats | None = None,
         last_attempt_decision: Mapping[str, Any] | None = None,
         speaker_id: str = "",
@@ -4983,6 +4987,12 @@ class CrossoverV2Session:
         self._attempt_history = list(attempt_history)[
             -AttemptBudget().hard_cap_attempts:
         ]
+        # #2602's series memory, resolved by the host from durable state and
+        # held opaquely: this class never reads inside it. ``None`` normalizes
+        # to the opening round at the one use site, which is also the only
+        # place ``coordinator`` is imported (see the TYPE_CHECKING note above —
+        # importing it here would pull ``flat_spec`` into every flow import).
+        self._series_position = series_position
         self._attempt_floor = attempt_floor
         self._last_attempt_decision = (
             dict(last_attempt_decision)
@@ -9066,6 +9076,11 @@ class CrossoverV2Session:
         if self._round_evaluated:
             return verdict
         self._round_evaluated = True
+        # #2602. ``None`` is a host that resolved nothing — a fresh series, or
+        # a construction path predating the ruling — and the opening round is
+        # the fail-safe reading of both: it can only offer another round, never
+        # suppress a stop the evidence asked for.
+        position = self._series_position or coordinator.SeriesPosition.first()
         decision = coordinator.run_round(
             coordinator.RoundEvidence(
                 session_id=self.session_id,
@@ -9116,6 +9131,13 @@ class CrossoverV2Session:
                 # the round's safety axis and the probe's own refusal read the
                 # same evidence rather than two reads a capture apart.
                 delta_probe=self._delta_probe,
+                # Where this round sits in the household's flattening series,
+                # and what the previous one measured (#2602). Both come from
+                # the durable receipt the previous round banked — this session
+                # cannot derive either, because a stage-2 grading run is a
+                # fresh session that has seen no earlier round.
+                round_ordinal=position.ordinal,
+                previous_objectives=position.previous_objectives,
             ),
             self._round_ports(),
         )

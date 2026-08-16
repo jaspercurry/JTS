@@ -1732,6 +1732,20 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         # is the validating reader, so a state file written by another build
         # cannot 500 this poll path.
         "measure": (state or {}).get("measure"),
+        # The last graded round's adoption receipt — what it decided, which row
+        # decided it, and where it sat in the series (#2537, #2602).
+        #
+        # **This projection was missing**, and the envelope has read ``None``
+        # here on every real box since #2537: ``persist_conductor_state`` wrote
+        # ``state["round_receipt"]`` and this block never forwarded it, so the
+        # done screen's round key and its keep-for-iteration caveat existed only
+        # in unit tests that hand-built the status dict. #2602 makes that gap
+        # load-bearing rather than merely wasteful — a series that cannot tell a
+        # household another round is coming has not delivered the ruling — so it
+        # is fixed here rather than filed. Copied through unvalidated, exactly
+        # like ``candidate`` and ``verify`` beside it: the envelope's own
+        # accessor is the validating reader.
+        "round_receipt": (state or {}).get("round_receipt"),
         "verify": (state or {}).get("verify"),
         "failure": (state or {}).get("failure"),
         "apply_blocked": (state or {}).get("apply_blocked"),
@@ -7524,6 +7538,9 @@ def prepare_v2_verify(
         session_wall_clock_ceiling_s,
     )
     from jasper.capture_relay import correction_adapter
+    from jasper.active_speaker.crossover_v2.coordinator import (
+        series_position_from_state,
+    )
 
     if session_volume_plan().needs_recovery:
         raise CrossoverV2Refused(
@@ -7721,6 +7738,14 @@ def prepare_v2_verify(
             ),
             verify_pilot_transfer_prior=pilot_transfer_prior,
             attempt_history=attempt_history_from_state(state),
+            # #2602: where the next round sits in the flattening series, read
+            # off the receipt the previous round banked and carried forward
+            # across sessions — the series outlives the session that started
+            # it. Wired HERE and only here because this is the stage that
+            # grades a round: stage 1 walks CHECK/MEASURE and never reaches
+            # ``_grade_round``, so a series position on its snapshot would be
+            # state nothing reads.
+            series_position=series_position_from_state(state),
             attempt_floor=attempt_store.floor,
             last_attempt_decision=(
                 dict(prior_attempt_decision)

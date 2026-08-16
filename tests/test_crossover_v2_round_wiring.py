@@ -49,6 +49,8 @@ suites co-run green in either order.
 
 from __future__ import annotations
 
+import itertools
+
 import dataclasses
 import json
 import logging
@@ -67,7 +69,11 @@ from jasper.active_speaker.delta_probe import (
 )
 from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
 from jasper.active_speaker.crossover_v2 import coordinator
-from jasper.active_speaker.crossover_v2.contracts import AdoptionOutcome
+from jasper.active_speaker.crossover_v2.contracts import (
+    ADOPTION_ROW_KEEP_ITERATING,
+    AdoptionOutcome,
+    IterationHeadroom,
+)
 from jasper.active_speaker.crossover_v2.round_evidence import (
     EntryBaseline,
     measured_response_from_analysis,
@@ -80,6 +86,8 @@ from jasper.active_speaker.crossover_v2.contracts import (
 from jasper.active_speaker.crossover_v2.verification import (
     ADOPTION_MEASURED_REGRESSION,
     ADOPTION_REALIZED_AND_IMPROVED,
+    HEADROOM_NO_OBJECTIVES,
+    HEADROOM_REACHABLE,
     ADOPTION_UNPROVEN,
     ADOPTION_UNPROVEN_BOOST,
     CAPTURE_INTEGRITY_FAILED,
@@ -420,7 +428,11 @@ def test_a_measurably_improved_round_keeps_the_graph_and_the_verdict(monkeypatch
     assert verdict.accepted is True
     evaluation = conductor.round_evaluation
     assert evaluation.adoption.outcome is AdoptionOutcome.KEEP
-    assert evaluation.adoption.reason == ADOPTION_REALIZED_AND_IMPROVED
+    # #2602: a tier that walks no post-apply cloud has no spec report, so
+    # the fourth axis cannot see whether a flatter result is reachable and
+    # stops the series fail-closed. The graph is still KEPT — only the
+    # reason names the ending now.
+    assert evaluation.adoption.reason == HEADROOM_NO_OBJECTIVES
     # The disclosure target list still names the unwalked spatial arm — spec
     # not deciding the status is not spec vanishing from the receipt.
     assert evaluation.quality.evidence["targets"] == ["spec:no_spec_report"]
@@ -723,7 +735,11 @@ def test_the_retry_after_a_rejected_verify_is_the_capture_that_gets_graded(
 
     assert retry.accepted is True
     assert conductor.round_evaluation.adoption.outcome is AdoptionOutcome.KEEP
-    assert conductor.round_evaluation.adoption.reason == ADOPTION_REALIZED_AND_IMPROVED
+    # #2602: a tier that walks no post-apply cloud has no spec report, so
+    # the fourth axis cannot see whether a flatter result is reachable and
+    # stops the series fail-closed. The graph is still KEPT — only the
+    # reason names the ending now.
+    assert conductor.round_evaluation.adoption.reason == HEADROOM_NO_OBJECTIVES
     assert conductor.round_receipt_identity is not None
     assert attempts == []
 
@@ -1137,7 +1153,11 @@ def test_the_round_receipt_lands_in_the_bundle_fingerprinted_and_readable(
 
     assert receipt["round_id"] == _MINTED_RELAY_SESSION_ID
     assert receipt["adoption"]["outcome"] == AdoptionOutcome.KEEP.value
-    assert receipt["adoption"]["reason"] == ADOPTION_REALIZED_AND_IMPROVED
+    # #2602: a tier that walks no post-apply cloud has no spec report, so
+    # the fourth axis cannot see whether a flatter result is reachable and
+    # stops the series fail-closed. The graph is still KEPT — only the
+    # reason names the ending now.
+    assert receipt["adoption"]["reason"] == HEADROOM_NO_OBJECTIVES
     assert receipt["entry_baseline"]["program_id"] == (
         conductor.measure_entry_baseline.program_id
     )
@@ -1939,11 +1959,19 @@ def test_every_restore_the_table_can_ask_for_has_its_own_household_code():
                 (QualityStatus.MISSED, ADOPTION_UNPROVEN),
                 (QualityStatus.REGRESSED, ADOPTION_MEASURED_REGRESSION),
             ):
-                for boosted in (True, False):
+                # #2602's axis is walked too: it cannot produce a restore
+                # (both its answers keep), and walking it is what PROVES that
+                # rather than assuming it — a headroom value that did reach a
+                # restoring row would surface here as a reason with no
+                # household code.
+                for boosted, headroom_status in itertools.product(
+                    (True, False), IterationHeadroom
+                ):
                     decision = coordinator.decide_adoption(
                         trust=Verdict(trust_status, trust_reason, {}),
                         safety=Verdict(safety_status, safety_reason, {}),
                         quality=Verdict(quality_status, quality_reason, {}),
+                        headroom=Verdict(headroom_status, "h", {}),
                         boosted=boosted, rollback_available=True,
                     )
                     if decision.outcome is AdoptionOutcome.RESTORE:
@@ -2175,8 +2203,18 @@ def test_the_full_tier_grades_its_round_at_the_post_apply_cloud_close(
     assert verdict.payload["group_complete"] == flow.PHASE_CLOUD_VERIFY
     evaluation = conductor.round_evaluation
     assert evaluation is not None, "the cloud close did not grade the round"
-    assert evaluation.adoption.outcome is AdoptionOutcome.KEEP
-    assert evaluation.adoption.reason == ADOPTION_REALIZED_AND_IMPROVED
+    # #2602's HEADLINE CASE, end to end: the Full tier walks a post-apply
+    # cloud, so the fourth axis can see this result still has tilt and ripple
+    # left in it. The graph is KEPT exactly as before — ``KEEP_FOR_ITERATION``
+    # leaves the speaker in the same state ``KEEP`` does — and the round now
+    # says another one is worth running instead of declaring the series over.
+    assert evaluation.adoption.outcome is AdoptionOutcome.KEEP_FOR_ITERATION
+    assert evaluation.adoption.row == ADOPTION_ROW_KEEP_ITERATING
+    assert evaluation.adoption.reason == HEADROOM_REACHABLE
+    assert evaluation.quality.status is QualityStatus.PASSED, (
+        "the round still PASSED on quality — #2602 changed the stop "
+        "condition, not the grade"
+    )
     # Spec still names its own miss on the target list — it just does not
     # move the outcome off KEEP.
     assert any(
@@ -2190,8 +2228,12 @@ def test_the_full_tier_grades_its_round_at_the_post_apply_cloud_close(
     assert identity is not None
     receipt = _round_receipt_json(real_bundle, _MINTED_RELAY_SESSION_ID)
     assert receipt["round_id"] == _MINTED_RELAY_SESSION_ID
-    assert receipt["adoption"]["outcome"] == AdoptionOutcome.KEEP.value
-    assert receipt["adoption"]["reason"] == ADOPTION_REALIZED_AND_IMPROVED
+    # The receipt records the same answer the evaluation reached — #2602's
+    # row 6, not row 1. A receipt that still said "keep" here would be the
+    # banked artifact disagreeing with the screen.
+    assert receipt["adoption"]["outcome"] == AdoptionOutcome.KEEP_FOR_ITERATION.value
+    assert receipt["adoption"]["row"] == ADOPTION_ROW_KEEP_ITERATING
+    assert receipt["adoption"]["reason"] == HEADROOM_REACHABLE
     # Fingerprinted by the contract, not merely stamped — the same re-hash the
     # Express receipt pin makes, so a Full round's receipt is held to it too.
     core = {key: value for key, value in receipt.items() if key != "fingerprint"}
@@ -2322,3 +2364,182 @@ def test_a_delta_probe_refusal_at_the_cloud_close_burns_no_round(
     assert attempts == []
     with pytest.raises(FileNotFoundError):
         _round_receipt_json(real_bundle, _MINTED_RELAY_SESSION_ID)
+
+
+# --------------------------------------------------------------------------
+# the series' own memory, across rounds (#2602)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("case", "raw", "ordinal", "previous"),
+    [
+        ("no state at all", {}, 1, None),
+        ("no receipt yet", {"session_id": "s"}, 1, None),
+        ("receipt is not a mapping", {"round_receipt": "corrupt"}, 1, None),
+        (
+            "a receipt written before #2602 knew about ordinals",
+            {"round_receipt": {"row": "row1_trusted_safe_passed"}},
+            1, None,
+        ),
+        (
+            "round 1 banked its objectives",
+            {"round_receipt": {
+                "round_ordinal": 1,
+                "objectives": {"tilt_db": 2.37, "ripple_db": 0.9},
+            }},
+            2, (2.37, 0.9),
+        ),
+        (
+            "an ordinal with no objectives beside it",
+            {"round_receipt": {"round_ordinal": 2}},
+            3, None,
+        ),
+        (
+            "a bool is not an ordinal",
+            {"round_receipt": {"round_ordinal": True}},
+            1, None,
+        ),
+        (
+            "a nonsense ordinal",
+            {"round_receipt": {"round_ordinal": 0}},
+            1, None,
+        ),
+    ],
+    ids=[
+        "no_state", "no_receipt", "corrupt_receipt", "pre_2602_receipt",
+        "after_round_one", "ordinal_without_objectives", "bool_ordinal",
+        "zero_ordinal",
+    ],
+)
+def test_the_series_position_reader(case, raw, ordinal, previous):
+    """Every shape durable state can be in, and what the next round inherits.
+
+    Unreadable shapes resolve to the FIRST round, never to "the cap was
+    reached": a bad byte on disk must not be able to silently switch iteration
+    back off, which is the behaviour #2602 exists to add.
+    """
+
+    position = coordinator.series_position_from_state(raw)
+
+    assert position.ordinal == ordinal, case
+    if previous is None:
+        assert position.previous_objectives is None, case
+    else:
+        assert position.previous_objectives is not None, case
+        assert (
+            position.previous_objectives.tilt_db,
+            position.previous_objectives.ripple_db,
+        ) == previous, case
+
+
+def test_a_poisoned_objective_reads_as_absent_not_as_a_number():
+    """A NaN would sail through every comparison in the headroom axis.
+
+    ``NaN < plateau`` is ``False`` and ``NaN <= plateau`` is ``False``, so a
+    corrupt write would make a series look permanently un-plateaued AND
+    permanently un-flat — iterating to the cap every time on evidence that is
+    not evidence.
+    """
+
+    position = coordinator.series_position_from_state({"round_receipt": {
+        "round_ordinal": 1,
+        "objectives": {"tilt_db": float("nan"), "ripple_db": float("inf")},
+    }})
+
+    assert position.previous_objectives is not None
+    assert position.previous_objectives.tilt_db is None
+    assert position.previous_objectives.ripple_db is None
+
+
+@pytest.mark.parametrize(
+    ("case", "receipt"),
+    [
+        ("objectives absent", {"round_ordinal": 9}),
+        # The branch EVERY real round after the first takes — a banked receipt
+        # always carries objectives beside its ordinal. The reader returns from
+        # two different places depending on this key, and a clamp added to only
+        # the second one is invisible to the case above. (Found by the #2602
+        # gate: a clamp mutation on this branch survived all 637 tests.)
+        (
+            "objectives present",
+            {
+                "round_ordinal": 9,
+                "objectives": {"tilt_db": 2.37, "ripple_db": 0.9},
+            },
+        ),
+    ],
+    ids=["objectives_absent", "objectives_present"],
+)
+def test_the_reader_never_clamps_the_cap_itself(case, receipt):
+    """One enforcer. The headroom axis is where the cap lives.
+
+    A reader that quietly clamped at 3 would be a second owner of the rule,
+    and the two could disagree about what "the last round" means.
+
+    Both return paths are exercised, because "the reader does not clamp" is a
+    property of the FUNCTION and the function has two exits.
+    """
+
+    position = coordinator.series_position_from_state({"round_receipt": receipt})
+
+    assert position.ordinal == 10, case
+
+
+def test_a_graded_round_banks_what_the_next_one_needs_to_read(
+    monkeypatch, real_bundle,
+):
+    """The round-trip: what ``_write_round_receipt`` writes, the reader reads.
+
+    Writer and reader live in one module precisely so they cannot drift, and
+    this is what proves they have not. Without it a series could bank the
+    ordinal under one key and look for it under another — and every round
+    would look like round 1, forever, with nothing red.
+    """
+
+    _seed_round_state()
+    conductor, _attempts = _restoring_stage_2(monkeypatch)
+    _install_entry_baseline(conductor, scale=1.5)
+    _install_applied_graph(monkeypatch, boosts=False)
+
+    _consume_verify(conductor, _post_apply_analysis(conductor))
+
+    identity = conductor.round_receipt_identity
+    assert identity is not None
+    assert identity["round_ordinal"] == 1, "the first graded round is round 1"
+    assert "objectives" in identity, "the next round has nothing to compare to"
+
+    # Fed back exactly as the host persists it — ``state["round_receipt"]``.
+    position = coordinator.series_position_from_state({"round_receipt": identity})
+    assert position.ordinal == 2
+
+
+def test_the_status_block_forwards_the_receipt_to_the_screen():
+    """The projection without which every round sentence is dead on a real box.
+
+    ``persist_conductor_state`` has written ``state["round_receipt"]`` since
+    #2537, and ``crossover_v2_status_block`` did not forward it — so the
+    envelope read ``None`` in production and the round nudges existed only in
+    unit tests that hand-built the status dict. #2602 makes that load-bearing:
+    a series that cannot tell a household another round is coming has not
+    delivered the ruling.
+    """
+
+    receipt = {
+        "round_id": "s1",
+        "adoption": "keep_for_iteration",
+        "row": "row6_trusted_safe_passed_reachable",
+        "reason": "flatter_result_reachable",
+        "round_ordinal": 1,
+        "objectives": {"tilt_db": 2.37, "ripple_db": 0.9},
+    }
+    state = _seed_round_state()
+    state["round_receipt"] = receipt
+    v2host.save_v2_state(state)
+
+    block = v2host.crossover_v2_status_block()
+
+    assert block is not None
+    assert block["round_receipt"] == receipt, (
+        "the screen cannot name a round the status block never forwards"
+    )
