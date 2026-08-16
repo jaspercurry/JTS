@@ -707,6 +707,10 @@ def _level_frame_record(**overrides: object) -> dict:
         "radiating_band_hi_hz_tweeter": None,
         "trim_band_average_db_tweeter": 0.0,
         "frame_offset_db_tweeter": 3.209,
+        # #2599: what the planner DID about the disagreement, and what it cost.
+        "frame_exclusion_reason": "frame_disagreement_unadjudicated",
+        "anchor_delta_db_woofer": 0.0,
+        "anchor_delta_db_tweeter": 3.209,
     }
     record.update(overrides)
     return record
@@ -774,6 +778,30 @@ def test_the_banked_finding_carries_all_three_instruments() -> None:
     assert evidence["tolerance_db"] == 3.0
     assert evidence["realized_difference_db"] == -0.828
     assert evidence["realized_tolerance_db"] == 3.0
+
+
+def test_the_banked_finding_says_what_the_session_did_about_it() -> None:
+    """#2599, in the artifact the household's own findings file is minted from.
+
+    A reader of this finding is being told two estimators disagreed. Since
+    #2599 that disagreement also CHANGES the tune — the disputed frame no
+    longer places the trim anchor — so the finding that reports the argument
+    has to report the action and its cost, or the artifact describes a
+    diagnosis whose consequence lives only in a journal line.
+
+    ``anchor_delta_db_*`` is not a restatement of ``frame_offset_db_*``: the
+    offset is what the frame ASKED for, the delta is what declining it did,
+    and the two differ because dropping ONE role's offset moves the shared
+    normalize shift under EVERY role. The woofer here carries a 0.0 offset and
+    a 0.0 delta only because this fixture's shift happens not to move it; the
+    conductor's own 6.156 dB case has a 0.0 offset and a +2.827 dB delta.
+    """
+
+    evidence = _level_frame_finding().evidence
+
+    assert evidence["frame_exclusion_reason"] == "frame_disagreement_unadjudicated"
+    assert evidence["anchor_delta_db_tweeter"] == 3.209
+    assert evidence["anchor_delta_db_woofer"] == 0.0
 
 
 def test_the_banked_finding_stays_unsure_and_claims_no_probe() -> None:

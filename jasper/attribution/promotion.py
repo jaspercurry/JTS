@@ -343,22 +343,28 @@ def promote_level_frame_disagreement(
     decision, and the *only* records that reach here are ones it already
     decided to bank.
 
-    **Two phrases from the ruling are deliberately not repeated here, because
-    the code does not do what they say** — the flow's own gate comment derives
-    both:
+    **One phrase from the ruling is still not repeated here, because the code
+    does not do what it says** — the flow's own gate comment derives it:
 
-    * *"proceeds on the near-Fc anchor (the trim solve)"*. Proceeding changes
-      nothing about the trims; the fit commits the anchor it always computed,
-      and the trim term cancels out of it, so the committed placement is set by
-      the CORE-MEDIAN frame — the *disputed* estimator. The accurate sentence
-      is "the same tune, not refused".
     * *"the estimator the realized check corroborates"*. The realized check is
       a closed-loop read of the pair about to ship ("One estimator, not a
       second opinion" — its own docstring), so it grades the OUTCOME and cannot
-      referee two frames against each other.
+      referee two frames against each other. The trim solve places the anchor
+      because the other estimator is disputed, not because this check endorsed
+      it. Refereeing the two needs a third instrument that does not exist yet.
 
-    Neither correction changes what is banked or when. They change what the
-    evidence is claimed to mean, which is this module's whole responsibility.
+    The ruling's *other* phrase, *"proceeds on the near-Fc anchor (the trim
+    solve)"*, was in the same position until #2599 and no longer is. Before it,
+    proceeding changed nothing about the trims — the trim term cancelled out of
+    the anchor, so the committed placement came from the CORE-MEDIAN frame, the
+    *disputed* estimator. A frame disputed past
+    ``LEVEL_FRAME_AGREEMENT_TOLERANCE_DB`` now does not place the anchor at all
+    (:func:`jasper.active_speaker.crossover_v2.intervention.anchor_trims`), so
+    the phrase describes the shipped mechanism.
+
+    Neither the correction nor the fix changes what is banked or when. What
+    reaches this function, and the threshold that sent it here, are the gate's
+    and are untouched.
 
     **It re-decides nothing.** There is no threshold here, no comparison of
     the disagreement against the tolerance, no re-reading of the realized

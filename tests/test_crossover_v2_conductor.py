@@ -7465,7 +7465,9 @@ def test_fit_linearization_wires_ripple_optimal_seeded_by_anchored_giveback(
     # give-back returns a branch to its OWN pre-correction system level, and
     # the offset then places that level where the session's one frame says it
     # belongs. Read off the fit rather than recomputed, for the same reason
-    # ``giveback`` is.
+    # ``giveback`` is. Since #2599 that term is admitted only while the frame
+    # AGREES, which this fixture's does; the disputed arm is pinned in
+    # ``tests/test_crossover_v2_level_frame_dispute.py``.
     frame_offset = {
         role: c.candidate.linearization[role]["level_frame_offset_db"]
         for role in ("woofer", "tweeter")
@@ -7547,7 +7549,33 @@ def test_linearized_ripple_polish_is_skipped_on_a_one_sided_band(caplog, monkeyp
     runs. With the tweeter swept from Fc the band is ``[Fc, 2*Fc]``, where the
     woofer is deep in its skirt and the summed ripple cannot express the
     handoff level. The scan must not run at all; the anchored give-back
-    stands, and the skip is disclosed."""
+    stands, and the skip is disclosed.
+
+    **The realized verdict is SUPPLIED, since #2599 — and this is the one place
+    in this file where that substitution changes an outcome, so it is argued
+    rather than asserted.** This fixture's two level estimators disagree by
+    5.799 dB, well past the 3.0 dB tolerance, so the frame is DISPUTED and no
+    longer places the anchor (``iv.anchor_trims``). That moves the anchored
+    tweeter from −2.161 to −7.960 dB, and with it the realized inter-driver
+    level from **+2.758** to **−3.042** dB — across a 3.0 dB tolerance this
+    fixture was clearing by 0.242 dB and now misses by 0.042 dB. Run end to end
+    it therefore REFUSES, and a refused session stashes no candidate for the
+    arithmetic below to read.
+
+    That flip is real and is pinned as its own claim, with these numbers, by
+    ``test_a_disputed_frame_can_cost_a_session_that_used_to_ship`` directly
+    below — it is not hidden here.
+    It is held off THIS test because it is not this test's subject: the subject
+    is that a one-sided band skips the scan and leaves the anchor standing,
+    which is upstream of every gate and is measured identically either way.
+    Letting a knife-edge downstream verdict decide whether this test can see
+    its own arithmetic would make it fail for reasons that have nothing to do
+    with the band. Same reasoning, and the same mechanism, as
+    ``test_large_raw_shift_is_accepted_by_the_guard_and_refused_by_the_level_
+    check`` and ``test_a_disagreeing_frame_the_realized_check_also_fails_still_
+    refuses``, which both supply this verdict for the mirror reason.
+    """
+    from jasper.audio_measurement.program_analysis import RealizedLevelMatch
 
     caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
     calls = []
@@ -7555,6 +7583,15 @@ def test_linearized_ripple_polish_is_skipped_on_a_one_sided_band(caplog, monkeyp
         iv, "solve_ripple_optimal_trim",
         lambda *a, **kw: calls.append(kw) or (kw["seed_trim_db"] - 4.0, 0.0, kw["seed_trim_db"]),
     )
+
+    def _matched(*_a, **_kw):
+        return RealizedLevelMatch(
+            level_w_db=0.0, level_t_db=0.0, difference_db=0.0,
+            tolerance_db=3.0, matched=True,
+            woofer_band_hz=(800.0, 1600.0), tweeter_band_hz=(1600.0, 3200.0),
+        )
+
+    monkeypatch.setattr(iv, "realized_level_match", _matched)
     fakes = FakeSeams()
     # A defect inside the tweeter's OWN swept band (this conductor sweeps the
     # tweeter from Fc up), so the fit has real work to do and the candidate
@@ -7601,27 +7638,108 @@ def test_linearized_ripple_polish_is_skipped_on_a_one_sided_band(caplog, monkeyp
         role: c.candidate.linearization[role]["correction_giveback_db"]
         for role in ("woofer", "tweeter")
     }
-    # PR-L5 adds the shared-level-frame offset to the same anchor: the
-    # give-back returns a branch to its OWN pre-correction system level, and
-    # the offset then places that level where the session's one frame says it
-    # belongs. Read off the fit rather than recomputed, for the same reason
-    # ``giveback`` is.
+    # PR-L5 added the shared-level-frame offset to the same anchor — and #2599
+    # made that term CONDITIONAL. This fixture's frame disagrees by 5.799 dB,
+    # past the 3.0 dB tolerance, so it is disputed and its offsets are excluded:
+    # the anchor is ``raw_trim + giveback``, the pre-PR-L5 shape. The offsets are
+    # still read off the fit and asserted to be non-trivial, so this stays a
+    # statement that they were DECLINED rather than that they happened to be
+    # zero — which is the difference between pinning the rule and pinning the
+    # fixture.
     frame_offset = {
         role: c.candidate.linearization[role]["level_frame_offset_db"]
         for role in ("woofer", "tweeter")
     }
-    unnormalized = {
-        r: raw_trim[r] + giveback[r] + frame_offset[r] for r in ("woofer", "tweeter")
-    }
+    assert max(abs(v) for v in frame_offset.values()) > 3.0
+    unnormalized = {r: raw_trim[r] + giveback[r] for r in ("woofer", "tweeter")}
     shift = max(0.0, max(unnormalized.values()))
     for role in ("woofer", "tweeter"):
         assert c.candidate.role_attenuations_db[role] == pytest.approx(
             unnormalized[role] - shift
         )
+    assert c.candidate.role_attenuations_db["tweeter"] == pytest.approx(
+        -7.960, abs=0.02
+    )
     # ...and the guard never fired, because the trim never left the anchor.
     assert (
         "event=correction.crossover_v2_linearization_trim_rejected" not in caplog.text
     )
+
+
+def test_a_disputed_frame_can_cost_a_session_that_used_to_ship(caplog):
+    """**#2599's named cost, pinned with the numbers rather than described.**
+
+    The same one-sided fixture as the test above, run end to end with nothing
+    supplied. Its two level estimators disagree by 5.799 dB, so since #2599 the
+    frame is disputed and does not place the anchor — which moves the anchored
+    tweeter from −2.161 to −7.960 dB and the realized inter-driver level from
+    **+2.758** to **−3.042** dB. Against a 3.0 dB tolerance this session used to
+    clear by 0.242 dB and now misses by 0.042 dB, so it REFUSES where it used to
+    ship.
+
+    **This is the trade, and it is deliberate.** The realized-level gate is not
+    new and its threshold did not move; what changed is that it is now grading a
+    pair placed by the estimator that is NOT in dispute. A session whose
+    undisputed placement cannot realize level within tolerance is one whose two
+    instruments disagree AND whose trim-solve placement mislevels — the honest
+    answer to which is the refusal the household already has copy for, not a
+    tune hung off a number the same session flagged ``unsure``/``refit``.
+
+    **Why a scan usually absorbs it, and why this fixture cannot.** The planner
+    grades the anchor AND the ripple scan's polish and commits whichever levels
+    better, so an anchor pushed past tolerance is normally rescued — that is
+    exactly what happens in
+    ``test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds``
+    (anchor −4.295, committed −1.195). A ONE-SIDED ripple band skips the scan
+    entirely, so the anchor is the only pair there is. The population this costs
+    is therefore narrow: disputed frame AND one-sided band AND an undisputed
+    placement within a few tenths of the tolerance.
+
+    **The proper fix is not this.** Neither estimator is known wrong; they
+    disagree, and the realized check cannot referee them ("One estimator, not a
+    second opinion"). Settling it needs a third, broadband arbitration
+    instrument — named as the follow-up on #2599, not built here. Until then
+    this refusal is the available correctness.
+    """
+    caplog.set_level(logging.WARNING, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    _one_sided_tweeter_db = 8.0 * np.exp(
+        -0.5 * ((np.log2(_LINEARIZABLE_FREQS_HZ / 2500.0) / 0.3) ** 2)
+    )
+    fakes.measure = lambda program: _eligible_measure_analysis(
+        program, tweeter_db=_one_sided_tweeter_db,
+    )
+    c = _one_sided_conductor(fakes)
+
+    with pytest.MonkeyPatch.context() as mp:
+        plans = _plan_spy(mp)
+        _run_phase(c, 1, 1)
+        with pytest.raises(CaptureBeginRefused) as excinfo:
+            _run_phase(c, 2, 2)
+
+    assert excinfo.value.code == REASON_DRIVER_LEVELS_DISAGREE
+    assert c.candidate is None
+    assert fakes.published_candidates == []
+
+    plan = plans[-1]
+    assert plan.level_frame_disagreement_db == pytest.approx(5.799, abs=0.02)
+    assert plan.level_frame_admission.admitted is False
+    assert plan.trim.anchored_db["tweeter"] == pytest.approx(-7.960, abs=0.02)
+    # The margin, both ways, so the knife edge is a number a reader can check
+    # rather than a claim in prose.
+    assert plan.realized_level_match.difference_db == pytest.approx(
+        -3.042, abs=0.02
+    )
+    assert plan.realized_level_match.matched is False
+    assert plan.level_frame_admission.anchor_delta_db["tweeter"] == pytest.approx(
+        -5.799, abs=0.02
+    )
+    # …and the household is told WHY, not just that something failed.
+    assert (
+        "event=correction.crossover_v2_linearization_level_frame_excluded"
+        in caplog.text
+    )
+    assert "reason=frame_disagreement_unadjudicated" in caplog.text
 
 
 def test_straddling_band_still_runs_the_linearized_ripple_polish(caplog):
@@ -7801,9 +7919,26 @@ def test_large_raw_shift_is_accepted_by_the_guard_and_refused_by_the_level_check
     """The two layers, on one fixture — guard pair (a) plus PR-L4 item 1.
 
     #1668 CD-horn re-anchor: the wild-trim guard is anchored to the
-    ripple-optimal tweeter trim's OWN seed, NOT the raw candidate trim, so a
-    large shift vs the raw trim (what a legitimate CD-horn give-back produces)
-    does not trip it. That is still true and still asserted here.
+    ripple-optimal tweeter trim's OWN seed, NOT the raw candidate trim.
+
+    **This fixture stopped demonstrating that at #2599, and the reason is the
+    point of #2599.** It only ever demonstrated it because the shared level
+    frame was silently ABSORBING the −20 dB raw trim: the offset repaired the
+    anchor, the scan landed near it, and the drift the guard measures stayed
+    small. But the 20 dB gap between the two estimators is exactly what makes
+    this frame DISPUTED, so the frame no longer places the anchor — which
+    leaves the anchor carrying the raw trim's own error (−20.918 dB), the scan
+    9.700 dB away from it, and the guard correctly firing. The guard is still
+    anchored to the seed and not to the raw trim; on this fixture those two are
+    now the same number, so nothing here can tell them apart any more. The
+    claim survives, separably, on the DEFAULT (agreeing) fixture in
+    ``test_wild_scan_drift_falls_back_to_anchored_pair_with_warning`` and
+    ``test_a_rejected_scan_is_not_committed_however_well_it_levels``.
+
+    What is NOT weakened is the outcome: same refusal, same code, same
+    untouched speaker, and now one MORE journal line naming the 9.700 dB drift.
+    A frame that used to repair a 20 dB junk input without saying so is
+    precisely the silent reference #2599 removes.
 
     What PR-L4 added is the half the guard never had: a raw trim 20 dB away
     from what these branches justify is *invisible to drift from the anchor* —
@@ -7854,9 +7989,20 @@ def test_large_raw_shift_is_accepted_by_the_guard_and_refused_by_the_level_check
             _run_phase(c, 2, 2)
     assert excinfo.value.code == REASON_DRIVER_LEVELS_DISAGREE
     assert LINEARIZATION_TRIM_SANITY_MARGIN_DB > 0  # the constant exists and is positive
-    # The GUARD did not fire — a near-seed scan is trusted, exactly as #1668
-    # intended. The refusal above came from the level layer, one stage later.
-    assert "event=correction.crossover_v2_linearization_trim_rejected" not in caplog.text
+    # Since #2599 the guard DOES fire here (see the docstring): the disputed
+    # frame no longer absorbs the −20 dB raw trim, so the anchor carries it and
+    # the scan sits 9.700 dB away. Asserted with its drift, because "the guard
+    # fired" without the number is the shape of telemetry nobody can check.
+    assert "event=correction.crossover_v2_linearization_trim_rejected" in caplog.text
+    assert "drift_db=9.7" in caplog.text
+    assert "committed=anchored" in caplog.text
+    # The exclusion that caused it is disclosed too, so a reader of this
+    # journal does not have to infer why the anchor moved.
+    assert (
+        "event=correction.crossover_v2_linearization_level_frame_excluded"
+        in caplog.text
+    )
+    # …and the refusal is still the frame gate's, one stage later, unchanged.
     assert "event=correction.crossover_v2_level_frame_refused" in caplog.text
     assert "tolerance_db=3.0" in caplog.text
     # Nothing was published or stashed: the speaker is untouched.
@@ -8043,6 +8189,14 @@ def test_anchored_trim_is_raw_plus_giveback_and_normalized_non_positive():
     assert giveback["tweeter"] > 0.0
     # PR-L5's shared-level-frame offset rides the same anchor (see the
     # sibling tests). Read off the fit, never recomputed.
+    #
+    # This fixture's frame AGREES, which since #2599 is the condition for the
+    # offset to be admitted at all — the formula below is the admitted arm, not
+    # the unconditional rule it was until then. The disputed arm and its
+    # three-case table are pinned in
+    # ``tests/test_crossover_v2_level_frame_dispute.py``; the assertion that
+    # this fixture takes the admitted arm is
+    # ``test_an_agreeing_frame_banks_nothing``.
     frame_offset = {
         role: c.candidate.linearization[role]["level_frame_offset_db"]
         for role in ("woofer", "tweeter")
@@ -8077,7 +8231,11 @@ def test_anchored_normalization_shift_prevents_a_positive_trim(monkeypatch):
     ``{"woofer": 0.0, "tweeter": 0.0}`` on the reasoning that "any positive
     give-back pushes the unnormalized anchor above 0 and forces the shift" —
     but PR-L5's frame offset is ``system − trim − core``, so the raw trim
-    CANCELS out of ``raw + giveback + level_frame_offset``. Measured across a
+    CANCELS out of ``raw + giveback + level_frame_offset`` — **while the offset
+    is admitted, which since #2599 needs the frame to agree. It does on this
+    fixture.** On the disputed arm there is no offset to cancel it and the base
+    is load-bearing; see ``tests/test_crossover_v2_level_frame_dispute.py``.
+    Measured across a
     raw-tweeter-trim sweep on this fixture, the anchor and everything
     downstream of it are byte-identical at every value:
     ``unnormalized = {woofer: 3.4743, tweeter: 2.0908}``, ``shift = 3.4743``,
@@ -10200,16 +10358,22 @@ def test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused(caplog):
     * *"the committed trim lands the two branches 0.32 dB apart where the
       pre-#1929 trim left them 2.85 dB apart."* **No longer true, and the reason
       is a genuine improvement.** Those were 2.847 and −0.321 dB under the flat
-      target; they are now 0.853 and 0.885 dB (0.693 and 0.725 before #2523 gave
-      the solve its own band) — the two arms land within 0.04 dB
-      of each other and both pass. **R10a made the pipeline robust to the
-      pre-#1929 frame error.** The frame still mislevels the ANCHOR by its full
-      6.16 dB, but the ripple-optimal scan now walks it back: 5.9 dB in the
-      pre-#1929 arm against 0.7 dB in the shipped one, asserted below. Under the
-      flat target the scan could not, because the fit had already buried ~9 dB
-      of spurious cut in the branch it was scanning, and the mislevel survived
-      into the shipped pair. So the realized instrument no longer corroborates
-      #1929 — it now says the frame error does not reach the household at all.
+      target; they are now 0.597 and 0.885 dB — both arms pass, and the frame
+      error does not reach the household in either.
+
+      **WHICH mechanism keeps it away changed at #2599, and the new one is
+      cheaper.** Between R10a and #2599 the frame still mislevelled the pre-arm
+      ANCHOR by its full 6.16 dB and the ripple-optimal scan walked the tweeter
+      5.9 dB to undo it — a rescue that worked, but one that finished **0.1 dB**
+      from tripping the 6.0 dB wild-trim sanity margin (it sat EXACTLY on it
+      before #2523). Since #2599 a 6.16 dB disagreement is DISPUTED and does not
+      place the anchor at all, so there is nothing to walk back: the pre-arm
+      scan moves **0.0 dB** and the anchor commits directly
+      (``anchored_committed``). The shipped arm is untouched — its 0.99 dB
+      agrees, its offsets are admitted, and its scan still walks the same 0.7 dB
+      it always did. So the pre-arm no longer depends on a near-margin rescue to
+      survive its own frame error, which is the whole point of not anchoring on
+      a disputed number.
 
     **What this test still pins, and why it is not vacuous.** #1929's own
     instrument, on the identical session: 6.16 dB over the declared span against
@@ -10231,8 +10395,8 @@ def test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused(caplog):
         return conductor
 
     # Both candidate trim pairs the level adjudication grades, in the order
-    # ``_fit_linearization`` grades them (resolved, then anchored) — two per
-    # arm. This is what makes the scan's rescue readable instead of inferred.
+    # ``plan_linearization`` grades them (**anchored, then resolved**) — two per
+    # arm. This is what makes each arm's scan walk readable instead of inferred.
     graded: list[dict] = []
     real_match = iv.realized_level_match
 
@@ -10326,66 +10490,65 @@ def test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused(caplog):
     #
     # Both moved +0.16 dB at #2523 (0.693 -> 0.853, 0.725 -> 0.885) because
     # each branch is now fitted over its own solve band, which changes the
-    # filters both arms carry. They moved TOGETHER — the gap between the arms,
-    # which is this line's actual subject, is 0.032 dB before and after — and
-    # both still pass with 2.1 dB of margin on a 3.0 dB tolerance.
+    # filters both arms carry.
+    #
+    # At #2599 the PRE arm moved again, alone: 0.853 -> 0.597. The post arm's
+    # frame agrees (0.99 dB) so its offsets are admitted and nothing about it
+    # changed; the pre arm's disagrees by 6.16 dB, so its offsets are excluded
+    # and its anchor lands elsewhere. The gap between the arms therefore widened
+    # from 0.032 to 0.288 dB — still small against the 3.0 dB tolerance both
+    # clear by more than 2.1 dB, which is the claim this line carries. The gap
+    # is bounded at 0.3 rather than pinned, because it is now the residue of two
+    # different mechanisms and a tight pin on it would test the fixture.
     before_difference_db = before_plan.realized_level_match.difference_db
     after_difference_db = after_plan.realized_level_match.difference_db
-    assert before_difference_db == pytest.approx(0.853, abs=0.05)
+    assert before_difference_db == pytest.approx(0.597, abs=0.05)
     assert after_difference_db == pytest.approx(0.885, abs=0.05)
-    assert abs(before_difference_db - after_difference_db) < 0.1
+    assert abs(before_difference_db - after_difference_db) < 0.3
     assert before_plan.realized_level_match.matched is True
     assert after_plan.realized_level_match.matched is True
+    # WHY only the pre arm moved, read off the admission rather than inferred
+    # from the magnitudes above.
+    assert before_plan.level_frame_admission.admitted is False
+    assert after_plan.level_frame_admission.admitted is True
 
-    # …and the MECHANISM that makes them agree, so the line above reads as a
-    # measured rescue rather than a coincidence. Four graded pairs, two per arm,
-    # ``(resolved, anchored)`` each: the pre-#1929 arm's anchor is mislevelled by
-    # the frame's full error and the ripple-optimal scan walks the tweeter 5.9 dB
-    # to undo it; the shipped arm's anchor is already right and the scan moves it
-    # 0.7 dB. That walk is what the flat target used to prevent, by burying ~9 dB
-    # of spurious cut in the very branch the scan reads.
+    # …and the MECHANISM, so the line above reads as measured rather than as a
+    # coincidence. Four graded pairs, two per arm, ``(anchored, resolved)``
+    # each — that order is ``plan_linearization``'s and was written down
+    # backwards here until #2599, exactly as in
+    # ``test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds``;
+    # it was invisible while the labels only fed an ``abs()``.
     #
-    # Both walks grew 0.2 dB at R10b (5.4 -> 5.6 and 0.2 -> 0.4) because
-    # the anchor each is measured FROM now carries the realized biquad cascade's
-    # give-back rather than `predicted_response`'s Lorentzian, and again at
-    # #2106 (5.6 -> 6.0 and 0.4 -> 0.8) because the boost the ruling permits
-    # reshapes both linearized branches the scan reads. #2523 then shrank both
-    # (6.0 -> 5.9 and 0.8 -> 0.7): a solve confined to each branch's own band
-    # leaves the scan less to walk back. The ratio the claim rests on survives
-    # every one of those — 8.4x now, where the assertion asks for 5x — and the
-    # two arms' realized level match, the actual subject above, still lands them
-    # within 0.04 dB of each other.
+    # **The mechanism CHANGED at #2599, and that is this block's news.** Until
+    # then the frame mislevelled the pre-arm's anchor by its full 6.16 dB and
+    # the ripple scan walked the tweeter 5.9 dB back — a rescue that worked but
+    # finished 0.1 dB from the 6.0 dB wild-trim margin, and sat EXACTLY on it
+    # before #2523 widened the clearance. Now the disputed frame never places
+    # that anchor, so there is nothing to walk back: the pre-arm's scan moves
+    # **0.0 dB** and the anchor commits directly. The post arm is untouched at
+    # **0.7 dB**, because its frame agrees.
     #
-    # The 10x the ratio assertion used to ask for is deliberately not kept.
-    # The claim is that the scan's rescue SCALES with the frame error the arm
-    # carries — large where the anchor is mislevelled by 6.16 dB, small where
-    # it is right — and 8.4x states that as clearly as 14x did. A threshold
-    # tightened to whatever the fixture last happened to produce tests the
-    # fixture rather than the claim; both magnitudes are pinned to +-0.1 dB
-    # directly above it, which is the stricter statement anyway.
+    # So the ratio assertion is retired rather than re-tuned. It said "the
+    # scan's rescue scales with the frame error the arm carries"; the rescue is
+    # no longer how the pre-arm survives its frame error, so a ratio would be
+    # measuring a mechanism that has been removed. What replaces it is the
+    # stronger statement the removal earns: the pre-arm's walk is now ZERO and
+    # its distance from the guard's margin is the FULL margin, where it used to
+    # be one scan step.
     assert len(graded) == 4, graded
-    (pre_resolved, pre_anchored, post_resolved, post_anchored) = graded
+    (pre_anchored, pre_resolved, post_anchored, post_resolved) = graded
+    assert pre_anchored == pytest.approx(dict(before_plan.trim.anchored_db), abs=1e-9)
+    assert post_anchored == pytest.approx(dict(after_plan.trim.anchored_db), abs=1e-9)
     pre_walk_db = abs(pre_resolved["tweeter"] - pre_anchored["tweeter"])
     post_walk_db = abs(post_resolved["tweeter"] - post_anchored["tweeter"])
-    #
-    # Both walks shrank 0.1 dB at #2523 (6.0 -> 5.9 and 0.8 -> 0.7), because a
-    # solve that no longer spends filters outside each branch's own band leaves
-    # the ripple scan less to walk back. The ratio the claim rests on grew from
-    # 7.5x to 8.4x.
-    assert pre_walk_db == pytest.approx(5.9, abs=0.1)
+    assert pre_walk_db == pytest.approx(0.0, abs=1e-9)
     assert post_walk_db == pytest.approx(0.7, abs=0.1)
-    assert pre_walk_db > 5.0 * post_walk_db
-    # …and the pre-#1929 walk sits just UNDER the wild-trim guard's margin,
-    # which is a strict `>` — so the guard does not fire. It used to sit
-    # EXACTLY on it (6.0 against 6.0, clearing by 0.0 dB); #2523 bought it one
-    # 0.1 dB scan step of clearance, which is the same effect the issue names
-    # on live hardware. Still pinned tightly, because it is two steps from
-    # firing rather than none and a future change that nudges this fixture up
-    # would silently move the pre-arm onto the guard's fallback branch and
-    # change which pair it commits.
+    # The clearance that used to be one 0.1 dB scan step is now the whole
+    # margin. Pinned as the margin itself rather than as a number, so it
+    # tracks the constant instead of a transcription of it.
     assert pre_walk_db < LINEARIZATION_TRIM_SANITY_MARGIN_DB
     assert LINEARIZATION_TRIM_SANITY_MARGIN_DB - pre_walk_db == pytest.approx(
-        0.1, abs=0.05,
+        LINEARIZATION_TRIM_SANITY_MARGIN_DB, abs=1e-9,
     )
 
 
@@ -10549,53 +10712,50 @@ def test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds(
     ``realized_branch_level_match`` check PASSES, the fit **banks the
     disagreement as an M7-class finding** … and proceeds."
 
-    Four things are pinned:
+    Five things are pinned:
 
     1. the session COMPLETES rather than refusing;
     2. a finding is banked carrying both estimators, both bands, and the
        realized difference;
-    3. **proceeding is the same tune, not refused** — the committed trims are
-       the pair the fit's own level adjudication picked out of the two IT
-       computed, and the inter-driver placement they carry is the fit's
-       anchor's, not the trim solve's;
-    4. the decision is visible in the journal under its own event.
+    3. **the anchor places on the UNDISPUTED estimator** — since #2599 a frame
+       disagreeing past tolerance does not place the trim pair, so the anchored
+       inter-driver placement is the trim solve's and not the core median's;
+    4. the exclusion and its dB consequence are DISCLOSED — on the plan, in the
+       banked record, and under their own journal event;
+    5. the decision is visible in the journal under its own event.
 
-    **Claim 3 is deliberately NOT "proceeds on the near-Fc anchor (the trim
-    solve)", which is the ruling's wording and is inverted.** The trim term
-    cancels out of ``anchor_base + giveback + level_frame_offset``, so the
-    committed inter-driver placement is set by the CORE-MEDIAN frame — the
-    *disputed* estimator. This fixture measures that directly: the anchor
-    places the pair 0.756 dB apart, which is the core-median frame's own value;
-    anchoring on the trim solve's placement instead would give 4.650; and the
-    two differ by 3.894 — exactly the banked disagreement. What proceeding buys
-    is that the session is not refused; it does not switch estimators, and the
-    realized check grades the outcome rather than picking a winner. The gate
-    comment in ``_assert_accountable`` derives all of this.
+    **Claim 3 inverted at #2599, and the inversion is the fix.** Until then the
+    trim term cancelled out of ``anchor_base + giveback + level_frame_offset``,
+    so the committed inter-driver placement was set by the CORE-MEDIAN frame —
+    the *disputed* estimator — and this test asserted exactly that, calling the
+    ruling's own wording ("proceeds on the near-Fc anchor (the trim solve)")
+    inverted. The code now does what the ruling said: with the offset excluded
+    there is nothing to cancel the base, and the placement is
+    ``giveback + trim``. This fixture measures the flip directly — the anchor
+    now places the pair **3.391 dB** apart, which is the trim solve's own
+    value; the core-median placement it used to take is **−0.502**; and the two
+    still differ by 3.894, exactly the banked disagreement. Both numbers are
+    unchanged from the pre-#2599 run: what moved is which of them the anchor
+    IS.
 
-    **Where claim 3's old "byte-for-byte the anchor" wording went (R10a,
-    #1817), and where it came back (#2106).** Before R10a the ripple-optimal
-    scan returned its own seed on this fixture, so committed, anchored and
-    resolved were one number and the claim could be written as an identity on
-    the anchor. It never was one: ``_fit_linearization`` grades BOTH candidate
-    pairs — the anchor and the scan's ripple polish — against the
-    realized-level instrument unconditionally, and commits whichever LEVELS
-    better ("inter-driver level is the load-bearing property, summed ripple is
-    the polish"). Between R10a and #2106 those pairs separated: the scan found
-    a ripple point 0.400 dB off its seed which also levelled better (|−0.952|
-    against |−1.352| dB), so the polish shipped.
+    **Claim 3 is discriminating again, and by a route worth reading.** Before
+    R10a the ripple scan returned its own seed here, so committed, anchored and
+    resolved were one number; between R10a and #2106 they separated; under the
+    boost ruling they coincided again at drift 0.000 dB, which left the
+    which-pair-won assertions true but vacuous. #2599 moves the anchor 3.391 dB
+    and they separate for the third time — the scan now walks **3.100 dB** off
+    the seed (inside the 6.0 dB sanity margin, so no guard fires) and the
+    adjudication has a real choice to make.
 
-    Under the boost ruling they coincide again — the scan returns its seed
-    exactly, drift 0.000 dB — because the permitted boost reshapes the
-    linearized branches whose SUMMED ripple the scan minimizes, and on this
-    pair the minimum lands back on the anchored placement. So ``committed ==
-    resolved == anchored`` here once more, which makes claim 3's assertions
-    below true but no longer DISCRIMINATING about which pair the adjudication
-    picked. That discrimination is not lost — it lives in
-    ``test_wild_trim_fallback_follows_levels_not_drift`` and
-    ``test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused`` —
-    and the claim this test is actually about, that the placement follows the
-    core median, is asserted below as an identity rather than as a choice
-    between pairs.
+    **It makes the choice the design promised, and this fixture is now the
+    evidence for it.** The anchor alone realizes **−4.295 dB**, which MISSES
+    the 3.0 dB realized tolerance; the scan's pair realizes **−1.195** and
+    passes; ``_fit_linearization`` grades both and commits the scan's
+    (``resolved_committed``). That is the named cost of #2599 not landing —
+    excluding a large offset can push the ANCHOR past the realized gate, and on
+    a candidate whose ripple band is one-sided (no scan, so the anchor is all
+    there is) the session would refuse rather than ship. Here the two-pair
+    grading absorbs it, the session proceeds, and the ruling still holds.
 
     **Why every magnitude here moved ~0.03-0.13 dB at R10b** (the claim-seam
     change; first-principles panel CC-2(b)).
@@ -10605,18 +10765,18 @@ def test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds(
     placement, the scan's walk and both realized differences all ride on it, so
     all of them shifted together; the DISAGREEMENT (3.894 dB) did not, because
     the give-back cancels out of it. No filter moved, and every verdict — the
-    session completes, the finding banks, the polish ships, no guard fires — is
-    the same.
+    session completes, the finding banks, no guard fires — is the same.
 
     **And why they moved ~1.26 dB again at #2106**, by the same mechanism and
     with the same invariant. The ruling lets the fit place a +3.43 dB boost at
     399 Hz on the woofer, which changes what that branch's realized cascade
-    removes — so ``correction_giveback_db`` moves, and the placement (0.756 ->
-    −0.502 dB) and the trim-solve's counterfactual (4.650 -> 3.391 dB) move
-    with it, by the SAME 1.259 dB, in the same direction. The disagreement is
-    still 3.894 dB and the two identities below still close to 1e-3, which is
-    the evidence that this is the give-back moving rather than the frame
-    breaking. The numbers in this docstring are the post-#2106 ones.
+    removes — so ``correction_giveback_db`` moves, and the core-median
+    placement (0.756 -> −0.502 dB) and the trim-solve placement (4.650 ->
+    3.391 dB) move with it, by the SAME 1.259 dB, in the same direction. The
+    disagreement is still 3.894 dB and the two identities below still close to
+    1e-3, which is the evidence that this is the give-back moving rather than
+    the frame breaking. The numbers in this docstring are post-#2106 and
+    post-#2599.
 
     **Why the trim-solve estimator's own number moved once before** (#1938 gate
     follow-up). ``_tilted_woofer_fixture`` used to hand a coherent-looking but
@@ -10681,7 +10841,7 @@ def test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds(
         plan.level_frame_disagreement_db > LEVEL_FRAME_AGREEMENT_TOLERANCE_DB
     )
     assert plan.realized_level_match.difference_db == pytest.approx(
-        -0.402, abs=0.02
+        -1.195, abs=0.02
     )
     assert plan.realized_level_match.matched is True
 
@@ -10690,7 +10850,7 @@ def test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds(
     record = banked[0]
     assert record["disagreement_db"] == pytest.approx(3.894, abs=0.02)
     assert record["tolerance_db"] == LEVEL_FRAME_AGREEMENT_TOLERANCE_DB
-    assert record["realized_difference_db"] == pytest.approx(-0.402, abs=0.02)
+    assert record["realized_difference_db"] == pytest.approx(-1.195, abs=0.02)
     for role in ("woofer", "tweeter"):
         # estimator 1 (the fit's median) and estimator 2 (the trim solve's
         # own level-match term) — the two numbers that disagreed
@@ -10713,36 +10873,54 @@ def test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds(
     # 3 — proceeding is the SAME TUNE, not refused: the committed trims are one
     # of the two pairs the fit itself computed and graded, taken from the fit's
     # OWN call rather than recomputed here (``graded`` records both, in the
-    # order ``_fit_linearization`` grades them: resolved, then anchored).
+    # order ``plan_linearization`` grades them: **anchored, then resolved**).
+    #
+    # That order was written down backwards here until #2599, and no assertion
+    # could see it: the two pairs coincided on this fixture, so naming them the
+    # wrong way round produced identical numbers. #2599 separates them by
+    # 3.100 dB and the mislabelling became a failure — which is the argument
+    # for pinning an order against the code rather than against a fixture that
+    # happens to make it unobservable.
     assert len(graded) == 2, graded
     committed = dict(c.candidate.role_attenuations_db)
-    resolved, anchored = graded[0], graded[1]
+    anchored, resolved = graded[0], graded[1]
+    assert anchored == pytest.approx(dict(plan.trim.anchored_db), abs=1e-9)
+    assert resolved == pytest.approx(dict(plan.trim.resolved_db), abs=1e-9)
     assert set(anchored) == set(committed) == set(resolved)
-    # The two graded pairs COINCIDE on this fixture since #2106 (see the
-    # docstring): the scan returns its seed, so what ships is both of them and
-    # the adjudication had nothing to choose between. Asserted as the drift
-    # rather than as a winner, precisely because there is no winner to name.
+    # Since #2599 the two graded pairs SEPARATE on this fixture (see the
+    # docstring), so the adjudication has a real choice and this is a claim
+    # about which pair it made rather than a tautology. It commits the scan's,
+    # because that is the pair that LEVELS — the property the grader is for.
     for role, value in resolved.items():
         assert committed[role] == pytest.approx(value, abs=1e-9)
+    assert plan.trim.strategy is iv.TrimStrategy.RESOLVED_COMMITTED
     drift_db = max(abs(resolved[role] - anchored[role]) for role in anchored)
-    assert drift_db == pytest.approx(0.0, abs=1e-9)
+    assert drift_db == pytest.approx(3.100, abs=0.02)
     assert drift_db < LINEARIZATION_TRIM_SANITY_MARGIN_DB
     assert "event=correction.crossover_v2_linearization_trim_rejected" not in (
         caplog.text
     )
+    # The named cost of #2599, pinned rather than asserted in prose: excluding
+    # a 3.894 dB offset pushes the ANCHOR past the realized tolerance, and only
+    # the scan's polish brings the committed pair back inside it. A candidate
+    # with a one-sided ripple band has no scan and would refuse here.
+    assert abs(plan.trim.anchored_match.difference_db) > (
+        plan.trim.anchored_match.tolerance_db
+    )
+    assert plan.trim.anchored_match.difference_db == pytest.approx(
+        -4.295, abs=0.02
+    )
+    assert plan.trim.committed_match.matched is True
 
-    # …and WHICH estimator the ANCHOR places on, because the ruling's own
-    # wording ("the trim solve") says the opposite of what the code does. The
-    # trim term cancels out of ``anchor_base + giveback + level_frame_offset``,
-    # leaving ``giveback + system − core``, so the anchored inter-driver
-    # placement follows the CORE MEDIAN — the disputed estimator. Read off the
-    # ANCHOR and not off ``committed`` because the ripple polish is the scan's
-    # business and not the frame's — it happens to move the committed pair by
-    # 0.000 dB on this fixture today, but reading the anchor is what keeps this
-    # a claim about the frame either way. Asserted as the
-    # identity rather than as a magic number: the placement the trim solve would
-    # have produced differs from the anchored one by exactly the banked
-    # disagreement.
+    # …and WHICH estimator the ANCHOR places on. Since #2599 a frame disagreeing
+    # past tolerance is DISPUTED and does not place the pair, so with no offset
+    # to cancel the base the anchored inter-driver placement is
+    # ``giveback + trim`` — the TRIM SOLVE, the estimator not in dispute — and
+    # the core-median placement it used to take is now the counterfactual. Read
+    # off the ANCHOR and not off ``committed`` because the ripple polish is the
+    # scan's business and not the frame's. Asserted as the identity rather than
+    # as a magic number: the two placements differ by exactly the banked
+    # disagreement, which is what makes this a claim about the frame.
     lin = c.candidate.linearization
     giveback = {role: lin[role]["correction_giveback_db"] for role in lin}
     cores = {r: v["level_db"] for r, v in plan.level_frame_cores.items()}
@@ -10756,17 +10934,40 @@ def test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds(
         (giveback["woofer"] + trims["woofer"])
         - (giveback["tweeter"] + trims["tweeter"])
     )
+    assert placed == pytest.approx(trim_frame, abs=1e-9)
+    assert placed == pytest.approx(3.391, abs=0.02)
     # 1e-3 is the disclosure's own rounding: ``level_frame_cores`` reports
     # each core level to 3 dp, so ``core_frame`` carries up to a half-step of
     # rounding on each of its two terms.
-    assert placed == pytest.approx(core_frame, abs=1e-3)
-    assert placed == pytest.approx(-0.502, abs=0.02)
-    assert trim_frame == pytest.approx(3.391, abs=0.02)
+    assert core_frame == pytest.approx(-0.502, abs=0.02)
     assert abs(trim_frame - core_frame) == pytest.approx(
         plan.level_frame_disagreement_db, abs=1e-3
     )
 
-    # 4 — the decision is in the journal under its own event, and the refusal
+    # 4 — the exclusion and its cost are disclosed on all three surfaces: the
+    # plan's own admission value, the banked record the household's findings
+    # artifact is minted from, and the journal.
+    admission = plan.level_frame_admission
+    assert admission is not None
+    assert admission.admitted is False
+    assert admission.reason == iv.LEVEL_FRAME_DISPUTED_REASON
+    assert admission.excluded_offset_db["tweeter"] == pytest.approx(
+        3.894, abs=0.02
+    )
+    # The dB the exclusion actually cost each role — NOT a copy of the offset:
+    # the woofer carries no offset yet still moves +0.502, because dropping the
+    # tweeter's offset moves ``normalize_shift_db`` under both of them.
+    assert admission.anchor_delta_db["tweeter"] == pytest.approx(-3.391, abs=0.02)
+    assert admission.anchor_delta_db["woofer"] == pytest.approx(0.502, abs=0.02)
+    assert record["frame_exclusion_reason"] == iv.LEVEL_FRAME_DISPUTED_REASON
+    assert record["anchor_delta_db_tweeter"] == pytest.approx(-3.391, abs=0.02)
+    assert record["anchor_delta_db_woofer"] == pytest.approx(0.502, abs=0.02)
+    assert (
+        "event=correction.crossover_v2_linearization_level_frame_excluded"
+        in caplog.text
+    )
+
+    # 5 — the decision is in the journal under its own event, and the refusal
     # event is NOT, so a reader can tell a banked session from a stopped one.
     assert "event=correction.crossover_v2_level_frame_finding" in caplog.text
     assert "event=correction.crossover_v2_level_frame_refused" not in caplog.text

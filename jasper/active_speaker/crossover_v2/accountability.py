@@ -193,6 +193,23 @@ def level_frame_finding_record(
     let the session proceed. Banking only the first two would record the
     argument and drop the reason it was allowed to stand.
 
+    **And what the session DID about it (#2599).** A disputed frame no
+    longer places the trim anchor
+    (:func:`~.intervention.anchor_trims`), so this record carries the
+    planner's named ``frame_exclusion_reason`` and the per-role
+    ``anchor_delta_db_*`` — how many dB each driver ships away from where
+    the disputed estimator wanted it. Both are READ off the planner's one
+    admission value, never re-decided here; the gate owns the banking
+    verdict, the planner owns the anchoring verdict, and this record
+    quotes each of them once.
+
+    The admission's own ``admitted`` flag is deliberately NOT a field.
+    Reaching this function means the disagreement passed the same
+    threshold the planner disputes at, so it would be a constant ``False``
+    — and a constant is not evidence. If those two thresholds are ever
+    given separate owners, ``frame_exclusion_reason`` going empty is what
+    a reader sees instead.
+
     Returns ``None`` when the frame produced no per-role bands to describe
     — unreachable on this path (the gate fired on a frame that had roles),
     but a record with no band cannot become a finding, and returning
@@ -203,6 +220,7 @@ def level_frame_finding_record(
     frame = state.level_frame
     cores = state.level_frame_cores
     realized = state.realized_level_match
+    admission = state.level_frame_admission
     # The band this finding is ABOUT: the span the two level reads were
     # actually taken over, unioned across roles. Deliberately the CORE
     # bands and not the radiating ones — a high-pass branch radiates to
@@ -240,6 +258,13 @@ def level_frame_finding_record(
             round(float(frame.system_level_db), 3)
             if frame is not None else None
         ),
+        # What the planner did with this frame, quoted from its own verdict.
+        # Empty means the offsets were admitted after all — which on this path
+        # means the two thresholds have been given separate owners, not that
+        # nothing happened.
+        "frame_exclusion_reason": (
+            "" if admission is None or admission.admitted else admission.reason
+        ),
     }
     if realized is not None:
         record.update(
@@ -263,6 +288,15 @@ def level_frame_finding_record(
         if frame is not None and role in frame.offset_db:
             record[f"frame_offset_db_{role}"] = round(
                 float(frame.offset_db[role]), 3
+            )
+        # The dB this role actually ships away from the disputed placement.
+        # ``frame_offset_db_*`` above is what the frame ASKED for; this is what
+        # declining it did — they are not the same number once the normalize
+        # shift moves, and on the 2026-08-15 jts3 run the woofer asked +3.264
+        # while the TWEETER is the role that moved by it.
+        if admission is not None and role in admission.anchor_delta_db:
+            record[f"anchor_delta_db_{role}"] = round(
+                float(admission.anchor_delta_db[role]), 3
             )
     return record
 
@@ -325,36 +359,43 @@ def assess_accountability(
     # Refusing that is a false negative on a good tune, and the diagnosis
     # the gate already computed reached no artifact at all.
     #
-    # **What "proceeds" commits, stated precisely — because the obvious
-    # reading is wrong.** The ruling's own wording is "proceeds on the
-    # near-Fc anchor (the trim solve)", and that describes an outcome the
-    # code does not produce. Proceeding changes NOTHING about the trims:
-    # the fit commits the anchor it always computed, and in
+    # **What "proceeds" commits.** The ruling's own wording is "proceeds on
+    # the near-Fc anchor (the trim solve)", and since #2599 that is what
+    # the pipeline does: a frame disputed past this same tolerance no
+    # longer places the trim anchor, so the committed inter-driver
+    # placement is the TRIM SOLVE's — the estimator that is not in dispute.
+    # :func:`~.intervention.anchor_trims` owns that rule and this record
+    # carries its named reason and per-role dB consequence.
+    #
+    # **It did not always, and the history is why this block is long.**
+    # Before #2599 proceeding changed NOTHING about the trims: the fit
+    # committed the anchor it always computed, and in
     # ``anchor_base + giveback + level_frame_offset`` the trim term
     # CANCELS — ``offset = system − trim − core``, leaving
     # ``giveback + system − core`` (the cancellation is derived in
-    # ``anchor_base_db``'s own comment). So the committed inter-driver
-    # placement is set by the CORE-MEDIAN frame — the disputed estimator —
-    # not by the trim solve. On the session fixture: committed −0.674,
-    # which is the core-median value to 4 dp; anchoring on the trim solve's
-    # placement instead would give +2.535; the two differ by 3.209, exactly
-    # the banked disagreement, which is not a coincidence but the identity
-    # ``placement_trim − placement_core = −offset``.
+    # ``anchor_base_db``'s own comment). So the committed placement was set
+    # by the CORE-MEDIAN frame — the DISPUTED estimator. On the session
+    # fixture: committed −0.674, the core-median value to 4 dp; the trim
+    # solve's placement gives +2.535; the two differ by 3.209, exactly the
+    # banked disagreement, by the identity
+    # ``placement_trim − placement_core = −offset``. That identity is also
+    # the size of the correction #2599 makes, per candidate.
     #
-    # The honest description of this branch is therefore: **the pipeline
-    # commits the anchor it always computed (which embeds the disputed
-    # estimator); proceeding is the same tune, not refused; the realized
-    # check gates the OUTCOME rather than selecting an estimator.** That is
-    # a weaker claim than "we proceed on the corroborated estimator" and it
-    # is the true one — the realized check's pass is evidence that the
-    # shipped pair is level, not evidence about which estimator was right.
+    # **RATIFIED, and the ratified description is what changed.** The
+    # pre-#2599 account above differs from the ruling's original wording,
+    # so it was put to the owner rather than merged under the inverted
+    # account; the owner confirmed it on 2026-07-30 (#1866 comment
+    # 5137494519) as "the ruling's operative form". #2599 closed the gap
+    # from the other side — by making the code do what the ruling said —
+    # after the 2026-08-15 jts3 run shipped a tweeter 3.264 dB quieter than
+    # the undisputed arithmetic gives, on a frame the same session had
+    # already marked ``unsure``/``refit``.
     #
-    # **RATIFIED.** This description differs from the ruling's original
-    # wording, so it was put to the owner rather than merged under the
-    # inverted account; the owner confirmed it on 2026-07-30 (#1866 comment
-    # 5137494519) as "the ruling's operative form". The two phrases above
-    # are retired: anything still asserting them is describing a mechanism
-    # this code does not implement.
+    # What still does NOT hold is the ruling's second phrase, "the
+    # estimator the realized check corroborates": the realized check grades
+    # the OUTCOME and cannot referee two frames against each other (below).
+    # The trim solve is anchored on because the other estimator is
+    # disputed, not because this check endorsed it.
     #
     # **What the realized check is, and is not.** It is a CLOSED-LOOP
     # check, not cross-band arbitration: its own docstring says "One
