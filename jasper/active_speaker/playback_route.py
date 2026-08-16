@@ -188,9 +188,10 @@ def resolve_live_active_endpoint(
       re-emits the ALSA lane over the rung that was just completed and the
       ladder cannot finish — which is exactly how a deploy landing in this
       window used to de-arm a box.
-    * Mid-rollback (``--endpoint aloop`` has run, marker still set): graph=aloop,
-      marker=ring. Following the marker re-arms a box the operator just
-      released.
+    * Legacy mid-rollback (graph=aloop, marker=ring) — reachable only as STATE
+      LEFT BEHIND, never as a new act: the rollback that produced it was retired
+      with the aloop endpoint. Following the graph still refuses the retired
+      device rather than adopting it; the way out is forward, by re-arming.
     * Marker set, graph moved back by something else: following the graph
       converges with the next hardware reconcile, which will clear the marker
       from that same graph.

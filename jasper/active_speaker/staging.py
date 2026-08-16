@@ -2102,9 +2102,10 @@ def prepare_driver_commissioning_config(
             "commissioning_ring_transport_unsupported",
             (
                 "This speaker is armed on the ring transport, which driver "
-                "commissioning does not measure through. Release it first with "
-                "`jasper-active-speaker baseline-reemit --endpoint aloop`, "
-                "commission, then re-arm."
+                "commissioning does not measure through. The de-arm that used to "
+                "precede commissioning no longer exists — the ACTIVE ring is the "
+                "one legal endpoint, so there is no aloop transport to release "
+                "onto. Commission a speaker BEFORE arming it."
             ),
         ))
 
