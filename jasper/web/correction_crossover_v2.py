@@ -2705,7 +2705,9 @@ def _candidate_octave_summary(linearization: Any) -> dict[str, dict[str, float]]
     return out
 
 
-def _candidate_octave_reasons(linearization: Any) -> dict[str, dict[str, str]]:
+def _candidate_octave_reasons(
+    linearization: Any, octaves: Mapping[str, Mapping[str, float]],
+) -> dict[str, dict[str, str]]:
     """Per-role octave-band reason codes (``LinearizationFit.reason_summary``
     — the fit engine's own closed
     :class:`~jasper.active_speaker.linearization_envelope.ReasonCode`
@@ -2713,6 +2715,15 @@ def _candidate_octave_reasons(linearization: Any) -> dict[str, dict[str, str]]:
     Same pure projection, same band keying: the fit computes both dicts over
     the same octave centers in the same pass, so they line up band-for-band
     (see ``linearization_fit._observe_octave_summary``'s own docstring).
+
+    Band-for-band, but NOT role-for-role on its own — which is why the
+    already-projected ``octaves`` is an argument rather than something this
+    recomputes. ``linearization_fit._empty_fit`` (the envelope allowed
+    correction nowhere) returns an EMPTY ``observe_octave_summary`` beside a
+    fully populated ``reason_summary``, so a role can honestly have verdicts
+    and no numbers. Keying off the numbers makes the reason set a subset of
+    the octave set by construction: no role is ever handed a verdict for a
+    band this candidate has no number in.
 
     **Why the numbers need this (#2638).** ``observe_octave_summary`` is
     ``working_db - frame_target_db`` across the WHOLE grid. Above a driver's
@@ -2733,7 +2744,7 @@ def _candidate_octave_reasons(linearization: Any) -> dict[str, dict[str, str]]:
     """
     out: dict[str, dict[str, str]] = {}
     for role, fit in (linearization or {}).items():
-        if not isinstance(fit, Mapping):
+        if not isinstance(fit, Mapping) or str(role) not in octaves:
             continue
         reasons = fit.get("reason_summary")
         if not isinstance(reasons, Mapping) or not reasons:
@@ -2759,6 +2770,7 @@ def _candidate_summary(candidate: Any) -> dict[str, Any] | None:
     if candidate is None:
         return None
     analysis = candidate.analysis if isinstance(candidate.analysis, Mapping) else {}
+    octaves = _candidate_octave_summary(candidate.linearization)
     return {
         "fingerprint": candidate.fingerprint,
         "program_id": candidate.program_id,
@@ -2787,7 +2799,7 @@ def _candidate_summary(candidate: Any) -> dict[str, Any] | None:
         ),
         # Gauge fix (2026-07-24): per-role top-octave deficits (the number
         # that says "the top octave is 9 dB down and nothing corrected it").
-        "linearization_octaves": _candidate_octave_summary(candidate.linearization),
+        "linearization_octaves": octaves,
         # WHY each of those octaves reads the way it does (#2638). The number
         # alone cannot distinguish "the top octave is 9 dB down and nothing
         # corrected it" from "this octave is past the driver's own band, where
@@ -2795,7 +2807,7 @@ def _candidate_summary(candidate: Any) -> dict[str, Any] | None:
         # driver did." Both are honest; only one is about performance, and the
         # screen was showing the second as if it were the first.
         "linearization_octave_reasons": _candidate_octave_reasons(
-            candidate.linearization
+            candidate.linearization, octaves
         ),
         # "This correction costs N dB of maximum level" (linearization-integrity
         # PR-L5). The owner's ruling on boost is that headroom spend is

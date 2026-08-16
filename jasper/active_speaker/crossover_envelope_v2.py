@@ -261,7 +261,7 @@ def _finite(value: Any) -> float | None:
 
 def _linearization_octave_rows(
     octaves: Any,
-    reasons: Any = None,
+    reasons: Any,
 ) -> list[dict[str, Any]]:
     """Gauge fix (2026-07-24): per-role top-octave rows (>= 8k/12k/16k) —
     the OBSERVE-layer honesty ladder's disclosure numbers

@@ -6704,6 +6704,50 @@ def test_candidate_summary_carries_the_reason_beside_each_octave_number():
     }
 
 
+def test_a_role_with_verdicts_but_no_octave_numbers_persists_no_reasons():
+    """The one place the two sibling projections could disagree.
+
+    ``linearization_fit._empty_fit`` -- the envelope allowed correction
+    nowhere -- returns an EMPTY ``observe_octave_summary`` beside a fully
+    populated ``reason_summary``, so a role can honestly hold verdicts and no
+    numbers. Keying the reasons off the numbers keeps the reason set a subset
+    of the octave set by construction, which is what makes the sibling's
+    "band-for-band" claim true for every candidate rather than most of them.
+    """
+    from jasper.active_speaker.measured_crossover_candidate import (
+        MeasuredCrossoverCandidate,
+    )
+
+    candidate = MeasuredCrossoverCandidate(
+        program_id="prog-abc",
+        analysis={"alignment_confidence": 0.9,
+                  "trim_band_average_db": {"woofer": 0.0, "tweeter": -12.4}},
+        source_preset=_preset(),
+        role_attenuations_db={"woofer": 0.0, "tweeter": -2.0},
+        linearization={
+            "woofer": {
+                "role": "woofer",
+                "observe_octave_summary": {"8000": -0.3},
+                "reason_summary": {"8000": "envelope_fitted"},
+            },
+            # The _empty_fit shape: verdicts, no numbers.
+            "tweeter": {
+                "role": "tweeter",
+                "observe_octave_summary": {},
+                "reason_summary": {"8000": "envelope_out_of_band"},
+            },
+        },
+        linearization_outcome="fitted",
+    )
+
+    summary = v2host._candidate_summary(candidate)
+
+    assert summary["linearization_octaves"] == {"woofer": {"8000": -0.3}}
+    assert summary["linearization_octave_reasons"] == {
+        "woofer": {"8000": "envelope_fitted"},
+    }
+
+
 def test_candidate_summary_linearization_fields_default_empty():
     from jasper.active_speaker.measured_crossover_candidate import (
         MeasuredCrossoverCandidate,
