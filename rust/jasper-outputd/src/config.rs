@@ -841,11 +841,15 @@ impl Config {
         // SCOPED TO ShmRing, deliberately. Under `Direct` there is no ring to
         // read, so the "is the active path" side is structurally false while
         // `ring_active_ok` stays TRUE on a healthy roleful box — an unscoped
-        // biconditional would therefore park exactly the documented rollback
-        // (coupling -> loopback, bridge -> direct), and re-running the hardware
-        // reconciler would re-derive the marker and keep it parked. The
-        // incoherent-pair bail above is the one that stays mode-independent,
-        // because a broken writer is broken under every bridge.
+        // biconditional would therefore park a roleful box the moment its
+        // coupling fell back to loopback, and re-running the hardware
+        // reconciler would re-derive the marker and keep it parked. That state
+        // used to be "the documented rollback"; #2285 P2 retired the rollback
+        // and it is now the PARK a roleful box reaches when it is unarmed, which
+        // makes the scoping matter more, not less — parking it here would bury
+        // the one doctor check that names the state. The incoherent-pair bail
+        // above stays mode-independent, because a broken writer is broken under
+        // every bridge.
         if content_bridge_mode == ContentBridgeMode::ShmRing {
             let is_active_path = shm_ring
                 .as_ref()

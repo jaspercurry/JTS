@@ -345,12 +345,32 @@ install_jts_ring_conf_assets() {
 install_jts_ring_platform() {
     build_install_jts_ring_ioplug
     install_jts_ring_conf_assets
-    # Program/content ring files are tmpfs transport state, never user data.
-    # Delete both explicit files before install_systemd_units can restart
-    # fan-in/outputd: an existing 8-slot mmap from an older default would be a
-    # fatal attach mismatch after the new 2-slot default lands. CamillaDSP keeps
-    # reading its old unlinked fd until the later DSP reconcile reloads it onto
-    # the freshly-created ring, which is inside the normal deploy audio bounce.
+    # Ring files are tmpfs transport state, never user data. Delete all three
+    # explicit files before install_systemd_units can restart fan-in/outputd: an
+    # existing 8-slot mmap from an older default would be a fatal attach
+    # mismatch after the new 2-slot default lands. CamillaDSP keeps reading its
+    # old unlinked fd until the later DSP reconcile reloads it onto the freshly-
+    # created ring, which is inside the normal deploy audio bounce.
+    #
+    # The ACTIVE ring joined the set here rather than at the arm path, because
+    # the arm path's own deleter (`_delete_stale_ring_files`, inside `_arm_ring`)
+    # is bypassed on exactly the boxes that have this file: an operator-pinned
+    # box short-circuits before `reconcile_coupling`, and every armed fleet box
+    # is pinned. The installer needs no roleful knowledge to own it — on a box
+    # that has no ACTIVE ring the file does not exist and `rm -f` is a no-op.
+    #
+    # Safe because nothing needs the header to SURVIVE a deploy: the ring is
+    # create-or-attach from BOTH ends (the ioplug's `ring_mapping_open` and
+    # outputd's `RingReader::create_or_attach` each do O_CREAT|O_EXCL then
+    # ftruncate), every doctor/reconciler reader treats absence as "nothing to
+    # judge" rather than a fault, and the only geometry the header carries is
+    # re-derived each deploy from the saved topology into the conf.d and
+    # outputd.env. The ACTIVE ring's writer is CamillaDSP through the same
+    # ioplug that writes content.ring, restarted by the same in-deploy bounce.
+    #
+    # RING FILES ONLY, never the sibling `.writer.lock` / `.open.lock`:
+    # unlinking a lock opens a silent inode-tear window between two holders.
     rm -f /dev/shm/jts-ring/program.ring
     rm -f /dev/shm/jts-ring/content.ring
+    rm -f /dev/shm/jts-ring/active-content.ring
 }

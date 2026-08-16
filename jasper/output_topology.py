@@ -1853,13 +1853,16 @@ def resolve_output_layout(
        ``OutputTransportPlan``.
     3. Otherwise the route is missing (no width, no subwoofer support).
 
-    **Case 2 has two TRANSPORTS and this is where a FRESH emit chooses between
-    them.** The active lane is reached over snd-aloop by default, and over the
-    ACTIVE RING when the reconciler's endpoint marker says so. Both carry the
-    same post-crossover per-driver program at the same width to the same reader,
-    so only the device name differs, and ``playback_device_source`` stays
-    ``OUTPUTD_ACTIVE_LANE_SOURCE`` so nothing keyed on the SOURCE has to learn
-    about the ring.
+    **Case 2 has ONE transport, and this is where a FRESH emit names it.** The
+    active lane is reached over the ACTIVE RING, unconditionally. It used to
+    have two — snd-aloop by default, the ring when the reconciler's endpoint
+    marker said so — and this function read that marker to choose. #2285 P2
+    retired the snd-aloop ACTIVE endpoint and deleted the marker read with it,
+    which is what removes the marker ← graph ← marker circle that made the
+    roleful arm manual. The marker itself is untouched; only this chooser
+    stopped consulting it. ``playback_device_source`` stays
+    ``OUTPUTD_ACTIVE_LANE_SOURCE``: it names the lane ROLE, not the transport,
+    so nothing keyed on the SOURCE had to learn about the ring.
 
     A RE-EMIT of a graph the box is already running asks a different question and
     does not come through here first. It reads
