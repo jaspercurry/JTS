@@ -2692,9 +2692,16 @@ def _band_limited_two_way(
     across the whole nominal ``[Fc/2, Fc*2]`` window and so cannot express
     #2613 at all. A shipped two-way does not look like that:
     ``build_measure_program`` sweeps each driver over
-    ``_intersect_band(declared_band, 150 Hz, 23 kHz)``, so a real tweeter
-    starts near 1.5 kHz and a real woofer stops near Fc — each leaving canonical
-    SNR rows inside the nominal window that its own stimulus never entered.
+    ``_intersect_band(declared_band, 150 Hz, 23 kHz)``, so a compression
+    tweeter's sweep starts ABOVE ``Fc/2`` — jts3's at 1600 Hz against a
+    824.35 Hz window floor — leaving canonical SNR rows inside the nominal
+    window that its own stimulus never entered.
+
+    Whether a driver leaves such a row is per-branch geometry, not a rule:
+    jts3's woofer sweeps 150-4000 Hz and covers its whole window, which is why
+    it is this fixture's control rather than a second defect. The mirror case
+    (a woofer that DOES stop inside the window) needs its own bands, and the
+    test below supplies them.
 
     Each branch's synthetic IR is band-limited to the same declared band, so
     "no signal in that row" is a property of the STIMULUS plan, not an
