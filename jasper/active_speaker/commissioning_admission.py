@@ -733,16 +733,24 @@ def issue_protection_evidence(
         # constant, which makes this the live counterpart of the end-to-end
         # coupling ``active_emit_devices`` emits — the same both-ends-agree
         # invariant, asserted on the read-back instead of on the emit.
-        # Strictly stronger than the constant it replaces: that accepted the
-        # snd-aloop tap paired with ANY sink, so a graph whose sink is the ring
-        # while its source is still ``plug:jasper_capture`` passed — and under
-        # ``shm_ring`` fan-in stops feeding that tap, so such a graph captures a
-        # device nobody writes and sweeps into digital silence with every daemon
-        # healthy. Here the pair must cohere, so that graph is refused; and
-        # everything the constant refused is still refused, because a non-ring
-        # sink still expects ``DEFAULT_CAPTURE_DEVICE``. The samplerate conjunct
-        # is a separate axis and is unchanged — the ring does not alter the
-        # graph's sample rate.
+        # The constant it replaces accepted the snd-aloop tap paired with ANY
+        # sink, so a graph whose sink is the ring while its source is still
+        # ``plug:jasper_capture`` passed — and under ``shm_ring`` fan-in stops
+        # feeding that tap, so such a graph captures a device nobody writes and
+        # sweeps into digital silence with every daemon healthy.
+        #
+        # THE DELTA IS EXACTLY TWO CELLS, and it is worth naming both rather
+        # than calling this "stronger" and leaving the other half implied:
+        # {ring sink, aloop source} moves from accepted to REFUSED — the silent
+        # sweep; and {ring sink, ring source} moves from refused to ACCEPTED —
+        # the capability, since ``fanin.coupling_reconcile
+        # .ring_endpoint_anchor_converged`` DEMANDS that same pair on an armed
+        # box, so before this the two gates were mutually unsatisfiable. Every
+        # other pair keeps the verdict the constant gave it, because a non-ring
+        # sink still expects ``DEFAULT_CAPTURE_DEVICE``.
+        #
+        # The samplerate conjunct is a separate axis and is unchanged — the
+        # ring does not alter the graph's sample rate.
         "capture_route_current": (
             devices.get("samplerate") == DEFAULT_SAMPLE_RATE
             and capture.get("device") == expected_capture_device

@@ -985,9 +985,14 @@ def test_successful_admission_does_not_log_or_persist_protection_report(
 #
 # The check had ZERO tests before these five (``grep -rl capture_route_current
 # tests/`` returned nothing), which is why the hole below could exist unseen.
-# The two halves of this wave's lens question are guarded separately: T1/T3 that
-# the coherent pairs still pass, T2/T4 that the silent-sweep graph is now
-# refused end to end, T5 that everything the constant refused is refused still.
+#
+# THE DELTA IS TWO CELLS AND EACH HAS ITS OWN TEST, so no polarity rides on an
+# argument: {ring sink, aloop source} accepted -> REFUSED (T2, and T4 for the
+# chain), and {ring sink, ring source} refused -> ACCEPTED (T1, the capability).
+# The other two cells keep the constant's verdict (T3, T5). That is both halves
+# of this wave's lens question — does it still refuse what it refused, and does
+# it now refuse the graph that sweeps into silence — with the one pair the wave
+# deliberately starts accepting named rather than implied.
 
 
 def _graph_with_devices(raw: str, *, playback_device: str, capture_device: str) -> str:
