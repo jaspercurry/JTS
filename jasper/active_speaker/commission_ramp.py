@@ -20,8 +20,10 @@ The model (the design-of-record, HANDOFF-active-speaker-dsp.md "Stage 5"):
        -> safe_playback ``floor_pending_operator`` (driver unmuted, awaiting ACK)
        -> operator ACK "heard_correct_driver" -> ``floor_confirmed``
     -> bounded ramp: +AUDIBLE_RAMP_STEP_DB per step toward
-       COMMISSION_RAMP_MAX_LEVEL_DBFS (each louder step requires the driver to
-       be floor-confirmed first)
+       COMMISSION_RAMP_MAX_LEVEL_DBFS (each louder step requires the operator
+       to have handled the last one — confirmed it, or called it silent and
+       asked to retry louder — unless the caller passes auto_retry_pending
+       for the same target)
   woofer before tweeter (a driver is ramped only after its lower-frequency
   siblings are floor-confirmed), and before ANY tweeter step the protective
   high-pass is re-asserted against the RUNNING graph, not just the file.
