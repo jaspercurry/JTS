@@ -283,8 +283,15 @@ def test_the_wire_key_has_no_writer_so_the_rollback_lever_survives() -> None:
     writer of a ``fanin.env`` / ``outputd.env`` key spells the key and the
     primitive on one line (``RuntimeEnvAction("set", KEY, …)``,
     ``upsert(text, KEY, …)``, ``os.environ[KEY] = …``, a shell heredoc line), so
-    that is the shape this catches. A writer that split the key across lines
-    would evade it — the honest bound, stated rather than implied.
+    that is the shape this catches.
+
+    TWO BOUNDS, both stated rather than implied. A writer that split the key
+    across lines would evade the primitive test. And the search is scoped to
+    :data:`_WRITER_DIRS` — ``jasper``, ``deploy``, ``scripts`` — which excludes
+    ``rust/`` and ``c/``: neither language writes env files in this repo (the
+    Rust daemons and the C ioplug READ their config and never author
+    ``fanin.env``), so including them would only add prose hits. A future Rust
+    env writer would need this list widened.
     """
     import subprocess
 

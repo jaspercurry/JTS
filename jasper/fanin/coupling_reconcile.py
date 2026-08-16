@@ -1237,7 +1237,19 @@ def reconcile_auto(
 
     NO-OP on an ineligible / fanin-less box: jts3 (roleful) / jts5 (composite)
     resolve loopback with the combo off (no gadget intent) and converge with zero
-    churn; jts4 (streambox, no fan-in stack) sees the coupling reconcile no-op.
+    churn.
+
+    A BOX CAN ALSO BE A NO-OP FOR THE OTHER REASON, and the two must not be
+    confused. Step 1's operator-marker branch returns ``owned=False`` with
+    ``ring_gates=()`` — an EMPTY tuple — so on an operator-pinned box the gate
+    set is never even constructed and neither ``ring_wire_caps_ready`` nor
+    ``ring_edge_width_ready`` runs, whatever the box's hardware would say. That
+    is by design (an operator choice is not the auto pass's to re-litigate), but
+    it means "the fleet's fail-closed wire gates protect this box" is FALSE for
+    every pinned box, and all three armed fleet boxes are pinned. jts4 is the
+    worked example and it is NOT the streambox-profile no-op an earlier version
+    of this docstring called it: it is a FLAT box, armed ``shm_ring``, pinned
+    ``operator``, so it reaches here and returns before any gate.
     ``gadget_present`` / ``usb_intent_enabled`` / ``restart_*`` / ``stop_camilla`` /
     ``start_camilla`` / ``reconcile_camilla`` / ``kick_hardware_reconcile`` /
     ``active_leader_check`` are injectable for tests; ``gadget_present=None`` reads
@@ -3780,10 +3792,19 @@ def _arm_ring(
     nothing had re-derived it by the time the spine restarts outputd, and outputd
     came up still asking for the LOOPBACK lane's wide ``S32_LE`` while CamillaDSP's
     ioplug attached the ring at the resolved ``S16_LE``. That is a hard
-    ``attach_fatal``, so jasper-camilla crash-looped into its start limit and
-    ``StartLimitAction=reboot`` rebooted the speaker; a SECOND arm then converged,
-    because by then some ordinary hardware-reconcile pass had moved the key. jts4
+    ``attach_fatal``, and the box rebooted; a SECOND arm then converged, because
+    by then some ordinary hardware-reconcile pass had moved the key. jts4
     reproduced exactly that on 2026-08-14.
+
+    WHICH UNIT REBOOTED IT IS AN INFERENCE, and an earlier version of this
+    comment got it wrong by naming jasper-camilla. Camilla cannot reboot a
+    speaker: ``jasper-camilla.service`` carries ``StartLimitAction=none`` and
+    parks through its own recovery handler instead (see the ``_CRASH_BUDGET_UNITS``
+    block comment at the top of this module, which had it right). The two units
+    that DO escalate an exhausted start window to ``StartLimitAction=reboot`` are
+    ``jasper-outputd`` and ``jasper-fanin``, and a sheared ring takes out the
+    READER as well as CamillaDSP — so the reboot came from one of those. Which
+    one is not derivable from here, and is not load-bearing for the fix below.
 
     The fix asks the OWNER to converge rather than writing the key here: this
     reconcile has already persisted ``JASPER_FANIN_CAMILLA_COUPLING=shm_ring``

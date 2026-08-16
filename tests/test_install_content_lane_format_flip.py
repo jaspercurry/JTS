@@ -38,7 +38,7 @@ import pytest
 
 from jasper.audio_runtime_plan import outputd_content_format_change
 from jasper.camilla_config_contract import DEFAULT_PLAYBACK_FORMAT
-from jasper.fanin_coupling import RING_WIRE_FORMAT
+from jasper.fanin_coupling import RING_WIRE_FORMAT, RING_WIRE_FORMAT_ENV_VAR
 
 ROOT = Path(__file__).resolve().parents[1]
 FRAGMENT = ROOT / "deploy" / "lib" / "install" / "systemd-units.sh"
@@ -97,70 +97,67 @@ def test_no_change_once_the_box_already_requests_the_wide_width(tmp_path):
 
 @pytest.mark.parametrize(
     "outputd",
-    [None, f"JASPER_OUTPUTD_CONTENT_FORMAT={RING_WIRE_FORMAT}\n"],
-    ids=["pre_flip", "post_flip"],
+    [
+        None,
+        f"JASPER_OUTPUTD_CONTENT_FORMAT={RING_WIRE_FORMAT}\n",
+        f"JASPER_OUTPUTD_CONTENT_FORMAT={DEFAULT_PLAYBACK_FORMAT}\n",
+    ],
+    ids=["unwritten", "narrow", "wide"],
 )
-def test_no_change_on_a_narrow_pinned_ring_box_either_side_of_the_flip(
-    tmp_path, monkeypatch, outputd
+@pytest.mark.parametrize(
+    "wire",
+    [None, f"{RING_WIRE_FORMAT_ENV_VAR}={RING_WIRE_FORMAT}\n"],
+    ids=["undeclared", "narrow_pin"],
+)
+def test_a_ring_coupled_box_never_reports_a_change_whatever_its_wire(
+    tmp_path, monkeypatch, outputd, wire
 ):
-    """RENAMED and RE-POINTED (jasper.fanin_coupling.resolve_ring_wire_format's
-    own default flip, 2026-08-11 — a SECOND, LATER flip than the one this
-    module's docstring describes). The old test kept this name across the PR-6
-    (loopback) flip because shm_ring FORCED the narrow width regardless of what
-    that flip did to loopback's own default, so an armed ring box was narrow
-    both before and after it, paying no churn either way.
+    """A ``shm_ring`` box has NO snd-aloop content lane, so there is never a
+    lane to release — whatever widths the two ends happen to carry.
 
-    Now the ring wire's OWN resolver defaults WIDE too, so an UNPINNED armed
-    ring box no longer "keeps the coupling-forced narrow width" at all — see
-    tests/test_fanin_coupling.py::test_content_lane_format_is_one_definition_for_both_ends_of_the_hop.
-    What survives is the coarser invariant this decision function actually
-    promises: a box already sitting at the width its coupling will request pays
-    no churn. Reproducing THAT now needs an explicit operator narrow pin
-    (JASPER_FANIN_RING_WIRE_FORMAT=S16_LE).
+    THE INVARIANT IS THE COUPLING, NOT THE WIDTHS, and that distinction is
+    load-bearing rather than tidy. This test used to pass for the wrong reason:
+    while the ring wire's resolver default was narrow, every ring box happened
+    to compare EQUAL here, so the ring branch was never exercised. The wire
+    flip broke that coincidence — an already-armed undeclared box (jts4's
+    shape: ``S16_LE`` in outputd.env, ``S32_LE`` upcoming) started reporting a
+    change — and reporting one there does not merely add churn, it SUPPRESSES
+    the install's own convergence step: the release stops CamillaDSP, and
+    ``reconcile_sound_dsp_state`` runs next and needs CamillaDSP's websocket to
+    read the loaded graph. See ``outputd_content_format_change``'s own docstring
+    for the full walk.
 
-    outputd_content_format_change's own fanin_env_path only threads through to
-    read_persisted_coupling (the COUPLING token) — content_lane_format_for_coupling's
-    ring-wire read (jasper.fanin_coupling.read_declared_ring_wire_format) is
-    FILE-FRESH against the module-level FANIN_ENV_PATH /
-    var/lib/jasper/fanin.env constant instead, so writing the pin into this
-    test's own fanin.env has no effect unless that constant is ALSO patched
-    onto the same file — the established pattern this repo already uses
-    everywhere else the ring wire format needs a hermetic env (e.g.
-    tests/test_doctor_usbsink.py, tests/test_ring_gates_recovery.py).
+    So the parametrisation is deliberately exhaustive over the shapes that
+    reached the old accident: outputd's key unwritten / narrow / wide, crossed
+    with an undeclared wire and an operator narrow pin. All six answer ``None``.
     """
     from jasper.fanin import coupling_reconcile as cr
 
+    # content_lane_format_for_coupling's ring-wire read is FILE-FRESH against
+    # the module-level FANIN_ENV_PATH, not against this call's fanin_env_path
+    # (which only threads through to read_persisted_coupling), so the pin has to
+    # land on the file the constant names — the pattern the ring suites already
+    # use (tests/test_ring_gates_recovery.py).
     monkeypatch.setattr(cr, "FANIN_ENV_PATH", str(tmp_path / "fanin.env"))
     assert (
         outputd_content_format_change(
             **_envs(
                 tmp_path,
                 outputd=outputd,
-                fanin=(
-                    "JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n"
-                    "JASPER_FANIN_RING_WIRE_FORMAT=S16_LE\n"
-                ),
+                fanin="JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n" + (wire or ""),
             )
         )
         is None
     )
 
 
-def test_change_reported_when_a_wide_box_arms_a_narrow_pinned_ring(
-    tmp_path, monkeypatch
-):
-    """The other direction is a change too: a wide box whose coupling moves to a
-    NARROW-PINNED shm_ring will request that pin's width, so the lane's lock has
-    to be released just the same. The check is an equality, never a width
-    ranking.
+def test_a_loopback_box_still_reports_its_own_width_change(tmp_path, monkeypatch):
+    """THE POSITIVE CONTROL for the guard above.
 
-    RE-POINTED (see the sibling test above for the full account): arming
-    shm_ring UNPINNED no longer diverges from a wide box's current width — both
-    now resolve S32_LE, which is byte-identical no-change rather than the
-    divergence this test exists to demonstrate. Reproducing a genuine
-    divergence needs the same explicit operator narrow pin, with FANIN_ENV_PATH
-    patched onto this test's own fanin.env for the same file-fresh-vs-real-path
-    reason.
+    Without it, "a ring box answers None" is satisfied by a function that
+    answers None for everything — which would delete the aloop hazard's only
+    detector. A ``loopback`` box genuinely owns an snd-aloop content lane, so a
+    width move there must still be reported and the lane still released.
     """
     from jasper.fanin import coupling_reconcile as cr
 
@@ -168,14 +165,11 @@ def test_change_reported_when_a_wide_box_arms_a_narrow_pinned_ring(
     change = outputd_content_format_change(
         **_envs(
             tmp_path,
-            outputd=f"JASPER_OUTPUTD_CONTENT_FORMAT={DEFAULT_PLAYBACK_FORMAT}\n",
-            fanin=(
-                "JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n"
-                "JASPER_FANIN_RING_WIRE_FORMAT=S16_LE\n"
-            ),
+            outputd=f"JASPER_OUTPUTD_CONTENT_FORMAT={RING_WIRE_FORMAT}\n",
+            fanin="JASPER_FANIN_CAMILLA_COUPLING=loopback\n",
         )
     )
-    assert change == (DEFAULT_PLAYBACK_FORMAT, RING_WIRE_FORMAT)
+    assert change == (RING_WIRE_FORMAT, DEFAULT_PLAYBACK_FORMAT)
 
 
 def test_the_probe_reads_only_env_files_never_a_camilla_config(monkeypatch, tmp_path):

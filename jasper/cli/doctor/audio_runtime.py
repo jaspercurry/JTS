@@ -1218,9 +1218,18 @@ def check_camilla_playback_format() -> CheckResult:
     that regenerates the identical config: without the File split, every
     pipe-sink leader and parked box; without the ring split, every armed-ring box
     (including the certified-latency USB box), whose canary criterion is
-    literally "doctor green". All three constants now genuinely differ in force
-    (loopback lane ``S32_LE``, pipe/File sink and SHM ring ``S16_LE``), so both
-    splits are load-bearing rather than latent.
+    literally "doctor green". The pipe/File sink stays pinned narrow
+    (``DEFAULT_PIPE_SINK_FORMAT`` ``S16_LE``) regardless of the ring wire flip,
+    so it still diverges in force from the loopback lane's
+    ``DEFAULT_PLAYBACK_FORMAT`` (``S32_LE``). The ring split no longer buys a
+    THIRD distinct value on an undeclared box — the ring wire's resolver
+    defaults wide too now, so an unpinned ring box's expected format equals
+    the loopback lane's — but the split stays load-bearing because the ring's
+    expected value is a per-box RESOLUTION (``resolve_ring_wire``), not a
+    constant: an operator's narrow rollback pin
+    (``JASPER_FANIN_RING_WIRE_FORMAT=S16_LE``) is exactly the box this check
+    must still catch, and reading it off ``DEFAULT_PLAYBACK_FORMAT`` instead
+    would miss that box entirely.
 
     Keyed on the LOADED CONFIG's own ``device``/``type``, not on the persisted
     coupling: this check's one job is "does the config on disk match what its own

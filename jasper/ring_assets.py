@@ -401,8 +401,10 @@ def ring_ioplug_wire_supported(
             needed=needed,
             detail=(
                 f"wire {wire.sample_format}/{wire.ring_a_channels}ch:"
-                f"{wire.ring_b_channels}ch declares no conf.d field beyond the "
-                "ioplug's own defaults, so any installed ioplug can open it"
+                f"{wire.ring_b_channels}ch forces no conf.d field beyond the "
+                "ioplug's own defaults, so this predicate has nothing to weigh "
+                "(it answers for the WIRE, not for the conf.d on disk, which "
+                "since the wide-wire flip spells `format` on every box — #2597)"
             ),
         )
     wanted = ", ".join(sorted(needed))

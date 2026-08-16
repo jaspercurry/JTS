@@ -56,10 +56,22 @@ pub const CHANNELS: u16 = 2;
 /// difference. This is PR #2330's round-3 lesson applied: check each axis at its
 /// own strength, and do not park a configuration that is merely suboptimal.
 ///
-/// The drift window is bounded rather than open-ended: `coupling_reconcile`
-/// restarts `jasper-voice` whenever a coupling flip changes the resolved
-/// assistant width, so the mismatch is a transient across that flip, not a
-/// state a box can sit in.
+/// The drift window is bounded, but by TWO mechanisms rather than the one this
+/// used to name. A COUPLING flip is covered by `coupling_reconcile`, which
+/// `try-restart`s `jasper-voice` when the flip changes the resolved assistant
+/// width. The other way the answer moves is the RESOLVER'S DEFAULT changing —
+/// the ring wire's narrow→wide flip did exactly that, with no coupling flip and
+/// no reconciler transition — and what bounds THAT is the deploy itself: a
+/// default only moves in an install, and an install parks `jasper-voice` and
+/// restarts it through `jasper-aec-reconcile`, replacing the process that
+/// cached the old answer.
+///
+/// What neither covers is an operator hand-editing
+/// `JASPER_FANIN_RING_WIRE_FORMAT` on a live box without running the documented
+/// arm ladder. That box can sit mismatched until its next restart — which is
+/// tolerable precisely because of the paragraph above: the payload names its own
+/// width, so the cost is one unnecessary conversion and one warn per daemon
+/// lifetime, not a level error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TtsWireWidth {
     /// `AUDIO` — interleaved stereo S16LE, the shipped fleet default.

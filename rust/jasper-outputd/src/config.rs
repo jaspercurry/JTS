@@ -168,7 +168,11 @@ pub struct Config {
     /// box, ahead of the per-hardware branches, resolved per coupling by
     /// `jasper.fanin_coupling.content_lane_format_for_coupling`: `S32_LE` on
     /// the `loopback` coupling (the passive lane's slaves are re-pinned to
-    /// match — see `deploy/alsa/asoundrc.jasper`), `S16_LE` on `shm_ring`.
+    /// match — see `deploy/alsa/asoundrc.jasper`), and now `S32_LE` on
+    /// `shm_ring` too by default — the ring wire's resolver defaults wide,
+    /// the same width `loopback` already carried. `S16_LE` on a ring box
+    /// means an explicit operator rollback pin
+    /// (`JASPER_FANIN_RING_WIRE_FORMAT=S16_LE`), not the ordinary case.
     /// Absence now means a box that has not yet reconciled (fresh install) or
     /// whose probe could not run — not "every box".
     ///
@@ -488,8 +492,11 @@ impl Config {
         // Unset or blank falls back to the historical S16_LE lane, but that is
         // no longer every live box: jasper-audio-hardware-reconcile emits this
         // name on every box now, resolved per coupling (S32_LE on loopback,
-        // S16_LE on shm_ring — see
-        // jasper.fanin_coupling.content_lane_format_for_coupling). The axis is
+        // and now S32_LE on shm_ring too by default — the ring wire's
+        // resolver defaults wide — see
+        // jasper.fanin_coupling.content_lane_format_for_coupling). S16_LE on
+        // a ring box means an explicit operator rollback pin
+        // (JASPER_FANIN_RING_WIRE_FORMAT=S16_LE), not the default. The axis is
         // no longer byte-identical on deploy; absence now means unreconciled
         // or probe-unavailable, not "nothing writes it".
         //

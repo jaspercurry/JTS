@@ -441,19 +441,44 @@ def test_arm_ring_a_capture_device_matches_fanin_coupling_ssot() -> None:
     the Rust writer and Python both read. A drift would arm a config CamillaDSP
     resolves against a conf.d entry that does not exist. The arm script must
     also forward its selected device under the variable the config builder
-    actually reads, so a lab override cannot split the ALSA and Camilla names."""
-    from jasper.fanin_coupling import RING_CAPTURE_DEVICE, RING_WIRE_FORMAT
+    actually reads, so a lab override cannot split the ALSA and Camilla names.
+
+    The capture FORMAT default is checked against the live RESOLUTION
+    (capture_kwargs_for_coupling), not a hardcoded literal. An earlier version
+    of this test only asserted the narrow RING_WIRE_FORMAT constant was
+    PRESENT somewhere in the script text — that stayed green even after the
+    ring wire's resolver default flipped wide (#2285), because the constant
+    was still named in a comment while the script's own DEFAULT silently drifted
+    out of step with the SSOT assertion the script runs against itself
+    (finding C-N1). A substring check cannot see a stale default; comparing
+    the extracted default to today's resolved kwarg can, and keeps tracking
+    the resolver if its default ever moves again.
+    """
+    from jasper.fanin_coupling import (
+        COUPLING_SHM_RING,
+        RING_CAPTURE_DEVICE,
+        capture_kwargs_for_coupling,
+    )
 
     arm_text = (RING_PROTO_DIR / "arm-ring-a.sh").read_text(encoding="utf-8")
     make_text = (RING_PROTO_DIR / "make-camilla-ring-config.sh").read_text(encoding="utf-8")
-    # The literal device + format names must appear in both scripts.
+    # The literal device name must appear in both scripts.
     assert RING_CAPTURE_DEVICE in arm_text, (
         f"arm-ring-a.sh must reference the SSOT capture device {RING_CAPTURE_DEVICE!r}"
     )
     assert RING_CAPTURE_DEVICE in make_text
-    assert RING_WIRE_FORMAT in make_text, (
-        f"make-camilla-ring-config.sh --ring-a must pin the SSOT wire format "
-        f"{RING_WIRE_FORMAT!r}"
+
+    # make-camilla-ring-config.sh --ring-a's RING_CAPTURE_FORMAT default must
+    # equal what an undeclared box's own SSOT resolves to today — the exact
+    # value the embedded Python's own "Ring A SSOT cross-check" (same script)
+    # refuses to proceed without.
+    want_format = capture_kwargs_for_coupling(COUPLING_SHM_RING)["capture_format"]
+    script_default = _extract_assignment_after_default(make_text, "RING_CAPTURE_FORMAT")
+    assert script_default == want_format, (
+        "make-camilla-ring-config.sh --ring-a's RING_CAPTURE_FORMAT default "
+        f"is {script_default!r} but capture_kwargs_for_coupling('shm_ring') "
+        f"resolves {want_format!r} for an undeclared box — the script's own "
+        "embedded SSOT cross-check would refuse to run at this default."
     )
     assert (
         'JASPER_RING_PROTO_ALSA_DEVICE="${CAPTURE_DEVICE}" '
