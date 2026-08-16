@@ -4,10 +4,13 @@
 > "[Appendix — the campaign record](#appendix--the-campaign-record-historical)"
 > is the **live spine**: what v2 is, how to run it, the shape it has today, the
 > contracts that must survive a refactor, and where to look when it breaks.
-> The appendix below it is the campaign narrative — dated bench results, the
-> bug-class catalog, the decision archaeology — and is **tagged historical**;
-> its specific facts (env defaults, thresholds, "what's working" lists, class
-> names that no longer exist) are deliberately not kept in sync with the code.
+> The appendix below it is the campaign narrative — dated bench results and
+> the decision archaeology — and is **tagged historical**; its specific facts
+> (env defaults, thresholds, "what's working" lists, class names that no
+> longer exist) are deliberately not kept in sync with the code. Two sections
+> inside it are exempt from that tag and say so at their own headings — the
+> failure taxonomy and the W6 bug-class catalog, which the spine's Debugging
+> section delegates its deeper catalogs to.
 > Read the spine for "what does this do"; read the appendix for "why is it
 > like this."
 
@@ -716,9 +719,9 @@ bug-class list — are in the appendix below.
 
 ## Appendix — the campaign record (historical)
 
-> **Status: historical.** Everything below this heading is the v2 campaign's
-> dated narrative — bench sessions, the bug-class catalog, hardware results,
-> and the decision archaeology behind the spine above. Snapshots from
+> **Status: historical.** Almost everything below this heading is the v2
+> campaign's dated narrative — bench sessions, hardware results, and the
+> decision archaeology behind the spine above. Snapshots from
 > 2026-07-17 through 2026-08-11. Read it for "why is it like this," never for
 > current state: specific facts here (thresholds, env defaults, file
 > responsibilities, "what's working" lists) drift, and names that no longer
@@ -726,6 +729,14 @@ bug-class list — are in the appendix below.
 > #2291 Phase 5c-iv — are kept where they are what the entry was about at the
 > time. Current operational truth is the spine above; the file map there is
 > the current shape.
+>
+> **Two sections are the exception, and this tag does not cover them:**
+> "[Failure taxonomy & debugging](#failure-taxonomy--debugging)" and
+> "[Gotchas — the W6 bug-class
+> catalog](#gotchas--the-w6-bug-class-catalog-do-not-reintroduce)". They are
+> where the spine's Debugging section delegates its deeper catalogs, and they
+> are maintained against the code. Each says so at its own heading, with the
+> caveats that apply to it.
 
 ### #2291 — the crossover-v2 contract migration (2026-08-10 → 2026-08-13)
 
@@ -2966,6 +2977,18 @@ be scored is disclosed with a reason code, never dropped: `fit_refused`
 
 ### Failure taxonomy & debugging
 
+> **Live reference — the historical tag above does not cover this section.**
+> The spine's "[Debugging — where to look
+> first](#debugging--where-to-look-first)" delegates its deeper catalogs here,
+> and they are maintained against the code rather than frozen with the
+> campaign. Read that spine section first; it flags what in here is still
+> dated. One clause of the tag above still applies here: campaign-era class
+> names are kept where they are what an entry was about — chiefly
+> `CrossoverV2Conductor`, dissolved in #2291 Phase 5c-iv, whose `_refuse`,
+> `_log_*_diag`, and `_safe_log_diag` are methods on `CrossoverV2Session`
+> today. The catalogs are maintained; the names around them are not renamed
+> under you.
+
 Terminal verdicts are **internal reason codes, not screens.**
 `REASON_REGISTRY` (in `crossover_v2/vocabulary.py`, re-exported by
 `crossover_v2_flow.py`) maps each code to one of
@@ -4412,6 +4435,11 @@ that same capture is 0.490 dB max (raw-to-raw is 0.606 dB).
 
 ### Gotchas — the W6 bug-class catalog (do not reintroduce)
 
+> **Live reference — the historical tag above does not cover this section.**
+> The spine's "[Debugging — where to look
+> first](#debugging--where-to-look-first)" delegates its bug-class list here,
+> and "do not reintroduce" is a current instruction, not a campaign result.
+
 Each was found on hardware and fixed at root cause (no wrapper layers,
 no retries-as-bodge). Treat these as regression fences.
 
@@ -5228,6 +5256,6 @@ the same reason as the two addenda above.
 Last verified: 2026-08-16 (#2602 — the live spine's adoption-axis count, row
 count, and file-map rows re-read against `decide_adoption`; plus #2611 — the
 delta-probe section's commanded-axis and chained-round paragraphs re-read
-against `crossover_v2.commanded` and `classify_delta_probe`. The historical
-appendix was NOT re-verified and still shows the pre-#2602 five-row table, as
-its own status callout says it will)
+against `crossover_v2.commanded` and `classify_delta_probe`. The appendix's
+dated narrative was NOT re-verified and still shows the pre-#2602 five-row
+table, as its own status callout says it will)
