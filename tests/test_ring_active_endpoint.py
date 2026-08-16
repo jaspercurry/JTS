@@ -572,12 +572,26 @@ def _endpoint_graph(device: str, channels: int = 2) -> GraphSafety:
     )
 
 
-@pytest.mark.parametrize(
-    "device", [OUTPUTD_ACTIVE_PLAYBACK_DEVICE, RING_ACTIVE_PLAYBACK_DEVICE]
-)
-def test_both_transports_of_the_active_lane_are_accepted_endpoints(device):
-    width, problem, accepted = _outputd_endpoint_width(_endpoint_graph(device), 8)
-    assert (width, problem, accepted) == (2, None, device)
+def test_the_active_ring_is_the_only_accepted_endpoint():
+    """#2285 P2: one member, and the RETIRED lane is refused by name.
+
+    This used to be parametrized over both transports of the active lane. The
+    snd-aloop lane's PCM definitions were deleted (#2534) and its MEMBERSHIP
+    with it, so the second case is now a REJECTION rather than a second accept —
+    and that rejection is why ``OUTPUTD_ACTIVE_PLAYBACK_DEVICE`` still has a
+    name at all. Every box commissioned before the retirement has a graph on
+    disk spelling it, so this is the shape the width probe actually meets.
+    """
+    width, problem, accepted = _outputd_endpoint_width(
+        _endpoint_graph(RING_ACTIVE_PLAYBACK_DEVICE), 8
+    )
+    assert (width, problem, accepted) == (2, None, RING_ACTIVE_PLAYBACK_DEVICE)
+
+    retired = _outputd_endpoint_width(
+        _endpoint_graph(OUTPUTD_ACTIVE_PLAYBACK_DEVICE), 8
+    )
+    assert retired == (None, "active_outputd_lane_missing", None)
+    assert OUTPUTD_ACTIVE_PLAYBACK_DEVICE not in OUTPUTD_LEGAL_ENDPOINT_DEVICES
 
 
 def test_the_stereo_ring_is_rejected_as_an_outputd_endpoint():
@@ -843,7 +857,13 @@ def test_a_ring_device_under_a_loopback_plan_is_reported_not_ignored():
     assert "is SILENT" not in note, note
     assert "jasper-audio-hardware-reconcile" in note, note
     assert "jasper-fanin-coupling-reconcile shm_ring" in note, note
-    assert "baseline-reemit --endpoint aloop" in note, note
+    # #2285 P2: the note used to offer a rollback exit as well
+    # (`baseline-reemit --endpoint aloop`). That endpoint is retired, so the
+    # note must say there is only one way out and must NOT name a command
+    # argparse now rejects — a remediation the operator cannot run is worse
+    # than none.
+    assert "no rollback direction" in note, note
+    assert "--endpoint aloop" not in note, note
 
 
 def test_the_active_ring_is_a_recognized_output_endpoint():
@@ -1308,18 +1328,25 @@ def test_the_coupling_warn_names_the_recovery_ladder_and_never_the_forbidden_rin
     assert "baseline-reemit" not in passive.detail
 
 
-def test_the_coupling_warn_on_an_armed_box_names_the_2332_canonical_rollback_route(
+def test_the_coupling_warn_on_an_armed_box_names_the_forward_ladder_not_a_rollback(
     monkeypatch,
 ):
-    """#2332 (owner-ruled 2026-08-12): an ARMED roleful box whose loaded graph
-    is the aloop rollback endpoint (``outputd_active_content_playback``) is
-    indistinguishable, from this check alone, between a finding-5 revert and the
-    CANONICAL rollback-ladder step-2 refusal — jasper-audio-hardware-reconcile
-    refuses the candidate with a ring-plan endpoint mismatch and exits 78
-    without touching the marker, so the box lands in exactly this warn while
-    mid-rollback. The warn must say that refusal is expected and point straight
-    at step 3, not just the finding-5-revert framing that fits the
-    CLEARED-marker case covered above.
+    """An ARMED roleful box on the RETIRED endpoint is sent forward, never back.
+
+    This is the state every box commissioned before #2534 is in once its marker
+    arms: the loaded graph still spells ``outputd_active_content_playback``. The
+    warn must name the one ladder that converges.
+
+    #2285 P2 renamed and re-pointed this. It used to pin the #2332 canonical
+    ROLLBACK route (owner-ruled 2026-08-12): the warn said the
+    jasper-audio-hardware-reconcile refusal was EXPECTED mid-rollback and to
+    skip to ``jasper-fanin-coupling-reconcile loopback (step 3)``. Both premises
+    died with the aloop endpoint — there is no aloop candidate to refuse, and
+    for a ROLEFUL box ``loopback`` is now the park (snd-aloop pair 5's PCMs are
+    deleted), so that text sent an armed speaker to a dead transport. It is not
+    deleted outright because the ARMED branch of this check has no other test:
+    what survives is that the branch still WARNs and still hands over a runnable
+    ladder.
     """
     from jasper.active_speaker.runtime_contract import OUTPUTD_ACTIVE_PLAYBACK_DEVICE
     from jasper.cli.doctor import audio_runtime
@@ -1352,24 +1379,25 @@ def test_the_coupling_warn_on_an_armed_box_names_the_2332_canonical_rollback_rou
     )
     result = audio_runtime.check_fanin_coupling()
     assert result.status == "warn", result.detail
-    assert "2332" in result.detail
-    assert "exited 78" in result.detail
-    assert "EXPECTED" in result.detail
-    assert "jasper-fanin-coupling-reconcile loopback (step 3)" in result.detail
-    # The step-3 advice and the recovery ladder must not run together as one
-    # em-dash-joined clause — a `;` separates "skip to step 3" from "here is
-    # the ladder", so a reader can tell the two apart at a glance.
-    assert "step 2; the ACTIVE-ring ladder" in result.detail
+    # The plain expectation, because an armed box IS expected to be on the ring.
+    assert f"(expected {RING_ACTIVE_PLAYBACK_DEVICE})" in result.detail
+    # The FORWARD ladder, and nothing that argparse or the PCM layer has retired.
+    assert "baseline-reemit --endpoint ring" in result.detail
+    assert "--endpoint aloop" not in result.detail
+    assert "loopback (step 3)" not in result.detail
+    assert "2332" not in result.detail
 
-    # The CLEARED-marker case (the sibling test above) must NOT claim the #2332
-    # canonical-route framing — that reading only holds while the marker is
-    # still armed (preserved by the refused reconcile), not once it clears.
+    # The CLEARED-marker case (the sibling test above) still reads differently:
+    # with no marker, no ring is expected at all, so the honest phrasing
+    # replaces the plain expectation. Asserted here so the two branches cannot
+    # quietly collapse into one message.
     monkeypatch.setattr(
         "jasper.fanin_coupling.ring_active_endpoint_armed", lambda env=None: False
     )
     cleared = audio_runtime.check_fanin_coupling()
     assert cleared.status == "warn", cleared.detail
-    assert "2332" not in cleared.detail
+    assert "no ring is expected here at all" in cleared.detail
+    assert f"(expected {RING_ACTIVE_PLAYBACK_DEVICE})" not in cleared.detail
 
 
 def _emitter_required_kwargs(emit):
@@ -1585,29 +1613,40 @@ def test_the_flat_lane_is_refused_on_a_roleful_box_so_its_ring_kwargs_cannot_sto
     assert flat_program_graph_blocked_reason(_full_range_stereo()) is None
 
 
-def test_resolve_output_layout_keeps_the_alsa_lane_until_the_marker_is_set(
+def test_resolve_output_layout_answers_the_ring_without_reading_the_marker(
     monkeypatch,
 ):
-    """The single chooser, and its default is exactly today's answer."""
+    """The single chooser, and it no longer branches on the endpoint marker.
+
+    #2285 P2 renamed this from ``..._keeps_the_alsa_lane_until_the_marker_is_set``
+    — a title the change falsifies outright, since nothing keeps the ALSA lane
+    any more. What it pinned was the branch that made this chooser a FIXED
+    POINT: the marker derives from the loaded graph and the graph's device
+    derived from the marker, so no automated pass could move a box between
+    transports. Deleting that branch is what makes the roleful path convergent,
+    and the successor property is that the marker is not consulted AT ALL —
+    driven from both stub values, because a chooser still reading it would
+    answer the retired lane in the first half.
+    """
     from jasper.output_topology import resolve_output_layout
 
     topo = _active_topology("mono", "active_2_way")
 
-    monkeypatch.setattr(
-        "jasper.fanin_coupling.ring_active_endpoint_armed", lambda env=None: False
-    )
-    layout = resolve_output_layout(topo, env={})
-    assert layout.playback_device == OUTPUTD_ACTIVE_PLAYBACK_DEVICE
+    layouts = []
+    for marker_armed in (False, True):
+        monkeypatch.setattr(
+            "jasper.fanin_coupling.ring_active_endpoint_armed",
+            lambda env=None, armed=marker_armed: armed,
+        )
+        layout = resolve_output_layout(topo, env={})
+        assert layout.playback_device == RING_ACTIVE_PLAYBACK_DEVICE, marker_armed
+        layouts.append(layout)
 
-    monkeypatch.setattr(
-        "jasper.fanin_coupling.ring_active_endpoint_armed", lambda env=None: True
-    )
-    armed = resolve_output_layout(topo, env={})
-    assert armed.playback_device == RING_ACTIVE_PLAYBACK_DEVICE
     # The SOURCE token is unchanged, which is why nothing keyed on it (the
     # baseline handoff-issue path) needed an edit.
-    assert armed.playback_device_source == layout.playback_device_source
-    assert armed.transport_channel_count == layout.transport_channel_count
+    unarmed, armed = layouts
+    assert armed.playback_device_source == unarmed.playback_device_source
+    assert armed.transport_channel_count == unarmed.transport_channel_count
 
 
 # --------------------------------------------------------------------------
@@ -1623,9 +1662,11 @@ def test_resolve_output_layout_keeps_the_alsa_lane_until_the_marker_is_set(
 #   ARM:      baseline-reemit --endpoint ring
 #          -> jasper-audio-hardware-reconcile   (marker derives 1)
 #          -> jasper-fanin-coupling-reconcile shm_ring
-#   ROLLBACK: baseline-reemit --endpoint aloop
-#          -> jasper-audio-hardware-reconcile   (marker derives 0)
-#          -> jasper-fanin-coupling-reconcile loopback
+#
+# #2285 P2 deleted the ROLLBACK ordering that used to sit here. Its first rung
+# was `baseline-reemit --endpoint aloop`, which argparse now rejects, onto a
+# transport whose PCMs are deleted (#2534). Recovery is forward only, by
+# re-arming; a roleful box on `loopback` is parked, not rolled back.
 # --------------------------------------------------------------------------
 
 
@@ -1929,9 +1970,16 @@ def test_the_crossover_v2_program_graph_follows_the_arm_in_both_directions(
     and every existing gate satisfied — the capture-channel check compares 2 == 2
     and the arm's width gate only holds ring-NAMED lanes to the wire.
 
-    BOTH arm states, because either half alone is a weaker claim than it reads
-    as: ring-only would pass for a site that hard-codes the ring lane, and
-    aloop-only would pass for the defect itself.
+    BOTH branches of ``active_emit_devices``, because either half alone is a
+    weaker claim than it reads as: ring-only would pass for a site that
+    hard-codes the ring lane, and non-ring-only would pass for the defect
+    itself.
+
+    #2285 P2: the second half used to be reached by an UNARMED box, which is
+    what its "inertness" framing meant. Nothing resolves the snd-aloop lane on
+    its own any more — the ring is the one legal endpoint — so it is now reached
+    only by an explicit lab/CI override, and what it still proves is that a
+    NON-RING sink gets the emitter's own defaults untouched.
     """
     from tests.active_speaker_fixtures import mono_output_topology
 
@@ -1956,10 +2004,10 @@ def test_the_crossover_v2_program_graph_follows_the_arm_in_both_directions(
     assert "  queuelimit: 1" in ring_graph
     assert "  enable_rate_adjust: false" in ring_graph
 
-    # --- UNARMED: the SAME site at the ALSA active lane. -------------------
-    # The inertness half. Not merely "capture is the tap": byte-identical to the
-    # emit this site made before it derived anything, so no box that is not armed
-    # can notice the fix at all.
+    # --- NON-RING: the SAME site at an explicitly-named ALSA lane. ---------
+    # Not merely "capture is the tap": byte-identical to the emit this site made
+    # before it derived anything, so a caller naming a non-ring sink cannot
+    # notice the derivation at all.
     aloop_graph = _crossover_v2_program_graph(
         topology,
         tmp_path / "aloop",
@@ -2171,10 +2219,16 @@ def _ring_path_written(actions):
 def test_the_arm_sequence_completes_from_an_unarmed_roleful_box(monkeypatch):
     """ARM, walked from the state a real box is in: marker ABSENT.
 
-    The fixed point the panel proved: with no marker, the single chooser answers
-    the ALSA lane, a re-emit reproduces the ALSA lane, and the marker derives
-    absent again — three iterations, no movement. ``--endpoint ring`` is the
-    operator act that moves the GRAPH first, and the rest of the ladder follows.
+    #2285 P2 inverted this test's opening. It used to EXECUTE the fixed point
+    the panel proved — with no marker the chooser answered the ALSA lane, a
+    re-emit reproduced it, and the marker derived absent again, three iterations
+    with no movement, so nothing but an explicit ``--endpoint`` could arm a box.
+    Deleting the chooser's marker branch dissolved that loop, so the same three
+    iterations are kept and run to the OPPOSITE conclusion: they CONVERGE. The
+    loop is the evidence either way; only its verdict moved.
+
+    ``--endpoint ring`` then remains the explicit rung, and the rest of the
+    ladder follows it.
     """
     from jasper.cli.active_speaker import _baseline_reemit_endpoint
     from jasper.fanin.coupling_reconcile import COUPLING_SHM_RING, _outputd_actions
@@ -2183,18 +2237,21 @@ def test_the_arm_sequence_completes_from_an_unarmed_roleful_box(monkeypatch):
     topology = _active_topology("mono", "active_2_way")
     preset = _mono_two_way_preset()
 
-    # --- The fixed point, executed rather than asserted. ------------------
+    # --- The convergence, executed rather than asserted. ------------------
+    # The marker is stubbed CLEAR throughout: an auto-resolving re-emit still
+    # reaches the ring and still derives the marker SET, which is only true
+    # because the chooser stopped reading it.
     monkeypatch.setattr(
         "jasper.fanin_coupling.ring_active_endpoint_armed", lambda env=None: False
     )
     device = resolve_output_layout(topology, env={}).playback_device
     for _ in range(3):
-        graph = _emit_active_baseline(preset, device)
-        assert _derived_marker(graph, topology) == OUTPUTD_ACTIVE_PLAYBACK_DEVICE
+        graph = _emit_active_baseline(preset, device, topology=topology)
+        assert _derived_marker(graph, topology) == RING_ACTIVE_PLAYBACK_DEVICE
         device = resolve_output_layout(topology, env={}).playback_device
-        assert device == OUTPUTD_ACTIVE_PLAYBACK_DEVICE, (
-            "an auto-resolving re-emit reproduced the ALSA lane, as designed — "
-            "so nothing in this loop can ever arm the box"
+        assert device == RING_ACTIVE_PLAYBACK_DEVICE, (
+            "an auto-resolving re-emit must reach the ring with no marker set — "
+            "otherwise the roleful path is manual again"
         )
 
     # --- Step 1: baseline-reemit --endpoint ring. -------------------------
@@ -2236,57 +2293,23 @@ def test_the_arm_sequence_completes_from_an_unarmed_roleful_box(monkeypatch):
     assert _ring_path_written(actions) == DEFAULT_OUTPUTD_ACTIVE_RING_PATH
 
 
-def test_the_release_sequence_completes_from_an_armed_roleful_box(monkeypatch):
-    """ROLLBACK, walked from marker=1 — the direction the same cycle also blocked.
+def test_a_loopback_coupling_unsets_the_ring_path_entirely():
+    """The disarm/park direction of the coupling reconciler still converges.
 
-    E1's ordering was coupling -> re-emit(aloop) -> hardware reconciler; B1
-    amended it to put the re-emit FIRST, for the same reason the arm needs it:
-    the marker has to have a graph to re-derive FROM. Either way the release
-    only completes because the endpoint is named explicitly.
+    #2285 P2 cut this down from ``test_the_release_sequence_completes_from_an_
+    armed_roleful_box``, which walked the RELEASE ladder end to end. Its first
+    two rungs are gone with the aloop endpoint: ``_baseline_reemit_endpoint(...,
+    "aloop")`` now raises, the "byte-identical to the pre-arm graph" restore has
+    no destination, and a marker deriving CLEAR from an aloop graph describes a
+    graph no writer produces. Only rung 3 survives on its own terms — a
+    ``loopback`` coupling must leave NO ring path behind, whether it was reached
+    by a park or by a passive box's ordinary state — and nothing else in the
+    suite drives ``_outputd_actions`` in that direction, so it is kept rather
+    than deleted with the ladder around it.
     """
-    from jasper.cli.active_speaker import _baseline_reemit_endpoint
     from jasper.fanin.coupling_reconcile import COUPLING_LOOPBACK, _outputd_actions
     from jasper.fanin_coupling import OUTPUTD_RING_PATH_ENV_VAR
-    from jasper.output_topology import resolve_output_layout
 
-    topology = _active_topology("mono", "active_2_way")
-    preset = _mono_two_way_preset()
-
-    # Armed: the chooser answers the ring, so an auto re-emit re-derives the
-    # marker SET. The same cycle, inverted.
-    monkeypatch.setattr(
-        "jasper.fanin_coupling.ring_active_endpoint_armed", lambda env=None: True
-    )
-    assert (
-        resolve_output_layout(topology, env={}).playback_device
-        == RING_ACTIVE_PLAYBACK_DEVICE
-    )
-    auto_graph = _emit_active_baseline(preset, RING_ACTIVE_PLAYBACK_DEVICE)
-    assert _derived_marker(auto_graph, topology) == RING_ACTIVE_PLAYBACK_DEVICE
-
-    # --- Step 1: baseline-reemit --endpoint aloop. ------------------------
-    released_device, source = _baseline_reemit_endpoint(topology, "aloop")
-    assert released_device == OUTPUTD_ACTIVE_PLAYBACK_DEVICE
-    assert source == "explicit_endpoint_aloop"
-    aloop_graph = _emit_active_baseline(preset, released_device)
-    # Byte-identical to the pre-arm graph: the rollback RESTORES the artifact,
-    # it does not synthesize a third shape.
-    assert aloop_graph == _emit_active_baseline(preset, OUTPUTD_ACTIVE_PLAYBACK_DEVICE)
-    # BOTH halves came back. A rollback that restored only the sink would leave
-    # CamillaDSP sourcing Ring A while fan-in feeds the snd-aloop tap again —
-    # the mirror of the arm-side trap, and just as silent.
-    aloop_devices = parse_camilla_devices_config(aloop_graph)
-    assert aloop_devices["capture_device"] == DEFAULT_CAPTURE_DEVICE
-    assert aloop_devices["capture_format"] == DEFAULT_CAPTURE_FORMAT
-    assert aloop_devices["playback_device"] == OUTPUTD_ACTIVE_PLAYBACK_DEVICE
-
-    # --- Step 2: the reconciler re-derives the marker CLEARED. ------------
-    assert _derived_marker(aloop_graph, topology) == OUTPUTD_ACTIVE_PLAYBACK_DEVICE
-
-    # --- Step 3: the coupling reconciler unsets the ring keys entirely. ----
-    # Same reason as the arm walk: past this point the marker is the real
-    # cleared value on disk, not the armed stub this test was holding.
-    monkeypatch.undo()
     actions = _outputd_actions(COUPLING_LOOPBACK, _outputd_env(marker=""))
     assert _ring_path_written(actions) is None
     assert any(
@@ -2323,8 +2346,16 @@ def test_the_capture_half_is_coherence_checked_in_both_directions():
     it: the plan compares capture CHANNELS and Ring A is stereo exactly like the
     snd-aloop tap, and the arm's width gate only holds ring-NAMED lanes to the
     wire, so a tap capture is not-inspected rather than refused. Only the DEVICE
-    comparison catches it, and it has to run in both directions because the arm
-    and the rollback each move the halves.
+    comparison catches it, and it has to run in both directions because a graph
+    can be left half-moved from either side.
+
+    #2285 P2 re-pointed the second direction and CONTROL 2. Both were phrased
+    around a ROLLBACK onto the snd-aloop ACTIVE lane; that lane's PCMs (#2534)
+    and its outputd capture pairing (P2/A6) are both deleted, so a loopback-plan
+    graph naming it is now unpaired by construction — no longer the "clean"
+    state a control can be built on. What the direction still catches is the
+    HALF-moved graph itself, which is why it is asserted by membership rather
+    than by an empty tuple.
     """
     armed_env = {
         "JASPER_OUTPUTD_CONTENT_BRIDGE": "shm_ring",
@@ -2346,17 +2377,16 @@ def test_the_capture_half_is_coherence_checked_in_both_directions():
         for err in armed
     ), armed
 
-    # ROLLBACK direction — non-ring plan, graph still on Ring A while the sink
-    # has already gone back. No ladder rung creates this; a half-applied
-    # rollback or a hand-edit does.
-    half_rolled_back = _coherence_errors(
+    # THE OTHER DIRECTION — non-ring plan, graph still on Ring A while the sink
+    # names the retired snd-aloop lane. No ladder rung creates this; an
+    # interrupted re-emit or a hand-edit does, and it is the shape a box
+    # commissioned before the retirement lands in if only its capture moves.
+    half_moved = _coherence_errors(
         coupling="loopback",
         capture=RING_CAPTURE_DEVICE,
         playback=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
     )
-    assert any("HALF-moved graph" in err for err in half_rolled_back), (
-        half_rolled_back
-    )
+    assert any("HALF-moved graph" in err for err in half_moved), half_moved
 
     # CONTROL 1 — the mid-arm WAYPOINT is not an error. Both halves have moved
     # while the coupling is still loopback; that is the state step 1 exists to
@@ -2368,11 +2398,22 @@ def test_the_capture_half_is_coherence_checked_in_both_directions():
         playback=RING_ACTIVE_PLAYBACK_DEVICE,
     ) == ()
 
-    # CONTROL 2 — a fully rolled-back box is clean, and a fully armed one is too.
+    # CONTROL 2 — an ordinary PASSIVE box on the paired snd-aloop lane is clean,
+    # and a fully armed one is too. The passive pair replaces the "fully
+    # rolled-back box" this control used to use: that box's sink was the ACTIVE
+    # snd-aloop lane, whose outputd capture pairing P2/A6 deleted, so it is now
+    # an error and can no longer say "the check is not blanket". The default
+    # pair is the one loopback shape that still HAS both halves registered.
+    from jasper.camilla_config_contract import (
+        DEFAULT_OUTPUTD_CAPTURE_DEVICE,
+        DEFAULT_PLAYBACK_DEVICE,
+    )
+
     assert _coherence_errors(
         coupling="loopback",
         capture=DEFAULT_CAPTURE_DEVICE,
-        playback=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+        playback=DEFAULT_PLAYBACK_DEVICE,
+        outputd_env={"JASPER_OUTPUTD_CONTENT_PCM": DEFAULT_OUTPUTD_CAPTURE_DEVICE},
     ) == ()
     assert _coherence_errors(
         coupling="shm_ring",
@@ -2555,10 +2596,13 @@ def test_the_arm_ladder_clears_the_validator_the_reconciler_actually_runs(
     )
     assert rc == 0, out
     assert out.startswith("ok note="), out
-    # The note names the state and BOTH exits — a box can be left here.
+    # The note names the state and the ONE exit — a box can be left here.
+    # (#2285 P2: it used to name a rollback exit too. That endpoint is retired,
+    # so the note says so instead of printing a command argparse rejects.)
     assert "goes silent at the next CamillaDSP load" in out, out
     assert "jasper-fanin-coupling-reconcile shm_ring" in out, out
-    assert "baseline-reemit --endpoint aloop" in out, out
+    assert "no rollback direction" in out, out
+    assert "--endpoint aloop" not in out, out
 
     # --- Step 3, preflight: the width gate reads the graph step 1 wrote. ---
     # The gate resolves the wire from the box's SAVED topology, so this walk
@@ -2695,31 +2739,96 @@ def _reemit_harness(monkeypatch, tmp_path, *, classification=None, yaml_text="gr
     )
 
 
-@pytest.mark.parametrize(
-    "endpoint,expected",
-    [("ring", RING_ACTIVE_PLAYBACK_DEVICE), ("aloop", OUTPUTD_ACTIVE_PLAYBACK_DEVICE)],
-)
+def test_the_retired_aloop_endpoint_is_refused_by_the_parser_itself(capsys):
+    """#2285 P2's ONE negative guard for the retired ``--endpoint aloop``.
+
+    Nine ``baseline-reemit`` tests used to carry a matched ``["ring", "aloop"]``
+    parametrize, so the rollback direction was re-proved nine times. It is now
+    refused once, and refused EARLY — ``choices=("ring",)`` means argparse
+    rejects it before any of that machinery runs, which is why exit 2 (argparse
+    usage error) rather than the command's own 1 is the assertion that matters:
+    a 1 would mean the command accepted the flag and then failed somewhere.
+
+    The parser is driven through ``main`` rather than ``build_parser`` because
+    ``main`` is what an operator and every remediation string invoke.
+    """
+    from jasper.cli.active_speaker import main
+
+    with pytest.raises(SystemExit) as excinfo:
+        main(["baseline-reemit", "--endpoint", "aloop"])
+    assert excinfo.value.code == 2
+    err = capsys.readouterr().err
+    assert "invalid choice: 'aloop'" in err, err
+
+    # NON-VACUITY: the surviving choice really does get past the parser. Without
+    # this, a parser that rejected EVERY endpoint would satisfy the assertion
+    # above. `--statefile` points nowhere on purpose; reaching a non-2 exit is
+    # the whole claim.
+    assert main([
+        "baseline-reemit", "--endpoint", "ring", "--statefile", "/nonexistent/x.yml"
+    ]) != 2
+
+
+def test_an_unrecognised_explicit_endpoint_raises_rather_than_auto_resolving():
+    """DEFENCE IN DEPTH behind the parser: the resolver refuses what it cannot name.
+
+    ``_baseline_reemit_endpoint`` returns ``(device, provenance)``, and an
+    endpoint string it does not recognise must NOT fall through to the
+    auto-resolver. Falling through would answer the ring anyway and report the
+    provenance as AUTO — so a caller asking for a retired endpoint would be told
+    it got what it asked for, on a transport it did not choose. The wrong answer
+    is silent by construction, which is why a raise rather than a log.
+
+    ``choices=("ring",)`` is the only entry point today, so this guards the
+    NEXT one: a wizard, a script, or a follow-up command calling the resolver
+    directly has no parser in front of it.
+    """
+    from jasper.cli.active_speaker import _baseline_reemit_endpoint
+
+    topology = _active_topology("mono", "active_2_way")
+
+    with pytest.raises(ValueError) as excinfo:
+        _baseline_reemit_endpoint(topology, "bogus")
+    # It names what it was given and what it will accept, so the caller can fix
+    # the call from the message alone.
+    assert "bogus" in str(excinfo.value)
+    assert RING_ACTIVE_PLAYBACK_DEVICE in str(excinfo.value)
+
+    # The retired endpoint reaches the same refusal, not a quiet auto answer.
+    with pytest.raises(ValueError):
+        _baseline_reemit_endpoint(topology, "aloop")
+
+    # CONTROLS. `ring` is explicit and says so; omitting it is the auto answer
+    # and says THAT — the provenance split is the thing a fall-through erases.
+    assert _baseline_reemit_endpoint(topology, "ring") == (
+        RING_ACTIVE_PLAYBACK_DEVICE,
+        "explicit_endpoint_ring",
+    )
+    device, source = _baseline_reemit_endpoint(topology, None)
+    assert device == RING_ACTIVE_PLAYBACK_DEVICE
+    assert source != "explicit_endpoint_ring"
+
+
 def test_baseline_reemit_writes_the_live_artifact_and_repoints_the_statefile(
-    monkeypatch, tmp_path, endpoint, expected
+    monkeypatch, tmp_path
 ):
     """The command that four surfaces said completed the arm now actually does.
 
     It wrote NOTHING by default before this round — no --out meant "emit and
     report" — so every claim that re-emitting closes the stale-artifact gap was
-    false. Both device modes are checked: the arm and the rollback are the same
-    code path with a different endpoint, and a mode that silently fell back to
-    the auto answer would reintroduce the fixed point.
+    false. The resolved device is asserted, not just the write: a mode that
+    silently fell back to the auto answer would reintroduce the fixed point.
     """
     from jasper.cli.active_speaker import main
 
     h = _reemit_harness(monkeypatch, tmp_path)
     code = main([
         "baseline-reemit",
-        "--endpoint", endpoint,
+        "--endpoint", "ring",
         "--statefile", str(h.statefile),
     ])
     assert code == 0
-    assert h.seen["playback_device"] == expected
+    assert h.seen["playback_device"] == RING_ACTIVE_PLAYBACK_DEVICE
     # The bytes landed on the artifact the statefile and the classifier read...
     assert h.artifact.read_text(encoding="utf-8") == "graph: 1\n"
     # ...and the boot pointer now names it.
@@ -3037,40 +3146,35 @@ def _anchor_reemit_harness(
     )
 
 
-@pytest.mark.parametrize(
-    "endpoint,expected_playback,expected_capture",
-    [
-        ("ring", RING_ACTIVE_PLAYBACK_DEVICE, RING_CAPTURE_DEVICE),
-        ("aloop", OUTPUTD_ACTIVE_PLAYBACK_DEVICE, "plug:jasper_capture"),
-    ],
-)
-def test_baseline_reemit_restages_the_startup_anchor_at_both_endpoints(
-    monkeypatch, tmp_path, endpoint, expected_playback, expected_capture
+def test_baseline_reemit_restages_the_startup_anchor_at_the_ring(
+    monkeypatch, tmp_path
 ):
-    """A mid-commission box gets step 1, in BOTH directions.
-
-    The arm (`ring`) is the point of the change; the rollback (`aloop`) is the
-    safety net, so it is proven to the same depth rather than assumed to be the
-    same code path with a different string.
+    """A mid-commission box gets step 1.
 
     BOTH device halves are asserted, because the whole failure mode this ladder
     step exists to prevent is a graph that moves its sink and leaves its source
     behind — a ring sink over the snd-aloop tap is silence with every daemon
     reporting healthy.
+
+    #2285 P2 dropped the ``aloop`` half of this parametrize (and the
+    ``..._at_both_endpoints`` name it justified). It re-proved the rollback
+    direction to the same depth as the arm; that direction is retired, and the
+    parser now refuses it once, in
+    ``test_the_retired_aloop_endpoint_is_refused_by_the_parser_itself``.
     """
     from jasper.cli.active_speaker import main
 
     h = _anchor_reemit_harness(monkeypatch, tmp_path)
     code = main([
         "baseline-reemit",
-        "--endpoint", endpoint,
+        "--endpoint", "ring",
         "--statefile", str(h.statefile),
     ])
     assert code == 0
 
     published = h.live_config.read_text(encoding="utf-8")
-    assert f'device: "{expected_playback}"' in published, published
-    assert f'device: "{expected_capture}"' in published, published
+    assert f'device: "{RING_ACTIVE_PLAYBACK_DEVICE}"' in published, published
+    assert f'device: "{RING_CAPTURE_DEVICE}"' in published, published
 
     # The metadata is what the runtime contract FOLLOWS to find this candidate,
     # so a published graph its metadata does not name is an anchor pointing at
@@ -3085,9 +3189,8 @@ def test_baseline_reemit_restages_the_startup_anchor_at_both_endpoints(
     assert f"config_path: {h.live_config}" in h.statefile.read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("endpoint", ["ring", "aloop"])
 def test_baseline_reemit_prefers_the_applied_baseline_over_the_anchor(
-    monkeypatch, tmp_path, endpoint
+    monkeypatch, tmp_path
 ):
     """Precedence: a commissioned box behaves EXACTLY as it did before.
 
@@ -3104,7 +3207,7 @@ def test_baseline_reemit_prefers_the_applied_baseline_over_the_anchor(
 
     code = main([
         "baseline-reemit",
-        "--endpoint", endpoint,
+        "--endpoint", "ring",
         "--statefile", str(baseline.statefile),
     ])
     assert code == 0
@@ -3115,9 +3218,8 @@ def test_baseline_reemit_prefers_the_applied_baseline_over_the_anchor(
     assert anchor.live_meta.read_text(encoding="utf-8") == '{"status": "stale"}'
 
 
-@pytest.mark.parametrize("endpoint", ["ring", "aloop"])
 def test_baseline_reemit_refuses_a_box_on_neither_accepted_graph(
-    monkeypatch, tmp_path, endpoint
+    monkeypatch, tmp_path
 ):
     """Neither class -> refuse by NAME, write nothing, and say what to do.
 
@@ -3133,7 +3235,7 @@ def test_baseline_reemit_refuses_a_box_on_neither_accepted_graph(
     with contextlib.redirect_stdout(out):
         code = main([
             "baseline-reemit",
-            "--endpoint", endpoint,
+            "--endpoint", "ring",
             "--statefile", str(h.statefile),
         ])
     text = out.getvalue()
@@ -3148,9 +3250,8 @@ def test_baseline_reemit_refuses_a_box_on_neither_accepted_graph(
     assert "config_path: /somewhere/else.yml" in h.statefile.read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("endpoint", ["ring", "aloop"])
 def test_baseline_reemit_out_is_preview_only_for_the_anchor(
-    monkeypatch, tmp_path, endpoint
+    monkeypatch, tmp_path
 ):
     """--out keeps its inspection semantics on the anchor path too.
 
@@ -3164,17 +3265,12 @@ def test_baseline_reemit_out_is_preview_only_for_the_anchor(
     preview = tmp_path / "preview.yml"
     code = main([
         "baseline-reemit",
-        "--endpoint", endpoint,
+        "--endpoint", "ring",
         "--out", str(preview),
         "--statefile", str(h.statefile),
     ])
     assert code == 0
-    expected_device = (
-        RING_ACTIVE_PLAYBACK_DEVICE
-        if endpoint == "ring"
-        else OUTPUTD_ACTIVE_PLAYBACK_DEVICE
-    )
-    assert f'device: "{expected_device}"' in preview.read_text("utf-8")
+    assert f'device: "{RING_ACTIVE_PLAYBACK_DEVICE}"' in preview.read_text("utf-8")
     assert h.live_config.read_text(encoding="utf-8") == "stale: true\n"
     assert h.live_meta.read_text(encoding="utf-8") == '{"status": "stale"}'
     assert "config_path: /somewhere/else.yml" in h.statefile.read_text(encoding="utf-8")
@@ -3203,9 +3299,8 @@ def test_baseline_reemit_help_names_both_accepted_graph_classes():
     assert GRAPH_ALL_MUTED_ACTIVE_STARTUP in help_text, help_text
 
 
-@pytest.mark.parametrize("endpoint", ["ring", "aloop"])
 def test_baseline_reemit_anchor_refusal_writes_nothing_at_all(
-    monkeypatch, tmp_path, endpoint
+    monkeypatch, tmp_path
 ):
     """A re-staged anchor that fails the re-proof must not reach disk.
 
@@ -3225,7 +3320,7 @@ def test_baseline_reemit_anchor_refusal_writes_nothing_at_all(
     h = _anchor_reemit_harness(monkeypatch, tmp_path, reproof="unsafe")
     code = main([
         "baseline-reemit",
-        "--endpoint", endpoint,
+        "--endpoint", "ring",
         "--statefile", str(h.statefile),
     ])
     assert code == 1
@@ -3241,9 +3336,8 @@ def test_baseline_reemit_anchor_refusal_writes_nothing_at_all(
         ("preserve_driver_domain", "driver_domain_baseline"),
     ],
 )
-@pytest.mark.parametrize("endpoint", ["ring", "aloop"])
 def test_baseline_reemit_refuses_a_preserved_non_anchor_graph(
-    monkeypatch, tmp_path, endpoint, decision_status, expected_class
+    monkeypatch, tmp_path, decision_status, expected_class
 ):
     """The CLASSIFICATION discriminator, not the status — pinned (review C-SF1).
 
@@ -3263,7 +3357,8 @@ def test_baseline_reemit_refuses_a_preserved_non_anchor_graph(
     COMMISSIONED speaker and repoint its boot statefile at it: silence at the
     next CamillaDSP restart.
 
-    Both endpoints, because the rollback direction reaches the same guard.
+    #2285 P2 dropped the second endpoint. The guard sits before any endpoint is
+    used, so the rollback direction only ever re-entered it by the same door.
     """
     from jasper.cli.active_speaker import main
 
@@ -3274,7 +3369,7 @@ def test_baseline_reemit_refuses_a_preserved_non_anchor_graph(
     with contextlib.redirect_stdout(out):
         code = main([
             "baseline-reemit",
-            "--endpoint", endpoint,
+            "--endpoint", "ring",
             "--statefile", str(h.statefile),
         ])
     text = out.getvalue()
@@ -3288,9 +3383,8 @@ def test_baseline_reemit_refuses_a_preserved_non_anchor_graph(
     assert "config_path: /somewhere/else.yml" in h.statefile.read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("endpoint", ["ring", "aloop"])
 def test_baseline_reemit_refuses_while_a_commission_load_is_active(
-    monkeypatch, tmp_path, endpoint
+    monkeypatch, tmp_path
 ):
     """Single-flight against a live commission load (review H-N1).
 
@@ -3311,7 +3405,7 @@ def test_baseline_reemit_refuses_while_a_commission_load_is_active(
     with contextlib.redirect_stdout(out):
         code = main([
             "baseline-reemit",
-            "--endpoint", endpoint,
+            "--endpoint", "ring",
             "--statefile", str(h.statefile),
         ])
     text = out.getvalue()
@@ -3323,9 +3417,8 @@ def test_baseline_reemit_refuses_while_a_commission_load_is_active(
     assert "config_path: /somewhere/else.yml" in h.statefile.read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("endpoint", ["ring", "aloop"])
 def test_baseline_reemit_force_overrides_the_commission_load_refusal(
-    monkeypatch, tmp_path, endpoint
+    monkeypatch, tmp_path
 ):
     """`--force` is the documented escape hatch, and it actually passes.
 
@@ -3338,7 +3431,7 @@ def test_baseline_reemit_force_overrides_the_commission_load_refusal(
     h = _anchor_reemit_harness(monkeypatch, tmp_path, commission_loaded=True)
     code = main([
         "baseline-reemit",
-        "--endpoint", endpoint,
+        "--endpoint", "ring",
         "--force",
         "--statefile", str(h.statefile),
     ])

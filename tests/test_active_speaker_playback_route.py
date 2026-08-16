@@ -19,7 +19,7 @@ from jasper.audio_hardware.dac import (
     HIFIBERRY_DAC8X,
     INNOMAKER_HIFI_AMP_PRO,
 )
-from jasper.camilla_config_contract import ACTIVE_OUTPUTD_PLAYBACK_DEVICE
+from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 from jasper.output_topology import (
     EXPLICIT_SOURCE,
     OUTPUT_TOPOLOGY_KIND,
@@ -138,13 +138,18 @@ def test_apple_dongle_capability_reads_width_two_outputd_active_lane() -> None:
     assert cap.issues == ()
 
 
-def test_innomaker_capability_reads_width_two_outputd_active_lane() -> None:
+def test_innomaker_capability_reads_the_width_two_active_ring() -> None:
     """The InnoMaker resolves the SAME width-2 active lane as the Apple dongle.
 
     Mirrors ``test_apple_dongle_capability_reads_width_two_outputd_active_lane``
     deliberately: the InnoMaker flip lands on that precedent's exact shape — one
     coherent single ALSA device carrying a mono active 2-way — so the route half
     must come out identical apart from the card identity.
+
+    #2285 P2 renamed this off ``..._outputd_active_lane``: the lane is now
+    carried by the ACTIVE RING, the one legal outputd ACTIVE endpoint. The
+    SOURCE token is unchanged, because it names the lane ROLE rather than the
+    transport.
     """
     topo = _topology(
         INNOMAKER_HIFI_AMP_PRO.id,
@@ -155,7 +160,7 @@ def test_innomaker_capability_reads_width_two_outputd_active_lane() -> None:
     )
     cap = active_playback_route_capability(topo)
 
-    assert cap.playback_device == ACTIVE_OUTPUTD_PLAYBACK_DEVICE
+    assert cap.playback_device == RING_ACTIVE_PLAYBACK_DEVICE
     assert cap.playback_device_source == OUTPUTD_ACTIVE_LANE_SOURCE
     assert cap.transport_channel_count == 2
     assert cap.required_active_output_count == 2

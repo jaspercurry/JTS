@@ -529,7 +529,7 @@ filters:
 def test_stale_ring_devices_under_loopback_send_a_roleful_box_up_the_ladder(
     monkeypatch, tmp_path
 ):
-    """A ROLEFUL box gets the rollback LADDER, not a reconcile that converges nothing.
+    """A ROLEFUL box gets the ARM LADDER, not a reconcile that converges nothing.
 
     This is the state PR #2514's residual describes: a ring-endpoint graph loaded
     while the coupling has fallen back to loopback. The check's remedy used to be
@@ -540,9 +540,16 @@ def test_stale_ring_devices_under_loopback_send_a_roleful_box_up_the_ladder(
     non-shm_ring coupling into `True`. So the operator ran a command, was told it
     worked, and the warn stayed.
 
-    The graph has to be moved by step 1 of the rollback ladder. Asserted through
-    the classification-free half of the message — the command spelling — because
+    The graph has to be moved by step 1 of the ladder. Asserted through the
+    classification-free half of the message — the command spelling — because
     that is what an operator copies.
+
+    #2285 P2 turned the ladder around. It was the ROLLBACK ladder
+    (`baseline-reemit --endpoint aloop` -> reconcile -> `…-reconcile loopback`);
+    that first rung is now an argparse error and its destination is the PARK for
+    a roleful box, so the remedy converges FORWARD onto the ring instead. Both
+    halves are asserted — the ring rungs present, the retired ones absent — so a
+    partial re-point cannot pass.
     """
     monkeypatch.setattr(audio, "_requires_roleful_graph", lambda: True)
     res = _run_check(
@@ -553,9 +560,14 @@ def test_stale_ring_devices_under_loopback_send_a_roleful_box_up_the_ladder(
     )
     assert res.status == "warn"
     assert "jts_ring_active_playback" in res.detail
-    assert "baseline-reemit --endpoint aloop" in res.detail, res.detail
+    assert "baseline-reemit --endpoint ring" in res.detail, res.detail
     assert "jasper-audio-hardware-reconcile" in res.detail, res.detail
-    assert "jasper-fanin-coupling-reconcile loopback" in res.detail, res.detail
+    assert "jasper-fanin-coupling-reconcile shm_ring" in res.detail, res.detail
+    # The retired rungs are asserted ABSENT, not merely unasserted: a remedy
+    # naming a command argparse rejects, or naming the park as a destination,
+    # is worse than no remedy at all.
+    assert "--endpoint aloop" not in res.detail, res.detail
+    assert "jasper-fanin-coupling-reconcile loopback" not in res.detail, res.detail
 
 
 def test_stale_ring_devices_under_loopback_keep_the_plain_remedy_when_passive(
