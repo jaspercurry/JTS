@@ -4,7 +4,7 @@
 
 """Where the ``jts_ring`` transport platform assets live, and are they present.
 
-The single source of truth for the three inert ring-platform assets P1 ships:
+The single source of truth for the three ring-platform assets every box ships:
 the compiled ioplug ``.so``, the conf.d PCM definitions
 (:data:`RING_CONF_PCMS`), and the
 ``/dev/shm/jts-ring`` tmpfs directory. Three consumers share this SSOT so the

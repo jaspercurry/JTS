@@ -115,6 +115,13 @@ def test_build_failure_with_prior_so_warns_it_is_stale(tmp_path):
     # says what is true today.
     assert "provenance record has been revoked" in out
     assert "doctor cannot distinguish" not in out
+    # The WARN also used to promise that "loopback coupling remains the
+    # transport (inert phase)". Boxes arm the ring now, so on an armed box that
+    # sentence is false in both halves — the transport is the ring, and nothing
+    # about the platform is inert. What the transcript says instead is which
+    # doctor check carries the verdict, pinned by name in
+    # test_ring_ioplug_provenance.py.
+    assert "inert phase" not in out
 
 
 @pytest.mark.skipif(not _has_bash(), reason="bash required")
@@ -125,6 +132,46 @@ def test_first_ever_build_failure_omits_stale_warning(tmp_path):
     out = _run_build_with_failure(tmp_path, stale_so=False)
     assert "ring platform unavailable" in out
     assert _STALE_MARKER not in out
+
+
+@pytest.mark.skipif(not _has_bash(), reason="bash required")
+def test_conf_asset_echoes_state_what_was_placed_not_what_the_box_is_doing(tmp_path):
+    """Every deploy prints these two lines, so they must hold on an ARMED box.
+
+    Both used to label the freshly-placed conf.d and tmpfiles assets `inert` —
+    false where it matters most, because on a box whose coupling is armed those
+    exact files carry the audio. This helper cannot see the coupling from here,
+    so the honest line states what it PLACED rather than what the box is doing.
+
+    The renderer-lane echo is the shape that survives, and asserting it still
+    prints is deliberate: its `inert` is CONDITIONED on an arm that has not
+    happened ("until a lane is armed"), which is a statement about that lane's
+    state rather than a claim about the platform, so a later sweep of this
+    vocabulary must not take it with the rest.
+    """
+    repo = tmp_path / "repo"
+    (repo / "deploy" / "alsa" / "conf.d").mkdir(parents=True)
+    (repo / "deploy" / "tmpfiles").mkdir(parents=True)
+    for rel in (
+        "deploy/alsa/conf.d/60-jts-ring.conf",
+        "deploy/alsa/conf.d/61-jts-renderer-lanes.conf",
+        "deploy/tmpfiles/jts-ring.conf",
+    ):
+        (repo / rel).write_text("# fixture\n", encoding="utf-8")
+    proc = _run_sh(
+        tmp_path,
+        "install() { :; }\n"
+        "systemd-tmpfiles() { :; }\n"
+        "install_jts_ring_conf_assets\n",
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    out = proc.stdout + proc.stderr
+    assert "60-jts-ring.conf (pcm.jts_ring_capture" in out
+    assert "Installed /etc/tmpfiles.d/jts-ring.conf and applied /dev/shm/jts-ring" in out
+    # The unconditioned label, in both parenthetical spellings it had.
+    assert "; inert)" not in out
+    assert "(inert)" not in out
+    assert "inert until a lane is armed" in out
 
 
 # --- the provenance helpers, EXECUTED ---------------------------------------
