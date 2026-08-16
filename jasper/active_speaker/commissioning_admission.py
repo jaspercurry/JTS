@@ -55,7 +55,7 @@ from jasper.audio_measurement.sweep import (
     synchronized_swept_sine,
     write_sweep_wav,
 )
-from jasper.camilla_config_contract import DEFAULT_CAPTURE_DEVICE, DEFAULT_SAMPLE_RATE
+from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
 from jasper.camilla import CamillaUnavailable
 from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology
@@ -65,6 +65,7 @@ from .bundles import BUNDLE_FILE_MODE, open_bundle_admission_authority
 from .camilla_yaml import (
     COMMISSIONING_HEADROOM_DB,
     STARTUP_LIMITER_CLIP_LIMIT_DB,
+    capture_device_for_playback,
     output_commission_mute_name,
 )
 from .capture_geometry import comparison_set_valid
@@ -667,6 +668,12 @@ def issue_protection_evidence(
     devices = devices if isinstance(devices, Mapping) else {}
     capture = devices.get("capture")
     capture = capture if isinstance(capture, Mapping) else {}
+    playback = devices.get("playback")
+    playback = playback if isinstance(playback, Mapping) else {}
+    running_playback_device = playback.get("device")
+    expected_capture_device = capture_device_for_playback(
+        running_playback_device if isinstance(running_playback_device, str) else ""
+    )
     volume_limit = gs.float_value(devices.get("volume_limit"))
     volume_ok = _main_volume_matches(
         observed_main_volume_db, expected_main_volume_db
@@ -720,9 +727,40 @@ def issue_protection_evidence(
             else all(filter_checks)
         ),
         "target_limiter_present": limiter_ok,
+        # PROTECTION, not transport: "the graph CamillaDSP is actually running
+        # reads the source I expect." The expectation is DERIVED FROM THE
+        # RUNNING GRAPH'S OWN playback device rather than compared against a
+        # constant, which makes this the live counterpart of the end-to-end
+        # coupling ``active_emit_devices`` emits — the same both-ends-agree
+        # invariant, asserted on the read-back instead of on the emit.
+        # The constant it replaces accepted the snd-aloop tap paired with ANY
+        # sink, so a graph whose sink is the ring while its source is still
+        # ``plug:jasper_capture`` passed — and under ``shm_ring`` fan-in stops
+        # feeding that tap, so such a graph captures a device nobody writes and
+        # sweeps into digital silence with every daemon healthy.
+        #
+        # THE DELTA IS EXACTLY TWO CELLS, and it is worth naming both rather
+        # than calling this "stronger" and leaving the other half implied:
+        # {ring sink, aloop source} moves from accepted to REFUSED — the silent
+        # sweep; and {ring sink, ring source} moves from refused to ACCEPTED —
+        # the capability, since ``fanin.coupling_reconcile
+        # .ring_endpoint_anchor_converged`` DEMANDS that same pair on an armed
+        # box, so before this the two gates were mutually unsatisfiable. Every
+        # other pair keeps the verdict the constant gave it, because a non-ring
+        # sink still expects ``DEFAULT_CAPTURE_DEVICE``.
+        #
+        # WHAT THE NEW CELL PROVES IS COHERENCE, NOT LIVENESS, and the gap is
+        # deliberate: this reads no env, so it cannot know the box's coupling —
+        # a ring/ring graph on a LOOPBACK-coupled box is self-consistent, passes
+        # here, and still captures a ring nobody writes. Teaching this check the
+        # box would make a protection check read reconciler env; the liveness
+        # conjunct belongs to the load preflight's armed-transport gate instead.
+        #
+        # The samplerate conjunct is a separate axis and is unchanged — the
+        # ring does not alter the graph's sample rate.
         "capture_route_current": (
             devices.get("samplerate") == DEFAULT_SAMPLE_RATE
-            and capture.get("device") == DEFAULT_CAPTURE_DEVICE
+            and capture.get("device") == expected_capture_device
         ),
         "graph_volume_ceiling": (
             volume_limit is not None
