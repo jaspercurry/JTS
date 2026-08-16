@@ -36,6 +36,8 @@ from jasper.audio_measurement.excitation_artifacts import (
     readmit_excitation_for_playback,
 )
 from jasper.audio_measurement.playback import PlaybackResult
+from jasper.camilla_config_contract import DEFAULT_CAPTURE_DEVICE
+from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE, RING_CAPTURE_DEVICE
 from tests.test_active_speaker_excitation_safety_plan import _profile_and_targets
 from tests.test_active_speaker_profile import _two_way_preset
 from tests.test_active_speaker_web_commissioning import _driver_comparison_set
@@ -970,3 +972,232 @@ def test_successful_admission_does_not_log_or_persist_protection_report(
         tmp_path / comparison["bundle_session_id"] / "protection_report.json"
     )
     assert not report_path.exists()
+
+
+# --- capture_route_current: both ends of the running graph must agree -------
+#
+# #2412 Wave 2. ``capture_route_current`` is a PROTECTION check — "the graph
+# CamillaDSP is actually running reads the source I expect" — and until this
+# wave it compared the running capture device against the ``DEFAULT_CAPTURE_DEVICE``
+# constant, which accepted the snd-aloop tap paired with ANY sink. It now
+# derives the expectation from the running graph's OWN playback device
+# (``capture_device_for_playback``), so the pair must cohere.
+#
+# The check had ZERO tests before these five (``grep -rl capture_route_current
+# tests/`` returned nothing), which is why the hole below could exist unseen.
+# The two halves of this wave's lens question are guarded separately: T1/T3 that
+# the coherent pairs still pass, T2/T4 that the silent-sweep graph is now
+# refused end to end, T5 that everything the constant refused is refused still.
+
+
+def _graph_with_devices(raw: str, *, playback_device: str, capture_device: str) -> str:
+    """The emitted commissioning graph, re-pointed at one device pair.
+
+    Surgery on a real emitted config rather than a fresh emit, because the
+    subject IS a running graph's declared devices: this builds the exact pairs a
+    box can present CamillaDSP — including the incoherent ones no emitter would
+    produce, which are precisely what a gate exists to refuse. Everything else
+    in the graph is untouched, so any check that flips is attributable to the
+    device pair and nothing else.
+    """
+    graph = yaml.safe_load(raw)
+    graph["devices"]["playback"]["device"] = playback_device
+    graph["devices"]["capture"]["device"] = capture_device
+    return yaml.safe_dump(graph)
+
+
+def _report_for_devices(
+    tmp_path, monkeypatch, *, playback_device: str, capture_device: str
+) -> dict:
+    topology, profile, _targets, comparison, applied, raw, load_payload = _context(
+        tmp_path, monkeypatch
+    )
+    prepared, _meta = prepare_capture_plan(
+        topology,
+        profile,
+        comparison,
+        applied,
+        speaker_group_id="mono",
+        role="woofer",
+        commissioning_gain_db=-50.0,
+        expected_main_volume_db=-4.0,
+        expected_graph_fingerprint=running_graph_fingerprint(raw),
+    )
+    _evidence, report = issue_protection_evidence(
+        topology=topology,
+        safety_profile=profile,
+        prepared=prepared,
+        load_payload=load_payload,
+        running_config_raw=_graph_with_devices(
+            raw, playback_device=playback_device, capture_device=capture_device
+        ),
+        observed_main_volume_db=-4.0,
+        expected_main_volume_db=-4.0,
+    )
+    return report
+
+
+def _failed_checks(report) -> set:
+    return {name for name, ok in report["checks"].items() if not ok}
+
+
+def test_capture_route_current_accepts_ring_playback_with_ring_capture(
+    tmp_path, monkeypatch
+):
+    """T1 — the ring's own coherent pair passes.
+
+    Guards the "ring can never pass" regression: an armed roleful box's
+    commissioning graph names the ACTIVE ring on the sink and Ring A on the
+    source, and before this wave that pair failed on every driver capture while
+    the arm gate (``ring_endpoint_anchor_converged``) demanded exactly it — the
+    two pointed in opposite directions on the same box.
+    """
+    report = _report_for_devices(
+        tmp_path,
+        monkeypatch,
+        playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+        capture_device=RING_CAPTURE_DEVICE,
+    )
+    assert report["checks"]["capture_route_current"] is True
+    assert _failed_checks(report) == set()
+    assert report["passed"] is True
+
+
+def test_capture_route_current_refuses_ring_playback_with_aloop_capture(
+    tmp_path, monkeypatch
+):
+    """T2 — the silent-sweep graph, refused.
+
+    A sink on the ring with a source still on the snd-aloop tap: under
+    ``shm_ring`` fan-in has stopped feeding that tap, so this graph captures a
+    device nobody writes. It sweeps into digital silence with every daemon
+    healthy. The constant this derivation replaced accepted it, and no test
+    anywhere caught that — this is the half of the wave's lens question that
+    had never been asked.
+    """
+    report = _report_for_devices(
+        tmp_path,
+        monkeypatch,
+        playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+        capture_device=DEFAULT_CAPTURE_DEVICE,
+    )
+    assert report["checks"]["capture_route_current"] is False
+    assert _failed_checks(report) == {"capture_route_current"}
+    assert report["passed"] is False
+
+
+def test_capture_route_current_accepts_non_ring_playback_with_aloop_capture(
+    tmp_path, monkeypatch
+):
+    """T3 — the control: a box that is not armed is untouched.
+
+    Kills an over-tightening that would break commissioning on every non-ring
+    box.
+    """
+    report = _report_for_devices(
+        tmp_path,
+        monkeypatch,
+        playback_device="hw:CARD=DAC8x,DEV=0",
+        capture_device=DEFAULT_CAPTURE_DEVICE,
+    )
+    assert report["checks"]["capture_route_current"] is True
+    assert _failed_checks(report) == set()
+    assert report["passed"] is True
+
+
+def test_capture_route_current_refuses_non_ring_playback_with_ring_capture(
+    tmp_path, monkeypatch
+):
+    """T5 — the non-regression direction: still refused, for a derived reason.
+
+    The mirror of T2, and the other half of this wave's lens question: *does the
+    check still refuse everything it refused before?* This pair was refused by
+    the old constant because the capture was not it; it is refused under the
+    derivation because a non-ring sink expects ``DEFAULT_CAPTURE_DEVICE``. Same
+    verdict, different mechanism — which is exactly the shape a rewrite can
+    silently lose. It is also the half-moved graph
+    ``transport_coherence_report``'s non-ring branch detects, so the two guards
+    corroborate. The property holds by construction; an argument in place of a
+    guard guards nothing.
+    """
+    report = _report_for_devices(
+        tmp_path,
+        monkeypatch,
+        playback_device="hw:CARD=DAC8x,DEV=0",
+        capture_device=RING_CAPTURE_DEVICE,
+    )
+    assert report["checks"]["capture_route_current"] is False
+    assert _failed_checks(report) == {"capture_route_current"}
+    assert report["passed"] is False
+
+
+def test_ring_playback_with_aloop_capture_refuses_at_admission_naming_the_check(
+    tmp_path, monkeypatch, caplog
+):
+    """T4 — T2's graph driven through the whole refusal chain.
+
+    A check-level verdict only matters if it reaches the operator, so this pins
+    the three rungs below it: ``ProtectionEvidence(current=False)`` →
+    ``PROTECTION_EVIDENCE_STALE`` → ``play_admitted_driver_capture`` raising.
+    Without it a future check-level fix could silently stop refusing while T2
+    still passed. The household-facing message stays the one actionable
+    sentence; the check name rides the journal.
+    """
+    topology, profile, _targets, comparison, applied, raw, load_payload = _context(
+        tmp_path, monkeypatch
+    )
+    swept = _graph_with_devices(
+        raw,
+        playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+        capture_device=DEFAULT_CAPTURE_DEVICE,
+    )
+
+    async def read_running():
+        return swept
+
+    async def read_volume():
+        return -4.0
+
+    with caplog.at_level(logging.INFO, logger=_ADMISSION_LOGGER_NAME):
+        with pytest.raises(ActiveCommissioningAdmissionError) as excinfo:
+            asyncio.run(
+                play_admitted_driver_capture(
+                    topology=topology,
+                    safety_profile=profile,
+                    comparison_set=comparison,
+                    applied_profile=applied,
+                    speaker_group_id="mono",
+                    role="woofer",
+                    commissioning_gain_db=-50.0,
+                    expected_main_volume_db=-4.0,
+                    load_payload=load_payload,
+                    read_running_config=read_running,
+                    read_main_volume_db=read_volume,
+                    load_current_context=lambda: (
+                        topology,
+                        profile,
+                        comparison,
+                        applied,
+                    ),
+                    alsa_device="correction_substream",
+                    timeout_margin_s=9.0,
+                )
+            )
+
+    from jasper.audio_measurement.admitted_playback import (
+        PLAYBACK_READMISSION_REFUSED_MESSAGE,
+    )
+
+    assert str(excinfo.value) == PLAYBACK_READMISSION_REFUSED_MESSAGE
+    assert excinfo.value.refusal_codes == ("protection_evidence_stale",)
+    assert (
+        "event=active_speaker.driver_capture_protection_evidence_stale" in caplog.text
+    )
+    assert "failed_checks=capture_route_current" in caplog.text
+    assert "failed_protection_checks=capture_route_current" in caplog.text
+
+    report_path = tmp_path / comparison["bundle_session_id"] / "protection_report.json"
+    assert report_path.exists()
+    persisted = json.loads(report_path.read_text())
+    assert persisted["checks"]["capture_route_current"] is False
+    assert persisted["passed"] is False

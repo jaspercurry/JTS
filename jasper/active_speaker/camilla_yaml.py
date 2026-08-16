@@ -325,6 +325,39 @@ def _assert_ring_playback_width(playback_device: str, output_count: int) -> None
         )
 
 
+def capture_device_for_playback(playback_device: str) -> str:
+    """The capture device an active emit against ``playback_device`` must declare.
+
+    THE DEVICE AXIS ALONE, and the one owner of it. :func:`active_emit_devices`
+    answers for the whole ``devices:`` block and calls this for its
+    ``capture_device`` field — one owner, two arities, so the two cannot drift
+    into two lists of the same names. The second arity's caller is
+    :func:`jasper.active_speaker.commissioning_admission.issue_protection_evidence`'s
+    ``capture_route_current`` check, which derives what a RUNNING graph's
+    capture device must be from that same graph's OWN playback device: the live
+    counterpart of the end-to-end coupling :func:`active_emit_devices`
+    documents, asserted on the read-back rather than on the emit.
+
+    THE DEVICE AXIS IS TOPOLOGY-FREE BY CONSTRUCTION, which is why this
+    signature takes no ``topology`` and this body reads no env and no file:
+    ring membership is a pure test against
+    :data:`~jasper.fanin_coupling.RING_PCM_DEVICES`, a module constant, and the
+    non-ring answer is a constant too. Only the FORMAT axis needs
+    :func:`~jasper.fanin_coupling.resolve_ring_wire`, which reads the box's
+    declaration and can raise ``ValueError`` — so a caller that needs the
+    device name alone pays none of that, and cannot fail for a reason that is
+    not about the device. Widening this helper past the device axis would need
+    the topology input :func:`active_emit_devices` has and this one
+    deliberately does not; a caller that needs more than the device asks that
+    function instead.
+    """
+    from jasper.fanin_coupling import RING_CAPTURE_DEVICE, RING_PCM_DEVICES
+
+    if playback_device not in RING_PCM_DEVICES:
+        return DEFAULT_CAPTURE_DEVICE
+    return RING_CAPTURE_DEVICE
+
+
 @dataclass(frozen=True)
 class ActiveEmitDevices:
     """The whole CamillaDSP ``devices:`` block an active emit against a sink needs.
@@ -376,8 +409,10 @@ def active_emit_devices(
 
     WHAT THE RING BRANCH ANSWERS, and who owns each value:
 
-    - ``capture_device`` — :data:`~jasper.fanin_coupling.RING_CAPTURE_DEVICE`
-      (Ring A). THE COUPLING IS END-TO-END AND SO IS THIS: under ``shm_ring``
+    - ``capture_device`` — :func:`capture_device_for_playback`, which answers
+      :data:`~jasper.fanin_coupling.RING_CAPTURE_DEVICE` (Ring A) here and owns
+      that axis for its second caller too.
+      THE COUPLING IS END-TO-END AND SO IS THIS: under ``shm_ring``
       fan-in writes Ring A and stops feeding the snd-aloop tap, so a graph whose
       sink is the ring while its source is still ``plug:jasper_capture`` captures
       a device nobody writes — digital silence with every daemon healthy. That
@@ -424,14 +459,13 @@ def active_emit_devices(
         RING_CAMILLA_ENABLE_RATE_ADJUST,
         RING_CAMILLA_QUEUELIMIT,
         RING_CAMILLA_TARGET_LEVEL,
-        RING_CAPTURE_DEVICE,
         RING_PCM_DEVICES,
         resolve_ring_wire,
     )
 
     if playback_device not in RING_PCM_DEVICES:
         return ActiveEmitDevices(
-            capture_device=DEFAULT_CAPTURE_DEVICE,
+            capture_device=capture_device_for_playback(playback_device),
             capture_format=DEFAULT_CAPTURE_FORMAT,
             playback_format=DEFAULT_PLAYBACK_FORMAT,
             chunksize=None,
@@ -441,7 +475,7 @@ def active_emit_devices(
         )
     wire_format = resolve_ring_wire(topology).sample_format
     return ActiveEmitDevices(
-        capture_device=RING_CAPTURE_DEVICE,
+        capture_device=capture_device_for_playback(playback_device),
         capture_format=wire_format,
         playback_format=wire_format,
         chunksize=RING_CAMILLA_CHUNKSIZE,
