@@ -1217,6 +1217,71 @@ def test_check_sound_profile_warns_when_saved_profile_not_active(
     assert "not reflected" in r.detail
 
 
+@pytest.mark.parametrize(
+    "active_name",
+    [
+        # The four shapes the check's old literal set did not know about.
+        "sound_reset_s1_1717000000.yml",
+        "sound_snapshot_s1_1717000000.yml",
+        "sound_lean_current.yml",
+        "grouping_leader.yml",
+    ],
+)
+def test_check_sound_profile_accepts_every_jts_generated_active_name(
+    monkeypatch, tmp_path, active_name,
+):
+    """One owner decides what "JTS-generated" means, and the doctor asks it.
+
+    `check_sound_profile` held a second, narrower copy of that predicate as a
+    literal set (`correction_*`, `sound_current.yml`, `sound_audition.yml`) and
+    had fallen four shapes behind
+    :func:`jasper.sound.camilla_yaml.is_jts_generated_config`. Every name below
+    is one JTS itself emits — `sound_reset_*` comes from the household's own
+    /sound/ reset (`_write_no_room_correction_config`) — so the doctor told a
+    household its saved profile was "not reflected in active generated config"
+    about a graph that demonstrably carries it. The config written here really
+    does contain the saved profile's filter, so the warning would be false in
+    substance and not merely in name.
+
+    Latent before #2572, permanent after it: the reconcile now leaves a
+    content-identical graph running under whatever it is named rather than
+    rewriting it to `sound_current.yml`, so nothing clears the false warn.
+
+    The negative half — a genuinely foreign config still warns — is
+    `test_check_sound_profile_warns_when_saved_profile_not_active` above, which
+    stays green as-written.
+    """
+    from jasper.sound.camilla_yaml import emit_sound_config
+    from jasper.sound.profile import SoundProfile, build_sound_filters
+
+    saved = {
+        "enabled": True,
+        "curve_id": "harman",
+        "simple_eq": {"bass_db": 1.0, "mid_db": 0.0, "treble_db": 0.0},
+    }
+    profile = tmp_path / "sound_profile.json"
+    profile.write_text(json.dumps(saved))
+
+    # The active graph genuinely carries the saved preference EQ.
+    active = tmp_path / active_name
+    active.write_text(
+        emit_sound_config(SoundProfile.from_mapping(saved), profile_id="t"),
+        encoding="utf-8",
+    )
+    assert build_sound_filters(SoundProfile.from_mapping(saved))
+    statefile = tmp_path / "statefile.yml"
+    statefile.write_text(f"config_path: {active}\n")
+    monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(profile))
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+
+    r = doctor.check_sound_profile()
+
+    assert r.status == "ok", r.detail
+    assert "not reflected" not in r.detail
+    # The check still reports what it always did; only the drift verdict moved.
+    assert "curve=harman" in r.detail
+
+
 def test_check_sound_profile_fails_on_corrupt_json(monkeypatch, tmp_path):
     profile = tmp_path / "sound_profile.json"
     profile.write_text("{not json")

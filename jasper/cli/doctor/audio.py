@@ -1324,6 +1324,7 @@ def _sound_profile_path() -> Path:
 
 @doctor_check(order=30, group="audio")
 def check_sound_profile() -> CheckResult:
+    from jasper.sound.camilla_yaml import is_jts_generated_config
     from jasper.sound.profile import (
         SoundProfile,
         build_sound_filters,
@@ -1350,11 +1351,25 @@ def check_sound_profile() -> CheckResult:
     trim = output_trim_db(profile, settings)
 
     _, active_path = _active_camilla_config_path()
-    active_name = Path(active_path).name if active_path else ""
-    active_generated = (
-        active_name.startswith("correction_")
-        or active_name in {"sound_current.yml", "sound_audition.yml"}
-    )
+    # "Is this a JTS-generated config?" has ONE owner
+    # (:func:`jasper.sound.camilla_yaml.is_jts_generated_config`); this used to
+    # hold a second, narrower copy as a literal set and it had already fallen
+    # behind by four shapes — `sound_reset_*`, `sound_snapshot_*`,
+    # `sound_lean_current`, and the `grouping_*` trio. Those names are all
+    # reachable in production (`sound_reset_*` from the household's own
+    # /sound/ reset), and since #2572 the reconcile legitimately leaves a
+    # content-identical graph running under whatever it is named instead of
+    # rewriting it to `sound_current.yml` — so a stale copy here turns a
+    # transient mis-warn into a permanent one, telling a household its saved
+    # profile is missing from a graph that demonstrably carries it.
+    # `config_dir` is the active config's own parent, the same way
+    # `check_correction_current_config` asks: this check is about the config
+    # the speaker actually loaded, wherever that lives, so the question left
+    # to the canonical owner is purely the name.
+    active_generated = is_jts_generated_config(
+        active_path,
+        config_dir=Path(active_path).parent,
+    ) if active_path else False
     status = "ok"
     drift = ""
     if profile.enabled and filter_count and not active_generated:

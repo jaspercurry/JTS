@@ -53,7 +53,6 @@ from pathlib import Path
 import pytest
 
 from jasper.active_speaker.baseline_profile import (
-    APPLIED_PROFILE_DISPLACED,
     STATE_PATH_ENV,
     applied_profile_displacement,
     build_baseline_profile_candidate,
@@ -171,9 +170,12 @@ async def test_a_kept_candidate_survives_the_deploy_reconcile(
         load_applied_baseline_profile_state,
     )
 
-    assert applied_profile_displacement(
-        load_applied_baseline_profile_state()
-    ) != APPLIED_PROFILE_DISPLACED
+    # The STRICT form: `""` is "the record is authoritative", which is what the
+    # fixture asserted before the reconcile ran. Asserting merely "not
+    # displaced" would also accept the two could-not-check codes, and a
+    # survival claim that tolerates "we lost the ability to look" is not the
+    # claim this test is making.
+    assert applied_profile_displacement(load_applied_baseline_profile_state()) == ""
 
     # Observable: ONE line, naming the running config it left in place and the
     # file it declined to write.

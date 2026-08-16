@@ -1029,8 +1029,12 @@ rate-limited so a broken live-upload environment does not spam the
 journal while the user drags a slider.
 
 Deploy/startup reconciliation emits `event=sound.reconcile_current_dsp` for
-every outcome: `result=reconciled`, `result=unchanged`, or
-`result=skipped reason=<code>`. CLI fail-open failures emit the same event with
+every outcome: `result=reconciled`,
+`result=unchanged reason=running_config_matches_intent`, or
+`result=skipped reason=<code>`. On the `unchanged` line, `current=` and
+`candidate=` name the running config and the file that was not written — they
+differ exactly when a non-`sound_current.yml` graph was deliberately left in
+place (see step 6 above). CLI fail-open failures emit the same event with
 `result=failed`, and install.sh prints the command output into the deploy
 transcript. This is the first place to look when a deploy did or did not refresh
 the audible sound profile.
