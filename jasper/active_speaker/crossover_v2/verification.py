@@ -104,6 +104,7 @@ import numpy as np
 from ..delta_probe import (
     VERDICT_LEVEL_MISMATCH,
     VERDICT_MATCHED,
+    VERDICT_SAFETY_ONLY,
     seam_rollback_deferral,
 )
 from ..flat_spec import (
@@ -870,6 +871,14 @@ def evaluate_applied_safety(
     evidence: dict[str, Any] = {
         # Which instruments actually looked, so "safe" can be read honestly.
         "probe_graded": bool(verdict),
+        # ...and HOW MUCH of the probe looked (#2614). A ``safety_only`` map is
+        # a real grade of the two directional findings and no grade at all of
+        # the correction's shape — the alternative-Fc case, where the previous
+        # graph is unnameable and the change axis with it. ``probe_graded``
+        # alone cannot say that, and a reader who took it for a full grade
+        # would read "safe" as "the shape check passed" on a round where it
+        # never ran.
+        "probe_shape_graded": bool(verdict) and verdict != VERDICT_SAFETY_ONLY,
         "probe_verdict": verdict,
         "probe_reason": (
             str(getattr(probe, "reason", "") or "") if probe is not None else ""

@@ -968,6 +968,73 @@ def test_the_negative_control_measures_the_untouched_band_and_finds_nothing():
     assert probe.rollback is False
 
 
+#: The mirror-image round: the previous graph CUT 5.2 kHz by 5 dB and the
+#: applied graph removes that cut. The applied graph then emits nothing at all,
+#: so the STATE axis is ~0 across the whole band while the CHANGE axis is +5 dB
+#: in the removal band.
+_STANDING_CUT = (
+    {"biquad_type": "Peaking", "freq": 5200.0, "q": 1.2, "gain": -5.0},
+)
+
+
+def _cut_removal_axes():
+    """``(commanded_db, declared_db, realized_db, band)`` for the cut-removal round."""
+    import dataclasses
+
+    applied = cmd.GraphSummation(
+        trim_db=_REPEAT_TRIMS, delay_us=60.0, polarity_sign=1,
+        linearization={"woofer": (), "tweeter": ()},
+    )
+    previous = dataclasses.replace(
+        applied, linearization={"woofer": (), "tweeter": _STANDING_CUT},
+    )
+    _f, applied_db = _summed(applied)
+    # The applied graph emits nothing, so it IS the raw crossover here and the
+    # STATE axis is flat zero across the whole band.
+    declared_db = cmd.commanded_delta(
+        (FREQS_HZ, applied_db), (FREQS_HZ, applied_db),
+    )[1]
+    commanded_db = cmd.commanded_delta(_summed(previous), (FREQS_HZ, applied_db))[1]
+    band = (FREQS_HZ >= _BOOST_BAND_HZ[0]) & (FREQS_HZ <= _BOOST_BAND_HZ[1])
+    standing = -1.0 - 0.2 * np.log2(FREQS_HZ / 1000.0)
+    measured_post = applied_db + standing + np.where(band, 4.0, 0.0)
+    return (
+        commanded_db, declared_db, (measured_post - applied_db) + commanded_db, band,
+    )
+
+
+def test_a_removed_cut_realized_hot_is_watched_by_the_unions_change_half():
+    """The union's OTHER half, which no test pinned (#2614 delta review).
+
+    The mirror of the standing-boost case above: the previous graph cut 5.2 kHz
+    and this apply REMOVES the cut, so the applied graph declares nothing there
+    while the change axis commands +5 dB — energy going into a tweeter that the
+    STATE axis alone cannot see, because there is no state axis to see it with.
+    The union watches it because it keeps the change bins.
+
+    Asserted on the CLASSIFIER, not on :func:`boost_overshoot`: the mask is
+    built inside ``classify_delta_probe``, so a test that assembled its own
+    would keep passing while the classifier swapped the union for the state
+    mask. That swap passed 495/495 before this test existed, which is why the
+    monotonicity argument needed a pin rather than three paragraphs of prose.
+    """
+    commanded_db, declared_db, realized_db, band = _cut_removal_axes()
+    # The fixture's own guard: the two axes really do disagree in this band, and
+    # the state axis is empty everywhere — so a state-only mask has NO bins and
+    # everything below rests on the change half.
+    assert float(np.max(commanded_db[band])) == pytest.approx(5.0, abs=0.1)
+    assert float(np.max(np.abs(declared_db))) == pytest.approx(0.0, abs=1e-9)
+
+    probe = classify_delta_probe(
+        FREQS_HZ, realized_db, commanded_db,
+        band_hz=TRUSTED_BAND_HZ, expected_offset_db=0.0,
+        declared_transfer_db=declared_db,
+    )
+    assert probe.boost_over_declared_bound is True
+    assert probe.boost_overshoot_db == pytest.approx(2.5856, abs=5e-4)
+    assert probe.realized_louder_than_commanded is True
+
+
 def test_the_state_axis_adds_bins_and_changes_nothing_else():
     """It is a MASK, not a second error curve.
 
@@ -1095,6 +1162,170 @@ def test_the_session_run_of_the_probe_carries_the_state_axis_to_the_classifier(c
         "event=correction.crossover_v2_declared_transfer_unavailable" in caplog.text
     )
     assert "reason=no_declared_transfer" in caplog.text
+
+
+# --------------------------------------------------------------------------- #
+# channel 5 — the alternative-Fc round, where there IS no change axis
+# --------------------------------------------------------------------------- #
+#
+# #2614 delta review. The corner guard refuses the previous graph on every
+# committed alternative-Fc candidate, which took the whole probe down with it:
+# the two directional hearing-safety rules never ran, ``evaluate_applied_safety``
+# reported SAFE on a round where nothing had looked, and nothing said so. The
+# STATE axis needs no corner match, so the safety half runs on that alone.
+
+
+def _alternative_fc_probe(*, hot_db: float, declared: bool = True):
+    """A round with NO commanded axis, run through ``_run_delta_probe`` itself.
+
+    The commanded delta is absent exactly as the corner guard leaves it; the
+    declared transfer is present exactly as every swept corner computes it.
+    """
+    from tests.crossover_v2_fixtures import FakeSeams
+
+    _applied, _previous, _raw = _repeat_round_graphs()
+    applied_db, _commanded_db, declared_db, band = _repeat_round_axes()
+    standing = -1.0 - 0.2 * np.log2(FREQS_HZ / 1000.0)
+    measured_post = applied_db + standing + np.where(band, hot_db, 0.0)
+
+    session = _session(FakeSeams().seams())
+    session._measure_commanded_delta = None
+    session._measure_declared_transfer = (FREQS_HZ, declared_db) if declared else None
+    session._verify_tracking_curve = (FREQS_HZ, measured_post, applied_db)
+    session._verify_trusted_band_hz = TRUSTED_BAND_HZ
+    return session._run_delta_probe()
+
+
+def test_an_alternative_fc_round_still_catches_an_overshooting_boost(caplog):
+    """(a) The 2026-07-27 class, an octave and a half above tracking's window.
+
+    No change axis — the corner moved, so there is no like-for-like previous
+    graph — and a +5 dB tweeter boost realized 4 dB hot. Before #2614's delta
+    round the probe was absent entirely and this reached the household. Now the
+    safety half runs off the STATE axis and the adoption table's hard stop
+    fires, which is a RESTORE.
+    """
+    import logging
+
+    from jasper.active_speaker.crossover_v2.contracts import SafetyStatus
+    from jasper.active_speaker.crossover_v2.verification import (
+        SAFETY_BOOST_OVER_DECLARED_BOUND,
+        evaluate_applied_safety,
+    )
+    from jasper.active_speaker.delta_probe import (
+        REASON_COMMANDED_AXIS_UNAVAILABLE,
+        VERDICT_SAFETY_ONLY,
+    )
+
+    with caplog.at_level(logging.WARNING):
+        probe = _alternative_fc_probe(hot_db=4.0)
+    assert probe is not None
+    assert probe.verdict == VERDICT_SAFETY_ONLY
+    assert probe.reason == REASON_COMMANDED_AXIS_UNAVAILABLE
+    assert probe.boost_over_declared_bound is True
+    assert probe.boost_overshoot_db is not None
+    assert probe.realized_louder_than_commanded is True
+    # Not a rollback verdict — the RESTORE comes from the safety table, which is
+    # the seam that owns a hearing-safety hard stop.
+    assert probe.rollback is False
+
+    safety = evaluate_applied_safety(probe=probe, integrity=None)
+    assert safety.status is SafetyStatus.UNSAFE
+    assert safety.reason == SAFETY_BOOST_OVER_DECLARED_BOUND
+    # ...and the journal put the half-grade in front of whoever reads the round.
+    assert "verdict=safety_only" in caplog.text
+
+
+def test_an_alternative_fc_round_that_is_clean_is_not_reported_as_fully_graded():
+    """(b) Safe, and honest about which half looked.
+
+    The dangerous outcome is not a false alarm, it is a clean state-axis grade
+    reading as "the probe passed". Three things keep that from happening: the
+    verdict is its own word rather than ``matched``, the shape and level
+    scalars are absent rather than computed in the wrong frame, and the safety
+    evidence says ``probe_shape_graded`` is False.
+    """
+    from jasper.active_speaker.crossover_v2.contracts import SafetyStatus
+    from jasper.active_speaker.crossover_v2.verification import (
+        evaluate_applied_safety,
+    )
+    from jasper.active_speaker.delta_probe import VERDICT_SAFETY_ONLY
+
+    probe = _alternative_fc_probe(hot_db=0.0)
+    assert probe is not None
+    assert probe.verdict == VERDICT_SAFETY_ONLY
+    assert probe.matched is False
+    assert probe.rollback is False
+    # Measured, and it found nothing.
+    assert probe.boost_over_declared_bound is False
+    assert probe.boost_overshoot_db is not None
+    assert probe.boost_overshoot_db < 0.0
+    # NOT a shape or level claim — every one of these would be stated in the
+    # state frame, where the residual is the chained-round contaminant #2611
+    # removed and the frame sits on quiet bins that mean something else.
+    assert probe.residual_offset_db is None
+    assert probe.gain_factor is None
+    assert probe.frame.fitted is False
+    assert probe.max_error_db == 0.0
+    assert probe.exceedance_octaves == 0.0
+
+    safety = evaluate_applied_safety(probe=probe, integrity=None)
+    assert safety.status is SafetyStatus.SAFE
+    assert safety.evidence["probe_graded"] is True
+    assert safety.evidence["probe_shape_graded"] is False
+
+
+def test_the_ordinary_round_is_untouched_by_the_state_axis_only_path():
+    """(c) A round WITH a change axis grades exactly as it did.
+
+    The same repeat-round capture through the same method, with the commanded
+    axis present: a full verdict, a fitted frame, a measured residual — none of
+    which the branch above may disturb.
+    """
+    from jasper.active_speaker.delta_probe import VERDICT_SAFETY_ONLY
+
+    full = _probe_from_repeat_round_session(hot_db=4.0)
+    assert full is not None
+    assert full.verdict != VERDICT_SAFETY_ONLY
+    assert full.verdict in (VERDICT_MODEL_ERROR, "matched")
+    assert full.gain_factor is not None
+    assert full.residual_offset_db is not None
+    # ...and the safety half is the same answer the state-axis-only path gives,
+    # because it is measured on the same error curve.
+    assert full.boost_over_declared_bound is True
+
+
+def test_neither_axis_leaves_the_probe_absent_exactly_as_before(caplog):
+    """(d) No change axis AND no state axis is still ``None``.
+
+    The pre-#2614 answer for a round nothing can grade, and
+    ``_declared_transfer_db`` has already named the reason on the journal — so
+    this path gains no new vocabulary and loses no disclosure.
+    """
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        assert _alternative_fc_probe(hot_db=4.0, declared=False) is None
+    assert (
+        "event=correction.crossover_v2_declared_transfer_unavailable" in caplog.text
+    )
+
+
+def _probe_from_repeat_round_session(*, hot_db: float):
+    """The ordinary path's counterpart of :func:`_alternative_fc_probe`."""
+    from tests.crossover_v2_fixtures import FakeSeams
+
+    _applied, _previous, _raw = _repeat_round_graphs()
+    applied_db, commanded_db, declared_db, band = _repeat_round_axes()
+    standing = -1.0 - 0.2 * np.log2(FREQS_HZ / 1000.0)
+    measured_post = applied_db + standing + np.where(band, hot_db, 0.0)
+
+    session = _session(FakeSeams().seams())
+    session._measure_commanded_delta = (FREQS_HZ, commanded_db)
+    session._measure_declared_transfer = (FREQS_HZ, declared_db)
+    session._verify_tracking_curve = (FREQS_HZ, measured_post, applied_db)
+    session._verify_trusted_band_hz = TRUSTED_BAND_HZ
+    return session._run_delta_probe()
 
 
 def test_two_present_curves_that_will_not_subtract_are_named_on_the_journal(caplog):

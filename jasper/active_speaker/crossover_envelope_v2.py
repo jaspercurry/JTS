@@ -109,6 +109,7 @@ from .delta_probe import (
     REASON_UNCOMMANDED_LEVEL_SHIFT_OUTSIDE_BAND,
     VERDICT_FRAME_MISMATCH,
     VERDICT_LEVEL_MISMATCH,
+    VERDICT_SAFETY_ONLY,
 )
 
 logger = logging.getLogger(__name__)
@@ -1778,6 +1779,23 @@ def _done_nudges(
             "text": (
                 "The overall loudness and balance differed from what this check "
                 "expected, so it could not confirm the correction's shape."
+            ),
+        })
+    if probe.get("verdict") == VERDICT_SAFETY_ONLY:
+        nudges.append({
+            "code": "crossover_v2_safety_only",
+            "severity": "warn",
+            # The third caveat, in the two above's register and under the same
+            # rules: no hardware noun, no instruction to act, a statement about
+            # what the check could and could not confirm (#2614). This one is
+            # not a finding about the speaker at all — the shape check simply
+            # did not run, because this round changed the crossover point and
+            # there is no like-for-like comparison to make against the previous
+            # sound. The loudness half DID run, and it found nothing, which is
+            # why the badge beside this still says Verified.
+            "text": (
+                "This round changed the crossover point, so this check could "
+                "compare loudness but not the correction's shape."
             ),
         })
     return nudges

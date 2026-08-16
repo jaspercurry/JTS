@@ -149,6 +149,7 @@ from jasper.active_speaker.delta_probe import (
     DELTA_PROBE_ROLLBACK_VERDICTS,
     VERDICT_FRAME_MISMATCH,
     VERDICT_LEVEL_MISMATCH,
+    VERDICT_SAFETY_ONLY,
     DeltaProbeMap,
     classify_delta_probe,
     seam_rollback_deferral,
@@ -10259,15 +10260,28 @@ class CrossoverV2Session:
         ``_verify_absolute_result`` gives (``no_trusted_crossover_region``) for
         the same missing fact.
 
-        Returns ``None`` when the tracking curve, the commanded delta, or the
-        trusted band is missing. ``None`` is the same thing
+        **A missing CHANGE axis no longer silences the hearing-safety half**
+        (#2614). A committed alternative-Fc candidate has no nameable previous
+        graph — its branches are composed through a crossover that graph never
+        ran — so the commanded delta is absent, and until this the whole probe
+        was absent with it: the two directional findings never ran, and
+        ``evaluate_applied_safety`` reported SAFE on a round where nothing had
+        looked. The STATE axis needs no corner match and is computed at every
+        swept corner, so when it is present the probe runs its safety half on
+        that alone and reports
+        :data:`~jasper.active_speaker.delta_probe.VERDICT_SAFETY_ONLY` — which
+        is not a pass, carries no shape grade, and says on the record that the
+        shape check did not run and why.
+
+        Returns ``None`` when the tracking curve, the trusted band, or BOTH
+        axes are missing. ``None`` is the same thing
         :data:`~jasper.active_speaker.delta_probe.VERDICT_UNAVAILABLE` is: no
         evidence to refuse on, and no permission granted either.
         """
         tracked = self._verify_tracking_curve
         commanded = self._measure_commanded_delta
         band_hz = self._verify_trusted_band_hz
-        if tracked is None or commanded is None:
+        if tracked is None:
             return None
         if band_hz is None:
             log_event(
@@ -10280,7 +10294,8 @@ class CrossoverV2Session:
             freqs = np.asarray(freqs, dtype=float)
             measured_s = np.asarray(measured_s, dtype=float)
             predicted_s = np.asarray(predicted_s, dtype=float)
-            commanded_db = np.interp(
+            declared_db = self._declared_transfer_db(freqs)
+            commanded_db = None if commanded is None else np.interp(
                 freqs,
                 np.asarray(commanded[0], dtype=float),
                 np.asarray(commanded[1], dtype=float),
@@ -10292,31 +10307,54 @@ class CrossoverV2Session:
             )
             return None
 
-        # realized − commanded == measured − predicted (the previous-graph
-        # prediction cancels), so the realized curve is reconstructed from the
-        # three quantities this session actually holds.
-        realized_db = (measured_s - predicted_s) + commanded_db
-        probe = classify_delta_probe(
-            freqs, realized_db, commanded_db, band_hz=band_hz,
-            declared_transfer_db=self._declared_transfer_db(freqs),
-            spatial=spatial_cost_from_group_spreads(
-                {"band_spread": self._group_band_spread.get(PHASE_CLOUD_MEASURE, ())},
-                {"band_spread": self._group_band_spread.get(PHASE_CLOUD_VERIFY, ())},
-            ),
-            expected_offset_db=self._applied_offset_db(),
-            entry_delta_db=self._entry_delta_db(freqs, predicted_s, commanded_db),
+        spatial = spatial_cost_from_group_spreads(
+            {"band_spread": self._group_band_spread.get(PHASE_CLOUD_MEASURE, ())},
+            {"band_spread": self._group_band_spread.get(PHASE_CLOUD_VERIFY, ())},
         )
+        if commanded_db is None:
+            if declared_db is None:
+                # Neither axis. Unchanged behaviour, and
+                # ``_declared_transfer_db`` has already named the reason.
+                return None
+            # The STATE axis in the commanded slot, and the classifier told so.
+            # ``realized − commanded`` is still ``measured − predicted``, which
+            # is what the two directional findings are measured on; no entry
+            # anchor goes with it, because that is a change measurement and
+            # shares no reference with a state axis.
+            probe = classify_delta_probe(
+                freqs, (measured_s - predicted_s) + declared_db, declared_db,
+                band_hz=band_hz, spatial=spatial,
+                expected_offset_db=self._applied_offset_db(),
+                state_axis_only=True,
+            )
+        else:
+            # realized − commanded == measured − predicted (the previous-graph
+            # prediction cancels), so the realized curve is reconstructed from
+            # the three quantities this session actually holds.
+            realized_db = (measured_s - predicted_s) + commanded_db
+            probe = classify_delta_probe(
+                freqs, realized_db, commanded_db, band_hz=band_hz,
+                declared_transfer_db=declared_db,
+                spatial=spatial,
+                expected_offset_db=self._applied_offset_db(),
+                entry_delta_db=self._entry_delta_db(freqs, predicted_s, commanded_db),
+            )
         self._delta_probe = probe
         log_event(
             logger, "correction.crossover_v2_delta_probe",
             # The two non-rollback findings produce no refusal by design, so
             # WARNING is the only thing that puts them in front of anyone
             # reading the journal for a session that otherwise "passed"
-            # (#1811, #2521).
+            # (#1811, #2521). ``safety_only`` joins them for the same reason
+            # one layer over (#2614): the round passed, and the shape check
+            # never ran.
             level=(
                 logging.WARNING
                 if probe.rollback
-                or probe.verdict in (VERDICT_LEVEL_MISMATCH, VERDICT_FRAME_MISMATCH)
+                or probe.verdict in (
+                    VERDICT_LEVEL_MISMATCH, VERDICT_FRAME_MISMATCH,
+                    VERDICT_SAFETY_ONLY,
+                )
                 else logging.INFO
             ),
             session_id=self.session_id,

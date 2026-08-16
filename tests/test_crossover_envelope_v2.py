@@ -919,6 +919,43 @@ def test_a_level_mismatch_caveats_the_pass_screen():
     )
 
 
+def test_a_safety_only_probe_caveats_the_pass_screen():
+    """#2614: "the shape check did not run" must reach the household.
+
+    An alternative-Fc round has no like-for-like previous graph, so the change
+    axis is unavailable and only the loudness half of the probe runs. That is
+    not a finding about the speaker and not a rollback — but every other word
+    on this screen says "Verified", and a household reading it would take the
+    shape check to have passed. The caveat rides BESIDE the badge for
+    ``level_mismatch``'s reason: the tracking comparator really did pass.
+    """
+    env = build_crossover_envelope_v2(_status(
+        phase="done",
+        verify={
+            "outcome": "pass",
+            "delta_probe": {
+                "verdict": "safety_only",
+                "reason": "commanded_axis_unavailable",
+                "boost": {"over_declared_bound": False, "overshoot_db": -1.2},
+            },
+        },
+        candidate=_candidate_summary(),
+    ))
+    codes = {n["code"] for n in env["nudges"]}
+    assert codes == {"crossover_v2_verified", "crossover_v2_safety_only"}
+    caveat = next(
+        n for n in env["nudges"] if n["code"] == "crossover_v2_safety_only"
+    )
+    assert caveat["severity"] == "warn"
+    assert "crossover point" in caveat["text"]
+    # The same copy rule the other two caveats carry: no hardware noun, and no
+    # instruction to act.
+    assert not any(
+        word in caveat["text"].lower()
+        for word in ("tweeter", "woofer", "amplifier", "horn")
+    )
+
+
 def test_a_whole_band_level_shift_keeps_the_overall_loudness_sentence():
     """The reason-aware split's control side (#2537).
 

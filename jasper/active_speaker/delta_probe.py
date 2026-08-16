@@ -262,6 +262,28 @@ VERDICT_FRAME_MISMATCH = "frame_mismatch"
 #: flow treats an unknown: no evidence to refuse on, and no permission
 #: granted either.
 VERDICT_UNAVAILABLE = "unavailable"
+#: Only the HEARING-SAFETY half of this probe ran (#2614). The caller had the
+#: applied graph's own declared transfer but no CHANGE axis — the reachable
+#: case is a committed alternative-Fc candidate, whose branches are composed
+#: through a crossover the previous graph never ran — so "did the speaker put
+#: more energy into a driver than the graph declared" is answerable and "did
+#: the correction realize the shape it commanded" is not.
+#:
+#: **Not a pass, and deliberately not a rollback.** The two directional
+#: findings on this map are real and reach
+#: :func:`~jasper.active_speaker.crossover_v2.verification.evaluate_applied_safety`
+#: exactly as they do on a full map, so an overshoot still comes off the
+#: speaker. What is missing is the shape grade, and a missing grade is not
+#: evidence of a defect — the same rule :data:`VERDICT_UNAVAILABLE` carries.
+#: It is its own word rather than ``matched`` because a household and a receipt
+#: must be able to tell "the shape check passed" from "the shape check did not
+#: run", and rather than ``unavailable`` because something WAS measured.
+VERDICT_SAFETY_ONLY = "safety_only"
+
+#: Why the shape half did not run on a :data:`VERDICT_SAFETY_ONLY` map. One
+#: string today; it is a constant so the journal, the receipt and the household
+#: caveat all quote the same one.
+REASON_COMMANDED_AXIS_UNAVAILABLE = "commanded_axis_unavailable"
 
 #: Every verdict this module can return. Pinned by a test so a new
 #: classification path cannot ship an un-enumerated string.
@@ -273,6 +295,7 @@ DELTA_PROBE_VERDICTS: frozenset[str] = frozenset({
     VERDICT_LEVEL_MISMATCH,
     VERDICT_FRAME_MISMATCH,
     VERDICT_UNAVAILABLE,
+    VERDICT_SAFETY_ONLY,
 })
 
 #: The verdicts on which rollback is AUTOMATIC (plan PR-L5: "Rollback is
@@ -920,6 +943,55 @@ def _unavailable(
     )
 
 
+def _safety_only(
+    spatial: SpatialCost,
+    *,
+    expected_offset_db: float,
+    requested_band_hz: tuple[float, float],
+    probe_band_hz: tuple[float, float],
+    n_bins: int,
+    boost_over_declared_bound: bool,
+    boost_overshoot_db: float | None,
+    boost_overshoot_octaves: float,
+    realized_louder_than_commanded: bool,
+    max_signed_error_db: float | None,
+) -> DeltaProbeMap:
+    """A map carrying the two directional findings and NO shape grade (#2614).
+
+    Deliberately shaped like :func:`_unavailable` plus five fields. Every shape
+    and level scalar keeps its dataclass default — 0.0 error, ``None`` gain,
+    ``None`` residual, an unfitted frame — because on this path the classifier
+    was handed the STATE axis in the commanded slot, and every one of those
+    numbers computed against a state axis would be a claim in the wrong frame:
+    the residual is the chained-round contaminant #2611 removed, and the frame
+    fit sits on quiet bins that mean something else. Returning them "for
+    information" is how a wrong number gets read as a right one, so they are
+    not returned at all.
+
+    The two that ARE returned survive the frame change because they are
+    measured on ``realized − commanded``, which is ``measured_post −
+    predicted_post`` whichever graph the two sides are stated against.
+    """
+    return DeltaProbeMap(
+        verdict=VERDICT_SAFETY_ONLY,
+        reason=REASON_COMMANDED_AXIS_UNAVAILABLE,
+        probe_band_hz=probe_band_hz,
+        n_bins=n_bins,
+        max_error_db=0.0, rms_error_db=0.0, worst_hz=0.0,
+        exceedance_octaves=0.0, gain_factor=None,
+        tolerance_low_db=DELTA_PROBE_TOLERANCE_LOW_DB,
+        tolerance_high_db=DELTA_PROBE_TOLERANCE_HIGH_DB,
+        spatial=spatial,
+        expected_offset_db=expected_offset_db,
+        requested_band_hz=requested_band_hz,
+        boost_over_declared_bound=boost_over_declared_bound,
+        boost_overshoot_db=boost_overshoot_db,
+        boost_overshoot_octaves=boost_overshoot_octaves,
+        realized_louder_than_commanded=realized_louder_than_commanded,
+        max_signed_error_db=max_signed_error_db,
+    )
+
+
 def _tolerance_curve(freqs_hz: np.ndarray) -> np.ndarray:
     """The two-tier per-bin tolerance (see the two tolerance constants)."""
     return np.where(
@@ -1169,6 +1241,7 @@ def classify_delta_probe(
     expected_offset_db: float = 0.0,
     entry_delta_db: Any | None = None,
     declared_transfer_db: Any | None = None,
+    state_axis_only: bool = False,
 ) -> DeltaProbeMap:
     """Classify one applied correction's realized-vs-commanded map.
 
@@ -1223,6 +1296,19 @@ def classify_delta_probe(
     frame, the quiet residual — is untouched by it, because ``realized −
     commanded`` is ``measured_post − predicted_post`` whichever graph the two
     sides are stated against.
+
+    ``state_axis_only`` says the curve in the ``commanded_delta_db`` slot is
+    that STATE axis rather than a change axis, because the caller has no change
+    axis to give (#2614). The reachable case is a committed alternative-Fc
+    candidate: its branches are composed through a crossover the previous graph
+    never ran, so the previous side is refused and the change axis with it —
+    while the applied graph's own declared transfer is well-defined at every
+    swept corner. The two directional findings then still hold, because they
+    are measured on ``realized − commanded``; nothing else does, so nothing
+    else is returned. The verdict is :data:`VERDICT_SAFETY_ONLY` and the map
+    carries no shape or level grade at all. Do NOT also pass
+    ``entry_delta_db`` on that path — it is a change measurement and shares no
+    reference with a state axis.
 
     **CHAINED ROUNDS: the reference graph is shared, and that is what makes the
     residual meaningful** (#2611 closed the #2545 hazard). ``commanded_delta_db``
@@ -1536,6 +1622,28 @@ def classify_delta_probe(
         realized, commanded, tolerance_full, safety_mask,
     )
 
+    # The caller had no CHANGE axis and said so (#2614): what it handed in as
+    # ``commanded`` is the applied graph's own declared transfer, so the two
+    # findings above are honest and every shape and level scalar computed above
+    # is a claim in the wrong frame. Return the first and none of the second.
+    # The shape work above is not skipped, only discarded — the alternative is a
+    # second exit path through half this function, and one lstsq and one frame
+    # fit per session is a smaller price than two orders of statements about
+    # what was measured.
+    if state_axis_only:
+        return _safety_only(
+            spatial,
+            expected_offset_db=offset,
+            requested_band_hz=requested_band_hz,
+            probe_band_hz=probe_band_hz,
+            n_bins=int(f.size),
+            boost_over_declared_bound=boost_over_bound,
+            boost_overshoot_db=boost_overshoot_db,
+            boost_overshoot_octaves=boost_overshoot_octaves,
+            realized_louder_than_commanded=realized_louder,
+            max_signed_error_db=max_signed_error_db,
+        )
+
     def _map(verdict: str, reason: str) -> DeltaProbeMap:
         return DeltaProbeMap(
             verdict=verdict, reason=reason, probe_band_hz=probe_band_hz,
@@ -1791,6 +1899,7 @@ __all__ = [
     "DELTA_PROBE_VERDICTS",
     "SEAM_DEFERRED_QUIETER_THAN_COMMANDED",
     "SPATIAL_COST_UNAVAILABLE",
+    "REASON_COMMANDED_AXIS_UNAVAILABLE",
     "REASON_UNCOMMANDED_LEVEL_SHIFT",
     "REASON_UNCOMMANDED_LEVEL_SHIFT_OUTSIDE_BAND",
     "DeltaProbeMap",
@@ -1800,6 +1909,7 @@ __all__ = [
     "VERDICT_LEVEL_MISMATCH",
     "VERDICT_MATCHED",
     "VERDICT_MODEL_ERROR",
+    "VERDICT_SAFETY_ONLY",
     "VERDICT_SPATIALLY_COSTLY",
     "VERDICT_UNAVAILABLE",
     "boost_overshoot",

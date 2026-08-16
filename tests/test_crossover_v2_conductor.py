@@ -65,6 +65,7 @@ from jasper.active_speaker.delta_probe import (
     VERDICT_LEVEL_MISMATCH,
     VERDICT_MATCHED,
     VERDICT_MODEL_ERROR,
+    VERDICT_SAFETY_ONLY,
     VERDICT_UNAVAILABLE,
 )
 from jasper.active_speaker.crossover_v2_flow import (
@@ -9950,6 +9951,13 @@ def test_every_non_matched_verdict_reaches_a_household_surface():
         # ``test_a_frame_mismatch_caveats_the_pass_screen`` in
         # tests/test_crossover_envelope_v2.py.
         VERDICT_FRAME_MISMATCH,
+        # The shape check did not RUN (#2614) — an alternative-Fc round has no
+        # like-for-like previous graph, so there is no change axis to grade
+        # against. Not a finding about the speaker, so not a refusal; it
+        # reaches the household on the same done-screen caveat by the same
+        # route — see ``test_a_safety_only_probe_caveats_the_pass_screen`` in
+        # tests/test_crossover_envelope_v2.py.
+        VERDICT_SAFETY_ONLY,
     }
     assert set(DELTA_PROBE_REASON_BY_VERDICT) == non_matched - surfaced_without_refusal
     assert set(DELTA_PROBE_REASON_BY_VERDICT) == set(DELTA_PROBE_ROLLBACK_VERDICTS)
