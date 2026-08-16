@@ -416,6 +416,26 @@ class FakeSeams:
     # rule ITSELF sets this True (or passes ``applied_boosts=None`` through
     # ``dataclasses.replace`` for the unbound case).
     applied_boosts: bool = False
+    # #2611: the profile the speaker is playing when a candidate is committed —
+    # the PREVIOUS side of the commanded axis. Bound by default (unlike
+    # ``rollback``) because "no applied profile" is the degraded case here, not
+    # the normal one: without it the commanded delta is ``None`` and every probe
+    # fixture would assert ``unavailable`` instead of its own subject. The
+    # default names the graph whose predicted sum is EXACTLY
+    # ``_eligible_measure_analysis``'s own ``predicted_sum`` — the fixture's raw
+    # branch pair at the fixture's raw trim, no correction, no delay, no
+    # inversion — so a probe fixture's commanded delta is byte-identical to the
+    # pre-#2611 one and every test written against it still measures what it
+    # says it measures. A test that wants the ABSENT case passes
+    # ``applied_profile=None`` through ``dataclasses.replace``.
+    applied_profile_state: Any = None
+
+    def applied_profile(self) -> dict[str, Any]:
+        return (
+            self.applied_profile_state
+            if self.applied_profile_state is not None
+            else _fixture_applied_profile()
+        )
 
     def seams(self) -> V2FlowSeams:
         def analyze(program, result, priors, geometry, *, phase=None):
@@ -440,8 +460,43 @@ class FakeSeams:
             apply_failed=lambda: self.apply_failed_code,
             rollback=self.rollback,
             applied_boosts=lambda: self.applied_boosts,
+            applied_profile=self.applied_profile,
             publish_findings=self.banked_findings.append,
         )
+
+
+def _fixture_applied_profile(
+    trim_db: dict[str, float] | None = None,
+    *,
+    linearization: dict[str, Any] | None = None,
+    delay_ms: dict[str, float] | None = None,
+    inverted: dict[str, bool] | None = None,
+) -> dict[str, Any]:
+    """An applied Layer-A profile in the shape the commanded axis reads (#2611).
+
+    Only the two fields
+    :func:`~jasper.active_speaker.crossover_v2.commanded.profile_graph_summation`
+    consults — ``recomposition_snapshot['corrections']`` and
+    ``recomposition_snapshot['linearization']`` — because a fixture that
+    fabricated a whole profile would be asserting the profile schema rather than
+    the axis. The defaults describe the graph
+    :func:`_eligible_measure_analysis` was measured through in these fixtures:
+    the raw trim, no correction, no delay, no inversion.
+    """
+    return {
+        "status": "applied",
+        "recomposition_snapshot": {
+            "corrections": {
+                role: {
+                    "gain_db": float((trim_db or _FIXTURE_RAW_TRIM_DB)[role]),
+                    "delay_ms": float((delay_ms or {}).get(role, 0.0)),
+                    "inverted": bool((inverted or {}).get(role, False)),
+                }
+                for role in (trim_db or _FIXTURE_RAW_TRIM_DB)
+            },
+            "linearization": dict(linearization or {}),
+        },
+    }
 
 
 #: The entry baseline's pooled spec residual, in dB, and the post-apply

@@ -654,8 +654,12 @@ def evaluate_candidate(
                        np.asarray(built.predicted_sum[1]).copy()),
         predicted_spec_report=(dict(spec_report)
             if spec_report is not None else None),
-        commanded_delta=commanded_delta(analysis.predicted_sum,
-                                        built.predicted_sum),
+        # THIS corner's own analysis, not its ``predicted_sum``: since #2611 the
+        # commanded axis is the applied graph minus the graph it REPLACES, and
+        # the previous graph is modelled on the branches this corner's analysis
+        # measured. Handing over the analysis is what keeps both sides of the
+        # subtraction on one branch pair per candidate.
+        commanded_delta=commanded_delta(analysis, built.predicted_sum),
         level_frame_finding=built.level_frame_finding,
         # THIS candidate's realized inter-driver level, which the sweep can
         # carry since the cutover (#2307 gate note N6): the verdict is a

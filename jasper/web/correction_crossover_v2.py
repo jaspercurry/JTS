@@ -2268,8 +2268,9 @@ def _decimate_delta(commanded_delta: Any) -> dict[str, Any] | None:
 
     The delta probe's commanded axis —
     :func:`~jasper.active_speaker.crossover_v2_flow._commanded_delta`'s
-    ``(freqs_hz, delta_db)``, the shape the emitted filters and trims ask the
-    speaker for. Bounded at the same :data:`MAX_PERSISTED_SUM_POINTS` ceiling,
+    ``(freqs_hz, delta_db)``, the CHANGE the applied graph asks the speaker for
+    relative to the graph it replaces — filters, role gains, polarity and delay
+    (#2611). Bounded at the same :data:`MAX_PERSISTED_SUM_POINTS` ceiling,
     over the same fixed-width blocks, so it lands on the SAME grid
     :func:`_decimate_sum` produces for the same input frequencies — the two
     curves cross the stage bridge together and a reader comparing them should
@@ -7098,6 +7099,39 @@ def _applied_graph_boosts() -> bool:
         return True
 
 
+def _applied_profile_now() -> Mapping[str, Any] | None:
+    """The Layer-A profile the speaker is playing right now, or ``None`` (#2611).
+
+    The conductor's PREVIOUS-graph seam. Read at MEASURE-commit time, when the
+    apply has not happened yet, so "currently applied" and "the graph this apply
+    would replace" are the same profile — and read through the same SSOT
+    (:func:`~jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state`)
+    ``_applied_graph_boosts`` and ``_applied_offset_gate`` already read, so the
+    commanded axis, the boost predicate and the declared level move all describe
+    one graph.
+
+    **Fails to ``None``, and that is not the fail-closed direction here — it is
+    the honest one.** ``None`` makes the commanded axis unavailable and the delta
+    probe ``unavailable``: no rollback, and no pass either. There is deliberately
+    no fabricated substitute, because grading against a graph nobody ran is the
+    defect #2611 records.
+    """
+    from jasper.active_speaker.baseline_profile import (
+        load_applied_baseline_profile_state,
+    )
+
+    try:
+        return load_applied_baseline_profile_state()
+    except (OSError, RuntimeError, TypeError, ValueError, KeyError):
+        log_event(
+            logger,
+            "correction.crossover_v2_applied_profile_unreadable",
+            level=logging.WARNING,
+            exc_info=True,
+        )
+        return None
+
+
 def bind_v2_stage_seams(
     opening: StageOpening,
     *,
@@ -7186,6 +7220,11 @@ def bind_v2_stage_seams(
             if CAPABILITY_ROLLBACK in capabilities.provides else None
         ),
         applied_offset_db=_applied_offset_gate,
+        # #2611: the graph an apply replaces, for the commanded axis. Bound on
+        # both stages for ``entry_graph_fingerprint``'s reason — "what is live
+        # right now" is not a stage asymmetry — though only stage 1 commits a
+        # candidate and therefore only stage 1 reads it today.
+        applied_profile=_applied_profile_now,
         record_model_error=_record_live_model_error,
         rollback_available=_rollback_anchor_available,
         # #2291/#2318: "does the APPLIED graph boost". Bound on both stages for

@@ -35,22 +35,27 @@ extend.
 **What "realized" and "commanded" are, exactly** (read this before trusting a
 verdict — the algebra matters):
 
-* ``commanded_delta_db`` is the correction's own predicted transfer on the
-  summed response: the linearized-branch prediction minus the raw-branch
-  prediction, both built from the SAME measured branches with the SAME
-  summation model. The branch measurements and the summation model therefore
-  cancel out of it; what survives is the shape the emitted filters and trims
-  command.
+* ``commanded_delta_db`` is what the apply asks the summed response to CHANGE:
+  the applied graph's predicted sum minus the predicted sum of **the graph it
+  replaces**, both built from the SAME measured branches with the SAME
+  summation model (:mod:`jasper.active_speaker.crossover_v2.commanded`). The
+  branch measurements and the summation model therefore cancel out of it; what
+  survives is every element the apply commands — the emitted filters, the role
+  gains, the polarity and the delay. **Every element is load-bearing:** until
+  #2611 both sides were evaluated at the applied candidate's own polarity,
+  delay and gains, so those three cancelled by construction and a commanded
+  +3.3209 dB role-gain step plus a commanded polarity flip arrived here as
+  uncommanded surprises, and rolled a measured-better tune back.
 * ``realized_delta_db`` is the measured post-apply response minus the SAME
-  raw-branch prediction, at the same microphone position.
+  previous-graph prediction, at the same microphone position.
 
 Their difference — the ``error_db`` map this module classifies — is
-algebraically ``measured_post − predicted_post``: the raw-branch prediction
+algebraically ``measured_post − predicted_post``: the previous-graph prediction
 cancels. That is deliberate and is stated here so nobody later reads the delta
 framing as implying an independent pre-apply *measurement* at the mark (there
-is none; MEASURE captures per-driver sweeps, not a summed curve). The delta
-framing earns its keep in two places the plain residual cannot reach: the
-commanded curve is the axis the shortfall-vs-model-error discriminator
+is none at MEASURE; ``entry_delta_db`` below is a real one, and it is optional).
+The delta framing earns its keep in two places the plain residual cannot reach:
+the commanded curve is the axis the shortfall-vs-model-error discriminator
 regresses against, and the spatial arm below IS two real measurements.
 
 **This comparison is NOT level-offset-invariant, and that is why
@@ -1176,19 +1181,22 @@ def classify_delta_probe(
     for ``verify_measured_curve_from_state``'s reason: a truncated optional
     record should read as "no anchor", not reach the classifier as a bad grid.
 
-    **READ THIS BEFORE TRUSTING A RESIDUAL FROM A CHAINED ROUND.**
-    ``commanded_delta_db`` is measured against the RAW crossover, while
-    ``entry_delta_db`` is a measurement of whatever graph was active at entry.
-    When those differ — a REPEAT round, where the entry graph already carried a
-    correction — the residual carries ``−mean(previous round's commanded curve
-    over this round's quiet bins)``. That term is exactly zero when the previous
-    round commanded nothing in those bins, and is **otherwise unbounded**: this
-    function is never given the previous round's curve and cannot see, disclose,
-    or bound it. It can fabricate a shift (a previous round correcting out to
-    20 kHz against a new one stopping at 8 kHz measures a +6.000 dB phantom) and
-    it can mask one (a genuine −2.2 dB shift re-grading to 0.000). Keeping a
-    chained round's commanded band from retreating out of the previous round's
-    empties the overlap by construction.
+    **CHAINED ROUNDS: the reference graph is shared, and that is what makes the
+    residual meaningful** (#2611 closed the #2545 hazard). ``commanded_delta_db``
+    and ``entry_delta_db`` are both stated against the graph that was live at
+    entry — the former by construction (the caller's previous side IS the
+    applied profile), the latter because it is a measurement of that graph — so
+    they subtract cleanly and the residual is ``mean(measured_post −
+    measured_pre − commanded)`` over the quiet bins. Until #2611 the commanded
+    curve was measured against the RAW crossover instead, and a REPEAT round
+    therefore carried ``−mean(previous round's commanded curve over this round's
+    quiet bins)``: a term this function is never given, cannot bound, and which
+    could both fabricate a shift (a previous round correcting out to 20 kHz
+    against a new one stopping at 8 kHz measured a +6.000 dB phantom) and mask
+    one (a genuine −2.2 dB shift re-grading to 0.000). What the caller still
+    owes is that its previous side describe the graph the entry capture actually
+    went through; the one reachable way for it not to is named in
+    ``crossover_v2.commanded``'s "known incompleteness".
 
     Topology-agnostic by construction: this function knows about a measured
     curve, a commanded curve, and a band. It has no notion of drivers, ways,
@@ -1283,25 +1291,27 @@ def classify_delta_probe(
     # 12-20 kHz, and −0.221 declared graph move. Only the middle term is a level
     # move at all.
     #
-    # **Known incompleteness, and it is NOT bounded.** ``commanded`` is the new
-    # correction's transfer relative to the RAW crossover, while ``entry_delta``
-    # is a measurement of whatever graph was active at entry. On a first apply
-    # that graph carries no linearization and the two agree exactly. On a REPEAT
-    # round the residual carries a contaminant of exactly
+    # **The two curves share one reference graph, which is what makes the
+    # subtraction an identity** (#2611). ``commanded`` is the applied graph's
+    # predicted sum minus the ENTRY graph's, and ``entry_delta`` is a
+    # measurement of that same entry graph, so the model term cancels and what
+    # is left is ``measured_post − measured_pre − commanded``.
+    #
+    # It did not always. While ``commanded`` was stated against the RAW
+    # crossover instead, a REPEAT round's residual carried a contaminant of
+    # exactly
     #
     #     −mean(previous round's commanded curve over this round's quiet bins)
     #
-    # which is zero when the previous round commanded nothing there and has no
-    # bound at all when it did — the previous round's curve is not an input to
-    # this function and nothing here can see it. Two shapes were constructed
+    # — zero when the previous round commanded nothing there, unbounded when it
+    # did, and invisible to this function. Two shapes were constructed
     # (adversarial gate, PR #2545): a previous round correcting out to 20 kHz
-    # against a new one stopping at 8 kHz puts a **+6.000 dB phantom** in the
-    # residual, and the same overlap can MASK — a genuine −2.2 dB uncommanded
-    # shift re-grades to residual 0.000 and ``frame_mismatch``. The operational
-    # mitigation is to keep a chained round's commanded band from retreating out
-    # of the previous round's, which makes the overlap empty by construction.
-    # ``entry_anchor_offset_db`` discloses what WAS removed; nothing here can
-    # disclose this term.
+    # against a new one stopping at 8 kHz put a **+6.000 dB phantom** in the
+    # residual, and the same overlap could MASK — a genuine −2.2 dB uncommanded
+    # shift re-grading to residual 0.000 and ``frame_mismatch``. Both shapes are
+    # unreachable now: the previous round's curve is no longer a hidden term,
+    # because the previous GRAPH is an explicit input to the commanded axis.
+    # ``entry_anchor_offset_db`` still discloses what was removed.
     entry: np.ndarray | None = None
     if entry_delta_db is not None:
         candidate = np.asarray(entry_delta_db, dtype=np.float64)

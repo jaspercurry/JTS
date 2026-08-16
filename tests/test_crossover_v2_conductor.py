@@ -9975,20 +9975,33 @@ def test_delta_probe_reason_copy_names_no_hardware_noun():
         assert not any(word in message for word in banned), code
 
 
-def test_the_commanded_delta_is_none_for_a_trims_only_candidate():
-    """A candidate that emits no filters commands nothing this probe can grade
-    relative to the raw crossover, and says so rather than inventing a zero
-    curve that would classify as 'matched'."""
+def test_the_commanded_delta_is_none_when_a_side_is_missing():
+    """A missing curve on EITHER side is ``None``, which the probe reads as
+    ``unavailable`` — not as a zero curve that would classify as 'matched'.
+
+    **Amended by #2611, and the amendment is the point.** This test also pinned
+    ``_commanded_delta(predicted, predicted) is None`` — the trims-only guard,
+    which was correct while the previous side was the raw crossover at the
+    applied candidate's own parameters: a candidate emitting no filters produced
+    the identical object on both sides and had, in that frame, commanded
+    nothing. In the applied-vs-PREVIOUS-graph frame a trims-only candidate
+    commands its whole trim, polarity and delay step, so that guard would now
+    delete a real commanded change. Two equal-VALUED curves still yield a
+    flat-zero delta, which ``classify_delta_probe``'s own commanded floor
+    refuses as ``nothing_commanded`` — one owner for "was anything asked for",
+    one layer down.
+    """
     predicted = (np.array([100.0, 200.0]), np.array([0.0, 0.0]))
-    assert flow._commanded_delta(predicted, predicted) is None
     assert flow._commanded_delta(None, predicted) is None
     assert flow._commanded_delta(predicted, None) is None
+    _freqs, delta = flow._commanded_delta(predicted, predicted)
+    assert list(delta) == [0.0, 0.0]
 
 
-def test_the_commanded_delta_is_the_linearized_minus_raw_prediction():
-    raw = (np.array([100.0, 1000.0]), np.array([0.0, 0.0]))
-    post = (np.array([100.0, 1000.0]), np.array([-1.0, 4.0]))
-    freqs, delta = flow._commanded_delta(raw, post)
+def test_the_commanded_delta_is_the_applied_minus_the_previous_graph():
+    previous = (np.array([100.0, 1000.0]), np.array([0.0, 0.0]))
+    applied = (np.array([100.0, 1000.0]), np.array([-1.0, 4.0]))
+    freqs, delta = flow._commanded_delta(previous, applied)
     assert list(freqs) == [100.0, 1000.0]
     assert list(delta) == [-1.0, 4.0]
 

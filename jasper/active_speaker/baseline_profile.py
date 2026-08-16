@@ -1282,6 +1282,38 @@ def profile_linearization(profile: Mapping[str, Any] | None) -> Mapping[str, Any
     return linearization if isinstance(linearization, Mapping) else {}
 
 
+def profile_driver_corrections(profile: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    """One profile's AUTHORITATIVE ``{role: {gain_db, delay_ms, inverted}}``, or ``{}``.
+
+    The per-driver refinement the emitted graph carries — the exact mapping
+    :func:`~jasper.active_speaker.measured_crossover_candidate.driver_corrections`
+    produced for the candidate that became this profile, so a reader gets the
+    per-role trim, the branch delay, and the branch inversion that are ACTUALLY
+    live rather than three values re-derived from a candidate nobody kept.
+
+    Same authority rule, and the same reason for it, as
+    :func:`profile_linearization` one function up:
+    ``recomposition_snapshot["corrections"]`` is the copy
+    :func:`recompose_applied_baseline_yaml` re-emits from, so it wins, and the
+    top-level key is the era-older convenience mirror. Both are written from a
+    single variable; the preference decides which is authoritative, never which
+    of two disagreeing copies to believe.
+
+    ``{}`` when neither copy is present or parseable — a true "this profile does
+    not say", which every caller must treat as an absence rather than as a graph
+    that trims nothing.
+    """
+    if not isinstance(profile, Mapping):
+        return {}
+    snapshot = profile.get("recomposition_snapshot")
+    corrections = (
+        snapshot.get("corrections") if isinstance(snapshot, Mapping) else None
+    )
+    if not isinstance(corrections, Mapping):
+        corrections = profile.get("corrections")
+    return corrections if isinstance(corrections, Mapping) else {}
+
+
 def applied_program_level_delta_db(
     previous_profile: Mapping[str, Any] | None,
     applied_profile: Mapping[str, Any] | None,
@@ -1310,12 +1342,23 @@ def applied_program_level_delta_db(
     loudness-doctrine work shrinks the charge), and a correction that hands
     headroom BACK yields a positive number.
 
-    **Two known incompletenesses, both deliberate, both caught downstream.**
-    Per-branch trims are excluded because they are per-branch SHAPE and are
-    already inside the predicted summation the probe compares against
-    (``crossover_v2.intervention.plan_linearization`` builds the linearized prediction
-    at the very trims the graph emits) — counting them here would remove them
-    twice. Room-PEQ and preference-EQ headroom are excluded because an
+    **This is the pre-split term, and it is the ONLY level term the commanded
+    axis cannot carry** (#2611). The absorption is applied BEFORE the branch
+    split, so ``predicted_branch_sum`` — a model of the two branches — has no
+    place to put it, which is why it travels as a scalar beside the commanded
+    curve rather than inside it. Per-branch trims are excluded here for the
+    complementary reason: since #2611 they ARE on the commanded axis, which is
+    the applied graph's predicted sum minus the PREVIOUS graph's
+    (:mod:`jasper.active_speaker.crossover_v2.commanded`), so counting them here
+    too would remove them twice. Before that fix they were in neither account —
+    both sides of the commanded delta carried the applied candidate's own
+    trims, so a per-role gain step cancelled out of the model entirely and
+    landed in ``residual_offset_db`` as a surprise (+3.2198 dB on the
+    2026-08-16 jts3 round). The two accounts are disjoint and, between them,
+    complete for everything the apply commands.
+
+    **One known incompleteness, deliberate, caught downstream.**
+    Room-PEQ and preference-EQ headroom are excluded because an
     active-crossover candidate is emitted without them
     (``build_baseline_profile_candidate`` passes no ``room_peqs`` /
     ``preference_filters``), so a household that has either can see a real

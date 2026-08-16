@@ -160,6 +160,7 @@ from jasper.active_speaker.crossover_v2 import admission as _admission
 from jasper.active_speaker.crossover_v2 import attempt_grading as _grading
 from jasper.active_speaker.crossover_v2 import candidates as _candidates
 from jasper.active_speaker.crossover_v2 import capture_dispatch as _dispatch
+from jasper.active_speaker.crossover_v2 import commanded as _commanded
 from jasper.active_speaker.crossover_v2 import fc_sweep as _fc
 from jasper.active_speaker.crossover_v2 import planning as _planning
 from jasper.active_speaker.crossover_v2 import priors as _priors
@@ -2949,6 +2950,20 @@ class V2FlowSeams:
     # ``classify_delta_probe`` treats honestly — the whole shift stays visible
     # as ``residual_offset_db`` instead of being silently claimed as accounted.
     applied_offset_db: Callable[[], float] | None = None
+    # #2611: the Layer-A profile the speaker is playing RIGHT NOW — the graph an
+    # apply would replace. Read once per committed candidate, at MEASURE-commit
+    # time (the apply has not happened yet, so "currently applied" IS the
+    # previous graph), and turned into the PREVIOUS side of the commanded axis
+    # by :meth:`CrossoverV2Session._previous_graph_predicted_sum`.
+    #
+    # Optional, and its absence is NOT a fallback to the old raw-crossover axis:
+    # a session that cannot learn what the speaker is playing cannot state what
+    # an apply commands, so the commanded delta is ``None`` and the delta probe
+    # reports ``unavailable`` — no evidence to refuse on, and no permission
+    # granted either. Grading against a graph nobody ran is what rolled a
+    # measured-better tune back on 2026-08-16; refusing to grade is the honest
+    # direction, and the reason is named on the journal every time.
+    applied_profile: Callable[[], Mapping[str, Any] | None] | None = None
     # S3 attempts loop: called once for each newly accepted applied-candidate
     # VERIFY. Optional so a session without a durable host still grades its
     # in-memory attempt and every pre-wiring construction site remains valid.
@@ -4842,41 +4857,29 @@ def spec_report_for_predicted_sum(predicted_sum: Any) -> Any:
         return None
 
 
-def _commanded_delta(raw_predicted_sum: Any, predicted_sum: Any) -> Any:
+def _commanded_delta(previous_predicted_sum: Any, predicted_sum: Any) -> Any:
     """``(freqs_hz, delta_db)`` — what the applied correction COMMANDS on the
     summed response, or ``None`` (PR-L5's delta probe, the commanded half).
 
-    The linearized-branch prediction minus the raw-branch one, both built from
-    the SAME measured branches with the SAME summation model
-    (``program_analysis.predicted_branch_sum``) at the SAME committed residual
-    delay, so the branch measurements, the summation model, and the alignment
-    all divide out and what is left is the shape the emitted filters and trims
-    ask the speaker for.
+    The applied graph's predicted sum minus **the predicted sum of the graph it
+    replaces**, both built from the SAME measured branches with the SAME
+    summation model (``program_analysis.predicted_branch_sum``) against the SAME
+    alignment anchor, so the branch measurements, the summation model, and the
+    anchor all divide out and what is left is every element the apply commands:
+    the emitted filters, the role gains, the polarity, and the delay.
+
+    The previous side is built by
+    :meth:`CrossoverV2Session._previous_graph_predicted_sum`; this function is
+    only the subtraction, and
+    :mod:`jasper.active_speaker.crossover_v2.commanded` owns both the model and
+    the argument for why the previous side is the graph rather than the raw
+    crossover (#2611).
 
     ``None`` — the probe reports ``unavailable``, which is not a pass — when
-    either curve is missing, when they are the same object (a trims-only
-    candidate: it emits no filters, so relative to the raw crossover it
-    commands nothing this probe could grade, and the VERIFY tracking check
-    remains its comparator), or when the two curves cannot be put on one grid.
+    either curve is missing or the two cannot be put on one grid. The caller
+    names the reason on the journal.
     """
-    if raw_predicted_sum is None or predicted_sum is None:
-        return None
-    if raw_predicted_sum is predicted_sum:
-        return None
-    try:
-        raw_freqs, raw_db = raw_predicted_sum
-        freqs, db = predicted_sum
-        grid = np.asarray(freqs, dtype=float)
-        delta = np.asarray(db, dtype=float) - np.interp(
-            grid, np.asarray(raw_freqs, dtype=float), np.asarray(raw_db, dtype=float),
-        )
-    except (ValueError, TypeError, IndexError, AttributeError) as exc:
-        log_event(
-            logger, "correction.crossover_v2_commanded_delta_failed",
-            level=logging.WARNING, error=str(exc),
-        )
-        return None
-    return grid, delta
+    return _commanded.commanded_delta(previous_predicted_sum, predicted_sum)
 
 
 # --------------------------------------------------------------------------- #
@@ -7395,7 +7398,7 @@ class CrossoverV2Session:
             sweep_bounds=self._measure_sweep_bounds,
             predicted_spec_report=lambda: self._measure_predicted_spec_report,
             ineligible_reason=self._linearization_ineligible_reason,
-            commanded_delta=_commanded_delta,
+            commanded_delta=self._commanded_delta_for,
             configured_fc_hz=self._fc_hz,
             preset=self._preset,
             tweeter_role=self._tweeter.role,
@@ -8306,6 +8309,100 @@ class CrossoverV2Session:
             linearization=linearization,
         )
 
+    def _previous_graph_predicted_sum(self, analysis: Any) -> Any:
+        """The graph an apply REPLACES, modelled on this capture's branches (#2611).
+
+        The PREVIOUS side of the commanded axis: the currently-applied Layer-A
+        profile's own correction filters, role gains, polarity and delay,
+        evaluated on the same measured branch pair and against the same
+        alignment anchor the applied side uses. See
+        :mod:`jasper.active_speaker.crossover_v2.commanded` for why that — and
+        not the raw crossover at the applied candidate's own parameters — is
+        what the probe's measured side is a change against.
+
+        ``None`` whenever the previous graph cannot be named, with the reason on
+        the journal. Every ``None`` here becomes an ``unavailable`` delta probe
+        rather than a grade against an incomplete expectation; there is no
+        fallback to the pre-#2611 axis, because that axis IS the defect.
+        """
+        def _absent(reason: str, **fields: Any) -> None:
+            log_event(
+                logger, "correction.crossover_v2_previous_graph_unavailable",
+                level=logging.WARNING, session_id=self.session_id,
+                reason=reason, **fields,
+            )
+            return None
+
+        seam = self._seams.applied_profile
+        if seam is None:
+            return _absent("no_applied_profile_seam")
+        try:
+            profile = seam()
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            return _absent("applied_profile_unreadable", error=str(exc))
+        woofer_role, tweeter_role = self._woofer.role, self._tweeter.role
+        graph = _commanded.profile_graph_summation(
+            profile, woofer_role=woofer_role, tweeter_role=tweeter_role,
+        )
+        if graph is None:
+            return _absent("applied_profile_names_no_graph")
+        responses = {
+            response.role: response
+            for response in (analysis.driver_responses or ())
+        }
+        if woofer_role not in responses or tweeter_role not in responses:
+            return _absent("capture_has_no_branch_pair")
+        alignment = analysis.alignment
+        predicted = _commanded.graph_predicted_sum(
+            # The WOOFER's grid, which is the grid ``plan_linearization`` builds
+            # the applied side on (``freqs = responses[woofer_role].freqs_hz``),
+            # so both sides of the subtraction land on one grid without an
+            # interpolation nobody asked for.
+            responses[woofer_role].freqs_hz,
+            {role: response.complex_tf for role, response in responses.items()},
+            graph,
+            woofer_role=woofer_role,
+            tweeter_role=tweeter_role,
+            # The SAME gate the applied side's residual is derived through
+            # (``program_analysis._build_candidate``): an anchor the aligner
+            # refused is no anchor, and both sides then model the frame the
+            # independently-aligned branch pair is already in.
+            anchor_delay_us=(
+                alignment.anchor_delay_us
+                if alignment is not None and alignment.status == ALIGNMENT_OK
+                else None
+            ),
+        )
+        if predicted is None:
+            return _absent("previous_graph_model_failed")
+        # INFO, and it carries the four numbers the model turned on: a disputed
+        # rollback should never need a second session to establish which graph
+        # the round was graded against.
+        log_event(
+            logger, "correction.crossover_v2_previous_graph",
+            level=logging.INFO, session_id=self.session_id,
+            trim_db={r: round(v, 4) for r, v in graph.trim_db.items()},
+            delay_us=round(graph.delay_us, 3),
+            polarity_sign=graph.polarity_sign,
+            linearization_filters={
+                role: len(entries) for role, entries in graph.linearization.items()
+            },
+        )
+        return predicted
+
+    def _commanded_delta_for(self, analysis: Any, predicted_sum: Any) -> Any:
+        """This candidate's commanded axis: applied graph minus previous graph.
+
+        The one place the two halves meet, so the configured-Fc walk and the
+        alternative-Fc sweep cannot build the axis differently. ``analysis`` is
+        the candidate's OWN analysis — the sweep re-analyses at each corner, and
+        the previous graph has to be modelled on the same branches the applied
+        side was, or the branch measurement stops cancelling.
+        """
+        return _commanded_delta(
+            self._previous_graph_predicted_sum(analysis), predicted_sum,
+        )
+
     def commit_intervention_proposal(
         self,
         candidate: Any,
@@ -8444,7 +8541,7 @@ class CrossoverV2Session:
         self.commit_intervention_proposal(
             candidate,
             predicted_sum=predicted_sum,
-            commanded_delta=_commanded_delta(analysis.predicted_sum, predicted_sum),
+            commanded_delta=self._commanded_delta_for(analysis, predicted_sum),
             level_frame_finding=built.level_frame_finding,
             # #2392's other half of the same one-line re-supply: the walk reads
             # the verdict off its own build's state, the same accessor
@@ -9885,13 +9982,20 @@ class CrossoverV2Session:
     ) -> Any | None:
         """This round's PRE-apply capture, in the realized curve's frame (#2533).
 
-        ``measured_pre − predicted_raw``, on the VERIFY grid — the exact
+        ``measured_pre − predicted_previous``, on the VERIFY grid — the exact
         counterpart of the ``realized_db`` reconstruction beside the call, with
         the entry baseline's magnitude in place of the post-apply one, so
         ``classify_delta_probe`` can measure its residual as a CHANGE across the
         apply instead of as an absolute disagreement with the model. The
-        raw-branch prediction is recovered the same way that reconstruction
-        recovers it: ``predicted_raw == predicted_post − commanded``.
+        previous-graph prediction is recovered the same way that reconstruction
+        recovers it: ``predicted_previous == predicted_post − commanded``.
+
+        Since #2611 that recovered curve is a model of the graph the entry
+        capture ACTUALLY went through, so this term and ``commanded`` share one
+        reference and the probe's residual is a measurement-minus-measurement
+        difference. It used to be the raw crossover, which is what put an
+        unbounded chained-round contaminant in the residual (see
+        :func:`~jasper.active_speaker.delta_probe.classify_delta_probe`).
 
         The curve is #2291's ``verify_priors.entry_baseline``, already retained
         and already rehydrated into stage 2 — nothing new is captured, persisted,
@@ -9997,7 +10101,7 @@ class CrossoverV2Session:
             )
             return None
 
-        # realized − commanded == measured − predicted (the raw-branch
+        # realized − commanded == measured − predicted (the previous-graph
         # prediction cancels), so the realized curve is reconstructed from the
         # three quantities this session actually holds.
         realized_db = (measured_s - predicted_s) + commanded_db
