@@ -1912,9 +1912,13 @@ def _series_complete_text(reason: str) -> str:
             "moved it, so more rounds are unlikely to help — the tuning is "
             "finished."
         ),
+        # Deliberately does NOT say "the third round". The cap is
+        # ``ROUND_SERIES_CAP``'s to state, and spelling the number into copy
+        # would be a second source of truth that a change to the constant
+        # would silently turn into a lie on a household's screen.
         HEADROOM_CAP_REACHED: (
-            "Everything measured is inside the target. That was the third and "
-            "last round of this tuning, so it is finished here."
+            "Everything measured is inside the target. That was the last "
+            "round of this tuning, so it is finished here."
         ),
         HEADROOM_NO_OBJECTIVES: (
             "Everything measured is inside the target. There was not enough of "

@@ -1114,7 +1114,7 @@ def test_a_passing_round_that_is_still_iterating_says_so_on_the_screen():
     [
         ("objectives_within_plateau", "as flat and as level as measuring can show"),
         ("improvement_plateaued", "barely moved it"),
-        ("round_cap_reached", "third and last round"),
+        ("round_cap_reached", "the last round"),
         ("objectives_unevaluable", "not enough of a full result"),
     ],
 )
@@ -1209,6 +1209,36 @@ def test_a_restoring_row_gets_no_round_sentence_at_all():
                 "crossover_v2_keep_for_iteration",
             }
         ], row
+
+
+def test_no_round_copy_spells_the_cap_out_as_a_number():
+    """``ROUND_SERIES_CAP`` has one owner, and the screen is not it.
+
+    Copy reading "that was the third round" would be a second source of truth
+    for the constant — and a change to the cap would turn it into a lie on a
+    household's screen with nothing red. The sentence says "the last round"
+    instead, which stays true at any cap.
+    """
+    from jasper.active_speaker.crossover_envelope_v2 import _series_complete_text
+
+    sentences = [
+        KEEP_ITERATING_TEXT,
+        KEEP_FOR_ITERATION_TEXT,
+        SERIES_COMPLETE_DEFAULT_TEXT,
+        *(
+            _series_complete_text(reason)
+            for reason in (
+                "objectives_within_plateau", "improvement_plateaued",
+                "round_cap_reached", "objectives_unevaluable",
+            )
+        ),
+    ]
+    for text in sentences:
+        lowered = text.lower()
+        assert not any(
+            word in lowered
+            for word in ("three", "third", "3 rounds", "3 more")
+        ), text
 
 
 def test_the_envelope_names_which_adoption_row_the_round_fired():
