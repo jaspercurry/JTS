@@ -30,6 +30,13 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { RelayClient } from "../../capture-page/js/relay-client.js";
+// The household sentences the auto-retake renders (#2557 phase B), imported
+// rather than retyped: a second copy of the copy is a copy that can drift, and
+// the wording itself is pinned next door in capture_integrity_test.mjs.
+import {
+  AUTO_RETAKE_MESSAGE,
+  AUTO_RETAKE_SPENT_NOTE,
+} from "../../capture-page/js/capture-integrity.js";
 import { runTestFunctions } from "./run_test_functions.mjs";
 
 // The EXACT rejection a real relay timeout raises, produced by driving the REAL
@@ -4822,11 +4829,6 @@ function makeSplicingRecorder(glitchedAttempts) {
   return recorder;
 }
 
-const AUTO_RETAKE_NOTE =
-  "That recording had a gap in it — JTS is taking this measurement again.";
-const AUTO_RETAKE_SPENT =
-  "JTS already retook this measurement once on its own after a gap in the recording.";
-
 function integrityReports(posted) {
   return posted.filter((e) => e.capture_integrity).map((e) => e.capture_integrity);
 }
@@ -4864,7 +4866,7 @@ async function testAWitnessedSpliceRetakesItselfWithNoTap() {
   // names the step being retaken, discloses WHY, and offers nothing to tap —
   // the auto-begin is a macrotask, so this state is what the household sees.
   assert.equal(headingText(ctx.screenEl), "Measuring this spot again");
-  assert.deepEqual(noteTexts(ctx.screenEl), [AUTO_RETAKE_NOTE]);
+  assert.deepEqual(noteTexts(ctx.screenEl), [AUTO_RETAKE_MESSAGE]);
   assert.deepEqual(actionLabels(ctx.screenEl), []);
   assert.deepEqual(
     (ctx.captureRefs.buttons || []).map((b) => b.action), [],
@@ -4987,7 +4989,7 @@ async function testTheAutomaticRetakeFiresOncePerMeasurement() {
   // The rejection is intact, and the disclosure rides beside it.
   assert.ok(noteTexts(ctx.screenEl).includes("The capture glitched."));
   assert.ok(
-    noteTexts(ctx.screenEl).includes(AUTO_RETAKE_SPENT),
+    noteTexts(ctx.screenEl).includes(AUTO_RETAKE_SPENT_NOTE),
     `expected the spent-automatic-try note, got: ${JSON.stringify(noteTexts(ctx.screenEl))}`,
   );
   assert.equal(integrityReports(posted)[1].zero_run_count, 1);
@@ -5046,7 +5048,7 @@ async function testASpentBudgetRefusesRatherThanAutoRetaking() {
   assert.equal(headingText(ctx.screenEl), "Take that measurement again");
   assert.equal(eyebrowText(ctx.screenEl), "Measurement 1 of 1 — no more tries at this spot");
   assert.ok(
-    !noteTexts(ctx.screenEl).includes(AUTO_RETAKE_SPENT),
+    !noteTexts(ctx.screenEl).includes(AUTO_RETAKE_SPENT_NOTE),
     "nothing automatic happened, so nothing claims it did",
   );
   await new Promise((resolve) => setTimeout(resolve, 20));

@@ -330,7 +330,7 @@ def test_the_digest_covers_the_shared_module_the_build_copies_in():
 # The published state of capture-page/js/**, paired with the build stamp it
 # ships under. See the test below for why a digest rather than a rule.
 _CAPTURE_PAGE_JS_DIGEST = (
-    "53d36bb75f78c2e1ef8a2158e53f20ff61e3ac69d5a419268cc6df0461d30545"
+    "8b733456d2001780a584df35544b1a2c14595ea9e1e241ae892b3ddfaf9df43b"
 )
 _CAPTURE_PAGE_JS_DIGEST_BUILD = "20260815.5"
 

@@ -269,10 +269,10 @@ export function witnessedZeroFillSplice(report) {
   );
 }
 
-// Why an automatic retake fired, as one stable token on the wire. The page's
-// only trigger today, and named for the mechanism (a spliced-in quantum of
-// digital zeros) rather than for the issue number, so a sidecar reader a year
-// from now can tell what the page believed it saw.
+// Why an automatic retake fired, as one stable token on the wire. It is named
+// for the mechanism — a spliced-in quantum of digital zeros — rather than for
+// the issue number, so a sidecar reader a year from now can tell what the page
+// believed it saw. `witnessedZeroFillSplice` is the only thing that sets it.
 export const AUTO_RETAKE_ZERO_FILL_REASON = "zero_fill_splice";
 
 // What the household reads while the page retakes a measurement on its own.
