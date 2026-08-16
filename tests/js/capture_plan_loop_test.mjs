@@ -4775,10 +4775,12 @@ async function testPreArmFailureDuringAFinalPositionRetakeRestoresTheConfirm() {
 // behalf without saying so.
 //
 // A NOTE ON THE FIXTURES. `makeRecorder()` returns 4800 zeros, which IS a zero
-// run — one starting at sample 0, the benign "graph had not warmed up" reading
-// the predicate declines by design. So every pre-existing test in this file
-// still reaches its retry screen, and these tests plant their splice INSIDE a
-// never-silent capture rather than relying on that.
+// run — and the predicate declines it on BOTH of its interior bounds at once
+// (it starts at sample 0, and it reaches the last sample), because a capture
+// that is silent end to end is a dead microphone rather than a splice. That is
+// why every pre-existing test in this file still reaches its retry screen. The
+// tests below do not lean on it: they plant their splice INSIDE a never-silent
+// capture, which is the shape the campaign actually measured.
 // ============================================================================
 
 // A capture that is never exactly zero, so a planted run is the only one.
