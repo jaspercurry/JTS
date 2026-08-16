@@ -63,7 +63,7 @@ a HARD STOP with no retry -- told the household to check its speaker wiring.
 Those captures are on a lab Pi this checkout cannot reach, so the last section
 reconstructs the decision geometry the same way the #2093 fixtures above do,
 and pins BOTH production verdicts: the shipped analyzer's
-``channel_map_mismatch`` on a 0.0006 anchor gap, and this branch's.
+``channel_map_mismatch`` on a 0.0005 anchor gap, and this branch's.
 """
 from __future__ import annotations
 

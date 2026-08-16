@@ -229,19 +229,21 @@ SWEEP_LOCATE_CONFIDENCE_FLOOR = 0.3
 #   * ATTRIBUTED captures (the witness landed on a real stimulus under ONE
 #     reading and on nothing under the other): 2026-08-16's accepted round 2
 #     separated its candidates by 0.818; this repo's reconstruction of the same
-#     program in a quiet room measures 0.849. #2093's VERIFY captures are the
+#     program in a quiet room measures 0.8488. #2093's VERIFY captures are the
 #     same shape — the summed sweep is unique, so the rival window holds
 #     silence.
 #   * UN-ATTRIBUTED captures (both readings land the witness on a pilot of the
 #     same shape): 2026-08-16's refused round 3 separated its candidates by
 #     0.0034; the two CHECK fixtures quoted in `_resolve_anchor`'s
 #     witness-ordering comment measured 0.000 and 0.0001; the reconstruction in
-#     `tests/test_audio_measurement_anchor_resolution.py` measures 0.0006.
+#     `tests/test_audio_measurement_anchor_resolution.py` measures 0.0005.
 #
 # 0.05 sits ~16x under the smallest attributed gap and ~15x over the largest
 # un-attributed one — a decade of headroom on both sides, which is why it is a
-# round number and not a fitted one. PROVISIONAL in the same sense as the
-# constants above: a bench population that lands a genuine capture inside it
+# round number and not a fitted one. Both ends are re-measured on this repo's
+# own fixtures by `test_the_margin_brackets_the_two_measured_populations`, so
+# the bracket is an assertion rather than this comment. PROVISIONAL in the same
+# sense as the constants above: a bench population that lands a capture inside it
 # would move it, and the `ambiguous=` field on the `program_analysis.anchor`
 # event is what that population would be counted from.
 ANCHOR_DISCRIMINATION_MARGIN = 0.05
