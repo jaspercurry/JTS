@@ -1585,7 +1585,7 @@ def decide_adoption(
     :data:`~.contracts.ADOPTION_ROW_KEEP_ITERATING` is the same passing round
     with a flatter result still in reach.
 
-    **Nothing else moved.** The split is confined to the one cell
+    **Nothing else moved with #2602.** Its split is confined to the one cell
     (:data:`_PASSED_ROWS`) that used to be unconditionally terminal, and every
     other stop the table had is still exactly where it was: a measured
     regression restores, an unmeasured state restores, a hazard restores, and
