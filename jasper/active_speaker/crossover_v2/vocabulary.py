@@ -118,6 +118,15 @@ REASON_NOISY_ROOM_LINEARITY = "noisy_room_linearity"
 REASON_PILOT_LEVEL_COLLAPSE = "pilot_level_collapse"
 REASON_SNR_FLOOR = "snr_floor"
 REASON_CHANNEL_MAP_MISMATCH = "channel_map_mismatch"
+# The analyzer could not decide WHICH scheduled tone a capture's first arrival
+# was, so it cannot say which driver played what. Its whole reason for existing
+# is that the alternative is `REASON_CHANNEL_MAP_MISMATCH` — a HARD STOP telling
+# a household to open its speaker — decided by a 0.0034 confidence gap on
+# 2026-08-16 (issue #2644). Retriable, and its copy names the recording rather
+# than the speaker: nothing about the hardware is known to be wrong here, and
+# the household must not be handed a rewire instruction the evidence cannot
+# support. See `capture_dispatch.SCREEN_ANCHOR_AMBIGUOUS` for the ladder rung.
+REASON_ANCHOR_AMBIGUOUS = "anchor_ambiguous"
 REASON_CLIPPED = "clipped"
 REASON_DRIFT_BASELINES_DISAGREE = "drift_baselines_disagree"
 REASON_DELAY_EXCEEDS_SEARCH_WINDOW = "delay_exceeds_search_window"
@@ -778,6 +787,22 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "The drivers didn't play in the expected order — check the speaker "
         "wiring, or if the room is noisy, quiet it and try again.",
     ),
+    REASON_ANCHOR_AMBIGUOUS: _retriable_reason(
+        REASON_ANCHOR_AMBIGUOUS, TEMPLATE_FIX_AND_RETRY, 1,
+        # One reason, one action (the Language guide). The diagnosis is
+        # deliberately about the RECORDING and not about the speaker: this code
+        # fires precisely when the evidence does not identify which driver
+        # played what, so naming any cause in the speaker would be the
+        # over-claim the code exists to prevent. It does not ask the household
+        # to quiet the room either — the 2026-08-16 capture that produced it had
+        # BETTER pilot SNR than the round that passed, so "the room was loud"
+        # would have been false. Re-recording is what actually clears it,
+        # because the anchor collapse is a property of one take.
+        RetryableReasonCopy(
+            "JTS couldn't line that recording up with the test tones it played.",
+            "Try that measurement again.",
+        ),
+    ),
     REASON_CLIPPED: _retriable_reason(
         REASON_CLIPPED, TEMPLATE_SILENT_AUTO_RETRY, 1,
         RetryableReasonCopy(
@@ -1212,10 +1237,12 @@ SCREEN_KIND_REASONS: dict[str, str] = {
     _spatial.SCREEN_LINEARITY_FAILED: REASON_AGC_BEHAVIORAL_FAIL,
     _spatial.SCREEN_CAPTURE_GLITCH: REASON_DRIFT_BASELINES_DISAGREE,
     _spatial.SCREEN_CLIPPED: REASON_CLIPPED,
-    # The five an ANCHOR phase adds (#2291 Phase 5a-vii). Two of them do not
-    # share their code's name either: an unresolved alignment renders as
-    # ``delay_exceeds_search_window``, and a bent curve the room caused renders
-    # as ``noisy_room_linearity`` rather than blaming the phone's microphone.
+    # The six an ANCHOR phase adds (#2291 Phase 5a-vii, plus #2644's). Two of
+    # them do not share their code's name either: an unresolved alignment
+    # renders as ``delay_exceeds_search_window``, and a bent curve the room
+    # caused renders as ``noisy_room_linearity`` rather than blaming the phone's
+    # microphone.
+    _dispatch.SCREEN_ANCHOR_AMBIGUOUS: REASON_ANCHOR_AMBIGUOUS,
     _dispatch.SCREEN_CHANNEL_MAP_MISMATCH: REASON_CHANNEL_MAP_MISMATCH,
     _dispatch.SCREEN_SNR_FLOOR: REASON_SNR_FLOOR,
     _dispatch.SCREEN_NOISY_ROOM_LINEARITY: REASON_NOISY_ROOM_LINEARITY,

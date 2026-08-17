@@ -3712,7 +3712,7 @@ def test_snap_production_path_preserves_parallax_contract(
     expected_delay_us = expected_raw_us - geometry.parallax_us()
     assert result.drift.epsilon_ppm == pytest.approx(30.0, abs=2.0)
     assert result.alignment.seed_delay_us == pytest.approx(expected_delay_us, abs=5.0)
-    measured_global_offset, _first, _stimuli = _global_offset(prog, cap, SR)
+    measured_global_offset, _first, _stimuli, _amb = _global_offset(prog, cap, SR)
     seg_w = prog.segment("sweep_w")
     seg_t = prog.segment("sweep_t")
     epsilon = result.drift.epsilon_ppm / 1e6
@@ -4803,7 +4803,7 @@ def _check_rumble_capture(rumble_hz: tuple[float, ...], rumble_amp: float, *, se
 def _old_peak_delta(prog, capture, role: str) -> float:
     """The OLD (pre-fix) full-band-peak linearity delta, on the SAME located
     windows the new estimator uses — a direct old-vs-new comparison."""
-    global_offset, _first, stimuli = _global_offset(prog, capture, SR)
+    global_offset, _first, stimuli, _amb = _global_offset(prog, capture, SR)
     locations = _locate_segments(prog, capture, SR, global_offset, stimuli)
     by_id = {loc.segment_id: loc for loc in locations}
     lo_seg = prog.segment(f"pilot_{role}_lo")
@@ -5016,7 +5016,7 @@ def test_channel_map_survives_concurrent_room_rumble():
 
     # OLD math, reimplemented inline: >50% of the tweeter pilot's TOTAL
     # spectral energy must land in its own declared band. It does not.
-    global_offset, _first, stimuli = _global_offset(chk, full_cap, SR)
+    global_offset, _first, stimuli, _amb = _global_offset(chk, full_cap, SR)
     locations = _locate_segments(chk, full_cap, SR, global_offset, stimuli)
     by_id = {loc.segment_id: loc for loc in locations}
     hi_seg = chk.segment("pilot_tweeter_hi")

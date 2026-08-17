@@ -88,6 +88,7 @@ __all__ = [
     "ANCHOR_SCREEN_KINDS",
     "CAPTURE_SCREEN_KINDS",
     "SCREEN_ALIGNMENT_UNRESOLVED",
+    "SCREEN_ANCHOR_AMBIGUOUS",
     "SCREEN_CHANNEL_MAP_MISMATCH",
     "SCREEN_LOW_ALIGNMENT_CONFIDENCE",
     "SCREEN_NOISY_ROOM_LINEARITY",
@@ -119,6 +120,12 @@ __all__ = [
 
 #: CHECK heard the drivers on the wrong outputs.
 SCREEN_CHANNEL_MAP_MISMATCH = "channel_map_mismatch"
+#: The capture's timeline could not be attributed to the program it played.
+#: Ahead of the one above in CHECK's ladder on purpose (issue #2644): a
+#: mis-anchored capture reads every driver's window one pilot spacing from where
+#: that driver actually played, which is how a correctly-wired speaker produced
+#: a confident-looking "the drivers played out of order".
+SCREEN_ANCHOR_AMBIGUOUS = "anchor_ambiguous"
 #: The capture cleared its gates but sits too close to the room's own floor.
 SCREEN_SNR_FLOOR = "snr_floor"
 #: The curve bent, and this capture's OWN ambient evidence says the room did it.
@@ -128,8 +135,9 @@ SCREEN_ALIGNMENT_UNRESOLVED = "alignment_unresolved"
 #: An alignment estimate exists and is not trustworthy enough to build on.
 SCREEN_LOW_ALIGNMENT_CONFIDENCE = "low_alignment_confidence"
 
-#: The five kinds only an anchor phase can produce.
+#: The six kinds only an anchor phase can produce.
 ANCHOR_SCREEN_KINDS = frozenset({
+    SCREEN_ANCHOR_AMBIGUOUS,
     SCREEN_CHANNEL_MAP_MISMATCH,
     SCREEN_SNR_FLOOR,
     SCREEN_NOISY_ROOM_LINEARITY,
@@ -165,6 +173,7 @@ class CheckScreens:
     """
 
     stimulus_located: bool
+    anchor_ambiguous: bool
     channel_map_ok: bool | None
     pilot_snr_ok: bool | None
     linearity_ok: bool | None
@@ -175,24 +184,34 @@ class CheckScreens:
 def check_screens(screens: CheckScreens) -> str | None:
     """CHECK's ladder: the refusal kind, or ``None`` to accept.
 
-    Order is load-bearing and unchanged from the shipped verdict:
+    Order is load-bearing and unchanged from the shipped verdict apart from
+    rung 2, which #2644 inserted ABOVE the channel map for the reason stated
+    there:
 
     1. **Stimulus located.**  A capture whose stimulus was never found is not
        evidence about anything.
-    2. **Channel map.**  Explicit ``False`` only — ``None`` is no evidence.
-    3. **Pilot SNR.**  Ahead of linearity for issue #1838's reason: below the
+    2. **Anchor attributed.**  A capture whose timeline the analyzer could not
+       pin is not evidence about WHICH driver played WHAT, and every rung below
+       reads per-driver windows.  It sits above the channel map specifically
+       because the channel map is the rung that turns a slid window into a
+       household instruction to rewire a correctly-wired speaker (issue #2644),
+       and it is retriable because re-recording is exactly what fixes it.
+    3. **Channel map.**  Explicit ``False`` only — ``None`` is no evidence.
+    4. **Pilot SNR.**  Ahead of linearity for issue #1838's reason: below the
        floor the ambient-subtracted two-pilot delta is not evidence either way
        (``linearity_ok`` is already ``None``), so the honest finding is the
        room and the level, never the phone's microphone.
-    4. **Linearity.**  W6.12 — do not blame the microphone when the room was
+    5. **Linearity.**  W6.12 — do not blame the microphone when the room was
        the cause.  CHECK is the one phase that can tell, because its gain solve
        already produced a band-resolved ambient verdict against THIS capture;
        when that verdict says the room was noisy, say so.
-    5. **The gain solve itself.**  No plan, or a plan that could not clear the
+    6. **The gain solve itself.**  No plan, or a plan that could not clear the
        floor, and there is nothing for MEASURE to play.
     """
     if not screens.stimulus_located:
         return SCREEN_LOCATE_FAILED
+    if screens.anchor_ambiguous:
+        return SCREEN_ANCHOR_AMBIGUOUS
     if screens.channel_map_ok is False:
         return SCREEN_CHANNEL_MAP_MISMATCH
     if screens.pilot_snr_ok is False:

@@ -43,6 +43,7 @@ MOVED_NAMES: dict[str, tuple[str, ...]] = {
         "NON_RETRIABLE_CODES",
         "PhaseVerdict",
         "REASON_AGC_BEHAVIORAL_FAIL",
+        "REASON_ANCHOR_AMBIGUOUS",
         "REASON_APPLY_FAILED",
         "REASON_CHANNEL_MAP_MISMATCH",
         "REASON_CLIPPED",

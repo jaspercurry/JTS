@@ -1852,6 +1852,7 @@ from jasper.active_speaker.crossover_v2.vocabulary import (
     DELTA_PROBE_REASON_BY_VERDICT as DELTA_PROBE_REASON_BY_VERDICT,
     NON_RETRIABLE_CODES as NON_RETRIABLE_CODES,
     REASON_AGC_BEHAVIORAL_FAIL as REASON_AGC_BEHAVIORAL_FAIL,
+    REASON_ANCHOR_AMBIGUOUS as REASON_ANCHOR_AMBIGUOUS,
     REASON_APPLY_FAILED as REASON_APPLY_FAILED,
     REASON_CHANNEL_MAP_MISMATCH as REASON_CHANNEL_MAP_MISMATCH,
     REASON_CLIPPED as REASON_CLIPPED,
@@ -7106,6 +7107,7 @@ class CrossoverV2Session:
         kind = _dispatch.check_screens(
             _dispatch.CheckScreens(
                 stimulus_located=_stimulus_locate_ok(analysis),
+                anchor_ambiguous=analysis.anchor_ambiguous,
                 channel_map_ok=analysis.channel_map_ok,
                 pilot_snr_ok=analysis.pilot_snr_ok,
                 linearity_ok=analysis.linearity_ok,
