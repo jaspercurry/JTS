@@ -36,7 +36,7 @@ against its primary source before acting on it.
 
 ---
 
-## Ethos (owner-ratified 2026-08-14)
+## Ethos (owner-ratified 2026-08-14; extended 2026-08-16)
 
 These are binding product principles for everything below, not preferences.
 
@@ -50,6 +50,42 @@ are reserved for the safety class: driver protection, hearing safety, and
 the clipping/volume ceiling. Every other defect **discloses and recommends
 a next action**. It never blocks. A gate that refuses on suspicion rather
 than on a measured regression is a bug against this principle.
+
+**Least-bad measured, honed in bites.** (Owner-ratified 2026-08-16.) The
+target of an intervention cycle is the least bad **measured** configuration,
+not a match to the prediction — a realized result will likely never perfectly
+match what the model commanded. So a series gets a few bites at that apple:
+up to three rounds to hone, which the owner may extend to four (#2602 owns
+the cap).
+
+Realized-versus-predicted mismatch is a **learning signal**, never by itself a
+reason to retreat. The bites exist to separate what is in our control to fix —
+model and accounting defects, which get fixed — from what is not — driver and
+room physics, which get commanded for the achievable instead — and then to land
+somewhere better than we started.
+
+Two decisions the machinery must not conflate. **What plays** is always the
+least-bad measured configuration, so a round that measures worse than the
+previous state restores that state: that restore is this principle working, not
+a violation of it. **Whether the series learns and continues** has one answer
+every time — it does. A worse round is a gradient sample, not a stop. Every
+round, kept or restored or refused, banks its measurement into the series state
+so the next bite is commanded from it. Only the round budget, the plateau, and
+the safety class end a series; rollback ends one only for the safety class or
+for genuine corruption — an unmeasured or integrity-lost state the model cannot
+reason about.
+
+So the rule a verdict class is held to: measured no-worse than the previous
+state → keep, bank, continue; measured worse → restore the playing
+configuration, bank, continue. A class that retreats from a measured-acceptable
+state on realized ≠ commanded alone is a bug against this principle — the
+2026-08-16 shortfall rollback (`gain_factor` 0.664, tracking and integration
+passing, and no round receipt written on the failed verify, so that round's
+realization survives only in journal events) is the incident that forced this
+into writing, and the probe's verdict classes are being re-audited against it.
+None of this is new: it restates tinker-first, restore-reserved, and the
+2026-08-15 least-bad-**measured** adoption ruling. What is new is the
+explicitness, not the idea.
 
 **Probabilistic posture, 80/20 execution.** Per-frequency graded evidence —
 support counts, confidence margins, tapered authority — beats a binary
@@ -350,6 +386,13 @@ Optional, in rough value order:
 - **D4's taper endpoint (item 12)** — put the full-authority end of the
   taper at the shipped `2.5/T` rather than introducing D4's `2/T` as a
   third ratio.
+- **The level datum's single owner** — ratified in principle 2026-08-16: the
+  measured summed response (deconvolved) owns the level datum outright.
+  Per-driver estimates become subordinate consistency checks whose
+  disagreement flags a suspect capture — retriable, never a discarded datum.
+  No arbitration between voters, no exclusion cliff, no taper. It supersedes
+  the taper direction recorded on #2609. Pending: the code-grounded design
+  brief, for owner approval before implementation.
 - **MMM adopt-with-conditions** — changes the regime plan's D7, which
   records MMM as unscheduled.
 - **#2321** — the relay journey-budget product decision. The budget is
