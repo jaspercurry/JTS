@@ -148,7 +148,7 @@ class LinearizationState:
     core_level_evidence: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     trim_band_estimate_db: Mapping[str, float] = field(default_factory=dict)
     level_consistency: LevelConsistency | None = None
-    """Both subordinate estimators graded against the summed level owner.
+    """The two per-driver level estimates, graded against each other.
 
     ``None`` on every non-planning outcome and whenever one of the two
     estimates covered no role — the "no verdict" state, and NOT a synonym for

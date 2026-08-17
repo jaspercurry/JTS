@@ -890,3 +890,63 @@ def test_the_request_refuses_inputs_the_eligibility_gate_should_have_caught():
             tweeter=replace(evidence, role="tweeter"),
             **common,
         )
+
+
+# --------------------------------------------------------------------------- #
+# every door into the anchor's arithmetic, pinned
+# --------------------------------------------------------------------------- #
+#
+# **Why these exist and why they are separate tests.** ``anchor_trims.place``
+# computes ``base + giveback`` and clamps it with
+# ``shift = max(0.0, max(unnormalized.values()))``. That clamp is the
+# hearing-safety invariant — no committed trim may be positive — and it is a
+# ``max``, so every comparison against NaN is False: a NaN term does not make
+# the clamp misfire, it makes the clamp STOP EXISTING, and the non-finite trim
+# goes to the emitter. Since #2609 made the raw measured trim the anchor's
+# base, the complete set of doors is ``raw_trim_db`` and
+# ``trim_band_average_db`` (guarded in ``LinearizationRequest.__post_init__``)
+# plus ``correction_giveback_db`` (guarded at the anchor's own call site).
+#
+# The safety delta caught these guards UNPINNED: deleting the whole
+# trim-finiteness loop left 432 tests green. The three ``match="finite"``
+# cases already in this file cover ``trim_sanity_margin_db`` ONLY, so a grep
+# for the guard read "covered" when two thirds of it was not — the
+# half-guarded-site trap. Each case below was verified to go red under that
+# same deletion.
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize("field", ["raw_trim_db", "trim_band_average_db"])
+def test_a_non_finite_request_trim_is_refused_at_the_door(field, bad):
+    """The two trim mappings the anchor's base can come from.
+
+    Refused at construction rather than at use, because by the time a NaN
+    reaches ``place`` the clamp that would have caught a too-loud value is
+    already inert.
+    """
+    with pytest.raises(iv.PlannerInputError, match="finite"):
+        _request(**{field: {"woofer": 0.0, "tweeter": bad}})
+    # The mechanism, demonstrated rather than described: this is what the
+    # refusal prevents — the clamp silently passing a non-finite trim through.
+    assert not (max(0.0, float("nan")) > 0.0)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_a_non_finite_giveback_is_refused_before_the_anchor_uses_it(
+    bad, monkeypatch,
+):
+    """The anchor's OTHER term, guarded at its own call site.
+
+    ``correction_giveback_db`` is produced by the fit rather than handed in, so
+    it cannot be guarded in ``__post_init__`` with the trims — the check lives
+    where the value enters the anchor. Driven here by making the fit return the
+    bad value, which is the only way to reach that door.
+    """
+    real_fit = iv.fit_driver_linearization
+
+    def _bad_giveback(*args, **kwargs):
+        return replace(real_fit(*args, **kwargs), correction_giveback_db=bad)
+
+    monkeypatch.setattr(iv, "fit_driver_linearization", _bad_giveback)
+    with pytest.raises(iv.PlannerInputError, match="finite"):
+        _pure(_sections_at(SELECTED_FC_HZ))

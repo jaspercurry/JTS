@@ -2919,7 +2919,7 @@ def fit_driver_linearization(
     where that flattened passband is PLACED relative to the other drivers' is
     a trim, decided later and elsewhere
     (:func:`~jasper.active_speaker.crossover_v2.intervention.anchor_trims`,
-    from the summed at-the-mark capture). The shared-level-frame offset this
+    from the raw measured trim). The shared-level-frame offset this
     function used to accept and stamp is deleted with the frame itself, so
     re-placing the pair costs no re-fit — nothing on this side of the seam
     reads a level datum at all.

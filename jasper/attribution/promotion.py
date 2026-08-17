@@ -332,15 +332,18 @@ def promote_level_frame_disagreement(
 ) -> Finding | None:
     """Promote one banked estimator disagreement to an M7 finding.
 
-    **What this finding now means (single-datum-owner migration, #2609).** The
-    level datum has one owner — the summed at-the-mark capture, deconvolved into
-    a per-role trim — and the two per-driver estimates that used to vote on it
-    are subordinate consistency checks
-    (:func:`jasper.active_speaker.crossover_v2.intervention.check_level_consistency`).
-    A record reaches here when one of those estimates sat further from the owner
-    than :data:`~jasper.active_speaker.crossover_v2.intervention.LEVEL_ESTIMATOR_TOLERANCE_DB`.
-    That is a claim about the CAPTURE, not about the tuning: the pair shipped on
-    the owner's measured placement either way, and what the household is being
+    **What this finding now means (#2609).** The two per-driver level estimates
+    — the trim solve's overlap-band average and the fit's core-band median — no
+    longer vote on anything. They are compared to EACH OTHER as a consistency
+    check
+    (:func:`jasper.active_speaker.crossover_v2.intervention.check_level_consistency`),
+    and a record reaches here when their relative placements of the pair sit
+    further APART than
+    :data:`~jasper.active_speaker.crossover_v2.intervention.LEVEL_ESTIMATOR_TOLERANCE_DB`.
+    There is no third measurement to hunt for: nothing adjudicates between them,
+    because the pair is anchored on the raw measured trim whatever they say.
+    That is a claim about the CAPTURE, not about the tuning: the same trims
+    shipped either way, and what the household is being
     offered is a reason to re-measure.
 
     **What it used to mean, and why the change is a narrowing.** Under the

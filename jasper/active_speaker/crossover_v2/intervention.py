@@ -1365,8 +1365,8 @@ def plan_linearization(
         role: float(level) + float(trim_band_estimate_db.get(role, 0.0))
         for role, level in core_levels_db.items()
     }
-    # Both estimators against the one owner. Symmetric, advisory, and unable to
-    # move a number — see :func:`check_level_consistency`. Where a 3.0 dB cliff
+    # The two estimates against each other. Symmetric, advisory, and unable
+    # to move a number — see :func:`check_level_consistency`. Where a 3.0 dB cliff
     # used to zero the anchor's per-role offsets, crossing the same 3.0 dB now
     # flags the capture retriable and the round proceeds on the raw measured
     # trim.

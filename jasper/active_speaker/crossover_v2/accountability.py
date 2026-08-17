@@ -5,8 +5,8 @@
 """Whether a built candidate may be PROPOSED at all (#2291 Phase 5a-v).
 
 The gate that runs after a candidate is built and before anything downstream
-can apply it.  Two refusals and one disclosure, most-specific-first: the
-subordinate estimators' consistency with the summed level owner (banked, never
+can apply it.  Two refusals and one disclosure, most-specific-first: whether
+the two per-driver level estimates agree with each other (banked, never
 refusing), then PR-L4's item 1 (the realized inter-driver level) and item 2
 (the spec-graded prediction).  Refusing here means no candidate is ever stashed or
 published, so the review screen has nothing to offer and the household is
