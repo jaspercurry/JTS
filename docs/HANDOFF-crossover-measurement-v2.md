@@ -4830,8 +4830,9 @@ no retries-as-bodge). Treat these as regression fences.
     precise reason, since an earlier draft of this entry overstated it —
     threading the 1 s window there would change **no verdict today**,
     because `analysis.channel_map_ok` is routed on at exactly one site
-    (`_check_verdict`). MEASURE/cloud/VERIFY compute the flag and never
-    branch on it. What it would do is leave a False flag ARMED on those
+    (`_check_verdict`, through `capture_dispatch.check_screens`, which
+    refuses on an explicit `False` only). MEASURE/cloud/VERIFY compute the
+    flag and never branch on it. What it would do is leave a False flag ARMED on those
     analyses for whoever next adds a routing branch, at which point a pilot
     pair a few dB over the floor would hard-stop with copy blaming the
     speaker wiring. **The general rule:** when a guard's input

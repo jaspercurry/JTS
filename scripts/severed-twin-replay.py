@@ -63,6 +63,14 @@ import numpy as np
 # reads different bytes than the session did — not that the speaker changed.
 # `delay_us` is deliberately absent: the banked value is post-T2-refinement and
 # the seed is what an offline replay reproduces (see FIDELITY_NOTE).
+#
+# `channel_map_ok` is absent since #2052 for a different reason: it is now
+# tri-state, `analysis_diagnostic_summary` omits a flag whose value is `None`,
+# and MEASURE/VERIFY never thread an ambient window into the channel-map check
+# — so a healthy MEASURE sidecar records no such field at all, while every
+# corpus banked BEFORE #2052 records `true`. Both compare as an infidelity,
+# which would report a deliberate semantic change as a broken reconstruction:
+# exactly the misattribution this gate exists to prevent.
 FIDELITY_FIELDS = (
     "epsilon_ppm",
     "woofer_repeat_epsilon_ppm",
@@ -77,7 +85,6 @@ FIDELITY_FIELDS = (
     "glitch_inputs",
     "linearity_ok",
     "pilot_snr_ok",
-    "channel_map_ok",
     "woofer_pilot_snr_db",
     "woofer_captured_delta_db",
     "woofer_gate_window_ms",

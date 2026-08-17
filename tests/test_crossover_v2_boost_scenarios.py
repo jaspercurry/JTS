@@ -482,8 +482,10 @@ def test_the_replay_asks_the_registry_which_way_a_calibration_file_reads(
     This has a test because its wrong answer is SILENT and was already wrong
     once: a vendor file states either the mic's RESPONSE or a CORRECTION, the
     two differ by a sign, and reading it the wrong way moves every magnitude
-    the fit sees while moving none of the twenty timing/deconvolution
-    diagnostics the replay's fidelity gate checks. The first revision of this
+    the fit sees while moving none of the timing/deconvolution diagnostics the
+    replay's fidelity gate checks (their count is pinned by
+    `test_the_replay_gate_checks_the_field_count_its_doc_advertises`, so it is
+    not restated here). The first revision of this
     harness pinned ``"correction"`` as a literal — correct for the 2026-07-24/25
     corpus it was borrowed from, wrong for the 2026-07-29 sessions it was
     applied to, and invisible to every check in the tool.
@@ -506,3 +508,30 @@ def test_the_replay_asks_the_registry_which_way_a_calibration_file_reads(
     for key, spec in SUPPORTED_MODELS.items():
         assert replay._sign_convention(f"vendor-{key}-hash") == spec["sign_convention"]
     assert replay._sign_convention("") == DEFAULT_SIGN_CONVENTION
+
+
+def test_the_replay_gate_checks_the_field_count_its_doc_advertises():
+    """`FIDELITY_FIELDS`' size is a number PROSE states, so prose can drift.
+
+    `docs/testing-tooling.md` tells an operator the tool "reproduces 19 of its
+    values and prints no fit unless every one matches" — that sentence is how
+    someone decides whether an exit 1 means their reconstruction is broken, so
+    it has to be the real count. It was 20 and un-pinned until #2052 had to
+    change it, and the same number was restated a third time in the docstring
+    above, which went stale silently.
+
+    Why the count moved, recorded here because the WRONG conclusion is the
+    tempting one: `channel_map_ok` left the tuple because it went tri-state,
+    `analysis_diagnostic_summary` omits a `None` flag entirely, and no
+    MEASURE/VERIFY sidecar records it any more — so keeping it would report a
+    deliberate semantic change as a broken reconstruction. That is the
+    tool's own misattribution failure mode, not a gap in its reach.
+    """
+    replay = _load_replay_module()
+
+    assert len(replay.FIDELITY_FIELDS) == 19
+    assert "channel_map_ok" not in replay.FIDELITY_FIELDS
+    # The other half of the pair — that a healthy MEASURE/VERIFY summary
+    # really does omit the flag, which is WHY it left — is pinned beside that
+    # fixture, in tests/test_crossover_v2_program_pilots.py's
+    # `test_measure_summary_omits_the_channel_map_flag_it_cannot_judge`.

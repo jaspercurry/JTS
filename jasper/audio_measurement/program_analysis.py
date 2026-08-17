@@ -1441,6 +1441,11 @@ class PilotObservation:
     and VERIFY could produce, because their programs carried no ambient
     window at all — so the guard was structurally dead on both phases.
 
+    ``channel_map_ok`` is tri-state for the reason ``linearity_ok`` is
+    (issue #2052): ``None`` means the evidence to judge this role's map was
+    not there, never that it passed. The fallback path reaches it — see
+    `_channel_map_ok`.
+
     ``channel_map_target_rise_db``/``channel_map_cross_rise_db`` are the two
     rise numbers `_channel_map_ok` computed on the way to ``channel_map_ok``
     (this driver's own band above ambient, and the worst/failing other
@@ -1468,7 +1473,7 @@ class PilotObservation:
     programmed_delta_db: float
     captured_delta_db: float
     linearity_ok: bool | None
-    channel_map_ok: bool
+    channel_map_ok: bool | None
     snr_valid: bool = True
     peak_lo_dbfs: float = DBFS_FLOOR
     peak_hi_dbfs: float = DBFS_FLOOR
@@ -4837,7 +4842,8 @@ def _pilot_observations(
        thresholds were derived from. Judging a 12 dB rise against it would be
        reading a threshold off an estimator it was never fitted to.
     2. **Pre-emption.** ``analysis.channel_map_ok`` is routed on at exactly
-       ONE site today — ``crossover_v2_flow._check_verdict``, which maps it to
+       ONE site today — ``crossover_v2_flow._check_verdict``, through
+       ``capture_dispatch.check_screens``, which maps an explicit ``False`` to
        the hard-stop ``channel_map_mismatch``. MEASURE, the cloud positions
        and VERIFY compute the flag and never branch on it, so threading the
        window here would currently change no verdict at all. It would instead
@@ -4847,7 +4853,8 @@ def _pilot_observations(
        the speaker wiring, on evidence never calibrated for a 1 s window.
 
     Their channel-map check therefore keeps the total-in-band-energy-fraction
-    fallback it has always used.
+    fallback it has always used, whose one-sided reporting since #2052 is
+    `_channel_map_ok`'s to state.
 
     The located segment's fixed composer fade (`_pilot_trim_fade`) is trimmed
     before measuring so the RMS estimate rides the steady-state portion, not
@@ -4972,28 +4979,41 @@ def _pilot_observations(
     return out
 
 
-def _aggregate_linearity_ok(
-    pilots: Sequence[PilotObservation],
+def _aggregate_tri_state_ok(
+    verdicts: Sequence[bool | None],
 ) -> bool | None:
-    """Reduce per-pilot ``linearity_ok`` over the roles, tri-state aware.
+    """Reduce per-role tri-state verdicts to one, FAILURE-dominant.
 
-    A FAILURE anywhere is the verdict; otherwise an UNKNOWN anywhere (a
-    pilot whose SNR was too low to judge — D7, issue #1838) makes the whole
-    verdict unknown, because "the roles we could read were fine" is not the
-    same claim as "the pilots were linear". ``None`` for no pilots at all,
-    unchanged. Written out rather than left as ``all(...)``: Python's
-    ``all()`` folds ``None`` to False, which would have turned every
-    unknown into a linearity FAILURE — precisely the mic accusation the
-    low-SNR routing exists to prevent.
+    A FAILURE anywhere is the verdict; otherwise an UNKNOWN anywhere makes
+    the whole verdict unknown, because "the roles we could read were fine"
+    is not the same claim as "every role was fine". ``None`` for no roles at
+    all — no evidence, the same value the caller published before any of
+    these verdicts were tri-state.
+
+    Written out rather than left as ``all(...)``: Python's ``all()`` folds
+    ``None`` to False, so an unknown would leave here as a FAILURE. For
+    ``linearity_ok`` (D7, issue #1838) that is the mic accusation the
+    low-SNR routing exists to prevent; for ``channel_map_ok`` (issue #2052)
+    it is worse — a hard stop telling a household to open its speaker and
+    rewire it, decided on evidence that was never there.
+
+    One fold for both because that is one decision, not two — a second copy
+    is a second place for "what does unknown mean here" to drift.
     """
-    if not pilots:
+    if not verdicts:
         return None
-    verdicts = [p.linearity_ok for p in pilots]
     if any(v is False for v in verdicts):
         return False
     if any(v is None for v in verdicts):
         return None
     return True
+
+
+def _aggregate_linearity_ok(
+    pilots: Sequence[PilotObservation],
+) -> bool | None:
+    """Per-pilot ``linearity_ok`` over the roles, through the shared fold."""
+    return _aggregate_tri_state_ok([p.linearity_ok for p in pilots])
 
 
 def _pilot_verdicts(
@@ -5019,15 +5039,17 @@ def _pilot_verdicts(
     schedule offset and hands it to the level/SNR path. The channel-map check
     still uses `_channel_map_ok`'s total-in-band-energy-fraction fallback —
     see `_pilot_observations` for why that short window must not feed the
-    rise test. A program without the window (legacy, or composed with no
-    leading pilots) behaves exactly as before.
+    rise test. That fallback is one-sided since #2052 (`_channel_map_ok`), so
+    these phases publish ``None`` unless a role actually failed it. The SNR
+    path is unaffected; a program without the window (legacy, or composed
+    with no leading pilots) reaches it exactly as before.
     """
     pilots = _pilot_observations(
         program, capture, sample_rate, locations,
         ambient_samples=_pilot_ambient_samples(program, capture, global_offset),
     )
     linearity_ok = _aggregate_linearity_ok(pilots)
-    channel_map_ok = all(p.channel_map_ok for p in pilots) if pilots else None
+    channel_map_ok = _aggregate_tri_state_ok([p.channel_map_ok for p in pilots])
     pilot_snr_ok = all(p.snr_valid for p in pilots) if pilots else None
     return tuple(pilots), linearity_ok, channel_map_ok, pilot_snr_ok
 
@@ -5039,7 +5061,7 @@ def _channel_map_ok(
     *,
     ambient_samples: np.ndarray | None = None,
     other_bands: Sequence[tuple[float, float]] = (),
-) -> tuple[bool, float | None, float | None]:
+) -> tuple[bool | None, float | None, float | None]:
     """Band-relative channel-map sanity (design note above `CHANNEL_MAP_*`).
 
     Given a leading ambient (room-noise) window — CHECK's own 12 s ambient
@@ -5063,10 +5085,22 @@ def _channel_map_ok(
     "two ambient parameters" note) — and the path any legacy program with no
     window at all takes.
 
+    **That fallback is ONE-SIDED evidence, and since issue #2052 it is
+    reported one-sided.** A cleared fraction is ``None`` (UNKNOWN, the posture
+    #1838 gave ``linearity_ok``): broadband room noise clears it too, so it
+    does not say the RIGHT driver put the energy there. A failed fraction
+    keeps its ``False``: energy that is NOT in the band the pilot was
+    scheduled in is a positive observation about this window, and it is the
+    only channel-map evidence a capture with no ambient window still carries.
+    Both halves are load-bearing and each is pinned by the fixture that
+    measured it — `test_channel_map_fallback_never_passes_a_driver_that_never_played`
+    and `test_degraded_miswire_still_names_the_wiring_not_the_room`.
+
     Returns ``(ok, target_rise_db, cross_rise_db)`` — the two rise numbers are
     ADDITIVE diagnostic evidence for operator logging (surfaced on
-    ``PilotObservation``); the pass/fail decision below is byte-identical to
-    before this return shape grew. ``cross_rise_db`` is the rise that failed
+    ``PilotObservation``); the RISE path's pass/fail decision below is
+    byte-identical to before this return shape grew (the fallback's is the
+    one #2052 changed). ``cross_rise_db`` is the rise that failed
     the CROSS test when ``ok`` is False, or the worst (highest) rise observed
     across every other band when ``ok`` is True. Both rises are ``None`` in
     the no-ambient-window fallback path (no rise concept there);
@@ -5085,7 +5119,10 @@ def _channel_map_ok(
         total = float(np.sum(spectrum))
         if total <= 0:
             return False, None, None
-        return float(np.sum(spectrum[in_band])) / total > 0.5, None, None
+        # One-sided (#2052): the fail is a finding, the pass is not evidence.
+        if float(np.sum(spectrum[in_band])) / total > 0.5:
+            return None, None, None
+        return False, None, None
 
     target_rise = (
         _band_rms_dbfs(x, sample_rate, seg.f1_hz, seg.f2_hz)
@@ -5577,7 +5614,7 @@ def _analyze_check(
         channel_map_ambient_samples=ambient_samples,
     )
     linearity_ok = _aggregate_linearity_ok(pilots)
-    channel_map_ok = all(p.channel_map_ok for p in pilots) if pilots else None
+    channel_map_ok = _aggregate_tri_state_ok([p.channel_map_ok for p in pilots])
     pilot_snr_ok = all(p.snr_valid for p in pilots) if pilots else None
     gain_plan = _solve_gain_plan(program, pilots, ambient_report, priors)
     return ProgramAnalysis(
