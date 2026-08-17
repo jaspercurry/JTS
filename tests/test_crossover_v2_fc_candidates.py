@@ -214,7 +214,20 @@ def test_proposals_are_geometric_bounded_and_inside_the_open_interval():
     assert max(alts) < beaming_onset_hz(JTS3_DIAMETER_MM)
 
 
-@pytest.mark.parametrize("search_lo", [2500.0, 3000.0, 1501.6, 1750.5])
+@pytest.mark.parametrize(
+    "search_lo",
+    [
+        # Rounds DOWN under the old ``- 0.05`` clamp: these three fail the
+        # moment the epsilon comes back. Verified by mutation, not assumed.
+        pytest.param(2500.0, id="rounds_down_2500"),
+        pytest.param(3000.0, id="rounds_down_3000"),
+        pytest.param(1501.6, id="rounds_down_1501p6"),
+        # Rounds UP, so it passed even WITH the bug — the same rounding luck the
+        # two shipped goldens had. Kept as the control: the fix must not move a
+        # case that already worked.
+        pytest.param(1750.5, id="rounds_up_control_1750p5"),
+    ],
+)
 def test_a_binding_search_floor_is_proposed_not_refused_as_its_own_violation(
     search_lo,
 ):
@@ -229,9 +242,11 @@ def test_a_binding_search_floor_is_proposed_not_refused_as_its_own_violation(
     ``outside_declared_search_band``: one proposal silently lost, and a journal
     line that reads like the household declared something contradictory.
 
-    Parametrised on search floors whose ``- 0.05`` rounds DOWN. That is the
-    whole reason the suite could not see this: both shipped goldens (1600 and
-    2000) round UP, so every existing case passed on rounding luck.
+    Three of the four floors here round DOWN under the old clamp and fail the
+    instant the epsilon returns (mutation-verified). The fourth rounds UP and
+    passed even WITH the bug — it is the control, and it is also the whole
+    reason the suite could not see this: both shipped goldens (1600 and 2000)
+    round UP, so every existing case passed on rounding luck.
     """
 
     result = fc_candidate_set(

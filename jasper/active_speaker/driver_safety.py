@@ -2491,6 +2491,38 @@ def _validate_driver_safety_profile_shape(profile: Mapping[str, Any]) -> None:
             )
 
 
+def _stale_low_limit_rebuild_issues(profile: Mapping[str, Any]) -> tuple[str, ...]:
+    """The blocking issues a REBUILD of this stale profile would carry.
+
+    Same derivation and same issue vocabulary the rebuild itself uses, applied
+    to the stored targets, so the two cannot disagree about whether confirming
+    is possible. Total by construction: a target this cannot read contributes
+    nothing rather than raising, because this runs inside an except branch
+    whose whole contract is to REPORT instead of raise.
+    """
+
+    targets = profile.get("targets")
+    if not isinstance(targets, list):
+        return ()
+    issues: list[str] = []
+    for target in targets:
+        if not isinstance(target, Mapping):
+            continue
+        try:
+            derived = apply_driver_low_limit(
+                target,
+                role=target.get("role"),
+                driver_style=target.get("driver_style"),
+            )
+            found = _target_issues(derived)
+        except (KeyError, TypeError, ValueError):
+            continue
+        for issue in found:
+            if issue not in issues:
+                issues.append(issue)
+    return tuple(issues)
+
+
 def evaluate_driver_safety_profile(
     profile: Any,
     topology: OutputTopology,
@@ -2508,12 +2540,25 @@ def evaluate_driver_safety_profile(
         # "re-confirm" instead of "corrupt". Still a RETURN, never a raise, so a
         # box carrying a pre-#2603 split declaration reports and waits rather
         # than crash-looping a daemon.
+        #
+        # The reasons carry MORE than the name, because the name alone cannot
+        # answer the only question the household has: will re-confirming work?
+        # Deriving the low limit moves the hard band's lower edge up to it, and
+        # that can push an already-declared crossover-search band outside its
+        # own hard band -- at which point ``build_driver_safety_profile``
+        # REFUSES to confirm. Appending the rebuild's own blocking issues lets
+        # /sound/ decide whether to offer the button at all, and name the
+        # remedy when it cannot, instead of offering it and raising on the
+        # first click. jts3 is exactly this shape.
         fingerprint = profile.get("profile_fingerprint")
         return DriverSafetyProfileEvaluation(
             "malformed",
             False,
             str(fingerprint) if isinstance(fingerprint, str) else None,
-            ("driver_safety_profile_low_limit_stale",),
+            (
+                "driver_safety_profile_low_limit_stale",
+                *_stale_low_limit_rebuild_issues(profile),
+            ),
         )
     except DriverSafetyProfileError:
         fingerprint = profile.get("profile_fingerprint")

@@ -93,7 +93,13 @@ def test_sound_setup_migrates_the_complete_event_vocabulary():
 
 
 def test_every_bool_or_optional_percent_s_field_is_prerendered_as_text():
-    """Pin all 107 affected parent `%s` positions, not hand-picked examples."""
+    """Pin all 108 affected parent `%s` positions, not hand-picked examples.
+
+    107 until #2603 added ``safety_profile_evaluation`` to the design-draft save
+    event, so a re-confirm wave leaves a journal trace. The ratchet moving by
+    exactly one, on a field whose name is in the digest below, is the intended
+    shape of that change.
+    """
     wrapped_fields: list[str] = []
     for call in _sound_event_calls():
         event = call.args[1].value
@@ -114,9 +120,9 @@ def test_every_bool_or_optional_percent_s_field_is_prerendered_as_text():
     # The digest catches a missed, swapped, or newly invented wrapper while
     # keeping this contract readable instead of checking in a 199-line tuple.
     signature = "\n".join(wrapped_fields).encode()
-    assert len(wrapped_fields) == 107
+    assert len(wrapped_fields) == 108
     assert hashlib.sha256(signature).hexdigest() == (
-        "ddd1e057df817ad0e3fc18bfb6a59ec03da7567e5b6b694f538b8414bbe34354"
+        "23651ba79cc611bfbd5cf575c158a047d099330cbbc01fa211c5c728840743b1"
     )
 
 

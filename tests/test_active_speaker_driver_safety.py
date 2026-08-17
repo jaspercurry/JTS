@@ -936,6 +936,89 @@ def test_a_profile_whose_derived_fields_left_its_own_low_limit_is_named() -> Non
     assert evaluation.confirmed_and_current is False
 
 
+def test_a_stale_profile_whose_rebuild_would_refuse_says_so_in_its_reasons() -> None:
+    """jts3's own shape, minimised: stale AND unconfirmable in one step.
+
+    Deriving the low limit raises the hard band's lower edge to the declared
+    owner, which can leave an already-declared crossover-search band sitting
+    below its own hard band -- and ``build_driver_safety_profile`` REFUSES to
+    confirm while that stands. The stale name alone cannot tell /sound/ that,
+    so the button was offered on a profile whose rebuild raises and the
+    operator's first click came back a bare reason code.
+
+    Verified against jts3's real stored artifacts during the fix round: its
+    tweeter declares 2000 Hz while its bands and search band were nested
+    against the old 1600, so it lands exactly here. Reproduced with the shipped
+    fixture rather than the box's file, which is not this repo's to carry.
+    """
+
+    topology = mono_output_topology(card_id=None)
+    profile = build_driver_safety_profile(
+        topology,
+        manual_settings=_manual_settings(),
+        driver_research=None,
+        confirm=True,
+        confirmed_at="2026-07-13T12:00:00Z",
+    )
+
+    split = deepcopy(profile)
+    tweeter = split["targets"][1]
+    # jts3's exact shape: a stored profile target carries no owner field, so the
+    # low limit is inferred from its protective high-pass -- and that cutoff
+    # sits ABOVE the floor its own bands were nested against. jts3 reads 2000
+    # from the filter with bands and search band nested at 1600; the fixture
+    # reads 6000 with both at 5000.
+    tweeter["required_protection_filters"][0]["cutoff_hz"] = 6000.0
+
+    evaluation = evaluate_driver_safety_profile(split, topology)
+
+    assert evaluation.status == "malformed"
+    assert evaluation.confirmed_and_current is False
+    # Still named first, so the "re-confirm" remedy still renders...
+    assert evaluation.reasons[0] == "driver_safety_profile_low_limit_stale"
+    # ...and the rebuild's own blocker rides with it, in the `<role>:<code>`
+    # vocabulary the page already knows how to phrase.
+    assert "tweeter:search_band_below_hard_band" in evaluation.reasons
+
+    # The claim that this REALLY is unconfirmable, rather than a reason string
+    # nobody checked: the rebuild refuses on the same code.
+    manual = deepcopy(_manual_settings())
+    manual["drivers"][1]["recommended_highpass_hz"] = 6000.0
+    with pytest.raises(DriverSafetyProfileError, match="search_band_below_hard_band"):
+        build_driver_safety_profile(
+            topology,
+            manual_settings=manual,
+            driver_research=None,
+            confirm=True,
+            confirmed_at="2026-07-13T12:00:00Z",
+            prior_profile=split,
+        )
+
+
+def test_a_stale_profile_that_would_rebuild_cleanly_offers_no_blocker() -> None:
+    """The control for the pair above — otherwise the gate reads as "always off".
+
+    A stale profile whose derivation leaves every other declaration coherent
+    carries the stale name and NOTHING else, so /sound/ still offers the
+    button and the household re-confirms in one click.
+    """
+
+    topology = mono_output_topology(card_id=None)
+    profile = build_driver_safety_profile(
+        topology,
+        manual_settings=_manual_settings(),
+        driver_research=None,
+        confirm=True,
+        confirmed_at="2026-07-13T12:00:00Z",
+    )
+    split = deepcopy(profile)
+    split["targets"][1]["hard_excitation_band_hz"][0] = 4000.0
+
+    evaluation = evaluate_driver_safety_profile(split, topology)
+
+    assert evaluation.reasons == ("driver_safety_profile_low_limit_stale",)
+
+
 def test_evaluation_recomputes_issues_instead_of_trusting_serialized_status() -> None:
     topology = mono_output_topology(card_id=None)
     incomplete_manual = _manual_settings()
