@@ -15,7 +15,9 @@
 # Usage:
 #   bash scripts/doc-freshness.sh             # 90-day threshold, HANDOFFs only
 #   bash scripts/doc-freshness.sh 60          # custom threshold
-#   bash scripts/doc-freshness.sh 90 --all    # also include top-level + non-HANDOFF docs/
+#   bash scripts/doc-freshness.sh 90 --all    # also include top-level + non-HANDOFF
+#                                             # docs/, minus the archival trees
+#                                             # (docs/research/, docs/historical/)
 #
 # Output columns:
 #   Date    last-verified (or last-touched) date
@@ -67,6 +69,7 @@ today_iso=$(date +%Y-%m-%d)
 
 # Build doc list (portable to bash 3.2 — no mapfile)
 docs=()
+archival_excluded=0
 while IFS= read -r d; do docs+=("$d"); done \
   < <(find docs -maxdepth 2 -name 'HANDOFF-*.md' -type f 2>/dev/null | sort)
 if (( include_all )); then
@@ -80,15 +83,25 @@ if (( include_all )); then
   # the defect, not the current age. `--all` already promises "top-level +
   # non-HANDOFF docs/"; capping the depth quietly broke that promise.
   #
-  # OPEN QUESTION — issue #2064: this now also enumerates docs/research/** and
-  # docs/historical/**, which are archival (a research bank's date IS the
-  # fact, so "re-verify and bump the footer" is the WRONG advice for them).
-  # They cross the 90-day threshold around 2026-08-23 and then read as
-  # permanently stale. Deliberately NOT excluded here: choosing which
-  # directories count as archival is a documentation-policy ruling, not a
-  # script default. Read #2064 before adding a prune.
-  while IFS= read -r d; do docs+=("$d"); done \
-    < <(find docs -name '*.md' -type f ! -name 'HANDOFF-*.md' 2>/dev/null | sort)
+  # RESOLVED — issue #2064 (owner ruling 2026-08-17): docs/research/** and
+  # docs/historical/** are pruned below. Those directories ARE the
+  # classification: in a research bank the date IS the fact, so the only
+  # action this report can offer — "re-verify and bump the footer" — would
+  # falsify the provenance it is reporting on. So they are excluded by
+  # directory, not by per-file opt-out, and the exclusion is PRINTED with its
+  # count: a silent prune would let this report read as "everything was
+  # checked" when it was not.
+  #
+  # One enumeration, one classifier: the count and the doc list come from the
+  # same pass, so they cannot disagree.
+  while IFS= read -r d; do
+    case "$d" in
+      docs/research/*|docs/historical/*)
+        archival_excluded=$(( archival_excluded + 1 )) ;;
+      *)
+        docs+=("$d") ;;
+    esac
+  done < <(find docs -name '*.md' -type f ! -name 'HANDOFF-*.md' 2>/dev/null | sort)
 fi
 
 missing_footer_rows=()
@@ -153,6 +166,12 @@ fi
 
 printf '\nSummary: %d missing footer, %d stale, %d fresh (threshold %d days).\n' \
   "$missing_footer_count" "$stale_count" "$fresh_count" "$days"
+if (( archival_excluded > 0 )); then
+  printf 'Excluded %d archival doc(s) under docs/research/ and docs/historical/:\n' \
+    "$archival_excluded"
+  printf '  a research bank records when something was learned, so bumping a\n'
+  printf '  freshness footer there would falsify its provenance (issue #2064).\n'
+fi
 if (( stale_count > 0 )); then
   printf '\nAction: for each stale doc, re-read it against the current code and either\n'
   printf '  (a) bump the footer to `Last verified: %s`, or\n' "$today_iso"
