@@ -19,6 +19,12 @@
 > now owns the next protected-raw measurement, bounded-Fc selection, and
 > candidate-specific verification campaign. The layer ownership below is
 > unchanged.
+> **Series-1 rulings (2026-08-17):** five owner rulings after the jts3
+> overnight convergence series add decisions 8–12 below and one new section,
+> ["The region-based adjustment contract"](#the-region-based-adjustment-contract-2026-08-17).
+> The five-layer ownership is unchanged. What changes: a driver's low limit
+> gets exactly one declared owner, and correction inside the crossover blend
+> region moves from the (blind) per-driver fit to the summed response.
 
 ## Why this exists (one paragraph of history)
 
@@ -117,6 +123,95 @@ visibly.
    gain structure (feed #1665: predict the hiss reduction from the
    declared pad) and assesses the closed-loop + multi-level + excess-phase
    combination as largely novel among shipping DIY tools.
+
+**The five rulings below were ratified by the owner on 2026-08-17**, the
+morning after the series-1 convergence run on jts3.
+
+8. **A driver's low limit has exactly ONE declared owner (2026-08-17).**
+   The bottom allowed frequency for a driver *is* the manufacturer's minimum
+   recommended crossover frequency, carrying whatever slope condition the
+   manufacturer attaches to it, entered ONCE through the operator's
+   driver-research response at component entry (#1665). One field, one
+   owner. Every consumer **derives** from it: the linearization fit band, the
+   protection posture, the Fc sweep bounds, and the grading bands. The jts3
+   preset as it stood for the series-1 run violates this —
+   `tweeter.protection_highpass_floor_hz: 2000.0` while the Fc sweep consumed
+   `tweeter.band.lower_hz: 1600`, two declared values for one driver's low
+   limit, with the shipped 1648.7 Hz corner legal under one and illegal under
+   the other (#2603, which also records that this one constant shapes both
+   the safety posture and the integration-claim grading band — which is why
+   it gets one owner rather than a reconciliation rule).
+   That both values originate in a single research-response ingestion is the
+   owner's reading on 2026-08-17, not something #2603 establishes. This
+   ruling decides which way the collapse goes; #2603 owns doing it.
+
+   **The manufacturer's figure, checked (2026-08-17):** B&C publishes the
+   DE250's *Recommended Crossover* as **1.6 kHz**, footnoted **"12 dB/oct. or
+   higher slope high-pass filter"**, alongside a 1.0–18.0 kHz frequency range
+   ([bcspeakers.com DE250](https://www.bcspeakers.com/en/products/hf-driver/1/8/DE250)).
+   The owner's attested 1600 Hz is therefore **confirmed as the published
+   fact**, and **2000 Hz is not a published figure for this driver** — no
+   source checked cites it. Provenance: the number reads off B&C's own live
+   product page, and the slope footnote reads cleanly from B&C's own
+   print-PDF endpoint (`/en/products/hf-driver/1-0/8/de250.pdf`, a genuine
+   text layer); the Parts Express mirror of the same sheet agrees.
+   Corroborated at 1.6 kHz by US Speaker's reseller listing; no contradicting
+   figure found anywhere. Note the shape of the fact: the number is
+   meaningless without its slope condition, which is why the field carries
+   both.
+9. **A research prompt asks for published facts; margins are computed
+   downstream (2026-08-17).** The upstream driver-research prompt produced
+   the 2000 Hz figure and presented it as datasheet data. The rule: a
+   research prompt asks the manufacturer's published facts — minimum
+   crossover frequency and its slope condition — and nothing else. A derived
+   safety margin is computed downstream by named code with a named rationale,
+   and is never smuggled into a datasheet field as though the manufacturer
+   had published it. The prompt fix itself rides #2603; this entry is only
+   the rule it implements.
+
+   **How the fact is actually published, so the prompt asks for the right
+   field (researched 2026-08-17).** Horn/compression-driver makers give it a
+   dedicated spec-sheet line, as a single frequency. Three of the five horn
+   makers checked print the exact phrase "Recommended Crossover" (B&C, BMS,
+   18 Sound); the other two use "Minimum Crossover Frequency" or
+   "Recommended min. crossover" (FaitalPro, Celestion). The slope condition
+   usually rides along in a numbered footnote: B&C and 18 Sound print the
+   *identical* sentence, "12 dB/oct. or higher slope high-pass filter."
+   (verbatim; 18 Sound repeats it on the ND1460, so it is house style), and
+   FaitalPro uses the same template. Celestion folds it into the field name
+   instead. It is not universal — BMS's 4590 field carries no slope
+   qualifier at all. **Dome tweeters usually have no such line whatsoever.**
+   SB Acoustics and Scan-Speak instead express it as the test condition
+   footnoted to the *power-handling* rating ("IEC 268-5, high-pass
+   Butterworth, 2600 Hz, 12 dB/oct."; "X-over: 2. order HP Butterworth,
+   2.5 kHz"), phrased as a filter order rather than a dB/octave figure.
+   Consequences for the prompt: ask for the number **and** a separately
+   reported slope/filter-order qualifier; do not key on the literal phrase
+   "recommended crossover"; and for a dome tweeter, look in the
+   power-handling footnote. Absent is a legitimate answer — a driver whose
+   maker publishes nothing must report absent, never a guess.
+10. **The crossover blend region is summed-response-owned correction
+    territory (2026-08-17).** Per-driver fitting is deliberately blind
+    across the blend, and stays that way — that honesty is correct and is
+    not the defect. What moves is who is allowed to act there. Full
+    contract, with the series-1 evidence:
+    ["The region-based adjustment contract"](#the-region-based-adjustment-contract-2026-08-17).
+11. **The contract is prescriber-agnostic; the harness is deterministic
+    forever (2026-08-17).** The region vocabulary and its bounds are defined
+    independently of who prescribes. Measurement, safety clamps,
+    keep/restore on measured evidence, and receipts carrying
+    commanded-vs-realized per band never become a model's judgement call.
+    The prescription *policy* is a pluggable seam, and which policy fills it
+    is an OPEN decision — see
+    ["The prescriber seam"](#the-prescriber-seam-open-decision).
+12. **Near-term mission, and its sequence (2026-08-17).** The bare minimum
+    before any prescriber work: the drivers linearized across the ENTIRE
+    spectrum *including* the crossover region, on corrected upstream data.
+    In order: **(i)** upstream truth — decisions 8 and 9 land, so the fit
+    band and the protection posture derive from one honest number; **(ii)**
+    the blend-region contract — decision 10; **(iii)** a hardware series that
+    proves the dip moves. Only after (iii) is prescriber policy worth
+    deciding.
 
 ## Layer 1a concretely — UX and data flow
 
@@ -374,6 +469,112 @@ Disclosure: octave centers above the ceiling report
 `envelope_beyond_measurement_confidence`; beyond the ceiling the lift is
 declared best-effort, never a measured claim.
 
+## The region-based adjustment contract (2026-08-17)
+
+**One paragraph of history.** Series 1 — four rounds on jts3 overnight
+2026-08-17, reported in `captures/xover-series1-2026-08-17/series1-report.md`
+(session-artifact) — asked whether the drivers converge toward flat. They did
+not, and the machinery said so honestly: zero unsafe findings, zero rollbacks,
+every round kept `for iteration` rather than claiming a win. The commanded
+tweeter trim across the four rounds was **−7.2017, −7.1849, −6.9464, −7.3111
+dB — a total spread of 0.365 dB**, the woofer was asked for `0.0` throughout,
+and the peak deviation stayed parked at **1947 Hz** in every round after the
+first, while the series ended on its own round cap with `headroom.status:
+exhausted`. The trim layer converged on a prescription; the response did not
+converge to flat. A **scalar level knob cannot fill a localized notch**, so
+the honest reading is that the loop had no lever aimed at the thing it kept
+measuring. Three mechanisms, each evidenced, say why:
+
+- **The per-driver instrument is blind exactly there.** Three of the four
+  candidates (r1/r2/r4) carry a woofer `blind_zone_placements` record over
+  **1291.4–2077.2 Hz** — the gap between the woofer's core-band top and the
+  tweeter's core-band bottom (#2600 item 4) — with the placement at 1857.4 Hz,
+  acknowledging `measured_excess_db` of 2.09–2.26 dB and emitting only −0.51
+  to −0.64 dB against it. That damping is the fit being careful on evidence
+  it does not have, not a bug. `_blind_zone_placements` in
+  [`jasper/active_speaker/linearization_fit.py`](../jasper/active_speaker/linearization_fit.py)
+  already carries the full argument — including why it reports rather than
+  refuses — and already names this section's conclusion: the honest separator
+  "needs the SUM, which only the alignment/crossover layer sees."
+- **No lever of the right shape reached the dip.** The tweeter fit asked for a
+  lift of 0.738 / 0.988 / 0.730 dB in r1/r3/r4 and got
+  `lift_suppressed_reason: no_realizable_boost` each time (r2 asked for none);
+  that lift is the HF-continuation stage's, not a notch filler. A boost *did*
+  realize — the woofer emitted a +2.38 to +2.68 dB Peaking filter in all four
+  rounds — but at 422–434 Hz, more than two octaves below the dip. (That is a
+  positive gain in the emitted graph: decision 4 above still describes the
+  retired cut-only posture, and roadmap item 6 owns the sweep that trues those
+  claims up.) So with the tweeter's lift refused and the woofer's only
+  realizable boost that far away, what was left near 1947 Hz were cuts —
+  damped in the blind zone, per the bullet above — and the whole-driver scalar
+  trim, which is the wrong shape for a notch.
+- **The prescription never consumed the banked trend.** What accumulates feeds
+  the STOP test, not the prescription. Rounds 1–2 were started with
+  `--reset-first`, which clears run state, so `previous_objectives` was null
+  and the plateau verdict carried no information; from round 3 the continued
+  rounds did bank it, and it drove the plateau/headroom verdict. The trim,
+  though, is absolute and re-derived from each round's own capture either way
+  — so round N+1 measured the same baseline and proposed the same number
+  again.
+
+**The contract.** The frequency axis divides into regions with different
+measurement trust and therefore different allowed tools. This is what ANY
+prescriber consumes — the regions, the vocabulary, and the bounds are the
+contract; the code that fills them in is not.
+
+**(a) Inside each driver's own band, away from the crossover.** Per-driver
+linearization under the correction envelope. Existing, unchanged — Layer 1a
+above owns it.
+
+**(b) The crossover/blend region — summed-response-owned.** Per-driver
+fitting stays instrument-blind here by design. What changes is the owner: the
+summed at-the-mark measurement *is* trusted in this region and sees the dip
+at every position, so it owns **bounded shape correction** there. The initial
+posture is **cuts-first**. Every existing safety cap is unchanged, the
+verification is the same summed verify, and the outcome is banked in the same
+receipts. This is a change of owner and of allowed tool — not a new safety
+class, not a new instrument, and not a new flow.
+
+**(c) Level, alignment, and Fc keep their own tools.** Level stays a scalar
+per-driver trim. Alignment (delay/polarity) and Fc selection stay their own
+tools with their own evidence. Nothing about the safety class changes.
+
+**What this contract does not decide.** The HOW of (b) — filter form, band
+edges, how much depth the summed evidence earns — is the implementing
+session's, inside these boundaries. One named prerequisite: reading per-role
+quantities out of a summed capture needs #2653's frame-coherence condition,
+because the summed capture rides the applied incumbent graph while per-branch
+sweeps ride the protected-neutral one.
+
+### The prescriber seam (open decision)
+
+The contract above is deliberately defined without saying who prescribes.
+
+- **Deterministic forever:** the harness. Measurement, the safety clamps,
+  keep/restore on measured evidence, and receipts carrying
+  commanded-vs-realized per band. None of this becomes a model's judgement
+  call, ever.
+- **Pluggable:** the prescription *policy* — what to try next, given the
+  banked trend.
+
+Two candidates, recorded neutrally, with the decision **deliberately
+deferred** until the upstream truth (decisions 8–9) and the contract
+(decision 10) land and a hardware series proves the blend region is
+correctable:
+
+1. **A deterministic trend engine** — closes the third mechanism above by
+   making the prescription read the round-over-round objectives the plateau
+   test already banks.
+2. **An LLM prescriber** —
+   [`llm-native-tuning-workbench-plan.md`](llm-native-tuning-workbench-plan.md)
+   is the planning authority for agent-assisted tuning and is where that
+   option's shape lives.
+
+The owner's stated concern is **complexity**. The observation that makes
+deferring cheap: everything except the trend engine itself — the contract,
+the vocabulary, the bounds, the harness, the receipts — is **common to both
+paths**, so nothing built now is wasted by either choice.
+
 ## Session operating model (how the implementing session runs)
 
 Fable is the brains, not the hands: architect, coordinator, debugger, and
@@ -501,3 +702,9 @@ rename · #1671 passive-class UX · #1672 mic HF arbitration · #1675 ka-
 beaming crossover guidance (simple v1 landed alongside #1665; Bessel
 beamwidth-vs-horn-coverage matching and the JTS3 Fc re-tune bench
 experiment remain open).
+
+Opened since, and load-bearing for the 2026-08-17 rulings: #2600 blend-window
+instrument blindness · #2603 the driver low-limit's two declared values ·
+#2653 the level datum's frame-coherence condition. Campaign-wide wave state
+lives in [`audio-commissioning-roadmap.md`](audio-commissioning-roadmap.md),
+not here.
