@@ -1049,7 +1049,25 @@ def decide_trim(
     drift_db = abs(
         float(resolved_db[tweeter_role]) - float(anchored_db[tweeter_role])
     )
-    beyond = drift_db > float(sanity_margin_db)
+    # EXCLUSIVE, and tolerant at the boundary itself. ``drift_db`` is a
+    # difference of two doubles neither of which is exactly representable, so a
+    # drift that IS the margin can re-derive a ULP either side of it: at an
+    # anchor of -2.691 the subtraction lands 5.999999999999999, and at
+    # -2.6910000000003 it lands 6.000000000000001. Which one a given box
+    # gets depends on the last bits of the anchor, and those come out of numpy
+    # reductions whose SIMD path varies by build — so a bare ``>`` makes
+    # "exactly at the margin" a coin flip across interpreters rather than a
+    # rule. CI caught it as a py3.12/3.13 failure against a py3.11 pass, on a
+    # test that had been green for months.
+    #
+    # The tolerance is 1e-9 RELATIVE — nine orders of magnitude below the
+    # smallest drift anyone can hear, and far above the ~1e-15 the arithmetic
+    # can produce — so it separates "the same number" from "a different
+    # number" and nothing else. It errs toward TRUSTING a scan that landed on
+    # the margin, which is what this bound's own contract says it does.
+    beyond = drift_db > float(sanity_margin_db) and not math.isclose(
+        drift_db, float(sanity_margin_db), rel_tol=1e-9, abs_tol=0.0
+    )
     anchor_levels_better = abs(anchored_match.difference_db) <= abs(
         resolved_match.difference_db
     )

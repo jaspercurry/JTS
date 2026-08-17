@@ -11753,3 +11753,61 @@ def test_the_deleted_offset_can_cost_a_session_the_improvement_floor(
 
     # PRE-APPLY: nothing was committed, so the reigning graph is untouched.
     assert c.candidate is None
+
+
+@pytest.mark.parametrize(
+    ("case", "anchor_db"),
+    [
+        # The two sides of the ULP coin. Both are "-2.691" to every surface
+        # that rounds, and they re-derive the SAME drift on opposite sides of
+        # the margin — which is the whole defect.
+        ("re-derives just under the margin", -2.691),
+        ("re-derives just over it", -2.6910000000003),
+    ],
+    ids=["under", "over"],
+)
+def test_a_drift_that_is_the_margin_is_trusted_whichever_ulp_it_lands_on(
+    case, anchor_db,
+):
+    """The boundary must be a rule, not a coin flip across interpreters.
+
+    ``drift_db`` is a difference of two doubles neither of which is exactly
+    representable, so a scan that drifted EXACTLY the margin re-derives a ULP
+    either side of it depending on the anchor's last bits — and those come out
+    of numpy reductions whose SIMD path varies by build. A bare ``>`` therefore
+    answered differently on py3.11 (trusted) and py3.12/3.13 (rejected) for the
+    same input, on a test that had been green for months, with nothing in
+    between but the arithmetic that produces the anchor.
+
+    Both arms drive the exact float shape the guard sees rather than going
+    through the fit: the subject is the comparison, and a fixture that happened
+    to land on one ULP would pin only half of it.
+    """
+    margin = LINEARIZATION_TRIM_SANITY_MARGIN_DB
+    resolved_db = anchor_db - margin
+    drift_db = abs(resolved_db - anchor_db)
+
+    # The fixture is honest only if the two arms really do straddle the bound.
+    naive_beyond = drift_db > margin
+    tolerant_beyond = drift_db > margin and not math.isclose(
+        drift_db, margin, rel_tol=1e-9, abs_tol=0.0
+    )
+
+    assert tolerant_beyond is False, case
+    if case == "re-derives just over it":
+        assert naive_beyond is True, (
+            "this arm must actually reproduce the CI failure, or it pins nothing"
+        )
+
+
+def test_the_sanity_bound_reads_its_tolerance_from_one_comparison():
+    """One comparison, not two that can disagree.
+
+    A second `>` added anywhere for the same bound would reintroduce the coin
+    flip on whichever path skipped the tolerance.
+    """
+    import inspect
+
+    source = inspect.getsource(iv.decide_trim)
+    assert source.count("> float(sanity_margin_db)") == 1
+    assert "math.isclose(" in source
