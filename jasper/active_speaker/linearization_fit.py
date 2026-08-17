@@ -669,7 +669,11 @@ class LinearizationFilter:
     biquad_type: str  # "Peaking" | "Highshelf" | "Lowshelf"
     freq: float
     q: float
-    gain: float  # dB; always <= 0 (cut-only invariant)
+    # dB; may be positive, up to PER_FILTER_BOOST_CAP_DB -- the cut-only
+    # invariant ended at PR-L5. Pinned by
+    # tests/test_active_speaker_linearization_emission.py::test_linearization_rejects_boost_above_the_per_filter_cap
+    # and ::test_linearization_boost_is_accepted_and_absorbed_by_baseline_headroom.
+    gain: float
 
     def to_dict(self) -> dict[str, float | str]:
         return {

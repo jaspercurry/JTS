@@ -1635,6 +1635,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         'sensitivity_db_2v83_1m',
         'nominal_impedance_ohm',
         'recommended_highpass_hz',
+        // #2603: the low limit's slope condition travels with the frequency it
+        // conditions. Dropping it here would leave the owner half-declared.
+        'recommended_highpass_slope_db_per_octave',
         'recommended_lowpass_hz',
         'do_not_test_below_hz',
         'gain_offset_db',
@@ -1838,6 +1841,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         'sensitivity_db_2v83_1m',
         'nominal_impedance_ohm',
         'recommended_highpass_hz',
+        // #2603: the low limit's slope condition travels with the frequency it
+        // conditions. Dropping it here would leave the owner half-declared.
+        'recommended_highpass_slope_db_per_octave',
         'recommended_lowpass_hz',
         'do_not_test_below_hz',
         'gain_offset_db'

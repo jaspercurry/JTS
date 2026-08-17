@@ -1302,7 +1302,9 @@ def _validated_linearization(
     role's filter list is validated field-by-field and RAISES
     ``ActiveSpeakerConfigError`` on the first violation (never silently
     dropped or clamped -- a hardware-bound safety invariant, matching the
-    fit engine's own explicit-raise cut-only invariant).
+    fit engine's own explicit-raise per-filter-boost-cap invariant). Pinned by
+    tests/test_active_speaker_linearization_emission.py::test_linearization_rejects_boost_above_the_per_filter_cap
+    and ::test_linearization_boost_is_accepted_and_absorbed_by_baseline_headroom.
     """
 
     safe: dict[str, list[dict[str, Any]]] = {}
@@ -3374,11 +3376,15 @@ def emit_active_speaker_baseline_config(
     bass-extension (mirrors the bass-extension addon's own slot exactly), via
     the shared ``emit_filter_spec`` primitive. Independently re-validated here
     (``_validated_linearization``): ``biquad_type`` in {Peaking, Highshelf,
-    Lowshelf}, finite positive ``freq``/``q``, non-positive ``gain``, plus the
+    Lowshelf}, finite positive ``freq``/``q``, ``gain`` capped at
+    ``MAX_LINEARIZATION_BOOST_DB``, plus the
     fail-closed shelf-placement structure (one leading shelf, one optional
     trailing Highshelf taper after a Lowshelf lead — #1668) — a hardware-bound
     safety invariant re-proved at the emitter boundary, not assumed from the
     caller. The empty default keeps every existing caller byte-identical.
+    Pinned by
+    tests/test_active_speaker_linearization_emission.py::test_linearization_rejects_boost_above_the_per_filter_cap
+    and ::test_linearization_boost_is_accepted_and_absorbed_by_baseline_headroom.
     """
 
     preset.validate()

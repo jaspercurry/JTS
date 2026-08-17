@@ -103,7 +103,7 @@ __all__ = [
     "EVENT_SWEEP",
     "EVENT_SWEEP_REFUSED",
     "FC_REJECT_ABOVE_LOWER_DRIVER_BAND",
-    "FC_REJECT_AT_OR_BELOW_FLOOR",
+    "FC_REJECT_BELOW_DECLARED_FLOOR",
     "FC_REJECT_BEAMING",
     "FC_REJECT_OUTSIDE_SEARCH_BAND",
     "FC_SWEEP_COMPUTE_BUDGET_S",
@@ -139,7 +139,18 @@ MAX_PROPOSED_FC_CANDIDATES = 5
 # Why each Fc was refused. Named codes, never a bare number, because every one
 # of these is a household- or operator-actionable declaration rather than an
 # internal detail.
-FC_REJECT_AT_OR_BELOW_FLOOR = "at_or_below_declared_floor"
+# Owner ruling, 2026-08-17: "exact is legal -- if the user/manufacturer says
+# 1600, we should be able to do it. no nannies." A corner exactly AT the
+# declared minimum recommended crossover is a SANCTIONED operating point, so
+# only STRICTLY BELOW is refused, and the reason says so. The old
+# ``at_or_below_declared_floor`` name described a behaviour that no longer
+# exists. Checked before flipping: at ``fc == floor`` the scoring band is
+# ``overlap_band_hz`` = ``[max(fc/2, tweeter_sweep_lo), min(2*fc, woofer_hi)]``
+# = ``[floor, min(2*floor, woofer_hi)]`` -- a full octave wide, not degenerate.
+# The one-sidedness the old strictness cited is a CONTINUUM (every Fc within an
+# octave of the floor is clamped the same way, just less), not a cliff at
+# equality, so there was no math to repair -- only conservatism to drop.
+FC_REJECT_BELOW_DECLARED_FLOOR = "below_declared_floor"
 FC_REJECT_ABOVE_LOWER_DRIVER_BAND = "above_lower_driver_band"
 FC_REJECT_BEAMING = "beaming_above_ka_ceiling"
 FC_REJECT_OUTSIDE_SEARCH_BAND = "outside_declared_search_band"
@@ -226,11 +237,11 @@ def fc_candidate_set(
 
     Four bounds, each traceable to something a person confirmed:
 
-    * **strictly above** ``hf_hard_floor_hz`` — the operator-confirmed minimum
-      for the HF driver. Strict because #1654 measured the edge case: at an Fc
-      equal to the floor the candidate's own handoff lands exactly on the
-      evidence band's edge, so it cannot be scored honestly even though the
-      sweep now reaches it;
+    * **at or above** ``hf_hard_floor_hz`` — the operator-confirmed minimum
+      recommended crossover for the HF driver. AT the floor is legal and is
+      itself proposed: the manufacturer's recommended crossover point is a
+      sanctioned operating point, not a boundary to keep a margin from (owner
+      ruling 2026-08-17). Only strictly below is refused;
     * at or below the lower driver's declared hard ceiling;
     * inside the declared search band when one is declared;
     * at or below the **beaming ceiling** from the lower driver's declared
@@ -266,11 +277,18 @@ def fc_candidate_set(
     rejected: list[tuple[float, str]] = []
     proposed: list[float] = []
     if hi > lo and count > 0:
-        # Geometric interior points, excluding both ends: the floor is refused
-        # by the strictness rule above and the ceiling is a bound rather than a
-        # recommendation, so neither is a value to propose.
-        step = (hi / lo) ** (1.0 / (int(count) + 1))
-        proposed = [round(lo * step ** (i + 1), 1) for i in range(int(count))]
+        # Geometric points over the half-open ``[lo, hi)``. The floor is
+        # INCLUDED -- the 2026-08-17 ruling makes the declared minimum a legal
+        # operating point rather than a refused edge, so it is proposed like any
+        # other. The ceiling stays excluded: it is a bound, not a
+        # recommendation. Starting the grid AT ``lo`` keeps the spacing
+        # geometric (a crossover argument is per-octave) and the count
+        # unchanged, rather than bolting the floor on beside a grid it does not
+        # belong to. Each point still passes ``_fc_rejection`` below, so a floor
+        # outside the search band or above the lower driver's ceiling is refused
+        # by name.
+        step = (hi / lo) ** (1.0 / int(count))
+        proposed = [round(lo * step ** i, 1) for i in range(int(count))]
 
     candidates = [float(configured_hz)]
     for fc in proposed:
@@ -310,8 +328,8 @@ def _fc_rejection(
     beaming_ceiling_hz: float | None,
 ) -> str | None:
     """The FIRST bound ``fc_hz`` violates, hardest first, or ``None``."""
-    if fc_hz <= float(hf_hard_floor_hz):
-        return FC_REJECT_AT_OR_BELOW_FLOOR
+    if fc_hz < float(hf_hard_floor_hz):
+        return FC_REJECT_BELOW_DECLARED_FLOOR
     if fc_hz > float(lower_driver_hard_ceiling_hz):
         return FC_REJECT_ABOVE_LOWER_DRIVER_BAND
     if search_band_hz is not None and not (
