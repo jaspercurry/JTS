@@ -87,9 +87,9 @@ __all__ = [
 #:
 #: Two names changed with the single-datum-owner migration, and the rename is
 #: the honest half of it. ``…_level_frame_finding`` banked a disagreement
-#: between two voting estimators; there is no vote now, so it is
-#: ``…_level_estimator_finding`` — one summed owner, two subordinate estimates
-#: graded against it. ``…_level_frame_refused`` is DELETED outright rather than
+#: between two VOTING estimators; the same two are still compared, but nothing
+#: they say places the pair, so it is ``…_level_estimator_finding``.
+#: ``…_level_frame_refused`` is DELETED outright rather than
 #: renamed: a consistency suspicion never refuses (the owner's never-nanny
 #: ruling), so the line has no condition left to describe.
 #: ``…_level_match_refused`` is untouched and is now the only level refusal.
@@ -195,19 +195,19 @@ def estimator_consistency_record(
     numbers are therefore suffixed with the role, which is also what makes the
     record self-describing to a reader who has never seen this schema.
 
-    **All THREE instruments ride, and now they have a referee.** The record
-    carries the fit's per-driver median (``core_level_db_*``), the trim solve's
-    per-driver level-match term (``trim_band_average_db_*``), each one's
-    distance from the summed owner (``*_delta_db_*``), and the owner's own
-    per-role distance from the other (``estimator_delta_db_*``). Before the
-    single-datum-owner migration a reader of this finding was being asked to
-    believe a session had proceeded past a gate that would have stopped it;
-    now they are being told something narrower and truer — a capture whose
-    subordinate estimates disagree with the measurement that placed the pair is
-    worth re-taking.
+    **BOTH estimates ride, plus the gap between them.** The record carries the
+    fit's per-driver median (``core_level_db_*``), the trim solve's per-driver
+    level-match term (``trim_band_average_db_*``), and their per-role distance
+    (``estimator_delta_db_*``). There is no third instrument and no referee —
+    that is the point of the migration rather than an omission: the pair is
+    anchored on the raw measured trim, so nothing has to adjudicate between
+    these two. Before #2609 a reader of this finding was being asked to believe
+    a session had proceeded past a gate that would have stopped it; now they
+    are being told something narrower and truer — a capture whose two level
+    estimates disagree is worth re-taking.
 
     **What the session DID about it: nothing, and that is the point.** The
-    round proceeds on the owner's placement whatever this record says. Its
+    round proceeds on the raw measured trim whatever this record says. Its
     predecessor carried ``frame_exclusion_reason`` and per-role
     ``anchor_delta_db_*`` because a disputed frame USED to zero the anchor's
     offsets; no verdict here moves a number, so there is no dB consequence to
@@ -314,13 +314,13 @@ def assess_accountability(
     journal: list[GateRecord] = []
     state = state if state is not None else LinearizationState()
 
-    # --- the subordinate estimators against the summed owner ---------
+    # --- the two per-driver level estimates against each other -------
     #
     # Runs before item 1 because it is the more specific diagnosis of the
     # same disease: item 1 grades the level the committed trim REALIZES,
     # this grades whether the two per-driver instruments that trim was
-    # cross-checked against still agree with the summed capture that placed
-    # it. On the 2026-07-27 captures the two per-driver reads sat 10.9-13.1
+    # cross-checked against still agree with each other about where the
+    # drivers sit. On the 2026-07-27 captures those reads sat 10.9-13.1
     # dB apart; PR-L3 fixed that cause, and this is what stops the next one
     # from shipping unremarked.
     #
@@ -329,7 +329,7 @@ def assess_accountability(
     # disagrees with the owner flags the CAPTURE as retriable; it does not
     # discard the datum and does not stop the session. There is nothing
     # left for it to refuse on, either: the disagreement no longer changes
-    # any committed number, because the summed capture owns the placement
+    # any committed number, because the raw measured trim owns the placement
     # (:func:`~.intervention.anchor_trims`).
     #
     # **What this replaced, and why the deleted refusal arm was reachable

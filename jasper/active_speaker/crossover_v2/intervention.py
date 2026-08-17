@@ -684,23 +684,22 @@ class LinearizationRequest:
 # the level datum's one owner, its subordinate checks, and the anchor it places
 # --------------------------------------------------------------------------- #
 
-#: Why a per-driver level estimate was flagged against the summed owner.
+#: Why a capture was flagged: the two per-driver level estimates disagree.
 #:
-#: Both halves of the condition are in the name. *estimator*: one of the two
+#: The name says what is measured and nothing more. *level_estimators*: the two
 #: SUBORDINATE per-driver derivations — the trim solve's overlap-band average
-#: (``trim_band_average_db``) or the fit's own core-band median
-#: (``driver_core_level_db``). *disagrees_with_summed_owner*: its relative
-#: placement of the pair sits further than :data:`LEVEL_ESTIMATOR_TOLERANCE_DB`
-#: from the placement the summed at-the-mark capture measured.
+#: (``trim_band_average_db``) and the fit's own core-band median
+#: (``driver_core_level_db``). *disagree*: their relative placements of the
+#: pair sit further apart than :data:`LEVEL_ESTIMATOR_TOLERANCE_DB`.
 #:
-#: **It flags a capture; it never changes a number.** The round proceeds on the
-#: owner's placement whatever this says — disclose and recommend, never discard
-#: the datum. What it earns the household is a RETRIABLE capture: a suspicion
-#: worth re-measuring, not a refusal.
-LEVEL_ESTIMATOR_SUSPECT_REASON = "estimator_disagrees_with_summed_owner"
+#: **It flags a capture; it never changes a number.** The pair is anchored on
+#: the raw measured trim whatever this says — disclose and recommend, never
+#: discard the datum. What it earns the household is a RETRIABLE capture: a
+#: suspicion worth re-measuring, not a refusal.
+LEVEL_ESTIMATOR_SUSPECT_REASON = "level_estimators_disagree"
 
-#: How far a subordinate estimator may sit from the summed owner before the
-#: capture is called suspect.
+#: How far the two per-driver level estimates may sit apart before the capture
+#: is called suspect.
 #:
 #: The same 3.0 dB the realized-level gate holds a shipped pair to
 #: (``REALIZED_LEVEL_MATCH_TOLERANCE_DB``), and deliberately so on three
@@ -720,22 +719,23 @@ LEVEL_ESTIMATOR_TOLERANCE_DB = REALIZED_LEVEL_MATCH_TOLERANCE_DB
 
 @dataclass(frozen=True)
 class LevelConsistency:
-    """How the two subordinate estimators compare to the summed owner.
+    """How far apart the two per-driver level estimates place the pair.
 
     A suspicion, not a placement — and that distinction is the whole point of
     the class. Its predecessor (``LevelFrameAdmission``) reported an
-    ARBITRATION: two per-driver estimators voted, a 3.0 dB cliff decided
+    ARBITRATION over the same two numbers: they voted, a 3.0 dB cliff decided
     whether their reconciliation was admitted, and crossing it zeroed every
     per-role offset. On 2026-08-16 a disagreement that missed that cliff by
     0.326 dB moved a tweeter +3.79 dB hotter than its own raw measurement
     asked, and the round was rolled back for the overshoot that followed.
 
-    There is no vote here. The summed capture owns the datum, both estimators
-    are measured against it, and neither can move it.
+    The comparison survived; the CONSEQUENCE did not. The pair is anchored on
+    the raw measured trim (:func:`anchor_trims`), so neither estimate places
+    anything and this verdict cannot move a number.
 
-    ``None`` in place of this value means **no summed owner was in hand**, so
-    there was nothing to check against — a third state, and not a quiet synonym
-    for "the estimators agreed".
+    ``None`` in place of this value means **one of the two estimates covered no
+    role**, so there was nothing to compare — a third state, and not a quiet
+    synonym for "the estimators agreed".
     """
 
     suspect: bool
@@ -747,7 +747,7 @@ class LevelConsistency:
     tolerance_db: float
 
     worst_delta_db: float
-    """The largest single |estimator − owner| over both estimators and roles."""
+    """The largest single per-role gap between the two estimates, in dB."""
 
     estimator_delta_db: Mapping[str, float]
     """Per role: |overlap-band placement − core-median placement|, in dB."""
@@ -776,10 +776,10 @@ class LevelConsistency:
 def _relative_placement_db(levels: Mapping[str, float]) -> dict[str, float]:
     """One estimator's placement of the pair, referred to its own loudest role.
 
-    Absolute levels from different instruments are not comparable — a summed
-    at-the-mark sweep, a power-band average and a core-band median each carry
-    their own reference. What IS comparable, and what the anchor actually
-    commits, is how far apart an estimator puts the two roles. Subtracting the
+    Absolute levels from different instruments are not comparable — a
+    power-band average about Fc and a core-band median each carry their own
+    reference. What IS comparable, and what the anchor actually commits, is how
+    far apart an estimator puts the two roles. Subtracting the
     loudest role makes every estimator state that same relative claim, so
     ``|a − b|`` per role is a difference of PLACEMENTS rather than a difference
     of references.
@@ -1126,9 +1126,9 @@ class LinearizationPlan:
     trim_band_estimate_db: Mapping[str, float]
     """Per role: the trim solve's own level-match term. The other subordinate."""
     level_consistency: LevelConsistency | None
-    """Both subordinate estimators graded against the summed owner.
+    """The two per-driver level estimates, graded against each other.
 
-    ``None`` when there was no owner to grade against. See
+    ``None`` when one of the two estimates covered no role. See
     :func:`check_level_consistency`. It flags a capture as retriable; it never
     moved this candidate's anchor and cannot.
     """
@@ -1368,8 +1368,8 @@ def plan_linearization(
     # Both estimators against the one owner. Symmetric, advisory, and unable to
     # move a number — see :func:`check_level_consistency`. Where a 3.0 dB cliff
     # used to zero the anchor's per-role offsets, crossing the same 3.0 dB now
-    # flags the capture retriable and the round proceeds on the owner's
-    # placement.
+    # flags the capture retriable and the round proceeds on the raw measured
+    # trim.
     level_consistency = check_level_consistency(
         trim_band_average_db=trim_band_estimate_db,
         core_proposal_db=core_proposal_db,

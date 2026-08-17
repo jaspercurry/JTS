@@ -150,8 +150,8 @@ class LinearizationState:
     level_consistency: LevelConsistency | None = None
     """Both subordinate estimators graded against the summed level owner.
 
-    ``None`` on every non-planning outcome and for a candidate planned with no
-    summed capture in hand — the "no verdict" state, and NOT a synonym for
+    ``None`` on every non-planning outcome and whenever one of the two
+    estimates covered no role — the "no verdict" state, and NOT a synonym for
     "the estimators agreed". See
     :func:`~.intervention.check_level_consistency`. It flags a capture as
     retriable and never moves a number.

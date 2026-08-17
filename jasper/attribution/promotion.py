@@ -422,9 +422,10 @@ def promote_level_frame_disagreement(
             # `unsure` survived the single-datum-owner migration on purpose and
             # is now MORE right, not less: the finding's claim narrowed to "this
             # capture is worth re-taking", and a suspicion about a capture is
-            # exactly an unsure one. The summed owner adjudicates the PLACEMENT,
-            # which is why no number here is in doubt; it does not adjudicate
-            # why an estimator read differently, which is what this records.
+            # exactly an unsure one. The raw measured trim owns the PLACEMENT,
+            # which is why no committed number is in doubt; nothing adjudicates
+            # WHY the two estimates read differently, which is what this
+            # records.
             confidence=CONFIDENCE_UNSURE,
             # `refit`, never `eq`. M7 declares both, and the split is exactly
             # plan §4's: `eq` when a driver's level is genuinely low, `refit`

@@ -687,7 +687,7 @@ def _level_frame_record(**overrides: object) -> dict:
         "f_hi_hz": 5844.7,
         "worst_delta_db": 3.209,
         "tolerance_db": 3.0,
-        "reason": "estimator_disagrees_with_summed_owner",
+        "reason": "level_estimators_disagree",
         "realized_difference_db": -0.828,
         "realized_tolerance_db": 3.0,
         "realized_level_w_db": 0.213,
@@ -789,7 +789,7 @@ def test_the_banked_finding_says_what_the_session_did_about_it() -> None:
 
     evidence = _level_frame_finding().evidence
 
-    assert evidence["reason"] == "estimator_disagrees_with_summed_owner"
+    assert evidence["reason"] == "level_estimators_disagree"
     assert evidence["estimator_delta_db_tweeter"] == 3.209
     assert evidence["estimator_delta_db_woofer"] == 0.0
 
