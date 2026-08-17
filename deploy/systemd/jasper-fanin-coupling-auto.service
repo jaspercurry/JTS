@@ -38,18 +38,40 @@ Wants=jasper-fanin.service jasper-outputd.service jasper-camilla.service
 # arm failure (rolled back to loopback) also exits 1 and would retry-loop.
 [Service]
 Type=oneshot
-# Worst-case pass under the entry lock (review #1252 tally, re-tallied for the
-# #2175 start-budget resets): <=10s lock wait + usbsink restart 8s + outputd
-# 8s + coordinated fan-in restart (camilla stop 8s + fanin 8s + camilla start
-# 8s) + camilla reconcile + a possible audio-hardware-reconcile kick 15s, plus
-# the three reset-failed calls that now precede a start-consuming verb on a
-# crash-budget daemon (outputd restart, fan-in restart, camilla start) at a 5s
-# timeout CEILING each — normal cost is milliseconds ~= 90s. 120s still gives
-# honest headroom (~30s): a systemd kill mid-sequence between camilla-stop and
+# Worst-case pass under the entry lock, RE-TALLIED for the #2285 P7 phase-0
+# convergence step (previous tallies: review #1252, then the #2175 start-budget
+# resets). Every term below is a hard timeout CEILING in code, not an observed
+# duration; normal cost is milliseconds. Two line items in the prior tally were
+# stale and are corrected here: it charged a "usbsink restart 8s" the reconciler
+# does not perform, and it charged the ARM path a 15s hardware-reconcile kick
+# when the arm's kick is _ARM_CONTENT_FORMAT_CONVERGE_TIMEOUT_SEC = 60s (the 15s
+# one is the DISARM floor re-emit, a different and mutually exclusive path).
+#
+#   entry lock wait                                              10s
+#   ACTIVE-endpoint convergence (jasper/fanin/converge.py):
+#     gate / graph / applied-record reads                         4s
+#     re-emit, ANCHOR branch (the slower of the two):            25s
+#       staged-anchor lock 15s + camilladsp --check 10s
+#     audio-hardware-reconcile kick                              15s
+#                                              convergence =     44s
+#   the ordered ARM:
+#     content-format converge kick                               60s
+#     outputd  reset-failed 5s + restart 8s                      13s
+#     fan-in   reset-failed 5s + restart 8s                      13s
+#     camilla reconcile: dsp_writer_lock 10s + --check 10s       20s
+#                                                      arm =    106s
+#                                                    TOTAL =    160s
+#
+# The other fork is cheaper and NOT additive: a pass that refuses to converge
+# takes the loopback confirm/disarm (61s) instead of the 106s arm. 160s is the
+# bound.
+#
+# 210s keeps the established ~30% headroom (50s) over it, and erring LONG is
+# the safe direction: a systemd kill mid-sequence between camilla-stop and
 # camilla-start leaves CamillaDSP cleanly stopped, which
 # OnFailure=jasper-camilla-recover does NOT catch (clean stop != failed) — so
 # the timeout must outlast the pass.
-TimeoutStartSec=120
+TimeoutStartSec=210
 # The CLI hydrates the trusted base and reconciler-owned fanin env internally.
 # Do not inject the group-writable fanin.env into this root Python process:
 # values such as PYTHONPATH/LD_PRELOAD must never cross the privilege boundary.

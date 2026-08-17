@@ -58,7 +58,12 @@ RECONCILE_ONESHOT_TIMEOUTS = {
     # (no trap, persistent voice-input-absent marker). The derivation itself is
     # pinned by tests/test_aec_init.py against the aec_init constants.
     "jasper-aec-reconcile": "120",
-    "jasper-fanin-coupling-auto": "120",
+    # Re-tallied for the #2285 P7 phase-0 convergence step: the pass now carries
+    # a graph move (staged-anchor lock + camilladsp --check + a hardware-
+    # reconcile kick) ahead of the ordered arm. The unit's own comment shows the
+    # arithmetic term by term; 210 is that 161s bound plus the established ~30%
+    # headroom.
+    "jasper-fanin-coupling-auto": "210",
     "jasper-grouping-reconcile": str(
         int(multiroom_reconcile._RECONCILE_SYSTEMD_TIMEOUT_SEC)
     ),

@@ -3978,3 +3978,116 @@ def test_render_subcommand_reads_a_readable_topology(
     out = capsys.readouterr().out
     assert "topology loaded" in out
     assert "ring_b_channels 2" in out
+
+
+# --- #2285 P7: the DAC-swap edge into the coupling reconciler -----------------
+#
+# udev already reached this script on every controlC* event; the chain stopped
+# here. These pin the edge that continues it, and — more importantly — the
+# guard that keeps the two reconcilers from kicking each other forever.
+
+_COUPLING_UNIT = "jasper-fanin-coupling-auto.service"
+
+
+def _coupling_kick_lines(tmp_path: Path, result: subprocess.CompletedProcess[str]):
+    """(systemctl starts of the coupling unit, the coupling_kick event lines)."""
+    starts = [
+        line
+        for line in _systemctl_log(tmp_path).splitlines()
+        if _COUPLING_UNIT in line and " start " in f" {line} "
+    ]
+    events = [
+        line
+        for line in result.stderr.splitlines()
+        if "event=audio_hardware_reconcile.coupling_kick" in line
+    ]
+    return starts, events
+
+
+def test_a_plugged_registered_dac_converges_without_an_operator(tmp_path: Path):
+    """THE jts5 STORY: plug a registered DAC in, and the box arms itself.
+
+    A first pass on a box that has never seen this DAC sets dac_env_changed and
+    render_changed, so the edge fires and the coupling reconciler gets its
+    chance to converge. Without this start the box would render a correct
+    asound.conf, bounce outputd, and then sit on loopback forever waiting for a
+    human to type the arm — which post-#2534 is the #2261 park, not a working
+    speaker.
+    """
+    result = _run_reconcile(tmp_path, INNOMAKER_LISTING, "--reason", "udev")
+
+    assert result.returncode == 0, result.stderr
+    starts, events = _coupling_kick_lines(tmp_path, result)
+    assert starts, _systemctl_log(tmp_path)
+    assert all("--no-block" in line for line in starts), starts
+    assert len(events) == 1 and "result=started" in events[0], events
+
+
+def test_an_unrecognized_dac_parks_and_does_not_kick_the_coupling(tmp_path: Path):
+    """THE OTHER HALF: an unproven shape parks loudly and converges nothing.
+
+    There is no output for a coupling to converge onto, so the park (#2261) is
+    the end state — not something to reconcile out of here.
+    """
+    result = _run_reconcile(tmp_path, "", "--reason", "udev")
+
+    starts, events = _coupling_kick_lines(tmp_path, result)
+    assert starts == [], _systemctl_log(tmp_path)
+    assert events == [], events
+
+
+def test_a_no_change_pass_issues_no_coupling_kick(tmp_path: Path):
+    """THE PING-PONG GUARD, half one (design section 10.4 item 4).
+
+    The coupling pass kicks THIS script during its arm. If a no-change run of
+    this script started the coupling unit back, the pair would ping-pong. It
+    cannot, because both directions are change-guarded: here is the proof that
+    a second, identical pass issues no start.
+    """
+    first = _run_reconcile(tmp_path, INNOMAKER_LISTING, "--reason", "udev")
+    assert first.returncode == 0, first.stderr
+    (tmp_path / "systemctl.log").write_text("", encoding="utf-8")
+
+    second = _run_reconcile(tmp_path, INNOMAKER_LISTING, "--reason", "udev")
+
+    assert second.returncode == 0, second.stderr
+    starts, events = _coupling_kick_lines(tmp_path, second)
+    assert starts == [], _systemctl_log(tmp_path)
+    assert len(events) == 1 and "result=skipped_no_change" in events[0], events
+
+
+def test_the_kick_guard_reads_neither_the_floor_nor_the_route_flag(tmp_path: Path):
+    """THE GUARD IS THE dac/render PAIR SPECIFICALLY, not "anything moved".
+
+    A latency-floor re-emit is not a DAC change and a route-env change already
+    has its own restart path; neither can alter a coupling verdict. Reading the
+    coarse ``env_changed`` instead would kick on both — which is exactly how the
+    coupling pass's OWN kick (it moves the active-lane marker pair, setting
+    outputd_committed and nothing else) would start yet another coupling pass.
+    """
+    source = SCRIPT.read_text(encoding="utf-8")
+    call = [
+        line.strip()
+        for line in source.splitlines()
+        if "kick_fanin_coupling_auto_if_needed " in line and "()" not in line
+    ]
+
+    assert call == ['kick_fanin_coupling_auto_if_needed "$dac_env_changed" "$render_changed"'], call
+    assert "$env_changed" not in call[0]
+    assert "LATENCY_FLOOR_CHANGED" not in call[0]
+    assert "ROUTE_FANIN_CHANGED" not in call[0]
+
+
+def test_the_coupling_kick_never_blocks(tmp_path: Path):
+    """--no-block IS THE DEADLOCK GUARD, not a nicety.
+
+    The coupling pass kicks this script back SYNCHRONOUSLY inside its arm. A
+    blocking start here would leave this script waiting on a pass that is
+    waiting on this script.
+    """
+    source = SCRIPT.read_text(encoding="utf-8")
+    body = source.split("kick_fanin_coupling_auto_if_needed() {", 1)[1].split("\n}", 1)[0]
+    start_lines = [line for line in body.splitlines() if "start" in line and "SYSTEMCTL" in line]
+
+    assert start_lines, body
+    assert all("--no-block" in line for line in start_lines), start_lines
