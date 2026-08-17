@@ -692,7 +692,7 @@ from .aec_probe import (
 def render(results: list[CheckResult]) -> int:
     print()
     print(f"{BOLD}jasper-doctor{RESET}\n")
-    fails = warns = 0
+    fails = warns = silent = 0
     for r in results:
         if r.status == "ok":
             color, mark = GREEN, "✓"
@@ -702,13 +702,22 @@ def render(results: list[CheckResult]) -> int:
         else:
             color, mark = RED, "✗"
             fails += 1
+        if r.speaker_silent:
+            silent += 1
         print(f"  {color}{mark}{RESET} {r.name:24s} {r.detail}")
     print()
+    # #2471: a parked speaker's warn used to end the run on "non-critical",
+    # which is the one thing it is not — the household hears nothing. The
+    # severity is carried by the WORDS, not by the colour or the exit code:
+    # those keep their single meaning (red/1 = something is broken), and a
+    # parked box must stay deployable (#2145).
+    silence = f", {silent} of them: the speaker is silent" if silent else ""
     if fails:
-        print(f"{RED}{fails} failed, {warns} warning(s).{RESET}")
+        print(f"{RED}{fails} failed, {warns} warning(s){silence}.{RESET}")
         return 1
     if warns:
-        print(f"{YELLOW}{warns} warning(s) — non-critical.{RESET}")
+        tail = silence if silence else " — non-critical"
+        print(f"{YELLOW}{warns} warning(s){tail}.{RESET}")
         return 0
     print(f"{GREEN}all checks passed.{RESET}")
     return 0

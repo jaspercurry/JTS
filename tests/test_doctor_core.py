@@ -380,3 +380,75 @@ def test_run_async_serializes_checks_in_same_exclusive_group(monkeypatch):
 
     assert [r.name for r in results] == ["a", "b", "c"]
     assert max_active == 1
+
+
+def _summary_line(results, capsys) -> tuple[int, str]:
+    exit_code = doctor.render(results)
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.strip()]
+    return exit_code, lines[-1]
+
+
+def test_summary_never_calls_a_silent_speaker_non_critical(capsys):
+    """#2471: the household hears nothing — that is not "non-critical".
+
+    The severity rides the WORDS. The colour and the exit code keep their one
+    meaning (a parked box is silent, not broken, and must stay deployable per
+    #2145), so this pins the wording, not a new exit status.
+    """
+
+    exit_code, line = _summary_line(
+        [
+            doctor.CheckResult("transit", "warn", "no MTA key"),
+            doctor.CheckResult(
+                "active speaker runtime graph",
+                "warn",
+                "parked silent",
+                speaker_silent=True,
+            ),
+        ],
+        capsys,
+    )
+
+    assert exit_code == 0
+    assert "the speaker is silent" in line
+    assert "non-critical" not in line
+    assert "2 warning(s)" in line
+    assert "1 of them" in line
+
+
+def test_summary_still_calls_cosmetic_warnings_non_critical(capsys):
+    """The inverse half: with nothing silent, the old wording is correct."""
+
+    exit_code, line = _summary_line(
+        [doctor.CheckResult("transit", "warn", "no MTA key")], capsys
+    )
+
+    assert exit_code == 0
+    assert line.endswith("1 warning(s) — non-critical.\x1b[0m")
+    assert "silent" not in line
+
+
+def test_summary_names_the_silence_alongside_a_failure(capsys):
+    """A fail does not excuse burying it: "1 failed" says nothing about sound."""
+
+    exit_code, line = _summary_line(
+        [
+            doctor.CheckResult("nginx", "fail", "down"),
+            doctor.CheckResult("blockers", "warn", "parked", speaker_silent=True),
+        ],
+        capsys,
+    )
+
+    assert exit_code == 1
+    assert "1 failed" in line
+    assert "the speaker is silent" in line
+
+
+def test_summary_stays_green_when_nothing_is_wrong(capsys):
+    exit_code, line = _summary_line(
+        [doctor.CheckResult("nginx", "ok", "up")], capsys
+    )
+
+    assert exit_code == 0
+    assert "all checks passed." in line
+    assert "silent" not in line

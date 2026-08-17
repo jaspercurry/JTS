@@ -1165,6 +1165,10 @@ def check_active_speaker_runtime_graph() -> CheckResult:
                 f"parked silent for {contract.classification}: "
                 f"{parked_muted_exits(topology)}"
             ),
+            # The parked graph is a File sink with every output hard-muted, so
+            # this branch IS the speaker-is-silent state. Declared here rather
+            # than re-derived by the summary composer (#2471).
+            speaker_silent=True,
         )
     if graph.allowed:
         return CheckResult(
@@ -1310,6 +1314,11 @@ def check_active_speaker_topology_blockers() -> CheckResult:
             f"next: {parked_muted_exits(topology)}. "
             "Fix the layout at http://<speaker>/sound/setup/"
         ),
+        # Reached only when `safe_graph_for_current_topology` returned
+        # PARKED_MUTED_STATUS, so the speaker is provably emitting nothing
+        # (#2471). The two warn branches above it are NOT silent: one could
+        # not determine the runtime graph, the other found the box unparked.
+        speaker_silent=True,
     )
 
 
