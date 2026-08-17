@@ -5305,8 +5305,9 @@ def test_degraded_miswire_still_names_the_wiring_not_the_room():
 
     This is the half of #2052 that a blanket "unknown whenever the window is
     gone" would have cost: measured on this branch, both shapes would have
-    dropped to ``None`` and been refused one rung lower, with copy blaming the
-    room instead. Refusal held either way; the household's remedy did not.
+    dropped to ``None`` and fallen from `check_screens`' rung 3 to its rung 5,
+    with copy blaming the room instead. Refusal held either way; the
+    household's remedy did not.
     """
     woofer = _deep_plant(200, 150.0, 1200.0, 1.0)
     tweeter = _deep_plant(225, 2500.0, 20000.0, 0.8)

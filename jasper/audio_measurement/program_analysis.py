@@ -4853,9 +4853,8 @@ def _pilot_observations(
        the speaker wiring, on evidence never calibrated for a 1 s window.
 
     Their channel-map check therefore keeps the total-in-band-energy-fraction
-    fallback it has always used — which since #2052 answers ``None``, not
-    ``True``, when it clears (see `_channel_map_ok`), so no phase publishes a
-    channel-map PASS it did not measure.
+    fallback it has always used, whose one-sided reporting since #2052 is
+    `_channel_map_ok`'s to state.
 
     The located segment's fixed composer fade (`_pilot_trim_fade`) is trimmed
     before measuring so the RMS estimate rides the steady-state portion, not
@@ -4998,9 +4997,8 @@ def _aggregate_tri_state_ok(
     it is worse — a hard stop telling a household to open its speaker and
     rewire it, decided on evidence that was never there.
 
-    One fold for both because the semantics are one decision, not two:
-    a second copy is a second place for "what does unknown mean here" to
-    drift.
+    One fold for both because that is one decision, not two — a second copy
+    is a second place for "what does unknown mean here" to drift.
     """
     if not verdicts:
         return None
@@ -5041,13 +5039,10 @@ def _pilot_verdicts(
     schedule offset and hands it to the level/SNR path. The channel-map check
     still uses `_channel_map_ok`'s total-in-band-energy-fraction fallback —
     see `_pilot_observations` for why that short window must not feed the
-    rise test. Since #2052 that fallback resolves a CLEARED fraction to
-    ``None``, so the aggregate channel-map verdict these phases publish is
-    ``None`` unless a role actually failed it: the flag they were already
-    documented never to branch on now says "not measured here" rather than
-    carrying an unearned PASS. The SNR path is unaffected; a program without
-    the window (legacy, or composed with no leading pilots) reaches it
-    exactly as before.
+    rise test. That fallback is one-sided since #2052 (`_channel_map_ok`), so
+    these phases publish ``None`` unless a role actually failed it. The SNR
+    path is unaffected; a program without the window (legacy, or composed
+    with no leading pilots) reaches it exactly as before.
     """
     pilots = _pilot_observations(
         program, capture, sample_rate, locations,
@@ -5091,20 +5086,15 @@ def _channel_map_ok(
     window at all takes.
 
     **That fallback is ONE-SIDED evidence, and since issue #2052 it is
-    reported one-sided.** Clearing the fraction says only that the window's
-    energy sits where the pilot's own band is; it does not say the RIGHT
-    driver put it there, because a window holding nothing but broadband room
-    noise clears it too — measured on a silent-tweeter capture whose ambient
-    window was lost, where noise against a 2.5-20 kHz declared band published
-    ``channel_map_ok=True`` for a driver that never played. A pass is
-    therefore ``None`` (UNKNOWN), the posture #1838 gave ``linearity_ok``.
-    A FAIL keeps its ``False``, unchanged: energy that is NOT in the band the
-    pilot was scheduled in is a positive observation about this window, and
-    on the two miswire shapes that destroy the ambient window outright — a
-    swapped pair, and a dead anchor driver — it is the only channel-map
-    evidence a capture still carries (measured: both refuse as
-    ``channel_map_mismatch`` through this branch). Reporting the fail as
-    unknown too would have moved both onto the room-blaming rungs below.
+    reported one-sided.** A cleared fraction is ``None`` (UNKNOWN, the posture
+    #1838 gave ``linearity_ok``): broadband room noise clears it too, so it
+    does not say the RIGHT driver put the energy there. A failed fraction
+    keeps its ``False``: energy that is NOT in the band the pilot was
+    scheduled in is a positive observation about this window, and it is the
+    only channel-map evidence a capture with no ambient window still carries.
+    Both halves are load-bearing and each is pinned by the fixture that
+    measured it — `test_channel_map_fallback_never_passes_a_driver_that_never_played`
+    and `test_degraded_miswire_still_names_the_wiring_not_the_room`.
 
     Returns ``(ok, target_rise_db, cross_rise_db)`` — the two rise numbers are
     ADDITIVE diagnostic evidence for operator logging (surfaced on

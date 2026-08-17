@@ -252,7 +252,9 @@ channel-map folds through the tri-state reducer `linearity_ok` already used.
 Its wrong-remedy half is NOT closed: a silent non-anchor driver whose ambient
 window is lost is still refused with room copy, because `_snr_floor_ok`
 collapses "no evidence" into "room too loud" and both consumer rungs live in
-`capture_dispatch.check_screens`),
+`capture_dispatch.check_screens`. That open half is pinned as a known defect by
+`test_a_lost_ambient_window_blames_the_room_for_a_wiring_fault`, so it cannot
+drift out of sight while it waits),
 #2054 (cloud-side screens carry no gate disclosure — the half #1994 deferred),
 #2058 (a room-correction session records `verdict:accept` while
 `acoustic_quality` warns — a verdict that hides its own warning is the same

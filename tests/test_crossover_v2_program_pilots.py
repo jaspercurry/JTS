@@ -382,6 +382,35 @@ def test_short_ambient_window_does_not_feed_the_channel_map_rise_test(phase):
     assert res.channel_map_ok is None
 
 
+@pytest.mark.parametrize("phase", ["measure", "verify"])
+def test_measure_summary_omits_the_channel_map_flag_it_cannot_judge(phase):
+    """A consequence with a live consumer, so it gets a pin of its own.
+
+    `analysis_diagnostic_summary` drops a tri-state flag whose value is
+    ``None``, and these phases never thread an ambient window into the
+    channel-map check — so since #2052 a healthy MEASURE/VERIFY sidecar
+    records no ``channel_map_ok`` at all, where it used to record ``true``.
+    That is the honest record (the phase did not measure the map), but it
+    silently broke `scripts/severed-twin-replay.py`, whose `FIDELITY_FIELDS`
+    treats an absent field as a reconstruction infidelity: every banked corpus
+    AND every new sidecar would have failed its fidelity gate, reporting a
+    deliberate semantic change as a broken replay. That tuple dropped the
+    field; this pins the fact that made it necessary, so a change re-arming
+    the flag on these phases has to come back through here.
+
+    ``linearity_ok`` and ``pilot_snr_ok`` stay in the record, which is what
+    makes the omission specific rather than the summary going quiet.
+    """
+    prog = _measure_program() if phase == "measure" else _verify_pilot_program()
+    res = analyze_program_capture(
+        prog, _synthesize(prog), SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
+    )
+    summary = analysis_diagnostic_summary(res)
+    assert "channel_map_ok" not in summary
+    assert summary["linearity_ok"] is True
+    assert summary["pilot_snr_ok"] is True
+
+
 @pytest.mark.parametrize("kept_samples_delta,expect_evidence", [(0, True), (-1, False)])
 def test_pilot_ambient_min_usable_fraction_boundary(
     kept_samples_delta, expect_evidence,

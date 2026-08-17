@@ -1093,7 +1093,7 @@ sidecar's recorded `diagnostic` block against the banked `candidate.json`'s
 
 *It validates itself and refuses when it cannot.* That same sidecar block is
 the analysis as PERFORMED, so it is ground truth for the replay's own fidelity.
-The tool reproduces 20 of its values and prints no fit unless every one matches
+The tool reproduces 19 of its values and prints no fit unless every one matches
 (exit 1 otherwise, and a field the sidecar never recorded is a refusal too), so
 an era-drifted reconstruction fails loudly instead of quietly re-reading the
 evidence. Its own module docstring states the two things that gate does **not**

@@ -373,11 +373,24 @@ def test_noqa_debt_does_not_grow() -> None:
 # account takes two lines more than the false claim did. Compressing correct
 # prose to keep a number flat would be gaming the guard; raising it by exactly
 # the two lines earned, in the diff that earned them, is the guard working.
+#
+# `program_analysis` sits at 6,969 rather than 6,932, and #2052 is the first
+# change to meet this ceiling. The diff is +6 executable lines and +31 of
+# prose. The six are the whole change: one shared tri-state fold where two
+# `all(...)` reductions stood (`all()` folds `None` to False, which would have
+# turned an unknown channel map into a hard stop telling a household to rewire
+# its speaker), two widened signatures, and a four-line branch where a
+# one-line `return <bool>` stood. The prose is the one-sidedness rule stated
+# once at its owner, `_channel_map_ok` — a review round trimmed it there and
+# at the two upstream sites that had begun restating it, which is where 10 of
+# these lines went back. What is left is a safety rule whose two halves are
+# each pinned by a fixture, and compressing that to keep a number flat would
+# be gaming the guard rather than passing it.
 MAX_LINES_BY_PATH = {
     "jasper/active_speaker/crossover_v2_flow.py": 12_510,
     "jasper/web/correction_crossover_v2.py": 9_186,
     "jasper/active_speaker/crossover_envelope_v2.py": 4_048,
-    "jasper/audio_measurement/program_analysis.py": 6_932,
+    "jasper/audio_measurement/program_analysis.py": 6_969,
 }
 
 

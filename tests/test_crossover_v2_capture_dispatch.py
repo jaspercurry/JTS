@@ -122,6 +122,35 @@ def test_a_bent_curve_blames_the_room_when_the_gain_solve_already_said_so():
     ) == cd.SCREEN_LINEARITY_FAILED
 
 
+def test_a_lost_ambient_window_blames_the_room_for_a_wiring_fault():
+    """A KNOWN DEFECT, pinned so it cannot drift out of sight (issue #2052).
+
+    These are the exact screens a real miswire produces when its ambient
+    window is lost — a silent non-anchor driver plus a late recording. The
+    analysis half is measured and pinned by
+    `test_channel_map_fallback_never_passes_a_driver_that_never_played`
+    (channel map UNKNOWN, linearity False); this is what the ladder then
+    answers.
+
+    ``noisy_room_linearity`` is the wrong remedy: it tells the household the
+    room bent the curve, when nothing here measured the room at all.
+    ``gain_plan_snr_floor_ok`` is ``False`` because
+    `program_analysis._snr_floor_ok` collapses "the ambient report is empty"
+    into the same bool as "the room's worst band is over the bound", so the
+    rung above reads no-evidence as a room verdict.
+
+    The refusal itself is correct and safety holds — this capture must not
+    commission a speaker, and it does not. What is wrong is only which lever
+    the household is pointed at. Fixing it needs a rung (or a rung condition)
+    that can tell the two apart, which is a change to THIS ladder; #2052
+    shipped the analysis half and left this recorded rather than guessed at.
+    When that fix lands, this test is the one that must change.
+    """
+    assert cd.check_screens(
+        _check(channel_map_ok=None, linearity_ok=False, gain_plan_snr_floor_ok=False)
+    ) == cd.SCREEN_NOISY_ROOM_LINEARITY
+
+
 def test_the_room_arm_needs_a_plan_to_have_said_it():
     """No gain plan means no ambient verdict, so the room cannot be blamed."""
     assert cd.check_screens(
