@@ -56,9 +56,11 @@ The shipped form is a damped fixed-point iteration::
 
 still a TOTAL re-derived every round — same discipline as the trim — but with
 the incumbent entering the derivation because the measurement was taken through
-it. Damping is not optional: series-1 realized/commanded ratios ranged 0.136 to
-**11.736×** across bands, and a per-band loop gain that large diverges at
-``k = 1``.
+it. Damping widens the stable range of realized/commanded loop gain from
+``g < 2`` to ``g < 2/k``; the CLAMPS are what bound the excursion when ``g``
+lands outside even that, which series-1 shows it can (band gains ranged 0.136
+to 11.736). See :data:`BLEND_DAMPING` for why the distinction is stated rather
+than blurred.
 
 **It fails to a no-op, never to a boost.** Every refusal arm returns zero
 filters and a reason naming which one fired, so a round that corrected nothing
@@ -150,12 +152,22 @@ BLEND_MAX_TOTAL_CUT_DB = 4.0
 #: can be honestly claimed, so it is not emitted at all.
 BLEND_MIN_CUT_DB = 0.5
 
-#: Damping on the incumbent-accounted iteration. See the module docstring:
-#: the loop converges for a realized/commanded gain in ``(0, 2/k)``, and
-#: series-1 measured band gains from 0.136 to 11.736. ``k = 0.7`` costs one
-#: bite — three rounds with an uncorrected first reach ~91% of the fixed point
-#: at unit gain — which is cheap insurance against divergence on a rig whose
-#: realization ratio has ranged that far.
+#: Damping on the incumbent-accounted iteration: each round commands 70% of the
+#: excess it measured, not all of it.
+#:
+#: The loop converges for a realized/commanded gain ``g`` in ``(0, 2/k)``, so
+#: ``k = 0.7`` widens the stable range from ``g < 2`` to ``g < 2.86``. **It does
+#: not make every measured gain stable, and the docstring must not claim it
+#: does**: series-1 measured band gains from 0.136 to 11.736, and ``g = 11.7``
+#: diverges at ``k = 0.7`` exactly as it does at ``k = 1``. What bounds the
+#: excursion there is the CLAMP — the per-filter and composed ceilings above,
+#: which hold whatever the gain assumption turns out to be — and after that,
+#: adoption's keep/restore on a round that measured worse. Damping and clamping
+#: are belt and braces, and only the braces are load-bearing at the extreme.
+#:
+#: The cost is one bite: three rounds with an uncorrected first reach ~91% of
+#: the fixed point at unit gain. Cheap, on a rig whose realization ratio has
+#: ranged that far.
 BLEND_DAMPING = 0.7
 
 #: The fewest surviving region bins a correction may be solved from. Below

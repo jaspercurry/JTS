@@ -363,6 +363,95 @@ def test_the_emitter_refuses_more_filters_than_the_solver_can_make():
         )
 
 
+def test_the_bounds_are_the_numbers_the_evidence_earned():
+    """The four bounds, as LITERALS.
+
+    Every other assertion in this file reads the constants, which is right —
+    they are testing behaviour against policy. This one is testing the policy,
+    so reading the constant would make it a tautology that passes at any value.
+    It is not decoration: a mutation raising
+    ``BLEND_MAX_FILTER_CUT_DB`` to 99 left the whole suite green, because the
+    composed ceiling still bounded the graph and every per-filter assertion
+    moved with the constant it was checking.
+
+    Each number's derivation, so a future change is made rather than drifted
+    into:
+
+    * **3.0 dB per filter** — the woofer's own acknowledged
+      ``measured_excess_db`` inside the series-1 blind zone (2.09-2.26 dB,
+      rounds r1/r2/r4 over 1291.4-2077.2 Hz) plus one model tracking error
+      (0.5 dB, ``attempt_grading.PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB``):
+      2.26 + 0.5 = 2.76, rounded up.
+    * **4.0 dB composed** — just under the whole observed defect, which the
+      cloud flat-spec gauge read at -4.24 dB worst across series-1. Correcting
+      more than the defect is over-correction by definition.
+    * **2 filters** — what the evidence in this region supports, given one mono
+      sweep per position and a null detector that is uncalibrated across the
+      entire blend window of any crossover below 4 kHz (#2600 item 1).
+    * **0.5 dB floor** — this model's own measured tracking error. Below it, a
+      correction is not something that can be honestly claimed.
+    * **Q 2.0** — a deliberate tightening against the fit engine's ``Q <= 8``
+      for cuts, and the Q every peaking filter the series-1 fits emitted used.
+    * **k = 0.7** — see :data:`~.blend_correction.BLEND_DAMPING`.
+    """
+
+    assert bc.BLEND_MAX_FILTER_CUT_DB == 3.0
+    assert bc.BLEND_MAX_TOTAL_CUT_DB == 4.0
+    assert bc.BLEND_MAX_FILTERS == 2
+    assert bc.BLEND_MIN_CUT_DB == 0.5
+    assert bc.BLEND_FILTER_Q == 2.0
+    assert bc.BLEND_DAMPING == 0.7
+
+
+def test_no_single_filter_is_cut_deeper_than_three_decibels():
+    """The per-filter ceiling, asserted against a LITERAL and on a curve where
+    it binds ALONE.
+
+    The composed ceiling is 4.0, so a single filter has a whole decibel of room
+    beneath it — which is exactly the gap a raised per-filter cap escapes into,
+    invisibly, if the assertion reads the constant.
+    """
+
+    for gain_db in (8.0, 12.0, 24.0):
+        result = _solve(_bell(1500.0, gain_db, q=bc.BLEND_FILTER_Q))
+        assert result.filters
+        for entry in result.filters:
+            assert -3.0 <= entry["gain"] < 0.0, (
+                f"a {gain_db} dB lobe earned a {entry['gain']} dB cut"
+            )
+
+
+def test_the_first_round_commands_less_than_the_excess_it_measured():
+    """The damping, observed rather than restated.
+
+    An undamped loop commands the whole measured excess on round one. This one
+    commands about 70% of it, which is what makes the round-over-round
+    iteration a contraction rather than a step that has to be right first time.
+    Asserted as a RANGE around the observed ratio rather than by recomputing
+    ``BLEND_DAMPING * excess`` — which would pass at any damping, including
+    none.
+    """
+
+    curve = _bell(1500.0, 3.0, q=bc.BLEND_FILTER_Q)
+    graded = _graded(curve)
+    result = bc.solve_blend_correction(
+        graded=graded, band_hz=SERIES1_BAND_HZ, incumbent=(),
+    )
+    assert len(result.filters) == 1
+
+    # The excess the solver saw: deviation against the speaker's own flat
+    # reference, derived here from the arrays rather than read off the result.
+    region = (_GRID >= SERIES1_BAND_HZ[0]) & (_GRID <= SERIES1_BAND_HZ[1])
+    excess_db = float(np.max(curve[region]) - graded.report.reference_db)
+    commanded = -result.filters[0]["gain"]
+    ratio = commanded / excess_db
+
+    assert 0.6 < ratio < 0.8, (
+        f"commanded {commanded:.3f} dB against a {excess_db:.3f} dB excess "
+        f"(ratio {ratio:.3f}); an undamped loop would command ~1.0"
+    )
+
+
 def test_the_emitters_bounds_equal_the_solvers():
     """The two constants are held apart on purpose — the emitter re-validates
     what a persisted candidate claims rather than importing the solver's policy
