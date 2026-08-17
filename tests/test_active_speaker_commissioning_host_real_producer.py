@@ -77,6 +77,11 @@ async def test_real_producer_commits_synthetic_capture_through_host(
         driver["level_duration_limits"]["minimum_cooldown_s"] = 0
         if driver["role"] == "woofer":
             driver["required_protection_filters"][0]["cutoff_hz"] = 7_000
+        else:
+            # #2603: widening the hard band means declaring the low limit it
+            # derives from -- see the twin fixture in
+            # tests/test_active_speaker_commissioning_capture_producer.py.
+            driver["recommended_highpass_hz"] = 3_000
     safety_profile = build_driver_safety_profile(
         topology,
         manual_settings=manual,

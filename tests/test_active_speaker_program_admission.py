@@ -79,6 +79,13 @@ def _profile_and_targets(*, woofer_peak: float = 0.0, tweeter_peak: float = -65.
                 "target_id": "mono:tweeter",
                 "role": "tweeter",
                 "model": "T",
+                # #2603: the tweeter's low limit is declared once, and its hard
+                # band's floor and protective high-pass both derive from it.
+                # This fixture used to share the woofer's 500 Hz hard floor
+                # while declaring a 5000 Hz protective high-pass -- two numbers
+                # for one driver's low limit, which is the shape the ruling
+                # collapsed.
+                "recommended_highpass_hz": 1500,
                 "required_protection_filters": [
                     {"kind": "highpass", "cutoff_hz": 5000, "minimum_slope_db_per_octave": 24}
                 ],

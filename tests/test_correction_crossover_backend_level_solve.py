@@ -70,6 +70,9 @@ def _safety_profile_and_targets(
                 "target_id": "mono:tweeter",
                 "role": "tweeter",
                 "model": "Example T1",
+                # #2603: one declared low limit; the hard floor and the
+                # protective high-pass both derive from it.
+                "recommended_highpass_hz": 1500,
                 # Tweeters are hard-capped by driver_protection.py's own
                 # code policy (max_auto_level_dbfs = -65.0 for HIGH_FREQUENCY_ROLES)
                 # regardless of what a manual setting requests -- this value

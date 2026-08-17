@@ -42,6 +42,10 @@ def _profile_and_targets(*, woofer_peak: float = -30.0, tweeter_peak: float = -7
             "hard_excitation_band_hz": [500, 20_000],
             "measurement_band_hz": [500, 10_000],
             "crossover_search_band_hz": [1500, 2500],
+            # #2603: the tweeter declares its low limit once; its hard floor and
+            # protective high-pass derive from it, instead of sharing the
+            # woofer's 500 Hz floor under a 5000 Hz protective high-pass.
+            **({"recommended_highpass_hz": 1500} if role == "tweeter" else {}),
             "level_duration_limits": {
                 "max_effective_peak_dbfs": peak,
                 "max_sweep_duration_s": 6,
