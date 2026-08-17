@@ -79,8 +79,9 @@ def test_authenticated_phone_event_round_trip() -> None:
     # and 2 slack bits, and `verify_authenticated_phone_event` compares the
     # DECODED bytes. Four of the 64 possible last characters therefore decode
     # identically, which made a last-character "forgery" verify cleanly -- and
-    # this check fail -- on 6.01% of runs (20000 random MACs, measured
-    # 2026-08-17). Every bit of the first character is meaningful.
+    # this check fail -- on about one run in sixteen: 4/64 = 6.25% by
+    # construction, 6.01% and 6.42% in two 20000-MAC samples (2026-08-17).
+    # Every bit of the first character is meaningful.
     forged = json.loads(json.dumps(envelope))
     mac = forged["authenticated_event"]["mac"]
     forged["authenticated_event"]["mac"] = ("A" if mac[0] != "A" else "B") + mac[1:]
