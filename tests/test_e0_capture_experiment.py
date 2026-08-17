@@ -204,24 +204,27 @@ def test_no_product_code_depends_on_the_experiment() -> None:
 
     Unlike experiments/usb-turntable, which install stages onto the Pi for a
     hot-plug hook, e0 has no deploy surface at all -- so the expected match
-    set is empty, and any hit means a product path grew a dependency on an
-    experiment.
+    set is empty. An empty result proves nothing on its own, so the same
+    scan runs against a marker the product certainly does contain.
     """
-    markers = ("e0-capture", "e0_capture", "preflight_noaudio", "reset_run")
     files = [ROOT / "pyproject.toml"]
     for directory in (ROOT / "deploy", ROOT / "jasper"):
         files.extend(path for path in directory.rglob("*") if path.is_file())
 
-    hits = {
-        path.relative_to(ROOT).as_posix()
-        for path in files
-        if any(
-            marker in path.relative_to(ROOT).as_posix() + path.read_text(errors="ignore")
-            for marker in markers
-        )
-    }
+    def scan(markers: tuple[str, ...]) -> set[str]:
+        return {
+            path.relative_to(ROOT).as_posix()
+            for path in files
+            if any(
+                marker
+                in path.relative_to(ROOT).as_posix() + path.read_text(errors="ignore")
+                for marker in markers
+            )
+        }
 
-    assert hits == set()
+    assert scan(("e0-capture", "e0_capture", "preflight_noaudio", "reset_run")) == set()
+    # Positive control: the scan can find something.
+    assert scan(("capture_relay",))
 
 
 def test_readme_keeps_the_experimental_and_risk_boundaries() -> None:
