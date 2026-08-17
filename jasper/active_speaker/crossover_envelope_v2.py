@@ -105,6 +105,17 @@ from .crossover_v2.contracts import (
     ADOPTION_ROW_KEEP_FOR_ITERATION,
     ADOPTION_ROW_KEEP_ITERATING,
 )
+# The round-outcome vocabulary this screen renders. Imported rather than
+# re-typed: the four codes are picked by the web host's ``_post_apply_grade``,
+# which this module may not import, so before #2662 both ends spelled the same
+# four strings by hand and nothing held them equal.
+from .crossover_v2.verification import (
+    RESULT_INCONCLUSIVE,
+    RESULT_KEEP_PREVIOUS,
+    RESULT_VERIFIED_BEST_EVALUATED,
+    RESULT_VERIFIED_TARGET,
+)
+from .crossover_v2.vocabulary import REASON_VOLUME_UNRESOLVED
 from .delta_probe import (
     REASON_UNCOMMANDED_LEVEL_SHIFT_OUTSIDE_BAND,
     VERDICT_FRAME_MISMATCH,
@@ -1770,10 +1781,12 @@ def _done_nudges(
     the verify_fail one and carries its own copy.
     """
     result_badges = {
-        "verified_target": ("ok", "Target verified."),
-        "verified_best_evaluated": ("warn", "Best evaluated; target still missed."),
-        "keep_previous": ("warn", "Keep the previous sound."),
-        "inconclusive": ("warn", "Result inconclusive."),
+        RESULT_VERIFIED_TARGET: ("ok", "Target verified."),
+        RESULT_VERIFIED_BEST_EVALUATED: (
+            "warn", "Best evaluated; target still missed.",
+        ),
+        RESULT_KEEP_PREVIOUS: ("warn", "Keep the previous sound."),
+        RESULT_INCONCLUSIVE: ("warn", "Result inconclusive."),
     }
     if result_outcome in result_badges:
         severity, text = result_badges[result_outcome]
@@ -3518,7 +3531,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
     # (the W2 gate ruling — a crash-hydrated active plan surfaces no unresolved
     # payload but still needs draining).
     if bool(v2.get("needs_recovery")):
-        spec = REASON_REGISTRY["volume_unresolved"]
+        spec = REASON_REGISTRY[REASON_VOLUME_UNRESOLVED]
         return _envelope(
             screen="volume_recovery", active_step="microphone_check",
             verdict=spec.message,
@@ -3859,24 +3872,29 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                 "undo if it sounds worse than before."
             )
         result_outcome = str(grade.get("outcome") or "")
-        if result_outcome in {"verified_target", "verified_best_evaluated", "keep_previous", "inconclusive"}:
+        if result_outcome in {
+            RESULT_VERIFIED_TARGET,
+            RESULT_VERIFIED_BEST_EVALUATED,
+            RESULT_KEEP_PREVIOUS,
+            RESULT_INCONCLUSIVE,
+        }:
             result_copy = {
-                "verified_target": (
+                RESULT_VERIFIED_TARGET: (
                     "The measured result reached the target and matched its prediction. "
                     "If it sounds worse than before, you can undo."
                 ),
-                "keep_previous": (
+                RESULT_KEEP_PREVIOUS: (
                     "This result should not replace the previous sound. This report changed "
                     "nothing automatically; use Undo if this audition is still applied."
                 ),
-                "inconclusive": (
+                RESULT_INCONCLUSIVE: (
                     "There is not enough complete evidence to grade this result. Valid saved "
                     "measurements are kept; this report changed nothing automatically."
                 ),
             }.get(result_outcome)
             if result_copy:
                 done_verdict = result_copy
-            elif result_outcome == "verified_best_evaluated":
+            elif result_outcome == RESULT_VERIFIED_BEST_EVALUATED:
                 miss = _finite(grade.get("absolute_miss_db"))
                 hz = _finite(grade.get("absolute_worst_hz"))
                 miss_text = (

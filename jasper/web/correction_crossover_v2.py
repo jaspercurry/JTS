@@ -101,6 +101,16 @@ from jasper.active_speaker.crossover_v2.vocabulary import (
     REASON_POSITION_TARGET_MISSING,
     REASON_SESSION_CEILING_EXPIRED,
 )
+# The round-outcome vocabulary, which the domain owns (#2662). This module
+# still DECIDES which of the four a graded session came to — see
+# ``_post_apply_grade`` — it just no longer declares their names, because the
+# domain renderer that speaks them cannot import this module to get them.
+from jasper.active_speaker.crossover_v2.verification import (
+    RESULT_INCONCLUSIVE,
+    RESULT_KEEP_PREVIOUS,
+    RESULT_VERIFIED_BEST_EVALUATED,
+    RESULT_VERIFIED_TARGET,
+)
 from jasper.dsp_apply import DSP_PROOF_INACTIVE_RESULTS
 from jasper.log_event import log_event
 
@@ -1954,10 +1964,9 @@ GRADE_INCONCLUSIVE = "inconclusive"
 GRADE_FAILED = "failed"
 GRADE_UNVERIFIED = "unverified"
 
-RESULT_VERIFIED_TARGET = "verified_target"
-RESULT_VERIFIED_BEST_EVALUATED = "verified_best_evaluated"
-RESULT_KEEP_PREVIOUS = "keep_previous"
-RESULT_INCONCLUSIVE = "inconclusive"
+# The four ``RESULT_*`` codes this module's ``_post_apply_grade`` selects from
+# are imported at the top of the file rather than declared here: the domain
+# owns the vocabulary, this module owns the choice.
 
 # --------------------------------------------------------------------------- #
 # #2098's scope/completeness fact, and #2160's failed-gauge consumption.

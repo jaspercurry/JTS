@@ -189,6 +189,10 @@ __all__ = [
     "REALIZATION_NO_TRACKING",
     "REALIZATION_OUT_OF_TOLERANCE",
     "REALIZATION_WITHIN_TOLERANCE",
+    "RESULT_INCONCLUSIVE",
+    "RESULT_KEEP_PREVIOUS",
+    "RESULT_VERIFIED_BEST_EVALUATED",
+    "RESULT_VERIFIED_TARGET",
     "SAFETY_BOOST_OVER_DECLARED_BOUND",
     "SAFETY_CLIPPED_CAPTURE",
     "SAFETY_NO_FINDING",
@@ -1744,3 +1748,41 @@ def _restore_or_recover(
         reason=f"{ADOPTION_NO_ROLLBACK_ANCHOR}:{reason}",
         row=row,
     )
+
+
+# --------------------------------------------------------------------------
+# 9. the round's household-facing outcome
+# --------------------------------------------------------------------------
+
+#: What the household is told a graded round came to. Four names, and the
+#: domain owns them even though it is the web host's ``_post_apply_grade``
+#: that picks one: they are the *vocabulary* of a commissioning result, in the
+#: same sense as :data:`ADOPTION_REALIZED_AND_IMPROVED` above, and the domain
+#: renderer has to speak them.
+#:
+#: They lived in ``jasper.web.correction_crossover_v2`` until #2662's health
+#: check, and that was a layering inversion with a measurable cost. The
+#: renderer that turns a graded round into screen copy —
+#: :mod:`jasper.active_speaker.crossover_envelope_v2` — may not import
+#: ``jasper.web`` (the package's one-way rule, enforced by
+#: ``test_crossover_v2_journey.py``), so it re-typed all four as bare string
+#: literals in twelve places with nothing holding the two sets equal. Owning
+#: them here lets both the host that writes one and the renderer that reads it
+#: import the same symbol.
+#:
+#: **These are not** :class:`~.contracts.AdoptionOutcome`. That enum decides
+#: what happens to the GRAPH for one round; these four name what a whole
+#: commission's post-apply grade came to for a PERSON, and a session can grade
+#: ``RESULT_KEEP_PREVIOUS`` off inputs no single round's adoption decision saw.
+#: The two are deliberately separate, and #2662 records that the pair has no
+#: reconciliation — naming the split is not the same as closing it.
+RESULT_VERIFIED_TARGET = "verified_target"
+RESULT_VERIFIED_BEST_EVALUATED = "verified_best_evaluated"
+RESULT_KEEP_PREVIOUS = "keep_previous"
+#: Shares its value with the host's ``GRADE_INCONCLUSIVE``, which answers the
+#: neighbouring question ("did the check finish?") about the same round. The
+#: collision is real and load-bearing to know about: a bare ``"inconclusive"``
+#: in the renderer cannot be attributed to one of the two by its value alone,
+#: which is why the conventions test that pins this vocabulary skips exactly
+#: this string and says so.
+RESULT_INCONCLUSIVE = "inconclusive"
