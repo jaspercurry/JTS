@@ -11980,6 +11980,17 @@ WALL_CLOCK_CEILING_PER_ENTRY_S = 120.0
 # a too-low f1 biased the estimated sweep duration (and so the displayed
 # minutes) SHORT, the wrong failure direction for a number the household
 # reads as a promise.
+#
+# NOT derived from the household's declared driver low limit (#2603), and that
+# is deliberate rather than an oversight. A declaration DOES exist by the time
+# this screen renders, but the only resolution path for it
+# (``resolve_conductor_context``) is refuse-if-not-ready and can regenerate the
+# crossover preview file as a SIDE EFFECT -- unacceptable for a value this
+# module recomputes on every ~1.5 s poll. Reading it into this memoized,
+# argument-less function instead would go stale the moment the operator edits
+# the declaration, which is a worse failure than a fixed representative pair.
+# So this stays a display-only fallback with its own safe-bias rationale, and
+# a per-poll side-effect-free read is tracked as separate cosmetic work.
 _DISPLAY_ROLES_BANDS = (
     RoleBand("woofer", 0, FrequencyBand(150.0, 6000.0)),
     RoleBand("tweeter", 1, FrequencyBand(1800.0, 20000.0)),

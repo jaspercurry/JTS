@@ -411,7 +411,17 @@ def test_noqa_debt_does_not_grow() -> None:
 #
 # Neither bump was clawed back out of correct prose elsewhere in the file.
 MAX_LINES_BY_PATH = {
-    "jasper/active_speaker/crossover_v2_flow.py": 12_537,
+    # 2026-08-17 (#2603): +11 on top of the two bumps above, and the ratchet
+    # catching its own author again. The representative RoleBand pair at
+    # `_DISPLAY_ROLES_BANDS` was flagged as a fourth declaration of a driver's
+    # low limit; it is not one, and the owner ruled it stays. Recording WHY it
+    # is not derived -- a declaration exists by the time that screen renders,
+    # but the resolution path is refuse-if-not-ready and regenerates the
+    # preview file as a side effect, and a memoized read would go stale -- is
+    # what costs the lines. Paying them here, in the diff that earned them, is
+    # the guard working; compressing the reason out to keep a number flat would
+    # be gaming it.
+    "jasper/active_speaker/crossover_v2_flow.py": 12_548,
     "jasper/web/correction_crossover_v2.py": 9_186,
     "jasper/active_speaker/crossover_envelope_v2.py": 4_076,
     "jasper/audio_measurement/program_analysis.py": 6_969,
