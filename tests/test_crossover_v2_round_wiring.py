@@ -64,8 +64,12 @@ import pytest
 from jasper.active_speaker import baseline_profile as baseline_profile_mod
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.delta_probe import (
+    DELTA_PROBE_ROLLBACK_VERDICTS,
     SEAM_DEFERRED_QUIETER_THAN_COMMANDED,
     VERDICT_MODEL_ERROR,
+)
+from jasper.active_speaker.crossover_v2.vocabulary import (
+    DELTA_PROBE_REASON_BY_VERDICT,
 )
 from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
 from jasper.active_speaker.crossover_v2 import coordinator
@@ -2897,3 +2901,114 @@ def test_a_receipt_from_before_the_floor_shipped_reads_back_as_unknown():
     }})
 
     assert position.previous_trusted_floor_hz is None
+
+
+@pytest.mark.parametrize(
+    "verdict",
+    sorted(DELTA_PROBE_ROLLBACK_VERDICTS),
+    ids=sorted(DELTA_PROBE_ROLLBACK_VERDICTS),
+)
+def test_a_routed_probe_rollback_keeps_its_own_household_sentence(verdict):
+    """The copy the routing was NOT allowed to change.
+
+    Each rollback class has its own sentence, and a household whose speaker was
+    reverted for a shape mismatch must not start reading the generic
+    unverifiable one because the DECISION moved from the probe's seam to the
+    adoption table. Walked end to end: the coordinator's refusal cause, through
+    the flow's own mapper, to the code whose copy the household reads.
+    """
+    probe = SimpleNamespace(
+        verdict=verdict, reason="", rollback=True,
+        # LOUDER than commanded, so ``model_error`` does not take the #2559
+        # deferral — this test is about the classes that DO restore, and the
+        # deferred one has its own test above.
+        realized_louder_than_commanded=True,
+        # …and NOT over the declared boost bound, so the SAFETY axis stays
+        # quiet and the row under test is the probe-class one rather than
+        # ``row3_unsafe``.
+        boost_over_declared_bound=False,
+        max_signed_error_db=2.0,
+        residual_offset_db=None, residual_offset_tolerance_db=None,
+        to_dict=lambda: {"verdict": verdict},
+    )
+
+    decision = _direct_round(
+        publish=lambda _r: "art",
+        rollback=lambda _reason: True,
+        rollback_available=lambda: True,
+        delta_probe=probe,
+    )
+
+    assert decision.evaluation.adoption.outcome is AdoptionOutcome.RESTORE
+    assert decision.refusal is not None
+    assert flow.round_restore_reason(decision.refusal.cause) == (
+        DELTA_PROBE_REASON_BY_VERDICT[verdict]
+    ), "the probe's class must reach the household as its own sentence"
+
+
+def test_an_unknown_probe_class_falls_to_the_floor_not_to_a_guess():
+    """A class this build does not have must not borrow another's sentence.
+
+    The floor is the unverifiable code — true of every unmapped cause by
+    construction — never the measured-regression one, which would claim a
+    finding the round did not make.
+    """
+    from jasper.active_speaker.crossover_v2.verification import (
+        ADOPTION_PROBE_ROLLBACK_CLASS,
+    )
+
+    code = flow.round_restore_reason(
+        f"{ADOPTION_PROBE_ROLLBACK_CLASS}:a_class_from_the_future"
+    )
+
+    assert code == flow.REASON_CORRECTION_UNVERIFIABLE_RESULT
+    assert code != REASON_CORRECTION_MEASURED_REGRESSION
+
+
+def test_the_position_role_reaches_the_combiners_own_input_struct():
+    """§4.2's one line, pinned where it was missing.
+
+    The role was written to the position RECORD and the persisted row and read
+    by nothing analytical, because ``cloud_position_capture`` — the ONLY
+    builder of the combiner's per-position struct — dropped it. Everything
+    downstream (the role-labelled residual, and any reader of
+    ``CombinedResponse.position_roles``) is silently unlabelled if this line
+    goes away, and no combine-level assertion would notice: the reduction is
+    unweighted, so the numbers stay identical.
+    """
+    import numpy as np
+
+    complex_tf = np.ones(9, dtype=complex)
+    position = SimpleNamespace(
+        position_id="p_onax",
+        role="onax",
+        sample_rate_hz=48_000,
+        response=SimpleNamespace(
+            freqs_hz=np.linspace(20.0, 20_000.0, 9),
+            magnitude_db=np.zeros(9),
+            complex_tf=complex_tf,
+        ),
+    )
+
+    capture = flow.cloud_position_capture(position)
+
+    assert capture.position_id == "p_onax"
+    assert capture.role == "onax"
+
+
+def test_a_position_that_declares_no_role_carries_an_empty_one():
+    """``""`` rather than ``None``: the combiner's field is a string, and a
+    ``None`` would reach a receipt as ``null`` where every other unlabelled
+    position reads as empty."""
+    import numpy as np
+
+    position = SimpleNamespace(
+        position_id="p0", role=None, sample_rate_hz=48_000,
+        response=SimpleNamespace(
+            freqs_hz=np.linspace(20.0, 20_000.0, 9),
+            magnitude_db=np.zeros(9),
+            complex_tf=np.ones(9, dtype=complex),
+        ),
+    )
+
+    assert flow.cloud_position_capture(position).role == ""
