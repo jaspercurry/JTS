@@ -441,7 +441,15 @@ async def test_alert_during_coalesce_does_not_queue_empty_reconcile(
 ):
     import jasper.source_events as source_events
 
-    mux.POLL_INTERVAL_SEC = 1.0
+    # Push the fixed patrol out past every wait below so no patrol can
+    # land inside this test at all. A disabling value, not a deadline the
+    # test races: 30.0s sits above wait_signalled's own 10s bound, so a
+    # stalled wait fails long before a patrol could ever appear. The
+    # alternative — filtering patrol-tagged reconciles out of the
+    # assertion — would discard the very bug this test forbids: an EMPTY
+    # reconcile reaches the trigger constructor in Mux.run with `dirty`
+    # empty, and that constructor labels it "patrol".
+    mux.POLL_INTERVAL_SEC = 30.0
     mux._fanin_none_best_effort = AsyncMock()
     monkeypatch.setattr(
         source_events,
@@ -459,25 +467,19 @@ async def test_alert_during_coalesce_does_not_queue_empty_reconcile(
     second_alert_done = asyncio.Event()
 
     async def record_reconcile(*, trigger, dirty_sources):
-        # Classify on the trigger mux reports, never on position in
-        # `reconciles`. POLL_INTERVAL_SEC is 1.0s, so a patrol may land
-        # anywhere in this sequence; a positional key let that patrol
-        # impersonate the first alert and mis-signal the whole
-        # coordination below, leaving the test correct only while it
-        # finished inside one poll interval. "alert+patrol" is an alert
-        # that was also patrol-due — mux's own rule is this substring
-        # test (see Mux._reconcile).
-        kind = (
-            "startup" if trigger == "startup"
-            else "alert" if "alert" in trigger
-            else "patrol"
-        )
-        reconciles.append((kind, tuple(sorted(s.value for s in dirty_sources))))
-        if kind == "startup":
+        # Key the coordination on the trigger mux reports, never on
+        # position in `reconciles`: a patrol landing between the alerts
+        # could otherwise impersonate the first one and mis-signal
+        # everything below, leaving the test correct only while it
+        # finished inside one poll interval. Substring, because an alert
+        # that was also patrol-due arrives as "alert+patrol" — the whole
+        # vocabulary is fixed by the trigger constructor in Mux.run.
+        reconciles.append((trigger, tuple(sorted(s.value for s in dirty_sources))))
+        if trigger == "startup":
             startup_done.set()
-        elif kind == "alert":
+        elif "alert" in trigger:
             mux._last_alert_reconcile_at = asyncio.get_running_loop().time()
-            alerts_seen = sum(1 for seen, _ in reconciles if seen == "alert")
+            alerts_seen = sum(1 for seen, _ in reconciles if "alert" in seen)
             if alerts_seen == 1:
                 first_alert_done.set()
             elif alerts_seen == 2:
@@ -498,16 +500,18 @@ async def test_alert_during_coalesce_does_not_queue_empty_reconcile(
         await wait_signalled(
             second_alert_done, "second alert reconcile", producer=task,
         )
-        await asyncio.sleep(0.02)
+        # Watch PAST the coalesce interval. An empty reconcile does not
+        # arrive with the alert that strands its wake — it arrives one
+        # ALERT_COALESCE_SEC later (measured at +51ms, against a 20ms
+        # window before this line grew). Strip both of mux's protections
+        # and the extra `("patrol", ())` lands inside this window; leave
+        # them in and nothing else can, because the patrol is 30s out.
+        await asyncio.sleep(mux_module.ALERT_COALESCE_SEC * 3)
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
 
-    # A patrol landing here is correct behaviour, not a fault, so it must
-    # not decide whether the test passes. Filtering it out keeps the
-    # property exactly as strong: exactly two alert reconciles, both
-    # carrying airplay, plus the startup one — and no third alert.
-    assert [entry for entry in reconciles if entry[0] != "patrol"] == [
+    assert reconciles == [
         ("startup", ()),
         ("alert", ("airplay",)),
         ("alert", ("airplay",)),

@@ -69,9 +69,10 @@ KNOWN_UNBOUNDED_WAITS: frozenset[tuple[str, str]] = frozenset()
 #: it is breaking is a deadline the test has to beat on a loaded box.
 #:
 #: 1.0 is the bottom of the band the tree already sits in: 29 of the 45
-#: bounded event waits on 2026-08-17 were exactly 1.0, and nothing at all
-#: fell between 0.2 and 1.0. So the ratchet starts with an EMPTY allowlist
-#: and grandfathers nothing.
+#: bounded event waits on 2026-08-17 (`wait_for` sites; counting the
+#: `wait_signalled` calls that name a bound too gives 49) were exactly
+#: 1.0, and nothing at all fell between 0.2 and 1.0. So the ratchet starts
+#: with an EMPTY allowlist and grandfathers nothing.
 SMALL_BOUNDED_WAIT_THRESHOLD_S = 1.0
 
 #: Burn-down list for the other half: async tests bounding an event wait
@@ -177,9 +178,11 @@ def _small_bounded_waits(fn: ast.AsyncFunctionDef) -> list[int]:
         name = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
         if name != "wait_for" or not node.args:
             continue
-        # Only `wait_for(<something>.wait(), ...)` — `wait_signalled`'s
-        # domain. `wait_for(<coroutine>, ...)` is bounding real work, and
-        # its timeout may well be the point.
+        # Any no-arg `.wait()` receiver, not just an `asyncio.Event` —
+        # `proc.wait()` and `cond.wait()` match too, and are meant to: a
+        # sub-second bound is a deadline the test has to beat whatever it
+        # is waiting on. `wait_for(<coroutine>, ...)` written any other
+        # way is out of scope; its timeout may well be the point.
         awaited = node.args[0]
         if not isinstance(awaited, ast.Call):
             continue
@@ -286,11 +289,12 @@ def test_no_new_test_bounds_an_event_wait_below_the_hang_breaker_floor() -> None
     new = sorted(key for key in offenders if key not in KNOWN_SMALL_BOUNDED_WAITS)
 
     assert not new, (
-        f"`wait_for(<event>.wait(), timeout=<{SMALL_BOUNDED_WAIT_THRESHOLD_S}s)` "
+        f"`wait_for(<x>.wait(), timeout=<{SMALL_BOUNDED_WAIT_THRESHOLD_S}s)` "
         "in a test body — the bound is a hang-breaker, not a timing promise, so "
-        "a small one only adds a deadline the test can lose. Use "
-        "wait_signalled() from tests/_async_wait.py, and pin any real timing "
-        "promise with an explicit `assert elapsed < N`:\n"
+        "a small one only adds a deadline the test can lose. Raise it above the "
+        "floor, or use wait_signalled() from tests/_async_wait.py when the wait "
+        "is on an asyncio.Event; pin any real timing promise with an explicit "
+        "`assert elapsed < N`:\n"
         + "\n".join(
             f"  {path}::{name}  line(s) {offenders[(path, name)]}"
             for path, name in new
