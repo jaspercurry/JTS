@@ -265,9 +265,11 @@ async def test_startup_reconcile_failure_recovers_on_patrol_without_restart(
     mux._reconcile = reconcile
     task = asyncio.create_task(mux.run())
     try:
-        await asyncio.wait_for(control_started.wait(), timeout=0.2)
-        await asyncio.wait_for(adapter_started.wait(), timeout=0.2)
-        await asyncio.wait_for(recovered.wait(), timeout=0.2)
+        await wait_signalled(control_started, "control server started", producer=task)
+        await wait_signalled(adapter_started, "adapter tasks started", producer=task)
+        await wait_signalled(
+            recovered, "recovery after startup reconcile failure", producer=task,
+        )
         assert not task.done()
     finally:
         task.cancel()
