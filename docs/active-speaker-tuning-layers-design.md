@@ -25,7 +25,7 @@
 > The five-layer ownership is unchanged. What changes: a driver's low limit
 > gets exactly one declared owner, and correction inside the crossover blend
 > region moves from the (blind) per-driver fit to the summed response.
-> **Capture-source ruling (2026-08-17, later the same morning):** a sixth
+> **Capture-source ruling (2026-08-17, later the same day):** a sixth
 > ruling adds decision 13 — the commissioning flow gets two first-class
 > capture sources, a microphone plugged into the Pi beside the existing relay
 > flow. Layer ownership is again unchanged; the seam is anchored by #2662.
@@ -217,7 +217,7 @@ morning after the series-1 convergence run on jts3.
     proves the dip moves. Only after (iii) is prescriber policy worth
     deciding.
 
-**The ruling below was ratified later the same morning.**
+**The ruling below was ratified later the same day.**
 
 13. **Two capture sources, both first-class (2026-08-17).** The commissioning
     flow supports a microphone plugged directly into the Pi — the Pi plays and
@@ -234,13 +234,14 @@ morning after the series-1 convergence run on jts3.
     the risk site named in
     `captures/xover-series1-2026-08-17/wheels-report.md` (session-artifact) —
     the host sheds relay interleaving and trends toward transport-only, by
-    strangler rather than rewrite, with that report's file-size ratchet
-    holding the line meanwhile. Sequenced after decision 12's hardware series
-    (iii), with a pull-forward trigger if lateral aborts recur during it.
-    #2662 is the anchor and owns the HOW through its design brief. Companion
-    ruling: `e0_capture.py` and the driver tools promote into `experiments/` —
-    tracked, usable, explicitly experimental, deprecated only by the owner —
-    while the browser flow stays first-class for human drivers (#2636).
+    strangler rather than rewrite; the wheels report's recommended file-size
+    ratchet (G2, unimplemented) is the intended interim guard. Sequenced after
+    decision 12's hardware series (iii), with a pull-forward trigger if
+    lateral aborts recur during it. #2662 is the anchor and owns the HOW.
+    Companion ruling: `e0_capture.py` and the driver tools promote into
+    `experiments/` — tracked, usable, explicitly experimental, deprecated only
+    by the owner — while the browser flow stays first-class for human drivers
+    (#2636).
 
 ## Layer 1a concretely — UX and data flow
 

@@ -214,9 +214,10 @@ and it is owned by
 [`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md)
 ("The region-based adjustment contract", decisions 10–12) — this roadmap
 carries only its position in the order: upstream truth (item 7) → the
-contract → a hardware series that proves the dip moves. Series 1 is why:
-four rounds converged a trim prescription against a crossover-region dip
-that a scalar trim cannot address.
+contract → a hardware series that proves the dip moves → then the
+capture-source seam (#2662), pulled forward if lateral aborts recur during
+the series. Series 1 is why: four rounds converged a trim prescription
+against a crossover-region dip that a scalar trim cannot address.
 
 ---
 
