@@ -127,3 +127,78 @@ def test_doc_freshness_normal_threshold_and_all_mode_still_work():
     assert proc.returncode == 0, out
     assert "Summary:" in out
     assert "threshold 90 days" in out
+
+
+_ARCHIVAL_DOC_DIRS = ("research", "historical")
+
+
+def _archival_doc_count() -> int:
+    """Mirror of doc-freshness.sh's `--all` non-HANDOFF predicate, archival half."""
+    docs_root = _SCRIPTS.parent / "docs"
+    return sum(
+        1
+        for name in _ARCHIVAL_DOC_DIRS
+        for path in (docs_root / name).rglob("*.md")
+        if path.is_file() and not path.name.startswith("HANDOFF-")
+    )
+
+
+def _doc_freshness(threshold: str) -> str:
+    proc = subprocess.run(
+        ["bash", str(_SCRIPTS / "doc-freshness.sh"), threshold, "--all"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    return proc.stdout + proc.stderr
+
+
+def test_doc_freshness_all_prunes_the_archival_trees():
+    """`--all` never asks an archival doc to bump its freshness footer.
+
+    Issue #2064 (owner ruling 2026-08-17): docs/research/ and docs/historical/
+    record WHEN something was learned, so the only remedy this report offers
+    would falsify their provenance.
+
+    Threshold 0 makes every enumerated doc stale, so this is date-independent:
+    any archival doc still in the enumeration would have to appear as a row in
+    the stale table.
+    """
+
+    out = _doc_freshness("0")
+    table = out.split("Docs not verified/touched")[1].split("Summary:")[0]
+    for name in _ARCHIVAL_DOC_DIRS:
+        assert f"docs/{name}/" not in table, (
+            f"docs/{name}/ is archival and must not be listed as stale:\n{out}"
+        )
+
+
+def test_doc_freshness_empty_state_does_not_claim_it_checked_every_doc():
+    """The all-fresh line says "enumerated", because `--all` skips the archive.
+
+    A ten-year threshold makes the empty branch deterministic: no doc in this
+    repo predates it, so the line always renders. (Not a larger number —
+    BSD `date -v-Nd` rejects one.) Without this the report contradicted its
+    own exclusion notice three lines further down.
+    """
+
+    out = _doc_freshness("3650")
+    assert "(none — all enumerated docs fresh)" in out, out
+    assert "all docs fresh" not in out, out
+
+
+def test_doc_freshness_all_reports_what_it_excluded():
+    """The prune is stated with its count, never silent.
+
+    A report that quietly drops 54 files reads as "everything was checked".
+    The count is asserted against the tree so a half-applied prune (one
+    directory, or a predicate that drifts from the enumeration) fails here.
+    """
+
+    out = _doc_freshness("90")
+    expected = _archival_doc_count()
+    assert expected > 0, "fixture assumption: the repo has archival docs"
+    assert f"Excluded {expected} archival doc(s)" in out, out
+    assert "docs/research/ and docs/historical/" in out, out
+    assert "issue #2064" in out, out
