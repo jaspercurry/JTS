@@ -171,19 +171,21 @@ morning after the series-1 convergence run on jts3.
 
    **How the fact is actually published, so the prompt asks for the right
    field (researched 2026-08-17).** Horn/compression-driver makers give it a
-   dedicated spec-sheet line — "Recommended Crossover" (B&C, BMS, 18 Sound:
-   three of the five horn makers checked use that exact phrase), or
-   "Minimum Crossover Frequency" / "Recommended min. crossover" (FaitalPro,
-   Celestion) — as a single frequency, usually paired with an explicit slope
-   condition, which may sit in a numbered footnote of near-identical wording
-   (B&C "12 dB/oct. or higher slope high-pass filter"; 18 Sound "12 dB/oct or
-   higher slope high pass filter"; FaitalPro the same template) or inside the
-   field name itself (Celestion). It is not universal: BMS's 4590 field
-   carries no slope qualifier. **Dome tweeters usually have no such line at
-   all** — SB Acoustics and Scan-Speak instead express it as the test condition
-   footnoted to the *power-handling* rating ("IEC 268-5, high-pass
-   Butterworth, 2600 Hz, 12 dB/oct."; "X-over: 2. order HP Butterworth,
-   2.5 kHz"), phrased as a filter order rather than a dB/octave figure.
+   dedicated spec-sheet line, as a single frequency. Three of the five horn
+   makers checked print the exact phrase "Recommended Crossover" (B&C, BMS,
+   18 Sound); the other two use "Minimum Crossover Frequency" or
+   "Recommended min. crossover" (FaitalPro, Celestion). The slope condition
+   usually rides along in a numbered footnote: B&C and 18 Sound print the
+   *identical* sentence, "12 dB/oct. or higher slope high-pass filter." (read
+   verbatim from both makers' own PDFs; 18 Sound repeats it on the ND1460, so
+   it is house style), and FaitalPro uses the same template. Celestion folds
+   it into the field name instead. It is not universal — BMS's 4590 field
+   carries no slope qualifier at all. **Dome tweeters usually have no such
+   line whatsoever.** SB Acoustics and Scan-Speak instead express it as the
+   test condition footnoted to the *power-handling* rating ("IEC 268-5,
+   high-pass Butterworth, 2600 Hz, 12 dB/oct."; "X-over: 2. order HP
+   Butterworth, 2.5 kHz"), phrased as a filter order rather than a dB/octave
+   figure.
    Consequences for the prompt: ask for the number **and** a separately
    reported slope/filter-order qualifier; do not key on the literal phrase
    "recommended crossover"; and for a dome tweeter, look in the
