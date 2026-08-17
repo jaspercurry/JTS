@@ -820,15 +820,6 @@ migrate_fanin_coupling() {
     rm -f "${jasper_env}.bak"
 }
 
-# Seed /var/lib/jasper/wifi_guardian.env from the currently-active WiFi
-# profile if no stash exists yet. This is the migration hook for the
-# WiFi profile guardian (docs/HANDOFF-resilience.md "Hardware-event
-# recovery" sidebar) — it covers the SSH-driven setup case where the
-# operator brought up WiFi via raspi-config / nmcli before ever
-# opening the /wifi/ wizard.
-#
-# Idempotent:
-#   - stash already exists       -> no-op
 # Remove the retired dmix/fanin topology switch's state file.
 #
 # WHY THIS ONE LINE SURVIVED THE #2285 DELETION when the migration around it did
@@ -849,6 +840,15 @@ remove_retired_audio_topology_state() {
 }
 
 
+# Seed /var/lib/jasper/wifi_guardian.env from the currently-active WiFi
+# profile if no stash exists yet. This is the migration hook for the
+# WiFi profile guardian (docs/HANDOFF-resilience.md "Hardware-event
+# recovery" sidebar) — it covers the SSH-driven setup case where the
+# operator brought up WiFi via raspi-config / nmcli before ever
+# opening the /wifi/ wizard.
+#
+# Idempotent:
+#   - stash already exists       -> no-op
 #   - nmcli missing              -> no-op (no NM, nothing to recover)
 #   - no active WiFi connection  -> no-op (Ethernet-only Pi)
 #   - active profile is WPA-EAP  -> no-op (enterprise out of scope)
