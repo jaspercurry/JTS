@@ -5104,12 +5104,18 @@ def _run_entry_verb(args) -> int:
         from jasper.fanin.converge import converge_active_endpoint
 
         # Guarded because this step runs BEFORE everything the pass has always
-        # done. A convergence that cannot even decide must cost the box its
-        # convergence, never its reconcile — the same "report, never raise out
-        # of the reconcile" rule the camilla step follows.
+        # done: a convergence that cannot even decide must cost the box its
+        # convergence, never its reconcile.
+        #
+        # NARROW, and derived rather than defensive. The reachable raise is a
+        # corrupt fanin.env — ``_read_snapshot`` catches ``OSError`` only, so a
+        # non-UTF-8 byte arrives as ``UnicodeDecodeError``, a ``ValueError`` —
+        # and its file reads can throw ``OSError``. Anything outside that pair
+        # is a bug, and swallowing bugs here would hide them behind a box that
+        # merely stopped converging.
         try:
             converge_active_endpoint(reason=args.reason)
-        except Exception as exc:  # noqa: BLE001 - never raise out of the pass
+        except (OSError, ValueError) as exc:
             log_event(
                 logger,
                 "fanin.converge",

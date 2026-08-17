@@ -38,10 +38,15 @@ Wants=jasper-fanin.service jasper-outputd.service jasper-camilla.service
 # arm failure (rolled back to loopback) also exits 1 and would retry-loop.
 [Service]
 Type=oneshot
-# Worst-case pass under the entry lock, RE-TALLIED for the #2285 P7 phase-0
-# convergence step (previous tallies: review #1252, then the #2175 start-budget
-# resets). Every term below is a hard timeout CEILING in code, not an observed
-# duration; normal cost is milliseconds. Two line items in the prior tally were
+# Worst-case pass under the entry lock, RE-TALLIED for the #2285 P7
+# ACTIVE-endpoint convergence step (previous tallies: review #1252, then the
+# #2175 start-budget resets). Every term below is a hard timeout CEILING in
+# code, not an observed duration, WITH ONE EXCEPTION named so a re-deriving
+# reader does not go hunting: the 4s reads line has no constant behind it. It
+# is a deliberate allowance over bounded file I/O — those steps read env files,
+# the topology and the loaded graph and shell out to nothing — where every
+# other line cites a named timeout. Normal cost is milliseconds. Two line
+# items in the prior tally were
 # stale and are corrected here: it charged a "usbsink restart 8s" the reconciler
 # does not perform, and it charged the ARM path a 15s hardware-reconcile kick
 # when the arm's kick is _ARM_CONTENT_FORMAT_CONVERGE_TIMEOUT_SEC = 60s (the 15s
@@ -49,7 +54,7 @@ Type=oneshot
 #
 #   entry lock wait                                              10s
 #   ACTIVE-endpoint convergence (jasper/fanin/converge.py):
-#     gate / graph / applied-record reads                         4s
+#     gate / graph / applied-record reads (ESTIMATE, see above)    4s
 #     re-emit, ANCHOR branch (the slower of the two):            25s
 #       staged-anchor lock 15s + camilladsp --check 10s
 #     audio-hardware-reconcile kick                              15s

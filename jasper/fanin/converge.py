@@ -127,18 +127,37 @@ def converge_active_endpoint(*, reason: str = "converge") -> str:
     if converged:
         return _emit("already_converged", reason=reason, detail=converged_detail)
 
-    # PROVE BEFORE MOVING, using the gate list the pass itself runs — minus the
-    # ONE gate this move exists to satisfy. ``ring_topology``'s roleful arm ends
-    # in ``active_ring_endpoint_proof``, which reads the marker that is derived
-    # from the graph this has not moved yet; requiring it here is the fixed
-    # point. The pass re-runs the whole list immediately after, so that gate is
-    # proved, just after the write rather than before it.
+    # PROVE BEFORE MOVING — FIVE of the pass's NINE gates, and the arithmetic is
+    # stated because "the gate list" would otherwise read as all of it.
+    # ``default_ring_gates()`` is six; this skips one; the pass appends three
+    # more that this step cannot run.
+    #
+    # THE ONE SKIPPED. ``ring_topology``'s roleful arm ends in
+    # ``active_ring_endpoint_proof``, which reads the marker derived from the
+    # graph this has not moved yet — requiring it here IS the fixed point. The
+    # pass re-runs it immediately after, so it is proved just after the write
+    # instead of before it.
+    #
+    # THE THREE UNAVAILABLE. ``ring_route``, ``ring_geometry`` and
+    # ``ring_slot_geometry`` are closures ``reconcile_auto`` binds over the route
+    # mode and the outputd/fanin snapshots it loads AFTER this step. Re-reading
+    # those files here would make this a second reader of facts the pass owns,
+    # and a refusal there costs only a graph move the pass re-decides on its very
+    # next line. What IS exact is the single-ownership half: every gate this runs
+    # comes from ``default_ring_gates()``, never from a second list.
     for name, gate in cr.default_ring_gates():
         if name == "ring_topology":
             continue
         try:
             ok, detail = gate()
-        except Exception as exc:  # noqa: BLE001 - a raising gate is a refusal
+        except (OSError, ValueError) as exc:
+            # The DERIVED set, not a catch-all. A gate's documented raise is
+            # the SD-card truncation shape — a non-UTF-8 byte reaching
+            # ``read_text`` as ``UnicodeDecodeError``, which is a
+            # ``ValueError`` — plus the ``OSError`` its file reads can throw.
+            # Catching those keeps the refusal ATTRIBUTED to the gate that
+            # raised; anything else is a bug, and a bug belongs at the
+            # caller's boundary rather than silently recorded as a refusal.
             ok, detail = False, f"{type(exc).__name__}: {exc}"
         if not ok:
             return _emit(
@@ -167,7 +186,14 @@ def converge_active_endpoint(*, reason: str = "converge") -> str:
             return _emit(
                 "applied_record_diverged",
                 reason=reason,
-                detail=f"{verdict} (#2558); leaving the coupling where it is",
+                detail=(
+                    f"{verdict} (#2558); leaving the coupling where it is. "
+                    "Re-apply the speaker profile at /correction/ to put the "
+                    "record and the running graph back into agreement — that "
+                    "apply is what writes both. Running `baseline-reemit` by "
+                    "hand is NOT the fix: it is the exact republish of the "
+                    "stale record that this refusal exists to prevent"
+                ),
                 level=logging.WARNING,
             )
 
@@ -214,8 +240,6 @@ def _reemit_graph_at_ring() -> tuple[bool, str]:
         rc = int(cli.main(argv))
     except SystemExit as exc:  # the CLI's own parser.exit on a config error
         rc = int(exc.code or 0)
-    except Exception as exc:  # noqa: BLE001 - report, never raise out of the pass
-        return False, f"baseline-reemit raised: {type(exc).__name__}: {exc}"
     if rc == 0:
         return True, ""
     return False, f"baseline-reemit refused (rc={rc}); nothing was written"
