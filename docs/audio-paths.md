@@ -86,7 +86,9 @@ reconciler's `JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT` marker says so. The role ride
 device NAME because it cannot ride the width: on a 2-way speaker both
 rings are 2 channels. The legacy `direct` content capture lane remains
 the fail-safe path for ring-ineligible topologies, operator-frozen boxes,
-and every roleful box that has not been explicitly armed. Those two
+and every roleful box the unattended pass has not converged — which since
+#2285 P7 means one it REFUSES (no proven graph, a diverged applied record,
+a failing gate), not merely one nobody has typed the arm on. Those two
 are the whole vocabulary of `JASPER_OUTPUTD_CONTENT_BRIDGE`: a third value,
 `rate_match` (an outputd-owned bounded ring plus ppm-clamped rate matcher at
 this final content/DAC clock boundary), was **deleted** after it failed the

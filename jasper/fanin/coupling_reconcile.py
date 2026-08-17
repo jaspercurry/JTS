@@ -2771,6 +2771,80 @@ def _staged_anchor_identity(graph: LoadedCamillaGraph) -> tuple[bool, str]:
     return True, ""
 
 
+def graph_at_active_ring_endpoint(
+    graph: LoadedCamillaGraph,
+) -> tuple[bool, str]:
+    """Is THIS graph already at the ACTIVE ring endpoint, at this box's wire?
+
+    Two axes, and deliberately only two: the ENDPOINT pair (capture is Ring A
+    and playback is the ACTIVE ring — both lanes, because a graph that plays
+    the ring while capturing the snd-aloop tap captures a device nobody writes,
+    the #2364 digital-silence trap) and the WIRE (every ring lane states the
+    box's resolved format AND channel width, via :func:`graph_wire_declarations`
+    and :func:`_wire_channels_for_ring`).
+
+    TWO CALLERS, ONE OWNER, and the split is the point.
+    :func:`ring_endpoint_anchor_converged` asks this between its anchor-identity
+    axis and its all-muted axis — it wants "the ANCHOR is already where the arm
+    wanted to put it". Phase 0 (:mod:`jasper.fanin.converge`) asks it alone,
+    because its question is narrower: "has the transport move already happened
+    to whatever graph is loaded". Those differ on exactly the class the
+    convergence design admits as its first arm — a COMMISSIONED box rides an
+    applied baseline, not the staged anchor, so anchor identity is false there
+    forever and all-muted is false by design (a commissioned graph plays). A
+    phase 0 that asked the anchor predicate whole would report NOT-converged on
+    every pass and re-emit the graph at every boot, deploy and hotplug, which is
+    the opposite of the idempotence its own budget rests on.
+
+    Fail-CLOSED on anything indeterminate: a wire this box cannot resolve, a
+    lane that declares no format or no channel count.
+    """
+    from jasper.fanin_coupling import (
+        RING_ACTIVE_PLAYBACK_DEVICE,
+        RING_CAPTURE_DEVICE,
+    )
+
+    capture = graph.devices.get("capture_device")
+    playback = graph.devices.get("playback_device")
+    if capture != RING_CAPTURE_DEVICE or playback != RING_ACTIVE_PLAYBACK_DEVICE:
+        return False, (
+            f"the loaded graph captures {capture!r} and plays {playback!r}, "
+            f"not the ring endpoint pair (capture {RING_CAPTURE_DEVICE!r} -> "
+            f"playback {RING_ACTIVE_PLAYBACK_DEVICE!r})"
+        )
+
+    wire, wire_problem = resolve_wire_for_gate(load_topology_for_wire())
+    if wire is None:
+        return False, wire_problem
+    problems: list[str] = []
+    for decl in graph_wire_declarations(graph):
+        if decl.sample_format != wire.sample_format:
+            problems.append(
+                f"{decl.end} declares format {decl.sample_format}, expected "
+                f"{wire.sample_format}"
+            )
+        want_channels = _wire_channels_for_ring(decl.ring, wire)
+        if want_channels is None:
+            problems.append(
+                f"{decl.end} declares {decl.channels} channels, but this box's "
+                "wire resolves NO active-ring width to prove that against"
+            )
+        elif decl.channels != want_channels:
+            problems.append(
+                f"{decl.end} declares {decl.channels} channels, expected "
+                f"{want_channels}"
+            )
+    if problems:
+        return False, (
+            "the loaded graph is at the ring endpoint but does not state this "
+            f"box's ring wire: {'; '.join(problems)}"
+        )
+    return True, (
+        f"at the ACTIVE ring endpoint, stating the box's ring wire "
+        f"({wire.sample_format})"
+    )
+
+
 def ring_endpoint_anchor_converged(
     *, loaded_config_path: str | None = None
 ) -> tuple[bool, str]:
@@ -2809,16 +2883,10 @@ def ring_endpoint_anchor_converged(
        (``DEFAULT_COMMISSIONING_CONFIG_NAME``) and therefore fails here, which is
        the point: a per-driver commissioning graph is a transient with a driver
        armed at level, and must never be read as a converged arm.
-    2. **Endpoint** — capture is Ring A and playback is the ACTIVE ring. Both
-       lanes, because a graph that plays the ring while capturing the snd-aloop
-       tap captures a device nobody writes once fan-in stops feeding the tap —
-       digital silence with every daemon healthy (the #2364 trap, fixed at the
-       emitter in #2514 and refused here as well).
-    3. **Wire** — every ring lane states the box's resolved ring wire, via
-       :func:`graph_wire_declarations` and :func:`_wire_channels_for_ring`, the
-       same two helpers :func:`ring_edge_width_ready` holds the graph to. Format
-       is what the ruling asked for; the CHANNELS axis rides along because this
-       predicate is also consulted on the CONFIRM path, where
+    2+3. **Endpoint and wire** — :func:`graph_at_active_ring_endpoint`, which
+       owns both axes because phase 0 asks them WITHOUT axes 1 and 4 (see that
+       function). Format is what the ruling asked for; the CHANNELS axis rides
+       along because this predicate is also consulted on the CONFIRM path, where
        ``ring_edge_width_ready`` does not run — without it an armed anchor box
        whose width later sheared would be reported converged forever instead of
        being recovered to loopback. Including it can only ever REFUSE more.
@@ -2844,10 +2912,6 @@ def ring_endpoint_anchor_converged(
     than left to the arm's preflights.
     """
     from jasper.active_speaker.camilla_yaml import STARTUP_MUTE_GAIN_DB
-    from jasper.fanin_coupling import (
-        RING_ACTIVE_PLAYBACK_DEVICE,
-        RING_CAPTURE_DEVICE,
-    )
 
     graph = read_loaded_camilla_graph(loaded_config_path)
     if graph.note:
@@ -2857,41 +2921,9 @@ def ring_endpoint_anchor_converged(
     if not is_anchor:
         return False, identity_problem
 
-    capture = graph.devices.get("capture_device")
-    playback = graph.devices.get("playback_device")
-    if capture != RING_CAPTURE_DEVICE or playback != RING_ACTIVE_PLAYBACK_DEVICE:
-        return False, (
-            f"the staged anchor captures {capture!r} and plays {playback!r}, "
-            f"not the ring endpoint pair (capture {RING_CAPTURE_DEVICE!r} -> "
-            f"playback {RING_ACTIVE_PLAYBACK_DEVICE!r})"
-        )
-
-    wire, wire_problem = resolve_wire_for_gate(load_topology_for_wire())
-    if wire is None:
-        return False, wire_problem
-    problems: list[str] = []
-    for decl in graph_wire_declarations(graph):
-        if decl.sample_format != wire.sample_format:
-            problems.append(
-                f"{decl.end} declares format {decl.sample_format}, expected "
-                f"{wire.sample_format}"
-            )
-        want_channels = _wire_channels_for_ring(decl.ring, wire)
-        if want_channels is None:
-            problems.append(
-                f"{decl.end} declares {decl.channels} channels, but this box's "
-                "wire resolves NO active-ring width to prove that against"
-            )
-        elif decl.channels != want_channels:
-            problems.append(
-                f"{decl.end} declares {decl.channels} channels, expected "
-                f"{want_channels}"
-            )
-    if problems:
-        return False, (
-            "the staged anchor is at the ring endpoint but does not state this "
-            f"box's ring wire: {'; '.join(problems)}"
-        )
+    at_endpoint, endpoint_detail = graph_at_active_ring_endpoint(graph)
+    if not at_endpoint:
+        return False, endpoint_detail
 
     muted, mute_problem = _anchor_is_all_muted(graph)
     if not muted:
@@ -2900,9 +2932,8 @@ def ring_endpoint_anchor_converged(
             f"is not the all-muted anchor: {mute_problem}"
         )
     return True, (
-        f"the loaded graph IS this box's staged startup anchor ({graph.path}) "
-        f"at the ACTIVE ring endpoint, stating the box's ring wire "
-        f"({wire.sample_format}), with every output held at the "
+        f"the loaded graph IS this box's staged startup anchor ({graph.path}), "
+        f"{endpoint_detail}, with every output held at the "
         f"{STARTUP_MUTE_GAIN_DB:g} dB startup mute floor; an all-muted anchor "
         "hosts no EQ, so there is nothing left for the camilla step to re-emit"
     )
@@ -5058,6 +5089,41 @@ def _run_entry_verb(args) -> int:
     from jasper.env_load import load_env_files
 
     load_env_files()
+
+    # Converge the ACTIVE endpoint before the gate set reads it (#2285 P7).
+    # Inside the entry flock, so it can never interleave with another pass.
+    #
+    # UNATTENDED PATH ONLY. The explicit operator arm is unchanged, ladder and
+    # all — this exists to spare a household that ladder, not to change what the
+    # CLI does for someone already typing it.
+    # Skipped under --no-apply, which promises env-only staging.
+    #
+    # A refusal is NOT an abort: it leaves the box as it found it and the gate
+    # set below decides the coupling, as it did before this existed.
+    if args.auto and not args.no_apply:
+        from jasper.fanin.converge import converge_active_endpoint
+
+        # Guarded because this step runs BEFORE everything the pass has always
+        # done: a convergence that cannot even decide must cost the box its
+        # convergence, never its reconcile.
+        #
+        # NARROW, and derived rather than defensive. The reachable raise is a
+        # corrupt fanin.env — ``_read_snapshot`` catches ``OSError`` only, so a
+        # non-UTF-8 byte arrives as ``UnicodeDecodeError``, a ``ValueError`` —
+        # and its file reads can throw ``OSError``. Anything outside that pair
+        # is a bug, and swallowing bugs here would hide them behind a box that
+        # merely stopped converging.
+        try:
+            converge_active_endpoint(reason=args.reason)
+        except (OSError, ValueError) as exc:
+            log_event(
+                logger,
+                "fanin.converge",
+                result="converge_raised",
+                reason=args.reason,
+                detail=f"{type(exc).__name__}: {exc}",
+                level=logging.ERROR,
+            )
 
     if args.auto:
         auto = reconcile_auto(reason=args.reason, apply=not args.no_apply)

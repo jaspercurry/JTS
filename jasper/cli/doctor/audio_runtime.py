@@ -1861,8 +1861,14 @@ def check_active_ring_split_transport() -> CheckResult:
     quieter. That is the wrong direction, and this check is the compensation:
     the split state is reachable by ordinary operations (a deploy reconcile, an
     EQ save re-emit the graph; nothing in that path moves the coupling), so it
-    must be loud on inspection until the coupling reconciler's phase 0 closes
-    it automatically.
+    must be loud on inspection.
+
+    IT IS ALSO THE DETECTION SURFACE FOR AN INTERRUPTED CONVERGENCE (#2285 P7).
+    ``jasper.fanin.converge`` moves the graph to the ring and the pass arms
+    seconds later; a process killed between those leaves exactly this split.
+    It self-heals at the next boot, deploy or DAC hotplug — the convergence
+    step is idempotent and re-enters from current state — and until then this
+    check is what names it, which is why it carries the runnable remedy.
 
     WHY TWO TERMS AND NOT THREE — do not "helpfully" add the third back.
     The original design specified a third conjunct, ``writer_alive:false``.
@@ -2679,17 +2685,18 @@ def check_ring_conf_floor_render() -> CheckResult:
     # commissioning finishes. It is not.
     roleful_note = (
         " This box is ROLEFUL (active crossover), so even a rendered conf.d "
-        "does not make it ring on its own. Commissioning it onto the ACTIVE "
-        "ring the first time is the explicit ladder: `jasper-active-speaker "
-        "baseline-reemit --endpoint ring`, then "
-        "jasper-audio-hardware-reconcile, then "
-        "`jasper-fanin-coupling-reconcile shm_ring`. The unattended default "
-        "pass converges a roleful box that ALREADY carries a proven graph — a "
+        "does not make it ring on its own. The unattended default pass now "
+        "does the whole thing by itself for a box carrying a proven graph — a "
         "hardware-fingerprint-matched applied baseline, or the all-muted "
-        "startup anchor — so a box left after step 2 is finished by the next "
-        "boot or deploy; one carrying neither still refuses. That first step "
-        "works on a mid-commission box too — it re-stages the all-muted "
-        "startup anchor when no applied baseline is saved yet."
+        "startup anchor: it re-emits the graph at the ring endpoint, "
+        "re-derives the hardware markers, and arms. So this box converges at "
+        "the next boot, deploy or DAC hotplug with no command at all. A box "
+        "carrying NEITHER graph still refuses, and its explicit ladder is "
+        "`jasper-active-speaker baseline-reemit --endpoint ring`, then "
+        "jasper-audio-hardware-reconcile, then "
+        "`jasper-fanin-coupling-reconcile shm_ring` — that first step works on "
+        "a mid-commission box, re-staging the all-muted startup anchor when no "
+        "applied baseline is saved yet."
         if _requires_roleful_graph()
         else ""
     )

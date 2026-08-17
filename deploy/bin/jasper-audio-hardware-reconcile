@@ -1430,6 +1430,49 @@ restart_route_runtime_if_needed() {
         "fanin_env=${FANIN_ENV_FILE} fanin_restarted=${fanin_changed}"
 }
 
+# Ask the coupling reconciler to converge after a real output-hardware move.
+#
+# THE DAC-SWAP EDGE (#2285 P7, convergence design section 4.1). udev already
+# reaches THIS script on every controlC* add/remove/change, and until now the
+# chain stopped here: a swapped DAC got a re-rendered asound.conf and a bounced
+# outputd, but nothing re-derived the fan-in coupling, so a box that should now
+# be on the ring stayed on loopback until someone typed the arm by hand. This
+# start is the missing edge.
+#
+# GUARDED ON dac_env_changed || render_changed, and the choice is deliberate.
+# Those two are exactly "the output hardware identity or the rendered ring
+# geometry moved" — the only change that can alter a coupling verdict — and
+# they are the same pair the restart tier above uses to select its full path.
+# LATENCY_FLOOR_CHANGED and ROUTE_FANIN_CHANGED are excluded on purpose: a floor
+# re-emit is not a DAC change, and a route-env change already has its own
+# restart_route_runtime_if_needed.
+#
+# WHY THE PAIR CANNOT PING-PONG, since the coupling pass kicks this script back.
+# Both directions are change-guarded and both reconcilers are write-on-change.
+# The coupling pass's own kick moves the active-lane marker pair and nothing
+# else, which sets outputd_committed but NOT dac_env_changed and NOT
+# render_changed — so the pass this script starts cannot start another pass.
+# Worst case per real hardware event is one extra round trip.
+#
+# --no-block IS LOAD-BEARING, not a nicety. The coupling pass kicks this unit
+# back SYNCHRONOUSLY (up to its own start timeout) during its arm. A blocking
+# start here would have this script waiting on a pass that is waiting on this
+# script. systemd also coalesces starts of an already-running oneshot, so a
+# udev storm collapses to one queued pass rather than a queue of them.
+kick_fanin_coupling_auto_if_needed() {
+    local dac_changed="${1:-0}" render_moved="${2:-0}" result="skipped_no_change"
+    if [[ "$dac_changed" == "1" || "$render_moved" == "1" ]]; then
+        if [[ "$NO_RESTART" == "1" ]]; then
+            result="skipped_no_restart"
+        else
+            "$SYSTEMCTL" --no-block start jasper-fanin-coupling-auto.service 2>/dev/null || true
+            result="started"
+        fi
+    fi
+    log_event "coupling_kick" \
+        "result=${result} dac_env_changed=${dac_changed} render_changed=${render_moved}"
+}
+
 start_outputd_if_recognized() {
     if [[ "$NO_RESTART" == "1" ]]; then
         log_event "outputd_start_skip" "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD} recognized=1 no_restart=1"
@@ -1795,6 +1838,10 @@ if [[ "$OUTPUT_DAC_RECOGNIZED" == "1" ]]; then
         start_outputd_if_recognized
     fi
     restart_route_runtime_if_needed "$ROUTE_FANIN_CHANGED"
+    # Recognized DACs only. An unrecognized one has just taken park_output_audio
+    # below; there is no output for a coupling to converge onto, and the park is
+    # the loud end state (#2261), not a state to reconcile out of here.
+    kick_fanin_coupling_auto_if_needed "$dac_env_changed" "$render_changed"
 else
     restart_route_runtime_if_needed "$ROUTE_FANIN_CHANGED"
     park_output_audio
