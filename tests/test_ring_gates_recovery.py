@@ -1379,3 +1379,126 @@ def test_wire_gate_says_so_when_it_could_not_read_the_graph(monkeypatch, tmp_pat
     assert ok is True, detail
     assert "was NOT one of them" in detail
     assert "is unreadable" in detail
+
+
+# --- a DEAD CamillaDSP keeps its strikes, and still escalates ----------------
+
+
+def _camilla_down_rung(monkeypatch, *, status="reconciled"):
+    """A ``reconcile_camilla`` hook wired to the REAL rung, daemon down.
+
+    The ring coupling gets the real ``_reconcile_camilla`` fed the real shape a
+    camilla-down ``reconcile_current_dsp`` returns since #2664 (it converges over
+    the statefile and reports success). Loopback stays loadable for the same
+    reason ``_confirm_once`` keeps it loadable: the walk being modelled is "the
+    ring reader is dead", and the escalation can only PROVE it recovered if the
+    state it recovers to works.
+    """
+    from jasper.fanin import coupling_reconcile as cr
+    from jasper.sound import runtime
+
+    calls: list[str] = []
+
+    async def camilla_down_reconcile(**_kwargs):
+        return {
+            "status": status,
+            "transport": "statefile",
+            "carrier_kind": "sound_or_correction",
+            "current_config_path": "/var/lib/camilladsp/configs/sound_current.yml",
+        }
+
+    monkeypatch.setattr(runtime, "reconcile_current_dsp", camilla_down_reconcile)
+
+    def reconcile_camilla(coupling: str) -> tuple[bool, str]:
+        calls.append(f"camilla:{coupling}")
+        if coupling != COUPLING_SHM_RING:
+            return True, "reconciled"
+        return cr._reconcile_camilla(coupling, reason="confirm", force=False)
+
+    return calls, reconcile_camilla
+
+
+def _confirm_once_with_dead_camilla(tmp_path, monkeypatch, *, status="reconciled"):
+    from tests.test_fanin_coupling_reconcile import _recorder
+
+    fanin_env, outputd_env = _armed_env(tmp_path)
+    _calls, ro, rf, _rc = _recorder()
+    calls, rc = _camilla_down_rung(monkeypatch, status=status)
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+    return result, calls, fanin_env
+
+
+def test_a_dead_camilla_confirm_records_a_strike_instead_of_clearing_them(
+    tmp_path, monkeypatch, _ring_assets_present
+):
+    """THE CONSEQUENCE #2664's first fix opened, pinned.
+
+    ``jasper-fanin-coupling-auto`` declares ``Wants=`` (not ``Requires=``)
+    CamillaDSP precisely so a degraded box still runs this pass, so an armed box
+    with a dead CamillaDSP reaches the confirm rung at every boot. Once the
+    reconcile started SUCCEEDING over the statefile, the rung reported
+    ``ok=True`` and the confirm cleared the strike record on every tick — so the
+    counter could never reach the limit and the escalation to loopback, the only
+    unattended path back to audio, was disabled for exactly the boxes that
+    needed it.
+
+    A recorded strike is therefore the load-bearing observation here, not the
+    return value.
+    """
+    strikes = _strike_state(monkeypatch, tmp_path)
+    result, calls, fanin_env = _confirm_once_with_dead_camilla(tmp_path, monkeypatch)
+
+    assert result.ok is False, result.detail
+    assert strikes.exists(), "a dead-reader confirm cleared its strikes"
+    assert "camilla:shm_ring" in calls
+    # One failure is still only a strike: the box keeps its ring for one more
+    # chance, exactly as with any other transient confirm failure.
+    assert result.recovered is False
+    assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
+
+
+def test_a_dead_camilla_still_escalates_to_loopback_at_the_strike_limit(
+    tmp_path, monkeypatch, _ring_assets_present
+):
+    """And the ladder actually completes: audio comes back unattended.
+
+    The strike above is only worth recording if it can still reach the limit.
+    This walks the whole ladder on a box whose CamillaDSP is dead and asserts the
+    box ends on loopback — the state that plays.
+    """
+    _strike_state(monkeypatch, tmp_path)
+    for _ in range(RING_CONFIRM_STRIKE_LIMIT - 1):
+        _confirm_once_with_dead_camilla(tmp_path, monkeypatch)
+    result, calls, fanin_env = _confirm_once_with_dead_camilla(tmp_path, monkeypatch)
+
+    assert result.ok is False
+    assert result.recovered is True
+    assert "camilla:loopback" in calls
+    assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
+
+
+def test_an_unchanged_camilla_down_confirm_is_refused_the_same_way(
+    tmp_path, monkeypatch, _ring_assets_present
+):
+    """``unchanged`` shares the branch with ``reconciled`` and the same premise.
+
+    A box whose saved intent already matches the graph the statefile names
+    answers ``unchanged``, and that is just as much "CamillaDSP loaded nothing"
+    as a re-emit is. Covered separately so a future narrowing of the guard to one
+    status word fails here.
+    """
+    strikes = _strike_state(monkeypatch, tmp_path)
+    result, _calls, _fanin_env = _confirm_once_with_dead_camilla(
+        tmp_path, monkeypatch, status="unchanged"
+    )
+
+    assert result.ok is False, result.detail
+    assert strikes.exists()

@@ -1049,10 +1049,14 @@ journal while the user drags a slider.
 Deploy/startup reconciliation emits `event=sound.reconcile_current_dsp` for
 every outcome: `result=reconciled`,
 `result=unchanged reason=running_config_matches_intent`, or
-`result=skipped reason=<code>`. Every line also carries `transport=websocket` or
-`transport=statefile`, naming whether the running daemon or its statefile
-answered "which graph is loaded" — a `statefile` line means CamillaDSP was down
-for that pass. On the `unchanged` line, `current=` and
+`result=skipped reason=<code>`. Every result line from the reconcile ITSELF also
+carries `transport=websocket` or `transport=statefile`, naming whether the
+running daemon or its statefile answered "which graph is loaded" — a `statefile`
+line means CamillaDSP was down for that pass. The CLI's own fail-open line
+(`result=failed`) has no `transport`: it is emitted by `jasper-sound` after the
+reconcile raised, so no reader ever answered. `_print_reconcile` does not print
+the field either, so read it in the journal rather than in the install
+transcript, which runs without `--json`. On the `unchanged` line, `current=` and
 `candidate=` name the running config and the file that was not written — they
 differ exactly when a non-`sound_current.yml` graph was deliberately left in
 place (see step 6 above). CLI fail-open failures emit the same event with

@@ -4874,10 +4874,16 @@ def write_camilla_statefile(
     *,
     channel_slots: int = 5,
 ) -> None:
-    """Write CamillaDSP's persisted config path with muted volume slots."""
+    """Write CamillaDSP's persisted config path with muted volume slots.
+
+    Published atomically: a reader sees the old statefile or the complete new
+    one, never a partial write. A truncated ``outputd-statefile.yml`` is a
+    CamillaDSP that cannot start — the same class of dead box #2664 is about —
+    and since that issue this writer also runs during install, on the deploy
+    path, which is exactly when a power cut or an OOM kill is most likely.
+    """
 
     target = Path(statefile_path)
-    target.parent.mkdir(parents=True, exist_ok=True)
     slots = max(1, int(channel_slots))
     payload: dict[str, Any] = {}
     try:
@@ -4893,8 +4899,7 @@ def write_camilla_statefile(
         payload["volume"] = [0.0] * slots
     ordered = {"config_path": payload.pop("config_path")}
     ordered.update(payload)
-    target.write_text(yaml.safe_dump(ordered, sort_keys=False), encoding="utf-8")
-    os.chmod(target, 0o644)
+    atomic_write_text(target, yaml.safe_dump(ordered, sort_keys=False), mode=0o644)
 
 
 def apply_safe_graph_decision_to_statefile(

@@ -459,6 +459,118 @@ def test_production_confirm_uses_nonforcing_camilla_fast_path(monkeypatch):
     assert observed == [{"force": False, "coupling": COUPLING_LOOPBACK}]
 
 
+def _rung_over_a_real_camilla_down_reconcile(box, tmp_path, monkeypatch, **rung_kwargs):
+    """Run the REAL reconcile on a REAL camilla-down box, into the REAL rung.
+
+    Nothing about the reconcile is canned: a real carrier, a real re-emit, a
+    real statefile, and the real controller factory refusing the connection. The
+    only redirection is the two paths, into ``tmp_path``. That matters because
+    the defect this pins is a payload SHAPE crossing a module boundary — a
+    hand-written payload could assert the shape I expect rather than the shape
+    the reconcile actually produces.
+
+    Returns ``(ok, detail, payload)``.
+    """
+
+    from jasper.sound.profile import SoundProfile, save_profile
+    from jasper.sound.runtime import reconcile_current_dsp as real_reconcile
+
+    from jasper.fanin import coupling_reconcile as cr
+    from jasper.sound import runtime
+    from tests.test_reconcile_camilla_down import _DownCamilla
+
+    _config, config_dir, _statefile = box
+    profile_path = tmp_path / "sound_profile.json"
+    save_profile(SoundProfile(), profile_path)
+
+    captured: dict = {}
+
+    async def redirected(**kwargs):
+        payload = await real_reconcile(
+            profile_path=profile_path,
+            config_dir=config_dir,
+            camilla_factory=lambda: _DownCamilla(),
+            **kwargs,
+        )
+        captured.clear()
+        captured.update(payload)
+        return payload
+
+    monkeypatch.setattr(runtime, "reconcile_current_dsp", redirected)
+    ok, detail = cr._reconcile_camilla(cr.COUPLING_SHM_RING, **rung_kwargs)
+    return ok, detail, captured
+
+
+@pytest.mark.parametrize("box_name", ["flat_streambox", "roleful"])
+@pytest.mark.parametrize(
+    ("reason", "force"), [("confirm", False), ("arm", True)]
+)
+def test_a_camilla_down_reconcile_never_satisfies_the_camilla_rung(
+    box_name, reason, force, tmp_path, monkeypatch
+):
+    """THE BLOCKER PIN: this rung's contract is "re-emit AND LOAD".
+
+    Since #2664 the reconcile SUCCEEDS with CamillaDSP down — it converges the
+    graph the box will boot, which is right for a deploy. This rung must not read
+    that as a load. Before #2664 it was protected for free (the reconcile raised
+    and the except turned it into a failure); the guard restores that outcome
+    deliberately.
+
+    Both box shapes are covered because they take DIFFERENT acceptance branches
+    and the first fix only narrowed the third one: a commissioned roleful box and
+    a flat box both answer ``reconciled`` and hit the common branch, so guarding
+    only the anchor branch would have left the entire production fleet accepting
+    a dead daemon while the mid-commission special case stayed protected.
+    """
+
+    from tests.test_reconcile_camilla_down import _flat_streambox, _roleful_box
+
+    build = _flat_streambox if box_name == "flat_streambox" else _roleful_box
+    box = build(tmp_path, monkeypatch)
+
+    ok, detail, payload = _rung_over_a_real_camilla_down_reconcile(
+        box, tmp_path, monkeypatch, reason=reason, force=force
+    )
+
+    # The reconcile really did succeed over the statefile — so this test is
+    # exercising the acceptance branches, not some unrelated earlier failure.
+    assert payload["transport"] == "statefile", payload
+    assert payload["status"] in ("reconciled", "unchanged"), payload
+
+    assert ok is False, (detail, payload)
+    # Typed enough for an operator to act on: names the cause, not just "failed".
+    assert "camilla down" in detail
+    assert "statefile" in detail
+
+
+def test_the_camilla_rung_answers_a_down_daemon_the_same_way_it_used_to(
+    tmp_path, monkeypatch
+):
+    """The pre-#2664 control for the guard above.
+
+    Before this PR a down daemon reached the rung as a RAISE, which the blanket
+    except turned into ``(False, "camilla reconcile raised: …")``. The guard's
+    whole claim is that it RESTORES that outcome rather than inventing one, so
+    the old shape is asserted here beside the new one: both directions refuse,
+    and only the wording differs.
+    """
+
+    from jasper.camilla import CamillaUnavailable
+    from jasper.fanin import coupling_reconcile as cr
+    from jasper.sound import runtime
+
+    async def raising_reconcile(**_kwargs):
+        raise CamillaUnavailable("[Errno 111] Connection refused")
+
+    monkeypatch.setattr(runtime, "reconcile_current_dsp", raising_reconcile)
+    ok, detail = cr._reconcile_camilla(
+        cr.COUPLING_SHM_RING, reason="confirm", force=False
+    )
+
+    assert ok is False
+    assert "Connection refused" in detail
+
+
 def _arm_reconcile_returning(monkeypatch, payload: dict):
     """Drive the arm ladder's camilla rung over a canned reconcile payload."""
 
