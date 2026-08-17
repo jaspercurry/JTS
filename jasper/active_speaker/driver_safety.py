@@ -1285,12 +1285,15 @@ def _prompt_example_highpass_hz(request: Mapping[str, Any]) -> float:
     """The worked RESULT SHAPE example's tweeter cutoff, in Hz.
 
     Read from policy for the same reason ``_driver_research_prompt_limits``
-    is: a fixed constant here is only legal for the styles whose floor it
-    happens to clear.  A hard-coded 3000 reads as a worked answer to a ribbon
-    (floor 5000) or supertweeter (floor 8000) target whose own LIMITS line one
-    screen above says otherwise — the reply then lands
-    ``tweeter:highpass_below_code_policy``, which is precisely the deadlock
-    #2186 exists to end.
+    is: a fixed constant here suits only the styles whose class default it
+    happens to sit near.  A hard-coded 3000 reads as a worked answer to a
+    ribbon (class default 5000) or supertweeter (8000) target whose own LIMITS
+    line one screen above states a plausibility band anchored somewhere else —
+    a worked example arguing with the bounds printed beside it is precisely the
+    deadlock #2186 exists to end.  (Until the 2026-08-17 ruling that mismatch
+    was also REFUSED, as ``tweeter:highpass_below_code_policy``; a sourced
+    figure now wins outright, so the cost is a confusing example rather than a
+    rejected reply.)
 
     The strictest high-frequency floor among this request's targets is used, so
     a mixed request cannot teach a cutoff that is illegal for one of its own
@@ -1390,7 +1393,7 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
     researcher's best reality-grounded number from the driver's published facts
     and physics, declared as an estimate, with one citation.  Safety never
     lived in a number's timidity: it lives in ``_target_issues`` (below), the
-    per-style high-pass floor, the peak ceiling, and the quiet-start ramp.  A
+    per-style plausibility band, the peak ceiling, and the quiet-start ramp.  A
     wrong best-estimate degrades a measurement; it cannot blow a driver, while
     prompt-level lowballing costs real performance — a needlessly high cutoff
     robs usable range, a needlessly low level under-drives the measurement —
@@ -1400,7 +1403,7 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
 
     What did **not** move is the protection itself.  ``_target_issues`` still
     refuses an estimate that lands outside code policy — the per-style
-    high-pass floor, the peak ceiling, band nesting — and refuses it by name
+    plausibility band, the peak ceiling, band nesting — and refuses it by name
     rather than silently clamping it, so an operator sees the bound and decides.
     The quiet-start commissioning ramp and its acknowledgements are untouched.
     Widening the *sourcing* of a proposed number is a different question from

@@ -228,11 +228,15 @@ def declared_protection_highpass_floor_hz(driver: Any) -> float | None:
     that no confirmation gate has seen.
 
     Confirmation is validated elsewhere and stays there:
-    ``driver_safety._target_issues`` refuses a *visible* declaration below this
-    module's ``min_highpass_hz`` code policy (``<role>:highpass_below_code_policy``),
-    and ``build_driver_safety_profile`` raises rather than confirm a profile
-    carrying that issue. So a confirmed declaration is at or above policy — but
-    that is a property of the confirmed profile, not of this read.
+    ``driver_safety._target_issues`` refuses a *visible* declaration that is not
+    believable for its style (``<role>:low_limit_implausible_for_style``), and
+    ``build_driver_safety_profile`` raises rather than confirm a profile
+    carrying that issue. Note what that does NOT buy since the 2026-08-17
+    ruling: a confirmed declaration may sit BELOW this module's
+    ``min_highpass_hz`` class default, because a published manufacturer figure
+    wins outright. "Confirmed" now means plausible for the style, never at or
+    above policy — and either way it is a property of the confirmed profile,
+    not of this read.
 
     An unvalidated floor arriving here can only ever *tighten*: the derived
     protection clamp is ``max(floor, multiplier x fc)``, so a floor can raise

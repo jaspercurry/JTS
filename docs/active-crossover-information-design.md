@@ -455,7 +455,7 @@ engineering estimate** from the driver's published facts and physics, tagged
 `confidence: "low"` with its derivation in `basis`, and `null` only where there
 is no engineering basis at all. The estimate asked for is deliberately not a
 timid one: safety never lived in a number's modesty but in the bounds below,
-the per-style high-pass floor, the peak ceiling, and the quiet-start ramp,
+the per-style plausibility band, the peak ceiling, and the quiet-start ramp,
 while prompt-level lowballing costs real performance — a needlessly high cutoff
 robs usable range, a needlessly low level under-drives the measurement. Every
 estimate is therefore declared as an estimate and carries one citation in its
