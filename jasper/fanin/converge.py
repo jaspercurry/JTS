@@ -251,12 +251,22 @@ def _reemit_graph_at_ring() -> tuple[bool, str]:
         # AttributeError, ImportError, RuntimeError, ...) arrives here live. Past
         # this frame the box loses its RECONCILE, not merely its convergence,
         # which is the contract this step exists to keep. The failure set of an
-        # entire CLI cannot be enumerated, and a narrowed catch here was measured
-        # to abort the unattended pass on reachable shapes: a mid-deploy
-        # ImportError (this pass runs WHILE install.sh rsyncs Python under it,
-        # and both modules lazy-import) and a type-confused applied record.
-        # The two NARROW catches elsewhere in this module stay narrow — they
-        # guard this module's own reads, whose raise set really is derived.
+        # entire CLI cannot be enumerated the way a module's own reads can.
+        #
+        # THREE CLAIMS, THREE EVIDENCE CLASSES, kept apart rather than blurred
+        # together as "reachable shapes":
+        #   MEASURED     the abort itself — a narrowed catch here drops the
+        #                unattended pass, run against this frame.
+        #   DEMONSTRATED a type-confused applied record reaching here, pinned by
+        #                the TypeError injection at _cmd_baseline_reemit in
+        #                tests/test_active_endpoint_convergence.py.
+        #   ARGUED       a mid-deploy ImportError, reasoned from the fact that
+        #                this pass runs WHILE install.sh rsyncs Python under it
+        #                and both modules lazy-import. Never reproduced.
+        #
+        # The THREE narrow catches elsewhere in this module (the topology read,
+        # the gate loop, the applied-record read) stay narrow — they guard this
+        # module's own reads, whose raise set really is derived.
         return False, f"baseline-reemit raised: {type(exc).__name__}: {exc}"
     if rc == 0:
         return True, ""

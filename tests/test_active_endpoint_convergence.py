@@ -397,12 +397,17 @@ def test_a_non_derived_raise_inside_the_cli_costs_only_the_convergence(
 
     ``cli.main`` converts exactly THREE classes into ``parser.exit``:
     ``ActiveSpeakerConfigError``, ``OutputTopologyError``, ``OSError``. Every
-    other class the CLI's whole tree can raise arrives at this caller live —
-    and a narrowed catch here was measured to abort the entire unattended pass
-    on reachable shapes: a mid-deploy ``ImportError`` (this pass runs WHILE
-    install.sh rsyncs Python under it, and both modules lazy-import) and a
-    type-confused applied record. That is the box losing its RECONCILE, not
-    merely its convergence, which is the contract this step exists to keep.
+    other class the CLI's whole tree can raise arrives at this caller live, and
+    a narrowed catch here aborts the entire unattended pass — the box losing its
+    RECONCILE, not merely its convergence, which is the contract this step
+    exists to keep.
+
+    THREE CLAIMS, THREE EVIDENCE CLASSES, kept apart rather than blurred into
+    "reachable shapes". The abort is MEASURED. The type-confused applied record
+    is DEMONSTRATED — it is precisely what this test injects. The mid-deploy
+    ``ImportError`` is ARGUED only, reasoned from this pass running WHILE
+    install.sh rsyncs Python under it with both modules lazy-importing; nobody
+    has reproduced it.
 
     INJECTED AT ``_cmd_baseline_reemit``, NOT at ``cli.main``, and the
     distinction is the whole test: patching ``cli.main`` would raise OUTSIDE

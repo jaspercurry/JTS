@@ -214,7 +214,19 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # The tokenized B-L-E-0-0-1 count fits the existing ceiling (618 -> 619), so
 # only the total moves: 808 -> 809.
 #
-# 809 -> 810 (#2285 P7, 2026-08-17): ONE availability wrap in
+# 809 -> 812 (#2285 P7, 2026-08-17), and the ceiling delta is NOT this PR's
+# marker delta -- the two numbers are different things and conflating them is
+# how a ratchet stops meaning anything. Measured, not inferred: origin/main
+# stands at 806 with 3 free slots; this branch adds SIX markers -- five F401 on
+# deliberate eager imports in tests/test_active_endpoint_convergence.py (they
+# keep a monkeypatched module-level binding from freezing into five importers,
+# and deleting them re-opens a cross-file failure; the argument is in that
+# file), plus the ONE availability wrap argued below. 806 + 6 = 812, so the
+# ceiling lands exactly on the count with no slack granted. An earlier revision
+# of this entry said "+1 exactly", which was true of the ceiling only because
+# main's then-headroom silently absorbed the five F401s.
+#
+# The ONE availability wrap in
 # jasper/fanin/converge.py::_reemit_graph_at_ring, and the argument is made here
 # rather than absorbed by the number. That frame invokes an ENTIRE CLI
 # (jasper.cli.active_speaker.main). The CLI's own converter turns exactly three
@@ -222,15 +234,20 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # OSError -- so every other class its whole tree can raise arrives at the caller
 # live, and the failure set of a CLI is not enumerable the way a module's own
 # reads are. The convergence step promises to cost a box its CONVERGENCE and
-# never its RECONCILE; a narrowed catch here was measured to break that promise
-# on reachable shapes (a mid-deploy ImportError -- this pass runs while
-# install.sh rsyncs Python under it, and both modules lazy-import -- and a
-# type-confused applied record). Same shape and same reason as
-# coupling_reconcile.py's camilla-reconcile wrap. The step's OTHER two catches
-# stay narrow: they guard that module's own reads, whose raise set IS derived.
-# BaseException is still not caught, and the B-L-E-0-0-1 count (615) sits under
-# its own unchanged ceiling, so only the total moves.
-MAX_NOQA_MARKERS = 810
+# never its RECONCILE, and a narrowed catch here breaks that promise. The
+# evidence classes are kept apart deliberately: the abort is MEASURED; a
+# type-confused applied record reaching that frame is DEMONSTRATED by the pin in
+# tests/test_active_endpoint_convergence.py; a mid-deploy ImportError (this pass
+# runs while install.sh rsyncs Python under it, and both modules lazy-import) is
+# ARGUED from the deploy ordering and has never been reproduced. Same shape and
+# same reason as coupling_reconcile.py's camilla-reconcile wrap. The step's
+# OTHER THREE catches stay narrow: they guard that module's own reads, whose
+# raise set IS derived. BaseException is still not caught. The B-L-E-0-0-1
+# count is 615 BY THE TOKENIZED COUNTER BELOW, which is the only count this rule
+# uses; a bare substring scan of the same tree answers 618, and the gap is
+# exactly why the assertion tokenizes rather than greps. 615 sits under its
+# unchanged ceiling, so only the total moves.
+MAX_NOQA_MARKERS = 812
 MAX_BLE001_MARKERS = 619
 # (Total reflects two independent +1 entries dated 2026-06-21: the AirPlay
 # latency-fit /state snapshot and the barge-in truncate wire-send guard.)
