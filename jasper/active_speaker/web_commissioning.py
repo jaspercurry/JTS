@@ -35,11 +35,7 @@ from jasper.active_speaker.calibration_level import (
     load_calibration_level_state,
 )
 from jasper.active_speaker.commission_ramp import (
-    abort_ramp,
-    clear_pending_ramp_step,
     load_ramp_state,
-    ramp_audible_step,
-    record_ramp_operator_ack,
 )
 from jasper.active_speaker.commission_wiring import (
     CommissionPresetResolutionError,
@@ -52,10 +48,8 @@ from jasper.active_speaker.commission_wiring import (
 )
 from jasper.active_speaker.camilla_yaml import APPLIED_RESPONSE_FILTER_MODE
 from jasper.active_speaker.measurement import (
-    confirmed_driver_roles,
     current_driver_floor_evidence,
     load_measurement_state,
-    record_driver_measurement,
     record_summed_test_artifact,
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
@@ -70,15 +64,13 @@ from jasper.active_speaker.staging import (
     stage_protected_startup_config,
 )
 from jasper.active_speaker.startup_load import (
-    commission_load_runtime_status,
-    commission_load_state_with_runtime_status,
     load_commission_load_state,
     load_driver_commissioning_config,
     load_protected_startup_config,
     load_startup_load_state,
     load_summed_commissioning_config,
-    mark_commission_load_state_stale,
     rollback_driver_commissioning_config,
+    staged_topology_match_status,
 )
 from jasper.active_speaker.topology_tone import build_summed_topology_tone_plan
 # P6c-ii dissolved the static COMMISSION_TONE_ALSA_DEVICE alias: the lane's
@@ -473,10 +465,41 @@ async def _ensure_commission_startup_anchor(
             "commissioning startup anchor requires one resolved graph source"
         )
     staged_path = (staged_config.get("config") or {}).get("path")
-    if _config_paths_match(current_config_path, staged_path):
-        return {"status": "already_loaded", "staged_config_path": staged_path}
 
-    topology, _guards_changed = request_missing_software_guards(load_output_topology())
+    # A PATH MATCH IS NOT AN ANCHOR MATCH, and this second term is why. The
+    # staged pair's metadata records the topology it was built for, so a box
+    # whose saved topology has moved since — a DAC swap, a role edit — can hold
+    # a staged graph at the very path this check is about to accept, describing
+    # hardware the box no longer has. Reusing it would anchor a commissioning
+    # rollback to a graph for the wrong speaker.
+    #
+    # SHARED WITH /sound/, deliberately: this is the same two-term gate
+    # `sound_setup._active_speaker_ensure_commission_startup_anchor` has run
+    # since the jts5 2026-08-06 regression, and `staged_topology_mismatch` is a
+    # mapped household code. /correction/ short-circuited on the path term
+    # alone, so the two surfaces disagreed about what "already loaded" meant and
+    # only one of them could ever emit that code (#2285).
+    #
+    # A mismatch is NOT a refusal — it falls through to the re-stage below,
+    # which rebuilds the pair against the topology the box actually has. The log
+    # line is what makes the re-stage attributable rather than silent.
+    topology = load_output_topology()
+    staged_topology = staged_topology_match_status(topology, staged_config)
+    paths_match = _config_paths_match(current_config_path, staged_path)
+    if paths_match and bool(staged_topology.get("matched")):
+        return {"status": "already_loaded", "staged_config_path": staged_path}
+    if paths_match:
+        log_event(
+            logger,
+            "active_speaker.web_commission_startup_anchor",
+            action="startup_anchor",
+            group=group,
+            role=role,
+            status="refresh_required",
+            reason="staged_topology_mismatch",
+        )
+
+    topology, _guards_changed = request_missing_software_guards(topology)
     stage = _stage_startup_config(
         topology,
         preset=preset,
@@ -1148,241 +1171,19 @@ def commission_status_payload() -> dict[str, Any]:
     }
 
 
-async def start_driver_test(
-    raw: dict[str, Any],
-    *,
-    camilla_factory: CamillaFactory,
-    blocking_phase: str | None = None,
-) -> dict[str, Any]:
-    """Arm and play one bounded per-driver test tone."""
-
-    if not isinstance(raw, dict):
-        raise ValueError("driver test request must be an object")
-    group = str(raw.get("speaker_group_id") or raw.get("group") or "").strip()
-    role = str(raw.get("role") or "").strip().lower()
-    force = bool(raw.get("force"))
-    if blocking_phase is not None:
-        return {
-            "status": "refused",
-            "reason": "measurement_in_progress",
-            "blocking_phase": blocking_phase,
-            "next_step": "Finish the other measurement before testing a driver.",
-        }
-    if not group or not role:
-        raise ValueError("speaker_group_id and role are required")
-
-    if force:
-        await asyncio.to_thread(stop_commission_tone, reason="driver_test_force")
-
-    cam = camilla_factory()
-    existing = load_commission_load_state()
-    if existing.get("status") == "loaded":
-        try:
-            running_raw = await cam.get_active_config_raw(best_effort=False)
-        except _COMMISSION_OPERATION_ERRORS:
-            running_raw = None
-        live_existing = commission_load_state_with_runtime_status(
-            existing,
-            commission_load_runtime_status(existing, running_raw),
-        )
-        active_target = _dict_value(live_existing.get("target"))
-        same_target = (
-            live_existing.get("status") == "loaded"
-            and (active_target.get("speaker_group_id") or "") == group
-            and (active_target.get("role") or "") == role
-        )
-        if live_existing.get("status") == "loaded" and not same_target:
-            if not force:
-                return {
-                    "status": "refused",
-                    "reason": "commission_load_already_active",
-                    "active_target": active_target,
-                    "next_step": "Stop the active driver test before starting another.",
-                }
-            await rollback_driver_commissioning_config(
-                load_config=commission_load_config(cam),
-            )
-        elif live_existing.get("status") != "loaded":
-            runtime_status = _dict_value(live_existing.get("runtime_status"))
-            mark_commission_load_state_stale(existing, runtime_status)
-
-    topology, guards_changed = request_missing_software_guards(load_output_topology())
-    if guards_changed:
-        log_event(
-            logger,
-            "active_speaker.web_driver_test",
-            action="request_software_guards",
-            group=group,
-            role=role,
-        )
-    preset, crossover_preview = resolve_commission_inputs()
-    staged = load_staged_startup_config()
-    current_config_path, current_config_error = await read_current_config_path(cam)
-    startup_setup = await _ensure_commission_startup_anchor(
-        group=group,
-        role=role,
-        staged_config=staged,
-        current_config_path=current_config_path,
-        camilla_factory=camilla_factory,
-        preset=preset,
-        crossover_preview=crossover_preview,
-    )
-    if startup_setup.get("status") == "blocked":
-        return startup_setup
-
-    staged = load_staged_startup_config()
-    current_config_path, current_config_error = await read_current_config_path(cam)
-    evidence_path = write_commission_path_safety(
-        topology, staged, current_config_path, current_config_error
-    )
-    load_config, read_running_config, get_current_config_path = commission_seams(cam)
-    commission = load_commission_load_state()
-    target = _dict_value(commission.get("target"))
-    if (
-        commission.get("status") != "loaded"
-        or (target.get("speaker_group_id") or "") != group
-        or (target.get("role") or "") != role
-    ):
-        load_payload = await load_driver_commissioning_config(
-            topology,
-            speaker_group_id=group,
-            role=role,
-            load_config=load_config,
-            read_running_config=read_running_config,
-            get_current_config_path=get_current_config_path,
-            preset=preset,
-            crossover_preview=crossover_preview,
-            staged_config=staged,
-            path_safety_evidence_path=evidence_path,
-        )
-        if (load_payload.get("load") or {}).get("status") == "loaded":
-            clear_pending_ramp_step(
-                speaker_group_id=group,
-                confirmed_roles=confirmed_driver_roles(
-                    topology,
-                    speaker_group_id=group,
-                ),
-            )
-    else:
-        load_payload = {"status": "loaded", "load": commission}
-
-    async def _play_commission_tone(**kwargs: Any) -> dict[str, Any]:
-        return await play_commission_tone(
-            **kwargs,
-            topology=topology,
-            preset=preset,
-            crossover_preview=crossover_preview,
-        )
-
-    step = await ramp_audible_step(
-        topology,
-        speaker_group_id=group,
-        role=role,
-        auto_retry_pending=bool(raw.get("auto_retry_pending")),
-        load_config=load_config,
-        read_running_config=read_running_config,
-        get_current_config_path=get_current_config_path,
-        preset=preset,
-        crossover_preview=crossover_preview,
-        staged_config=staged,
-        path_safety_evidence_path=evidence_path,
-        play_tone=_play_commission_tone,
-        confirmed_roles=confirmed_driver_roles(
-            topology,
-            speaker_group_id=group,
-        ),
-    )
-    log_event(
-        logger,
-        "active_speaker.web_driver_test",
-        action="start",
-        status=step.get("status"),
-        group=group,
-        role=role,
-    )
-    return {
-        "status": step.get("status"),
-        "startup_setup": startup_setup,
-        "load": load_payload,
-        "step": step,
-        "commission": commission_status_payload(),
-    }
-
-
-async def confirm_driver_test(
-    raw: dict[str, Any],
-    *,
-    camilla_factory: CamillaFactory,
-) -> dict[str, Any]:
-    """Record operator floor confirmation for the active driver test."""
-
-    if not isinstance(raw, dict):
-        raise ValueError("driver confirmation request must be an object")
-    outcome = str(raw.get("outcome") or "heard_correct_driver").strip().lower()
-    prior_ramp = load_ramp_state()
-    pending = prior_ramp.get("pending")
-    if outcome != "silent":
-        tone_stop = await asyncio.to_thread(
-            stop_commission_tone,
-            reason=f"ack_{outcome}",
-        )
-    else:
-        tone_stop = {"status": "not_stopped", "reason": "silent_retry"}
-    cam = camilla_factory()
-    payload = await record_ramp_operator_ack(
-        outcome=outcome,
-        load_config=commission_load_config(cam),
-    )
-    should_record_driver_evidence = (
-        outcome == "heard_correct_driver"
-        and payload.get("status") == "confirmed"
-        and not payload.get("issues")
-    ) or (outcome == "heard_wrong_driver" and payload.get("status") == "aborted")
-    if should_record_driver_evidence and isinstance(pending, dict):
-        topology = load_output_topology()
-        measurements = record_driver_measurement(
-            topology,
-            {
-                "speaker_group_id": prior_ramp.get("speaker_group_id"),
-                "role": pending.get("role"),
-                "outcome": outcome,
-                "playback_id": pending.get("playback_id"),
-                "test_level_dbfs": pending.get("gain_db"),
-                "notes": "Recorded from secure correction crossover driver confirmation.",
-            },
-            calibration_level=load_calibration_level_state(),
-            safe_session=load_safe_playback_state(),
-        )
-        payload["measurements"] = measurements
-    payload["tone_stop"] = tone_stop
-    payload["commission"] = commission_status_payload()
-    log_event(
-        logger,
-        "active_speaker.web_driver_test",
-        action="confirm",
-        outcome=outcome,
-        status=payload.get("status"),
-    )
-    return payload
-
-
-async def abort_driver_test(*, camilla_factory: CamillaFactory) -> dict[str, Any]:
-    """Hard stop: stop any tone and re-mute the transient driver graph."""
-
-    tone_stop = await asyncio.to_thread(
-        stop_commission_tone,
-        reason="driver_test_abort",
-    )
-    payload = await abort_ramp(load_config=commission_load_config(camilla_factory()))
-    payload["tone_stop"] = tone_stop
-    payload["commission"] = commission_status_payload()
-    log_event(
-        logger,
-        "active_speaker.web_driver_test",
-        action="abort",
-        status=payload.get("status"),
-    )
-    return payload
+# THE PER-DRIVER TEST TRIO LIVED HERE and is deleted (#2285 / #2628). It was a
+# SECOND, unrouted implementation of a shipped feature: nothing reached
+# ``start_driver_test`` but an uncalled wrapper in
+# ``jasper.web.correction_crossover_backend`` and one test, and its two siblings
+# had no caller at all. The live per-driver test is /sound/'s commission-ramp
+# trio -- ``/active-speaker/commission-ramp-step``/``-ack``/``-abort`` ->
+# ``_active_speaker_commission_ramp_*_payload`` -> ``jasper.active_speaker
+# .commission_ramp`` -- which superseded this layer and kept its own routes.
+# Wiring these up instead would have given one household feature two
+# orchestrations, which is the drift this campaign exists to remove. The
+# primitives they composed (``abort_ramp``, ``load_ramp_state``,
+# ``stop_commission_tone``, ``commission_load_config``) are untouched: the ramp
+# path is their live caller.
 
 
 def _crossover_frequency_for_group(

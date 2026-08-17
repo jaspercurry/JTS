@@ -553,7 +553,8 @@ def _latest_current_driver_confirmations(
 
     ``record_driver_measurement`` is the single writer for both the operator
     by-ear floor-confirmation path (no ``acoustic`` block -- the guided ramp
-    ack in ``sound_setup.py`` / ``web_commissioning.confirm_driver_test``) and
+    ack: ``sound_setup``'s ``/active-speaker/commission-ramp-ack`` route into
+    ``commission_ramp.record_ramp_operator_ack``) and
     the sweep+analyze commissioning path (``acoustic`` populated by
     ``commissioning_capture.record_driver_acoustic_capture``). Both append to
     the same durable ``driver_measurements`` list, and

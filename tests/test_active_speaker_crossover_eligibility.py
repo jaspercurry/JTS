@@ -657,7 +657,8 @@ def _real_floor_confirmation(
     now="2026-07-16T05:41:12Z",
 ):
     """Record the by-ear driver-level-check ceremony through the real write
-    path -- mirrors ``web_commissioning.confirm_driver_test``."""
+    path -- mirrors the guided ramp ack
+    (``commission_ramp.record_ramp_operator_ack``)."""
     from jasper.active_speaker.measurement import record_driver_measurement
 
     target = {

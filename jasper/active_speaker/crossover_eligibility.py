@@ -207,7 +207,8 @@ def driver_repeat_completed(
 # (`commissioning_capture.record_driver_acoustic_capture`): every accepted
 # repeat plays its OWN sweep tone, always a *different* playback than the
 # driver's earlier, independently-durable by-ear confirmation
-# (`web_commissioning.confirm_driver_test`). So `record["captured"]` is
+# (the guided ramp ack: `/active-speaker/commission-ramp-ack` ->
+# `commission_ramp.record_ramp_operator_ack`). So `record["captured"]` is
 # *always* False on an acoustic-bearing record produced by the repeat-set
 # flow, by design -- pinned by
 # tests/test_active_speaker_measurement.py::
