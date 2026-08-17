@@ -188,10 +188,12 @@ and the emitter docstring in `jasper/active_speaker/camilla_yaml.py` called
 not a bound** — a review of the first revision of this doc found a third
 cut-only sentence on the same path (`camilla_yaml.py`'s
 `_validated_linearization` docstring, citing "the fit engine's own
-explicit-raise cut-only invariant"). `LinearizationFilter.gain`'s comment,
-the `_validated_linearization` docstring's cut-only-invariant phrase, and
-the emitter's "non-positive `gain`" clause were trued up; the emitter's
-"cut-only EQ/shelf stage" phrase was not, out of this pass's scope.
+explicit-raise cut-only invariant"). All four were trued up:
+`LinearizationFilter.gain`'s comment, the `_validated_linearization`
+docstring's cut-only-invariant phrase, the emitter's "non-positive `gain`"
+clause, and the emitter's stage NAME — "the per-driver cut-only EQ/shelf
+stage" — which is the same staleness class, a name asserting cut-only while
+a 12 dB boost cap exists.
 
 **7. Collapse the driver low-limit to one declared owner (#2603).**
 [Code path delivered in this PR; jts3's own stored value has not been

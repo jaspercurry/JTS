@@ -29,6 +29,9 @@
 > ruling adds decision 13 — the commissioning flow gets two first-class
 > capture sources, a microphone plugged into the Pi beside the existing relay
 > flow. Layer ownership is again unchanged; the seam is anchored by #2662.
+> **Boundary ruling (2026-08-17):** a corner exactly at the declared limit is
+> legal — the recommended crossover is a sanctioned operating point, no nanny
+> margin.
 
 ## Why this exists (one paragraph of history)
 

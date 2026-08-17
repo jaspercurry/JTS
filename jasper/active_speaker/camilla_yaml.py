@@ -3366,9 +3366,11 @@ def emit_active_speaker_baseline_config(
     non-empty (a flat profile can't clip from EQ and plays at unity), so the
     default keeps the no-EQ baseline byte-identical.
 
-    ``linearization`` (Layer 1a, #1668 PR-D) is the per-driver cut-only
-    EQ/shelf stage the driver-linearization fit engine
-    (``jasper.active_speaker.linearization_fit``) designs — the REDUCED shape
+    ``linearization`` (Layer 1a, #1668 PR-D) is the per-driver EQ/shelf stage
+    the driver-linearization fit engine
+    (``jasper.active_speaker.linearization_fit``) designs — cut-preferred but
+    NOT cut-only since PR-L5: a positive ``gain`` is legal here, bounded by
+    the per-filter cap re-proved below — the REDUCED shape
     ``{role: [{biquad_type, freq, q, gain}, ...]}``, produced from a
     ``LinearizationFit``/candidate by
     ``linearization_fit.linearization_filters_by_role``. Each role's filters
