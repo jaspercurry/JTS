@@ -443,8 +443,9 @@ async def test_alert_during_coalesce_does_not_queue_empty_reconcile(
 
     # Push the fixed patrol out past every wait below so no patrol can
     # land inside this test at all. A disabling value, not a deadline the
-    # test races: 30.0s sits above wait_signalled's own 10s bound, so a
-    # stalled wait fails long before a patrol could ever appear. The
+    # test races: 30.0s sits above wait_signalled's own 10s bound, so no
+    # single wait can approach it alone — the real margin comes from the
+    # test finishing in ~0.2s in practice. The
     # alternative — filtering patrol-tagged reconciles out of the
     # assertion — would discard the very bug this test forbids: an EMPTY
     # reconcile reaches the trigger constructor in Mux.run with `dirty`
