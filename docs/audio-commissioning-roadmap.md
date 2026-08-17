@@ -195,6 +195,20 @@ clause, and the emitter's stage NAME — "the per-driver cut-only EQ/shelf
 stage" — which is the same staleness class, a name asserting cut-only while
 a 12 dB boost cap exists.
 
+And the caveat earned its keep a second time: a mechanical re-run after those
+four returned **six more**, none of them on the hand list. Also trued up —
+`linearization_fit.py`'s module docstring and `fit_driver_linearization`'s own
+first line (both said "cut-only" while the same docstrings described the boost
+vocabulary below); this file's live-spine sibling
+[`HANDOFF-crossover-measurement-v2.md`](HANDOFF-crossover-measurement-v2.md)
+invariant 11, which claimed the emitter re-proves a *non-positive gain* when it
+re-proves the cap; the duplicated cut-only justification in
+`deploy/assets/correction/js/crossover/{chart,cloud}.js` (the per-curve
+reference rule there never depended on the sign, so only the premise moved);
+and a dated superseded note on
+[`flat-linearization-plan.md`](flat-linearization-plan.md)'s S3 paragraph,
+which still asks for the owner amendment that was granted 2026-07-27.
+
 **7. Collapse the driver low-limit to one declared owner (#2603).**
 [Code path delivered in this PR; jts3's own stored value has not been
 re-entered — that is owner/operator work, still outstanding.] Ruled

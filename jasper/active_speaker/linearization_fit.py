@@ -8,9 +8,10 @@ Consumes ONE driver's :class:`~jasper.audio_measurement.program_analysis.
 DriverResponse` (the primary, gated, calibrated measurement) plus its
 :class:`~jasper.active_speaker.linearization_envelope.EnvelopeCurve` (from
 :func:`jasper.active_speaker.linearization_envelope.compose_envelope`) and
-produces a cut-only PEQ/shelf fit that flattens the driver toward a
+produces a cut-preferred PEQ/shelf fit that flattens the driver toward a
 per-session target level, honoring the envelope's per-bin correction-depth
-ceiling everywhere. Pure computation: numpy plus
+ceiling everywhere. Cut-PREFERRED, not cut-only: see "Boost is allowed" below
+for the vocabulary that admits a lift and what bounds it. Pure computation: numpy plus
 :func:`jasper.audio_measurement.analysis.smooth_fractional_octave` and
 :func:`jasper.correction.peq.design_peq` (the existing greedy cuts-only PEQ
 designer, extended here — backward-compatibly — to accept a per-bin cut
@@ -2843,8 +2844,12 @@ def fit_driver_linearization(
     blind_bands_hz: Sequence[tuple[float, float]] = (),
     target: BranchTarget | None = None,
 ) -> LinearizationFit:
-    """Fit one driver's cut-only linearization from its measured response
-    and correction envelope.
+    """Fit one driver's linearization from its measured response and
+    correction envelope.
+
+    Cut-preferred, not cut-only: ``vocabulary`` decides whether a lift is
+    admitted at all, and this function re-proves both that decision and the
+    per-filter boost cap on its own output before returning.
 
     ``envelope`` carries everything besides the raw magnitude curve —
     role, mic tier, driver class, repeat count, and (critically) the

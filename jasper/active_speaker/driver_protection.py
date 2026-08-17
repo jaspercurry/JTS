@@ -324,7 +324,10 @@ def format_protection_hz(value: float) -> str:
 # disclosure and the load gate now fire from one always-derived number,
 # where the blocker only fired when a separate optional field happened to be
 # declared (the #2132 fail-open). The key is still ACCEPTED by the schemas so
-# drafts written before this load unchanged; nothing writes or reads it.
+# drafts written before this load unchanged, and /sound/ still round-trips a
+# stored value under a "Legacy advisory floor (not enforced)" label rather than
+# dropping it silently. What is gone is every CONSUMER: no policy, band, filter
+# or gate derives from it any more.
 #
 # ``measurement_band_hz`` itself stays a SEPARATE published fact -- the
 # datasheet's frequency-response range -- and only has its lower edge clamped

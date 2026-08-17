@@ -626,6 +626,49 @@ def test_a_corner_exactly_at_the_declared_low_limit_is_legal() -> None:
     assert "crossover_below_declared_protection_floor" not in codes
 
 
+def test_a_stored_do_not_test_below_hz_changes_nothing() -> None:
+    """The retirement, asserted as an absence rather than described as one.
+
+    ``driver_protection``'s ruling block claims the key survives only so old
+    drafts load, and that no policy, band, filter or gate derives from it. That
+    is a claim about something NOT happening, which nothing else in the suite
+    can fail on -- the other tests simply never set the key.
+
+    So this sets it, at the exact value the retired blocker fired on: a
+    do-not-test line sitting ON the candidate corner used to land
+    ``crossover_below_do_not_test_floor`` and drop the filter intent. The two
+    payloads must now agree, which is only true while the key has no consumer.
+    """
+
+    def draft(**extra: float) -> dict:
+        return build_design_draft(
+            _topology(),
+            driver_research=_de250_research(candidate_hz=1800, **extra),
+            created_at="2026-06-19T12:00:00Z",
+        )
+
+    def preview(source: dict) -> dict:
+        return build_crossover_preview(source, created_at="2026-06-19T12:30:00Z")
+
+    legacy_draft = draft(do_not_test_below_hz=1800)
+    # Positive control. Without this the test passes just as happily if the key
+    # were silently dropped on the way in, which would prove nothing about
+    # whether a stored value is inert.
+    assert "do_not_test_below_hz" in json.dumps(legacy_draft)
+
+    without = preview(draft())
+    with_legacy = preview(legacy_draft)
+
+    assert with_legacy["status"] == without["status"]
+    assert _crossover(with_legacy) == _crossover(without)
+    # …and the filter intent specifically, since dropping it was the retired
+    # blocker's whole payload.
+    assert [item["filter"] for item in _crossover(with_legacy)["filters"]] == [
+        "lowpass",
+        "highpass",
+    ]
+
+
 def test_a_corner_below_the_declared_low_limit_is_disclosed_here_and_refused_at_load() -> None:
     """#2491's architecture, now reached through ONE floor instead of two.
 

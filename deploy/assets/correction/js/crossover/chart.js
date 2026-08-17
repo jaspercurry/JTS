@@ -9,9 +9,12 @@
 // productization-plan.md's PR-7 section: "reuse … never derive a spec-facing
 // number privately").
 //
-// **Deviation frame, not absolute dB (review B-1, 2026-07-27).** Linearization
-// is cut-only (the house `gain <= 0` invariant), so VERIFY's own reference
-// level is always at or below MEASURE's. Plotting both curves in absolute dB
+// **Deviation frame, not absolute dB (review B-1, 2026-07-27).** A fit moves
+// VERIFY's own reference level away from MEASURE's — below it on a cut-only
+// fit, and since the boost ruling (#2106) a permitted lift can move it the
+// other way, which is why this frame is stated per curve rather than assuming
+// a direction (premise trued up by #2603's sweep; the rule below never
+// depended on the sign). Plotting both curves in absolute dB
 // against ONE shared reference (VERIFY's) displaced the entire "Before" curve
 // by a level change the spec never grades, under a corridor labeled "Spec
 // tolerance" that was not testing what it claimed to. Each curve is instead

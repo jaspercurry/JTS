@@ -612,9 +612,12 @@ the module, not a second copy here.
     is one of the things it classifies.
 11. **Linearization emission is independently re-validated at every boundary,
     never trust-the-caller.** The emitter and the runtime-safety verifier each
-    re-prove biquad type ∈ {Peaking, Highshelf, Lowshelf}, non-positive gain,
-    and the shelf-placement structure from scratch — the fit engine's own
-    cut-only invariant is not assumed to have survived a JSON round-trip. The
+    re-prove biquad type ∈ {Peaking, Highshelf, Lowshelf}, gain at or under
+    `MAX_LINEARIZATION_BOOST_DB`, and the shelf-placement structure from
+    scratch — the fit engine's own vocabulary and per-filter-cap invariants are
+    not assumed to have survived a JSON round-trip. (This bullet said
+    "non-positive gain" and "cut-only invariant" until #2603's sweep; PR-L5's
+    boost ruling had already moved both re-proofs to the cap.) The
     safety-posture rationale is owned by
     [`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md).
 12. **A submitted graph is proven live before anything plays.**
