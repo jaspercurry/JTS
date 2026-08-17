@@ -604,10 +604,12 @@ RIPPLE_TRIM_MIN_DB = -60.0
 #   the driver's radiating band and the range moved with it — archived run 5
 #   goes 1.076 -> 0.510 dB. The floor argument is unaffected in DIRECTION (the
 #   disagreement shrank, so 3.0 dB is if anything more generous than when it
-#   was derived), which is why the constant did not move; but the number a
-#   reader should quote today lives beside the importing gate, at
-#   ``jasper.active_speaker.crossover_v2_flow.LEVEL_FRAME_AGREEMENT_TOLERANCE_DB``,
-#   together with what #1929 did NOT close.
+#   was derived), which is why the constant did not move. The importing reader
+#   is now ``jasper.active_speaker.crossover_v2.intervention.
+#   LEVEL_ESTIMATOR_TOLERANCE_DB``, and what it gates changed with it: since the
+#   single-datum-owner migration a disagreement past it flags a capture as
+#   retriable rather than refusing a session, because the summed at-the-mark
+#   capture — not either of these two estimates — places the pair.
 # * CEILING — the level error at which the flat spec must fail anyway. An
 #   inter-branch level error of D dB appears in the summed response as a step
 #   across Fc; the spec's reference is a power mean spanning BOTH sides
@@ -4277,6 +4279,96 @@ def solve_branch_trims(
     )
     target = min(level_w, level_t)  # attenuate the louder branch
     return target - level_w, target - level_t, level_w, level_t
+
+
+
+def summed_level_reference_db(
+    freqs: np.ndarray,
+    summed_db: np.ndarray,
+    fc_hz: float,
+    *,
+    base_trim_db: Mapping[str, float],
+    woofer_role: str,
+    tweeter_role: str,
+    woofer_span_hz: tuple[float, float] | None = None,
+    tweeter_span_hz: tuple[float, float] | None = None,
+) -> dict[str, float] | None:
+    """The per-role trim ONE summed capture says the room requires.
+
+    This is the level datum's owner (single-datum-owner migration, #2609).
+    ``summed_db`` is a mono summed sweep through the live graph at the mark —
+    ``PHASE_ENTRY_BASELINE``, which replays the VERIFY program verbatim — so
+    both roles are read from the SAME capture by the SAME statistic over
+    mirrored halves of the same band pair. There is no second estimate to
+    disagree with, which is the property the deleted two-voter arbitration
+    could not have.
+
+    **The derivation, in one line each.** Each role's half-band level
+    ``L_role`` is read off the summed curve where that role dominates the sum
+    (:func:`branch_level_bands_hz`'s mirrored halves — the SAME band pair
+    :func:`solve_branch_trims` reads, so the owner and the subordinate
+    estimator that is checked against it cannot be comparing different spans).
+    The summed capture already contains the currently-applied attenuation, so
+    the correction is differential: cut every role by how much LOUDER it
+    currently reads than the quietest role, starting from the trim it already
+    has.
+
+        ``reference[role] = base_trim_db[role] - (L_role - min(L))``
+
+    **Only the RELATIVE placement is measured here, deliberately.** The common
+    mode comes from ``base_trim_db`` — the candidate's own raw solve — and is
+    passed through untouched. Two reasons, and the second is a hearing/headroom
+    one: a summed capture at the mark carries the room's own gain, so its
+    absolute level is not a trim; and adding common-mode attenuation spends max
+    SPL to no tonal end (the gain-structure rule — normalize to the computed
+    ceiling, never trim in common mode). The quietest role therefore keeps its
+    existing trim exactly, and every other role is cut toward it.
+
+    A pair that already measures level returns ``base_trim_db`` unchanged,
+    which is the continuity property that makes the absent-owner fallback
+    honest: with no summed capture the planner anchors on ``base_trim_db``, and
+    that is what this function would have returned had the capture shown the
+    pair already level.
+
+    Returns ``None`` — "no owner", which the planner reads as the fallback
+    rather than as a level of zero — when either half-band lands on no bins, or
+    when the band pair cannot be derived at all. Fail-soft rather than raising:
+    an unusable summed capture is missing evidence, not a broken session, and
+    the planner has an honest measured number to fall back to.
+    """
+
+    try:
+        (w_lo, w_hi), (t_lo, t_hi) = branch_level_bands_hz(
+            fc_hz, woofer_span_hz=woofer_span_hz, tweeter_span_hz=tweeter_span_hz,
+        )
+    except (ValueError, ZeroDivisionError):
+        return None
+    grid = np.asarray(freqs, dtype=float)
+    curve = np.asarray(summed_db, dtype=float)
+    if grid.size == 0 or curve.size != grid.size:
+        return None
+    # Bins the capture could not trust arrive as NaN and must not become a
+    # level: a power mean over a NaN is a NaN, and a NaN reference would place
+    # the pair at NaN with no clamp able to catch it (the non-positive
+    # normalize compares against NaN and does nothing). Drop them here, and
+    # treat a half-band left with no finite bin as no owner at all.
+    finite = np.isfinite(curve)
+    if not bool(np.any(finite)):
+        return None
+    grid, curve = grid[finite], curve[finite]
+    levels: dict[str, float] = {}
+    for role, (lo, hi) in (
+        (woofer_role, (w_lo, w_hi)), (tweeter_role, (t_lo, t_hi)),
+    ):
+        try:
+            levels[role] = _band_average_db(grid, curve, lo, hi)
+        except ValueError:
+            return None
+    quietest = min(levels.values())
+    return {
+        role: float(base_trim_db.get(role, 0.0)) - (level - quietest)
+        for role, level in levels.items()
+    }
 
 
 @dataclass(frozen=True)

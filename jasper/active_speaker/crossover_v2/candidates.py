@@ -46,7 +46,7 @@ from typing import TYPE_CHECKING, Any, Mapping
 
 import numpy as np
 
-from .intervention import LevelFrameAdmission, LinearizationPlan
+from .intervention import LevelConsistency, LinearizationPlan
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from jasper.audio_measurement.program_analysis import RealizedLevelMatch
@@ -145,17 +145,17 @@ class LinearizationState:
     """
 
     outcome: str = ""
-    level_frame: Any = None
-    level_frame_disagreement_db: float = 0.0
-    level_frame_cores: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
-    level_frame_trims: Mapping[str, float] = field(default_factory=dict)
-    level_frame_admission: LevelFrameAdmission | None = None
-    """Did the frame place the anchor, and what excluding it cost (#2599).
+    summed_level_reference_db: Mapping[str, float] | None = None
+    core_level_evidence: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    trim_band_estimate_db: Mapping[str, float] = field(default_factory=dict)
+    level_consistency: LevelConsistency | None = None
+    """Both subordinate estimators graded against the summed level owner.
 
-    ``None`` on every non-planning outcome and for a candidate whose fit solved
-    no frame — the same "no verdict" the other frame fields default to, and NOT
-    a synonym for "admitted". See
-    :func:`~.intervention.anchor_trims`.
+    ``None`` on every non-planning outcome and for a candidate planned with no
+    summed capture in hand — the "no verdict" state, and NOT a synonym for
+    "the estimators agreed". See
+    :func:`~.intervention.check_level_consistency`. It flags a capture as
+    retriable and never moves a number.
     """
     linearized_predicted_sum: tuple[np.ndarray, np.ndarray] | None = None
     realized_level_match: "RealizedLevelMatch | None" = None
@@ -170,11 +170,10 @@ class LinearizationState:
         """
         return cls(
             outcome=plan.outcome,
-            level_frame=plan.level_frame,
-            level_frame_disagreement_db=plan.level_frame_disagreement_db,
-            level_frame_cores=plan.level_frame_cores,
-            level_frame_trims=plan.level_frame_trims,
-            level_frame_admission=plan.level_frame_admission,
+            summed_level_reference_db=plan.summed_level_reference_db,
+            core_level_evidence=plan.core_level_evidence,
+            trim_band_estimate_db=plan.trim_band_estimate_db,
+            level_consistency=plan.level_consistency,
             linearized_predicted_sum=plan.linearized_predicted_sum,
             realized_level_match=plan.realized_level_match,
         )

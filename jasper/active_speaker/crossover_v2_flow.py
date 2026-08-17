@@ -2799,53 +2799,14 @@ def _worst_pilot_snr_db(analysis: ProgramAnalysis) -> float | None:
 # irreversible half. See
 # docs/active-speaker-tuning-layers-design.md "Layer 1a concretely".
 
-# How far the two measured level estimates may disagree before the session is
-# refused (linearization-integrity PR-L5). The estimates are the trim solve's
-# power-band average on each side of Fc (`program_analysis.solve_branch_trims`)
-# and the fit's median over each driver's own RADIATING band since #1929
-# (`linearization_fit.driver_core_level_db`), reconciled by
-# `solve_shared_level_frame` into one frame whose per-role offset IS their
-# disagreement.
-#
-# DELIBERATELY the same number as `program_analysis.
-# REALIZED_LEVEL_MATCH_TOLERANCE_DB`, and imported from it rather than written
-# twice: both answer one question — do two estimates of where these drivers sit
-# agree — and PR-L4 already derived 3.0 dB for it from this exact evidence (the
-# 2026-07-27 profile that shipped 9-11 dB dark sat at 8.76 dB). A second number
-# for the same question is how two instruments start disagreeing about what
-# "agree" means.
-#
-# The FLOOR argument moved with #1929 and is no longer 1.08-1.30 dB. That range
-# was PR-L3's measurement with the median over each driver's whole DECLARED
-# capture span, which counted the driver's own crossover stopband as driver
-# level. On archived run 5 — the capture this repo replays, in
-# `tests/test_audio_measurement_program_analysis.py` — banding the median takes
-# the same session's disagreement from 1.076 dB to 0.510 dB. The other four
-# archived captures have not been re-measured under the band, so the honest
-# statement is "the one capture we replay halved", not a new range.
-#
-# What the tolerance still does NOT buy is a small residual. A pair that is
-# identical by construction still reads 0.910 dB, and the number climbs with
-# ordinary driver shape at roughly 1.33 dB per dB/octave of woofer passband
-# tilt (measured on the session fixture: 0.910 flat, 2.251 at -1 dB/oct,
-# 3.574 at -2, 4.883 at -3), so a -2 dB/oct woofer — an unremarkable driver —
-# refuses while the realized-level instrument reads 1.41 dB and passes.
-#
-# That gradient is the honest read of this constant: about 1.6 dB/oct of real
-# passband tilt is the whole budget, because 0.910 dB is spent before the
-# speaker contributes anything. #1929 removed one structural bias; it did not
-# make the two estimators agree, and the next field refusal comes from what is
-# left. Closing THAT is the comparator family's work (plan section 4 M7 /
-# WO-4), and the frame-gate SEMANTICS ruling on #1866 is the next step of it.
-#
-# EXTERNAL FIELD EVIDENCE, not reproducible from this repo: an offline re-fit
-# of the 2026-07-30 field bundle puts that session at 3.2307 dB under this
-# banded estimator — still refused. Provenance and fidelity are recorded on
-# #1870; the bundle is laptop-side and gitignored, so no test replays it and
-# nothing here should be read as if one did. The archived-corpus numbers above
-# ARE in-repo and are a different session's bytes — both true, neither derived
-# from the other.
-LEVEL_FRAME_AGREEMENT_TOLERANCE_DB = REALIZED_LEVEL_MATCH_TOLERANCE_DB
+# The level-frame agreement tolerance used to live here, as a flow-side alias
+# the planner and the accountability gate both read. It is deleted with the
+# arbitration it gated (single-datum-owner migration, #2609): the summed
+# at-the-mark capture owns the level datum, the two per-driver estimates became
+# an advisory consistency check, and the one surviving tolerance is owned by
+# `crossover_v2.intervention.LEVEL_ESTIMATOR_TOLERANCE_DB` — which still
+# resolves to `program_analysis.REALIZED_LEVEL_MATCH_TOLERANCE_DB`, for the
+# reason it always did. Nothing in this file holds a level tolerance.
 
 
 # --------------------------------------------------------------------------- #
@@ -8934,9 +8895,9 @@ class CrossoverV2Session:
         household as its own sentence rather than as "the measurement link
         timed out" (see :meth:`_refuse`).
 
-        The four inputs the gate is TOLD rather than reaches for are the two
-        thresholds and the two household reason codes; that module's docstring
-        records why each stays owned here.
+        The three inputs the gate is TOLD rather than reaches for are the
+        prediction threshold and the two household reason codes; that module's
+        docstring records why each stays owned here.
 
         **Write-then-say, and the ordering that matters.** The stash is
         installed before the journal is emitted, which differs from the
@@ -8950,7 +8911,6 @@ class CrossoverV2Session:
             raw_predicted_sum=raw_predicted_sum,
             state=linearization,
             grade_prediction=spec_report_for_predicted_sum,
-            level_frame_tolerance_db=LEVEL_FRAME_AGREEMENT_TOLERANCE_DB,
             material_improvement_db=PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
             reason_levels_disagree=REASON_DRIVER_LEVELS_DISAGREE,
             reason_not_an_improvement=REASON_CORRECTION_NOT_AN_IMPROVEMENT,
@@ -11147,6 +11107,56 @@ class CrossoverV2Session:
             session_id=self.session_id, **record.fields,
         )
 
+    def _summed_baseline_curve(self) -> tuple[Any, Any] | None:
+        """This session's summed at-the-mark capture, for the LEVEL datum.
+
+        The owner of the level datum is a measurement, and this is where the
+        host hands it over: ``PHASE_ENTRY_BASELINE``'s reduced curve, already
+        screened and retained by :meth:`_retain_entry_baseline`, with the bins
+        that capture EXCLUDED blanked to NaN so a level cannot be anchored on a
+        bin the capture itself did not trust. The same treatment
+        :meth:`_entry_delta_db` gives the same curve, for the same reason.
+
+        **``None`` is the ordinary first-round answer, not a failure.** Stage 1
+        runs the entry baseline LAST — after the walk and after any cloud,
+        because #2291 wants the summed "before" immediately before apply — and
+        the eager fit runs at the cloud close, which is earlier. So on a first
+        commissioning pass the planner anchors on the raw measured trim (the
+        pre-PR-L5 placement, and the one 2026-08-16's forensic vindicated), and
+        the consistency check has no owner to grade against and returns
+        ``None``. A stage-2 or re-verify session that rehydrated a baseline
+        hands one over and the summed owner places the pair.
+
+        Named as a NAMED GAP rather than left implicit: making the first round
+        read its own baseline needs the anchor re-placed after that capture
+        lands, which is a candidate-lifecycle change (the candidate is built
+        once, at the cloud close) and is deliberately not in the migration that
+        deletes the arbitration. Tracked as follow-up work; the correctness win
+        the deletion buys does not depend on it, because the fallback is the
+        number the incident vindicated.
+        """
+        baseline = self._measure_entry_baseline
+        if baseline is None:
+            return None
+        try:
+            curve = baseline.curve
+            hz = np.asarray(curve.hz, dtype=float)
+            db = np.asarray(curve.db, dtype=float)
+            excluded = np.asarray(baseline.excluded, dtype=bool)
+            if hz.size == 0 or db.size != hz.size:
+                return None
+            if excluded.size == hz.size:
+                db = np.where(excluded, np.nan, db)
+        except (AttributeError, TypeError, ValueError):
+            # Fail-soft on the same terms as every other optional accounting
+            # term: an unusable baseline is nothing known, never a lost plan.
+            log_event(
+                logger, "correction.crossover_v2_summed_level_reference_failed",
+                level=logging.WARNING, session_id=self.session_id,
+            )
+            return None
+        return hz, db
+
     def _plan_linearization(
         self,
         analysis: ProgramAnalysis,
@@ -11185,6 +11195,7 @@ class CrossoverV2Session:
             post_apply_verifies=self.post_apply_verifies,
             cloud_phase_planned=PHASE_CLOUD_MEASURE in self._journey.plan.phases,
             plan_linearization=plan_linearization,
+            summed_baseline=self._summed_baseline_curve(),
             journal=self._journal_linearization,
         )
         if plan.journal_dropped:

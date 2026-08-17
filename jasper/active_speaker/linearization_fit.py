@@ -597,94 +597,6 @@ class BlindZonePlacement:
         }
 
 
-@dataclass(frozen=True)
-class SharedLevelFrame:
-    """ONE level frame both (or all) drivers' targets are expressed in.
-
-    **The defect this closes.** Before PR-L5 each driver was fitted to a flat
-    target at ITS OWN median (:func:`_target_and_plateau_db`) and the two
-    numbers had no stated relationship: on the 2026-07-27 JTS3 profile the
-    tweeter's was −7.24 dB and the woofer's −21.13 dB, 13.9 dB apart, and the
-    only stage that leveled the pair was the overlap-band trim — which was
-    itself carrying ~11 dB of frame error (PR-L3). PR-L4 added an ASSERTION
-    that the realized branch levels agree; this makes them agree by
-    construction, which is the difference between catching the bug and not
-    having it.
-
-    **How.** Each role proposes the system-referred level its own passband
-    would land at: ``core_level_db[role] + trim_db[role]``. The frame adopts
-    the LOUDEST proposal and derives every role's target from it, so
-    ``target[role] + trim[role]`` is one identical number for every role.
-    :attr:`offset_db` is what each role must move to get there.
-
-    **Why the loudest, not the mean or the quietest.** The quietest reference
-    cuts every other driver purely to match a dark one — spending real max SPL
-    to reach a level nothing wanted; the mean does half of that. The loudest
-    moves only the driver that is actually out of place, which is the owner's
-    "a 4 dB natural darkness gets its 4 dB" posture, and — crucially — that
-    move is realized in the TRIM, by reducing an attenuation the speaker was
-    already applying. It costs no headroom at all. This is the trim-domain
-    face of "reduce our own cuts before you boost".
-
-    **What it trusts.** ``trim_db`` is the measured branch trim, so a broken
-    trim propagates into the frame. That is the same input PR-L3 fixed and
-    PR-L4's measured-vs-datasheet cross-check and realized-level assertion
-    both grade; this frame does not add a second opinion, it removes a place
-    where two opinions could silently coexist.
-    """
-
-    system_level_db: float
-    reference_role: str
-    target_level_db: Mapping[str, float]
-    offset_db: Mapping[str, float]
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "system_level_db": self.system_level_db,
-            "reference_role": self.reference_role,
-            "target_level_db": dict(self.target_level_db),
-            "offset_db": dict(self.offset_db),
-        }
-
-
-def solve_shared_level_frame(
-    core_level_db: Mapping[str, float], trim_db: Mapping[str, float],
-) -> SharedLevelFrame:
-    """Reconcile every role's own passband level into one shared frame.
-
-    ``core_level_db`` is each role's own core-passband level (what
-    :func:`driver_core_level_db` reads off the same curve the fit targets) and
-    ``trim_db`` its branch attenuation. Roles missing from ``trim_db`` are
-    read as 0 dB of trim.
-
-    Works for any number of roles — one (a passive box's summed chain, where
-    the frame is trivially that chain's own level and the offset is 0), two,
-    or N. Raises ``ValueError`` on an empty mapping rather than inventing a
-    frame from nothing.
-    """
-    if not core_level_db:
-        raise ValueError("a shared level frame needs at least one role")
-    proposals = {
-        role: float(level) + float(trim_db.get(role, 0.0))
-        for role, level in core_level_db.items()
-    }
-    reference_role = max(proposals, key=lambda r: (proposals[r], r))
-    system_level_db = proposals[reference_role]
-    targets = {
-        role: system_level_db - float(trim_db.get(role, 0.0))
-        for role in core_level_db
-    }
-    return SharedLevelFrame(
-        system_level_db=system_level_db,
-        reference_role=reference_role,
-        target_level_db=targets,
-        offset_db={
-            role: targets[role] - float(level)
-            for role, level in core_level_db.items()
-        },
-    )
-
-
 def _ladder_smooth(grid_hz: np.ndarray, magnitude_db: np.ndarray) -> np.ndarray:
     """The design doc's smoothing ladder: 1/6 oct below 4 kHz, 1/3 oct
     4-10 kHz, 1/2 oct at/above 10 kHz.
@@ -915,14 +827,6 @@ class LinearizationFit:
     # must never stack invisible headroom.
     # 0.0 for every cut-only fit — which is every fit before PR-L5.
     headroom_cost_db: float = 0.0
-    # How far this driver had to move to reach the session's SHARED level
-    # frame (:class:`SharedLevelFrame`), positive = it was the dark one and
-    # needs lifting. Consumed by ``crossover_v2.intervention.plan_linearization``,
-    # which adds it into the anchored trim so every branch realizes the same
-    # system level BY CONSTRUCTION rather than by later comparison. 0.0 when
-    # no frame was supplied (every pre-PR-L5 caller) and for whichever role
-    # the frame took as its reference.
-    level_frame_offset_db: float = 0.0
     # The lift the boost vocabulary was asked for and what it delivered, in
     # dB, over the fit band — non-zero only when the lift stage fired.
     # ``lift_from_reduced_cuts_db`` is the share bought by SHRINKING this
@@ -989,7 +893,6 @@ class LinearizationFit:
             "measured_deficit_at_ceiling_db": self.measured_deficit_at_ceiling_db,
             "correction_giveback_db": self.correction_giveback_db,
             "headroom_cost_db": self.headroom_cost_db,
-            "level_frame_offset_db": self.level_frame_offset_db,
             "lift_requested_db": self.lift_requested_db,
             "lift_from_reduced_cuts_db": self.lift_from_reduced_cuts_db,
             "lift_from_boost_db": self.lift_from_boost_db,
@@ -1460,13 +1363,23 @@ def driver_core_level_db(
     primary: DriverResponse, envelope: EnvelopeCurve,
     *, radiating_band_hz: tuple[float, float] | None = None,
 ) -> float | None:
-    """One driver's own passband level — the number a
-    :class:`SharedLevelFrame` reconciles across drivers (PR-L5).
+    """One driver's own passband level — a SUBORDINATE level estimate.
 
     It runs :func:`fit_driver_linearization`'s own resample → ladder-smooth →
-    core-mask → median chain, and exists as a separate entry point only
-    because the frame has to be solved across ALL drivers before any one of
-    them is fitted.
+    core-mask → median chain, and exists as a separate entry point because it
+    is read across ALL drivers before any one of them is fitted.
+
+    **It does not place the trim pair, and since the single-datum-owner
+    migration nothing derived from it does.** The level datum has one owner —
+    the summed at-the-mark capture, read off the entry baseline and handed to
+    the planner as ``LinearizationRequest.summed_level_reference_db``. This
+    number is one of the two per-driver estimates that
+    :func:`~jasper.active_speaker.crossover_v2.intervention.check_level_consistency`
+    compares AGAINST that owner: agreement is reassurance, disagreement flags
+    the capture as retriable, and neither outcome changes the anchor. The
+    two-voter arbitration this used to feed — and the 3.0 dB cliff that
+    arbitration hung on — are deleted; see that function for why no estimator
+    is preferred.
 
     ``radiating_band_hz`` (#1929) narrows the median's band to where this
     driver's own crossover leaves it radiating —
@@ -1490,9 +1403,13 @@ def driver_core_level_db(
     declared to 4000 Hz against a 2000 Hz LR4, putting ~28% of its core bins
     an octave inside its own stopband and reading its level 3.4 dB away from
     the trim solve's mirrored ±1-octave estimate of the same physical
-    quantity — past :data:`~jasper.active_speaker.crossover_v2_flow.
-    LEVEL_FRAME_AGREEMENT_TOLERANCE_DB`, refusing a healthy speaker. Two
+    quantity — past :data:`~jasper.active_speaker.crossover_v2.intervention.
+    LEVEL_ESTIMATOR_TOLERANCE_DB`, which then refused a healthy speaker. Two
     identical flat drivers behind a matched LR4 pair reproduce it at 9.4 dB.
+    (Crossing that tolerance no longer refuses anything — see
+    :func:`~jasper.active_speaker.crossover_v2.intervention.check_level_consistency`
+    — but the contamination this paragraph describes is still real and the band
+    is still the fix for it.)
 
     The contamination is specific to the rank statistic, so the fix is. The
     give-back (:attr:`LinearizationFit.correction_giveback_db`) is a
@@ -2920,7 +2837,6 @@ def fit_driver_linearization(
     envelope: EnvelopeCurve,
     *,
     vocabulary: FitVocabulary = CUT_ONLY_VOCABULARY,
-    level_frame: SharedLevelFrame | None = None,
     radiating_band_hz: tuple[float, float] | None = None,
     blind_bands_hz: Sequence[tuple[float, float]] = (),
     target: BranchTarget | None = None,
@@ -3000,13 +2916,15 @@ def fit_driver_linearization(
     separate, which is the same seam #1809 and #1929 each found from their own
     side.
 
-    ``level_frame`` is the session's :class:`SharedLevelFrame`; when supplied,
-    this driver's :attr:`~LinearizationFit.level_frame_offset_db` reports how
-    far it must move to reach that shared frame, which the session folds
-    into the anchored trim. The frame does NOT change what this function
-    flattens toward — a driver is flattened to its own passband, which is what
-    flattening means — it changes where that flattened passband is placed
-    relative to the other drivers', and that placement is a trim.
+    **This fit is independent of the level datum, and that is structural.** A
+    driver is flattened to its OWN passband, which is what flattening means;
+    where that flattened passband is PLACED relative to the other drivers' is
+    a trim, decided later and elsewhere
+    (:func:`~jasper.active_speaker.crossover_v2.intervention.anchor_trims`,
+    from the summed at-the-mark capture). The shared-level-frame offset this
+    function used to accept and stamp is deleted with the frame itself, so
+    re-placing the pair costs no re-fit — nothing on this side of the seam
+    reads a level datum at all.
 
     Algorithm (design doc "Layer 1a concretely"):
       1. Resample ``primary``'s magnitude onto ``envelope``'s grid, ladder-
@@ -3467,10 +3385,6 @@ def fit_driver_linearization(
         # headroom_cost_db is deliberately left at its 0.0 default: the charge
         # is a property of the emitted branch chain, which this core does not
         # know. See the field's own comment — the composer stamps it.
-        level_frame_offset_db=(
-            float(level_frame.offset_db.get(envelope.role, 0.0))
-            if level_frame is not None else 0.0
-        ),
         lift_requested_db=lift.requested_db,
         lift_from_reduced_cuts_db=lift.from_reduced_cuts_db,
         lift_from_boost_db=lift.from_boost_db,

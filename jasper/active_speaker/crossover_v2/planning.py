@@ -72,6 +72,7 @@ from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_OK,
     ProgramAnalysis,
     polarity_label,
+    summed_level_reference_db as solve_summed_level_reference_db,
 )
 from jasper.log_event import log_event
 
@@ -82,6 +83,7 @@ from .intervention import (
     LINEARIZATION_MIN_PAIRED_OCCURRENCES,
     LinearizationPlan,
     driver_response_by_role,
+    measure_validity_floor_hz,
     request_from_analysis,
 )
 from .journey import PHASE_CLOUD_MEASURE, PHASE_MEASURE
@@ -518,6 +520,7 @@ def plan_for_candidate(
     post_apply_verifies: bool,
     cloud_phase_planned: bool,
     plan_linearization: Callable[..., LinearizationPlan],
+    summed_baseline: tuple[Any, Any] | None = None,
     journal: Callable[[Any], None] | None = None,
 ) -> LinearizationPlan:
     """Assemble ONE candidate's planner request and run the pure planner.
@@ -590,6 +593,32 @@ def plan_for_candidate(
     # explicitly for mypy and as a defensive invariant check.
     assert seg_w.f1_hz is not None and seg_w.f2_hz is not None
     assert seg_t.f1_hz is not None and seg_t.f2_hz is not None
+    # The level datum's OWNER, derived HERE because this is the one place that
+    # already holds both halves of the derivation: the summed curve the host
+    # passes in, and the per-branch validity spans this function just resolved
+    # off the MEASURE program. Deriving it in the host would need a second copy
+    # of those spans; deriving it in the planner would need the curve, which
+    # belongs to a different phase's capture. One derivation, at the join.
+    #
+    # ``None`` in, ``None`` out — the planner then anchors on the raw measured
+    # trim. See ``LinearizationRequest.summed_level_reference_db``.
+    summed_level_reference_db = None
+    if summed_baseline is not None:
+        floor_hz = measure_validity_floor_hz(analysis)
+
+        def _span(lo: float, hi: float) -> tuple[float, float]:
+            if floor_hz is not None and math.isfinite(floor_hz):
+                lo = max(lo, floor_hz)
+            return float(lo), float(hi)
+
+        summed_level_reference_db = solve_summed_level_reference_db(
+            summed_baseline[0], summed_baseline[1], context.fc_hz,
+            base_trim_db=dict(cand.trim_db),
+            woofer_role=woofer_role,
+            tweeter_role=tweeter_role,
+            woofer_span_hz=_span(seg_w.f1_hz, seg_w.f2_hz),
+            tweeter_span_hz=_span(seg_t.f1_hz, seg_t.f2_hz),
+        )
     request = request_from_analysis(
         analysis, cand,
         context=context,
@@ -607,6 +636,11 @@ def plan_for_candidate(
         post_apply_verifies=post_apply_verifies,
         cloud_phase_planned=cloud_phase_planned,
         cloud=cloud,
+        # The level datum's owner, read off a summed capture from a DIFFERENT
+        # phase than this analysis. Only the host holds it, for the same reason
+        # it holds the two flags above — ``analysis`` is one program's result
+        # and this number is another's.
+        summed_level_reference_db=summed_level_reference_db,
     )
     return plan_linearization(request, journal=journal)
 

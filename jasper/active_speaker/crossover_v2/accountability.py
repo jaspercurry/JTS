@@ -5,9 +5,10 @@
 """Whether a built candidate may be PROPOSED at all (#2291 Phase 5a-v).
 
 The gate that runs after a candidate is built and before anything downstream
-can apply it.  Three assertions, most-specific-first: PR-L5's shared level
-frame, then PR-L4's item 1 (the realized inter-driver level) and item 2 (the
-spec-graded prediction).  Refusing here means no candidate is ever stashed or
+can apply it.  Two refusals and one disclosure, most-specific-first: the
+subordinate estimators' consistency with the summed level owner (banked, never
+refusing), then PR-L4's item 1 (the realized inter-driver level) and item 2
+(the spec-graded prediction).  Refusing here means no candidate is ever stashed or
 published, so the review screen has nothing to offer and the household is
 never asked to decide about a correction JTS cannot stand behind.
 
@@ -26,13 +27,16 @@ which is what makes the speculative build safe to drop.
 established.  Two kinds are worth naming because they look like things this
 module should own and are deliberately not:
 
-* **The two thresholds.**  ``level_frame_tolerance_db`` and
-  ``material_improvement_db`` arrive as arguments.  Both carry long
-  field-evidence provenance in the flow, and the item-2 threshold has a second
-  in-flow reader in the prediction ledger's ``required_db`` field.  Moving the
-  constants here while that reader stays there would create exactly the
-  cross-module twin 5a-v just closed for the candidate-required band.  They
-  move when their other reader does.
+* **The threshold.**  ``material_improvement_db`` arrives as an argument.  It
+  carries long field-evidence provenance in the flow, and has a second in-flow
+  reader in the prediction ledger's ``required_db`` field.  Moving the constant
+  here while that reader stays there would create exactly the cross-module twin
+  5a-v just closed for the candidate-required band.  It moves when its other
+  reader does.  (There used to be a second: the level-frame agreement
+  tolerance.  The single-datum-owner migration deleted the arbitration it
+  gated; the surviving estimator-consistency tolerance is owned once, by
+  :data:`~.intervention.LEVEL_ESTIMATOR_TOLERANCE_DB`, and rides the verdict
+  this gate reads rather than being passed alongside it.)
 * **The two household reason codes.**  They are opaque tokens here: this
   module never renders one, never branches on one, and only routes the one it
   was handed — into a journal payload and into
@@ -60,8 +64,7 @@ from typing import Any, Callable, Mapping
 from .candidates import LinearizationState
 
 __all__ = [
-    "EVENT_LEVEL_FRAME_FINDING",
-    "EVENT_LEVEL_FRAME_REFUSED",
+    "EVENT_LEVEL_ESTIMATOR_FINDING",
     "EVENT_LEVEL_MATCH_REFUSED",
     "EVENT_PREDICTION_GATE",
     "EVENT_PREDICTION_UNGRADEABLE",
@@ -74,15 +77,23 @@ __all__ = [
     "AccountabilityDecision",
     "GateRecord",
     "assess_accountability",
-    "level_frame_finding_record",
+    "estimator_consistency_record",
 ]
 
-#: The five event names this gate emits. Named constants rather than literals
+#: The four event names this gate emits. Named constants rather than literals
 #: because a journal name is a grep contract — ``test_crossover_v2_*`` and the
 #: field runbooks both match on them, so a rename is a breaking change that
 #: should be visible as one.
-EVENT_LEVEL_FRAME_FINDING = "correction.crossover_v2_level_frame_finding"
-EVENT_LEVEL_FRAME_REFUSED = "correction.crossover_v2_level_frame_refused"
+#:
+#: Two names changed with the single-datum-owner migration, and the rename is
+#: the honest half of it. ``…_level_frame_finding`` banked a disagreement
+#: between two voting estimators; there is no vote now, so it is
+#: ``…_level_estimator_finding`` — one summed owner, two subordinate estimates
+#: graded against it. ``…_level_frame_refused`` is DELETED outright rather than
+#: renamed: a consistency suspicion never refuses (the owner's never-nanny
+#: ruling), so the line has no condition left to describe.
+#: ``…_level_match_refused`` is untouched and is now the only level refusal.
+EVENT_LEVEL_ESTIMATOR_FINDING = "correction.crossover_v2_level_estimator_finding"
 EVENT_LEVEL_MATCH_REFUSED = "correction.crossover_v2_level_match_refused"
 EVENT_PREDICTION_UNGRADEABLE = "correction.crossover_v2_prediction_ungradeable"
 EVENT_PREDICTION_GATE = "correction.crossover_v2_prediction_gate"
@@ -160,84 +171,76 @@ class AccountabilityDecision:
     spec_report_written: bool = False
 
 
-def level_frame_finding_record(
-    state: LinearizationState, *, tolerance_db: float,
+def estimator_consistency_record(
+    state: LinearizationState,
 ) -> Mapping[str, Any] | None:
-    """This session's banked frame disagreement, as flat evidence (#1866).
+    """This session's banked estimator disagreement, as flat evidence.
 
-    Built ONLY on the finding+proceed path, from the plan this candidate's
-    own build returned — no measurement, no re-derivation, no second
-    verdict. Taking the state as an argument rather than reading it off
-    ``self`` is what makes "this session's" true of one candidate rather
-    than of whichever build ran last (#2291 Phase 2b). The
-    attribution package turns it into an M7 finding
+    Built ONLY when the planner's own consistency verdict came back SUSPECT,
+    from the plan this candidate's own build returned — no measurement, no
+    re-derivation, no second verdict. Taking the state as an argument rather
+    than reading it off ``self`` is what makes "this session's" true of one
+    candidate rather than of whichever build ran last (#2291 Phase 2b). The
+    attribution package turns it into a finding
     (:func:`~jasper.attribution.promotion.promote_level_frame_disagreement`);
     this function owns *what the evidence is*, that one owns *what it means*.
-    Nothing here imports attribution, so the flow keeps no dependency on
-    the diagnosis layer.
+    Nothing here imports attribution, so the flow keeps no dependency on the
+    diagnosis layer.
 
     **Flat, and every value a finite scalar or a string**, because that is
-    what :class:`~jasper.attribution.findings.Finding` accepts — nesting
-    would be rejected at construction, and rejection is a lost diagnosis.
-    Per-role numbers are therefore suffixed with the role, which is also
-    what makes the record self-describing to a reader who has never seen
-    this schema.
+    what :class:`~jasper.attribution.findings.Finding` accepts — nesting would
+    be rejected at construction, and rejection is a lost diagnosis. Per-role
+    numbers are therefore suffixed with the role, which is also what makes the
+    record self-describing to a reader who has never seen this schema.
 
-    **All THREE instruments ride, not just the two that disagreed.** A
-    reader of this finding is being asked to believe that a session
-    proceeded past a gate that would have stopped it, so the record has to
-    carry the whole basis for that: the fit's per-driver median
-    (``core_level_db_*``), the trim solve's per-driver level-match term
-    (``trim_band_average_db_*``), the reconciled per-role offset that IS
-    their disagreement, and the realized-level check whose PASS is what
-    let the session proceed. Banking only the first two would record the
-    argument and drop the reason it was allowed to stand.
+    **All THREE instruments ride, and now they have a referee.** The record
+    carries the fit's per-driver median (``core_level_db_*``), the trim solve's
+    per-driver level-match term (``trim_band_average_db_*``), each one's
+    distance from the summed owner (``*_delta_db_*``), and the owner's own
+    per-role placement (``summed_level_reference_db_*``). Before the
+    single-datum-owner migration a reader of this finding was being asked to
+    believe a session had proceeded past a gate that would have stopped it;
+    now they are being told something narrower and truer — a capture whose
+    subordinate estimates disagree with the measurement that placed the pair is
+    worth re-taking.
 
-    **And what the session DID about it (#2599).** A disputed frame no
-    longer places the trim anchor
-    (:func:`~.intervention.anchor_trims`), so this record carries the
-    planner's named ``frame_exclusion_reason`` and the per-role
-    ``anchor_delta_db_*`` — how many dB each driver ships away from where
-    the disputed estimator wanted it. Both are READ off the planner's one
-    admission value, never re-decided here; the gate owns the banking
-    verdict, the planner owns the anchoring verdict, and this record
-    quotes each of them once.
+    **What the session DID about it: nothing, and that is the point.** The
+    round proceeds on the owner's placement whatever this record says. Its
+    predecessor carried ``frame_exclusion_reason`` and per-role
+    ``anchor_delta_db_*`` because a disputed frame USED to zero the anchor's
+    offsets; no verdict here moves a number, so there is no dB consequence to
+    report and those two fields are deleted rather than left reading zero.
 
-    The admission's own ``admitted`` flag is deliberately NOT a field.
-    Reaching this function means the disagreement passed the same
-    threshold the planner disputes at, so it would be a constant ``False``
-    — and a constant is not evidence. If those two thresholds are ever
-    given separate owners, ``frame_exclusion_reason`` going empty is what
-    a reader sees instead.
-
-    Returns ``None`` when the frame produced no per-role bands to describe
-    — unreachable on this path (the gate fired on a frame that had roles),
-    but a record with no band cannot become a finding, and returning
-    ``None`` here says so at the producer instead of failing validation
-    two layers away.
+    Returns ``None`` when the planner produced no per-role bands to describe —
+    unreachable on this path (a suspicion needs an owner and both estimators,
+    which needs roles), but a record with no band cannot become a finding, and
+    returning ``None`` here says so at the producer instead of failing
+    validation two layers away.
     """
 
-    frame = state.level_frame
-    cores = state.level_frame_cores
+    consistency = state.level_consistency
+    cores = state.core_level_evidence
     realized = state.realized_level_match
-    admission = state.level_frame_admission
-    # The band this finding is ABOUT: the span the two level reads were
-    # actually taken over, unioned across roles. Deliberately the CORE
-    # bands and not the radiating ones — a high-pass branch radiates to
-    # infinity, so a radiating union has no upper edge, while the core
-    # band is exactly the finite span each median was computed on.
+    if consistency is None:
+        return None
+    # The band this finding is ABOUT: the span the level reads were actually
+    # taken over, unioned across roles. Deliberately the CORE bands and not the
+    # radiating ones — a high-pass branch radiates to infinity, so a radiating
+    # union has no upper edge, while the core band is exactly the finite span
+    # each median was computed on.
     #
-    # **The union is an OUTER hull, and it spans a gap neither median
-    # read** — on the session fixture the woofer's core stops at 1255.8
-    # Hz and the tweeter's starts at 2020.0, so 1255.8-2020.0 Hz is inside
-    # the finding's band and inside no measurement. That is the right shape
-    # rather than a rounding of it: this finding is about the RELATIONSHIP
-    # between two drivers, which lives in the handoff sitting in that gap,
-    # and a band stated as two disjoint intervals would say the finding is
-    # about two places when it is about one. It is not, and must not be
-    # read as, a claim that anything was measured in the gap — the
-    # per-role ``core_band_*`` keys below are what say where each number
-    # actually came from.
+    # **The union is an OUTER hull, and it spans a gap neither median read** —
+    # on the session fixture the woofer's core stops at 1255.8 Hz and the
+    # tweeter's starts at 2020.0, so 1255.8-2020.0 Hz is inside the finding's
+    # band and inside no per-branch measurement. That is the right shape rather
+    # than a rounding of it: this finding is about the RELATIONSHIP between two
+    # drivers, which lives in the handoff sitting in that gap, and a band stated
+    # as two disjoint intervals would say the finding is about two places when
+    # it is about one. It is not, and must not be read as, a claim that either
+    # per-branch capture measured inside the gap — the per-role ``core_band_*``
+    # keys below are what say where each number came from. (The summed capture
+    # that owns the level datum DOES cover the gap, which is exactly why it owns
+    # it.)
     edges = [
         band for role in cores
         if (band := cores[role].get("band_hz")) is not None
@@ -249,22 +252,9 @@ def level_frame_finding_record(
     record: dict[str, Any] = {
         "f_lo_hz": min(lo_edges),
         "f_hi_hz": max(hi_edges),
-        "disagreement_db": round(
-            float(state.level_frame_disagreement_db), 3
-        ),
-        "tolerance_db": float(tolerance_db),
-        "reference_role": frame.reference_role if frame is not None else "",
-        "system_level_db": (
-            round(float(frame.system_level_db), 3)
-            if frame is not None else None
-        ),
-        # What the planner did with this frame, quoted from its own verdict.
-        # Empty means the offsets were admitted after all — which on this path
-        # means the two thresholds have been given separate owners, not that
-        # nothing happened.
-        "frame_exclusion_reason": (
-            "" if admission is None or admission.admitted else admission.reason
-        ),
+        "worst_delta_db": round(float(consistency.worst_delta_db), 3),
+        "tolerance_db": float(consistency.tolerance_db),
+        "reason": consistency.reason,
     }
     if realized is not None:
         record.update(
@@ -273,6 +263,7 @@ def level_frame_finding_record(
             realized_level_w_db=round(float(realized.level_w_db), 3),
             realized_level_t_db=round(float(realized.level_t_db), 3),
         )
+    owner = state.summed_level_reference_db or {}
     for role, core in cores.items():
         band = core.get("band_hz") or (None, None)
         radiating = core.get("radiating_band_hz") or (None, None)
@@ -281,22 +272,25 @@ def level_frame_finding_record(
         record[f"core_band_hi_hz_{role}"] = band[1]
         record[f"radiating_band_lo_hz_{role}"] = radiating[0]
         record[f"radiating_band_hi_hz_{role}"] = radiating[1]
-        if role in state.level_frame_trims:
+        if role in state.trim_band_estimate_db:
             record[f"trim_band_average_db_{role}"] = round(
-                float(state.level_frame_trims[role]), 3
+                float(state.trim_band_estimate_db[role]), 3
             )
-        if frame is not None and role in frame.offset_db:
-            record[f"frame_offset_db_{role}"] = round(
-                float(frame.offset_db[role]), 3
+        if role in owner:
+            record[f"summed_level_reference_db_{role}"] = round(
+                float(owner[role]), 3
             )
-        # The dB this role actually ships away from the disputed placement.
-        # ``frame_offset_db_*`` above is what the frame ASKED for; this is what
-        # declining it did — they are not the same number once the normalize
-        # shift moves, and on the 2026-08-15 jts3 run the woofer asked +3.264
-        # while the TWEETER is the role that moved by it.
-        if admission is not None and role in admission.anchor_delta_db:
-            record[f"anchor_delta_db_{role}"] = round(
-                float(admission.anchor_delta_db[role]), 3
+        # How far each SUBORDINATE estimate sat from the owner, per role, in the
+        # relative frame the check compares in. Both estimators ride whether or
+        # not either one is the reason this record exists: which of them
+        # disagreed is the diagnosis, and banking only the worst would drop it.
+        if role in consistency.trim_band_delta_db:
+            record[f"trim_band_delta_db_{role}"] = round(
+                float(consistency.trim_band_delta_db[role]), 3
+            )
+        if role in consistency.core_level_delta_db:
+            record[f"core_level_delta_db_{role}"] = round(
+                float(consistency.core_level_delta_db[role]), 3
             )
     return record
 
@@ -307,7 +301,6 @@ def assess_accountability(
     raw_predicted_sum: Any,
     state: LinearizationState | None,
     grade_prediction: Callable[[Any], Any],
-    level_frame_tolerance_db: float,
     material_improvement_db: float,
     reason_levels_disagree: str,
     reason_not_an_improvement: str,
@@ -316,8 +309,8 @@ def assess_accountability(
 
     ``state`` is the candidate's own planner output.  ``None`` means no build
     produced one, which is the same evidence state as an ineligible session and
-    takes the same path: no frame to disagree, no realized verdict to fail, and
-    item 2's abstain below.
+    takes the same path: no consistency verdict to disclose, no realized verdict
+    to fail, and item 2's abstain below.
 
     ``grade_prediction`` is the spec evaluator, injected rather than imported.
     It is called AT MOST twice and the second call is conditional, which is why
@@ -328,153 +321,82 @@ def assess_accountability(
     journal: list[GateRecord] = []
     state = state if state is not None else LinearizationState()
 
-    # --- PR-L5: the two level FRAMES agree ---------------------------
+    # --- the subordinate estimators against the summed owner ---------
     #
     # Runs before item 1 because it is the more specific diagnosis of the
     # same disease: item 1 grades the level the committed trim REALIZES,
-    # this grades whether the two instruments that trim was derived from
-    # still agree about where the drivers sit. On the 2026-07-27 captures
-    # the disagreement was 10.9-13.1 dB; PR-L3 fixed its cause, and this
-    # is what stops the next cause from shipping silently.
+    # this grades whether the two per-driver instruments that trim was
+    # cross-checked against still agree with the summed capture that placed
+    # it. On the 2026-07-27 captures the two per-driver reads sat 10.9-13.1
+    # dB apart; PR-L3 fixed that cause, and this is what stops the next one
+    # from shipping unremarked.
     #
-    # It refuses under PR-L4's own ``driver_levels_disagree`` code, not a
-    # new one: the household's remedy is identical (re-check sensitivity
-    # and the pad in speaker setup) and one consistent sentence beats two
-    # near-duplicates. The journal separates them by ``event=``.
+    # **It banks and proceeds. It never refuses** — the owner's
+    # never-nanny ruling (2026-08-17, #2609): a subordinate estimate that
+    # disagrees with the owner flags the CAPTURE as retriable; it does not
+    # discard the datum and does not stop the session. There is nothing
+    # left for it to refuse on, either: the disagreement no longer changes
+    # any committed number, because the summed capture owns the placement
+    # (:func:`~.intervention.anchor_trims`).
     #
-    # **The refusal is no longer unconditional (owner ruling, #1866,
-    # 2026-07-30).** A disagreement over tolerance now asks ONE more
-    # question before it stops the session: does the realized-level check
-    # pass on the pair this session is about to ship? If it does, the
-    # session banks the disagreement as a finding and PROCEEDS; the hard
-    # refusal remains only when the realized check ALSO fails. Why the
-    # ruling went that way, in one line: #1929 removed a structural bias
-    # from one estimator, it did not make the two agree, and what is left
-    # refuses healthy speakers — a pair identical by construction reads
-    # 0.910 dB apart and ordinary woofer passband tilt adds ~1.33 dB per
-    # dB/octave, so a −2 dB/oct woofer refuses at 3.574 while the realized
-    # instrument reads 1.41 and passes. The field case is the 2026-07-30
-    # session: 3.2307 dB under the banded estimator, realized −0.247,
-    # predicted on-axis residual 3.106 → 1.333 dB (all recorded on #1870).
-    # Refusing that is a false negative on a good tune, and the diagnosis
-    # the gate already computed reached no artifact at all.
+    # **What this replaced, and why the deleted refusal arm was reachable
+    # by nothing.** Until #2609 a disagreement past 3.0 dB asked one more
+    # question — does the realized-level check pass on the pair about to
+    # ship? — and refused when it did not, under item 1's own
+    # ``driver_levels_disagree`` code. Every case that arm could refuse,
+    # item 1 refuses on its own two branches below, under the same code:
+    # the arm's extra reach was the ``realized is None`` case, and the
+    # code's own prior finding is that a state carrying no realized verdict
+    # carries no disagreement either (a fit that raised part-way yields
+    # neither), so the pair never co-occurred. What the arm's deletion
+    # therefore removes is a second owner of one refusal, not a stop.
     #
-    # **What "proceeds" commits.** The ruling's own wording is "proceeds on
-    # the near-Fc anchor (the trim solve)", and since #2599 that is what
-    # the pipeline does: a frame disputed past this same tolerance no
-    # longer places the trim anchor, so the committed inter-driver
-    # placement is the TRIM SOLVE's — the estimator that is not in dispute.
-    # :func:`~.intervention.anchor_trims` owns that rule and this record
-    # carries its named reason and per-role dB consequence.
-    #
-    # **It did not always, and the history is why this block is long.**
-    # Before #2599 proceeding changed NOTHING about the trims: the fit
-    # committed the anchor it always computed, and in
-    # ``anchor_base + giveback + level_frame_offset`` the trim term
-    # CANCELS — ``offset = system − trim − core``, leaving
-    # ``giveback + system − core`` (the cancellation is derived in
-    # ``anchor_base_db``'s own comment). So the committed placement was set
-    # by the CORE-MEDIAN frame — the DISPUTED estimator. On the session
-    # fixture: committed −0.674, the core-median value to 4 dp; the trim
-    # solve's placement gives +2.535; the two differ by 3.209, exactly the
-    # banked disagreement, by the identity
-    # ``placement_trim − placement_core = −offset``. That identity is also
-    # the size of the correction #2599 makes, per candidate.
-    #
-    # **RATIFIED, and the ratified description is what changed.** The
-    # pre-#2599 account above differs from the ruling's original wording,
-    # so it was put to the owner rather than merged under the inverted
-    # account; the owner confirmed it on 2026-07-30 (#1866 comment
-    # 5137494519) as "the ruling's operative form". #2599 closed the gap
-    # from the other side — by making the code do what the ruling said —
-    # after the 2026-08-15 jts3 run shipped a tweeter 3.264 dB quieter than
-    # the undisputed arithmetic gives, on a frame the same session had
-    # already marked ``unsure``/``refit``.
-    #
-    # What still does NOT hold is the ruling's second phrase, "the
-    # estimator the realized check corroborates": the realized check grades
-    # the OUTCOME and cannot referee two frames against each other (below).
-    # The trim solve is anchored on because the other estimator is
-    # disputed, not because this check endorsed it.
-    #
-    # **What the realized check is, and is not.** It is a CLOSED-LOOP
-    # check, not cross-band arbitration: its own docstring says "One
-    # estimator, not a second opinion" — the levels come from
-    # ``solve_branch_trims`` on the TRIMMED pair, the same power-band
-    # average over the same ``branch_level_bands_hz`` halves that set the
-    # trim. So it cannot referee the two frames against each other, and
-    # nothing here should read as if it did. What it IS: independent of the
-    # fit's core median (different inputs — the post-fit linearized
-    # branches — different band, different statistic), and non-vacuous —
-    # it fails on a −6 dB/oct woofer where the frame gate also fails. It
-    # answers one question, the useful one: did the pair we are about to
-    # ship end up level?
-    #
-    # **Ordering: nothing moved, and nothing needed to.** The realized
-    # verdict this branch consults is item 1's own
-    # ``state.realized_level_match``, which reads later in this
-    # function but was computed earlier in the build — the planner returns
-    # the frame and the realized match on one plan, complete before the
-    # build calls this. There is no reordering here
-    # and no second computation: item 1 keeps its own gate, its own event,
-    # and its own refusal below, and every OTHER gate's semantics are
-    # byte-identical to before this change.
-    #
-    # ``match is None`` (no fit ran) falls to the refusal, and that is the
-    # fail-closed direction rather than an oversight: with no realized
-    # verdict there is no outcome check to gate on, so the ruling's
-    # precondition is unmet. In practice it is unreachable from here — the
-    # frame is only non-zero when a fit completed, and a fit that raised
-    # part-way yields a state carrying neither — but a future path that
-    # separates them must refuse, not proceed.
-    if state.level_frame_disagreement_db > level_frame_tolerance_db:
-        frame = state.level_frame
+    # The cliff that arm sat on is the located mechanism of the 2026-08-16
+    # shortfall round — 3.326 dB against a 3.0 dB bar, +3.79 dB of
+    # unrequested tweeter level, and a rolled-back round. #2609's conviction
+    # comment carries the full chain.
+    if state.level_consistency is not None and state.level_consistency.suspect:
+        consistency = state.level_consistency
         realized = state.realized_level_match
-        banked = realized is not None and realized.matched
         journal.append(GateRecord(
-            EVENT_LEVEL_FRAME_FINDING if banked else EVENT_LEVEL_FRAME_REFUSED,
+            EVENT_LEVEL_ESTIMATOR_FINDING,
             {
-                "reason": "" if banked else reason_levels_disagree,
-                "disagreement_db": round(
-                    float(state.level_frame_disagreement_db), 3
-                ),
-                "tolerance_db": level_frame_tolerance_db,
-                "system_level_db": (
-                    round(float(frame.system_level_db), 3)
-                    if frame is not None else None
-                ),
-                "reference_role": (
-                    frame.reference_role if frame is not None else ""
-                ),
-                "offset_db": (
-                    {k: round(float(v), 3) for k, v in frame.offset_db.items()}
-                    if frame is not None else {}
-                ),
-                "core_level_db": dict(state.level_frame_cores),
-                # The two fields the finding path adds, and only it: the OTHER
-                # estimator's per-role level-match term, and the realized
-                # verdict that decided which way this went. Both are ``None``/
-                # ``{}`` on the refusal arm so that line stays what #1934
-                # shipped.
-                "trim_band_average_db": (
-                    {k: round(float(v), 3)
-                     for k, v in state.level_frame_trims.items()}
-                    if banked else {}
-                ),
+                "reason": consistency.reason,
+                "worst_delta_db": round(float(consistency.worst_delta_db), 3),
+                "tolerance_db": float(consistency.tolerance_db),
+                "summed_level_reference_db": {
+                    k: round(float(v), 3)
+                    for k, v in (state.summed_level_reference_db or {}).items()
+                },
+                "core_level_db": dict(state.core_level_evidence),
+                "trim_band_average_db": {
+                    k: round(float(v), 3)
+                    for k, v in state.trim_band_estimate_db.items()
+                },
+                # Both estimators' distance from the owner, per role. Which
+                # one disagreed is the diagnosis; the worst alone would drop
+                # it.
+                "trim_band_delta_db": {
+                    k: round(float(v), 3)
+                    for k, v in consistency.trim_band_delta_db.items()
+                },
+                "core_level_delta_db": {
+                    k: round(float(v), 3)
+                    for k, v in consistency.core_level_delta_db.items()
+                },
+                # The outcome check, for the reader deciding how much to
+                # care. It no longer DECIDES anything here — it decides item
+                # 1 below, on its own — but a suspicion beside a passing
+                # realized level reads very differently from one beside a
+                # failing one.
                 "realized_difference_db": (
-                    round(float(realized.difference_db), 3)
-                    if banked and realized is not None else None
+                    None if realized is None
+                    else round(float(realized.difference_db), 3)
                 ),
             },
-            level=logging.WARNING if banked else logging.ERROR,
+            level=logging.WARNING,
         ))
-        if not banked:
-            return AccountabilityDecision(
-                journal=tuple(journal), refusal_reason=reason_levels_disagree,
-            )
-        finding = level_frame_finding_record(
-            state, tolerance_db=level_frame_tolerance_db,
-        )
+        finding = estimator_consistency_record(state)
     else:
         finding = None
 
