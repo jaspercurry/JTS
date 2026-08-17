@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 
 import pytest
@@ -681,6 +682,226 @@ def test_no_test_module_imports_the_conductor_test_file():
             offenders[module.name] = lines
 
     assert offenders == {}
+
+
+# --------------------------------------------------------------------------
+# architecture — the package's own shape
+# --------------------------------------------------------------------------
+
+#: How a module inside the package spells itself from the outside.
+PACKAGE_DOTTED = "jasper.active_speaker.crossover_v2"
+
+
+def _package_suffix(dotted_name: str, package: str) -> list[str]:
+    """``["contracts"]`` for ``<package>.contracts.X``, ``[]`` for anything else."""
+
+    prefix = f"{package}."
+    if not dotted_name.startswith(prefix):
+        return []
+    return [dotted_name[len(prefix):].split(".")[0]]
+
+
+def _intra_package_edges(package: Path, dotted: str) -> dict[str, set[str]]:
+    """``{module: the sibling modules it imports}``, by bare module name.
+
+    Both spellings the package actually uses are read: the relative
+    ``from .contracts import X`` / ``from . import priors``, and the absolute
+    ``from jasper.active_speaker.crossover_v2.contracts import X`` that two
+    lazy in-function imports use today. A guard blind to the second would miss
+    the exact shape a cycle arrives in, since deferring an import into a
+    function body is how a developer works around one.
+
+    ``__init__.py`` is deliberately not a node. Importing any submodule
+    executes the package ``__init__``, and this one re-exports most of the
+    package — so a graph containing it is cyclic by construction and would say
+    nothing about whether the MODULES depend on each other in one direction.
+
+    Names that are not modules of this package are dropped rather than
+    trusted: ``from . import GEOMETRY_RETRY_POSITIONS`` would otherwise invent
+    an edge to a module that does not exist.
+    """
+
+    modules = {path.stem for path in package.glob("*.py")} - {"__init__"}
+    edges: dict[str, set[str]] = {}
+    for path in sorted(package.glob("*.py")):
+        if path.stem == "__init__":
+            continue
+        found: set[str] = set()
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                if node.level == 1:
+                    named = (
+                        [node.module.split(".")[0]] if node.module
+                        else [alias.name for alias in node.names]
+                    )
+                elif node.level == 0 and node.module:
+                    named = _package_suffix(node.module, dotted)
+                else:  # ``from ..flat_spec import X`` — outside the package
+                    named = []
+            elif isinstance(node, ast.Import):
+                named = [
+                    name
+                    for alias in node.names
+                    for name in _package_suffix(alias.name, dotted)
+                ]
+            else:
+                continue
+            found |= {n for n in named if n in modules and n != path.stem}
+        edges[path.stem] = found
+    return edges
+
+
+def _import_cycle(edges: dict[str, set[str]]) -> tuple[str, ...] | None:
+    try:
+        TopologicalSorter(edges).prepare()
+    except CycleError as exc:
+        return tuple(exc.args[1])
+    return None
+
+
+def test_the_cycle_guard_sees_a_planted_cycle(tmp_path):
+    """The acyclicity guard's own positive control.
+
+    Two ways this guard could pass while asserting nothing, and the plant
+    catches both: an edge walk that matches no import shape returns an empty
+    graph, which is trivially acyclic and reads exactly like a healthy
+    package; and a cycle detector wired to the wrong end of the graph never
+    raises. The planted package uses ONE spelling per direction — relative one
+    way, absolute the other — so a walker that understands only one of them
+    finds a single edge and no cycle.
+    """
+
+    package = tmp_path / "tmpkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("from .a import A\n")
+    (package / "a.py").write_text("from .b import B\n")
+    (package / "b.py").write_text("from tmpkg.a import A\n")
+
+    edges = _intra_package_edges(package, "tmpkg")
+    assert edges == {"a": {"b"}, "b": {"a"}}, "the __init__ is not a node"
+    assert _import_cycle(edges) is not None
+
+
+def test_the_package_import_graph_stays_acyclic():
+    """#2662's G1: the DAG the package happens to be becomes the DAG it is.
+
+    ``test_no_domain_module_imports_the_host_or_the_legacy_flow`` above forbids
+    two imports by name. It says nothing about the package's INTERNAL shape,
+    so nothing stopped ``contracts`` — which eight nodes of this graph import
+    (nine files do; the package ``__init__`` is not a node) and which
+    imports none of them — from importing ``coordinator`` tomorrow. The
+    layering was an accident of how the extraction happened to land; this
+    makes it a contract, at the cost of one walk.
+
+    The edge floor is not decoration. An assertion that a graph has no cycle
+    is satisfied by a graph with no edges, so a walker broken by a Python
+    grammar change would report perfect health.
+    """
+
+    package = (
+        Path(__file__).resolve().parents[1]
+        / "jasper" / "active_speaker" / "crossover_v2"
+    )
+    edges = _intra_package_edges(package, PACKAGE_DOTTED)
+
+    assert len(edges) >= 15, f"expected the package's modules, saw {len(edges)}"
+    assert sum(len(deps) for deps in edges.values()) >= 20
+
+    cycle = _import_cycle(edges)
+    assert cycle is None, f"crossover_v2 import cycle: {' -> '.join(cycle or ())}"
+
+
+# --------------------------------------------------------------------------
+# architecture — the renderer speaks the vocabulary by symbol
+# --------------------------------------------------------------------------
+
+
+def _guarded_vocabulary() -> dict[str, str]:
+    """``{value: owning symbol}`` for the two code vocabularies the renderer
+    speaks: ``vocabulary.REASON_*`` and ``verification.RESULT_*``."""
+
+    from jasper.active_speaker.crossover_v2 import verification, vocabulary
+
+    owners: dict[str, str] = {}
+    for module, prefix in ((vocabulary, "REASON_"), (verification, "RESULT_")):
+        for name in dir(module):
+            value = getattr(module, name)
+            if name.startswith(prefix) and isinstance(value, str):
+                owners[value] = name
+    return owners
+
+
+def _retyped_vocabulary(module: Path, owners: dict[str, str]) -> list[str]:
+    """Every string literal in ``module`` that re-types a guarded code."""
+
+    tree = ast.parse(module.read_text(), filename=str(module))
+    return [
+        f"{module.name}:{node.lineno}: {node.value!r} is {owners[node.value]}"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and node.value in owners
+    ]
+
+
+def test_the_retyping_guard_sees_a_planted_literal(tmp_path):
+    """The conventions guard's own positive control.
+
+    A value-matching walk that matched nothing — a changed node type, a
+    vocabulary read that came back empty — would report the renderer clean and
+    read exactly like compliance, which is the state this guard exists to tell
+    apart from the real thing.
+    """
+
+    owners = _guarded_vocabulary()
+    assert len(owners) >= 40, f"the vocabulary read came back thin: {len(owners)}"
+
+    planted = tmp_path / "_retyping_probe.py"
+    planted.write_text('BADGE = {"keep_previous": "Keep the previous sound."}\n')
+
+    # Asserted by MARKER, not by the whole formatted string: the message is
+    # diagnostic prose, and a control that breaks when someone improves the
+    # wording teaches the next person to loosen the control.
+    found = _retyped_vocabulary(planted, owners)
+    assert len(found) == 1
+    assert "_retyping_probe.py:1" in found[0]
+    assert "RESULT_KEEP_PREVIOUS" in found[0]
+
+
+def test_the_envelope_renderer_never_re_types_a_code_it_could_import():
+    """#2662's G3: the domain renderer imports the vocabulary it renders.
+
+    ``crossover_envelope_v2`` may not import ``jasper.web`` (the rule above),
+    and the four ``RESULT_*`` codes lived there — so it spelled all four by
+    hand in twelve places, with nothing holding the two sets equal. The codes
+    moved to ``verification`` where the renderer can import them; this stops
+    the next one from being re-typed instead.
+
+    **One guarded value is skipped, and the skip is only as alive as its
+    reason.** ``RESULT_INCONCLUSIVE`` and the host's ``GRADE_INCONCLUSIVE``
+    are both ``"inconclusive"`` while answering different questions about the
+    same round — what the result WAS, versus whether the check finished. The
+    renderer legitimately compares a grade state against the second, so a bare
+    ``"inconclusive"`` cannot be attributed to one of the two by its value.
+    The assertion below fails if the collision ever ends, which is when this
+    skip should be deleted rather than inherited.
+    """
+
+    from jasper.active_speaker.crossover_v2.verification import RESULT_INCONCLUSIVE
+    from jasper.web.correction_crossover_v2 import GRADE_INCONCLUSIVE
+
+    assert GRADE_INCONCLUSIVE == RESULT_INCONCLUSIVE, (
+        "the value collision this skip exists for has ended — delete the skip"
+    )
+    owners = _guarded_vocabulary()
+    del owners[RESULT_INCONCLUSIVE]
+
+    renderer = (
+        Path(__file__).resolve().parents[1]
+        / "jasper" / "active_speaker" / "crossover_envelope_v2.py"
+    )
+    assert _retyped_vocabulary(renderer, owners) == []
 
 
 def test_the_journey_holds_no_dsp_no_filesystem_and_no_rendering():

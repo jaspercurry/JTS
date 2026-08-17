@@ -250,7 +250,6 @@ class GateDisclosure:
     """
 
     gate_ms: float | None
-    taper: str | None
     source_of_bound: str | None
     exempt_reason: str | None
     f_min_hz: float | None
@@ -321,7 +320,6 @@ def build_gate_disclosure(block: Mapping[str, Any] | None) -> GateDisclosure:
     ) else []
     return GateDisclosure(
         gate_ms=_finite(b.get("window_ms")),
-        taper=b.get("window") if isinstance(b.get("window"), str) else None,
         source_of_bound=source if isinstance(source, str) else None,
         exempt_reason=exempt if isinstance(exempt, str) else None,
         f_min_hz=_finite(b.get("f_valid_floor_hz")),

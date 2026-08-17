@@ -22,13 +22,15 @@ import logging
 
 from jasper.active_speaker.crossover_v2 import accountability, intervention
 from jasper.active_speaker.crossover_v2.candidates import LinearizationState
+from jasper.active_speaker.crossover_v2.vocabulary import (
+    REASON_CORRECTION_NOT_AN_IMPROVEMENT,
+    REASON_DRIVER_LEVELS_DISAGREE,
+)
 from jasper.active_speaker.flat_spec import BandResult, FlatSpecReport
 from jasper.audio_measurement.program_analysis import RealizedLevelMatch
 
 TOLERANCE_DB = 3.0
 IMPROVEMENT_DB = 0.5
-REASON_DISAGREE = "driver_levels_disagree"
-REASON_NOT_BETTER = "correction_not_an_improvement"
 
 
 def _report(passed, *, rms_db=1.0):
@@ -106,8 +108,8 @@ def _assess(state, **over):
         state=state,
         grade_prediction=lambda _sum: _report(True),
         material_improvement_db=IMPROVEMENT_DB,
-        reason_levels_disagree=REASON_DISAGREE,
-        reason_not_an_improvement=REASON_NOT_BETTER,
+        reason_levels_disagree=REASON_DRIVER_LEVELS_DISAGREE,
+        reason_not_an_improvement=REASON_CORRECTION_NOT_AN_IMPROVEMENT,
     )
     kwargs.update(over)
     return accountability.assess_accountability(**kwargs)
@@ -132,7 +134,7 @@ def _assess(state, **over):
 def test_a_refusal_arm_never_carries_a_stash():
     decision = _assess(_state(suspect=False, matched=False))
 
-    assert decision.refusal_reason == REASON_DISAGREE
+    assert decision.refusal_reason == REASON_DRIVER_LEVELS_DISAGREE
     assert decision.spec_report_written is False
     assert decision.spec_report is None
 
@@ -149,10 +151,10 @@ def test_a_graded_refusal_DOES_carry_its_stash():
         _state(), grade_prediction=lambda _sum: _report(False, rms_db=2.0),
     )
 
-    assert decision.refusal_reason == REASON_NOT_BETTER
+    assert decision.refusal_reason == REASON_CORRECTION_NOT_AN_IMPROVEMENT
     assert decision.spec_report_written is True
     assert decision.spec_report is not None
-    assert decision.spec_report["comparison"]["reason"] == REASON_NOT_BETTER
+    assert decision.spec_report["comparison"]["reason"] == REASON_CORRECTION_NOT_AN_IMPROVEMENT
 
 
 def test_an_ungradeable_prediction_clears_the_stash_rather_than_leaving_it():
@@ -231,7 +233,7 @@ def test_a_refusal_never_banks_a_finding():
         grade_prediction=lambda _sum: _report(False, rms_db=2.0),
     )
 
-    assert decision.refusal_reason == REASON_NOT_BETTER
+    assert decision.refusal_reason == REASON_CORRECTION_NOT_AN_IMPROVEMENT
     assert decision.finding is None
 
 

@@ -1785,7 +1785,6 @@ def test_discontinuity_unresolved_survives_the_durable_diagnostic_summary():
     (``analysis_diagnostic_summary``'s own docstring)."""
     drift = program_analysis.DriftEstimate(
         epsilon_ppm=0.0,
-        baselines_ppm={},
         max_residual_samples=0.0,
         glitch_detected=False,
         discontinuity_samples=program_analysis.DISCONTINUITY_UNRESOLVED,

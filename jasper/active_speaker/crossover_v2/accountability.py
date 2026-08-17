@@ -240,9 +240,11 @@ def estimator_consistency_record(
     # as two disjoint intervals would say the finding is about two places when
     # it is about one. It is not, and must not be read as, a claim that either
     # per-branch capture measured inside the gap — the per-role ``core_band_*``
-    # keys below are what say where each number came from. (The summed capture
-    # that owns the level datum DOES cover the gap, which is exactly why it owns
-    # it.)
+    # keys below are what say where each number came from. (The summed
+    # at-the-mark capture DOES cover the gap, and still does not own the level
+    # datum: the raw per-branch trim solve places the pair, because the two
+    # captures ride different graphs — see
+    # :func:`~.intervention.plan_linearization`'s anchor block and #2653.)
     edges = [
         band for role in cores
         if (band := cores[role].get("band_hz")) is not None
@@ -277,10 +279,12 @@ def estimator_consistency_record(
             record[f"trim_band_average_db_{role}"] = round(
                 float(state.trim_band_estimate_db[role]), 3
             )
-        # How far each SUBORDINATE estimate sat from the owner, per role, in the
-        # relative frame the check compares in. Both estimators ride whether or
-        # not either one is the reason this record exists: which of them
-        # disagreed is the diagnosis, and banking only the worst would drop it.
+        # What the two per-driver estimators made of EACH OTHER, per role, in
+        # the relative frame the check compares in — a symmetric distance with
+        # no owner term in it, since neither of them places the pair. Both
+        # estimators ride whether or not either one is the reason this record
+        # exists: which of them disagreed is the diagnosis, and banking only
+        # the worst would drop it.
         if role in consistency.estimator_delta_db:
             record[f"estimator_delta_db_{role}"] = round(
                 float(consistency.estimator_delta_db[role]), 3
@@ -326,7 +330,7 @@ def assess_accountability(
     #
     # **It banks and proceeds. It never refuses** — the owner's
     # never-nanny ruling (2026-08-17, #2609): a subordinate estimate that
-    # disagrees with the owner flags the CAPTURE as retriable; it does not
+    # disagrees with the other one flags the CAPTURE as retriable; it does not
     # discard the datum and does not stop the session. There is nothing
     # left for it to refuse on, either: the disagreement no longer changes
     # any committed number, because the raw measured trim owns the placement
@@ -362,9 +366,9 @@ def assess_accountability(
                     k: round(float(v), 3)
                     for k, v in state.trim_band_estimate_db.items()
                 },
-                # Both estimators' distance from the owner, per role. Which
-                # one disagreed is the diagnosis; the worst alone would drop
-                # it.
+                # What the two per-driver estimators made of each other, per
+                # role — symmetric, with no owner term. Which one disagreed is
+                # the diagnosis; the worst alone would drop it.
                 "estimator_delta_db": {
                     k: round(float(v), 3)
                     for k, v in consistency.estimator_delta_db.items()

@@ -36,6 +36,7 @@ import numpy as np
 
 from jasper.audio_measurement.correction_lane import CORRECTION_PLAY_UMASK
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity
+from jasper.audio_measurement.program import PROGRAM_SAMPLE_RATE_HZ
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -141,10 +142,11 @@ _WAV_FRAME_CHUNK = 64 * 1024
 MAX_VERIFIED_WAV_BYTES = 64 * 1024 * 1024
 MAX_VERIFIED_WAV_CHANNELS = 8
 
-# The longest shipped consumer is Room crossover leveling: 90 s at 48 kHz.
-# This bounds disk/CPU work before any allocation or file creation while still
-# preserving every current call shape.
-MAX_TONE_SAMPLES = 90 * 48_000
+# The longest shipped consumer is Room crossover leveling: 90 s at the program
+# rate. This bounds disk/CPU work before any allocation or file creation while
+# still preserving every current call shape. The rate is imported rather than
+# re-typed so a rate change moves this bound with it.
+MAX_TONE_SAMPLES = 90 * PROGRAM_SAMPLE_RATE_HZ
 MAX_TONE_SAMPLE_RATE = 192_000
 MAX_TONE_DURATION_S = 90.0
 

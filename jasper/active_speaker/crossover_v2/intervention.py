@@ -936,8 +936,6 @@ class TrimDecision:
     anchor_drift_db: float
     sanity_margin_db: float
     beyond_sanity_margin: bool
-    anchored_match: RealizedLevelMatch
-    resolved_match: RealizedLevelMatch
     committed_match: RealizedLevelMatch
     ripple_db: float | None
     """The scan's own ripple at its optimum; ``None`` when the scan was skipped."""
@@ -1106,8 +1104,6 @@ def decide_trim(
         anchor_drift_db=drift_db,
         sanity_margin_db=float(sanity_margin_db),
         beyond_sanity_margin=beyond,
-        anchored_match=anchored_match,
-        resolved_match=resolved_match,
         committed_match=committed_match,
         ripple_db=None if ripple_db is None else float(ripple_db),
     )
@@ -1151,8 +1147,6 @@ class LinearizationPlan:
     moved this candidate's anchor and cannot.
     """
     linearized_predicted_sum: tuple[np.ndarray, np.ndarray]
-    headroom_charge_db: Mapping[str, float]
-    chain_peak_db: Mapping[str, float]
     radiating_band_hz: Mapping[str, tuple[float, float]]
     journal: tuple[JournalRecord, ...] = field(default=())
     journal_dropped: tuple[str, ...] = field(default=())
@@ -2047,8 +2041,6 @@ def plan_linearization(
         trim_band_estimate_db=banked_trim_estimate_db,
         level_consistency=level_consistency,
         linearized_predicted_sum=linearized_predicted_sum,
-        headroom_charge_db=charge_db,
-        chain_peak_db=peak_db,
         radiating_band_hz=radiating_bands,
         journal=tuple(records),
         journal_dropped=tuple(dropped),

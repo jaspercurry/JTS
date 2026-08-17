@@ -419,8 +419,17 @@ Optional, in rough value order:
   Per-driver estimates become subordinate consistency checks whose
   disagreement flags a suspect capture — retriable, never a discarded datum.
   No arbitration between voters, no exclusion cliff, no taper between the
-  estimators. It supersedes the taper direction recorded on #2609. Pending:
-  the code-grounded design brief, for owner approval before implementation.
+  estimators. It supersedes the taper direction recorded on #2609.
+  **What shipped is the second half only.** The single owner, the retriable
+  finding, and the removal of the cliff all landed; the owner is the **raw
+  per-branch trim solve**, not the summed response. The summed capture rides
+  the applied incumbent graph while the per-branch sweeps ride the
+  protected-neutral one, so combining them double-counts the incumbent's own
+  trims — see the anchor block in
+  `crossover_v2.intervention.plan_linearization`. Still pending, and tracked
+  together because neither is worth anything alone:
+  [#2653](https://github.com/jaspercurry/JTS/issues/2653)'s frame-coherence
+  condition and the re-place-anchor lifecycle change.
 - **MMM adopt-with-conditions** — changes the regime plan's D7, which
   records MMM as unscheduled.
 - **#2321** — the relay journey-budget product decision. The budget is
