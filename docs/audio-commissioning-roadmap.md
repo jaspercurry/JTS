@@ -193,6 +193,31 @@ not a hand list: run `bash scripts/tense-grep.sh` plus a grep for
 cut-only and non-positive-gain claims across the boost path, and fix what
 it returns.
 
+**7. Collapse the driver low-limit to one declared owner (#2603).** Ruled
+2026-08-17 after the series-1 convergence run: a driver's bottom allowed
+frequency *is* the manufacturer's minimum recommended crossover frequency
+with its slope condition, entered once at component entry, and every
+consumer derives from that one field. As of the ruling, jts3 carries two
+values for it. #2603 owns the collapse and the companion fix to the research prompt
+that produced the second one; the rule, the datasheet evidence, and the
+published-field convention live in
+[`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md)
+decisions 8–9. Small, and sequenced early because that one constant shapes
+both the safety posture and the integration-claim grading band, so anything
+measured before it grades itself against a number nobody stands behind.
+
+**Sequencing note (not a pre-run item).** The same ruling set puts a second
+piece of work between this wave and the next tuning series: correction
+inside the crossover blend region moves from the (blind) per-driver fit to
+the summed response. That contract is a design-and-build, not a small item,
+and it is owned by
+[`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md)
+("The region-based adjustment contract", decisions 10–12) — this roadmap
+carries only its position in the order: upstream truth (item 7) → the
+contract → a hardware series that proves the dip moves. Series 1 is why:
+four rounds converged a trim prescription against a crossover-region dip
+that a scalar trim cannot address.
+
 ---
 
 ## The DoD hardware run
