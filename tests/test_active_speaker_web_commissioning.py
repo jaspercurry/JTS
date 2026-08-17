@@ -34,6 +34,57 @@ def _topology(**kwargs):
     return mono_output_topology(topology_name="Bench mono", **kwargs)
 
 
+def _staged_anchor_for(topology, staged_path):
+    """A staged-anchor stub in the shape ``staging.py`` really writes.
+
+    The `topology` and `hardware` blocks are NOT decoration: since #2285 both
+    /sound/ and /correction/ gate "already loaded" on
+    ``staged_topology_match_status``, which compares them against the box's
+    saved topology, so a stub carrying only `status` + `config.path` describes
+    a staged pair production never produces and makes the anchor look stale.
+    Mirrors ``stage_protected_startup_config``'s payload field-for-field
+    (`staging.py`, the "topology"/"hardware" blocks) so a fixture cannot drift
+    into agreeing with a check the real writer would fail.
+    """
+
+    return {
+        "status": "staged",
+        "config": {"path": staged_path},
+        "topology": {
+            "topology_id": topology.topology_id,
+            "name": topology.name,
+            "speaker_group_id": None,
+            "speaker_label": None,
+            "speaker_group_ids": [],
+            "speaker_labels": [],
+        },
+        "hardware": {
+            "device_id": topology.hardware.device_id,
+            "device_label": topology.hardware.device_label,
+            "card_id": topology.hardware.card_id,
+            "physical_output_count": topology.hardware.physical_output_count,
+            "clock_domain_id": topology.hardware.clock_domain_id,
+        },
+        # Written out from the topology's own channels rather than by calling
+        # `topology_target_signature`: this fixture mirrors the WRITER, and a
+        # fixture that called the comparator's own helper would agree with it by
+        # construction even if the writer had stopped producing this shape.
+        "targets": [
+            {
+                "speaker_group_id": group.id,
+                "role": channel.role,
+                "physical_output_index": channel.physical_output_index,
+                "identity_verified": bool(channel.identity_verified),
+                "startup_muted": bool(channel.startup_muted),
+                "protection_required": bool(channel.protection_required),
+                "protection_status": channel.protection_status,
+            }
+            for group in topology.speaker_groups
+            for channel in group.channels
+        ],
+    }
+
+
 def _durable_driver_record(
     topology,
     *,
@@ -114,82 +165,6 @@ def _install_driver_admission_prerequisites(monkeypatch):
         yield
 
     monkeypatch.setattr(dsp_apply, "dsp_writer_lock", unlocked)
-
-
-@pytest.mark.parametrize("source_kind", ["preset", "preview"])
-def test_start_driver_test_threads_resolved_source_to_startup_anchor(
-    monkeypatch,
-    source_kind,
-):
-    topology = _topology()
-    frozen_preset = object() if source_kind == "preset" else None
-    resolved_preview = (
-        {"status": "ready_for_protected_staging"} if source_kind == "preview" else None
-    )
-    anchor_call = {}
-    load_call = {}
-    resolve_calls = []
-
-    def resolve_inputs():
-        assert not resolve_calls, "commission inputs must be resolved once per test run"
-        resolve_calls.append(True)
-        return frozen_preset, resolved_preview
-
-    monkeypatch.setattr(web, "load_commission_load_state", lambda: {})
-    monkeypatch.setattr(web, "load_output_topology", lambda: topology)
-    monkeypatch.setattr(
-        web,
-        "request_missing_software_guards",
-        lambda current: (current, False),
-    )
-    monkeypatch.setattr(
-        web,
-        "resolve_commission_inputs",
-        resolve_inputs,
-    )
-    monkeypatch.setattr(web, "load_staged_startup_config", lambda: {})
-
-    async def current_config_path(_cam):
-        return "/var/lib/camilladsp/configs/sound_current.yml", None
-
-    async def loaded_anchor(**kwargs):
-        anchor_call.update(kwargs)
-        return {"status": "loaded"}
-
-    async def blocked_load(*_args, **kwargs):
-        load_call.update(kwargs)
-        return {"load": {"status": "blocked"}}
-
-    async def refused_ramp(*_args, **_kwargs):
-        return {"status": "refused"}
-
-    monkeypatch.setattr(web, "read_current_config_path", current_config_path)
-    monkeypatch.setattr(web, "_ensure_commission_startup_anchor", loaded_anchor)
-    monkeypatch.setattr(
-        web, "write_commission_path_safety", lambda *_args: "/tmp/evidence"
-    )
-    monkeypatch.setattr(
-        web,
-        "commission_seams",
-        lambda _cam: (object(), object(), object()),
-    )
-    monkeypatch.setattr(web, "load_driver_commissioning_config", blocked_load)
-    monkeypatch.setattr(web, "ramp_audible_step", refused_ramp)
-    monkeypatch.setattr(web, "commission_status_payload", lambda: {})
-
-    result = asyncio.run(
-        web.start_driver_test(
-            {"speaker_group_id": "mono", "role": "woofer"},
-            camilla_factory=lambda: object(),
-        )
-    )
-
-    assert result["status"] == "refused"
-    assert resolve_calls == [True]
-    assert anchor_call["preset"] is frozen_preset
-    assert anchor_call["crossover_preview"] is resolved_preview
-    assert load_call["preset"] is frozen_preset
-    assert load_call["crossover_preview"] is resolved_preview
 
 
 def test_driver_capture_sweep_requires_confirmed_driver(monkeypatch):
@@ -899,72 +874,6 @@ def test_async_commission_tone_select_cancellation_settles_and_releases_gate(
     assert calls == expected_calls
 
 
-def test_play_commission_tone_cancellation_during_select_releases_before_exit(
-    monkeypatch,
-):
-    """The continuous-tone caller cannot lose ownership before it gets a gate.
-
-    This caller has no payload/FaninGateContext yet while TEST_SELECT is in
-    flight. Its cancellation therefore depends on the async selection boundary
-    completing owner-scoped cleanup before the request exits.
-    """
-
-    select_started = threading.Event()
-    allow_select_response = threading.Event()
-    cleanup_finished = threading.Event()
-    calls: list[str] = []
-
-    def delayed_mux_command(cmd: str) -> dict:
-        calls.append(cmd)
-        if len(calls) == 1:
-            select_started.set()
-            assert allow_select_response.wait(timeout=2.0)
-        else:
-            cleanup_finished.set()
-        return {"active_source": "correction"}
-
-    monkeypatch.setattr(web, "_commission_tone_mux_command", delayed_mux_command)
-    monkeypatch.setattr(
-        web,
-        "_commission_tone_signal_plan",
-        lambda **_kwargs: {"status": "ready", "frequency_hz": 180.0},
-    )
-    monkeypatch.setattr(web, "_commission_tone_wav_path", lambda **_kwargs: "tone.wav")
-    monkeypatch.setattr(
-        web.subprocess,
-        "Popen",
-        lambda *_args, **_kwargs: pytest.fail("playback started after cancellation"),
-    )
-
-    async def wait_for_thread_event(event: threading.Event) -> None:
-        while not event.is_set():
-            await asyncio.sleep(0)
-
-    async def scenario() -> None:
-        task = asyncio.create_task(
-            web.play_commission_tone(
-                role="woofer",
-                level_dbfs=-30.0,
-                playback_id="cancel-before-select-response",
-            )
-        )
-        await wait_for_thread_event(select_started)
-        task.cancel()
-        allow_select_response.set()
-
-        with pytest.raises(asyncio.CancelledError):
-            await task
-
-        assert cleanup_finished.is_set()
-
-    asyncio.run(scenario())
-
-    assert calls == [
-        "TEST_SELECT correction active-speaker-commissioning",
-        "TEST_RELEASE active-speaker-commissioning",
-    ]
-
-
 def _driver_capture_sweep_boundary(monkeypatch, *, play_admitted=None):
     """Boundary mocks for a play_driver_capture_sweep() run that leave the
     REAL _commission_tone_select/release_fanin_lane() in place — only the
@@ -1552,10 +1461,12 @@ def test_capture_retry_reuses_staged_anchor_without_reanchoring(monkeypatch):
             set_calls.append(path)
             return True
 
+    topology = _topology()
+    monkeypatch.setattr(web, "load_output_topology", lambda: topology)
     monkeypatch.setattr(
         web,
         "load_staged_startup_config",
-        lambda: {"status": "staged", "config": {"path": staged_path}},
+        lambda: _staged_anchor_for(topology, staged_path),
     )
     monkeypatch.setattr(
         web,
@@ -1598,6 +1509,74 @@ def test_capture_retry_reuses_staged_anchor_without_reanchoring(monkeypatch):
     # attempt must not overwrite it with the anchor.
     assert capture_entry_anchor.pending_entry() == production_path
     assert load_driver_call["load_config"] is not None
+
+
+def test_a_path_match_with_a_stale_topology_is_not_already_loaded(monkeypatch):
+    """#2285: /correction/ gates the anchor on TWO terms, like /sound/ does.
+
+    The fast path used to short-circuit on the config-path term alone, so a box
+    whose saved topology had moved since staging -- a DAC swap, a role edit --
+    reused a staged graph built for hardware it no longer has, anchoring a
+    commissioning rollback to the wrong speaker's graph. /sound/ has gated on
+    both terms since the jts5 2026-08-06 regression; this is the same gate.
+
+    A mismatch is a RE-STAGE, not a refusal, which is why this asserts on the
+    absence of ``already_loaded`` rather than on a blocker code: the caller
+    falls through and rebuilds the pair against the topology the box has.
+    """
+
+    staged_path = "/var/lib/camilladsp/configs/active_speaker_staged_startup.yml"
+    topology = _topology()
+    monkeypatch.setattr(web, "load_output_topology", lambda: topology)
+
+    stale = _staged_anchor_for(topology, staged_path)
+    stale["topology"] = dict(stale["topology"], topology_id="a-topology-since-replaced")
+    matched = _staged_anchor_for(topology, staged_path)
+
+    # THE GATE ITSELF IS DRIVEN, not its two predicates. An earlier version of
+    # this pin asserted `_config_paths_match(p, p)` (a string against itself)
+    # and `staged_topology_match_status(...)` — a helper this change does not
+    # touch — and never called `_ensure_commission_startup_anchor` at all, so
+    # reverting the port left it green. Composition is the subject; the
+    # predicates were already covered by their own module's tests.
+    #
+    # The spy is enough because the fast path returns BEFORE `_stage_startup_config`
+    # is reached, so "was it called" IS "was the fast path skipped" — no real
+    # staging, no `preset` plumbing, and the re-stage is proved rather than
+    # inferred from the absence of `already_loaded`.
+    staged_calls: list[str] = []
+
+    def _spy_stage(_topology, *, preset=None, crossover_preview=None):
+        staged_calls.append("staged")
+        return {"status": "blocked"}
+
+    monkeypatch.setattr(web, "_stage_startup_config", _spy_stage)
+    monkeypatch.setattr(web, "request_missing_software_guards", lambda t: (t, False))
+
+    def _run(staged_config):
+        staged_calls.clear()
+        return asyncio.run(
+            web._ensure_commission_startup_anchor(
+                group="mono",
+                role="woofer",
+                staged_config=staged_config,
+                current_config_path=staged_path,  # the PATH term IS satisfied
+                camilla_factory=object,
+                preset=None,
+                crossover_preview=None,
+            )
+        )
+
+    # Path true, topology FALSE -> no fast path, and a RE-STAGE really happened.
+    stale_result = _run(stale)
+    assert stale_result.get("status") != "already_loaded", stale_result
+    assert staged_calls == ["staged"]
+
+    # Both terms true -> the fast path, and nothing is re-staged. Without this
+    # half a gate that never took the fast path would also pass.
+    matched_result = _run(matched)
+    assert matched_result.get("status") == "already_loaded", matched_result
+    assert staged_calls == []
 
 
 def test_level_match_teardown_leaves_anchor_for_first_sweep_attempt(monkeypatch):
@@ -1657,10 +1636,12 @@ def test_level_match_teardown_leaves_anchor_for_first_sweep_attempt(monkeypatch)
     assert teardown["status"] == "anchored"
     assert set_calls == []  # teardown never repoints the persisted path
 
+    topology = _topology()
+    monkeypatch.setattr(web, "load_output_topology", lambda: topology)
     monkeypatch.setattr(
         web,
         "load_staged_startup_config",
-        lambda: {"status": "staged", "config": {"path": staged_path}},
+        lambda: _staged_anchor_for(topology, staged_path),
     )
     monkeypatch.setattr(
         web,

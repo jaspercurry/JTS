@@ -84,19 +84,51 @@ APLAY_TIMEOUT_PAD_SEC = 1.0
 #
 # The RING devices are here for the sharper version of that: writing into a
 # ring is not merely "wrong output", it is a SECOND WRITER on a single-producer
-# ring. The ring's epoch takeover accepts a new writer rather than refusing it
-# the way a raw ALSA `hw` device refuses with EBUSY, so a stray tone would be
-# admitted, not rejected — and on the ACTIVE ring it would land post-crossover,
-# where a full-range tone reaches a compression driver.
+# ring — and on the ACTIVE ring it lands POST-crossover, where a full-range
+# tone reaches a compression driver with no protection filter left in front of
+# it. That consequence is what this list fences, and it holds whether or not
+# any lock does.
+#
+# WHAT THE RING ACTUALLY DOES ABOUT A SECOND WRITER — derived from
+# `c/jts-ring-ioplug/jts_ring_shm.c`, `jts_ring_writer_open`, not assumed. It
+# takes an exclusive flock on `<ring>.writer.lock` FIRST and maps a bounded-
+# wait expiry (500 ms) to -EBUSY; a live incumbent never releases that lock, so
+# the refusal is structural rather than a timing race. Only then does it
+# consult the epoch/heartbeat guard (`foreign_writer_is_live`), which the
+# source itself labels SECONDARY. So a stray tone through the ioplug is
+# normally REFUSED, exactly as a raw ALSA `hw` device refuses.
+#
+# PROVENANCE, because the two paragraphs above used to say the opposite:
+# written true in PR #2326 (2026-08-11), when no ring had a writer lock and
+# the epoch takeover admitted a second writer outright; falsified by PR #2389
+# (2026-08-12), which landed that flock beside this comment; reconciled here
+# (#2285/#2624). The FENCE never changed and must not — only this prose was
+# wrong.
+#
+# The fence stays because that refusal has three gaps the C and Rust sources
+# document, and each one ends in an admitted second writer:
+#   - the flock is a C-ioplug-only claim. `jasper_ring::RingWriter` takes no
+#     such lock (rust/jasper-ring/src/lib.rs, WRITER_LIVENESS_TIMEOUT_NS), so
+#     a ring written by the Rust side is guarded by the 2 s heartbeat alone —
+#     and a heartbeat is stamped on PUBLISH, so it reads "dead" the moment a
+#     writer PAUSES, which is exactly when the device is still owned;
+#   - an unopenable or unchmod-able lock file makes the writer open FAIL OPEN
+#     (loudly, but open), leaving a paused incumbent unprotected;
+#   - an flock's identity is the PATHNAME, so unlinking `<ring>.writer.lock`
+#     voids exclusivity SILENTLY, with no log line between two live writers.
+# A hearing-safety fence should not rest on a guard with those three holes.
 #
 # RENDERER-lane rings (jts_ring_lane_* / *_ring_lane, incl. the correction
-# lane's — U3/P6) are deliberately NOT fenced, by the same takeover logic in
-# reverse: their ioplug writer side takes the P6a writer flock, so a stray
-# second writer gets a clean bounded-wait EBUSY — the refusal the epoch-
-# takeover rings lack. The env-chosen test PCM here is operator intent and
-# does NOT silently follow the lane map: an operator who arms the correction
-# lane and wants lab tones on the ring re-points JASPER_AUDIO_LAB_TEST_PCM
-# themselves; one pointed at a busy armed lane fails loudly with EBUSY.
+# lane's — U3/P6) are still deliberately NOT fenced, but on the CONSEQUENCE
+# asymmetry rather than the mechanism one this paragraph used to claim: a lane
+# ring is INGRESS into fan-in, not a sink, so a tone landing there is wrong
+# output on the ordinary program path — not audio placed past the crossover.
+# Their ioplug writer side takes the same P6a flock, so a stray second writer
+# gets a clean bounded-wait EBUSY. The env-chosen test PCM here is operator
+# intent and does NOT silently follow the lane map: an operator who arms the
+# correction lane and wants lab tones on the ring re-points
+# JASPER_AUDIO_LAB_TEST_PCM themselves; one pointed at a busy armed lane fails
+# loudly with EBUSY.
 FORBIDDEN_TEST_PCM_TOKENS = (
     DEFAULT_PLAYBACK_DEVICE,
     ACTIVE_OUTPUTD_PLAYBACK_DEVICE,

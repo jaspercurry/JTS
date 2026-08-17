@@ -1604,9 +1604,9 @@ def build_parser() -> argparse.ArgumentParser:
             "both are present. Any other graph class — a parked graph, an "
             "unrecognised one, or a topology with no roleful outputs — is refused "
             "by name rather than guessed at. This is the FIRST step of the "
-            "active-ring arm (--endpoint ring) and of its rollback (--endpoint "
-            "aloop): the reconciler derives its endpoint marker from the loaded "
-            "graph, so the graph must move first."
+            "active-ring arm (--endpoint ring), which has no rollback: the "
+            "reconciler derives its endpoint marker from the loaded graph, so "
+            "the graph must move first."
         ),
     )
     reemit.add_argument(

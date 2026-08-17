@@ -8,14 +8,20 @@ WHY THIS EXISTS — the audio-graph-consolidation campaign flipped the shipped
 DEFAULT for two independent feature sets from "off, opt-in" to "on where the box
 is eligible":
 
-- **P4 (ring coupling):** on a validated full-profile, solo, stereo-eligible box the default coupling
+- **P4 (ring coupling):** on a solo, stereo-eligible box the default coupling
   becomes ``shm_ring`` (the end-to-end SHM-ring path) instead of loopback —
   BUT only when every #1169 arm preflight would pass (ring platform assets
   present, topology ring-eligible, and BOTH geometry axes coherent). On an
-  ineligible box (streambox profile, roleful/composite/mono topology, or a box
-  with no ring platform) the default stays loopback, byte-for-byte as before.
-  Streamboxes still run this owner for the independent USB DIRECT decision;
-  installed ring assets alone are not hardware validation.
+  ineligible box (roleful/composite/mono topology, or a box with no ring
+  platform) the default stays loopback, byte-for-byte as before.
+  **No box class is refused for being its class.** #2285 deleted
+  ``ring_install_profile_ready``, which held streamboxes on loopback because
+  the ring had not been VALIDATED on Zero-class hardware — a class-shaped
+  refusal standing in for the per-box proof the gates below already make. A
+  streambox is now judged on its own ring evidence like any other box, and a
+  refusal names the gate rather than the profile. The USB DIRECT decision
+  remains independent of the ring one, which is what that gate's separation
+  was also for.
 
 - **P3 (USB combo):** the default arms the certified USB-in low-latency path
   ONLY on a box that BOTH (a) has the resolved USB gadget capability available
@@ -214,7 +220,10 @@ def resolve_auto_decision(
           gate short-circuits to ``loopback`` with its detail as the reason, so
           a box this pass must not arm — a roleful box carrying NEITHER a
           hardware-matched applied baseline nor an all-muted anchor, a grouped
-          box, a streambox — resolves loopback with a crisp explanation.
+          box, a box whose ring assets or geometry do not check out — resolves
+          loopback with a crisp explanation. Note what is NOT in that list
+          since #2285: an install profile. No gate here refuses a box for its
+          class.
         * combo = ARMED iff ``gadget_present AND usb_intent_enabled`` (see
           :func:`combo_is_armed`);
           ``usb_combo_actions`` carries explicit on/off writes either way (the
@@ -284,24 +293,16 @@ def resolved_choice_label(marker_raw: str | None) -> str:
     return COUPLING_CHOICE_OPERATOR if is_operator_choice(marker_raw) else "auto"
 
 
-def ring_install_profile_ready() -> tuple[bool, str]:
-    """Allow automatic SHM-ring coupling only on validated full profiles.
-
-    Streamboxes share the fan-in graph and therefore install the ring assets,
-    but the P4 ring path has not been validated on Zero-class hardware. This
-    gate is deliberately independent from USB combo eligibility so a
-    streambox can arm USB DIRECT while retaining loopback coupling.
-    """
-
-    from jasper.install_profile import (
-        is_streambox_install_profile,
-        read_install_profile,
-    )
-
-    profile = read_install_profile()
-    if is_streambox_install_profile(profile):
-        return False, "streambox profile is not validated for automatic shm_ring"
-    return True, f"install profile {profile} permits automatic shm_ring"
+# NO INSTALL-PROFILE GATE. A streambox arms the ring on exactly the same
+# evidence every other box does — #2285 deleted ``ring_install_profile_ready``,
+# which refused automatic shm_ring on Zero-class hardware purely because the
+# ring had not been VALIDATED there. That is a class-shaped refusal standing in
+# for a per-box proof the remaining gates already make: topology eligibility,
+# asset presence, ioplug capability, wire agreement and both geometry gates all
+# run per box, and ``_arm_ring`` rolls the WHOLE box back to loopback + direct
+# on any failure, so a streambox the ring genuinely does not suit lands exactly
+# where the gate used to hold it — with a named reason instead of a silent
+# class exclusion.
 
 
 def read_usb_gadget_available() -> bool:

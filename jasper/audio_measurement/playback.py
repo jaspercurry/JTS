@@ -34,6 +34,7 @@ from typing import Any, AsyncIterator
 
 import numpy as np
 
+from jasper.audio_measurement.correction_lane import CORRECTION_PLAY_UMASK
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity
 from jasper.log_event import log_event
 
@@ -860,6 +861,14 @@ async def _play_wav_source(
             alsa_device,
             "-q",
             spawn_path,
+            # Correction-lane spawn policy, same as every wrapper in
+            # `correction_lane` (#2626). `jasper-correction-web.service` runs
+            # with `UMask=0077`, so an aplay that CREATES an armed lane's ring
+            # file inherits 0600 and the non-root fan-in end cannot write its
+            # header half — a silent failure. `create_subprocess_exec` forwards
+            # unknown keywords to `subprocess.Popen`, which is what carries
+            # `umask` to the child (mirrors `exec_correction_play`).
+            umask=CORRECTION_PLAY_UMASK,
             **process_kwargs,
         )
     except OSError as exc:
@@ -1444,6 +1453,9 @@ class TonePlayer:
                 str(self._wav_path),
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
+                # Correction-lane spawn policy — see `_play_wav_source` for why
+                # a missing umask here is a silent-failure shape (#2626).
+                umask=CORRECTION_PLAY_UMASK,
             )
         except OSError as exc:
             log_event(

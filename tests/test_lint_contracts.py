@@ -269,7 +269,26 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # to spend or to revoke, and collapsing it would red a concurrent branch that
 # had already argued for a slot. Deleting code earns the ratchet its own
 # markers back and nothing more.
-MAX_NOQA_MARKERS = 810
+# 810 -> 813 (#2285 THE WAVE part 2, 2026-08-17), and the delta is THREE S-L-F-0-0-1
+# in one new test, argued rather than absorbed. The test pins that
+# ``baseline-reemit``'s `help=` AND `description=` never name an endpoint
+# argparse rejects -- the drift it closes is that the two strings live in
+# different objects (`help=` on the parent's pseudo-action, `description=` on
+# the subparser) and exactly one of them got trued up.
+#
+# The private reads are the only way to compare the strings AS AUTHORED.
+# argparse exposes no public accessor for either, and the obvious alternative --
+# assert against rendered `--help` output -- is WORSE for this specific pin:
+# the formatter wraps at terminal width, so the very substring being forbidden
+# ("--endpoint aloop") can land split across two lines and the guard would pass
+# on the text it exists to reject. A fragile guard on a string an operator reads
+# is worth less than three suppression markers.
+#
+# The B-L-E-0-0-1 count is unchanged at 613 under its 617 ceiling: part 2's one
+# broad catch is a MOVE, not an addition -- the /sound/ rollback teardown's
+# catch was deleted when its five forked codes moved to their single owner, and
+# the owner carries the same catch for the same reason.
+MAX_NOQA_MARKERS = 813
 MAX_BLE001_MARKERS = 617
 # (Total reflects two independent +1 entries dated 2026-06-21: the AirPlay
 # latency-fit /state snapshot and the barge-in truncate wire-send guard.)

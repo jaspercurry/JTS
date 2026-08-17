@@ -8,11 +8,17 @@ These helpers clear durable wizard/evidence state after the saved output
 topology is reset to passive. They intentionally do not delete generated
 CamillaDSP YAML files: those are inert without the state/evidence JSON and can
 be useful for forensics, while a loaded runtime graph is reconciled separately.
+
+One artifact is not a lone file — ``staged_config`` is the METADATA half of the
+staged startup-anchor pair — so its unlink alone runs under that pair's
+cross-process lock (#2518/#2590). See :func:`_staged_anchor_unlink_guard`.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -24,12 +30,26 @@ from .crossover_preview import crossover_preview_path
 from .design_draft import DEFAULT_DESIGN_DRAFT_PATH, DESIGN_DRAFT_PATH_ENV
 from .measurement import measurement_state_path
 from .path_safety import path_safety_evidence_path
-from .staging import staged_metadata_path
+from .staging import (
+    StagedAnchorLockContended,
+    staged_anchor_lock,
+    staged_config_path,
+    staged_metadata_path,
+)
 from .startup_load import commission_load_state_path, startup_load_state_path
 
 logger = logging.getLogger(__name__)
 
 ACTIVE_SPEAKER_SETUP_RESET_KIND = "jts_active_speaker_setup_reset"
+
+# The one artifact in the tables below that is HALF OF A PAIR: `staged_config`
+# is the staged startup anchor's METADATA half, whose GRAPH half this module
+# deliberately leaves on disk (see the module docstring). #2518 gave that pair
+# a cross-process lock and both of its writers take it; this reset did not, so
+# a reset racing a stage could lose the reset (the stage's metadata lands after
+# the unlink) or leave the pair torn. See :func:`_staged_anchor_unlink_guard`.
+_STAGED_ANCHOR_ARTIFACT_ID = "staged_config"
+_STAGED_ANCHOR_LOCK_SOURCE = "active_speaker_reset"
 
 
 def _design_draft_state_path(path: str | Path | None = None) -> Path:
@@ -123,6 +143,37 @@ def active_speaker_measurement_journey_paths() -> dict[str, Path]:
     }
 
 
+@contextmanager
+def _staged_anchor_unlink_guard(artifact_id: str) -> Iterator[None]:
+    """Hold the staged startup anchor's pair lock — for ONE unlink only.
+
+    Scoped to the ``staged_config`` artifact and nothing else, deliberately.
+    Holding this across the whole clear loop would let one contending stage
+    block the other eight, unrelated deletions; the race this closes is only
+    ever about the pair, so the hold is only ever about the pair.
+
+    The lock is :func:`~jasper.active_speaker.staging.staged_anchor_lock` keyed
+    on the GRAPH half's path (``staged_config_path()``) — the same key both
+    writers pass (``stage_protected_startup_config`` and ``baseline-reemit``'s
+    publish), which is what makes this the same lock and not a second one
+    beside it.
+
+    It inherits that lock's contract unchanged: bounded wait, then
+    :class:`StagedAnchorLockContended`; and fail-OPEN at WARNING on a lock file
+    that cannot be opened at all. The caller turns a contention into this
+    artifact's ``errors`` entry, which is the existing ``status="partial"``
+    refusal — no new exception type and no new return shape.
+    """
+
+    if artifact_id != _STAGED_ANCHOR_ARTIFACT_ID:
+        yield
+        return
+    with staged_anchor_lock(
+        staged_config_path(), source=_STAGED_ANCHOR_LOCK_SOURCE
+    ):
+        yield
+
+
 def _clear_paths(
     paths: dict[str, Path],
     *,
@@ -134,7 +185,18 @@ def _clear_paths(
     errors: list[dict[str, str]] = []
     for artifact_id, path in paths.items():
         try:
-            path.unlink()
+            with _staged_anchor_unlink_guard(artifact_id):
+                path.unlink()
+        # `StagedAnchorLockContended` is a RuntimeError, so it needs its own
+        # arm; the `OSError` arm below would not catch it. A contended pair is
+        # reported as this artifact's error and the loop continues, so the
+        # other eight artifacts still clear.
+        except StagedAnchorLockContended as exc:
+            errors.append({
+                "id": artifact_id,
+                "path": str(path),
+                "error": f"{type(exc).__name__}: {exc}",
+            })
         except FileNotFoundError:
             missing.append({"id": artifact_id, "path": str(path)})
         except OSError as exc:

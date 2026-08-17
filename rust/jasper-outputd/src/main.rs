@@ -665,6 +665,19 @@ fn run_alsa(
             // max_audio_played_ms barge-in has never had from fanin.
             let report = core.commit_prepared_period_with_dac_delay(dac_delay_frames);
             reference_sequence = report.reference_sequence;
+            // NO FOLD HERE, and none is needed (#2627). The `else` branch below
+            // folds a wide sink's program down to the stereo :9891 wire because
+            // its period can be wider than two channels; this period never can.
+            // Local TTS and a wide/roleful sink are MUTUALLY EXCLUSIVE BY
+            // CONFIG, enforced loudly at startup: `config.rs` bails when
+            // `tts_socket_path.is_some() && !is_full_range_stereo_lr_sink`, and
+            // that predicate is `sink_mode == SinkMode::SingleAlsa
+            // && content_channels == 2 && !active_lane`. So reaching this line
+            // at all proves the sink is a full-range stereo L/R single-ALSA one
+            // and `core.output_period()` is already the wire's own width —
+            // exactly like the `content_channels == CHANNELS` byte-identical
+            // arm below. A width mismatch would be a config-gate regression,
+            // not a case to handle here.
             ref_outputs.publish(core.output_period(), reference_sequence);
             period_clipped_samples = report.clipped_samples;
             state.mark_period(

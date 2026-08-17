@@ -863,10 +863,6 @@ def alsa_card_name() -> str:
     return ALSA_CARD_NAME
 
 
-def _stream_path(card: str | None = None) -> Path:
-    return Path(f"/proc/asound/{card or alsa_card_name()}/stream0")
-
-
 def is_present() -> bool:
     """True if the chip's ALSA card has enumerated under /proc/asound."""
     return any(

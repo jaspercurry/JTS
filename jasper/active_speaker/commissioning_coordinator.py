@@ -80,12 +80,14 @@ _MAP = COMMISSIONING_STEP_PAGE_TITLES["map"]
 # blocker's own prose, and that prose carries absolute paths, exception class
 # names, and the DSP engine's name (see `_household_safe_reason`). Mapping the
 # reachable load-path codes keeps the household on written copy.
+#
+# Codes SHARE a sentence whenever they share the household's next action. That
+# costs no diagnostic precision: the exact code always rides out of band as
+# `combined_groups[].failure_code` (`first_blocker()[0]`), so support and the
+# journal still see which code fired no matter which family supplied the copy.
+# One sentence per ACTION is therefore the shape to keep — a second sentence
+# that prescribes the same two steps is a second place for the copy to drift.
 _SUMMED_TEST_FAILURE_FAMILIES: tuple[tuple[tuple[str, ...], str], ...] = (
-    (
-        ("tone_backend_failed", "commission_tone_backend_failed"),
-        "JTS could not prepare the combined test audio. Retry after the setup "
-        "finishes; if it fails again, open System status.",
-    ),
     # The setup for this layout was never prepared. Route back to the values.
     (
         (
@@ -114,57 +116,74 @@ _SUMMED_TEST_FAILURE_FAMILIES: tuple[tuple[tuple[str, ...], str], ...] = (
         f"JTS could not verify the speaker outputs for this test. Re-check "
         f"{_MAP}, then retry the combined test.",
     ),
-    (
-        ("summed_test_output_mismatch",),
-        "The last combined test did not match the saved speaker outputs. "
-        f"Re-check {_MAP} before retrying.",
-    ),
-    (
-        ("summed_test_already_active",),
-        "A combined speaker test is already running. Stop it, then try again.",
-    ),
-    # The graph the test would play names one output connection where it plays
-    # out and a different one where it captures (#2412's Gate 1). Nothing a
-    # household sets produces this — it is an internal defect — so the copy
-    # routes to the one screen that shows the speaker's own state rather than
-    # asking for an action that does not exist.
-    (
-        ("commissioning_transport_ends_disagree",),
-        "JTS could not prepare the combined test for this speaker’s output "
-        "connection. Open System status.",
-    ),
-    # The speaker's output path is ringed but not yet armed end to end — either
-    # nothing fills the ring or nothing reads it (#2412's Gate 2). MUST be
-    # mapped rather than left to fall through: each blocker's own prose carries
-    # the operator's reconciler command, and `_household_safe_reason` would NOT
-    # strip it — no absolute path, no exception class, no underscore — so an
-    # unmapped code would print a shell command to a household. The two codes
-    # share one sentence because the household ACTION is the same for both; the
-    # two operator remedies are what differ, and they stay on the CLI and
-    # journal surfaces that already carry them.
+    # The speaker's output connection cannot carry the test: its two ends name
+    # different transports (#2412's Gate 1), the ring is declared but not armed
+    # end to end — nothing fills it or nothing reads it (#2412's Gate 2) — or an
+    # operator-set ring-wire override no longer parses. One sentence, because
+    # every one of them is an internal or operator-level defect with the SAME
+    # household action: none of them is reachable from anything a household
+    # sets, so the copy routes to the one screen that shows the speaker's own
+    # state instead of inventing an action that does not exist. The operator
+    # remedies DO differ, and they stay on the CLI and journal surfaces that
+    # already carry them, one issue per failed conjunct.
+    #
+    # MUST be mapped rather than left to fall through: these blockers' own prose
+    # carries the operator's reconciler command and the daemon that owns the
+    # other half, and `_household_safe_reason` would NOT strip either — no
+    # absolute path, no exception class, no underscore, no banned token — so an
+    # unmapped code would print a shell command to a household.
+    #
+    # Kept ABOVE the quiet-test family below: `startup_load` appends the unarmed
+    # conjuncts onto a list that already carries the startup/prepare load issues,
+    # so the two families genuinely co-occur, and "retry" is the one answer a
+    # structurally unarmed path can never satisfy.
     (
         (
+            "commissioning_transport_ends_disagree",
             "commissioning_ring_feed_unarmed",
             "commissioning_active_endpoint_unarmed",
+            "ring_wire_declaration_invalid",
         ),
-        "This speaker’s output path isn’t finished setting up, so the combined "
-        "test can’t run yet. Open System status.",
+        "This speaker’s output connection isn’t ready for the combined test, "
+        "so the test can’t run. Open System status.",
     ),
-    # The box declares a ring wire nothing can resolve — an operator-set override
-    # that no longer parses. Mapped for the same reason as the code above: the
-    # backend sentence names the daemon that owns the other half, which reads as
-    # a command and which `_household_safe_reason` has no reason to strip. The
-    # household cannot fix a bad override from this card, so the copy sends them
-    # to the one place that shows it.
-    (
-        ("ring_wire_declaration_invalid",),
-        "This speaker's output connection is set to something JTS doesn't "
-        "recognise, so the combined test can't run. Open System status.",
-    ),
-    # The quiet test path could not be opened or restored. Nothing the household
-    # can prepare differently — retry, then escalate.
+    # The quiet test path could not be opened, prepared, or restored. Nothing
+    # the household can prepare differently — retry, then escalate.
+    #
+    # `tone_backend_failed` / `commission_tone_backend_failed` (the tone or
+    # speech backend raised while bringing the test up) live here rather than in
+    # a sentence of their own: their remedy is the same two steps, and this
+    # sentence names the control to press instead of saying "retry" abstractly.
+    #
+    # ORDER, stated in full because the merge moved more than the two codes it
+    # folded. First-code-present-wins, so collapsing three transport families
+    # into one and folding the tone codes in here promoted BOTH this 21-code
+    # family and the 4-code transport family above `summed_test_output_mismatch`
+    # AND `summed_test_already_active` — 25 codes crossed, not 2.
+    #
+    # vs `summed_test_output_mismatch`: REACHABLE, and this is the correct
+    # order. `measurement.record_summed_test_artifact` does
+    # `issues.extend(playback_issues)` and THEN appends the mismatch, so
+    # co-occurrence is structural. The existing pin's own rationale — a backend
+    # that never played beats a mismatch measured from what played — now extends
+    # from the 2 tone codes to all 25: telling a household to "re-check Confirm
+    # outputs" when the graph never loaded is the misdirection.
+    #
+    # vs `summed_test_already_active`: UNREACHABLE together, so the promotion is
+    # inert rather than judged. Every `_summed_playback_with_issue` call site in
+    # sound_setup.py is a mutually-exclusive early return carrying ONE issue, and
+    # the already-active site is gated behind `start_tone_playback` having
+    # returned `completed` — a quiet/transport code cannot ride the same list.
+    # Its order relative to `summed_test_output_mismatch` is preserved (both
+    # moved down together).
+    #
+    # Below every routing family above, because "go back to <step>" / "open
+    # System status" is a better answer than "retry" whenever one of those codes
+    # is also present.
     (
         (
+            "tone_backend_failed",
+            "commission_tone_backend_failed",
             "commission_startup_anchor_load_failed",
             "summed_commission_load_failed",
             "driver_commission_load_failed",
@@ -173,6 +192,14 @@ _SUMMED_TEST_FAILURE_FAMILIES: tuple[tuple[tuple[str, ...], str], ...] = (
             "startup_config_path_missing",
             "startup_config_unreadable",
             "startup_config_validation_not_valid",
+            # Same fact as the line above from the environment probe's side:
+            # the graph is not proven valid. Mapped because its own prose names
+            # the operator's `--check` invocation, which `_household_safe_reason`
+            # only happens to withhold today — it rejects on the banned token
+            # "camilladsp", not on the command. That is a coincidence of
+            # vocabulary, not a guarantee: reword the sentence without the
+            # engine's name and the command reaches a household.
+            "camilla_config_not_validated",
             "current_config_snapshot_failed",
             "current_config_snapshot_missing",
             "rollback_anchor_missing",
@@ -186,6 +213,15 @@ _SUMMED_TEST_FAILURE_FAMILIES: tuple[tuple[tuple[str, ...], str], ...] = (
         ),
         "JTS could not open the quiet crossover setup. Press Play combined "
         "test to retry; if it fails again, open System status.",
+    ),
+    (
+        ("summed_test_output_mismatch",),
+        "The last combined test did not match the saved speaker outputs. "
+        f"Re-check {_MAP} before retrying.",
+    ),
+    (
+        ("summed_test_already_active",),
+        "A combined speaker test is already running. Stop it, then try again.",
     ),
     (
         (

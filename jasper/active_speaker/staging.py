@@ -1706,10 +1706,11 @@ def _stage_protected_startup_config_locked(
     # not armed.
     #
     # CROSS-BOOT SEMANTICS, stated because #2364 asked for them: the anchor names
-    # whichever endpoint the operator last chose, exactly as the applied baseline
-    # does. `baseline-reemit --endpoint ring` moves it to the ring, `--endpoint
-    # aloop` moves it back, and a re-stage in between re-derives from the live
-    # marker rather than freezing a stale answer.
+    # whichever endpoint the box currently resolves, exactly as the applied
+    # baseline does. `baseline-reemit --endpoint ring` moves it to the ring —
+    # the ONE legal ACTIVE endpoint, and so the arm's only `--endpoint` choice,
+    # with no "back" to move it to — and a re-stage in between re-derives from
+    # the live marker rather than freezing a stale answer.
     devices = None
     if blocker_count == 0 and bound_preset and resolved_playback_device:
         # A ring wire token neither jasper-fanin nor JTS can resolve must reach

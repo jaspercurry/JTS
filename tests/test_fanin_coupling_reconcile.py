@@ -1118,6 +1118,51 @@ def test_default_ring_gates_order_puts_each_gate_after_what_makes_it_meaningful(
     assert dict(default_ring_gates())["ring_edge_width"] is ring_edge_width_ready
 
 
+def test_both_arm_paths_read_their_order_from_one_enumeration():
+    """#2285: the unattended pass and the manual arm cannot disagree on order.
+
+    They used to. ``default_ring_gates()`` ran topology BEFORE assets while
+    ``_arm_ring`` spelled the same four gates out again and ran assets BEFORE
+    topology, so a box broken in BOTH ways was told a different first thing to
+    fix depending on which path found it — and ``default_ring_gates``'s own
+    docstring claimed "in manual-arm order" while describing the order the
+    manual arm did not use. Nothing compared them, which is why it drifted.
+
+    The comparison is the point of this test: both paths now derive from
+    ``_SHARED_RING_PREFLIGHTS``, and the assertions below fail if either grows a
+    second list. Asserting the shared tuple alone would not — a re-introduced
+    hand-written sequence inside ``_arm_ring`` would sail past it.
+    """
+    import inspect
+
+    from jasper.fanin.coupling_reconcile import (
+        _arm_ring,
+        _SHARED_RING_PREFLIGHTS,
+    )
+
+    shared = [name for name, _ in _SHARED_RING_PREFLIGHTS]
+
+    # The unattended pass is the shared spine plus its own prefix, in order.
+    unattended = [name for name, _ in default_ring_gates()]
+    assert [n for n in unattended if n in shared] == shared
+
+    # The manual arm iterates the shared tuple rather than re-listing the gates.
+    # A hand-written `x_ok, x_detail = ring_<gate>_ready()` for a SHARED gate is
+    # exactly the drift this closes; the two non-shared geometry gates it calls
+    # directly are deliberately not in the tuple.
+    arm_src = inspect.getsource(_arm_ring)
+    assert "_SHARED_RING_PREFLIGHTS" in arm_src
+    for direct_call in (
+        "ring_topology_ready_strict()",
+        "ring_assets_ready()",
+        "ring_wire_caps_ready()",
+    ):
+        assert direct_call not in arm_src, (
+            f"{direct_call} is called directly in _arm_ring — that is a second "
+            "enumeration of a shared gate, which is how the orders drifted"
+        )
+
+
 def test_arm_shm_ring_refused_on_broken_narrowing_recovers_to_loopback(
     tmp_path, monkeypatch, _ring_assets_present
 ):

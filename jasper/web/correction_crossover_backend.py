@@ -2879,64 +2879,6 @@ async def apply_profile(
     return payload
 
 
-async def start_driver_test(
-    raw: dict[str, Any],
-    *,
-    camilla_factory: CamillaFactory,
-    blocking_phase: str | None = None,
-) -> dict[str, Any]:
-    """Start the safe per-driver audible confirmation path."""
-
-    _LEVEL_LEASE.assert_volume_safety_resolved()
-    payload = await web_commissioning.start_driver_test(
-        raw,
-        camilla_factory=camilla_factory,
-        blocking_phase=blocking_phase,
-    )
-    log_event(
-        logger,
-        "correction.crossover_driver_test",
-        status=payload.get("status"),
-        group_id=raw.get("speaker_group_id"),
-        role=raw.get("role"),
-    )
-    return payload
-
-
-async def confirm_driver_test(
-    raw: dict[str, Any],
-    *,
-    camilla_factory: CamillaFactory,
-) -> dict[str, Any]:
-    """Record the operator acknowledgement for a per-driver test."""
-
-    payload = await web_commissioning.confirm_driver_test(
-        raw,
-        camilla_factory=camilla_factory,
-    )
-    log_event(
-        logger,
-        "correction.crossover_driver_confirm",
-        status=payload.get("status"),
-        outcome=raw.get("outcome"),
-    )
-    return payload
-
-
-async def abort_driver_test(*, camilla_factory: CamillaFactory) -> dict[str, Any]:
-    """Stop any per-driver audible test and re-mute the transient graph."""
-
-    payload = await web_commissioning.abort_driver_test(
-        camilla_factory=camilla_factory,
-    )
-    log_event(
-        logger,
-        "correction.crossover_driver_abort",
-        status=payload.get("status"),
-    )
-    return payload
-
-
 async def start_summed_test(
     raw: dict[str, Any],
     *,

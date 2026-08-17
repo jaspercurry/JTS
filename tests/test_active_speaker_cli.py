@@ -1137,3 +1137,79 @@ def test_runtime_safe_graph_summary_is_silent_when_nothing_is_muted(capsys) -> N
     _print_runtime_safe_graph_summary(payload, wrote_statefile=True)
 
     assert "hard-muted" not in capsys.readouterr().out
+
+
+# --- #2285: baseline-reemit's own text must not teach a rejected endpoint ----
+
+
+def _reemit_texts() -> dict[str, object]:
+    """``baseline-reemit``'s two operator-facing strings, off the real parser.
+
+    They live in different places, which is part of why they drifted apart:
+    ``help=`` is stored on the PARENT's pseudo-action (it renders in the
+    top-level listing) while ``description=`` is stored on the SUBPARSER (it
+    renders on ``baseline-reemit --help``). Both are read here so neither can
+    be trued up alone again.
+    """
+
+    from jasper.cli.active_speaker import build_parser
+
+    for action in build_parser()._subparsers._group_actions:  # noqa: SLF001
+        choices = getattr(action, "choices", None)
+        if not isinstance(choices, dict) or "baseline-reemit" not in choices:
+            continue
+        sub = choices["baseline-reemit"]
+        help_text = next(
+            (
+                pseudo.help or ""
+                for pseudo in action._choices_actions  # noqa: SLF001
+                if pseudo.dest == "baseline-reemit"
+            ),
+            "",
+        )
+        return {"help": help_text, "description": sub.description or "", "_sub": sub}
+    raise AssertionError("baseline-reemit subparser not found")
+
+
+def test_baseline_reemit_text_never_names_an_endpoint_argparse_rejects() -> None:
+    """`help=` AND `description=` may only name endpoints the parser accepts.
+
+    HOW THIS DRIFTED, which is why the guard covers both strings rather than
+    the one that was wrong: `--endpoint` has `choices=("ring",)`, so argparse
+    hard-errors anything else. The rollback direction (`aloop`) was retired
+    with the snd-aloop ACTIVE lane, and the `help=` string was trued up while
+    the `description=` beside it was missed — and `description=` is the one an
+    operator running `baseline-reemit --help` actually reads.
+
+    Derived from the parser's own `choices` rather than a hardcoded list, so
+    adding a legal endpoint later does not have to touch this test; and driven
+    off both attributes, because fixing one and not the other is the exact
+    failure being pinned.
+    """
+    texts = _reemit_texts()
+    endpoint = next(
+        action for action in texts["_sub"]._actions  # noqa: SLF001
+        if "--endpoint" in getattr(action, "option_strings", ())
+    )
+    legal = set(endpoint.choices or ())
+    assert legal, "--endpoint must constrain its choices"
+
+    # `aloop` names the retired rollback direction. It is the value that
+    # actually drifted; `rejected` is derived against the live choices so this
+    # test stops firing on its own if the endpoint is ever readmitted.
+    rejected = {"aloop"} - legal
+    assert rejected, "aloop is legal again — retire this guard"
+    for attribute in ("help", "description"):
+        text = str(texts[attribute])
+        assert text, f"baseline-reemit has no {attribute}"
+        for value in rejected:
+            assert f"--endpoint {value}" not in text, (
+                f"{attribute}= names `--endpoint {value}`, which argparse "
+                f"rejects (choices={sorted(legal)})"
+            )
+
+    # NON-VACUITY: the surviving choice IS named in both strings, so a guard
+    # that passed because both were empty or endpoint-free would fail here.
+    for attribute in ("help", "description"):
+        text = str(texts[attribute])
+        assert any(f"--endpoint {value}" in text for value in legal), attribute

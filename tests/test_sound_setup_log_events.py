@@ -36,11 +36,39 @@ def _sound_event_calls() -> list[ast.Call]:
 def test_sound_setup_migrates_the_complete_event_vocabulary():
     calls = _sound_event_calls()
 
-    # 94 / 40: the output-topology save guard added a WARNING refusal under the
-    # existing sound.output_topology_save name plus one new event name,
-    # sound.output_topology_save_reconcile (WARNING, failure only).
-    assert len(calls) == 94
+    # 93 / 40. This walker counts `log_event` calls made IN sound_setup.py, so
+    # #2285 dropped it by one WARNING when the summed-test rollback teardown
+    # moved to its single owner (`web_commissioning
+    # .rollback_summed_commission_teardown`) — the two surfaces had forked that
+    # teardown, and the fork is what let /correction/'s narrower catch drop the
+    # household's re-mute failure message.
+    #
+    # THE EVENT DID NOT GO ANYWHERE, and the assertion below is what proves
+    # that rather than leaving the reader to trust this comment: the owner takes
+    # the event name as a parameter, /sound/ still passes
+    # `sound.active_speaker_summed_test`, and the emitted vocabulary is
+    # unchanged. A count that only went down would have read identically whether
+    # the event moved or was deleted.
+    #
+    # Before that: 94 / 40, when the output-topology save guard added a WARNING
+    # refusal under the existing sound.output_topology_save name plus one new
+    # event name, sound.output_topology_save_reconcile (WARNING, failure only).
+    assert len(calls) == 93
     assert len({call.args[1].value for call in calls}) == 40
+
+    # The delegated half of the vocabulary: an event this file no longer emits
+    # itself but still NAMES, handed to the shared owner. Without this the
+    # walker above would silently stop covering it.
+    delegated = {
+        keyword.value.value
+        for node in ast.walk(ast.parse(Path(sound_setup.__file__).read_text()))
+        if isinstance(node, ast.Call)
+        for keyword in node.keywords
+        if keyword.arg == "log_event_name"
+        and isinstance(keyword.value, ast.Constant)
+        and isinstance(keyword.value.value, str)
+    }
+    assert "sound.active_speaker_summed_test" in delegated
 
     levels: Counter[str] = Counter()
     for call in calls:
@@ -59,7 +87,9 @@ def test_sound_setup_migrates_the_complete_event_vocabulary():
         else:
             assert "exc_info" not in keywords
 
-    assert levels == {"INFO": 54, "WARNING": 12, "ERROR": 28}
+    # WARNING 12 -> 11: the one that left is the rollback teardown's, delegated
+    # to its owner above, not deleted.
+    assert levels == {"INFO": 54, "WARNING": 11, "ERROR": 28}
 
 
 def test_every_bool_or_optional_percent_s_field_is_prerendered_as_text():

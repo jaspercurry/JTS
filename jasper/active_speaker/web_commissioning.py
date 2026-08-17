@@ -20,8 +20,6 @@ import math
 import os
 import socket
 import subprocess
-import threading
-import time
 from collections.abc import Coroutine
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,11 +33,7 @@ from jasper.active_speaker.calibration_level import (
     load_calibration_level_state,
 )
 from jasper.active_speaker.commission_ramp import (
-    abort_ramp,
-    clear_pending_ramp_step,
     load_ramp_state,
-    ramp_audible_step,
-    record_ramp_operator_ack,
 )
 from jasper.active_speaker.commission_wiring import (
     CommissionPresetResolutionError,
@@ -52,10 +46,8 @@ from jasper.active_speaker.commission_wiring import (
 )
 from jasper.active_speaker.camilla_yaml import APPLIED_RESPONSE_FILTER_MODE
 from jasper.active_speaker.measurement import (
-    confirmed_driver_roles,
     current_driver_floor_evidence,
     load_measurement_state,
-    record_driver_measurement,
     record_summed_test_artifact,
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
@@ -70,15 +62,13 @@ from jasper.active_speaker.staging import (
     stage_protected_startup_config,
 )
 from jasper.active_speaker.startup_load import (
-    commission_load_runtime_status,
-    commission_load_state_with_runtime_status,
     load_commission_load_state,
     load_driver_commissioning_config,
     load_protected_startup_config,
     load_startup_load_state,
     load_summed_commissioning_config,
-    mark_commission_load_state_stale,
     rollback_driver_commissioning_config,
+    staged_topology_match_status,
 )
 from jasper.active_speaker.topology_tone import build_summed_topology_tone_plan
 # P6c-ii dissolved the static COMMISSION_TONE_ALSA_DEVICE alias: the lane's
@@ -88,7 +78,6 @@ from jasper.active_speaker.topology_tone import build_summed_topology_tone_plan
 # steady state about which transport the box is on.
 from jasper.audio_measurement.correction_lane import (
     correction_play_device,
-    popen_correction_play,
 )
 from jasper.camilla import CamillaUnavailable
 from jasper.camilla_config_contract import DEFAULT_VOLUME_LIMIT_DB
@@ -124,8 +113,6 @@ DEFAULT_AUTOMATIC_SUMMED_CONFIG_PATH = Path(
 AUTOMATIC_SUMMED_CONFIG_PATH_ENV = "JASPER_ACTIVE_SPEAKER_SUMMED_MEASUREMENT_CONFIG"
 COMMISSION_TONE_MUX_SOCKET = "/run/jasper-mux/control.sock"
 COMMISSION_TONE_FANIN_LABEL = "correction"
-_COMMISSION_TONE_LOCK = threading.Lock()
-_COMMISSION_TONE_SESSION: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -346,12 +333,100 @@ def _path_safety_evidence_path() -> str | None:
     return str(default_path) if default_path.exists() else None
 
 
+# The five commissioning blockers BOTH operator surfaces mint — /correction/
+# here and /sound/ through `jasper.web.sound_setup`. This module is their ONE
+# owner and /sound/ imports these factories, the same way it already imports the
+# commission-tone helpers rather than keeping a hand-copied fork (see the import
+# block's comment in sound_setup.py). The two surfaces' surrounding
+# orchestrations genuinely differ — /sound/ re-saves a crossover preview and
+# runs a stoppable playback loop, /correction/ takes resolved inputs and plays
+# once — so what is shared is the vocabulary, not the flow. Hand-copying the
+# sentence is what let the two drift while reading identical.
+#
+# One factory per code rather than a code->message table, so the literal pair
+# stays visible to the AST copy guard in tests/test_sound_setup.py, which reads
+# the message an author wrote next to the code.
+
+
+def commission_startup_anchor_not_staged_issue() -> dict[str, str]:
+    return _issue(
+        "commission_startup_anchor_not_staged",
+        "could not stage the silent active-speaker setup before driver testing",
+    )
+
+
+def commission_startup_anchor_path_safety_blocked_issue() -> dict[str, str]:
+    return _issue(
+        "commission_startup_anchor_path_safety_blocked",
+        "could not verify the silent active-speaker setup path before driver testing",
+    )
+
+
+def commission_startup_anchor_load_failed_issue() -> dict[str, str]:
+    return _issue(
+        "commission_startup_anchor_load_failed",
+        "could not load the silent active-speaker setup before driver testing",
+    )
+
+
+def summed_commission_load_failed_issue() -> dict[str, str]:
+    return _issue(
+        "summed_commission_load_failed",
+        "could not open the combined active-speaker test path",
+    )
+
+
+def summed_commission_rollback_failed_issue() -> dict[str, str]:
+    return _issue(
+        "summed_commission_rollback_failed",
+        "combined test played, but JTS could not re-mute the active-speaker test path",
+    )
+
+
+async def rollback_summed_commission_teardown(
+    rollback: Callable[[], Coroutine[Any, Any, dict[str, Any]]],
+    *,
+    log_event_name: str,
+) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
+    """Re-mute the combined-test path. Return ``(rollback, blocker)``, never raise.
+
+    THE ONE owner of the re-mute FAILURE CONTRACT for both operator surfaces,
+    because a teardown that raises is a teardown that leaves a household audible
+    with no copy telling them so. Both callers run this from a ``finally``, and
+    the blocker it returns is the highest-stakes sentence in the whole map
+    ("could not restore the quiet setup … before playing anything else"). Which
+    rollback to run stays the caller's — the two surfaces reach the same
+    ``rollback_driver_commissioning_config`` through their own seam, and each
+    keeps the name its own tests substitute.
+
+    The catch is broad ON PURPOSE. /correction/ used to catch a five-entry
+    tuple, so a rollback failure raising anything outside it — a ``KeyError``
+    out of a payload, an ``AttributeError`` off a stubbed camilla — escaped the
+    ``finally`` unconverted: no issue, no copy, an unhandled exception exactly
+    where the household needed a warning. /sound/ already caught broadly; that
+    is the behaviour that survives. Consolidating here keeps the repo's
+    broad-catch count flat rather than adding a second handler.
+    """
+
+    try:
+        return await rollback(), None
+    except Exception as exc:  # noqa: BLE001 - a silent teardown failure is the bug.
+        log_event(
+            logger,
+            log_event_name,
+            level=logging.WARNING,
+            action="rollback",
+            status="failed",
+            error=str(exc),
+        )
+        return None, summed_commission_rollback_failed_issue()
+
+
 def _blocked_startup_anchor(
     *,
     group: str,
     role: str,
-    code: str,
-    message: str,
+    issue: dict[str, str],
     startup_setup: dict[str, Any],
 ) -> dict[str, Any]:
     return {
@@ -362,7 +437,7 @@ def _blocked_startup_anchor(
             "status": "blocked",
             "last_action": "startup_anchor_blocked",
             "target": {"speaker_group_id": group, "role": role},
-            "issues": [_issue(code, message)],
+            "issues": [issue],
         },
     }
 
@@ -385,10 +460,41 @@ async def _ensure_commission_startup_anchor(
             "commissioning startup anchor requires one resolved graph source"
         )
     staged_path = (staged_config.get("config") or {}).get("path")
-    if _config_paths_match(current_config_path, staged_path):
-        return {"status": "already_loaded", "staged_config_path": staged_path}
 
-    topology, _guards_changed = request_missing_software_guards(load_output_topology())
+    # A PATH MATCH IS NOT AN ANCHOR MATCH, and this second term is why. The
+    # staged pair's metadata records the topology it was built for, so a box
+    # whose saved topology has moved since — a DAC swap, a role edit — can hold
+    # a staged graph at the very path this check is about to accept, describing
+    # hardware the box no longer has. Reusing it would anchor a commissioning
+    # rollback to a graph for the wrong speaker.
+    #
+    # SHARED WITH /sound/, deliberately: this is the same two-term gate
+    # `sound_setup._active_speaker_ensure_commission_startup_anchor` has run
+    # since the jts5 2026-08-06 regression, and `staged_topology_mismatch` is a
+    # mapped household code. /correction/ short-circuited on the path term
+    # alone, so the two surfaces disagreed about what "already loaded" meant and
+    # only one of them could ever emit that code (#2285).
+    #
+    # A mismatch is NOT a refusal — it falls through to the re-stage below,
+    # which rebuilds the pair against the topology the box actually has. The log
+    # line is what makes the re-stage attributable rather than silent.
+    topology = load_output_topology()
+    staged_topology = staged_topology_match_status(topology, staged_config)
+    paths_match = _config_paths_match(current_config_path, staged_path)
+    if paths_match and bool(staged_topology.get("matched")):
+        return {"status": "already_loaded", "staged_config_path": staged_path}
+    if paths_match:
+        log_event(
+            logger,
+            "active_speaker.web_commission_startup_anchor",
+            action="startup_anchor",
+            group=group,
+            role=role,
+            status="refresh_required",
+            reason="staged_topology_mismatch",
+        )
+
+    topology, _guards_changed = request_missing_software_guards(topology)
     stage = _stage_startup_config(
         topology,
         preset=preset,
@@ -398,8 +504,7 @@ async def _ensure_commission_startup_anchor(
         return _blocked_startup_anchor(
             group=group,
             role=role,
-            code="commission_startup_anchor_not_staged",
-            message="could not stage the silent active-speaker setup before driver testing",
+            issue=commission_startup_anchor_not_staged_issue(),
             startup_setup={"status": "blocked", "stage": stage},
         )
 
@@ -420,8 +525,7 @@ async def _ensure_commission_startup_anchor(
         return _blocked_startup_anchor(
             group=group,
             role=role,
-            code="commission_startup_anchor_path_safety_blocked",
-            message="could not verify the silent active-speaker setup path before driver testing",
+            issue=commission_startup_anchor_path_safety_blocked_issue(),
             startup_setup={"status": "blocked", "stage": stage, "path_safety": report},
         )
 
@@ -437,8 +541,7 @@ async def _ensure_commission_startup_anchor(
         return _blocked_startup_anchor(
             group=group,
             role=role,
-            code="commission_startup_anchor_load_failed",
-            message="could not load the silent active-speaker setup before driver testing",
+            issue=commission_startup_anchor_load_failed_issue(),
             startup_setup={
                 "status": "blocked",
                 "stage": stage,
@@ -809,235 +912,6 @@ def _commission_tone_payload(
     return payload
 
 
-def _stop_commission_tone_locked(*, reason: str) -> dict[str, Any]:
-    global _COMMISSION_TONE_SESSION
-
-    session = _COMMISSION_TONE_SESSION
-    _COMMISSION_TONE_SESSION = None
-    if not session:
-        return {"status": "idle", "reason": reason}
-    proc = session.get("process")
-    was_running = bool(proc is not None and proc.poll() is None)
-    if was_running and proc is not None:
-        try:
-            proc.terminate()
-            proc.wait(timeout=0.75)
-        except subprocess.TimeoutExpired:
-            try:
-                proc.kill()
-                proc.wait(timeout=0.75)
-            except (OSError, ProcessLookupError, subprocess.TimeoutExpired):
-                pass
-        except ProcessLookupError:
-            pass
-    return {
-        "status": "stopped" if was_running else "expired",
-        "reason": reason,
-        "playback_id": session.get("playback_id"),
-        "target_key": session.get("target_key"),
-    }
-
-
-def stop_commission_tone(*, reason: str) -> dict[str, Any]:
-    """Stop the continuous per-driver tone and release the test fan-in lane."""
-
-    with _COMMISSION_TONE_LOCK:
-        payload = _stop_commission_tone_locked(reason=reason)
-    payload["fanin_gate"] = _commission_tone_release_fanin_lane(reason=reason)
-    log_event(
-        logger,
-        "active_speaker.web_commission_tone",
-        action="stop",
-        reason=reason,
-        status=payload.get("status"),
-    )
-    return payload
-
-
-async def play_commission_tone(
-    *,
-    role: str,
-    level_dbfs: float,
-    playback_id: str,
-    group_id: str | None = None,
-    target: dict[str, Any] | None = None,
-    topology: Any = None,
-    preset: Any = None,
-    crossover_preview: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Ensure one bounded continuous commissioning tone is playing."""
-
-    global _COMMISSION_TONE_SESSION
-
-    role = str(role or "").strip().lower()
-    signal_plan = _commission_tone_signal_plan(
-        role=role,
-        group_id=group_id,
-        topology=topology,
-        preset=preset,
-        crossover_preview=crossover_preview,
-    )
-    frequency_hz = signal_plan.get("frequency_hz")
-    if signal_plan.get("status") != "ready" or frequency_hz is None:
-        log_event(
-            logger,
-            "active_speaker.web_commission_tone",
-            level=logging.WARNING,
-            action="plan",
-            status="blocked",
-            group=group_id,
-            role=role,
-        )
-        return _commission_tone_payload(
-            status="blocked",
-            playback_id=playback_id,
-            role=role,
-            level_dbfs=level_dbfs,
-            frequency_hz=None,
-            target=target,
-            group_id=group_id,
-            audio_emitted=False,
-            issues=[
-                issue for issue in signal_plan.get("issues", [])
-                if isinstance(issue, dict)
-            ],
-            signal_plan=signal_plan,
-        )
-    target_key = _commission_tone_target_key(role=role, group_id=group_id, target=target)
-    try:
-        wav_path = _commission_tone_wav_path(frequency_hz=frequency_hz)
-        fanin_gate = await _commission_tone_select_fanin_lane_async()
-    except _COMMISSION_START_ERRORS as exc:
-        return _commission_tone_payload(
-            status="failed",
-            playback_id=playback_id,
-            role=role,
-            level_dbfs=level_dbfs,
-            frequency_hz=frequency_hz,
-            target=target,
-            group_id=group_id,
-            audio_emitted=False,
-            issues=[_commission_tone_issue(exc)],
-            signal_plan=signal_plan,
-        )
-
-    started_proc = None
-    try:
-        with _COMMISSION_TONE_LOCK:
-            session = _COMMISSION_TONE_SESSION
-            if session and session.get("process") is not None:
-                proc = session["process"]
-                elapsed = time.monotonic() - float(session.get("started_monotonic", 0.0))
-                remaining = COMMISSION_TONE_DURATION_S - elapsed
-                if (
-                    session.get("target_key") == target_key
-                    and abs(float(session.get("frequency_hz", 0.0)) - frequency_hz)
-                    < 0.01
-                    and proc.poll() is None
-                    and remaining > COMMISSION_TONE_RESTART_MARGIN_S
-                ):
-                    session["playback_id"] = playback_id
-                    return _commission_tone_payload(
-                        status="completed",
-                        playback_id=playback_id,
-                        role=role,
-                        level_dbfs=level_dbfs,
-                        frequency_hz=frequency_hz,
-                        target=target,
-                        group_id=group_id,
-                        audio_emitted=True,
-                        issues=[],
-                        session_reused=True,
-                        fanin_gate=fanin_gate,
-                        signal_plan=signal_plan,
-                    )
-                _stop_commission_tone_locked(reason="replace")
-
-            proc = popen_correction_play(
-                wav_path,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            if proc.poll() is not None:
-                raise RuntimeError(f"aplay exited immediately with rc={proc.returncode}")
-            started_proc = proc
-            _COMMISSION_TONE_SESSION = {
-                "process": proc,
-                "playback_id": playback_id,
-                "target_key": target_key,
-                "frequency_hz": frequency_hz,
-                "started_monotonic": time.monotonic(),
-            }
-    except (OSError, RuntimeError) as exc:
-        await _commission_tone_release_fanin_lane_async(reason="start_failed")
-        return _commission_tone_payload(
-            status="failed",
-            playback_id=playback_id,
-            role=role,
-            level_dbfs=level_dbfs,
-            frequency_hz=frequency_hz,
-            target=target,
-            group_id=group_id,
-            audio_emitted=False,
-            issues=[_commission_tone_issue(exc)],
-            fanin_gate=fanin_gate,
-            signal_plan=signal_plan,
-        )
-    if started_proc is not None:
-        proc = started_proc
-        await asyncio.sleep(COMMISSION_TONE_STARTUP_CHECK_S)
-        if proc.poll() is not None:
-            with _COMMISSION_TONE_LOCK:
-                if (
-                    _COMMISSION_TONE_SESSION
-                    and _COMMISSION_TONE_SESSION.get("process") is proc
-                ):
-                    _COMMISSION_TONE_SESSION = None
-            await _commission_tone_release_fanin_lane_async(reason="startup_exit")
-            return _commission_tone_payload(
-                status="failed",
-                playback_id=playback_id,
-                role=role,
-                level_dbfs=level_dbfs,
-                frequency_hz=frequency_hz,
-                target=target,
-                group_id=group_id,
-                audio_emitted=False,
-                issues=[
-                    _commission_tone_issue(
-                        RuntimeError(
-                            f"aplay exited during startup with rc={proc.returncode}"
-                        )
-                    )
-                ],
-                fanin_gate=fanin_gate,
-                signal_plan=signal_plan,
-            )
-
-    log_event(
-        logger,
-        "active_speaker.web_commission_tone",
-        action="start",
-        group=group_id,
-        role=role,
-        frequency_hz=frequency_hz,
-        duration_s=COMMISSION_TONE_DURATION_S,
-    )
-    return _commission_tone_payload(
-        status="completed",
-        playback_id=playback_id,
-        role=role,
-        level_dbfs=level_dbfs,
-        frequency_hz=frequency_hz,
-        target=target,
-        group_id=group_id,
-        audio_emitted=True,
-        issues=[],
-        fanin_gate=fanin_gate,
-        signal_plan=signal_plan,
-    )
-
-
 def _plan_with_issues(
     plan: dict[str, Any],
     issues: list[dict[str, str]],
@@ -1063,241 +937,29 @@ def commission_status_payload() -> dict[str, Any]:
     }
 
 
-async def start_driver_test(
-    raw: dict[str, Any],
-    *,
-    camilla_factory: CamillaFactory,
-    blocking_phase: str | None = None,
-) -> dict[str, Any]:
-    """Arm and play one bounded per-driver test tone."""
-
-    if not isinstance(raw, dict):
-        raise ValueError("driver test request must be an object")
-    group = str(raw.get("speaker_group_id") or raw.get("group") or "").strip()
-    role = str(raw.get("role") or "").strip().lower()
-    force = bool(raw.get("force"))
-    if blocking_phase is not None:
-        return {
-            "status": "refused",
-            "reason": "measurement_in_progress",
-            "blocking_phase": blocking_phase,
-            "next_step": "Finish the other measurement before testing a driver.",
-        }
-    if not group or not role:
-        raise ValueError("speaker_group_id and role are required")
-
-    if force:
-        await asyncio.to_thread(stop_commission_tone, reason="driver_test_force")
-
-    cam = camilla_factory()
-    existing = load_commission_load_state()
-    if existing.get("status") == "loaded":
-        try:
-            running_raw = await cam.get_active_config_raw(best_effort=False)
-        except _COMMISSION_OPERATION_ERRORS:
-            running_raw = None
-        live_existing = commission_load_state_with_runtime_status(
-            existing,
-            commission_load_runtime_status(existing, running_raw),
-        )
-        active_target = _dict_value(live_existing.get("target"))
-        same_target = (
-            live_existing.get("status") == "loaded"
-            and (active_target.get("speaker_group_id") or "") == group
-            and (active_target.get("role") or "") == role
-        )
-        if live_existing.get("status") == "loaded" and not same_target:
-            if not force:
-                return {
-                    "status": "refused",
-                    "reason": "commission_load_already_active",
-                    "active_target": active_target,
-                    "next_step": "Stop the active driver test before starting another.",
-                }
-            await rollback_driver_commissioning_config(
-                load_config=commission_load_config(cam),
-            )
-        elif live_existing.get("status") != "loaded":
-            runtime_status = _dict_value(live_existing.get("runtime_status"))
-            mark_commission_load_state_stale(existing, runtime_status)
-
-    topology, guards_changed = request_missing_software_guards(load_output_topology())
-    if guards_changed:
-        log_event(
-            logger,
-            "active_speaker.web_driver_test",
-            action="request_software_guards",
-            group=group,
-            role=role,
-        )
-    preset, crossover_preview = resolve_commission_inputs()
-    staged = load_staged_startup_config()
-    current_config_path, current_config_error = await read_current_config_path(cam)
-    startup_setup = await _ensure_commission_startup_anchor(
-        group=group,
-        role=role,
-        staged_config=staged,
-        current_config_path=current_config_path,
-        camilla_factory=camilla_factory,
-        preset=preset,
-        crossover_preview=crossover_preview,
-    )
-    if startup_setup.get("status") == "blocked":
-        return startup_setup
-
-    staged = load_staged_startup_config()
-    current_config_path, current_config_error = await read_current_config_path(cam)
-    evidence_path = write_commission_path_safety(
-        topology, staged, current_config_path, current_config_error
-    )
-    load_config, read_running_config, get_current_config_path = commission_seams(cam)
-    commission = load_commission_load_state()
-    target = _dict_value(commission.get("target"))
-    if (
-        commission.get("status") != "loaded"
-        or (target.get("speaker_group_id") or "") != group
-        or (target.get("role") or "") != role
-    ):
-        load_payload = await load_driver_commissioning_config(
-            topology,
-            speaker_group_id=group,
-            role=role,
-            load_config=load_config,
-            read_running_config=read_running_config,
-            get_current_config_path=get_current_config_path,
-            preset=preset,
-            crossover_preview=crossover_preview,
-            staged_config=staged,
-            path_safety_evidence_path=evidence_path,
-        )
-        if (load_payload.get("load") or {}).get("status") == "loaded":
-            clear_pending_ramp_step(
-                speaker_group_id=group,
-                confirmed_roles=confirmed_driver_roles(
-                    topology,
-                    speaker_group_id=group,
-                ),
-            )
-    else:
-        load_payload = {"status": "loaded", "load": commission}
-
-    async def _play_commission_tone(**kwargs: Any) -> dict[str, Any]:
-        return await play_commission_tone(
-            **kwargs,
-            topology=topology,
-            preset=preset,
-            crossover_preview=crossover_preview,
-        )
-
-    step = await ramp_audible_step(
-        topology,
-        speaker_group_id=group,
-        role=role,
-        auto_retry_pending=bool(raw.get("auto_retry_pending")),
-        load_config=load_config,
-        read_running_config=read_running_config,
-        get_current_config_path=get_current_config_path,
-        preset=preset,
-        crossover_preview=crossover_preview,
-        staged_config=staged,
-        path_safety_evidence_path=evidence_path,
-        play_tone=_play_commission_tone,
-        confirmed_roles=confirmed_driver_roles(
-            topology,
-            speaker_group_id=group,
-        ),
-    )
-    log_event(
-        logger,
-        "active_speaker.web_driver_test",
-        action="start",
-        status=step.get("status"),
-        group=group,
-        role=role,
-    )
-    return {
-        "status": step.get("status"),
-        "startup_setup": startup_setup,
-        "load": load_payload,
-        "step": step,
-        "commission": commission_status_payload(),
-    }
-
-
-async def confirm_driver_test(
-    raw: dict[str, Any],
-    *,
-    camilla_factory: CamillaFactory,
-) -> dict[str, Any]:
-    """Record operator floor confirmation for the active driver test."""
-
-    if not isinstance(raw, dict):
-        raise ValueError("driver confirmation request must be an object")
-    outcome = str(raw.get("outcome") or "heard_correct_driver").strip().lower()
-    prior_ramp = load_ramp_state()
-    pending = prior_ramp.get("pending")
-    if outcome != "silent":
-        tone_stop = await asyncio.to_thread(
-            stop_commission_tone,
-            reason=f"ack_{outcome}",
-        )
-    else:
-        tone_stop = {"status": "not_stopped", "reason": "silent_retry"}
-    cam = camilla_factory()
-    payload = await record_ramp_operator_ack(
-        outcome=outcome,
-        load_config=commission_load_config(cam),
-    )
-    should_record_driver_evidence = (
-        outcome == "heard_correct_driver"
-        and payload.get("status") == "confirmed"
-        and not payload.get("issues")
-    ) or (outcome == "heard_wrong_driver" and payload.get("status") == "aborted")
-    if should_record_driver_evidence and isinstance(pending, dict):
-        topology = load_output_topology()
-        measurements = record_driver_measurement(
-            topology,
-            {
-                "speaker_group_id": prior_ramp.get("speaker_group_id"),
-                "role": pending.get("role"),
-                "outcome": outcome,
-                "playback_id": pending.get("playback_id"),
-                "test_level_dbfs": pending.get("gain_db"),
-                "notes": "Recorded from secure correction crossover driver confirmation.",
-            },
-            calibration_level=load_calibration_level_state(),
-            safe_session=load_safe_playback_state(),
-        )
-        payload["measurements"] = measurements
-    payload["tone_stop"] = tone_stop
-    payload["commission"] = commission_status_payload()
-    log_event(
-        logger,
-        "active_speaker.web_driver_test",
-        action="confirm",
-        outcome=outcome,
-        status=payload.get("status"),
-    )
-    return payload
-
-
-async def abort_driver_test(*, camilla_factory: CamillaFactory) -> dict[str, Any]:
-    """Hard stop: stop any tone and re-mute the transient driver graph."""
-
-    tone_stop = await asyncio.to_thread(
-        stop_commission_tone,
-        reason="driver_test_abort",
-    )
-    payload = await abort_ramp(load_config=commission_load_config(camilla_factory()))
-    payload["tone_stop"] = tone_stop
-    payload["commission"] = commission_status_payload()
-    log_event(
-        logger,
-        "active_speaker.web_driver_test",
-        action="abort",
-        status=payload.get("status"),
-    )
-    return payload
+# THE PER-DRIVER TEST TRIO LIVED HERE and is deleted (#2285 / #2628). It was a
+# SECOND, unrouted implementation of a shipped feature: nothing reached
+# ``start_driver_test`` but an uncalled wrapper in
+# ``jasper.web.correction_crossover_backend`` and one test, and its two siblings
+# had no caller at all. The live per-driver test is /sound/'s commission-ramp
+# trio -- ``/active-speaker/commission-ramp-step``/``-ack``/``-abort`` ->
+# ``_active_speaker_commission_ramp_*_payload`` -> ``jasper.active_speaker
+# .commission_ramp`` -- which superseded this layer and kept its own routes.
+# Wiring these up instead would have given one household feature two
+# orchestrations, which is the drift this campaign exists to remove.
+#
+# WHAT SURVIVED AND WHAT WENT WITH THEM, re-derived rather than asserted after
+# the first version of this comment named a live caller that did not exist.
+# ``abort_ramp``, ``load_ramp_state`` and ``commission_load_config`` are
+# untouched -- /sound/'s ramp routes are their live callers. ``stop_commission_tone``
+# and ``play_commission_tone`` were NOT: their only callers were the wrappers
+# above, so the same commit that removed those orphaned these, and they are
+# deleted here with the module-local session state they owned
+# (``_stop_commission_tone_locked`` and its ``_COMMISSION_TONE_SESSION`` /
+# ``_COMMISSION_TONE_LOCK`` pair). /sound/ keeps its own same-named locals --
+# see the note at ``jasper/web/sound_setup.py``'s commission-tone import block,
+# which is why the shared-owner contract in
+# tests/test_commission_tone_single_owner.py deliberately excludes them.
 
 
 def _crossover_frequency_for_group(
@@ -3108,9 +2770,8 @@ async def _play_summed_commission_tone(
     load_state = _dict_value(load_payload.get("load"))
     if load_state.get("status") != "loaded":
         load_issues = _dict_items(load_state.get("issues"))
-        issue = load_issues[0] if load_issues else _issue(
-            "summed_commission_load_failed",
-            "could not open the combined active-speaker test path",
+        issue = (
+            load_issues[0] if load_issues else summed_commission_load_failed_issue()
         )
         return _summed_playback_with_issue(
             artifact_playback,
@@ -3165,23 +2826,12 @@ async def _play_summed_commission_tone(
     finally:
         if fanin_gate is not None:
             await _commission_tone_release_fanin_lane_async(reason="summed_test")
-        try:
-            rollback = await _rollback_summed_commissioning_config(
+        rollback, rollback_issue = await rollback_summed_commission_teardown(
+            lambda: _rollback_summed_commissioning_config(
                 camilla_factory=camilla_factory,
-            )
-        except _COMMISSION_OPERATION_ERRORS as exc:
-            log_event(
-                logger,
-                "active_speaker.web_summed_test",
-                level=logging.WARNING,
-                action="rollback",
-                status="failed",
-                error=str(exc),
-            )
-            rollback_issue = _issue(
-                "summed_commission_rollback_failed",
-                "combined test played, but JTS could not re-mute the active-speaker test path",
-            )
+            ),
+            log_event_name="active_speaker.web_summed_test",
+        )
     if rollback is not None:
         playback_result["rollback"] = rollback
     if rollback_issue is not None:
