@@ -422,6 +422,15 @@ def round_restore_reason(cause: str) -> str:
     :mod:`~jasper.active_speaker.flat_spec`, which this module imports lazily
     everywhere for that reason.
 
+    **A delta-probe rollback class keeps the probe's OWN sentence.** Since the
+    fifth-principle routing, the three classes that used to restore from the
+    probe's own seam reach this function instead, carrying their verdict in a
+    composite cause (``delta_probe_rollback_class:<verdict>``). Each still
+    renders the code it always did, through the one mapping that owns that
+    correspondence (:data:`DELTA_PROBE_REASON_BY_VERDICT`) — a household whose
+    speaker was reverted for a shape mismatch must not start reading the
+    generic unverifiable sentence because the DECISION moved one module over.
+
     Anything unlisted falls back to the unverifiable code — the weakest true
     statement available for "the round asked for a restore", and a safer floor
     than the measured-regression code it used to be: claiming a REGRESSION the
@@ -432,6 +441,7 @@ def round_restore_reason(cause: str) -> str:
     """
     from jasper.active_speaker.crossover_v2.verification import (
         ADOPTION_MEASURED_REGRESSION,
+        ADOPTION_PROBE_ROLLBACK_CLASS,
         ADOPTION_UNPROVEN_BOOST,
         CAPTURE_INTEGRITY_FAILED,
         CAPTURE_INTEGRITY_UNAVAILABLE,
@@ -441,6 +451,15 @@ def round_restore_reason(cause: str) -> str:
         SAFETY_CLIPPED_CAPTURE,
         SAFETY_UNCOMMANDED_LEVEL_LOUDER,
     )
+
+    prefix, _, probe_verdict = cause.partition(":")
+    if prefix == ADOPTION_PROBE_ROLLBACK_CLASS and probe_verdict:
+        # The probe's own per-class sentence, from its one owner. An unknown
+        # class falls through to the same floor as any other unlisted cause
+        # rather than to a guessed one.
+        return DELTA_PROBE_REASON_BY_VERDICT.get(
+            probe_verdict, REASON_CORRECTION_UNVERIFIABLE_RESULT,
+        )
 
     return {
         ADOPTION_MEASURED_REGRESSION: REASON_CORRECTION_MEASURED_REGRESSION,

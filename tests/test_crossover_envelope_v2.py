@@ -46,6 +46,7 @@ SITTING = "sitting-1"
 from jasper.active_speaker.crossover_envelope_v2 import (
     KEEP_FOR_ITERATION_TEXT,
     KEEP_ITERATING_TEXT,
+    KEEP_ITERATING_UNGRADED_TEXT,
     SERIES_COMPLETE_DEFAULT_TEXT,
     CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION,
     RIPPLE_RESERVATION_COPY,
@@ -126,6 +127,39 @@ def _status(**v2) -> dict:
 
 def _step_statuses(env: dict) -> dict[str, str]:
     return {step["id"]: step["status"] for step in env["steps"]}
+
+
+def _every_screen_envelope() -> dict[str, dict]:
+    """One envelope per screen the builder can serve, keyed by a readable name.
+
+    A sweep rather than a list of the screens a given test remembered: the
+    action-shape invariants below are properties of the FLOW, and the next
+    action minted with the wrong shape will be on whichever screen the author
+    was not thinking about. Built through the real builder from the real
+    fixtures, so a screen that stops rendering fails here too.
+
+    The set is asserted non-trivial by its own callers (an empty sweep would
+    pass every invariant vacuously); the screen NAMES are not pinned, because
+    adding a screen should extend the sweep rather than fail it.
+    """
+    envelopes = {
+        "inactive": build_crossover_envelope_v2({"active": False}),
+        "speaker_setup": build_crossover_envelope_v2({
+            "active": True,
+            "setup": {"active": True, "status": "incomplete"},
+            "crossover_v2": {},
+        }),
+        "review": build_crossover_envelope_v2(_review_status()),
+        "review_no_candidate": build_crossover_envelope_v2(
+            _review_status(candidate={})
+        ),
+        "done": build_crossover_envelope_v2(_done_status()),
+    }
+    for phase in ("check", "measure", "apply", "verify", "done"):
+        envelopes[f"phase_{phase}"] = build_crossover_envelope_v2(
+            _status(phase=phase)
+        )
+    return envelopes
 
 
 # --- shape --------------------------------------------------------------------
@@ -1175,6 +1209,80 @@ def test_a_series_that_ended_says_which_ending_it_was(reason, phrase):
     assert nudge["severity"] == "ok"
     assert phrase in nudge["text"]
     assert "inside the target" in nudge["text"]
+
+
+def test_an_iterating_round_with_nothing_gradable_does_not_claim_the_target():
+    """The bites ruling made this row reachable with NO measured flatness.
+
+    ``objectives_unevaluable`` used to end the series, so row 6 always carried
+    a graded post-apply cloud behind it and ``KEEP_ITERATING_TEXT``'s opening
+    ("Everything measured is inside the target") was always true. Since
+    missing evidence stopped ending a series, an Express round — which walks no
+    post-apply cloud at all — lands here, and that sentence would be a claim
+    nothing supports.
+    """
+
+    env = _round_done_env(
+        adoption="keep_for_iteration",
+        row="row6_trusted_safe_passed_reachable",
+        reason="objectives_unevaluable",
+    )
+    nudge = _nudge(env, "crossover_v2_keep_iterating")
+
+    assert nudge["text"] == KEEP_ITERATING_UNGRADED_TEXT
+    assert "inside the target" not in nudge["text"]
+    assert "not enough of a full result" in nudge["text"]
+    # Still the good half: the speaker is playing the best measured tune.
+    assert "best sound measured so far" in nudge["text"]
+
+
+@pytest.mark.parametrize(
+    "row",
+    ["row2_trusted_safe_missed", "row6_trusted_safe_passed_reachable"],
+    ids=["missed", "passed_but_reachable"],
+)
+def test_a_round_that_promises_another_bite_offers_the_button_to_take_it(row):
+    """Copy that names an action the screen does not carry is #2641's shape.
+
+    Both iterating rows tell the household "measuring again is how that gets
+    closer", and this screen's only exits were Undo and Room correction — so
+    the sentence pointed at nothing. The action is the same re-measure the
+    review screen mints, not a second way in.
+    """
+
+    env = _round_done_env(adoption="keep_for_iteration", row=row, reason="r")
+    action = next(
+        a for a in env["alternate_actions"] if a["id"] == "round_remeasure"
+    )
+
+    assert action["label"] == "Try again with what we learned"
+    assert action["endpoint"] == "/correction/crossover/v2/session"
+    # An EMPTY body: the tier is the lapsed session's, resolved server-side.
+    # A literal here would be the #2639 demotion with extra steps.
+    assert action["body"] == {}
+    # Offered first — on a round that says another bite is coming, taking it
+    # is the recommended next step.
+    assert env["alternate_actions"][0]["id"] == "round_remeasure"
+
+
+@pytest.mark.parametrize(
+    "row",
+    ["row1_trusted_safe_passed", "", "row_from_the_future"],
+    ids=["series_complete", "no_row", "unknown_row"],
+)
+def test_a_round_that_ended_the_series_offers_no_re_measure(row):
+    """The other half, and the one that makes the button mean something.
+
+    A terminal round, a receipt with no row, and a row this build does not
+    know all get the same answer: no re-measure. Offering one on a finished
+    series would invite a household to spend a round the ruling says is over.
+    """
+
+    env = _round_done_env(adoption="keep", row=row, reason="r")
+
+    assert "round_remeasure" not in {
+        a["id"] for a in env["alternate_actions"]
+    }
 
 
 def test_an_unknown_ending_still_says_the_tuning_is_finished():
@@ -3933,9 +4041,12 @@ def test_review_decline_exits_to_the_active_speaker_entry_not_the_hub():
 
     Pinned as a literal, not "anything under /correction/": ``/correction/`` is
     a prefix of ``/correction/crossover/``, so a containment assertion would
-    have passed against the bug. The sibling ``review_remeasure`` alternate is
-    asserted alongside it because the two must stay distinguishable — one
-    navigates away, one POSTs and re-renders in place.
+    have passed against the bug.
+
+    Since #2641 the href is a PRESENTATION HINT beside a real endpoint rather
+    than the action itself — see
+    :func:`test_the_decline_is_an_action_not_a_navigation`. Where it points is
+    still the household-visible fact this test owns.
     """
     env = build_crossover_envelope_v2(_review_status())
     decline = next(
@@ -3943,13 +4054,69 @@ def test_review_decline_exits_to_the_active_speaker_entry_not_the_hub():
     )
     assert decline["label"] == "Keep current sound"
     assert decline["href"] == "/correction/crossover/"
-    # Declining applies nothing: it is a link, never an endpoint.
-    assert "endpoint" not in decline
     remeasure = next(
         a for a in env["alternate_actions"] if a["id"] == "review_remeasure"
     )
     assert remeasure["endpoint"] == "/correction/crossover/v2/session"
     assert "href" not in remeasure
+
+
+def test_the_decline_is_an_action_not_a_navigation():
+    """#2641, measured live: the Keep button performed no action at all.
+
+    Five clicks on a real round-2 review screen produced a plain page reload
+    back onto the SAME decision screen — no state-changing request, no
+    acknowledgement — because the mint carried an ``href`` and no ``endpoint``.
+    A household that has decided was asked again indefinitely, and the round
+    record could not tell a decline from a household that never looked.
+
+    The candidate guard is pinned alongside, because a decline recorded
+    against a superseded candidate would close a review nobody saw.
+    """
+    status = _review_status()
+    fingerprint = status["crossover_v2"]["candidate"]["fingerprint"]
+
+    decline = next(
+        a for a in build_crossover_envelope_v2(status)["alternate_actions"]
+        if a["id"] == "review_decline"
+    )
+
+    assert decline["endpoint"] == "/correction/crossover/v2/decline"
+    assert decline["body"] == {"expected_candidate_fingerprint": fingerprint}
+
+
+def test_every_in_flow_action_the_envelope_mints_is_machine_actionable():
+    """One flow, N drivers: a decision must be performable without a browser.
+
+    The invariant, stated so it can be checked rather than intended: an action
+    whose ``href`` points back INTO this flow is a decision, and a decision has
+    to carry an ``endpoint`` a driver can POST. An action pointing at another
+    subsystem (``/correction/room/``, ``/sound/setup/``) is a navigation and is
+    exempt — no endpoint here could perform it, and minting a fake one would be
+    worse than the link.
+
+    This is the shape #2641 was: ``review_decline``'s href was
+    ``/correction/crossover/`` — in-flow — with no endpoint, so it looked like
+    an exit and behaved like a reload. Every screen is swept rather than the
+    one that was reported, because the next instance of this bug will be on a
+    different screen.
+    """
+    offenders: list[tuple[str, str]] = []
+    for name, env in _every_screen_envelope().items():
+        actions = [env.get("next_action"), *(env.get("alternate_actions") or [])]
+        for action in actions:
+            if not isinstance(action, dict):
+                continue
+            href = str(action.get("href") or "")
+            if not href.startswith("/correction/crossover"):
+                continue
+            if not action.get("endpoint"):
+                offenders.append((name, str(action.get("id") or "?")))
+
+    assert offenders == [], (
+        "an in-flow action with no endpoint is a decision a driver cannot "
+        "take, and a button a household clicks to no effect", offenders,
+    )
 
 
 def test_review_names_the_exact_alternative_in_the_single_apply_action():
@@ -4774,3 +4941,64 @@ def test_the_reservation_does_not_displace_the_verified_badge():
     assert RIPPLE_RESERVATION_COPY in texts
     # The badge keeps the slot it earned; the reservation follows it.
     assert texts.index("Verified.") < texts.index(RIPPLE_RESERVATION_COPY)
+
+
+@pytest.mark.parametrize(
+    ("case", "ordinal", "offered"),
+    [
+        ("mid-series", 1, True),
+        ("the last round the budget allows", 2, True),
+        ("the cap itself", 3, False),
+        ("past it, from a state nobody should be able to produce", 9, False),
+        ("an ordinal no build wrote", None, True),
+        ("a corrupt ordinal", True, True),
+    ],
+    ids=["round1", "round2", "at_cap", "past_cap", "absent", "corrupt"],
+)
+def test_a_missed_round_at_the_cap_offers_no_fourth_bite(case, ordinal, offered):
+    """The gap this screen must not widen, bounded at the button.
+
+    A MISSED round reaches ``keep_for_iteration`` through ``_QUALITY_ROWS``
+    without the headroom axis being consulted — only the PASSED cell splits on
+    it — so a MISSED series never ends via the round cap. That is
+    ``decide_adoption``'s, it predates this PR, and it is filed separately.
+    What is NEW here is the button: until it existed the gap cost a household
+    nothing, and offering a fourth bite on a three-round budget is exactly the
+    thing "only the budget, the plateau, and the safety class end a series"
+    forbids.
+
+    The unreadable cases OFFER, matching the direction
+    ``series_position_from_state`` already fails in: a lost history resolves to
+    the first round, never to "the cap was reached".
+    """
+    receipt = {
+        "round_id": "s1",
+        "adoption": "keep_for_iteration",
+        "row": "row2_trusted_safe_missed",
+        "reason": "benefit_unproven",
+    }
+    if ordinal is not None:
+        receipt["round_ordinal"] = ordinal
+
+    env = _round_done_env(**receipt)
+
+    ids = {a["id"] for a in env["alternate_actions"]}
+    assert ("round_remeasure" in ids) is offered, case
+    # The CAVEAT stays either way — the round did miss something, and saying so
+    # is honest whether or not another round is on offer.
+    assert "crossover_v2_keep_for_iteration" in {n["code"] for n in env["nudges"]}
+
+
+def test_the_cap_the_button_reads_is_the_headroom_axis_own_constant():
+    """One budget, two readers. A literal here would be a second definition
+    that a change to ``ROUND_SERIES_CAP`` would silently turn into a lie."""
+    import inspect
+
+    from jasper.active_speaker import crossover_envelope_v2 as envelope
+    from jasper.active_speaker.crossover_v2.round_evidence import ROUND_SERIES_CAP
+
+    source = inspect.getsource(envelope._round_is_iterating)
+    assert "ROUND_SERIES_CAP" in source
+    assert str(ROUND_SERIES_CAP) not in source, (
+        "the cap must be read from its owner, never spelled into this screen"
+    )

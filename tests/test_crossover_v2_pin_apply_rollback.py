@@ -147,8 +147,9 @@ def test_a_wider_failure_still_propagates_rather_than_reading_as_a_clean_no(
 
     The seam deliberately does NOT claim to never raise: an ``OSError`` from
     the CamillaDSP socket is not a "we checked and there was nothing to
-    restore", and the conductor's ``_delta_probe_refusal`` owns that wider
-    family on the other side of the seam. Widening the ``except`` here would
+    restore", and
+    ``coordinator._run_round_restore`` owns that wider family on the other
+    side of the seam. Widening the ``except`` here would
     collapse "could not run" into the same ``False`` as "ran and refused",
     and the honest-failure distinction #2291 asks for would be gone.
     """

@@ -146,13 +146,11 @@ from jasper.active_speaker.attempts_loop import (
     decide_next,
 )
 from jasper.active_speaker.delta_probe import (
-    DELTA_PROBE_ROLLBACK_VERDICTS,
     VERDICT_FRAME_MISMATCH,
     VERDICT_LEVEL_MISMATCH,
     VERDICT_SAFETY_ONLY,
     DeltaProbeMap,
     classify_delta_probe,
-    seam_rollback_deferral,
     spatial_cost_from_group_spreads,
 )
 from jasper.active_speaker.branch_chain import CrossoverSection
@@ -3413,6 +3411,14 @@ def cloud_position_capture(position: _CloudPosition) -> Any:
         magnitude_db=magnitude,
         sample_rate=int(position.sample_rate_hz),
         ir=ir,
+        # §4.2's one line. The role was written to the position RECORD and the
+        # persisted row and read by nothing analytical — the combiner's only
+        # per-position struct dropped it here, so nothing that decides or
+        # remembers a round ever saw a position's KIND. Carrying it changes no
+        # combination (the reduction stays unweighted; see
+        # ``PositionCapture.role``) and is what lets the per-position residual
+        # say "on-axis" rather than "position 3".
+        role=str(position.role or ""),
     )
 
 
@@ -5171,6 +5177,22 @@ class CrossoverV2Session:
         # SUCCESSFUL publish only, so a transient failure on one close still
         # gets a chance on the next.
         self._group_cloud_published: set[str] = set()
+        # #2609 SF5 and the design brief's §4.2, both per closed group and both
+        # read by exactly one caller (:meth:`_grade_round_once`, for
+        # ``PHASE_CLOUD_VERIFY``).
+        #
+        # ``_group_trusted_floor_hz`` is the frame the group's spec bands were
+        # graded in — the SAME number ``assemble_cloud_group_result`` derived
+        # and intersected them with, recomputed here from the same two owners
+        # rather than dug back out of the serialized result, so the round banks
+        # the floor its own report used.
+        #
+        # ``_group_position_residuals`` is one number per position: how far it
+        # sat from the combined curve. Computed at close, when both operands are
+        # already in memory on the combine, because the combine does not survive
+        # to grading time on the tier that needs it.
+        self._group_trusted_floor_hz: dict[str, float | None] = {}
+        self._group_position_residuals: dict[str, tuple[Mapping[str, Any], ...]] = {}
         # The group's most recent COMBINE, held from its geometry close until
         # the household confirms past it (flow-simplification §2.6 —
         # ``confirm_cloud_measure_group``). Only CLOUD_MEASURE ever populates
@@ -7981,23 +8003,22 @@ class CrossoverV2Session:
             # than a modelled one. Deliberately OUTSIDE the disclosure wrap
             # above — this is a product gate, like the candidate build, and a
             # gate that cannot fail the capture is not a gate.
-            refusal = self._delta_probe_refusal(self._run_delta_probe())
-            if refusal is not None:
-                # No round grading on a refusal. The probe already rolled back
-                # and named itself with the more specific code, and every code
-                # it can name is non-retriable — so the settle rung ends the
-                # session on THIS verdict (#2086's condition rung) and there is
-                # no better-evidenced ending coming that this one would have
-                # pre-empted. A session that ends on a terminal rejection
-                # writes no round receipt, which is the honest record: its
-                # post-apply evidence never completed. The receipt is
-                # write-once, so "grade the first ending" is not a shape this
-                # can safely take twice.
-                return PhaseVerdict(
-                    False, refusal,
-                    payload={"delta_probe": self._delta_probe.to_dict()}
-                    if self._delta_probe is not None else {},
-                )
+            self._run_delta_probe()
+            # **The probe reports; the ROUND decides.** This arm used to call
+            # a second seam that restored the graph itself and returned a
+            # refusal code, ending the session BEFORE ``run_round`` — so a
+            # rollback class wrote no receipt at all, and the adoption table
+            # never saw the evidence. The ethos's fifth principle makes that
+            # unacceptable ("every round, kept or restored or refused, banks
+            # its measurement into the series state"), and the seam was also a
+            # second owner of "restore the previous graph" beside
+            # ``coordinator._run_round_restore``.
+            #
+            # Both are gone. The probe's verdict now reaches
+            # ``evaluate_round_quality``, the same three classes restore
+            # through the one restore owner, and the receipt records what the
+            # restore did — because ``_write_round_receipt`` runs last.
+            #
             # #2291: the Full tier's post-apply evidence is complete here — the
             # spatial arm has landed, so the spec verdict has a report and the
             # benefit verdict has everything it will get.
@@ -8856,6 +8877,51 @@ class CrossoverV2Session:
             return 0.0
         return worst_headroom_cost_db(linearization)
 
+    def _position_residual_rows(
+        self, combined: Any, floor_hz: float | None,
+    ) -> tuple[Mapping[str, Any], ...]:
+        """§4.2: how far each position sat from the combined curve, labelled.
+
+        One number per position per round, banked on the receipt so the next
+        bite can separate a miss that is OURS from one that is the room's: a
+        residual large at every position is broadband — a role-level trim or
+        model defect, which is fixable — while one large at a single position
+        is placement, which gets commanded for the achievable instead. The role
+        is what makes that readable; "off-axis 2.9 dB" is an instruction where
+        a bare spread number is a mood.
+
+        Graded over the same frame the group's spec bands were: this group's
+        trusted floor below, and the mic tier's own ceiling above (#2649 — the
+        probe may not grade where the fitter may not command, and neither may
+        this). An absent floor or ceiling widens the band rather than narrowing
+        it, which is the honest direction: no evidence of an edge is not an
+        edge at zero.
+
+        **Never raises and never gates.** This is disclosure riding a close
+        that already decided; losing the whole group's result to an arithmetic
+        surprise here would be exactly the trade the pipeline refuses.
+        """
+        from jasper.audio_measurement.spatial_combine import position_residuals
+
+        try:
+            freqs = np.asarray(getattr(combined, "freqs_hz", ()), dtype=float)
+            if freqs.size == 0:
+                return ()
+            ceiling_hz = self._mic_trust_ceiling_hz(freqs)
+            band_hz = (
+                float(floor_hz) if floor_hz is not None else float(freqs[0]),
+                float(ceiling_hz) if ceiling_hz is not None else float(freqs[-1]),
+            )
+            return tuple(
+                row.to_dict() for row in position_residuals(combined, band_hz=band_hz)
+            )
+        except (ValueError, TypeError, IndexError, AttributeError):
+            log_event(
+                logger, "correction.crossover_v2_position_residual_failed",
+                level=logging.WARNING, session_id=self.session_id, exc_info=True,
+            )
+            return ()
+
     def _mic_trust_ceiling_hz(self, freqs: Any) -> float | None:
         """The frequency above which the FITTER was not allowed to command.
 
@@ -9130,6 +9196,17 @@ class CrossoverV2Session:
             ),
         )
         self._group_cloud_result[phase] = result
+        # #2609 SF5 / §4.2: the two things the ROUND needs from this group that
+        # the serialized result above does not carry, taken while the combine
+        # is still in hand. Both are recorded whichever phase this is; only
+        # ``PHASE_CLOUD_VERIFY``'s are read, and stashing the pre-apply group's
+        # too costs one float and a short list while making the two closes
+        # symmetrical rather than special-cased.
+        floor_hz = cloud_trusted_floor_hz(cloud_validity_floor_hz(positions))
+        self._group_trusted_floor_hz[phase] = floor_hz
+        self._group_position_residuals[phase] = self._position_residual_rows(
+            combined, floor_hz,
+        )
         # PR-5: the spec verdict a session's journal carries. It replaces the
         # per-VERIFY-capture ``flatness_*`` fields ``_log_verify_diag`` used
         # to log from the retired capture-grid construction — same operator
@@ -9513,6 +9590,19 @@ class CrossoverV2Session:
                 # fresh session that has seen no earlier round.
                 round_ordinal=position.ordinal,
                 previous_objectives=position.previous_objectives,
+                # #2609 SF5: the frame those objectives were graded in, this
+                # round's from the group that produced the report and the
+                # previous round's from the receipt it banked. Without the
+                # pair, a 7-vs-10 ms gate change reads as 0.518 dB of progress.
+                trusted_floor_hz=self._group_trusted_floor_hz.get(
+                    PHASE_CLOUD_VERIFY
+                ),
+                previous_trusted_floor_hz=position.previous_trusted_floor_hz,
+                # §4.2, from the same close as the spec report above — ``()``
+                # on a tier that walks no post-apply cloud.
+                position_residuals=self._group_position_residuals.get(
+                    PHASE_CLOUD_VERIFY, (),
+                ),
             ),
             self._round_ports(),
         )
@@ -10152,19 +10242,12 @@ class CrossoverV2Session:
         summed = analysis.summed_response
         if summed is not None:
             self._verify_trusted_band_hz = _gate_trusted_band_hz(summed)
-        refusal = self._delta_probe_refusal(self._run_delta_probe())
-        if refusal is not None:
-            self._set_verify_outcome("fail", refusal, gate_record)
-            return PhaseVerdict(
-                False, refusal,
-                payload={
-                    "tracking": dict(tracking),
-                    "delta_probe": (
-                        self._delta_probe.to_dict()
-                        if self._delta_probe is not None else {}
-                    ),
-                },
-            )
+        # The probe reports here and the ROUND decides — see the
+        # ``PHASE_CLOUD_VERIFY`` arm for the seam that used to sit between them
+        # and why it is gone. This CAPTURE passed tracking, which is what this
+        # verdict answers; whether the graph it measured stays on the speaker
+        # is the adoption table's question, one call later.
+        self._run_delta_probe()
         # Absolute remains independent; the terminal owner classifies its miss.
         self._set_verify_outcome("pass", None, gate_record)
         return PhaseVerdict(
@@ -10561,86 +10644,6 @@ class CrossoverV2Session:
             spatial_worst_widening_db=round(probe.spatial.worst_widening_db, 3),
         )
         return probe
-
-    def _delta_probe_refusal(self, probe: DeltaProbeMap | None) -> str | None:
-        """Roll the correction back and return the reason code, or ``None``.
-
-        The automatic half of PR-L5's "rollback is automatic on the
-        non-matched classes". Rollback runs BEFORE the refusal is returned, so
-        by the time the household reads the copy ("the previous sound has been
-        put back") it is already true.
-
-        A session with no ``rollback`` seam still refuses — the verdict is
-        real whether or not this process can act on it, and the failure screen
-        already offers Undo — but it refuses under
-        :data:`REASON_CORRECTION_ROLLBACK_FAILED`, whose copy says the
-        correction is STILL APPLIED. The three verdict-specific codes all
-        promise "the previous sound has been put back", and that promise is
-        only theirs to make when the restore actually happened; a household
-        listening to a correction while being told it was reverted is a false
-        statement about their speaker, not a rounding of one.
-
-        **One class defers instead of restoring (#2559).** A ``model_error``
-        whose realized deviation points entirely quieter than commanded is a
-        quality miss, and the owner's iterate ruling keeps those for the next
-        round rather than reverting them. The seam PREEMPTS the adoption table —
-        a refusal here ends the session before ``decide_adoption`` runs — so
-        letting that class through is the only way the table's
-        ``keep_for_iteration`` row can ever fire on it.
-        :func:`~jasper.active_speaker.delta_probe.seam_rollback_deferral` owns
-        which class that is; this method owns saying so out loud, because a
-        restore that did not happen must be as legible in the journal as one
-        that did.
-        """
-        if probe is None or probe.verdict not in DELTA_PROBE_ROLLBACK_VERDICTS:
-            return None
-        deferral = seam_rollback_deferral(probe)
-        if deferral:
-            log_event(
-                logger, "correction.crossover_v2_delta_probe_seam_deferred",
-                level=logging.WARNING, session_id=self.session_id,
-                reason=deferral, verdict=probe.verdict,
-                probe_reason=probe.reason,
-                # The measurement the deferral rests on, beside the deferral, so
-                # the journal answers "how do you know it was quieter" without a
-                # second lookup. Negative here is the whole finding.
-                max_signed_error_db=(
-                    None if probe.max_signed_error_db is None
-                    else round(probe.max_signed_error_db, 3)
-                ),
-                max_error_db=round(probe.max_error_db, 3),
-                worst_hz=round(probe.worst_hz, 1),
-            )
-            return None
-        verdict_code = DELTA_PROBE_REASON_BY_VERDICT[probe.verdict]
-        restored = False
-        error = ""
-        if self._seams.rollback is not None:
-            try:
-                restored = bool(self._seams.rollback(verdict_code))
-            except (OSError, RuntimeError, TypeError, ValueError, AttributeError,
-                    KeyError) as exc:
-                # A rollback that could not run must not swallow the verdict
-                # that asked for it: the refusal still fires, and the
-                # household's Undo button is still on the screen. The family is
-                # wider than this file's usual four because this call sits
-                # OUTSIDE the cloud pipeline's own wrap — nothing downstream
-                # would catch an AttributeError/KeyError from a host binding,
-                # and losing the verdict is strictly worse than reporting it
-                # with the restore marked failed.
-                error = str(exc)
-        code = verdict_code if restored else REASON_CORRECTION_ROLLBACK_FAILED
-        log_event(
-            logger, "correction.crossover_v2_delta_probe_rollback",
-            level=logging.ERROR, session_id=self.session_id,
-            reason=code, verdict=probe.verdict, restored=restored,
-            seam_bound=self._seams.rollback is not None, error=error,
-        )
-        self._last_failure_code = code
-        # A delta-probe verdict, not a capture — no pilot evidence belongs to
-        # it, and the prior capture's must not trail in (#2085).
-        self._last_failure_pilot_heard = None
-        return code
 
     # --- diagnostic logging (Part 1) ------------------------------------------
     #

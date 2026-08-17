@@ -2128,6 +2128,14 @@ POST /crossover/v2/restore   v2 conductor: the verify_fail "Undo" — reload the
                              pre-candidate applied profile handle_v2_apply
                              stashed at apply time and clear the durable v2
                              applied/candidate/failure state
+POST /crossover/v2/decline   v2 conductor: the review screen's "Keep current
+                             sound" (#2641). Records the household's answer at
+                             `state.review_decision`, guarded on
+                             `expected_candidate_fingerprint` like apply, and
+                             returns the fresh envelope. Touches no DSP and
+                             does NOT delete the candidate — the proposal
+                             stays reviewable until a newer measurement
+                             replaces it
 POST /crossover/v2/position-ready
                              v2 conductor, REMOTE tier only: an external mic
                              positioner's driver reporting the microphone has

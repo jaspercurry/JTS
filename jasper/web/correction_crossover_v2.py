@@ -802,6 +802,77 @@ def observe_restore() -> None:
     save_v2_state(state, durable=True)
 
 
+#: The one shape a recorded review decision takes, and its only value.
+#:
+#: ``decision`` is a word rather than a bool because the fact being recorded is
+#: WHICH answer the household gave, and a bool names only one of them.
+REVIEW_DECISION_DECLINED = "declined"
+
+
+def observe_review_decline(candidate_fingerprint: str) -> None:
+    """Record that the household chose to keep the current sound (#2641).
+
+    The write half of the review screen's decline, beside its
+    :func:`observe_restore` sibling and under the same lock, because that is
+    where every durable v2 write lives: a read-modify-write from the HTTP layer
+    would be a second writer racing this one on the state file.
+
+    **It clears nothing.** Declining changes nothing on the speaker and does
+    not delete the candidate — the review screen's own contract, and the reason
+    it holds is that an accidental tap would otherwise cost ten captures to
+    undo. The proposal stays reviewable until a newer measurement replaces it;
+    what this records is the DECISION.
+
+    ``candidate_fingerprint`` is stamped so the decline binds to the proposal
+    it answered. A later measurement mints a different candidate, and the
+    phase resolver compares the two — so a stale decline cannot close a review
+    the household has never seen. Durable, because the whole point is that a
+    household who has decided is not asked again after a power cut.
+    """
+    with _state_lock:
+        state = load_v2_state()
+        if state is None:
+            return
+        state["review_decision"] = {
+            "decision": REVIEW_DECISION_DECLINED,
+            "candidate_fingerprint": str(candidate_fingerprint or ""),
+        }
+        save_v2_state(state, durable=True)
+    log_event(
+        logger, "correction.crossover_v2_review_declined",
+        candidate_fingerprint=str(candidate_fingerprint or ""),
+    )
+
+
+def review_declined(state: Mapping[str, Any] | None) -> bool:
+    """Has the household declined the candidate this state currently holds?
+
+    The READER for the key :func:`observe_review_decline` writes, beside that
+    writer for the reason every other reader/writer pair in this module is:
+    the two must be impossible to drift apart on a shape.
+
+    The fingerprint comparison is the whole check. A decline names the proposal
+    it answered, so a newer measurement — which mints a new candidate — is not
+    covered by it and the review screen comes back. A decline recorded when
+    there was nothing to propose matches a state with no candidate, because
+    "there is nothing to offer, keep what you have" is a real answer to a real
+    screen.
+    """
+    if not isinstance(state, Mapping):
+        return False
+    decision = state.get("review_decision")
+    if not isinstance(decision, Mapping):
+        return False
+    if str(decision.get("decision") or "") != REVIEW_DECISION_DECLINED:
+        return False
+    candidate = state.get("candidate")
+    current = (
+        str(candidate.get("fingerprint") or "")
+        if isinstance(candidate, Mapping) else ""
+    )
+    return str(decision.get("candidate_fingerprint") or "") == current
+
+
 def _applied_gate() -> bool:
     """The conductor's ``apply_complete`` seam: reads the durable applied flag."""
     state = load_v2_state()
@@ -1175,6 +1246,7 @@ def _phase_from_state(state: Mapping[str, Any] | None) -> str:
     from jasper.active_speaker.crossover_v2_flow import (
         CAPTURE_PHASES,
         PHASE_APPLYING,
+        PHASE_CHECK,
         PHASE_CLOSING,
         PHASE_DONE,
         PHASE_MEASURE,
@@ -1262,6 +1334,14 @@ def _phase_from_state(state: Mapping[str, Any] | None) -> str:
         # the review screen's absence copy is the honest answer).
         if str((state or {}).get("cloud_close") or ""):
             return PHASE_CLOSING
+        # …and a household who has ALREADY answered this screen does not get
+        # it again (#2641). The decline changed nothing on the speaker and did
+        # not delete the candidate, so the honest destination is the journey's
+        # own resting screen — which is what ``PHASE_CHECK`` renders. Bound to
+        # the candidate the decline answered, so a newer measurement brings
+        # the review back rather than inheriting a stale "no".
+        if review_declined(state):
+            return PHASE_CHECK
         return PHASE_REVIEW
     return PHASE_DONE
 
@@ -7412,13 +7492,26 @@ def prepare_v2_session(
     §5.6 (and logged); the fresh session starts at CHECK.
 
     ``raw["tier"]`` selects the commission instrument (flow-simplification
-    §3): the wizard posts the household's explicit choice, an absent value
-    means the full instrument, and an unrecognised one is refused before any
-    relay registration rather than silently measured as something else. It is
-    resolved into ONE :class:`V2PlanShape` here, which is then threaded into
-    both the emitted spec and the conductor's index→phase map — the two
-    surfaces that must agree about the walk and used to reach their defaults
-    independently.
+    §3): the wizard posts the household's explicit choice, and an unrecognised
+    one is refused before any relay registration rather than silently measured
+    as something else. It is resolved into ONE :class:`V2PlanShape` here, which
+    is then threaded into both the emitted spec and the conductor's index→phase
+    map — the two surfaces that must agree about the walk and used to reach
+    their defaults independently.
+
+    **An ABSENT tier inherits the lapsed session's, and #2639 is the
+    asymmetry that fixed.** ``resolve_plan_shape`` is strict about unknown
+    names and lenient about absence, resolving nothing to ``TIER_FULL``; every
+    re-measure action the envelope mints posts an empty body, because the
+    action does not know what the session was. So a REMOTE session's own retry
+    silently minted ``full`` — a tier the turntable rig cannot walk, since full
+    is not externally positioned and its verify plan raises in
+    ``position_angle_deg`` — and an Express household was demoted by the same
+    line. :func:`prepare_v2_verify` already reads its tier from durable state
+    (``_verify_plan_shape``); this reads the same fact from the same place when
+    the body does not name one, which makes the two siblings agree rather than
+    giving the retry a second rule. An explicit body tier still wins: the tier
+    chooser is how a household changes instrument.
     """
     from jasper.active_speaker.branch_chain import confirmed_protection_sections
     from jasper.active_speaker.crossover_v2_flow import (
@@ -7436,8 +7529,16 @@ def prepare_v2_session(
     )
     from jasper.capture_relay import correction_adapter
 
+    requested_tier = (raw.get("tier") if raw else None) or None
+    if requested_tier is None:
+        # #2639. Read fresh rather than from any snapshot: this runs before
+        # hydration, and the lapsed session's tier is exactly what the durable
+        # state's ``tier`` key holds. ``None`` here is still ``None`` to
+        # ``resolve_plan_shape`` — a first session, with no lapsed tier to
+        # inherit, keeps the shipped default.
+        requested_tier = ((load_v2_state() or {}).get("tier")) or None
     try:
-        plan_shape = resolve_plan_shape(raw.get("tier") if raw else None)
+        plan_shape = resolve_plan_shape(requested_tier)
     except CrossoverV2FlowError as exc:
         raise refused_from_flow_error(exc) from exc
     if session_volume_plan().needs_recovery:
@@ -8417,29 +8518,33 @@ def bind_delta_probe_rollback(run_async: Any, camilla_factory: Any) -> Any:
     not swallow the verdict that asked for it.
 
     It does NOT claim to catch everything: an OSError from the CamillaDSP
-    socket or a malformed stash still propagates, and the conductor's own
-    ``_delta_probe_refusal`` catches that wider family on the other side of
-    the seam (it has to — a conductor with a different binding gets the same
-    protection). Two honest halves rather than one dishonest "never raises".
+    socket or a malformed stash still propagates, and
+    :func:`~jasper.active_speaker.crossover_v2.coordinator._run_round_restore`
+    catches that wider family on the other side of the seam (it has to — a
+    conductor with a different binding gets the same protection). Two honest
+    halves rather than one dishonest "never raises".
 
-    **Exactly once per binding, and the reason is the copy (#2291).** Three
-    conductor sites can reach this closure in one Full session — the delta
-    probe's refusal at VERIFY, the same refusal when the post-apply cloud
-    closes, and the round's adoption path. ``handle_v2_restore`` is NOT
-    idempotent: a successful restore sets ``applied = False``, so the SECOND
-    call refuses with "nothing is applied to undo", this closure returns
-    ``False``, and ``_delta_probe_refusal`` re-labels the verdict
+    **Exactly once per binding, and the reason is the copy (#2291).** ONE
+    conductor site reaches this closure — the round's adoption path — and the
+    guard below is what its history bought. Until the fifth-principle routing
+    there were three: the delta probe's own refusal at VERIFY, the same refusal
+    when the post-apply cloud closed, and the round. ``handle_v2_restore`` is
+    NOT idempotent: a successful restore sets ``applied = False``, so a SECOND
+    call refused with "nothing is applied to undo", this closure returned
+    ``False``, and the second asker re-labelled its verdict
     :data:`REASON_CORRECTION_ROLLBACK_FAILED` — whose household copy says the
-    correction is **still applied**. It is not. That false sentence about
-    their own speaker is the defect, not the extra call, so the guard fixes
-    the sentence rather than merely the reachability: the restore is attempted
-    once, and every later caller is handed the FIRST call's outcome verbatim,
-    so a successful restore keeps reporting success and the verdict keeps its
-    own "the previous sound has been put back" copy.
+    correction is **still applied**. It is not. That false sentence about their
+    own speaker was the defect, not the extra call, so the guard fixed the
+    sentence rather than merely the reachability: the restore is attempted
+    once, and every later caller is handed the FIRST call's outcome verbatim.
 
-    Remembering the outcome rather than suppressing the repeat is also what
-    lets the shipped delta-probe rollback and the new adoption-driven restore
-    coexist without either one having to know about the other.
+    **Kept now that the callers are down to one**, deliberately. It is a
+    property of THIS closure rather than of any caller's discipline, and it is
+    what makes "a successful restore never reports failure" hold without the
+    binding having to know how many askers exist — which is exactly the
+    assumption that broke last time. The one-owner rule is pinned separately,
+    at the flow (``test_two_restore_triggers_run_one_undo_and_keep_the_honest_
+    sentence`` asserts no second ``self._seams.rollback(`` call site survives).
     """
     lock = threading.Lock()
     outcome: dict[str, bool] = {}

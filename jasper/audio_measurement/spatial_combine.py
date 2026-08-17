@@ -134,7 +134,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Sequence
+from typing import Any, Sequence
 
 import numpy as np
 
@@ -878,6 +878,17 @@ class PositionCapture:
         early-arrival region itself. When ``None`` the position contributes
         no echo diagnostic (reported as ``None``, distinct from "measured
         and found nothing").
+      role: what KIND of listening position this is, in the caller's own
+        vocabulary (the v2 cloud's ``onax`` / ``offax`` / ``xovr``). ``""``
+        when the caller does not say, which every pre-existing caller does not.
+
+        **Carried, never read by the combination.** The reduction stays an
+        unweighted power mean and an unweighted dB median: no role is
+        down-weighted, up-weighted, or excluded, and there is no ``weights=``
+        argument anywhere in this module. The role exists so a per-position
+        NUMBER can be labelled when it is reported — "off-axis 2.9 dB" is an
+        instruction where "spread 1.7 dB" is a mood — which is exactly the
+        one thing :func:`position_residuals` needs and the combiner does not.
     """
 
     position_id: str
@@ -885,6 +896,7 @@ class PositionCapture:
     magnitude_db: np.ndarray
     sample_rate: int
     ir: np.ndarray | None = None
+    role: str = ""
 
 
 @dataclass(frozen=True)
@@ -1236,6 +1248,68 @@ class GeometryLock:
 
 
 @dataclass(frozen=True)
+class PositionResidual:
+    """How far ONE position sat from the combined curve, over one band.
+
+    The cheapest per-position trend surface this module can offer, and
+    deliberately the only one: both operands are already on
+    :class:`CombinedResponse` at group close, so it is one subtraction and one
+    reduction — no new capture, no new pass, no new artifact.
+
+    **What it separates, which is why it is worth banking per round.**
+    :func:`~jasper.audio_measurement.interference_nulls.classify_dip_position_variance`
+    already makes the position-invariant / position-dependent call at the level
+    of one dip; this lifts the same distinction to the whole round. A residual
+    that is large at EVERY position is broadband and ours — a role-level trim
+    or model error, which is fixable. One that is large at a single position is
+    the room or the placement, which is commanded for the achievable instead.
+    Labelling it with the role is what makes it readable: "on-axis 0.4 dB,
+    off-axis 2.9 dB" is an instruction; a bare spread number is a mood.
+
+    It would NOT have caught the 2026-08-16 level-anchor incident, which was
+    measured at the mark and had no spatial term. What it catches is the
+    anchor-OUTLIER class, whose signature is exactly a broadband
+    position-invariant residual.
+
+    Args:
+      position_id: the position this describes.
+      role: its :attr:`PositionCapture.role`, or ``""`` when it declared none.
+      rms_db: root-mean-square of ``per_position_diag_db -
+        power_mean_diag_db`` over the graded band, in dB. ``None`` when the
+        band selected no usable bin — an absence, never a fabricated zero,
+        which would read as "this position agreed perfectly".
+
+        **The DIAGNOSTIC-smoothed pair, not the raw one, and that choice was
+        measured rather than assumed.** On the raw curves the dominant term is
+        each position's own interference comb: a healthy dispersed
+        four-position cloud reports ~2.5 dB at every position, and adding a
+        broadband +4 dB offset to ONE of them moved its number by less than
+        the spread between the untouched three — the metric could not see the
+        very defect class it exists for. Smoothing averages the comb away and
+        leaves the broadband disagreement, which is the signal. Both operands
+        come from the same fraction and the same construction (see
+        :attr:`CombinedResponse.per_position_diag_db`), so this adds no
+        smoothing pass and no second convention.
+      n_bins: how many bins the RMS was taken over. ``0`` with a ``None``
+        ``rms_db`` says the band was empty rather than that the arithmetic
+        failed.
+    """
+
+    position_id: str
+    role: str
+    rms_db: float | None
+    n_bins: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "position_id": self.position_id,
+            "role": self.role,
+            "rms_db": self.rms_db,
+            "n_bins": self.n_bins,
+        }
+
+
+@dataclass(frozen=True)
 class BandSpread:
     """Cross-position magnitude spread in one octave band — two numbers
     answering two different questions.
@@ -1341,6 +1415,10 @@ class CombinedResponse:
         wanting coarser reporting should post-process.
       n_positions: number of captures combined.
       position_ids: their ids, in input order.
+      position_roles: their :attr:`PositionCapture.role` values, index-aligned
+        with ``position_ids``. ``""`` for a capture that declared none. Copied
+        through untouched — nothing in the combination reads it; see
+        :attr:`PositionCapture.role`.
       per_position_echo: index-aligned with ``position_ids``. ``None``
         means *strictly* "no IR was supplied for this position" — the only
         thing it ever means. A capture that supplied an IR always gets an
@@ -1395,6 +1473,66 @@ class CombinedResponse:
     per_position_diag_db: np.ndarray = field(
         default_factory=lambda: np.empty((0, 0))
     )
+    #: Defaulted on the same terms as the two arrays above: additive, so every
+    #: existing construction keeps working, and ``()`` is what a hand-built or
+    #: deserialised record carries. :func:`combine_positions` always populates
+    #: it, with ``""`` for a capture that declared no role.
+    position_roles: tuple[str, ...] = ()
+
+
+def position_residuals(
+    combined: CombinedResponse, *, band_hz: tuple[float, float] | None = None,
+) -> tuple[PositionResidual, ...]:
+    """One :class:`PositionResidual` per position, in input order.
+
+    ``band_hz`` is the trusted band the round graded in — the caller's, because
+    the trusted floor and the mic-tier ceiling are session facts this module
+    has no way to know. ``None`` uses the whole shared grid, which is the
+    honest default for a caller that has not decided on one rather than a claim
+    that the whole grid is trustworthy.
+
+    Bins the combination EXCLUDED are dropped too. A bin the two diagnostic
+    estimators disagree on is one no verdict is graded on, and letting it into
+    a per-position number would put interference structure into a figure a
+    reader will take for a placement error.
+
+    ``()`` when the record retained no per-position curves (a hand-built or
+    deserialised :class:`CombinedResponse`) — the same absent-vs-zero rule the
+    dataclass follows.
+    """
+
+    stacked = np.asarray(combined.per_position_diag_db, dtype=float)
+    reference = np.asarray(combined.power_mean_diag_db, dtype=float)
+    ids = tuple(combined.position_ids)
+    if not ids or stacked.ndim != 2 or stacked.shape[0] != len(ids):
+        return ()
+    if stacked.shape[1] != reference.size:
+        return ()
+
+    grid = np.asarray(combined.freqs_hz, dtype=float)
+    keep = np.ones(grid.size, dtype=bool)
+    if band_hz is not None:
+        keep &= (grid >= float(band_hz[0])) & (grid <= float(band_hz[1]))
+    excluded = np.asarray(combined.excluded, dtype=bool)
+    if excluded.size == grid.size:
+        keep &= ~excluded
+
+    roles = tuple(combined.position_roles)
+    rows: list[PositionResidual] = []
+    for index, position_id in enumerate(ids):
+        deviation = stacked[index] - reference
+        usable = keep & np.isfinite(deviation)
+        n_bins = int(np.count_nonzero(usable))
+        rows.append(PositionResidual(
+            position_id=str(position_id),
+            role=str(roles[index]) if index < len(roles) else "",
+            rms_db=(
+                float(np.sqrt(np.mean(deviation[usable] ** 2)))
+                if n_bins else None
+            ),
+            n_bins=n_bins,
+        ))
+    return tuple(rows)
 
 
 # --------------------------------------------------------------------------- #
@@ -2970,4 +3108,5 @@ def combine_positions(
         signal_band_hz=signal_band,
         per_position_db=stacked,
         per_position_diag_db=per_position_diag_db,
+        position_roles=tuple(str(c.role or "") for c in captures),
     )

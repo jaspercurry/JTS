@@ -438,7 +438,16 @@ function renderActions(primary, alternates = []) {
       ? 'btn btn--primary'
       : (index === 0 ? 'btn btn--primary' : 'btn btn--ghost');
     let control;
-    if (action.href) {
+    // `endpoint` WINS over `href` when an action carries both (#2641). An
+    // action that can be performed is a button; `href` is then only a
+    // presentation hint naming where the household ends up, for a client that
+    // cannot POST. This branch used to test `href` FIRST, which is what made
+    // "Keep current sound" a link: the server minted a decision, the client
+    // rendered a navigation, and the click reloaded the page back onto the
+    // same decision screen forever. Reversing the order is also what makes
+    // "every minted action is machine-actionable" true for THIS driver, not
+    // only for the ones that read the envelope directly.
+    if (action.href && !action.endpoint) {
       control = el('a', {
         class: className,
         href: publicCrossoverUrl(action.href),

@@ -27,6 +27,7 @@ import logging
 import re
 import secrets
 import threading
+import contextlib
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
@@ -1015,3 +1016,90 @@ def test_both_preparers_mint_their_link_from_the_ceiling_they_arm():
         assert "ttl_s=relay_link_ttl_s(plan_shape, ceiling_s)" in source, (
             f"{fn.__name__} must mint its relay link from the ceiling it arms"
         )
+
+
+def _tier_resolved_by_prepare(body, state, tmp_path):
+    """Which tier ``prepare_v2_session`` hands to ``resolve_plan_shape``.
+
+    Recorded at the resolver rather than inferred from a later refusal: the
+    preparer runs several gates this harness cannot satisfy, and "it failed
+    somewhere after the tier gate" is not evidence about the tier.
+    """
+    import jasper.active_speaker.crossover_v2_flow as flow_mod
+    from jasper.web import correction_crossover_v2 as v2host
+
+    seen: list = []
+    original = flow_mod.resolve_plan_shape
+
+    def _record(tier=None, **kwargs):
+        seen.append(tier)
+        return original(tier, **kwargs)
+
+    v2host.set_state_path_for_tests(tmp_path / "v2_state.json")
+    try:
+        v2host.save_v2_state(state)
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(flow_mod, "resolve_plan_shape", _record)
+            with contextlib.suppress(Exception):
+                v2host.prepare_v2_session(
+                    body, status={}, run_async=None, camilla_factory=None,
+                )
+    finally:
+        v2host.set_state_path_for_tests(None)
+    assert seen, "the preparer never reached the tier resolver"
+    return seen[0]
+
+
+@pytest.mark.parametrize(
+    "tier",
+    ["remote", "express", "full"],
+    ids=["remote_stays_remote", "express_stays_express", "full_stays_full"],
+)
+def test_a_re_measure_with_no_tier_inherits_the_lapsed_sessions(tier, tmp_path):
+    """#2639: every re-measure action the envelope mints posts ``{}``.
+
+    ``resolve_plan_shape`` is strict about unknown names and LENIENT about
+    absence, so an empty body resolved to ``full`` — and the envelope has no
+    way to name a tier, because the action does not know what the session was.
+    Observed on a live round-2 review screen: a REMOTE session's own retry
+    silently minted a tier the turntable rig cannot walk (full is not
+    externally positioned, and its verify plan raises in
+    ``position_angle_deg``). Express households were demoted by the same line.
+
+    All three tiers are walked rather than just the reported one: the defect
+    is the ABSENT-tier path, and a fix that special-cased remote would leave
+    express demoted exactly as it was.
+    """
+    resolved = _tier_resolved_by_prepare(
+        {}, {"session_id": "cap_lapsed", "tier": tier}, tmp_path,
+    )
+
+    assert resolved == tier
+
+
+def test_the_tier_a_household_explicitly_chooses_still_wins(tmp_path):
+    """The control. Inheriting must not turn the tier chooser into a no-op.
+
+    The Express done screen's "Run a Full measurement" posts an explicit tier
+    over a lapsed express session, and that is a household changing
+    instrument rather than retrying one.
+    """
+    from jasper.web import correction_crossover_v2 as v2host  # noqa: F401
+    from jasper.active_speaker.crossover_v2_flow import TIER_FULL
+
+    resolved = _tier_resolved_by_prepare(
+        {"tier": TIER_FULL}, {"session_id": "cap_lapsed", "tier": "express"},
+        tmp_path,
+    )
+
+    assert resolved == TIER_FULL
+
+
+def test_a_first_session_with_nothing_to_inherit_keeps_the_shipped_default(
+    tmp_path,
+):
+    """No lapsed session is not a tier. ``None`` must still reach the resolver
+    as ``None`` so the shipped default answers, rather than becoming an empty
+    string the strict half would refuse."""
+    from jasper.web import correction_crossover_v2 as v2host  # noqa: F401
+    assert _tier_resolved_by_prepare({}, {"session_id": "cap_first"}, tmp_path) is None

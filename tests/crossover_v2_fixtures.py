@@ -402,6 +402,18 @@ class FakeSeams:
     # PR-L5: the delta probe's automatic-rollback seam. ``None`` (the default)
     # is the honest "no binding" case the conductor must still refuse under.
     rollback: Any = None
+    # #2291's anchor half of "can this host restore" — the STATE fact beside
+    # ``rollback``'s process fact. Production binds it UNCONDITIONALLY on both
+    # stages (``bind_v2_stage_seams``), so a fixture that binds ``rollback``
+    # and leaves this unbound is not modelling any real speaker: the round
+    # would route to ``recovery_required`` on a host whose Undo works.
+    #
+    # It matters here since the fifth-principle routing. A delta-probe rollback
+    # class used to restore from the probe's own seam, which asked only whether
+    # ``rollback`` was bound; it now restores through the adoption table, which
+    # correctly asks both halves. Defaulted to follow ``rollback`` so every
+    # existing fixture keeps modelling the host it meant to.
+    rollback_available: Any = None
     # #1866: every level-frame finding the conductor banks, in order. Bound by
     # default (unlike ``rollback``) because "no findings seam" is the degraded
     # case here, not the normal one — a test that wants it unbound passes
@@ -459,6 +471,14 @@ class FakeSeams:
             apply_complete=lambda: self.apply_done,
             apply_failed=lambda: self.apply_failed_code,
             rollback=self.rollback,
+            # Follows ``rollback`` unless a test says otherwise — see the
+            # field's own note for why an unbound anchor beside a bound
+            # rollback models no real host.
+            rollback_available=(
+                self.rollback_available
+                if self.rollback_available is not None
+                else (None if self.rollback is None else (lambda: True))
+            ),
             applied_boosts=lambda: self.applied_boosts,
             applied_profile=self.applied_profile,
             publish_findings=self.banked_findings.append,
