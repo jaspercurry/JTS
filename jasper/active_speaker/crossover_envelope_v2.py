@@ -2696,12 +2696,12 @@ def _envelope(
         "progress": _progress(active_step),
         "applied": _applied_chip(status),
         # WHICH adoption row the last graded round fired, for a driver chaining
-        # rounds (#2537). Three of the six rows restore and three keep, so the
-        # outcome alone cannot say which rule applied, and the reason travels
-        # from whichever axis decided — the row is the stable thing to branch
-        # on. Since #2602 that is load-bearing on this very screen rather than
-        # only for a driver: rows 2 and 6 share the ``keep_for_iteration``
-        # outcome and carry opposite news, so the copy keys on the row.
+        # rounds (#2537). Three of the seven rows restore and four keep the
+        # graph, sharing two outcomes between them, so the outcome alone cannot
+        # say which rule applied, and the reason travels from whichever axis
+        # decided — the row is the stable thing to branch on. Load-bearing on
+        # this very screen since #2602, not only for a driver: rows that share
+        # an outcome carry opposite news, so the copy keys on the row.
         # ``None`` until a round has been graded.
         #
         # Machine data on a household surface, deliberately: the alternative is
