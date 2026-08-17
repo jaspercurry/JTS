@@ -6887,6 +6887,35 @@ def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
             # the crossover frequency and the declared driver bands. ``None``
             # when the selected band carried no id: never a stand-in label.
             out[f"{role}_snr_band"] = worst.get("band_id")
+            # The ALIGNMENT-class trio, beside the MAGNITUDE one (#2640). Same
+            # shape, same source pattern, no decision change — these three are
+            # published because the number they carry DECIDES polarity and
+            # delay (`_select_alignment_pair` refuses the pair when this
+            # verdict is `insufficient`) and reached no surface at all: the
+            # only alignment-SNR footprint anywhere was a single OR'd boolean
+            # on `event=program_analysis.alignment_selection`, with no dB, no
+            # role attribution, and no band.
+            #
+            # A separate trio rather than a widened one because they answer
+            # different questions under different laws: magnitude trusts 25 dB
+            # and has a `reduced` rung, alignment demands 35 dB and has none
+            # (`snr_policy._band_verdict`). Collapsing them would let a capture
+            # that is fine for a trim read as fine for a null depth.
+            #
+            # `.get(...) or {}` twice over, deliberately: a block written
+            # before this key existed carries no `alignment` at all, and this
+            # function's contract is that a foreign or partial analysis
+            # degrades to an emptier summary rather than raising past the
+            # caller's best-effort guard.
+            alignment = resp.snr.get(DRIVER_SNR_ALIGNMENT_KEY) or {}
+            alignment_worst = alignment.get("worst_relevant") or {}
+            out[f"{role}_alignment_snr_db"] = alignment_worst.get(
+                "estimated_snr_db"
+            )
+            out[f"{role}_alignment_snr_verdict"] = driver_alignment_snr_verdict(
+                resp
+            )
+            out[f"{role}_alignment_snr_band"] = alignment_worst.get("band_id")
 
     for pilot in getattr(analysis, "pilots", None) or ():
         role = pilot.role

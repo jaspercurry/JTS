@@ -195,7 +195,7 @@ What the frame may and may not do is asymmetric on purpose:
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
 import numpy as np
@@ -489,6 +489,32 @@ DELTA_PROBE_MIN_BINS: int = 8
 # enough to have failed the amplitude test that got us into this branch, and
 # the two constants cannot disagree about a correction of that size.
 DELTA_PROBE_SHORTFALL_GAIN_CEILING: float = 0.85
+
+#: The band ids a realization ratio is reported per (#2649).
+#:
+#: Reported instead of relying on ONE least-squares slope over the whole graded
+#: band, because that scalar can be manufactured by a defect confined to a band
+#: the system is not even allowed to command in. On the 2026-08-16 shortfall
+#: round the pooled slope read 0.664 while the trusted HF realized 96-101% of
+#: commanded: ~90% of the squared error came from a -3.04 dB hole ABOVE the
+#: 16.4 kHz mic-trust ceiling.
+#:
+#: ``crossover`` is the graded tier BELOW :data:`DELTA_PROBE_HF_SPLIT_HZ` —
+#: named for what it contains (the crossover region and the bulk of commanded
+#: correction) rather than derived from any Fc, which this function is not told
+#: and must not guess. ``trusted_hf`` is the graded tier at or above that split.
+#: ``above_ceiling`` is reported and NEVER graded: it is the span inside the
+#: caller's requested band that the mic-trust ceiling excluded.
+DELTA_PROBE_BAND_CROSSOVER = "crossover"
+DELTA_PROBE_BAND_TRUSTED_HF = "trusted_hf"
+DELTA_PROBE_BAND_ABOVE_CEILING = "above_ceiling"
+
+#: Every band id a realization block can carry, in report order.
+DELTA_PROBE_REALIZATION_BANDS: tuple[str, ...] = (
+    DELTA_PROBE_BAND_CROSSOVER,
+    DELTA_PROBE_BAND_TRUSTED_HF,
+    DELTA_PROBE_BAND_ABOVE_CEILING,
+)
 
 # Widening of the across-position level spread (``BandSpread.sigma_db``, dB)
 # beyond which the post-apply cloud is called spatially costly.
@@ -849,6 +875,41 @@ class DeltaProbeMap:
     #: reduces to a finding against the per-bin tolerance. ``None`` when no bin
     #: was in the safety mask, never 0.0 (``gain_factor``'s distinction).
     max_signed_error_db: float | None = None
+    #: How much of what was commanded arrived, PER BAND (#2649), keyed by
+    #: :data:`DELTA_PROBE_REALIZATION_BANDS`. Each entry is
+    #: ``{band_hz, n_bins, ratio, graded}``; ``ratio`` is ``None`` for a band
+    #: too thin to fit a slope through, and ``graded`` is False for the
+    #: above-ceiling band, which is reported so a reader can see what the
+    #: mic-trust ceiling excluded and never enters a verdict.
+    #:
+    #: Empty on every map that never reached the fit (``unavailable``,
+    #: ``safety_only``) — the same "not measured" those maps already report by
+    #: leaving ``gain_factor`` ``None``.
+    band_realization: Mapping[str, Mapping[str, Any]] = field(
+        default_factory=dict
+    )
+    #: The mic-trust ceiling the caller applied, in Hz — ``None`` when the
+    #: caller supplied none and the graded band is the requested one.
+    trust_ceiling_hz: float | None = None
+    #: The band actually GRADED: the requested band intersected with the
+    #: ceiling above. Reported beside ``requested_band_hz`` rather than
+    #: replacing it, so "what the caller asked for" and "what was judged" stay
+    #: two readable facts instead of one ambiguous one.
+    graded_band_hz: tuple[float, float] | None = None
+
+    @property
+    def trusted_floor_hz(self) -> float | None:
+        """The graded band's lower edge — the gate's trusted floor.
+
+        A named accessor because the round receipt banks this number beside its
+        objectives (#2609 SF5): a later round can then refuse a cross-floor
+        comparison instead of consuming a gate-length change as movement. It is
+        the requested band's floor by construction — the ceiling only ever
+        narrows the top — and reading it off the graded band keeps floor and
+        ceiling coming from one place.
+        """
+        band = self.graded_band_hz or self.requested_band_hz
+        return None if band is None else float(band[0])
 
     @property
     def matched(self) -> bool:
@@ -912,6 +973,30 @@ class DeltaProbeMap:
             # The frame's own terms and the grades taken with it removed, nested
             # together so a reader picks a frame of reference once and reads a
             # matching set rather than pairing keys by name.
+            # How much of the commanded correction arrived, PER BAND, with the
+            # trusted-band provenance that says which bins were allowed to
+            # answer (#2649). Nested for the reason every other block here is:
+            # a reader judging a realization claim needs the per-band ratios,
+            # the band that was graded, and the ceiling that narrowed it as one
+            # set, not five keys to pair up by name.
+            #
+            # ``pooled`` is ``gain_factor`` under its band-resolved name, kept
+            # here as well as at the top level so a consumer reading this block
+            # never has to reach outside it to compare the whole-band answer
+            # against the per-band ones.
+            "realization": {
+                "pooled": self.gain_factor,
+                "bands": {
+                    band_id: dict(entry)
+                    for band_id, entry in self.band_realization.items()
+                },
+                "graded_band_hz": (
+                    None if self.graded_band_hz is None
+                    else list(self.graded_band_hz)
+                ),
+                "trusted_floor_hz": self.trusted_floor_hz,
+                "trust_ceiling_hz": self.trust_ceiling_hz,
+            },
             "frame": {
                 **self.frame.to_dict(),
                 "removed": {
@@ -1231,6 +1316,70 @@ def interquartile_band_hz(freqs_hz: np.ndarray) -> tuple[float, float] | None:
     return (lo, hi) if hi > lo > 0.0 else None
 
 
+def _band_realization(
+    freqs: np.ndarray,
+    deframed: np.ndarray,
+    commanded: np.ndarray,
+    *,
+    graded: np.ndarray,
+    in_band: np.ndarray,
+    ceiling_hz: float | None,
+) -> dict[str, dict[str, Any]]:
+    """Per-band realization ratio: how much of what was commanded arrived.
+
+    One least-squares slope per band instead of one over all of them, so a
+    defect confined to a band cannot be smeared across the whole graded span —
+    and so a band the fitter was never allowed to command in cannot contribute
+    to the verdict at all. See :data:`DELTA_PROBE_REALIZATION_BANDS` for the
+    three ids and why they are cut where they are.
+
+    Each entry carries ``band_hz`` (the bins actually present, not the nominal
+    edges), ``n_bins``, ``ratio``, and ``graded``. ``ratio`` is ``None`` for a
+    band with fewer than :data:`DELTA_PROBE_MIN_BINS` bins — too few to fit a
+    slope through, and a slope that says nothing must not be reported as a
+    number that does. ``graded`` is False for ``above_ceiling`` always: those
+    bins are reported so a reader can SEE what the ceiling excluded, and they
+    are excluded from the verdict for the same reason the fitter may not
+    command there.
+    """
+
+    hf = freqs >= DELTA_PROBE_HF_SPLIT_HZ
+    above = (
+        in_band & (freqs > float(ceiling_hz))
+        if ceiling_hz is not None
+        else np.zeros_like(in_band)
+    )
+    selectors = (
+        (DELTA_PROBE_BAND_CROSSOVER, graded & ~hf, True),
+        (DELTA_PROBE_BAND_TRUSTED_HF, graded & hf, True),
+        (DELTA_PROBE_BAND_ABOVE_CEILING, above & np.isfinite(commanded), False),
+    )
+    out: dict[str, dict[str, Any]] = {}
+    for band_id, sel, is_graded in selectors:
+        n = int(np.count_nonzero(sel))
+        entry: dict[str, Any] = {
+            "band_hz": (
+                [float(freqs[sel][0]), float(freqs[sel][-1])] if n else None
+            ),
+            "n_bins": n,
+            "ratio": None,
+            "graded": bool(is_graded),
+        }
+        if n >= DELTA_PROBE_MIN_BINS:
+            c_b = commanded[sel]
+            design = np.column_stack((np.ones_like(c_b), c_b))
+            try:
+                _, slope = np.linalg.lstsq(
+                    design, deframed[sel], rcond=None,
+                )[0]
+            except (np.linalg.LinAlgError, ValueError):
+                slope = np.nan
+            if np.isfinite(slope):
+                entry["ratio"] = float(slope)
+        out[band_id] = entry
+    return out
+
+
 def classify_delta_probe(
     freqs_hz: np.ndarray,
     realized_delta_db: np.ndarray,
@@ -1241,6 +1390,7 @@ def classify_delta_probe(
     expected_offset_db: float = 0.0,
     entry_delta_db: Any | None = None,
     declared_transfer_db: Any | None = None,
+    trust_ceiling_hz: float | None = None,
     state_axis_only: bool = False,
 ) -> DeltaProbeMap:
     """Classify one applied correction's realized-vs-commanded map.
@@ -1353,13 +1503,30 @@ def classify_delta_probe(
     # accounting, which is the only part that could be a defect.
     realized = realized - offset
 
+    # The mic-trust ceiling, intersected in (#2649). **The fitter may not
+    # command there; the probe may not grade there.** The caller derives the
+    # ceiling (this function owns no gate, no validity floor and no ceiling of
+    # its own — it is TOLD both bounds), but the intersection happens here so
+    # one place decides which bins are graded and the map can report the
+    # requested band, the applied ceiling and the result together instead of a
+    # reader pairing three numbers from two layers.
+    #
+    # Why it matters: the grading band comes from the capture's own gate
+    # disclosure, which is blind to the mic tier. On a `reference` mic the fit
+    # envelope is exactly zero from about 16.4 kHz, so every bin above that was
+    # commanded at zero and measured through a microphone nobody trusts —
+    # grading them manufactured 90% of the 2026-08-16 round's squared error.
     lo_hz, hi_hz = requested_band_hz
-    in_band = (
-        (freqs >= lo_hz)
-        & (freqs <= hi_hz)
-        & np.isfinite(realized)
-        & np.isfinite(commanded)
-    )
+    graded_hi_hz = hi_hz
+    if trust_ceiling_hz is not None and float(trust_ceiling_hz) < graded_hi_hz:
+        graded_hi_hz = float(trust_ceiling_hz)
+    measurable = np.isfinite(realized) & np.isfinite(commanded)
+    # What the CALLER asked to grade, before the ceiling narrowed it. Kept so
+    # the map can report the excluded span rather than silently dropping it —
+    # a ceiling that removes bins without saying so is the same blindness in
+    # the other direction.
+    requested_in_band = (freqs >= lo_hz) & (freqs <= hi_hz) & measurable
+    in_band = requested_in_band & (freqs <= graded_hi_hz)
     floor = graded_command_floor_db(freqs)
     mask = in_band & (np.abs(commanded) >= floor)
     if int(mask.sum()) < DELTA_PROBE_MIN_BINS:
@@ -1585,6 +1752,20 @@ def classify_delta_probe(
     intercept, gain_factor = (
         float(v) for v in np.linalg.lstsq(design, deframed[mask], rcond=None)[0]
     )
+    # The same question asked per band (#2649). ``gain_factor`` above stays
+    # exactly what it was and keeps its place on the wire; this is the
+    # band-resolved answer beside it, and it is what the shortfall verdict now
+    # reads.
+    realization = _band_realization(
+        freqs, deframed, commanded,
+        graded=mask,
+        in_band=requested_in_band,
+        ceiling_hz=graded_hi_hz if trust_ceiling_hz is not None else None,
+    )
+    graded_ratios = [
+        entry["ratio"] for entry in realization.values()
+        if entry["graded"] and entry["ratio"] is not None
+    ]
 
     tolerance_full = _tolerance_curve(freqs)
     error_full = np.where(mask, realized - commanded, 0.0)
@@ -1677,6 +1858,11 @@ def classify_delta_probe(
             boost_overshoot_octaves=boost_overshoot_octaves,
             realized_louder_than_commanded=realized_louder,
             max_signed_error_db=max_signed_error_db,
+            band_realization=realization,
+            trust_ceiling_hz=(
+                None if trust_ceiling_hz is None else float(trust_ceiling_hz)
+            ),
+            graded_band_hz=(float(lo_hz), float(graded_hi_hz)),
         )
 
     if not exceeded:
@@ -1825,10 +2011,27 @@ def classify_delta_probe(
     # attenuation does not compress — and belongs in the model-error bucket
     # where someone will look at the filter math.
     commanded_is_lift = float(np.max(c)) >= DELTA_PROBE_MIN_COMMANDED_DB
+    # **EVERY graded band must fall short, not the pooled slope** (#2649).
+    #
+    # Two changes in one condition, both narrowing when a ROLLBACK verdict
+    # fires. Bins above the mic-trust ceiling are no longer graded at all, so
+    # they cannot manufacture a slope; and a shortfall confined to ONE band is
+    # not level-dependent — a driver that fails to deliver level fails to
+    # deliver it everywhere it was asked, and a band-localised miss is a shape
+    # error, which is what ``model_error`` already means. Taking the worst band
+    # instead would fire MORE often on less evidence, which is the wrong
+    # direction for a verdict whose consequence is restoring the household's
+    # previous sound.
+    #
+    # Falls back to the pooled slope when no graded band cleared
+    # ``DELTA_PROBE_MIN_BINS`` — a band too thin to fit is not evidence either
+    # way, and the pooled fit is what this test read before band resolution
+    # existed, so a narrow graded band classifies exactly as it always did.
+    shortfall_ratio = max(graded_ratios) if graded_ratios else gain_factor
     if (
         not scaled_exceeded
         and commanded_is_lift
-        and 0.0 <= gain_factor < DELTA_PROBE_SHORTFALL_GAIN_CEILING
+        and 0.0 <= shortfall_ratio < DELTA_PROBE_SHORTFALL_GAIN_CEILING
     ):
         return _map(
             VERDICT_LEVEL_DEPENDENT_SHORTFALL,
@@ -1884,12 +2087,16 @@ class _PlainBand:
 
 
 __all__ = [
+    "DELTA_PROBE_BAND_ABOVE_CEILING",
+    "DELTA_PROBE_BAND_CROSSOVER",
+    "DELTA_PROBE_BAND_TRUSTED_HF",
     "DELTA_PROBE_HF_SPLIT_HZ",
     "DELTA_PROBE_MIN_BINS",
     "DELTA_PROBE_MIN_COMMANDED_DB",
     "DELTA_PROBE_MIN_COMMANDED_HIGH_DB",
     "DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES",
     "DELTA_PROBE_MIN_QUIET_COVERAGE",
+    "DELTA_PROBE_REALIZATION_BANDS",
     "DELTA_PROBE_RESIDUAL_OFFSET_TOLERANCE_DB",
     "DELTA_PROBE_ROLLBACK_VERDICTS",
     "DELTA_PROBE_SHORTFALL_GAIN_CEILING",

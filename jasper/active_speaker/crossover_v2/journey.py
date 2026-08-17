@@ -313,6 +313,24 @@ class CommissionJourney:
         """The apply has been observed — arms the soft-held VERIFY (§5.2)."""
         self._applied = True
 
+    def mark_restored(self) -> None:
+        """The applied graph has been put back — disarms the VERIFY hold (#2616).
+
+        :meth:`mark_applied`'s inverse, and the reason it has to exist: this
+        object is the single owner of ``applied``, and until it had a way to go
+        back the flag could only ever be set. The durable state's own clear
+        (``correction_crossover_v2.observe_restore``) holds no conductor, so a
+        live session that rolled back kept ``applied`` True IN MEMORY, and the
+        next ``persist_conductor_state`` wrote that stale True straight back
+        over the clear — one fact with two owners, resolved here in favour of
+        the one whose job it is.
+
+        Unconditional, like its inverse: this state machine declines
+        illegal-transition guards (see the class docstring), so restoring a
+        session that never applied is a no-op rather than an error.
+        """
+        self._applied = False
+
     # --- derivations ---------------------------------------------------------
 
     @property

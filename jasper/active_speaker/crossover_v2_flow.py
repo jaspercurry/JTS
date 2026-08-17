@@ -6300,6 +6300,22 @@ class CrossoverV2Session:
             session_id=self.session_id,
         )
 
+    def note_restore_observed(self) -> None:
+        """The restore-observed host event — disarms the VERIFY hold (#2616).
+
+        :meth:`note_apply_complete`'s mirror, and the same split of duties: the
+        journey owns the flag and says nothing, this says it. The host calls it
+        when the DURABLE state shows a restore this in-memory session did not
+        see — the delta probe's rollback seam and the round's adoption restore
+        both clear the durable flag through ``observe_restore``, which holds no
+        conductor and so could not tell the owner.
+        """
+        self._journey.mark_restored()
+        log_event(
+            logger, "correction.crossover_v2_restore_observed",
+            session_id=self.session_id,
+        )
+
     def _apply_observed(self) -> bool:
         if self._journey.applied:
             return True
@@ -8841,6 +8857,61 @@ class CrossoverV2Session:
             return 0.0
         return worst_headroom_cost_db(linearization)
 
+    def _mic_trust_ceiling_hz(self, freqs: Any) -> float | None:
+        """The frequency above which the FITTER was not allowed to command.
+
+        Read off the envelope module's own ``mic_trust_limit`` curve rather than
+        from a table copied here: the first grid bin where the allowed depth is
+        exactly 0 dB IS the ceiling, by that function's construction, so the
+        probe's ceiling and the fit's cannot drift. On a ``reference`` mic that
+        lands at about 16.4 kHz — the first bin past the table's 16 kHz taper
+        zero.
+
+        **The fitter may not command there; the probe may not grade there**
+        (#2649). Grading bins above it graded a microphone nobody trusts against
+        a command that was never issued: on the 2026-08-16 round that produced
+        ~90% of the squared error behind a 0.664 pooled realization, while the
+        trusted HF had realized 96-101% of commanded.
+
+        The tier reaches VERIFY through the published candidate's own fits —
+        ``_analyze_verify`` does not stamp ``mic_tier`` on its analysis, and the
+        MEASURE analysis that carries one is released after the fit. Same route
+        and same guard shape as :meth:`_candidate_headroom_cost_db`.
+
+        ``None`` — no ceiling, so the graded band is the caller's requested one,
+        byte-identically to before this existed — when no candidate is bound, no
+        fit recorded a tier, the tier is not one this build knows, or the curve
+        never reaches zero on this grid.
+        """
+        linearization = getattr(self._candidate, "linearization", None)
+        if not isinstance(linearization, Mapping):
+            return None
+        tier = ""
+        for entry in linearization.values():
+            if isinstance(entry, Mapping) and entry.get("mic_tier"):
+                tier = str(entry["mic_tier"])
+                break
+        if not tier:
+            return None
+        from jasper.active_speaker.linearization_envelope import mic_trust_limit
+
+        try:
+            grid = np.asarray(freqs, dtype=float)
+            allowed = mic_trust_limit(grid, tier=tier)
+        except (ValueError, TypeError):
+            # An unknown tier raises by design in the envelope module. Here that
+            # is missing evidence, not a broken session: fall back to no ceiling
+            # and keep grading what the gate trusted.
+            log_event(
+                logger, "correction.crossover_v2_mic_trust_ceiling_unavailable",
+                level=logging.WARNING, session_id=self.session_id, mic_tier=tier,
+            )
+            return None
+        zeros = np.flatnonzero(allowed <= 0.0)
+        if zeros.size == 0:
+            return None
+        return float(grid[zeros[0]])
+
     def _refuse(self, code: str) -> "CaptureBeginRefused":
         """Build the refusal for ``code``, with that code's household copy, and
         record it as this session's failure code.
@@ -10361,6 +10432,7 @@ class CrossoverV2Session:
             probe = classify_delta_probe(
                 freqs, (measured_s - predicted_s) + declared_db, declared_db,
                 band_hz=band_hz, spatial=spatial,
+                trust_ceiling_hz=self._mic_trust_ceiling_hz(freqs),
                 expected_offset_db=self._applied_offset_db(),
                 state_axis_only=True,
             )
@@ -10372,6 +10444,7 @@ class CrossoverV2Session:
             probe = classify_delta_probe(
                 freqs, realized_db, commanded_db, band_hz=band_hz,
                 declared_transfer_db=declared_db,
+                trust_ceiling_hz=self._mic_trust_ceiling_hz(freqs),
                 spatial=spatial,
                 expected_offset_db=self._applied_offset_db(),
                 entry_delta_db=self._entry_delta_db(freqs, predicted_s, commanded_db),
