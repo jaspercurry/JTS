@@ -953,8 +953,9 @@ def test_a_band_that_survives_no_bin_falls_back_to_full_band(band):
     sides are zeroed, the peak is 0.0, and the function returns index 0 --
     which on this fixture is 2022.4 ms from the real arrival, i.e. a timeline
     error 67x the per-segment search window. Deleting the guard leaves every
-    other test in this file green (the #2644 panel's G7 mutation: 62/62), so
-    the promise needs its own assertion.
+    OTHER test in this file green -- the #2644 review's G7 mutation ran it
+    against the then-62-test suite and got 62 passed -- so the promise needs
+    its own assertion rather than a reader's trust.
     """
     prog = _incident_program()
     cap = _incident_room(prog, tone_rms=QUIET_TONE_RMS)
