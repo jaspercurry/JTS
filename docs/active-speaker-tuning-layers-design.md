@@ -151,14 +151,14 @@ morning after the series-1 convergence run on jts3.
    ([bcspeakers.com DE250](https://www.bcspeakers.com/en/products/hf-driver/1/8/DE250)).
    The owner's attested 1600 Hz is therefore **confirmed as the published
    fact**, and **2000 Hz is not a published figure for this driver** — no
-   source checked cites it. One provenance caveat: the 1.6 kHz number was
-   read off B&C's own live product page, but the slope footnote was readable
-   only from a mirror of B&C's authored spec PDF (Parts Express'
-   document server), because three attempts to extract text from the PDF on
-   bcspeakers.com returned unrenderable image data. Corroborated at 1.6 kHz
-   by US Speaker's reseller listing; no contradicting figure found anywhere.
-   Note the shape of the fact: the number is meaningless without its slope
-   condition, which is why the field carries both.
+   source checked cites it. Provenance: the number reads off B&C's own live
+   product page, and the slope footnote reads cleanly from B&C's own
+   print-PDF endpoint (`/en/products/hf-driver/1-0/8/de250.pdf`, a genuine
+   text layer); the Parts Express mirror of the same sheet agrees.
+   Corroborated at 1.6 kHz by US Speaker's reseller listing; no contradicting
+   figure found anywhere. Note the shape of the fact: the number is
+   meaningless without its slope condition, which is why the field carries
+   both.
 9. **A research prompt asks for published facts; margins are computed
    downstream (2026-08-17).** The upstream driver-research prompt produced
    the 2000 Hz figure and presented it as datasheet data. The rule: a
@@ -176,16 +176,15 @@ morning after the series-1 convergence run on jts3.
    18 Sound); the other two use "Minimum Crossover Frequency" or
    "Recommended min. crossover" (FaitalPro, Celestion). The slope condition
    usually rides along in a numbered footnote: B&C and 18 Sound print the
-   *identical* sentence, "12 dB/oct. or higher slope high-pass filter." (read
-   verbatim from both makers' own PDFs; 18 Sound repeats it on the ND1460, so
-   it is house style), and FaitalPro uses the same template. Celestion folds
-   it into the field name instead. It is not universal — BMS's 4590 field
-   carries no slope qualifier at all. **Dome tweeters usually have no such
-   line whatsoever.** SB Acoustics and Scan-Speak instead express it as the
-   test condition footnoted to the *power-handling* rating ("IEC 268-5,
-   high-pass Butterworth, 2600 Hz, 12 dB/oct."; "X-over: 2. order HP
-   Butterworth, 2.5 kHz"), phrased as a filter order rather than a dB/octave
-   figure.
+   *identical* sentence, "12 dB/oct. or higher slope high-pass filter."
+   (verbatim; 18 Sound repeats it on the ND1460, so it is house style), and
+   FaitalPro uses the same template. Celestion folds it into the field name
+   instead. It is not universal — BMS's 4590 field carries no slope
+   qualifier at all. **Dome tweeters usually have no such line whatsoever.**
+   SB Acoustics and Scan-Speak instead express it as the test condition
+   footnoted to the *power-handling* rating ("IEC 268-5, high-pass
+   Butterworth, 2600 Hz, 12 dB/oct."; "X-over: 2. order HP Butterworth,
+   2.5 kHz"), phrased as a filter order rather than a dB/octave figure.
    Consequences for the prompt: ask for the number **and** a separately
    reported slope/filter-order qualifier; do not key on the literal phrase
    "recommended crossover"; and for a dome tweeter, look in the
