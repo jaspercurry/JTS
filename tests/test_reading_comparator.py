@@ -29,6 +29,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import math
+import operator
 import pathlib
 import sys
 from typing import Any
@@ -170,7 +171,10 @@ def test_a_bool_flipping_to_a_number_is_a_change_not_a_silence() -> None:
     only nulls the delta, and never touched the status.
     """
 
-    assert True == 1.0  # noqa: E712 - the premise, stated rather than implied
+    # The premise, stated rather than implied. `operator.eq` is the `==` this
+    # is a claim about, so it says so without a literal `== True` comparison.
+    assert operator.eq(True, 1.0)
+    assert operator.eq(False, 0)
 
     for before, after in ((True, 1.0), (1.0, True), (False, 0), (0, False)):
         results = _by_name(_compare({"flag": before}, {"flag": after}))
