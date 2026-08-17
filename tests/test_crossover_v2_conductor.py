@@ -6514,7 +6514,6 @@ from tests.crossover_v2_fixtures import (
     _FIXTURE_RAW_TRIM_DB,
     _FakeVolumePlan,
     _GOLDEN_V2_PLAN_BYTES,
-    _LEVEL_FRAME_FINDING_TILT_DB_PER_OCT,
     _LINEARIZABLE_FREQS_HZ,
     _POST_APPLY_RESIDUAL_DB,
     _ROOM_SCALE_EXPECTED_RMS_DB,
@@ -6562,7 +6561,6 @@ from tests.crossover_v2_fixtures import (
     _snr_pilot,
     _solve_fixture_raw_trim,
     _spliced_verify,
-    _tilted_woofer_fixture,
     _tracking_curve,
     _tracking_with_frame,
     _verify_analysis,
@@ -7765,29 +7763,40 @@ def test_fit_linearization_wires_ripple_optimal_seeded_by_anchored_giveback(
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
     c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    verdict = _run_phase(c, 2, 2)
+    with monkeypatch.context() as mp:
+        plans = _plan_spy(mp)
+        _run_phase(c, 1, 1)
+        verdict = _run_phase(c, 2, 2)
     assert verdict["accepted"] is True
 
     assert len(calls) == 1
     call = calls[0]
     assert call["fc_hz"] == FC_HZ
     assert call["sign"] == 1  # _alignment()'s default polarity="normal"
-    # Anchored seed = raw trim + that branch's own measured give-back, with the
-    # shared non-positive normalization shift applied to both roles.
-    raw_trim = dict(_FIXTURE_RAW_TRIM_DB)
+    # Anchored seed = the anchor's BASE + that branch's own measured give-back,
+    # with the shared non-positive normalization shift applied to both roles.
+    #
+    # The single-datum-owner migration (#2609) deleted the two-voter frame that
+    # used to add a reconciled offset to this same anchor, and moved the base
+    # itself: it is the summed at-the-mark capture's per-role trim, which
+    # ``_conductor`` pre-banks for every stage-2-shaped fixture. The base is
+    # READ off the plan's own disclosure rather than re-derived here — this test
+    # is pinning the anchor's ARITHMETIC (``base + giveback``, normalized
+    # non-positive, no third term), not re-deriving the datum, and a second
+    # derivation of the base is exactly the drift the migration removed.
+    plan = plans[-1]
+    base = plan.summed_level_reference_db
+    assert base is not None, (
+        "the fixture pre-banks an entry baseline, so the summed owner must "
+        "have placed this anchor — a None here means the plumbing broke, not "
+        "that the fallback is fine"
+    )
     giveback = {
         role: c.candidate.linearization[role]["correction_giveback_db"]
         for role in ("woofer", "tweeter")
     }
-    # The single-datum-owner migration (#2609) deleted the two-voter frame
-    # that used to add a reconciled offset to this same anchor. This harness
-    # never captures a summed at-the-mark baseline (no test in this file
-    # populates ``_measure_entry_baseline``), so ``anchor_trims`` always falls
-    # back to the raw measured trim: the anchor is ``raw_trim + giveback``,
-    # with no third term.
     unnormalized = {
-        r: raw_trim[r] + giveback[r] for r in ("woofer", "tweeter")
+        r: base[r] + giveback[r] for r in ("woofer", "tweeter")
     }
     shift = max(0.0, max(unnormalized.values()))
     expected_anchored = {r: v - shift for r, v in unnormalized.items()}
@@ -7832,7 +7841,7 @@ def test_fit_linearization_wires_ripple_optimal_seeded_by_anchored_giveback(
         pytest.approx(expected_anchored["tweeter"]),
         pytest.approx(resolved_trim_t),
     )
-    assert committed_t != pytest.approx(raw_trim["tweeter"])
+    assert committed_t != pytest.approx(_FIXTURE_RAW_TRIM_DB["tweeter"])
     # …and the fixture-specific outcome, stated precisely rather than hedged, so
     # a future flip back is visible here rather than silent. Since #2106 the
     # scan does not move AT ALL on this pair — it returns its own seed, so the
@@ -10471,14 +10480,21 @@ def test_a_role_with_no_crossover_region_is_credited_nothing():
     assert sections_by_role(()) == {}
 
 
-def test_an_agreeing_frame_banks_nothing():
-    """The ordinary session, which the ruling does not touch: a frame inside
-    tolerance mints no finding and calls no seam.
+def test_an_ordinary_session_banks_no_estimator_finding():
+    """The ordinary session mints no level-estimator finding and calls no
+    banking seam.
 
-    Pinned because "banks a finding" is a NEW side effect on the path every
-    healthy speaker takes, and the cheapest way for it to go wrong is to fire
-    unconditionally — which would put a diagnosis of a disagreement in front
-    of every household whose instruments agreed.
+    Pinned because "banks a finding" is a side effect
+    (:func:`~jasper.active_speaker.crossover_v2.accountability.
+    estimator_consistency_record`) and the cheapest way for it to go wrong is
+    to fire unconditionally — which would put a diagnosis in front of every
+    household regardless of evidence.
+
+    ``_conductor`` pre-banks an entry baseline for every stage-2-shaped
+    fixture, so this session DOES have a summed owner and the check does run —
+    it simply finds both estimators inside tolerance. That is the assertion
+    worth having: not "the check was skipped" but "the check ran and stayed
+    quiet".
     """
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
@@ -10488,9 +10504,10 @@ def test_an_agreeing_frame_banks_nothing():
         plans = _plan_spy(mp)
         _run_phase(c, 1, 1)
         assert _run_phase(c, 2, 2)["accepted"] is True
-    assert (
-        plans[-1].level_frame_disagreement_db < LEVEL_FRAME_AGREEMENT_TOLERANCE_DB
-    )
+    consistency = plans[-1].level_consistency
+    assert consistency is not None, "the fixture's summed owner should be read"
+    assert consistency.suspect is False
+    assert consistency.worst_delta_db < consistency.tolerance_db
     assert banked == []
 
 
