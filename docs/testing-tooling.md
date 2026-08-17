@@ -38,6 +38,7 @@
 | Grade the boost-permission gate's decision against a defect you injected on purpose (rather than one a room happened to produce) | [`tests/test_crossover_v2_boost_scenarios.py`](../tests/test_crossover_v2_boost_scenarios.py) — synthetic spatial scenarios, the validation ladder's third rung |
 | Validate two Apple USB-C DACs as a lab-only output topology | [Dual Apple DAC lab runner](#dual-apple-dac-lab-runner) |
 | Manually detect, probe, or move the experimental USB turntable on JTS3 | [USB turntable experiment](#usb-turntable-experiment) |
+| Drive a crossover-measurement v2 lab round from a Mac with no browser and no phone | [E0 headless capture client](#e0-headless-capture-client) |
 | Characterize whole-system CPU/memory/journal behavior over time | [System soak artifacts](#system-soak-artifacts) |
 | Measure inter-speaker sync error for multi-room (stereo pair / sub) on WiFi | [Multi-room sync spike (P0)](#multi-room-sync-spike-p0) |
 | Measure the AirPlay latency budget a sender negotiates (free vs. tight regime for bonded-leader lip-sync) | [Pi-side diagnostics](#pi-side-diagnostics) — [`scripts/airplay-latency-probe.sh`](../scripts/airplay-latency-probe.sh) |
@@ -1359,6 +1360,41 @@ stop and exits on success or after four attempts. Read the experiment's
 [`README.md`](../experiments/usb-turntable/README.md) before use. Hardware-free
 adapter and preflight coverage lives in
 [`tests/test_usb_turntable_experiment.py`](../tests/test_usb_turntable_experiment.py).
+
+---
+
+## E0 headless capture client
+
+[`experiments/e0-capture/e0_capture.py`](../experiments/e0-capture/e0_capture.py)
+stands in for the browser capture page so a measurement microphone on a Mac
+can drive the real Pi-side crossover-v2 conductor (CHECK → MEASURE → VERIFY)
+with no browser and no phone. It speaks wire protocol v3, mints or accepts a
+session, records each plan entry with `sox`, and posts the authenticated
+phone events the conductor's position gate rides. It is the lab/agent path;
+the browser flow stays first-class for a human driver. Promoted out of an
+untracked working directory by design decision 13's companion ruling
+([#2636](https://github.com/jaspercurry/JTS/issues/2636)).
+
+Start with `--selftest`, which is offline and makes no network call:
+
+```sh
+.venv/bin/python experiments/e0-capture/e0_capture.py --selftest
+```
+
+`--start-session` / `--tap-link` reach a live Pi and make the speaker play
+sweeps, so only a human hardware operator runs them.
+[`preflight_noaudio.py`](../experiments/e0-capture/preflight_noaudio.py)
+validates mint, spec fetch, and MAC verification against a live Pi without
+playing anything. The wire contract, with `file:line` citations and a dated
+revival addendum, is
+[`PROTOCOL.md`](../experiments/e0-capture/PROTOCOL.md); read the experiment's
+[`README.md`](../experiments/e0-capture/README.md) before a hardware round,
+in particular its stated residual risk — a future capture-page change to the
+`setup` payload is not refused, it degrades the round to uncalibrated data,
+and the only signal is `correction.crossover_v2_uncalibrated_capture` in the
+`jasper-correction-web` journal. Hardware-free coverage lives in
+[`tests/test_e0_capture_experiment.py`](../tests/test_e0_capture_experiment.py),
+which runs the same offline checks `--selftest` does.
 
 ---
 

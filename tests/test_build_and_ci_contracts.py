@@ -400,6 +400,81 @@ def test_fast_lane_routes_untracked_tests_before_staging(tmp_path: Path) -> None
     assert any("tests/test_new_feature.py" in call for call in calls), calls
 
 
+def test_fast_lane_routes_an_experiment_kit_to_its_own_guard(tmp_path: Path) -> None:
+    """An edit inside experiments/<kit>/ selects that kit's guard, only.
+
+    Experiment kits keep their guards under tests/, so without this routing
+    an edit to a kit selects nothing in the fast lane and its layout/path
+    pins first run in the merge lane. The second assertion is what makes
+    the arm worth having in this shape: it derives the guard from the
+    directory name, so editing one kit does not drag in every other kit's
+    tests.
+    """
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    (repo / "scripts").mkdir()
+    (repo / "tests").mkdir()
+    (repo / "experiments" / "e0-capture").mkdir(parents=True)
+    for name in ("test-fast", "_test_lane.sh", "ci-classify.py"):
+        shutil.copy2(ROOT / "scripts" / name, repo / "scripts" / name)
+
+    pytest_calls = repo / "pytest-calls.jsonl"
+    fake_pytest = repo / "fake-pytest"
+    fake_pytest.write_text(
+        "\n".join(
+            [
+                "#!/usr/bin/env python3",
+                "import json",
+                "import os",
+                "import sys",
+                "with open(os.environ['PYTEST_CALLS'], 'a', encoding='utf-8') as f:",
+                "    f.write(json.dumps(sys.argv[1:]) + '\\n')",
+                "raise SystemExit(5 if '--last-failed' in sys.argv else 0)",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    fake_pytest.chmod(0o755)
+
+    fake_ruff = repo / "fake-ruff"
+    fake_ruff.write_text("#!/usr/bin/env sh\nexit 0\n", encoding="utf-8")
+    fake_ruff.chmod(0o755)
+
+    (repo / "tests" / "test_e0_capture_experiment.py").write_text("", encoding="utf-8")
+    # A second kit's guard, present but untouched by the change below.
+    (repo / "tests" / "test_usb_turntable_experiment.py").write_text(
+        "", encoding="utf-8"
+    )
+    # Committed first: the lane treats untracked files as changed, so an
+    # uncommitted guard would be selected by the `tests/test_*.py` arm and
+    # prove nothing about this one.
+    _commit_all(repo, "scaffold")
+
+    (repo / "experiments" / "e0-capture" / "README.md").write_text(
+        "kit prose\n", encoding="utf-8"
+    )
+
+    env = {
+        **os.environ,
+        "PYTEST": str(fake_pytest),
+        "PYTEST_CALLS": str(pytest_calls),
+        "RUFF": str(fake_ruff),
+        "TEST_BASE": "missing-base",
+    }
+    _run(["scripts/test-fast"], cwd=repo, env=env)
+
+    calls = [
+        json.loads(line)
+        for line in pytest_calls.read_text(encoding="utf-8").splitlines()
+    ]
+    selected = [arg for call in calls for arg in call if arg.startswith("tests/")]
+    assert "tests/test_e0_capture_experiment.py" in selected, calls
+    assert "tests/test_usb_turntable_experiment.py" not in selected, calls
+
+
 def test_rust_ci_gate_is_path_aware_without_renaming_visible_job() -> None:
     """Keep the visible `rust` job while avoiding unrelated apt/Cargo work."""
 
