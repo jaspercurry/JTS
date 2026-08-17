@@ -23,12 +23,24 @@ from jasper.atomic_io import atomic_write_text
 from jasper.output_topology import OutputTopology, OutputTopologyError
 from ._common import ACTIVE_CROSSOVER_ROLE_PAIRS, issue as _issue
 from .driver_protection import (
+    LOW_LIMIT_DECLARED,
+    apply_driver_low_limit,
     declared_protection_highpass_floor_hz,
+    driver_protection_profile,
     format_protection_hz,
     protection_highpass_floor_satisfied,
+    resolve_driver_low_limit,
 )
 
-SCHEMA_VERSION = 1
+#: Bumped to 2 for the one-owner low-limit collapse (#2603). A preview saved
+#: before it carries UN-DERIVED driver payloads, and staging compiles the
+#: preset straight from those, so such a file must not be reused. It cannot be
+#: caught by a content re-prove -- ``crossover_preview_fingerprint`` reads the
+#: version out of the artifact itself, so an old preview stays self-consistent
+#: -- which is why the version is what moves. ``load_crossover_preview``'s
+#: existing guard turns that into the actionable "Prepare a fresh crossover
+#: preview."
+SCHEMA_VERSION = 2
 CROSSOVER_PREVIEW_KIND = "jts_active_speaker_crossover_preview"
 DEFAULT_CROSSOVER_PREVIEW_PATH = Path(
     "/var/lib/jasper/active_speaker_crossover_preview.json"
@@ -214,30 +226,30 @@ def _range_ceiling(driver: Mapping[str, Any] | None) -> float | None:
     return None
 
 
-def _upper_recommended_floor(driver: Mapping[str, Any] | None) -> float | None:
-    """Lowest researched/recommended crossover point for the upper driver.
+def _driver_style_for_role(topology: OutputTopology, role: str) -> str | None:
+    """The topology-declared driver style for one role, or ``None``."""
 
-    This is advisory. The operator-entered crossover remains the proposed value
-    unless it crosses a hard protection line such as ``do_not_test_below_hz``.
-    """
-    values = [
-        _range_floor(driver),
-        _finite_positive(driver.get("recommended_highpass_hz")) if driver else None,
-    ]
-    present = [value for value in values if value is not None]
-    return max(present) if present else None
+    for group in topology.speaker_groups:
+        for channel in group.channels:
+            if channel.role == role and channel.driver_style:
+                return str(channel.driver_style)
+    return None
 
 
-def _do_not_test_floor(driver: Mapping[str, Any] | None) -> float | None:
-    """The hard protection line for the upper driver.
-
-    A compression/horn driver must be crossed *strictly above* this frequency;
-    crossing at or below it (even after a 24 dB/oct highpass) passes damaging
-    energy into the diaphragm. ``None`` when the research did not declare one.
-    """
-    if not driver:
-        return None
-    return _finite_positive(driver.get("do_not_test_below_hz"))
+# ``_do_not_test_floor`` and its ``crossover_below_do_not_test_floor`` blocker
+# are gone with the second declaration they read (#2603). ``do_not_test_below_hz``
+# was an optional restatement of the driver's low limit, so once that limit got
+# one owner the blocker would have fired on exactly the condition #2491 routes
+# deliberately: this page DISCLOSES a corner below the declared protection
+# floor and ``path_safety`` REFUSES it at load. Blocking here would have made
+# that load gate unreachable. The remaining path is also strictly more reliable
+# than the one it replaces -- the disclosure below and the load gate both read
+# one always-derived number, where the blocker only fired when a separate
+# optional field happened to have been declared (#2132's fail-open).
+#
+# ``crossover_below_recommended_driver_floor`` went the same way: it read
+# ``recommended_highpass_hz`` directly, which is now the owner the disclosure
+# already speaks for, so it had become a second message for one fact.
 
 
 def _filter_type(candidate: Mapping[str, Any]) -> str:
@@ -315,43 +327,6 @@ def _build_crossover(
         )
 
     proposed_frequency = candidate_frequency
-    recommended_floor = _upper_recommended_floor(upper_driver)
-    if (
-        proposed_frequency is not None
-        and recommended_floor is not None
-        and proposed_frequency < recommended_floor
-    ):
-        issues.append(
-            _issue(
-                "warning",
-                "crossover_below_recommended_driver_floor",
-                (
-                    f"{upper_role} research recommends at least "
-                    f"{round(recommended_floor)} Hz; keeping the operator value "
-                    f"of {round(proposed_frequency)} Hz"
-                ),
-            )
-        )
-    do_not_test = _do_not_test_floor(upper_driver)
-    if (
-        proposed_frequency is not None
-        and do_not_test is not None
-        and proposed_frequency <= do_not_test
-    ):
-        issues.append(
-            _issue(
-                "blocker",
-                "crossover_below_do_not_test_floor",
-                (
-                    f"{upper_role} must be crossed strictly above its do-not-test "
-                    f"floor of {round(do_not_test)} Hz; {round(proposed_frequency)} Hz "
-                    "would risk the driver"
-                ),
-            )
-        )
-        # Fail closed: never carry an at/below-do-not-test crossover into filter
-        # intent or downstream staging. Drop the frequency so no filters emit.
-        proposed_frequency = None
     # #2491 disclosure. Preview is the household's confirm-and-commit surface,
     # and it was silent about a candidate crossing below the upper driver's own
     # confirmed protective high-pass floor. Preview stays advisory — the hard
@@ -378,6 +353,38 @@ def _build_crossover(
                     f"{format_protection_hz(protection_floor)}; crossing at "
                     f"{format_protection_hz(proposed_frequency)} sits below it "
                     "and the protected startup load will refuse this design"
+                ),
+            )
+        )
+    # Disclose-and-recommend, never nanny (#2603). A declared low limit BELOW
+    # its style's class default is legal and wins -- that is the ruling -- but
+    # the household confirms designs on this page, so the disagreement is named
+    # here rather than left for someone to discover. Never fires for an
+    # inferred or defaulted limit: only a number a human or a research reply
+    # actually declared can disagree with the default.
+    upper_style = _driver_style_for_role(topology, upper_role)
+    upper_limit = resolve_driver_low_limit(
+        upper_driver, role=upper_role, driver_style=upper_style
+    )
+    style_default_hz = driver_protection_profile(
+        upper_role, driver_style=upper_style
+    ).min_highpass_hz
+    if (
+        upper_limit is not None
+        and upper_limit.provenance == LOW_LIMIT_DECLARED
+        and style_default_hz is not None
+        and upper_limit.frequency_hz < style_default_hz
+    ):
+        issues.append(
+            _issue(
+                "warning",
+                "low_limit_below_style_default",
+                (
+                    f"{upper_role} declares a minimum crossover of "
+                    f"{format_protection_hz(upper_limit.frequency_hz)}, below the "
+                    f"{format_protection_hz(style_default_hz)} default for its "
+                    "driver type; confirm this is the manufacturer's published "
+                    "figure"
                 ),
             )
         )
@@ -486,7 +493,6 @@ def _build_crossover(
         out["delay_ms"] = delay_ms
     if delay_target_role is not None:
         out["delay_target_role"] = delay_target_role
-    out["do_not_test_below_hz"] = round(do_not_test, 2) if do_not_test is not None else None
     out["declared_protection_floor_hz"] = (
         round(protection_floor, 2) if protection_floor is not None else None
     )
@@ -555,6 +561,20 @@ def build_crossover_preview(
         )
     drivers, driver_issues = _driver_map(design_inputs)
     issues.extend(driver_issues)
+    if topology is not None:
+        # One owner, every consumer derives (#2603). Stamped HERE, before the
+        # per-crossover checks read a floor and before ``preview["drivers"]`` is
+        # frozen -- staging compiles the preset from that payload, so this is
+        # what makes the emitted graph, the load gate, and this page's own
+        # disclosures agree on where each driver stops.
+        drivers = {
+            role: apply_driver_low_limit(
+                driver,
+                role=role,
+                driver_style=_driver_style_for_role(topology, role),
+            )
+            for role, driver in drivers.items()
+        }
     candidates = _candidate_map(design_inputs)
 
     groups: list[dict[str, Any]] = []

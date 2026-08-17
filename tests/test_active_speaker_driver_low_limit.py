@@ -50,7 +50,6 @@ DE250_PUBLISHED_RANGE_HZ = [1000.0, 18000.0]
 DERIVED_FIELDS = (
     "hard_excitation_band_hz",
     "measurement_band_hz",
-    "do_not_test_below_hz",
     "required_protection_filters",
 )
 
@@ -106,7 +105,6 @@ def test_every_derived_field_moves_with_the_owner(mutated_hz: float) -> None:
     derived = _derived(_de250(recommended_highpass_hz=mutated_hz))
 
     assert derived["hard_excitation_band_hz"][0] == mutated_hz
-    assert derived["do_not_test_below_hz"] == mutated_hz
     assert _highpass(derived)["cutoff_hz"] == mutated_hz
     assert declared_protection_highpass_floor_hz(derived) == mutated_hz
     # The analysis window is a SEPARATE published fact (the datasheet response
@@ -254,12 +252,33 @@ def test_an_internally_consistent_legacy_declaration_is_a_no_op() -> None:
     # what keeps this change from un-confirming the field.
     for field, value in consistent.items():
         assert derived[field] == value, field
-    # The derivation does ADD the convenience projections a pre-owner artifact
-    # never carried. They are draft-surface fields; the safety profile stores
-    # only the four fields above, so a stored profile does not go non-canonical
-    # by gaining them (pinned in test_active_speaker_driver_safety.py).
-    assert derived["do_not_test_below_hz"] == 5000.0
+    # The derivation does write the OWNER back, so a pre-owner artifact gains
+    # the one field it was missing. That is the collapse, not a drift: the
+    # value is read straight out of the artifact's own stored high-pass.
     assert derived["recommended_highpass_hz"] == 5000.0
+
+
+def test_do_not_test_below_hz_is_retired_rather_than_derived() -> None:
+    """It was an optional SECOND declaration of this same line, and its only
+    consumer was a crossover-preview blocker.
+
+    Collapsed onto the owner it would have fired on exactly the condition
+    #2491 routes deliberately -- preview DISCLOSES a corner below the declared
+    floor, ``path_safety`` REFUSES it at load -- and blocking at preview makes
+    that load gate unreachable. What replaces it is strictly more reliable:
+    the disclosure and the gate both read one always-derived number, where the
+    blocker only fired when a separate optional field happened to be declared
+    (#2132's fail-open).
+    """
+
+    stale = _de250(do_not_test_below_hz=1200.0)
+    derived = _derived(stale)
+    # Not written...
+    assert derived["do_not_test_below_hz"] == 1200.0
+    # ...and not read: the value that governs is the owner, which no longer
+    # has to agree with this leftover key for the design to be graded right.
+    assert _highpass(derived)["cutoff_hz"] == DE250_LOW_LIMIT_HZ
+    assert declared_protection_highpass_floor_hz(derived) == DE250_LOW_LIMIT_HZ
 
 
 def test_a_declared_owner_outranks_a_stale_stored_highpass() -> None:

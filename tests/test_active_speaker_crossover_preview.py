@@ -366,7 +366,18 @@ def test_crossover_preview_prefers_manual_settings_over_imported_research() -> N
     assert crossover["proposed_frequency_hz"] == 3200
 
 
-def test_crossover_preview_warns_below_recommended_driver_floor() -> None:
+def test_crossover_preview_warns_below_the_declared_driver_floor() -> None:
+    """One message per fact (#2603).
+
+    This used to assert ``crossover_below_recommended_driver_floor``, a second
+    warning that read ``recommended_highpass_hz`` directly while
+    ``crossover_below_declared_protection_floor`` read the protective high-pass
+    for the same driver. Those are now the same number, so the duplicate is
+    gone and the surviving disclosure carries the fact. The behaviour a
+    household sees is unchanged: the operator value is KEPT and the conflict is
+    named.
+    """
+
     research = _research()
     research["crossover_candidates"][0]["frequency_hz"] = 1800
 
@@ -378,9 +389,9 @@ def test_crossover_preview_warns_below_recommended_driver_floor() -> None:
 
     assert payload["status"] == "ready_for_protected_staging"
     assert crossover["proposed_frequency_hz"] == 1800
-    assert "crossover_below_recommended_driver_floor" in {
-        issue["code"] for issue in crossover["issues"]
-    }
+    codes = {issue["code"] for issue in crossover["issues"]}
+    assert "crossover_below_declared_protection_floor" in codes
+    assert "crossover_below_recommended_driver_floor" not in codes
 
 
 def test_crossover_preview_prefers_usable_candidate_over_missing_frequency() -> None:
@@ -514,10 +525,19 @@ def test_load_crossover_preview_fails_soft_on_bad_json(tmp_path: Path) -> None:
 def _de250_research(
     *,
     candidate_hz: float,
-    recommended_highpass_hz: float | None = 2000,
-    do_not_test_below_hz: float | None = 1600,
+    recommended_highpass_hz: float | None = 1600,
+    do_not_test_below_hz: float | None = None,
     confidence: str = "medium",
 ) -> dict:
+    """The DE250, declared the way #2603 ruled it must be.
+
+    This fixture used to carry the split itself: ``recommended_highpass_hz``
+    2000 alongside a ``do_not_test_below_hz`` of 1600 -- two numbers for one
+    driver's low limit, and INVERTED, since 1.6 kHz is B&C's published
+    Recommended Crossover and 2000 is not a published figure for this driver at
+    all. The owner is now the published 1600, and ``do_not_test_below_hz`` is
+    retired: still accepted so old drafts load, read by nothing.
+    """
     tweeter: dict = {
         "role": "tweeter",
         "model": "DE250-8",
@@ -557,9 +577,11 @@ def _crossover(payload: dict) -> dict:
     return payload["groups"][0]["crossovers"][0]
 
 
-def test_crossover_keeps_operator_value_above_do_not_test_floor() -> None:
-    # The reported case: 1800 Hz is below the recommended 2000 Hz highpass but
-    # above the 1600 Hz do-not-test line. Keep the operator value and warn.
+def test_crossover_above_the_declared_low_limit_is_kept_and_emits_filters() -> None:
+    # 1800 Hz sits above the DE250's published 1600 Hz minimum, so it is simply
+    # legal. Under the old split it ALSO drew a
+    # `crossover_below_recommended_driver_floor` warning, because a second
+    # declaration claimed the minimum was 2000 -- a number B&C never published.
     payload = build_crossover_preview(
         build_design_draft(
             _topology(),
@@ -572,25 +594,73 @@ def test_crossover_keeps_operator_value_above_do_not_test_floor() -> None:
 
     assert payload["status"] == "ready_for_protected_staging"
     assert crossover["proposed_frequency_hz"] == 1800
-    assert crossover["do_not_test_below_hz"] == 1600
+    assert crossover["declared_protection_floor_hz"] == 1600
     codes = {issue["code"] for issue in crossover["issues"]}
-    assert "crossover_below_recommended_driver_floor" in codes
-    assert "crossover_below_do_not_test_floor" not in codes
+    assert "crossover_below_declared_protection_floor" not in codes
     assert [item["filter"] for item in crossover["filters"]] == ["lowpass", "highpass"]
     assert all(item["frequency_hz"] == 1800 for item in crossover["filters"])
 
 
-def test_crossover_blocks_at_do_not_test_floor_without_safe_highpass() -> None:
-    # No recommended_highpass to rescue it: a crossover sitting on the
-    # do_not_test line must fail closed — blocker, no filter intent emitted.
+def test_a_corner_exactly_at_the_declared_low_limit_is_legal() -> None:
+    """The manufacturer's minimum recommended crossover is a value it RECOMMENDS.
+
+    Crossing at exactly 1600 Hz is what B&C's own datasheet sanctions for the
+    DE250, so this page neither blocks it nor warns about it. The old split
+    refused it, because the separate do-not-test line happened to sit on the
+    same number and its comparison was "strictly above".
+    """
+
+    payload = build_crossover_preview(
+        build_design_draft(
+            _topology(),
+            driver_research=_de250_research(candidate_hz=1600),
+            created_at="2026-06-19T12:00:00Z",
+        ),
+        created_at="2026-06-19T12:30:00Z",
+    )
+    crossover = _crossover(payload)
+
+    assert payload["status"] == "ready_for_protected_staging"
+    assert crossover["proposed_frequency_hz"] == 1600
+    codes = {issue["code"] for issue in crossover["issues"]}
+    assert "crossover_below_declared_protection_floor" not in codes
+
+
+def test_a_corner_below_the_declared_low_limit_is_disclosed_here_and_refused_at_load() -> None:
+    """#2491's architecture, now reached through ONE floor instead of two.
+
+    This page is the household's confirm surface and stays advisory: it names
+    the conflict rather than blocking, and ``path_safety`` refuses the load
+    (pinned in tests/test_active_speaker_protection_floor.py). Blocking here
+    would make that gate unreachable, which is what removing the duplicate
+    do-not-test blocker avoids.
+    """
+
+    payload = build_crossover_preview(
+        build_design_draft(
+            _topology(),
+            driver_research=_de250_research(candidate_hz=1400),
+            created_at="2026-06-19T12:00:00Z",
+        ),
+        created_at="2026-06-19T12:30:00Z",
+    )
+    crossover = _crossover(payload)
+
+    codes = {issue["code"] for issue in crossover["issues"]}
+    assert "crossover_below_declared_protection_floor" in codes
+    assert crossover["proposed_frequency_hz"] == 1400
+    assert crossover["declared_protection_floor_hz"] == 1600
+
+
+def test_an_undeclared_low_limit_neither_blocks_nor_invents_a_floor() -> None:
+    """The never-nanny boundary at the preview surface: with no owner declared
+    there is no floor, so nothing is refused on a number nobody supplied."""
+
     payload = build_crossover_preview(
         build_design_draft(
             _topology(),
             driver_research=_de250_research(
-                candidate_hz=1600,
-                recommended_highpass_hz=None,
-                do_not_test_below_hz=1600,
-                confidence="low",
+                candidate_hz=1400, recommended_highpass_hz=None
             ),
             created_at="2026-06-19T12:00:00Z",
         ),
@@ -598,39 +668,9 @@ def test_crossover_blocks_at_do_not_test_floor_without_safe_highpass() -> None:
     )
     crossover = _crossover(payload)
 
-    assert payload["status"] == "blocked"
-    assert payload["permissions"]["may_prepare_protected_startup_config"] is False
-    assert crossover["status"] == "blocked"
-    assert crossover["proposed_frequency_hz"] is None
-    assert crossover["filters"] == []
-    assert "crossover_below_do_not_test_floor" in {
-        issue["code"] for issue in crossover["issues"]
-    }
-
-
-def test_crossover_hard_floor_blocks_below_operator_value() -> None:
-    # Pathological research where recommended_highpass sits below do_not_test:
-    # the protection line remains the final authority.
-    payload = build_crossover_preview(
-        build_design_draft(
-            _topology(),
-            driver_research=_de250_research(
-                candidate_hz=1400,
-                recommended_highpass_hz=1500,
-                do_not_test_below_hz=1600,
-            ),
-            created_at="2026-06-19T12:00:00Z",
-        ),
-        created_at="2026-06-19T12:30:00Z",
-    )
-    crossover = _crossover(payload)
-
-    assert payload["status"] == "blocked"
-    assert crossover["proposed_frequency_hz"] is None
-    assert crossover["filters"] == []
-    assert "crossover_below_do_not_test_floor" in {
-        issue["code"] for issue in crossover["issues"]
-    }
+    assert crossover["declared_protection_floor_hz"] is None
+    codes = {issue["code"] for issue in crossover["issues"]}
+    assert "crossover_below_declared_protection_floor" not in codes
 
 
 def test_crossover_persisted_low_value_blocks_instead_of_overriding() -> None:
@@ -680,9 +720,13 @@ def test_crossover_persisted_low_value_blocks_instead_of_overriding() -> None:
     )
     crossover = _crossover(payload)
 
-    assert payload["status"] == "blocked"
-    assert crossover["proposed_frequency_hz"] is None
-    assert crossover["filters"] == []
-    assert "crossover_below_do_not_test_floor" in {
+    # The persisted manual value still WINS over the research candidates -- that
+    # is what this test has always been about. What changed with #2603 is the
+    # consequence: 1600 sits at the DE250's declared minimum rather than under a
+    # phantom 2000, so it is legal, and the manual value is carried through
+    # instead of being dropped.
+    assert crossover["proposed_frequency_hz"] == 1600
+    assert all(item["frequency_hz"] == 1600 for item in crossover["filters"])
+    assert "crossover_below_declared_protection_floor" not in {
         issue["code"] for issue in crossover["issues"]
     }

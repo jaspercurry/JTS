@@ -313,7 +313,18 @@ def format_protection_hz(value: float) -> str:
 #                                                      floor below
 #   hard_excitation_band_hz[0]                       = the owner's frequency
 #   measurement_band_hz[0]                           = max(published, owner)
-#   do_not_test_below_hz                             = the owner's frequency
+#
+# ``do_not_test_below_hz`` is RETIRED rather than derived. It was a second,
+# optional declaration of this same line, and its only consumer was a
+# crossover-preview blocker. Collapsed onto the owner it would have made that
+# blocker fire on exactly the condition #2491 deliberately routes elsewhere --
+# preview DISCLOSES a corner below the declared floor, ``path_safety`` REFUSES
+# it at load -- and blocking at preview would have made the load gate
+# unreachable. Retiring it is also strictly safer than what it replaced: the
+# disclosure and the load gate now fire from one always-derived number,
+# where the blocker only fired when a separate optional field happened to be
+# declared (the #2132 fail-open). The key is still ACCEPTED by the schemas so
+# drafts written before this load unchanged; nothing writes or reads it.
 #
 # ``measurement_band_hz`` itself stays a SEPARATE published fact -- the
 # datasheet's frequency-response range -- and only has its lower edge clamped
@@ -582,7 +593,6 @@ def apply_driver_low_limit(
         out.pop("recommended_highpass_slope_db_per_octave", None)
     else:
         out["recommended_highpass_slope_db_per_octave"] = limit.slope_db_per_octave
-    out["do_not_test_below_hz"] = frequency
     filters = [
         dict(item)
         for item in (driver.get("required_protection_filters") or [])
