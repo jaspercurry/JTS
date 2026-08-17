@@ -2225,29 +2225,63 @@ def test_the_realization_block_carries_the_trusted_band_provenance():
     assert payload["graded_band_hz"][1] == pytest.approx(_TRUSTED_CEILING_HZ)
 
 
-def test_a_shortfall_confined_to_one_band_is_a_shape_error_not_a_level_one():
-    """``level_dependent_shortfall`` needs EVERY graded band to fall short.
-
-    A driver that fails to deliver level fails everywhere it was asked. A miss
-    confined to one band is a shape error, which is what ``model_error`` means
-    — and this is strictly the narrower direction for a verdict whose
-    consequence is restoring the household's previous sound.
+def _two_regime_realization(lo_ratio: float, hi_ratio: float):
+    """A commanded RAMP realized at one ratio below the HF split and another
+    above it — the only shape on which a per-band ratio and the pooled slope
+    can disagree, because a flat command makes the per-band fits degenerate.
     """
     grid = _WIDE_GRID_HZ
-    commanded = np.where(grid >= 500.0, 6.0, 0.0)
-    realized = np.where(grid >= DELTA_PROBE_HF_SPLIT_HZ, 6.0 * 0.4, commanded)
+    inb = (grid >= 500.0) & (grid <= _TRUSTED_CEILING_HZ)
+    commanded = np.where(
+        inb, 2.0 + 6.0 * (np.log2(grid / 500.0) / np.log2(40.0)), 0.0
+    )
+    hf = grid >= DELTA_PROBE_HF_SPLIT_HZ
+    realized = np.where(
+        inb, commanded * np.where(hf, hi_ratio, lo_ratio), 0.0,
+    )
+    return grid, realized, commanded
+
+
+def test_a_band_localised_miss_is_already_a_shape_error():
+    """A miss confined to one band routes to ``model_error``, not a shortfall.
+
+    The property the shortfall verdict actually has, pinned at the level it is
+    true: ``scaled_exceeded`` — the residual against the fitted line — catches
+    a band-localised miss one branch above the gain test, so
+    ``level_dependent_shortfall`` only ever sees a realization that is uniform
+    across the graded band. This is WHY the verdict still reads the pooled
+    slope after #2649: gating it on the per-band ratios was tried and could not
+    be shown to change any outcome (see the comment at that branch).
+    """
+    grid, realized, commanded = _two_regime_realization(1.0, 0.4)
     probe = classify_delta_probe(
         grid, realized, commanded, band_hz=(500.0, _TRUSTED_CEILING_HZ),
     )
     assert probe.verdict != VERDICT_LEVEL_DEPENDENT_SHORTFALL
+    # ...and the per-band evidence shows the disagreement the verdict did not
+    # need: one band realized what it was told, the other did not.
+    bands = probe.band_realization
+    assert bands[DELTA_PROBE_BAND_CROSSOVER]["ratio"] == pytest.approx(1.0, abs=0.05)
+    assert bands["trusted_hf"]["ratio"] == pytest.approx(0.4, abs=0.05)
 
 
-def test_a_proportional_shortfall_across_every_graded_band_still_fires():
-    """The control for the test above: uniform undershoot is still a shortfall."""
-    grid = _WIDE_GRID_HZ
-    commanded = np.where(grid >= 500.0, 6.0, 0.0)
-    realized = commanded * 0.4
+def test_a_uniform_shortfall_across_the_graded_band_still_fires():
+    """The control: an actually level-dependent shortfall is still one.
+
+    Without this the test above would pass on a probe that had stopped issuing
+    the verdict at all.
+    """
+    grid, realized, commanded = _two_regime_realization(0.4, 0.4)
     probe = classify_delta_probe(
         grid, realized, commanded, band_hz=(500.0, _TRUSTED_CEILING_HZ),
     )
     assert probe.verdict == VERDICT_LEVEL_DEPENDENT_SHORTFALL
+    # Uniform realization means every band agrees with the pooled slope, which
+    # is the structural reason a per-band gate could not have changed this.
+    graded = [
+        entry["ratio"] for entry in probe.band_realization.values()
+        if entry["graded"] and entry["ratio"] is not None
+    ]
+    assert probe.gain_factor is not None
+    for ratio in graded:
+        assert ratio == pytest.approx(probe.gain_factor, abs=0.05)

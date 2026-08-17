@@ -91,7 +91,6 @@ from jasper.active_speaker.crossover_v2_flow import (
     GAIN_CAP_BACKOFF_DB,
     GEOMETRY_RETRY_OFFSET_CM,
     GEOMETRY_RETRY_POSITIONS,
-    LEVEL_FRAME_AGREEMENT_TOLERANCE_DB,
     LINEARIZATION_MIN_PAIRED_OCCURRENCES,
     LINEARIZATION_TRIM_SANITY_MARGIN_DB,
     MAX_CLOUD_MEASURE_POSITIONS,
@@ -7781,19 +7780,14 @@ def test_fit_linearization_wires_ripple_optimal_seeded_by_anchored_giveback(
         role: c.candidate.linearization[role]["correction_giveback_db"]
         for role in ("woofer", "tweeter")
     }
-    # PR-L5 adds the shared-level-frame offset to the same anchor: the
-    # give-back returns a branch to its OWN pre-correction system level, and
-    # the offset then places that level where the session's one frame says it
-    # belongs. Read off the fit rather than recomputed, for the same reason
-    # ``giveback`` is. Since #2599 that term is admitted only while the frame
-    # AGREES, which this fixture's does; the disputed arm is pinned in
-    # ``tests/test_crossover_v2_level_frame_dispute.py``.
-    frame_offset = {
-        role: c.candidate.linearization[role]["level_frame_offset_db"]
-        for role in ("woofer", "tweeter")
-    }
+    # The single-datum-owner migration (#2609) deleted the two-voter frame
+    # that used to add a reconciled offset to this same anchor. This harness
+    # never captures a summed at-the-mark baseline (no test in this file
+    # populates ``_measure_entry_baseline``), so ``anchor_trims`` always falls
+    # back to the raw measured trim: the anchor is ``raw_trim + giveback``,
+    # with no third term.
     unnormalized = {
-        r: raw_trim[r] + giveback[r] + frame_offset[r] for r in ("woofer", "tweeter")
+        r: raw_trim[r] + giveback[r] for r in ("woofer", "tweeter")
     }
     shift = max(0.0, max(unnormalized.values()))
     expected_anchored = {r: v - shift for r, v in unnormalized.items()}
@@ -7871,29 +7865,19 @@ def test_linearized_ripple_polish_is_skipped_on_a_one_sided_band(caplog, monkeyp
     handoff level. The scan must not run at all; the anchored give-back
     stands, and the skip is disclosed.
 
-    **The realized verdict is SUPPLIED, since #2599 — and this is the one place
-    in this file where that substitution changes an outcome, so it is argued
-    rather than asserted.** This fixture's two level estimators disagree by
-    5.799 dB, well past the 3.0 dB tolerance, so the frame is DISPUTED and no
-    longer places the anchor (``iv.anchor_trims``). That moves the anchored
-    tweeter from −2.161 to −7.960 dB, and with it the realized inter-driver
-    level from **+2.758** to **−3.042** dB — across a 3.0 dB tolerance this
-    fixture was clearing by 0.242 dB and now misses by 0.042 dB. Run end to end
-    it therefore REFUSES, and a refused session stashes no candidate for the
-    arithmetic below to read.
-
-    That flip is real and is pinned as its own claim, with these numbers, by
-    ``test_a_disputed_frame_can_cost_a_session_that_used_to_ship`` directly
-    below — it is not hidden here.
-    It is held off THIS test because it is not this test's subject: the subject
-    is that a one-sided band skips the scan and leaves the anchor standing,
-    which is upstream of every gate and is measured identically either way.
-    Letting a knife-edge downstream verdict decide whether this test can see
-    its own arithmetic would make it fail for reasons that have nothing to do
-    with the band. Same reasoning, and the same mechanism, as
+    **The realized verdict is SUPPLIED, for the same reason the sibling tests
+    below supply theirs.** This harness never captures a summed at-the-mark
+    baseline, so ``anchor_trims`` (single-datum-owner migration, #2609) always
+    falls back to the raw measured trim — there is no owner in hand to place
+    the pair any other way, and no dispute mechanism left to move it. The
+    realized-level check is what decides whether that anchor ships, and it is
+    supplied directly here rather than provoked, because provoking it is not
+    this test's subject: the subject is that a one-sided band skips the scan
+    and leaves the anchor standing, which is upstream of every level gate and
+    is measured identically regardless of what the realized check says. Same
+    reasoning, and the same mechanism, as
     ``test_large_raw_shift_is_accepted_by_the_guard_and_refused_by_the_level_
-    check`` and ``test_a_disagreeing_frame_the_realized_check_also_fails_still_
-    refuses``, which both supply this verdict for the mirror reason.
+    check``, which supplies its own verdict for the same reason.
     """
     from jasper.audio_measurement.program_analysis import RealizedLevelMatch
 
@@ -7958,19 +7942,10 @@ def test_linearized_ripple_polish_is_skipped_on_a_one_sided_band(caplog, monkeyp
         role: c.candidate.linearization[role]["correction_giveback_db"]
         for role in ("woofer", "tweeter")
     }
-    # PR-L5 added the shared-level-frame offset to the same anchor — and #2599
-    # made that term CONDITIONAL. This fixture's frame disagrees by 5.799 dB,
-    # past the 3.0 dB tolerance, so it is disputed and its offsets are excluded:
-    # the anchor is ``raw_trim + giveback``, the pre-PR-L5 shape. The offsets are
-    # still read off the fit and asserted to be non-trivial, so this stays a
-    # statement that they were DECLINED rather than that they happened to be
-    # zero — which is the difference between pinning the rule and pinning the
-    # fixture.
-    frame_offset = {
-        role: c.candidate.linearization[role]["level_frame_offset_db"]
-        for role in ("woofer", "tweeter")
-    }
-    assert max(abs(v) for v in frame_offset.values()) > 3.0
+    # No summed capture in hand (see the docstring), so ``anchor_trims``
+    # (single-datum-owner migration, #2609) falls back unconditionally to the
+    # raw measured trim: the anchor is ``raw_trim + giveback``, with no third
+    # term to add or exclude.
     unnormalized = {r: raw_trim[r] + giveback[r] for r in ("woofer", "tweeter")}
     shift = max(0.0, max(unnormalized.values()))
     for role in ("woofer", "tweeter"):

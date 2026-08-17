@@ -1762,10 +1762,6 @@ def classify_delta_probe(
         in_band=requested_in_band,
         ceiling_hz=graded_hi_hz if trust_ceiling_hz is not None else None,
     )
-    graded_ratios = [
-        entry["ratio"] for entry in realization.values()
-        if entry["graded"] and entry["ratio"] is not None
-    ]
 
     tolerance_full = _tolerance_curve(freqs)
     error_full = np.where(mask, realized - commanded, 0.0)
@@ -2011,27 +2007,32 @@ def classify_delta_probe(
     # attenuation does not compress — and belongs in the model-error bucket
     # where someone will look at the filter math.
     commanded_is_lift = float(np.max(c)) >= DELTA_PROBE_MIN_COMMANDED_DB
-    # **EVERY graded band must fall short, not the pooled slope** (#2649).
+    # **The pooled slope still decides, and #2649's fix is upstream of it.**
     #
-    # Two changes in one condition, both narrowing when a ROLLBACK verdict
-    # fires. Bins above the mic-trust ceiling are no longer graded at all, so
-    # they cannot manufacture a slope; and a shortfall confined to ONE band is
-    # not level-dependent — a driver that fails to deliver level fails to
-    # deliver it everywhere it was asked, and a band-localised miss is a shape
-    # error, which is what ``model_error`` already means. Taking the worst band
-    # instead would fire MORE often on less evidence, which is the wrong
-    # direction for a verdict whose consequence is restoring the household's
-    # previous sound.
+    # What that issue found was a shortfall manufactured by bins ABOVE the
+    # mic-trust ceiling. Those bins are now excluded from ``mask`` before this
+    # line ever runs, so ``gain_factor`` is computed only over bins the fitter
+    # was allowed to command in — that intersection is the correction, and it
+    # is what turns the 2026-08-16 round's 0.664 back into the ~0.97 the
+    # trusted band actually realized.
     #
-    # Falls back to the pooled slope when no graded band cleared
-    # ``DELTA_PROBE_MIN_BINS`` — a band too thin to fit is not evidence either
-    # way, and the pooled fit is what this test read before band resolution
-    # existed, so a narrow graded band classifies exactly as it always did.
-    shortfall_ratio = max(graded_ratios) if graded_ratios else gain_factor
+    # **Gating this test on the per-band ratios instead was tried and is
+    # INERT — measured, not assumed.** For the two rules to disagree on an
+    # OUTCOME you need ``not scaled_exceeded`` (the residual against the fitted
+    # line is inside tolerance everywhere) together with band ratios far enough
+    # apart to move the pooled slope across 0.85. Those are near-contradictory:
+    # a single line that fits well IS the bands agreeing. Sweeping ramped and
+    # flat fixtures across ratio pairs from 0.1 to 1.0, every case where the
+    # two rules differed on the ratio test was already routed to
+    # ``model_error`` by ``scaled_exceeded`` one branch up. An extra condition
+    # that cannot change an answer is not defence in depth on a verdict whose
+    # consequence is restoring the household's previous sound — it is an
+    # untested branch. The per-band ratios are published as EVIDENCE (see
+    # ``band_realization``), which is what the next round reads them for.
     if (
         not scaled_exceeded
         and commanded_is_lift
-        and 0.0 <= shortfall_ratio < DELTA_PROBE_SHORTFALL_GAIN_CEILING
+        and 0.0 <= gain_factor < DELTA_PROBE_SHORTFALL_GAIN_CEILING
     ):
         return _map(
             VERDICT_LEVEL_DEPENDENT_SHORTFALL,
