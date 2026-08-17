@@ -57,6 +57,7 @@
 | Build or verify the first-party Pi ARM64 runtime bundle | [First-party ARM64 release artifact](#first-party-arm64-release-artifact) |
 | Pin a documented invariant / convention with a test (registry coverage, SSOT readers, env-var codification, cross-language wire shapes) | [Guard & contract test patterns](#guard--contract-test-patterns) |
 | Point a laptop-durable flat-linearization corpus at a non-default location, or re-derive a pinned reading after a detector/reading change | [`tests/_flat_lin_corpus.py`](../tests/_flat_lin_corpus.py) — `JTS_FLAT_LIN_S0` / `JTS_FLAT_LIN_CORPUS` env vars; re-derivation procedure lives in `tests/test_spatial_combine.py::test_band_deficit_separates_honest_captures_from_stopband_residue` |
+| Find out what a measurement change actually moved — including the readings a tolerance absorbed and the prose homes that restate them, neither of which any lane can go red on | [Reading comparator (pre/post value diff)](#reading-comparator-prepost-value-diff) |
 | Fix a test that only flakes in a loaded full-suite run (spawn/thread/FD exhaustion), without papering over a real failure | [Guard & contract test patterns](#guard--contract-test-patterns) — transient-resource retry row |
 | Find out *why* a loaded run runs out of file descriptors, instead of retrying around it | [Guard & contract test patterns](#guard--contract-test-patterns) — fd-leak row |
 | Understand why a test failed with "Timeout … from pytest-timeout", or bound a legitimately slow test | [Hang backstop (pytest-timeout)](#hang-backstop-pytest-timeout) |
@@ -1198,6 +1199,111 @@ before copying either one:
   quotes a banked number, name the frame it was computed in beside it; a
   derived comparand (here `BOX_COMMITTED_RIPPLE_DB`, reconstructed from the
   banked pair's own anchor-ripple and improvement) is worth the extra line.
+
+---
+
+## Reading comparator (pre/post value diff)
+
+[`scripts/compare-readings.py`](../scripts/compare-readings.py) answers **what
+did this measurement change actually move?** — at value level, across the whole
+set of readings a change touches, not just the ones a test happens to pin.
+
+It exists because a lane can only ever go red on one of the three places a
+reading lives. PR #2062 (issue #2045) is the worked example: PR #1991
+legitimately moved one S0 capture's gate, **31 of 155 compared readings moved**
+with it, and two of the three classes were invisible —
+
+* **12 pins went red.** The corpus lane finds these.
+* **1 reading was absorbed by a tolerance** — the 1.8 kHz dip depth landed
+  inside `pytest.approx(5.19, abs=0.05)` with **0.0041 dB to spare**, so the
+  suite passed on a stale number, and the next honest re-read would have tipped
+  it red as a phantom regression.
+* **7 prose homes restated the same facts**, three pinned by nothing at all,
+  and one had been contradicting the very test it names.
+
+The instrument that found classes 2 and 3 was built by hand during that
+diagnosis and thrown away. This is that comparator, committed under issue
+[#1884](https://github.com/jaspercurry/JTS/issues/1884) rider (d).
+
+**It does not replace the human-executed corpus lane, and it is not CI.** The
+standing ruling on #1884 is that corpus-gated tests stay laptop-local and
+human-run; this sits *on top of* that lane. There is no runner, no nightly job
+and no corpus in CI. It reads two JSON files and the source files those files
+declare, and nothing else.
+
+Dump the readings once on the base commit, once on the branch, then:
+
+```sh
+PYTHONPATH=. .venv/bin/python scripts/compare-readings.py before.json after.json
+```
+
+**Producing the dumps is the caller's job, deliberately.** Which readings
+matter is a property of the change under test, so a measurement PR writes a
+throwaway dump script that drives the shipped code paths and serializes what it
+got. The tool owns the comparison and the classification, not the enumeration.
+A dump maps a reading's name to a bare value, or to a record that also declares
+the tolerance guarding it and the other files that restate it:
+
+```json
+{
+  "s0.cloud_04.floor_hz": 1777.7777777777778,
+  "nulls.dip_1800.depth_db": {
+    "value": 5.144103951440755,
+    "tolerance": 0.05,
+    "homes": ["jasper/audio_measurement/interference_nulls.py"]
+  }
+}
+```
+
+`tolerance` and `homes` are read from the **after** dump, so one file owns that
+metadata and the two cannot disagree. Home paths resolve relative to the
+current working directory.
+
+**Five properties worth knowing before you trust its output.**
+
+*A tolerance-absorbed move is a reported class, not a pass.* It prints with the
+headroom the move left, because that number is what says how close the pin came
+to going red. Silence there was the #2062 failure, so every section prints its
+count even at zero, and a reading present in only one dump is named rather than
+dropped.
+
+*Prose-home hits are candidate sites for a human to judge, not proof of drift.*
+For each moved or absorbed reading, the declared homes are scanned for
+renderings of the **before** value at 0–6 decimal places — that same S0 floor
+is written both as "1778" (`jasper/audio_measurement/gating.py`) and as
+"1777.8" (`jasper/active_speaker/crossover_v2_flow.py`) — with one hit per line
+at the most specific rendering that matched. A rendering that is also a
+rendering of the after value is skipped, so a site that already reads correctly
+is not flagged. The scan matches a number; it cannot know which fact that
+number is stating. A declared home that is not on disk is reported too.
+
+*Two kinds of rendering carry no information, and both are dropped before the
+scan.* One is under three characters — an `n_rungs` of 12 would match half a
+source file. The other has rounded its last significant digit away: 0.029 at
+one decimal place is `"0.0"`, which matches every ordinary `0.0` literal in
+the file it scans, and on a real `interference_nulls.py` that buries the one
+hit stating the reading under 35 that state nothing. Neither rule subsumes the
+other, and the band matters — this corpus quotes rung deltas of `-0.029` and
+`-0.004`, and #2062's own headroom is `0.0041 dB`.
+
+*A home it could not scan is its own reported class.* When the before value has
+no rendering to search for — a short int, a short string, a bool, anything that
+leaves nothing to look for — the file is **never opened**, so it prints under
+`HOMES NOT SCANNED` with the before value, to be checked by hand. "Not looked
+at" must not print the same as "looked at, clean"; that is #2062 class 3 all
+over again, in the tool built to end it. A float never lands here: its `repr`
+round-trips exactly. Note the boundary against the paragraph above: a value
+whose renderings all read correctly for the after value is *not* flagged and
+*not* listed here — that home has nothing to find.
+
+*It is advisory and exits 0 whatever it found.* Same contract as
+[`scripts/tense-grep.sh`](../scripts/tense-grep.sh). It exits 2 only when it
+could not do the comparison at all — a malformed or unreadable dump — so "I
+could not compare" never reads as "nothing moved".
+
+Hardware-free coverage is
+[`tests/test_reading_comparator.py`](../tests/test_reading_comparator.py),
+which grades it on one synthetic case per #2062 class.
 
 ---
 
