@@ -44,10 +44,10 @@ from jasper.active_speaker.attempts_loop import (
 #: cross-sitting sentence has its own test below.
 SITTING = "sitting-1"
 from jasper.active_speaker.crossover_envelope_v2 import (
-    KEEP_MISSED_EXHAUSTED_TEXT,
     KEEP_FOR_ITERATION_TEXT,
     KEEP_ITERATING_TEXT,
     KEEP_ITERATING_UNGRADED_TEXT,
+    KEEP_MISSED_EXHAUSTED_TEXT,
     SERIES_COMPLETE_DEFAULT_TEXT,
     CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION,
     RIPPLE_RESERVATION_COPY,
