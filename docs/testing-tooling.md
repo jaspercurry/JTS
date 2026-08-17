@@ -58,6 +58,7 @@
 | Pin a documented invariant / convention with a test (registry coverage, SSOT readers, env-var codification, cross-language wire shapes) | [Guard & contract test patterns](#guard--contract-test-patterns) |
 | Point a laptop-durable flat-linearization corpus at a non-default location, or re-derive a pinned reading after a detector/reading change | [`tests/_flat_lin_corpus.py`](../tests/_flat_lin_corpus.py) — `JTS_FLAT_LIN_S0` / `JTS_FLAT_LIN_CORPUS` env vars; re-derivation procedure lives in `tests/test_spatial_combine.py::test_band_deficit_separates_honest_captures_from_stopband_residue` |
 | Find out what a measurement change actually moved — including the readings a tolerance absorbed and the prose homes that restate them, neither of which any lane can go red on | [Reading comparator (pre/post value diff)](#reading-comparator-prepost-value-diff) |
+| Reproduce a flake that only appears when the box is busy, without leaking a CPU burner onto a machine other agent sessions are sharing | [Reproducing a load-dependent flake](#reproducing-a-load-dependent-flake) |
 | Fix a test that only flakes in a loaded full-suite run (spawn/thread/FD exhaustion), without papering over a real failure | [Guard & contract test patterns](#guard--contract-test-patterns) — transient-resource retry row |
 | Find out *why* a loaded run runs out of file descriptors, instead of retrying around it | [Guard & contract test patterns](#guard--contract-test-patterns) — fd-leak row |
 | Understand why a test failed with "Timeout … from pytest-timeout", or bound a legitimately slow test | [Hang backstop (pytest-timeout)](#hang-backstop-pytest-timeout) |
@@ -139,6 +140,43 @@ fails in ~10 s *and names the producing task's exception*, and the guard
 in `tests/test_async_wait_contract.py` catches the pattern at CI time —
 where quiet Linux runners mean the backstop never fires. See the
 bounded-wait row in [Guard & contract test patterns](#guard--contract-test-patterns).
+
+---
+
+## Reproducing a load-dependent flake
+
+Some flakes only appear when the box is busy (#1909, #2681, the macOS
+subprocess class), so reproducing one means generating CPU load on
+purpose — on a machine **shared with other agent sessions running their
+own pytest lanes**, where an orphaned burner steals their wall clock and
+can manufacture the very timing flake someone else is diagnosing. Three
+measured traps turn the obvious cleanup into a silent no-op:
+
+```sh
+PIDS=""
+for _ in 1 2 3 4 5 6 7 8; do
+  ( end=$((SECONDS+55)); while [ $SECONDS -lt $end ]; do :; done ) &
+  PIDS="$PIDS $!"
+done
+# ... run the flaky test ...
+for p in ${=PIDS}; do kill "$p"; done      # NOT 2>/dev/null
+```
+
+- **A non-interactive shell reports no jobs.** With two live background
+  jobs, `jobs -p | wc -l` measured `0`, so `kill $(jobs -p)` dies with
+  `kill: not enough arguments` and cleans up nothing. Keep the `$!`
+  values yourself.
+- **zsh does not word-split** (the agent shells here are zsh 5.9), so
+  `for p in $PIDS` iterates **once** with the whole space-joined string
+  and calls `kill "11802 11803"` → `kill: illegal pid`. `${=PIDS}`
+  splits; plain SIGTERM is then enough, and `kill -9` is not needed.
+- **Never `2>/dev/null` the cleanup.** Both messages above *are* the
+  diagnosis — unsuppressed they name the bug on the first run. A cleanup
+  that prints nothing is not evidence it cleaned anything; confirm with
+  `ps -o pid=,command= -p <pid>`.
+
+Time-bound the loop body as well, so a cleanup you lose anyway self-heals
+in under a minute instead of burning a core until someone else notices.
 
 ---
 
