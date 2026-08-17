@@ -7763,10 +7763,8 @@ def test_fit_linearization_wires_ripple_optimal_seeded_by_anchored_giveback(
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
     c = _conductor(fakes)
-    with monkeypatch.context() as mp:
-        plans = _plan_spy(mp)
-        _run_phase(c, 1, 1)
-        verdict = _run_phase(c, 2, 2)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
     assert verdict["accepted"] is True
 
     assert len(calls) == 1
