@@ -1019,7 +1019,7 @@ impl AlsaBackend {
         // `format=` is the DAC edge and keeps its bare name. Not because
         // anything would break: no machine consumer parses this line today (the
         // only references are prose — docs/AEC-DIAG-01-baseline.md,
-        // docs/CHIP-AEC-EXPERIMENT.md, scripts/ring-proto/README.md). It stays
+        // docs/CHIP-AEC-EXPERIMENT.md). It stays
         // by convention, because operators and journal-grep recipes read it and
         // a stable key costs nothing. The content lane rides the
         // explicitly-named `content_format=` beside it, so one line names both

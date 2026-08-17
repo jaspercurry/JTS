@@ -415,8 +415,6 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
    - jasper-outputd daemon from rust/jasper-outputd with
      cargo build --release --locked; Zero-class RAM uses the installer
      low-memory Cargo release overrides.
-   - Retire the obsolete jasper-usbsink-audio binary and Cargo cache; fan-in
-     owns the sole USB DIRECT data plane and systemd keeps only a readiness marker.
    - jts_ring ALSA ioplug from c/jts-ring-ioplug with make plugin
      (needs libasound2-dev), installed to the arch ALSA plugin dir,
      sha256-compared like the Rust daemons. Installing it opens nothing by
@@ -452,9 +450,10 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      opens nothing; the coupling reconciler decides whether this box arms.
    - Write output hardware state before Camilla statefile seed.
    - Render outputd flat startup config with active DAC latency floor.
-   - Move HA/Spotify integration secrets into
-     /var/lib/jasper-intsecrets (streambox keeps only the Spotify side
-     active, but shares the same migration/forward path).
+   - Re-assert ownership and modes on the /var/lib/jasper-intsecrets
+     integration-secret compartment holding the HA token and Spotify
+     credentials/caches (streambox keeps only the Spotify side active,
+     but shares the same compartment and forward path).
 
 5. Services and live actions
    - Enable/start jasper-control, jasper-camilla, jasper-fanin,
@@ -462,8 +461,7 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      renderer services, nginx, Avahi, identity reconciliation, and the
      multi-room grouping reconciler.
    - Install jasper-usbsink.service as a process-free readiness marker. Fan-in
-     owns the USB data plane and is covered by the core-graph restart above;
-     the obsolete standalone binary and build cache are removed.
+     owns the USB data plane and is covered by the core-graph restart above.
    - Enable the hardware-gated composite USB gadget
      (jasper-usbgadget.service): where the resolved USB role permits, its USB
      management network (a CPU-serial-derived usb0 /30, no forwarding) makes
@@ -473,8 +471,7 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      available; the source-intent coordinator later restores canonical On in
      direct-lane-before-advertising order. NM keyfile owns usb0 and the
      device-activated jasper-usbnet-dhcp.service (dnsmasq-base) serves DHCP.
-     Retire the old jasper-usbsink-init.service. Kill switch:
-     JASPER_USB_NETWORK=disabled.
+     Kill switch: JASPER_USB_NETWORK=disabled.
    - Enable socket-activated streambox-safe web surfaces:
      /spotify/, /sources/, /sound/, /speaker/, /wifi/, /rooms/,
      /bluetooth/, /system/, and HTTPS /correction/.
@@ -578,8 +575,6 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
    - jasper-outputd daemon from rust/jasper-outputd with
      cargo build --release --locked; enabled as the mainline final-output
      owner.
-   - Retire the obsolete jasper-usbsink-audio binary and Cargo cache; fan-in
-     owns the sole USB DIRECT data plane and systemd keeps only a readiness marker.
    - jts_ring ALSA ioplug from c/jts-ring-ioplug with make plugin
      (needs libasound2-dev), installed to the arch ALSA plugin dir,
      sha256-compared like the Rust daemons. Installing it opens nothing by
@@ -626,12 +621,9 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
 4. Config and migrations
    - Seed /etc/jasper/jasper.env on fresh installs.
    - Migrate wizard-owned keys out of /etc/jasper/jasper.env into
-     /var/lib/jasper/* env files for voice provider, transit, weather,
-     wake detection legs, multi-room grouping, and WiFi guardian
-     recovery.
-   - Seed JASPER_SPEAKER_ROOM in /var/lib/jasper/speaker_name.env from
-     the legacy peering room (JASPER_PEER_ROOM in peering.env) when the
-     identity room is unset; one-time, never overwrites a set room.
+     /var/lib/jasper/* env files for transit, weather, wake detection
+     legs, multi-room grouping, and WiFi guardian recovery, and move an
+     operator-seeded LLM API key into the jasper-secrets compartment.
    - Seed defaults for speaker name, AirPlay mode, ALSA quality,
      wake model, AEC mode, peer_id, journald persistence, memory
      resilience, and correction TLS CA/cert files.
@@ -646,11 +638,6 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      correction is its negation). Keyed on each record's own stored
      convention, so it is idempotent and never touches a household's
      uploaded file or an already-correct record.
-   - Remove stale legacy audio-topology state (audio_topology.env,
-     dmix-era asound.conf backups); fan-in is the only topology.
-   - Remove legacy self-signed HTTPS artifacts (the old
-     /etc/nginx/ssl/jasper.* cert and previous-generation nginx
-     site files) superseded by the GitHub Pages OAuth bounce page.
 
 5. Services and live actions
    - Create the \`jasper\` group and the non-root service users
@@ -688,8 +675,7 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      wizard-toggled USB audio function. Install first parks derived USB audio
      and establishes an NCM-only baseline when management transport is
      available; the source-intent coordinator later restores canonical On in
-     direct-lane-before-advertising order. Retire the old
-     jasper-usbsink-init.service on upgrade. Install the
+     direct-lane-before-advertising order. Install the
      NM keyfile owning usb0 and the scoped,
      device-activated jasper-usbnet-dhcp.service (dnsmasq-base — no global
      dnsmasq service). USB audio stays off by default. Skips cleanly
@@ -1590,27 +1576,6 @@ resolve_fanin_coupling_default() {
         echo "  WARN: fan-in coupling default resolution failed. Check logs with: journalctl -u jasper-fanin-coupling-auto -e"
 }
 
-remove_legacy_https_artifacts() {
-    # The old install topology served /spotify/ over HTTPS using a
-    # self-signed cert at /etc/nginx/ssl/jasper.{crt,key} so Spotify's
-    # OAuth-redirect-URI rules accepted it. The cert tripped scary
-    # "connection not private" warnings in every browser, which we now
-    # side-step by terminating Spotify's HTTPS requirement at a static
-    # GitHub Pages bounce page (separate public repo
-    # jaspercurry/spotify-oauth-callback). Sweep the old cert + key +
-    # previous-generation nginx site files here so upgrading installs
-    # end up with the new plain-HTTP topology for the legacy routes.
-    #
-    # NOTE: the new room-correction TLS lives at
-    # /etc/nginx/ssl/jts.local.{crt,key} (different filenames),
-    # provisioned by provision_correction_tls() below. Don't sweep
-    # those.
-    rm -f /etc/nginx/ssl/jasper.crt /etc/nginx/ssl/jasper.key
-    rm -f /etc/nginx/sites-enabled/jasper-https.conf
-    rm -f /etc/nginx/sites-available/jasper-https.conf
-    rm -f /etc/nginx/jasper-locations.conf
-}
-
 provision_correction_tls() {
     # /correction/ requires HTTPS because getUserMedia (mic capture)
     # only works in a secure context. There's no way around this in
@@ -2251,13 +2216,11 @@ main() {
         render_outputd_cutover_config
         ensure_outputd_camilla_statefile
         ensure_crossover_camilla_statefile  # camilla#2 seed (INERT; unit not enabled)
-        migrate_secrets_phase4b  # WS1 Phase 4b: streambox Spotify creds/cache path
+        reassert_intsecrets_compartment_perms  # WS1 Phase 4b: streambox Spotify creds/cache perms
         build_install_jasper_fanin
         build_install_jasper_outputd
-        retire_jasper_usbsink_audio
         install_jts_ring_platform  # jts_ring ioplug + conf.d + shm dir (staging only; arming is the coupling reconciler's)
         install_streambox_systemd_units
-        retire_audio_topology_switch
         migrate_wifi_guardian
         migrate_memory_resilience
         migrate_cgroup_memory_enabled
@@ -2267,7 +2230,6 @@ main() {
         install_jasper_web_polkit  # WS1 3b-3: grant jasper-web NetworkManager wifi management
         widen_jasper_web_writable_dirs  # WS1 3b-3: /etc/bluetooth + camilladsp/configs group-jasper writable
         install_peering_template
-        remove_legacy_https_artifacts
         provision_correction_tls
         install_streambox_nginx_site
         widen_control_secret_env_modes  # WS1 3b-2: secret env group-jasper readable for the spawned doctor
@@ -2301,10 +2263,8 @@ main() {
     ensure_crossover_camilla_statefile  # camilla#2 seed (INERT; unit not enabled)
     build_install_jasper_fanin    # Rust daemon binary; enabled by install_systemd_units
     build_install_jasper_outputd  # Rust mainline final-output owner
-    retire_jasper_usbsink_audio   # fan-in owns USB DIRECT; remove retired helper/cache
     install_jts_ring_platform     # jts_ring ioplug + conf.d + shm dir (staging only; arming is the coupling reconciler's)
     install_systemd_units
-    retire_audio_topology_switch # Remove stale dmix/fanin state; fanin is canonical
     migrate_memory_resilience   # Stage 1 OOM protection: sysctl + MGLRU + zram
     migrate_cgroup_memory_enabled  # Stage 2 audio-slice: cgroup memory + PSI in cmdline.txt
     install_journald_persistent_storage
@@ -2313,7 +2273,6 @@ main() {
     install_jasper_web_polkit  # WS1 3b-3: grant jasper-web NetworkManager wifi management
     widen_jasper_web_writable_dirs  # WS1 3b-3: /etc/bluetooth + camilladsp/configs group-jasper writable
     install_peering_template
-    remove_legacy_https_artifacts
     provision_correction_tls   # cert files must exist before nginx -t
     install_nginx_site
     install_camillagui

@@ -110,9 +110,7 @@ logger = logging.getLogger(__name__)
 FANIN_CONTROL_SOCKET = os.environ.get(
     "JASPER_FANIN_CONTROL_SOCKET", "/run/jasper-fanin/control.sock",
 )
-MUX_CONTROL_SOCKET = os.environ.get(
-    "JASPER_MUX_CONTROL_SOCKET", "/run/jasper-mux/control.sock",
-)
+MUX_CONTROL_SOCKET = "/run/jasper-mux/control.sock"
 # Durable home for the source-selection mode (auto vs manual + the
 # pinned source). Persisted so a household's manual pin survives the
 # Restart=always deploy/restart cycle. RuntimeDirectory is wiped on

@@ -134,10 +134,12 @@ DOCS_ROUTING_MAP = "docs/doc-map.toml"
 #
 # Deliberately NOT registered despite opening a .md during the audit:
 # tests/test_shell_awk_environ_convention.py shebang-probes every file under
-# `deploy` and `scripts` only (SCAN_DIRS), so the one document it touched
-# (scripts/ring-proto/README.md) is not a docs-lane subject -- no change this
-# lane can carry is able to reach it.  That is a structural argument, not a
-# judgement about whether its assertions happen to be strict today.
+# `deploy` and `scripts` only (SCAN_DIRS).  The single document it touched at
+# audit time was deleted with the ring prototype (2026-08-17, #2285), and those
+# two trees now contain no `*.md` at all, so it reaches no document whatsoever
+# -- no change this lane can carry is able to reach it.  That is a structural
+# argument, not a judgement about whether its assertions happen to be strict
+# today.
 #
 # Every hand-registered entry below carries its reason as DATA, so
 # tests/test_ci_classifier.py can assert SET EQUALITY against
@@ -157,10 +159,12 @@ DOCS_HAND_REGISTERED_READERS = {
     ),
     # Generic directory sweeps: no statically visible pattern names a document.
     # test_env_vars_codified.py walks `path.rglob("*")` over _SURFACES, which
-    # contains no `docs` entry -- the only document it reaches is
-    # scripts/ring-proto/README.md, structurally the same evidence as the
-    # EXCLUDED test_shell_awk_environ_convention.py above.  Kept because
-    # over-registering is safe; the honest reason is the structural one.
+    # contains no `docs` entry.  The one document it used to reach
+    # (scripts/ring-proto/README.md) was deleted with the ring prototype
+    # (2026-08-17, #2285), so it now reaches no document at all -- structurally
+    # the same evidence as the EXCLUDED test_shell_awk_environ_convention.py
+    # above.  Kept because over-registering is safe; on the reach argument alone
+    # this entry could now be dropped from both registries together.
     "tests/test_env_vars_codified.py": "rglob('*') over non-docs surfaces",
     # Child-process reads, which a Python audit hook can never observe.
     # doc-freshness.sh is the ONLY script under scripts/, deploy/ or .github/

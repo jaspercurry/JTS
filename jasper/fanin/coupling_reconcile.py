@@ -3911,7 +3911,8 @@ def _arm_ring(
     CamillaDSP (loads the ring config, opening jts_ring_capture plus the post-DSP
     ring the marker selects — jts_ring_playback, or jts_ring_active_playback on an
     armed roleful box)
-    last — matching the validated ring-proto arm order. Any failure rolls the whole
+    last — the arm order validated on hardware: every ring END is up before the
+    graph that attaches to it. Any failure rolls the whole
     box back to loopback + direct (``recovered=True``). The rings are forgiving
     (empty-ring reader/writer emit/drop silence), so there is no queue-drift
     activation window; the gates are wire-width + asset-presence + geometry

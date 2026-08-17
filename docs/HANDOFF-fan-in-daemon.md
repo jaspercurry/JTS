@@ -1409,9 +1409,10 @@ but inactive.
 ### Phase 3 — historical opt-in activation (superseded by Phase 4)
 
 - The rollout temporarily used `JASPER_AUDIO_TOPOLOGY=fanin` versus `dmix`.
-  Phase 4 deleted both the dmix path and this flag;
-  `env-migrations.sh`'s `retire_audio_topology_switch()` strips leftovers on
-  every install. This section is retained only as build-history narrative.
+  Phase 4 deleted both the dmix path and this flag, and #2285 deleted the
+  install-time cleanup that swept the leftover `audio_topology.env` (the
+  doctor still warns if one is present). This section is retained only as
+  build-history narrative.
 - When `=fanin`: jasper-fanin starts; renderers point at per-renderer
   substreams; `pcm.jasper_capture` dsnoop targets substream 7.
 - When `=dmix`: existing topology, unchanged.

@@ -1015,8 +1015,15 @@ def test_each_source_build_entrypoint_checks_bundle_first() -> None:
     fanin_body = rust.split("build_install_jasper_fanin() {", 1)[1].split(
         "build_install_jasper_outputd() {", 1
     )[0]
+    # build_install_jasper_outputd is the LAST function in rust-daemons.sh, so
+    # there is no following `<name>() {` to bound its body with. Its own
+    # column-0 closing brace is the boundary instead — which keeps the slice
+    # correct (and this assertion honest) whether or not a function is ever
+    # appended below it. Do not swap this for a split on a sibling function
+    # name: deleting that sibling silently widens the slice to the rest of the
+    # file instead of failing.
     outputd_body = rust.split("build_install_jasper_outputd() {", 1)[1].split(
-        "retire_jasper_usbsink_audio() {", 1
+        "\n}\n", 1
     )[0]
     ring_body = ring.split("build_install_jts_ring_ioplug() {", 1)[1].split(
         "install_jts_ring_conf_assets() {", 1

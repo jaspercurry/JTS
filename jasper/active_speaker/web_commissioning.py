@@ -122,9 +122,7 @@ DEFAULT_AUTOMATIC_SUMMED_CONFIG_PATH = Path(
     "/var/lib/camilladsp/configs/active_speaker_automatic_summed_measurement.yml"
 )
 AUTOMATIC_SUMMED_CONFIG_PATH_ENV = "JASPER_ACTIVE_SPEAKER_SUMMED_MEASUREMENT_CONFIG"
-COMMISSION_TONE_MUX_SOCKET = os.environ.get(
-    "JASPER_MUX_CONTROL_SOCKET", "/run/jasper-mux/control.sock",
-)
+COMMISSION_TONE_MUX_SOCKET = "/run/jasper-mux/control.sock"
 COMMISSION_TONE_FANIN_LABEL = "correction"
 _COMMISSION_TONE_LOCK = threading.Lock()
 _COMMISSION_TONE_SESSION: dict[str, Any] | None = None

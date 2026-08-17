@@ -7,14 +7,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import time
 from typing import Any
 
-MUX_CONTROL_SOCKET_PATH = os.environ.get(
-    "JASPER_MUX_CONTROL_SOCKET",
-    "/run/jasper-mux/control.sock",
-)
+MUX_CONTROL_SOCKET_PATH = "/run/jasper-mux/control.sock"
 # The one ceiling every local STATUS reader in jasper-control shares.  It is a
 # safety bound on a hostile or wedged local daemon, not a size estimate for any
 # particular payload — set it far above what any daemon actually answers so

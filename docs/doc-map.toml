@@ -541,7 +541,6 @@ code = [
   "deploy/systemd/jasper-wifi-recover.service",
   "deploy/systemd/jasper-wifi-recover.timer",
   "deploy/systemd/jasper-wifi-scan-repair.service",
-  "scripts/experiments/wifi-scan-repair.py",
 ]
 docs = [
   "AGENTS.md",

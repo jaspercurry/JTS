@@ -25,7 +25,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import re
 from typing import Any
 
@@ -110,11 +109,10 @@ class RendererClient:
         selected, so volume/dashboard callers should prefer this policy
         layer when it is available.
         """
-        socket_path = os.environ.get(
-            "JASPER_MUX_CONTROL_SOCKET", MUX_CONTROL_SOCKET,
-        )
         try:
-            reader, writer = await asyncio.open_unix_connection(socket_path)
+            reader, writer = await asyncio.open_unix_connection(
+                MUX_CONTROL_SOCKET
+            )
         except (FileNotFoundError, ConnectionRefusedError,
                 asyncio.TimeoutError, OSError) as e:
             logger.debug("mux status unavailable: %s", e)

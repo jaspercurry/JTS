@@ -79,8 +79,7 @@ _JTS_RING_SHM_DIR = ring_assets.RING_SHM_DIR
 # The two inert PCM names the conf.d defines, each paired with (probe tool,
 # ring-file basename). The open probe against these both resolves the name
 # AND forces ALSA to dlopen the ioplug .so; with no ring present it exercises
-# the writer-dead / no-reader silence path, which terminates safely (the lab
-# ring-proto resolvability step relies on this).
+# the writer-dead / no-reader silence path, which terminates safely.
 #
 # The ring-file basename matters because the ioplug's open path is
 # create-or-attach (O_RDWR|O_CREAT|O_EXCL in jts_ring_reader_open /

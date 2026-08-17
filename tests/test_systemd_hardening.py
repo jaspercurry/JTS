@@ -587,9 +587,9 @@ def test_streambox_spotify_uses_intsecrets_compartment():
         'if [[ "${install_profile}" == "streambox" ]]; then',
         1,
     )[1].split("return 0", 1)[0]
-    assert "migrate_secrets_phase4b" in streambox_branch, (
-        "streambox installs must create/migrate the Phase 4b compartment before "
-        "installing the profile-scoped jasper-web unit"
+    assert "reassert_intsecrets_compartment_perms" in streambox_branch, (
+        "streambox installs must create the Phase 4b compartment and re-narrow "
+        "its perms before installing the profile-scoped jasper-web unit"
     )
 
 

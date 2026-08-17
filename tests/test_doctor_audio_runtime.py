@@ -1031,23 +1031,23 @@ def test_outputd_service_ok_with_expected_status(monkeypatch):
     assert "speaker_reference_source=outputd_final_electrical" in r.detail
 
 
-def test_outputd_warns_but_does_not_fail_at_the_active_ring_arm_waypoint(
+def test_the_arm_waypoint_is_reported_once_by_the_check_that_owns_it(
     monkeypatch,
 ):
-    """The waypoint must WARN — not pass, and not fail. The exit code is the point.
+    """ONE fact, ONE check. This pins the de-duplication, in both directions.
 
-    `jasper-doctor` exits non-zero on a fail and zero on a warn, and that exit
-    code is what deploy verification and the R7b runbook read. Both wrong answers
-    are costly and they are opposite:
+    The ACTIVE-ring arm waypoint — a loaded graph naming the ACTIVE ring under a
+    non-ring coupling — used to surface twice: `check_active_ring_split_transport`
+    FAILed on it, and `check_outputd_service` separately elevated the same
+    detector's note to a WARN. Same statefile, same two terms, two check names,
+    two severities: a household or an operator reading `jasper-doctor` saw one
+    problem written up as two, and the louder of the two already carried the
+    runnable remedy.
 
-      - `ok` hides a box that comes back silent from its next CamillaDSP load,
-        which nothing else on this check can see (fan-in and outputd both keep
-        looping over the missing stage);
-      - `fail` reds the box for standing on a documented rung of an operator
-        ladder, which teaches an operator that the arm is broken when it is not.
-
-    Pinned through the real `check_outputd_service`, so the note has to survive
-    the whole `_outputd_transport_health` path — not just the detector.
+    So `check_outputd_service` is now silent on the waypoint and the split check
+    still names it. Asserting only the first half would pass just as well if the
+    finding had been dropped altogether, which is the failure this whole wave is
+    supposed to avoid — so the FAIL is asserted in the same test.
     """
     from jasper import audio_runtime_plan
     from jasper.audio_runtime_plan import OutputEndpointEvidence
@@ -1067,16 +1067,33 @@ def test_outputd_warns_but_does_not_fail_at_the_active_ring_arm_waypoint(
 
     r = doctor.check_outputd_service()
 
-    assert r.status == "warn", r.detail
-    assert "arm waypoint" in r.detail
-    # The remediation the operator needs is carried, not just the diagnosis.
-    assert "jasper-fanin-coupling-reconcile shm_ring" in r.detail
-    # #2285 P2: the note used to offer a rollback exit alongside the arm. That
-    # endpoint is retired, so it must state there is no rollback direction and
-    # must NOT print a command argparse rejects — a remediation the operator
-    # cannot run is worse than none, because they do the work of trying it.
-    assert "no rollback direction" in r.detail
-    assert "--endpoint aloop" not in r.detail
+    # Half one: outputd no longer restates the split.
+    assert r.status == "ok", r.detail
+    assert "arm waypoint" not in r.detail
+
+    # Half two: the check that OWNS the split still fails on it, with the
+    # remedy. Same two terms the detector uses — a graph on the ACTIVE ring
+    # under a coupling that routes outputd elsewhere.
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda *a, **k: "loopback",
+    )
+    from jasper.cli.doctor import audio_runtime as _audio_runtime
+
+    monkeypatch.setattr(
+        _audio_runtime,
+        "_loaded_playback_device",
+        lambda *a, **k: RING_ACTIVE_PLAYBACK_DEVICE,
+    )
+
+    split = _audio_runtime.check_active_ring_split_transport()
+
+    assert split.status == "fail", split.detail
+    assert "jasper-fanin-coupling-reconcile shm_ring" in split.detail
+    # #2285 P2: the retired rollback endpoint must never be printed as a
+    # remediation — argparse rejects it, and a command the operator cannot run
+    # is worse than none, because they do the work of trying it.
+    assert "--endpoint aloop" not in split.detail
 
 
 def test_outputd_content_bridge_detail_reports_every_mode():

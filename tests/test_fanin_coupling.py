@@ -384,18 +384,6 @@ def test_resolve_outputd_content_bridge_fail_safe_and_tokens():
     assert resolve_outputd_content_bridge("garbage") == OUTPUTD_CONTENT_BRIDGE_DIRECT
 
 
-def test_outputd_content_bridge_for_coupling_pairs_ring_with_ring():
-    from jasper.fanin_coupling import (
-        OUTPUTD_CONTENT_BRIDGE_DIRECT,
-        OUTPUTD_CONTENT_BRIDGE_SHM_RING,
-        outputd_content_bridge_for_coupling,
-    )
-
-    assert outputd_content_bridge_for_coupling("shm_ring") == OUTPUTD_CONTENT_BRIDGE_SHM_RING
-    assert outputd_content_bridge_for_coupling("loopback") == OUTPUTD_CONTENT_BRIDGE_DIRECT
-    assert outputd_content_bridge_for_coupling(None) == OUTPUTD_CONTENT_BRIDGE_DIRECT
-
-
 def test_resolve_outputd_ring_path_and_slots_fail_safe():
     from jasper.fanin_coupling import (
         DEFAULT_OUTPUTD_RING_PATH,

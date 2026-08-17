@@ -322,10 +322,7 @@ fn run() -> Result<()> {
     // Spawn before mlockall, like every other helper thread in this process.
     let source_notify_thread = source_notify_signals
         .map(|signals| {
-            let mux_socket = PathBuf::from(
-                std::env::var("JASPER_MUX_CONTROL_SOCKET")
-                    .unwrap_or_else(|_| "/run/jasper-mux/control.sock".to_string()),
-            );
+            let mux_socket = PathBuf::from("/run/jasper-mux/control.sock");
             let notify_shutdown = Arc::clone(&shutdown);
             std::thread::Builder::new()
                 .name("fanin-source-notify".into())

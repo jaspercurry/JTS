@@ -938,8 +938,8 @@ def test_voice_aec_checks_read_parked_on_bonded_follower(monkeypatch):
 def test_resolve_device_prefers_the_lane_map_over_systemctl_show(monkeypatch, tmp_path):
     """`systemctl show -p Environment` returns ONLY `Environment=` directives —
     never `EnvironmentFile=` layers, which is where every JTS runtime override
-    lives (scripts/ring-proto/arm.sh documents the same finding empirically,
-    2026-07-02; re-confirmed on jts.local during the P6a review).
+    lives (established empirically on an armed box 2026-07-02; re-confirmed on
+    jts.local during the P6a review).
 
     So on an ARMED box `systemctl show` reports the in-unit aloop DEFAULT while
     the renderer is really writing its ring device. Trusting it would make the

@@ -83,27 +83,6 @@ PY
     return 1
 }
 
-retire_esp32_accessory_files() {
-    # The bespoke ESP32 dial/AMOLED accessory stack was removed in 2026-07.
-    # Its source and locally-built images were deliberately staged without
-    # rsync --delete, so deleting them from the repository is insufficient on
-    # an upgraded speaker. Remove the exact retired tree plus its tiny
-    # heartbeat record. The :? guards make an unset install/state root fatal
-    # before either destructive path is resolved.
-    rm -rf -- "${INSTALL_DIR:?}/firmware"
-    rm -f -- \
-        "${STATE_DIR:?}/dial_heartbeat.json" \
-        "${STATE_DIR:?}/dial_heartbeat.json.tmp"
-    if [[ -f "${ENV_DIR:?}/jasper.env" ]]; then
-        sed -i.bak \
-            -e '/^JASPER_DIAL_LOG_HOST=/d' \
-            -e '/^JASPER_DIAL_LOG_PORT=/d' \
-            -e '/^JASPER_BUILD_OPTIONAL_FIRMWARE=/d' \
-            "${ENV_DIR}/jasper.env"
-        rm -f -- "${ENV_DIR}/jasper.env.bak"
-    fi
-}
-
 retire_esp32_accessory_python_packages() {
     # Editable installs add/update requirements but pip does not prune
     # dependencies that disappear from pyproject.toml. Remove the retired
@@ -188,21 +167,21 @@ install_jasper() {
     # good manifest rather than a SHA the box isn't cleanly running.
     # (Problem #4, docs/install-update-resilience-plan.md.)
 
-    # WS1 Phase 4a — the per-account Google OAuth token tree + client secret now
+    # WS1 Phase 4a — the per-account Google OAuth token tree + client secret
     # live in the group-`jasper-secrets` compartment (jasper-voice + jasper-web
     # only), NOT here under the /var/lib/jasper StateDirectory (whose recursive
     # chown would force the group back to `jasper`, re-exposing the refresh
     # tokens to every jasper daemon). ensure_secrets_dir creates the compartment
-    # parent + installs the boot self-heal tmpfiles; migrate_secrets_phase4a (in
-    # the migrate list below) moves any existing tree out of /var/lib/jasper,
-    # rewrites the absolute token_paths baked into accounts.json, re-groups the
-    # tree to jasper-secrets, and splits the LLM API keys into voice_keys.env.
+    # parent + installs the boot self-heal tmpfiles;
+    # reassert_secrets_compartment_perms (in the list below) re-narrows the
+    # tree's ownership/modes and splits an operator-seeded LLM API key into
+    # voice_keys.env.
     ensure_secrets_dir
 
     # WS1 Phase 4b — Home Assistant + Spotify integration secrets live in the
     # sibling group-`jasper-intsecrets` compartment (voice/control/mux/web).
-    # ensure_intsecrets_dir creates the forward path; migrate_secrets_phase4b
-    # below moves any existing broad-state files into it.
+    # ensure_intsecrets_dir creates the forward path;
+    # reassert_intsecrets_compartment_perms below re-narrows its ownership/modes.
     ensure_intsecrets_dir
 
     # Stop optional work before mutating the live source/venv. Its compiler
@@ -254,7 +233,6 @@ install_jasper() {
         --exclude='__pycache__' --exclude='*.pyc' \
         "${REPO_DIR}/experiments/usb-turntable" \
         "${INSTALL_DIR}/experiments/"
-    retire_esp32_accessory_files
 
     if [[ ! -d "${INSTALL_DIR}/.venv" ]]; then
         python3 -m venv "${INSTALL_DIR}/.venv"
@@ -422,27 +400,19 @@ PY
         chmod 0640 "${ENV_DIR}/jasper.env"
         echo "  audio DAC id: ${OUTPUT_DAC_ID}"
     fi
-    migrate_voice_provider
-    # WS1 Phase 4a — runs AFTER migrate_voice_provider so JASPER_VOICE_PROVIDER
-    # is already in voice_provider.env; this moves the Google tree + client
-    # secret into the jasper-secrets compartment and splits the LLM API keys out
-    # of voice_provider.env (+ any jasper.env seed) into voice_keys.env.
-    migrate_secrets_phase4a
-    # WS1 Phase 4b — runs after the 4a migration. Moves Home Assistant +
-    # Spotify credentials/caches into jasper-intsecrets and rewrites Spotify's
-    # absolute cache_path values baked into accounts.json.
-    migrate_secrets_phase4b
-    migrate_openai_noise_reduction_default
-    migrate_tts_outputd_socket_default
-    migrate_removed_output_dac_route
+    # WS1 Phase 4a — re-narrow the jasper-secrets compartment's ownership and
+    # modes on every deploy, and move any operator-seeded LLM API key out of
+    # jasper.env into voice_keys.env.
+    reassert_secrets_compartment_perms
+    # WS1 Phase 4b — the same re-narrow for the jasper-intsecrets compartment
+    # (Home Assistant token + Spotify credentials/caches).
+    reassert_intsecrets_compartment_perms
     render_voice_provider_ids_manifest
     migrate_transit_config
     migrate_weather_config
     migrate_wifi_guardian
     migrate_wake_legs_config
     migrate_grouping
-    migrate_retired_source_state
-    migrate_speaker_room
     migrate_control_host_bind_seed
     # Relocate JASPER_FANIN_CAMILLA_COUPLING out of jasper.env into the
     # reconciler-owned fanin.env (jasper.fanin.coupling_reconcile is its single
@@ -513,7 +483,6 @@ install_streambox_jasper() {
         "${REPO_DIR}/README.md" \
         "${REPO_DIR}/docs" \
         "${INSTALL_DIR}/"
-    retire_esp32_accessory_files
 
     if [[ ! -d "${INSTALL_DIR}/.venv" ]]; then
         python3 -m venv "${INSTALL_DIR}/.venv"
@@ -535,13 +504,11 @@ install_streambox_jasper() {
     if [[ ! -f "${ENV_DIR}/jasper.env" ]]; then
         cat > "${ENV_DIR}/jasper.env" <<EOF
 JASPER_HOSTNAME=${hostname_value}
-JASPER_CONTROL_HOST=0.0.0.0
 JASPER_INSTALL_PROFILE=streambox
 EOF
         chmod 0640 "${ENV_DIR}/jasper.env"
         echo "  streambox env: created ${ENV_DIR}/jasper.env"
     else
-        set_jasper_env_value JASPER_CONTROL_HOST "0.0.0.0"
         set_jasper_env_value JASPER_INSTALL_PROFILE "streambox"
         chmod 0640 "${ENV_DIR}/jasper.env"
         echo "  streambox env: refreshed streambox defaults"

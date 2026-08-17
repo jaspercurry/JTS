@@ -687,21 +687,6 @@ def resolve_outputd_content_bridge(raw: str | None) -> str:
     return OUTPUTD_CONTENT_BRIDGE_DIRECT
 
 
-def outputd_content_bridge_for_coupling(raw: str | None) -> str:
-    """The outputd content bridge that COHERENTLY pairs with a fan-in coupling.
-
-    ``shm_ring`` -> ``shm_ring`` (Ring B), everything else -> ``direct``. This is
-    the pairing the coupling reconciler enforces so the two ends never split:
-    fan-in on Ring A implies outputd on Ring B. ``loopback`` maps to ``direct``
-    (outputd reads the snd-aloop content lane, not the content bridge).
-    """
-    return (
-        OUTPUTD_CONTENT_BRIDGE_SHM_RING
-        if resolve_coupling(raw) == COUPLING_SHM_RING
-        else OUTPUTD_CONTENT_BRIDGE_DIRECT
-    )
-
-
 def resolve_outputd_ring_path(raw_path: str | None) -> str:
     """Resolve the Ring B (content) SHM ring file path from a raw env value.
 

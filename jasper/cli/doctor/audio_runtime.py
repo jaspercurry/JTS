@@ -2034,8 +2034,8 @@ def check_ring_platform_assets() -> CheckResult:
         if not ok:
             probe_failures.append(f"{pcm}: {detail}")
     if probe_failures:
-        # EBUSY is NOT a registration defect: on a lab-armed box (the ring-proto
-        # experiment live, or after P2 arms a coupling) the ring already has a
+        # EBUSY is NOT a registration defect: on a box whose ring is already
+        # armed outside this check's view, the ring has a
         # live foreign reader/writer, and the ioplug's SPSC guard refuses the
         # probe with -EBUSY ("Device or resource busy"). The .so is fine — the
         # ring is simply in use. A ring armed through the PRODUCT path never
@@ -2292,8 +2292,9 @@ def check_ring_writer_lock_exclusivity() -> CheckResult:
     verbatim: an ``flock``'s identity is the PATHNAME, not the inode, so
     UNLINKING ``<ring>.writer.lock`` while a writer holds it voids exclusivity
     SILENTLY — "two live writers proceed with no log line between them.
-    Measured." It is reachable today because ``scripts/ring-proto/disarm.sh``
-    does ``rm -rf`` over the tmpfs directory. The C comment names its own fix, a
+    Measured." It stays reachable because nothing stops an operator (or a
+    cleanup script) from ``rm -rf``-ing the tmpfs directory out from under a
+    live writer. The C comment names its own fix, a
     doctor check that notices two live writer pids on one ring; this is it. It
     lands here, and not as a follow-up, because the grouping reconciler's
     active-leader arm now DEPENDS on that lock as a safety signal (the
@@ -2354,8 +2355,9 @@ def check_ring_writer_lock_exclusivity() -> CheckResult:
                 "ring's SPSC contract is broken: "
                 + "; ".join(parts)
                 + ". Most likely the lock file was unlinked while a writer held "
-                "it (scripts/ring-proto/disarm.sh rm -rf's the tmpfs dir). Stop "
-                "the extra writer, then re-arm the lane.",
+                "it — anything that rm -rf's /dev/shm/jts-ring voids "
+                "exclusivity silently. Stop the extra writer, then re-arm the "
+                "lane.",
             )
 
     orphaned = [
@@ -3210,17 +3212,15 @@ def _outputd_transport_health(
                 "fail",
                 "; ".join(transport_report.errors) + _transport_route_remedy(),
             )
-        # A note is coherent but NOT steady, and today's only note — the
-        # ACTIVE-ring arm waypoint — is a box that goes silent at its next
-        # CamillaDSP load. Warn rather than pass, precisely because it is not
-        # audible yet: the statefile repoint is durable, so the box can sit in
-        # the waypoint indefinitely and come back silent from a reboot that
-        # nothing else here would flag — fan-in and outputd both keep looping
-        # over the missing stage. Warn rather than fail because it is a
-        # documented rung of an operator ladder with two named exits, not a
-        # broken box; the note carries both.
-        if transport_report.notes:
-            transport_evidence_warning = "; ".join(transport_report.notes)
+        # NOTES ARE DELIBERATELY NOT ELEVATED HERE — do not re-add the WARN.
+        # Today's only note, the ACTIVE-ring arm waypoint, is exactly the state
+        # :func:`check_active_ring_split_transport` FAILs on, from the same two
+        # terms (a graph naming the ACTIVE ring under a non-ring coupling). That
+        # check owns the finding and carries the runnable remedy; elevating the
+        # same fact to a WARN under a second check name made one problem read as
+        # two. The earlier "nothing else here would flag" rationale predated
+        # that check and was never reconciled when it landed. Errors above still
+        # FAIL here, because those are outputd's own coherence, not the split.
     local_pipe_detail = f"content_source={actual_content_source}"
     # KEYED ON THE CONTENT BRIDGE, NOT ON sink_mode. What decides whether a
     # content PCM exists at all is which bridge outputd runs, and only the

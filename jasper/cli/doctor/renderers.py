@@ -863,10 +863,10 @@ def _resolve_systemd_env_vars(device: str, unit: str) -> str:
     only thing this function asked.** That property returns the unit's
     `Environment=` directives ONLY — it does not include `EnvironmentFile=`
     layers, which is exactly where every JTS runtime override lives.
-    `scripts/ring-proto/arm.sh` documents the same finding empirically
-    (2026-07-02): "on jts.local `systemctl show` reports PERIOD_FRAMES=1024
-    while the box actually runs 128; on jts3 ACTIVE_LANE=1 is invisible to
-    `systemctl show`", and it reads `/proc/<MainPID>/environ` for that reason.
+    Measured empirically on 2026-07-02: on jts.local `systemctl show` reported
+    PERIOD_FRAMES=1024 while the box actually ran 128, and on jts3 ACTIVE_LANE=1
+    was invisible to `systemctl show` — which is why this reads
+    `/proc/<MainPID>/environ` instead.
     Confirmed again on jts.local hardware during the P6a review. Trusting the
     old surface here would have made the doctor probe an ARMED box's *aloop*
     device — reporting a lane healthy while the live ring lane went unprobed.

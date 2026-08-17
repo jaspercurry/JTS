@@ -1352,7 +1352,6 @@ real audio clock.
 | `deploy/camilladsp/outputd-cutover.yml` | `enable_rate_adjust=true`, no resampler block | Canonical 1:1 config — no double-correction oscillation |
 | `deploy/camilladsp/outputd-cutover.yml` | `target_level: 2048` | Two-chunk playback target — the documented floor for stable operation. Avoids downstream underruns; saves ~21 ms vs the original 4096 (2026-05-25 trim). Revert to 4096 if underruns reappear. |
 | `deploy/systemd/jasper-fanin.service` | `Environment="JASPER_FANIN_INPUT_BUFFER_FRAMES=4096"`, `Environment="JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1024"` | Production defaults. Input provides the ~85 ms WiFi-burst absorption capacity the old dmix layer accidentally supplied; output is trimmed to the JTS2-verified stable floor so the downstream path does not carry an unnecessary large queue. Pattern A3 fix companion. |
-| `deploy/install.sh` `retire_audio_topology_switch()` | Removes stale `/var/lib/jasper/audio_topology.env`; fan-in asoundrc and renderer lanes are canonical | Prevents dmix/fanin split-brain after deploy. |
 | `deploy/modprobe.d/snd-aloop.conf` | Default (no `timer_source`) | Ruled out as load-bearing; default keeps DAC-agnostic |
 | `deploy/install.sh` | Disables NM WiFi power-save | brcmfmac default-ON would micro-stall AP2 RX |
 | Default mode env | `JASPER_AIRPLAY_FREE_RUNNING=no` (synced) | Synced is glitch-free, works for video + multi-room |

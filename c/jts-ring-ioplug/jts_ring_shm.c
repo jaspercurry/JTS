@@ -817,8 +817,9 @@ static int acquire_writer_lock(const char *path) {
     // <ring>.writer.lock while a writer holds it therefore voids exclusivity
     // SILENTLY — the incumbent keeps a lock on an inode nothing can name, the
     // next opener creates a fresh file and locks that, and two live writers
-    // proceed with no log line between them. Measured. It is reachable today:
-    // scripts/ring-proto/disarm.sh does `rm -rf` over the tmpfs directory.
+    // proceed with no log line between them. Measured. It stays reachable by
+    // any `rm -rf` over the tmpfs ring directory, which takes the lock file
+    // with it while a writer still holds the unlinked inode.
     // This is the pre-existing shape of ANY path-named lock (the open lock has
     // it too) rather than something this guard introduced, and it is why
     // delete_stale_ring deliberately unlinks the ring file ALONE. The detector

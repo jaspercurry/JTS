@@ -1230,7 +1230,8 @@ def test_arm_converges_the_content_format_before_any_restart(
     happen somewhere in the arm.
 
     Asserted as a full ordered list rather than an index comparison: the spine's
-    own order (outputd, fan-in, camilla) is the validated ring-proto order and a
+    own order — outputd, then fan-in, then CamillaDSP — is itself validated (the
+    reader is up before the writer, and Camilla attaches the ring last), so a
     converge that displaced one of those would be a different bug.
     """
     fanin_env = _write(tmp_path / "fanin.env", "")

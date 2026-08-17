@@ -24,47 +24,9 @@ WIZARD_UNITS=(
     jasper-chat-web
 )
 
-retire_esp32_accessory_units() {
-    # Upgrade cleanup for the retired bespoke ESP32 dial/AMOLED stack.
-    # Removing the source unit files does not remove copies already installed
-    # under /etc/systemd/system. Stop and disable both activation paths before
-    # deleting the exact files; each caller performs daemon-reload afterward.
-    systemctl disable --now \
-        jasper-dial-web.socket jasper-dial-web.service \
-        >/dev/null 2>&1 || true
-    rm -f -- \
-        "${SYSTEMD_DIR:?}/jasper-dial-web.service" \
-        "${SYSTEMD_DIR:?}/jasper-dial-web.socket"
-}
-
-cleanup_legacy_recovery_window_dropins() {
-    # 2026-06-29: jts2 received these ad hoc drop-ins during an emergency
-    # targeted recovery. The policy now lives in repo-owned unit files, so a
-    # normal deploy should remove the temporary override before daemon-reload.
-    local unit dropin dir
-    local -a units=(
-        librespot
-        nqptp
-        shairport-sync
-        bt-agent
-        jasper-mux
-        "${WIZARD_UNITS[@]}"
-    )
-    for unit in "${units[@]}"; do
-        dir="${SYSTEMD_DIR}/${unit}.service.d"
-        dropin="${dir}/jts-recovery-window.conf"
-        if [[ -e "${dropin}" ]]; then
-            rm -f "${dropin}"
-            rmdir "${dir}" 2>/dev/null || true
-            echo "  removed legacy ad hoc recovery drop-in for ${unit}.service"
-        fi
-    done
-}
-
 install_jasper_support_files() {
     install -d -m 0755 /usr/local/lib/jasper /usr/local/sbin /usr/local/bin \
         "${SYSTEMD_DIR}"
-    cleanup_legacy_recovery_window_dropins
     install -m 0644 \
         "${REPO_DIR}/deploy/lib/jasper-asound-render.sh" \
         /usr/local/lib/jasper/jasper-asound-render.sh
@@ -534,27 +496,6 @@ install_usb_network_files() {
             fi
         fi
     fi
-}
-
-migrate_usbsink_init_to_usbgadget() {
-    # The old jasper-usbsink-init.service (oneshot ConfigFS gadget owner, ships
-    # disabled) is replaced by the hardware-gated composite jasper-usbgadget.service.
-    # Disable + stop the old unit on upgrade before enabling the new one, and
-    # remove its stale unit file so systemd-analyze / doctor don't trip on a
-    # deleted-from-repo file that lingers under /etc/systemd/system. Idempotent
-    # and safe on a fresh install (the old unit never existed → no-op).
-    if systemctl list-unit-files jasper-usbsink-init.service >/dev/null 2>&1; then
-        systemctl disable --now jasper-usbsink-init.service >/dev/null 2>&1 || true
-    fi
-    local stale="${SYSTEMD_DIR}/jasper-usbsink-init.service"
-    if [[ -e "${stale}" ]]; then
-        rm -f "${stale}"
-        echo "  removed stale jasper-usbsink-init.service (replaced by jasper-usbgadget.service)"
-    fi
-    # Remove the renamed gadget scripts' old paths so a stale copy can't be
-    # invoked by a lingering unit override.
-    rm -f /usr/local/sbin/jasper-usbsink-gadget-up \
-          /usr/local/sbin/jasper-usbsink-gadget-down 2>/dev/null || true
 }
 
 enable_usbgadget() {
@@ -1309,7 +1250,6 @@ start_streambox_runtime_units() {
 }
 
 install_streambox_systemd_units() {
-    retire_esp32_accessory_units
     install_jasper_support_files
     install_local_audio_graph_unit_files
     install_streambox_web_unit_files
@@ -1320,7 +1260,6 @@ install_streambox_systemd_units() {
     install_streambox_audio_slices
     install_audio_output_recovery_unit_files
     park_streambox_brain_units
-    migrate_usbsink_init_to_usbgadget
 
     validate_streambox_systemd_units
     systemctl daemon-reload
@@ -1331,7 +1270,6 @@ install_streambox_systemd_units() {
 }
 
 install_systemd_units() {
-    retire_esp32_accessory_units
     # Full speakers and streamboxes consume the same support-file and core-graph
     # owners before any profile-specific units are staged or started.
     install_jasper_support_files
@@ -1743,11 +1681,6 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/bluealsa-aplay.service.d/jts-slice.conf" \
         "${SYSTEMD_DIR}/bluealsa-aplay.service.d/jts-slice.conf"
-
-    # Retire the old jasper-usbsink-init.service (disable+stop+remove the stale
-    # file) BEFORE the daemon-reload so systemd forgets it, then reload so the
-    # new jasper-usbgadget.service / jasper-usbnet-dhcp.service are known.
-    migrate_usbsink_init_to_usbgadget
 
     systemctl daemon-reload
     # Commit only after systemd accepted the complete generation. Runtime

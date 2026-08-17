@@ -152,7 +152,7 @@ def test_shairport_template_keeps_renderer_placeholder():
     assert "output_rate = 44100" in conf
 
 
-def test_install_writes_fanin_asound_conf_and_retires_switcher():
+def test_install_writes_fanin_asound_conf_and_ships_no_switcher():
     install = installer_text()
     assert "jasper_asound_render_template" in install
     assert '"${ENV_DIR}/asoundrc.jasper.template"' in install
@@ -161,7 +161,6 @@ def test_install_writes_fanin_asound_conf_and_retires_switcher():
     assert "chmod 0644 /var/lib/jasper-asound/asound.conf" in install
     assert 'grep -q "shairport_substream" /etc/asound.conf' in install
     assert "rm -f /usr/local/sbin/jasper-audio-topology" in install
-    assert "retire_audio_topology_switch" in install
     assert "systemctl enable jasper-camilla.service jasper-fanin.service" in install
     assert "/usr/local/sbin/jasper-audio-topology fanin" not in install
 
