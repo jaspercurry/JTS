@@ -546,8 +546,8 @@ def test_the_env_example_ceiling_prose_tracks_max_ttl_s():
 
     ``.env.example`` states the ceiling twice — once as the advertised range and
     once as the sentence naming what the bound IS. Prose cannot be derived the
-    way the reader's ``hi=`` is, so those two literals are the only copies of
-    ``MAX_TTL_S`` left in this change.
+    way the reader's ``hi=`` is, so those are the two copies an OPERATOR reads,
+    and the only ones this change leaves unguarded by the derivation itself.
 
     Deliberately a containment check, not a parse: the wording is free to be
     rewritten, the NUMBER is not free to disagree with its owner. **Scope, said
@@ -556,9 +556,20 @@ def test_the_env_example_ceiling_prose_tracks_max_ttl_s():
     copies behind at once. It does NOT catch someone updating one copy and not
     the other, because a live number anywhere in the block satisfies it. That
     gap is left open rather than closed with a positional parse, which would
-    pin the wording this test deliberately leaves free; the failure direction is
-    conservative either way (an operator reads a LOWER bound and under-uses the
-    knob, never a higher one the Worker would clamp).
+    pin the wording this test deliberately leaves free, and which needs two
+    independent things to go wrong before it bites.
+
+    **What the residual gap costs, stated straight rather than softened.** If
+    ``MAX_TTL_S`` ever SHRINKS — it mirrors a separately released artifact, and
+    a mirror tracks down as well as up — this guard fires, and a half-update
+    that fixes only the advertised range leaves the other sentence quoting the
+    old, HIGHER bound. An operator who believes it sets a value above the real
+    ceiling, and nothing clamps that: ``bounded_env_float`` DROPS an
+    out-of-range value and silently answers the 300 s default, which is the
+    very failure this knob exists to prevent. (The Worker's clamp is on
+    ``ttl_s`` mint requests and does not reach this knob.) Accepted because the
+    likely direction — the owner growing, both copies left behind — is the one
+    the assertion below catches outright.
     """
     text = (Path(__file__).resolve().parents[1] / ".env.example").read_text()
     start = text.index("# JASPER_V2_FIRST_BEGIN_TIMEOUT_S")
