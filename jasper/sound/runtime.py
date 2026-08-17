@@ -100,6 +100,7 @@ def _log_reconcile_result(payload: dict[str, Any]) -> dict[str, Any]:
     }
     for field, key in (
         ("reason", "reason"),
+        ("transport", "transport"),
         ("carrier", "carrier_kind"),
         ("current", "current_config_path"),
         ("candidate", "candidate_config_path"),
@@ -122,6 +123,72 @@ def default_camilla_factory():
     from jasper.camilla import primary_controller
 
     return primary_controller()
+
+
+class StatefileCamillaController:
+    """Disk-backed stand-in for the live CamillaDSP controller.
+
+    :func:`load_profile_config` asks the daemon exactly two things — "which
+    config is loaded?" and "load this one" — and both have an honest on-disk
+    answer while the daemon is down: CamillaDSP's statefile names the config it
+    will open on its next start. Answering from there is what lets a reconcile
+    CONVERGE a box whose CamillaDSP is stopped instead of aborting on a refused
+    websocket (#2664).
+
+    Why that matters, from the jts4 incident: install deliberately stops
+    CamillaDSP before the reconcile when a deploy changes the content lane's
+    wire width (``release_camilla_content_lane_for_format_flip`` in
+    deploy/lib/install/systemd-units.sh) — snd-aloop param-locks the pair to its
+    first opener. The width flip is EXACTLY when the graph must be re-emitted,
+    so the one deploy that needs the reconcile most was the one that could not
+    reach the daemon. It aborted, and install then started CamillaDSP against a
+    statefile still naming the pre-flip graph: ``set_format`` EINVAL, five
+    restarts, ``start-limit-hit``.
+
+    This is a TRANSPORT, not a graph choice. The carrier is still resolved from
+    the config the statefile already names, so a roleful box re-emits its own
+    roleful graph and a flat box its flat one — no topology decision is taken
+    or restated here. Choosing a graph when the statefile names none stays
+    :mod:`jasper.active_speaker.runtime_contract`'s job (install runs it as
+    ``jasper-active-speaker runtime-safe-graph`` immediately before this).
+
+    PRIOR ART, and why it is not reused here.
+    :func:`jasper.fanin.coupling_reconcile._reseed_loopback_statefile` already
+    names this hole — "there is no websocket to talk to: the reconcile fails, the
+    statefile still names the [bad] config, and the daemon's NEXT start comes up
+    on the same [one] and fails again". It closes it by asking the seeding
+    contract for a SAFE graph with the coupling pinned to loopback, which is
+    right for a recovery that is deliberately de-arming the box. A deploy is the
+    opposite job: it must keep the speaker on its own graph and its own
+    coupling, and merely refresh them. It also could not have healed jts4 —
+    ``classify_camilla_config_text`` reads ``playback_device``,
+    ``playback_channels`` and ``volume_limit_db``, never the sample format, so
+    the seeding contract re-proves a stale-width graph LEGAL and preserves it.
+    Only a re-emit moves the width, which is why this converges through the
+    carrier rather than through a second call to the seeder.
+    """
+
+    def __init__(self, statefile_path: str | Path | None = None) -> None:
+        from jasper.active_speaker.environment import camilla_statefile_path
+
+        self.statefile_path = camilla_statefile_path(statefile_path)
+
+    async def get_config_file_path(
+        self, *, best_effort: bool = False
+    ) -> str | None:
+        from jasper.active_speaker.environment import (
+            read_camilla_statefile_config_path,
+        )
+
+        return read_camilla_statefile_config_path(self.statefile_path)
+
+    async def set_config_file_path(
+        self, path: str, *, best_effort: bool = False
+    ) -> bool:
+        from jasper.active_speaker.runtime_contract import write_camilla_statefile
+
+        write_camilla_statefile(self.statefile_path, path)
+        return True
 
 
 def _paths_match(left: str | Path, right: str | Path) -> bool:
@@ -237,14 +304,22 @@ async def reconcile_current_dsp(
     camilla_factory: Callable[[], Any] = default_camilla_factory,
     force: bool = False,
     coupling: str | None = None,
+    statefile_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Refresh the current JTS-owned generated DSP graph from saved intent.
 
     ``sound_profile.json`` and ``sound_settings.json`` are source of truth. The
     CamillaDSP YAML is a derived artifact. This function deliberately skips
     unknown or non-hostable graphs instead of trying to patch arbitrary YAML.
+
+    A CamillaDSP that is DOWN does not abort the pass: the reconcile falls back
+    to :class:`StatefileCamillaController` and converges the graph the box will
+    boot instead (``transport=statefile`` on the result line). One bounded
+    fallback, no retry ladder — either the disk answers on the first read or the
+    ordinary skip result names why it could not.
     """
 
+    from jasper.camilla import CamillaConfigRejected, CamillaUnavailable
     from jasper.dsp_apply import dsp_writer_lock
     from jasper.sound.camilla_yaml import sound_audition_config_path, sound_config_path
     from jasper.sound.graph_carrier import (
@@ -265,12 +340,31 @@ async def reconcile_current_dsp(
         config_path,
         source="sound_reconcile_current_dsp",
     ):
-        current_path = await cam.get_config_file_path(best_effort=False)
+        transport = "websocket"
+        try:
+            current_path = await cam.get_config_file_path(best_effort=False)
+        except CamillaConfigRejected:
+            # A LIVE daemon that rejected something is not an absent daemon.
+            # CamillaConfigRejected subclasses CamillaUnavailable, so catching
+            # the parent alone would divert a real config refusal down the
+            # disk path and answer it with a statefile write.
+            raise
+        except CamillaUnavailable:
+            # The daemon is down, so there is no running graph to read — but
+            # there IS a next one, and the statefile names it. Converging that
+            # is the same job over a different transport; see
+            # StatefileCamillaController. Reassigning ``cam`` moves the whole
+            # remaining pass (dry run, apply, rollback, confirm) onto it, so no
+            # apply logic is duplicated for this branch.
+            cam = StatefileCamillaController(statefile_path)
+            transport = "statefile"
+            current_path = await cam.get_config_file_path(best_effort=False)
         if not current_path:
             return _log_reconcile_result(
                 {
                     "status": "skipped",
                     "reason": "camilla_config_path_missing",
+                    "transport": transport,
                     "current_config_path": None,
                     "candidate_config_path": str(default_out_path),
                     "output_trim_db": trim_db,
@@ -283,6 +377,7 @@ async def reconcile_current_dsp(
                 {
                     "status": "skipped",
                     "reason": "active_audition",
+                    "transport": transport,
                     "message": "sound_audition.yml is an unsaved preview",
                     "current_config_path": str(current_path),
                     "output_trim_db": trim_db,
@@ -307,6 +402,7 @@ async def reconcile_current_dsp(
                 {
                     "status": "skipped",
                     "reason": exc.reason_code,
+                    "transport": transport,
                     "message": exc.message,
                     "carrier_kind": carrier.kind,
                     "current_config_path": str(current_path),
@@ -332,6 +428,7 @@ async def reconcile_current_dsp(
                 {
                     "status": "skipped",
                     "reason": "flat_profile_noop",
+                    "transport": transport,
                     "carrier_kind": carrier.kind,
                     "current_config_path": str(current_path),
                     "candidate_config_path": str(out_path),
@@ -353,6 +450,7 @@ async def reconcile_current_dsp(
                 {
                     "status": "unchanged",
                     "reason": "running_config_matches_intent",
+                    "transport": transport,
                     "carrier_kind": carrier.kind,
                     "current_config_path": str(current_path),
                     "candidate_config_path": str(out_path),
@@ -377,6 +475,7 @@ async def reconcile_current_dsp(
     return _log_reconcile_result(
         {
             "status": "reconciled",
+            "transport": transport,
             "carrier_kind": carrier.kind,
             "current_config_path": str(current_path),
             "candidate_config_path": str(applied_path),

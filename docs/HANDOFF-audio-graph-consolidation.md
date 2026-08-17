@@ -823,7 +823,13 @@ and step 1 already put the graph at the endpoint. It reports
 refusal is `result=camilla_anchor_not_converged`, WARNING, carrying the reason)
 and on the operator's stdout line — so a converged arm is never read as one that
 wrote a graph. A commissioned box's applied baseline still RECONCILES exactly as
-before, and every other `skipped` still fails and recovers to loopback: a
+before **whenever CamillaDSP is running** — which is the only case it can, since
+the rung's contract is "re-emit AND LOAD". With the daemon down the reconcile
+still succeeds, over the statefile (`transport=statefile`, #2664), and the rung
+refuses that answer ahead of every acceptance: nothing was loaded, so nothing is
+confirmed, and the box takes a confirm strike toward the two-strike escalation
+back to loopback rather than reporting itself armed against a dead reader.
+Every other `skipped` still fails and recovers to loopback: a
 different refusal code, a per-driver commissioning load (told apart by PATH,
 since it classifies like the anchor), an anchor still at the aloop endpoint,
 one that moved only its sink, one at the wrong wire, or one that is not muted.
