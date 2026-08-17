@@ -527,13 +527,13 @@ def _verify_claims_lines(status: Mapping[str, Any]) -> list[str]:
     # round after round, with nothing saying the loop has a lever aimed at it,
     # reasonably concludes nothing is happening. Read off the durable receipt,
     # never re-derived, so the screen and the graph cannot disagree.
-    blend = _v2(status).get("round_receipt")
-    cuts = _mapping(blend).get("blend") if isinstance(blend, Mapping) else None
-    depths = [
-        _finite(_mapping(f).get("gain"))
-        for f in cuts if isinstance(f, Mapping)
-    ] if isinstance(cuts, (list, tuple)) else []
-    depths = [d for d in depths if d is not None]
+    cuts = _mapping(_v2(status).get("round_receipt")).get("blend")
+    depths: list[float] = []
+    if isinstance(cuts, (list, tuple)):
+        for entry in cuts:
+            gain = _finite(_mapping(entry).get("gain"))
+            if gain is not None:
+                depths.append(gain)
     if depths:
         lines.append(
             f"the next round trims this region "
