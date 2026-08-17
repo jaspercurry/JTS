@@ -466,13 +466,18 @@ def solve_blend_correction(
     contract's target is flat: one level for the spectrum, so one reference.
     """
 
-    if incumbent is None:
-        return _refusal(BLEND_NO_INCUMBENT)
-    incumbent_filters = tuple(dict(entry) for entry in incumbent)
-
+    # The band is resolved FIRST so that every refusal after it still names the
+    # region it was refusing about. A receipt saying "no readable incumbent"
+    # without the band cannot be told apart by a reader from a round that had
+    # no crossover region at all, and those are different facts with different
+    # next actions — and the receipt writer uses exactly this field to decide
+    # whether the round had a blend question worth banking.
     band = _band_from(band_hz)
     if band is None:
-        return _refusal(BLEND_NO_TRUSTED_BAND, incumbent=incumbent_filters)
+        return _refusal(BLEND_NO_TRUSTED_BAND)
+    if incumbent is None:
+        return _refusal(BLEND_NO_INCUMBENT, band_hz=band)
+    incumbent_filters = tuple(dict(entry) for entry in incumbent)
     if graded is None:
         return _refusal(
             BLEND_NOT_COMPARABLE, band_hz=band, incumbent=incumbent_filters,

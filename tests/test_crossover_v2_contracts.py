@@ -17,6 +17,7 @@ import dataclasses
 import pytest
 
 from jasper.active_speaker.branch_chain import CrossoverSection
+from jasper.active_speaker.crossover_v2.contracts import SCHEMA_VERSION
 from jasper.active_speaker.crossover_v2 import (
     PLAN_REFUSAL_REASONS,
     PROPOSAL_FINGERPRINT_KINDS,
@@ -370,7 +371,7 @@ def test_a_proposal_round_trips_its_declared_fingerprint():
     payload = proposal.to_dict()
     assert payload["fingerprint"] == proposal.fingerprint
     assert payload["kind"] == "jts_crossover_v2_intervention_proposal"
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == SCHEMA_VERSION
 
 
 # --------------------------------------------------------------------------

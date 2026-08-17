@@ -2618,6 +2618,20 @@ _USABLE_ANALYSIS = SimpleNamespace(
     program_id="prog-1",
 )
 
+#: The same analysis, plus the VERIFY absolute claim that names a crossover
+#: region. Decision 10's blend record rides only when there IS a region, so a
+#: round graded from the analysis above banks none — which is what
+#: ``test_a_round_with_no_cloud_banks_no_residuals_rather_than_empty_ones``
+#: pins, and why the widest-receipt fixture needs this one instead.
+#: ``[824.35, 3297.4]`` is the band every series-1 round actually graded.
+_REGION_ANALYSIS = SimpleNamespace(
+    capture_integrity=SimpleNamespace(failed=(), not_evaluated=()),
+    verify_tracking={"max_db_notch_excluded": 0.1, "n_bins": 10},
+    summed_response=None,
+    program_id="prog-1",
+    verify_absolute={"band_hz": [824.35, 3297.4], "worst_db": -2.9},
+)
+
 
 def _direct_round(
     *,
@@ -2895,7 +2909,14 @@ RECEIPT_MAP_KEYS = {
     },
     # Both optional; the empty and single-key cases are pinned above. This is
     # the widest the map gets.
-    "round_measurements": {"realization", "position_residuals"},
+    # ``blend`` (decision 10) rides only when the round had a crossover region
+    # to speak about — see ``_round_measurements``. It carries the region's
+    # commanded-vs-realized pair AND the reason code for a round that
+    # prescribed nothing, deliberately together rather than split across
+    # ``round_axes``: that map is the four ADOPTION axes and every value in it
+    # is a Verdict, which a blend reason is not — a fifth key of a different
+    # shape there would read as a fifth axis, which decision 10 forbids.
+    "round_measurements": {"realization", "position_residuals", "blend"},
 }
 
 _KEY_DRIFT_REMEDY = (
@@ -2922,6 +2943,7 @@ def _widest_receipt():
     banked = []
     _direct_round(
         publish=lambda r: banked.append(r) or "art",
+        analysis=_REGION_ANALYSIS,
         delta_probe=probe,
         position_residuals=({"position_id": "p0", "role": "onax", "rms_db": 0.4},),
     )
@@ -2942,7 +2964,9 @@ def test_the_receipt_key_guard_sees_a_planted_key(monkeypatch):
     monkeypatch.setattr(
         coordinator,
         "_round_measurements",
-        lambda evidence: {**real(evidence), "smuggled_in": 1},
+        lambda evidence, evaluation: {
+            **real(evidence, evaluation), "smuggled_in": 1,
+        },
     )
 
     added, missing = _key_drift(

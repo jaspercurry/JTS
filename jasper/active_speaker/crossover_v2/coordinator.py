@@ -65,7 +65,7 @@ from .verification import FlatnessObjectives, decide_adoption
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from jasper.audio_measurement.program_analysis import ProgramAnalysis
-    from jasper.active_speaker.flat_spec import FlatSpecReport
+    from jasper.active_speaker.flat_spec import FlatSpecReport, GradedSpec
 
 logger = logging.getLogger(__name__)
 
@@ -343,6 +343,23 @@ class RoundEvidence:
     #: post-apply cloud, and defaulted for the reason directly above: an empty
     #: tuple and an unsupplied one both mean "no positions to report".
     position_residuals: tuple[Mapping[str, Any], ...] = ()
+    #: The post-apply cloud's flat-spec evaluation with its graded curve and
+    #: MERGED honesty mask (decision 10) — the blend correction's evidence.
+    #: ``None`` on a tier that walks no post-apply cloud, and defaulted for the
+    #: same fail-direction reason the floors above are: absent evidence
+    #: prescribes nothing, which is the safe answer, while a fabricated one
+    #: would prescribe a filter from a mask nobody screened.
+    graded_spec: "GradedSpec | None" = None
+    #: The blend correction the post-apply capture actually rode, read off the
+    #: APPLIED candidate. ``None`` is "could not be established" and refuses to
+    #: prescribe; ``()`` is "it rode none", which every first round honestly is.
+    #:
+    #: **Defaulted to ``None`` rather than ``()`` deliberately.** The two are
+    #: not interchangeable here: assuming an empty incumbent when the real one
+    #: is unknown double-counts the correction the capture was actually taken
+    #: through, which is the precise shape #2653 reverted for the level datum.
+    #: A caller that forgets this keyword gets a refusal, not a wrong number.
+    applied_blend_correction: tuple[Mapping[str, Any], ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -438,6 +455,11 @@ def run_round(evidence: RoundEvidence, ports: RoundPorts) -> RoundDecision:
             # #2609 SF5's frame, carried beside the objectives it scoped.
             trusted_floor_hz=evidence.trusted_floor_hz,
             previous_trusted_floor_hz=evidence.previous_trusted_floor_hz,
+            # Decision 10's two inputs, forwarded rather than re-derived: the
+            # cloud evidence the correction is solved from, and the incumbent
+            # the capture rode.
+            graded_spec=evidence.graded_spec,
+            applied_blend_correction=evidence.applied_blend_correction,
         )
     except (OSError, RuntimeError, TypeError, ValueError, KeyError,
             AttributeError, IndexError, ZeroDivisionError):
@@ -770,7 +792,7 @@ def _write_round_receipt(
             # the reason the assembler states: the instruments are the
             # caller's, and deriving these there would give them a second
             # owner.
-            round_measurements=_round_measurements(evidence),
+            round_measurements=_round_measurements(evidence, evaluation),
             evidence_identities={
                 "session_id": evidence.session_id,
                 "tier": evidence.tier,
@@ -857,13 +879,25 @@ def _round_identity(
         "round_ordinal": evaluation.headroom.evidence.get("round_ordinal"),
         "objectives": evaluation.headroom.evidence.get("objectives"),
         "trusted_floor_hz": evaluation.headroom.evidence.get("trusted_floor_hz"),
+        # Decision 10's prescription for the NEXT round, carried on the same
+        # durable record the objectives are — because it is the same kind of
+        # fact (what this round learned that only the next one can use) and
+        # because a series that remembered its objectives from one record and
+        # its prescription from another would be remembering two pasts. Read
+        # back by ``series_position_from_state`` directly below.
+        "blend": (
+            None if evaluation.blend is None
+            else [dict(f) for f in evaluation.blend.filters]
+        ),
     }
 
 
-def _round_measurements(evidence: RoundEvidence) -> dict[str, Any]:
+def _round_measurements(
+    evidence: RoundEvidence, evaluation: RoundEvaluation,
+) -> dict[str, Any]:
     """The round's own measured numbers, for the receipt's third mapping.
 
-    Two instruments, both optional, neither graded here:
+    Three instruments, all optional, none graded here:
 
     * the delta probe's band-resolved realization (#2649) — read off the
       probe's own ``to_dict`` so the receipt banks exactly what the probe
@@ -872,6 +906,26 @@ def _round_measurements(evidence: RoundEvidence) -> dict[str, Any]:
       report shipped; both are honest absences and neither is an error.
     * the post-apply cloud's per-position residuals (§4.2), already
       JSON-shaped by the caller.
+    * the blend region's commanded-vs-realized pair (decision 10/11) — the
+      filters prescribed for the next round, the incumbent they were derived
+      from, the damping, and what the incumbent actually achieved in the
+      region. Decision 11 makes that pair deterministic forever no matter who
+      eventually prescribes, which is why it is banked with the numbers rather
+      than only logged.
+
+      **Its reason code rides here, with the numbers, not on ``round_axes``.**
+      ``round_axes`` is the four ADOPTION axes and every value in it is a
+      ``Verdict``; a blend reason is neither an adoption axis nor a verdict, and
+      a fifth key of a different shape would read as one — which decision 10
+      explicitly forbids ("not a new safety class"). Keeping the reason beside
+      the numbers is also what lets a reader tell "the region was already
+      clean" from "the instrument refused" in one place.
+
+      **Deliberately NOT nested under ``realization.bands.crossover``.** That
+      band is the graded tier below ``DELTA_PROBE_HF_SPLIT_HZ``
+      (``[953.5, 9999.98] Hz`` on the series-1 rig) and its own comment says it
+      is named for what it contains rather than derived from any Fc — which
+      this one is. Same word, different band.
 
     Never raises. A probe object that cannot answer costs the receipt one
     optional mapping, and losing the whole receipt over it would be exactly the
@@ -886,6 +940,20 @@ def _round_measurements(evidence: RoundEvidence) -> dict[str, Any]:
         measurements["position_residuals"] = [
             dict(row) for row in evidence.position_residuals
         ]
+    blend = evaluation.blend
+    # Banked only when there WAS a crossover region to speak about. A round on
+    # a tier that walks no cloud, or one whose absolute claim was never
+    # evaluated, has no blend question — and a record saying so would be the
+    # same false claim the empty position-residual list above is refused for:
+    # that the question was asked and answered. Once there IS a band, the
+    # record always rides, emitted or not, because "the region was already
+    # clean" and "the instrument refused" are then genuinely different answers.
+    if blend is not None and blend.band_hz is not None:
+        record = blend.to_dict()
+        region_benefit = evaluation.region_benefit
+        if region_benefit is not None:
+            record["region_benefit"] = region_benefit.to_dict()
+        measurements["blend"] = record
     return measurements
 
 
@@ -930,6 +998,12 @@ class SeriesPosition:
     ordinal: int
     #: What the previous round measured, or ``None`` when there was none.
     previous_objectives: FlatnessObjectives | None
+    #: The blend correction the NEXT round should apply (decision 10), or
+    #: ``None`` when the previous round prescribed none / there was no previous
+    #: round. A TOTAL, not a delta: the whole correction, incumbent included,
+    #: so the candidate build applies it verbatim rather than composing it with
+    #: anything.
+    previous_blend_correction: tuple[Mapping[str, Any], ...] = ()
     #: The frame those objectives were graded in (#2609 SF5), or ``None`` for
     #: no previous round, a receipt written before SF5, or a round whose tier
     #: banked no floor. Travels in this pair rather than beside it for the
@@ -995,6 +1069,7 @@ def series_position_from_state(raw: Any) -> SeriesPosition:
         return SeriesPosition(
             ordinal=previous_ordinal + 1,
             previous_objectives=None,
+            previous_blend_correction=_blend_from_receipt(receipt),
             previous_trusted_floor_hz=None,
         )
     return SeriesPosition(
@@ -1003,11 +1078,35 @@ def series_position_from_state(raw: Any) -> SeriesPosition:
             tilt_db=_optional_db(objectives.get("tilt_db")),
             ripple_db=_optional_db(objectives.get("ripple_db")),
         ),
+        # Absent on every receipt written before decision 10, and on every
+        # round that prescribed nothing — both mean "apply no blend
+        # correction", which is the honest reading and the safe one.
+        previous_blend_correction=_blend_from_receipt(receipt),
         # Absent on every receipt written before SF5, which the headroom axis
         # reads as "no evidence the frame moved" — the same non-refusing
         # direction an unknown floor has everywhere else.
         previous_trusted_floor_hz=_optional_db(receipt.get("trusted_floor_hz")),
     )
+
+
+def _blend_from_receipt(receipt: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
+    """The blend correction the next round should apply, from a banked receipt.
+
+    Unreadable in ANY way resolves to ``()`` — apply no blend correction. That
+    is the safe direction and the only one: this list becomes emitted biquads,
+    so a half-parsed record must produce no filter rather than a filter nobody
+    can vouch for. Cuts-only is re-proved at the emitter regardless; this reader
+    refuses earlier so a malformed record never reaches it.
+
+    ``()`` is also what "the previous round prescribed nothing" writes, and the
+    two do not need telling apart HERE: both mean the same graph. They are told
+    apart on the receipt, whose ``blend.reason`` says which arm fired.
+    """
+
+    from .blend_correction import blend_filters_from_mapping
+
+    filters = blend_filters_from_mapping(receipt.get("blend"))
+    return () if filters is None else filters
 
 
 def _optional_db(value: Any) -> float | None:
