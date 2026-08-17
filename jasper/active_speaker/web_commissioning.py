@@ -346,12 +346,100 @@ def _path_safety_evidence_path() -> str | None:
     return str(default_path) if default_path.exists() else None
 
 
+# The five commissioning blockers BOTH operator surfaces mint — /correction/
+# here and /sound/ through `jasper.web.sound_setup`. This module is their ONE
+# owner and /sound/ imports these factories, the same way it already imports the
+# commission-tone helpers rather than keeping a hand-copied fork (see the import
+# block's comment in sound_setup.py). The two surfaces' surrounding
+# orchestrations genuinely differ — /sound/ re-saves a crossover preview and
+# runs a stoppable playback loop, /correction/ takes resolved inputs and plays
+# once — so what is shared is the vocabulary, not the flow. Hand-copying the
+# sentence is what let the two drift while reading identical.
+#
+# One factory per code rather than a code->message table, so the literal pair
+# stays visible to the AST copy guard in tests/test_sound_setup.py, which reads
+# the message an author wrote next to the code.
+
+
+def commission_startup_anchor_not_staged_issue() -> dict[str, str]:
+    return _issue(
+        "commission_startup_anchor_not_staged",
+        "could not stage the silent active-speaker setup before driver testing",
+    )
+
+
+def commission_startup_anchor_path_safety_blocked_issue() -> dict[str, str]:
+    return _issue(
+        "commission_startup_anchor_path_safety_blocked",
+        "could not verify the silent active-speaker setup path before driver testing",
+    )
+
+
+def commission_startup_anchor_load_failed_issue() -> dict[str, str]:
+    return _issue(
+        "commission_startup_anchor_load_failed",
+        "could not load the silent active-speaker setup before driver testing",
+    )
+
+
+def summed_commission_load_failed_issue() -> dict[str, str]:
+    return _issue(
+        "summed_commission_load_failed",
+        "could not open the combined active-speaker test path",
+    )
+
+
+def summed_commission_rollback_failed_issue() -> dict[str, str]:
+    return _issue(
+        "summed_commission_rollback_failed",
+        "combined test played, but JTS could not re-mute the active-speaker test path",
+    )
+
+
+async def rollback_summed_commission_teardown(
+    rollback: Callable[[], Coroutine[Any, Any, dict[str, Any]]],
+    *,
+    log_event_name: str,
+) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
+    """Re-mute the combined-test path. Return ``(rollback, blocker)``, never raise.
+
+    THE ONE owner of the re-mute FAILURE CONTRACT for both operator surfaces,
+    because a teardown that raises is a teardown that leaves a household audible
+    with no copy telling them so. Both callers run this from a ``finally``, and
+    the blocker it returns is the highest-stakes sentence in the whole map
+    ("could not restore the quiet setup … before playing anything else"). Which
+    rollback to run stays the caller's — the two surfaces reach the same
+    ``rollback_driver_commissioning_config`` through their own seam, and each
+    keeps the name its own tests substitute.
+
+    The catch is broad ON PURPOSE. /correction/ used to catch a five-entry
+    tuple, so a rollback failure raising anything outside it — a ``KeyError``
+    out of a payload, an ``AttributeError`` off a stubbed camilla — escaped the
+    ``finally`` unconverted: no issue, no copy, an unhandled exception exactly
+    where the household needed a warning. /sound/ already caught broadly; that
+    is the behaviour that survives. Consolidating here keeps the repo's
+    broad-catch count flat rather than adding a second handler.
+    """
+
+    try:
+        return await rollback(), None
+    except Exception as exc:  # noqa: BLE001 - a silent teardown failure is the bug.
+        log_event(
+            logger,
+            log_event_name,
+            level=logging.WARNING,
+            action="rollback",
+            status="failed",
+            error=str(exc),
+        )
+        return None, summed_commission_rollback_failed_issue()
+
+
 def _blocked_startup_anchor(
     *,
     group: str,
     role: str,
-    code: str,
-    message: str,
+    issue: dict[str, str],
     startup_setup: dict[str, Any],
 ) -> dict[str, Any]:
     return {
@@ -362,7 +450,7 @@ def _blocked_startup_anchor(
             "status": "blocked",
             "last_action": "startup_anchor_blocked",
             "target": {"speaker_group_id": group, "role": role},
-            "issues": [_issue(code, message)],
+            "issues": [issue],
         },
     }
 
@@ -398,8 +486,7 @@ async def _ensure_commission_startup_anchor(
         return _blocked_startup_anchor(
             group=group,
             role=role,
-            code="commission_startup_anchor_not_staged",
-            message="could not stage the silent active-speaker setup before driver testing",
+            issue=commission_startup_anchor_not_staged_issue(),
             startup_setup={"status": "blocked", "stage": stage},
         )
 
@@ -420,8 +507,7 @@ async def _ensure_commission_startup_anchor(
         return _blocked_startup_anchor(
             group=group,
             role=role,
-            code="commission_startup_anchor_path_safety_blocked",
-            message="could not verify the silent active-speaker setup path before driver testing",
+            issue=commission_startup_anchor_path_safety_blocked_issue(),
             startup_setup={"status": "blocked", "stage": stage, "path_safety": report},
         )
 
@@ -437,8 +523,7 @@ async def _ensure_commission_startup_anchor(
         return _blocked_startup_anchor(
             group=group,
             role=role,
-            code="commission_startup_anchor_load_failed",
-            message="could not load the silent active-speaker setup before driver testing",
+            issue=commission_startup_anchor_load_failed_issue(),
             startup_setup={
                 "status": "blocked",
                 "stage": stage,
@@ -3108,9 +3193,8 @@ async def _play_summed_commission_tone(
     load_state = _dict_value(load_payload.get("load"))
     if load_state.get("status") != "loaded":
         load_issues = _dict_items(load_state.get("issues"))
-        issue = load_issues[0] if load_issues else _issue(
-            "summed_commission_load_failed",
-            "could not open the combined active-speaker test path",
+        issue = (
+            load_issues[0] if load_issues else summed_commission_load_failed_issue()
         )
         return _summed_playback_with_issue(
             artifact_playback,
@@ -3165,23 +3249,12 @@ async def _play_summed_commission_tone(
     finally:
         if fanin_gate is not None:
             await _commission_tone_release_fanin_lane_async(reason="summed_test")
-        try:
-            rollback = await _rollback_summed_commissioning_config(
+        rollback, rollback_issue = await rollback_summed_commission_teardown(
+            lambda: _rollback_summed_commissioning_config(
                 camilla_factory=camilla_factory,
-            )
-        except _COMMISSION_OPERATION_ERRORS as exc:
-            log_event(
-                logger,
-                "active_speaker.web_summed_test",
-                level=logging.WARNING,
-                action="rollback",
-                status="failed",
-                error=str(exc),
-            )
-            rollback_issue = _issue(
-                "summed_commission_rollback_failed",
-                "combined test played, but JTS could not re-mute the active-speaker test path",
-            )
+            ),
+            log_event_name="active_speaker.web_summed_test",
+        )
     if rollback is not None:
         playback_result["rollback"] = rollback
     if rollback_issue is not None:

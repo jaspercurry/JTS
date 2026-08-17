@@ -1,11 +1,14 @@
 """Move this box's ACTIVE endpoint onto the ring, once, by itself. (#2285 P7)
 
 WHAT THIS CLOSES. The ACTIVE endpoint was the one arming axis a machine could
-not move. ``resolve_output_layout`` picks the emit device from a marker; the
-hardware reconciler derives that marker from the LOADED GRAPH; and the graph
+not move. ``resolve_output_layout`` USED TO pick the emit device from a marker;
+the hardware reconciler derives that marker from the LOADED GRAPH; and the graph
 only names the ring once something re-emits it there. Marker <- graph <- marker:
 a fixed point whose only lever was a human typing ``jasper-active-speaker
-baseline-reemit --endpoint ring``. Post-#2534 a roleful box waiting on that
+baseline-reemit --endpoint ring``. (The marker read is deleted now —
+``resolve_output_layout`` returns the ring unconditionally — which is part of
+what made this pass possible; the fixed point is described here as the state
+being closed, not a live one.) Post-#2534 a roleful box waiting on that
 human is not a working speaker, it is the #2261 park. This is the lever, pulled
 by the unattended pass at the three events that already exist: boot, deploy, and
 a DAC hotplug.
@@ -127,10 +130,12 @@ def converge_active_endpoint(*, reason: str = "converge") -> str:
     if converged:
         return _emit("already_converged", reason=reason, detail=converged_detail)
 
-    # PROVE BEFORE MOVING — FIVE of the pass's NINE gates, and the arithmetic is
-    # stated because "the gate list" would otherwise read as all of it.
-    # ``default_ring_gates()`` is six; this skips one; the pass appends three
-    # more that this step cannot run.
+    # PROVE BEFORE MOVING — FOUR of the pass's EIGHT gates, and the arithmetic
+    # is stated because "the gate list" would otherwise read as all of it.
+    # ``default_ring_gates()`` is five; this skips one; the pass appends three
+    # more that this step cannot run. (It was six until #2285 deleted the
+    # install-profile gate, which refused a whole box class rather than proving
+    # anything about the box in front of it.)
     #
     # THE ONE SKIPPED. ``ring_topology``'s roleful arm ends in
     # ``active_ring_endpoint_proof``, which reads the marker derived from the

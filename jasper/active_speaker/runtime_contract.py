@@ -4529,7 +4529,7 @@ def safe_graph_for_current_topology(
     a wrong selection: if its on-disk baseline still names the pre-arm ALSA lane,
     preserving it is the correct thing to do with the graph the box has, and the
     box de-arms itself on the next CamillaDSP restart. Closing that is what
-    ``jasper-active-speaker baseline-reemit --endpoint ring|aloop`` is FOR — it
+    ``jasper-active-speaker baseline-reemit --endpoint ring`` is FOR — it
     publishes the re-emitted graph over the artifact this function selects and
     repoints the statefile at it, which is also why it is step ONE of the arm
     ladder rather than a tidy-up after it (ordering:

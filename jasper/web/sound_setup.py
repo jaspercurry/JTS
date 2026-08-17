@@ -134,11 +134,18 @@ from jasper.active_speaker.commission_wiring import (
 # drifted above that lease would let the gate expire mid-tone and readmit
 # household music into a live sweep. tests/test_commission_tone_single_owner.py
 # pins both the import and the lease headroom.
+#
+# The commissioning BLOCKER VOCABULARY the two surfaces share is owned there for
+# the same reason: five codes were hand-copied into this file, byte-identical in
+# message, and the logic around them had already drifted apart underneath. One
+# owner, one sentence, imported — see the factories' own comment over there.
+from jasper.active_speaker._common import blocker_issue as _issue
 from jasper.active_speaker.web_commissioning import (
     COMMISSION_TONE_DURATION_S,
     COMMISSION_TONE_RESTART_MARGIN_S,
     COMMISSION_TONE_STARTUP_CHECK_S,
     SUMMED_COMMISSION_SPEECH_BACKEND,
+    _blocked_startup_anchor,
     _combined_speech_stimulus_wav_path,
     _commission_summed_stimulus_issue,
     _commission_tone_issue,
@@ -151,6 +158,11 @@ from jasper.active_speaker.web_commissioning import (
     _commission_tone_wav_path,
     _config_paths_match,
     _summed_playback_with_issue,
+    commission_startup_anchor_load_failed_issue,
+    commission_startup_anchor_not_staged_issue,
+    commission_startup_anchor_path_safety_blocked_issue,
+    rollback_summed_commission_teardown,
+    summed_commission_load_failed_issue,
 )
 from jasper.sound.profile import (
     ADVANCED_GAIN_LIMIT_DB,
@@ -3333,7 +3345,7 @@ async def _active_speaker_play_summed_commission_tone(
         if _summed_test_session_occupies_resources(prior):
             return _summed_playback_with_issue(
                 artifact_playback,
-                issue=_commission_setup_issue(
+                issue=_issue(
                     "summed_test_already_active",
                     "a combined speaker test is already running",
                 ),
@@ -3411,10 +3423,7 @@ async def _active_speaker_play_summed_commission_tone(
         issue = (
             load_issues[0]
             if load_issues
-            else _commission_setup_issue(
-                "summed_commission_load_failed",
-                "could not open the combined active-speaker test path",
-            )
+            else summed_commission_load_failed_issue()
         )
         return _summed_playback_with_issue(
             artifact_playback,
@@ -3589,23 +3598,12 @@ async def _active_speaker_play_summed_commission_tone(
                 _terminate_process(started_proc)
             if fanin_gate is not None:
                 _commission_tone_release_fanin_lane(reason="summed_test")
-            try:
-                rollback = await _active_speaker_rollback_summed_commissioning_config(
+            rollback, rollback_issue = await rollback_summed_commission_teardown(
+                lambda: _active_speaker_rollback_summed_commissioning_config(
                     camilla_factory=camilla_factory,
-                )
-            except Exception as exc:  # noqa: BLE001 - surface but do not mask playback.
-                log_event(
-                    logger,
-                    "sound.active_speaker_summed_test",
-                    level=logging.WARNING,
-                    action="rollback",
-                    status="failed",
-                    error=exc,
-                )
-                rollback_issue = _commission_setup_issue(
-                    "summed_commission_rollback_failed",
-                    "combined test played, but JTS could not re-mute the active-speaker test path",
-                )
+                ),
+                log_event_name="sound.active_speaker_summed_test",
+            )
         finally:
             with _SUMMED_TEST_TONE_LOCK:
                 if _SUMMED_TEST_TONE_SESSION is session:
@@ -3625,30 +3623,6 @@ async def _active_speaker_play_summed_commission_tone(
             rollback_issue,
         ]
     return playback_result
-
-
-def _commission_setup_issue(code: str, message: str) -> dict[str, str]:
-    return {"severity": "blocker", "code": code, "message": message}
-
-
-def _commission_setup_blocked_payload(
-    *,
-    group: str,
-    role: str,
-    issue: dict[str, str],
-    startup_setup: dict[str, Any],
-) -> dict[str, Any]:
-    return {
-        "status": "blocked",
-        "startup_setup": startup_setup,
-        "preflight": None,
-        "load": {
-            "status": "blocked",
-            "last_action": "startup_anchor_blocked",
-            "target": {"speaker_group_id": group, "role": role},
-            "issues": [issue],
-        },
-    }
 
 
 async def _active_speaker_ensure_commission_startup_anchor(
@@ -3688,14 +3662,10 @@ async def _active_speaker_ensure_commission_startup_anchor(
     preview = _active_speaker_crossover_preview_save_payload()
     stage = _active_speaker_stage_config_payload({})
     if stage.get("status") != "staged":
-        issue = _commission_setup_issue(
-            "commission_startup_anchor_not_staged",
-            "could not stage the silent active-speaker setup before driver testing",
-        )
-        return _commission_setup_blocked_payload(
+        return _blocked_startup_anchor(
             group=group,
             role=role,
-            issue=issue,
+            issue=commission_startup_anchor_not_staged_issue(),
             startup_setup={"status": "blocked", "preview": preview, "stage": stage},
         )
 
@@ -3705,14 +3675,10 @@ async def _active_speaker_ensure_commission_startup_anchor(
     )
     path_report = path_payload.get("report") if isinstance(path_payload, dict) else {}
     if not isinstance(path_report, dict) or path_report.get("load_gate") != "ready":
-        issue = _commission_setup_issue(
-            "commission_startup_anchor_path_safety_blocked",
-            "could not verify the silent active-speaker setup path before driver testing",
-        )
-        return _commission_setup_blocked_payload(
+        return _blocked_startup_anchor(
             group=group,
             role=role,
-            issue=issue,
+            issue=commission_startup_anchor_path_safety_blocked_issue(),
             startup_setup={
                 "status": "blocked",
                 "preview": preview,
@@ -3729,14 +3695,10 @@ async def _active_speaker_ensure_commission_startup_anchor(
         startup_load.get("load") if isinstance(startup_load.get("load"), dict) else {}
     )
     if load_state.get("status") != "loaded" or not load_state.get("rollback_available"):
-        issue = _commission_setup_issue(
-            "commission_startup_anchor_load_failed",
-            "could not load the silent active-speaker setup before driver testing",
-        )
-        return _commission_setup_blocked_payload(
+        return _blocked_startup_anchor(
             group=group,
             role=role,
-            issue=issue,
+            issue=commission_startup_anchor_load_failed_issue(),
             startup_setup={
                 "status": "blocked",
                 "preview": preview,
@@ -4147,7 +4109,7 @@ async def _active_speaker_commission_ramp_ack_payload(
                     if isinstance(payload.get("issues"), list)
                     else []
                 ),
-                _commission_setup_issue(
+                _issue(
                     "driver_target_identity_save_failed",
                     (
                         "the driver was heard, but JTS could not save the "

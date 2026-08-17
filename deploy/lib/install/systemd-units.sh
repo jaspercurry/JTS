@@ -1236,9 +1236,10 @@ start_streambox_runtime_units() {
         systemctl stop "${unit}.service" 2>/dev/null || true
     done
     reconcile_grouping_state
-    # Run the owner now, not only at next boot. Its install-profile gate keeps
-    # streambox ring coupling on loopback while the independent USB decision
-    # can still arm DIRECT capture from canonical source intent.
+    # Run the owner now, not only at next boot. Since #2285 there is no
+    # install-profile gate: a streambox resolves its coupling on the same
+    # per-box ring evidence as any other box, and the independent USB decision
+    # still arms DIRECT capture from canonical source intent either way.
     resolve_fanin_coupling_default
     systemctl enable jasper-wifi-guardian.service
     systemctl enable --now jasper-wifi-recover.timer

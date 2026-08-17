@@ -62,15 +62,16 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #                        fan-in still opens hw:Loopback,1,3 as the usbsink lane's
 #                        idle fallback when USB Audio Input is off)
 #   correction sweeps  → pcm.correction_substream  → hw:Loopback,0,4
-#   (active Nch DSP rides the ACTIVE ring, not snd-aloop — pair 5 is free)
+#   (active Nch DSP rides the ACTIVE ring, not snd-aloop — pair 5 UNALLOCATED)
 #   passive stereo DSP ← outputd_content_*        ← hw:Loopback,0/1,6
 #     ALSO the active-follower grouping round-trip (distributed-active
 #     Slice 3): a bonded active follower's snapclient writes 0,6 and its
 #     CamillaDSP captures 1,6 to run Layer A. Safe to share with the
 #     passive content lane: the two uses are mutually exclusive by hardware
 #     mode — an active follower's outputd is always Composite, reads the
-#     ACTIVE ring, and never opens the passive lane on 6.
-#     snd_aloop caps at 8 pairs, so a dedicated extra pair isn't possible.
+#     ACTIVE ring, and never opens the passive lane on 6. Why they share a
+#     pair rather than take one each is the allocation owner's argument:
+#     deploy/modprobe.d/snd-aloop.conf.
 #                                                       │
 #                                                       ▼ (loop)
 #   jasper-fanin reads        hw:Loopback,1,0..4
@@ -150,8 +151,12 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 # `hw:Loopback,1,0` is now a private fan-in input lane; the summed
 # music reference is `pcm.jasper_capture` on substream 7.
 
-# Per-renderer substream aliases. Substream allocation (8 pairs per
-# card, pinned in deploy/modprobe.d/snd-aloop.conf):
+# Per-renderer substream aliases. deploy/modprobe.d/snd-aloop.conf OWNS the
+# substream allocation and the reasoning behind it (8 pairs per card, pinned
+# there). The numbers are repeated here only because the alias definitions
+# immediately below are written in terms of them, so an editor changing one
+# has to see which lane it is; read the owner for anything this list does not
+# answer, and change the owner first when the allocation moves.
 #   0 — librespot          (Spotify Connect)
 #   1 — shairport-sync     (AirPlay 2)
 #   2 — bluealsa-aplay     (Bluetooth A2DP)
@@ -169,8 +174,8 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #       the active-follower grouping round-trip (snapclient -> the follower's
 #       CamillaDSP; distributed-active Slice 3). Mutually exclusive by hardware
 #       mode — an active follower's outputd is Composite and reads the ACTIVE
-#       ring, so it never opens lane 6; snd_aloop caps at 8 pairs so no
-#       dedicated extra pair exists.
+#       ring, so it never opens lane 6. The sharing argument is the allocation
+#       owner's: see deploy/modprobe.d/snd-aloop.conf.
 #   7 — fan-in daemon's summed output → CamillaDSP (its only reader)
 #
 # Each alias is a `plug:` wrapper so the renderer's native rate/format

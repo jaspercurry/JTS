@@ -29,7 +29,7 @@ from ...audio_measurement.correction_lane import (
 )
 from ...control import client as control
 from ...correction.coordinator import MeasurementWindowError, measurement_window
-from ._shared import CheckResult, _loopback_playback_active, _run
+from ._shared import CheckResult, _run
 from .aec import _AEC_MIC_MUSIC_THRESHOLD, _AEC_RMS_RE
 
 
@@ -164,14 +164,36 @@ def _probe_aec_ref_path_locked() -> list[CheckResult]:
                 "active source and re-run.",
             ))
             return results
-        if _loopback_playback_active():
-            results.append(CheckResult(
-                "probe — renderers idle", "fail",
-                "a fan-in input lane is currently open in /proc/asound; "
-                "refuse to play test sine over active renderer audio. "
-                "Stop playback and re-run.",
-            ))
-            return results
+        # NO /proc/asound LANE CHECK HERE ANY MORE (#2585). A third precheck
+        # used to read `_loopback_playback_active()` — an open fan-in INPUT lane
+        # under /proc/asound/Loopback — and refuse. It was PERMANENTLY INERT on a
+        # ring-armed box: no aloop input lane is open there by construction, so
+        # it read as protection while protecting nothing, and making it ring-
+        # aware would need a fan-in STATUS or lane-map read inside a helper that
+        # is deliberately /proc-only.
+        #
+        # WHICH LAYERS HOLD THE PROPERTY NOW ("never play a test sine over live
+        # audio"), stated explicitly because this is hearing-adjacent:
+        #
+        #  - `_run_isolated_probe()` below is the layer that actually holds it,
+        #    and it held it more strongly than this check ever did. Its
+        #    `measurement_window` asks mux to EXCLUDE EVERY MUSIC LANE
+        #    (`_acquire_measurement_gate` -> `TEST_SELECT`), VERIFIES the landed
+        #    state, and mux reasserts that selection once per tick for the whole
+        #    window — so even a renderer that starts mid-probe cannot enter the
+        #    mix. It is transport-agnostic (mux owns the mix on both couplings)
+        #    and it FAILS CLOSED: if the gate cannot be established or proven —
+        #    including when mux itself is unreachable — it raises
+        #    `MeasurementWindowError` and no tone is played. The deleted check
+        #    was a point-in-time read that could go stale between the read and
+        #    the play; this one is held for the duration.
+        #
+        #  - The `active_source` precheck just above is the transport-agnostic
+        #    COURTESY refusal: it gives the operator "stop the active source and
+        #    re-run" before anything is gated. It catches a playing renderer on
+        #    either coupling, because mux elects a winner on every confirmed
+        #    inactive->active transition and `/state`'s `active_source` is
+        #    derived from mux's `selected_source`/`winner`.
         results.append(CheckResult(
             "probe — renderers idle", "ok", f"active_source={active!r}"
         ))

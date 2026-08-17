@@ -2964,13 +2964,20 @@ def recompose_baseline_yaml(
     # fan-in stops feeding, which is silence with every daemon healthy, and
     # quiet — the plan compares capture CHANNELS (2 == 2) and the width gate
     # only holds ring-NAMED lanes to the wire.
+    # Same refusal as the durable builder above, framed the same way: an
+    # unresolvable ring wire reads identically wherever it surfaces, and the
+    # parser's own sentence rides on the end as detail. A bare `str(exc)` here
+    # was the odd one out of this code's four mint sites — it named no subject,
+    # so the one code carried two different sentences depending on which path
+    # reached it.
     try:
         devices = active_emit_devices(resolved_device, topology=topology)
     except ValueError as exc:
         return None, [_issue(
             "blocker",
             "ring_wire_declaration_invalid",
-            str(exc),
+            f"this box declares a ring wire neither jasper-fanin nor JTS can "
+            f"resolve, so there is no wire to emit against: {exc}",
         )]
     yaml = emit_active_speaker_baseline_config(
         preset,

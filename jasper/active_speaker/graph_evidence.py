@@ -432,6 +432,27 @@ def driver_commission_audible_evidence(
 # parse dialects are kept separate while the predicates are shared).
 
 
+def _no_bypassed_pipeline_step(payload: Any) -> bool:
+    """True iff the graph has a readable pipeline with no ``bypassed`` step.
+
+    The raw-pipeline half of :func:`running_commission_evidence`'s proof, split
+    out only so the check has a name. Fails CLOSED in both unreadable
+    directions — a non-dict payload or a pipeline that is not a list returns
+    False — matching :func:`graph_safety.output_terminally_muted`, which
+    refuses its proof on exactly the same shapes.
+    """
+    if not isinstance(payload, dict):
+        return False
+    pipeline = payload.get("pipeline")
+    if not isinstance(pipeline, list):
+        return False
+    return not any(
+        gs.truthy_bool(step.get("bypassed"))
+        for step in pipeline
+        if isinstance(step, dict)
+    )
+
+
 def running_commission_evidence(
     running_config_raw: str | None,
     *,
@@ -453,8 +474,9 @@ def running_commission_evidence(
     by its protective high-pass + startup limiter. This is the "assert the
     high-pass is present in the RUNNING pipeline, not just the config file" gate
     that guards the per-driver tweeter unmute (HANDOFF-active-speaker-dsp.md
-    Stage 5). Fails closed: an unparseable read-back, a missing filter, or a mask
-    that drifted from intent all return ``passed=False``.
+    Stage 5). Fails closed: an unparseable read-back, a missing filter, a mask
+    that drifted from intent, or any ``bypassed`` pipeline step all return
+    ``passed=False``.
     """
     audible = {int(i) for i in audible_outputs}
     muted = {int(i) for i in muted_outputs}
@@ -470,6 +492,20 @@ def running_commission_evidence(
             config = None
     parse_ok = isinstance(config, dict)
     view = gs.view_from_camilla_dict(config if parse_ok else None)
+
+    # (0) No pipeline step is `bypassed` (#2625). Every predicate below reads
+    # :class:`GraphView`, which models filters and channels but NOT the per-step
+    # bypass flag — so a graph that carries JTS's own mute filter names and a
+    # `bypassed: true` step reads as fully masked while CamillaDSP skips the
+    # step entirely and the channel runs live. Checked here, on the raw
+    # pipeline, where the flag lives. Same WHOLESALE rule and same reasoning as
+    # `graph_safety.output_terminally_muted` fact 3 and the two bench
+    # derivation checkers: any bypassed step anywhere refuses the whole proof,
+    # because no JTS emitter ever writes `bypassed`, so its presence means the
+    # graph was hand-edited and picking which bypassed step is harmless is the
+    # generous shape this evidence exists to reject. Not folded into (1) —
+    # a named check tells an operator WHICH invariant failed.
+    no_bypassed_step = _no_bypassed_pipeline_step(config if parse_ok else None)
 
     # (1) Audible mask: each declared output un-muted iff in `audible`, every
     # other declared output -120 dB hard-muted, and each mute wired to its own
@@ -500,6 +536,7 @@ def running_commission_evidence(
     headroom = _startup_headroom_present(view, expected_headroom_db)
     checks = {
         "running_config_parsed": parse_ok,
+        "no_bypassed_pipeline_step": no_bypassed_step,
         "audible_mask_correct": mask_correct,
         "tweeter_protected_while_audible": tweeter_protected,
         "startup_headroom": headroom,

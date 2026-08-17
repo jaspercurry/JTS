@@ -258,16 +258,29 @@ def test_active_aec_probe_fails_closed_for_untrusted_active_source(
 
 
 @pytest.mark.parametrize(
-    ("active_source", "loopback_active", "detail"),
+    ("active_source", "detail"),
     [
-        ("spotify", False, "active_source='spotify'"),
-        ("voice", False, "active_source='voice'"),
-        ("idle", True, "fan-in input lane is currently open"),
+        ("spotify", "active_source='spotify'"),
+        ("voice", "active_source='voice'"),
+        ("airplay", "active_source='airplay'"),
+        ("usbsink", "active_source='usbsink'"),
+        ("bluetooth", "active_source='bluetooth'"),
     ],
 )
 def test_active_aec_probe_refuses_known_active_playback(
-    monkeypatch, active_source, loopback_active, detail
+    monkeypatch, active_source, detail
 ):
+    """A non-idle `active_source` still refuses, and plays nothing (#2585).
+
+    This is the precheck that survived the deletion of the `/proc/asound`
+    fan-in-lane layer, so it carries the whole "tell the operator to stop the
+    source" job now. It is TRANSPORT-AGNOSTIC on purpose — `active_source` is
+    mux's effective winner, not a lane read — which is why every source id is
+    exercised rather than only the two the old parametrization named. The
+    `not any(... "aplay" ...)` assertion is the load-bearing half: refusing
+    with a message while still playing a tone would be the failure this
+    guards.
+    """
     calls, fake_run, fake_play = _active_probe_run_recorder()
     monkeypatch.setattr(doctor.aec_probe, "_run", fake_run)
     monkeypatch.setattr(doctor.aec_probe, "run_correction_play", fake_play)
@@ -276,15 +289,28 @@ def test_active_aec_probe_refuses_known_active_playback(
         "get_state",
         lambda **_kwargs: {"active_source": active_source},
     )
-    monkeypatch.setattr(
-        doctor.aec_probe, "_loopback_playback_active", lambda: loopback_active
-    )
 
     results = doctor.probe_aec_ref_path()
 
     assert [result.status for result in results] == ["ok", "fail"]
     assert detail in results[-1].detail
+    assert "Stop the active source and re-run" in results[-1].detail
     assert not any(call and call[0] == "aplay" for call in calls)
+
+
+def test_active_aec_probe_has_no_proc_asound_lane_precheck(monkeypatch):
+    """The retired `/proc/asound` fan-in-lane layer stays retired (#2585).
+
+    An absence guard, because the deleted check was PERMANENTLY INERT on a
+    ring-armed box: re-adding it would read as protection while protecting
+    nothing there, and the property is held by the measurement window's mux
+    gate plus the `active_source` precheck above. Named-symbol absence rather
+    than a grep so a comment describing the retirement cannot satisfy it.
+    """
+    assert not hasattr(doctor.aec_probe, "_loopback_playback_active")
+    # Positive control: the module DOES still re-export the sibling helpers it
+    # uses, so the assertion above is discriminating rather than vacuous.
+    assert hasattr(doctor.aec_probe, "_run")
 
 
 def test_active_aec_probe_trustworthy_idle_reaches_aplay(monkeypatch, tmp_path):
@@ -336,7 +362,6 @@ def test_active_aec_probe_trustworthy_idle_reaches_aplay(monkeypatch, tmp_path):
         "get_state",
         lambda **_kwargs: {"active_source": "idle"},
     )
-    monkeypatch.setattr(doctor.aec_probe, "_loopback_playback_active", lambda: False)
     monkeypatch.setattr(doctor.aec_probe, "_PROBE_SINE_DURATION_S", 0.0)
     monkeypatch.setattr(
         doctor.aec_probe, "_PROBE_SINE_PATH", str(tmp_path / "probe.wav")
@@ -380,7 +405,6 @@ def test_active_aec_probe_releases_isolation_after_aplay_failure(
         "get_state",
         lambda **_kwargs: {"active_source": "idle"},
     )
-    monkeypatch.setattr(doctor.aec_probe, "_loopback_playback_active", lambda: False)
     monkeypatch.setattr(
         doctor.aec_probe, "measurement_window", fake_measurement_window
     )
@@ -415,7 +439,6 @@ def test_active_aec_probe_never_generates_or_plays_without_isolation(
         "get_state",
         lambda **_kwargs: {"active_source": "idle"},
     )
-    monkeypatch.setattr(doctor.aec_probe, "_loopback_playback_active", lambda: False)
     monkeypatch.setattr(doctor.aec_probe, "measurement_window", unavailable_window)
     monkeypatch.setattr(doctor.aec_probe, "_PROBE_SINE_PATH", str(sine_path))
 
@@ -493,7 +516,6 @@ def test_active_aec_probe_reports_exit_cleanup_failure_after_tone(monkeypatch):
         "get_state",
         lambda **_kwargs: {"active_source": "idle"},
     )
-    monkeypatch.setattr(doctor.aec_probe, "_loopback_playback_active", lambda: False)
     monkeypatch.setattr(doctor.aec_probe, "measurement_window", release_fails)
     monkeypatch.setattr(
         doctor.aec_probe,
@@ -538,7 +560,6 @@ def test_active_aec_probe_preserves_generate_failure_on_cleanup_failure(
         "get_state",
         lambda **_kwargs: {"active_source": "idle"},
     )
-    monkeypatch.setattr(doctor.aec_probe, "_loopback_playback_active", lambda: False)
     monkeypatch.setattr(doctor.aec_probe, "measurement_window", release_fails)
     monkeypatch.setattr(
         doctor.aec_probe,

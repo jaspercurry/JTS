@@ -111,6 +111,13 @@ def _ready_preview() -> dict:
 
 
 def test_summed_test_failure_message_prioritizes_artifact_permission_failure():
+    """A backend that never played beats a mismatch measured from what played.
+
+    `tone_backend_failed` shares the quiet-test family's sentence — the remedy
+    is the same two steps, and that sentence names the control to press — so
+    what is pinned here is the PRECEDENCE, not which family owns the copy.
+    """
+
     message = summed_test_failure_message([
         {
             "severity": "blocker",
@@ -124,8 +131,9 @@ def test_summed_test_failure_message_prioritizes_artifact_permission_failure():
         },
     ])
 
-    assert "could not prepare the combined test audio" in message
+    assert "Press Play combined test to retry" in message
     assert "Confirm outputs" not in message
+    assert "did not match the saved speaker outputs" not in message
 
 
 def test_commissioning_view_exposes_combined_test_as_next_action():
@@ -515,8 +523,9 @@ def test_commissioning_view_uses_backend_failure_copy_for_combined_group():
 
     group = view["combined_groups"][0]
     assert group["status"] == "test_failed"
-    assert "could not prepare the combined test audio" in group["message"]
+    assert "Press Play combined test to retry" in group["message"]
     assert "Confirm outputs" not in group["message"]
+    assert "did not match the saved speaker outputs" not in group["message"]
 
 
 def test_commissioning_view_blocks_output_confirmation_until_values_are_ready():
@@ -1343,4 +1352,58 @@ def test_failure_remedies_name_the_card_titles_the_page_actually_renders():
     )
     assert guard_titles == COMMISSIONING_STEP_PAGE_TITLES, (
         "outputStepTitle drifted from the /sound/ page titles"
+    )
+
+
+def test_host_error_codes_and_household_blocker_codes_stay_disjoint():
+    """Two vocabularies, one namespace — keep them from colliding again.
+
+    `CommissioningHostError` codes are INTERNAL: they name invariant violations
+    in the server-owned commissioning journal, and nothing outside
+    `commissioning_host.py` reads `.code` today. `_SUMMED_TEST_FAILURE_COPY`
+    codes are HOUSEHOLD blockers, each mapped to a sentence prescribing a
+    remedy a household can carry out.
+
+    `rollback_anchor_missing` was spelled in BOTH — the household one meaning
+    "the current CamillaDSP config path does not exist" (remedy: press Play
+    combined test to retry), the internal one meaning "a restore was recorded
+    with no matching intent" (no remedy; a retry cannot fix an invariant
+    violation). They never collided in behaviour, because nothing wires a host
+    error's code into an issues list. The first reader who does would map an
+    internal defect onto a household retry, so the guarantee is asserted rather
+    than left to that reader noticing.
+
+    Mutation: revert the rename in `_runtime_mutation_journal`'s
+    `record_restored` and this fails naming the shared token.
+    """
+
+    import ast
+
+    repo = Path(__file__).resolve().parent.parent
+    source = (repo / "jasper" / "active_speaker" / "commissioning_host.py").read_text(
+        encoding="utf-8"
+    )
+    host_codes = set()
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.id if isinstance(func, ast.Name) else None
+        if name != "CommissioningHostError" or not node.args:
+            continue
+        first = node.args[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            host_codes.add(first.value)
+
+    assert len(host_codes) > 40, (
+        f"the CommissioningHostError walk found too few codes ({len(host_codes)}) "
+        "— this guard would be vacuous"
+    )
+
+    household_codes = {code for code, _ in _SUMMED_TEST_FAILURE_COPY}
+    shared = sorted(host_codes & household_codes)
+    assert not shared, (
+        "these tokens name an internal commissioning-journal failure AND a "
+        "household blocker with a household remedy; wiring a host error's "
+        f"`.code` into an issues list would prescribe the wrong fix: {shared}"
     )

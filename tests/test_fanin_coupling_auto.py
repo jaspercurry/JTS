@@ -82,8 +82,18 @@ def test_is_operator_choice(raw, expected):
     assert ca.is_operator_choice(raw) is expected
 
 
-def test_streambox_profile_keeps_ring_loopback_while_usb_combo_arms(monkeypatch):
-    """Ring hardware validation and USB DIRECT eligibility are independent."""
+def test_a_streambox_is_judged_on_its_own_evidence_not_its_class(monkeypatch):
+    """#2285: no install-profile gate. A streambox arms on the same proof as any box.
+
+    ``ring_install_profile_ready`` used to refuse automatic ``shm_ring`` on a
+    Zero-class box purely because the ring had not been VALIDATED there — a
+    class-shaped refusal standing in for a per-box proof the other gates already
+    make. It is deleted, so a streambox now takes the ring exactly when its own
+    hardware evidence says it can.
+
+    BOTH directions are asserted, because only the first would pass equally well
+    if the whole gate list had been dropped instead of one entry.
+    """
 
     from jasper import install_profile
 
@@ -92,18 +102,38 @@ def test_streambox_profile_keeps_ring_loopback_while_usb_combo_arms(monkeypatch)
         "read_install_profile",
         lambda: install_profile.STREAMBOX_INSTALL_PROFILE,
     )
-    decision = ca.resolve_auto_decision(
+
+    # Gates pass -> a streambox resolves the ring, which the class gate forbade.
+    _stub_ring_gates(monkeypatch, eligible=True)
+    armed = ca.resolve_auto_decision(
         marker_raw=None,
         gadget_present=True,
         usb_intent_enabled=True,
         ring_gates=cr.default_ring_gates(),
     )
+    assert armed.coupling == COUPLING_SHM_RING, armed.reason
 
-    assert decision.coupling == COUPLING_LOOPBACK
-    assert decision.combo_armed is True
-    assert decision.usb_combo_actions
-    assert all(action.value == "enabled" for action in decision.usb_combo_actions)
-    assert "streambox profile" in decision.reason
+    # Gates refuse -> still loopback (the fail-safe the class gate used to give
+    # for free), but the reason names the GATE that refused rather than the
+    # profile, so an operator is told what to fix.
+    _stub_ring_gates(monkeypatch, eligible=False)
+    refused = ca.resolve_auto_decision(
+        marker_raw=None,
+        gadget_present=True,
+        usb_intent_enabled=True,
+        ring_gates=cr.default_ring_gates(),
+    )
+    assert refused.coupling == COUPLING_LOOPBACK
+    assert "streambox" not in refused.reason.lower(), refused.reason
+    assert "ring_assets" in refused.reason or "ring_topology" in refused.reason
+
+    # USB DIRECT eligibility stays independent of the ring question, in both
+    # directions — that separation was the original gate's other justification
+    # and it must survive the deletion.
+    for decision in (armed, refused):
+        assert decision.combo_armed is True
+        assert decision.usb_combo_actions
+        assert all(a.value == "enabled" for a in decision.usb_combo_actions)
 
 
 def test_usbsink_effective_gate_reads_canonical_source_state_and_role(monkeypatch):

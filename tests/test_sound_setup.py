@@ -1226,6 +1226,17 @@ _COMMISSION_CODE_MODULES = (
     "jasper/active_speaker/driver_protection.py",
     "jasper/active_speaker/measurement.py",
     "jasper/web/sound_setup.py",
+    # Also in the issue flow, and absent from this list until #2285: the
+    # baseline emitter mints two of the four `ring_wire_declaration_invalid`
+    # sites, the environment probe contributes the config/ALSA blockers the
+    # preflight aggregates, and topology_tone's six target blockers are spliced
+    # straight into the combined-test payload
+    # (`web_commissioning._summed_target_or_issue`). A module that mints a
+    # blocker a household can reach and is not scanned here is a guard that
+    # reports on a subset while reading as complete.
+    "jasper/active_speaker/baseline_profile.py",
+    "jasper/active_speaker/environment.py",
+    "jasper/active_speaker/topology_tone.py",
 )
 
 # An operator remedy: a sudo/systemctl invocation, a `jasper-*` binary, or a
@@ -1246,19 +1257,114 @@ _OPERATOR_COMMAND_RE = re.compile(
 )
 
 
+def _lit_str(node) -> str | None:
+    """The literal string a node carries, or None when it is computed."""
+    import ast
+
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):  # f-string: keep the literal parts
+        return "".join(
+            v.value
+            for v in node.values
+            if isinstance(v, ast.Constant) and isinstance(v.value, str)
+        )
+    return None
+
+
+def _blocker_dict_fields(node) -> tuple[object, object] | None:
+    """``(code_node, message_node)`` for a literal ``severity: "blocker"`` dict."""
+    import ast
+
+    if not isinstance(node, ast.Dict):
+        return None
+    fields = {
+        key.value: value
+        for key, value in zip(node.keys, node.values)
+        if isinstance(key, ast.Constant) and isinstance(key.value, str)
+    }
+    if _lit_str(fields.get("severity")) != "blocker":
+        return None
+    if "code" not in fields:
+        return None
+    return fields["code"], fields.get("message")
+
+
+# The seeded builders, whose definitions live OUTSIDE the scanned modules
+# (`jasper.active_speaker._common`), so nothing here can discover them. ARITY,
+# not name, disambiguates the `_issue` alias: most modules do
+# `from ._common import issue as _issue` — 3 positional args, severity first —
+# while `web_commissioning` does `from ._common import blocker_issue as _issue`
+# — 2 args, code first, always a blocker. Reading `args[1]` blindly would
+# collect MESSAGES as codes there. Value is (code_index, message_index).
+_SEEDED_BLOCKER_BUILDERS: dict[tuple[str, int], tuple[int, int]] = {
+    ("_issue", 2): (0, 1),
+    ("blocker_issue", 2): (0, 1),
+    ("_blocked", 2): (0, 1),
+}
+
+
+def _local_blocker_helpers(tree) -> dict[str, tuple[int, int]]:
+    """Module-local helpers that forward their own params into a blocker issue.
+
+    Discovered BY DEFINITION, not by name. The walk used to recognise three
+    hard-coded helper names positionally and require `code=` in the keyword
+    branch, so `sound_setup`'s since-deleted `_commission_setup_issue` — called
+    positionally at seven sites — matched neither, and every one of those
+    blockers was invisible while the guard read as complete. Deleting that one
+    helper fixed that one instance; a name list still cannot be widened ahead of
+    the next helper somebody writes, and a definition scan can.
+
+    Returns ``name -> (code_arg_index, message_arg_index)`` for any function
+    whose body builds a blocker (a literal `severity: "blocker"` dict, or a call
+    to a seeded builder) directly out of its own positional parameters.
+    """
+    import ast
+
+    helpers: dict[str, tuple[int, int]] = {}
+    for func in ast.walk(tree):
+        if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        params = [arg.arg for arg in func.args.args + func.args.kwonlyargs]
+
+        def _param_index(node, _params=params):
+            if isinstance(node, ast.Name) and node.id in _params:
+                return _params.index(node.id)
+            return None
+
+        for inner in ast.walk(func):
+            fields = _blocker_dict_fields(inner)
+            if fields is None and isinstance(inner, ast.Call):
+                target = inner.func
+                inner_name = target.id if isinstance(target, ast.Name) else None
+                key = (inner_name, min(len(inner.args), 2))
+                if inner_name and key in _SEEDED_BLOCKER_BUILDERS and inner.args:
+                    code_i, message_i = _SEEDED_BLOCKER_BUILDERS[key]
+                    if len(inner.args) > max(code_i, message_i):
+                        fields = (inner.args[code_i], inner.args[message_i])
+            if fields is None:
+                continue
+            code_index = _param_index(fields[0])
+            message_index = _param_index(fields[1])
+            if code_index is not None and message_index is not None:
+                helpers[func.name] = (code_index, message_index)
+                break
+    return helpers
+
+
 def _commission_blocker_pairs() -> list[tuple[str, str, str]]:
     """AST-walk the commissioning modules for literal (code, message, where).
 
     Mechanical on purpose: a hand-kept list of codes is the same class of bug as
-    a hand-kept list of copy entries.
+    a hand-kept list of copy entries — and so is a hand-kept list of the HELPER
+    NAMES that build them, which is why `_local_blocker_helpers` discovers those
+    from their definitions instead.
 
-    ARITY, not name, disambiguates the ``_issue`` alias. Most modules do
-    ``from ._common import issue as _issue`` — 3 positional args, severity first.
-    ``web_commissioning`` does ``from ._common import blocker_issue as _issue``
-    — 2 args, code first, always a blocker. Reading ``args[1]`` blindly would
-    collect MESSAGES as codes there, so each arity is handled on its own branch.
-    Keyword ``code=`` / ``message=`` forms are collected too
-    (``_blocked_startup_anchor``, ``_commission_setup_issue``).
+    Three shapes are collected: the seeded `_common` builders (by arity, see
+    `_SEEDED_BLOCKER_BUILDERS`), any module-local helper that forwards its own
+    params into a blocker, and BARE `{"severity": "blocker", ...}` dict literals
+    — which the walk skipped entirely while it visited only `ast.Call`, hiding
+    five live mint sites in modules it was already scanning.
 
     Codes built from an f-string or a variable are invisible here. That is a
     known bound, not an oversight: the property under test is about the literal
@@ -1267,45 +1373,44 @@ def _commission_blocker_pairs() -> list[tuple[str, str, str]]:
     """
     import ast
 
-    def _lit(node):
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            return node.value
-        if isinstance(node, ast.JoinedStr):  # f-string: keep the literal parts
-            return "".join(
-                v.value
-                for v in node.values
-                if isinstance(v, ast.Constant) and isinstance(v.value, str)
-            )
-        return None
-
     repo = Path(__file__).resolve().parent.parent
     pairs: list[tuple[str, str, str]] = []
     for rel in _COMMISSION_CODE_MODULES:
         path = repo / rel
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            name = (
-                func.attr
-                if isinstance(func, ast.Attribute)
-                else func.id
-                if isinstance(func, ast.Name)
-                else None
-            )
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        builders = dict(_SEEDED_BLOCKER_BUILDERS)
+        builders.update(
+            {(name, 2): indices for name, indices in _local_blocker_helpers(tree).items()}
+        )
+        # The 3-arg severity-first alias, kept separate: its severity must be
+        # the literal "blocker" before the pair counts.
+        for node in ast.walk(tree):
             code = message = None
-            if name == "_issue" and len(node.args) >= 3:
-                if _lit(node.args[0]) == "blocker":
-                    code, message = _lit(node.args[1]), _lit(node.args[2])
-            elif name == "_issue" and len(node.args) == 2:
-                code, message = _lit(node.args[0]), _lit(node.args[1])
-            elif name in {"blocker_issue", "_blocked"} and len(node.args) >= 2:
-                code, message = _lit(node.args[0]), _lit(node.args[1])
-            if code is None:
-                kwargs = {kw.arg: kw.value for kw in node.keywords if kw.arg}
-                if "code" in kwargs:
-                    code = _lit(kwargs["code"])
-                    message = _lit(kwargs.get("message"))
+            fields = _blocker_dict_fields(node)
+            if fields is not None:
+                code, message = _lit_str(fields[0]), _lit_str(fields[1])
+            elif isinstance(node, ast.Call):
+                func = node.func
+                name = (
+                    func.attr
+                    if isinstance(func, ast.Attribute)
+                    else func.id
+                    if isinstance(func, ast.Name)
+                    else None
+                )
+                if name == "_issue" and len(node.args) >= 3:
+                    if _lit_str(node.args[0]) == "blocker":
+                        code, message = _lit_str(node.args[1]), _lit_str(node.args[2])
+                else:
+                    indices = builders.get((name, min(len(node.args), 2)))
+                    if indices and len(node.args) > max(indices):
+                        code = _lit_str(node.args[indices[0]])
+                        message = _lit_str(node.args[indices[1]])
+                if code is None:
+                    kwargs = {kw.arg: kw.value for kw in node.keywords if kw.arg}
+                    if "code" in kwargs:
+                        code = _lit_str(kwargs["code"])
+                        message = _lit_str(kwargs.get("message"))
             if code:
                 pairs.append((code, message or "", f"{rel}:{node.lineno}"))
     return pairs
@@ -1451,24 +1556,58 @@ def test_the_transport_blockers_are_registered_on_every_household_surface():
     # which is why the ladder's real coverage is asserted BEHAVIOURALLY in
     # tests/js/active_speaker_ui_test.mjs. This is the cheap second layer, not
     # the guarantee.
+    #
+    # THE WHOLE SHARED SET, not the transport rungs alone. Pinning four of the
+    # eleven codes both surfaces carry left the other seven free to be renamed
+    # on one side only — the same partial-re-point hazard this test was written
+    # for, just further down the ladder. `ring_wire_declaration_invalid` joins
+    # the loop here rather than being asserted separately: it was mapped in the
+    # coordinator since #2364 and absent from the ladder until the gate lifted,
+    # and it never had the `emitted` half at all.
     for code in (
         "commissioning_transport_ends_disagree",
         "commissioning_ring_feed_unarmed",
         "commissioning_active_endpoint_unarmed",
+        "ring_wire_declaration_invalid",
+        "commission_live_state_stale",
+        "commission_output_hardware_reconcile_failed",
+        "commission_tone_backend_failed",
+        "commission_active_graph_not_staged",
     ):
         assert code in emitted, f"no commissioning builder raises {code}"
         assert f"'{code}'" in helper_js, (
             f"the /sound/ issue ladder does not name {code}"
         )
         assert code in mapped, f"the combined-test card has no copy for {code}"
-    # Correction 4's pin: mapped in the coordinator since #2364 and absent from
-    # the ladder until the gate lifted. The ladder falls through to written copy
-    # rather than leaking, so this is advice precision, not a prose leak — owed
-    # at the lift because the ring is now a transport a household can be on.
-    assert "'ring_wire_declaration_invalid'" in helper_js, (
-        "the /sound/ issue ladder does not name the unresolvable-wire blocker"
+    # The three the ladder reaches through a PREFIX rung, not by name. This is
+    # asserted as it is rather than as eight equal codes because the two
+    # surfaces genuinely disagree here and the pin must say which is true:
+    #
+    #   `for (var i = 0; …) if (String(codes[i]).indexOf('commission_startup_anchor_') === 0)`
+    #
+    # collapses all three into ONE sentence ("re-check the setup above, then
+    # start the tone again"), while Python routes them to THREE different
+    # families with three different remedies — back to Add your components, back
+    # to Confirm outputs, and retry-then-escalate. So the codes appear ZERO
+    # times literally in the ladder and `f"'{code}'" in helper_js` is false for
+    # every one of them. Pinned: each is emitted, each has Python copy, and the
+    # prefix rung that swallows them still exists. Not pinned as equivalent
+    # advice, because it is not.
+    assert "indexOf('commission_startup_anchor_') === 0" in helper_js, (
+        "the /sound/ ladder no longer collapses the startup-anchor family by "
+        "prefix; if it now names the codes, pin them like the eight above"
     )
-    assert "ring_wire_declaration_invalid" in mapped
+    for code in (
+        "commission_startup_anchor_not_staged",
+        "commission_startup_anchor_path_safety_blocked",
+        "commission_startup_anchor_load_failed",
+    ):
+        assert code in emitted, f"no commissioning builder raises {code}"
+        assert code in mapped, f"the combined-test card has no copy for {code}"
+        assert f"'{code}'" not in helper_js, (
+            f"the /sound/ ladder now names {code} directly — move it into the "
+            "loop above so its own sentence is pinned"
+        )
     # The transport gates the preflight publishes both key household copy on
     # their ids (the closed-set guard below walks the builder for these).
     assert f"\n    {COMMISSIONING_TRANSPORT_GATE_ID}:" in helper_js, (
@@ -6363,3 +6502,54 @@ def test_profile_library_route_helpers_create_rename_delete(tmp_path: Path):
     sound_setup.delete_named_profile(renamed.id, path=library_path)
 
     assert load_profile_library(library_path) == ()
+
+
+def test_rollback_teardown_converts_any_failure_into_the_household_blocker():
+    """The re-mute teardown may not let ANY exception escape uncopied.
+
+    /sound/ and /correction/ both run the combined-test re-mute from a
+    ``finally`` and both import this one helper. /correction/ used to catch a
+    five-entry tuple (``CamillaUnavailable``, ``OSError``, ``RuntimeError``,
+    ``ValueError``, ``TypeError``), so a rollback failing with anything else —
+    a ``KeyError`` out of a payload, an ``AttributeError`` off a stubbed
+    controller — escaped the ``finally`` unconverted. The household then got an
+    unhandled exception in place of the highest-stakes sentence in the map: the
+    speaker may still be audible and nothing said so.
+
+    Mutation: narrow the helper's `except Exception` back to
+    `_COMMISSION_OPERATION_ERRORS` and the KeyError case raises here instead of
+    returning the blocker.
+    """
+    from jasper.active_speaker.web_commissioning import (
+        rollback_summed_commission_teardown,
+    )
+
+    async def _boom(exc):
+        raise exc
+
+    for exc in (KeyError("payload"), AttributeError("controller"), RuntimeError("io")):
+        rollback, issue = asyncio.run(
+            rollback_summed_commission_teardown(
+                lambda exc=exc: _boom(exc),
+                log_event_name="test.rollback",
+            )
+        )
+        assert rollback is None, exc
+        assert issue == {
+            "severity": "blocker",
+            "code": "summed_commission_rollback_failed",
+            "message": (
+                "combined test played, but JTS could not re-mute the "
+                "active-speaker test path"
+            ),
+        }, exc
+
+    # And the success path stays a plain pass-through with no blocker.
+    async def _ok():
+        return {"status": "rolled_back"}
+
+    rollback, issue = asyncio.run(
+        rollback_summed_commission_teardown(_ok, log_event_name="test.rollback")
+    )
+    assert rollback == {"status": "rolled_back"}
+    assert issue is None

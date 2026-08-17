@@ -900,8 +900,18 @@ class CommissioningEvidenceHost:
         async def record_restored(observation: RestoreObservation) -> None:
             nonlocal mutation, restored_by_caller
             if mutation is None or predecessor is None:
+                # NOT `rollback_anchor_missing`: that token is a HOUSEHOLD
+                # blocker code (startup_load's "the current CamillaDSP config
+                # path does not exist"), mapped into the combined-test copy
+                # whose remedy is "press Play combined test to retry". This is a
+                # different fact — a restore was recorded with no matching
+                # intent, an invariant violation in the mutation journal that no
+                # retry can fix. The two vocabularies are asserted disjoint by
+                # tests/test_active_speaker_commissioning_coordinator.py so a
+                # future reader wiring `.code` into an issues list cannot
+                # silently prescribe the wrong remedy.
                 raise CommissioningHostError(
-                    "rollback_anchor_missing",
+                    "restore_without_mutation_intent",
                     "restore marker has no exact pending rollback anchor",
                 )
             artifact = self._publish_restore_marker(

@@ -87,7 +87,6 @@ from jasper.fanin.coupling_auto import (
     read_marker,
     read_usb_gadget_available,
     resolve_auto_decision,
-    ring_install_profile_ready,
     usb_combo_actions,
     usbsink_effectively_enabled,
 )
@@ -3307,8 +3306,41 @@ def ring_roleful_unattended_ready() -> tuple[bool, str]:
     )
 
 
+# THE ring preflights, in ONE order, shared by BOTH arm paths.
+#
+# THIS TUPLE EXISTS BECAUSE THE TWO PATHS HAD DRIFTED. The unattended resolver
+# and the manual arm each enumerated these four gates in their own body, and the
+# orders disagreed: the resolver ran topology BEFORE assets, ``_arm_ring`` ran
+# assets BEFORE topology. So a box broken in both ways was told a DIFFERENT
+# first thing to fix depending on which path found it, and
+# :func:`default_ring_gates`'s docstring claimed "in manual-arm order" while
+# describing the order the manual arm did not use. Nothing compared them.
+#
+# ORDER IS A DIAGNOSTIC DECISION. Each gate sits ahead of the gates whose
+# answers would be MEANINGLESS or MISLEADING without it: topology eligibility
+# first, because a box that resolves no ring width makes the wire question
+# ill-posed (``resolve_ring_wire`` falls back to the shipped stereo declaration
+# there, so a wire mismatch would name the wrong defect on a roleful box); asset
+# presence before the two gates that READ those assets; capability before width,
+# because a plugin that cannot parse the wire's fields is a blunter refusal than
+# any per-end disagreement. ``ring_edge_width`` ran first while it was a zero-I/O
+# check over two constants; it now reads the conf.d and both env files, so
+# "cheapest first" no longer describes it.
+#
+# Each path still adds its OWN gates around this spine — the unattended resolver
+# prepends the coarse rolefulness question and appends route/geometry closures;
+# the manual arm appends the two geometry gates and binds the snapshots it
+# already holds into the width gate. What neither may do is restate this order.
+_SHARED_RING_PREFLIGHTS: tuple[tuple[str, RingGate], ...] = (
+    ("ring_topology", ring_topology_ready_strict),
+    ("ring_assets", ring_assets_ready),
+    ("ring_wire_caps", ring_wire_caps_ready),
+    ("ring_edge_width", ring_edge_width_ready),
+)
+
+
 def default_ring_gates() -> tuple[tuple[str, RingGate], ...]:
-    """Return the unattended ring preflights in manual-arm order.
+    """Return the unattended ring preflights, in the shared order.
 
     This factory lives beside the reconciler-owned asset and topology probes it
     composes.  Keeping the pure decision module independent of this transition
@@ -3316,32 +3348,18 @@ def default_ring_gates() -> tuple[tuple[str, RingGate], ...]:
     used by a manual arm.  The unattended path deliberately uses the strict
     topology probe so an unreadable topology fails closed.
 
-    ORDER IS A DIAGNOSTIC DECISION, and it is why ``ring_edge_width`` no longer
-    runs first.  Each gate is ordered ahead of the gates whose answers would be
-    MEANINGLESS or MISLEADING without it: the box class before anything
-    ring-specific; topology eligibility next, because a box that resolves no
-    ring width makes the wire question ill-posed (``resolve_ring_wire`` falls
-    back to the shipped stereo declaration there, so a wire mismatch would name
-    the wrong defect on a roleful box); asset presence before the two gates that
-    READ those assets; capability before width, because a plugin that cannot
-    parse the wire's fields is a blunter refusal than any per-end disagreement.
-    ``ring_edge_width`` was ordered first while it was a zero-I/O check over two
-    constants; it now reads the conf.d and both env files, so "cheapest first"
-    no longer describes it.
+    The order is :data:`_SHARED_RING_PREFLIGHTS`' and is documented there; this
+    function only prepends the one gate the manual arm has no use for.
 
-    ``ring_roleful_unattended`` sits immediately after the box class and BEFORE
-    ``ring_topology``, because it is the coarser question and its refusal is the
-    one an operator of a crossover box needs to read. It is independent of every
-    eligibility predicate on purpose — see its docstring.
+    ``ring_roleful_unattended`` runs FIRST, because it is the coarser question
+    and its refusal is the one an operator of a crossover box needs to read. It
+    is independent of every eligibility predicate on purpose — see its
+    docstring. ``_arm_ring`` does not run it: an operator arriving at the
+    explicit arm has already decided.
     """
     return (
-        ("install_profile", ring_install_profile_ready),
         ("ring_roleful_unattended", ring_roleful_unattended_ready),
-        ("ring_topology", ring_topology_ready_strict),
-        ("ring_assets", ring_assets_ready),
-        ("ring_wire_caps", ring_wire_caps_ready),
-        ("ring_edge_width", ring_edge_width_ready),
-    )
+    ) + _SHARED_RING_PREFLIGHTS
 
 
 def ring_route_ready(route_mode: RouteMode) -> tuple[bool, str]:
@@ -3889,20 +3907,23 @@ def _arm_ring(
     """Arm the ``shm_ring`` coupling (Ring A + Ring B), fail-safe to loopback.
 
     PREFLIGHTs run in order, each fail-safe to loopback (no daemon bounced until
-    all pass): (0) P1 ring assets present (``ring_assets_ready`` — a
-    half-installed ring platform would strand the realtime path); (1) topology
-    ring-eligible (``ring_topology_ready_strict`` — either the STEREO arm or the
-    ACTIVE arm, and fail-CLOSED on an unreadable topology); (2) the installed ioplug can parse
-    the wire (``ring_wire_caps_ready`` — a record compare against what the
-    installer built, never an open-probe); (3) every declaring end states one
-    wire (``ring_edge_width_ready``: fan-in's env, both stereo conf.d blocks,
+    all pass). The first four are :data:`_SHARED_RING_PREFLIGHTS`, run from that
+    ONE enumeration rather than restated here — topology eligibility
+    (``ring_topology_ready_strict``: either the STEREO arm or the ACTIVE arm,
+    fail-CLOSED on an unreadable topology), P1 ring assets present
+    (``ring_assets_ready``: a half-installed ring platform would strand the
+    realtime path), the installed ioplug can parse the wire
+    (``ring_wire_caps_ready``: a record compare against what the installer
+    built, never an open-probe), and every declaring end states one wire
+    (``ring_edge_width_ready``: fan-in's env, both stereo conf.d blocks,
     CamillaDSP's emitted stanzas, outputd's declarations, and the LOADED
     CamillaDSP graph's own ring lanes — a disagreement is a hard ioplug attach
-    failure at arm); (4) conf.d period == outputd period
-    (``ring_geometry_ready``); (5) Ring-A slot count == conf.d n_slots
+    failure at arm). Then two gates only this path can run, because they read
+    the snapshots it holds: (5) conf.d period == outputd period
+    (``ring_geometry_ready``); (6) Ring-A slot count == conf.d n_slots
     (``ring_slot_geometry_ready``, after ``_migrate_stale_fanin_ring_slots``
     self-heals a shear-prone stale ``JASPER_FANIN_RING_SLOTS`` — the 2026-07-05
-    defect-A geometry hole); then (5) ``_delete_stale_ring_files`` clears a
+    defect-A geometry hole); then (7) ``_delete_stale_ring_files`` clears a
     geometry-mismatched on-disk ring so the writer re-creates it fresh. Then the
     CONTENT-FORMAT CONVERGE (``do_converge_content_format``, below), and only
     then the
@@ -3975,96 +3996,62 @@ def _arm_ring(
     defaulted — a default here would silently reach the real broker from a test
     that forgot it, which is the one caller shape that must fail loudly.
     """
-    assets_ok, assets_detail = ring_assets_ready()
-    if not assets_ok:
-        return _fail_ring_arm(
-            do_restart,
-            do_restart_outputd,
-            do_reconcile,
-            desired,
-            reason,
-            fanin_snapshot,
-            outputd_snapshot,
-            event_result="arm_ring_assets_missing",
-            detail=assets_detail,
-        )
-
-    # Topology-eligibility preflight. Two admitting arms (see
-    # ``ring_topology_ready``): a full-range stereo single-sink box takes the
-    # STEREO ring; a roleful box takes the ACTIVE ring, and only once its
-    # endpoint is staged. A composite/mono box fits neither and is refused UP
-    # FRONT with a crisp reason, rather than failing outputd's Rust rejection
-    # later as a confusing rollback.
+    # THE SHARED PREFLIGHTS, run from the one enumeration (see
+    # :data:`_SHARED_RING_PREFLIGHTS`). This function used to spell the same
+    # four gates out again in its own order, and the two orders had drifted
+    # apart; the arm now takes the shared spine and adds only what is genuinely
+    # its own — the snapshots it already holds, and its own per-gate event
+    # names, so a refused arm still says which gate refused.
     #
-    # STRICT on an unreadable topology, and this is a deliberate change of
-    # direction. The operator arm used to fail OPEN here, justified as
-    # "backstopped by outputd's own guard" — and that backstop was proven to fail
-    # open on the SAME error: a topology read failure clears the active-lane
-    # marker, outputd's stereo predicate then admits the ring, and on a 2-way box
-    # no width check can tell that apart. The allowlist restores the backstop,
-    # but the arm stays fail-closed regardless: an operator is present to fix an
-    # unreadable topology, so refusing costs a rerun where admitting costs a park.
-    topo_ok, topo_detail = ring_topology_ready_strict()
-    if not topo_ok:
-        return _fail_ring_arm(
-            do_restart,
-            do_restart_outputd,
-            do_reconcile,
-            desired,
-            reason,
-            fanin_snapshot,
-            outputd_snapshot,
-            event_result="arm_ring_topology_ineligible",
-            detail=topo_detail,
-        )
-
-    # ioplug CAPABILITY preflight (the degraded-deploy walk): the ring's
-    # resolved wire may render a conf.d `format`/`channels` key the INSTALLED
-    # ioplug cannot parse — the plugin build degrades to a WARN, so a failed
-    # rebuild leaves the previous .so beside new daemons. That plugin refuses the
-    # device at open() with -EINVAL and CamillaDSP cannot start against the ring.
-    # A RECORD compare (installer-written provenance vs the .so on disk), never
-    # an open-probe: probing a ring PCM from the reconciler would disturb a live
-    # arm. LIVE on every box since the ring wire's default went wide — the only
-    # wire that still short-circuits without reading a record is an operator's
-    # `JASPER_FANIN_RING_WIRE_FORMAT=S16_LE` pin.
-    caps_ok, caps_detail = ring_wire_caps_ready()
-    if not caps_ok:
-        return _fail_ring_arm(
-            do_restart,
-            do_restart_outputd,
-            do_reconcile,
-            desired,
-            reason,
-            fanin_snapshot,
-            outputd_snapshot,
-            event_result="arm_ring_ioplug_caps_missing",
-            detail=caps_detail,
-        )
-
-    # EVERY-END wire preflight: fan-in's env, both stereo conf.d blocks,
-    # CamillaDSP's emitted stanzas, outputd's declarations AND the loaded
-    # CamillaDSP graph must state ONE wire. Runs after the topology gate because
-    # a box that resolves no ring width makes the comparison ill-posed, and after
-    # the asset gate because it reads the conf.d. The graph is left to the gate
-    # to read: this function holds the two env snapshots it wrote, and nothing on
-    # the arm path has read the statefile, so passing one here would mean opening
-    # it a second time rather than sharing a snapshot.
-    width_ok, width_detail = ring_edge_width_ready(
-        fanin_text=fanin_snapshot.text, outputd_text=outputd_snapshot.text
-    )
-    if not width_ok:
-        return _fail_ring_arm(
-            do_restart,
-            do_restart_outputd,
-            do_reconcile,
-            desired,
-            reason,
-            fanin_snapshot,
-            outputd_snapshot,
-            event_result="arm_ring_edge_width_mismatch",
-            detail=width_detail,
-        )
+    # WHAT EACH SHARED GATE COSTS AN OPERATOR HERE, kept because the arm's
+    # stakes differ from the unattended pass's:
+    #
+    # * ``ring_topology`` is STRICT on an unreadable topology, and that is a
+    #   deliberate change of direction. The operator arm used to fail OPEN,
+    #   justified as "backstopped by outputd's own guard" — and that backstop
+    #   was proven to fail open on the SAME error: a topology read failure
+    #   clears the active-lane marker, outputd's stereo predicate then admits
+    #   the ring, and on a 2-way box no width check can tell that apart. An
+    #   operator is present to fix an unreadable topology, so refusing costs a
+    #   rerun where admitting costs a park. Its two admitting arms are a
+    #   full-range stereo single-sink box (STEREO ring) and a roleful box whose
+    #   endpoint is staged (ACTIVE ring); a composite/mono box fits neither and
+    #   is refused up front rather than through outputd's later Rust rejection.
+    # * ``ring_wire_caps`` is the degraded-deploy walk: the resolved wire may
+    #   render a conf.d `format`/`channels` key the INSTALLED ioplug cannot
+    #   parse, because a failed plugin rebuild degrades to a WARN and leaves the
+    #   previous .so beside new daemons. A RECORD compare, never an open-probe —
+    #   probing a ring PCM from here would disturb a live arm.
+    # * ``ring_edge_width`` reads every declaring end. The arm binds the two env
+    #   snapshots it already wrote rather than letting the gate re-read them;
+    #   the LOADED graph is left to the gate, since nothing on this path has
+    #   opened the statefile and passing one would mean opening it twice.
+    arm_gate_events = {
+        "ring_topology": "arm_ring_topology_ineligible",
+        "ring_assets": "arm_ring_assets_missing",
+        "ring_wire_caps": "arm_ring_ioplug_caps_missing",
+        "ring_edge_width": "arm_ring_edge_width_mismatch",
+    }
+    for gate_name, gate in _SHARED_RING_PREFLIGHTS:
+        if gate_name == "ring_edge_width":
+            gate_ok, gate_detail = ring_edge_width_ready(
+                fanin_text=fanin_snapshot.text,
+                outputd_text=outputd_snapshot.text,
+            )
+        else:
+            gate_ok, gate_detail = gate()
+        if not gate_ok:
+            return _fail_ring_arm(
+                do_restart,
+                do_restart_outputd,
+                do_reconcile,
+                desired,
+                reason,
+                fanin_snapshot,
+                outputd_snapshot,
+                event_result=arm_gate_events[gate_name],
+                detail=gate_detail,
+            )
 
     # Period-geometry preflight: the conf.d ring period MUST equal outputd's
     # resolved DAC period (the ring slot IS one outputd period). A mismatch is a

@@ -284,24 +284,16 @@ def resolved_choice_label(marker_raw: str | None) -> str:
     return COUPLING_CHOICE_OPERATOR if is_operator_choice(marker_raw) else "auto"
 
 
-def ring_install_profile_ready() -> tuple[bool, str]:
-    """Allow automatic SHM-ring coupling only on validated full profiles.
-
-    Streamboxes share the fan-in graph and therefore install the ring assets,
-    but the P4 ring path has not been validated on Zero-class hardware. This
-    gate is deliberately independent from USB combo eligibility so a
-    streambox can arm USB DIRECT while retaining loopback coupling.
-    """
-
-    from jasper.install_profile import (
-        is_streambox_install_profile,
-        read_install_profile,
-    )
-
-    profile = read_install_profile()
-    if is_streambox_install_profile(profile):
-        return False, "streambox profile is not validated for automatic shm_ring"
-    return True, f"install profile {profile} permits automatic shm_ring"
+# NO INSTALL-PROFILE GATE. A streambox arms the ring on exactly the same
+# evidence every other box does — #2285 deleted ``ring_install_profile_ready``,
+# which refused automatic shm_ring on Zero-class hardware purely because the
+# ring had not been VALIDATED there. That is a class-shaped refusal standing in
+# for a per-box proof the remaining gates already make: topology eligibility,
+# asset presence, ioplug capability, wire agreement and both geometry gates all
+# run per box, and ``_arm_ring`` rolls the WHOLE box back to loopback + direct
+# on any failure, so a streambox the ring genuinely does not suit lands exactly
+# where the gate used to hold it — with a named reason instead of a silent
+# class exclusion.
 
 
 def read_usb_gadget_available() -> bool:
