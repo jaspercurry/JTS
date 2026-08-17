@@ -78,12 +78,14 @@ reason about.
 So the rule a verdict class is held to: measured no-worse than the previous
 state → keep, bank, continue; measured worse → restore the playing
 configuration, bank, continue. A class that retreats from a measured-acceptable
-state on realized ≠ commanded alone is a bug against this principle — the
-2026-08-16 shortfall rollback (`gain_factor` 0.664, tracking and integration
-passing, and no round receipt written on the failed verify, so that round's
-realization survives only in journal events) is the incident that forced this
-into writing, and the probe's verdict classes are being re-audited against it.
-None of this is new: it restates tinker-first, restore-reserved, and the
+state on realized ≠ commanded alone is a bug against this principle. What forced
+that into writing is the 2026-08-16 shortfall rollback (`gain_factor` 0.664;
+tracking and integration passing but the verify absolute claim failing at
+−2.83 dB @ 1935 Hz on a crossover band realized +3.10 dB over commanded — a real
+measured regression, so the restore was right; the bug is that no round receipt
+was written on the failed verify, leaving that round's realization only in
+journal events), and the probe's verdict classes are being re-audited against
+it. None of this is new: it restates tinker-first, restore-reserved, and the
 2026-08-15 least-bad-**measured** adoption ruling. What is new is the
 explicitness, not the idea.
 
@@ -390,9 +392,9 @@ Optional, in rough value order:
   measured summed response (deconvolved) owns the level datum outright.
   Per-driver estimates become subordinate consistency checks whose
   disagreement flags a suspect capture — retriable, never a discarded datum.
-  No arbitration between voters, no exclusion cliff, no taper. It supersedes
-  the taper direction recorded on #2609. Pending: the code-grounded design
-  brief, for owner approval before implementation.
+  No arbitration between voters, no exclusion cliff, no taper between the
+  estimators. It supersedes the taper direction recorded on #2609. Pending:
+  the code-grounded design brief, for owner approval before implementation.
 - **MMM adopt-with-conditions** — changes the regime plan's D7, which
   records MMM as unscheduled.
 - **#2321** — the relay journey-budget product decision. The budget is
