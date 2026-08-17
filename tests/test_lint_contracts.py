@@ -366,8 +366,8 @@ def test_noqa_debt_does_not_grow() -> None:
 # that had two, not a smaller file, and a ratchet that quietly booked it as a
 # saving would be lying about which kind of win it was.
 #
-# `crossover_envelope_v2` sits at 4,073 rather than the 4,048 it was set at, and
-# the 25 lines are #2656's: a capped MISSED series now ends in the adoption
+# `crossover_envelope_v2` sits at 4,076 rather than the 4,048 it was set at, and
+# the 28 lines are #2656's: a capped MISSED series now ends in the adoption
 # table, which mints an ending this screen had no sentence for. The lines are
 # one household sentence, its rationale, and the branch that reaches it — the
 # household-copy work this module exists to own, not a concern leaking in. The
@@ -398,7 +398,7 @@ def test_noqa_debt_does_not_grow() -> None:
 MAX_LINES_BY_PATH = {
     "jasper/active_speaker/crossover_v2_flow.py": 12_510,
     "jasper/web/correction_crossover_v2.py": 9_186,
-    "jasper/active_speaker/crossover_envelope_v2.py": 4_073,
+    "jasper/active_speaker/crossover_envelope_v2.py": 4_076,
     "jasper/audio_measurement/program_analysis.py": 6_969,
 }
 

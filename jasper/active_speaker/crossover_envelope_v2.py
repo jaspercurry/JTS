@@ -1951,7 +1951,10 @@ KEEP_FOR_ITERATION_TEXT = (
     "is how that gets closer."
 )
 
-#: The same news when the series has no round left to spend (#2656).
+#: Row 7's sentence: the same news, with no round left to spend (#2656).
+#:
+#: Named for its ROW rather than for the sentence above it, because the outcome
+#: differs — row 7 is a ``keep``, and only the row says the round did not pass.
 #:
 #: Recomposed from the two sentences this screen already owns rather than
 #: written fresh: the first is :data:`KEEP_FOR_ITERATION_TEXT`'s verbatim,
@@ -1960,7 +1963,7 @@ KEEP_FOR_ITERATION_TEXT = (
 #: is "measuring again is how that gets closer" — a remedy this screen no
 #: longer offers, and a promise with no button is exactly what #2655 minted
 #: the button to stop.
-KEEP_FOR_ITERATION_CAPPED_TEXT = (
+KEEP_MISSED_EXHAUSTED_TEXT = (
     "This is the best sound measured so far, and it is what the speaker is "
     "playing. Some of what was measured is still off target, and that was the "
     "last round of this tuning."
@@ -2184,7 +2187,7 @@ def _round_adoption_nudges(v2: Mapping[str, Any]) -> list[dict[str, str]]:
             # measured sound and some of it is still off target. What differs
             # is whether another round follows, which the sentence says.
             "text": (
-                KEEP_FOR_ITERATION_CAPPED_TEXT
+                KEEP_MISSED_EXHAUSTED_TEXT
                 if row == ADOPTION_ROW_KEEP_MISSED_EXHAUSTED
                 else KEEP_FOR_ITERATION_TEXT
             ),

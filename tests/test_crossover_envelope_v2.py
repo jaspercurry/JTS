@@ -44,7 +44,7 @@ from jasper.active_speaker.attempts_loop import (
 #: cross-sitting sentence has its own test below.
 SITTING = "sitting-1"
 from jasper.active_speaker.crossover_envelope_v2 import (
-    KEEP_FOR_ITERATION_CAPPED_TEXT,
+    KEEP_MISSED_EXHAUSTED_TEXT,
     KEEP_FOR_ITERATION_TEXT,
     KEEP_ITERATING_TEXT,
     KEEP_ITERATING_UNGRADED_TEXT,
@@ -1381,7 +1381,7 @@ def test_no_round_copy_spells_the_cap_out_as_a_number():
     sentences = [
         KEEP_ITERATING_TEXT,
         KEEP_FOR_ITERATION_TEXT,
-        KEEP_FOR_ITERATION_CAPPED_TEXT,
+        KEEP_MISSED_EXHAUSTED_TEXT,
         SERIES_COMPLETE_DEFAULT_TEXT,
         *(
             _series_complete_text(reason)
@@ -5014,7 +5014,7 @@ def test_a_capped_missed_round_says_the_series_is_over_without_claiming_a_pass()
     nudge = _nudge(env, "crossover_v2_keep_for_iteration")
 
     assert nudge["severity"] == "warn"
-    assert nudge["text"] == KEEP_FOR_ITERATION_CAPPED_TEXT
+    assert nudge["text"] == KEEP_MISSED_EXHAUSTED_TEXT
     # The best measured state stays, and the outstanding targets are said.
     assert "best sound measured so far" in nudge["text"]
     assert "still off target" in nudge["text"]
