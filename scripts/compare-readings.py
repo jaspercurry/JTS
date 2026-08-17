@@ -69,6 +69,13 @@ What it reports, in urgency order:
   rendering that is also a rendering of the after value is skipped, so a site
   that already reads correctly is not flagged. A declared home that does not
   exist on disk is reported too.
+* **HOMES NOT SCANNED** — a home the scan could not look inside, because the
+  before value has no rendering worth searching for. A short int, a short
+  string or a bool renders to nothing that survives the noise filters (an
+  ``n_rungs`` of 12 would match half a source file), so the file is never
+  opened — and **"not looked at" must not print the same as "looked at,
+  clean"**. Check those homes by hand. A float never lands here: its ``repr``
+  round-trips exactly, so it always survives.
 
 Home hits are **candidate sites for a human to judge, not proof of drift** —
 the scan matches a number, and cannot know which fact that number is stating.
@@ -93,6 +100,14 @@ REMOVED = "removed"
 
 # Renderings shorter than this are dropped before scanning: a bare "5" or
 # "42" matches half a source file and would bury the real hits.
+#
+# This is a filter on LENGTH, and length is not the only way a rendering can
+# carry no information. A rendering that has lost every significant digit --
+# 0.029 at one decimal place is "0.0" -- clears three characters and then
+# matches every ordinary `0.0` literal in the file it scans. Both filters are
+# needed and neither subsumes the other: "5" keeps a significant digit and
+# only the length rule rejects it; "0.0" is three characters and only the
+# significant-digit rule rejects it. See `_has_significant_digit`.
 MIN_RENDERING_LEN = 3
 # 1777.7777777777778 renders as "1778" at 0 places and "1777.8" at 1. Both
 # shapes are in the tree today, so the span has to cover at least that, and
@@ -138,6 +153,7 @@ class Comparison:
     delta: float | None = None
     home_hits: tuple[HomeHit, ...] = ()
     missing_homes: tuple[str, ...] = ()
+    unscanned_homes: tuple[str, ...] = ()
 
     @property
     def headroom(self) -> float | None:
@@ -149,9 +165,26 @@ class Comparison:
 
 
 def _is_number(value: Any) -> bool:
-    # `bool` is an `int` subclass and is not a reading; comparing True to 1.0
-    # numerically would report a type flip as "unchanged".
+    # `bool` is an `int` subclass but is not a number here, so a bool never
+    # reaches the delta/tolerance arithmetic. That alone does NOT decide the
+    # status -- `_same` below is what stops a bool flip reading as unchanged.
     return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _same(before: Any, after: Any) -> bool:
+    """Whether two values are the same reading, at full precision.
+
+    `True == 1.0` in Python, so plain equality would report a bool-to-number
+    flip as unchanged. A type flip is a real change and this tool's whole
+    thesis is that silence is the enemy, so exactly one bool means changed.
+    `int` vs `float` is deliberately NOT a flip: 5 and 5.0 are the same
+    reading, and a dump script that starts calling `float()` is not a
+    measurement change.
+    """
+
+    if isinstance(before, bool) != isinstance(after, bool):
+        return False
+    return bool(before == after)
 
 
 def parse_dump(payload: Any, source: str) -> dict[str, Reading]:
@@ -199,6 +232,23 @@ def load_dump(path: Path) -> dict[str, Reading]:
     return parse_dump(payload, str(path))
 
 
+def _has_significant_digit(rendering: str, value: Any) -> bool:
+    """Whether a rounded rendering still states the value it came from.
+
+    ``f"{0.029:.1f}"`` is ``"0.0"`` — three characters, every significant
+    digit gone, and it matches every ordinary ``0.0`` literal in a source
+    file. No prose states a non-zero reading by writing zero, so such a
+    rendering costs recall nothing and buries the hits that do state it.
+    """
+
+    if not _is_number(value) or float(value) == 0.0:
+        return True
+    try:
+        return float(rendering) != 0.0
+    except ValueError:
+        return True
+
+
 def renderings(value: Any) -> list[str]:
     """Every way this value plausibly appears in prose, longest first."""
 
@@ -216,7 +266,11 @@ def renderings(value: Any) -> list[str]:
             if number.is_integer():
                 out.append(str(int(number)))
     unique = list(dict.fromkeys(out))
-    kept = [text for text in unique if len(text) >= MIN_RENDERING_LEN]
+    kept = [
+        text
+        for text in unique
+        if len(text) >= MIN_RENDERING_LEN and _has_significant_digit(text, value)
+    ]
     # Longest first so a line carrying "1777.7778" is reported at that
     # precision rather than as the shorter "1778" that also matches it.
     return sorted(kept, key=len, reverse=True)
@@ -253,18 +307,28 @@ def scan_home(path: Path, candidates: Sequence[str]) -> list[HomeHit]:
 
 def _scan_homes(
     homes: Sequence[str], before: Any, after: Any
-) -> tuple[tuple[HomeHit, ...], tuple[str, ...]]:
+) -> tuple[tuple[HomeHit, ...], tuple[str, ...], tuple[str, ...]]:
+    """Hits, homes that are not on disk, and homes that could not be scanned.
+
+    The third bucket is the one that must never be silent: when the before
+    value has no rendering worth searching for — an ``n_rungs`` of 12 is two
+    characters, and a 0.004 rounds away — the file is never opened, and
+    "not looked at" must not print the same as "looked at, clean".
+    """
+
     superseded = [text for text in renderings(before) if text not in set(renderings(after))]
     hits: list[HomeHit] = []
     missing: list[str] = []
+    unscanned: list[str] = []
     for home in homes:
         path = Path(home)
         if not path.is_file():
             missing.append(home)
-            continue
-        if superseded:
+        elif not superseded:
+            unscanned.append(home)
+        else:
             hits.extend(scan_home(path, superseded))
-    return tuple(hits), tuple(missing)
+    return tuple(hits), tuple(missing), tuple(unscanned)
 
 
 def compare(
@@ -284,7 +348,7 @@ def compare(
             continue
         numeric = _is_number(was.value) and _is_number(now.value)
         delta = float(now.value) - float(was.value) if numeric else None
-        if was.value == now.value:
+        if _same(was.value, now.value):
             out.append(
                 Comparison(
                     name=name,
@@ -301,7 +365,7 @@ def compare(
             and now.tolerance is not None
             and abs(delta) <= now.tolerance
         )
-        hits, missing = _scan_homes(now.homes, was.value, now.value)
+        hits, missing, unscanned = _scan_homes(now.homes, was.value, now.value)
         out.append(
             Comparison(
                 name=name,
@@ -312,6 +376,7 @@ def compare(
                 delta=delta,
                 home_hits=hits,
                 missing_homes=missing,
+                unscanned_homes=unscanned,
             )
         )
     return out
@@ -390,6 +455,18 @@ def render_report(comparisons: Sequence[Comparison]) -> str:
     for item in missing_owners:
         for home in item.missing_homes:
             lines.append(f"  {item.name}   {home}")
+    lines.append("")
+
+    unscanned_owners = [item for item in comparisons if item.unscanned_homes]
+    unscanned_count = sum(len(item.unscanned_homes) for item in unscanned_owners)
+    lines.append(
+        f"HOMES NOT SCANNED ({unscanned_count}) - the before value has no "
+        f"rendering worth searching for (under {MIN_RENDERING_LEN} "
+        "characters), so these files were never opened. Check them by hand."
+    )
+    for item in unscanned_owners:
+        for home in item.unscanned_homes:
+            lines.append(f"  {item.name}   {home}   before {item.before!r}")
     return "\n".join(lines) + "\n"
 
 

@@ -1259,7 +1259,7 @@ the tolerance guarding it and the other files that restate it:
 metadata and the two cannot disagree. Home paths resolve relative to the
 current working directory.
 
-**Three properties worth knowing before you trust its output.**
+**Five properties worth knowing before you trust its output.**
 
 *A tolerance-absorbed move is a reported class, not a pass.* It prints with the
 headroom the move left, because that number is what says how close the pin came
@@ -1270,11 +1270,28 @@ dropped.
 *Prose-home hits are candidate sites for a human to judge, not proof of drift.*
 For each moved or absorbed reading, the declared homes are scanned for
 renderings of the **before** value at 0–6 decimal places — that same S0 floor
-is written as "1778" in four files on `main` and as "1777.8" in seven — with
-one hit per line at the most specific rendering that matched. A rendering that is also a rendering of
-the after value is skipped, so a site that already reads correctly is not
-flagged. The scan matches a number; it cannot know which fact that number is
-stating. A declared home that is not on disk is reported too.
+is written both as "1778" (`jasper/audio_measurement/gating.py`) and as
+"1777.8" (`jasper/active_speaker/crossover_v2_flow.py`) — with one hit per line
+at the most specific rendering that matched. A rendering that is also a
+rendering of the after value is skipped, so a site that already reads correctly
+is not flagged. The scan matches a number; it cannot know which fact that
+number is stating. A declared home that is not on disk is reported too.
+
+*Two kinds of rendering carry no information, and both are dropped before the
+scan.* One is under three characters — an `n_rungs` of 12 would match half a
+source file. The other has rounded its last significant digit away: 0.029 at
+one decimal place is `"0.0"`, which matches every ordinary `0.0` literal in
+the file it scans, and on a real `interference_nulls.py` that buries the one
+hit stating the reading under 35 that state nothing. Neither rule subsumes the
+other, and the band matters — this corpus quotes rung deltas of `-0.029` and
+`-0.004`, and #2062's own headroom is `0.0041 dB`.
+
+*A home it could not scan is its own reported class.* When those filters leave
+nothing to search for — a short int, a short string, a bool — the file is
+**never opened**, so it prints under `HOMES NOT SCANNED` with the before
+value, to be checked by hand. "Not looked at" must not print the same as
+"looked at, clean"; that is #2062 class 3 all over again, in the tool built to
+end it. A float never lands here: its `repr` round-trips exactly.
 
 *It is advisory and exits 0 whatever it found.* Same contract as
 [`scripts/tense-grep.sh`](../scripts/tense-grep.sh). It exits 2 only when it

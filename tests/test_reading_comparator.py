@@ -157,6 +157,40 @@ def test_an_identical_reading_is_unchanged_and_a_non_numeric_flip_is_moved() -> 
     assert flipped.delta is None
 
 
+def test_a_bool_flipping_to_a_number_is_a_change_not_a_silence() -> None:
+    """`True == 1.0` in Python, so plain equality would call this unchanged.
+
+    A type flip is a real change, and this tool's thesis is that silence is
+    the enemy. `_same` is what enforces it - excluding bool from `_is_number`
+    only nulls the delta, and never touched the status.
+    """
+
+    assert True == 1.0  # noqa: E712 - the premise, stated rather than implied
+
+    for before, after in ((True, 1.0), (1.0, True), (False, 0), (0, False)):
+        results = _by_name(_compare({"flag": before}, {"flag": after}))
+        assert results["flag"].status == comparator.MOVED, (before, after)
+        assert results["flag"].delta is None, "a bool has no numeric delta"
+
+    # A bool that did not flip is still unchanged.
+    assert (
+        _by_name(_compare({"flag": True}, {"flag": True}))["flag"].status
+        == comparator.UNCHANGED
+    )
+
+
+def test_an_int_that_becomes_a_float_is_not_a_flip() -> None:
+    """5 and 5.0 are the same reading.
+
+    Deliberately NOT reported: a dump script that starts calling `float()` is
+    not a measurement change, and flagging it would be the noise this tool
+    spends its credibility on avoiding.
+    """
+
+    results = _by_name(_compare({"n_bins": 5}, {"n_bins": 5.0}))
+    assert results["n_bins"].status == comparator.UNCHANGED
+
+
 def test_a_float_that_differs_below_display_precision_still_moves() -> None:
     """Comparison is at full precision, not at whatever a report would print.
 
@@ -257,6 +291,7 @@ def test_every_section_prints_even_when_it_is_empty() -> None:
         "REMOVED (0)",
         "PROSE HOMES (0)",
         "HOMES NOT FOUND (0)",
+        "HOMES NOT SCANNED (0)",
     ):
         assert heading in moved_only
 
@@ -374,6 +409,121 @@ def test_a_prose_home_that_already_reads_correctly_is_not_flagged(
     assert results["floor_hz"].home_hits == ()
 
 
+def test_a_home_the_scan_could_not_look_inside_is_reported_not_silent(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#2062 class 3, reintroduced by the instrument built to end it.
+
+    A rung count of 12 has no rendering worth searching for, so the file is
+    never opened. Printing that as PROSE HOMES (0) would say "scanned, clean"
+    about a file carrying the superseded value on the same line as its
+    rationale - the exact silence this tool exists to break.
+    """
+
+    home = tmp_path / "home.py"
+    home.write_text(
+        "# The ladder needs 12 rungs, so the count is 12.\n", encoding="utf-8"
+    )
+    monkeypatch.chdir(tmp_path)
+
+    comparisons = _compare(
+        {"nulls.n_rungs": 12},
+        {"nulls.n_rungs": {"value": 14, "homes": ["home.py"]}},
+    )
+    rung = _by_name(comparisons)["nulls.n_rungs"]
+    assert comparator.renderings(12) == [], "premise: nothing to search for"
+    assert rung.home_hits == ()
+    assert rung.missing_homes == (), "the file is on disk; it was not opened"
+    assert rung.unscanned_homes == ("home.py",)
+
+    report = comparator.render_report(comparisons)
+    assert "HOMES NOT SCANNED (1)" in report
+    assert "home.py" in report
+    # The before value rides along, so the hand check knows what to look for.
+    assert "before 12" in report
+
+
+def test_a_short_string_reading_leaves_its_home_unscanned_too(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same route, non-numerically: nothing long enough to search for.
+
+    A float can never reach here - its `repr` round-trips exactly, so it
+    always survives both filters. Short ints, short strings and bools are the
+    whole population.
+    """
+
+    home = tmp_path / "home.py"
+    home.write_text("MODE = 'ab'\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    assert comparator.renderings("ab") == []
+    assert comparator.renderings(0.0000004) == [repr(0.0000004)]
+
+    results = _by_name(
+        _compare(
+            {"mode": "ab"},
+            {"mode": {"value": "cd", "homes": ["home.py"]}},
+        )
+    )
+    assert results["mode"].unscanned_homes == ("home.py",)
+
+
+# --- Renderings that state nothing must not flood the report ---------------
+
+
+def test_a_rendering_that_rounded_away_its_last_digit_is_dropped() -> None:
+    """0.029 at one decimal place is "0.0" - three characters, no information.
+
+    This band is where the corpus lives: #2062 quotes rung deltas of -0.029
+    and -0.004, and its own headroom is 0.0041 dB. Length alone does not
+    catch it, and neither filter subsumes the other - "5" keeps a significant
+    digit and only the length rule rejects it.
+    """
+
+    assert f"{0.029:.1f}" == "0.0", "premise: the collapse is real"
+    rendered = comparator.renderings(0.029)
+    assert "0.0" not in rendered
+    assert "0.00" not in rendered
+    assert "0.03" in rendered
+    assert "0.029" in rendered
+
+    # A genuine zero reading keeps its zeros - there is nothing to lose.
+    assert "0.0" in comparator.renderings(0.0)
+    # Negative zero collapses the same way.
+    assert "-0.0" not in comparator.renderings(-0.004)
+    assert "-0.004" in comparator.renderings(-0.004)
+    # And the length rule still owns its own case.
+    assert "5" not in comparator.renderings(5.19)
+
+
+def test_the_collapsed_rendering_does_not_bury_the_real_hit(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End to end: one hit that states the reading, not 36 that state nothing."""
+
+    home = tmp_path / "interference_nulls.py"
+    home.write_text(
+        "def f(r):\n"
+        "    if r <= 0.0:\n"
+        "        return 0.0\n"
+        "    return 0.0\n"
+        "# the rung delta is 0.029 dB\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    results = _by_name(
+        _compare(
+            {"rung.delta_db": 0.029},
+            {"rung.delta_db": {"value": 0.5, "homes": ["interference_nulls.py"]}},
+        )
+    )
+    assert [
+        (hit.line_no, hit.rendering) for hit in results["rung.delta_db"].home_hits
+    ] == [(5, "0.029")]
+
+
 def test_a_declared_home_that_does_not_exist_is_reported(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -428,10 +578,12 @@ def test_homes_resolve_relative_to_the_working_directory(
 def test_renderings_cover_the_decimal_places_this_repo_quotes() -> None:
     """The two shapes this floor is actually written in must both match.
 
-    Not hypothetical: on `main` the S0 floor is written "1778" in four files
-    (incl. `jasper/audio_measurement/gating.py`) and "1777.8" in seven (incl.
-    `jasper/active_speaker/crossover_v2_flow.py`). Full precision too, since
-    a test pin carries the repr.
+    Not hypothetical: on `main` the S0 floor is written "1778" in
+    `jasper/audio_measurement/gating.py` and "1777.8" in
+    `jasper/active_speaker/crossover_v2_flow.py`. Full precision too, since a
+    test pin carries the repr. How MANY files carry each shape is deliberately
+    not stated - it would be a second unpinned copy of a count, in a tool
+    whose whole subject is that kind of drift.
     """
 
     rendered = comparator.renderings(FLOOR_BEFORE)
