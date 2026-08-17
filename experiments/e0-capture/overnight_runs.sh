@@ -17,7 +17,7 @@
 # instant aborts the whole series. The shipped value is the 2026-07-22
 # session's floor and is in the PAST, so the gate passes on every run today.
 # Re-arm it for a quiet-hours series by exporting a future epoch:
-#   FLOOR_EPOCH=$(date -j -f '%Y-%m-%d %H:%M' '2026-09-01 00:30' +%s) \
+#   FLOOR_EPOCH=$(date -j -f '%Y-%m-%d %H:%M:%S' '2026-09-01 00:30:00' +%s) \
 #     bash overnight_runs.sh smoke 5
 set -euo pipefail
 
