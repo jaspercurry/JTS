@@ -486,6 +486,52 @@ The two measurements a round compares, reduced to comparands and carrying the
 margin below which a difference is not a change, are
 [`crossover_v2/round_evidence.py`](../jasper/active_speaker/crossover_v2/round_evidence.py).
 
+### The blend region — a second owner, and a second reported claim (#2600)
+
+Per-driver linearization is deliberately blind across the crossover blend:
+neither branch's own sweep can say what the SUM does there. Decision 10 of
+[`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md)
+gives that region a second owner — the summed at-the-mark measurement — and
+one bounded tool. The solve is
+[`crossover_v2/blend_correction.py`](../jasper/active_speaker/crossover_v2/blend_correction.py);
+read its module docstring for the argument, not a second copy here.
+
+Three things about it are worth knowing before touching the round:
+
+- **It is emitted PRE-SPLIT**, with the room PEQs and above
+  `active_baseline_headroom`. That placement is the safety argument, not a
+  convenience: one summed fact gets one filter, the correction is common-mode
+  by construction (the sum scales, the inter-driver ratio does not), and it
+  sits upstream of the crossover high-pass that IS the tweeter's protection in
+  the durable baseline. Moving it per-role would make it alignment work wearing
+  a shape-correction hat.
+- **The loop is incumbent-accounted.** Per-branch MEASURE sweeps ride the
+  protected-neutral graph, so the trim is re-derived absolutely each round and
+  that is correct. The summed VERIFY capture rides the APPLIED graph, so its
+  deviation already contains the incumbent's own correction — re-deriving
+  absolutely there oscillates rather than converges. An incumbent that cannot
+  be established refuses rather than being assumed zero, which is #2653's
+  condition applied to this quantity.
+- **`benefit` now reports twice.** The pooled verdict is unchanged and is still
+  the only adoption input. Beside it, `evaluate_region_benefit` runs the same
+  estimator with only the band narrowed, because a win confined to two octaves
+  cannot show itself in a residual pooled over six — which is why every
+  series-1 round banked `residual_within_margin` about a speaker that had in
+  fact not moved. The region claim discloses; it does not gate.
+
+The region itself is **not** re-derived: it is read off the VERIFY absolute
+claim's `band_hz`, which is
+`program_analysis.crossover_region_band_hz`'s output. That function is
+deliberately not `overlap_band_hz` — see its docstring — and the difference is
+load-bearing rather than academic: on jts3 the per-branch band's floor is
+1600 Hz and the series-1 dip sat at 1938 Hz, so both bands contain the dip and
+only the summed one contains the octave below it.
+
+Receipts bank the region's commanded-vs-realized pair under
+`round_measurements.blend`, with the reason code beside the numbers so a round
+that prescribed nothing says which arm fired — "the region was already clean"
+and "the instrument refused" are different facts.
+
 ## File map
 
 One line per file. Design prose lives in each module's own docstring — read
@@ -511,6 +557,7 @@ the module, not a second copy here.
 | [`crossover_v2/proposal.py`](../jasper/active_speaker/crossover_v2/proposal.py) | One committed candidate gathered into the fingerprinted `InterventionProposal` the round receipt names. Computes nothing; refuses rather than raising. |
 | [`crossover_v2/verification.py`](../jasper/active_speaker/crossover_v2/verification.py) | The four verification verdicts, the four adoption axes they compose into, and the seven-row table. |
 | [`crossover_v2/round_evidence.py`](../jasper/active_speaker/crossover_v2/round_evidence.py) | The two measurements one round compares, the margin that makes a difference a change, and the series policy the headroom axis is handed (round cap, plateau margin). |
+| [`crossover_v2/blend_correction.py`](../jasper/active_speaker/crossover_v2/blend_correction.py) | Decision 10's blend-region shape correction: the bounded cuts-first solve over the summed response, its four ceilings, the damped incumbent-accounted iteration, and the four refusals that make it a no-op instead of a boost. |
 | [`crossover_v2/round_anchor.py`](../jasper/active_speaker/crossover_v2/round_anchor.py) | What an apply displaced, what it put live, whether the running graph is still that, and whether a restore is aimed at what the round displaced. |
 | [`crossover_v2/coordinator.py`](../jasper/active_speaker/crossover_v2/coordinator.py) | The round's tail: grade, act on the adoption table, restore, bank the receipt. |
 | [`crossover_v2/attempt_grading.py`](../jasper/active_speaker/crossover_v2/attempt_grading.py) | Whether a VERIFY capture is a new tuning attempt, and how it grades against the cross-session ledger. |
@@ -5423,7 +5470,11 @@ corrections came from that gate's review of PR #2545, and every figure in them
 was measured on this branch. **The date below is deliberately NOT bumped**, for
 the same reason as the two addenda above.
 
-Last verified: 2026-08-17 (#2609/#2641/#2639 — the paragraphs this round's
+Last verified: 2026-08-17 (#2600 — the "round, graded" section gained the
+blend-region subsection, whose every claim was written against the code it
+describes in the same diff, and the file map gained
+`crossover_v2/blend_correction.py`. Nothing else in the live spine was
+re-verified this pass. Carried forward: #2609/#2641/#2639 — the paragraphs that round's
 change falsified were re-read against code and corrected: the headroom axis's
 endings against `evaluate_iteration_headroom`, the receipt paragraph against
 `coordinator._write_round_receipt` and `evaluate_round_quality`'s probe
