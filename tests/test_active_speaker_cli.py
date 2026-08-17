@@ -360,6 +360,7 @@ def test_path_probe_cli_writes_probe_backed_evidence(
 # get_active_config_raw read-back, get_config_file_path anchor), single-flight,
 # the dry-run preflight, and exit codes — not re-testing the load transaction.
 
+from tests._armed_transport import arm_ring_transport
 from tests.test_active_speaker_commission_load import _block
 from tests.active_speaker_fixtures import (
     mono_output_topology as _topology,
@@ -397,6 +398,13 @@ class _FakeController:
 
 
 def _commission_env(monkeypatch, tmp_path: Path, controller: _FakeController) -> dict:
+    # #2285 P2: this box is on the ring, so the load gate's liveness conjuncts
+    # have to answer. `resolve_output_layout` case 2 now names the ring
+    # unconditionally, and Wave 3's `commissioning_transport_armed` gate reads
+    # fan-in's coupling and outputd's ACTIVE marker FRESH and fails SAFE — so a
+    # harness declaring neither reads `loopback` with the marker false and every
+    # commission-load call through this env blocks. See `tests/_armed_transport.py`.
+    arm_ring_transport(monkeypatch)
     staged = _staged(tmp_path)
     staged_path = staged["config"]["path"]
     statefile = tmp_path / "outputd-statefile.yml"

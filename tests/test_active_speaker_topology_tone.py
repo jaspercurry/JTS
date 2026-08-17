@@ -9,7 +9,7 @@ from jasper.active_speaker.playback_route import active_playback_route_capabilit
 from jasper.active_speaker.tone_plan import MAX_TONE_DURATION_MS
 from jasper.active_speaker.topology_tone import build_summed_topology_tone_plan
 from jasper.audio_hardware import dac
-from jasper.camilla_config_contract import ACTIVE_OUTPUTD_PLAYBACK_DEVICE
+from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 
 
@@ -63,12 +63,18 @@ def _issue_codes(plan: dict) -> set[str]:
     return {str(issue["code"]) for issue in plan["issues"]}
 
 
-def test_active_playback_route_capability_resolves_dac8x_active_lane() -> None:
+def test_active_playback_route_capability_resolves_dac8x_to_the_active_ring() -> None:
+    """#2285 P2 renamed this off ``..._resolves_dac8x_active_lane``.
+
+    The active lane is carried by the ACTIVE RING now — the one legal ACTIVE
+    outputd endpoint. The SOURCE token is asserted unchanged just below, because
+    it names the lane ROLE rather than the transport.
+    """
     topology = _topology()
 
     capability = active_playback_route_capability(topology)
 
-    assert capability.playback_device == ACTIVE_OUTPUTD_PLAYBACK_DEVICE
+    assert capability.playback_device == RING_ACTIVE_PLAYBACK_DEVICE
     assert capability.playback_device_source == "outputd_active_lane"
     assert capability.transport_channel_count == HIFIBERRY_PHYSICAL_OUTPUTS
     assert capability.required_active_output_count == 2

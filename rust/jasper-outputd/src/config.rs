@@ -415,9 +415,42 @@ impl Config {
             "JASPER_OUTPUTD_CHIP_REF_PERIOD_FRAMES",
         )?;
 
-        let default_content_pcm = match sink_mode {
-            SinkMode::SingleAlsa => "outputd_content_capture",
-            SinkMode::Composite => "outputd_active_content_capture",
+        // The Composite arm used to default to `outputd_active_content_capture`,
+        // the snd-aloop ACTIVE lane's capture half. That PCM no longer exists:
+        // #2534 deleted its definitions, and the ACTIVE ring is now the one
+        // legal ACTIVE endpoint, so nothing can ever create it again. A default
+        // naming it was a permanently-broken guess that failed only later, at
+        // the sink open, and misdiagnosed itself on the way out —
+        // `jasper-outputd-failure-reconcile` matches the lane by name, so the
+        // park record would have named the deleted lane as if it were expected.
+        //
+        // SCOPED TO Direct, deliberately. Under `ShmRing` outputd reads the ring
+        // FILE and never opens a content PCM at all (`content_pcm_skipped`), so
+        // a ring-armed composite box legitimately has no content PCM to declare
+        // — bailing there would refuse to start the very topology this campaign
+        // is converging boxes onto.
+        //
+        // Failing HERE rather than at the open is the whole point: a
+        // `Config::from_env` error exits 78 (EX_CONFIG) before any ALSA device
+        // is touched, so the box parks immediately with the reason named
+        // instead of running on a guess it can never satisfy.
+        let default_content_pcm = match (sink_mode, content_bridge_mode) {
+            (SinkMode::SingleAlsa, _) => "outputd_content_capture",
+            (SinkMode::Composite, ContentBridgeMode::ShmRing) => "",
+            (SinkMode::Composite, ContentBridgeMode::Direct) => {
+                if env_str("JASPER_OUTPUTD_CONTENT_PCM", "").trim().is_empty() {
+                    anyhow::bail!(
+                        "JASPER_OUTPUTD_CONTENT_PCM must be set explicitly on a \
+                         composite sink using the direct content bridge: the \
+                         snd-aloop ACTIVE lane it used to default to was deleted \
+                         (#2534) and the ACTIVE ring is the one legal ACTIVE \
+                         endpoint. Arm the ring \
+                         (jasper-fanin-coupling-reconcile shm_ring), or name a \
+                         content PCM this box actually defines."
+                    );
+                }
+                ""
+            }
         };
         let default_dac_pcm = match sink_mode {
             SinkMode::SingleAlsa => "outputd_dac",
@@ -808,11 +841,15 @@ impl Config {
         // SCOPED TO ShmRing, deliberately. Under `Direct` there is no ring to
         // read, so the "is the active path" side is structurally false while
         // `ring_active_ok` stays TRUE on a healthy roleful box — an unscoped
-        // biconditional would therefore park exactly the documented rollback
-        // (coupling -> loopback, bridge -> direct), and re-running the hardware
-        // reconciler would re-derive the marker and keep it parked. The
-        // incoherent-pair bail above is the one that stays mode-independent,
-        // because a broken writer is broken under every bridge.
+        // biconditional would therefore park a roleful box the moment its
+        // coupling fell back to loopback, and re-running the hardware
+        // reconciler would re-derive the marker and keep it parked. That state
+        // used to be "the documented rollback"; #2285 P2 retired the rollback
+        // and it is now the PARK a roleful box reaches when it is unarmed, which
+        // makes the scoping matter more, not less — parking it here would bury
+        // the one doctor check that names the state. The incoherent-pair bail
+        // above stays mode-independent, because a broken writer is broken under
+        // every bridge.
         if content_bridge_mode == ContentBridgeMode::ShmRing {
             let is_active_path = shm_ring
                 .as_ref()
@@ -980,6 +1017,28 @@ mod tests {
     use std::sync::Mutex;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// What a composite fixture must declare since #2285 P2 retired the default.
+    ///
+    /// `default_content_pcm`'s `(Composite, Direct)` arm used to guess
+    /// `outputd_active_content_capture`; #2534 deleted that PCM, so the arm now
+    /// REFUSES rather than guessing (the refusal is pinned by
+    /// `a_composite_sink_on_the_direct_bridge_refuses_an_undeclared_content_pcm`).
+    ///
+    /// **Why so many fixtures need it, and why setting it is not papering over
+    /// anything.** That refusal is the FIRST composite guard — line order puts it
+    /// ahead of the child-PCM, distinct-PCM, delay-budget, active-channel-width,
+    /// TTS-socket and dac-content-lane guards. So a composite fixture that
+    /// declares no content PCM now trips this refusal BEFORE reaching the guard
+    /// it exists to exercise, and its assertion reads a message about the wrong
+    /// thing. Declaring the PCM restores each test to the path it was written
+    /// for; every one of them keeps its ORIGINAL assertion, so a target guard
+    /// that stopped biting would still fail its own test.
+    ///
+    /// The value is deliberately a name no ALSA config defines: nothing here
+    /// opens a PCM, and a plausible-looking real name would invite a reader to
+    /// think the lane is resolved rather than merely declared.
+    const DECLARED_CONTENT_PCM: &str = "outputd_declared_content";
 
     fn with_env<F: FnOnce()>(vars: &[(&str, Option<&str>)], f: F) {
         let _guard = ENV_LOCK
@@ -1252,6 +1311,12 @@ mod tests {
                 ("JASPER_OUTPUTD_SINK", Some("dual_apple")),
                 ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
                 ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
+                // SHADOW GUARD (#2285 P2): the content-PCM refusal precedes the
+                // dac-content-lane fence. This is the test whose own assertion
+                // reported the shadowing verbatim in CI ("guard should name the
+                // required mode, got: JASPER_OUTPUTD_CONTENT_PCM must be set…").
+                // Assertion unchanged, so the fence must still bite.
+                ("JASPER_OUTPUTD_CONTENT_PCM", Some(DECLARED_CONTENT_PCM)),
             ],
             || {
                 let err = Config::from_env().unwrap_err();
@@ -1281,6 +1346,10 @@ mod tests {
                 ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
                 ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
                 // No JASPER_OUTPUTD_DAC_CONTENT_FIFO — camilla owns the round-trip.
+                // Declared since #2285 P2: this fixture is a LEGAL bonded-member
+                // shape and must still parse, so it declares the content PCM the
+                // composite/direct arm no longer defaults (DECLARED_CONTENT_PCM).
+                ("JASPER_OUTPUTD_CONTENT_PCM", Some(DECLARED_CONTENT_PCM)),
             ],
             || {
                 let cfg = Config::from_env().unwrap();
@@ -1727,17 +1796,49 @@ mod tests {
     }
 
     #[test]
+    fn a_composite_sink_on_the_direct_bridge_refuses_an_undeclared_content_pcm() {
+        // The snd-aloop ACTIVE lane this arm used to default to was deleted
+        // (#2534) and cannot come back, so guessing it is a permanently-broken
+        // config. Refusing at PARSE time is what turns it into an immediate,
+        // correctly-labelled park (exit 78) instead of a later sink-open
+        // failure that misnames itself in the park record.
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_SINK", Some("dual_apple")),
+                ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
+                ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
+                ("JASPER_OUTPUTD_CONTENT_PCM", None),
+            ],
+            || {
+                let err = Config::from_env().expect_err(
+                    "a composite sink on the direct bridge with no declared \
+                     content PCM must refuse, not guess a deleted lane",
+                );
+                let msg = format!("{err:#}");
+                assert!(msg.contains("JASPER_OUTPUTD_CONTENT_PCM"), "{msg}");
+                // The remedy must point FORWARD at the arm; there is no
+                // rollback endpoint left to send an operator to.
+                assert!(msg.contains("shm_ring"), "{msg}");
+            },
+        );
+    }
+
+    #[test]
     fn parses_dual_apple_sink_contract() {
         with_env(
             &[
                 ("JASPER_OUTPUTD_SINK", Some("dual_apple")),
                 ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
                 ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
+                // Declared explicitly since the composite default was retired
+                // with the lane it named; the rest of this contract is
+                // unchanged by that.
+                ("JASPER_OUTPUTD_CONTENT_PCM", Some(DECLARED_CONTENT_PCM)),
             ],
             || {
                 let cfg = Config::from_env().unwrap();
                 assert_eq!(cfg.sink_mode, SinkMode::Composite);
-                assert_eq!(cfg.content_pcm, "outputd_active_content_capture");
+                assert_eq!(cfg.content_pcm, DECLARED_CONTENT_PCM);
                 assert_eq!(cfg.content_channels, 4);
                 assert_eq!(cfg.dac_pcm, "dual_apple_usb_c_dac_4ch");
                 assert_eq!(cfg.dual_dac_a_pcm.as_deref(), Some("hw:CARD=A,DEV=0"));
@@ -1759,6 +1860,9 @@ mod tests {
                 ("JASPER_OUTPUTD_SINK", Some("composite")),
                 ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
                 ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
+                // Declared since #2285 P2 — both spellings must reach the SAME
+                // legal shape, so both arms of this equivalence declare it.
+                ("JASPER_OUTPUTD_CONTENT_PCM", Some(DECLARED_CONTENT_PCM)),
             ],
             || {
                 let cfg = Config::from_env().unwrap();
@@ -1956,6 +2060,12 @@ mod tests {
                 ("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some("8")),
                 ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
                 ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
+                // SHADOW GUARD (#2285 P2): without this the composite/direct
+                // content-PCM refusal fires first and this test asserts against
+                // ITS message instead of the width guard's. Declaring it puts the
+                // test back on its own path; the assertion below is unchanged, so
+                // the width guard still has to bite for this to pass.
+                ("JASPER_OUTPUTD_CONTENT_PCM", Some(DECLARED_CONTENT_PCM)),
             ],
             || {
                 let err = Config::from_env().unwrap_err().to_string();
@@ -2019,6 +2129,11 @@ mod tests {
                 ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
                 ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
                 ("JASPER_OUTPUTD_TTS_SOCKET", Some("/run/x.sock")),
+                // SHADOW GUARD (#2285 P2) — this arm leaves the bridge at its
+                // `direct` default, so the content-PCM refusal preceded the
+                // TTS-socket guard. The arm ABOVE sets `shm_ring` and so never
+                // reached the refusal; only this one needed the declaration.
+                ("JASPER_OUTPUTD_CONTENT_PCM", Some(DECLARED_CONTENT_PCM)),
             ],
             || {
                 let err = Config::from_env().unwrap_err().to_string();
@@ -2029,10 +2144,20 @@ mod tests {
 
     #[test]
     fn dual_apple_sink_requires_both_child_pcms() {
-        with_env(&[("JASPER_OUTPUTD_SINK", Some("dual_apple"))], || {
-            let err = Config::from_env().unwrap_err();
-            assert!(err.to_string().contains("JASPER_OUTPUTD_DUAL_DAC_A_PCM"));
-        });
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_SINK", Some("dual_apple")),
+                // SHADOW GUARD (#2285 P2): the content-PCM refusal precedes the
+                // child-PCM guard, so without this the assertion below read the
+                // wrong message. Unchanged otherwise — the child-PCM guard must
+                // still bite for this to pass.
+                ("JASPER_OUTPUTD_CONTENT_PCM", Some(DECLARED_CONTENT_PCM)),
+            ],
+            || {
+                let err = Config::from_env().unwrap_err();
+                assert!(err.to_string().contains("JASPER_OUTPUTD_DUAL_DAC_A_PCM"));
+            },
+        );
     }
 
     #[test]
@@ -2042,6 +2167,9 @@ mod tests {
                 ("JASPER_OUTPUTD_SINK", Some("dual_apple")),
                 ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
                 ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=A,DEV=0")),
+                // SHADOW GUARD (#2285 P2): the content-PCM refusal precedes the
+                // distinct-children guard. Assertion unchanged.
+                ("JASPER_OUTPUTD_CONTENT_PCM", Some(DECLARED_CONTENT_PCM)),
             ],
             || {
                 let err = Config::from_env().unwrap_err();
@@ -2058,6 +2186,9 @@ mod tests {
                 ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
                 ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
                 ("JASPER_OUTPUTD_DUAL_MAX_DELAY_DELTA_FRAMES", Some("-1")),
+                // SHADOW GUARD (#2285 P2): the content-PCM refusal precedes the
+                // delay-budget guard. Assertion unchanged.
+                ("JASPER_OUTPUTD_CONTENT_PCM", Some(DECLARED_CONTENT_PCM)),
             ],
             || {
                 let err = Config::from_env().unwrap_err();

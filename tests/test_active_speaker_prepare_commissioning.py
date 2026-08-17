@@ -177,14 +177,16 @@ def test_multi_group_topology_fails_closed(tmp_path: Path):
 def test_build_active_commissioning_context_resolves_single_group():
     # N1: direct coverage of the helper both staging entry points share.
     from jasper.active_speaker.staging import _build_active_commissioning_context
-    from jasper.camilla_config_contract import ACTIVE_OUTPUTD_PLAYBACK_DEVICE
+    from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 
     ctx = _build_active_commissioning_context(
         _topology(), preset=None, crossover_preview=None, playback_device=None
     )
     assert ctx["bound_preset"] is not None
     assert [group.id for group in ctx["active_groups"]] == ["mono"]
-    assert ctx["resolved_playback_device"] == ACTIVE_OUTPUTD_PLAYBACK_DEVICE
+    # No explicit override, so this walks `resolve_output_layout`'s case 2,
+    # which names the ACTIVE RING unconditionally since #2285 P2.
+    assert ctx["resolved_playback_device"] == RING_ACTIVE_PLAYBACK_DEVICE
     assert ctx["issues"] == []
     gate_ids = {gate["id"] for gate in ctx["gates"]}
     assert "explicit_active_playback_device" in gate_ids

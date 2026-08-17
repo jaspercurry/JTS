@@ -38,7 +38,6 @@ from .audio_hardware.dac import (
     label_for as _dac_label_for,
     physical_output_count_for as _dac_physical_output_count_for,
 )
-from .camilla_config_contract import ACTIVE_OUTPUTD_PLAYBACK_DEVICE
 from .camilla_emit import (
     BASS_MANAGEMENT_CORNER_HZ_HI,
     BASS_MANAGEMENT_CORNER_HZ_LO,
@@ -1854,13 +1853,16 @@ def resolve_output_layout(
        ``OutputTransportPlan``.
     3. Otherwise the route is missing (no width, no subwoofer support).
 
-    **Case 2 has two TRANSPORTS and this is where a FRESH emit chooses between
-    them.** The active lane is reached over snd-aloop by default, and over the
-    ACTIVE RING when the reconciler's endpoint marker says so. Both carry the
-    same post-crossover per-driver program at the same width to the same reader,
-    so only the device name differs, and ``playback_device_source`` stays
-    ``OUTPUTD_ACTIVE_LANE_SOURCE`` so nothing keyed on the SOURCE has to learn
-    about the ring.
+    **Case 2 has ONE transport, and this is where a FRESH emit names it.** The
+    active lane is reached over the ACTIVE RING, unconditionally. It used to
+    have two — snd-aloop by default, the ring when the reconciler's endpoint
+    marker said so — and this function read that marker to choose. #2285 P2
+    retired the snd-aloop ACTIVE endpoint and deleted the marker read with it,
+    which is what removes the marker ← graph ← marker circle that made the
+    roleful arm manual. The marker itself is untouched; only this chooser
+    stopped consulting it. ``playback_device_source`` stays
+    ``OUTPUTD_ACTIVE_LANE_SOURCE``: it names the lane ROLE, not the transport,
+    so nothing keyed on the SOURCE had to learn about the ring.
 
     A RE-EMIT of a graph the box is already running asks a different question and
     does not come through here first. It reads
@@ -1896,17 +1898,23 @@ def resolve_output_layout(
         and profile.active_outputd_lane_channels
     ):
         # Lazy import: fanin_coupling is import-cheap but this module is on the
-        # topology layer, and the marker read is a file read on the default path.
-        from jasper.fanin_coupling import (
-            RING_ACTIVE_PLAYBACK_DEVICE,
-            ring_active_endpoint_armed,
-        )
+        # topology layer.
+        from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 
-        active_device = (
-            RING_ACTIVE_PLAYBACK_DEVICE
-            if ring_active_endpoint_armed()
-            else ACTIVE_OUTPUTD_PLAYBACK_DEVICE
-        )
+        # The ACTIVE ring, unconditionally — there is no second legal endpoint
+        # to choose between (OUTPUTD_LEGAL_ENDPOINT_DEVICES is one member).
+        #
+        # This used to read `ring_active_endpoint_armed()` and fall back to the
+        # snd-aloop active lane, which made this chooser a FIXED POINT: the
+        # marker derives from the loaded graph and the graph's device derived
+        # from the marker, so no automated pass could move a box between
+        # transports — only a human passing `--endpoint`. Deleting that one
+        # branch is what makes the roleful path convergent rather than manual.
+        #
+        # The marker itself SURVIVES and is unaffected: it is outputd's own
+        # JASPER_OUTPUTD_ACTIVE_LANE biconditional, read by the Rust daemon and
+        # by `active_ring_endpoint_proof`. Only this chooser stops reading it.
+        active_device = RING_ACTIVE_PLAYBACK_DEVICE
         return OutputLayout(
             device_id=hardware.device_id,
             card_id=hardware.card_id,

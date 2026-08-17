@@ -135,16 +135,26 @@ session/fingerprint ids, the newest capture's SNR/verdict/clipping, and the
 last failure code — for the household/operator summary described in the design
 doc's "Runtime surface"; detailed curves and bundle paths stay out of `/state`
 by design. [#2412](https://github.com/jaspercurry/JTS/issues/2412)'s Wave 4 adds
-one more key, `transport` (`ring` / `alsa`, `null` when the topology cannot be
-read or resolves to no device — **not** a rolefulness test: a passive box
-resolves the active outputd lane and follows the marker like any other, `alsa`
-unarmed and `ring` armed. What decides both questions is the DAC profile —
-`resolve_output_layout` consults the marker only when the profile declares an
-active outputd lane, and a box failing that condition is the `no device` case):
-a commissioning graph can
-name the ACTIVE lane and reach it over either snd-aloop or the ring, and only
-one of those is fed by fan-in under `shm_ring`, so a device reported without its
-transport is a half-fact. It shares one derivation
+one more key, `transport`. **Since [#2285](https://github.com/jaspercurry/JTS/issues/2285)'s
+P2 the production contract is single-transport: `ring` or `null`, never `alsa`**
+(post-seal correction 9). P2 deleted `resolve_output_layout` case 2's marker
+read, so the ACTIVE-endpoint marker takes no part in this derivation — spied
+across the roleful and passive fixtures, it is consulted zero times and both
+report `ring`. `null` still means the topology cannot be read or resolves to no
+device, and it is still **not** a rolefulness test: a passive box resolves the
+active outputd lane and reports `ring` like any other. What decides ring-vs-null
+is the DAC profile — `resolve_output_layout` names the ring when the profile
+declares an active outputd lane, and a box failing that condition is the
+`no device` case. `alsa` survives only for a non-ring device string, reachable
+here only through an explicit lab/CI override (`playback_device` or
+`JASPER_ACTIVE_SPEAKER_PLAYBACK_DEVICE`); `transport_label` keeps that branch and
+the `driver_commission_load` journal line still exercises both values, because it
+reports the device a load actually used. Why the key exists at all: before P2 a
+commissioning graph could name the ACTIVE lane and reach it over either snd-aloop
+or the ring while only one of those is fed by fan-in under `shm_ring`, so a
+device reported without its transport was a half-fact — P2 retired the snd-aloop
+half, and the key now records which transport a box is on rather than which of
+two it chose. It shares one derivation
 (`jasper.fanin_coupling.transport_label`) with the `transport=` field the same
 wave puts on the `driver_commission_prepared` and `driver_commission_load`
 journal lines, so the two surfaces cannot disagree about a device they both

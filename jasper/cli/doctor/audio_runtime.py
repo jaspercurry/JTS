@@ -1629,9 +1629,7 @@ def check_fanin_coupling() -> CheckResult:
                 "the ACTIVE-ring ladder, in order: sudo /opt/jasper/.venv/bin/"
                 "jasper-active-speaker baseline-reemit --endpoint ring && sudo "
                 "systemctl start jasper-audio-hardware-reconcile && sudo "
-                "/opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile shm_ring "
-                "(to roll back, the same three with --endpoint aloop and "
-                "`loopback`)"
+                "/opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile shm_ring"
             )
         else:
             recovery = (
@@ -1645,20 +1643,13 @@ def check_fanin_coupling() -> CheckResult:
         # A ROLEFUL box that is still ARMED here cannot be told apart, by this
         # check alone, from the CANONICAL rollback-ladder step-2 refusal
         # (owner-ruled 2026-08-12, #2332): jasper-audio-hardware-reconcile
-        # refuses the aloop-rollback candidate with a ring-plan endpoint
-        # mismatch and exits 78 without touching the marker, so an armed box
-        # mid-rollback lands in exactly this warn. That refusal is expected,
-        # not a second symptom to chase — the way out is step 3
-        # (jasper-fanin-coupling-reconcile loopback), not re-running step 2, and
-        # a later hardware reconcile clears the stale marker once step 3 lands.
-        if roleful and armed:
-            cause += (
-                ", or an EXPECTED rollback-ladder step-2 refusal (#2332) if "
-                "jasper-audio-hardware-reconcile already exited 78 here after "
-                "baseline-reemit --endpoint aloop — normal on an armed box: skip "
-                "straight to jasper-fanin-coupling-reconcile loopback (step 3) "
-                "rather than re-running step 2"
-            )
+        # The rollback direction this branch used to explain is GONE: the ring is
+        # the one legal ACTIVE endpoint, so there is no aloop candidate to refuse
+        # and no `loopback` step 3 to skip to. Naming that route here would be
+        # worse than silence — for a ROLEFUL box `loopback` is now the park
+        # (pair 5's PCMs are deleted), so the old text sent an armed box to a
+        # dead transport. Recovery is forward, and `recovery` above already
+        # carries the one ladder that converges.
         return CheckResult(
             label,
             "warn",
@@ -1693,14 +1684,20 @@ def check_fanin_coupling() -> CheckResult:
         # exactly as the shm_ring branch above already spells out for its own
         # direction.
         if _requires_roleful_graph():
+            # A ROLEFUL box has no loopback destination to be sent to any more.
+            # This used to print the rollback ladder; both of its premises died —
+            # `baseline-reemit` no longer accepts an aloop endpoint, and a roleful
+            # box on `loopback` coupling has no content transport at all (pair 5's
+            # PCMs are deleted), which is the park, not a recovery. So the honest
+            # remediation is the forward one: converge onto the ACTIVE ring.
             recovery = (
-                "this box is ROLEFUL, so the coupling reconciler cannot move its "
-                "graph (it declines to host a transient active graph and reports "
-                "success without converging). Run the ROLLBACK ladder, in order: "
-                "sudo /opt/jasper/.venv/bin/jasper-active-speaker baseline-reemit "
-                "--endpoint aloop && sudo systemctl start "
+                "this box is ROLEFUL, so a loopback coupling leaves it with no "
+                "content transport (snd-aloop pair 5 is deleted) — that is a "
+                "park, not a rollback. Converge it forward onto the ACTIVE ring, "
+                "in order: sudo /opt/jasper/.venv/bin/jasper-active-speaker "
+                "baseline-reemit --endpoint ring && sudo systemctl start "
                 "jasper-audio-hardware-reconcile && sudo /opt/jasper/.venv/bin/"
-                "jasper-fanin-coupling-reconcile loopback"
+                "jasper-fanin-coupling-reconcile shm_ring"
             )
         else:
             recovery = (
@@ -1845,6 +1842,83 @@ def _jts_ring_pcm_resolves(pcm: str, tool: str) -> tuple[bool, str]:
     if len(err) > 160:
         err = err[:157] + "..."
     return False, err or f"{tool} exit {proc.returncode}"
+
+
+@doctor_check(order=51.72, group="audio")
+def check_active_ring_split_transport() -> CheckResult:
+    """A graph on the ACTIVE ring under a ``loopback`` coupling is SILENT.
+
+    The state this catches: the loaded CamillaDSP graph names
+    ``jts_ring_active_playback`` while the persisted coupling is ``loopback``.
+    CamillaDSP then writes the ACTIVE ring and outputd reads its ALSA content
+    lane instead — nobody consumes the ring, so the speaker is silent with
+    every daemon healthy and every other check green.
+
+    WHY THIS CHECK EXISTS AT ALL. Before the aloop ACTIVE endpoint was retired,
+    an unarmed roleful box's graph named a PCM whose definitions #2534 had
+    deleted, so CamillaDSP failed its load and the box parked LOUDLY. Now the
+    graph resolves to the ring and loads fine, so the same misconfiguration got
+    quieter. That is the wrong direction, and this check is the compensation:
+    the split state is reachable by ordinary operations (a deploy reconcile, an
+    EQ save re-emit the graph; nothing in that path moves the coupling), so it
+    must be loud on inspection until the coupling reconciler's phase 0 closes
+    it automatically.
+
+    WHY TWO TERMS AND NOT THREE — do not "helpfully" add the third back.
+    The original design specified a third conjunct, ``writer_alive:false``.
+    It is not observable in this check's own target state, and conditioning on
+    it would make the check silently never fire:
+
+    * ``writer_alive`` is a READER-REPORTED metric — ``jts_ring_shm.h:99``
+      states it is "what a reader REPORTS". Under a ``loopback`` coupling
+      NOTHING reads the ACTIVE ring, so there is no reader to report it.
+    * outputd publishes it only inside its ``shm_ring`` block, and
+      ``shm_ring_path`` is ``Some`` **iff** ``JASPER_OUTPUTD_CONTENT_BRIDGE=
+      shm_ring`` (``rust/jasper-outputd/src/state.rs:220-223``). Under
+      ``loopback`` that block is ``{"enabled": false}`` with no further fields,
+      so the key is absent exactly when this check would need it.
+
+    The two terms are together DEFINITIONAL: a graph naming the ACTIVE ring
+    plus a coupling that routes outputd elsewhere IS the split. The third
+    term's content — "nothing is consuming the ring" — is IMPLIED by the
+    second, not independent evidence.
+
+    KNOWN TRANSIENT. The arm ladder moves the graph first and the coupling
+    third, so a doctor run taken INSIDE an active arm ladder can FAIL here for
+    the seconds between those rungs. That is the ladder working, not a fault.
+    The arm's own terminal doctor pass is the authoritative read.
+    """
+    from jasper.fanin.coupling_reconcile import read_persisted_coupling
+    from jasper.fanin_coupling import COUPLING_SHM_RING, RING_ACTIVE_PLAYBACK_DEVICE
+
+    label = "active ring split transport"
+    coupling = read_persisted_coupling()
+    if coupling == COUPLING_SHM_RING:
+        return CheckResult(label, "ok", f"coupling={coupling}; ring is consumed")
+
+    _, active_path = _active_camilla_config_path()
+    config_path = Path(active_path) if active_path else Path(
+        "/var/lib/camilladsp/configs/sound_current.yml"
+    )
+    playback_device = _loaded_playback_device(config_path)
+    if playback_device != RING_ACTIVE_PLAYBACK_DEVICE:
+        return CheckResult(
+            label,
+            "ok",
+            f"coupling={coupling}; loaded graph playback="
+            f"{playback_device or '(none)'}",
+        )
+    return CheckResult(
+        label,
+        "fail",
+        f"SPLIT TRANSPORT: the loaded graph writes {RING_ACTIVE_PLAYBACK_DEVICE} "
+        f"but coupling={coupling}, so outputd reads its ALSA content lane and "
+        "nothing consumes the ring — this speaker is SILENT while every daemon "
+        "looks healthy. Complete the arm: sudo /opt/jasper/.venv/bin/"
+        "jasper-fanin-coupling-reconcile shm_ring. (Transient and expected if "
+        "an arm ladder is running right now; the ladder's own final doctor pass "
+        "is the authoritative read.)",
+    )
 
 
 @doctor_check(order=51.8, group="audio", exclusive_group="audio-probe")
@@ -3134,12 +3208,57 @@ def _outputd_transport_health(
         if transport_report.notes:
             transport_evidence_warning = "; ".join(transport_report.notes)
     local_pipe_detail = f"content_source={actual_content_source}"
-    if content.get("pcm") != expected_content_pcm:
+    # KEYED ON THE CONTENT BRIDGE, NOT ON sink_mode. What decides whether a
+    # content PCM exists at all is which bridge outputd runs, and only the
+    # bridge: under the ring, outputd reads the ring FILE and opens no content
+    # PCM (`content_pcm_skipped`), whatever the sink is.
+    #
+    # This used to derive the expectation from sink_mode and compare against the
+    # snd-aloop ACTIVE lane for a composite/active box. That lane is deleted
+    # (#2534) and the reconciler no longer writes it, so the comparison would
+    # have FAILED every armed composite box in the fleet against a name nothing
+    # can produce.
+    #
+    # Under the ring the check therefore stops comparing to a name and instead
+    # REJECTS THE ONE NAME THAT MEANS SOMETHING IS STALE — the retired snd-aloop
+    # ACTIVE capture lane. Not "any value is the fault": under the ring the
+    # declaration is inert (nothing opens it), and the values a healthy box
+    # actually declares differ by shape rather than by health —
+    #
+    #   * roleful (composite, or active single-ALSA): the reconciler writes
+    #     explicit-EMPTY (`jasper-audio-hardware-reconcile`), and outputd keeps
+    #     it, since `env_str` defaults only when a variable is UNSET
+    #     (`rust/jasper-env/src/lib.rs`);
+    #   * flat/passive single-ALSA — the campaign's most common ring box: the
+    #     same reconciler writes the surviving PASSIVE lane, `jasper-outputd.service`
+    #     carries it as a unit default, and `Config::from_env`'s `SingleAlsa` arm
+    #     defaults to it too. That name is a live asoundrc declaration
+    #     (`deploy/alsa/asoundrc.jasper`) which the ring simply never opens.
+    #
+    # Failing on any value would have failed every flat ring box in the fleet,
+    # which is the same defect in the opposite direction from the sink-keyed
+    # expectation this replaced.
+    live_content_pcm = str(content.get("pcm") or "")
+    if actual_content_source == "shm_ring":
+        if live_content_pcm == _OUTPUTD_EXPECTED_ACTIVE_CONTENT_PCM:
+            return CheckResult(
+                "jasper-outputd",
+                "fail",
+                f"content.pcm={live_content_pcm!r} but content.source="
+                f"{actual_content_source!r}: that is the snd-aloop ACTIVE "
+                "capture lane, which #2534 deleted — no box can open it and no "
+                "reconcile writes it. A ring-coupled outputd reads the ring "
+                "FILE and opens no content PCM at all, so this is a stale value "
+                "surviving in outputd.env — run: sudo systemctl start "
+                "jasper-audio-hardware-reconcile",
+            )
+    elif live_content_pcm != expected_content_pcm:
         return CheckResult(
             "jasper-outputd",
             "fail",
             f"content.pcm={content.get('pcm')!r}; expected "
-            f"{expected_content_pcm!r} for sink_mode={sink_mode!r}, "
+            f"{expected_content_pcm!r} for content.source="
+            f"{actual_content_source!r}, sink_mode={sink_mode!r}, "
             f"active_channels={active_channels!r}",
         )
     if dac.get("pcm") != expected_dac_pcm:
@@ -3209,11 +3328,14 @@ def check_outputd_service() -> CheckResult:
     outputd_env = _outputd_reconciled_env()
     active_channels = _outputd_active_channels_from_env(outputd_env)
     active_single_alsa = sink_mode == "single_alsa" and active_channels is not None
-    expected_content_pcm = (
-        _OUTPUTD_EXPECTED_ACTIVE_CONTENT_PCM
-        if sink_mode == "dual_apple" or active_single_alsa
-        else _OUTPUTD_EXPECTED_CONTENT_PCM
-    )
+    # The DIRECT-bridge expectation only. A ring-coupled box is handled by the
+    # stale-name branch in the helper, which reads content.source — the bridge,
+    # not the sink, is what decides whether a content PCM is opened at all.
+    # sink_mode no longer selects a content PCM: the ACTIVE spelling it used to
+    # select was the deleted snd-aloop lane. Composite is not a case here
+    # either — a composite sink on the DIRECT bridge refuses at parse
+    # (`Config::from_env`, EX_CONFIG) rather than reaching this comparison.
+    expected_content_pcm = _OUTPUTD_EXPECTED_CONTENT_PCM
     expected_dac_pcm = (
         _OUTPUTD_EXPECTED_DUAL_DAC_PCM
         if sink_mode == "dual_apple"

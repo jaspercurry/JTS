@@ -1935,8 +1935,8 @@ def transport_coherence_report(
                 f"{playback_device!r}: a HALF-moved graph. Under a non-ring plan "
                 "fan-in writes the snd-aloop tap and nothing writes Ring A, so "
                 "CamillaDSP would capture silence. Re-emit both halves together "
-                "(`jasper-active-speaker baseline-reemit --endpoint aloop` on a "
-                "roleful box)"
+                "(`jasper-active-speaker baseline-reemit --endpoint ring` on a "
+                "roleful box) and finish the arm"
             )
 
     if normalized == TRANSPORT_LOOPBACK and playback_device:
@@ -1999,16 +1999,21 @@ def transport_coherence_report(
                 "CamillaDSP load and stays silent until the ladder finishes. "
                 "Complete it with `systemctl start "
                 "jasper-audio-hardware-reconcile` then "
-                "`jasper-fanin-coupling-reconcile shm_ring`, or roll back with "
-                "`jasper-active-speaker baseline-reemit --endpoint aloop`."
+                "`jasper-fanin-coupling-reconcile shm_ring`. There is no rollback "
+                "direction: the ring is the one legal ACTIVE endpoint, and a "
+                "roleful box on `loopback` has no content transport at all."
             )
         elif playback_device in _unpaired_post_dsp_playback_devices():
             # MEMBERSHIP, not one `==`. Two distinct contradictions land here and
             # both must be reported:
             #
-            #   - the ACTIVE ALSA lane with no registered outputd capture —
-            #     defensive completeness if the pairing registry is edited
-            #     without updating this plan layer;
+            #   - the ACTIVE ALSA lane, whose outputd capture pairing was
+            #     RETIRED with the snd-aloop ACTIVE endpoint (#2534 deleted the
+            #     lane; the registry entry left `_OUTPUTD_CAPTURE_BY_PLAYBACK_DEVICE`
+            #     for the same reason the rings were never in it). This arm was
+            #     written as defensive completeness against a registry edit; the
+            #     edit happened, so it is now the LIVE arm for that device, and a
+            #     graph still naming it is a box the ring deletion left behind;
             #   - the STEREO ring device under a LOOPBACK plan. A ring PCM has no
             #     outputd capture pairing by construction (outputd reads the
             #     ring file, not an ALSA capture), so a Camilla graph pointed at

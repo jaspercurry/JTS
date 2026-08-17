@@ -59,9 +59,9 @@ from jasper.audio_runtime_plan import (
     transport_topology_for_coupling,
 )
 from jasper.camilla_config_contract import (
-    ACTIVE_OUTPUTD_CAPTURE_DEVICE,
     ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
     DEFAULT_OUTPUTD_CAPTURE_DEVICE,
+    DEFAULT_PLAYBACK_DEVICE,
 )
 from jasper.cli.audio_config import main as audio_config_main
 from jasper.env_load import EnvFileState
@@ -1302,46 +1302,40 @@ def test_transport_topology_removed_transport_pipe_falls_back_to_loopback():
 
 
 def test_loopback_topology_derives_outputd_reader_from_camilla_writer():
+    # Re-pointed at the PASSIVE pair, which is the only registered pairing left.
+    # The property under test is the derivation — outputd's reader follows
+    # CamillaDSP's writer rather than being chosen independently — and that is
+    # unchanged by which pair carries it.
     topology = transport_topology_for_coupling(
         COUPLING_LOOPBACK,
-        camilla_playback_device=ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
+        camilla_playback_device=DEFAULT_PLAYBACK_DEVICE,
     )
 
     assert (
         topology.camilla_to_outputd["outputd_capture_pcm"]
-        == ACTIVE_OUTPUTD_CAPTURE_DEVICE
+        == DEFAULT_OUTPUTD_CAPTURE_DEVICE
     )
 
 
-def test_transport_coherence_rejects_disconnected_active_output_lane():
-    errors = transport_coherence_errors(
-        coupling=COUPLING_LOOPBACK,
-        outputd_env={"JASPER_OUTPUTD_CONTENT_PCM": DEFAULT_OUTPUTD_CAPTURE_DEVICE},
-        camilla_devices={"playback_device": ACTIVE_OUTPUTD_PLAYBACK_DEVICE},
-    )
+def test_the_retired_aloop_active_lane_has_no_registered_capture_pairing(capsys):
+    """The ONE negative guard for the retired snd-aloop ACTIVE pair.
 
-    assert len(errors) == 1
-    assert "post-DSP route disconnected" in errors[0]
-    assert ACTIVE_OUTPUTD_CAPTURE_DEVICE in errors[0]
-
-
-def test_transport_coherence_accepts_paired_active_output_lane():
-    assert transport_coherence_errors(
-        coupling=COUPLING_LOOPBACK,
-        outputd_env={"JASPER_OUTPUTD_CONTENT_PCM": ACTIVE_OUTPUTD_CAPTURE_DEVICE},
-        camilla_devices={"playback_device": ACTIVE_OUTPUTD_PLAYBACK_DEVICE},
-    ) == ()
-
-
-def test_audio_config_resolves_outputd_capture_from_canonical_pairing(capsys):
+    It replaces three tests that pinned that pairing as live: a
+    derives-the-reader case, a coherence-accepts case, and a CLI-resolves case.
+    Those asserted a pairing that no longer exists — #2534 deleted the PCMs and
+    the ACTIVE ring is now the one legal ACTIVE endpoint, so no box has an
+    outputd capture half for this device either. Absence is the assertion, and
+    it is deliberately made ONCE: three separate re-points of a dead pairing
+    would be three places to keep agreeing about nothing.
+    """
     assert audio_config_main(
         [
             "outputd-capture-device",
             "--playback-device",
             ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
         ]
-    ) == 0
-    assert capsys.readouterr().out.strip() == ACTIVE_OUTPUTD_CAPTURE_DEVICE
+    ) != 0
+    assert "no outputd capture endpoint is registered" in capsys.readouterr().out
 
 
 def test_audio_config_rejects_unregistered_outputd_playback(capsys):

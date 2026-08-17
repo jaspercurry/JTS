@@ -542,9 +542,18 @@ def transport_label(playback_device: str | None) -> str | None:
     ONE derivation, three surfaces — the ``driver_commission_prepared`` and
     ``driver_commission_load`` journal lines and ``/state``'s commissioning
     block — because a device name reported without its transport is the exact
-    half-fact that produced #2412: a graph can name the ACTIVE lane and reach it
-    over either snd-aloop or the ring, and only one of those is fed by fan-in
-    under ``shm_ring``.
+    half-fact that produced #2412: a graph COULD name the ACTIVE lane and reach
+    it over either snd-aloop or the ring, and only one of those is fed by fan-in
+    under ``shm_ring``. #2285 P2 retired the snd-aloop ACTIVE endpoint, so that
+    ambiguity is gone from the active lane and the surfaces now record which
+    transport a box is on rather than which of two it chose.
+
+    THIS FUNCTION IS UNCHANGED BY THAT, deliberately (post-seal correction 9).
+    It labels whatever device string it is handed, so its ``alsa`` branch stays
+    live for every non-ring device — the explicit lab/CI override, and the
+    content/stereo lanes that were never the active lane's question. Only
+    ``/state``'s SURFACE contract narrowed to ``ring``/``null``; do not "tidy"
+    the ``alsa`` branch away on the strength of that narrowing.
 
     Keyed on :data:`RING_PCM_DEVICES`, the set that already owns "is this end a
     ring end?", so this never becomes a second list of the three ring names.

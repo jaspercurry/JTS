@@ -388,26 +388,36 @@ def _baseline_reemit_endpoint(
 ) -> tuple[str | None, str]:
     """Which playback endpoint this re-emit targets, and where that came from.
 
-    ``--endpoint`` is what makes this command the ARM/ROLLBACK entry point
-    rather than a tidy-up. The reconciler derives its ring marker FROM the
-    loaded graph, and the graph's device derives from that marker, so an
-    auto-resolving re-emit can only ever reproduce the state the box is already
-    in — it cannot bootstrap either direction. Naming the endpoint explicitly is
-    the operator act that breaks that circle: the GRAPH moves first, the marker
-    then derives from it, and the coupling follows.
+    ``--endpoint ring`` is the explicit RE-EMIT-NOW verb: it moves the GRAPH
+    onto the ACTIVE ring, after which the marker derives from the graph and the
+    coupling follows. It is no longer a choice BETWEEN transports — the ring is
+    the only legal endpoint (``OUTPUTD_LEGAL_ENDPOINT_DEVICES``) — so there is
+    no ``aloop`` rollback arm to name. That direction was retired with the
+    snd-aloop ACTIVE lane's PCM definitions (#2534): naming it moved the anchor
+    onto a transport that does not exist, so the only thing it could still
+    produce was a park. Recovery is forward, by re-arming the ring.
 
     Omitting it keeps the auto answer (``resolve_output_layout``, the single
-    chooser, reading the marker) — correct for a plain refresh, and never able
-    to change which lane the box is on.
+    chooser). Since that chooser now returns the ring unconditionally, omitting
+    and passing ``ring`` agree on the device and differ only in provenance —
+    which is why this still reports WHERE the answer came from.
     """
     from jasper.active_speaker.playback_route import resolve_active_playback_device
-    from jasper.active_speaker.runtime_contract import OUTPUTD_ACTIVE_PLAYBACK_DEVICE
     from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 
     if endpoint == "ring":
         return RING_ACTIVE_PLAYBACK_DEVICE, "explicit_endpoint_ring"
-    if endpoint == "aloop":
-        return OUTPUTD_ACTIVE_PLAYBACK_DEVICE, "explicit_endpoint_aloop"
+    if endpoint:
+        # An explicit endpoint this function does not recognise must NOT fall
+        # through to the auto-resolver. Falling through would answer the ring
+        # anyway and report the provenance as auto — so a caller asking for a
+        # retired endpoint (`aloop`) would be told it got what it asked for.
+        # argparse's `choices` is the only entry point today, but proving that
+        # stays true is more expensive than refusing here.
+        raise ValueError(
+            f"unrecognised playback endpoint {endpoint!r}: "
+            f"{RING_ACTIVE_PLAYBACK_DEVICE} is the one legal ACTIVE endpoint"
+        )
     return resolve_active_playback_device(topology)
 
 
@@ -810,13 +820,14 @@ def _cmd_baseline_reemit(args: argparse.Namespace) -> int:
     healthy.
 
     AND IT IS THE BOOTSTRAP. The endpoint marker derives from the loaded graph;
-    the graph's device derives from the marker. That is a fixed point: at
-    marker-absent the pair can only reproduce itself, in BOTH directions — a box
-    can neither arm nor release. ``--endpoint`` is the explicit operator act
-    that breaks it by moving the GRAPH first, which is why the arm ladder is
+    the graph's device derives from the marker. That was a fixed point: at
+    marker-absent the pair could only reproduce itself, so a box could neither
+    arm nor release. ``resolve_output_layout`` no longer reads the marker, which
+    removes the circle; ``--endpoint ring`` remains the explicit re-emit-now verb
+    that moves the GRAPH first, which is why the arm ladder is
     ``baseline-reemit --endpoint ring`` -> ``jasper-audio-hardware-reconcile``
-    (the marker derives 1) -> ``jasper-fanin-coupling-reconcile shm_ring``, and
-    the rollback is its mirror through ``--endpoint aloop``.
+    (the marker derives 1) -> ``jasper-fanin-coupling-reconcile shm_ring``. It
+    has no mirror: the release direction was retired with the aloop endpoint.
 
     ON THE APPLIED PATH it is a pure re-emit from the IMMUTABLE applied snapshot
     — the same seam ``/sound`` and the commissioning host use — so Layer A is
@@ -1568,9 +1579,9 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "re-emit this box's roleful boot graph against a playback endpoint, "
             "publishing it over the live artifact and repointing the statefile. "
-            "This is the FIRST step of the active-ring arm (--endpoint ring) and "
-            "of its rollback (--endpoint aloop): the reconciler derives its "
-            "endpoint marker from the loaded graph, so the graph must move first. "
+            "This is the FIRST step of the active-ring arm (--endpoint ring), "
+            "which has no rollback: the reconciler derives its endpoint marker "
+            "from the loaded graph, so the graph must move first. "
             "Accepts either roleful boot graph — an APPLIED baseline "
             "(approved_active_runtime) on a commissioned box, or the all-muted "
             "startup anchor (all_muted_active_startup) on a mid-commission one, "
@@ -1611,13 +1622,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     reemit.add_argument(
         "--endpoint",
-        choices=("ring", "aloop"),
+        choices=("ring",),
         help=(
-            "playback endpoint to emit against: 'ring' = the ACTIVE ring "
-            "(jts_ring_active_playback, the arm), 'aloop' = the ALSA active lane "
-            "(outputd_active_content_playback, the rollback). Omit to keep the "
-            "endpoint the box already resolves, which can refresh a graph but "
-            "never move a box between lanes"
+            "playback endpoint to emit against. 'ring' (the ACTIVE ring, "
+            "jts_ring_active_playback) is the only legal endpoint and so the "
+            "only choice: pass it to re-emit the graph onto the ring now. Omit "
+            "to keep the endpoint the box already resolves"
         ),
     )
     reemit.add_argument(

@@ -78,9 +78,15 @@ DRIVER_DOMAIN_PAIR_TRIM_FILTER = "pair_balance_trim"
 # registered capture. What that means then depends on WHICH ring — the stereo
 # ring is the contradiction it reports, the ACTIVE ring is the documented arm
 # waypoint it notes — but either way the absence is what routes it there.
+# The snd-aloop ACTIVE pair is ABSENT for the SAME reason the rings are, and it
+# joined them rather than being special-cased: #2534 deleted its PCM definitions
+# and the ACTIVE ring is now the one legal ACTIVE endpoint, so no box has an
+# outputd capture half for it either. Its last hard consumer — the audio-hardware
+# reconciler, which resolved this map to write JASPER_OUTPUTD_CONTENT_PCM and
+# hard-exited when the lookup missed — stopped asking in the same commit; a
+# roleful box declares no content PCM at all now.
 _OUTPUTD_CAPTURE_BY_PLAYBACK_DEVICE = {
     DEFAULT_PLAYBACK_DEVICE: DEFAULT_OUTPUTD_CAPTURE_DEVICE,
-    ACTIVE_OUTPUTD_PLAYBACK_DEVICE: ACTIVE_OUTPUTD_CAPTURE_DEVICE,
 }
 
 

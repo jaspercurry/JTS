@@ -2748,9 +2748,9 @@ def recompose_applied_baseline_yaml(
     # stops feeding the moment the coupling arms — silence with every daemon
     # healthy, and quiet, because the plan compares capture CHANNELS (2 == 2) and
     # the width gate only holds ring-NAMED lanes to the wire. Non-ring devices
-    # answer the emitter's own defaults, so this is byte-identical on every box
-    # that is not armed, and `--endpoint aloop` restores the tap by the same
-    # derivation. The topology goes in because the ring's resolution is per-box.
+    # answer the emitter's own defaults. Nothing restores the tap: the ring is
+    # the one legal ACTIVE endpoint, so there is no reverse derivation to run.
+    # The topology goes in because the ring's resolution is per-box.
     #
     # The ring branch resolves the box's DECLARED wire, which FAILS LOUD on a
     # token neither language recognizes (a typo in
@@ -2915,9 +2915,35 @@ def recompose_baseline_yaml(
         crossover_preview,
         measurements,
     )
+    # BOTH DEVICE HALVES follow the resolved sink, exactly as the durable
+    # builder and the applied-path seam already do. This call used to pass only
+    # the playback device and let the emitter default the rest, which was
+    # byte-identical ONLY while the resolver answered a non-ring device —
+    # non-ring devices get the emitter's own defaults, so the two agreed by
+    # coincidence rather than by derivation. Once the resolver answers the ring
+    # the coincidence breaks and the omission emits the half-moved graph this
+    # module warns about elsewhere: playback=ring with capture=the snd-aloop tap
+    # fan-in stops feeding, which is silence with every daemon healthy, and
+    # quiet — the plan compares capture CHANNELS (2 == 2) and the width gate
+    # only holds ring-NAMED lanes to the wire.
+    try:
+        devices = active_emit_devices(resolved_device, topology=topology)
+    except ValueError as exc:
+        return None, [_issue(
+            "blocker",
+            "ring_wire_declaration_invalid",
+            str(exc),
+        )]
     yaml = emit_active_speaker_baseline_config(
         preset,
         playback_device=resolved_device,
+        capture_device=devices.capture_device,
+        capture_format=devices.capture_format,
+        playback_format=devices.playback_format,
+        chunksize=devices.chunksize,
+        target_level=devices.target_level,
+        queuelimit=devices.queuelimit,
+        enable_rate_adjust=devices.enable_rate_adjust,
         corrections=corrections,
         room_peqs=room_peqs,
         preference_filters=preference_filters,

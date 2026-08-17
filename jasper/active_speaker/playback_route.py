@@ -188,17 +188,22 @@ def resolve_live_active_endpoint(
       re-emits the ALSA lane over the rung that was just completed and the
       ladder cannot finish — which is exactly how a deploy landing in this
       window used to de-arm a box.
-    * Mid-rollback (``--endpoint aloop`` has run, marker still set): graph=aloop,
-      marker=ring. Following the marker re-arms a box the operator just
-      released.
+    * Legacy mid-rollback (graph=aloop, marker=ring) — reachable only as STATE
+      LEFT BEHIND, never as a new act: the rollback that produced it was retired
+      with the aloop endpoint. Following the graph still refuses the retired
+      device rather than adopting it; the way out is forward, by re-arming.
     * Marker set, graph moved back by something else: following the graph
       converges with the next hardware reconcile, which will clear the marker
       from that same graph.
 
-    ONLY THE ACTIVE LANE'S OWN TWO TRANSPORTS are adopted from the graph
-    (:data:`~jasper.active_speaker.runtime_contract.OUTPUTD_LEGAL_ENDPOINT_DEVICES`),
-    because those two are the whole question this function exists to answer.
-    Anything else the graph might name — a stale stereo lane left in the
+    ONLY THE ACTIVE LANE'S OWN TRANSPORT is adopted from the graph
+    (:data:`~jasper.active_speaker.runtime_contract.OUTPUTD_LEGAL_ENDPOINT_DEVICES`,
+    a ONE-member set since #2285 P2 retired the snd-aloop ACTIVE endpoint),
+    because that is the whole question this function exists to answer. The set
+    is still read as a membership rather than an equality: it is the one place
+    that decides what is legal, and the legacy-mid-rollback bullet above is
+    exactly a graph naming something outside it. Anything else the graph might
+    name — a stale stereo lane left in the
     statefile, a lab PCM, a grouped pipe sink — is not a third answer to
     "which transport", and adopting it would hand the active emitter a device
     its own forbidden-token guard then refuses mid-save. Those fall through to
@@ -240,8 +245,10 @@ def resolve_live_active_endpoint(
         named = device.strip()
         if named in OUTPUTD_LEGAL_ENDPOINT_DEVICES:
             return named, LOADED_GRAPH_SOURCE
-        # The graph names a sink that is not one of the active lane's two
-        # transports — a stale stereo lane, a lab PCM, a pipe. Declining it is
+        # The graph names a sink that is not the active lane's transport (ONE
+        # since #2285 P2 retired the snd-aloop ACTIVE endpoint; the retired name
+        # now falls here like any other stranger) — a stale stereo lane, a lab
+        # PCM, a pipe, or that retired lane. Declining it is
         # correct (see above), but the moment of observation should be visible:
         # the doctor's coupling check will report the incoherence later, and a
         # journal line here is what says the endpoint derivation SAW it and

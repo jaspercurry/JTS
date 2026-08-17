@@ -240,14 +240,33 @@ CONTRACT_SUBWOOFER_PRESENT = "subwoofer_present"
 CONTRACT_PROTECTED_OUTPUTS_PRESENT = "protected_outputs_present"
 CONTRACT_UNKNOWN_OR_INVALID = "unknown_or_invalid"
 
+# The snd-aloop ACTIVE lane's playback PCM — RETIRED as an endpoint. #2534
+# deleted its PCM definitions; this change deletes its MEMBERSHIP below, so no
+# graph naming it can be a legal outputd endpoint any more.
+#
+# The name survives for the TESTS, and that is the whole reason — measured, not
+# assumed. Production readers of this constant: ZERO (the only other mention in
+# `jasper/` is the comment below). The refusal is a SET-COMPLEMENT —
+# `resolve_live_active_endpoint` asks `named in OUTPUTD_LEGAL_ENDPOINT_DEVICES`
+# and declines everything else — so no guard names this device at all; an
+# earlier version of this comment claimed one did, which was the opposite of
+# what the code does.
+#
+# What still reads it is the suite: 39 references across five modules pin that a
+# graph persisted before the retirement, or a stale hand-rolled asoundrc, is
+# REFUSED by name. Deleting the constant would make those tests spell the retired
+# device as a bare literal, which is strictly worse than one named constant.
+# Deleting it would also not remove the string from the tree: the sibling
+# `jasper.camilla_config_contract.ACTIVE_OUTPUTD_PLAYBACK_DEVICE` holds the same
+# literal and does have live production readers.
 OUTPUTD_ACTIVE_PLAYBACK_DEVICE = "outputd_active_content_playback"
-# Every playback device a legal outputd ENDPOINT graph may name. Two members,
-# and the difference between them is the transport, not the program: the ALSA
-# active lane (snd-aloop) and the ACTIVE RING (`jts_ring_active_playback`) both
-# carry the same POST-crossover per-driver channels to outputd. Membership, not
-# a single `!=`, because the endpoint width probe must accept either without
-# knowing which coupling the box is on — and must reject anything else, notably
-# the STEREO ring, which carries a full-range program no active graph may target.
+# Every playback device a legal outputd ENDPOINT graph may name. ONE member:
+# the ACTIVE RING is now the only transport carrying POST-crossover per-driver
+# channels to outputd. It stays a frozenset rather than collapsing to a single
+# `==` because membership is the seam the endpoint width probe reads — it must
+# reject everything outside this set, notably the STEREO ring (which carries a
+# full-range program no active graph may target) and the retired snd-aloop lane
+# above.
 #
 # Redeclared (deliberately, like OUTPUTD_ACTIVE_PLAYBACK_DEVICE itself) rather
 # than imported from jasper.fanin_coupling: this module is the runtime
@@ -255,7 +274,6 @@ OUTPUTD_ACTIVE_PLAYBACK_DEVICE = "outputd_active_content_playback"
 # pins the copies equal.
 OUTPUTD_ACTIVE_RING_PLAYBACK_DEVICE = "jts_ring_active_playback"
 OUTPUTD_LEGAL_ENDPOINT_DEVICES = frozenset((
-    OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
     OUTPUTD_ACTIVE_RING_PLAYBACK_DEVICE,
 ))
 OUTPUTD_ENDPOINT_GRAPH_CLASSIFICATIONS = frozenset((

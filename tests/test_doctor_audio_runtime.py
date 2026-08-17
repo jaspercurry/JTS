@@ -547,6 +547,83 @@ def _outputd_status_payload(
     return json.dumps(payload).encode()
 
 
+def _patch_ring_coupled_box(
+    monkeypatch,
+    tmp_path,
+    *,
+    active_endpoint: bool = False,
+    active_channels: int | None = None,
+):
+    """Put the box on the shm_ring coupling, the way a converged box actually is.
+
+    #2285 P2: the ACTIVE snd-aloop endpoint is retired, so the roleful shapes
+    below (composite, active single-ALSA) no longer have a direct-bridge form to
+    model. The reconciler writes an explicit-EMPTY ``JASPER_OUTPUTD_CONTENT_PCM``
+    for both, and ``Config::from_env`` refuses a composite sink on the DIRECT
+    bridge outright (EX_CONFIG), so a composite box that is running at all is a
+    ring box. ``active_endpoint=True`` adds the reconciler's endpoint marker,
+    which is what selects the ACTIVE-ring transport shape rather than the
+    full-range stereo Ring B — the marker, never the observed device.
+
+    Call this LAST, after ``_patch_fanin_systemctl`` and
+    ``_patch_fanin_status_socket``: the first pins the persisted coupling to
+    ``loopback`` and the second points the endpoint evidence at the stereo ring,
+    so an earlier call is silently undone.
+    """
+    from jasper.fanin_coupling import (
+        DEFAULT_OUTPUTD_ACTIVE_RING_PATH,
+        RING_ACTIVE_PLAYBACK_DEVICE,
+        RING_CAPTURE_DEVICE,
+    )
+
+    env_lines = ["JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring"]
+    if active_channels is not None:
+        env_lines.append(f"JASPER_OUTPUTD_ACTIVE_CHANNELS={active_channels}")
+    if active_endpoint:
+        # An armed box's three facts travel together: the marker, and the ring
+        # PATH it must read. outputd bails at startup on the crossed pair, so a
+        # fixture that armed the marker over Ring B's path would model a box
+        # that cannot boot.
+        env_lines.append("JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT=1")
+        env_lines.append(
+            f"JASPER_OUTPUTD_SHM_RING_PATH={DEFAULT_OUTPUTD_ACTIVE_RING_PATH}"
+        )
+    env_path = tmp_path / "outputd.env"
+    env_path.write_text("\n".join(env_lines) + "\n", encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda: "shm_ring",
+    )
+    if active_endpoint:
+        # ...and the third: CamillaDSP plays the ACTIVE ring, not Ring B.
+        monkeypatch.setattr(
+            audio_runtime_plan,
+            "output_endpoint_evidence_from_statefiles",
+            lambda *paths: audio_runtime_plan.OutputEndpointEvidence(
+                devices={
+                    "playback_device": RING_ACTIVE_PLAYBACK_DEVICE,
+                    "capture_device": RING_CAPTURE_DEVICE,
+                }
+            ),
+        )
+
+
+def _ring_coupled_status_payload(**kwargs) -> bytes:
+    """A STATUS payload for a ring-coupled box: no content PCM, honest synthetic.
+
+    ``content_pcm=""`` is what outputd publishes once the reconciler has written
+    explicit-empty — ``env_str`` defaults only when a variable is UNSET
+    (``rust/jasper-env/src/lib.rs``), so the empty value is preserved. The
+    period-sized content buffer is the real synthetic a ring box publishes,
+    because outputd never opens a content ALSA PCM under this bridge.
+    """
+    kwargs.setdefault("content_pcm", "")
+    kwargs.setdefault("content_buffer_frames", 1024)
+    kwargs.setdefault("period_frames", 1024)
+    return _outputd_status_payload(content_source="shm_ring", **kwargs)
+
+
 def _patch_fanin_status_socket(monkeypatch, payload: bytes):
     monkeypatch.setattr(
         doctor.socket,
@@ -994,7 +1071,12 @@ def test_outputd_warns_but_does_not_fail_at_the_active_ring_arm_waypoint(
     assert "arm waypoint" in r.detail
     # The remediation the operator needs is carried, not just the diagnosis.
     assert "jasper-fanin-coupling-reconcile shm_ring" in r.detail
-    assert "baseline-reemit --endpoint aloop" in r.detail
+    # #2285 P2: the note used to offer a rollback exit alongside the arm. That
+    # endpoint is retired, so it must state there is no rollback direction and
+    # must NOT print a command argparse rejects — a remediation the operator
+    # cannot run is worse than none, because they do the work of trying it.
+    assert "no rollback direction" in r.detail
+    assert "--endpoint aloop" not in r.detail
 
 
 def test_outputd_content_bridge_detail_reports_every_mode():
@@ -1577,39 +1659,107 @@ def test_route_latency_evidence_fails_live_state_mismatch(
 
 
 def test_outputd_service_ok_with_single_alsa_active_lane(monkeypatch, tmp_path):
-    env_path = tmp_path / "outputd.env"
-    env_path.write_text("JASPER_OUTPUTD_ACTIVE_CHANNELS=2\n", encoding="utf-8")
-    monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
+    """An ACTIVE single-ALSA box is healthy on the ring, declaring NO content PCM.
+
+    #2285 P2 moved this off the direct bridge. It used to model the same box
+    declaring ``outputd_active_content_capture``; that lane is deleted (#2534),
+    the reconciler now writes explicit-empty for an active single-ALSA box, and
+    under the direct bridge outputd would open whatever it was handed
+    (``content_pcm_skipped`` is false there) — so the old shape describes no box
+    that can run. The width readout is still the assertion that matters, and it
+    comes from the env, independently of the bridge.
+    """
     _patch_fanin_systemctl(monkeypatch)
     _patch_fanin_status_socket(
         monkeypatch,
-        _outputd_status_payload(
-            content_pcm=doctor._OUTPUTD_EXPECTED_ACTIVE_CONTENT_PCM,
-            dac_pcm=doctor._OUTPUTD_EXPECTED_DAC_PCM,
-        ),
+        _ring_coupled_status_payload(dac_pcm=doctor._OUTPUTD_EXPECTED_DAC_PCM),
+    )
+    _patch_ring_coupled_box(
+        monkeypatch, tmp_path, active_endpoint=True, active_channels=2
     )
 
     r = doctor.check_outputd_service()
 
-    assert r.status == "ok"
+    assert r.status == "ok", r.detail
     assert "active_channels=2" in r.detail
 
 
-def test_outputd_service_fails_when_active_env_has_legacy_content_pcm(
+def test_outputd_service_fails_when_a_ring_box_still_names_the_retired_content_pcm(
     monkeypatch,
     tmp_path,
 ):
-    env_path = tmp_path / "outputd.env"
-    env_path.write_text("JASPER_OUTPUTD_ACTIVE_CHANNELS=2\n", encoding="utf-8")
-    monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
+    """The negative guard the retired name survives FOR.
+
+    #2285 P2 re-pointed this from ``..._when_active_env_has_legacy_content_pcm``,
+    which pinned the sink-keyed expectation: an ACTIVE box was compared against
+    ``outputd_active_content_capture`` and failed for declaring anything else.
+    That expectation is gone — the name it demanded is a PCM #2534 deleted and
+    no reconcile writes — so the comparison inverted. The same "a legacy content
+    PCM must not pass quietly" property now lands here: under the ring outputd
+    opens no content PCM at all, so the retired snd-aloop lane appearing in
+    ``outputd.env`` is the one value that means something stale survived.
+
+    The message must both NAME the stale value and carry the reconcile that
+    clears it, because the operator cannot infer either from a bare mismatch.
+    """
     _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(monkeypatch, _outputd_status_payload())
+    _patch_fanin_status_socket(
+        monkeypatch,
+        _ring_coupled_status_payload(
+            content_pcm=doctor._OUTPUTD_EXPECTED_ACTIVE_CONTENT_PCM,
+        ),
+    )
+    _patch_ring_coupled_box(monkeypatch, tmp_path, active_endpoint=True)
 
     r = doctor.check_outputd_service()
 
-    assert r.status == "fail"
+    assert r.status == "fail", r.detail
     assert "outputd_active_content_capture" in r.detail
-    assert "active_channels=2" in r.detail
+    assert "jasper-audio-hardware-reconcile" in r.detail
+
+
+def test_outputd_service_ok_when_a_flat_ring_box_declares_its_passive_lane(
+    monkeypatch,
+    tmp_path,
+):
+    """CONTROL for the guard above — and the fleet's most common ring box.
+
+    A flat (passive single-ALSA) box on the ring still declares
+    ``outputd_content_capture``: the hardware reconciler writes it, the unit
+    carries it as an ``Environment=`` default, and ``Config::from_env``'s
+    ``SingleAlsa`` arm defaults to it. Under the ring nothing opens it, so the
+    declaration is inert — a live asoundrc definition the transport happens not
+    to use.
+
+    Without this control the guard above would also pass if the ring branch
+    rejected ANY content PCM, which is the shape that would have FAILED every
+    flat ring box in the fleet.
+    """
+    _patch_fanin_systemctl(monkeypatch)
+    _patch_fanin_status_socket(
+        monkeypatch,
+        _ring_coupled_status_payload(
+            content_pcm=doctor._OUTPUTD_EXPECTED_CONTENT_PCM,
+        ),
+    )
+    _patch_ring_coupled_box(monkeypatch, tmp_path)
+
+    r = doctor.check_outputd_service()
+
+    assert r.status == "ok", r.detail
+    assert "content_source=shm_ring" in r.detail
+
+
+# #2285 P2 (A6) retired the snd-aloop ACTIVE lane's outputd capture PAIRING with
+# the endpoint itself, so this shape stopped reporting a capture MISMATCH — there
+# is no registered capture left to mismatch against, and the unpaired-device arm
+# of `transport_coherence_errors` reports it instead. Same box, same verdict, a
+# different sentence. Kept as one constant so the two tests below cannot drift
+# apart from each other.
+_ROUTE_UNPAIRED = (
+    "post-DSP route has no registered outputd capture for "
+    "Camilla playback='outputd_active_content_playback'"
+)
 
 
 def _patch_disconnected_post_dsp_route(monkeypatch) -> None:
@@ -1696,8 +1846,7 @@ def test_outputd_service_fails_when_active_graph_feeds_passive_reader(
     r = doctor.check_outputd_service()
 
     assert r.status == "fail"
-    assert "post-DSP route disconnected" in r.detail
-    assert "outputd_active_content_capture" in r.detail
+    assert _ROUTE_UNPAIRED in r.detail
     assert "audio-hardware-reconcile" in r.detail
 
 
@@ -1718,7 +1867,7 @@ def test_route_disconnect_remedy_does_not_recommend_an_impossible_reconcile(
     r = doctor.check_outputd_service()
 
     assert r.status == "fail"
-    assert "post-DSP route disconnected" in r.detail
+    assert _ROUTE_UNPAIRED in r.detail
     assert PASSIVE_ONLY_DAC_LABEL in r.detail
     assert "/sound/setup/" in r.detail
     assert "audio-hardware-reconcile" not in r.detail
@@ -1782,30 +1931,29 @@ def test_outputd_service_warns_when_gain_exceeds_the_peak_cap(monkeypatch):
     assert "peak_cap_gain_db=-6.0" in r.detail
 
 
-def test_outputd_service_fails_when_dual_apple_status_missing(monkeypatch):
+def test_outputd_service_fails_when_dual_apple_status_missing(monkeypatch, tmp_path):
     _patch_fanin_systemctl(monkeypatch)
     payload = json.loads(
-        _outputd_status_payload(
+        _ring_coupled_status_payload(
             sink_mode="dual_apple",
-            content_pcm=doctor._OUTPUTD_EXPECTED_ACTIVE_CONTENT_PCM,
             dac_pcm=doctor._OUTPUTD_EXPECTED_DUAL_DAC_PCM,
         ).decode()
     )
     payload.pop("dual_apple", None)
     _patch_fanin_status_socket(monkeypatch, json.dumps(payload).encode())
+    _patch_ring_coupled_box(monkeypatch, tmp_path, active_endpoint=True)
 
     r = doctor.check_outputd_service()
-    assert r.status == "fail"
+    assert r.status == "fail", r.detail
     assert "STATUS missing dual_apple runtime health" in r.detail
 
 
-def test_outputd_service_warns_when_dual_apple_pcm_link_missing(monkeypatch):
+def test_outputd_service_warns_when_dual_apple_pcm_link_missing(monkeypatch, tmp_path):
     _patch_fanin_systemctl(monkeypatch)
     _patch_fanin_status_socket(
         monkeypatch,
-        _outputd_status_payload(
+        _ring_coupled_status_payload(
             sink_mode="dual_apple",
-            content_pcm=doctor._OUTPUTD_EXPECTED_ACTIVE_CONTENT_PCM,
             dac_pcm=doctor._OUTPUTD_EXPECTED_DUAL_DAC_PCM,
             dual_apple_status={
                 "dac_a_pcm": "hw:CARD=A,DEV=0",
@@ -1818,23 +1966,32 @@ def test_outputd_service_warns_when_dual_apple_pcm_link_missing(monkeypatch):
             },
         ),
     )
+    _patch_ring_coupled_box(monkeypatch, tmp_path, active_endpoint=True)
     r = doctor.check_outputd_service()
-    assert r.status == "warn"
+    assert r.status == "warn", r.detail
     assert "not ALSA-linked" in r.detail
 
 
-def test_outputd_service_ok_with_dual_apple_status(monkeypatch):
+def test_outputd_service_ok_with_dual_apple_status(monkeypatch, tmp_path):
+    """The armed composite box on the ring — jts.local's own shape.
+
+    #2285 P2 moved the three dual_apple tests off the direct bridge. A composite
+    sink declaring no content PCM is REFUSED at parse on the direct bridge
+    (``Config::from_env``, EX_CONFIG), and the only other direct-bridge shape —
+    a composite naming the passive lane — is the 4ch-over-a-2ch-slave reuse this
+    PR rejected as hearing-adjacent. A running composite box is a ring box.
+    """
     _patch_fanin_systemctl(monkeypatch)
     _patch_fanin_status_socket(
         monkeypatch,
-        _outputd_status_payload(
+        _ring_coupled_status_payload(
             sink_mode="dual_apple",
-            content_pcm=doctor._OUTPUTD_EXPECTED_ACTIVE_CONTENT_PCM,
             dac_pcm=doctor._OUTPUTD_EXPECTED_DUAL_DAC_PCM,
         ),
     )
+    _patch_ring_coupled_box(monkeypatch, tmp_path, active_endpoint=True)
     r = doctor.check_outputd_service()
-    assert r.status == "ok"
+    assert r.status == "ok", r.detail
     assert "backend=alsa" in r.detail
     assert "dual_a_pcm=hw:CARD=A,DEV=0" in r.detail
     assert "dual_linked=True" in r.detail

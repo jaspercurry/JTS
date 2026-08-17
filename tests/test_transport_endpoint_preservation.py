@@ -159,47 +159,41 @@ def _both_halves(yaml_text: str) -> tuple[str | None, str | None]:
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("graph_device", "marker_armed"),
-    [
-        # Mid-arm: rung 1 has moved the graph, the hardware reconciler has not
-        # run yet. A deploy landing HERE is what used to undo rung 1.
-        (RING_ACTIVE_PLAYBACK_DEVICE, False),
-        # Mid-rollback (and the #2339 crash window): the marker still says armed
-        # while the graph has already gone back to the ALSA lane.
-        (OUTPUTD_ACTIVE_PLAYBACK_DEVICE, True),
-    ],
-)
 async def test_the_live_endpoint_follows_the_graph_not_the_marker(
-    tmp_path, monkeypatch, graph_device, marker_armed,
+    tmp_path, monkeypatch,
 ):
-    """THE GRAPH IS UPSTREAM TRUTH, and these are the states that prove it.
+    """THE GRAPH IS UPSTREAM TRUTH, and mid-arm is the state that proves it.
 
-    Both halves of the ladder pass through a window where the graph and the
-    marker disagree, in opposite directions. The marker is *derived from* the
-    graph by ``jasper-audio-hardware-reconcile``, so following the graph is
-    following the half the reconcilers are converging toward; following the
-    marker would undo the rung the operator just completed (arm) or re-arm a box
-    they just released (rollback).
+    Rung 1 has moved the graph onto the ring; the hardware reconciler has not
+    run yet, so the marker is still clear. A deploy landing HERE is what used to
+    undo rung 1. The marker is *derived from* the graph by
+    ``jasper-audio-hardware-reconcile``, so following the graph is following the
+    half the reconcilers are converging toward.
+
+    #2285 P2: the opposite window (marker armed, graph on the snd-aloop lane)
+    used to be the second half of this pair. It is no longer a disagreement this
+    function resolves by ADOPTION — the aloop endpoint was retired, so a graph
+    still naming it is DECLINED like any other non-endpoint sink and the chooser
+    answers. That direction is pinned below, in the declined-device shapes.
     """
     topology, applied = _applied_box(tmp_path, monkeypatch)
     _point_statefile_at(
         tmp_path,
         monkeypatch,
-        _graph_for(topology, applied, graph_device),
+        _graph_for(topology, applied, RING_ACTIVE_PLAYBACK_DEVICE),
         name="loaded.yml",
     )
     monkeypatch.setattr(
         "jasper.fanin_coupling.ring_active_endpoint_armed",
-        lambda env=None: marker_armed,
+        lambda env=None: False,
     )
 
     device, source = resolve_live_active_endpoint(topology)
 
-    assert device == graph_device
-    # The SOURCE is asserted, not just the device: on an unarmed box both
-    # witnesses answer the same name, so a device-only assertion would pass
-    # while the marker was the one answering.
+    assert device == RING_ACTIVE_PLAYBACK_DEVICE
+    # The SOURCE is asserted, not just the device: the chooser now answers the
+    # same name for an active-capable topology, so a device-only assertion would
+    # pass while the fall-through was the one answering.
     assert source == LOADED_GRAPH_SOURCE
 
 
@@ -210,24 +204,36 @@ async def test_the_live_endpoint_follows_the_graph_not_the_marker(
         "dangling_config_path",
         "graph_without_devices",
         "graph_on_a_non_endpoint_device",
+        "graph_on_the_retired_aloop_endpoint",
     ],
 )
-async def test_an_unreadable_graph_falls_back_to_the_marker_never_the_snapshot(
+async def test_an_unadoptable_graph_falls_back_to_the_chooser_never_the_snapshot(
     tmp_path, monkeypatch, shape,
 ):
     """DEFAULT-SAFE, deliberately, and never worse than what it replaced.
 
-    A fresh box has no statefile at all and still has to take a deploy, so an
-    unreadable graph is not a refusal. The second witness is the MARKER, not the
-    applied snapshot: on an armed box with an unreadable statefile the marker
-    still answers the ring, where the snapshot would have named the ALSA lane
-    and re-created the very clobber this fixes.
+    A fresh box has no statefile at all and still has to take a deploy, so a
+    graph this derivation cannot adopt is not a refusal. The second witness is
+    the CHOOSER (``resolve_active_playback_device``), which answers the ACTIVE
+    ring for an active-capable topology — never the applied snapshot, whose lane
+    is what re-created the #2339 clobber.
+
+    #2285 P2 renamed this: the second witness used to be the endpoint MARKER,
+    and the two marker states below used to answer different devices. The
+    chooser no longer reads the marker (there is one legal endpoint to choose),
+    so sweeping both states is now the control proving exactly that — a chooser
+    that still branched on the marker would answer the retired lane in the
+    second half.
 
     ``graph_on_a_non_endpoint_device`` is the same rule from the other side: a
-    device that is not one of the active lane's two transports is not a third
-    answer to "which transport", and adopting it would hand the active emitter a
-    device its own forbidden-token guard refuses mid-save. Here that device IS
-    the forbidden stereo lane, so the pre-emption is not theoretical.
+    device that is not the active lane's transport is not a second answer to
+    "which transport", and adopting it would hand the active emitter a device
+    its own forbidden-token guard refuses mid-save. There that device is the
+    forbidden stereo lane, so the pre-emption is not theoretical.
+    ``graph_on_the_retired_aloop_endpoint`` is the shape every box commissioned
+    before the retirement is actually in, and the reason
+    ``OUTPUTD_ACTIVE_PLAYBACK_DEVICE`` still has a name: it must be DECLINED,
+    not followed.
     """
     topology, applied = _applied_box(tmp_path, monkeypatch)
     statefile = tmp_path / "outputd-statefile.yml"
@@ -242,31 +248,29 @@ async def test_an_unreadable_graph_falls_back_to_the_marker_never_the_snapshot(
     else:
         from jasper.camilla_config_contract import DEFAULT_PLAYBACK_DEVICE
 
-        graph = tmp_path / "stereo-lane.yml"
-        graph.write_text(
-            _graph_for(topology, applied, None).replace(
-                OUTPUTD_ACTIVE_PLAYBACK_DEVICE, DEFAULT_PLAYBACK_DEVICE
-            ),
-            encoding="utf-8",
+        declined = (
+            OUTPUTD_ACTIVE_PLAYBACK_DEVICE
+            if shape == "graph_on_the_retired_aloop_endpoint"
+            else DEFAULT_PLAYBACK_DEVICE
         )
+        graph = tmp_path / f"{shape}.yml"
+        text = _graph_for(topology, applied, None).replace(
+            RING_ACTIVE_PLAYBACK_DEVICE, declined
+        )
+        assert declined in text
+        graph.write_text(text, encoding="utf-8")
         statefile.write_text(f"config_path: {graph}\n", encoding="utf-8")
     monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
 
-    monkeypatch.setattr(
-        "jasper.fanin_coupling.ring_active_endpoint_armed", lambda env=None: True
-    )
-    assert resolve_live_active_endpoint(topology) == (
-        RING_ACTIVE_PLAYBACK_DEVICE,
-        OUTPUTD_ACTIVE_LANE_SOURCE,
-    )
-
-    monkeypatch.setattr(
-        "jasper.fanin_coupling.ring_active_endpoint_armed", lambda env=None: False
-    )
-    assert resolve_live_active_endpoint(topology) == (
-        OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
-        OUTPUTD_ACTIVE_LANE_SOURCE,
-    )
+    for marker_armed in (True, False):
+        monkeypatch.setattr(
+            "jasper.fanin_coupling.ring_active_endpoint_armed",
+            lambda env=None, armed=marker_armed: armed,
+        )
+        assert resolve_live_active_endpoint(topology) == (
+            RING_ACTIVE_PLAYBACK_DEVICE,
+            OUTPUTD_ACTIVE_LANE_SOURCE,
+        ), marker_armed
 
 
 async def test_a_declined_non_endpoint_device_is_visible_in_the_journal(
@@ -289,7 +293,7 @@ async def test_a_declined_non_endpoint_device_is_visible_in_the_journal(
         tmp_path,
         monkeypatch,
         _graph_for(topology, applied, None).replace(
-            OUTPUTD_ACTIVE_PLAYBACK_DEVICE, DEFAULT_PLAYBACK_DEVICE
+            RING_ACTIVE_PLAYBACK_DEVICE, DEFAULT_PLAYBACK_DEVICE
         ),
         name="stereo-lane.yml",
     )
@@ -297,8 +301,10 @@ async def test_a_declined_non_endpoint_device_is_visible_in_the_journal(
     with caplog.at_level(_logging.DEBUG, logger="jasper.active_speaker.playback_route"):
         device, source = resolve_live_active_endpoint(topology)
 
+    # The chooser answers the same NAME the adopted case would, so the SOURCE is
+    # what says this graph was declined rather than followed.
     assert (device, source) == (
-        OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+        RING_ACTIVE_PLAYBACK_DEVICE,
         OUTPUTD_ACTIVE_LANE_SOURCE,
     )
     assert "event=active_speaker.live_endpoint" in caplog.text
@@ -337,21 +343,33 @@ async def test_reconcile_current_dsp_keeps_an_armed_box_on_the_ring(
     ``captures/r7b-jts3-arm3-20260811T162742Z`` file 12. Pre-fix the reconcile
     re-emitted the snapshot's ALSA lane over the ring graph and re-pointed the
     statefile at it. It must now re-emit THROUGH the ring, on both halves.
+
+    #2285 P2: the pre-arm graph is written EXPLICITLY at the retired snd-aloop
+    endpoint. It used to be ``_graph_for(..., None)``, which answered that lane
+    by default; now the default IS the ring, so leaving it would have made the
+    stale graph identical to the live one and quietly emptied this reproduction
+    of its contrast. The retired lane is also the real shape on disk for every
+    box commissioned before the retirement.
     """
     from jasper.sound.runtime import reconcile_current_dsp
 
     topology, applied = _applied_box(tmp_path, monkeypatch)
+    ring_graph = _graph_for(topology, applied, RING_ACTIVE_PLAYBACK_DEVICE)
     _point_statefile_at(
         tmp_path,
         monkeypatch,
-        _graph_for(topology, applied, RING_ACTIVE_PLAYBACK_DEVICE),
+        ring_graph,
         name="active_speaker_baseline_candidate.yml",
     )
 
     config_dir = tmp_path / "configs"
     config_dir.mkdir(exist_ok=True)
     stale = config_dir / "sound_current.yml"
-    stale.write_text(_graph_for(topology, applied, None), encoding="utf-8")
+    pre_arm = ring_graph.replace(
+        RING_ACTIVE_PLAYBACK_DEVICE, OUTPUTD_ACTIVE_PLAYBACK_DEVICE
+    ).replace(RING_CAPTURE_DEVICE, DEFAULT_CAPTURE_DEVICE)
+    assert pre_arm != ring_graph
+    stale.write_text(pre_arm, encoding="utf-8")
     camilla = _FakeCamilla(str(stale))
 
     profile_path = tmp_path / "sound_profile.json"
@@ -376,26 +394,34 @@ async def test_reconcile_current_dsp_keeps_an_armed_box_on_the_ring(
     )
 
 
-async def test_reconcile_current_dsp_is_byte_identical_on_an_unarmed_box(
+async def test_reconcile_current_dsp_is_byte_identical_to_the_default_recompose(
     tmp_path, monkeypatch,
 ):
-    """The other direction of the same rule: an unarmed box does not move.
+    """The other direction of the same rule: a box already on its endpoint
+    does not move.
 
     The reconcile still exists to refresh the artifact on every deploy (so
     CamillaDSP cannot reopen a stale statefile against freshly-created ring
     files); re-emitting THROUGH the live endpoint keeps that refresh and changes
     nothing else.
+
+    #2285 P2 renamed this from ``..._on_an_unarmed_box``. The distinguishing
+    fact was never the marker — it is that the loaded graph already names the
+    device the default resolution answers, so re-emitting through it is a no-op.
+    With one legal endpoint left, "unarmed" no longer describes a box on a
+    different lane, and a title claiming it would have to be read as a promise
+    the code stopped making.
     """
     from jasper.sound.runtime import reconcile_current_dsp
 
     topology, applied = _applied_box(tmp_path, monkeypatch)
-    aloop_graph = _graph_for(topology, applied, None)
-    _point_statefile_at(tmp_path, monkeypatch, aloop_graph, name="loaded.yml")
+    default_graph = _graph_for(topology, applied, None)
+    _point_statefile_at(tmp_path, monkeypatch, default_graph, name="loaded.yml")
 
     config_dir = tmp_path / "configs"
     config_dir.mkdir(exist_ok=True)
     current = config_dir / "sound_current.yml"
-    current.write_text(aloop_graph, encoding="utf-8")
+    current.write_text(default_graph, encoding="utf-8")
     camilla = _FakeCamilla(str(current))
 
     profile_path = tmp_path / "sound_profile.json"
@@ -410,11 +436,11 @@ async def test_reconcile_current_dsp_is_byte_identical_on_an_unarmed_box(
     assert payload["status"] == "reconciled", payload
     emitted = Path(str(camilla.loaded_path)).read_text(encoding="utf-8")
     assert _both_halves(emitted) == (
-        DEFAULT_CAPTURE_DEVICE,
-        OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+        RING_CAPTURE_DEVICE,
+        RING_ACTIVE_PLAYBACK_DEVICE,
     )
-    # Byte-for-byte the graph the snapshot default would have produced, so an
-    # unarmed fleet sees no change at all.
+    # Byte-for-byte the graph the default resolution would have produced, so a
+    # deploy over a box already on its endpoint changes nothing at all.
     expected, _ = recompose_applied_baseline_yaml(
         topology,
         applied_profile=applied,
@@ -435,28 +461,24 @@ def _preference_filters(profile_path: Path):
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("armed", "expected_halves"),
-    [
-        (True, (RING_CAPTURE_DEVICE, RING_ACTIVE_PLAYBACK_DEVICE)),
-        (False, (DEFAULT_CAPTURE_DEVICE, OUTPUTD_ACTIVE_PLAYBACK_DEVICE)),
-    ],
-)
-async def test_a_sound_save_preserves_the_boxs_endpoint(
-    tmp_path, monkeypatch, armed, expected_halves,
-):
+async def test_a_sound_save_preserves_the_boxs_endpoint(tmp_path, monkeypatch):
     """A household EQ save changes the EQ, never the transport.
 
     ``/eq/`` and ``/sound/setup/`` both land on ``load_profile_config``, which
     resolves the same active carrier; the save must fold the new preference
     filters into the graph the box is running WITHOUT moving which lane it runs
     on. Pre-fix an armed box was silently disarmed by a taste-EQ save (#2337).
+
+    #2285 P2 collapsed the armed/unarmed pair. The unarmed leg passed
+    ``playback_device=None`` and expected the snd-aloop halves; that resolution
+    now answers the ring, so the leg had become a byte-for-byte duplicate of the
+    armed one. Keeping it would have looked like two transports were still being
+    distinguished when only one is left.
     """
     from jasper.sound.runtime import load_profile_config
 
     topology, applied = _applied_box(tmp_path, monkeypatch)
-    endpoint = RING_ACTIVE_PLAYBACK_DEVICE if armed else None
-    loaded_graph = _graph_for(topology, applied, endpoint)
+    loaded_graph = _graph_for(topology, applied, RING_ACTIVE_PLAYBACK_DEVICE)
     _point_statefile_at(tmp_path, monkeypatch, loaded_graph, name="loaded.yml")
 
     config_dir = tmp_path / "configs"
@@ -482,7 +504,7 @@ async def test_a_sound_save_preserves_the_boxs_endpoint(
     # The save did its job...
     assert "sound_simple_treble" in emitted
     # ...without moving the box.
-    assert _both_halves(emitted) == expected_halves
+    assert _both_halves(emitted) == (RING_CAPTURE_DEVICE, RING_ACTIVE_PLAYBACK_DEVICE)
 
 
 # --------------------------------------------------------------------------
@@ -1211,10 +1233,24 @@ async def test_the_transport_gate_invents_no_failure_when_no_graph_was_emitted(
 async def test_driver_commissioning_still_emits_on_an_unarmed_box(
     tmp_path, monkeypatch,
 ):
-    """CONTROL: the refusal is keyed on the ring, not on commissioning at all.
+    """CONTROL: the refusal is keyed on the graph's coherence, not on the marker.
 
     Without this, a gate that refused every box would satisfy the assertions
-    above. The unarmed path must still reach the emitter on the ALSA lane.
+    above. The unarmed path must still reach the emitter — and since #2285 P2 it
+    reaches it naming the ACTIVE RING, because ``resolve_output_layout`` case 2
+    no longer reads the endpoint marker to choose a transport.
+
+    THIS TEST CARRIED AN ``xfail(reason="#2412")`` AND NO LONGER NEEDS ONE. It
+    was marked when the emit was genuinely unreachable: before #2412's waves an
+    unarmed roleful box's commissioning emit named
+    ``outputd_active_content_playback``, a PCM whose definition #2534 had
+    deleted (positive control: ``pcm.outputd_content_playback`` IS still found
+    in ``deploy/alsa/asoundrc.jasper``), so the device the "control" proved
+    reachable was never openable. #2412 Waves 1-3 made ring commissioning work
+    and P2 makes the chooser name the ring, so the emit is now both reachable
+    and coherent. The marker is REMOVED rather than left non-strict — sealed
+    §3.4 rule 3 admits zero xfails, and a passing test wearing an xfail hides
+    the very repair it should be reporting (post-seal correction 9).
     """
     from jasper.active_speaker.staging import prepare_driver_commissioning_config
 
@@ -1235,7 +1271,10 @@ async def test_driver_commissioning_still_emits_on_an_unarmed_box(
 
     assert payload["status"] == "prepared", payload
     assert len(emits) == 1, emits
-    assert emits[0]["playback_device"] == OUTPUTD_ACTIVE_PLAYBACK_DEVICE
+    # The RING, on an UNARMED box — that is the post-P2 meaning of this control.
+    # The marker is false above and the emit still names the ring, which is the
+    # observable consequence of deleting case 2's marker read.
+    assert emits[0]["playback_device"] == RING_ACTIVE_PLAYBACK_DEVICE
     gate = next(
         g
         for g in payload["required_gates"]

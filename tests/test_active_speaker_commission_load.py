@@ -256,19 +256,25 @@ def _load(
     with_path_safety: bool = True,
     reconcile_output_hardware: bool = True,
     playback_device: str | None = None,
-    arm_transport: bool = False,
+    arm_transport: bool = True,
 ):
-    # OPT-IN, and defaulting OFF is the whole finding (#2412 Wave 6). Arming
-    # is NOT inert on this tree: the ACTIVE-endpoint marker is read by
-    # `resolve_output_layout` as well as by the load gate, so arming it
-    # unconditionally here would move all 37 tests that funnel through this
-    # helper — 17 in this module plus the 20 that reach it through
-    # `test_active_speaker_stage5_ramp.py::_ramp_step` — off the snd-aloop path
-    # they were written to cover. (37 is the CARRIAGE, measured by AST; the 34
-    # this comment used to claim was the enumerator's RED count for the two
-    # modules, which is a different set.) It defaults off so those keep their
-    # coverage, and the ring-polarity tests below ask for it explicitly. See
-    # `tests/_armed_transport.py`.
+    # DEFAULTS ON since #2285 P2, and the flip is the whole point of the
+    # handoff (#2412 Wave 6 determined it, this branch executes it). While the
+    # chooser still had two answers, arming here was NOT inert — the
+    # ACTIVE-endpoint marker is read by `resolve_output_layout` as well as by
+    # the load gate, so arming unconditionally would have moved all 37 tests
+    # that funnel through this helper (17 in this module plus the 20 reaching it
+    # through `test_active_speaker_stage5_ramp.py::_ramp_step`) off the
+    # snd-aloop path they were written to cover. P2 retires that path: case 2 of
+    # `resolve_output_layout` now names the ring unconditionally, so there is no
+    # longer a second transport to lose coverage of, and arming supplies only
+    # the liveness Wave 3's `commissioning_transport_armed` gate asks for.
+    #
+    # It stays a PARAMETER rather than becoming unconditional so the negative
+    # controls keep working: `test_an_unarmed_ring_blocks_the_load_and_the_arming_is_what_lifts_it`
+    # passes `False` to prove the arming is load-bearing, and the load-line
+    # polarity test passes it explicitly per case. Removing the knob would
+    # delete both proofs. See `tests/_armed_transport.py`.
     if arm_transport:
         arm_ring_transport(monkeypatch)
     staged = _staged(tmp_path)
@@ -341,6 +347,12 @@ def test_woofer_commissioning_load_happy_path(monkeypatch, tmp_path, reconcile_t
 
 
 def test_summed_commissioning_load_happy_path(monkeypatch, tmp_path, reconcile_triggers):
+    # Armed HERE, not in `_load`: this test inlines the production entry point
+    # (`load_summed_commissioning_config`, itself a wrapper over
+    # `load_driver_commissioning_config`), so it meets Wave 3's
+    # `commissioning_transport_armed` gate without reaching any shared harness —
+    # no helper edit can arm it. One of exactly two rows in that position.
+    arm_ring_transport(monkeypatch)
     staged = _staged(tmp_path)
     staged_path = staged["config"]["path"]
     statefile = _statefile(tmp_path, staged_path)
@@ -522,6 +534,12 @@ def test_durable_statefile_drift_fails_closed(monkeypatch, caplog, tmp_path):
 
 
 def test_load_blocks_when_active_graph_is_not_staged(monkeypatch, tmp_path):
+    # Armed HERE, not in `_load`: this test inlines
+    # `load_driver_commissioning_config` directly, so no helper edit can arm it.
+    # The arming is what keeps this test ISOLATING the gate it names — without
+    # it the ring-transport liveness gate also fires and pollutes the issue-code
+    # set the assertion below reads. One of exactly two rows in that position.
+    arm_ring_transport(monkeypatch)
     # Precondition: commissioning requires the all-muted staged boot config to be
     # the active graph first. If a different config is persisted/active, fail
     # closed (the path-safety binding + the explicit precondition gate both
@@ -752,8 +770,24 @@ def test_rollback_reloads_the_staged_all_muted_config(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize(
     "playback_device, arm, expect_transport",
-    [(None, False, "alsa"), (RING_ACTIVE_PLAYBACK_DEVICE, True, "ring")],
-    ids=["aloop_active_lane", "ring"],
+    [
+        # The LAB/CI OVERRIDE route — `resolve_output_layout` case 1, which
+        # honours any explicit device. It is the only way an `alsa` transport is
+        # still reachable after #2285 P2 (post-seal correction 9). The device is
+        # this campaign's established lab idiom rather than the retired
+        # `outputd_active_content_playback`: re-pointing onto deleted vocabulary
+        # would keep the removed world alive for a test's benefit, which is the
+        # thing correction 9 rules out. It is also NOT one of
+        # `FORBIDDEN_ACTIVE_PLAYBACK_TOKENS` — `outputd_content_playback` is,
+        # being the CONTENT lane, so it cannot stand in here.
+        ("hw:CARD=Lab,DEV=0", False, "alsa"),
+        # The PRODUCTION route — no override, so this walks case 2, the chooser
+        # P2 made unconditional. Previously this row passed the ring device
+        # explicitly and so also went through case 1; routing it through the
+        # chooser is what makes the pair cover both resolution paths.
+        (None, True, "ring"),
+    ],
+    ids=["explicit_lab_lane", "production_chooser_ring"],
 )
 def test_the_load_line_names_the_transport_on_both_polarities(
     monkeypatch, tmp_path, caplog, playback_device, arm, expect_transport
@@ -764,6 +798,13 @@ def test_the_load_line_names_the_transport_on_both_polarities(
     line without this field, and the second is the one new failure mode
     commissioning-on-the-ring introduces. Both polarities, because one would
     pass against a line that hard-coded either answer.
+
+    The polarity pair SURVIVES #2285 P2 while `/state`'s narrows to ring/`null`
+    (post-seal correction 9), and the asymmetry is deliberate: `transport_label`
+    keeps its `alsa` branch because it labels whatever device string it is
+    handed, and this line reports the device the load actually used — including
+    one an operator overrode. Only the `/state` SURFACE contract went
+    single-valued.
 
     The ring arm is also the PROOF that `arm_ring_transport` does something —
     the reason #2412 can ship that helper for P2 to call rather than shipping an
