@@ -610,7 +610,18 @@ right place. Read this before adding or restructuring docs.
    after a PR that never opened the file falsified the claim; #2325).
    Run `bash scripts/tense-grep.sh --all` once per deletion PR instead
    — every repo-tracked file, grouped by file with a per-file count —
-   against a baseline captured before the cut.
+   against a baseline captured before the cut. **That sweep is also
+   blind to a whole class, so it is a floor and not the method:**
+   deleting a MEMBER OF AN ENUMERATED SET falsifies every description
+   that lists the set without ever naming the deleted thing, and those
+   descriptions are ordinary present tense with no roadmap token to
+   match. #2285's wave deleted one box-class gate and left six such
+   sites standing — two inside the deleting file, one in the bring-up
+   doc a commissioner of that very box class reads — while
+   `tense-grep --all` reported exactly one newly-flagged file, and it
+   was a false positive (PR #2660). So sweep by SUBJECT as well: grep
+   the deleted thing's own vocabulary (its name, its class, the reason
+   it existed) and read the enumerations it appears in.
 
 ---
 

@@ -485,7 +485,8 @@ now resolves `shm_ring` exactly when its OWN ring evidence checks out (assets,
 topology, ioplug capability, wire agreement, both geometry axes) and falls back
 to loopback + direct on any refusal, naming the gate. **This is the change a
 Zero-class bring-up should watch**: read `journalctl -u jasper-fanin-coupling-auto`
-for `event=fanin.coupling_auto` and its `detail="not ring-eligible (<gate>)"`,
+for `event=fanin.coupling_reconcile result=auto_resolved` and its
+`detail="not ring-eligible (<gate>)"`,
 and check `jasper-doctor` after the first boot.
 
 **Open question: active-crossover topology.** Any role that drives
