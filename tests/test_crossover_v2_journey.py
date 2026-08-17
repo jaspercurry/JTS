@@ -788,7 +788,8 @@ def test_the_package_import_graph_stays_acyclic():
 
     ``test_no_domain_module_imports_the_host_or_the_legacy_flow`` above forbids
     two imports by name. It says nothing about the package's INTERNAL shape,
-    so nothing stopped ``contracts`` — which nine modules import and which
+    so nothing stopped ``contracts`` — which eight nodes of this graph import
+    (nine files do; the package ``__init__`` is not a node) and which
     imports none of them — from importing ``coordinator`` tomorrow. The
     layering was an accident of how the extraction happened to land; this
     makes it a contract, at the cost of one walk.
@@ -858,9 +859,14 @@ def test_the_retyping_guard_sees_a_planted_literal(tmp_path):
 
     planted = tmp_path / "_retyping_probe.py"
     planted.write_text('BADGE = {"keep_previous": "Keep the previous sound."}\n')
-    assert _retyped_vocabulary(planted, owners) == [
-        "_retyping_probe.py:1: 'keep_previous' is RESULT_KEEP_PREVIOUS"
-    ]
+
+    # Asserted by MARKER, not by the whole formatted string: the message is
+    # diagnostic prose, and a control that breaks when someone improves the
+    # wording teaches the next person to loosen the control.
+    found = _retyped_vocabulary(planted, owners)
+    assert len(found) == 1
+    assert "_retyping_probe.py:1" in found[0]
+    assert "RESULT_KEEP_PREVIOUS" in found[0]
 
 
 def test_the_envelope_renderer_never_re_types_a_code_it_could_import():

@@ -2798,8 +2798,10 @@ def _worst_pilot_snr_db(analysis: ProgramAnalysis) -> float | None:
 
 # The level-frame agreement tolerance used to live here, as a flow-side alias
 # the planner and the accountability gate both read. It is deleted with the
-# arbitration it gated (single-datum-owner migration, #2609): the summed
-# at-the-mark capture owns the level datum, the two per-driver estimates became
+# arbitration it gated (single-datum-owner migration, #2609): the raw per-branch
+# trim solve places the pair, NOT the summed at-the-mark capture (incoherent
+# frames — `intervention.plan_linearization`'s anchor block; #2653), the two
+# per-driver estimates became
 # an advisory consistency check, and the one surviving tolerance is owned by
 # `crossover_v2.intervention.LEVEL_ESTIMATOR_TOLERANCE_DB` — which still
 # resolves to `program_analysis.REALIZED_LEVEL_MATCH_TOLERANCE_DB`, for the

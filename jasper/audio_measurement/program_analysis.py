@@ -608,8 +608,8 @@ RIPPLE_TRIM_MIN_DB = -60.0
 #   is now ``jasper.active_speaker.crossover_v2.intervention.
 #   LEVEL_ESTIMATOR_TOLERANCE_DB``, and what it gates changed with it: since the
 #   single-datum-owner migration a disagreement past it flags a capture as
-#   retriable rather than refusing a session, because the summed at-the-mark
-#   capture — not either of these two estimates — places the pair.
+#   retriable rather than refusing a session, because the raw per-branch trim
+#   solve — not either of these two estimates — places the pair.
 # * CEILING — the level error at which the flat spec must fail anyway. An
 #   inter-branch level error of D dB appears in the summed response as a step
 #   across Fc; the spec's reference is a power mean spanning BOTH sides
