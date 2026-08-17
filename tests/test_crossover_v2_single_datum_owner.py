@@ -28,6 +28,7 @@ rolled the round back.
 from __future__ import annotations
 
 import inspect
+from dataclasses import replace
 
 import pytest
 
@@ -35,6 +36,16 @@ from jasper.active_speaker.crossover_v2 import intervention as iv
 from jasper.audio_measurement.program_analysis import (
     REALIZED_LEVEL_MATCH_TOLERANCE_DB,
 )
+# The planner harness, borrowed rather than forked: that module already owns
+# the two stubs a `plan_linearization` run needs (the un-replayable fit and
+# ripple seams) and the banked request they run against. A second copy here
+# would be a second answer to "how do you drive the planner".
+from tests.test_crossover_v2_intervention_dual_run import (
+    _install_stubs,
+    _planner_request,
+    _sections_at,
+)
+from tests.test_crossover_v2_incident_replay import SELECTED_FC_HZ
 
 # --------------------------------------------------------------------------- #
 # the 2026-08-16 jts3 terms
@@ -208,6 +219,66 @@ def test_no_disagreement_can_change_the_committed_pair():
     # Same inputs to the anchor, same answer, whatever the check said.
     again, again_shift = _anchor()
     assert again == baseline and again_shift == baseline_shift
+
+
+# --------------------------------------------------------------------------- #
+# (a2) the WIRING — which of the request's two estimates reaches the anchor
+# --------------------------------------------------------------------------- #
+
+
+def _anchored_through_the_planner(monkeypatch, **request_overrides):
+    """One full ``plan_linearization`` run's anchored pair.
+
+    Through the whole planner rather than :func:`anchor_trims` directly,
+    because the wiring is the fact under test: everything above pins what the
+    anchor DOES with a base, and none of it can see which base the planner
+    picks up.
+    """
+
+    _install_stubs(monkeypatch, scan_delta_db=0.0)
+    request = _planner_request(_sections_at(SELECTED_FC_HZ))
+    plan = iv.plan_linearization(replace(request, **request_overrides))
+    return dict(plan.trim.anchored_db)
+
+
+def test_the_planner_anchors_on_the_raw_trim_and_not_the_band_average(monkeypatch):
+    """#2662 G4: the level datum's owner, pinned at the seam that chooses it.
+
+    ``plan_linearization`` is handed BOTH per-driver level estimates on one
+    request — ``raw_trim_db`` and the subordinate ``trim_band_average_db`` —
+    and passes exactly one of them to the anchor. Which one is the fact this
+    repo's prose got backwards at three sites in a single commit
+    (``9b27f2716``, whose subject asserted the wrong half too), so an argument
+    about it is worth nothing and a test is worth having.
+
+    Stated as two runs rather than as arithmetic, so it cannot pass by
+    re-deriving ``base + giveback`` the way production does: moving the
+    SUBORDINATE estimate must change nothing, and moving the OWNER by the same
+    amount must change the answer. A planner wired to the band average fails
+    both halves at once.
+    """
+
+    on_owner = _anchored_through_the_planner(
+        monkeypatch,
+        raw_trim_db=_RAW_TRIM_DB,
+        trim_band_average_db=_TRIM_BAND_AVERAGE_DB,
+    )
+
+    # (i) the subordinate estimate moves the full 3.942 dB; the datum does not.
+    subordinate_moved = _anchored_through_the_planner(
+        monkeypatch,
+        raw_trim_db=_RAW_TRIM_DB,
+        trim_band_average_db=_RAW_TRIM_DB,
+    )
+    assert subordinate_moved == pytest.approx(on_owner)
+
+    # (ii) the owner moves by that same amount, and the anchor follows it.
+    owner_moved = _anchored_through_the_planner(
+        monkeypatch,
+        raw_trim_db=_TRIM_BAND_AVERAGE_DB,
+        trim_band_average_db=_TRIM_BAND_AVERAGE_DB,
+    )
+    assert owner_moved["tweeter"] != pytest.approx(on_owner["tweeter"])
 
 
 # --------------------------------------------------------------------------- #
