@@ -69,6 +69,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     REASON_VERIFY_DETERMINISTIC_MISMATCH,
     TIER_EXPRESS,
     TIER_FULL,
+    V2_FIRST_BEGIN_TIMEOUT_S,
     VERIFY_TERMINAL_OUTCOME_DETERMINISTIC,
     CrossoverV2Session,
     V2FlowSeams,
@@ -79,9 +80,11 @@ from jasper.active_speaker.crossover_v2_flow import (
     format_position_distance,
     locate_failed_diagnosis,
     resolve_plan_shape,
+    v2_first_begin_timeout_s,
 )
 import jasper.active_speaker.baseline_profile as baseline_profile_mod
 
+import jasper.capture_relay.session as relay_session
 from jasper.capture_relay.client import RelayClient
 from jasper.capture_relay.session import (
     CaptureAborted,
@@ -470,6 +473,90 @@ def _build_runner(conductor, volume, **kwargs):
         volume=volume.hooks(),
         **kwargs,
     )
+
+
+# --- the first-begin budget knob (#2637) ---------------------------------------
+#
+# Four commissioning sessions on the 2026-08-16 walk died at exactly the 300 s
+# default in phase=awaiting_begin, so the budget is a jasper.env edit rather than
+# a rebuild. The reader is the flow's, the wiring is this host's, and both are
+# pinned here so the pair cannot drift apart.
+
+
+def test_the_first_begin_budget_defaults_to_the_constant(monkeypatch):
+    """Unset env ⇒ the shipped 300 s, read off the constant itself."""
+    monkeypatch.delenv("JASPER_V2_FIRST_BEGIN_TIMEOUT_S", raising=False)
+    assert v2_first_begin_timeout_s() == V2_FIRST_BEGIN_TIMEOUT_S == 300.0
+
+
+def test_the_first_begin_budget_takes_an_in_range_override(monkeypatch):
+    monkeypatch.setenv("JASPER_V2_FIRST_BEGIN_TIMEOUT_S", "900")
+    assert v2_first_begin_timeout_s() == 900.0
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "",           # present but empty — an operator who blanked the line
+        "   ",
+        "soon",       # unparseable
+        "29.9",       # below the 30 s floor
+        "3600.1",     # above the 3600 s ceiling
+        "-1",
+    ],
+)
+def test_a_bad_first_begin_value_falls_back_to_the_default(monkeypatch, raw):
+    """A jasper.env typo can never shorten or brick the first-begin window.
+
+    Same fall-back idiom as every other ``bounded_env_float`` knob — the value
+    is dropped silently, not raised, because the alternative is a commissioning
+    flow that refuses to start over a stray character.
+    """
+    monkeypatch.setenv("JASPER_V2_FIRST_BEGIN_TIMEOUT_S", raw)
+    assert v2_first_begin_timeout_s() == 300.0
+
+
+def test_the_runner_passes_the_env_resolved_first_begin_budget(monkeypatch):
+    """The plan runner receives the ENV value, not the hard-coded constant.
+
+    This is the assertion the knob exists for: the reader above can be perfect
+    and still reach nobody if the host keeps consuming the constant directly.
+    900 is deliberately not 300, so a revert to the constant fails here.
+    """
+    monkeypatch.setenv("JASPER_V2_FIRST_BEGIN_TIMEOUT_S", "900")
+    seen: dict[str, Any] = {}
+    real_run_capture_plan = relay_session.run_capture_plan
+
+    def spy(*args, **kwargs):
+        seen.update(kwargs)
+        return real_run_capture_plan(*args, **kwargs)
+
+    monkeypatch.setattr(relay_session, "run_capture_plan", spy)
+
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(
+        _roles(), FC_HZ, acknowledgement_binding=_BINDING,
+        include_cloud_measure=False,
+    )
+    client, session, phone = _mint_v2_session(backend, spec)
+    conductor = _conductor(
+        backend, session, phone, published=[],
+        index_phase_map=build_v2_cloud_index_phase_map(include_cloud_measure=False),
+    )
+    # Deliberately NOT via _build_runner: that helper pins first_begin_timeout_s
+    # to the small test timeout, which is exactly the default path under test.
+    runner = v2host.build_v2_run_and_consume(
+        conductor,
+        volume=VolumeRecorder().hooks(),
+        poll_interval_s=0.01,
+        timeout_s=20.0,
+        stop_event=threading.Event(),
+        stop_lock=threading.Lock(),
+    )
+    _run(runner, client, session)
+
+    assert conductor.current_phase == PHASE_DONE
+    assert seen["first_begin_timeout_s"] == 900.0
 
 
 # --- happy path through the REAL plan runner -----------------------------------

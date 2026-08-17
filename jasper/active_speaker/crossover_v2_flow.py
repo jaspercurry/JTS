@@ -241,6 +241,7 @@ from jasper.audio_measurement.program_analysis import (
     polarity_label,
 )
 from jasper.capture_relay.session import CaptureBeginDeferred, CaptureBeginRefused
+from jasper.env_load import bounded_env_float
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -11269,6 +11270,22 @@ AUTO_ADVANCE_ON_APPLY = "on_apply"
 V2_FIRST_BEGIN_TIMEOUT_S = 300.0
 
 
+def v2_first_begin_timeout_s() -> float:
+    """The first-begin budget in force — the constant above, env-overridable.
+
+    Four commissioning sessions on the 2026-08-16 walk died at exactly the 300 s
+    default in ``phase=awaiting_begin``. Widening it is a ``jasper.env`` edit
+    (``JASPER_V2_FIRST_BEGIN_TIMEOUT_S``, 30..3600 s) rather than a rebuild;
+    out-of-range or unparseable values fall back to the default, mirroring the
+    ``JASPER_CAPTURE_ALIGNMENT_THRESHOLD`` pattern.
+    """
+
+    return bounded_env_float(
+        "JASPER_V2_FIRST_BEGIN_TIMEOUT_S", V2_FIRST_BEGIN_TIMEOUT_S,
+        lo=30.0, hi=3600.0,
+    )
+
+
 def _program_duration_ms(program: ExcitationProgram) -> int:
     return int(round(program.total_samples / program.sample_rate_hz * 1000))
 
@@ -12447,6 +12464,7 @@ __all__ = [
     "CAPTURE_PLAN_TARGET",
     "CAPTURE_PLAN_MAX_ATTEMPTS",
     "V2_FIRST_BEGIN_TIMEOUT_S",
+    "v2_first_begin_timeout_s",
     "ALIGNMENT_CONFIDENCE_TRUST_FLOOR",
     "MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB",
     "SWEEP_SCHEDULE_RESIDUAL_CEILING_MS",

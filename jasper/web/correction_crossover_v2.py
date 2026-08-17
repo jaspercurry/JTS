@@ -5565,8 +5565,8 @@ def build_v2_run_and_consume(
             REASON_RELAY_TIMEOUT,
             REASON_REVIEW_HOLD_TIMEOUT,
             REASON_USER_STOPPED,
-            V2_FIRST_BEGIN_TIMEOUT_S,
             TRANSIENT_AUTO_RETRY_CODES,
+            v2_first_begin_timeout_s,
         )
         from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
         from jasper.correction.coordinator import MeasurementWindowError
@@ -5979,7 +5979,7 @@ def build_v2_run_and_consume(
         # per-phase backstop. The REVIEW hold's own rescope lives in the runner.
         plan_kwargs["first_begin_timeout_s"] = (
             first_begin_timeout_s if first_begin_timeout_s is not None
-            else V2_FIRST_BEGIN_TIMEOUT_S
+            else v2_first_begin_timeout_s()
         )
         capture_task = asyncio.create_task(
             asyncio.to_thread(
