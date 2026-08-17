@@ -509,7 +509,7 @@ the module, not a second copy here.
 | [`crossover_v2/intervention.py`](../jasper/active_speaker/crossover_v2/intervention.py) | The deterministic prescription planner as pure functions — assembly around existing DSP primitives, never a second fitter. |
 | [`crossover_v2/accountability.py`](../jasper/active_speaker/crossover_v2/accountability.py) | Whether a built candidate may be PROPOSED at all — three assertions, most-specific first. |
 | [`crossover_v2/proposal.py`](../jasper/active_speaker/crossover_v2/proposal.py) | One committed candidate gathered into the fingerprinted `InterventionProposal` the round receipt names. Computes nothing; refuses rather than raising. |
-| [`crossover_v2/verification.py`](../jasper/active_speaker/crossover_v2/verification.py) | The four verification verdicts, the four adoption axes they compose into, and the six-row table. |
+| [`crossover_v2/verification.py`](../jasper/active_speaker/crossover_v2/verification.py) | The four verification verdicts, the four adoption axes they compose into, and the seven-row table. |
 | [`crossover_v2/round_evidence.py`](../jasper/active_speaker/crossover_v2/round_evidence.py) | The two measurements one round compares, the margin that makes a difference a change, and the series policy the headroom axis is handed (round cap, plateau margin). |
 | [`crossover_v2/round_anchor.py`](../jasper/active_speaker/crossover_v2/round_anchor.py) | What an apply displaced, what it put live, whether the running graph is still that, and whether a restore is aimed at what the round displaced. |
 | [`crossover_v2/coordinator.py`](../jasper/active_speaker/crossover_v2/coordinator.py) | The round's tail: grade, act on the adoption table, restore, bank the receipt. |
