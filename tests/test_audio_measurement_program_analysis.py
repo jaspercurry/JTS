@@ -134,6 +134,7 @@ from jasper.audio_measurement.program_analysis import (
     analysis_diagnostic_summary,
     analyze_program_capture,
     crossover_region_band_hz,
+    DRIVER_SNR_ALIGNMENT_KEY,
     driver_alignment_snr_verdict,
     driver_snr_verdict,
     REALIZED_LEVEL_MATCH_TOLERANCE_DB,
@@ -1230,6 +1231,36 @@ def test_diagnostic_summary_snr_band_is_none_not_a_stand_in_label():
     # it was read from a band whose identity the block did not carry.
     assert "tweeter_snr_band" in summary
     assert summary["tweeter_snr_verdict"] == "insufficient"
+
+
+def test_diagnostic_summary_alignment_snr_trio_is_none_when_the_block_predates_it():
+    """A ``snr`` dict written before #2640 — magnitude-only, no ``"alignment"``
+    key at all — must not raise, and the three alignment keys must still be
+    present, with ``None`` values: never a raise, and never a guessed verdict
+    for evidence the block never carried."""
+    resp = program_analysis.DriverResponse(
+        role="tweeter",
+        freqs_hz=np.linspace(100.0, 20000.0, 64),
+        magnitude_db=np.zeros(64),
+        complex_tf=np.ones(64, dtype=complex),
+        gating={"applied": True, "window_ms": 8.0},
+        snr={"worst_relevant": {
+            "band_id": "mid", "estimated_snr_db": 30.0, "verdict": "ok",
+        }},
+        validity_floor_hz=None,
+    )
+    summary = analysis_diagnostic_summary(program_analysis.ProgramAnalysis(
+        phase=PHASE_MEASURE, program_id="test", locations=(),
+        driver_responses=(resp,),
+    ))
+    assert summary["tweeter_alignment_snr_db"] is None
+    assert summary["tweeter_alignment_snr_verdict"] is None
+    assert summary["tweeter_alignment_snr_band"] is None
+    # Present, not merely absent — the same None-vs-absent rule the magnitude
+    # trio's own band identity is held to above.
+    assert "tweeter_alignment_snr_db" in summary
+    assert "tweeter_alignment_snr_verdict" in summary
+    assert "tweeter_alignment_snr_band" in summary
 
 
 @pytest.mark.parametrize(
@@ -2984,6 +3015,34 @@ def test_a_held_rounds_model_does_not_carry_the_refused_anchors_residual():
     )
     assert shipped_ripple == pytest.approx(res.candidate.predicted_ripple_db, abs=1e-9)
     assert res.candidate.snap_delta_us == pytest.approx(withheld_us)
+
+
+def test_diagnostic_summary_alignment_snr_trio_is_distinct_from_the_magnitude_one():
+    """#2640: the diagnostic summary publishes the ALIGNMENT-class SNR trio
+    beside the pre-existing MAGNITUDE one, off the same ``driver_responses``
+    entry, and the two trios are not just a copy of each other.
+
+    Reuses the ``-48 dB`` fixture two tests up: the magnitude law (25 dB) is
+    satisfied and the alignment law (35 dB, no ``reduced`` rung) is not, so
+    the two trios genuinely disagree here rather than coincidentally match.
+    """
+    res = _refused_two_way_analysis()
+    tweeter = next(r for r in res.driver_responses if r.role == "tweeter")
+    alignment_worst = tweeter.snr[DRIVER_SNR_ALIGNMENT_KEY]["worst_relevant"]
+
+    summary = analysis_diagnostic_summary(res)
+    # The alignment trio carries the ALIGNMENT block's own worst_relevant
+    # values — read off the same entry the summary is built from, not a
+    # separately-asserted number.
+    assert summary["tweeter_alignment_snr_db"] == alignment_worst["estimated_snr_db"]
+    assert summary["tweeter_alignment_snr_verdict"] == alignment_worst["verdict"]
+    assert summary["tweeter_alignment_snr_band"] == alignment_worst["band_id"]
+
+    # ...and distinct from the magnitude trio: the -48 dB row exists
+    # precisely because the two laws disagree here.
+    assert summary["tweeter_snr_verdict"] == "ok"
+    assert summary["tweeter_alignment_snr_verdict"] == "insufficient"
+    assert summary["tweeter_snr_verdict"] != summary["tweeter_alignment_snr_verdict"]
 
 
 def test_a_held_round_is_not_refused_by_the_accountability_prediction_gate():
