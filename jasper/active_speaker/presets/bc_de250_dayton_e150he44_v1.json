@@ -38,7 +38,8 @@
       "manufacturer": "B&C Speakers",
       "model": "DE250",
       "rated_power_w": 60,
-      "expected_nearfield_response": "Compression-driver horn response must be measured with the final horn or waveguide attached."
+      "expected_nearfield_response": "Compression-driver horn response must be measured with the final horn or waveguide attached.",
+      "protection_highpass_floor_hz": 1600
     }
   },
   "crossover_regions": [

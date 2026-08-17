@@ -8,9 +8,10 @@ Consumes ONE driver's :class:`~jasper.audio_measurement.program_analysis.
 DriverResponse` (the primary, gated, calibrated measurement) plus its
 :class:`~jasper.active_speaker.linearization_envelope.EnvelopeCurve` (from
 :func:`jasper.active_speaker.linearization_envelope.compose_envelope`) and
-produces a cut-only PEQ/shelf fit that flattens the driver toward a
+produces a cut-preferred PEQ/shelf fit that flattens the driver toward a
 per-session target level, honoring the envelope's per-bin correction-depth
-ceiling everywhere. Pure computation: numpy plus
+ceiling everywhere. Cut-PREFERRED, not cut-only: see "Boost is allowed" below
+for the vocabulary that admits a lift and what bounds it. Pure computation: numpy plus
 :func:`jasper.audio_measurement.analysis.smooth_fractional_octave` and
 :func:`jasper.correction.peq.design_peq` (the existing greedy cuts-only PEQ
 designer, extended here — backward-compatibly — to accept a per-bin cut
@@ -669,7 +670,11 @@ class LinearizationFilter:
     biquad_type: str  # "Peaking" | "Highshelf" | "Lowshelf"
     freq: float
     q: float
-    gain: float  # dB; always <= 0 (cut-only invariant)
+    # dB; may be positive, up to PER_FILTER_BOOST_CAP_DB -- the cut-only
+    # invariant ended at PR-L5. Pinned by
+    # tests/test_active_speaker_linearization_emission.py::test_linearization_rejects_boost_above_the_per_filter_cap
+    # and ::test_linearization_boost_is_accepted_and_absorbed_by_baseline_headroom.
+    gain: float
 
     def to_dict(self) -> dict[str, float | str]:
         return {
@@ -2839,8 +2844,12 @@ def fit_driver_linearization(
     blind_bands_hz: Sequence[tuple[float, float]] = (),
     target: BranchTarget | None = None,
 ) -> LinearizationFit:
-    """Fit one driver's cut-only linearization from its measured response
-    and correction envelope.
+    """Fit one driver's linearization from its measured response and
+    correction envelope.
+
+    Cut-preferred, not cut-only: ``vocabulary`` decides whether a lift is
+    admitted at all, and this function re-proves both that decision and the
+    per-filter boost cap on its own output before returning.
 
     ``envelope`` carries everything besides the raw magnitude curve —
     role, mic tier, driver class, repeat count, and (critically) the

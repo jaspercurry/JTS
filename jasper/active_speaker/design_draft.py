@@ -69,6 +69,7 @@ _MANUAL_DRIVER_FIELDS = {
     "sensitivity_db_2v83_1m",
     "usable_frequency_range_hz",
     "recommended_highpass_hz",
+    "recommended_highpass_slope_db_per_octave",
     "recommended_lowpass_hz",
     "do_not_test_below_hz",
     "gain_offset_db",
@@ -333,10 +334,10 @@ def _normalise_driver_common(
             raw.get("usable_frequency_range_hz"),
             f"{prefix}.usable_frequency_range_hz",
         ),
-        "recommended_highpass_hz": _positive_float(
-            raw.get("recommended_highpass_hz"),
-            f"{prefix}.recommended_highpass_hz",
-        ),
+        # recommended_highpass_hz -- the OWNER of this driver's low limit
+        # (#2603) -- is deliberately NOT parsed here. It is a safety field, and
+        # ``normalise_driver_safety_fields`` below owns it along with its slope
+        # condition, so the declaration has exactly one parse point.
         "recommended_lowpass_hz": _positive_float(
             raw.get("recommended_lowpass_hz"),
             f"{prefix}.recommended_lowpass_hz",
@@ -821,6 +822,7 @@ _V2_RESEARCH_COMPARABLE_FIELDS = frozenset({
         "nominal_impedance_ohm",
         "sensitivity_db_2v83_1m",
         "recommended_highpass_hz",
+        "recommended_highpass_slope_db_per_octave",
         "recommended_lowpass_hz",
         "do_not_test_below_hz",
         "gain_offset_db",

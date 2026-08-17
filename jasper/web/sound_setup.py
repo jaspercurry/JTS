@@ -2366,6 +2366,21 @@ def _active_speaker_design_draft_save_payload(
         safety_profile_status=str(
             (payload.get("driver_safety_profile") or {}).get("status")
         ),
+        # #2603: the EVALUATION, not just the stored status. A re-confirm wave
+        # left no journal trace at all — a fleet owner had no way to find the
+        # boxes whose profile went un-confirmed under the one-owner collapse.
+        # Carried on the existing save event rather than a new one, so there is
+        # no second grep contract to keep in sync.
+        safety_profile_evaluation=str(
+            (payload.get("driver_safety_profile_evaluation") or {}).get("status")
+        ),
+        safety_profile_reasons=",".join(
+            str(reason)
+            for reason in (
+                (payload.get("driver_safety_profile_evaluation") or {}).get("reasons")
+                or ()
+            )
+        ),
         issues=len(payload.get("issues") or []),
     )
     return payload

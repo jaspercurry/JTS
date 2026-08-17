@@ -1274,6 +1274,25 @@ async function testComponentFirstResearchFlowIsOrderedAndAdvancedIsFlat() {
       !html.includes('value="compression_horn" selected')) {
     fail("a conditional component edit should not collapse the open Advanced editor", { html });
   }
+
+  // #2603 decision 8: the low limit is entered ONCE, and this is the input it
+  // is entered in. Without it the operator's only routes were pasting research
+  // or typing the high-pass cutoff — which the derivation overwrites, so a
+  // deliberate edit could vanish with nowhere to express it. jts3's own remedy
+  // is typing B&C's published 1600 here.
+  if (!html.includes('data-manual-field="recommended_highpass_hz"') ||
+      !html.includes('data-manual-field="recommended_highpass_slope_db_per_octave"')) {
+    fail("the low limit's owner must be editable, not only pasteable", { html });
+  }
+  // …and the fields it derives say so, rather than inviting an edit that the
+  // next save silently replaces.
+  if (!html.includes("Required high-pass cutoff (derived)")) {
+    fail("a derived protection field must be labelled derived", { html });
+  }
+  // Typing is deliberately not a repaint here (only driver_class/pad_kind
+  // re-render), so the round trip is asserted where it is observable: the
+  // field reaches the same payload the echo-back contract already requires it
+  // to render back, pinned in tests/test_sound_profile_echo_back_contract.py.
   return { componentFirstResearchFlowIsOrderedAndAdvancedIsFlat: true };
 }
 
@@ -3111,9 +3130,16 @@ async function testTweeterDriverStyleSelectorSetsTopologyAndAppearsInReview() {
   if (!afterSelectHtml.includes('value="compression_driver" selected')) {
     fail("selecting a style must reflect back as the selected option", { afterSelectHtml });
   }
+  // #2603 re-baselined this copy: the figure is the DEFAULT minimum crossover
+  // used when the datasheet publishes none, not a floor the declaration must
+  // clear. The assertion still pins that the declared style and its number
+  // reach the review card.
   if (!afterSelectHtml.includes("Tweeter style: Compression driver (horn-loaded)") ||
-      !afterSelectHtml.includes("protective high-pass floor 2000 Hz")) {
-    fail("declared style must be visible on the review card with its floor", { afterSelectHtml });
+      !afterSelectHtml.includes("default minimum crossover 2000 Hz")) {
+    fail("declared style must be visible on the review card with its figure", { afterSelectHtml });
+  }
+  if (afterSelectHtml.includes("protective high-pass floor")) {
+    fail("the retired floor vocabulary must not return to this hint", { afterSelectHtml });
   }
 
   if (saves.length !== 1) fail("style change should auto-save through the existing topology writer", { saves });
@@ -3140,9 +3166,10 @@ async function testUnknownDriverStyleRendersWithoutGuessedFloor() {
   if (!html.includes("Tweeter style: horn compression driver.")) {
     fail("an unknown-to-the-picker style must render its label without a floor", { html });
   }
-  if (html.includes("horn compression driver — protective high-pass floor") ||
+  if (html.includes("horn compression driver — default minimum crossover") ||
+      html.includes("horn compression driver — protective high-pass floor") ||
       /horn compression driver[^<]*5000/.test(html)) {
-    fail("an unknown-to-the-picker style must never show a guessed floor", { html });
+    fail("an unknown-to-the-picker style must never show a guessed figure", { html });
   }
   if (!html.includes('value="horn_compression_driver" selected')) {
     fail("the picker must show the stored unknown style as selected, not 'Not sure'", { html });
@@ -3177,8 +3204,8 @@ async function testConfirmSafetyToastRestatesTweeterStyleAndFloor() {
 
   const text = harness.elements.get("status").textContent;
   if (!text.includes("Safety limits confirmed") ||
-      !text.includes("Compression driver (horn-loaded), 2000 Hz protective floor")) {
-    fail("confirm toast must restate the confirmed tweeter style and floor", { text });
+      !text.includes("Compression driver (horn-loaded), 2000 Hz default minimum crossover")) {
+    fail("confirm toast must restate the confirmed tweeter style and figure", { text });
   }
   if (!text.includes("does not authorize sound")) {
     fail("confirm toast must keep the no-audio disclaimer", { text });
@@ -7659,6 +7686,83 @@ async function testIncompleteSafetyProfileExplainsWithoutADeadButton() {
   return { incompleteSafetyProfileExplainsWithoutADeadButton: true };
 }
 
+// #2603. A profile confirmed before a driver's low limit had one declared
+// owner evaluates 'malformed', NOT 'incomplete', so the status test that keeps
+// the button off an unconfirmable profile did not cover it. jts3's own stored
+// artifact is this shape: the button was offered, and the operator's first
+// click came back a bare `search_band_below_hard_band` from the server.
+async function testStaleLowLimitWithABlockerExplainsAndOffersNoConfirm() {
+  const harness = await harnessWithSafetyEvaluation({
+    status: "malformed",
+    confirmed_and_current: false,
+    reasons: [
+      "driver_safety_profile_low_limit_stale",
+      "tweeter:search_band_below_hard_band",
+    ],
+  });
+  const html = harness.elements.get("view-body").innerHTML;
+  const calloutAt = html.indexOf('id="confirm-safety-limits"');
+  if (calloutAt < 0) {
+    fail("a stale-low-limit profile still needs the explanation", { html });
+  }
+  const callout = html.slice(calloutAt, html.indexOf("data-driver-advanced"));
+  if (!callout.includes("one declared minimum crossover per driver")) {
+    fail("the copy must name WHY the confirmation lapsed", { callout });
+  }
+  if (!callout.includes(
+    "the tweeter&#39;s crossover search band starts below its hard excitation band"
+  )) {
+    fail("the copy must name the blocker that stops a re-confirm", { callout });
+  }
+  if (!callout.includes("the datasheet")) {
+    fail("the copy must name the remedy, not just the conflict", { callout });
+  }
+  if (callout.includes('data-act="confirm-driver-safety"')) {
+    fail("a rebuild that would refuse must not be offered as a button", {
+      callout,
+    });
+  }
+  // There are TWO confirm buttons: the hoisted callout's and the Advanced
+  // editor's own save row. Gating only the first left the dead click one
+  // disclosure away — in the very panel the operator is in while fixing the
+  // values that make the rebuild refuse. The Advanced one stays rendered and
+  // goes `disabled`, so the row does not appear to lose an action.
+  const advancedButtonAt = html.lastIndexOf('data-act="confirm-driver-safety"');
+  if (advancedButtonAt < 0) {
+    fail("the Advanced editor should still render its confirm control", { html });
+  }
+  const advancedButton = html.slice(advancedButtonAt, advancedButtonAt + 160);
+  if (!advancedButton.includes("disabled")) {
+    fail("the Advanced confirm button must be disabled when a rebuild refuses", {
+      advancedButton,
+    });
+  }
+  return { staleLowLimitWithABlockerExplainsAndOffersNoConfirm: true };
+}
+
+// The control. Without it the gate above reads as "malformed never confirms",
+// which would strand every box in the compat class instead of letting the
+// ordinary case re-confirm in one click.
+async function testStaleLowLimitWithoutABlockerStillOffersConfirm() {
+  const harness = await harnessWithSafetyEvaluation({
+    status: "malformed",
+    confirmed_and_current: false,
+    reasons: ["driver_safety_profile_low_limit_stale"],
+  });
+  const html = harness.elements.get("view-body").innerHTML;
+  const calloutAt = html.indexOf('id="confirm-safety-limits"');
+  const callout = html.slice(calloutAt, html.indexOf("data-driver-advanced"));
+  if (!callout.includes("one declared minimum crossover per driver")) {
+    fail("the copy must still name why the confirmation lapsed", { callout });
+  }
+  if (!callout.includes('data-act="confirm-driver-safety"')) {
+    fail("a stale profile that rebuilds cleanly must still offer Confirm", {
+      callout,
+    });
+  }
+  return { staleLowLimitWithoutABlockerStillOffersConfirm: true };
+}
+
 async function testIncompleteFromABandRelationshipNamesTheRelationship() {
   // Issue #2191. 'incomplete' is also reached with every value present — the
   // owner's tweeter repair hit exactly this — and "add the missing limits"
@@ -7850,6 +7954,8 @@ results.push(await testSubwooferWithSpareOutputHidesWirelessCta());
 results.push(await testUnconfirmedSafetyProfileHoistsTheConfirmControl());
 results.push(await testConfirmedSafetyProfileRendersNoCallout());
 results.push(await testIncompleteSafetyProfileExplainsWithoutADeadButton());
+results.push(await testStaleLowLimitWithABlockerExplainsAndOffersNoConfirm());
+results.push(await testStaleLowLimitWithoutABlockerStillOffersConfirm());
 results.push(await testIncompleteFromABandRelationshipNamesTheRelationship());
 results.push(await testConfirmSafetyDeepLinkOpensTheComponentStep());
 results.push(await testCombinedTestCardAgreesWithItsDisabledButton());

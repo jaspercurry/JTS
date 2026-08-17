@@ -127,6 +127,12 @@ def _harness(tmp_path: Path, *, layout: str = "mono") -> _Harness:
         driver["level_duration_limits"]["minimum_cooldown_s"] = 0
         if driver["role"] == "woofer":
             driver["required_protection_filters"][0]["cutoff_hz"] = 7_000
+        else:
+            # #2603: the hard band's floor DERIVES from the driver's declared
+            # low limit, so widening the band means declaring the limit --
+            # otherwise the tweeter's own protective high-pass (5000) still
+            # owns the floor and the summed program lands below it.
+            driver["recommended_highpass_hz"] = 3_000
     safety_profile = build_driver_safety_profile(
         topology,
         manual_settings=manual,

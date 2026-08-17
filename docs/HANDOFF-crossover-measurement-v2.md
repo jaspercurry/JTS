@@ -612,9 +612,12 @@ the module, not a second copy here.
     is one of the things it classifies.
 11. **Linearization emission is independently re-validated at every boundary,
     never trust-the-caller.** The emitter and the runtime-safety verifier each
-    re-prove biquad type ∈ {Peaking, Highshelf, Lowshelf}, non-positive gain,
-    and the shelf-placement structure from scratch — the fit engine's own
-    cut-only invariant is not assumed to have survived a JSON round-trip. The
+    re-prove biquad type ∈ {Peaking, Highshelf, Lowshelf}, gain at or under
+    `MAX_LINEARIZATION_BOOST_DB`, and the shelf-placement structure from
+    scratch — the fit engine's own vocabulary and per-filter-cap invariants are
+    not assumed to have survived a JSON round-trip. (This bullet said
+    "non-positive gain" and "cut-only invariant" until #2603's sweep; PR-L5's
+    boost ruling had already moved both re-proofs to the cap.) The
     safety-posture rationale is owned by
     [`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md).
 12. **A submitted graph is proven live before anything plays.**
@@ -888,12 +891,23 @@ the whole 0.0003; the 4-dp rounding is incidental, and in fact moved the figure
 0.00005 *toward* the true value. The margin is deterministic (filter math over
 declared numbers, not a measurement) but it is thin, and the DECLARATION
 spends it: a household declaring a hard floor more than ~0.39 octave under its
-protection corner gets a hard MEASURE stop. The corner is not free to follow
-the floor down — it is a code-owned class default
+protection corner gets a hard MEASURE stop. The corner now follows the
+DECLARED low limit rather than a fixed class default: since the 2026-08-17
+ruling (#2603), the code-owned class default
 (`driver_protection._STYLE_HIGH_PASS_HZ`, 2000 Hz for a compression driver)
-enforced as a minimum by `driver_safety._target_issues`, and `code_owned_policy`
-is fingerprint-checked, so lowering it un-confirms every stored profile of that
-style. Open question tracked on #1654.
+is no longer enforced as a minimum by `driver_safety._target_issues` — a
+published manufacturer figure wins outright, including below the table's own
+number. The table keeps three jobs: the default answer when nothing is
+published; the plausibility anchor that catches a garbage declaration; and a
+**commissioning-tone gate** — `driver_protection._highpass_satisfied` compares
+the staged high-pass against that same `min_highpass_hz` to set
+`band_limit_highpass_ok`, so lowering the table moves an *audible-test* gate,
+not only a confirmation one. On top of those,
+`code_owned_policy` is still fingerprint-checked against it, so lowering the
+table's own number still un-confirms every stored profile of that style.
+Consequence: #1654's compression-driver instance no longer needs the table
+lowered at all — the operator declares B&C's published 1.6 kHz instead, and
+the corner follows it — but the general #1654 question stays open.
 
 **Outside those bins** the same exact ratio still applies, magnitude-saturated
 at the policy's own +12 dB ceiling — provably inactive where the policy binds,

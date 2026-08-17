@@ -94,16 +94,21 @@ def _driver_research(
     tweeter_floor_hz: float | None = None,
     woofer_floor_hz: float | None = None,
 ) -> dict[str, Any]:
+    # #2603: the declared floor has ONE owner now. This fixture used to state
+    # it twice -- a recommended_highpass_hz of 1500 alongside a separately
+    # typed required_protection_filters cutoff -- which is the exact shape the
+    # 2026-08-17 ruling collapsed. The floor is now declared once, as the
+    # driver's minimum recommended crossover, and the protective high-pass
+    # DERIVES from it. "Undeclared" means the owner is genuinely absent, which
+    # is what keeps the never-nanny cases below honest.
     tweeter: dict[str, Any] = {
         "role": "tweeter",
         "manufacturer": "Eminence",
         "model": "F110M-8",
-        "recommended_highpass_hz": 1500,
-        "do_not_test_below_hz": 1200,
         "sources": ["https://example.test/tweeter"],
     }
     if tweeter_floor_hz is not None:
-        tweeter["required_protection_filters"] = _highpass_filters(tweeter_floor_hz)
+        tweeter["recommended_highpass_hz"] = tweeter_floor_hz
     woofer: dict[str, Any] = {
         "role": "woofer",
         "manufacturer": "Dayton Audio",
@@ -113,7 +118,7 @@ def _driver_research(
         "sources": ["https://example.test/woofer"],
     }
     if woofer_floor_hz is not None:
-        woofer["required_protection_filters"] = _highpass_filters(woofer_floor_hz)
+        woofer["recommended_highpass_hz"] = woofer_floor_hz
     return {
         "artifact_schema_version": 1,
         "kind": DRIVER_RESEARCH_KIND,

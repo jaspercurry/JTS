@@ -791,6 +791,10 @@ plumbing/tests/wizard copy. The bass session's lane
   authorized by this plan**; taking it requires an explicit owner
   amendment plus its own headroom/safety design. The stacked-shelf
   branch stays inside the cut-domain contract.
+  (*Superseded 2026-07-27:* the owner amendment this paragraph asks for was
+  given — decision 4 now permits a bounded positive gain, and the layer doc
+  owns its current wording. Read this note as the 2026-07-25 record of what
+  the plan itself authorized.)
 - **S4 — Generalization.** Loop core stays role-count-blind (consumes
   topology roles); 3-way lands with #1703's conductor; passive/1-way =
   one full-range role through the same loop.

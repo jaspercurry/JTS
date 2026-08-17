@@ -1856,12 +1856,30 @@ def prepare_summed_excitation(
         raise CommissioningRuntimeError("driver safety profile targets are stale")
     typed_targets = cast(list[Mapping[str, Any]], targets)
     try:
+        # ``measurement_band_hz[0]`` is the whole low edge here; this used to
+        # ALSO take a max over ``hard_excitation_band_hz[0]``, which restated a
+        # rule this module does not own and could never bind.
+        #
+        # The short argument, and it needs nothing from #2603: every confirmed
+        # profile satisfies ``_band_subset(measurement, hard)``, because
+        # ``driver_safety._target_issues`` raises
+        # ``<role>:measurement_band_outside_hard_band`` otherwise and
+        # ``evaluate_driver_safety_profile`` turns any derived issue into a
+        # NOT-confirmed verdict -- which the ``confirmed_and_current`` gate
+        # above already refused. Subset means ``measurement[0] >= hard[0]``, so
+        # the ``hard[0]`` term was dominated on every reachable input.
+        #
+        # #2603 adds a second, independent guarantee for the same inequality:
+        # ``apply_driver_low_limit`` stamps ``hard[0]`` at the declared low
+        # limit and ``measurement[0]`` at ``max(published response floor, that
+        # limit)``.
+        #
+        # ``excitation_safety_plan.resolve_driver_excitation_ceilings`` keeps its
+        # own ``hard[0]`` term and is not wrong to: on its proven-HP
+        # high-frequency branch it EXCLUDES ``measurement[0]``, so there
+        # ``hard[0]`` is the binding edge. The summed path has no such branch.
         lower_hz = max(
             MIN_DRIVER_TEST_FREQUENCY_HZ,
-            *(float(target["hard_excitation_band_hz"][0]) for target in typed_targets),
-        )
-        lower_hz = max(
-            lower_hz,
             *(float(target["measurement_band_hz"][0]) for target in typed_targets),
         )
         upper_hz = min(

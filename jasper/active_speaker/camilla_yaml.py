@@ -1302,7 +1302,9 @@ def _validated_linearization(
     role's filter list is validated field-by-field and RAISES
     ``ActiveSpeakerConfigError`` on the first violation (never silently
     dropped or clamped -- a hardware-bound safety invariant, matching the
-    fit engine's own explicit-raise cut-only invariant).
+    fit engine's own explicit-raise per-filter-boost-cap invariant). Pinned by
+    tests/test_active_speaker_linearization_emission.py::test_linearization_rejects_boost_above_the_per_filter_cap
+    and ::test_linearization_boost_is_accepted_and_absorbed_by_baseline_headroom.
     """
 
     safe: dict[str, list[dict[str, Any]]] = {}
@@ -3364,9 +3366,11 @@ def emit_active_speaker_baseline_config(
     non-empty (a flat profile can't clip from EQ and plays at unity), so the
     default keeps the no-EQ baseline byte-identical.
 
-    ``linearization`` (Layer 1a, #1668 PR-D) is the per-driver cut-only
-    EQ/shelf stage the driver-linearization fit engine
-    (``jasper.active_speaker.linearization_fit``) designs — the REDUCED shape
+    ``linearization`` (Layer 1a, #1668 PR-D) is the per-driver EQ/shelf stage
+    the driver-linearization fit engine
+    (``jasper.active_speaker.linearization_fit``) designs — cut-preferred but
+    NOT cut-only since PR-L5: a positive ``gain`` is legal here, bounded by
+    the per-filter cap re-proved below — the REDUCED shape
     ``{role: [{biquad_type, freq, q, gain}, ...]}``, produced from a
     ``LinearizationFit``/candidate by
     ``linearization_fit.linearization_filters_by_role``. Each role's filters
@@ -3374,11 +3378,15 @@ def emit_active_speaker_baseline_config(
     bass-extension (mirrors the bass-extension addon's own slot exactly), via
     the shared ``emit_filter_spec`` primitive. Independently re-validated here
     (``_validated_linearization``): ``biquad_type`` in {Peaking, Highshelf,
-    Lowshelf}, finite positive ``freq``/``q``, non-positive ``gain``, plus the
+    Lowshelf}, finite positive ``freq``/``q``, ``gain`` capped at
+    ``MAX_LINEARIZATION_BOOST_DB``, plus the
     fail-closed shelf-placement structure (one leading shelf, one optional
     trailing Highshelf taper after a Lowshelf lead — #1668) — a hardware-bound
     safety invariant re-proved at the emitter boundary, not assumed from the
     caller. The empty default keeps every existing caller byte-identical.
+    Pinned by
+    tests/test_active_speaker_linearization_emission.py::test_linearization_rejects_boost_above_the_per_filter_cap
+    and ::test_linearization_boost_is_accepted_and_absorbed_by_baseline_headroom.
     """
 
     preset.validate()
