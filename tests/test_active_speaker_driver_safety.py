@@ -936,6 +936,59 @@ def test_a_profile_whose_derived_fields_left_its_own_low_limit_is_named() -> Non
     assert evaluation.confirmed_and_current is False
 
 
+def test_a_typed_protection_value_the_derivation_replaced_is_disclosed() -> None:
+    """"Derived" alone hid the case that costs the operator something.
+
+    /sound/ renders an editable high-pass cutoff and slope, and the projection
+    overwrites both from the declared low limit. A household that deliberately
+    typed a STRICTER number was told only that the field was derived — never
+    that their own entry had been superseded, or by what. The unknowns are what
+    the confirm gate shows before anything is frozen, so that is where the
+    replacement has to be named.
+    """
+
+    topology = mono_output_topology(card_id=None)
+    manual = deepcopy(_manual_settings())
+    tweeter = manual["drivers"][1]
+    tweeter["recommended_highpass_hz"] = 5000.0
+    # Typed TIGHTER than the declaration on both fields.
+    for entry in tweeter["required_protection_filters"]:
+        if entry.get("kind") == "highpass":
+            entry["cutoff_hz"] = 6500.0
+            entry["minimum_slope_db_per_octave"] = 48.0
+
+    profile = build_driver_safety_profile(
+        topology, manual_settings=manual, driver_research=None
+    )
+    unknowns = profile["targets"][1]["unknowns"]
+
+    assert any(
+        "the typed high-pass cutoff 6500 was replaced by the derived 5000" in note
+        for note in unknowns
+    ), unknowns
+    assert any(
+        "the typed high-pass slope 48 was replaced by the derived 24" in note
+        for note in unknowns
+    ), unknowns
+
+
+def test_an_untouched_typed_high_pass_discloses_no_replacement() -> None:
+    """The control: the disclosure is a signal, not a line on every save.
+
+    A declaration whose typed high-pass already equals its derivation — the
+    ordinary case, including every profile whose low limit was INFERRED from
+    that same filter — must not claim anything was replaced.
+    """
+
+    topology = mono_output_topology(card_id=None)
+    profile = build_driver_safety_profile(
+        topology, manual_settings=_manual_settings(), driver_research=None
+    )
+
+    for target in profile["targets"]:
+        assert not [n for n in target["unknowns"] if "was replaced by" in n]
+
+
 def test_a_stale_profile_whose_rebuild_would_refuse_says_so_in_its_reasons() -> None:
     """jts3's own shape, minimised: stale AND unconfirmable in one step.
 

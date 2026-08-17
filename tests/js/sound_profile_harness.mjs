@@ -1274,6 +1274,25 @@ async function testComponentFirstResearchFlowIsOrderedAndAdvancedIsFlat() {
       !html.includes('value="compression_horn" selected')) {
     fail("a conditional component edit should not collapse the open Advanced editor", { html });
   }
+
+  // #2603 decision 8: the low limit is entered ONCE, and this is the input it
+  // is entered in. Without it the operator's only routes were pasting research
+  // or typing the high-pass cutoff — which the derivation overwrites, so a
+  // deliberate edit could vanish with nowhere to express it. jts3's own remedy
+  // is typing B&C's published 1600 here.
+  if (!html.includes('data-manual-field="recommended_highpass_hz"') ||
+      !html.includes('data-manual-field="recommended_highpass_slope_db_per_octave"')) {
+    fail("the low limit's owner must be editable, not only pasteable", { html });
+  }
+  // …and the fields it derives say so, rather than inviting an edit that the
+  // next save silently replaces.
+  if (!html.includes("Required high-pass cutoff (derived)")) {
+    fail("a derived protection field must be labelled derived", { html });
+  }
+  // Typing is deliberately not a repaint here (only driver_class/pad_kind
+  // re-render), so the round trip is asserted where it is observable: the
+  // field reaches the same payload the echo-back contract already requires it
+  // to render back, pinned in tests/test_sound_profile_echo_back_contract.py.
   return { componentFirstResearchFlowIsOrderedAndAdvancedIsFlat: true };
 }
 

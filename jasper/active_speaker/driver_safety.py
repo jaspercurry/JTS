@@ -1982,6 +1982,24 @@ def _profile_core(
                 if low_limit is not None
                 else f"{field}: derived from the declared driver low limit"
             )
+            # "Derived" alone hides the case that actually costs an operator
+            # something: a value they TYPED, replaced. /sound/ still renders an
+            # editable high-pass cutoff and slope, and the derivation overwrites
+            # both -- so a household that deliberately entered a stricter
+            # number was told only that the field was derived, never that their
+            # own entry had been superseded and by what. Naming it is what
+            # makes the replacement reviewable at the confirm gate, where every
+            # unknown is shown before anything is frozen.
+            replaced = _superseded_typed_highpass(visible, derived) if (
+                field == "required_protection_filters"
+            ) else ()
+            for was, now, what in replaced:
+                supersede_note = (
+                    f"{field}: the typed high-pass {what} {was:g} was replaced "
+                    f"by the derived {now:g}"
+                )
+                if supersede_note not in unknowns:
+                    unknowns.append(supersede_note)
             if derived_note not in unknowns:
                 unknowns.append(derived_note)
         entry: dict[str, Any] = {
@@ -2489,6 +2507,51 @@ def _validate_driver_safety_profile_shape(profile: Mapping[str, Any]) -> None:
                 required=True,
                 max_chars=max_chars,
             )
+
+
+def _superseded_typed_highpass(
+    visible: Mapping[str, Any],
+    derived: Mapping[str, Any],
+) -> tuple[tuple[float, float, str], ...]:
+    """``(typed, derived, what)`` for each high-pass value the projection replaced.
+
+    Only reports a value that actually MOVED. A declaration whose typed
+    high-pass already equals its derivation -- the ordinary case, including
+    every profile whose low limit was inferred from that same filter -- reports
+    nothing, so the disclosure stays a signal rather than a line on every save.
+    """
+
+    def highpass(source: Mapping[str, Any]) -> Mapping[str, Any] | None:
+        entries = source.get("required_protection_filters")
+        if not isinstance(entries, list):
+            return None
+        for item in entries:
+            if not isinstance(item, Mapping):
+                continue
+            if str(item.get("kind") or "").strip().lower() == "highpass":
+                return item
+        return None
+
+    def number(value: Any) -> float | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value) if math.isfinite(float(value)) else None
+
+    typed = highpass(visible)
+    now = highpass(derived)
+    if typed is None or now is None:
+        return ()
+    out: list[tuple[float, float, str]] = []
+    for key, what in (
+        ("cutoff_hz", "cutoff"),
+        ("minimum_slope_db_per_octave", "slope"),
+    ):
+        was_value = number(typed.get(key))
+        now_value = number(now.get(key))
+        if was_value is None or now_value is None or was_value == now_value:
+            continue
+        out.append((was_value, now_value, what))
+    return tuple(out)
 
 
 def _stale_low_limit_rebuild_issues(profile: Mapping[str, Any]) -> tuple[str, ...]:

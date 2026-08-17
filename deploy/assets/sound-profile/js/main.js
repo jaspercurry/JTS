@@ -2641,8 +2641,16 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       'high-pass cutoff sits outside its hard excitation band',
     lowpass_cutoff_outside_hard_band:
       'low-pass cutoff sits outside its hard excitation band',
+    // The band this refusal is measured against is anchored on the driver's
+    // declared type, and an UNDECLARED type is anchored on the cautious
+    // unknown-tweeter default — which is how a genuinely published 800 Hz on a
+    // large-format horn gets refused on a box whose type nobody set. The copy
+    // therefore names the declaration as the first thing to check, rather than
+    // asserting a "driver type" the household may never have chosen.
     low_limit_implausible_for_style:
-      'the minimum crossover frequency is not believable for that driver type',
+      'the minimum crossover frequency is not believable for its driver type ' +
+      '(check the tweeter type above is set — an undeclared type is judged ' +
+      'against a cautious default)',
     max_effective_peak_above_code_policy:
       'level ceiling is louder than what JTS allows for that driver'
   };
@@ -2853,16 +2861,25 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     return '<section class="driver-research__advanced-group">' +
       '<div><h5 class="setting-row__title">Protection and measurement limits</h5>' +
       '<p class="setting-row__hint">Hard limits are never-test-beyond edges. Measurement and crossover-search ranges must sit inside them. Filter cutoff and slope are separate because a crossover still passes some energy beyond its cutoff.</p>' +
+      '<p class="setting-row__hint">Minimum crossover is the one number to enter for a driver’s bottom end — the figure its datasheet publishes. The required high-pass, the never-test-below edge and the measure-from edge are all derived from it, so a value you type into those is replaced on the next save.</p>' +
       '</div>' +
       '<div class="driver-research__fields">' +
+        // #2603 decision 8: the driver's low limit is entered ONCE, here, as
+        // the manufacturer's minimum recommended crossover. Until this input
+        // existed the operator's only routes were pasting research or typing
+        // the high-pass cutoff below — which the derivation then overwrote,
+        // so a deliberate edit could vanish with no way to express it. It
+        // leads the panel because everything under it derives from it.
+        driverSafetyNumberField(targetId, setting, 'recommended_highpass_hz', 'Minimum crossover (datasheet)', {min: 1, placeholder: 'Hz'}) +
+        driverSafetyNumberField(targetId, setting, 'recommended_highpass_slope_db_per_octave', 'Slope the datasheet states', {min: 1, max: 96, step: 6, placeholder: 'dB/oct'}) +
         driverSafetyNumberField(targetId, setting, 'hard_excitation_min_hz', 'Never test below', {min: 1, placeholder: 'Hz'}) +
         driverSafetyNumberField(targetId, setting, 'hard_excitation_max_hz', 'Never test above', {min: 1, placeholder: 'Hz'}) +
         driverSafetyNumberField(targetId, setting, 'measurement_min_hz', 'Measure from', {min: 1, placeholder: 'Hz'}) +
         driverSafetyNumberField(targetId, setting, 'measurement_max_hz', 'Measure through', {min: 1, placeholder: 'Hz'}) +
         driverSafetyNumberField(targetId, setting, 'crossover_search_min_hz', 'Try crossovers from', {min: 1, placeholder: 'Hz'}) +
         driverSafetyNumberField(targetId, setting, 'crossover_search_max_hz', 'Try crossovers through', {min: 1, placeholder: 'Hz'}) +
-        driverSafetyNumberField(targetId, setting, 'required_highpass_cutoff_hz', 'Required high-pass cutoff', {min: 1, placeholder: 'Hz'}) +
-        driverSafetyNumberField(targetId, setting, 'required_highpass_min_slope_db_per_octave', 'Minimum high-pass slope', {min: 1, max: 96, step: 6, placeholder: 'dB/oct'}) +
+        driverSafetyNumberField(targetId, setting, 'required_highpass_cutoff_hz', 'Required high-pass cutoff (derived)', {min: 1, placeholder: 'Hz'}) +
+        driverSafetyNumberField(targetId, setting, 'required_highpass_min_slope_db_per_octave', 'Minimum high-pass slope (derived)', {min: 1, max: 96, step: 6, placeholder: 'dB/oct'}) +
         '<label class="driver-research__field"><span>High-pass family / equivalent</span>' +
           '<input type="text" data-manual-driver="' + escapeHtml(targetId) + '" data-manual-field="required_highpass_family_or_equivalent" value="' + escapeHtml(setting.required_highpass_family_or_equivalent || '') + '" placeholder="equivalent or steeper"></label>' +
         driverSafetyNumberField(targetId, setting, 'required_lowpass_cutoff_hz', 'Required low-pass cutoff', {min: 1, placeholder: 'Hz'}) +
