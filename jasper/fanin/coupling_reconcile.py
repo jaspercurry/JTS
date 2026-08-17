@@ -4400,11 +4400,17 @@ def _disarm(
 # ``reconcile_coupling`` only when the pass OWNS the box; on an OPERATOR-FROZEN
 # box (``JASPER_FANIN_COUPLING_CHOICE=operator``) it preserves the choice and
 # synthesises a confirm result WITHOUT running one, so no deploy clears the
-# record there. That is not a corner case: arming the ACTIVE ring is
-# explicit-CLI-only and stamps that very marker, so every active-ring box is
-# operator-frozen by construction. On such a box the record is cleared by the
-# operator's own next `jasper-fanin-coupling-reconcile <coupling>` — or it ages
-# out of the 24 h window.
+# record there. That is not a corner case: an OPERATOR arm of the ACTIVE ring
+# stamps that very marker, so an operator-armed active-ring box is frozen by
+# construction. On such a box the record is cleared by the operator's own next
+# `jasper-fanin-coupling-reconcile <coupling>` — or it ages out of the 24 h
+# window.
+#
+# SINCE P6 that no longer covers EVERY active-ring box, and the difference is
+# this record's, not a corner of it. A roleful box the unattended pass converged
+# itself (``ring_roleful_unattended_ready``'s two proven arms) carries no
+# operator marker and stays AUTO-OWNED, so a deploy does reach a transition
+# there and clears the record exactly as it does on any auto-owned box.
 RING_CONFIRM_STRIKE_STATE = "/var/lib/jasper/ring-confirm-strikes.json"
 RING_CONFIRM_STRIKE_LIMIT = 2
 RING_CONFIRM_STRIKE_WINDOW_SEC = 24 * 3600

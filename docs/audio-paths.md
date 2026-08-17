@@ -76,10 +76,13 @@ outputd consumes `/dev/shm/jts-ring/content.ring` one DAC-sized slot at a
 time. A roleful (active-crossover) box has a ring of its own — the ACTIVE
 ring, `jts_ring_active_playback` → `/dev/shm/jts-ring/active-content.ring`
 — carrying POST-crossover per-driver channels rather than a full-range
-stereo program. It is never armed by the unattended default pass: arming
-it is an explicit `jasper-fanin-coupling-reconcile shm_ring`, and outputd
-admits it only when the hardware reconciler's
-`JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT` marker says so. The role rides the
+stereo program. Reaching it the first time is an explicit
+`jasper-fanin-coupling-reconcile shm_ring`; since P6 the unattended pass
+also converges a roleful box that ALREADY carries a proven graph — a
+hardware-fingerprint-matched applied baseline, or the all-muted staged
+anchor (`ring_roleful_unattended_ready`) — and refuses, fail-closed, one
+that carries neither. Either way outputd admits it only when the hardware
+reconciler's `JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT` marker says so. The role rides the
 device NAME because it cannot ride the width: on a 2-way speaker both
 rings are 2 channels. The legacy `direct` content capture lane remains
 the fail-safe path for ring-ineligible topologies, operator-frozen boxes,

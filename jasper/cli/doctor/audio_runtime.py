@@ -2625,9 +2625,12 @@ def check_ring_conf_floor_render() -> CheckResult:
     axis.
 
     THE FLOOR IS NOT THE ONLY REASON, and R7b changed what this check can say
-    about the other one. A ROLEFUL (active-crossover) box is never armed by the
-    unattended default pass however good its floor is: its ring is the ACTIVE
-    ring, and that is explicit-arm-only. So on a roleful box a green period line
+    about the other one. A ROLEFUL (active-crossover) box does not ring on the
+    strength of its floor however good it is: its ring is the ACTIVE ring, which
+    the unattended pass arms only for a box already carrying a proven graph
+    (``ring_roleful_unattended_ready``'s two arms — a hardware-fingerprint-matched
+    applied baseline, or the all-muted anchor) and refuses otherwise. So on a
+    roleful box a green period line
     means "the conf.d is ready", NOT "this box will ring" — and saying only the
     former is how an operator concludes the arm is broken when nothing is. Every
     OK branch below therefore carries the rolefulness sentence when it applies,

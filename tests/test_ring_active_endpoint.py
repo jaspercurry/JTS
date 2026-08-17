@@ -1592,7 +1592,9 @@ def test_the_floor_render_ok_names_the_roleful_reason_a_box_cannot_ring(monkeypa
 
     The check reads the DAC floor against the conf.d. On any box whose DAC
     declares a matching floor that pair reads green — and a ROLEFUL box still
-    does not ring, because the active ring is explicit-arm-only. Reporting only
+    may not ring, because the unattended pass arms the active ring only for a
+    box already carrying a proven graph (``ring_roleful_unattended_ready``).
+    Reporting only
     "period_frames matches" there answers a question nobody asked and leaves the
     real one ("why is this box on loopback?") unanswered, which is the same
     defect #2294 fixed for the floor half.

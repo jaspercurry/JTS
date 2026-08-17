@@ -289,7 +289,8 @@ def test_an_unreadable_topology_fails_soft_to_not_roleful(monkeypatch, tmp_path,
     rolefulness reads the fail-CLOSED loaders instead. So its ``except`` arm must
     return False: a box whose topology cannot be read must keep the generic
     wording rather than be told, on no evidence, that it is an active-crossover
-    box whose ring is explicit-arm-only. Failing soft to True would print a
+    box whose ring needs a proven graph before it can be armed. Failing soft to
+    True would print a
     remediation ladder at every box with a torn topology file.
 
     Asserted at BOTH surfaces — the helper's own answer and the detail string it
