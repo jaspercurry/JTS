@@ -330,7 +330,7 @@ def assess_accountability(
     #
     # **It banks and proceeds. It never refuses** — the owner's
     # never-nanny ruling (2026-08-17, #2609): a subordinate estimate that
-    # disagrees with the owner flags the CAPTURE as retriable; it does not
+    # disagrees with the other one flags the CAPTURE as retriable; it does not
     # discard the datum and does not stop the session. There is nothing
     # left for it to refuse on, either: the disagreement no longer changes
     # any committed number, because the raw measured trim owns the placement
