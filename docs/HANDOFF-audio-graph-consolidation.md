@@ -1683,6 +1683,22 @@ was still owner-gated and unarmed, contradicting the Fleet row — all three
 corrected. **No box was probed in this pass**; every hardware fact here is
 carried from a dated reading already in this file.
 
+**2026-08-17 (the #2344 armed-box restriction, lifted on §8.7's evidence):**
+re-verified only the #2344 restriction and its two statement sites — the
+primary prose above the R-ladder tables, and the issue-ledger row — each
+against the source rather than against this file. The hardware claim was read
+from [#2412's closing
+comment](https://github.com/jaspercurry/JTS/issues/2412#issuecomment-5318721559),
+the durable source, because the capture it cites is laptop-side and
+gitignored; #2344's still-OPEN state from `gh`; and PR #2363's merge from
+`git merge-base --is-ancestor a6e6ae9c2 d10924a9f` (exit 0), which is what
+falsified both sites' "not merged". Rewritten: the restriction now reads
+lifted for the **commissioning** half and outstanding for the **measurement**
+half, so #2344's own closure condition survives the lift. **No box was probed
+in this pass** — it records the §8.7 pass of the same date, run on jts.local
+elsewhere, rather than claiming a new one. Nothing else in this file was
+re-read.
+
 Everything else — both appendices, the egress and source-half facts, the wire
 resolution, the P6/P7 arcs beyond the one verdict named above, and the
 non-endpoint mechanics of the arm ladder's steps — was not re-read and stands
