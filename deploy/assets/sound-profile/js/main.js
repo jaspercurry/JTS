@@ -3263,11 +3263,24 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         read: function(setting) { return echoBandText(setting, 'hard_excitation'); }
       },
       {
-        key: 'do_not_test_below_hz',
-        label: 'Never test below',
+        // #2603: this row used to echo do_not_test_below_hz, which is retired.
+        // What replaced it is the low limit's OWNER -- the manufacturer's
+        // minimum recommended crossover frequency -- and the slope condition
+        // the manufacturer attaches to it. Both render, because the operator
+        // entered both and a half-echoed declaration is exactly the round-trip
+        // gap this panel exists to close. The commissioning margin JTS derives
+        // from them is deliberately NOT shown: the panel echoes what the reply
+        // said, never what the server computed on top of it.
+        key: 'recommended_highpass_hz',
+        label: 'Minimum crossover',
         read: function(setting) {
-          var value = manualNumberValue(setting.do_not_test_below_hz);
-          return value == null ? '' : fmtFreq(value);
+          var value = manualNumberValue(setting.recommended_highpass_hz);
+          if (value == null) return '';
+          var slope = manualNumberValue(
+            setting.recommended_highpass_slope_db_per_octave
+          );
+          return fmtFreq(value) +
+            (slope == null ? '' : ', ' + slope + ' dB/oct or steeper');
         }
       },
       {

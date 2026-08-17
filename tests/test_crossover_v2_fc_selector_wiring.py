@@ -870,7 +870,12 @@ def test_the_sweep_retains_no_analysis_sized_object():
     assert c._fc_evaluations
     planned = c._fc_candidate_set().candidates
     assert tuple(e.fc_hz for e in c._fc_evaluations) == planned
-    assert len(planned) == len(set(planned)) == 6
+    # Five since #2603, not six: this shape's configured corner sits exactly on
+    # its declared floor, which the exact-is-legal grid now proposes, so the
+    # duplicate collapses. The distinctness half is what this line is really
+    # for — a sweep that evaluated the same corner twice would still be a real
+    # sweep, and would still hide a hoarded ProgramAnalysis behind a repeat.
+    assert len(planned) == len(set(planned)) == 5
     assert all(e.refusal != EVAL_REFUSED_BUDGET for e in c._fc_evaluations)
     grid = flow.lateral_evidence_grid_hz()
     for evaluation in c._fc_evaluations:
@@ -1341,8 +1346,20 @@ def test_an_alternative_winner_publishes_its_exact_candidate_and_preset():
 #: ``declaration shape -> (bands, ordered candidates, declared limits)``.
 #: Both jts3 shapes from the R17 STOP: the LIVE tweeter declaration whose search
 #: band starts AT the configured corner (so the intersection admits nothing), and
-#: the WIDENED one that opens five alternatives — including 1648.7 Hz, the corner
-#: the 2026-08-10 incident actually selected.
+#: the WIDENED one that opens the downward set.
+#:
+#: Re-baselined by #2603's exact-is-legal ruling, which moved the proposal grid
+#: from strictly-interior to half-open ``[floor, ceiling)``. Two visible
+#: consequences, both deliberate:
+#:
+#: * the widened set is FIVE entries, not six — its floor point coincides with
+#:   the configured 1600 Hz corner, which is always evaluated first, so the
+#:   duplicate collapses (pinned directly in
+#:   ``test_fc_selector.test_a_configured_corner_sitting_on_the_declared_floor_is_not_duplicated``);
+#: * 1648.7 Hz — the corner the 2026-08-10 incident actually selected — is no
+#:   longer ON the grid; the nearest proposal is 1658.6 Hz. It remains a LEGAL
+#:   corner (at or above the declared floor); this grid proposes where to look,
+#:   it does not bound what may be configured.
 SWEEP_GOLDEN = {
     "live_no_alternative": (
         LIVE_BANDS,
@@ -1357,7 +1374,7 @@ SWEEP_GOLDEN = {
     ),
     "widened": (
         WIDENED_BANDS,
-        [1600.0, 1648.7, 1698.9, 1750.6, 1803.9, 1858.8],
+        [1600.0, 1658.6, 1719.4, 1782.4, 1847.7],
         {
             "beaming_ceiling_hz": 1915.443701,
             "declared_floor_hz": 300.0,
