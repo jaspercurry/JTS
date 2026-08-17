@@ -7722,6 +7722,21 @@ async function testStaleLowLimitWithABlockerExplainsAndOffersNoConfirm() {
       callout,
     });
   }
+  // There are TWO confirm buttons: the hoisted callout's and the Advanced
+  // editor's own save row. Gating only the first left the dead click one
+  // disclosure away — in the very panel the operator is in while fixing the
+  // values that make the rebuild refuse. The Advanced one stays rendered and
+  // goes `disabled`, so the row does not appear to lose an action.
+  const advancedButtonAt = html.lastIndexOf('data-act="confirm-driver-safety"');
+  if (advancedButtonAt < 0) {
+    fail("the Advanced editor should still render its confirm control", { html });
+  }
+  const advancedButton = html.slice(advancedButtonAt, advancedButtonAt + 160);
+  if (!advancedButton.includes("disabled")) {
+    fail("the Advanced confirm button must be disabled when a rebuild refuses", {
+      advancedButton,
+    });
+  }
   return { staleLowLimitWithABlockerExplainsAndOffersNoConfirm: true };
 }
 

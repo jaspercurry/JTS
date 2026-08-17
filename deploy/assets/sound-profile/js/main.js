@@ -3666,8 +3666,18 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           '</section>' +
           '<section class="driver-research__advanced-section driver-research__advanced-section--actions">' +
             '<div class="driver-research__actions driver-research__actions--save">' +
+              // Same gate as the hoisted callout's button. This one was
+              // reachable whenever Advanced was open, whatever the evaluation
+              // said, so the dead click the callout carefully withheld was
+              // still one disclosure away — and this is the panel the operator
+              // is IN while fixing the very values that make a rebuild refuse.
+              // `disabled` rather than absent: the button belongs to the
+              // Advanced editor's own save row, and removing it there would
+              // read as the row losing an action rather than the action being
+              // unavailable.
               '<button type="button" class="btn btn--ghost" data-act="confirm-driver-safety"' +
-                (saveDisabled ? ' disabled' : '') + '>' +
+                (saveDisabled || !driverSafetyConfirmState(topology).canConfirm
+                  ? ' disabled' : '') + '>' +
                 escapeHtml(driverResearch.saving ? 'Saving' : 'Confirm safety limits') +
               '</button>' +
             '</div>' +
