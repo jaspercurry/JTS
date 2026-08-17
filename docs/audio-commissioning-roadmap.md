@@ -177,23 +177,25 @@ literal 1 GB Pi is the unmeasured number, and it is the one to get. Decide
 the next stage-1 capture has zero retake headroom.
 
 **6. Sweep the boost path for stale cut-only claims, before the first
-hardware boost run.** Two known sites describe a cut-only world the code
-left behind at PR-L5: `LinearizationFilter.gain` in
-`jasper/active_speaker/linearization_fit.py` is annotated
+hardware boost run.** [Done — #2603.] Two known sites described a cut-only
+world the code left behind at PR-L5: `LinearizationFilter.gain` in
+`jasper/active_speaker/linearization_fit.py` was annotated
 `dB; always <= 0 (cut-only invariant)` on the field that carries boosts,
-and the emitter docstring in `jasper/active_speaker/camilla_yaml.py` calls
+and the emitter docstring in `jasper/active_speaker/camilla_yaml.py` called
 `linearization` "the per-driver cut-only EQ/shelf stage" requiring a
-"non-positive `gain`" while `_validated_linearization` accepts up to
-`MAX_LINEARIZATION_BOOST_DB` (12.0). **That enumeration is a hypothesis,
+"non-positive `gain`" while `_validated_linearization` accepted up to
+`MAX_LINEARIZATION_BOOST_DB` (12.0). **That enumeration was a hypothesis,
 not a bound** — a review of the first revision of this doc found a third
 cut-only sentence on the same path (`camilla_yaml.py`'s
 `_validated_linearization` docstring, citing "the fit engine's own
-explicit-raise cut-only invariant"). So the item is a mechanical sweep,
-not a hand list: run `bash scripts/tense-grep.sh` plus a grep for
-cut-only and non-positive-gain claims across the boost path, and fix what
-it returns.
+explicit-raise cut-only invariant"). `LinearizationFilter.gain`'s comment,
+the `_validated_linearization` docstring's cut-only-invariant phrase, and
+the emitter's "non-positive `gain`" clause were trued up; the emitter's
+"cut-only EQ/shelf stage" phrase was not, out of this pass's scope.
 
-**7. Collapse the driver low-limit to one declared owner (#2603).** Ruled
+**7. Collapse the driver low-limit to one declared owner (#2603).**
+[Code path delivered in this PR; jts3's own stored value has not been
+re-entered — that is owner/operator work, still outstanding.] Ruled
 2026-08-17 after the series-1 convergence run: a driver's bottom allowed
 frequency *is* the manufacturer's minimum recommended crossover frequency
 with its slope condition, entered once at component entry, and every

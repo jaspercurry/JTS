@@ -101,8 +101,10 @@ visibly.
    tolerance from validity floor to 16 kHz"). Envelope/report copy must
    never let one imply the other — that conflation is how this gap stayed
    invisible.
-4. **Safety posture unchanged:** per-driver correction gains stay
-   non-positive in the emitted graph; an HF shelf is emitted as attenuation
+4. **Safety posture unchanged:** per-driver linearization gains may be
+   positive, up to `MAX_LINEARIZATION_BOOST_DB` (12 dB) per filter —
+   refused rather than clamped above that cap, and absorbed by
+   `active_baseline_headroom` (PR-L5); an HF shelf is emitted as attenuation
    elsewhere + headroom accounting, never a positive ceiling raise; the
    two-invariant protection model and declared-sensitivity ceilings stand
    (#1665 adds pad/component declarations so effective sensitivities track
@@ -532,9 +534,9 @@ measuring. Three mechanisms, each evidenced, say why:
   that lift is the HF-continuation stage's, not a notch filler. A boost *did*
   realize — the woofer emitted a +2.38 to +2.68 dB Peaking filter in all four
   rounds — but at 422–434 Hz, more than two octaves below the dip. (That is a
-  positive gain in the emitted graph: decision 4 above still describes the
-  retired cut-only posture, and roadmap item 6 owns the sweep that trues those
-  claims up.) So with the tweeter's lift refused and the woofer's only
+  positive gain in the emitted graph: decision 4 above and the boost-path
+  prose were trued up by roadmap item 6's sweep, #2603.) So with the
+  tweeter's lift refused and the woofer's only
   realizable boost that far away, what was left near 1947 Hz were cuts —
   damped in the blind zone, per the bullet above — and the whole-driver scalar
   trim, which is the wrong shape for a notch.
@@ -739,3 +741,13 @@ instrument blindness · #2603 the driver low-limit's two declared values ·
 frame-coherence condition · #2662 the capture-source seam. Campaign-wide wave
 state lives in
 [`audio-commissioning-roadmap.md`](audio-commissioning-roadmap.md), not here.
+
+This pass (#2603) verified decisions 8–9 and the low-limit claims — including
+correcting decision 4's cut-only claim above — against the code in this
+change: `driver_protection.py`'s owner-ruling derivation, the B&C DE250
+published-figure fact, and the linearization boost cap in `camilla_yaml.py` /
+`linearization_fit.py`. Decisions 1–3, 5–7, and 10–13, the region-based
+adjustment contract, the prescriber seam, and the rest of the historical/
+appendix material were not re-verified in this pass.
+
+Last verified: 2026-08-17
