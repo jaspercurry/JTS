@@ -29,7 +29,10 @@ from .driver_protection import (
     DRIVER_PROTECTION_POLICY_VERSION,
     HF_MEASUREMENT_ABS_CEILING_DBFS,
     HIGH_FREQUENCY_ROLES,
+    apply_driver_low_limit,
+    driver_low_limit_plausible,
     driver_protection_profile,
+    resolve_driver_low_limit,
 )
 from .measurement import active_driver_targets, physical_driver_target
 from .test_signal_plan import MIN_DRIVER_TEST_FREQUENCY_HZ
@@ -73,6 +76,7 @@ _MANUAL_DRIVER_FIELDS = {
     "sensitivity_db_2v83_1m",
     "usable_frequency_range_hz",
     "recommended_highpass_hz",
+    "recommended_highpass_slope_db_per_octave",
     "recommended_lowpass_hz",
     "do_not_test_below_hz",
     "gain_offset_db",
@@ -112,6 +116,19 @@ _MANUAL_CANDIDATE_FIELDS = {
 
 class DriverSafetyProfileError(ValueError):
     """Raised when research or safety-profile input is malformed."""
+
+
+class DriverSafetyProfileStaleLowLimitError(DriverSafetyProfileError):
+    """A stored profile predates the one-owner low-limit collapse (#2603).
+
+    Its own bands and protective high-pass disagree about where the driver
+    stops, which is what the 2026-08-17 ruling exists to end. Split out from
+    the generic malformed case so the household is told the ACTIONABLE thing --
+    re-confirm the driver profile at /sound/ -- rather than "schema invalid",
+    which reads as corruption and suggests no remedy. Playback is unaffected:
+    the staged CamillaDSP graph is a separate artifact, so the speaker keeps
+    working while the profile waits to be re-confirmed.
+    """
 
 
 @dataclass(frozen=True)
@@ -678,6 +695,34 @@ def normalise_driver_safety_fields(
     if not isinstance(value, Mapping):
         raise DriverSafetyProfileError(f"{field_name} must be an object")
     out: dict[str, Any] = {}
+    # The OWNER of this driver's low limit (2026-08-17 ruling, #2603) is parsed
+    # here rather than alongside the advisory display fields, because that is
+    # what it is: a safety field, and the one every other low-limit field
+    # derives from. Parsing it at this shared point is what gives it a single
+    # parse site across the design draft, the research result, and the safety
+    # profile's own manual settings.
+    low_limit_hz = _positive_float(
+        value.get("recommended_highpass_hz"),
+        f"{field_name}.recommended_highpass_hz",
+    )
+    low_limit_slope = _positive_float(
+        value.get("recommended_highpass_slope_db_per_octave"),
+        f"{field_name}.recommended_highpass_slope_db_per_octave",
+    )
+    if low_limit_slope is not None:
+        if low_limit_hz is None:
+            raise DriverSafetyProfileError(
+                f"{field_name}.recommended_highpass_slope_db_per_octave has no "
+                "recommended_highpass_hz to condition"
+            )
+        if low_limit_slope > 96:
+            raise DriverSafetyProfileError(
+                f"{field_name}.recommended_highpass_slope_db_per_octave must be <= 96"
+            )
+    if low_limit_hz is not None:
+        out["recommended_highpass_hz"] = low_limit_hz
+    if low_limit_slope is not None:
+        out["recommended_highpass_slope_db_per_octave"] = low_limit_slope
     for key in (
         "hard_excitation_band_hz",
         "measurement_band_hz",
@@ -746,6 +791,7 @@ _V2_RESEARCH_DRIVER_FIELDS = {
     "sensitivity_db_2v83_1m",
     "usable_frequency_range_hz",
     "recommended_highpass_hz",
+    "recommended_highpass_slope_db_per_octave",
     "recommended_lowpass_hz",
     "do_not_test_below_hz",
     "hard_excitation_band_hz",
@@ -1793,20 +1839,26 @@ def _target_issues(target: Mapping[str, Any]) -> list[str]:
             cutoff = float(item["cutoff_hz"])
             if not hard[0] <= cutoff <= hard[1]:
                 reasons.append(f"{role}:{item.get('kind')}_cutoff_outside_hard_band")
-    if policy.min_highpass_hz is not None:
-        highpass = next(
-            (
-                item
-                for item in filters
-                if isinstance(item, Mapping) and item.get("kind") == "highpass"
-            ),
-            None,
-        )
-        if (
-            isinstance(highpass, Mapping)
-            and float(highpass["cutoff_hz"]) < policy.min_highpass_hz
-        ):
-            reasons.append(f"{role}:highpass_below_code_policy")
+    # The style table used to VETO here: a declared high-pass below the class
+    # default landed ``<role>:highpass_below_code_policy`` and the profile
+    # refused to confirm. The 2026-08-17 ruling (#2603) reversed that -- a
+    # sourced manufacturer figure wins outright, and B&C's published 1.6 kHz
+    # for the DE250 is exactly the number the 2 kHz class default was rejecting.
+    # What remains is a plausibility bound: a declared low limit wildly away
+    # from its style is garbage (a transposed digit, a woofer's number pasted
+    # into a tweeter row) rather than a datasheet, and refusing garbage IS the
+    # safety class. Within the band the declaration is believed.
+    low_limit = resolve_driver_low_limit(
+        target,
+        role=role,
+        driver_style=target.get("driver_style"),
+    )
+    if low_limit is not None and not driver_low_limit_plausible(
+        low_limit.frequency_hz,
+        role=role,
+        driver_style=target.get("driver_style"),
+    ):
+        reasons.append(f"{role}:low_limit_implausible_for_style")
     return reasons
 
 
@@ -1877,13 +1929,41 @@ def _profile_core(
                 unknown = f"{field}: operator override has no matching research source"
                 if unknown not in unknowns:
                     unknowns.append(unknown)
+        # One owner, every consumer derives (#2603). The stored target carries
+        # the PROJECTION of this driver's declared low limit, not four
+        # independently-typed numbers -- so the Fc sweep's floor, the
+        # linearization fit band, the protection posture, and the grading bands
+        # cannot disagree about where this driver stops.
+        style = driver_styles.get(target_id) or "unspecified"
+        derived = apply_driver_low_limit(visible, role=role, driver_style=style)
+        for field in ("hard_excitation_band_hz", "measurement_band_hz",
+                      "required_protection_filters"):
+            if _canonical_json(derived.get(field)) == _canonical_json(visible.get(field)):
+                continue
+            low_limit = resolve_driver_low_limit(visible, role=role, driver_style=style)
+            provenance[field] = {
+                "confidence": "unknown",
+                "basis": (
+                    "Derived from the declared minimum recommended crossover "
+                    "frequency; not an independently sourced value."
+                ),
+                "sources": [],
+            }
+            derived_note = (
+                f"{field}: derived from recommended_highpass_hz "
+                f"({low_limit.frequency_hz:g} Hz, {low_limit.provenance})"
+                if low_limit is not None
+                else f"{field}: derived from the declared driver low limit"
+            )
+            if derived_note not in unknowns:
+                unknowns.append(derived_note)
         entry: dict[str, Any] = {
             "target_id": target_id,
             "target_fingerprint": str(physical["target_fingerprint"]),
             "speaker_group_id": str(physical["speaker_group_id"]),
             "speaker_group_mode": str(physical["speaker_group_mode"]),
             "role": role,
-            "driver_style": driver_styles.get(target_id) or "unspecified",
+            "driver_style": style,
             "target_values_binding": (
                 "explicit_target"
                 if target_id in manual_by_target
@@ -1894,12 +1974,12 @@ def _profile_core(
             "physical_output_index": physical.get("output_index"),
             "model": visible.get("model"),
             "manufacturer": visible.get("manufacturer"),
-            "hard_excitation_band_hz": visible.get("hard_excitation_band_hz"),
-            "required_protection_filters": visible.get(
+            "hard_excitation_band_hz": derived.get("hard_excitation_band_hz"),
+            "required_protection_filters": derived.get(
                 "required_protection_filters", []
             ),
-            "measurement_band_hz": visible.get("measurement_band_hz"),
-            "crossover_search_band_hz": visible.get("crossover_search_band_hz"),
+            "measurement_band_hz": derived.get("measurement_band_hz"),
+            "crossover_search_band_hz": derived.get("crossover_search_band_hz"),
             "level_duration_limits": visible.get("level_duration_limits", {}),
             "cabinet": visible.get(
                 "cabinet",
@@ -2288,6 +2368,24 @@ def _validate_driver_safety_profile_shape(profile: Mapping[str, Any]) -> None:
             raise DriverSafetyProfileError(
                 f"{field_name} safety fields are not canonical"
             )
+        # ... and they must still be the PROJECTION of this target's own
+        # declared low limit (#2603). A stored profile whose bands and
+        # protective high-pass disagree about where the driver stops is exactly
+        # the drift this ruling collapsed; it is refused rather than read,
+        # because reading it would pick one of two answers silently.
+        rederived = apply_driver_low_limit(
+            normalised_safety,
+            role=target.get("role"),
+            driver_style=target.get("driver_style"),
+        )
+        rederived_safety = {
+            key: rederived[key] for key in safety_fields if key in rederived
+        }
+        if _canonical_json(raw_safety) != _canonical_json(rederived_safety):
+            raise DriverSafetyProfileStaleLowLimitError(
+                f"{field_name} safety fields no longer match this driver's "
+                "declared low limit; re-confirm the driver profile at /sound/"
+            )
         normalised_unknowns = _normalise_unknowns(
             target.get("unknowns"),
             f"{field_name}.unknowns",
@@ -2378,6 +2476,18 @@ def evaluate_driver_safety_profile(
         )
     try:
         _validate_driver_safety_profile_shape(profile)
+    except DriverSafetyProfileStaleLowLimitError:
+        # Named separately from the generic malformed case so /sound/ can say
+        # "re-confirm" instead of "corrupt". Still a RETURN, never a raise, so a
+        # box carrying a pre-#2603 split declaration reports and waits rather
+        # than crash-looping a daemon.
+        fingerprint = profile.get("profile_fingerprint")
+        return DriverSafetyProfileEvaluation(
+            "malformed",
+            False,
+            str(fingerprint) if isinstance(fingerprint, str) else None,
+            ("driver_safety_profile_low_limit_stale",),
+        )
     except DriverSafetyProfileError:
         fingerprint = profile.get("profile_fingerprint")
         return DriverSafetyProfileEvaluation(

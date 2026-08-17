@@ -2629,8 +2629,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       'high-pass cutoff sits outside its hard excitation band',
     lowpass_cutoff_outside_hard_band:
       'low-pass cutoff sits outside its hard excitation band',
-    highpass_below_code_policy:
-      'high-pass cutoff is below what JTS allows for that driver',
+    low_limit_implausible_for_style:
+      'the minimum crossover frequency is not believable for that driver type',
     max_effective_peak_above_code_policy:
       'level ceiling is louder than what JTS allows for that driver'
   };
