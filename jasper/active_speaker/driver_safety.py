@@ -30,6 +30,7 @@ from .driver_protection import (
     HF_MEASUREMENT_ABS_CEILING_DBFS,
     HIGH_FREQUENCY_ROLES,
     apply_driver_low_limit,
+    driver_low_limit_plausibility_band_hz,
     driver_low_limit_plausible,
     driver_protection_profile,
     resolve_driver_low_limit,
@@ -1252,7 +1253,7 @@ _PROMPT_TARGET_KEYS = (
 # remaining fields are advisory prefill an operator reviews anyway.
 _PROMPT_PROVENANCE_KEYS = (
     "hard_excitation_band_hz",
-    "do_not_test_below_hz",
+    "recommended_highpass_hz",
     "required_protection_filters",
     "level_duration_limits",
     "sensitivity_db_2v83_1m",
@@ -1342,10 +1343,14 @@ def _driver_research_prompt_limits(request: Mapping[str, Any]) -> list[str]:
             driver_style=target.get("driver_style"),
         )
         bounds: list[str] = []
-        if policy.min_highpass_hz is not None:
+        band = driver_low_limit_plausibility_band_hz(
+            str(target.get("role") or ""),
+            driver_style=target.get("driver_style"),
+        )
+        if band is not None:
             bounds.append(
-                "required high-pass cutoff_hz at or above "
-                f"{policy.min_highpass_hz:g}"
+                "recommended_highpass_hz between "
+                f"{band[0]:g} and {band[1]:g} if published, else null"
             )
         bounds.append(
             f"max_effective_peak_dbfs at or below {policy.max_auto_level_dbfs:g}"
@@ -1453,19 +1458,29 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
             "Use null only for a field with no engineering basis at all, and add one entry to that driver's unknowns saying which fact is missing.",
             "Never infer physical installation choices such as enclosure kind or horn or waveguide use. Treat operator_declared_context as authoritative; if an installation choice is undeclared, leave it unknown.",
             "For cabinet geometry, research radiator count, effective radiating diameter, and baffle width only when supported by evidence, while preserving any operator-declared enclosure choice.",
-            "For a tweeter or compression driver, do_not_test_below_hz and required_protection_filters are the priority lookups.",
+            "For a tweeter or compression driver, recommended_highpass_hz is the priority lookup.",
             "",
-            "ESTIMATING THE PROTECTION FIELDS",
-            "required_protection_filters: cutoff_hz and minimum_slope_db_per_octave are both numbers, never null. Estimate the cutoff from the driver's type and size — a small dome or ribbon needs a higher cutoff than a large compression driver — at 24 dB/octave or steeper. A mid needs both a high-pass and a low-pass.",
-            "hard_excitation_band_hz: the published usable range when there is one, otherwise the range typical for that type, tightened at both ends.",
-            "measurement_band_hz and crossover_search_band_hz are protocol choices, not driver facts. A filter cutoff is not a brick wall. Keep the hard excitation band distinct from required filter cutoff/slope, the measurement band, and the crossover-search band.",
-            "Nest the three bands: the crossover-search band sits inside the measurement band, the measurement band sits inside the hard excitation band, and every filter cutoff sits inside the hard excitation band. A reply that does not nest is refused.",
+            "THE MINIMUM CROSSOVER FREQUENCY, AND HOW IT IS PUBLISHED",
+            "recommended_highpass_hz is the manufacturer's minimum recommended crossover frequency for this driver. It is the single most important number in this reply: this build derives the driver's protective high-pass, the bottom of its allowed excitation band, and the bottom of its analysis window from it.",
+            "Horn and compression-driver makers print it on a dedicated spec line. The exact wording varies — \"Recommended Crossover\" (B&C, BMS, 18 Sound), \"Minimum Crossover Frequency\" or \"Recommended min. crossover\" (FaitalPro, Celestion) — so match the meaning, not the phrase.",
+            "Dome tweeters usually have no such line at all. Look instead at the test condition footnoted to the POWER HANDLING rating, which states the filter used: \"IEC 268-5, high-pass Butterworth, 2600 Hz, 12 dB/oct\" or \"X-over: 2. order HP Butterworth, 2.5 kHz\". That frequency is the answer.",
+            "recommended_highpass_slope_db_per_octave is the slope CONDITION the manufacturer attaches to that frequency, reported separately. Convert a filter order to dB/octave: 2nd order is 12, 3rd is 18, 4th is 24. Send it only when the manufacturer states one — it is not universal, and some datasheets give the frequency with no slope at all.",
+            "If the manufacturer publishes no minimum crossover frequency, send null for both and add an entry to unknowns. Absent is a correct answer here. Do NOT estimate this one: a safety margin is computed downstream by this build, and an invented number would be indistinguishable from a datasheet figure.",
+            "",
+            "ESTIMATING THE REMAINING PROTECTION FIELDS",
+            "required_protection_filters: send this ONLY for a mid, which needs a low-pass. A high-pass requirement is DERIVED from recommended_highpass_hz and must not be sent. cutoff_hz and minimum_slope_db_per_octave are both numbers, never null.",
+            'A mid therefore adds exactly one entry, in this shape: "required_protection_filters": [{"kind":"lowpass","cutoff_hz":3000,"minimum_slope_db_per_octave":24,"family_or_equivalent":"equivalent_or_steeper"}]. No other role sends this key.',
+            "hard_excitation_band_hz: the published usable range when there is one, otherwise the range typical for that type, tightened at both ends. Its LOWER edge is derived from recommended_highpass_hz, so what matters here is the upper edge.",
+            "measurement_band_hz is the driver's published frequency-response range — for example a compression driver rated 1.0-18.0 kHz sends [1000, 18000]. Send the published range even when it extends below the minimum crossover; this build clamps the analysis window up into the allowed band itself.",
+            "crossover_search_band_hz is a protocol choice, not a driver fact. A filter cutoff is not a brick wall.",
+            "Nest the bands: the crossover-search band sits inside the measurement band, and the measurement band sits inside the hard excitation band. A reply that does not nest is refused.",
             "level_duration_limits: measurement-protocol discipline, not datasheet facts. Send all four numbers, and unless a datasheet says stricter use max_sweep_duration_s 4, max_repeat_count 3, minimum_cooldown_s 2.",
             "For max_effective_peak_dbfs, use -20 for a woofer, mid, or full-range driver. For a tweeter with no published level limit, send exactly the ceiling listed under LIMITS: that hands the level choice to this build's own protection logic, which raises it only once a protective high-pass is proven in the signal path.",
             "Send a lower tweeter number only when you mean it as a deliberate quieter limit — anything below the ceiling is taken literally and is never raised. Never send a value above the ceiling.",
             "",
             "LIMITS",
             "This build refuses a reply outside these bounds. They are outer bounds, not recommended values: when a published requirement is stricter, the published one wins.",
+            "The minimum-crossover bound is a PLAUSIBILITY range, not a target. A published figure inside it is believed even when it sits below what is typical for the driver type; a figure outside it is refused as a mis-read rather than believed.",
             *_driver_research_prompt_limits(request),
             "",
             "RESULT SHAPE",
@@ -1483,17 +1498,16 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
             '    "sensitivity_db_2v83_1m": 90,',
             f'    "usable_frequency_range_hz": [{hp - 1000}, 20000],',
             f'    "recommended_highpass_hz": {hp},',
-            f'    "do_not_test_below_hz": {hard_low},',
+            '    "recommended_highpass_slope_db_per_octave": 12,',
             f'    "hard_excitation_band_hz": [{hard_low}, 20000],',
-            f'    "required_protection_filters": [{{"kind":"highpass","cutoff_hz":{hp},"minimum_slope_db_per_octave":24,"family_or_equivalent":"equivalent_or_steeper"}}],',
-            f'    "measurement_band_hz": [{hp}, 18000],',
+            f'    "measurement_band_hz": [{hp - 1000}, 18000],',
             f'    "crossover_search_band_hz": [{hp + 500}, {search_high}],',
             '    "level_duration_limits": {"max_effective_peak_dbfs":-65,"max_sweep_duration_s":4,"max_repeat_count":3,"minimum_cooldown_s":2},',
             '    "cabinet": {"enclosure_kind":"sealed|vented|passive_radiator|open_baffle|transmission_line|unknown","radiator_count":1,"effective_radiating_diameter_mm":null,"baffle_width_mm":null},',
             '    "driver_class": "compression_horn|soft_dome|metal_dome|beryllium_diamond_dome|ribbon_amt|unknown",',
             '    "radiating_diameter_mm": 25,',
             '    "unknowns": ["facts that could not be established"],',
-            '    "field_provenance": {"do_not_test_below_hz":{"confidence":"high","basis":"datasheet minimum crossover","source":"manufacturer datasheet","sources":["https://..."]},"level_duration_limits":{"confidence":"low","basis":"estimated: protocol default, no published limit","source":"measurement protocol, no published limit","sources":[]}},',
+            '    "field_provenance": {"recommended_highpass_hz":{"confidence":"high","basis":"datasheet recommended crossover line","source":"manufacturer datasheet","sources":["https://..."]},"level_duration_limits":{"confidence":"low","basis":"estimated: protocol default, no published limit","source":"measurement protocol, no published limit","sources":[]}},',
             '    "notes": "one short sentence",',
             '    "sources": ["https://..."]',
             "  }],",

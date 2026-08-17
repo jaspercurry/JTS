@@ -36,6 +36,10 @@ from jasper.active_speaker.driver_safety import (
     validate_driver_research_request,
     validate_driver_research_result_shape,
 )
+from jasper.active_speaker.driver_protection import (
+    LOW_LIMIT_PLAUSIBILITY_FACTOR,
+    driver_low_limit_plausibility_band_hz,
+)
 from jasper.active_speaker.excitation_safety_plan import (
     resolve_driver_excitation_ceilings,
 )
@@ -350,7 +354,7 @@ def test_research_request_and_prompt_bind_exact_physical_targets() -> None:
     assert request["build_notes"] == "Sealed bench cabinet"
     assert "Legacy per-driver note that is no longer editable" not in prompt
     assert "Sealed bench cabinet" in prompt
-    assert "hard excitation band distinct" in prompt
+    assert "crossover_search_band_hz is a protocol choice" in prompt
     assert "Never infer physical installation choices" in prompt
     assert "Treat operator_declared_context as authoritative" in prompt
     assert "preserving any operator-declared enclosure choice" in prompt
@@ -454,6 +458,12 @@ def test_prompt_asks_only_for_fields_with_a_consumer() -> None:
         "recommended_lowpass_hz",
         "horn_coverage_deg",
         "gain_offset_db",
+        # #2603: retired, not merely unasked. It was an optional SECOND
+        # declaration of the driver's low limit; the owner
+        # (recommended_highpass_hz) is what the ask carries now, and nothing
+        # reads this key. Still accepted so older drafts load, which
+        # test_dropped_ask_fields_are_still_accepted_and_normalised pins.
+        "do_not_test_below_hz",
     ):
         assert dropped not in prompt
     # "manufacturer_and_model" is the request-side key and stays; the standalone
@@ -466,9 +476,11 @@ def test_prompt_asks_only_for_fields_with_a_consumer() -> None:
         "sensitivity_db_2v83_1m",
         "usable_frequency_range_hz",
         "recommended_highpass_hz",
-        "do_not_test_below_hz",
+        # #2603: the owner's slope condition, asked separately because that is
+        # how manufacturers publish it -- a footnote to the frequency, and not
+        # universal.
+        "recommended_highpass_slope_db_per_octave",
         "hard_excitation_band_hz",
-        "required_protection_filters",
         "measurement_band_hz",
         "crossover_search_band_hz",
         "level_duration_limits",
@@ -513,7 +525,10 @@ def test_prompt_scopes_provenance_to_the_five_limit_setting_keys() -> None:
 
     assert _PROMPT_PROVENANCE_KEYS == (
         "hard_excitation_band_hz",
-        "do_not_test_below_hz",
+        # #2603: the owner replaced the retired do_not_test_below_hz here. It
+        # is the field whose value most directly bounds what the speaker may
+        # excite, so it is exactly the kind of key this scope exists for.
+        "recommended_highpass_hz",
         "required_protection_filters",
         "level_duration_limits",
         "sensitivity_db_2v83_1m",
@@ -2006,7 +2021,14 @@ def test_prompt_result_shape_template_is_storable_not_gate_refused(
             "role": "tweeter",
             "model": "Example T1",
             "hard_excitation_band_hz": driver["hard_excitation_band_hz"],
-            "required_protection_filters": driver["required_protection_filters"],
+            # #2603: the template no longer STATES a protective high-pass for a
+            # tweeter -- it declares the driver's minimum recommended crossover
+            # and the requirement derives from it. Copying the owner is what
+            # makes this test prove the template is storable.
+            "recommended_highpass_hz": driver["recommended_highpass_hz"],
+            "recommended_highpass_slope_db_per_octave": driver[
+                "recommended_highpass_slope_db_per_octave"
+            ],
             "measurement_band_hz": driver["measurement_band_hz"],
             "crossover_search_band_hz": driver["crossover_search_band_hz"],
             "level_duration_limits": driver["level_duration_limits"],
@@ -2036,9 +2058,19 @@ def test_prompt_result_shape_template_is_storable_not_gate_refused(
     )
     assert confirmed["status"] == "confirmed"
 
-    # The example's cutoff tracks this style's floor rather than a constant.
-    cutoff = driver["required_protection_filters"][0]["cutoff_hz"]
-    assert float(cutoff) >= expected_floor
+    # The example's low limit tracks this style's figure rather than a
+    # constant, and the protective high-pass it DERIVES lands on the same
+    # number -- the template teaches one declaration, not two (#2603).
+    assert float(driver["recommended_highpass_hz"]) >= expected_floor
+    tweeter_target = next(
+        t for t in confirmed["targets"] if t["role"] == "tweeter"
+    )
+    highpass = next(
+        item
+        for item in tweeter_target["required_protection_filters"]
+        if item["kind"] == "highpass"
+    )
+    assert highpass["cutoff_hz"] == float(driver["recommended_highpass_hz"])
     # All four limit fields survive normalisation (the original null defect).
     for field in (
         "max_effective_peak_dbfs",
@@ -2081,7 +2113,7 @@ def test_prompt_asks_for_a_best_estimate_declared_with_a_source() -> None:
     assert "Never infer physical installation choices" in prompt
 
     # A constraint the researcher was never told about cannot be satisfied.
-    assert "Nest the three bands" in prompt
+    assert "Nest the bands" in prompt
 
     # The template teaches the contract: one estimated field, tagged low.
     provenance = _prompt_json_example(prompt)["drivers"][0]["field_provenance"]
@@ -2361,8 +2393,18 @@ def test_prompt_limits_are_read_from_code_policy_not_restated(
     _, _, limits_block = limits_block.partition("\nLIMITS\n")
     assert limits_block, "prompt has no LIMITS section"
 
+    # #2603: the style figure is no longer stated as a required MINIMUM -- a
+    # published manufacturer number below it now wins. What the ask states is
+    # the PLAUSIBILITY band derived from that same figure, so the bound still
+    # cannot drift from the policy it is read out of.
+    band = driver_low_limit_plausibility_band_hz("tweeter", driver_style=style)
+    assert band == (
+        expected_floor / LOW_LIMIT_PLAUSIBILITY_FACTOR,
+        expected_floor * LOW_LIMIT_PLAUSIBILITY_FACTOR,
+    )
     assert (
-        f"mono:tweeter: required high-pass cutoff_hz at or above {expected_floor:g}"
+        f"mono:tweeter: recommended_highpass_hz between {band[0]:g} and "
+        f"{band[1]:g} if published, else null"
         in limits_block
     )
     assert (
