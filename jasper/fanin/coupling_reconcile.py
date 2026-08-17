@@ -498,7 +498,10 @@ def _reconcile_camilla(
     ring endpoint at the box's wire; only then is the step converged, with its
     own detail so the outcome is never confused with a re-emit. Every other
     ``skipped`` — a different refusal code, a commissioning load, an anchor that
-    is not coherent — fails exactly as before.
+    is not coherent — fails exactly as before. So does the same refusal reached
+    with CamillaDSP DOWN (``transport=statefile``, #2664): that payload's
+    ``current_config_path`` is the statefile's pointer rather than the daemon's
+    answer, which is precisely the weaker reader this acceptance refuses below.
     """
     import asyncio
 
@@ -518,7 +521,17 @@ def _reconcile_camilla(
     if status == "skipped" and coupling != COUPLING_SHM_RING:
         return True, str(status)
     refusal = str(payload.get("reason") or "")
-    if status == "skipped" and refusal == CARRIER_TRANSIENT_ACTIVE_REFUSAL:
+    if (
+        status == "skipped"
+        and refusal == CARRIER_TRANSIENT_ACTIVE_REFUSAL
+        # ``transport`` names which reader answered "which graph is loaded".
+        # Since #2664 the reconcile completes over the STATEFILE when CamillaDSP
+        # is down, and that answer is exactly the weaker reader the paragraph
+        # below refuses — so it can never satisfy this acceptance. Fail closed
+        # (the reconciler keeps loopback) rather than claim a converged anchor
+        # about a daemon that is not running.
+        and payload.get("transport") != "statefile"
+    ):
         # Keyed on the ONE refusal this acceptance is about, not on "skipped"
         # generally: a refusal code added later is a shape nobody proved
         # convergent, so it keeps failing until someone decides otherwise.

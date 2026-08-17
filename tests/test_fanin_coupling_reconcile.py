@@ -459,6 +459,79 @@ def test_production_confirm_uses_nonforcing_camilla_fast_path(monkeypatch):
     assert observed == [{"force": False, "coupling": COUPLING_LOOPBACK}]
 
 
+def _arm_reconcile_returning(monkeypatch, payload: dict):
+    """Drive the arm ladder's camilla rung over a canned reconcile payload."""
+
+    from jasper.fanin import coupling_reconcile as cr
+    from jasper.sound import runtime
+
+    async def fake_reconcile_current_dsp(**_kwargs):
+        return payload
+
+    monkeypatch.setattr(runtime, "reconcile_current_dsp", fake_reconcile_current_dsp)
+    # The anchor really IS converged on disk in both directions, so the only
+    # thing that can separate the two cases below is which reader answered.
+    monkeypatch.setattr(
+        cr, "ring_endpoint_anchor_converged", lambda **_k: (True, "anchor ok")
+    )
+    return cr._reconcile_camilla(
+        cr.COUPLING_SHM_RING, reason="arm", force=True
+    )
+
+
+def _staged_anchor_skip(transport: str) -> dict:
+    from jasper.fanin.coupling_reconcile import CARRIER_TRANSIENT_ACTIVE_REFUSAL
+
+    return {
+        "status": "skipped",
+        "reason": CARRIER_TRANSIENT_ACTIVE_REFUSAL,
+        "transport": transport,
+        "current_config_path": "/var/lib/camilladsp/configs/"
+        "active_speaker_staged_startup.yml",
+    }
+
+
+def test_the_arm_ladder_will_not_claim_a_converged_anchor_off_the_statefile(
+    monkeypatch,
+):
+    """The consequence next door: ``transport`` gates the arm ladder's acceptance.
+
+    ``jasper.fanin.coupling_reconcile._reconcile_camilla`` accepts ONE skipped
+    reconcile in the arm direction — a mid-commission roleful box parked on its
+    all-muted staged anchor — and proves convergence from
+    ``payload["current_config_path"]``. Its own comment says why that is sound:
+    the value is "the DAEMON's own answer … not the statefile's", because a
+    statefile moved mid-arm would otherwise report a converged anchor while
+    CamillaDSP still writes the lane the ring replaced (#2364).
+
+    Since #2664 that payload can carry the STATEFILE's answer instead — exactly
+    the weaker reader the acceptance excludes. Without a guard the arm ladder
+    would report a converged anchor about a CamillaDSP that is not running.
+    """
+
+    ok, detail = _arm_reconcile_returning(
+        monkeypatch, _staged_anchor_skip("statefile")
+    )
+    assert ok is False, detail
+
+
+def test_the_arm_ladder_still_accepts_the_anchor_over_the_websocket(monkeypatch):
+    """The positive control for the guard above.
+
+    Same payload, same on-disk anchor, only the reader differs. Without this the
+    guard could have been an unconditional refusal — which would break every
+    mid-commission arm rather than only the one it is meant to exclude.
+    """
+
+    from jasper.fanin.coupling_reconcile import CAMILLA_ANCHOR_CONVERGED_DETAIL
+
+    ok, detail = _arm_reconcile_returning(
+        monkeypatch, _staged_anchor_skip("websocket")
+    )
+    assert ok is True, detail
+    assert detail == CAMILLA_ANCHOR_CONVERGED_DETAIL
+
+
 def test_cli_auto_dispatches_to_reconcile_auto(monkeypatch, capsys):
     from jasper.fanin import coupling_reconcile as cr
 
