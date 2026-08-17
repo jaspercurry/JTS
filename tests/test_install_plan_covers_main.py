@@ -69,6 +69,7 @@ _STEP_TO_PLAN_MARKER = {
     "install_jts_ring_platform": "jts_ring ALSA ioplug from c/jts-ring-ioplug",
     "install_systemd_units": "Enable socket-activated setup wizards",
     "migrate_wifi_guardian": "WiFi guardian recovery",
+    "remove_retired_audio_topology_state": "retired dmix/fanin topology switch",
     "migrate_memory_resilience": "memory resilience",
     "migrate_cgroup_memory_enabled": "memory cgroup/PSI kernel args",
     "install_journald_persistent_storage": "journald persistence",

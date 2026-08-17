@@ -1894,6 +1894,10 @@ def check_active_ring_split_transport() -> CheckResult:
     the seconds between those rungs. That is the ladder working, not a fault.
     The arm's own terminal doctor pass is the authoritative read.
     """
+    from jasper.audio_runtime_plan import (
+        DEFAULT_CAMILLA2_STATEFILE_PATH,
+        output_endpoint_evidence_from_statefiles,
+    )
     from jasper.fanin.coupling_reconcile import read_persisted_coupling
     from jasper.fanin_coupling import COUPLING_SHM_RING, RING_ACTIVE_PLAYBACK_DEVICE
 
@@ -1902,11 +1906,27 @@ def check_active_ring_split_transport() -> CheckResult:
     if coupling == COUPLING_SHM_RING:
         return CheckResult(label, "ok", f"coupling={coupling}; ring is consumed")
 
-    _, active_path = _active_camilla_config_path()
-    config_path = Path(active_path) if active_path else Path(
-        "/var/lib/camilladsp/configs/sound_current.yml"
+    # BOTH STATEFILES, first-recognized-endpoint-wins — the same reader the
+    # `check_outputd_service` transport note used before #2285 folded that note
+    # into this check. Reading only the primary was the gap that fold left: an
+    # active leader keeps a program-bake graph in the primary statefile and its
+    # real output endpoint in camilla#2's, so a box whose primary names no
+    # registered endpoint (a bake, a parked graph, a statefile pointing at a
+    # deleted config) while camilla#2 names the ACTIVE ring would have gone
+    # quiet from BOTH surfaces. Measured, not assumed: two such shapes were
+    # constructed on disk and are pinned in
+    # tests/test_ring_split_transport_doctor.py.
+    #
+    # The primary path still comes from `_active_camilla_config_path()` so an
+    # operator's `JASPER_CAMILLA_STATEFILE` override keeps working; the reader
+    # falls through to camilla#2 by itself when the primary is unreadable, which
+    # is why the old hardcoded `sound_current.yml` rescue is gone rather than
+    # kept beside it.
+    statefile, _ = _active_camilla_config_path()
+    evidence = output_endpoint_evidence_from_statefiles(
+        statefile, DEFAULT_CAMILLA2_STATEFILE_PATH
     )
-    playback_device = _loaded_playback_device(config_path)
+    playback_device = (evidence.devices or {}).get("playback_device")
     if playback_device != RING_ACTIVE_PLAYBACK_DEVICE:
         return CheckResult(
             label,

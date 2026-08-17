@@ -2692,3 +2692,40 @@ def test_low_memory_park_reuses_the_shared_core_graph_park_list():
             f"{renderer} was re-inlined into park_low_memory_build_units; "
             "iterate JASPER_CORE_GRAPH_PARK_UNITS instead"
         )
+
+
+def test_install_removes_the_retired_audio_topology_state():
+    """The doctor's remedy for the ghost topology file must name a real remover.
+
+    `jasper-doctor`'s `check_fanin_asound_wiring` WARNs when
+    `/var/lib/jasper/audio_topology.env` is present and tells the operator to
+    re-run the installer. #2285 deleted the migration that used to remove it and
+    very nearly shipped the WARN with nothing behind it — a warning no operator
+    action could ever clear, which is worse than either half alone.
+
+    So this pins the PAIR, not the function: the doctor's promise on one side,
+    an installer step that actually deletes the file on the other, wired into
+    BOTH profiles. Asserting only that the function exists would still pass if it
+    were never called.
+    """
+    migrations = (_INSTALL_LIB_DIR / "env-migrations.sh").read_text(
+        encoding="utf-8"
+    )
+    body = migrations.split("remove_retired_audio_topology_state() {", 1)[1].split(
+        "\n}\n", 1
+    )[0]
+    assert 'rm -f "${STATE_DIR}/audio_topology.env"' in body
+
+    install_sh = _INSTALL_SH.read_text(encoding="utf-8")
+    # Both profiles, because a box only carries the ghost file if it predates
+    # the switch's retirement, and that is true on either profile.
+    assert install_sh.count("\n        remove_retired_audio_topology_state") == 1
+    assert install_sh.count("\n    remove_retired_audio_topology_state") == 1
+
+    # The doctor's side of the pair: the remedy still names re-running the
+    # installer, which the step above is what makes true.
+    doctor_src = (
+        REPO_ROOT / "jasper" / "cli" / "doctor" / "audio_runtime.py"
+    ).read_text(encoding="utf-8")
+    assert "audio_topology.env" in doctor_src
+    assert "Re-run " in doctor_src

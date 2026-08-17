@@ -627,6 +627,8 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
    - Seed defaults for speaker name, AirPlay mode, ALSA quality,
      wake model, AEC mode, peer_id, journald persistence, memory
      resilience, and correction TLS CA/cert files.
+   - Remove the retired dmix/fanin topology switch state file, which
+     jasper-doctor warns about on presence.
    - Reconcile the USB data role from board topology and the registered
      output-DAC overlay; add other Pi boot/config changes when needed:
      memory cgroup/PSI kernel args, MGLRU tmpfiles, sysctl values,
@@ -2221,6 +2223,7 @@ main() {
         build_install_jasper_outputd
         install_jts_ring_platform  # jts_ring ioplug + conf.d + shm dir (staging only; arming is the coupling reconciler's)
         install_streambox_systemd_units
+        remove_retired_audio_topology_state  # retired dmix/fanin switch state; doctor WARNs on its presence
         migrate_wifi_guardian
         migrate_memory_resilience
         migrate_cgroup_memory_enabled
@@ -2265,6 +2268,7 @@ main() {
     build_install_jasper_outputd  # Rust mainline final-output owner
     install_jts_ring_platform     # jts_ring ioplug + conf.d + shm dir (staging only; arming is the coupling reconciler's)
     install_systemd_units
+    remove_retired_audio_topology_state  # retired dmix/fanin switch state; doctor WARNs on its presence
     migrate_memory_resilience   # Stage 1 OOM protection: sysctl + MGLRU + zram
     migrate_cgroup_memory_enabled  # Stage 2 audio-slice: cgroup memory + PSI in cmdline.txt
     install_journald_persistent_storage
