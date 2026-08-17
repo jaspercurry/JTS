@@ -507,8 +507,11 @@ class CamillaController:
         via `_level_pair` and remains the surface for main L/R metering.
         This method is additive to it, not a replacement — it serves the
         readers that must see a channel beyond index 0/1: multi-channel
-        owner metering (the bass-extension bench R10 live cross-check's
-        planned stereo extension, issue #1723) and `/state`'s per-driver
+        owner metering (the bass-extension bench R10 live cross-check
+        reads this once per owner channel — see `cross_check.py` under
+        `jasper/bass_extension/bench/`, whose admissibility rule is a
+        per-entry index check, not a topology restriction) and
+        `/state`'s per-driver
         playback level readout on an active-crossover box. It returns every channel
         CamillaDSP reports, in channel order, with no truncation and no
         mirroring. It reuses the exact same `c.levels.playback_peak()`

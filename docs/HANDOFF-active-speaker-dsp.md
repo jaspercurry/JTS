@@ -258,10 +258,13 @@ above; this is only the entry points:
 CLI (`jasper-active-speaker`): `startup-template`, `path-audit`,
 `path-probe`, `environment-probe`, `runtime-safe-graph`,
 `commission-load`, `commission-rollback`, `commission-ramp
-{step,ack,status,abort}`. Full flags and the complete
-`/sound/active-speaker/*` web-route table:
-[testing-tooling.md](testing-tooling.md) (search "active-speaker") —
-canonical, kept current there rather than duplicated here.
+{step,ack,status,abort}`. Full flags for every verb above, and the
+`/sound/active-speaker/*` web-route surface with its GET/POST and
+safety semantics: [testing-tooling.md](testing-tooling.md) (search
+"active-speaker") — canonical, kept current there rather than
+duplicated here. That table summarizes the web surface rather than
+enumerating it; the route set itself is owned by the mutating-route
+allowlist in [`jasper/web/sound_setup.py`](../jasper/web/sound_setup.py).
 
 Recovery when a saved topology has drifted from physical reality (for
 example a physically passive box still carrying a stale roleful
