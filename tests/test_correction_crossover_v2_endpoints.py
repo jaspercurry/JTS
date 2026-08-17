@@ -524,11 +524,49 @@ def test_the_first_begin_ceiling_is_the_relay_link_ceiling(monkeypatch):
     That sentence is only true while the reader derives its ceiling from
     ``MAX_TTL_S`` — a hard-coded twin would pass every other test in this file
     and make the disclosure a lie the day either number moved.
+
+    So the last two lines MOVE THE OWNER rather than trusting the numbers to
+    agree. The reader takes ``MAX_TTL_S`` through a function-local import, so
+    the lookup happens per call and a patched owner is genuinely what it reads —
+    which is the whole justification for that import being function-local
+    instead of joining the top-level one. A twin answers the default here.
     """
     monkeypatch.setenv("JASPER_V2_FIRST_BEGIN_TIMEOUT_S", str(MAX_TTL_S))
     assert v2_first_begin_timeout_s() == float(MAX_TTL_S)
     monkeypatch.setenv("JASPER_V2_FIRST_BEGIN_TIMEOUT_S", str(MAX_TTL_S + 1))
     assert v2_first_begin_timeout_s() == V2_FIRST_BEGIN_TIMEOUT_S
+
+    monkeypatch.setattr(relay_session, "MAX_TTL_S", 7200)
+    monkeypatch.setenv("JASPER_V2_FIRST_BEGIN_TIMEOUT_S", "7000")
+    assert v2_first_begin_timeout_s() == 7000.0  # a twin would answer 300.0
+
+
+def test_the_env_example_ceiling_prose_tracks_max_ttl_s():
+    """The operator-facing 3600 is prose, so only a test can keep it honest.
+
+    ``.env.example`` states the ceiling twice — once as the advertised range and
+    once as the sentence naming what the bound IS. Prose cannot be derived the
+    way the reader's ``hi=`` is, so those two literals are the only copies of
+    ``MAX_TTL_S`` left in this change.
+
+    Deliberately a containment check, not a parse: the wording is free to be
+    rewritten, the NUMBER is not free to disagree with its owner. **Scope, said
+    plainly rather than implied:** this catches the block going stale as a whole
+    — the case that actually happens, since ``MAX_TTL_S`` moving leaves both
+    copies behind at once. It does NOT catch someone updating one copy and not
+    the other, because a live number anywhere in the block satisfies it. That
+    gap is left open rather than closed with a positional parse, which would
+    pin the wording this test deliberately leaves free; the failure direction is
+    conservative either way (an operator reads a LOWER bound and under-uses the
+    knob, never a higher one the Worker would clamp).
+    """
+    text = (Path(__file__).resolve().parents[1] / ".env.example").read_text()
+    start = text.index("# JASPER_V2_FIRST_BEGIN_TIMEOUT_S")
+    block = text[start:text.index("\nJASPER_V2_FIRST_BEGIN_TIMEOUT_S=", start)]
+    assert str(MAX_TTL_S) in block, (
+        "the .env.example ceiling prose no longer names MAX_TTL_S's value; "
+        "an operator is being told a stale bound"
+    )
 
 
 def test_the_runner_passes_the_env_resolved_first_begin_budget(monkeypatch):
