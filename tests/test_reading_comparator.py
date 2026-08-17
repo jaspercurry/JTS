@@ -146,7 +146,12 @@ def test_an_identical_reading_is_unchanged_and_a_non_numeric_flip_is_moved() -> 
                 "tau_us": 298.777,
             },
             {
-                "floor_source": "search_span_bound",
+                # A tolerance cannot absorb a change with no numeric delta,
+                # so a declared one must not silently accept this.
+                "floor_source": {
+                    "value": "search_span_bound",
+                    "tolerance": 1000.0,
+                },
                 "tau_us": 298.777,
             },
         )
@@ -407,6 +412,46 @@ def test_a_prose_home_that_already_reads_correctly_is_not_flagged(
     )
     assert results["floor_hz"].status == comparator.MOVED
     assert results["floor_hz"].home_hits == ()
+    assert results["floor_hz"].unscanned_homes == (), (
+        "already-correct is not a hand check"
+    )
+
+
+@pytest.mark.parametrize(
+    "before, after",
+    [
+        (1778, 1777.7777777777778),
+        (100, 100.4),
+        (1778, 1778.0001),
+    ],
+)
+def test_an_already_correct_home_is_not_demoted_into_the_hand_check(
+    before: Any,
+    after: Any,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nothing to search for and nothing to find are different verdicts.
+
+    An int before value has exactly one rendering, and when the after value
+    rounds to it the home already reads correctly - `1778` IS right for
+    1777.7777777777778. Folding that into the hand-check bucket would demand
+    a human open a file with nothing to find, and would print a reason that
+    is false: "1778" is four characters, not too short to search for.
+    """
+
+    home = tmp_path / "home.py"
+    home.write_text(f"FLOOR_HZ = {before}\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    assert comparator.renderings(before), "premise: there IS a rendering"
+    result = _by_name(
+        _compare({"floor": before}, {"floor": {"value": after, "homes": ["home.py"]}}),
+    )["floor"]
+    assert result.status == comparator.MOVED
+    assert result.home_hits == ()
+    assert result.unscanned_homes == ()
+    assert result.missing_homes == ()
 
 
 def test_a_home_the_scan_could_not_look_inside_is_reported_not_silent(
@@ -443,30 +488,58 @@ def test_a_home_the_scan_could_not_look_inside_is_reported_not_silent(
     assert "before 12" in report
 
 
-def test_a_short_string_reading_leaves_its_home_unscanned_too(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    "before, after",
+    [
+        ("ab", "cd"),
+        (None, 5.0),
+        ([1, 2], [1, 3]),
+        ({"a": 1}, {"a": 2}),
+    ],
+)
+def test_any_reading_with_nothing_to_search_for_lands_in_the_hand_check(
+    before: Any,
+    after: Any,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The same route, non-numerically: nothing long enough to search for.
+    """The same route as a short int, for the other shapes JSON can carry.
 
-    A float can never reach here - its `repr` round-trips exactly, so it
-    always survives both filters. Short ints, short strings and bools are the
-    whole population.
+    Deliberately NOT a claim about which shapes those are. A `null` is
+    natural in a measurement dump - a reading not measured this run - and a
+    census of the rest would be an unpinned completeness claim in a tool
+    whose subject is exactly that kind of prose.
+
+    The before dump uses the record form throughout because a bare dict is
+    read as a record: `{"x": {"a": 1}}` is a record missing its 'value', not
+    a dict-valued reading. `{"x": {"value": {"a": 1}}}` is how you say that.
     """
 
     home = tmp_path / "home.py"
     home.write_text("MODE = 'ab'\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
-    assert comparator.renderings("ab") == []
-    assert comparator.renderings(0.0000004) == [repr(0.0000004)]
-
-    results = _by_name(
-        _compare(
-            {"mode": "ab"},
-            {"mode": {"value": "cd", "homes": ["home.py"]}},
-        )
+    assert comparator.renderings(before) == []
+    comparisons = _compare(
+        {"x": {"value": before}},
+        {"x": {"value": after, "homes": ["home.py"]}},
     )
-    assert results["mode"].unscanned_homes == ("home.py",)
+    assert _by_name(comparisons)["x"].unscanned_homes == ("home.py",)
+
+    report = comparator.render_report(comparisons)
+    assert "HOMES NOT SCANNED (1)" in report
+    # The printed reason must fit every cause. A JSON `null` is not "under 3
+    # characters", and a reason that is false on the line a human acts on is
+    # worse than no reason.
+    assert "characters" not in report, report
+
+
+def test_a_float_never_lands_in_the_hand_check_bucket() -> None:
+    """Its `repr` round-trips exactly, so a float always has something to
+    search for - however small, however round."""
+
+    for value in (0.0, -0.0, 5e-324, 1e-300, 1.797e308, 4e-07, -1e-9, 1778.0):
+        assert comparator.renderings(value) != [], value
 
 
 # --- Renderings that state nothing must not flood the report ---------------

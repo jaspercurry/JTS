@@ -1286,12 +1286,15 @@ hit stating the reading under 35 that state nothing. Neither rule subsumes the
 other, and the band matters — this corpus quotes rung deltas of `-0.029` and
 `-0.004`, and #2062's own headroom is `0.0041 dB`.
 
-*A home it could not scan is its own reported class.* When those filters leave
-nothing to search for — a short int, a short string, a bool — the file is
-**never opened**, so it prints under `HOMES NOT SCANNED` with the before
-value, to be checked by hand. "Not looked at" must not print the same as
-"looked at, clean"; that is #2062 class 3 all over again, in the tool built to
-end it. A float never lands here: its `repr` round-trips exactly.
+*A home it could not scan is its own reported class.* When the before value has
+no rendering to search for — a short int, a short string, a bool, anything that
+leaves nothing to look for — the file is **never opened**, so it prints under
+`HOMES NOT SCANNED` with the before value, to be checked by hand. "Not looked
+at" must not print the same as "looked at, clean"; that is #2062 class 3 all
+over again, in the tool built to end it. A float never lands here: its `repr`
+round-trips exactly. Note the boundary against the paragraph above: a value
+whose renderings all read correctly for the after value is *not* flagged and
+*not* listed here — that home has nothing to find.
 
 *It is advisory and exits 0 whatever it found.* Same contract as
 [`scripts/tense-grep.sh`](../scripts/tense-grep.sh). It exits 2 only when it

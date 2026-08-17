@@ -57,8 +57,9 @@ that metadata. Home paths resolve relative to the current working directory.
 
 What it reports, in urgency order:
 
-* **MOVED** — changed beyond its tolerance, or changed with no tolerance
-  declared.
+* **MOVED** — changed, and nothing accepted it: the move exceeded its
+  tolerance, no tolerance was declared, or the change is not numeric (a string,
+  or a bool-to-number type flip).
 * **ABSORBED** — changed, and a declared tolerance accepted it. Printed with
   the headroom left, because that is the number that says how close the pin
   came to going red.
@@ -70,11 +71,10 @@ What it reports, in urgency order:
   that already reads correctly is not flagged. A declared home that does not
   exist on disk is reported too.
 * **HOMES NOT SCANNED** — a home the scan could not look inside, because the
-  before value has no rendering worth searching for. A short int, a short
-  string or a bool renders to nothing that survives the noise filters (an
-  ``n_rungs`` of 12 would match half a source file), so the file is never
-  opened — and **"not looked at" must not print the same as "looked at,
-  clean"**. Check those homes by hand. A float never lands here: its ``repr``
+  before value has no rendering to search for: a short int, a short string, a
+  bool — anything that leaves nothing to look for. The file is never opened,
+  and **"not looked at" must not print the same as "looked at, clean"**, so
+  check those homes by hand. A float never lands here: its ``repr``
   round-trips exactly, so it always survives.
 
 Home hits are **candidate sites for a human to judge, not proof of drift** —
@@ -311,12 +311,18 @@ def _scan_homes(
     """Hits, homes that are not on disk, and homes that could not be scanned.
 
     The third bucket is the one that must never be silent: when the before
-    value has no rendering worth searching for — an ``n_rungs`` of 12 is two
-    characters, and a 0.004 rounds away — the file is never opened, and
-    "not looked at" must not print the same as "looked at, clean".
+    value has no rendering to search for, the file is never opened, and "not
+    looked at" must not print the same as "looked at, clean".
+
+    Two different things can leave nothing to search, and they must not share
+    a bucket. Having no rendering AT ALL is the hand-check case. Having
+    renderings that are ALL also renderings of the after value means the home
+    already reads correctly, and flagging it would demand a hand check with
+    nothing to find.
     """
 
-    superseded = [text for text in renderings(before) if text not in set(renderings(after))]
+    searchable = renderings(before)
+    superseded = [text for text in searchable if text not in set(renderings(after))]
     hits: list[HomeHit] = []
     missing: list[str] = []
     unscanned: list[str] = []
@@ -324,10 +330,12 @@ def _scan_homes(
         path = Path(home)
         if not path.is_file():
             missing.append(home)
-        elif not superseded:
+        elif not searchable:
             unscanned.append(home)
-        else:
+        elif superseded:
             hits.extend(scan_home(path, superseded))
+        # else: every rendering this value has already reads correctly for the
+        # after value. Nothing to find, so nothing to report.
     return tuple(hits), tuple(missing), tuple(unscanned)
 
 
@@ -461,8 +469,8 @@ def render_report(comparisons: Sequence[Comparison]) -> str:
     unscanned_count = sum(len(item.unscanned_homes) for item in unscanned_owners)
     lines.append(
         f"HOMES NOT SCANNED ({unscanned_count}) - the before value has no "
-        f"rendering worth searching for (under {MIN_RENDERING_LEN} "
-        "characters), so these files were never opened. Check them by hand."
+        "rendering to search for, so these files were never opened. "
+        "Check them by hand."
     )
     for item in unscanned_owners:
         for home in item.unscanned_homes:
