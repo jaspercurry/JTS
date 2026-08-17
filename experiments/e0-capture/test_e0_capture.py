@@ -1,9 +1,18 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Offline self-tests for e0_capture.py.
 
-Run with:
-    e0venv/bin/python test_e0_capture.py
-    e0venv/bin/python e0_capture.py --selftest
+Run with (from the repo root, whose .venv already has requests +
+cryptography -- see README.md "Run it"):
+    .venv/bin/python experiments/e0-capture/test_e0_capture.py
+    .venv/bin/python experiments/e0-capture/e0_capture.py --selftest
+
+These same checks run in CI through tests/test_e0_capture_experiment.py,
+which imports this module and parametrizes over TESTS.
 
 NEVER touches the network -- no relay.jasper.tech, no jts3.local. Every
 check round-trips data in-process against fabricated fixtures, or writes to
@@ -64,9 +73,17 @@ def test_authenticated_phone_event_round_trip() -> None:
     assert decoded == event, "authenticated event payload mismatch after verify"
 
     # Tamper check: a flipped MAC character must fail verification.
+    #
+    # Flip the FIRST character, not the last. The MAC is unpadded base64url of
+    # a 32-byte HMAC: 43 characters, so the last one carries 4 meaningful bits
+    # and 2 slack bits, and `verify_authenticated_phone_event` compares the
+    # DECODED bytes. Four of the 64 possible last characters therefore decode
+    # identically, which made a last-character "forgery" verify cleanly -- and
+    # this check fail -- on 6.01% of runs (20000 random MACs, measured
+    # 2026-08-17). Every bit of the first character is meaningful.
     forged = json.loads(json.dumps(envelope))
     mac = forged["authenticated_event"]["mac"]
-    forged["authenticated_event"]["mac"] = mac[:-1] + ("A" if mac[-1] != "A" else "B")
+    forged["authenticated_event"]["mac"] = ("A" if mac[0] != "A" else "B") + mac[1:]
     try:
         e0.integ.verify_authenticated_phone_event(key, session_id, forged)
     except e0.integ.CaptureIntegrityError:

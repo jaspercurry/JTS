@@ -211,6 +211,9 @@ DOCS_TEST_FILES = (
     "tests/test_docs_handoff_freshness.py",
     "tests/test_docs_impact.py",
     "tests/test_docs_linkcheck.py",
+    # Discovered because it reads experiments/e0-capture/README.md -- a real
+    # doc read, of the experiment's own README rather than one under docs/.
+    "tests/test_e0_capture_experiment.py",
     "tests/test_env_vars_codified.py",
     "tests/test_first_party_arm64_release.py",
     "tests/test_launch_blocker_docs_exist.py",

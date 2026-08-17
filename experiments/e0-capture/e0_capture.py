@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """E0: a standalone "phone" for the JTS crossover-measurement v2 conductor.
 
 Stands in for the browser capture page (capture-page/js/main.js) so a
@@ -27,6 +32,12 @@ changes: the capture_relay import path is now self-locating instead of
 hardcoded to a deleted worktree, and the session mint sends an explicit
 `{"tier": ...}` so it can open the REMOTE tier (the July build could only
 ever mint FULL). --tap-link, the conductor's usual path, is unchanged.
+
+Promoted into experiments/ on 2026-08-17 (design decision 13's companion
+ruling, docs/active-speaker-tuning-layers-design.md). It is tracked and
+usable, and it stays EXPERIMENTAL: the browser capture flow remains the
+first-class path for human drivers. README.md, same directory, is the
+operator's entry point.
 """
 from __future__ import annotations
 
@@ -54,15 +65,23 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 # pulling in numpy via `jasper/__init__`. See PROTOCOL.md #9.
 # --------------------------------------------------------------------------
 
-# Self-locating: this file lives at <repo>/captures/<session-dir>/e0_capture.py,
+# Self-locating: this file lives at <repo>/experiments/e0-capture/e0_capture.py,
 # so parents[2] is the repo root. The July original hardcoded an absolute path
 # to a throwaway agent worktree, which was later deleted and broke import
 # (issue #2636). Deriving the path from __file__ cannot rot that way.
 # `E0_CAPTURE_RELAY_DIR` overrides it when reading from another checkout.
+# tests/test_e0_capture_experiment.py pins this resolution against the real
+# tree, so moving this file to another depth fails there rather than at a
+# lab Mac hours later.
+REPO_ROOT = Path(__file__).resolve().parents[2]
 WT = Path(
-    os.environ.get("E0_CAPTURE_RELAY_DIR")
-    or Path(__file__).resolve().parents[2] / "jasper" / "capture_relay"
+    os.environ.get("E0_CAPTURE_RELAY_DIR") or REPO_ROOT / "jasper" / "capture_relay"
 )
+
+# Recorded WAVs and run summaries go to the repo's gitignored captures/ tree,
+# the one home for lab corpora, so a run cannot dirty this now-tracked
+# directory. `--outdir` overrides it per run.
+DEFAULT_CORPUS_DIR = REPO_ROOT / "captures" / "e0-corpus"
 
 
 def _load_repo_module(name: str) -> types.ModuleType:
@@ -70,7 +89,7 @@ def _load_repo_module(name: str) -> types.ModuleType:
     if not path.is_file():
         raise SystemExit(
             f"capture_relay module not found: {path}\n"
-            "Expected this script to live at <repo>/captures/<dir>/e0_capture.py.\n"
+            "Expected this script to live at <repo>/experiments/e0-capture/e0_capture.py.\n"
             "Set E0_CAPTURE_RELAY_DIR to a checkout's jasper/capture_relay to override."
         )
     spec = importlib.util.spec_from_file_location(f"cr_{name}", path)
@@ -880,7 +899,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--placement", default="placement", help="label for output filenames")
     p.add_argument("--run", type=int, default=1, help="run number for output filenames")
-    p.add_argument("--outdir", default=None, help="output dir (default: <scratchpad>/e0-corpus/<placement>)")
+    p.add_argument("--outdir", default=None, help="output dir (default: <repo>/captures/e0-corpus/<placement>)")
     p.add_argument("--mic", default="UMIK-2", help="sox -t coreaudio device name")
     p.add_argument("--record-margin-sec", type=float, default=2.0, help="extra recording tail/head margin")
     p.add_argument("--reset-first", action="store_true", help="scoped /crossover/reset before start-session (avoids session rebind)")
@@ -904,7 +923,7 @@ def main(argv: list[str] | None = None) -> int:
         print("Nothing to do: pass --selftest, --start-session, or --tap-link.", file=sys.stderr)
         return 2
 
-    outdir = Path(args.outdir) if args.outdir else Path(__file__).parent / "e0-corpus" / args.placement
+    outdir = Path(args.outdir) if args.outdir else DEFAULT_CORPUS_DIR / args.placement
 
     try:
         if args.start_session:

@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Scoped crossover journey reset between E0 runs, so each run starts from a
 clean, un-rebound conductor state (keeps topology/design-draft/baseline).
 POST /correction/crossover/reset with CSRF double-submit.
 
-Run:  e0venv/bin/python reset_run.py --host jts3.local
+Run:  .venv/bin/python experiments/e0-capture/reset_run.py --host jts3.local
 """
 from __future__ import annotations
 

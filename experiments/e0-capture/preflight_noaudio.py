@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """E0 no-audio pre-flight: validate session-start + spec fetch + MAC verify
 WITHOUT posting begin_capture/armed (so the Pi plays NO audio), then recover
 the session volume so nothing is left dangling.
 
-Run with the e0venv:  e0venv/bin/python preflight_noaudio.py --host jts3.local
+Run:  .venv/bin/python experiments/e0-capture/preflight_noaudio.py --host jts3.local
 """
 from __future__ import annotations
 
