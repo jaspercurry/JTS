@@ -245,7 +245,14 @@ alone, plus the measured limit of the notch-bin intersection — §B is a Monday
 ratification input), #2027 (the 35 dB alignment-SNR floor has not been
 re-derived for the sweep-derived band semantics #2024 introduced; R12 advanced
 the offline half inconclusive-with-findings), #2052 (`_channel_map_ok` should
-answer honest-unknown when ambient evidence is absent — deferred from #2042),
+answer honest-unknown when ambient evidence is absent — deferred from #2042;
+addressed by PR #2680, which makes the no-ambient fallback one-sided — a
+cleared fraction is `None`, a failed one stays `False` — and routes both
+channel-map folds through the tri-state reducer `linearity_ok` already used.
+Its wrong-remedy half is NOT closed: a silent non-anchor driver whose ambient
+window is lost is still refused with room copy, because `_snr_floor_ok`
+collapses "no evidence" into "room too loud" and both consumer rungs live in
+`capture_dispatch.check_screens`),
 #2054 (cloud-side screens carry no gate disclosure — the half #1994 deferred),
 #2058 (a room-correction session records `verdict:accept` while
 `acoustic_quality` warns — a verdict that hides its own warning is the same
