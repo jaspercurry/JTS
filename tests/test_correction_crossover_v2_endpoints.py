@@ -69,6 +69,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     REASON_VERIFY_DETERMINISTIC_MISMATCH,
     TIER_EXPRESS,
     TIER_FULL,
+    V2_FIRST_BEGIN_TIMEOUT_S,
     VERIFY_TERMINAL_OUTCOME_DETERMINISTIC,
     CrossoverV2Session,
     V2FlowSeams,
@@ -79,11 +80,14 @@ from jasper.active_speaker.crossover_v2_flow import (
     format_position_distance,
     locate_failed_diagnosis,
     resolve_plan_shape,
+    v2_first_begin_timeout_s,
 )
 import jasper.active_speaker.baseline_profile as baseline_profile_mod
 
+import jasper.capture_relay.session as relay_session
 from jasper.capture_relay.client import RelayClient
 from jasper.capture_relay.session import (
+    MAX_TTL_S,
     CaptureAborted,
     CaptureBeginRefused,
     CaptureResult,
@@ -470,6 +474,153 @@ def _build_runner(conductor, volume, **kwargs):
         volume=volume.hooks(),
         **kwargs,
     )
+
+
+# --- the first-begin budget knob (#2637) ---------------------------------------
+#
+# Four commissioning sessions on the 2026-08-16 walk died at exactly the 300 s
+# default in phase=awaiting_begin, so the budget is a jasper.env edit rather than
+# a rebuild. The reader is the flow's, the wiring is this host's, and both are
+# pinned here so the pair cannot drift apart.
+
+
+def test_the_first_begin_budget_defaults_to_the_constant(monkeypatch):
+    """Unset env ⇒ the shipped 300 s, read off the constant itself."""
+    monkeypatch.delenv("JASPER_V2_FIRST_BEGIN_TIMEOUT_S", raising=False)
+    assert v2_first_begin_timeout_s() == V2_FIRST_BEGIN_TIMEOUT_S == 300.0
+
+
+def test_the_first_begin_budget_takes_an_in_range_override(monkeypatch):
+    monkeypatch.setenv("JASPER_V2_FIRST_BEGIN_TIMEOUT_S", "900")
+    assert v2_first_begin_timeout_s() == 900.0
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "",           # present but empty — an operator who blanked the line
+        "   ",
+        "soon",       # unparseable
+        "29.9",       # below the 30 s floor
+        "99999",      # above the ceiling
+    ],
+)
+def test_a_bad_first_begin_value_falls_back_to_the_default(monkeypatch, raw):
+    """A jasper.env typo can never shorten or brick the first-begin window.
+
+    Same fall-back idiom as every other ``bounded_env_float`` knob — the value
+    is dropped silently, not raised, because the alternative is a commissioning
+    flow that refuses to start over a stray character.
+    """
+    monkeypatch.setenv("JASPER_V2_FIRST_BEGIN_TIMEOUT_S", raw)
+    assert v2_first_begin_timeout_s() == V2_FIRST_BEGIN_TIMEOUT_S
+
+
+def test_the_first_begin_ceiling_is_the_relay_link_ceiling(monkeypatch):
+    """The ceiling IS ``MAX_TTL_S``, not a copy of it that agrees today.
+
+    ``.env.example`` tells an operator the 3600 s bound is the longest link the
+    relay Worker grants, so nothing above it can mean anything on any stage.
+    That sentence is only true while the reader derives its ceiling from
+    ``MAX_TTL_S`` — a hard-coded twin would pass every other test in this file
+    and make the disclosure a lie the day either number moved.
+
+    So the last two lines MOVE THE OWNER rather than trusting the numbers to
+    agree. The reader takes ``MAX_TTL_S`` through a function-local import, so
+    the lookup happens per call and a patched owner is genuinely what it reads —
+    which is the whole justification for that import being function-local
+    instead of joining the top-level one. A twin answers the default here.
+    """
+    monkeypatch.setenv("JASPER_V2_FIRST_BEGIN_TIMEOUT_S", str(MAX_TTL_S))
+    assert v2_first_begin_timeout_s() == float(MAX_TTL_S)
+    monkeypatch.setenv("JASPER_V2_FIRST_BEGIN_TIMEOUT_S", str(MAX_TTL_S + 1))
+    assert v2_first_begin_timeout_s() == V2_FIRST_BEGIN_TIMEOUT_S
+
+    monkeypatch.setattr(relay_session, "MAX_TTL_S", 7200)
+    monkeypatch.setenv("JASPER_V2_FIRST_BEGIN_TIMEOUT_S", "7000")
+    assert v2_first_begin_timeout_s() == 7000.0  # a twin would answer 300.0
+
+
+def test_the_env_example_ceiling_prose_tracks_max_ttl_s():
+    """The operator-facing 3600 is prose, so only a test can keep it honest.
+
+    ``.env.example`` states the ceiling twice — once as the advertised range and
+    once as the sentence naming what the bound IS. Prose cannot be derived the
+    way the reader's ``hi=`` is, so those are the two copies an OPERATOR reads,
+    and the only ones this change leaves unguarded by the derivation itself.
+
+    Deliberately a containment check, not a parse: the wording is free to be
+    rewritten, the NUMBER is not free to disagree with its owner. **Scope, said
+    plainly rather than implied:** this catches the block going stale as a whole
+    — the case that actually happens, since ``MAX_TTL_S`` moving leaves both
+    copies behind at once. It does NOT catch someone updating one copy and not
+    the other, because a live number anywhere in the block satisfies it. That
+    gap is left open rather than closed with a positional parse, which would
+    pin the wording this test deliberately leaves free, and which needs two
+    independent things to go wrong before it bites.
+
+    **What the residual gap costs, stated straight rather than softened.** If
+    ``MAX_TTL_S`` ever SHRINKS — it mirrors a separately released artifact, and
+    a mirror tracks down as well as up — this guard fires, and a half-update
+    that fixes only the advertised range leaves the other sentence quoting the
+    old, HIGHER bound. An operator who believes it sets a value above the real
+    ceiling, and nothing clamps that: ``bounded_env_float`` DROPS an
+    out-of-range value and silently answers the 300 s default, which is the
+    very failure this knob exists to prevent. (The Worker's clamp is on
+    ``ttl_s`` mint requests and does not reach this knob.) Accepted because the
+    likely direction — the owner growing, both copies left behind — is the one
+    the assertion below catches outright.
+    """
+    text = (Path(__file__).resolve().parents[1] / ".env.example").read_text()
+    start = text.index("# JASPER_V2_FIRST_BEGIN_TIMEOUT_S")
+    block = text[start:text.index("\nJASPER_V2_FIRST_BEGIN_TIMEOUT_S=", start)]
+    assert str(MAX_TTL_S) in block, (
+        "the .env.example ceiling prose no longer names MAX_TTL_S's value; "
+        "an operator is being told a stale bound"
+    )
+
+
+def test_the_runner_passes_the_env_resolved_first_begin_budget(monkeypatch):
+    """The plan runner receives the ENV value, not the hard-coded constant.
+
+    This is the assertion the knob exists for: the reader above can be perfect
+    and still reach nobody if the host keeps consuming the constant directly.
+    900 is deliberately not 300, so a revert to the constant fails here.
+    """
+    monkeypatch.setenv("JASPER_V2_FIRST_BEGIN_TIMEOUT_S", "900")
+    seen: dict[str, Any] = {}
+    real_run_capture_plan = relay_session.run_capture_plan
+
+    def spy(*args, **kwargs):
+        seen.update(kwargs)
+        return real_run_capture_plan(*args, **kwargs)
+
+    monkeypatch.setattr(relay_session, "run_capture_plan", spy)
+
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(
+        _roles(), FC_HZ, acknowledgement_binding=_BINDING,
+        include_cloud_measure=False,
+    )
+    client, session, phone = _mint_v2_session(backend, spec)
+    conductor = _conductor(
+        backend, session, phone, published=[],
+        index_phase_map=build_v2_cloud_index_phase_map(include_cloud_measure=False),
+    )
+    # Deliberately NOT via _build_runner: that helper pins first_begin_timeout_s
+    # to the small test timeout, which is exactly the default path under test.
+    runner = v2host.build_v2_run_and_consume(
+        conductor,
+        volume=VolumeRecorder().hooks(),
+        poll_interval_s=0.01,
+        timeout_s=20.0,
+        stop_event=threading.Event(),
+        stop_lock=threading.Lock(),
+    )
+    _run(runner, client, session)
+
+    assert conductor.current_phase == PHASE_DONE
+    assert seen["first_begin_timeout_s"] == 900.0
 
 
 # --- happy path through the REAL plan runner -----------------------------------

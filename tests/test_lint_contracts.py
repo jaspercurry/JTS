@@ -395,8 +395,23 @@ def test_noqa_debt_does_not_grow() -> None:
 # these lines went back. What is left is a safety rule whose two halves are
 # each pinned by a fixture, and compressing that to keep a number flat would
 # be gaming the guard rather than passing it.
+#
+# 2026-08-17 (#2637): `crossover_v2_flow` 12,510 -> 12,537, in two bumps in one
+# PR. The caps were set at the tree's exact counts, so the file had zero
+# headroom and ANY addition trips the guard — which is the guard working, not a
+# verdict that the addition is wrong.
+#
+# The first +18 is one env reader (`v2_first_begin_timeout_s`) plus its import
+# and export entry, buying a first-begin budget an operator can widen in
+# jasper.env instead of a rebuild. The second +9 is that PR's own gate round:
+# the reader advertised a range four times wider than a hand-walked stage's
+# relay link can honour, and the correction is a derived ceiling plus the
+# paragraph saying why the bound is not written here. Prose that stops an
+# operator setting a value the link clock will kill is worth nine lines.
+#
+# Neither bump was clawed back out of correct prose elsewhere in the file.
 MAX_LINES_BY_PATH = {
-    "jasper/active_speaker/crossover_v2_flow.py": 12_510,
+    "jasper/active_speaker/crossover_v2_flow.py": 12_537,
     "jasper/web/correction_crossover_v2.py": 9_186,
     "jasper/active_speaker/crossover_envelope_v2.py": 4_076,
     "jasper/audio_measurement/program_analysis.py": 6_969,
