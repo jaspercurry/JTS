@@ -87,6 +87,7 @@ import jasper.active_speaker.baseline_profile as baseline_profile_mod
 import jasper.capture_relay.session as relay_session
 from jasper.capture_relay.client import RelayClient
 from jasper.capture_relay.session import (
+    MAX_TTL_S,
     CaptureAborted,
     CaptureBeginRefused,
     CaptureResult,
@@ -501,8 +502,7 @@ def test_the_first_begin_budget_takes_an_in_range_override(monkeypatch):
         "   ",
         "soon",       # unparseable
         "29.9",       # below the 30 s floor
-        "3600.1",     # above the 3600 s ceiling
-        "-1",
+        "99999",      # above the ceiling
     ],
 )
 def test_a_bad_first_begin_value_falls_back_to_the_default(monkeypatch, raw):
@@ -513,7 +513,22 @@ def test_a_bad_first_begin_value_falls_back_to_the_default(monkeypatch, raw):
     flow that refuses to start over a stray character.
     """
     monkeypatch.setenv("JASPER_V2_FIRST_BEGIN_TIMEOUT_S", raw)
-    assert v2_first_begin_timeout_s() == 300.0
+    assert v2_first_begin_timeout_s() == V2_FIRST_BEGIN_TIMEOUT_S
+
+
+def test_the_first_begin_ceiling_is_the_relay_link_ceiling(monkeypatch):
+    """The ceiling IS ``MAX_TTL_S``, not a copy of it that agrees today.
+
+    ``.env.example`` tells an operator the 3600 s bound is the longest link the
+    relay Worker grants, so nothing above it can mean anything on any stage.
+    That sentence is only true while the reader derives its ceiling from
+    ``MAX_TTL_S`` — a hard-coded twin would pass every other test in this file
+    and make the disclosure a lie the day either number moved.
+    """
+    monkeypatch.setenv("JASPER_V2_FIRST_BEGIN_TIMEOUT_S", str(MAX_TTL_S))
+    assert v2_first_begin_timeout_s() == float(MAX_TTL_S)
+    monkeypatch.setenv("JASPER_V2_FIRST_BEGIN_TIMEOUT_S", str(MAX_TTL_S + 1))
+    assert v2_first_begin_timeout_s() == V2_FIRST_BEGIN_TIMEOUT_S
 
 
 def test_the_runner_passes_the_env_resolved_first_begin_budget(monkeypatch):

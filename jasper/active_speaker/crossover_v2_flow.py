@@ -11275,14 +11275,23 @@ def v2_first_begin_timeout_s() -> float:
 
     Four commissioning sessions on the 2026-08-16 walk died at exactly the 300 s
     default in ``phase=awaiting_begin``. Widening it is a ``jasper.env`` edit
-    (``JASPER_V2_FIRST_BEGIN_TIMEOUT_S``, 30..3600 s) rather than a rebuild;
-    out-of-range or unparseable values fall back to the default, mirroring the
+    (``JASPER_V2_FIRST_BEGIN_TIMEOUT_S``) rather than a rebuild; out-of-range or
+    unparseable values fall back to the default, mirroring the
     ``JASPER_CAPTURE_ALIGNMENT_THRESHOLD`` pattern.
+
+    The ceiling is DERIVED from ``capture_relay.session.MAX_TTL_S`` rather than
+    written here: nothing outliving the longest link the Worker grants can be
+    honoured, whatever this knob says, and a second copy of that bound would be
+    free to drift from it. Below the ceiling a hand-walked stage still spends
+    this window out of its own ``DEFAULT_TTL_S`` link — ``.env.example`` carries
+    what an operator has to weigh, and is the only place that says it.
     """
+
+    from jasper.capture_relay.session import MAX_TTL_S
 
     return bounded_env_float(
         "JASPER_V2_FIRST_BEGIN_TIMEOUT_S", V2_FIRST_BEGIN_TIMEOUT_S,
-        lo=30.0, hi=3600.0,
+        lo=30.0, hi=float(MAX_TTL_S),
     )
 
 
