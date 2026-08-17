@@ -13,7 +13,7 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from .. import identity_state
 from ..audio_quality import (
@@ -899,12 +899,18 @@ async def _get_state(
             return None
         return round(value, 2)
 
-    def _round_pair(
-        pair: tuple[float, float] | None,
+    def _round_levels(
+        levels: Sequence[float] | None,
     ) -> list[float | None] | None:
-        if pair is None:
+        """Every channel the running graph carries, not just the front pair.
+
+        An active-crossover box plays four (or more) physical outputs; a
+        stereo readout hides entire drivers, which is exactly what a
+        commissioning ramp needs to see. The width comes from CamillaDSP.
+        """
+        if levels is None:
             return None
-        return [_round_db(pair[0]), _round_db(pair[1])]
+        return [_round_db(v) for v in levels]
 
     async def _camilla_status() -> dict[str, Any]:
         status: dict[str, Any] = {
@@ -928,16 +934,16 @@ async def _get_state(
             vol, rms, peak, clipped, active_config_path = await asyncio.wait_for(
                 asyncio.gather(
                     cam.get_volume_db(best_effort=True),
-                    cam.get_playback_rms(best_effort=True),
-                    cam.get_playback_peak(best_effort=True),
+                    cam.get_playback_rms_all(best_effort=True),
+                    cam.get_playback_peak_all(best_effort=True),
                     cam.get_clipped_samples(best_effort=True),
                     config_path_probe,
                 ),
                 timeout=_CAMILLA_PROBE_TIMEOUT_SEC,
             )
             status["main_volume_db"] = _round_db(vol)
-            status["playback_rms_dbfs"] = _round_pair(rms)
-            status["playback_peak_dbfs"] = _round_pair(peak)
+            status["playback_rms_dbfs"] = _round_levels(rms)
+            status["playback_peak_dbfs"] = _round_levels(peak)
             status["clipped_samples"] = clipped
             status["active_config_path"] = active_config_path
             return status

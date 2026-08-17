@@ -471,6 +471,31 @@ class CamillaController:
                 return None
             raise
 
+    async def get_playback_rms_all(
+        self, *, best_effort: bool = False,
+    ) -> list[float] | None:
+        """Full per-channel playback RMS in dBFS — the list analog of
+        `get_playback_rms`, exactly as `get_playback_peak_all` is to
+        `get_playback_peak`, with the same no-truncation / no-mirroring
+        contract and the same `c.levels.playback_rms()` websocket call.
+
+        `get_playback_rms` stays the stereo-master surface the TTS gain
+        tracker reads; this is for readers that must see every driver on an
+        active-crossover box (`/state`'s per-driver level readout).
+        """
+        def read(c):
+            return _level_list(c.levels.playback_rms())
+        try:
+            return await self._call(read)
+        except CamillaUnavailable as e:
+            if best_effort:
+                logger.debug(
+                    "camilla unavailable; get_playback_rms_all -> None: %s",
+                    e,
+                )
+                return None
+            raise
+
     async def get_playback_peak_all(
         self, *, best_effort: bool = False,
     ) -> list[float] | None:
@@ -480,10 +505,11 @@ class CamillaController:
         `get_playback_peak` is the stereo-master metering surface: it
         truncates/mirrors CamillaDSP's per-channel meter down to a 2-tuple
         via `_level_pair` and remains the surface for main L/R metering.
-        This method is additive to it, not a replacement — it exists for
-        multi-channel owner metering (the bass-extension bench R10 live
-        cross-check's planned stereo extension, issue #1723), where an
-        "owner" channel can live beyond index 0/1. It returns every channel
+        This method is additive to it, not a replacement — it serves the
+        readers that must see a channel beyond index 0/1: multi-channel
+        owner metering (the bass-extension bench R10 live cross-check's
+        planned stereo extension, issue #1723) and `/state`'s per-driver
+        playback level readout on an active-crossover box. It returns every channel
         CamillaDSP reports, in channel order, with no truncation and no
         mirroring. It reuses the exact same `c.levels.playback_peak()`
         websocket call `get_playback_peak` uses — no new websocket surface.

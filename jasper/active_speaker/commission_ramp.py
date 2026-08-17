@@ -228,14 +228,28 @@ def reset_ramp_state(*, state_path: str | Path | None = None) -> dict[str, Any]:
 
 def clear_pending_ramp_step(
     *,
-    speaker_group_id: str,
+    speaker_group_id: str | None = None,
     confirmed_roles: Iterable[str] | None = None,
     state_path: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Start a fresh silent arm with no stale audible step awaiting ACK."""
+    """Drop the one audible step awaiting an ACK, keeping the ordering memory.
+
+    Two callers, one meaning — "no audible step is outstanding any more":
+
+    * a fresh silent arm, which passes the arming group and the durable
+      confirmed roles for it;
+    * a bare ``commission-rollback``, which passes neither: the graph is back
+      on the all-muted anchor, so the step it was waiting on no longer exists,
+      but the group and the woofer-before-tweeter memory are still true. An
+      omitted ``speaker_group_id`` therefore means "this ramp's own group",
+      not "a different group" (which is what wipes the memory).
+
+    ``ack`` and ``abort`` clear the step through their own terminal writes —
+    ``abort`` resets the whole ramp, which is a stronger claim than this.
+    """
 
     prior = load_ramp_state(state_path=state_path)
-    group = str(speaker_group_id or "").strip()
+    group = str(speaker_group_id or prior.get("speaker_group_id") or "").strip()
     same_group = (
         not prior.get("speaker_group_id") or prior.get("speaker_group_id") == group
     )
@@ -249,7 +263,7 @@ def clear_pending_ramp_step(
     return _record_ramp_state(
         {
             **_ramp_base_state(ramp_state_path(state_path)),
-            "speaker_group_id": group or prior.get("speaker_group_id"),
+            "speaker_group_id": group or None,
             "confirmed_roles": merged_confirmed_roles,
             "pending": None,
             "last_action": "clear_pending",
