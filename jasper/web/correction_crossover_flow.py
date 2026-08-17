@@ -239,9 +239,9 @@ def handle_reset(
 #: What a recorded review decision looks like in durable v2 state.
 #:
 #: One key, one shape, one writer (:func:`handle_v2_decline`), one reader (the
-#: phase resolver). ``decision`` is a word rather than a bool so a later
-#: "deferred" or "snoozed" needs no migration — but nothing mints a second
-#: value today and nothing should until a screen asks for one.
+#: phase resolver). ``decision`` is a word rather than a bool because the fact
+#: being recorded is WHICH answer the household gave, and a bool would name
+#: only one of them. This is the sole value the flow mints.
 REVIEW_DECISION_DECLINED = "declined"
 
 

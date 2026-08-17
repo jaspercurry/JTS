@@ -502,6 +502,10 @@ def test_known_post_routes_reach_csrf_guard():
         # JASPER_CROSSOVER_FLOW selector.
         "/crossover/v2/session", "/crossover/v2/verify", "/crossover/v2/apply",
         "/crossover/v2/restore",
+        # The review screen's "Keep current sound" (#2641) — a decision the
+        # household takes, so CSRF-guarded like every other mutating route
+        # even though it changes nothing on the speaker.
+        "/crossover/v2/decline",
         # The remote tier's position release — an external driver's POST, and
         # CSRF-guarded exactly like every other mutating route here.
         "/crossover/v2/position-ready",

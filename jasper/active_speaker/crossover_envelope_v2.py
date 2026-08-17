@@ -1954,10 +1954,9 @@ KEEP_ITERATING_TEXT = (
 
 #: The same row, when the round could not grade how flat the result is.
 #:
-#: Since the bites ruling an ungradable objective keeps the series open rather
-#: than ending it (see
+#: An ungradable objective keeps the series open rather than ending it (see
 #: :func:`~.crossover_v2.verification.evaluate_iteration_headroom`), so this
-#: row is now reachable with NO measured flatness behind it — an Express tier
+#: row is reachable with NO measured flatness behind it — an Express tier
 #: walks no post-apply cloud, and a report whose bands all fell below the
 #: trusted floor grades nothing either. :data:`KEEP_ITERATING_TEXT` opens with
 #: "Everything measured is inside the target", which on that round would be a

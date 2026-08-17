@@ -466,6 +466,15 @@ measured, safe, improving candidate that could not. #2602 added the fourth axis
 and split the one row that used to be terminal: a round that passes keeps
 iterating while a flatter, more level result is still reachable, up to
 `ROUND_SERIES_CAP` rounds — *in-tolerance is not done*.
+
+**Only three answers from that axis end a series**, per the ethos's
+"least-bad measured, honed in bites": the round cap, the plateau, and
+"already inside the plateau". `HEADROOM_NO_OBJECTIVES` is not one of them —
+an ungradable objective is missing evidence, not a plateau, so it names the
+ending in the reason and leaves the status `REACHABLE`. The practical effect
+is that an Express round, which walks no post-apply cloud and therefore grades
+no objectives, now offers another bite instead of stopping; the cap still
+bounds it and the review screen's decline closes it on request.
 See "The round, graded" below for the table itself; that appendix copy predates
 #2602 and still shows the five-row shape, so read `decide_adoption` for the
 current rows.
@@ -2375,7 +2384,16 @@ own rather than amending this one. Its identity lands in `state.round_receipt`
 so the next round resolves it without scanning bundles. Writing is fail-soft —
 a receipt that could not be written is never a lost verdict — but it is logged
 at **ERROR**, not WARN
-(`event=correction.crossover_v2_round_receipt_failed`). `coordinator.py`'s own
+(`event=correction.crossover_v2_round_receipt_failed`).
+
+**Since #2609 the IDENTITY survives what the ARTIFACT does not.** It is
+assembled from the round's own evaluation and returned on every path,
+including an unbound or raising publish seam; only the two fingerprint fields
+depend on the artifact, and they are `""` when none was banked. That split is
+load-bearing because the identity is also the series' memory — the ordinal,
+the objectives, and the trusted floor `series_position_from_state` reads back —
+so a durably broken evidence store used to pin every round at 1 and silently
+disable both the cap and the plateau stop. `coordinator.py`'s own
 handler records why: this is the exact event that would have fired on every
 shipped round for a whole phase while nobody looked, and a fail-soft path whose
 only trace is a WARNING is one nobody reads. Its sibling, the no-anchor recovery
@@ -2463,6 +2481,18 @@ tolerance when the prediction misses. An improved-but-spec-failing fit is
 available, because the decision is the household's. Actions are Apply and
 verify / Measure again / Keep current sound, and **never Undo** (D6 — stage 1
 replaced nothing, so there is nothing to restore).
+
+**"Keep current sound" is an action, not a link (#2641).** It POSTs
+`/correction/crossover/v2/decline`, guarded on
+`expected_candidate_fingerprint` like Apply, and records the household's
+answer at `state.review_decision`. It still changes nothing on the speaker and
+still does not delete the candidate. It was minted href-only until #2641
+measured what that cost: the click reloaded the page back onto the same
+decision screen, and the record could not tell a decline from a household that
+never looked — the fact a series needs before it offers another bite. Its
+`href` is retained as a presentation hint; the client prefers `endpoint`
+whenever an action carries both, which is what makes every in-flow action
+performable by a driver as well as by a browser.
 
 Apply is enabled only when all three hold: a candidate with a fingerprint
 exists, the prediction is gradeable (`overall_passed is not None` — a graded
@@ -5335,9 +5365,15 @@ corrections came from that gate's review of PR #2545, and every figure in them
 was measured on this branch. **The date below is deliberately NOT bumped**, for
 the same reason as the two addenda above.
 
-Last verified: 2026-08-16 (#2602 — the live spine's adoption-axis count, row
-count, and file-map rows re-read against `decide_adoption`; plus #2611 — the
-delta-probe section's commanded-axis and chained-round paragraphs re-read
-against `crossover_v2.commanded` and `classify_delta_probe`. The appendix's
-dated narrative was NOT re-verified and still shows the pre-#2602 five-row
-table, as its own status callout says it will)
+Last verified: 2026-08-17 (#2609/#2641 — the three paragraphs this round's
+change falsified were re-read against code and corrected: the headroom axis's
+endings against `evaluate_iteration_headroom`, the receipt paragraph against
+`coordinator._write_round_receipt`, and the review screen's decline against
+`_review_envelope` + `handle_v2_decline`. Carried forward: #2602 — the live
+spine's adoption-axis count, row count, and file-map rows re-read against
+`decide_adoption`; #2611 — the delta-probe section's commanded-axis and
+chained-round paragraphs re-read against `crossover_v2.commanded` and
+`classify_delta_probe`. **Scope: only the three paragraphs named above were
+re-verified this pass**; the rest of the live spine carries its 2026-08-16
+reading, and the appendix's dated narrative was NOT re-verified and still shows
+the pre-#2602 five-row table, as its own status callout says it will)

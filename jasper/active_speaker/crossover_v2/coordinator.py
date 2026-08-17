@@ -697,12 +697,6 @@ def _write_round_receipt(
     the honest shape, because it is a different measurement of a different
     speaker state, and a receipt that could be amended would not be a receipt.
 
-    **Fail-soft, deliberately and in both directions.** A receipt that could not
-    be built or written never reverses a verdict, never refuses a capture, and
-    never crashes the capture path. The verdict is what protects the
-    household's speaker; the receipt is what lets someone reconstruct why
-    afterwards, and losing the second must not cost the first.
-
     **The IDENTITY survives what the ARTIFACT does not, and that split is
     #2609.** This identity is also the series' only memory:
     :func:`series_position_from_state` reads ``round_ordinal``, ``objectives``,
