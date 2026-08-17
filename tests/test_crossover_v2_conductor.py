@@ -7777,20 +7777,11 @@ def test_fit_linearization_wires_ripple_optimal_seeded_by_anchored_giveback(
     # with the shared non-positive normalization shift applied to both roles.
     #
     # The single-datum-owner migration (#2609) deleted the two-voter frame that
-    # used to add a reconciled offset to this same anchor, and moved the base
-    # itself: it is the summed at-the-mark capture's per-role trim, which
-    # ``_conductor`` pre-banks for every stage-2-shaped fixture. The base is
-    # READ off the plan's own disclosure rather than re-derived here — this test
-    # is pinning the anchor's ARITHMETIC (``base + giveback``, normalized
-    # non-positive, no third term), not re-deriving the datum, and a second
-    # derivation of the base is exactly the drift the migration removed.
-    plan = plans[-1]
-    base = plan.summed_level_reference_db
-    assert base is not None, (
-        "the fixture pre-banks an entry baseline, so the summed owner must "
-        "have placed this anchor — a None here means the plumbing broke, not "
-        "that the fallback is fine"
-    )
+    # used to add a reconciled offset to this same anchor. What is left is the
+    # one design SSOT — docs/active-speaker-tuning-layers-design.md, "Anchored
+    # give-back (the trim)": the committed RAW trim plus that branch's own
+    # measured give-back, shared-shift normalized non-positive, no third term.
+    base = dict(_FIXTURE_RAW_TRIM_DB)
     giveback = {
         role: c.candidate.linearization[role]["correction_giveback_db"]
         for role in ("woofer", "tweeter")
@@ -10197,11 +10188,10 @@ def test_the_realized_level_assertion_still_fires_on_its_own_evidence(caplog):
     two-voter frame's own refusal arm, and this pins that it still fires on
     its own evidence rather than having quietly gone dead.
 
-    **Item 1's route in this harness is now the ONLY route.** This file never
-    captures a summed at-the-mark baseline, so the level-consistency check
-    (#2609's ``check_level_consistency``) never has an owner to grade
-    against and never banks or refuses anything — every session in this file
-    reaches item 1 with whatever the anchor computed. A mislevelled committed
+    **Item 1's route in this harness is now the ONLY route.** The
+    level-consistency check (#2609's ``check_level_consistency``) compares the
+    two per-driver estimators and can BANK a finding, but it has no refusal arm
+    at all — every session reaches item 1 with whatever the anchor computed. A mislevelled committed
     pair then has item 1 as the only thing standing in front of it. (The
     ripple polish is not a route around it either — the linearized scan can
     still move the committed pair, but only through the wild-trim guard,
@@ -10490,11 +10480,9 @@ def test_an_ordinary_session_banks_no_estimator_finding():
     to fire unconditionally — which would put a diagnosis in front of every
     household regardless of evidence.
 
-    ``_conductor`` pre-banks an entry baseline for every stage-2-shaped
-    fixture, so this session DOES have a summed owner and the check does run —
-    it simply finds both estimators inside tolerance. That is the assertion
-    worth having: not "the check was skipped" but "the check ran and stayed
-    quiet".
+    The check compares the two per-driver estimators and runs on every planned
+    candidate; here it finds them inside tolerance. That is the assertion worth
+    having: not "the check was skipped" but "the check ran and stayed quiet".
     """
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
@@ -10505,7 +10493,7 @@ def test_an_ordinary_session_banks_no_estimator_finding():
         _run_phase(c, 1, 1)
         assert _run_phase(c, 2, 2)["accepted"] is True
     consistency = plans[-1].level_consistency
-    assert consistency is not None, "the fixture's summed owner should be read"
+    assert consistency is not None, "both estimators cover a role here"
     assert consistency.suspect is False
     assert consistency.worst_delta_db < consistency.tolerance_db
     assert banked == []

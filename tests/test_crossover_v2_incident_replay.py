@@ -112,6 +112,7 @@ from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import RoleBand
 from jasper.audio_measurement.program_analysis import (
+    REALIZED_LEVEL_MATCH_TOLERANCE_DB,
     ALIGNMENT_OK,
     AlignmentEstimate,
     CrossoverCandidate,
@@ -142,6 +143,19 @@ EXPECTED_OUTCOME = _fixture("expected_outcome")
 CONFIGURED_FC_HZ = SESSION_CONTEXT["configured_fc_hz"]
 SELECTED_FC_HZ = SESSION_CONTEXT["selected_fc_hz"]
 COMMITTED_DB = EXPECTED_OUTCOME["committed_attenuations_db"]
+# The anchor these numbers pin is the one design SSOT:
+# docs/active-speaker-tuning-layers-design.md, "Anchored give-back (the trim)"
+# — the committed RAW trim plus that branch's measured
+# ``correction_giveback_db``, shared-shift normalized non-positive. No third
+# term.
+#
+# Re-derived 2026-08-17 (#2609). The prior banked pair carried PR-L5's
+# ``level_frame_offset_db`` (woofer +1.5644, tweeter 0.0), which was the
+# two-voter arbitration's limb rather than an independent measured fact: it
+# substituted the shared-frame solve for the raw trim. Deleting it moves the
+# tweeter -6.713 -> -5.149 and the shift 2.900 -> 1.335. The tweeter's raw
+# measured trim here is -10.8846 — and #2609's conviction is that THAT was the
+# right number all along (the reigning tune sat at -10.214).
 ANCHORED_DB = EXPECTED_OUTCOME["anchor_replay"]["anchored_trim_db"]
 
 
@@ -686,15 +700,28 @@ def test_a_rejected_trim_is_not_the_trim_that_ships(monkeypatch, caplog):
     # the anchor here.
     #
     # That is not an argument for dropping the fallback policy, and the number
-    # above says why: the drift is 6.300 dB, so the anchor is committed under
-    # ANCHORED_COMMITTED_AFTER_SANITY_DRIFT — the rejection, not the grading —
-    # and the policy is what covers the session-corner-wild regime where the
-    # grading points the other way. Asserted rather than left implicit, because
-    # a synthetic branch pair that reproduced the OLD ordering would mean this
-    # replay had drifted from the corner it claims to be planning at.
-    assert abs(anchor["difference_db"]) < abs(scan["difference_db"]), (
-        "at the candidate's corner the anchor should level better; the "
-        "opposite ordering is the session-corner world"
+    # above says why: the drift is 7.864 dB against a 6.0 dB margin, so the
+    # anchor is committed under ANCHORED_COMMITTED_AFTER_SANITY_DRIFT — the
+    # REJECTION, not the grading — and the policy is what covers the
+    # session-corner-wild regime where the grading points the other way.
+    #
+    # The two pairs now grade to a TIE, and that is the honest pin (#2609
+    # re-derivation). With PR-L5's offset term deleted the anchor levels at
+    # 3.940 dB against the scan's 3.924 — 0.016 dB apart, where the banked
+    # arbitration numbers had the anchor clearly ahead. A strict inequality on
+    # a 0.016 dB margin pins nothing but rounding, so what is asserted is the
+    # tie plus the mechanism that actually decides: the drift policy, not the
+    # grading. Both pairs miss the 3.0 dB realized-level tolerance, which is
+    # why this session refuses either way — the fail-closed direction, and the
+    # thing this replay exists to reproduce.
+    assert abs(abs(anchor["difference_db"]) - abs(scan["difference_db"])) < 0.1, (
+        "the two pairs should grade to a tie at the candidate's corner; a "
+        "wide separation means this replay has drifted from the corner it "
+        "claims to be planning at"
+    )
+    assert abs(anchor["difference_db"]) > REALIZED_LEVEL_MATCH_TOLERANCE_DB, (
+        "the incident's anchor misses the realized-level tolerance, which is "
+        "what makes this a refusing session"
     )
 
 
