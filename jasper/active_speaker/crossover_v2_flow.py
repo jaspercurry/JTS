@@ -3290,7 +3290,6 @@ class LateralPoseCurve:
     freqs_hz: np.ndarray
     complex_tf: np.ndarray
     band_hz: tuple[float, float]
-    validity_floor_hz: float | None
 
 
 @dataclass(frozen=True)
@@ -3310,7 +3309,6 @@ class LateralPose:
     role: str
     offset_cm: float
     at_mark: bool
-    captured_at: float
     curves: tuple[LateralPoseCurve, ...]
 
     def curve(self, role: str) -> LateralPoseCurve | None:
@@ -3370,7 +3368,6 @@ def lateral_pose_curve(
         freqs_hz=freqs[take],
         complex_tf=tf[take],
         band_hz=(float(band_hz[0]), float(band_hz[1])),
-        validity_floor_hz=response.validity_floor_hz,
     )
 
 
@@ -7418,7 +7415,6 @@ class CrossoverV2Session:
             role=prompt.role,
             offset_cm=float(prompt.offset_cm),
             at_mark=float(prompt.offset_cm) == 0.0,
-            captured_at=time.time(),
             curves=tuple(curves),
         )
         log_event(

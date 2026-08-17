@@ -1178,7 +1178,6 @@ class DriftEstimate:
     """
 
     epsilon_ppm: float
-    baselines_ppm: Mapping[str, float]
     max_residual_samples: float
     glitch_detected: bool
     repeat_level_delta_db: float = 0.0
@@ -2658,18 +2657,13 @@ def _estimate_drift(
     w1 = woofer_occurrences[0] if woofer_occurrences else None
     w2 = woofer_occurrences[-1] if len(woofer_occurrences) >= 2 else None
 
-    baselines: dict[str, float] = {}
     epsilon = 0.0
     if w1 is not None and w2 is not None:
         result = _repeat_epsilon(capture, program, w1, w2)
         if result is not None:
-            # Primary: sub-sample separation of two identical woofer sweeps
-            # (τ cancels; drift is the ratio). Design §3.1 / §5.6.3.
-            epsilon, eps_int = result
-            baselines["woofer_repeat"] = epsilon * 1e6
-            # Cross-check baseline: the integer-located separation ratio (no
-            # sub-sample refinement) — a coarse independent view of the same span.
-            baselines["woofer_repeat_integer"] = eps_int * 1e6
+            # Sub-sample separation of two identical woofer sweeps (τ cancels;
+            # drift is the ratio). Design §3.1 / §5.6.3.
+            epsilon = result[0]
 
     # Per-driver-demeaned schedule residual after applying ε. A driver's own
     # acoustic delay is a constant offset (removed by demeaning), so this does
@@ -2789,7 +2783,6 @@ def _estimate_drift(
         )
     return DriftEstimate(
         epsilon_ppm=epsilon * 1e6,
-        baselines_ppm=baselines,
         max_residual_samples=max_residual,
         glitch_detected=glitch,
         repeat_level_delta_db=repeat_level_delta_db,

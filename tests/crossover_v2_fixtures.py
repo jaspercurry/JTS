@@ -284,7 +284,7 @@ def _measure_analysis(
         program_id=program.program_id,
         locations=locations,
         drift=DriftEstimate(
-            epsilon_ppm=30.0, baselines_ppm={"woofer_repeat": 30.0},
+            epsilon_ppm=30.0,
             max_residual_samples=0.2, glitch_detected=glitch,
         ),
         driver_responses=(
@@ -1621,7 +1621,7 @@ def _eligible_measure_analysis(
             _loc("sweep_w"), _loc("sweep_t"), _loc("sweep_w_rep"), _loc("sweep_t_rep"),
         ),
         drift=DriftEstimate(
-            epsilon_ppm=5.0, baselines_ppm={"woofer_repeat": 5.0},
+            epsilon_ppm=5.0,
             max_residual_samples=0.1, glitch_detected=False,
         ),
         mic_tier=mic_tier,
@@ -1855,61 +1855,6 @@ def _healthy_crossed_over_pair(dip_db: float = 7.0):
     return woofer_db, tweeter_db, {
         "woofer": round(float(trim_w), 3), "tweeter": round(float(trim_t), 3),
     }
-
-
-# --------------------------------------------------------------------------- #
-# #1866: the frame gate's finding+proceed path (owner ruling, 2026-07-30)
-# --------------------------------------------------------------------------- #
-#
-# The synthetic stand-in for the 2026-07-30 field session. That session is
-# laptop-side and gitignored — 3.2307 dB frame under #1929's banded estimator,
-# realized −0.247 dB matched, predicted on-axis residual 3.106 → 1.333 dB, all
-# recorded on #1870 — so it is CITED and never replayed. What is replayed is a
-# fixture with the same SHAPE: an extra −1.6 dB/octave of woofer passband tilt,
-# an ordinary driver in baffle-step territory, which lands the frame at
-# 3.894 dB against the 3.0 tolerance while the realized-level instrument reads
-# −0.978 dB and passes. Both numbers are asserted below, so a change that moves
-# either has to argue with these tests.
-#
-# The tilt is the fixture's physical premise and has never moved; these two
-# numbers are its CONSEQUENCE and have, twice:
-#
-#  * 3.276 → 3.209 (#1938 gate follow-up) — _solve_fixture_raw_trim's
-#    hardcoded-woofer-0.0 return was fixed, and at this tilt the woofer is the
-#    louder branch, so the coherent trim attenuates it by 0.067 dB. See
-#    _tilted_woofer_fixture's docstring.
-#  * 3.209 → 3.894 (R10a, #1817) — _fixture_branch_db became faithful, so the
-#    curves this fixture tilts now carry each branch's own crossover, as a real
-#    per-driver measurement does. Both of the frame's estimators read the
-#    MEASUREMENT, so a truer measurement moves them; neither reads the fit's
-#    target, and the value is 3.894 with the shaped target and with a flat one
-#    alike (measured both ways).
-_LEVEL_FRAME_FINDING_TILT_DB_PER_OCT = -1.6
-
-
-def _tilted_woofer_fixture(fakes: FakeSeams, *, tilt_db_per_oct: float) -> None:
-    """Point ``fakes`` at the eligible fixture with extra woofer tilt.
-
-    The trim is SOLVED from the tilted branches rather than written down, for
-    the reason ``_solve_fixture_raw_trim`` gives: a hand-picked trim is a
-    fixture field nobody derived from the fixture, and this test is about the
-    relationship between two estimators of exactly that number.
-    """
-    freqs = _LINEARIZABLE_FREQS_HZ
-    base_woofer_db, tweeter_db = _fixture_branch_db()
-    woofer_db = base_woofer_db + tilt_db_per_oct * np.log2(
-        np.maximum(freqs, 1.0) / _FIXTURE_FC_HZ
-    )
-    # #1938 gate follow-up (SF-1): this used to hand-roll the same
-    # hardcoded-woofer-0.0 solve _solve_fixture_raw_trim had, which was a
-    # silent no-op at production tilt (-1.6 dB/oct) — that tilt makes the
-    # WOOFER the louder branch (level_w 1.4467 > level_t 1.3797), so the true
-    # trim is {"woofer": -0.067, "tweeter": 0.0}, not {"woofer": 0.0, ...}.
-    # Reusing the now-general helper instead of a second hand-rolled copy.
-    trim_db = _solve_fixture_raw_trim(woofer_db, tweeter_db)
-    fakes.measure = lambda program: _eligible_measure_analysis(
-        program, woofer_db=woofer_db, tweeter_db=tweeter_db, trim_db=trim_db,
-    )
 
 
 def _tracking_with_frame(**frame_overrides):

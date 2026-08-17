@@ -90,6 +90,13 @@ Simpler-but-hacky is not a simplification.
   worktree, and a stale same-length-literal `.pyc` can mask the result
   (`PYTHONDONTWRITEBYTECODE=1` guards against it). Commit before mutating
   anything, in-process or not — a clean tree is always a recoverable one.
+- **Load-bearing prose is a claim to check against the code it names — and the
+  PR title is one of them.** A comment or docstring naming a fact's owner is as
+  reviewable as a line of code, and a wrong one sends the next reader to the
+  wrong place with confidence: `9b27f2716` shipped three such sentences AND its
+  own title asserting the opposite of what the same commit's code did. Read the
+  named code, not the sentence about it. A claim nothing can pin is itself the
+  finding — either it earns a test or it goes.
 
 ## Gate 0 — necessity and complexity (run before detailed correctness)
 

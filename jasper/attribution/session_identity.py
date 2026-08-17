@@ -86,7 +86,6 @@ SESSION_IDENTITY_KEY = "jts_session_identity"
 #: namespace this module has never heard of, and refusing it would push that
 #: store back to having no join at all — but listed so the common ones stay
 #: spelled the same way.
-ALIAS_BUNDLE_ID = "bundle_id"
 ALIAS_RELAY_SESSION_ID = "relay_session_id"
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_.\-]{1,128}")
@@ -250,7 +249,6 @@ def read_session_identity(payload: Any) -> SessionIdentity | None:
 
 
 __all__ = [
-    "ALIAS_BUNDLE_ID",
     "ALIAS_RELAY_SESSION_ID",
     "SESSION_IDENTITY_KEY",
     "SESSION_IDENTITY_SCHEME",

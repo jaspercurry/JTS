@@ -303,7 +303,6 @@ def _analysis(program_id: str) -> ProgramAnalysis:
         ),
         drift=DriftEstimate(
             epsilon_ppm=SESSION_CONTEXT["capture_context"]["epsilon_ppm"],
-            baselines_ppm={"woofer_repeat": 5.0},
             max_residual_samples=0.1,
             glitch_detected=False,
         ),

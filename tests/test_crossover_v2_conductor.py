@@ -7027,7 +7027,7 @@ def test_measure_diag_logs_full_numbers_on_accept(caplog):
             _loc("sweep_w"), _loc("sweep_t"), _loc("sweep_w_rep"),
         ),
         drift=DriftEstimate(
-            epsilon_ppm=30.0, baselines_ppm={"woofer_repeat": 30.0},
+            epsilon_ppm=30.0,
             max_residual_samples=0.2, glitch_detected=False,
             repeat_level_delta_db=0.05,
         ),
@@ -7118,7 +7118,7 @@ def _measure_snr_analysis(program, *, woofer, tweeter):
         phase="measure", program_id=program.program_id,
         locations=(_loc("sweep_w"), _loc("sweep_t"), _loc("sweep_w_rep")),
         drift=DriftEstimate(
-            epsilon_ppm=30.0, baselines_ppm={"woofer_repeat": 30.0},
+            epsilon_ppm=30.0,
             max_residual_samples=0.2, glitch_detected=False,
         ),
         driver_responses=(woofer, tweeter),
@@ -7208,7 +7208,7 @@ def test_measure_diag_logs_per_role_repeat_epsilon_ppm(caplog):
             _loc("sweep_w_rep"), _loc("sweep_t_rep"),
         ),
         drift=DriftEstimate(
-            epsilon_ppm=30.0, baselines_ppm={"woofer_repeat": 30.0},
+            epsilon_ppm=30.0,
             max_residual_samples=0.2, glitch_detected=False,
             per_role_epsilon_ppm={"woofer": 31.5, "tweeter": -4.25},
         ),
@@ -8034,7 +8034,7 @@ def test_analysis_json_round_trips_trim_band_average_db():
     analysis = ProgramAnalysis(
         phase="measure", program_id="p1", locations=(),
         drift=DriftEstimate(
-            epsilon_ppm=1.0, baselines_ppm={}, max_residual_samples=0.0,
+            epsilon_ppm=1.0, max_residual_samples=0.0,
             glitch_detected=False,
         ),
         alignment=_alignment(), candidate=cand,

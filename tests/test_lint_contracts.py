@@ -342,6 +342,78 @@ def test_noqa_debt_does_not_grow() -> None:
     assert ble_markers <= MAX_BLE001_MARKERS
 
 
+# Line ceilings for the four largest files of the crossover-commissioning
+# program (#2662). Same ratchet contract as the marker counts above: LOWERING a
+# number is a win anyone can bank without asking, RAISING one is a deliberate
+# line in a diff that a reviewer gets to argue with.
+#
+# Why these four and not a repo-wide rule. Over the 21 days to 2026-08-17 the
+# subsystem grew 51% while its AVERAGE file size did not move — growth went
+# into new seams, which is the healthy shape and is not what this guards. It
+# guards the exception: `web/correction_crossover_v2.py` went 3,464 -> 9,178
+# monotonically, never once cut, while `crossover_v2_flow.py` was cut 14,314 ->
+# 10,988. A file that only ever grows is the one that ends up owning things its
+# filename does not describe.
+#
+# Set at the tree's own counts on 2026-08-17, AFTER this PR's own edits, so the
+# caps bank what is actually here rather than a number from a report. Two of
+# the four are below their measured start (`crossover_v2_flow` 12,512 ->
+# 12,508; `program_analysis` 6,939 -> 6,932) because of this PR's deletions.
+# The other two are ABOVE it, and the reason is worth stating rather than
+# hiding: moving the four RESULT_* codes to their owner ADDED lines at both
+# ends — an import block in each file, and symbol names long enough to reflow
+# the dict literals they replaced. The win there is one owner for a vocabulary
+# that had two, not a smaller file, and a ratchet that quietly booked it as a
+# saving would be lying about which kind of win it was.
+MAX_LINES_BY_PATH = {
+    "jasper/active_speaker/crossover_v2_flow.py": 12_508,
+    "jasper/web/correction_crossover_v2.py": 9_186,
+    "jasper/active_speaker/crossover_envelope_v2.py": 4_048,
+    "jasper/audio_measurement/program_analysis.py": 6_932,
+}
+
+
+def _over_line_cap(path: Path, cap: int) -> str | None:
+    """The complaint for one file over its ceiling, or ``None``."""
+
+    count = len(path.read_text(encoding="utf-8").splitlines())
+    if count <= cap:
+        return None
+    return f"{path.name}: {count} lines, ceiling {cap} (+{count - cap})"
+
+
+def test_the_line_ratchet_reports_a_file_over_its_ceiling(tmp_path) -> None:
+    """The ratchet's own positive control.
+
+    The marker ratchets above have none, and can afford it: they count over a
+    tree that always has some markers, so a broken counter reads as zero and
+    trivially passes a `<=`. This one compares per file, so a helper that
+    returned a too-small count — a changed reader, a file it could not open —
+    would report every file comfortably under its ceiling and read exactly like
+    a codebase that had stopped growing.
+    """
+
+    planted = tmp_path / "_ratchet_probe.py"
+    planted.write_text("one\ntwo\nthree\n", encoding="utf-8")
+
+    assert _over_line_cap(planted, 3) is None
+    assert _over_line_cap(planted, 2) == "_ratchet_probe.py: 3 lines, ceiling 2 (+1)"
+
+
+def test_the_commissioning_files_do_not_grow_without_an_extraction() -> None:
+    over = [
+        complaint
+        for rel, cap in sorted(MAX_LINES_BY_PATH.items())
+        if (complaint := _over_line_cap(REPO / rel, cap)) is not None
+    ]
+
+    assert not over, (
+        "These files may not grow without something moving out of them "
+        "(#2662 G2). Cut a seam and lower the ceiling, or raise it here in the "
+        "same diff and say what earned the room:\n" + "\n".join(over)
+    )
+
+
 def _unclosed_event_loops(source: str) -> list[str]:
     """Loops in `source` created by `new_event_loop()` that nothing closes.
 
