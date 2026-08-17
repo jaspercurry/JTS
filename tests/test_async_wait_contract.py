@@ -21,16 +21,23 @@ awaits. CI's Linux runners are quiet enough that these never hang there,
 so the global pytest-timeout backstop never fires on them either; this
 static guard is the only thing that catches the pattern at CI time.
 
-The allowlist is a two-sided ratchet, mirroring
+Structure, second half: nor may one bound such a wait so tightly that the
+bound becomes a deadline the test has to beat — see
+`SMALL_BOUNDED_WAIT_THRESHOLD_S`. The unbounded guard alone cannot see
+that shape, because a `wait_for` bounds whatever it encloses no matter
+how small its timeout is.
+
+Both allowlists are two-sided ratchets, mirroring
 `tests/test_atomic_io_conventions.py`: a new offender fails, AND a stale
-entry fails, so the list can only shrink. It is the burn-down list for
-the sites this bug class already has — not permission to add more.
+entry fails, so a list can only shrink. They are the burn-down lists for
+the sites each bug class already has — not permission to add more.
 """
 
 from __future__ import annotations
 
 import ast
 import asyncio
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -49,6 +56,30 @@ from ._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_signalled
 #: bound alone (no producer attribution) still turns a hang into a fast,
 #: clear failure instead of leaving the list non-empty.
 KNOWN_UNBOUNDED_WAITS: frozenset[tuple[str, str]] = frozenset()
+
+#: Floor for a `wait_for(<event>.wait(), timeout=...)` bound in a test.
+#:
+#: In this repo a timing promise is pinned by an explicit
+#: `assert elapsed < N` — test_alert_storm_does_not_postpone_fixed_patrol
+#: in tests/test_mux.py does exactly that, alongside a `wait_signalled`
+#: whose own bound it calls a hang-breaker. A `wait_for` timeout never
+#: pins one: nothing reads it, nothing reports it, and a test that beats
+#: it learns nothing. So a small bound on an event wait is always a
+#: hang-breaker in disguise — and a hang-breaker set near the coordination
+#: it is breaking is a deadline the test has to beat on a loaded box.
+#:
+#: 1.0 is the bottom of the band the tree already sits in: 29 of the 45
+#: bounded event waits on 2026-08-17 were exactly 1.0, and nothing at all
+#: fell between 0.2 and 1.0. So the ratchet starts with an EMPTY allowlist
+#: and grandfathers nothing.
+SMALL_BOUNDED_WAIT_THRESHOLD_S = 1.0
+
+#: Burn-down list for the other half: async tests bounding an event wait
+#: below `SMALL_BOUNDED_WAIT_THRESHOLD_S`. Empty because the last three
+#: sites (all in one mux test) were fixed when this guard landed. Fix with
+#: `wait_signalled()` and DELETE the entry — the guard fails on a stale
+#: entry too, so this only ever shrinks. Never add.
+KNOWN_SMALL_BOUNDED_WAITS: frozenset[tuple[str, str]] = frozenset()
 
 #: Calls that bound whatever they enclose.
 _BOUNDING_CALLS = frozenset({"wait_for", "timeout", "wait_signalled"})
@@ -116,8 +147,62 @@ def _unbounded_waits(fn: ast.AsyncFunctionDef) -> list[int]:
     return lines
 
 
-def _offending_tests() -> dict[tuple[str, str], list[int]]:
-    """Every async test under tests/ with an unbounded wait in its body."""
+def _timeout_literal(call: ast.Call) -> float | None:
+    """`call`'s timeout when it is written as a plain number, else None.
+
+    A variable or expression is not guessed at — the guard has no way to
+    know what it holds. That is also why `wait_signalled`'s own internal
+    `asyncio.wait_for(event.wait(), timeout)` is not a candidate.
+    """
+
+    node: ast.expr | None = None
+    if len(call.args) >= 2:
+        node = call.args[1]
+    for keyword in call.keywords:
+        if keyword.arg == "timeout":
+            node = keyword.value
+    if isinstance(node, ast.Constant) and isinstance(node.value, int | float):
+        return float(node.value)
+    return None
+
+
+def _small_bounded_waits(fn: ast.AsyncFunctionDef) -> list[int]:
+    """Lines where `fn`'s own body bounds an event wait too tightly."""
+
+    nested = _nodes_under_nested_defs(fn)
+    lines: list[int] = []
+    for node in ast.walk(fn):
+        if id(node) in nested or not isinstance(node, ast.Call):
+            continue
+        name = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+        if name != "wait_for" or not node.args:
+            continue
+        # Only `wait_for(<something>.wait(), ...)` — `wait_signalled`'s
+        # domain. `wait_for(<coroutine>, ...)` is bounding real work, and
+        # its timeout may well be the point.
+        awaited = node.args[0]
+        if not isinstance(awaited, ast.Call):
+            continue
+        func = awaited.func
+        if not isinstance(func, ast.Attribute) or func.attr != "wait":
+            continue
+        timeout = _timeout_literal(node)
+        if timeout is not None and timeout < SMALL_BOUNDED_WAIT_THRESHOLD_S:
+            lines.append(node.lineno)
+    return lines
+
+
+def _flagged_tests(
+    detect: Callable[[ast.AsyncFunctionDef], list[int]],
+) -> dict[tuple[str, str], list[int]]:
+    """Every async test under tests/ whose own body `detect` flags.
+
+    Scoped to `async def test_*` exactly as the unbounded guard is, and
+    each detector drops nodes under nested defs for the same reason: a
+    helper coroutine's wait is driven by the test body, not by pytest.
+    Both choices are deliberate, and together they are why a helper module
+    like tests/_async_wait.py is out of scope without being named here.
+    """
 
     offenders: dict[tuple[str, str], list[int]] = {}
     for path in sorted((_REPO_ROOT / "tests").rglob("*.py")):
@@ -131,10 +216,22 @@ def _offending_tests() -> dict[tuple[str, str], list[int]]:
                 continue
             if not node.name.startswith("test_"):
                 continue
-            lines = _unbounded_waits(node)
+            lines = detect(node)
             if lines:
                 offenders.setdefault((relative, node.name), []).extend(lines)
     return offenders
+
+
+def _offending_tests() -> dict[tuple[str, str], list[int]]:
+    """Every async test under tests/ with an unbounded wait in its body."""
+
+    return _flagged_tests(_unbounded_waits)
+
+
+def _small_bounded_tests() -> dict[tuple[str, str], list[int]]:
+    """Every async test under tests/ bounding an event wait too tightly."""
+
+    return _flagged_tests(_small_bounded_waits)
 
 
 def test_no_new_test_coordinates_through_an_unbounded_event_wait() -> None:
@@ -173,6 +270,42 @@ def test_known_unbounded_wait_allowlist_has_no_stale_entries() -> None:
     assert not stale, (
         "stale KNOWN_UNBOUNDED_WAITS entries — the test was fixed, renamed, or "
         "removed. Delete these so the ratchet keeps tightening:\n"
+        + "\n".join(f"  {path}::{name}" for path, name in stale)
+    )
+
+
+def test_no_new_test_bounds_an_event_wait_below_the_hang_breaker_floor() -> None:
+    """A tight `wait_for` bound on an event wait is a deadline in disguise.
+
+    It looks bounded, so the unbounded guard passes it, but nothing reads
+    the timeout as a promise: the test just has to reach its signal before
+    the bound, and on a loaded box it sometimes does not.
+    """
+
+    offenders = _small_bounded_tests()
+    new = sorted(key for key in offenders if key not in KNOWN_SMALL_BOUNDED_WAITS)
+
+    assert not new, (
+        f"`wait_for(<event>.wait(), timeout=<{SMALL_BOUNDED_WAIT_THRESHOLD_S}s)` "
+        "in a test body — the bound is a hang-breaker, not a timing promise, so "
+        "a small one only adds a deadline the test can lose. Use "
+        "wait_signalled() from tests/_async_wait.py, and pin any real timing "
+        "promise with an explicit `assert elapsed < N`:\n"
+        + "\n".join(
+            f"  {path}::{name}  line(s) {offenders[(path, name)]}"
+            for path, name in new
+        )
+    )
+
+
+def test_known_small_bounded_wait_allowlist_has_no_stale_entries() -> None:
+    """This ratchet only tightens too, for the same reason as the other."""
+
+    stale = sorted(KNOWN_SMALL_BOUNDED_WAITS - set(_small_bounded_tests()))
+
+    assert not stale, (
+        "stale KNOWN_SMALL_BOUNDED_WAITS entries — the test was fixed, renamed, "
+        "or removed. Delete these so the ratchet keeps tightening:\n"
         + "\n".join(f"  {path}::{name}" for path, name in stale)
     )
 
@@ -221,6 +354,38 @@ def test_guard_still_flags_an_unbounded_wait_named_like_asyncio_wait() -> None:
     fn = tree.body[0]
     assert isinstance(fn, ast.AsyncFunctionDef)
     assert _unbounded_waits(fn) == [2]
+
+
+def test_guard_detects_a_bound_below_the_floor() -> None:
+    """The shape the unbounded guard cannot see: bounded, but too tightly."""
+
+    tree = ast.parse(
+        "async def test_x():\n"
+        "    await asyncio.wait_for(started.wait(), timeout=0.2)\n"
+        "    await asyncio.wait_for(other.wait(), 0.5)\n"  # positional timeout
+    )
+    fn = tree.body[0]
+    assert isinstance(fn, ast.AsyncFunctionDef)
+    assert _unbounded_waits(fn) == []
+    assert _small_bounded_waits(fn) == [2, 3]
+
+
+def test_guard_accepts_hang_breaker_bounds_and_unknowable_timeouts() -> None:
+    """At the floor, above it, integral, non-literal, or not an event wait."""
+
+    tree = ast.parse(
+        "async def test_x():\n"
+        "    async def producer():\n"
+        "        await asyncio.wait_for(release.wait(), timeout=0.2)\n"
+        "    await asyncio.wait_for(started.wait(), timeout=1.0)\n"
+        "    await asyncio.wait_for(other.wait(), timeout=1)\n"
+        "    await asyncio.wait_for(later.wait(), timeout=budget)\n"
+        "    await asyncio.wait_for(reader.read(4), timeout=0.2)\n"
+        "    await wait_signalled(done, 'done')\n"
+    )
+    fn = tree.body[0]
+    assert isinstance(fn, ast.AsyncFunctionDef)
+    assert _small_bounded_waits(fn) == []
 
 
 async def test_wait_signalled_returns_once_the_event_fires() -> None:
