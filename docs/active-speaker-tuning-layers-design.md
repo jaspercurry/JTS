@@ -25,6 +25,10 @@
 > The five-layer ownership is unchanged. What changes: a driver's low limit
 > gets exactly one declared owner, and correction inside the crossover blend
 > region moves from the (blind) per-driver fit to the summed response.
+> **Capture-source ruling (2026-08-17, later the same morning):** a sixth
+> ruling adds decision 13 — the commissioning flow gets two first-class
+> capture sources, a microphone plugged into the Pi beside the existing relay
+> flow. Layer ownership is again unchanged; the seam is anchored by #2662.
 
 ## Why this exists (one paragraph of history)
 
@@ -212,6 +216,31 @@ morning after the series-1 convergence run on jts3.
     the blend-region contract — decision 10; **(iii)** a hardware series that
     proves the dip moves. Only after (iii) is prescriber policy worth
     deciding.
+
+**The ruling below was ratified later the same morning.**
+
+13. **Two capture sources, both first-class (2026-08-17).** The commissioning
+    flow supports a microphone plugged directly into the Pi — the Pi plays and
+    records on one clock, which removes the relay/upload/cross-device-desync
+    class structurally rather than diagnosing it — *and* the existing
+    web/phone relay flow, kept with its known unreliability accepted and
+    disclosed. Where a local mic is detected the flow may recommend it:
+    disclose-and-recommend, never nanny. The shape is a **capture-source
+    seam** under the existing tier/capture-plan machinery — the conductor asks
+    for a capture of program X at position Y, a provider answers with WAV plus
+    metadata — so the relay choreography becomes the relay provider's private
+    internals. Named consequence: this is the designated slimming path for
+    [`jasper/web/correction_crossover_v2.py`](../jasper/web/correction_crossover_v2.py),
+    the risk site named in
+    `captures/xover-series1-2026-08-17/wheels-report.md` (session-artifact) —
+    the host sheds relay interleaving and trends toward transport-only, by
+    strangler rather than rewrite, with that report's file-size ratchet
+    holding the line meanwhile. Sequenced after decision 12's hardware series
+    (iii), with a pull-forward trigger if lateral aborts recur during it.
+    #2662 is the anchor and owns the HOW through its design brief. Companion
+    ruling: `e0_capture.py` and the driver tools promote into `experiments/` —
+    tracked, usable, explicitly experimental, deprecated only by the owner —
+    while the browser flow stays first-class for human drivers (#2636).
 
 ## Layer 1a concretely — UX and data flow
 
@@ -705,6 +734,7 @@ experiment remain open).
 
 Opened since, and load-bearing for the 2026-08-17 rulings: #2600 blend-window
 instrument blindness · #2603 the driver low-limit's two declared values ·
-#2653 the level datum's frame-coherence condition. Campaign-wide wave state
-lives in [`audio-commissioning-roadmap.md`](audio-commissioning-roadmap.md),
-not here.
+#2636 the headless lab capture client's revival · #2653 the level datum's
+frame-coherence condition · #2662 the capture-source seam. Campaign-wide wave
+state lives in
+[`audio-commissioning-roadmap.md`](audio-commissioning-roadmap.md), not here.
