@@ -5,6 +5,12 @@ Source tree read: `$WT = /Users/jaspercurry/Code/JTS/.claude/worktrees/jts3-depl
 verified via `git rev-parse HEAD` and the presence of `_play_body` /
 `_maybe_retain_capture` in `jasper/web/correction_crossover_v2.py`).
 
+> **That path is a dated provenance record, not a location.** It names the
+> throwaway worktree this document was written against in July 2026 and has
+> since been deleted; the tool lives at `experiments/e0-capture/` and locates
+> `jasper/capture_relay/` from its own path. Read `$WT` below as "the repo
+> root at that commit."
+
 This file is the distilled contract `e0_capture.py` implements. Every claim
 below cites `file:line` in `$WT`. No live requests were made while writing
 this — every fact comes from reading source, not from probing a running Pi.

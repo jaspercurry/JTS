@@ -1388,9 +1388,11 @@ validates mint, spec fetch, and MAC verification against a live Pi without
 playing anything. The wire contract, with `file:line` citations and a dated
 revival addendum, is
 [`PROTOCOL.md`](../experiments/e0-capture/PROTOCOL.md); read the experiment's
-[`README.md`](../experiments/e0-capture/README.md) — including its stated
-residual risk that the setup payload may have drifted since `856903ca1` —
-before a hardware round. Hardware-free coverage lives in
+[`README.md`](../experiments/e0-capture/README.md) before a hardware round,
+in particular its stated residual risk — a future capture-page change to the
+`setup` payload is not refused, it degrades the round to uncalibrated data,
+and the only signal is `correction.crossover_v2_uncalibrated_capture` in the
+`jasper-correction-web` journal. Hardware-free coverage lives in
 [`tests/test_e0_capture_experiment.py`](../tests/test_e0_capture_experiment.py),
 which runs the same offline checks `--selftest` does.
 

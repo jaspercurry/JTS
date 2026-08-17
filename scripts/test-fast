@@ -219,6 +219,17 @@ while IFS= read -r changed; do
       add_test_if_present "tests/test_outputd_wiring.py"
       add_test_if_present "tests/test_usbsink_impulse_tap_contract.py"
       ;;
+    experiments/*/*)
+      # Same reasoning as the rust arm above: an experiment kit's guards are
+      # Python tests under tests/, so without this an edit to a kit selects
+      # nothing and its layout/path pins first run in the merge lane. The
+      # directory name is the test name (experiments/e0-capture ->
+      # tests/test_e0_capture_experiment.py), so this stays one arm however
+      # many kits land.
+      experiment="${changed#experiments/}"
+      experiment="${experiment%%/*}"
+      add_test_if_present "tests/test_${experiment//-/_}_experiment.py"
+      ;;
   esac
 done < "${changed_file_tmp}"
 

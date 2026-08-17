@@ -100,8 +100,9 @@ edit them, do not inherit them).
 `--start-session` and `--tap-link` reach a live Pi and the live relay, and the
 session they open makes the speaker play measurement sweeps at commissioning
 level. Only a human hardware operator coordinating a live run invokes them —
-never a background or automated context. `--selftest` is the only mode that
-touches nothing.
+never a background or automated context. `--selftest` reaches no Pi and no
+relay; it is still not inert locally, because it records 0.2 s from the
+default input when `sox` is present (see "Run it").
 
 `overnight_runs.sh` gates every run on `FLOOR_EPOCH`, a quiet-hours floor. The
 shipped value is a past date, so the gate passes today; export a future epoch
@@ -109,16 +110,52 @@ to re-arm it.
 
 ## Known residual risk
 
-**The setup wire payload may have drifted, and this client has not been
-proven on hardware since.** `e0_capture.py` mirrors the capture page's
-`setupWirePayload()` as of `856903ca1`; #1959, #1977, and #2035 touched
-capture-page screens after that. The 2026-08-16 revival re-read the contract
-offline and moved four claims (see PROTOCOL.md's addendum), but offline
-reading is not a hardware run. If the payload shape moved in a way that
-reading missed, the first `begin_capture` fails LOUDLY — the Pi refuses it —
-so the failure is one debug cycle at the start of a round, not a corrupted
-capture. Budget for it on the first hardware series that uses this tool; that
-series is what turns the risk into a fact either way.
+**A drifted `setup` payload is not refused — it silently degrades the round
+to uncalibrated data.** This is the risk to hold, and it is the opposite
+shape from a loud failure.
+
+The mirror itself is current. `setup_wire_payload()` was re-checked against
+`40d117229` (2026-08-16), line-exact, and the payloads still match on
+2026-08-17: the page's `validDefaultSetupHint` (`capture-page/js/main.js`)
+gates on the same mode / `resolvable` / `calibration_id` triple, and builds
+the same `{mode: "stored", calibration_id, model}` object. The one divergence
+— the page also carries `total_positions: 5` — is deliberate and documented
+in that function's docstring. No capture-page commit has landed since that
+anchor; re-derive with `git log --oneline 40d117229..HEAD -- capture-page/`.
+
+What a future capture-page change to `setupWirePayload()` or
+`validDefaultSetupHint` would do, by field:
+
+- **`begin_capture` drift is refused loudly.** `parse_begin_capture`
+  (`jasper/capture_relay/session.py`) accepts exactly `index` + `attempt`
+  plus an optional literal-`true` `retake`, and raises
+  `CaptureBeginRefused("begin_malformed")` on anything else.
+- **`setup` drift is not.** `classify_status` takes `setup` behind a bare
+  `isinstance(..., dict)` check; `build_crossover_sweep_spec` never arms
+  `setup_validation` (it keeps the dataclass default `False`); and when the
+  calibration does not resolve, the v2 host **annotates and continues** —
+  it logs `correction.crossover_v2_uncalibrated_capture` at WARNING and the
+  analysis still runs. That is the house disclose-don't-block posture
+  working as designed, not a gap.
+
+So the worst case is a **completed round of uncalibrated data**, and nothing
+on screen says so. Check the journal after the first capture of a round:
+
+```sh
+ssh pi@jts3.local \
+  "sudo journalctl -u jasper-correction-web --since '-10 min' --no-pager" \
+  | grep crossover_v2_uncalibrated_capture
+```
+
+No match means the capture resolved a calibration. A match names
+`setup_mode` — `absent` (the client sent no setup) versus a mode that was
+sent but did not resolve — which is the first thing to fix before spending
+more sweeps.
+
+The client has also not been proven on hardware since the revival: the
+2026-08-16 re-read was source reading, not a run. The first hardware series
+that uses this tool is what turns that into a fact either way, and the
+journal check above is what it should watch on capture one.
 
 One diagnostic is knowingly absent: this client sends no `capture_integrity`
 sidecar (#2151). That field is optional and never validated, so the loss is a

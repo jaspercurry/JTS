@@ -166,6 +166,29 @@ def test_live_validator_accepts_the_shipped_capture_page_identity(selftest) -> N
         validate_capture_page(stale, spec)
 
 
+class _SubprocessSpy:
+    """Records every attempted launch and blocks it from ever executing.
+
+    Blocking matters as much as recording: the control below deliberately
+    lets the recording path believe ``sox`` is installed, and it must still
+    be impossible for this lane to open the machine's input device.
+    """
+
+    def __init__(self) -> None:
+        self.launches: list[tuple[str, ...]] = []
+
+    def __call__(self, cmd, *_args, **_kwargs):
+        self.launches.append(tuple(str(part) for part in cmd))
+        raise FileNotFoundError("subprocess launch blocked by the test lane")
+
+
+def _install_subprocess_spy(selftest, monkeypatch) -> _SubprocessSpy:
+    spy = _SubprocessSpy()
+    monkeypatch.setattr(selftest.e0.subprocess, "run", spy)
+    monkeypatch.setattr(selftest.e0.subprocess, "Popen", spy)
+    return spy
+
+
 @pytest.mark.parametrize("check", SELFTEST_CHECKS)
 def test_offline_selftest_check(selftest, monkeypatch, check: str) -> None:
     """Run each of the experiment's own offline checks as its own node.
@@ -174,10 +197,38 @@ def test_offline_selftest_check(selftest, monkeypatch, check: str) -> None:
     best-effort 0.2 s recording from the machine's default input, and a
     hardware-free lane must not open an input device. The tool's own
     ``--selftest`` keeps that probe.
+
+    Hiding the binary is the mechanism; ZERO launches is the property, so
+    the property is what this asserts. A spy stands in for ``subprocess``
+    throughout, so no check can reach a shell by some other route this file
+    did not anticipate either.
     """
     monkeypatch.setattr(selftest.shutil, "which", lambda _name: None)
+    spy = _install_subprocess_spy(selftest, monkeypatch)
 
     getattr(selftest, check)()
+
+    assert spy.launches == []
+
+
+def test_without_the_suppression_the_lane_would_launch_sox(
+    selftest, monkeypatch
+) -> None:
+    """Positive control for the assertion above.
+
+    Without it, ``spy.launches == []`` would also pass if the recording path
+    had quietly stopped existing -- an empty list proves nothing on its own.
+    Here ``sox`` is made to look installed, so the check proceeds to the
+    launch the lane normally suppresses; the spy records it and raises
+    instead of executing, so no input device opens even in the control.
+    """
+    monkeypatch.setattr(selftest.shutil, "which", lambda _name: "/usr/bin/sox")
+    spy = _install_subprocess_spy(selftest, monkeypatch)
+
+    selftest.test_wav_encoding_matches_the_page()
+
+    assert [cmd[0] for cmd in spy.launches] == ["sox"]
+    assert "-t" in spy.launches[0]
 
 
 def test_every_selftest_check_runs_in_this_lane(selftest) -> None:
@@ -237,7 +288,18 @@ def test_readme_keeps_the_experimental_and_risk_boundaries() -> None:
     assert "#2636" in readme
     assert "active-speaker-tuning-layers-design.md" in readme
     # The disclosure that survives until a hardware series replaces it.
-    assert "has not been proven on hardware since" in readme
-    assert "the first `begin_capture` fails LOUDLY" in readme
+    assert "not been proven on hardware" in readme
+    # The shape of the risk, which is silent degradation and NOT a loud
+    # refusal. An earlier version of this file pinned the inverted claim
+    # ("the first begin_capture fails LOUDLY"), which would have sent an
+    # operator looking for an error the product deliberately never raises:
+    # `setup` is read behind a bare isinstance check, `setup_validation` is
+    # never armed for a crossover sweep, and an unresolved calibration is
+    # annotated and analyzed rather than refused.
+    assert "A drifted `setup` payload is not refused" in readme
+    assert "completed round of uncalibrated data" in readme
+    # The operator's only signal, and how to read its absence.
+    assert "crossover_v2_uncalibrated_capture" in readme
+    assert "jasper-correction-web" in readme
     # The one command a reader must be able to copy.
     assert "e0_capture.py --selftest" in readme
