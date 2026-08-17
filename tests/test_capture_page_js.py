@@ -385,7 +385,10 @@ def test_the_build_refuses_rather_than_publishing_without_the_shared_helper(tmp_
     file that is not there — is exactly the 404 this guard exists to prevent.
     """
     dist, _ = _build_capture_page_bundle(tmp_path)
-    shutil.rmtree(dist)
+    # Cleanup, not an assertion: `ignore_errors` so a build that failed to
+    # produce `dist` at all fails on THIS test's own assertions below rather
+    # than on a FileNotFoundError here, which names the wrong defect.
+    shutil.rmtree(dist, ignore_errors=True)
     (dist.parent.parent / "deploy/assets/shared/js/measurement-audio.js").unlink()
 
     proc = subprocess.run(

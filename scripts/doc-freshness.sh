@@ -155,7 +155,9 @@ printf '\n'
 
 printf 'Docs not verified/touched in >%d days:\n\n' "$days"
 if (( stale_count == 0 )); then
-  printf '  (none — all docs fresh)\n'
+  # "all docs" would be the very over-claim the archival exclusion below is
+  # printed to prevent: under `--all` some docs are deliberately not assessed.
+  printf '  (none — all enumerated docs fresh)\n'
 else
   printf '  %-12s %5s  %-6s  %s\n' 'Date' 'Days' 'Source' 'Doc'
   printf '  %-12s %5s  %-6s  %s\n' '------------' '-----' '------' '---'

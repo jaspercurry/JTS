@@ -174,6 +174,20 @@ def test_doc_freshness_all_prunes_the_archival_trees():
         )
 
 
+def test_doc_freshness_empty_state_does_not_claim_it_checked_every_doc():
+    """The all-fresh line says "enumerated", because `--all` skips the archive.
+
+    A ten-year threshold makes the empty branch deterministic: no doc in this
+    repo predates it, so the line always renders. (Not a larger number —
+    BSD `date -v-Nd` rejects one.) Without this the report contradicted its
+    own exclusion notice three lines further down.
+    """
+
+    out = _doc_freshness("3650")
+    assert "(none — all enumerated docs fresh)" in out, out
+    assert "all docs fresh" not in out, out
+
+
 def test_doc_freshness_all_reports_what_it_excluded():
     """The prune is stated with its count, never silent.
 

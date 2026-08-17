@@ -413,7 +413,6 @@ def test_summary_never_calls_a_silent_speaker_non_critical(capsys):
     assert "the speaker is silent" in line
     assert "non-critical" not in line
     assert "2 warning(s)" in line
-    assert "1 of them" in line
 
 
 def test_summary_still_calls_cosmetic_warnings_non_critical(capsys):
@@ -451,4 +450,91 @@ def test_summary_stays_green_when_nothing_is_wrong(capsys):
 
     assert exit_code == 0
     assert "all checks passed." in line
+    assert "silent" not in line
+
+
+def test_a_silent_failure_alone_does_not_count_itself_among_the_warnings(capsys):
+    """The `fail` half of the contract, which was unpinned and wrong.
+
+    No check sets the flag on a `fail` today, but `speaker_silent` exists to be
+    extended, and `check_active_speaker_runtime_graph`'s own `fail` branches
+    ("statefile points at missing config", "Camilla graph is unsafe...") are
+    plausible next members. Before this, that reachable state printed
+    "1 failed, 0 warning(s), 1 of them: the speaker is silent" — one of zero.
+
+    The silence LEADS the line now, so it has no "them" to be counted out of.
+    """
+
+    exit_code, line = _summary_line(
+        [doctor.CheckResult("graph", "fail", "unsafe", speaker_silent=True)],
+        capsys,
+    )
+
+    assert exit_code == 1
+    assert "the speaker is silent" in line
+    assert "of them" not in line
+    # The counts stay behind the fact, and stay literal.
+    assert "1 failed, 0 warning(s)" in line
+
+
+def test_a_silent_failure_does_not_pin_its_silence_on_a_cosmetic_warning(capsys):
+    """The misattribution cell: the silence belongs to the FAIL, not the warn.
+
+    The old wording spliced ", 1 of them: the speaker is silent" into a
+    sentence whose "them" was the warning count, so this exact input read as
+    though the missing transit key had silenced the speaker.
+    """
+
+    exit_code, line = _summary_line(
+        [
+            doctor.CheckResult("graph", "fail", "unsafe", speaker_silent=True),
+            doctor.CheckResult("transit", "warn", "no MTA key"),
+        ],
+        capsys,
+    )
+
+    assert exit_code == 1
+    assert line.endswith(
+        "the speaker is silent — 1 failed, 1 warning(s).\x1b[0m"
+    )
+    assert "of them" not in line
+
+
+def test_an_ok_result_claiming_silence_is_ignored_rather_than_believed(capsys):
+    """`CheckResult` says the flag is read on warn/fail only — pin that.
+
+    A check that returned `ok` while asserting silence is contradicting
+    itself, and the summary must not repeat the contradiction. Previously this
+    was an argument in a comment with no test behind it.
+
+    The `ok` result is paired with a COSMETIC WARN on purpose. Alone it proves
+    nothing: with no warn and no fail the composer takes the all-passed branch,
+    which never reads the flag, so a version that counted `ok` results would
+    pass anyway — measured, by mutating the scoping and watching the
+    ok-only input survive. Only this pairing reaches the branch that reads it.
+    """
+
+    exit_code, line = _summary_line(
+        [
+            doctor.CheckResult("graph", "ok", "legal", speaker_silent=True),
+            doctor.CheckResult("transit", "warn", "no MTA key"),
+        ],
+        capsys,
+    )
+
+    assert exit_code == 0
+    assert line.endswith("1 warning(s) — non-critical.\x1b[0m")
+    assert "silent" not in line
+
+
+def test_a_lone_ok_result_claiming_silence_still_reports_all_passed(capsys):
+    """The other half of the same contradiction: nothing to warn about."""
+
+    exit_code, line = _summary_line(
+        [doctor.CheckResult("graph", "ok", "legal", speaker_silent=True)],
+        capsys,
+    )
+
+    assert exit_code == 0
+    assert line.endswith("all checks passed.\x1b[0m")
     assert "silent" not in line

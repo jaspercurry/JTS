@@ -692,32 +692,42 @@ from .aec_probe import (
 def render(results: list[CheckResult]) -> int:
     print()
     print(f"{BOLD}jasper-doctor{RESET}\n")
-    fails = warns = silent = 0
+    fails = warns = 0
+    silent = False
     for r in results:
         if r.status == "ok":
             color, mark = GREEN, "✓"
-        elif r.status == "warn":
-            color, mark = YELLOW, "!"
-            warns += 1
         else:
-            color, mark = RED, "✗"
-            fails += 1
-        if r.speaker_silent:
-            silent += 1
+            # Read inside this arm, so an `ok` result's `speaker_silent` is
+            # never read at all. That makes the field's warn/fail scope true by
+            # construction rather than by convention: a check returning `ok`
+            # while asserting silence contradicts itself, and the summary must
+            # not repeat the contradiction.
+            silent = silent or r.speaker_silent
+            if r.status == "warn":
+                color, mark = YELLOW, "!"
+                warns += 1
+            else:
+                color, mark = RED, "✗"
+                fails += 1
         print(f"  {color}{mark}{RESET} {r.name:24s} {r.detail}")
     print()
     # #2471: a parked speaker's warn used to end the run on "non-critical",
     # which is the one thing it is not — the household hears nothing. The
-    # severity is carried by the WORDS, not by the colour or the exit code:
-    # those keep their single meaning (red/1 = something is broken), and a
-    # parked box must stay deployable (#2145).
-    silence = f", {silent} of them: the speaker is silent" if silent else ""
+    # silence LEADS the line, because it outranks every count behind it and
+    # because no count can be misread as attributing it to the wrong result.
+    # It is one phrase for a warn and for a fail: the household outcome is the
+    # same either way, and which check said so is already on the lines above.
+    #
+    # Severity rides the WORDS. Colour and exit code keep their single meaning
+    # (red / 1 = something is broken), so a parked box stays deployable (#2145).
+    lead = "the speaker is silent — " if silent else ""
     if fails:
-        print(f"{RED}{fails} failed, {warns} warning(s){silence}.{RESET}")
+        print(f"{RED}{lead}{fails} failed, {warns} warning(s).{RESET}")
         return 1
     if warns:
-        tail = silence if silence else " — non-critical"
-        print(f"{YELLOW}{warns} warning(s){tail}.{RESET}")
+        tail = "" if silent else " — non-critical"
+        print(f"{YELLOW}{lead}{warns} warning(s){tail}.{RESET}")
         return 0
     print(f"{GREEN}all checks passed.{RESET}")
     return 0
