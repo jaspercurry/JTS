@@ -9532,8 +9532,8 @@ def test_delta_probe_removes_the_applys_declared_level_move(caplog):
 def test_a_level_mismatch_is_persisted_and_logged_at_warning(caplog):
     """#1811 SF1: a non-rollback finding must leave a trace, on both surfaces.
 
-    ``_delta_probe_refusal`` returns ``None`` for it by design, so the session
-    passes — and until this landed the ONLY evidence was an INFO journal line
+    ``level_mismatch`` is not in ``DELTA_PROBE_ROLLBACK_VERDICTS`` by design,
+    so nothing escalates on it and the session passes — and until this landed the ONLY evidence was an INFO journal line
     nobody greps. It now rides WARNING (the level a reader sweeping a
     "successful" session actually sees) and is persisted so ``/state``, the
     doctor, and the done screen's caveat can all read one record.

@@ -1036,9 +1036,9 @@ def test_only_stage_2_binds_the_rollback_seam(monkeypatch):
 
     ``bind_delta_probe_rollback`` is wired into exactly one set of seams, and
     #2291 Phase 3a moved it to the right one. Stage 1 carries no VERIFY, so it
-    can never reach the delta probe that presses this button; stage 2 is the
-    session that produces the post-apply verdict. Per ``_delta_probe_refusal``,
-    a conductor with no rollback seam still refuses — but under
+    can never reach the delta probe whose verdict presses this button; stage 2
+    is the session that produces the post-apply verdict. A conductor with no
+    rollback seam still refuses — but under
     ``REASON_CORRECTION_ROLLBACK_FAILED``, the copy that tells the household
     the correction is STILL APPLIED. That sentence is now true only when the
     restore genuinely failed, rather than being the only sentence available.

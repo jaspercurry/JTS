@@ -648,12 +648,20 @@ def _run_round_restore(
 ) -> tuple[bool, dict[str, Any]]:
     """Fire the rollback seam for an adoption-driven restore.
 
-    Shares the host's once-guarded closure with the delta probe, so a Full
-    session in which both ask for a restore attempts exactly one — and the
-    second asker is handed the FIRST attempt's outcome rather than
-    ``handle_v2_restore``'s "nothing is applied to undo" refusal, which would
-    otherwise be reported as a failed rollback and told to the household as
-    "the correction is still applied" when it is not.
+    **The ONLY caller of that seam, and that is a guarantee rather than an
+    observation about the call graph.** The delta probe used to restore from a
+    seam of its own, so a Full session could ask twice; ``handle_v2_restore``
+    is not idempotent, and the second asker read its "nothing is applied to
+    undo" refusal as a failed rollback and told the household "the correction
+    is still applied" when it was not. That seam is deleted — the probe reports
+    and this function acts on the table's decision — and the flow is pinned
+    against growing a second one back.
+
+    The host's closure is still once-guarded, and it should stay that way: the
+    guard is a property of the binding rather than of this caller's discipline,
+    which is precisely the assumption whose failure produced the false
+    sentence. See ``bind_delta_probe_rollback`` in
+    :mod:`jasper.web.correction_crossover_v2`.
     """
     restored = False
     error = ""

@@ -4941,3 +4941,64 @@ def test_the_reservation_does_not_displace_the_verified_badge():
     assert RIPPLE_RESERVATION_COPY in texts
     # The badge keeps the slot it earned; the reservation follows it.
     assert texts.index("Verified.") < texts.index(RIPPLE_RESERVATION_COPY)
+
+
+@pytest.mark.parametrize(
+    ("case", "ordinal", "offered"),
+    [
+        ("mid-series", 1, True),
+        ("the last round the budget allows", 2, True),
+        ("the cap itself", 3, False),
+        ("past it, from a state nobody should be able to produce", 9, False),
+        ("an ordinal no build wrote", None, True),
+        ("a corrupt ordinal", True, True),
+    ],
+    ids=["round1", "round2", "at_cap", "past_cap", "absent", "corrupt"],
+)
+def test_a_missed_round_at_the_cap_offers_no_fourth_bite(case, ordinal, offered):
+    """The gap this screen must not widen, bounded at the button.
+
+    A MISSED round reaches ``keep_for_iteration`` through ``_QUALITY_ROWS``
+    without the headroom axis being consulted — only the PASSED cell splits on
+    it — so a MISSED series never ends via the round cap. That is
+    ``decide_adoption``'s, it predates this PR, and it is filed separately.
+    What is NEW here is the button: until it existed the gap cost a household
+    nothing, and offering a fourth bite on a three-round budget is exactly the
+    thing "only the budget, the plateau, and the safety class end a series"
+    forbids.
+
+    The unreadable cases OFFER, matching the direction
+    ``series_position_from_state`` already fails in: a lost history resolves to
+    the first round, never to "the cap was reached".
+    """
+    receipt = {
+        "round_id": "s1",
+        "adoption": "keep_for_iteration",
+        "row": "row2_trusted_safe_missed",
+        "reason": "benefit_unproven",
+    }
+    if ordinal is not None:
+        receipt["round_ordinal"] = ordinal
+
+    env = _round_done_env(**receipt)
+
+    ids = {a["id"] for a in env["alternate_actions"]}
+    assert ("round_remeasure" in ids) is offered, case
+    # The CAVEAT stays either way — the round did miss something, and saying so
+    # is honest whether or not another round is on offer.
+    assert "crossover_v2_keep_for_iteration" in {n["code"] for n in env["nudges"]}
+
+
+def test_the_cap_the_button_reads_is_the_headroom_axis_own_constant():
+    """One budget, two readers. A literal here would be a second definition
+    that a change to ``ROUND_SERIES_CAP`` would silently turn into a lie."""
+    import inspect
+
+    from jasper.active_speaker import crossover_envelope_v2 as envelope
+    from jasper.active_speaker.crossover_v2.round_evidence import ROUND_SERIES_CAP
+
+    source = inspect.getsource(envelope._round_is_iterating)
+    assert "ROUND_SERIES_CAP" in source
+    assert str(ROUND_SERIES_CAP) not in source, (
+        "the cap must be read from its owner, never spelled into this screen"
+    )

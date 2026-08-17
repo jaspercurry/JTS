@@ -2,13 +2,22 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Scoped "start over" for the crossover flow (``POST /crossover/reset``).
+"""The crossover flow's two "leave this where it is" routes.
 
-Pins the KEEP/CLEAR split for the in-flow reset that restarts the guided
-measurement journey without losing driver research or disturbing whatever
-audio graph is currently applied/loaded — see
-``jasper.active_speaker.reset.clear_active_speaker_measurement_journey`` and
-docs/HANDOFF-correction.md "Scoped crossover reset".
+``POST /crossover/reset`` — scoped "start over". Pins the KEEP/CLEAR split for
+the in-flow reset that restarts the guided measurement journey without losing
+driver research or disturbing whatever audio graph is currently applied/loaded
+— see ``jasper.active_speaker.reset.clear_active_speaker_measurement_journey``
+and docs/HANDOFF-correction.md "Scoped crossover reset".
+
+``POST /crossover/v2/decline`` — the review screen's "Keep current sound"
+(#2641). It shares this file rather than getting its own because it is the
+same question one screen over (what a household keeps when they decline to go
+further) and it is tested through the same ``flow`` handler and the same
+durable-state scaffold. Its own section pins both halves: the write records
+the decision without touching the speaker or the candidate, and the read stops
+serving a decision screen the household has already answered — bound to the
+candidate they answered, so a newer measurement brings the review back.
 """
 
 from __future__ import annotations

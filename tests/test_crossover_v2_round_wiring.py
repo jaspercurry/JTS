@@ -2361,7 +2361,7 @@ def test_exactly_one_of_the_two_round_triggers_fires_in_any_session(
     assert full.round_evaluation is not None, "Full grades at the cloud close"
 
 
-def test_a_delta_probe_refusal_at_the_cloud_close_burns_no_round(
+def test_a_probe_rollback_at_the_cloud_close_banks_its_round(
     monkeypatch, real_bundle,
 ):
     """A probe ROLLBACK at the cloud close banks a receipt — the founding ask.

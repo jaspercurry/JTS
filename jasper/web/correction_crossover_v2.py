@@ -802,7 +802,7 @@ def observe_restore() -> None:
     save_v2_state(state, durable=True)
 
 
-#: The one shape a recorded review decision takes, and its only value today.
+#: The one shape a recorded review decision takes, and its only value.
 #:
 #: ``decision`` is a word rather than a bool because the fact being recorded is
 #: WHICH answer the household gave, and a bool names only one of them.
@@ -8518,29 +8518,33 @@ def bind_delta_probe_rollback(run_async: Any, camilla_factory: Any) -> Any:
     not swallow the verdict that asked for it.
 
     It does NOT claim to catch everything: an OSError from the CamillaDSP
-    socket or a malformed stash still propagates, and the conductor's own
-    ``_delta_probe_refusal`` catches that wider family on the other side of
-    the seam (it has to — a conductor with a different binding gets the same
-    protection). Two honest halves rather than one dishonest "never raises".
+    socket or a malformed stash still propagates, and
+    :func:`~jasper.active_speaker.crossover_v2.coordinator._run_round_restore`
+    catches that wider family on the other side of the seam (it has to — a
+    conductor with a different binding gets the same protection). Two honest
+    halves rather than one dishonest "never raises".
 
-    **Exactly once per binding, and the reason is the copy (#2291).** Three
-    conductor sites can reach this closure in one Full session — the delta
-    probe's refusal at VERIFY, the same refusal when the post-apply cloud
-    closes, and the round's adoption path. ``handle_v2_restore`` is NOT
-    idempotent: a successful restore sets ``applied = False``, so the SECOND
-    call refuses with "nothing is applied to undo", this closure returns
-    ``False``, and ``_delta_probe_refusal`` re-labels the verdict
+    **Exactly once per binding, and the reason is the copy (#2291).** ONE
+    conductor site reaches this closure — the round's adoption path — and the
+    guard below is what its history bought. Until the fifth-principle routing
+    there were three: the delta probe's own refusal at VERIFY, the same refusal
+    when the post-apply cloud closed, and the round. ``handle_v2_restore`` is
+    NOT idempotent: a successful restore sets ``applied = False``, so a SECOND
+    call refused with "nothing is applied to undo", this closure returned
+    ``False``, and the second asker re-labelled its verdict
     :data:`REASON_CORRECTION_ROLLBACK_FAILED` — whose household copy says the
-    correction is **still applied**. It is not. That false sentence about
-    their own speaker is the defect, not the extra call, so the guard fixes
-    the sentence rather than merely the reachability: the restore is attempted
-    once, and every later caller is handed the FIRST call's outcome verbatim,
-    so a successful restore keeps reporting success and the verdict keeps its
-    own "the previous sound has been put back" copy.
+    correction is **still applied**. It is not. That false sentence about their
+    own speaker was the defect, not the extra call, so the guard fixed the
+    sentence rather than merely the reachability: the restore is attempted
+    once, and every later caller is handed the FIRST call's outcome verbatim.
 
-    Remembering the outcome rather than suppressing the repeat is also what
-    lets the shipped delta-probe rollback and the new adoption-driven restore
-    coexist without either one having to know about the other.
+    **Kept now that the callers are down to one**, deliberately. It is a
+    property of THIS closure rather than of any caller's discipline, and it is
+    what makes "a successful restore never reports failure" hold without the
+    binding having to know how many askers exist — which is exactly the
+    assumption that broke last time. The one-owner rule is pinned separately,
+    at the flow (``test_two_restore_triggers_run_one_undo_and_keep_the_honest_
+    sentence`` asserts no second ``self._seams.rollback(`` call site survives).
     """
     lock = threading.Lock()
     outcome: dict[str, bool] = {}

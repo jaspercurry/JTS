@@ -2059,18 +2059,45 @@ def _round_summary(status: Mapping[str, Any]) -> dict[str, str] | None:
 
 
 def _round_is_iterating(v2: Mapping[str, Any]) -> bool:
-    """Did the last graded round say another bite is coming?
+    """Did the last graded round say another bite is coming, and is one left?
 
     Keyed on the ROW for :func:`_round_adoption_nudges`' reason — two rows
     share the ``keep_for_iteration`` outcome and this needs both of them, so
-    reading the outcome would work today and break the moment a third row
-    joins it. Reads the same ``round_receipt`` the copy does, so the screen
+    reading the outcome answers correctly for both of them by accident, and
+    stops the moment a third row joins them. Reads the same ``round_receipt`` the copy does, so the screen
     can never promise another round in prose and withhold the button, or the
     reverse.
+
+    **The budget is checked here too, and the reason is a gap in the table
+    this screen must not widen.** The row alone is not enough: a MISSED round
+    (:data:`~.crossover_v2.contracts.ADOPTION_ROW_KEEP_FOR_ITERATION`) reaches
+    ``keep_for_iteration`` from :data:`~.crossover_v2.verification.
+    _QUALITY_ROWS` WITHOUT the headroom axis being consulted at all — only the
+    PASSED cell splits on it — so a MISSED series never ends via the cap. That
+    predates this screen and ``decide_adoption`` is unchanged by it, but until
+    now the done screen offered no re-measure and the gap cost a household
+    nothing. Minting the button is what would turn it into an offered fourth
+    bite, so the button carries the budget the row does not.
+
+    Read as ``banked_ordinal >= ROUND_SERIES_CAP`` — the SAME comparison
+    :func:`~.crossover_v2.verification.evaluate_iteration_headroom` makes,
+    against the same constant, on the ordinal that round banked. Not a second
+    definition of the budget: one constant, one comparison, two readers. An
+    unreadable or absent ordinal offers the bite, which is the direction the
+    series' own reader already fails in (a lost history resolves to the first
+    round, never to "the cap was reached").
     """
 
-    row = str(_mapping(v2.get("round_receipt")).get("row") or "")
-    return row in {ADOPTION_ROW_KEEP_FOR_ITERATION, ADOPTION_ROW_KEEP_ITERATING}
+    from .crossover_v2.round_evidence import ROUND_SERIES_CAP
+
+    receipt = _mapping(v2.get("round_receipt"))
+    row = str(receipt.get("row") or "")
+    if row not in {ADOPTION_ROW_KEEP_FOR_ITERATION, ADOPTION_ROW_KEEP_ITERATING}:
+        return False
+    ordinal = receipt.get("round_ordinal")
+    if isinstance(ordinal, bool) or not isinstance(ordinal, int):
+        return True
+    return ordinal < ROUND_SERIES_CAP
 
 
 def _round_adoption_nudges(v2: Mapping[str, Any]) -> list[dict[str, str]]:

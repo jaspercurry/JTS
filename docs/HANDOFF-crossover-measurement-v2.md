@@ -3692,7 +3692,9 @@ which would be false about a take rejected on its first attempt — and the
 `attempts` block rides out unspent, which is exactly what
 `terminal_outcome` distinguishes. Two producers reach it: `check_screens`'
 `channel_map_mismatch`, and the post-apply round/delta-probe `correction_*`
-refusals (`_round_refusal_for`, `_delta_probe_refusal`). Both were
+refusals (`_round_refusal_for` — the probe's own `_delta_probe_refusal` was
+the second producer until the fifth-principle routing deleted it, and its
+classes now reach this through the round). Both were
 reproduced riding out as ordinary retryable verdicts before #2086's second
 half — the page rendered "Try again" over `attempts.left: 3`, and the tap
 raised `CaptureBeginRefused` pre-play.
@@ -3771,7 +3773,7 @@ journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(a
 journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(calibration_resolve_failed|uncalibrated_capture|default_calibration_hint_failed)'
 # Accountability + delta probe (PR-L4/L5) — why a session refused, and what
 # the speaker actually did with the correction:
-journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(level_estimator_finding|level_match_refused|prediction_gate|realized_level_match|delta_probe|delta_probe_rollback|delta_probe_restore)'
+journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(level_estimator_finding|level_match_refused|prediction_gate|realized_level_match|delta_probe|round_restore|round_recovery_required|delta_probe_restore)'
 ```
 
 `event=correction.crossover_v2_level_estimator_finding` is the banked-and-
