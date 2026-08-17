@@ -478,6 +478,18 @@ def test_anchor_decision_is_logged_with_its_margin(caplog):
     assert "corrected=true" in caplog.text
     # A correction is a WARNING -- a mis-anchor was caught and is worth seeing.
     assert any(r.levelno == logging.WARNING for r in caplog.records)
+    # The LOSING interpretation is named too (#2644 review), because a reader
+    # triaging an ambiguous anchor otherwise re-derives it from the WAVs. Both
+    # shifts share the pre-#2093 baseline, so their difference is the gap
+    # between the two candidate timelines -- here one pilot spacing.
+    line = next(r.getMessage() for r in caplog.records
+                if "event=program_analysis.anchor" in r.getMessage())
+    fields = dict(tok.split("=", 1) for tok in line.split() if "=" in tok)
+    assert fields["anchor"] == "pilot_summed_hi"
+    assert fields["runner_up_anchor"] == "pilot_summed_lo"
+    spacing_ms = _pilot_spacing(prog) / SR * 1000.0
+    separation = float(fields["shift_ms"]) - float(fields["runner_up_shift_ms"])
+    assert separation == pytest.approx(-spacing_ms, abs=1.0)
 
     caplog.clear()
     with caplog.at_level(logging.INFO, logger=_ANALYSIS_LOGGER):
@@ -926,17 +938,56 @@ def test_ambiguity_needs_BOTH_readings_corroborated(
     assert resolved_ambiguous is ambiguous
 
 
-def test_the_margin_brackets_the_two_measured_populations(monkeypatch):
-    """The constant's derivation, as an assertion rather than a comment.
+@pytest.mark.parametrize(
+    "band",
+    [
+        (30_000.0, 40_000.0),   # entirely above Nyquist at this rate
+        (4_000.0, 150.0),       # inverted: hi below lo, so the mask is empty
+    ],
+)
+def test_a_band_that_survives_no_bin_falls_back_to_full_band(band):
+    """The fallback `_earliest_strong_peak` promises in prose, pinned.
 
-    ``ANCHOR_DISCRIMINATION_MARGIN`` is not fitted -- it is a round number
-    chosen because the two populations it separates do not overlap by two
-    orders of magnitude: a capture the witness ATTRIBUTES separates its
-    candidates by ~0.8 (2026-08-16's accepted round: 0.818), and one it cannot
-    separates them by ~0.001 (that day's refused round: 0.0034). Both ends are
-    measured HERE, on this suite's own fixtures, so moving the constant into
-    either population fails -- which nothing else does, because there is no
-    fixture in between to fail on and, per the field data, no capture either.
+    Its docstring says a band that survives no FFT bin "keeps the full-band
+    behavior exactly". Without the two-norm check that makes that true, both
+    sides are zeroed, the peak is 0.0, and the function returns index 0 --
+    which on this fixture is 2022.4 ms from the real arrival, i.e. a timeline
+    error 67x the per-segment search window. Deleting the guard leaves every
+    other test in this file green (the #2644 panel's G7 mutation: 62/62), so
+    the promise needs its own assertion.
+    """
+    prog = _incident_program()
+    cap = _incident_room(prog, tone_rms=QUIET_TONE_RMS)
+    stim = np.asarray(
+        segment_stimulus(prog.segment("pilot_woofer_lo")), dtype=np.float64
+    )
+    full_band = _earliest_strong_peak(cap, stim)
+    assert full_band > 0, "the fixture itself must locate, or this proves nothing"
+    assert _earliest_strong_peak(
+        cap, stim, band_hz=band, sample_rate=SR
+    ) == full_band
+
+
+def test_the_margin_brackets_the_two_measured_populations(monkeypatch):
+    """A floor sanity check on ``ANCHOR_DISCRIMINATION_MARGIN``, and NOT a
+    claim that it separates two populations.
+
+    An earlier version of this suite said the constant sat in an empty band
+    between clean populations. The #2644 adversarial panel falsified that: an
+    un-attributed capture's separation is a continuous function of ROOM LEVEL
+    (its sweep ramped to 0.6463 on captures that had all slid one pilot
+    spacing, five of them inside the range once called empty). Enumerating the
+    fixtures we happen to own was a hypothesis about the population, never a
+    bound on it -- which is the rule this repo already states about
+    enumeration, applied to a number instead of to a grep.
+
+    What survives, and is asserted here, is narrower: on QUIET-ROOM fixtures
+    the margin sits between the separation a correctly-attributed capture
+    shows and the one the reconstructed incident shows. That keeps an edit
+    that moves the constant into either of THOSE from landing silently. Why a
+    capture that escapes it is still refused is
+    ``ANCHOR_DISCRIMINATION_MARGIN``'s own comment: the room level that widens
+    the gap independently fails the rungs below.
     """
     prog = _incident_program()
     healthy = _anchor_margin(prog, _incident_room(prog, tone_rms=QUIET_TONE_RMS))
@@ -948,10 +999,99 @@ def test_the_margin_brackets_the_two_measured_populations(monkeypatch):
         prog, _incident_room(prog, tone_rms=INCIDENT_TONE_RMS)
     )
     assert unattributed < ANCHOR_DISCRIMINATION_MARGIN < healthy
-    # ...and with room to spare on BOTH sides, which is the actual claim. A
-    # margin that merely squeaks between them is a fitted number, not a floor.
+    # ...with room to spare on both sides, so a constant that merely squeaks
+    # past one of these two fixtures reads as fitted and fails here. Says
+    # nothing about captures neither fixture represents.
     assert unattributed * 10 < ANCHOR_DISCRIMINATION_MARGIN
     assert ANCHOR_DISCRIMINATION_MARGIN * 10 < healthy
+
+
+_ROOM_RAMP = (QUIET_TONE_RMS, 0.05, 0.10, INCIDENT_TONE_RMS, 0.30, 0.65)
+
+
+def _mislocked(analysis) -> bool:
+    """A slid timeline reads the loud pilot's window as the quiet one's, so the
+    captured delta inverts against a programmed +10 dB -- the incident's own
+    signature, and a fact about the RESULT rather than about the locate."""
+    return any(p.captured_delta_db < 0.0 for p in analysis.pilots)
+
+
+def test_a_mislocking_room_has_already_failed_a_rung_below(monkeypatch):
+    """The claim that replaced the population story, asserted rather than
+    quoted: a mis-locked capture is NOT guaranteed to sit inside the margin,
+    and what makes that survivable is that the room level doing the
+    mis-locking has already failed a gate below it.
+
+    Walked as a ramp, because the point is that there is no boundary to find
+    -- the #2644 panel measured the un-attributed separation as a continuous
+    function of room level, up to 0.6463. This asks the load-bearing question
+    instead: is there a room quiet enough to still clear the gain solve's
+    floor and loud enough to mis-lock? On this fixture there is not, and the
+    floor has already failed one step BEFORE the first mis-lock. If that ever
+    stops holding, the margin becomes the only thing between that household
+    and a rewire instruction, and this fails.
+
+    Run against the pre-#2644 locate, because that is what produces mis-locks
+    at all; the companion below asserts the shipped locate produces none.
+    """
+    monkeypatch.setattr(
+        "jasper.audio_measurement.program_analysis._earliest_strong_peak",
+        _full_band_locate,
+    )
+    prog = _incident_program()
+    saw_mislock = False
+    for tone in _ROOM_RAMP:
+        analysis = analyze_program_capture(
+            prog, _incident_room(prog, tone_rms=tone), SR
+        )
+        if not _mislocked(analysis):
+            continue
+        saw_mislock = True
+        assert analysis.gain_plan is not None
+        assert analysis.gain_plan.snr_floor_ok is False, (
+            f"tone={tone}: mis-locked while the room still cleared the gain "
+            "solve's floor -- the margin is now load-bearing on its own"
+        )
+    assert saw_mislock, "the ramp must reach a mis-lock or it asserts nothing"
+
+
+def test_the_shipped_locate_mis_locks_nowhere_on_that_ramp():
+    """The companion, and the reason the rung above is defence in depth rather
+    than the defence: over the SAME room ramp the band-limited locate never
+    slides the timeline at all, at any level the fixture reaches."""
+    prog = _incident_program()
+    for tone in _ROOM_RAMP:
+        analysis = analyze_program_capture(
+            prog, _incident_room(prog, tone_rms=tone), SR
+        )
+        assert not _mislocked(analysis), f"tone={tone} slid the timeline"
+        assert analysis.anchor_ambiguous is False
+
+
+def test_a_corrected_anchor_can_also_be_ambiguous(monkeypatch):
+    """The one state combination no fixture reaches, pinned so its meaning is
+    recorded rather than discovered.
+
+    Nothing reverts a near-tie winner to ``first``, so ``corrected`` and
+    ``ambiguous`` can both be true: the arbitration moved the anchor AND says
+    it could not really tell. That is the honest reading of the state -- the
+    move stands because a near-tie is not a reason to prefer the other one
+    either -- and the safety property does not rest on it, because the ladder
+    refuses an ambiguous capture whichever candidate won.
+    """
+    scores = iter((0.9000, 0.9007))
+    monkeypatch.setattr(
+        "jasper.audio_measurement.program_analysis._locate_in_window",
+        lambda capture, stim, scheduled, n, *, sample_rate: (
+            scheduled, next(scores)
+        ),
+    )
+    prog = _incident_program()
+    _offset, anchor, _stimuli, ambiguous = _global_offset(
+        prog, _incident_room(prog, tone_rms=QUIET_TONE_RMS), SR
+    )
+    assert anchor.segment_id == "pilot_woofer_hi", "the LATER candidate must win"
+    assert ambiguous is True
 
 
 def test_the_anchor_event_reports_the_ambiguity_it_found(monkeypatch):

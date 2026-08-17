@@ -223,29 +223,41 @@ SWEEP_LOCATE_CONFIDENCE_FLOOR = 0.3
 # this one asks "did hearing it tell the two readings apart" — and a capture can
 # pass the first and fail this one, which is precisely issue #2644.
 #
-# Derived from the two measured populations, which do not overlap by two orders
-# of magnitude rather than by a hair:
+# **It is NOT a separator between two clean populations, and an earlier version
+# of this comment claimed it was.** That claim was falsified by the #2644
+# adversarial panel's own sweep: an un-attributed capture's separation is a
+# continuous function of ROOM LEVEL, not a property of the mis-lock. The witness
+# scores it compares are full-band (see `_resolve_anchor`'s note beside the
+# guard), so both hypotheses' confidences fall as the room gets louder, and they
+# fall by different amounts — the panel measured a monotone ramp from 0.0000 up
+# to 0.6463 on mis-locked captures that had ALL slid by exactly one pilot
+# spacing, including five inside the range this comment used to call empty
+# (0.0663 / 0.1532 / 0.2816 / 0.3791 / 0.6463). So captures escape this margin,
+# and a bigger number would not close the door: the ramp is continuous.
 #
-#   * ATTRIBUTED captures (the witness landed on a real stimulus under ONE
-#     reading and on nothing under the other): 2026-08-16's accepted round 2
-#     separated its candidates by 0.818; this repo's reconstruction of the same
-#     program in a quiet room measures 0.8488. #2093's VERIFY captures are the
-#     same shape — the summed sweep is unique, so the rival window holds
-#     silence.
-#   * UN-ATTRIBUTED captures (both readings land the witness on a pilot of the
-#     same shape): 2026-08-16's refused round 3 separated its candidates by
-#     0.0034; the two CHECK fixtures quoted in `_resolve_anchor`'s
-#     witness-ordering comment measured 0.000 and 0.0001; the reconstruction in
-#     `tests/test_audio_measurement_anchor_resolution.py` measures 0.0005.
+# What makes 0.05 a safe number is not exhaustiveness — it is that the room
+# level which widens the gap ALSO trips the rungs below this one, independently.
+# The panel constructed ~160 captures with flip controls and found ZERO rows
+# where removing only the mis-lock removed the wiring hard stop. This module's
+# own fixture agrees: sweeping its room tone from 0.003 to 0.9, every capture
+# that mis-locked (0.10 and up) had `gain_plan.snr_floor_ok` False as well, and
+# the room was already failing that gate at 0.05, BEFORE the first mis-lock. The
+# margin is therefore the layer that removes the *specific* harm #2644 filed —
+# a household told to rewire on a coin flip — and not a claim to catch every
+# mis-locked capture. The ones it misses are refused on other evidence, which
+# `test_a_mislocking_room_has_already_failed_a_rung_below` is what pins.
 #
-# 0.05 sits ~16x under the smallest attributed gap and ~15x over the largest
-# un-attributed one — a decade of headroom on both sides, which is why it is a
-# round number and not a fitted one. Both ends are re-measured on this repo's
-# own fixtures by `test_the_margin_brackets_the_two_measured_populations`, so
-# the bracket is an assertion rather than this comment. PROVISIONAL in the same
-# sense as the constants above: a bench population that lands a capture inside it
-# would move it, and the `ambiguous=` field on the `program_analysis.anchor`
-# event is what that population would be counted from.
+# What IS measured, and asserted by
+# `test_the_margin_brackets_the_two_measured_populations`, is narrower and
+# honest: on this repo's QUIET-ROOM fixtures the margin brackets the separation
+# a correctly-attributed capture shows (0.8488 here; 0.818 on 2026-08-16's
+# accepted round) against the one the reconstructed incident shows (0.0005 here;
+# 0.0034 on the refused round). That bracket is a floor sanity check on the
+# constant, not a population boundary.
+#
+# PROVISIONAL in the same sense as the constants above. `ambiguous=`,
+# `runner_up=`, and `runner_up_anchor=` on the `program_analysis.anchor` event
+# are what a field population would be counted from.
 ANCHOR_DISCRIMINATION_MARGIN = 0.05
 
 # `crossover_v2.capture_dispatch.SWEEP_SCHEDULE_RESIDUAL_CEILING_MS`'s twin
@@ -2217,9 +2229,17 @@ def _resolve_anchor(
         )
         scored.append((confidence, seg, offset))
     # `max` keeps the FIRST maximum, so an exact tie holds the structurally
-    # first candidate — i.e. the pre-#2093 choice — rather than drifting.
-    best_confidence, best_seg, best_offset = max(scored, key=lambda item: item[0])
-    runner_up = sorted((item[0] for item in scored), reverse=True)[1]
+    # first candidate — i.e. the pre-#2093 choice — rather than drifting. The
+    # runner-up is then the best of what is LEFT (again first-maximum), which
+    # is the same confidence `sorted(...)[1]` gave but keeps the losing row's
+    # segment and offset in hand — see the event line below for why.
+    best_index, (best_confidence, best_seg, best_offset) = max(
+        enumerate(scored), key=lambda item: item[1][0]
+    )
+    runner_up, runner_up_seg, runner_up_offset = max(
+        (row for index, row in enumerate(scored) if index != best_index),
+        key=lambda item: item[0],
+    )
     # Re-anchoring requires POSITIVE evidence that the witness was heard, not
     # merely that one candidate out-scored the other. When the witness itself
     # never played — a silent driver in CHECK, or a capture with no program in
@@ -2240,6 +2260,17 @@ def _resolve_anchor(
     # — a near-tie is not a reason to pick the OTHER one — but the capture is
     # flagged un-attributed so a consuming phase refuses it as retriable instead
     # of grading per-driver windows the anchor may have slid a whole pilot apart.
+    #
+    # The witness scores above are FULL-BAND on purpose — `_locate_in_window`
+    # and `_locate_segments` were left alone by #2644, which band-limited only
+    # the anchor locate. That asymmetry is why this guard is not made redundant
+    # by the band-limit: because the witness confidences carry the room's
+    # out-of-band energy in their denominator, BOTH of them fall as the room
+    # gets louder, and how far apart they land is a function of room level
+    # rather than of the schedule. So the separation compared here is not a
+    # constant property of a mis-locked capture — see
+    # :data:`ANCHOR_DISCRIMINATION_MARGIN` for what that costs and why it is
+    # survivable.
     ambiguous = (
         corroborated
         and runner_up >= SWEEP_LOCATE_CONFIDENCE_FLOOR
@@ -2251,6 +2282,17 @@ def _resolve_anchor(
     # unobservable step in the chain: nothing in the journal, `/state`, or the
     # diagnostic record said which stimulus the timeline was pinned to, so
     # three fabricated failures read exactly like real ones.
+    #
+    # It names the LOSING interpretation too (#2644 review): a reader triaging
+    # an ambiguous anchor needs to know which timeline nearly won and how far
+    # away it sat, and the alternative is re-deriving it from the banked WAVs —
+    # the #2640 lesson. Both shifts are measured from the SAME baseline (the
+    # pre-#2093 reading, `arrival - first.start_sample`), so their DIFFERENCE
+    # is the separation between the two candidate timelines: one pilot spacing
+    # in the shape #2644 describes.
+    runner_up_shift_ms = round(
+        (runner_up_offset - (arrival - first.start_sample)) / sample_rate * 1000.0, 1
+    )
     log_event(
         logger,
         "program_analysis.anchor",
@@ -2262,12 +2304,14 @@ def _resolve_anchor(
         candidates=len(candidates),
         confidence=round(best_confidence, 4),
         runner_up=round(runner_up, 4),
+        runner_up_anchor=runner_up_seg.segment_id,
         corroborated=corroborated,
         corrected=corrected,
         ambiguous=ambiguous,
         shift_ms=round(
             (best_offset - (arrival - first.start_sample)) / sample_rate * 1000.0, 1
         ),
+        runner_up_shift_ms=runner_up_shift_ms,
     )
     return best_seg, best_offset, ambiguous
 
