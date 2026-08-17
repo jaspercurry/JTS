@@ -536,28 +536,6 @@ def test_a_non_finite_margin_is_refused_before_it_can_disable_the_guard(margin_d
     assert not (99.0 > float("nan"))
 
 
-@pytest.mark.parametrize(
-    "tolerance_db", [float("nan"), float("inf"), float("-inf")]
-)
-def test_a_non_finite_frame_tolerance_is_refused_before_it_can_admit_a_dispute(
-    tolerance_db,
-):
-    """#2599's threshold inherits the guard above, and for the same reason.
-
-    ``anchor_trims`` disputes a frame on ``disagreement > tolerance``. With a
-    NaN tolerance that is False for every disagreement, so the dispute rule
-    does not widen — it stops existing, and a frame the session has already
-    marked unresolved silently goes back to placing the anchor. ``+inf`` is the
-    same outcome by a different route and is refused with it; ``-inf`` would
-    dispute every frame, including agreeing ones, which is equally not a
-    tolerance.
-    """
-
-    with pytest.raises(iv.PlannerInputError, match="finite"):
-        _request(level_frame_tolerance_db=tolerance_db)
-    assert not (99.0 > float("nan"))
-
-
 def test_an_unregistered_mic_tier_is_a_named_refusal_not_a_bare_key_error():
     """A caller error that reads as one, instead of as malformed planner output."""
 

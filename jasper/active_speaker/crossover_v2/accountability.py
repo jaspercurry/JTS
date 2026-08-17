@@ -144,21 +144,23 @@ class AccountabilityDecision:
     """What the gate decided, and everything the caller must do about it.
 
     ``refusal_reason`` is the household code to refuse under, or ``None`` to
-    proceed.  ``finding`` is the #1866 banked record when the frame gate took
-    the finding+proceed path.
+    proceed.  ``finding`` is the banked record when the estimator-consistency
+    gate found the two per-driver estimates in disagreement.  That gate has no
+    refusal arm since #2609 — it always proceeds — so a ``finding`` and a
+    ``refusal_reason`` can now co-occur, where before they could not.
 
     **``spec_report`` and ``spec_report_written`` are two facts, not one.**
     ``None`` with ``spec_report_written`` True means "graded, and the grader
     refused" — the stash must be cleared.  ``None`` with it False means the
     gate refused before item 2 ran at all and the stash must not be touched.
-    Collapsing them would make a frame refusal clear a stash it never reached,
+    Collapsing them would make a level refusal clear a stash it never reached,
     which is a different session state than the one that happened.
 
     ``journal`` is in emission order.  A caller that writes the stash first and
     then iterates produces the same journal, and the same session state, as
     the method this replaced — the one ordering claim worth pinning rather than
-    arguing, which
-    ``test_crossover_v2_accountability`` does from both refusal arms.
+    arguing, which ``test_crossover_v2_accountability`` does from the
+    realized-level refusal, the only level refusal left since #2609.
     """
 
     journal: tuple[GateRecord, ...] = ()
@@ -197,7 +199,7 @@ def estimator_consistency_record(
     carries the fit's per-driver median (``core_level_db_*``), the trim solve's
     per-driver level-match term (``trim_band_average_db_*``), each one's
     distance from the summed owner (``*_delta_db_*``), and the owner's own
-    per-role placement (``summed_level_reference_db_*``). Before the
+    per-role distance from the other (``estimator_delta_db_*``). Before the
     single-datum-owner migration a reader of this finding was being asked to
     believe a session had proceeded past a gate that would have stopped it;
     now they are being told something narrower and truer — a capture whose
@@ -263,7 +265,6 @@ def estimator_consistency_record(
             realized_level_w_db=round(float(realized.level_w_db), 3),
             realized_level_t_db=round(float(realized.level_t_db), 3),
         )
-    owner = state.summed_level_reference_db or {}
     for role, core in cores.items():
         band = core.get("band_hz") or (None, None)
         radiating = core.get("radiating_band_hz") or (None, None)
@@ -276,21 +277,13 @@ def estimator_consistency_record(
             record[f"trim_band_average_db_{role}"] = round(
                 float(state.trim_band_estimate_db[role]), 3
             )
-        if role in owner:
-            record[f"summed_level_reference_db_{role}"] = round(
-                float(owner[role]), 3
-            )
         # How far each SUBORDINATE estimate sat from the owner, per role, in the
         # relative frame the check compares in. Both estimators ride whether or
         # not either one is the reason this record exists: which of them
         # disagreed is the diagnosis, and banking only the worst would drop it.
-        if role in consistency.trim_band_delta_db:
-            record[f"trim_band_delta_db_{role}"] = round(
-                float(consistency.trim_band_delta_db[role]), 3
-            )
-        if role in consistency.core_level_delta_db:
-            record[f"core_level_delta_db_{role}"] = round(
-                float(consistency.core_level_delta_db[role]), 3
+        if role in consistency.estimator_delta_db:
+            record[f"estimator_delta_db_{role}"] = round(
+                float(consistency.estimator_delta_db[role]), 3
             )
     return record
 
@@ -364,10 +357,6 @@ def assess_accountability(
                 "reason": consistency.reason,
                 "worst_delta_db": round(float(consistency.worst_delta_db), 3),
                 "tolerance_db": float(consistency.tolerance_db),
-                "summed_level_reference_db": {
-                    k: round(float(v), 3)
-                    for k, v in (state.summed_level_reference_db or {}).items()
-                },
                 "core_level_db": dict(state.core_level_evidence),
                 "trim_band_average_db": {
                     k: round(float(v), 3)
@@ -376,13 +365,9 @@ def assess_accountability(
                 # Both estimators' distance from the owner, per role. Which
                 # one disagreed is the diagnosis; the worst alone would drop
                 # it.
-                "trim_band_delta_db": {
+                "estimator_delta_db": {
                     k: round(float(v), 3)
-                    for k, v in consistency.trim_band_delta_db.items()
-                },
-                "core_level_delta_db": {
-                    k: round(float(v), 3)
-                    for k, v in consistency.core_level_delta_db.items()
+                    for k, v in consistency.estimator_delta_db.items()
                 },
                 # The outcome check, for the reader deciding how much to
                 # care. It no longer DECIDES anything here — it decides item

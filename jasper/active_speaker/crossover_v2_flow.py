@@ -240,7 +240,6 @@ from jasper.audio_measurement.program_analysis import (
     MeasurementGeometry,
     MeasurementPriors,
     ProgramAnalysis,
-    REALIZED_LEVEL_MATCH_TOLERANCE_DB,
     polarity_label,
 )
 from jasper.capture_relay.session import CaptureBeginDeferred, CaptureBeginRefused
@@ -8841,7 +8840,7 @@ class CrossoverV2Session:
             self._seams.publish_findings(record)
         except (OSError, RuntimeError, TypeError, ValueError):
             log_event(
-                logger, "correction.crossover_v2_level_frame_finding_failed",
+                logger, "correction.crossover_v2_level_estimator_finding_failed",
                 level=logging.WARNING, session_id=self.session_id, exc_info=True,
             )
 
@@ -8973,9 +8972,11 @@ class CrossoverV2Session:
         **Write-then-say, and the ordering that matters.** The stash is
         installed before the journal is emitted, which differs from the
         method this replaced only where nothing can observe it: a decision
-        carries a stash only when it got past the frame and realized-level
-        gates, so no refusal arm writes one. That is pinned rather than
-        argued, from both arms, in ``test_crossover_v2_accountability``.
+        carries a stash only when it got past the realized-level gate, so no
+        refusal arm writes one. That is pinned rather than argued in
+        ``test_crossover_v2_accountability``. It used to say "both arms": the
+        estimator-consistency gate had a refusal arm of its own until #2609,
+        and now banks and proceeds without one.
         """
         decision = _accountability.assess_accountability(
             predicted_sum=predicted_sum,
@@ -11180,56 +11181,6 @@ class CrossoverV2Session:
             session_id=self.session_id, **record.fields,
         )
 
-    def _summed_baseline_curve(self) -> tuple[Any, Any] | None:
-        """This session's summed at-the-mark capture, for the LEVEL datum.
-
-        The owner of the level datum is a measurement, and this is where the
-        host hands it over: ``PHASE_ENTRY_BASELINE``'s reduced curve, already
-        screened and retained by :meth:`_retain_entry_baseline`, with the bins
-        that capture EXCLUDED blanked to NaN so a level cannot be anchored on a
-        bin the capture itself did not trust. The same treatment
-        :meth:`_entry_delta_db` gives the same curve, for the same reason.
-
-        **``None`` is the ordinary first-round answer, not a failure.** Stage 1
-        runs the entry baseline LAST — after the walk and after any cloud,
-        because #2291 wants the summed "before" immediately before apply — and
-        the eager fit runs at the cloud close, which is earlier. So on a first
-        commissioning pass the planner anchors on the raw measured trim (the
-        pre-PR-L5 placement, and the one 2026-08-16's forensic vindicated), and
-        the consistency check has no owner to grade against and returns
-        ``None``. A stage-2 or re-verify session that rehydrated a baseline
-        hands one over and the summed owner places the pair.
-
-        Named as a NAMED GAP rather than left implicit: making the first round
-        read its own baseline needs the anchor re-placed after that capture
-        lands, which is a candidate-lifecycle change (the candidate is built
-        once, at the cloud close) and is deliberately not in the migration that
-        deletes the arbitration. Tracked as follow-up work; the correctness win
-        the deletion buys does not depend on it, because the fallback is the
-        number the incident vindicated.
-        """
-        baseline = self._measure_entry_baseline
-        if baseline is None:
-            return None
-        try:
-            curve = baseline.curve
-            hz = np.asarray(curve.hz, dtype=float)
-            db = np.asarray(curve.db, dtype=float)
-            excluded = np.asarray(baseline.excluded, dtype=bool)
-            if hz.size == 0 or db.size != hz.size:
-                return None
-            if excluded.size == hz.size:
-                db = np.where(excluded, np.nan, db)
-        except (AttributeError, TypeError, ValueError):
-            # Fail-soft on the same terms as every other optional accounting
-            # term: an unusable baseline is nothing known, never a lost plan.
-            log_event(
-                logger, "correction.crossover_v2_summed_level_reference_failed",
-                level=logging.WARNING, session_id=self.session_id,
-            )
-            return None
-        return hz, db
-
     def _plan_linearization(
         self,
         analysis: ProgramAnalysis,
@@ -11268,7 +11219,6 @@ class CrossoverV2Session:
             post_apply_verifies=self.post_apply_verifies,
             cloud_phase_planned=PHASE_CLOUD_MEASURE in self._journey.plan.phases,
             plan_linearization=plan_linearization,
-            summed_baseline=self._summed_baseline_curve(),
             journal=self._journal_linearization,
         )
         if plan.journal_dropped:

@@ -685,10 +685,9 @@ def _level_frame_record(**overrides: object) -> dict:
     record = {
         "f_lo_hz": 150.0,
         "f_hi_hz": 5844.7,
-        "disagreement_db": 3.209,
+        "worst_delta_db": 3.209,
         "tolerance_db": 3.0,
-        "reference_role": "woofer",
-        "system_level_db": 3.209,
+        "reason": "estimator_disagrees_with_summed_owner",
         "realized_difference_db": -0.828,
         "realized_tolerance_db": 3.0,
         "realized_level_w_db": 0.213,
@@ -699,18 +698,14 @@ def _level_frame_record(**overrides: object) -> dict:
         "radiating_band_lo_hz_woofer": 0.0,
         "radiating_band_hi_hz_woofer": 1282.3,
         "trim_band_average_db_woofer": -0.067,
-        "frame_offset_db_woofer": 0.0,
+        "estimator_delta_db_woofer": 0.0,
         "core_level_db_tweeter": 0.0,
         "core_band_lo_hz_tweeter": 2020.0,
         "core_band_hi_hz_tweeter": 5844.7,
         "radiating_band_lo_hz_tweeter": 1996.4,
         "radiating_band_hi_hz_tweeter": None,
         "trim_band_average_db_tweeter": 0.0,
-        "frame_offset_db_tweeter": 3.209,
-        # #2599: what the planner DID about the disagreement, and what it cost.
-        "frame_exclusion_reason": "frame_disagreement_unadjudicated",
-        "anchor_delta_db_woofer": 0.0,
-        "anchor_delta_db_tweeter": 3.209,
+        "estimator_delta_db_tweeter": 3.209,
     }
     record.update(overrides)
     return record
@@ -774,7 +769,7 @@ def test_the_banked_finding_carries_all_three_instruments() -> None:
     assert evidence["radiating_band_hi_hz_tweeter"] is None
     # The disagreement, its tolerance, and the realized check whose pass is
     # what let the session proceed.
-    assert evidence["disagreement_db"] == 3.209
+    assert evidence["worst_delta_db"] == 3.209
     assert evidence["tolerance_db"] == 3.0
     assert evidence["realized_difference_db"] == -0.828
     assert evidence["realized_tolerance_db"] == 3.0
@@ -783,25 +778,20 @@ def test_the_banked_finding_carries_all_three_instruments() -> None:
 def test_the_banked_finding_says_what_the_session_did_about_it() -> None:
     """#2599, in the artifact the household's own findings file is minted from.
 
-    A reader of this finding is being told two estimators disagreed. Since
-    #2599 that disagreement also CHANGES the tune — the disputed frame no
-    longer places the trim anchor — so the finding that reports the argument
-    has to report the action and its cost, or the artifact describes a
-    diagnosis whose consequence lives only in a journal line.
-
-    ``anchor_delta_db_*`` is not a restatement of ``frame_offset_db_*``: the
-    offset is what the frame ASKED for, the delta is what declining it did,
-    and the two differ because dropping ONE role's offset moves the shared
-    normalize shift under EVERY role. The woofer here carries a 0.0 offset and
-    a 0.0 delta only because this fixture's shift happens not to move it; the
-    conductor's own 6.156 dB case has a 0.0 offset and a +2.827 dB delta.
+    A reader of this finding is being told the two per-driver estimators
+    disagreed. Since #2609 that disagreement changes NOTHING about the tune —
+    the pair is anchored on the raw measured trim either way — so what the
+    record has to carry is the disagreement itself, per role, and the reason
+    code that names it. There is no action and no dB cost to report, which is
+    why the ``frame_exclusion_reason`` / ``anchor_delta_db_*`` pair this test
+    used to assert is gone rather than left reading zero.
     """
 
     evidence = _level_frame_finding().evidence
 
-    assert evidence["frame_exclusion_reason"] == "frame_disagreement_unadjudicated"
-    assert evidence["anchor_delta_db_tweeter"] == 3.209
-    assert evidence["anchor_delta_db_woofer"] == 0.0
+    assert evidence["reason"] == "estimator_disagrees_with_summed_owner"
+    assert evidence["estimator_delta_db_tweeter"] == 3.209
+    assert evidence["estimator_delta_db_woofer"] == 0.0
 
 
 def test_the_banked_finding_stays_unsure_and_claims_no_probe() -> None:
@@ -887,10 +877,10 @@ def test_the_banked_finding_re_decides_nothing() -> None:
     """
 
     contradictory = _level_frame_finding(
-        disagreement_db=0.1, realized_difference_db=99.0
+        worst_delta_db=0.1, realized_difference_db=99.0
     )
     assert contradictory is not None
-    assert contradictory.evidence["disagreement_db"] == 0.1
+    assert contradictory.evidence["worst_delta_db"] == 0.1
     assert contradictory.evidence["realized_difference_db"] == 99.0
 
 

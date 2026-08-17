@@ -196,12 +196,10 @@ def test_no_disagreement_can_change_the_committed_pair():
     """
     baseline, baseline_shift = _anchor()
     agreeing = iv.check_level_consistency(
-        summed_level_reference_db=_RAW_TRIM_DB,
         trim_band_average_db=_RAW_TRIM_DB,
         core_proposal_db=_RAW_TRIM_DB,
     )
     wild = iv.check_level_consistency(
-        summed_level_reference_db=_RAW_TRIM_DB,
         trim_band_average_db={"woofer": 0.0, "tweeter": -30.0},
         core_proposal_db={"woofer": 0.0, "tweeter": 12.0},
     )
@@ -258,76 +256,6 @@ def test_the_normalize_preserves_relative_placement_exactly():
 # --------------------------------------------------------------------------- #
 
 
-def test_no_owner_means_no_verdict_not_an_agreement():
-    """``None`` is a third state, and not a quiet synonym for "they agreed"."""
-    assert iv.check_level_consistency(
-        summed_level_reference_db=None,
-        trim_band_average_db=_RAW_TRIM_DB,
-        core_proposal_db=_RAW_TRIM_DB,
-    ) is None
-    assert iv.check_level_consistency(
-        summed_level_reference_db={},
-        trim_band_average_db=_RAW_TRIM_DB,
-        core_proposal_db=_RAW_TRIM_DB,
-    ) is None
-
-
-def test_neither_estimator_is_preferred():
-    """The ruling, as a test: the two estimators are graded identically.
-
-    #2609 carries two owner comments pointing opposite ways on the same numeric
-    pair. The later ruling resolves it by declining to pick: neither per-driver
-    estimator is reliably right, so both are subordinate and both are measured
-    the same way. Swapping which estimator carries the error must not change
-    the verdict or the worst delta.
-    """
-    owner = {"woofer": 0.0, "tweeter": -10.0}
-    good = {"woofer": 0.0, "tweeter": -10.0}
-    bad = {"woofer": 0.0, "tweeter": -2.0}
-
-    trim_is_wrong = iv.check_level_consistency(
-        summed_level_reference_db=owner,
-        trim_band_average_db=bad,
-        core_proposal_db=good,
-    )
-    core_is_wrong = iv.check_level_consistency(
-        summed_level_reference_db=owner,
-        trim_band_average_db=good,
-        core_proposal_db=bad,
-    )
-    assert trim_is_wrong is not None and core_is_wrong is not None
-    assert trim_is_wrong.suspect is core_is_wrong.suspect is True
-    assert trim_is_wrong.worst_delta_db == pytest.approx(
-        core_is_wrong.worst_delta_db
-    )
-    # ...and each names the estimator that actually disagreed, so "symmetric"
-    # does not mean "indistinguishable".
-    assert trim_is_wrong.trim_band_delta_db["tweeter"] == pytest.approx(8.0)
-    assert trim_is_wrong.core_level_delta_db["tweeter"] == pytest.approx(0.0)
-    assert core_is_wrong.core_level_delta_db["tweeter"] == pytest.approx(8.0)
-    assert core_is_wrong.trim_band_delta_db["tweeter"] == pytest.approx(0.0)
-
-
-def test_the_comparison_is_relative_not_absolute():
-    """A common-mode offset between instruments is not a disagreement.
-
-    Three instruments with three references — a summed at-the-mark sweep, a
-    power-band average, a core-band median — are not comparable in absolute
-    level. What IS comparable is how far apart each puts the two roles, which
-    is what the anchor commits.
-    """
-    owner = {"woofer": 0.0, "tweeter": -10.0}
-    shifted = {role: value - 25.0 for role, value in owner.items()}
-    verdict = iv.check_level_consistency(
-        summed_level_reference_db=owner,
-        trim_band_average_db=shifted,
-        core_proposal_db=shifted,
-    )
-    assert verdict is not None
-    assert verdict.worst_delta_db == pytest.approx(0.0)
-    assert not verdict.suspect
-
-
 def test_the_tolerance_is_the_realized_level_one_and_is_owned_once():
     """One threshold, one owner — and it is the number it always was."""
     assert iv.LEVEL_ESTIMATOR_TOLERANCE_DB == REALIZED_LEVEL_MATCH_TOLERANCE_DB
@@ -335,80 +263,6 @@ def test_the_tolerance_is_the_realized_level_one_and_is_owned_once():
         iv.check_level_consistency
     ).parameters["tolerance_db"].default
     assert default == iv.LEVEL_ESTIMATOR_TOLERANCE_DB
-
-
-def test_the_incident_disagreement_now_flags_instead_of_zeroing():
-    """3.326 dB against a 3.0 dB bar: suspect, and the pair ships anyway.
-
-    The same numbers that took the deleted third branch. The verdict still
-    fires — the migration did not widen the bar — but what it produces is a
-    flag, not a placement.
-    """
-    owner = {"woofer": 0.0, "tweeter": -10.835}
-    estimate = {"woofer": 0.0, "tweeter": -10.835 + 3.326}
-    verdict = iv.check_level_consistency(
-        summed_level_reference_db=owner,
-        trim_band_average_db=estimate,
-        core_proposal_db=owner,
-    )
-    assert verdict is not None
-    assert verdict.suspect
-    assert verdict.reason == iv.LEVEL_ESTIMATOR_SUSPECT_REASON
-    assert verdict.worst_delta_db == pytest.approx(3.326, abs=1e-6)
-    # The anchor is untouched by it: same base, same committed pair.
-    anchored, _ = _anchor(anchor_base_db=owner)
-    assert anchored["tweeter"] == pytest.approx(
-        _MEASURED_TWEETER_DB, abs=_INCIDENT_TOLERANCE_DB
-    )
-
-
-def test_a_verdict_just_under_the_bar_is_not_suspect():
-    """The boundary is `>`, so exactly-at-tolerance is not a finding."""
-    owner = {"woofer": 0.0, "tweeter": -10.0}
-    at_bar = {
-        "woofer": 0.0,
-        "tweeter": -10.0 + iv.LEVEL_ESTIMATOR_TOLERANCE_DB,
-    }
-    verdict = iv.check_level_consistency(
-        summed_level_reference_db=owner,
-        trim_band_average_db=at_bar,
-        core_proposal_db=owner,
-    )
-    assert verdict is not None
-    assert not verdict.suspect
-    assert verdict.reason == ""
-
-
-def test_a_role_the_owner_does_not_cover_is_not_a_disagreement():
-    verdict = iv.check_level_consistency(
-        summed_level_reference_db={"woofer": 0.0},
-        trim_band_average_db={"woofer": 0.0, "tweeter": -40.0},
-        core_proposal_db={"woofer": 0.0},
-    )
-    assert verdict is not None
-    assert not verdict.suspect
-    assert set(verdict.trim_band_delta_db) == {"woofer"}
-
-
-def test_the_verdict_serializes_flat_for_the_journal():
-    verdict = iv.check_level_consistency(
-        summed_level_reference_db={"woofer": 0.0, "tweeter": -10.0},
-        trim_band_average_db={"woofer": 0.0, "tweeter": -2.0},
-        core_proposal_db={"woofer": 0.0, "tweeter": -10.0},
-    )
-    assert verdict is not None
-    payload = verdict.to_dict()
-    assert set(payload) == {
-        "suspect", "reason", "tolerance_db", "worst_delta_db",
-        "trim_band_delta_db", "core_level_delta_db",
-    }
-    assert payload["suspect"] is True
-    assert payload["worst_delta_db"] == pytest.approx(8.0)
-
-
-# --------------------------------------------------------------------------- #
-# the deleted machinery stays deleted
-# --------------------------------------------------------------------------- #
 
 
 @pytest.mark.parametrize(
@@ -429,70 +283,139 @@ def test_the_frame_solver_is_gone(name):
     assert not hasattr(linearization_fit, name)
 
 
-def test_the_request_no_longer_carries_a_level_tolerance():
+# --------------------------------------------------------------------------- #
+# the consistency check: estimator-vs-estimator, advisory, three-state
+# --------------------------------------------------------------------------- #
+
+
+def test_an_empty_estimate_means_no_verdict_not_an_agreement():
+    """``None`` is a third state, not a quiet synonym for "they agreed"."""
+    assert iv.check_level_consistency(
+        trim_band_average_db={}, core_proposal_db=_RAW_TRIM_DB,
+    ) is None
+    assert iv.check_level_consistency(
+        trim_band_average_db=_RAW_TRIM_DB, core_proposal_db={},
+    ) is None
+
+
+def test_neither_estimator_is_preferred():
+    """The ruling, as a test: the check reports a DISTANCE, not a winner.
+
+    #2609 carries two owner comments pointing opposite ways on the same numeric
+    pair. The later ruling resolves it by declining to pick — neither
+    per-driver estimator is reliably right, which is why neither places the
+    pair. Swapping which one carries the error must not change the verdict.
+    """
+    a = iv.check_level_consistency(
+        trim_band_average_db={"woofer": 0.0, "tweeter": -2.0},
+        core_proposal_db={"woofer": 0.0, "tweeter": -10.0},
+    )
+    b = iv.check_level_consistency(
+        trim_band_average_db={"woofer": 0.0, "tweeter": -10.0},
+        core_proposal_db={"woofer": 0.0, "tweeter": -2.0},
+    )
+    assert a is not None and b is not None
+    assert a.suspect is b.suspect is True
+    assert a.worst_delta_db == pytest.approx(b.worst_delta_db)
+    assert a.estimator_delta_db == pytest.approx(b.estimator_delta_db)
+
+
+def test_the_comparison_is_relative_not_absolute():
+    """A common-mode offset between the two is not a disagreement.
+
+    The two estimates carry different references — a power-band average about
+    Fc and a core-band median — so only their PLACEMENT of the pair is
+    comparable, which is also the only thing the anchor commits.
+    """
+    verdict = iv.check_level_consistency(
+        trim_band_average_db={"woofer": 0.0, "tweeter": -10.0},
+        core_proposal_db={"woofer": -25.0, "tweeter": -35.0},
+    )
+    assert verdict is not None
+    assert verdict.worst_delta_db == pytest.approx(0.0)
+    assert not verdict.suspect
+
+
+def test_a_role_only_one_estimator_read_is_not_a_disagreement():
+    verdict = iv.check_level_consistency(
+        trim_band_average_db={"woofer": 0.0, "tweeter": -40.0},
+        core_proposal_db={"woofer": 0.0},
+    )
+    assert verdict is not None
+    assert not verdict.suspect
+    assert set(verdict.estimator_delta_db) == {"woofer"}
+
+
+def test_a_verdict_exactly_at_the_bar_is_not_suspect():
+    """The boundary is `>`, so exactly-at-tolerance is not a finding."""
+    verdict = iv.check_level_consistency(
+        trim_band_average_db={"woofer": 0.0, "tweeter": -10.0},
+        core_proposal_db={
+            "woofer": 0.0,
+            "tweeter": -10.0 + iv.LEVEL_ESTIMATOR_TOLERANCE_DB,
+        },
+    )
+    assert verdict is not None
+    assert not verdict.suspect
+    assert verdict.reason == ""
+
+
+def test_the_incident_disagreement_flags_and_ships_anyway():
+    """3.326 dB against a 3.0 dB bar: suspect, and the pair ships unchanged.
+
+    The same magnitude that took the deleted third branch. The verdict still
+    fires — the migration did not widen the bar — but what it produces is a
+    flag, and the anchor is the raw measured trim either way.
+    """
+    verdict = iv.check_level_consistency(
+        trim_band_average_db={"woofer": 0.0, "tweeter": -10.835},
+        core_proposal_db={"woofer": 0.0, "tweeter": -10.835 + 3.326},
+    )
+    assert verdict is not None
+    assert verdict.suspect
+    assert verdict.reason == iv.LEVEL_ESTIMATOR_SUSPECT_REASON
+    assert verdict.worst_delta_db == pytest.approx(3.326, abs=1e-6)
+    anchored, _ = _anchor()
+    assert anchored["tweeter"] == pytest.approx(
+        _MEASURED_TWEETER_DB, abs=_INCIDENT_TOLERANCE_DB
+    )
+
+
+def test_the_verdict_serializes_flat_for_the_journal():
+    verdict = iv.check_level_consistency(
+        trim_band_average_db={"woofer": 0.0, "tweeter": -2.0},
+        core_proposal_db={"woofer": 0.0, "tweeter": -10.0},
+    )
+    assert verdict is not None
+    payload = verdict.to_dict()
+    assert set(payload) == {
+        "suspect", "reason", "tolerance_db", "worst_delta_db",
+        "estimator_delta_db",
+    }
+    assert payload["suspect"] is True
+    assert payload["worst_delta_db"] == pytest.approx(8.0)
+
+
+def test_the_summed_owner_plumbing_is_gone_not_dormant():
+    """The deletion test, as a test.
+
+    An earlier cut of this migration made the summed at-the-mark capture the
+    level owner. It is unreachable in production — the session that holds the
+    baseline never plans (the VERIFY map has no MEASURE), the session that
+    plans never holds one (stage 1 captures the baseline AFTER the fit, and
+    hydrate passes none) — and the two captures are in different frames anyway:
+    the per-branch sweeps ride the protected-NEUTRAL graph while the baseline
+    rides the applied incumbent, so combining them double-counts the
+    incumbent's trims. Fixture-only code is not kept as aspiration.
+    """
     from dataclasses import fields
 
+    from jasper.audio_measurement import program_analysis
+
+    assert not hasattr(program_analysis, "summed_level_reference_db")
     names = {f.name for f in fields(iv.LinearizationRequest)}
+    assert "summed_level_reference_db" not in names
     assert "level_frame_tolerance_db" not in names
-    assert "summed_level_reference_db" in names
-
-
-def _minimal_request(**overrides):
-    """One minimal, valid request — the shape the request guards are tested on."""
-    from dataclasses import replace
-
-    from jasper.active_speaker.branch_chain import CrossoverSection
-    from jasper.active_speaker.crossover_v2.contracts import (
-        CandidateAcousticContext,
-    )
-
-    fc_hz = 1600.0
-    sections = {
-        "woofer": (CrossoverSection(fc_hz=fc_hz, order=4, highpass=False),),
-        "tweeter": (CrossoverSection(fc_hz=fc_hz, order=4, highpass=True),),
+    assert "summed_level_reference_db" not in {
+        f.name for f in fields(iv.LinearizationPlan)
     }
-    evidence = iv.DriverEvidence(
-        role="woofer", response=object(), excited_band_hz=(100.0, 2000.0),
-    )
-    kwargs = dict(
-        context=CandidateAcousticContext.from_sections(sections),
-        woofer=evidence,
-        tweeter=replace(evidence, role="tweeter"),
-        raw_trim_db={},
-        trim_band_average_db={},
-        predicted_ripple_db=0.0,
-        polarity_sign=1,
-        delay_us=0.0,
-        anchor_delay_us=None,
-        mic_tier="reference",
-        branch_floor_hz=None,
-        post_apply_verifies=True,
-        cloud_phase_planned=False,
-    )
-    kwargs.update(overrides)
-    return iv.LinearizationRequest(**kwargs)
-
-
-@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
-def test_a_non_finite_level_owner_is_refused_at_the_door(bad):
-    """NaN in the owner would place the pair at NaN with no clamp to catch it.
-
-    ``max`` against NaN is not a clamp — every comparison against NaN is False —
-    so the non-positive normalize would not misfire, it would stop existing.
-    The guard therefore has to be where the datum enters, not where it is used.
-    """
-    with pytest.raises(iv.PlannerInputError, match="not finite"):
-        _minimal_request(summed_level_reference_db={"tweeter": bad})
-
-
-def test_a_finite_level_owner_is_accepted_and_snapshotted():
-    """The guard admits a real number, and the frozen request holds a copy.
-
-    The snapshot half matters for the same reason the other trim mappings are
-    snapshotted: a frozen dataclass holding a live dict is frozen in name only,
-    and this one is read at the anchor and again by the consistency check.
-    """
-    live = {"woofer": 0.0, "tweeter": -10.8}
-    request = _minimal_request(summed_level_reference_db=live)
-    live["tweeter"] = 999.0
-    assert request.summed_level_reference_db["tweeter"] == pytest.approx(-10.8)

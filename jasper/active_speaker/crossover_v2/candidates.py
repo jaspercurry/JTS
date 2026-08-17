@@ -145,7 +145,6 @@ class LinearizationState:
     """
 
     outcome: str = ""
-    summed_level_reference_db: Mapping[str, float] | None = None
     core_level_evidence: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     trim_band_estimate_db: Mapping[str, float] = field(default_factory=dict)
     level_consistency: LevelConsistency | None = None
@@ -170,7 +169,6 @@ class LinearizationState:
         """
         return cls(
             outcome=plan.outcome,
-            summed_level_reference_db=plan.summed_level_reference_db,
             core_level_evidence=plan.core_level_evidence,
             trim_band_estimate_db=plan.trim_band_estimate_db,
             level_consistency=plan.level_consistency,

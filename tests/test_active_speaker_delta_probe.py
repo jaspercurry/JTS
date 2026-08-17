@@ -2242,16 +2242,12 @@ def _two_regime_realization(lo_ratio: float, hi_ratio: float):
     return grid, realized, commanded
 
 
-def test_a_band_localised_miss_is_already_a_shape_error():
+def test_a_band_localised_miss_is_a_shape_error_not_a_level_one():
     """A miss confined to one band routes to ``model_error``, not a shortfall.
 
-    The property the shortfall verdict actually has, pinned at the level it is
-    true: ``scaled_exceeded`` — the residual against the fitted line — catches
-    a band-localised miss one branch above the gain test, so
-    ``level_dependent_shortfall`` only ever sees a realization that is uniform
-    across the graded band. This is WHY the verdict still reads the pooled
-    slope after #2649: gating it on the per-band ratios was tried and could not
-    be shown to change any outcome (see the comment at that branch).
+    ``level_dependent_shortfall`` requires EVERY graded band to fall short: a
+    driver failing to deliver LEVEL fails everywhere it was asked, and a
+    band-localised miss is a shape error.
     """
     grid, realized, commanded = _two_regime_realization(1.0, 0.4)
     probe = classify_delta_probe(
@@ -2276,12 +2272,98 @@ def test_a_uniform_shortfall_across_the_graded_band_still_fires():
         grid, realized, commanded, band_hz=(500.0, _TRUSTED_CEILING_HZ),
     )
     assert probe.verdict == VERDICT_LEVEL_DEPENDENT_SHORTFALL
-    # Uniform realization means every band agrees with the pooled slope, which
-    # is the structural reason a per-band gate could not have changed this.
+    # Every graded band fell short, which is what the verdict now requires.
     graded = [
         entry["ratio"] for entry in probe.band_realization.values()
         if entry["graded"] and entry["ratio"] is not None
     ]
-    assert probe.gain_factor is not None
+    assert graded
     for ratio in graded:
-        assert ratio == pytest.approx(probe.gain_factor, abs=0.05)
+        assert ratio < DELTA_PROBE_SHORTFALL_GAIN_CEILING
+
+
+def test_the_fitter_commands_nothing_above_the_mic_trust_ceiling():
+    """S-3: the invariant the ceiling-narrowed safety mask leans on.
+
+    ``classify_delta_probe`` widens its safety mask with the ceiling-narrowed
+    ``in_band``, so a NONZERO commanded transfer above the ceiling would lose
+    safety coverage. It cannot exist for the LINEARIZATION half, and that is
+    structural rather than incidental: ``linearization_envelope.
+    compose_envelope`` stacks ``mic_trust_limit`` as one term
+    (``EnvelopeTerm(ReasonCode.LIMITED_BY_MIC_TIER, ...)``) and reduces the
+    stack with ``np.min``, so the allowed depth can never exceed it — and it is
+    exactly 0 from the tier's taper zero. Pinned here so the probe's coverage
+    argument stops depending on an unstated invariant two modules away.
+    """
+    from jasper.active_speaker.linearization_envelope import mic_trust_limit
+
+    grid = np.geomspace(200.0, 22_000.0, 600)
+    for tier in ("reference", "phone"):
+        trust = np.asarray(mic_trust_limit(grid, tier=tier), dtype=float)
+        zeros = np.flatnonzero(trust <= 0.0)
+        assert zeros.size, f"{tier} has no ceiling on this grid"
+        ceiling = float(grid[zeros[0]])
+        above = grid > ceiling
+        assert np.all(trust[above] == 0.0), (
+            f"{tier}: allowed depth is not identically zero above {ceiling} Hz, "
+            "so the fitter could command where the probe no longer grades"
+        )
+
+
+def test_a_fully_realized_round_with_disjoint_band_commands_is_not_a_shortfall():
+    """#2649's counterexample: the pooled chord fires a FALSE rollback.
+
+    Both graded bands realize 1.00x — nothing is missing anywhere — but the
+    crossover band is commanded near one value and the trusted HF near another,
+    so the single least-squares line through the (commanded, realized) cloud is
+    the CHORD BETWEEN THE TWO BAND CENTROIDS. Its slope reports the level
+    difference between the bands, not the fraction of command either realized:
+    it reads 0.459, clears the 0.85 shortfall ceiling from below, and — with
+    the residual against that chord inside tolerance — used to classify
+    ``level_dependent_shortfall`` and ROLL BACK a correction that did exactly
+    what it was told.
+
+    This is the case an earlier cut of this migration missed by sweeping a
+    fixture whose two bands shared one commanded range, where the chord
+    degenerates to the true slope. Pinned so the per-band gate cannot be
+    reverted to the pooled slope without turning red.
+    """
+    grid = np.geomspace(200.0, 16_000.0, 600)
+    lo = grid < DELTA_PROBE_HF_SPLIT_HZ
+    hi = grid >= DELTA_PROBE_HF_SPLIT_HZ
+    commanded = np.zeros_like(grid)
+    commanded[lo] = np.linspace(1.0, 2.0, int(lo.sum()))
+    commanded[hi] = np.linspace(6.0, 7.0, int(hi.sum()))
+    # Each band realizes its own command 1:1 — only the constant OFFSET differs,
+    # which the pooled fit's intercept cannot absorb across two clouds.
+    realized = np.zeros_like(grid)
+    realized[lo] = commanded[lo] - 0.2
+    realized[hi] = commanded[hi] - 3.0
+
+    probe = classify_delta_probe(
+        grid, realized, commanded, band_hz=(200.0, 16_000.0),
+    )
+    assert probe.gain_factor is not None
+    assert probe.gain_factor < DELTA_PROBE_SHORTFALL_GAIN_CEILING, (
+        "the pooled chord must sit below the shortfall ceiling, or this "
+        "fixture is not the counterexample"
+    )
+    # The FALSE LEVEL CLAIM is what this closes: `level_dependent_shortfall`
+    # asserts the driver could not deliver level, which is a statement about
+    # the hardware and is false here — both bands delivered exactly what they
+    # were told. It is now `model_error`, a statement about OUR single-slope
+    # model, which is the thing that is actually wrong.
+    #
+    # **It does NOT stop the rollback**, and that is stated rather than
+    # implied: `scaled_exceeded` fires on the residual against the chord one
+    # branch earlier, and `model_error` is itself a rollback verdict. Closing
+    # the false RESTORE needs the seam-deferral work, not this.
+    assert probe.verdict != VERDICT_LEVEL_DEPENDENT_SHORTFALL
+    assert probe.verdict == VERDICT_MODEL_ERROR
+    graded = [
+        entry["ratio"] for entry in probe.band_realization.values()
+        if entry["graded"] and entry["ratio"] is not None
+    ]
+    assert len(graded) == 2, "both tiers must be graded for the chord to form"
+    for ratio in graded:
+        assert ratio == pytest.approx(1.0, abs=0.05)

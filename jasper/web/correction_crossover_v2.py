@@ -3110,7 +3110,6 @@ def persist_conductor_state(
         prior.get("applied") is False
         and prior.get("session_id") == snap.session_id
         and snap.applied
-        and hasattr(conductor, "note_restore_observed")
     ):
         conductor.note_restore_observed()
         snap = conductor.snapshot()
@@ -4713,7 +4712,7 @@ def bind_findings_publisher(
     :func:`bind_evidence_publishers`' ``publish_candidate`` wrote moments
     earlier, for three reasons: it is the thing the finding is ABOUT (the
     trims committed under a frame whose estimators disagreed), it carries the
-    frame's own per-role ``level_frame_offset_db`` inside its ``linearization``
+    candidate's own per-role ``correction_giveback_db`` inside its ``linearization``
     block, and it is guaranteed to exist and to be durable at this point in the
     session — which a citation must be, since
     :func:`~jasper.attribution.storage.read_finding_set` re-hashes it on every

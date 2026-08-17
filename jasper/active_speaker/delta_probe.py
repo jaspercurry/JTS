@@ -2007,32 +2007,47 @@ def classify_delta_probe(
     # attenuation does not compress — and belongs in the model-error bucket
     # where someone will look at the filter math.
     commanded_is_lift = float(np.max(c)) >= DELTA_PROBE_MIN_COMMANDED_DB
-    # **The pooled slope still decides, and #2649's fix is upstream of it.**
+    # **The GRADED BANDS decide, not the pooled slope** (#2649).
     #
-    # What that issue found was a shortfall manufactured by bins ABOVE the
-    # mic-trust ceiling. Those bins are now excluded from ``mask`` before this
-    # line ever runs, so ``gain_factor`` is computed only over bins the fitter
-    # was allowed to command in — that intersection is the correction, and it
-    # is what turns the 2026-08-16 round's 0.664 back into the ~0.97 the
-    # trusted band actually realized.
+    # Two narrowings of when a rollback verdict fires, and both are needed.
+    # Bins above the mic-trust ceiling are excluded from ``mask`` before this
+    # point, so they cannot manufacture a slope at all. And the ratio this
+    # tests is the per-band one, because the pooled fit is not a realization
+    # measurement when the graded band carries two disjoint COMMANDED ranges.
     #
-    # **Gating this test on the per-band ratios instead was tried and is
-    # INERT — measured, not assumed.** For the two rules to disagree on an
-    # OUTCOME you need ``not scaled_exceeded`` (the residual against the fitted
-    # line is inside tolerance everywhere) together with band ratios far enough
-    # apart to move the pooled slope across 0.85. Those are near-contradictory:
-    # a single line that fits well IS the bands agreeing. Sweeping ramped and
-    # flat fixtures across ratio pairs from 0.1 to 1.0, every case where the
-    # two rules differed on the ratio test was already routed to
-    # ``model_error`` by ``scaled_exceeded`` one branch up. An extra condition
-    # that cannot change an answer is not defence in depth on a verdict whose
-    # consequence is restoring the household's previous sound — it is an
-    # untested branch. The per-band ratios are published as EVIDENCE (see
-    # ``band_realization``), which is what the next round reads them for.
+    # Why the pooled fit lies there, concretely: ``lstsq`` puts one line
+    # through the (commanded, realized) cloud, and with the crossover band
+    # commanded near one value and the trusted HF near another, that line is
+    # the CHORD BETWEEN THE TWO BAND CENTROIDS. Its slope reports the level
+    # difference between the bands, not the fraction of command either band
+    # realized. A round where both bands realized **1.00x** of what they were
+    # told — nothing missing anywhere — fits a chord of 0.459 and, with the
+    # residual against that chord inside tolerance, was classified
+    # ``level_dependent_shortfall`` and ROLLED BACK. That is a false restore of
+    # a correction that worked, which is the fifth-principle violation this
+    # issue exists to kill. (An earlier cut of this migration called the
+    # per-band gate inert; that claim was made against a fixture whose two
+    # bands shared one commanded range, where the chord degenerates to the true
+    # slope, so it structurally could not exhibit the case. It is pinned now.)
+    #
+    # EVERY graded band must fall short, not just the worst: a driver failing
+    # to deliver LEVEL fails everywhere it was asked, and a band-localised miss
+    # is a shape error — ``model_error``, which is where it goes. Taking the
+    # worst band instead would fire more often on less evidence, the wrong
+    # direction for a verdict that restores the household's previous sound.
+    #
+    # Falls back to the pooled slope only when no graded band cleared
+    # ``DELTA_PROBE_MIN_BINS`` — a band too thin to fit is not evidence either
+    # way, and that is the pre-#2649 reading exactly.
+    graded_ratios = [
+        entry["ratio"] for entry in realization.values()
+        if entry["graded"] and entry["ratio"] is not None
+    ]
+    shortfall_ratio = max(graded_ratios) if graded_ratios else gain_factor
     if (
         not scaled_exceeded
         and commanded_is_lift
-        and 0.0 <= gain_factor < DELTA_PROBE_SHORTFALL_GAIN_CEILING
+        and 0.0 <= shortfall_ratio < DELTA_PROBE_SHORTFALL_GAIN_CEILING
     ):
         return _map(
             VERDICT_LEVEL_DEPENDENT_SHORTFALL,

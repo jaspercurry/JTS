@@ -80,15 +80,13 @@ def _consistency(*, suspect, worst_delta_db=5.799):
         reason=intervention.LEVEL_ESTIMATOR_SUSPECT_REASON,
         tolerance_db=TOLERANCE_DB,
         worst_delta_db=worst_delta_db,
-        trim_band_delta_db={"woofer": worst_delta_db},
-        core_level_delta_db={"woofer": worst_delta_db},
+        estimator_delta_db={"woofer": worst_delta_db},
     )
 
 
 def _state(*, suspect=False, matched=True, linearized=("f", "m")):
     return LinearizationState(
         outcome="fitted",
-        summed_level_reference_db={"woofer": 0.823},
         # Tuples on purpose — see the GateRecord fidelity pin below.
         core_level_evidence={
             "woofer": {"level_db": 0.823, "band_hz": (150.0, 1255.8),

@@ -1369,17 +1369,15 @@ def driver_core_level_db(
     core-mask → median chain, and exists as a separate entry point because it
     is read across ALL drivers before any one of them is fitted.
 
-    **It does not place the trim pair, and since the single-datum-owner
-    migration nothing derived from it does.** The level datum has one owner —
-    the summed at-the-mark capture, read off the entry baseline and handed to
-    the planner as ``LinearizationRequest.summed_level_reference_db``. This
-    number is one of the two per-driver estimates that
+    **It does not place the trim pair, and since #2609 nothing derived from it
+    does.** The pair is anchored on the RAW MEASURED TRIM
+    (:func:`~jasper.active_speaker.crossover_v2.intervention.anchor_trims`).
+    This number is one of the two per-driver estimates that
     :func:`~jasper.active_speaker.crossover_v2.intervention.check_level_consistency`
-    compares AGAINST that owner: agreement is reassurance, disagreement flags
-    the capture as retriable, and neither outcome changes the anchor. The
-    two-voter arbitration this used to feed — and the 3.0 dB cliff that
-    arbitration hung on — are deleted; see that function for why no estimator
-    is preferred.
+    compares against the other: agreement is reassurance, disagreement banks a
+    finding and flags the capture as retriable, and neither outcome changes the
+    anchor. The two-voter arbitration this used to feed — and the 3.0 dB cliff
+    it hung on — are deleted; see that function for why no estimator wins.
 
     ``radiating_band_hz`` (#1929) narrows the median's band to where this
     driver's own crossover leaves it radiating —

@@ -49,11 +49,11 @@ JSON set these tests read is derived from it by
 ``scripts/derive-crossover-incident-fixture.py``, which has a ``--check`` mode.
 
 **What replays exactly, and what does not.** Every scalar the decision path
-consumes — the raw trim, both fits' give-back and level-frame offset, the
-correction filters, the ripple scan's own result, the session and candidate
-corners — is the incident's, so the anchor, the drift verdict, the outcome
-string, the commit choice and the committed pair are all computed by
-production from banked numbers and match the incident exactly.
+consumes — the raw trim, both fits' give-back, the correction filters, the
+ripple scan's own result, the session and candidate corners — is the
+incident's, so the anchor, the drift verdict, the outcome string, the commit
+choice and the committed pair are all computed by production from banked
+numbers and match the incident exactly.
 
 The per-driver measured RESPONSES do not replay, and the reason is size, not
 absence. They were never retained as arrays; re-deriving them offline from
@@ -154,9 +154,9 @@ def _incident_fit(role: str) -> LinearizationFit:
     """Rebuild one role's ``LinearizationFit`` from the banked candidate.
 
     ``candidate.json``'s per-role linearization block IS the serialized fit, so
-    this is deserialization, not reconstruction — the give-back and the
-    level-frame offset the anchor is built from are the fit engine's own
-    numbers from the incident, not numbers this test chose.
+    this is deserialization, not reconstruction — the give-back the anchor is
+    built from is the fit engine's own number from the incident, not a number
+    this test chose.
     """
     banked = dict(CANDIDATE_FIT["linearization"][role])
     return LinearizationFit(
@@ -186,7 +186,6 @@ def _incident_fit(role: str) -> LinearizationFit:
         measured_deficit_at_ceiling_db=banked["measured_deficit_at_ceiling_db"],
         correction_giveback_db=banked["correction_giveback_db"],
         headroom_cost_db=banked["headroom_cost_db"],
-        level_frame_offset_db=banked["level_frame_offset_db"],
         lift_requested_db=banked["lift_requested_db"],
         lift_from_boost_db=banked["lift_from_boost_db"],
         lift_from_reduced_cuts_db=banked["lift_from_reduced_cuts_db"],
@@ -633,8 +632,8 @@ def test_a_rejected_trim_is_not_the_trim_that_ships(monkeypatch, caplog):
     renamed.
 
     Everything asserted here is production's own arithmetic on banked inputs:
-    the anchor from the incident's give-back and level-frame offsets, the drift
-    against the shipped margin constant, and the commit choice.
+    the anchor from the incident's give-back, the drift against the shipped
+    margin constant, and the commit choice.
     """
     caplog.set_level("WARNING", logger="jasper.active_speaker.crossover_v2_flow")
     replay = _run_replay(monkeypatch)

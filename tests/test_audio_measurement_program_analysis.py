@@ -145,7 +145,6 @@ from jasper.audio_measurement.program_analysis import (
     realized_branch_level_match,
     solve_branch_trims,
     solve_ripple_optimal_trim,
-    summed_level_reference_db,
     summed_model_residual_delay_us,
 )
 from jasper.active_speaker.branch_chain import (
@@ -6192,56 +6191,6 @@ def test_branch_level_bands_hz_refuse_a_branch_that_does_not_reach_fc():
     assert branch_level_bands_hz(
         fc, woofer_span_hz=(1000.0, fc), tweeter_span_hz=(fc, 4000.0),
     ) == ((1000.0, fc), (fc, 4000.0))
-
-
-def test_summed_level_reference_db_is_continuous_and_cuts_only_the_louder_role():
-    """The level datum owner's two docstring properties (single-datum-owner
-    migration, #2609): a pair the summed capture already shows level-matched
-    returns ``base_trim_db`` untouched (continuity), and a role that reads N dB
-    LOUDER than its sibling in that same capture has its trim cut by exactly
-    N dB while the quieter role — which anchors the pair — keeps its base trim
-    exactly. No common-mode attenuation is added to the quiet role either way.
-    """
-    fc_hz = 2000.0
-    # Strictly inside each mirrored half (woofer [1000, 2000], tweeter
-    # [2000, 4000] at this Fc — OVERLAP_OCTAVE_RATIO=2.0) so the two bands'
-    # bins never overlap and each band average is exactly its own constant.
-    woofer_freqs = np.linspace(1050.0, 1950.0, 200)
-    tweeter_freqs = np.linspace(2050.0, 3950.0, 200)
-    freqs_hz = np.concatenate([woofer_freqs, tweeter_freqs])
-    base_trim_db = {"woofer": 0.0, "tweeter": -3.5}
-
-    # (i) continuity: both halves already read the SAME level in the summed
-    # curve, so the reference is base_trim_db, byte for byte.
-    level_db = -14.0
-    level_summed_db = np.concatenate([
-        np.full(woofer_freqs.size, level_db), np.full(tweeter_freqs.size, level_db),
-    ])
-    level_reference = summed_level_reference_db(
-        freqs_hz, level_summed_db, fc_hz,
-        base_trim_db=base_trim_db, woofer_role="woofer", tweeter_role="tweeter",
-    )
-    assert level_reference is not None
-    assert level_reference["woofer"] == pytest.approx(base_trim_db["woofer"])
-    assert level_reference["tweeter"] == pytest.approx(base_trim_db["tweeter"])
-
-    # (ii) the tweeter reads 6 dB LOUDER than the woofer in the summed curve:
-    # only the tweeter's reference moves, cut by that same 6 dB, while the
-    # woofer (the quietest role) keeps its base trim exactly.
-    skew_db = 6.0
-    skewed_summed_db = np.concatenate([
-        np.full(woofer_freqs.size, level_db),
-        np.full(tweeter_freqs.size, level_db + skew_db),
-    ])
-    skewed_reference = summed_level_reference_db(
-        freqs_hz, skewed_summed_db, fc_hz,
-        base_trim_db=base_trim_db, woofer_role="woofer", tweeter_role="tweeter",
-    )
-    assert skewed_reference is not None
-    assert skewed_reference["woofer"] == pytest.approx(base_trim_db["woofer"])
-    assert skewed_reference["tweeter"] == pytest.approx(
-        base_trim_db["tweeter"] - skew_db
-    )
 
 
 def test_build_candidate_refuses_a_tweeter_swept_above_fc():
