@@ -47,6 +47,7 @@ from jasper.active_speaker.crossover_envelope_v2 import (
     KEEP_FOR_ITERATION_TEXT,
     KEEP_ITERATING_TEXT,
     KEEP_ITERATING_UNGRADED_TEXT,
+    KEEP_MISSED_EXHAUSTED_TEXT,
     SERIES_COMPLETE_DEFAULT_TEXT,
     CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION,
     RIPPLE_RESERVATION_COPY,
@@ -1132,11 +1133,13 @@ def test_a_kept_for_iteration_round_says_so_rather_than_only_verified():
     ids=["absent", "empty", "no_adoption", "plain_keep", "passed_but_iterating"],
 )
 def test_only_a_kept_for_iteration_round_gets_that_caveat(receipt):
-    """Row 2's caveat belongs to row 2 alone.
+    """That caveat belongs to the two MISSED rows and nothing else.
 
     A round that restored or escalated never reaches this screen at all; a
     round with no row cannot be told apart from one that never graded; and
     since #2602 a round that PASSED gets its own sentence rather than this one.
+    Row 7 is the second row that DOES get it — it also measured something it
+    did not fix — and it gets its own sentence under the same code.
     """
     env = build_crossover_envelope_v2(_status(
         phase="done",
@@ -1307,6 +1310,7 @@ def test_an_unknown_ending_still_says_the_tuning_is_finished():
         ("row1_trusted_safe_passed", "crossover_v2_series_complete"),
         ("row6_trusted_safe_passed_reachable", "crossover_v2_keep_iterating"),
         ("row2_trusted_safe_missed", "crossover_v2_keep_for_iteration"),
+        ("row7_trusted_safe_missed_exhausted", "crossover_v2_keep_for_iteration"),
     ],
 )
 def test_every_round_copy_keeps_the_screens_register(row, code):
@@ -1323,7 +1327,7 @@ def test_every_round_copy_keeps_the_screens_register(row, code):
 
 
 def test_exactly_one_round_sentence_is_ever_owed():
-    """The three rows are alternatives, not a stack.
+    """The four rows are alternatives, not a stack.
 
     A screen that rendered two of them would be telling a household both that
     the tuning is finished and that another round is coming.
@@ -1333,6 +1337,7 @@ def test_exactly_one_round_sentence_is_ever_owed():
         "row1_trusted_safe_passed",
         "row6_trusted_safe_passed_reachable",
         "row2_trusted_safe_missed",
+        "row7_trusted_safe_missed_exhausted",
     ):
         env = _round_done_env(
             adoption="keep", row=row, reason="objectives_within_plateau"
@@ -1376,6 +1381,7 @@ def test_no_round_copy_spells_the_cap_out_as_a_number():
     sentences = [
         KEEP_ITERATING_TEXT,
         KEEP_FOR_ITERATION_TEXT,
+        KEEP_MISSED_EXHAUSTED_TEXT,
         SERIES_COMPLETE_DEFAULT_TEXT,
         *(
             _series_complete_text(reason)
@@ -1396,9 +1402,10 @@ def test_no_round_copy_spells_the_cap_out_as_a_number():
 def test_the_envelope_names_which_adoption_row_the_round_fired():
     """The machine half of #2537's disclosure, for a driver chaining rounds.
 
-    Three of the five rows restore and two keep, so ``adoption`` alone cannot
-    say which rule applied, and the reason travels from whichever axis decided.
-    The ROW is the stable thing to branch on.
+    Three of the seven rows restore and four keep the graph, sharing two
+    outcomes between them, so ``adoption`` alone cannot say which rule applied,
+    and the reason travels from whichever axis decided. The ROW is the stable
+    thing to branch on.
     """
     env = build_crossover_envelope_v2(_status(
         phase="done",
@@ -4956,16 +4963,15 @@ def test_the_reservation_does_not_displace_the_verified_badge():
     ids=["round1", "round2", "at_cap", "past_cap", "absent", "corrupt"],
 )
 def test_a_missed_round_at_the_cap_offers_no_fourth_bite(case, ordinal, offered):
-    """The gap this screen must not widen, bounded at the button.
+    """The budget at the button, and since #2656 the second of two bounds.
 
-    A MISSED round reaches ``keep_for_iteration`` through ``_QUALITY_ROWS``
-    without the headroom axis being consulted — only the PASSED cell splits on
-    it — so a MISSED series never ends via the round cap. That is
-    ``decide_adoption``'s, it predates this PR, and it is filed separately.
-    What is NEW here is the button: until it existed the gap cost a household
-    nothing, and offering a fourth bite on a three-round budget is exactly the
-    thing "only the budget, the plateau, and the safety class end a series"
-    forbids.
+    A capped MISSED series now ends in the adoption table itself, on row 7, so
+    a round graded by this build never reaches this screen carrying row 2 at
+    the cap. Every receipt in this case list is therefore one banked BEFORE
+    that change — row 2 at every ordinal — and they are exactly what this check
+    still covers: the done screen reads persisted receipts, and offering a
+    fourth bite on a three-round budget is what "only the budget, the plateau,
+    and the safety class end a series" forbids however old the record is.
 
     The unreadable cases OFFER, matching the direction
     ``series_position_from_state`` already fails in: a lost history resolves to
@@ -4987,6 +4993,61 @@ def test_a_missed_round_at_the_cap_offers_no_fourth_bite(case, ordinal, offered)
     # The CAVEAT stays either way — the round did miss something, and saying so
     # is honest whether or not another round is on offer.
     assert "crossover_v2_keep_for_iteration" in {n["code"] for n in env["nudges"]}
+
+
+def test_a_capped_missed_round_says_the_series_is_over_without_claiming_a_pass():
+    """#2656's household sentence, and the three things it has to get right.
+
+    A capped MISSED end is the one ending where both halves of the news are
+    true at once: the speaker is playing the best measured sound, and some of
+    what was measured is still off target, and there is no round left to fix
+    it. Row 1's sentence would claim the opposite of the second half; row 2's
+    would promise the remedy this screen no longer offers.
+    """
+
+    env = _round_done_env(
+        adoption="keep",
+        row="row7_trusted_safe_missed_exhausted",
+        reason="round_cap_reached",
+        round_ordinal=3,
+    )
+    nudge = _nudge(env, "crossover_v2_keep_for_iteration")
+
+    assert nudge["severity"] == "warn"
+    assert nudge["text"] == KEEP_MISSED_EXHAUSTED_TEXT
+    # The best measured state stays, and the outstanding targets are said.
+    assert "best sound measured so far" in nudge["text"]
+    assert "still off target" in nudge["text"]
+    # The series is over: no remedy is promised, and no pass is claimed.
+    assert "measuring again" not in nudge["text"]
+    assert "inside the target" not in nudge["text"]
+    assert nudge["text"] != KEEP_FOR_ITERATION_TEXT
+    # And the button matches the sentence — a screen that said "the last round"
+    # beside a re-measure control would be two answers to one question.
+    assert "round_remeasure" not in {a["id"] for a in env["alternate_actions"]}
+
+
+def test_the_capped_missed_row_is_not_offered_a_bite_at_any_ordinal():
+    """The row alone withholds it, whatever ordinal the receipt carries.
+
+    The ordinal check above is the bound for receipts banked before #2656.
+    This row is the bound for every round graded since, and it must not depend
+    on the ordinal being readable — a receipt whose ordinal was lost still
+    ended its series, and the row says so.
+    """
+
+    for ordinal in (3, 9, None, True):
+        receipt = {
+            "adoption": "keep",
+            "row": "row7_trusted_safe_missed_exhausted",
+            "reason": "round_cap_reached",
+        }
+        if ordinal is not None:
+            receipt["round_ordinal"] = ordinal
+        env = _round_done_env(**receipt)
+        assert "round_remeasure" not in {
+            a["id"] for a in env["alternate_actions"]
+        }, ordinal
 
 
 def test_the_cap_the_button_reads_is_the_headroom_axis_own_constant():

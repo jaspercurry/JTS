@@ -104,6 +104,7 @@ from .crossover_v2.contracts import (
     ADOPTION_ROW_KEEP,
     ADOPTION_ROW_KEEP_FOR_ITERATION,
     ADOPTION_ROW_KEEP_ITERATING,
+    ADOPTION_ROW_KEEP_MISSED_EXHAUSTED,
 )
 # The round-outcome vocabulary this screen renders. Imported rather than
 # re-typed: the four codes are picked by the web host's ``_post_apply_grade``,
@@ -1950,6 +1951,24 @@ KEEP_FOR_ITERATION_TEXT = (
     "is how that gets closer."
 )
 
+#: Row 7's sentence: the same news, with no round left to spend (#2656).
+#:
+#: Named for its ROW rather than for the sentence above it, because the outcome
+#: differs — row 7 is a ``keep``, and only the row says the round did not pass.
+#:
+#: Recomposed from the two sentences this screen already owns rather than
+#: written fresh: the first is :data:`KEEP_FOR_ITERATION_TEXT`'s verbatim,
+#: because what the speaker is playing did not change, and the last clause is
+#: :func:`_series_complete_text`'s for the same ending. What it cannot borrow
+#: is "measuring again is how that gets closer" — a remedy this screen no
+#: longer offers, and a promise with no button is exactly what #2655 minted
+#: the button to stop.
+KEEP_MISSED_EXHAUSTED_TEXT = (
+    "This is the best sound measured so far, and it is what the speaker is "
+    "playing. Some of what was measured is still off target, and that was the "
+    "last round of this tuning."
+)
+
 #: The household copy for a round that PASSED and is iterating anyway (#2602).
 #:
 #: The sentence the owner's ruling exists to make possible: *in-tolerance is not
@@ -2081,16 +2100,14 @@ def _round_is_iterating(v2: Mapping[str, Any]) -> bool:
     can never promise another round in prose and withhold the button, or the
     reverse.
 
-    **The budget is checked here too, and the reason is a gap in the table
-    this screen must not widen.** The row alone is not enough: a MISSED round
-    (:data:`~.crossover_v2.contracts.ADOPTION_ROW_KEEP_FOR_ITERATION`) reaches
-    ``keep_for_iteration`` from :data:`~.crossover_v2.verification.
-    _QUALITY_ROWS` WITHOUT the headroom axis being consulted at all — only the
-    PASSED cell splits on it — so a MISSED series never ends via the cap. That
-    predates this screen and ``decide_adoption`` is unchanged by it, but until
-    now the done screen offered no re-measure and the gap cost a household
-    nothing. Minting the button is what would turn it into an offered fourth
-    bite, so the button carries the budget the row does not.
+    **The budget is checked here too, and since #2656 that is defense in depth
+    rather than the only bound.** A capped MISSED series now ends in the table
+    itself, on its own row
+    (:data:`~.crossover_v2.contracts.ADOPTION_ROW_KEEP_MISSED_EXHAUSTED`),
+    which this function refuses on the row check above like any other
+    non-iterating row. What the ordinal check still covers is a receipt banked
+    BEFORE that change: those carry row 2 at the cap, and reading the row alone
+    would offer them a fourth bite.
 
     Read as ``banked_ordinal >= ROUND_SERIES_CAP`` — the SAME comparison
     :func:`~.crossover_v2.verification.evaluate_iteration_headroom` makes,
@@ -2121,13 +2138,15 @@ def _round_adoption_nudges(v2: Mapping[str, Any]) -> list[dict[str, str]]:
     "which badge did the VERIFY OUTCOME earn", and this answers what the ROUND
     decided — a different instrument, owed on this screen whichever badge won.
 
-    **Keyed on the ROW, not the outcome, since #2602.** Two rows now share the
-    ``keep_for_iteration`` outcome and they are opposite pieces of news: row 2
-    kept a result that MISSED, row 6 kept one that PASSED and is chasing flatter
-    anyway. Reading the outcome alone would tell a household with an
-    in-tolerance speaker that "some of what was measured is still off target",
-    which is false. The row is the stable identifier that survives exactly this
-    kind of split — see
+    **Keyed on the ROW, not the outcome, since #2602.** Four rows reach this
+    screen and they share two outcomes between them: row 2 kept a result that
+    MISSED, row 6 kept one that PASSED and is chasing flatter anyway, and rows
+    1 and 7 both end the series with only the row saying whether it passed.
+    Reading the outcome alone would tell a household with an in-tolerance
+    speaker that "some of what was measured is still off target", which is
+    false — and a household whose targets are still open that the tuning is
+    finished and inside them, which is worse. The row is the stable identifier
+    that survives exactly this kind of split — see
     :class:`~.crossover_v2.contracts.AdoptionDecision`.
 
     Reads off ``round_receipt``, which the coordinator stamps beside the
@@ -2158,11 +2177,20 @@ def _round_adoption_nudges(v2: Mapping[str, Any]) -> list[dict[str, str]]:
                 else KEEP_ITERATING_TEXT
             ),
         }]
-    if row == ADOPTION_ROW_KEEP_FOR_ITERATION:
+    if row in {ADOPTION_ROW_KEEP_FOR_ITERATION, ADOPTION_ROW_KEEP_MISSED_EXHAUSTED}:
         return [{
             "code": "crossover_v2_keep_for_iteration",
             "severity": "warn",
-            "text": KEEP_FOR_ITERATION_TEXT,
+            # One code, two endings, told apart by the ROW — the same split
+            # the branch above makes on a reason. One code because the news a
+            # household acts on is identical: the speaker is playing the best
+            # measured sound and some of it is still off target. What differs
+            # is whether another round follows, which the sentence says.
+            "text": (
+                KEEP_MISSED_EXHAUSTED_TEXT
+                if row == ADOPTION_ROW_KEEP_MISSED_EXHAUSTED
+                else KEEP_FOR_ITERATION_TEXT
+            ),
         }]
     # An unrecognised or absent row, INCLUDING a pre-#2602 receipt that carries
     # an outcome but no row. Falling back to the outcome here would resurrect
@@ -2668,12 +2696,12 @@ def _envelope(
         "progress": _progress(active_step),
         "applied": _applied_chip(status),
         # WHICH adoption row the last graded round fired, for a driver chaining
-        # rounds (#2537). Three of the six rows restore and three keep, so the
-        # outcome alone cannot say which rule applied, and the reason travels
-        # from whichever axis decided — the row is the stable thing to branch
-        # on. Since #2602 that is load-bearing on this very screen rather than
-        # only for a driver: rows 2 and 6 share the ``keep_for_iteration``
-        # outcome and carry opposite news, so the copy keys on the row.
+        # rounds (#2537). Three of the seven rows restore and four keep the
+        # graph, sharing two outcomes between them, so the outcome alone cannot
+        # say which rule applied, and the reason travels from whichever axis
+        # decided — the row is the stable thing to branch on. Load-bearing on
+        # this very screen since #2602, not only for a driver: rows that share
+        # an outcome carry opposite news, so the copy keys on the row.
         # ``None`` until a round has been graded.
         #
         # Machine data on a household surface, deliberately: the alternative is

@@ -473,11 +473,11 @@ def _log_round(evaluation: RoundEvaluation, *, session_id: str) -> None:
         logger, "correction.crossover_v2_round_graded",
         session_id=session_id,
         adoption=evaluation.adoption.outcome.value,
-        # WHICH rule fired, beside what it decided (#2537). Three of the six
-        # rows restore and three keep — and since #2602 two of those three
-        # keeping rows share one outcome — so ``adoption`` alone cannot say,
-        # and the reason travels from whichever axis spoke. The row is the
-        # stable thing to grep a journal for.
+        # WHICH rule fired, beside what it decided (#2537). Three of the seven
+        # rows restore and four keep the graph — and the four share only two
+        # outcomes between them, since #2602 and #2656 each split a cell — so
+        # ``adoption`` alone cannot say, and the reason travels from whichever
+        # axis spoke. The row is the stable thing to grep a journal for.
         row=evaluation.adoption.row,
         reason=evaluation.adoption.reason,
         capture=record["verdicts"]["capture"]["status"],
