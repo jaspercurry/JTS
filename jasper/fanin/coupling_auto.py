@@ -66,10 +66,14 @@ accepts the risk of an indeterminate read. **It no longer does** — its stated
 backstop (outputd's own guard) was shown to fail open on the same error, so both
 paths are now fail-CLOSED and this module's direction is simply the shared one.
 
-The unattended pass additionally refuses a ROLEFUL box outright
-(``ring_not_roleful_ready``), independent of every eligibility predicate: a
-crossover speaker's ring is armed by an explicit operator command only, never by
-a boot or a deploy.
+The unattended pass additionally holds a ROLEFUL box to its own gate
+(``ring_roleful_unattended_ready``), ahead of every eligibility predicate. It
+refuses by DEFAULT and admits only two proven graph shapes — a
+hardware-fingerprint-matched applied baseline, or the all-muted staged anchor,
+the same two legal roleful boot graphs the operator ladder's step 1 accepts.
+The narrowing and its safety argument live in that gate's docstring and in §4.7
+of the convergence design (owner ruling, §12 decision 1); they are not restated
+here.
 """
 
 from __future__ import annotations

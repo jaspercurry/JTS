@@ -452,7 +452,7 @@ composite edge).
 | P1 | Ring platform ship (inert) | **DONE** — `deploy/lib/install/ring-platform.sh`, `deploy/alsa/conf.d/60-jts-ring.conf`, `deploy/tmpfiles/jts-ring.conf` |
 | P2 | Ring citizenship | **DONE** — emitters, `coupling_reconcile` `shm_ring` mode, topology contract, statefile seeding, artifact binder, `/state`, doctor |
 | P3 | USB combo default-on where the gadget is present | **DONE** |
-| P4 | Rings default on validated full-profile solo-stereo boxes | **DONE** — jts.local armed; the `--auto` pass still resolves `loopback` for a roleful box like jts3 and always will (roleful is excluded from auto arming by design); jts3's ring is **operator**-armed instead, since 2026-08-11. jts4 / jts5 excluded by topology and profile, not hostname |
+| P4 | Rings default on validated full-profile solo-stereo boxes | **DONE** — jts.local armed; the `--auto` pass still resolves `loopback` for an UNARMED roleful box like jts3 — no longer because roleful is categorically excluded (P6 narrowed that gate to admit two proven graph shapes, per §12 decision 1 of the convergence design), but because `ring_topology`'s ACTIVE arm still requires a STAGED endpoint and only a converging pass moves the graph there; jts3's ring is **operator**-armed instead, since 2026-08-11. jts4 / jts5 excluded by topology and profile, not hostname |
 | P5a | Delete Python usbsink pump + lean-FIFO lane + Rust solo aloop mode | **DONE** |
 | P5b | Delete `transport_pipe` | **DONE** (2026-07-11) |
 | P5c | Delete `rate_match` + adaptive-buffer + stale cushion recipes | **DONE** — PR [#2302](https://github.com/jaspercurry/JTS/pull/2302), merged 2026-08-10, gate 0/0 after fix round. Owned the `.env.example` and `HANDOFF-usb-low-latency.md` prose edits |
