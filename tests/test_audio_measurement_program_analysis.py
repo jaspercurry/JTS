@@ -5137,9 +5137,12 @@ def test_check_refuses_a_capture_with_no_program_in_it_at_all():
     here: with no ambient evidence `_channel_map_ok` documents a fallback to
     the original total-in-band-energy-fraction test (no rise concept without
     an ambient window), and white noise against the tweeter's 2.5-20 kHz
-    declared band does put most of its energy in band — a true statement about
-    a capture that contains no program. Per-role protection is pinned on the
-    realistic miswire fixture above, where the offset is sound.
+    declared band does put most of its energy in band — which since #2052
+    resolves that role to UNKNOWN rather than to a PASS it did not earn. The
+    woofer's own band still fails the fraction outright, and a FAILURE
+    outranks an unknown in the fold, so the session verdict is ``False``.
+    Per-role protection is pinned on the realistic miswire fixture above,
+    where the offset is sound.
     """
     roles = _check_roles()
     chk = build_check_program(roles, ambient_s=1.0, pilot_duration_s=0.5)
@@ -5154,6 +5157,191 @@ def test_check_refuses_a_capture_with_no_program_in_it_at_all():
     assert res.linearity_ok is False
     assert res.gain_plan is not None
     assert res.gain_plan.snr_floor_ok is False
+
+
+# --------------------------------------------------------------------------- #
+# CHECK channel map — honest-unknown on the no-ambient fallback (issue #2052)
+#
+# The fallback runs whenever the ambient window is absent or unusable. Three
+# facts are pinned below and they are one design: the fallback's PASS is not
+# evidence (so it is UNKNOWN), its FAIL still is (so it stays a finding), and
+# the fold over the roles is tri-state rather than `all()`.
+# --------------------------------------------------------------------------- #
+
+
+def _deep_plant(delay: int, f_lo: float, f_hi: float, amp: float) -> np.ndarray:
+    """A synthetic driver IR with a ~-88 dB stopband.
+
+    Doubling `_band_impulse`'s ~-44 dB single-mask stopband, for the same
+    reason `test_channel_map_fails_on_swapped_channels` does it: at -44 dB a
+    driver fed fully out-of-band content still leaks a coherent in-band ghost
+    above the noise floor, which is a fixture artifact rather than anything a
+    physical driver does.
+    """
+    single = _band_impulse(delay, f_lo, f_hi, 1.0)
+    return amp * fftconvolve(single, single)
+
+
+def _degraded_check_capture(
+    woofer_plant: np.ndarray | None,
+    tweeter_plant: np.ndarray | None,
+    seed: int,
+    *,
+    late_samples: int = 0,
+):
+    """A CHECK capture whose ambient window is gone, so the fallback runs.
+
+    Two independent ways to lose the window, both reproduced by the callers:
+    starting the recording ``late_samples`` after the program (the #1818 shape
+    — below `AMBIENT_MIN_USABLE_FRACTION` of the scheduled window survives, so
+    `_ambient_from_capture` answers "no evidence"), or silencing the driver
+    that anchors offset recovery, which leaves the window's scheduled span
+    almost entirely before the capture began.
+    """
+    roles = [
+        RoleBand("woofer", 0, FrequencyBand(150.0, 1200.0)),
+        RoleBand("tweeter", 1, FrequencyBand(2500.0, 20000.0)),
+    ]
+    chk = build_check_program(roles, ambient_s=1.0, pilot_duration_s=0.5)
+    pcm = render_program_pcm(chk)
+    mono = np.zeros(pcm.shape[0])
+    for channel, plant in ((0, woofer_plant), (1, tweeter_plant)):
+        if plant is not None:
+            mono = mono + fftconvolve(pcm[:, channel], plant)[: pcm.shape[0]]
+    cap = np.concatenate([np.zeros(500), mono, np.zeros(5000)])
+    cap = cap + np.random.default_rng(seed).normal(0.0, 3e-5, cap.size)
+    return chk, (cap[late_samples:] if late_samples else cap)
+
+
+#: 0.9 s of a 1.0 s scheduled window, plus the fixture's own 500-sample lead —
+#: comfortably under `AMBIENT_MIN_USABLE_FRACTION` (0.5).
+_LATE_SAMPLES = int(0.9 * SR) + 500
+
+
+def test_channel_map_fallback_pass_is_unknown_and_fail_is_a_finding():
+    """The no-ambient fallback is ONE-SIDED evidence, reported one-sided.
+
+    Direct unit coverage of `_channel_map_ok`'s fallback branch, because the
+    asymmetry IS the design and a symmetric rewrite in either direction is a
+    real regression:
+
+    * folding the FAIL to ``None`` too drops the only channel-map evidence a
+      capture with no ambient window still carries (pinned end-to-end by
+      `test_degraded_miswire_still_names_the_wiring_not_the_room`);
+    * leaving the PASS as ``True`` republishes the #2042 false pass (pinned by
+      `test_channel_map_fallback_never_passes_a_driver_that_never_played`).
+
+    Both rise numbers stay ``None`` on this path — there is no rise concept
+    without an ambient reference — so the tell that the fallback ran, rather
+    than the rise test, is unchanged.
+    """
+    # The real scheduled segment, not a hand-built twin: its declared band IS
+    # the fact under test, and a local copy is a second statement of it.
+    chk = build_check_program(
+        [
+            RoleBand("woofer", 0, FrequencyBand(150.0, 1200.0)),
+            RoleBand("tweeter", 1, FrequencyBand(2500.0, 20000.0)),
+        ],
+        ambient_s=1.0, pilot_duration_s=0.5,
+    )
+    seg = chk.segment("pilot_woofer_hi")
+    noise = np.random.default_rng(2052).normal(0.0, 1.0, seg.n_samples)
+    in_band = fftconvolve(noise, _band_impulse(0, 150.0, 1200.0, 1.0))[: seg.n_samples]
+    out_of_band = fftconvolve(noise, _band_impulse(0, 4000.0, 20000.0, 1.0))[: seg.n_samples]
+
+    ok, target_rise, cross_rise = program_analysis._channel_map_ok(
+        in_band, SR, seg, ambient_samples=None,
+    )
+    assert ok is None                       # cleared the fraction — not evidence
+    assert target_rise is None and cross_rise is None
+
+    ok, target_rise, cross_rise = program_analysis._channel_map_ok(
+        out_of_band, SR, seg, ambient_samples=None,
+    )
+    assert ok is False                      # missed its own band — a finding
+    assert target_rise is None and cross_rise is None
+
+
+def test_channel_map_fallback_never_passes_a_driver_that_never_played():
+    """#2042's flagged false PASS, removed (issue #2052).
+
+    The realistic miswire — one driver silent — recorded so late that the
+    ambient window is unusable. The rise test cannot run, and the fallback's
+    fraction is cleared by the silent role's window of pure ROOM NOISE, because
+    a 2.5-20 kHz declared band holds most of broadband noise's energy. Before
+    #2052 that published ``channel_map_ok=True`` for a driver that produced
+    nothing at all.
+
+    What must hold: neither role claims a PASS, the session verdict is UNKNOWN
+    rather than a PASS, and — the `all()` trap — an unknown beside a pass is
+    NOT laundered into the ``channel_map_mismatch`` hard stop, which would tell
+    this household to open a speaker on evidence that was never taken.
+    """
+    chk, cap = _degraded_check_capture(
+        _deep_plant(200, 150.0, 1200.0, 1.0), None, 5, late_samples=_LATE_SAMPLES,
+    )
+    res = analyze_program_capture(chk, cap, SR, priors=MeasurementPriors())
+
+    assert res.ambient_report["bands"] == []           # the fallback really ran
+    by_role = {p.role: p for p in res.pilots}
+    assert by_role["tweeter"].channel_map_ok is None   # was True before #2052
+    assert by_role["woofer"].channel_map_ok is None
+    assert all(p.channel_map_target_rise_db is None for p in res.pilots)
+    assert res.channel_map_ok is None
+    # Still refused, on the rungs whose evidence this capture DOES carry.
+    assert res.linearity_ok is False
+
+
+def test_degraded_miswire_still_names_the_wiring_not_the_room():
+    """The fallback's FAIL is the only wiring evidence a lost window leaves.
+
+    Both miswire shapes that destroy offset recovery outright — a swapped
+    pair, and a silent ANCHOR driver (`_global_offset` anchors on
+    ``pilot_woofer_lo``) — take the fallback with no ambient window at all.
+    Their surviving role misses its own declared band, so the fallback fails
+    and the session verdict stays an explicit ``False``, which
+    `capture_dispatch.check_screens` maps to ``channel_map_mismatch`` — a
+    wiring remedy for a wiring fault.
+
+    This is the half of #2052 that a blanket "unknown whenever the window is
+    gone" would have cost: measured on this branch, both shapes would have
+    dropped to ``None`` and been refused one rung lower, with copy blaming the
+    room instead. Refusal held either way; the household's remedy did not.
+    """
+    woofer = _deep_plant(200, 150.0, 1200.0, 1.0)
+    tweeter = _deep_plant(225, 2500.0, 20000.0, 0.8)
+    for tag, (ch0, ch1, seed) in {
+        "swapped pair": (tweeter, woofer, 12),
+        "silent anchor driver": (None, tweeter, 7),
+    }.items():
+        chk, cap = _degraded_check_capture(ch0, ch1, seed)
+        res = analyze_program_capture(chk, cap, SR, priors=MeasurementPriors())
+        assert res.ambient_report["bands"] == [], tag   # the fallback really ran
+        assert res.channel_map_ok is False, tag
+
+
+def test_channel_map_aggregate_is_tri_state():
+    """The channel-map fold, pinned on the same table as ``linearity_ok``.
+
+    Both go through `_aggregate_tri_state_ok` — one fold, because "what does
+    unknown mean here" is one decision. FAILURE outranks UNKNOWN outranks
+    PASS: a role that genuinely landed in the wrong band must not be laundered
+    by an unreadable sibling, and a readable sibling must not upgrade an
+    unknown into "the map is right".
+
+    Pinned directly because the reduction was ``all(...)`` until #2052, and
+    Python folds ``None`` to False there — so the moment the fallback started
+    answering ``None``, a plain ``all()`` would have turned every unknown into
+    ``channel_map_mismatch``: a hard stop telling a household to rewire its
+    speaker, decided on evidence nobody took.
+    """
+    aggregate = program_analysis._aggregate_tri_state_ok
+    assert aggregate([]) is None
+    assert aggregate([True, True]) is True
+    assert aggregate([True, None]) is None
+    assert aggregate([None, None]) is None
+    assert aggregate([False, None]) is False
+    assert aggregate([False, True]) is False
 
 
 # --------------------------------------------------------------------------- #

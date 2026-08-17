@@ -361,6 +361,12 @@ def test_short_ambient_window_does_not_feed_the_channel_map_rise_test(phase):
     blames the speaker wiring. MEASURE/VERIFY therefore keep the
     total-in-band-energy-fraction fallback, whose tell is that neither rise
     number is computed.
+
+    A CLEAN capture on that fallback publishes ``None``, not ``True`` (issue
+    #2052): clearing the fraction says the window's energy sits in the band
+    the pilot was scheduled in, which room noise alone can do, so it is not
+    evidence the right driver produced it. The rise numbers stay the tell
+    either way.
     """
     prog = _measure_program() if phase == "measure" else _verify_pilot_program()
     cap = _synthesize(prog)
@@ -368,9 +374,12 @@ def test_short_ambient_window_does_not_feed_the_channel_map_rise_test(phase):
         prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
     )
     pilot = res.pilots[0]
-    assert pilot.channel_map_ok is True
+    assert pilot.channel_map_ok is None
     assert pilot.channel_map_target_rise_db is None
     assert pilot.channel_map_cross_rise_db is None
+    # ...and the session verdict is UNKNOWN, never a PASS these phases did
+    # not measure and never the hard stop `all()` would have folded it into.
+    assert res.channel_map_ok is None
 
 
 @pytest.mark.parametrize("kept_samples_delta,expect_evidence", [(0, True), (-1, False)])
