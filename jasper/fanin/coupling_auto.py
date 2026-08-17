@@ -207,13 +207,14 @@ def resolve_auto_decision(
       canonical source intent because the operator marker freezes transport
       topology, not permission to capture a household-Off source.
     - Else the auto pass owns the box:
-        * ``coupling`` = ``shm_ring`` iff EVERY ring gate returns ``ok`` (not
-          roleful, assets present, topology ring-eligible, geometry coherent on
-          both axes, route supports the ring); the first failing gate
-          short-circuits to ``loopback`` with its detail as the reason, so a box
-          this pass must not arm — jts3 roleful (whose ACTIVE ring is
-          explicit-arm-only), jts5 composite, a grouped box — resolves loopback
-          with a crisp explanation.
+        * ``coupling`` = ``shm_ring`` iff EVERY ring gate returns ``ok``
+          (roleful boxes only via ``ring_roleful_unattended_ready``'s two proven
+          graph shapes, assets present, topology ring-eligible, geometry
+          coherent on both axes, route supports the ring); the first failing
+          gate short-circuits to ``loopback`` with its detail as the reason, so
+          a box this pass must not arm — a roleful box carrying NEITHER a
+          hardware-matched applied baseline nor an all-muted anchor, a grouped
+          box, a streambox — resolves loopback with a crisp explanation.
         * combo = ARMED iff ``gadget_present AND usb_intent_enabled`` (see
           :func:`combo_is_armed`);
           ``usb_combo_actions`` carries explicit on/off writes either way (the

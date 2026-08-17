@@ -3192,6 +3192,17 @@ def ring_roleful_unattended_ready() -> tuple[bool, str]:
     record and no anchor, a stale fingerprint, an anchor that is not terminally
     muted. The refusal names the runnable arm so a refused box has a way out
     rather than a verdict.
+
+    A CORRUPT applied record is caught HERE rather than left to the caller.
+    ``load_applied_baseline_profile_state`` returns ``None`` for the shapes its
+    own loader catches, but a non-UTF-8 byte — the documented SD-card /
+    power-cut truncation — raises ``UnicodeDecodeError`` straight past it.
+    ``resolve_auto_decision`` would convert that to a fail-closed refusal on its
+    own (``ValueError`` is in its backstop), but the sentence it renders carries
+    no remediation, which would make this the one refusal in this gate that
+    leaves an operator without a way out. The local catch keeps every refusal
+    the same shape; the backstop stays as belt-and-braces. The SHARED loader is
+    deliberately not widened — it has other callers whose contracts are theirs.
     """
     from jasper.active_speaker.baseline_profile import (
         applied_baseline_hardware_match,
@@ -3215,8 +3226,15 @@ def ring_roleful_unattended_ready() -> tuple[bool, str]:
         return True, "topology is not roleful"
 
     # Arm 1 — an applied baseline that still matches this hardware.
-    applied = load_applied_baseline_profile_state()
     stale_detail = ""
+    try:
+        applied = load_applied_baseline_profile_state()
+    except (OSError, ValueError) as exc:
+        applied = None
+        stale_detail = (
+            f"the applied active-speaker record could not be read "
+            f"({type(exc).__name__})"
+        )
     if applied is not None:
         _snapshot, hardware_issues = applied_baseline_hardware_match(
             topology, applied_profile=applied

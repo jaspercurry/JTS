@@ -2676,13 +2676,17 @@ def check_ring_conf_floor_render() -> CheckResult:
     # commissioning finishes. It is not.
     roleful_note = (
         " This box is ROLEFUL (active crossover), so even a rendered conf.d "
-        "does not make it ring on its own: the ACTIVE ring is armed only by an "
-        "explicit `jasper-active-speaker baseline-reemit --endpoint ring` "
-        "followed by jasper-audio-hardware-reconcile and "
-        "`jasper-fanin-coupling-reconcile shm_ring`, never by the unattended "
-        "default pass. That first step works on a mid-commission box too — it "
-        "re-stages the all-muted startup anchor when no applied baseline is "
-        "saved yet."
+        "does not make it ring on its own. Commissioning it onto the ACTIVE "
+        "ring the first time is the explicit ladder: `jasper-active-speaker "
+        "baseline-reemit --endpoint ring`, then "
+        "jasper-audio-hardware-reconcile, then "
+        "`jasper-fanin-coupling-reconcile shm_ring`. The unattended default "
+        "pass converges a roleful box that ALREADY carries a proven graph — a "
+        "hardware-fingerprint-matched applied baseline, or the all-muted "
+        "startup anchor — so a box left after step 2 is finished by the next "
+        "boot or deploy; one carrying neither still refuses. That first step "
+        "works on a mid-commission box too — it re-stages the all-muted "
+        "startup anchor when no applied baseline is saved yet."
         if _requires_roleful_graph()
         else ""
     )

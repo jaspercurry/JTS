@@ -977,6 +977,138 @@ def test_the_roleful_gate_fails_closed_on_an_unreadable_topology(monkeypatch):
     assert "fail-closed" in detail
 
 
+# --- the steps-1-2 corollary: the auto pass now finishes step 3 --------------
+
+
+def _steps_one_and_two_box(monkeypatch, tmp_path):
+    """Stage a roleful box that has completed ladder steps 1 and 2, NOT step 3.
+
+    Every state here comes from the REAL writers' artifacts rather than a
+    synthetic gate flag:
+
+    * **step 1** (``baseline-reemit --endpoint ring``) leaves the box's
+      published all-muted anchor loaded AT the ring endpoint — the graph, the
+      statefile and the staged record are real files, via ``_stage_box``;
+    * **step 2** (``jasper-audio-hardware-reconcile``) writes outputd's endpoint
+      marker into ``outputd.env`` and renders the conf.d block at this box's
+      resolved active width (4 for the composite);
+    * **step 3** (``jasper-fanin-coupling-reconcile shm_ring``) is the ONLY
+      writer of the operator-choice marker, and it is exactly what has not run.
+
+    ``force_ring_gates_pass`` covers the infrastructure gates (asset presence,
+    geometry, the ioplug provenance record a dev host has no way to satisfy). It
+    does NOT stub the roleful gate, the topology gate, or the endpoint proof —
+    the three this test is actually about — so the chain stays non-vacuous.
+    """
+    import jasper.ring_assets as ra
+    from jasper.fanin import coupling_reconcile as cr
+    from jasper.fanin_coupling import (
+        OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR,
+        RING_ACTIVE_PLAYBACK_DEVICE,
+        RING_CAPTURE_DEVICE,
+    )
+    from tests.test_composite_ring_arm_enabling import _composite_active_2way
+    from tests.test_fanin_coupling_reconcile import force_ring_gates_pass
+    from tests.test_ring_anchor_arm_acceptance import _graph_yaml, _stage_box
+
+    force_ring_gates_pass(monkeypatch)
+
+    _stage_box(
+        tmp_path,
+        monkeypatch,
+        graph_yaml=_graph_yaml(
+            capture_device=RING_CAPTURE_DEVICE,
+            playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+            fmt="S32_LE",
+        ),
+    )
+    monkeypatch.setattr(
+        "jasper.output_topology.load_output_topology_strict", _composite_active_2way
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
+        lambda *a, **k: None,
+    )
+
+    outputd_env = tmp_path / "outputd.env"
+    outputd_env.write_text(
+        f"{OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR}=1\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(cr, "OUTPUTD_ENV_PATH", str(outputd_env))
+
+    conf_d = tmp_path / "60-jts-ring.conf"
+    conf_d.write_text(
+        "pcm.jts_ring_capture {\n    format S32_LE\n}\n"
+        "pcm.jts_ring_playback {\n    format S32_LE\n}\n"
+        f"pcm.{ra.RING_ACTIVE_CONF_PCM} {{\n"
+        "    format S32_LE\n    channels 4\n}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ra, "RING_CONF_D", str(conf_d))
+
+
+def test_the_auto_pass_finishes_step_three_on_a_steps_one_and_two_box(
+    monkeypatch, tmp_path
+):
+    """THE COROLLARY of the narrowing, pinned because nothing else pins it.
+
+    Step 2 alone satisfies ``active_ring_endpoint_proof``; the operator-freeze
+    marker is stamped only by step 3; and after P6 the roleful gate no longer
+    blocks. So a box parked between steps 2 and 3 — which used to sit there
+    until a human ran the third command — is now converged by the next boot or
+    deploy. This is the newly-enabled behaviour, and it is the exact set for
+    which "never armed by the unattended pass" stopped being true.
+    """
+    from jasper.fanin.coupling_auto import resolve_auto_decision
+    from jasper.fanin.coupling_reconcile import default_ring_gates
+    from jasper.fanin_coupling import COUPLING_SHM_RING
+
+    _steps_one_and_two_box(monkeypatch, tmp_path)
+
+    decision = resolve_auto_decision(
+        marker_raw=None,  # step 3 never ran, so no operator choice is stamped
+        gadget_present=False,
+        usb_intent_enabled=False,
+        ring_gates=default_ring_gates(),
+    )
+    assert decision.owned is True
+    assert decision.coupling == COUPLING_SHM_RING, decision.gate_details
+
+
+def test_a_fully_armed_operator_frozen_box_never_evaluates_the_gates(
+    monkeypatch, tmp_path
+):
+    """The other polarity: step 3 HAS run, so the operator marker freezes it.
+
+    A fully-armed box is owned by the operator, and ``resolve_auto_decision``
+    returns before the gate loop — so the narrowed roleful gate cannot re-open,
+    re-arm, or re-decide anything on a box a human already committed. Proved by
+    a spy rather than by the verdict, because the verdict alone cannot tell
+    "gates passed" from "gates never ran".
+    """
+    from jasper.fanin.coupling_auto import resolve_auto_decision
+    from jasper.fanin.coupling_reconcile import default_ring_gates
+    from jasper.fanin_coupling import COUPLING_SHM_RING
+
+    _steps_one_and_two_box(monkeypatch, tmp_path)
+
+    evaluated: list[str] = []
+    spied = tuple(
+        (name, (lambda n=name, g=gate: (evaluated.append(n), g())[1]))
+        for name, gate in default_ring_gates()
+    )
+    decision = resolve_auto_decision(
+        marker_raw="operator",
+        gadget_present=False,
+        usb_intent_enabled=False,
+        ring_gates=spied,
+        current_coupling=COUPLING_SHM_RING,
+    )
+    assert decision.owned is False
+    assert decision.coupling == COUPLING_SHM_RING
+    assert evaluated == []
+
+
 # --- the two proven arms (§4.7, owner ruling §12 decision 1) -----------------
 
 
@@ -1114,16 +1246,60 @@ def test_arm_two_refuses_an_anchor_that_is_not_terminally_muted(monkeypatch, tmp
     assert "jasper-fanin-coupling-reconcile shm_ring" in detail
 
 
+def test_the_roleful_gate_refuses_a_corrupt_applied_record_with_a_remedy(
+    monkeypatch, tmp_path
+):
+    """A corrupt applied record refuses LOCALLY, with the runnable arm named.
+
+    ``_load_saved_state`` catches ``FileNotFoundError``/``OSError``/
+    ``JSONDecodeError`` and returns ``None``, but a non-UTF-8 byte — the
+    documented SD-card / power-cut truncation — raises ``UnicodeDecodeError``
+    (a ``ValueError``) straight past it. ``resolve_auto_decision``'s backstop
+    would fail closed on that anyway, but its sentence carries NO remediation.
+    Caught in the gate so every refusal keeps the same shape.
+    """
+    import jasper.active_speaker.baseline_profile as bp
+    from jasper.fanin import coupling_reconcile
+
+    record = tmp_path / "baseline_profile.json"
+    record.write_bytes(b'{"status": "applied", "x": "\xff\xfe not utf-8"}')
+    monkeypatch.setattr(bp, "baseline_profile_state_path", lambda *a, **k: record)
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(tmp_path / "absent.yml"))
+    monkeypatch.setattr(
+        "jasper.output_topology.load_output_topology_strict",
+        lambda *a, **k: _active_topology("mono", "active_2_way"),
+    )
+
+    # The raise really does escape the shared loader — otherwise this test would
+    # be pinning the gate against a hazard that no longer exists.
+    with pytest.raises(UnicodeDecodeError):
+        bp.load_applied_baseline_profile_state()
+
+    ok, detail = coupling_reconcile.ring_roleful_unattended_ready()
+    assert ok is False
+    assert "could not be read" in detail
+    assert "jasper-fanin-coupling-reconcile shm_ring" in detail
+
+
 def test_the_roleful_gate_does_not_ask_the_divergence_question(monkeypatch, tmp_path):
     """SCOPE PIN: ``applied_profile_displacement`` is phase 0c's, not this gate's.
 
     The convergence design places applied-record DIVERGENCE at phase 0c (N5) and
     arm 1 at the fingerprint compare only. Pulling the displacement read forward
     into this gate would move a P7 decision into a P6 predicate, so a spy proves
-    it is never consulted on any of the three outcomes.
+    it is never consulted.
+
+    ALL THREE outcomes are driven, and the third is why this reads the way it
+    does: an earlier version set an absent statefile in every config, so
+    ``graph.note`` was always set and ARM 2'S BRANCH NEVER RAN — a displacement
+    read placed there would have passed the spy. The anchor config below is what
+    makes the guard cover the branch it claims to.
     """
     import jasper.active_speaker.baseline_profile as bp
+    from jasper.active_speaker.runtime_contract import OUTPUTD_ACTIVE_PLAYBACK_DEVICE
     from jasper.fanin import coupling_reconcile
+    from tests.test_composite_ring_arm_enabling import _composite_active_2way
+    from tests.test_ring_anchor_arm_acceptance import _graph_yaml, _stage_box
 
     calls: list[str] = []
     monkeypatch.setattr(
@@ -1132,16 +1308,37 @@ def test_the_roleful_gate_does_not_ask_the_divergence_question(monkeypatch, tmp_
         lambda *a, **k: calls.append("asked") or "",
     )
 
+    # 1 + 2: the default refusal, and arm 1 admitting.
     topology = _active_topology("mono", "active_2_way")
     monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(tmp_path / "absent.yml"))
     monkeypatch.setattr(
         "jasper.output_topology.load_output_topology_strict", lambda *a, **k: topology
     )
+    outcomes = []
     for profile in (None, _applied_profile_for(topology)):
         monkeypatch.setattr(
             bp, "load_applied_baseline_profile_state", lambda *a, **k: profile
         )
-        coupling_reconcile.ring_roleful_unattended_ready()
+        outcomes.append(coupling_reconcile.ring_roleful_unattended_ready()[0])
+
+    # 3: arm 2's branch, actually entered — a readable staged anchor.
+    monkeypatch.setattr(bp, "load_applied_baseline_profile_state", lambda *a, **k: None)
+    _stage_box(
+        tmp_path,
+        monkeypatch,
+        graph_yaml=_graph_yaml(
+            capture_device="hw:Loopback,1,7",
+            playback_device=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+            fmt="S32_LE",
+        ),
+    )
+    monkeypatch.setattr(
+        "jasper.output_topology.load_output_topology_strict", _composite_active_2way
+    )
+    outcomes.append(coupling_reconcile.ring_roleful_unattended_ready()[0])
+
+    # Refuse, arm 1, arm 2 — three distinct paths, so the spy covers them all.
+    assert outcomes == [False, True, True]
     assert calls == []
 
 
