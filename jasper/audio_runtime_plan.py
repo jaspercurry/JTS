@@ -1184,8 +1184,8 @@ def _route_policy_errors(
     # usb_low_latency_48k is certifiable on EITHER of the two COHERENT transports:
     # loopback + direct (legacy/fail-safe fallback), OR the shm_ring pair (Ring A
     # plus whichever post-DSP ring the box armed — the intent tokens are all this
-    # predicate reads). The ring pair was measured to reduce route latency (the
-    # ring-proto train), so the artifact binder must accept it — the earlier
+    # predicate reads). The ring pair was measured to reduce route latency, so
+    # the artifact binder must accept it — the earlier
     # blanket "requires loopback + direct" would turn a ring-armed box's shipped
     # low-latency claim permanently red (gap 8). Any OTHER raw bridge literal
     # stays rejected — including the removed `rate_match` lab transport, which

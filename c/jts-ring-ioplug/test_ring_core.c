@@ -4,7 +4,7 @@
 //
 // Host unit test for the JTS Ring B writer core (jts_ring_shm.c). No ALSA, no
 // Rust — compiles and runs on any host (macOS/Linux) via the Makefile `test`
-// target and scripts/ring-proto/host-check.sh. It exercises:
+// target. It exercises:
 //   - the `_Static_assert`ed header layout (compiled in from the header),
 //   - geometry validation,
 //   - create + writer publish + a simulated reader consume with the exact

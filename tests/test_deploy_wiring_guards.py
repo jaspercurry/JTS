@@ -390,27 +390,6 @@ def test_nginx_recovery_dropin_installed_on_both_profiles():
     )
 
 
-def test_legacy_ad_hoc_recovery_window_dropins_are_removed():
-    install_text = "\n".join(
-        p.read_text(encoding="utf-8") for p in _INSTALL_SCRIPTS
-    )
-    assert "cleanup_legacy_recovery_window_dropins" in install_text
-    assert "jts-recovery-window.conf" in install_text
-    for unit in (
-        "librespot",
-        "nqptp",
-        "shairport-sync",
-        "bt-agent",
-        "jasper-mux",
-        "jasper-web",
-        "jasper-bluetooth-web",
-        "jasper-correction-web",
-        "jasper-system-web",
-        "jasper-chat-web",
-    ):
-        assert unit in install_text
-
-
 # ----------------------------------------------------------------------
 # 6 — deploy-to-pi.sh post-install verification wiring (Workstream B)
 # ----------------------------------------------------------------------

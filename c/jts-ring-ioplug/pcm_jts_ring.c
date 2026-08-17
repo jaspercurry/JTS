@@ -76,15 +76,18 @@
 // 2. What breaks if the writer (this plugin) dies? write_seq stops advancing;
 //    the reader sees the ring empty and emits silence. On close we clear
 //    writer_pid so the reader reports writer_alive:false.
-// 3. Latency: the ring depth is n_slots * period_frames (16*128 = 2048 frames,
-//    ~42.7 ms) but that is the CEILING, not the steady-state latency. Steady
-//    state is set by the WRITER's own buffering target: CamillaDSP parks its
-//    device delay at `target_level` (1536 frames ~= 32 ms in the current
-//    ring_proto config), so observed occupancy sits ~12/16 slots. n_slots MUST
-//    be >= ceil(target_level / period_frames) with headroom, or camilla's rate
-//    controller chases a target the reported delay can never reach (see the
-//    n_slots 4 -> 16 note in jts_ring_shm.h). Effective latency == the writer's
-//    target_level, not the ring depth.
+// 3. Latency: the ring depth is n_slots * period_frames, but that is the
+//    CEILING, not the steady-state latency. Steady state is set by the WRITER's
+//    own buffering target: CamillaDSP parks its device delay at `target_level`.
+//    Worked example at the depth ceiling (n_slots 16, the max this header
+//    validates): 16*128 = 2048 frames ~= 42.7 ms of depth against a
+//    target_level of 1536 frames ~= 32 ms, so observed occupancy sits ~12/16
+//    slots. n_slots MUST be >= ceil(target_level / period_frames) with
+//    headroom, or camilla's rate controller chases a target the reported delay
+//    can never reach (see the n_slots 4 -> 16 note in jts_ring_shm.h). The
+//    SHIPPED default sits at the shallow end of that same rule:
+//    JTS_RING_DEFAULT_SLOTS (2) * 128 frames against target_level 128.
+//    Effective latency == the writer's target_level, not the ring depth.
 // 4. Observability: writer counters (published/dropped/full_waits) are logged
 //    at close; the reader publishes occupancy/empty_reads/writer_alive to
 //    /state.shm_ring.

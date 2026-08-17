@@ -197,9 +197,10 @@ async def test_async_client_headers_default_none_is_backward_compatible(monkeypa
 # _connect_host — bind-address vs connect-address mapping
 # ----------------------------------------------------------------------
 #
-# JASPER_CONTROL_HOST is primarily the *server bind* address (seeded
-# 0.0.0.0 on installs so household clients and LAN automation can reach
-# 8780). The client must connect via loopback instead: connecting to 0.0.0.0
+# JASPER_CONTROL_HOST is primarily the *server bind* address; its code
+# default is 0.0.0.0 so household clients and LAN automation can reach 8780,
+# and nothing seeds it into jasper.env any more.
+# The client must connect via loopback instead: connecting to 0.0.0.0
 # "works" on Linux but carries `Host: 0.0.0.0:8780`, which the
 # management-host guard rejects — the 2026-06-11 regression where every
 # /system/ dashboard poll 403ed.

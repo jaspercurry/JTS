@@ -499,9 +499,6 @@ def ring_ioplug_wire_supported(
 # job: converging a conf.d that has drifted OFF ``RING_SLOT_FRAMES`` (a hand
 # edit, a half install) back onto it. It refuses any other target. Its format
 # and channels axes are per-box and carry no such fixed target.
-# (scripts/ring-proto/arm.sh
-# renders the conf period from outputd's resolved env per box — that is the lab
-# prototype, which predates the fixed-slot product path and is not this rule.)
 #
 # One regex, two directions: the ``indent``/``frames`` groups let the renderer
 # rewrite exactly the lines this parser reads, so a conf.d the parser accepts is

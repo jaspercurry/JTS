@@ -247,8 +247,30 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # uses; a bare substring scan of the same tree answers 618, and the gap is
 # exactly why the assertion tokenizes rather than greps. 615 sits under its
 # unchanged ceiling, so only the total moves.
-MAX_NOQA_MARKERS = 812
-MAX_BLE001_MARKERS = 619
+#
+# 812 -> 810 (#2285 THE WAVE, 2026-08-17). This PR ADDS no marker; it deletes
+# code that carried two, so the ratchet ratchets DOWN and the ceiling follows
+# it exactly rather than being left as slack a later PR could spend without
+# argument. Both numbers are MEASURED with this file's own methods, run over
+# the post-deletion tree: the total with the substring assertion below (810),
+# the B-L-E-0-0-1 count with the tokenizer below (613). Do not substitute a
+# substring scan for the second -- it answers a different, larger number, which
+# is the whole reason the assertion tokenizes.
+#
+# AND DO NOT SPELL EITHER MARKER LITERALLY IN THIS COMMENT. The total is a
+# SUBSTRING count over these very files, so prose about the ratchet lands
+# inside the thing it describes: an earlier revision of this entry wrote the
+# marker out to explain the method and measured 810 while the tree then held
+# 811. That is why the entry above spells it B-L-E-0-0-1.
+#
+# The B-L-E-0-0-1 ceiling drops by the same TWO the deletions struck (619 ->
+# 617) rather than down to the measured 613. That constant has carried
+# deliberate headroom since the P7 entry above, the headroom is not this PR's
+# to spend or to revoke, and collapsing it would red a concurrent branch that
+# had already argued for a slot. Deleting code earns the ratchet its own
+# markers back and nothing more.
+MAX_NOQA_MARKERS = 810
+MAX_BLE001_MARKERS = 617
 # (Total reflects two independent +1 entries dated 2026-06-21: the AirPlay
 # latency-fit /state snapshot and the barge-in truncate wire-send guard.)
 

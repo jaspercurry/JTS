@@ -340,8 +340,7 @@ def test_full_install_uses_transactional_core_graph_installer():
         for line in function_tail.splitlines()
         if line.strip() and not line.lstrip().startswith("#")
     ]
-    assert commands[:3] == [
-        "retire_esp32_accessory_units",
+    assert commands[:2] == [
         "install_jasper_support_files",
         "install_local_audio_graph_unit_files",
     ]

@@ -557,27 +557,10 @@ def test_fanin_starts_before_hot_path_consumers():
         assert dep in before
 
 
-def test_install_sh_enables_fanin_and_retires_topology_switch():
-    """Fan-in is mandatory now: install.sh enables the daemon directly
-    and removes the retired dmix/fanin switch state."""
+def test_install_sh_enables_fanin_and_drops_the_topology_switcher():
+    """Fan-in is mandatory now: install.sh enables the daemon directly and
+    ships no dmix/fanin topology switcher."""
     install_sh = installer_text()
-    env_migrations_lib = (
-        REPO / "deploy" / "lib" / "install" / "env-migrations.sh"
-    ).read_text()
-    assert "retire_audio_topology_switch()" in env_migrations_lib, (
-        "the installer's env-migrations lib must define the "
-        "retire_audio_topology_switch helper"
-    )
-    call_site = re.search(
-        r"^\s*retire_audio_topology_switch(?:\s|$|\s*#)",
-        install_sh,
-        re.MULTILINE,
-    )
-    assert call_site is not None, (
-        "main() must call retire_audio_topology_switch so stale "
-        "/var/lib/jasper/audio_topology.env cannot keep misleading "
-        "operators after fan-in became canonical."
-    )
     assert "systemctl enable jasper-camilla.service jasper-fanin.service" in install_sh, (
         "install.sh must enable jasper-fanin.service directly; renderer "
         "audio depends on it."

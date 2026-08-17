@@ -13,7 +13,7 @@
 #
 # The host-safe targets (test, bench) never link libasound, so they build on
 # macOS + Linux. `plugin`/`install` are gated to Linux with alsa-lib headers;
-# scripts/ring-proto/build-on-pi.sh drives them on the Pi.
+# deploy/lib/install/ring-platform.sh drives them on the Pi.
 
 CC ?= cc
 # -std=c11 keeps the language strict (no silent GNU language extensions), but

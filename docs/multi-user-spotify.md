@@ -401,9 +401,9 @@ plain HTTP was a deliberate trade.
 
 What this means for upgrading installs:
 
-- The cert + key files are removed by the install script
-  (`remove_legacy_https_artifacts` in `deploy/install.sh`); nginx is
-  reconfigured to plain HTTP only.
+- The cert + key files are no longer installed, and nginx serves plain
+  HTTP only. (An install-time sweep removed leftovers from pre-2026-06
+  boxes; #2285 deleted it once no producer remained.)
 - The wizard's `spotify_credentials.env` schema changed from
   `SPOTIFY_CLIENT_ID + SPOTIFY_CLIENT_SECRET` to
   `SPOTIFY_CLIENT_ID + SPOTIFY_OAUTH_MODE`. The wizard re-prompts

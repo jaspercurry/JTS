@@ -1894,6 +1894,10 @@ def check_active_ring_split_transport() -> CheckResult:
     the seconds between those rungs. That is the ladder working, not a fault.
     The arm's own terminal doctor pass is the authoritative read.
     """
+    from jasper.audio_runtime_plan import (
+        DEFAULT_CAMILLA2_STATEFILE_PATH,
+        output_endpoint_evidence_from_statefiles,
+    )
     from jasper.fanin.coupling_reconcile import read_persisted_coupling
     from jasper.fanin_coupling import COUPLING_SHM_RING, RING_ACTIVE_PLAYBACK_DEVICE
 
@@ -1902,11 +1906,27 @@ def check_active_ring_split_transport() -> CheckResult:
     if coupling == COUPLING_SHM_RING:
         return CheckResult(label, "ok", f"coupling={coupling}; ring is consumed")
 
-    _, active_path = _active_camilla_config_path()
-    config_path = Path(active_path) if active_path else Path(
-        "/var/lib/camilladsp/configs/sound_current.yml"
+    # BOTH STATEFILES, first-recognized-endpoint-wins — the same reader the
+    # `check_outputd_service` transport note used before #2285 folded that note
+    # into this check. Reading only the primary was the gap that fold left: an
+    # active leader keeps a program-bake graph in the primary statefile and its
+    # real output endpoint in camilla#2's, so a box whose primary names no
+    # registered endpoint (a bake, a parked graph, a statefile pointing at a
+    # deleted config) while camilla#2 names the ACTIVE ring would have gone
+    # quiet from BOTH surfaces. Measured, not assumed: two such shapes were
+    # constructed on disk and are pinned in
+    # tests/test_ring_split_transport_doctor.py.
+    #
+    # The primary path still comes from `_active_camilla_config_path()` so an
+    # operator's `JASPER_CAMILLA_STATEFILE` override keeps working; the reader
+    # falls through to camilla#2 by itself when the primary is unreadable, which
+    # is why the old hardcoded `sound_current.yml` rescue is gone rather than
+    # kept beside it.
+    statefile, _ = _active_camilla_config_path()
+    evidence = output_endpoint_evidence_from_statefiles(
+        statefile, DEFAULT_CAMILLA2_STATEFILE_PATH
     )
-    playback_device = _loaded_playback_device(config_path)
+    playback_device = (evidence.devices or {}).get("playback_device")
     if playback_device != RING_ACTIVE_PLAYBACK_DEVICE:
         return CheckResult(
             label,
@@ -2034,8 +2054,8 @@ def check_ring_platform_assets() -> CheckResult:
         if not ok:
             probe_failures.append(f"{pcm}: {detail}")
     if probe_failures:
-        # EBUSY is NOT a registration defect: on a lab-armed box (the ring-proto
-        # experiment live, or after P2 arms a coupling) the ring already has a
+        # EBUSY is NOT a registration defect: on a box whose ring is already
+        # armed outside this check's view, the ring has a
         # live foreign reader/writer, and the ioplug's SPSC guard refuses the
         # probe with -EBUSY ("Device or resource busy"). The .so is fine — the
         # ring is simply in use. A ring armed through the PRODUCT path never
@@ -2292,8 +2312,9 @@ def check_ring_writer_lock_exclusivity() -> CheckResult:
     verbatim: an ``flock``'s identity is the PATHNAME, not the inode, so
     UNLINKING ``<ring>.writer.lock`` while a writer holds it voids exclusivity
     SILENTLY — "two live writers proceed with no log line between them.
-    Measured." It is reachable today because ``scripts/ring-proto/disarm.sh``
-    does ``rm -rf`` over the tmpfs directory. The C comment names its own fix, a
+    Measured." It stays reachable because nothing stops an operator (or a
+    cleanup script) from ``rm -rf``-ing the tmpfs directory out from under a
+    live writer. The C comment names its own fix, a
     doctor check that notices two live writer pids on one ring; this is it. It
     lands here, and not as a follow-up, because the grouping reconciler's
     active-leader arm now DEPENDS on that lock as a safety signal (the
@@ -2354,8 +2375,9 @@ def check_ring_writer_lock_exclusivity() -> CheckResult:
                 "ring's SPSC contract is broken: "
                 + "; ".join(parts)
                 + ". Most likely the lock file was unlinked while a writer held "
-                "it (scripts/ring-proto/disarm.sh rm -rf's the tmpfs dir). Stop "
-                "the extra writer, then re-arm the lane.",
+                "it — anything that rm -rf's /dev/shm/jts-ring voids "
+                "exclusivity silently. Stop the extra writer, then re-arm the "
+                "lane.",
             )
 
     orphaned = [
@@ -3210,17 +3232,15 @@ def _outputd_transport_health(
                 "fail",
                 "; ".join(transport_report.errors) + _transport_route_remedy(),
             )
-        # A note is coherent but NOT steady, and today's only note — the
-        # ACTIVE-ring arm waypoint — is a box that goes silent at its next
-        # CamillaDSP load. Warn rather than pass, precisely because it is not
-        # audible yet: the statefile repoint is durable, so the box can sit in
-        # the waypoint indefinitely and come back silent from a reboot that
-        # nothing else here would flag — fan-in and outputd both keep looping
-        # over the missing stage. Warn rather than fail because it is a
-        # documented rung of an operator ladder with two named exits, not a
-        # broken box; the note carries both.
-        if transport_report.notes:
-            transport_evidence_warning = "; ".join(transport_report.notes)
+        # NOTES ARE DELIBERATELY NOT ELEVATED HERE — do not re-add the WARN.
+        # Today's only note, the ACTIVE-ring arm waypoint, is exactly the state
+        # :func:`check_active_ring_split_transport` FAILs on, from the same two
+        # terms (a graph naming the ACTIVE ring under a non-ring coupling). That
+        # check owns the finding and carries the runnable remedy; elevating the
+        # same fact to a WARN under a second check name made one problem read as
+        # two. The earlier "nothing else here would flag" rationale predated
+        # that check and was never reconciled when it landed. Errors above still
+        # FAIL here, because those are outputd's own coherence, not the split.
     local_pipe_detail = f"content_source={actual_content_source}"
     # KEYED ON THE CONTENT BRIDGE, NOT ON sink_mode. What decides whether a
     # content PCM exists at all is which bridge outputd runs, and only the

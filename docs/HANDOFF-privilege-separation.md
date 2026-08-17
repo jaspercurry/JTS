@@ -707,9 +707,11 @@ in `/var/lib/jasper` group `jasper`, because jasper-control reads them fresh for
   + jasper-control keep reading the keyless `voice_provider.env` for the active
   provider. `config.py` is unchanged for the keys (still read via
   `EnvironmentFile`); only the Google path defaults move.
-- `migrate_secrets_phase4a` (install) does a guarded **atomic `mv`** of the
+- A one-time install migration did a guarded **atomic `mv`** of the
   `google/` tree + `google_credentials.env` out of `/var/lib/jasper` (rewriting
-  the absolute `token_path`s baked into `accounts.json`), re-groups them to
+  the absolute `token_path`s baked into `accounts.json`). It was deleted in
+  #2285 once every current path resolved to the destination; what survives is
+  `reassert_secrets_compartment_perms`, which re-groups them to
   `jasper-secrets`, and splits the keys out of `voice_provider.env` +
   `jasper.env`. Idempotent; never strips a key from the broad files until it is
   confirmed written to `voice_keys.env`.
@@ -750,8 +752,10 @@ Machinery mirrors Phase 4a: group creation in
 [`service-users.sh`](../deploy/lib/install/service-users.sh), direct install +
 boot self-heal via
 [`deploy/tmpfiles/jts-intsecrets.conf`](../deploy/tmpfiles/jts-intsecrets.conf),
-a guarded `migrate_secrets_phase4b` in
-[`env-migrations.sh`](../deploy/lib/install/env-migrations.sh), and unit
+`reassert_intsecrets_compartment_perms` in
+[`env-migrations.sh`](../deploy/lib/install/env-migrations.sh) (the
+every-deploy permission re-assert; its one-time move arm was deleted in
+#2285), and unit
 `SupplementaryGroups=` + `ReadWritePaths=` on voice/control/mux/web.
 
 **Files relocated out of `/var/lib/jasper`:** `home_assistant.env` (the
@@ -783,8 +787,9 @@ mux all build routers that refresh → **all WRITE the cache**. So unlike 4a
 **`accounts.json` bakes absolute paths** — like google's `token_path`, spotify's
 `accounts.json` stores absolute `cache_path` values
 (`/var/lib/jasper/spotify/caches/<name>.json` on pre-4b installs);
-`migrate_secrets_phase4b` rewrites that prefix on move (parallel to 4a's google
-rewrite) so the per-account caches do not orphan. The new-location defaults live
+the one-time 4b migration rewrote that prefix on move (parallel to 4a's google
+rewrite) so the per-account caches did not orphan; the move arm was deleted in
+#2285 and only the permission re-assert survives. The new-location defaults live
 in
 [`jasper/config.py`](../jasper/config.py) (`spotify_cache_path`,
 `spotify_accounts_path`) + [`jasper/accounts.py`](../jasper/accounts.py)
@@ -859,7 +864,7 @@ confidentiality regression is invisible everywhere else. Reports are strictly
 secret-free (owner / group / octal-mode / daemon-name only; never a byte of the
 value — mirrors `check_control_token`).
 
-**Install-side re-tighten.** `migrate_secrets_phase4a`'s unconditional re-assert
+**Install-side re-tighten.** `reassert_secrets_compartment_perms`'s unconditional
 block already `chown -R`'s the whole compartment to `jasper-secrets` and re-chmods
 `google_credentials.env` / `accounts.json` / the token tree to `0640` every deploy;
 `migrate_voice_keys_split` only chmods `voice_keys.env` when it *writes* it, so on

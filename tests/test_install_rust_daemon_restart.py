@@ -122,14 +122,3 @@ def test_core_graph_restart_makes_built_daemons_live():
     assert "systemctl restart jasper-outputd.service" in outputd_ready
     assert "restart_services_for_changed_rust_daemons" not in text
     assert "restart_services_for_changed_rust_daemons" not in RUST_HELPERS.read_text()
-
-
-def test_installer_retires_obsolete_usb_binary_and_cache_on_both_profiles():
-    helpers = RUST_HELPERS.read_text()
-    retire = _function_body(helpers, "retire_jasper_usbsink_audio")
-    assert "rm -f -- /opt/jasper/bin/jasper-usbsink-audio" in retire
-    assert "rm -rf -- /var/cache/jasper-usbsink-audio-build" in retire
-
-    main = _function_body(INSTALL.read_text(), "main")
-    assert main.count("retire_jasper_usbsink_audio") == 2
-    assert "build_install_jasper_usbsink_audio" not in main

@@ -254,11 +254,3 @@ build_install_jasper_outputd() {
     # outputd is the mainline final-output owner and is required.
     build_install_rust_daemon "jasper-outputd" "1"
 }
-
-retire_jasper_usbsink_audio() {
-    # USB ingress is owned entirely by jasper-fanin. Remove the retired helper
-    # image and its persistent Cargo cache on upgrade so deletion actually
-    # reclaims disk instead of leaving an executable that looks supported.
-    rm -f -- /opt/jasper/bin/jasper-usbsink-audio
-    rm -rf -- /var/cache/jasper-usbsink-audio-build
-}

@@ -43,7 +43,6 @@ ROOT = Path(__file__).resolve().parents[1]
 CONF_D = ROOT / "deploy" / "alsa" / "conf.d" / "60-jts-ring.conf"
 IOPLUG_C = ROOT / "c" / "jts-ring-ioplug" / "pcm_jts_ring.c"
 RUST_FANIN_CONFIG = ROOT / "rust" / "jasper-fanin" / "src" / "config.rs"
-ARM_RING_A = ROOT / "scripts" / "ring-proto" / "arm-ring-a.sh"
 CAMILLADSP_TAG = "v4.1.3"
 CAMILLADSP_COMMIT = "05e9cfc"
 
@@ -175,8 +174,9 @@ def test_camilla_request_is_documented_but_negotiated_outcome_is_fixed():
 
     Formula source: CamillaDSP v4.1.3 (05e9cfc)
     src/alsa_backend/threaded_buffermanager.rs::
-    DeviceBufferManager::calculate_buffer_size. The same request is mirrored by
-    scripts/ring-proto/arm-ring-a.sh's 8-slot lab default notes.
+    DeviceBufferManager::calculate_buffer_size. The same request is what the
+    8-slot/chunk-256 hardware anchor below negotiates against: 8 slots * 128
+    frames is the 1024-frame buffer that request resolves to.
     """
 
     outcome = negotiate(chunksize=RING_CAMILLA_CHUNKSIZE)
@@ -185,9 +185,6 @@ def test_camilla_request_is_documented_but_negotiated_outcome_is_fixed():
     assert outcome.negotiated_buffer_frames == RING_SLOT_FRAMES * DEFAULT_FANIN_RING_SLOTS
     assert outcome.requested_period_frames == outcome.negotiated_buffer_frames // 8
     assert outcome.negotiated_period_frames == RING_SLOT_FRAMES
-    assert "8 slots * 128 = 1024-frame buffer" in ARM_RING_A.read_text(
-        encoding="utf-8"
-    )
 
 
 def test_ring_coupled_camilla_emitter_matches_two_slot_ring_geometry():

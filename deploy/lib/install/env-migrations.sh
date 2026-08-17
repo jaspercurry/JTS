@@ -156,42 +156,31 @@ ensure_intsecrets_dir() {
     install -d -m 2770 -g jasper-intsecrets "${INTSECRETS_DIR}"
 }
 
-# WS1 Phase 4a — move the high-value secrets OUT of the broad /var/lib/jasper
-# StateDirectory into the jasper-secrets compartment. Guarded + idempotent: each
-# move runs only when the old path exists and the new one does not, so a re-run
-# (or a fresh install) is a no-op. mv on the same filesystem is an atomic rename
-# — no token loss. See docs/HANDOFF-privilege-separation.md "Phase 4".
-migrate_secrets_phase4a() {
+# WS1 Phase 4a — re-assert ownership and modes across the jasper-secrets
+# compartment (Google OAuth token tree + client secret + the LLM API keys) on
+# every deploy, and run the two key relocations that still have a producer.
+#
+# This is a CONFIDENTIALITY re-assert, not a migration: nothing writes these
+# files under the broad /var/lib/jasper StateDirectory any more, so there is no
+# tree left to move. What remains is drift repair — a manual `chmod o+r`, a
+# backup restore, or a file an older build created under the wrong owner:group
+# would otherwise survive indefinitely, which is exactly what jasper-doctor's
+# check_jasper_secrets_compartment FAILs on.
+#
+# Idempotent; no-op before the group exists.
+# See docs/HANDOFF-privilege-separation.md "Phase 4".
+reassert_secrets_compartment_perms() {
     getent group jasper-secrets >/dev/null 2>&1 || return 0
     ensure_secrets_dir
 
-    local old_google="${STATE_DIR}/google"
     local new_google="${SECRETS_DIR}/google"
-    if [[ -d "${old_google}" && ! -e "${new_google}" ]]; then
-        mv "${old_google}" "${new_google}"
-        # accounts.json bakes ABSOLUTE token_path values; rewrite the prefix so
-        # google_creds.load_credentials() finds the moved per-account tokens.
-        if [[ -f "${new_google}/accounts.json" ]]; then
-            sed -i.bak "s#${STATE_DIR}/google/#${SECRETS_DIR}/google/#g" \
-                "${new_google}/accounts.json"
-            rm -f "${new_google}/accounts.json.bak"
-        fi
-        echo "  migrate_secrets_phase4a: moved Google token tree -> ${new_google}"
-    fi
-
-    local old_creds="${STATE_DIR}/google_credentials.env"
     local new_creds="${SECRETS_DIR}/google_credentials.env"
-    if [[ -f "${old_creds}" && ! -e "${new_creds}" ]]; then
-        mv "${old_creds}" "${new_creds}"
-        echo "  migrate_secrets_phase4a: moved google_credentials.env -> ${SECRETS_DIR}"
-    fi
 
-    # (Re-)assert the tree layout + perms at the new location. mv preserves the
-    # moved files' OLD owner:group (jasper-voice:jasper from the StateDirectory)
-    # — setgid only affects NEW files — so an explicit recursive chown to
-    # root:jasper-secrets is required (owner root = rollback-safe + matches the
-    # tmpfiles spec; group-read is the access path). install -d is idempotent
-    # (fresh install: just creates the subdirs).
+    # (Re-)assert the tree layout + perms. setgid only affects NEW files, so an
+    # explicit recursive chown to root:jasper-secrets is required to repair
+    # anything already on disk under another owner:group (owner root =
+    # rollback-safe + matches the tmpfiles spec; group-read is the access
+    # path). install -d is idempotent (fresh install: just creates the subdirs).
     install -d -m 2770 -g jasper-secrets "${new_google}" "${new_google}/tokens"
     chown -R root:jasper-secrets "${SECRETS_DIR}" 2>/dev/null || true
     chmod 0640 "${new_creds}" 2>/dev/null || true
@@ -223,57 +212,29 @@ migrate_secrets_phase4a() {
     systemd-tmpfiles --create --prefix="${SECRETS_DIR}" 2>/dev/null || true
 }
 
-# WS1 Phase 4b — move Home Assistant + Spotify secrets OUT of the broad
-# /var/lib/jasper StateDirectory into the jasper-intsecrets compartment.
+# WS1 Phase 4b — re-assert ownership and modes across the jasper-intsecrets
+# integration-secret compartment (Home Assistant token + Spotify
+# credentials/OAuth token caches) on every deploy. Like the 4a re-assert above
+# this is confidentiality drift repair, not a migration: nothing writes these
+# files under the broad /var/lib/jasper StateDirectory any more.
+#
 # Spotify is read-write: voice, control, mux, and web can all refresh/persist
 # spotipy token caches, so the compartment is writable by all four service
-# users via systemd ReadWritePaths=. See docs/HANDOFF-privilege-separation.md.
-migrate_secrets_phase4b() {
+# users via systemd ReadWritePaths=. Idempotent; no-op before the group exists.
+# See docs/HANDOFF-privilege-separation.md.
+reassert_intsecrets_compartment_perms() {
     getent group jasper-intsecrets >/dev/null 2>&1 || return 0
     ensure_intsecrets_dir
 
-    local old_ha="${STATE_DIR}/home_assistant.env"
     local new_ha="${INTSECRETS_DIR}/home_assistant.env"
-    if [[ -f "${old_ha}" && ! -e "${new_ha}" ]]; then
-        mv "${old_ha}" "${new_ha}"
-        echo "  migrate_secrets_phase4b: moved home_assistant.env -> ${INTSECRETS_DIR}"
-    fi
-
-    local old_spotify_creds="${STATE_DIR}/spotify_credentials.env"
     local new_spotify_creds="${INTSECRETS_DIR}/spotify_credentials.env"
-    if [[ -f "${old_spotify_creds}" && ! -e "${new_spotify_creds}" ]]; then
-        mv "${old_spotify_creds}" "${new_spotify_creds}"
-        echo "  migrate_secrets_phase4b: moved spotify_credentials.env -> ${INTSECRETS_DIR}"
-    fi
-
-    local old_legacy_cache="${STATE_DIR}/.spotify-cache"
     local new_legacy_cache="${INTSECRETS_DIR}/.spotify-cache"
-    if [[ -f "${old_legacy_cache}" && ! -e "${new_legacy_cache}" ]]; then
-        mv "${old_legacy_cache}" "${new_legacy_cache}"
-        echo "  migrate_secrets_phase4b: moved legacy Spotify cache -> ${new_legacy_cache}"
-    fi
-
-    local old_spotify="${STATE_DIR}/spotify"
     local new_spotify="${INTSECRETS_DIR}/spotify"
-    if [[ -d "${old_spotify}" && ! -e "${new_spotify}" ]]; then
-        mv "${old_spotify}" "${new_spotify}"
-        echo "  migrate_secrets_phase4b: moved Spotify token tree -> ${new_spotify}"
-    fi
 
-    # accounts.json bakes ABSOLUTE cache_path values; rewrite the prefix so all
-    # per-account caches remain reachable after the tree move. Run this
-    # unconditionally when the moved registry exists so partial/re-run states
-    # converge too.
-    if [[ -f "${new_spotify}/accounts.json" ]]; then
-        sed -i.bak "s#${STATE_DIR}/spotify/#${INTSECRETS_DIR}/spotify/#g" \
-            "${new_spotify}/accounts.json"
-        rm -f "${new_spotify}/accounts.json.bak"
-    fi
-
-    # (Re-)assert the tree layout + perms at the new location. mv preserves the
-    # old StateDirectory owner:group; explicit recursive chown moves everything
-    # to root:jasper-intsecrets. install -d is idempotent and also creates the
-    # forward path on fresh installs.
+    # (Re-)assert the tree layout + perms. The recursive chown repairs anything
+    # already on disk under another owner:group (setgid only affects NEW
+    # files). install -d is idempotent and also creates the forward path on
+    # fresh installs.
     install -d -m 2770 -g jasper-intsecrets \
         "${new_spotify}" "${new_spotify}/caches"
     chown -R root:jasper-intsecrets "${INTSECRETS_DIR}" 2>/dev/null || true
@@ -288,33 +249,27 @@ migrate_secrets_phase4b() {
     systemd-tmpfiles --create --prefix="${INTSECRETS_DIR}" 2>/dev/null || true
 }
 
-# WS1 Phase 4a — split the three provider API keys out of the broad
-# voice_provider.env (and any operator seed in /etc/jasper/jasper.env) into the
-# group-jasper-secrets voice_keys.env. The non-secret JASPER_VOICE_PROVIDER +
-# per-provider model/voice selectors stay in voice_provider.env so jasper-control
-# keeps reading the active provider for /system/. Safe: never strips a key from
-# the broad files until its value is confirmed written to voice_keys.env.
+# WS1 Phase 4a — move an operator's hand-seeded provider API key out of the
+# broad /etc/jasper/jasper.env into the group-jasper-secrets voice_keys.env.
+# An operator seeding a key for headless/CI imaging is the remaining producer;
+# the /voice wizard writes voice_keys.env directly. Safe: never strips a key
+# from jasper.env until its value is confirmed written to voice_keys.env.
 migrate_voice_keys_split() {
     getent group jasper-secrets >/dev/null 2>&1 || return 0
-    local provider_env="${STATE_DIR}/voice_provider.env"
     local jasper_env="${ENV_DIR}/jasper.env"
     local keys_env="${SECRETS_DIR}/voice_keys.env"
     local key line val moved=0
 
     for key in GEMINI_API_KEY OPENAI_API_KEY XAI_API_KEY; do
-        # Already split out (e.g. the wizard wrote it post-4a)? Just clean any
-        # stale copy left on the broad files.
+        # Already in the secret file (the wizard's normal path)? Just clean any
+        # stale operator seed left in jasper.env.
         if [[ -f "${keys_env}" ]] && grep -qE "^${key}=" "${keys_env}"; then
-            _strip_key_from_broad "${key}" "${provider_env}" "${jasper_env}"
+            _strip_key_from_broad "${key}" "${jasper_env}"
             continue
         fi
-        # Find the value: wizard file first, then operator seed in jasper.env.
+        # Find the value: an operator seed in jasper.env.
         val=""
-        if [[ -f "${provider_env}" ]]; then
-            line=$(grep -E "^${key}=" "${provider_env}" || true)
-            val="${line#"${key}"=}"
-        fi
-        if [[ -z "${val}" && -f "${jasper_env}" ]]; then
+        if [[ -f "${jasper_env}" ]]; then
             line=$(grep -E "^${key}=" "${jasper_env}" || true)
             val="${line#"${key}"=}"
         fi
@@ -326,7 +281,7 @@ migrate_voice_keys_split() {
         chmod 0640 "${keys_env}"
         printf '%s=%s\n' "${key}" "${val}" >> "${keys_env}"
         if grep -qE "^${key}=" "${keys_env}"; then
-            _strip_key_from_broad "${key}" "${provider_env}" "${jasper_env}"
+            _strip_key_from_broad "${key}" "${jasper_env}"
             moved=1
         fi
     done
@@ -340,38 +295,33 @@ migrate_voice_keys_split() {
 }
 
 _strip_key_from_broad() {
-    local key="$1" provider_env="$2" jasper_env="$3"
-    if [[ -f "${provider_env}" ]]; then
-        sed -i.bak "/^${key}=/d" "${provider_env}"
-        rm -f "${provider_env}.bak"
-    fi
+    local key="$1" jasper_env="$2"
     if [[ -f "${jasper_env}" ]]; then
         sed -i.bak "/^${key}=/d" "${jasper_env}"
         rm -f "${jasper_env}.bak"
     fi
 }
 
+# Move an operator's hand-seeded Google Routes key out of the broad
+# /etc/jasper/jasper.env into the group-jasper-secrets google_routes.env. Same
+# remaining producer as migrate_voice_keys_split: headless/CI seeding. The
+# /transit wizard writes google_routes.env directly.
 migrate_google_routes_key() {
     getent group jasper-secrets >/dev/null 2>&1 || return 0
     ensure_secrets_dir
     local jasper_env="${ENV_DIR}/jasper.env"
-    local transit_env="${STATE_DIR}/transit.env"
     local routes_env="${SECRETS_DIR}/google_routes.env"
     local key="GOOGLE_ROUTES_API_KEY"
     local line val moved=0
 
     if [[ -f "${routes_env}" ]] && grep -qE "^${key}=" "${routes_env}"; then
-        _strip_key_from_broad "${key}" "${transit_env}" "${jasper_env}"
+        _strip_key_from_broad "${key}" "${jasper_env}"
         chmod 0640 "${routes_env}" 2>/dev/null || true
         return 0
     fi
 
     val=""
-    if [[ -f "${transit_env}" ]]; then
-        line=$(grep -E "^${key}=" "${transit_env}" || true)
-        val="${line#"${key}"=}"
-    fi
-    if [[ -z "${val}" && -f "${jasper_env}" ]]; then
+    if [[ -f "${jasper_env}" ]]; then
         line=$(grep -E "^${key}=" "${jasper_env}" || true)
         val="${line#"${key}"=}"
     fi
@@ -383,11 +333,11 @@ migrate_google_routes_key() {
         chmod 0640 "${routes_env}"
         printf '%s=%s\n' "${key}" "${val}" >> "${routes_env}"
         if grep -qE "^${key}=" "${routes_env}"; then
-            _strip_key_from_broad "${key}" "${transit_env}" "${jasper_env}"
+            _strip_key_from_broad "${key}" "${jasper_env}"
             moved=1
         fi
     else
-        _strip_key_from_broad "${key}" "${transit_env}" "${jasper_env}"
+        _strip_key_from_broad "${key}" "${jasper_env}"
     fi
 
     if [[ "${moved}" == "1" ]]; then
@@ -432,11 +382,14 @@ PY
 #   JASPER_MIC_DEVICE_DTLN=udp:9878       (triple-stream extras)
 #   JASPER_AEC_DTLN_ENABLED=1
 # This function preserves an operator's prior intent on upgrade by
-# translating those values into the new boolean form, then strips
-# the underlying vars so the reconciler is the only writer going
-# forward. Fresh installs (no underlying vars set) are a no-op here
-# — the new defaults seeded in reconcile_aec_state take effect
-# (RAW=1, DTLN=0).
+# translating those values into the new boolean form. Fresh installs
+# (no underlying vars set) are a no-op here — the new defaults seeded
+# in reconcile_aec_state take effect (RAW=1, DTLN=0).
+#
+# It deliberately does NOT strip the underlying vars from jasper.env:
+# jasper-aec-reconcile owns those keys there and rewrites all six on
+# every run, so removing them here would only delete lines the
+# reconciler immediately recreates.
 #
 # Idempotent — already-translated installs find nothing to migrate.
 migrate_wake_legs_config() {
@@ -555,67 +508,6 @@ migrate_wake_legs_config() {
         echo "JASPER_WAKE_LEG_CHIP_AEC_210=${want_chip_aec_210}" >> "${wizard_env}"
         echo "  migrate_wake_legs_config: set JASPER_WAKE_LEG_CHIP_AEC_210=${want_chip_aec_210}"
         echo "    from prior JASPER_MIC_DEVICE_CHIP_AEC_210=${chip_210_value:-<unset>}"
-    fi
-
-    sed -i.bak '/^JASPER_MIC_DEVICE_RAW=/d' "${jasper_env}"
-    sed -i.bak '/^JASPER_MIC_DEVICE_DTLN=/d' "${jasper_env}"
-    sed -i.bak '/^JASPER_AEC_DTLN_ENABLED=/d' "${jasper_env}"
-    sed -i.bak '/^JASPER_MIC_DEVICE_CHIP_AEC_150=/d' "${jasper_env}"
-    sed -i.bak '/^JASPER_MIC_DEVICE_CHIP_AEC_210=/d' "${jasper_env}"
-    sed -i.bak '/^JASPER_AEC_CHIP_AEC_ENABLED=/d' "${jasper_env}"
-    rm -f "${jasper_env}.bak"
-}
-
-# Migrate the old OpenAI Realtime template default from far_field to auto.
-#
-# The far_field line originally shipped as part of the server-VAD/music
-# experiment. Server VAD was later demoted back to opt-in, but existing
-# installs may still carry the provider-side denoising default in
-# /etc/jasper/jasper.env. Auto lets voice resolve provider preprocessing
-# from the active input contract, while still allowing an operator to set
-# far_field explicitly after migration if their custom raw-mic path wants it.
-migrate_openai_noise_reduction_default() {
-    local jasper_env="${ENV_DIR}/jasper.env"
-    [[ -f "${jasper_env}" ]] || return 0
-    if grep -qE '^JASPER_OPENAI_NOISE_REDUCTION=far_field$' "${jasper_env}"; then
-        sed -i.bak \
-            's/^JASPER_OPENAI_NOISE_REDUCTION=far_field$/JASPER_OPENAI_NOISE_REDUCTION=auto/' \
-            "${jasper_env}"
-        rm -f "${jasper_env}.bak"
-        chmod 0640 "${jasper_env}"
-        echo "  migrate_openai_noise_reduction_default: set JASPER_OPENAI_NOISE_REDUCTION=auto"
-    fi
-}
-
-# Migrate the first outputd-cutover TTS socket default to the current
-# fan-in-owned TTS socket. Existing installs that still carry the old
-# /run/jasper-outputd/tts.sock value shadow jasper-voice.service's
-# packaged Environment= line and make voice restart-loop, because
-# outputd no longer owns a TTS IPC socket.
-migrate_tts_outputd_socket_default() {
-    local jasper_env="${ENV_DIR}/jasper.env"
-    [[ -f "${jasper_env}" ]] || return 0
-    if grep -qE '^JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-outputd/tts\.sock$' "${jasper_env}"; then
-        sed -i.bak \
-            's|^JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-outputd/tts\.sock$|JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-fanin/tts.sock|' \
-            "${jasper_env}"
-        rm -f "${jasper_env}.bak"
-        chmod 0640 "${jasper_env}"
-        echo "  migrate_tts_outputd_socket_default: set JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-fanin/tts.sock"
-    fi
-}
-
-# Remove the deleted DAC8x final-output route knob from long-lived installs.
-# The renderer no longer reads it, but leaving the stale line in jasper.env makes
-# operators think a lab/direct-output alias still exists.
-migrate_removed_output_dac_route() {
-    local jasper_env="${ENV_DIR}/jasper.env"
-    [[ -f "${jasper_env}" ]] || return 0
-    if grep -qE '^JASPER_OUTPUT_DAC_ROUTE=' "${jasper_env}"; then
-        sed -i.bak '/^JASPER_OUTPUT_DAC_ROUTE=/d' "${jasper_env}"
-        rm -f "${jasper_env}.bak"
-        chmod 0640 "${jasper_env}"
-        echo "  migrate_removed_output_dac_route: removed stale JASPER_OUTPUT_DAC_ROUTE"
     fi
 }
 
@@ -798,110 +690,6 @@ migrate_grouping() {
     done
 }
 
-# Retire generated state that no runtime reads after USB capture moved wholly
-# into jasper-fanin and grouping effective-role state moved under
-# /var/lib/jasper-grouping. These files were generated/reconciler-owned, so the
-# migration removes each retired name without opening or following it. A
-# directory at either path is unexpected and aborts loudly rather than being
-# removed recursively.
-migrate_retired_source_state() {
-    ensure_state_dir
-    if ! /usr/bin/python3 - "${STATE_DIR}" <<'PY'
-import os
-import stat
-import sys
-
-state_dir = sys.argv[1]
-for name in ("usbsink.env", "grouping-follower-status.json"):
-    path = os.path.join(state_dir, name)
-    try:
-        file_stat = os.lstat(path)
-    except FileNotFoundError:
-        continue
-    if stat.S_ISDIR(file_stat.st_mode):
-        raise SystemExit(f"ERROR: refusing retired-state directory {path}")
-    # unlink removes the directory entry itself; it never follows a symlink and
-    # never opens a FIFO/socket/device.
-    os.unlink(path)
-PY
-    then
-        return 1
-    fi
-    echo "  migrate_retired_source_state: retired USB env keys and grouping follower status cleaned"
-}
-
-# Seed the speaker's room label into the speaker-identity home
-# (/var/lib/jasper/speaker_name.env, JASPER_SPEAKER_ROOM) from the
-# legacy peering room (/var/lib/jasper/peering.env, JASPER_PEER_ROOM)
-# so an existing household keeps its room label in the identity home where
-# /rooms and control_advert now read it. One-time, non-destructive:
-#
-#   - If speaker_name.env already has a NON-EMPTY JASPER_SPEAKER_ROOM,
-#     leave it untouched (don't overwrite an operator-set room).
-#   - Otherwise (line absent OR present-but-empty), copy the explicit
-#     JASPER_PEER_ROOM value from peering.env, if any.
-#   - If peering.env has no explicit room (auto-derived default), do
-#     nothing — the identity reader's legacy peering fallback keeps
-#     /rooms consistent at runtime, so there is nothing to persist.
-#
-# SCOPE: JASPER_PEER_ROOM remains a data-compatibility fallback for older
-# peering.env files; this only mirrors the value into the identity home.
-#
-# Fail-soft: any read/write hiccup is a warn-and-continue, never an
-# install failure. Idempotent — a second run finds the room already set
-# and no-ops. The value is written quoted to match the format
-# jasper.speaker_name.write_state emits and read_state parses.
-migrate_speaker_room() {
-    local speaker_env="${STATE_DIR}/speaker_name.env"
-    local peering_env="${STATE_DIR}/peering.env"
-
-    # Nothing to seed into if the identity file isn't there yet. The
-    # fresh-install seed in seed_env_defaults creates it before this
-    # runs, so this guard only fires on an odd partial state.
-    [[ -f "${speaker_env}" ]] || return 0
-
-    # Already set (non-empty) -> respect the operator's choice, no-op.
-    local cur_line cur_room
-    cur_line=$(grep -E '^JASPER_SPEAKER_ROOM=' "${speaker_env}" 2>/dev/null || true)
-    if [[ -n "${cur_line}" ]]; then
-        cur_room="${cur_line#JASPER_SPEAKER_ROOM=}"
-        cur_room="${cur_room%$'\r'}"
-        cur_room="${cur_room%$'\n'}"
-        # Strip surrounding double quotes (write_state quotes the value).
-        cur_room="${cur_room#\"}"
-        cur_room="${cur_room%\"}"
-        if [[ -n "${cur_room}" ]]; then
-            return 0
-        fi
-    fi
-
-    # No legacy peering room to carry over -> no-op.
-    [[ -f "${peering_env}" ]] || return 0
-    local peer_line peer_room
-    peer_line=$(grep -E '^JASPER_PEER_ROOM=' "${peering_env}" 2>/dev/null || true)
-    [[ -z "${peer_line}" ]] && return 0
-    peer_room="${peer_line#JASPER_PEER_ROOM=}"
-    peer_room="${peer_room%$'\r'}"
-    peer_room="${peer_room%$'\n'}"
-    # peering.env writes the value bare, but tolerate quotes defensively.
-    peer_room="${peer_room#\"}"
-    peer_room="${peer_room%\"}"
-    [[ -z "${peer_room}" ]] && return 0
-
-    # Replace any present-but-empty room line, then append the seeded
-    # value so a stale `JASPER_SPEAKER_ROOM=""` doesn't leave a duplicate.
-    if ! sed -i.bak '/^JASPER_SPEAKER_ROOM=/d' "${speaker_env}" 2>/dev/null; then
-        rm -f "${speaker_env}.bak"
-        echo "  migrate_speaker_room: could not update ${speaker_env} (left unchanged)"
-        return 0
-    fi
-    rm -f "${speaker_env}.bak"
-    printf 'JASPER_SPEAKER_ROOM="%s"\n' "${peer_room}" >> "${speaker_env}"
-    chmod 0644 "${speaker_env}" 2>/dev/null || true
-    echo "  migrate_speaker_room: seeded JASPER_SPEAKER_ROOM=${peer_room}"
-    echo "    into ${speaker_env} from ${peering_env}"
-}
-
 # Migrate stale weather env vars from /etc/jasper/jasper.env into the
 # wizard-owned /var/lib/jasper/weather.env, and seed missing weather /
 # transit coordinates from each other. Weather and transit remain
@@ -988,73 +776,16 @@ migrate_weather_config() {
     fi
 }
 
-# Migrate stale JASPER_VOICE_PROVIDER from /etc/jasper/jasper.env to
-# /var/lib/jasper/voice_provider.env. The wizard at /voice owns this
-# variable; previously the install template also set a default
-# (JASPER_VOICE_PROVIDER=gemini), which created stale-vs-runtime
-# confusion when the wizard had written a different value.
-#
-# This function:
-#  - reads any JASPER_VOICE_PROVIDER= line out of /etc/jasper/jasper.env
-#  - if the wizard file (/var/lib/jasper/voice_provider.env) doesn't
-#    already define the variable, moves the value there
-#  - removes the line from /etc/jasper/jasper.env either way
-#
-# Idempotent: running multiple times produces the same end state.
-# Safe on fresh installs (where neither file has the var, this is a
-# no-op) and on long-lived installs (where the wizard file already
-# has the var, this just cleans up the stale line).
-migrate_voice_provider() {
-    local jasper_env="${ENV_DIR}/jasper.env"
-    local wizard_env="${STATE_DIR}/voice_provider.env"
-
-    [[ -f "${jasper_env}" ]] || return 0
-    local line
-    line=$(grep -E '^JASPER_VOICE_PROVIDER=' "${jasper_env}" || true)
-    [[ -z "${line}" ]] && return 0
-
-    # value is everything after the first '='. Trim trailing CR/whitespace.
-    local stale_value="${line#JASPER_VOICE_PROVIDER=}"
-    stale_value="${stale_value%[$'\r\n ']*}"
-
-    ensure_state_dir
-
-    # If wizard file already declares the variable, just remove the
-    # stale jasper.env line — the wizard's value wins per systemd's
-    # EnvironmentFile load order regardless, this is just cleanup.
-    if [[ -f "${wizard_env}" ]] && grep -qE '^JASPER_VOICE_PROVIDER=' "${wizard_env}"; then
-        sed -i.bak '/^JASPER_VOICE_PROVIDER=/d' "${jasper_env}"
-        rm -f "${jasper_env}.bak"
-        echo "  migrate_voice_provider: removed stale JASPER_VOICE_PROVIDER"
-        echo "    line from ${jasper_env} (wizard file already canonical)"
-        return 0
-    fi
-
-    # Migrate the value to the wizard file. Empty stale value (we just
-    # introduced this on a clean install) → don't write anything, just
-    # remove the line from jasper.env. Non-empty → preserve the
-    # operator's pre-cleanup choice so voice keeps working.
-    if [[ -n "${stale_value}" ]]; then
-        touch "${wizard_env}"
-        # WS1 Phase 3b-2: 0640 (was 0600) so the now-non-root jasper-control +
-        # the jasper-doctor it spawns (group jasper) can read voice_provider.env.
-        # widen_control_secret_env_modes re-asserts group jasper on this file.
-        chmod 0640 "${wizard_env}"
-        echo "JASPER_VOICE_PROVIDER=${stale_value}" >> "${wizard_env}"
-        echo "  migrate_voice_provider: moved JASPER_VOICE_PROVIDER=${stale_value}"
-        echo "    from ${jasper_env} to ${wizard_env}"
-    fi
-    sed -i.bak '/^JASPER_VOICE_PROVIDER=/d' "${jasper_env}"
-    rm -f "${jasper_env}.bak"
-}
-
 # Move JASPER_FANIN_CAMILLA_COUPLING out of jasper.env into the
 # reconciler-owned /var/lib/jasper/fanin.env. The coupling reconciler
 # (jasper.fanin.coupling_reconcile) is the single writer of this key in
 # fanin.env (the same file jasper-fanin + jasper-mux load, fanin.env
 # winning over the unit Environment= defaults). During the experimental
 # phase the flag may have been hand-set in jasper.env; this relocates it
-# so there is one owner and no shadowing. Mirrors migrate_voice_provider.
+# so there is one owner and no shadowing. Same shape as the other
+# wizard-file relocations (migrate_transit_config, migrate_grouping): move
+# the value only when the wizard file does not already declare it, then
+# strip the jasper.env line either way.
 # fanin.env carries no secrets (buffer frames + coupling mode), so 0644.
 migrate_fanin_coupling() {
     local jasper_env="${ENV_DIR}/jasper.env"
@@ -1089,6 +820,26 @@ migrate_fanin_coupling() {
     rm -f "${jasper_env}.bak"
 }
 
+# Remove the retired dmix/fanin topology switch's state file.
+#
+# WHY THIS ONE LINE SURVIVED THE #2285 DELETION when the migration around it did
+# not: `jasper-doctor`'s `check_fanin_asound_wiring` WARNs on this file's
+# presence and names re-running the installer as the fix, and this is the only
+# thing in the tree that makes that sentence true. Deleting the remover with the
+# rest of the migration would have left a WARN no operator action could ever
+# clear -- the paired "doctor warns on presence + install cleans" mechanism with
+# its cleaning half cut. Pinned by
+# tests/test_install_helpers.py::test_install_removes_the_retired_audio_topology_state.
+#
+# No backup, deliberately, unlike the migration this replaces: nothing reads the
+# file for routing (only the doctor inspects it), so a `.retired.*` copy would
+# preserve ghost state under a name the doctor does NOT warn about -- trading a
+# clearable warning for a silent one.
+remove_retired_audio_topology_state() {
+    rm -f "${STATE_DIR}/audio_topology.env" /etc/asound.conf.dmix-mode-backup
+}
+
+
 # Seed /var/lib/jasper/wifi_guardian.env from the currently-active WiFi
 # profile if no stash exists yet. This is the migration hook for the
 # WiFi profile guardian (docs/HANDOFF-resilience.md "Hardware-event
@@ -1106,22 +857,6 @@ migrate_fanin_coupling() {
 # in it because NM's own keyfile is also plaintext at 0600 — encrypting
 # our copy while NM's stays plaintext is theatre against a root-equiv
 # attacker. The PSK does NOT appear in any `echo` from this function.
-retire_audio_topology_switch() {
-    # Fan-in is now the only supported renderer topology. Older builds
-    # persisted mutable topology intent in /var/lib/jasper/audio_topology.env
-    # and could leave that file saying `fanin` while install_alsa had just
-    # re-rendered a dmix-era /etc/asound.conf. Remove the stale state and
-    # backup files so deploy has one source of truth again: the shipped
-    # fan-in asoundrc plus fixed renderer unit devices.
-    local state="${STATE_DIR}/audio_topology.env"
-    if [[ -f "${state}" ]]; then
-        cp "${state}" "${state}.retired.$(date +%s)"
-        rm -f "${state}"
-        echo "  retire_audio_topology_switch: removed stale ${state} (backup kept with .retired.* suffix)"
-    fi
-    rm -f /etc/asound.conf.dmix-mode-backup
-}
-
 migrate_wifi_guardian() {
     local stash="${STATE_DIR}/wifi_guardian.env"
 

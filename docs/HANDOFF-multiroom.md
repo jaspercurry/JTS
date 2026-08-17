@@ -454,8 +454,7 @@ Increment 6 (per-follower calibration). What exists:
   Avahi `*.service` renderer is `jasper/avahi_service.py` (`render_service`,
   used by both control_advert and peering). **The room label now lives in the
   speaker-identity home** (`jasper/speaker_name.py`, `JASPER_SPEAKER_ROOM`;
-  `/speaker` writes it; `install.sh migrate_speaker_room` seeds it from the
-  legacy peering room) — `JASPER_PEER_ROOM` remains only as a compatibility
+  `/speaker` writes it) — `JASPER_PEER_ROOM` remains only as a compatibility
   fallback for older peering env files. See §8 "Friendly names + identity".
 
 Not yet built (P1+, post-spike): the `BondedSet` entity, satellite
@@ -1922,9 +1921,10 @@ no non-empty default). `validate_room` reuses the name's
 printable-ASCII/normalize rules; `runtime_room` mirrors `runtime_name`'s
 env→state→"" precedence; `write_state(name, room)` persists both atomically
 and `write_state(name)` preserves the stored room (back-compat). The
-`/speaker` wizard now renders a Room text input and writes both. `install.sh`'s
-`migrate_speaker_room` seeds `JASPER_SPEAKER_ROOM` once from peering's legacy
-`JASPER_PEER_ROOM` so existing rooms carry into the identity home.
+`/speaker` wizard now renders a Room text input and writes both. A one-time
+install migration seeded `JASPER_SPEAKER_ROOM` from peering's legacy
+`JASPER_PEER_ROOM`; it was deleted in #2285 once every box had converged, so
+`/speaker` is the only writer now.
 
 **Three shared primitives back this (extracted, not re-grown per caller):**
 
@@ -2875,8 +2875,7 @@ the one Avahi `*.service` renderer `jasper/avahi_service.py`
 (`render_service`, now used by both `control_advert` and `peering/avahi`),
 and the single speaker-identity reader `jasper/identity.py`
 (`read_identity()`). The **room label moved into the speaker-identity home**
-(`jasper/speaker_name.py`, `JASPER_SPEAKER_ROOM`; `/speaker` writes it;
-`install.sh migrate_speaker_room` seeds it from the legacy peering room);
+(`jasper/speaker_name.py`, `JASPER_SPEAKER_ROOM`; `/speaker` writes it);
 `/rooms/`'s self block reads name/room/hostname through `read_identity()`.
 Peering still accepts the legacy `JASPER_PEER_ROOM` fallback for older env
 files; the user-facing room editor now lives only in `/speaker/` — see §8

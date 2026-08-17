@@ -2205,11 +2205,14 @@ picker, which preserves the threshold on model save). Edit point is
 
 **Migration on upgrade**: `migrate_wake_legs_config` in
 [`deploy/lib/install/env-migrations.sh`](deploy/lib/install/env-migrations.sh)
-moves any hand-set
+folds any hand-set
 `JASPER_MIC_DEVICE_RAW` / `_DTLN` / `JASPER_AEC_DTLN_ENABLED` /
-chip-AEC device vars from `/etc/jasper/jasper.env` into
-`aec_mode.env`, infers the nearest profile (`xvf_chip_aec`,
-`xvf_software_aec3`, or `custom`), then strips the underlying vars.
+chip-AEC device vars found in `/etc/jasper/jasper.env` into
+`aec_mode.env` as leg booleans, and infers the nearest profile
+(`xvf_chip_aec`, `xvf_software_aec3`, or `custom`). It does not strip
+them: `jasper-aec-reconcile` writes all six back into `jasper.env` on
+every pass, so those lines legitimately live there and the reconciler
+is their single writer.
 Existing pre-profile `aec_mode.env` files keep behavior: software
 defaults infer `xvf_software_aec3`, chip-AEC booleans infer
 `xvf_chip_aec`, unusual leg mixes infer `custom`. Only a truly fresh

@@ -35,9 +35,10 @@ from jasper.fanin_coupling import (
 # DeviceBufferManager::calculate_buffer_size requests next_pow2(max(3*chunk,
 # 4*min_period)); DeviceBufferManager::apply_period_size then requests
 # negotiated_buffer/8 as the period.
-# The same request is the reason for scripts/ring-proto/arm-ring-a.sh's lab
-# default note around RING_SLOTS: chunk 256 with 128-frame slots negotiates a
-# 1024-frame request before the ioplug's fixed 8-slot geometry satisfies it.
+# The same request is what makes slot COUNT load-bearing rather than cosmetic:
+# chunk 256 with 128-frame slots negotiates a 1024-frame request, which only an
+# 8-slot ring geometry satisfies. That pairing is pinned as a hardware anchor by
+# tests/test_ring_emitter_ioplug_negotiation.py.
 _CAMILLA_BUFFER_CHUNK_FACTOR = 3
 _CAMILLA_BUFFER_MIN_PERIODS = 4
 _CAMILLA_PERIOD_REQUEST_DIVISOR = 8

@@ -284,7 +284,10 @@ timeout_method = "signal"
 [tool.ruff]
 target-version = "py311"
 # Spikes / one-off experiments are not production code — don't lint them.
-extend-exclude = ["experiments", "scripts/experiments"]
+# One pattern, because ruff matches the `experiments` path segment at any
+# depth; `scripts/experiments` was a redundant second spelling of it and its
+# directory is gone.
+extend-exclude = ["experiments"]
 
 [tool.ruff.lint]
 # Pyflakes `F`, Ruff's default pycodestyle subset (`E4`, `E7`, `E9`),

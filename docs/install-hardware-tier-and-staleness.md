@@ -174,18 +174,49 @@ on-disk state*; they do not chain across deploys, and the set that runs
 is "every migration that exists at the target SHA" — identical at 1 or
 748 commits behind. Evidence from `deploy/lib/install/env-migrations.sh`:
 
-- `migrate_voice_keys_split`: "Already split out? Just clean any stale
-  copy" then continue — and an explicit comment that it must
-  `return 0` cleanly so `set -e` doesn't abort re-deploys.
+- `migrate_voice_keys_split`: "Already in the secret file … ? Just clean
+  any stale operator seed left in jasper.env" then continue — and an
+  explicit comment that it must `return 0` cleanly so `set -e` doesn't
+  abort re-deploys.
 - `migrate_wake_legs_config`: docstring "Idempotent — already-translated
   installs find nothing to migrate. Fresh installs … are a no-op."
 
-A full audit of all 31 migration/reconcile functions (the `migrate_*`,
-`retire_*`, `reconcile_*` set across `env-migrations.sh`,
-`memory-resilience.sh`, and `install.sh`) found **28 convergent, 3
-destructive-but-safe (backup-before-delete or idempotent `rm -f`), and 0
-that assume a prior shape.** Every key-rewriting migration guards on both
-"old key present?" *and* "new key already there?" (e.g.
+Counting the whole set — the `migrate_*` / `retire_*` / `reconcile_*`
+functions across `env-migrations.sh`, `memory-resilience.sh`, and
+`install.sh`:
+
+```sh
+grep -hoE '^(migrate|retire|reconcile|remove)_[A-Za-z0-9_]*\(\) \{' \
+  deploy/lib/install/env-migrations.sh \
+  deploy/lib/install/memory-resilience.sh \
+  deploy/install.sh | sort
+```
+
+That returns **16 functions: all 16 convergent, 0 that assume a prior
+shape, and 0 that delete household state.**
+
+The last clause is deliberately narrower than "delete anything", because
+that phrasing is falsifiable by a grep of the same set: **6 of the 16 call
+`rm -f`**. For **5** of them the target is only the `${jasper_env}.bak`
+the same function just created with its own `sed -i.bak`
+(`migrate_control_host_bind_seed`, `migrate_fanin_coupling`,
+`migrate_grouping`, `migrate_transit_config`, `migrate_weather_config`) —
+the superseded text's "destructive-but-safe (backup-before-delete or
+idempotent `rm -f`)" bucket, which is a real distinction and is restated
+here rather than folded away. The **6th**,
+`remove_retired_audio_topology_state`, is the one genuine file removal:
+its whole body is an `rm -f` of the retired dmix/fanin switch's state file,
+which nothing reads and which `jasper-doctor` warns about on presence. It
+is an unconditional cleanup rather than a migration, and it is in the set
+because the grep above now matches `remove_` too — without that the
+denominator would silently omit the one function that deletes anything.
+
+(The earlier "31 total / 28 convergent / 3 destructive-but-safe" figures
+are superseded and do not reproduce — the same grep returned 24
+immediately before the #2285 deletion wave, and both functions in the set
+that removed files, `retire_audio_topology_switch` and
+`migrate_retired_source_state`, were among the ones that wave cut.) Every key-rewriting migration still guards
+on both "old key present?" *and* "new key already there?" (e.g.
 `migrate_transit_config`: `if [[ -f "${wizard_env}" ]] && grep -qE`;
 `migrate_control_host_bind_seed` only rewrites the *exact* `0.0.0.0`
 seed), so a box that predates even the old key degrades to a no-op, not a
@@ -407,6 +438,7 @@ and a dedicated test pins that the guard does *not* fire during
 | No build step can starve/kill a live daemon | Diagnosed (staleness × low-RAM forces the OOM-prone rebuilds); containment is A. |
 | The whole flow is testable without owning every SKU | Test strategy above: synthetic-`/proc` decision matrix + cgroup smoke + canary. |
 
-Last verified: 2026-07-27 (historical WebRTC-build recommendation reconciled
-with the shipped mandatory-v1 / optional-v2 split; broader tier/staleness
-analysis remains the 2026-06-21 design note)
+Last verified: 2026-08-17 (migration/reconcile denominator recounted against
+the surviving set after the #2285 deletion wave; historical WebRTC-build
+recommendation reconciled with the shipped mandatory-v1 / optional-v2 split;
+broader tier/staleness analysis remains the 2026-06-21 design note)
