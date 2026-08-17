@@ -340,3 +340,167 @@ def test_active_group_member_reads_grouping_config(monkeypatch) -> None:
     monkeypatch.setattr(grouping_config, "is_bonded_follower", lambda cfg: False)
     monkeypatch.delattr(grouping_config, "is_active_leader")
     assert flow._active_group_member() is False
+
+
+# --------------------------------------------------------------------------- #
+# "Keep current sound" — POST /crossover/v2/decline (#2641)
+# --------------------------------------------------------------------------- #
+
+
+def _declinable_state(v2, tmp_path, **overrides):
+    state = {
+        "session_id": "cap_x",
+        "accepted_phases": ["check", "measure"],
+        "applied": False,
+        "candidate": {"fingerprint": "fp-current"},
+    }
+    state.update(overrides)
+    v2.set_state_path_for_tests(tmp_path / "v2_state.json")
+    v2.save_v2_state(state)
+    return state
+
+
+def test_a_decline_is_recorded_and_a_no_show_is_distinguishable(
+    monkeypatch, tmp_path,
+):
+    """#2641's load-bearing half: the record must tell the two apart.
+
+    Before this the review's Keep button performed no request at all, so
+    "the household declined" and "the household never looked" were the same
+    state on disk — and a series that offers another bite has no way to know
+    the answer was no. The distinction is an ABSENT key versus a present one,
+    not a flag defaulting to False, so a state file written by an older build
+    reads as "never looked" rather than as a decline nobody made.
+    """
+    from jasper.web import correction_crossover_v2 as v2
+
+    try:
+        _declinable_state(v2, tmp_path)
+        _reset_scaffold(monkeypatch)
+        # Never looked.
+        assert "review_decision" not in (v2.load_v2_state() or {})
+
+        payload, status = flow.handle_v2_decline(
+            {"expected_candidate_fingerprint": "fp-current"}
+        )
+
+        assert status == 200
+        # The resting screen, in one round trip — not a poll for it.
+        assert payload["screen"] == "start"
+        decision = (v2.load_v2_state() or {})["review_decision"]
+        assert decision["decision"] == flow.REVIEW_DECISION_DECLINED
+        assert decision["candidate_fingerprint"] == "fp-current"
+    finally:
+        v2.set_state_path_for_tests(None)
+
+
+def test_a_decline_does_not_touch_the_candidate_or_the_speaker(
+    monkeypatch, tmp_path,
+):
+    """The review screen's own contract: declining changes nothing.
+
+    Deleting the proposal on decline would make an accidental tap cost ten
+    captures to undo, and the applied flag is what the speaker is playing.
+    Both must read back exactly as they were.
+    """
+    from jasper.web import correction_crossover_v2 as v2
+
+    try:
+        _declinable_state(v2, tmp_path, applied=True)
+        _reset_scaffold(monkeypatch)
+
+        _payload, status = flow.handle_v2_decline(
+            {"expected_candidate_fingerprint": "fp-current"}
+        )
+
+        assert status == 200
+        state = v2.load_v2_state() or {}
+        assert state["candidate"] == {"fingerprint": "fp-current"}
+        assert state["applied"] is True
+        assert state["accepted_phases"] == ["check", "measure"]
+    finally:
+        v2.set_state_path_for_tests(None)
+
+
+def test_a_decline_against_a_superseded_candidate_is_refused(
+    monkeypatch, tmp_path,
+):
+    """The same guard ``/v2/apply`` carries, and for the same reason.
+
+    A newer measurement can replace the proposal while the screen is open. A
+    decline recorded against the old one would close a review the household
+    never saw, and the next screen would silently stop offering the bite the
+    new candidate earned.
+    """
+    from jasper.web import correction_crossover_v2 as v2
+
+    try:
+        _declinable_state(v2, tmp_path)
+        _reset_scaffold(monkeypatch)
+
+        payload, status = flow.handle_v2_decline(
+            {"expected_candidate_fingerprint": "fp-stale"}
+        )
+
+        assert status == 409
+        assert payload["ok"] is False
+        assert "review_decision" not in (v2.load_v2_state() or {})
+    finally:
+        v2.set_state_path_for_tests(None)
+
+
+def test_a_decline_with_no_candidate_to_name_is_still_a_decline(
+    monkeypatch, tmp_path,
+):
+    """The review screen mints the button even when there is nothing to
+    propose ("JTS measured your speaker but has no correction to propose"),
+    and "keep what you have" is a real answer to that screen too. An empty
+    expectation therefore passes the guard rather than tripping it."""
+    from jasper.web import correction_crossover_v2 as v2
+
+    try:
+        _declinable_state(v2, tmp_path, candidate=None)
+        _reset_scaffold(monkeypatch)
+
+        _payload, status = flow.handle_v2_decline(
+            {"expected_candidate_fingerprint": ""}
+        )
+
+        assert status == 200
+        decision = (v2.load_v2_state() or {})["review_decision"]
+        assert decision["decision"] == flow.REVIEW_DECISION_DECLINED
+        assert decision["candidate_fingerprint"] == ""
+    finally:
+        v2.set_state_path_for_tests(None)
+
+
+def test_the_decline_route_is_reachable_from_the_endpoint_the_envelope_mints():
+    """The mint and the router have to agree on one string.
+
+    An envelope action naming an endpoint the server does not route is the
+    inert button all over again, one layer down — and nothing else compares
+    the two. Read off the ENVELOPE rather than from a copy of the literal, so
+    a rename on either side fails here.
+    """
+    from jasper.active_speaker.crossover_envelope_v2 import (
+        build_crossover_envelope_v2,
+    )
+    from jasper.web import correction_setup
+
+    status = {
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": {
+            "phase": "review",
+            "candidate": {"fingerprint": "fp", "linearization": {}},
+        },
+    }
+    decline = next(
+        a for a in build_crossover_envelope_v2(status)["alternate_actions"]
+        if a["id"] == "review_decline"
+    )
+
+    # The correction router mounts its paths under /correction.
+    assert decline["endpoint"].startswith("/correction/")
+    routed = decline["endpoint"][len("/correction"):]
+    assert routed in correction_setup._POST_ROUTES

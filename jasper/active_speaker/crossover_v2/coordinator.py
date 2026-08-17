@@ -321,6 +321,28 @@ class RoundEvidence:
     #: for the series' first round. Required for the same reason: "there was no
     #: previous round" and "nobody looked" must not be the same keyword.
     previous_objectives: FlatnessObjectives | None
+    #: The trusted floor THIS round's objectives were graded against, and the
+    #: one the previous round's were (#2609 SF5). Together they let the
+    #: headroom axis refuse a cross-floor movement comparison instead of
+    #: reading a gate-length artefact as progress.
+    #:
+    #: **Defaulted, unlike the three required fields above, and the line is
+    #: the fail direction rather than the number of call sites.** A forgotten
+    #: ``round_ordinal`` is silently WRONG on every round after the first; a
+    #: forgotten floor is merely ABSENT, and absent is a value the reader
+    #: already handles honestly — no floor means no evidence the frame moved,
+    #: so the comparison proceeds exactly as it did before SF5. A default that
+    #: can only withhold a refusal is safe; one that can fabricate a number is
+    #: not.
+    trusted_floor_hz: float | None = None
+    previous_trusted_floor_hz: float | None = None
+    #: The post-apply cloud's per-position residuals, role-labelled, as
+    #: JSON-shaped rows (§4.2). Banked on the receipt so the next bite can tell
+    #: a position-INVARIANT miss — ours, a model or level defect — from a
+    #: position-DEPENDENT one, which is the room. Empty on a tier that walks no
+    #: post-apply cloud, and defaulted for the reason directly above: an empty
+    #: tuple and an unsupplied one both mean "no positions to report".
+    position_residuals: tuple[Mapping[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -413,6 +435,9 @@ def run_round(evidence: RoundEvidence, ports: RoundPorts) -> RoundDecision:
             # previous one measured.
             round_ordinal=evidence.round_ordinal,
             previous_objectives=evidence.previous_objectives,
+            # #2609 SF5's frame, carried beside the objectives it scoped.
+            trusted_floor_hz=evidence.trusted_floor_hz,
+            previous_trusted_floor_hz=evidence.previous_trusted_floor_hz,
         )
     except (OSError, RuntimeError, TypeError, ValueError, KeyError,
             AttributeError, IndexError, ZeroDivisionError):
@@ -678,28 +703,37 @@ def _write_round_receipt(
     household's speaker; the receipt is what lets someone reconstruct why
     afterwards, and losing the second must not cost the first.
 
-    **Since #2602 it is no longer "a journal line and nothing more", and the
-    difference is worth stating exactly.** This identity is also the series'
-    only memory: :func:`series_position_from_state` reads ``round_ordinal`` and
-    ``objectives`` back off it. So a receipt write that fails *persistently*
-    pins the ordinal at 1 and leaves the next round with no previous objectives
-    — which disables both the round-cap stop and the plateau stop, and the
-    series then ends only when the measurement itself says "flat enough" or
-    "nothing gradable".
+    **The IDENTITY survives what the ARTIFACT does not, and that split is
+    #2609.** This identity is also the series' only memory:
+    :func:`series_position_from_state` reads ``round_ordinal``, ``objectives``,
+    and (since SF5) ``trusted_floor_hz`` back off it. It used to be returned
+    only on the success path, so an unbound or raising publish seam cost the
+    series its place in the count as well as its artifact: every round then read
+    as round 1, which disables the round cap AND the plateau stop, and the gate
+    drove twelve rounds proving it.
 
-    That is bounded rather than dangerous, and the bound is structural: the
-    fourth axis can only ever KEEP (see :func:`~.verification.decide_adoption`),
-    so the worst case is a household repeatedly invited to measure again — and
-    each of those rounds needs a human to walk a cloud, so nothing runs away on
-    its own. It is still a stop condition riding a path designed to be lossy.
-    Banking the ordinal outside the fail-soft write is
-    `#2609 <https://github.com/jaspercurry/JTS/issues/2609>`_; a single failed
-    write is already harmless, because the identity the host carries forward is
-    the previous round's rather than nothing.
+    So the identity is assembled from the EVALUATION — which is in hand
+    whatever the seam does — and returned on every path. Only the two
+    fingerprint fields depend on the artifact, and they say so by being empty:
+    ``""`` means "this round decided what it says it decided, and no artifact
+    was banked", which is a fact worth carrying rather than a hole. Nothing
+    downstream reads a fingerprint as proof the round happened; the row, the
+    outcome, and the reason are what the screens and the next round read.
+
+    **The artifact write is still fail-soft, deliberately and in both
+    directions.** A receipt that could not be built or written never reverses a
+    verdict, never refuses a capture, and never crashes the capture path. The
+    verdict is what protects the household's speaker; the artifact is what lets
+    someone reconstruct why afterwards, and losing the second must not cost the
+    first — nor, now, the series its memory.
     """
+    identity = _round_identity(evaluation, evidence)
     seam = ports.publish_round_receipt
     if seam is None:
-        return None
+        # No publishing capability on this host. The round still happened and
+        # the series still has to remember it, so the identity goes back with
+        # empty fingerprints rather than as ``None``.
+        return identity
     baseline = evidence.entry_baseline
     try:
         receipt = build_round_receipt(
@@ -729,6 +763,12 @@ def _write_round_receipt(
                 phase=PHASE_VERIFY,
             ),
             restore_result=restore_result,
+            # What the round MEASURED and nothing graded — the next bite's
+            # command inputs. Assembled here rather than in the assembler for
+            # the reason the assembler states: the instruments are the
+            # caller's, and deriving these there would give them a second
+            # owner.
+            round_measurements=_round_measurements(evidence),
             evidence_identities={
                 "session_id": evidence.session_id,
                 "tier": evidence.tier,
@@ -759,34 +799,9 @@ def _write_round_receipt(
             logger, "correction.crossover_v2_round_receipt_failed",
             level=logging.ERROR, session_id=evidence.session_id, exc_info=True,
         )
-        return None
-    identity = {
-        "round_id": evidence.session_id,
-        "artifact_fingerprint": str(fingerprint or ""),
-        "receipt_fingerprint": receipt.fingerprint,
-        # WHAT the round decided, WHICH row decided it, and the deciding axis's
-        # own reason (#2537), beside the pointers to where the full receipt
-        # landed. The done screen needs the outcome to know whether it owes a
-        # "kept, and here is what is still off" caveat, and a driver chaining
-        # rounds needs the row — fetching a bundle artifact to answer either
-        # would make a live surface depend on evidence storage.
-        "adoption": evaluation.adoption.outcome.value,
-        "row": evaluation.adoption.row,
-        "reason": evaluation.adoption.reason,
-        # #2602: the series' own memory, and the reason it is HERE rather than
-        # only inside the banked artifact. The next round needs both — the
-        # ordinal to know where the cap is, the objectives to know whether the
-        # series is still moving — and it resolves them from this durable
-        # identity, which the host already carries forward across sessions.
-        # Fetching a bundle artifact to answer "should we run another round"
-        # would make the decision depend on evidence storage.
-        #
-        # Read off the headroom verdict's own evidence rather than recomputed,
-        # so the numbers banked for the next round are byte-for-byte the ones
-        # this round decided on.
-        "round_ordinal": evaluation.headroom.evidence.get("round_ordinal"),
-        "objectives": evaluation.headroom.evidence.get("objectives"),
-    }
+        return identity
+    identity["artifact_fingerprint"] = str(fingerprint or "")
+    identity["receipt_fingerprint"] = receipt.fingerprint
     log_event(
         logger, "correction.crossover_v2_round_receipt",
         session_id=evidence.session_id, round_id=evidence.session_id,
@@ -799,6 +814,95 @@ def _write_round_receipt(
         proposal_fingerprint_kind=receipt.proposal_fingerprint_kind,
     )
     return identity
+
+
+def _round_identity(
+    evaluation: RoundEvaluation, evidence: RoundEvidence,
+) -> dict[str, Any]:
+    """What the round decided, plus the series' memory of it.
+
+    Built from the evaluation alone, so it exists whether or not an artifact
+    was banked — see :func:`_write_round_receipt` for why that independence is
+    the point. The two fingerprint fields start empty and are filled in only by
+    a successful publish.
+    """
+
+    return {
+        "round_id": evidence.session_id,
+        "artifact_fingerprint": "",
+        "receipt_fingerprint": "",
+        # WHAT the round decided, WHICH row decided it, and the deciding axis's
+        # own reason (#2537), beside the pointers to where the full receipt
+        # landed. The done screen needs the outcome to know whether it owes a
+        # "kept, and here is what is still off" caveat, and a driver chaining
+        # rounds needs the row — fetching a bundle artifact to answer either
+        # would make a live surface depend on evidence storage.
+        "adoption": evaluation.adoption.outcome.value,
+        "row": evaluation.adoption.row,
+        "reason": evaluation.adoption.reason,
+        # #2602: the series' own memory, and the reason it is HERE rather than
+        # only inside the banked artifact. The next round needs all three — the
+        # ordinal to know where the cap is, the objectives to know whether the
+        # series is still moving, and (SF5) the floor to know whether those
+        # objectives are even comparable — and it resolves them from this
+        # durable identity, which the host already carries forward across
+        # sessions. Fetching a bundle artifact to answer "should we run another
+        # round" would make the decision depend on evidence storage.
+        #
+        # Read off the headroom verdict's own evidence rather than recomputed,
+        # so the numbers banked for the next round are byte-for-byte the ones
+        # this round decided on.
+        "round_ordinal": evaluation.headroom.evidence.get("round_ordinal"),
+        "objectives": evaluation.headroom.evidence.get("objectives"),
+        "trusted_floor_hz": evaluation.headroom.evidence.get("trusted_floor_hz"),
+    }
+
+
+def _round_measurements(evidence: RoundEvidence) -> dict[str, Any]:
+    """The round's own measured numbers, for the receipt's third mapping.
+
+    Two instruments, both optional, neither graded here:
+
+    * the delta probe's band-resolved realization (#2649) — read off the
+      probe's own ``to_dict`` so the receipt banks exactly what the probe
+      published rather than a reshaped copy of it. Absent on a session that ran
+      no probe, and absent on a probe from a build before the band-resolved
+      report shipped; both are honest absences and neither is an error.
+    * the post-apply cloud's per-position residuals (§4.2), already
+      JSON-shaped by the caller.
+
+    Never raises. A probe object that cannot answer costs the receipt one
+    optional mapping, and losing the whole receipt over it would be exactly the
+    trade this module refuses everywhere else.
+    """
+
+    measurements: dict[str, Any] = {}
+    realization = _probe_realization(evidence.delta_probe)
+    if realization is not None:
+        measurements["realization"] = realization
+    if evidence.position_residuals:
+        measurements["position_residuals"] = [
+            dict(row) for row in evidence.position_residuals
+        ]
+    return measurements
+
+
+def _probe_realization(probe: Any) -> dict[str, Any] | None:
+    """The probe's ``realization`` block, verbatim, or ``None``."""
+
+    if probe is None:
+        return None
+    to_dict = getattr(probe, "to_dict", None)
+    if not callable(to_dict):
+        return None
+    try:
+        record = to_dict()
+    except _SEAM_ERRORS:
+        return None
+    if not isinstance(record, Mapping):
+        return None
+    realization = record.get("realization")
+    return dict(realization) if isinstance(realization, Mapping) else None
 
 
 # --------------------------------------------------------------------------
@@ -824,12 +928,21 @@ class SeriesPosition:
     ordinal: int
     #: What the previous round measured, or ``None`` when there was none.
     previous_objectives: FlatnessObjectives | None
+    #: The frame those objectives were graded in (#2609 SF5), or ``None`` for
+    #: no previous round, a receipt written before SF5, or a round whose tier
+    #: banked no floor. Travels in this pair rather than beside it for the
+    #: reason the pair exists at all: a floor read from one record and
+    #: objectives from another would be a series remembering two different
+    #: pasts, which is precisely the artefact SF5 exists to refuse.
+    previous_trusted_floor_hz: float | None = None
 
     @classmethod
     def first(cls) -> "SeriesPosition":
         """The opening round — nothing has run, nothing was measured."""
 
-        return cls(ordinal=1, previous_objectives=None)
+        return cls(
+            ordinal=1, previous_objectives=None, previous_trusted_floor_hz=None,
+        )
 
 
 def series_position_from_state(raw: Any) -> SeriesPosition:
@@ -848,17 +961,13 @@ def series_position_from_state(raw: Any) -> SeriesPosition:
     assuming the cap was reached would silently refuse to iterate at all — the
     exact behaviour #2602 exists to remove, restored by a bad byte on disk.
 
-    **What that costs, stated rather than glossed.** A ONE-OFF unreadable
-    receipt is cheap: the host carries the previous round's identity forward, so
-    the next round resumes the count. But if the receipt write fails
-    *persistently* — see :func:`_write_round_receipt`'s own note — every round
-    reads as round 1, and the cap never bites. So the cap does NOT bound the
-    series unconditionally; it bounds it whenever the series can remember
-    itself, which is every path except a durably broken receipt write. The
-    remaining bound in that case is structural rather than counted: the fourth
-    axis can only KEEP, and every round needs a human-walked cloud.
-    `#2609 <https://github.com/jaspercurry/JTS/issues/2609>`_ is the fix that
-    would make the cap unconditional.
+    **The cap is unconditional since #2609, and this is the other half of
+    that.** The identity this reads is now assembled from the round's own
+    evaluation and returned whether or not the artifact write succeeded (see
+    :func:`_write_round_receipt`), so a broken evidence store costs the series
+    its artifacts and not its count. What still resolves to the first round is
+    genuinely lost history: no state file, a corrupt one, or a host that never
+    persisted the identity at all.
 
     A previous ordinal at or past the cap still returns ``ordinal + 1``, not a
     clamp: the headroom axis is the one place the cap is enforced, and a reader
@@ -879,9 +988,12 @@ def series_position_from_state(raw: Any) -> SeriesPosition:
         # wrote it, so this is a partially-written or hand-edited record. The
         # ordinal is still usable and the objectives are not: the round runs
         # with no movement to judge, which is exactly the first-round reading
-        # of the plateau stop and never a fabricated zero.
+        # of the plateau stop and never a fabricated zero. The floor goes with
+        # them — a frame for objectives nobody has is not a fact.
         return SeriesPosition(
-            ordinal=previous_ordinal + 1, previous_objectives=None
+            ordinal=previous_ordinal + 1,
+            previous_objectives=None,
+            previous_trusted_floor_hz=None,
         )
     return SeriesPosition(
         ordinal=previous_ordinal + 1,
@@ -889,6 +1001,10 @@ def series_position_from_state(raw: Any) -> SeriesPosition:
             tilt_db=_optional_db(objectives.get("tilt_db")),
             ripple_db=_optional_db(objectives.get("ripple_db")),
         ),
+        # Absent on every receipt written before SF5, which the headroom axis
+        # reads as "no evidence the frame moved" — the same non-refusing
+        # direction an unknown floor has everywhere else.
+        previous_trusted_floor_hz=_optional_db(receipt.get("trusted_floor_hz")),
     )
 
 

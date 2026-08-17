@@ -1183,6 +1183,20 @@ class RoundReceipt:
     #: that declined to answer.
     round_axes: Mapping[str, Any]
     restore_result: Mapping[str, Any]
+    #: The round's own measured numbers that no verdict collapsed — the
+    #: band-resolved realization the delta probe reported (#2649) and the
+    #: per-position residual the post-apply cloud produced (§4.2). A THIRD
+    #: mapping beside the two above rather than keys folded into either,
+    #: because the three answer different questions and a reader has to be
+    #: able to tell them apart: ``round_axes`` is what the axes DECIDED,
+    #: ``evidence_identities`` is what the evidence WAS by name, and this is
+    #: what the round MEASURED and nothing graded. It exists because the next
+    #: bite commands from these numbers — a realization ratio per band says
+    #: where the model and the hardware disagreed, and a role-labelled
+    #: residual says whether a miss is the speaker's or the room's.
+    #: ``{}`` on a round graded before this shipped, and on one whose
+    #: instruments produced neither.
+    round_measurements: Mapping[str, Any]
     evidence_identities: Mapping[str, Any]
     created_at: str
     fingerprint: str = field(init=False)
@@ -1203,6 +1217,7 @@ class RoundReceipt:
         post_measurement: Mapping[str, Any] | None = None,
         round_axes: Mapping[str, Any] | None = None,
         restore_result: Mapping[str, Any] | None = None,
+        round_measurements: Mapping[str, Any] | None = None,
         evidence_identities: Mapping[str, Any] | None = None,
     ) -> None:
         if not isinstance(verification, VerificationResult):
@@ -1268,6 +1283,11 @@ class RoundReceipt:
         object.__setattr__(self, "restore_result", restore)
         object.__setattr__(
             self,
+            "round_measurements",
+            _json_mapping(round_measurements, field_name="round_measurements"),
+        )
+        object.__setattr__(
+            self,
             "evidence_identities",
             _json_mapping(evidence_identities, field_name="evidence_identities"),
         )
@@ -1289,6 +1309,7 @@ class RoundReceipt:
             "adoption": self.adoption.to_dict(),
             "round_axes": dict(self.round_axes),
             "restore_result": dict(self.restore_result),
+            "round_measurements": dict(self.round_measurements),
             "evidence_identities": dict(self.evidence_identities),
             "created_at": self.created_at,
         }

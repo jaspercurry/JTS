@@ -1610,6 +1610,29 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         {
             "id": "review_decline",
             "label": "Keep current sound",
+            # #2641. This used to be href-ONLY, and the omission was
+            # deliberate: declining changes nothing on the speaker, so a
+            # navigation looked like the honest shape. Measured on a live
+            # round-2 review screen it is not — the click reloads the page and
+            # lands back on the SAME decision screen, so a household that has
+            # decided is asked again, indefinitely. And the round record
+            # cannot tell "the household declined" from "the household never
+            # looked", which is the fact a series needs in order to stop
+            # offering bites.
+            #
+            # So the decline is a real action. It still changes nothing on the
+            # speaker and it still does not delete the candidate (see the
+            # docstring) — what it records is the DECISION.
+            "endpoint": "/correction/crossover/v2/decline",
+            # The same guard ``review_apply`` carries, and for the same
+            # reason: a decline recorded against a candidate that has since
+            # been replaced would close a review the household never saw.
+            "body": {"expected_candidate_fingerprint": fingerprint},
+            # Kept, now as a PRESENTATION HINT rather than the action itself:
+            # where a household ends up after declining, for a client that
+            # cannot POST. The client prefers ``endpoint`` whenever both are
+            # present (``main.js:renderActions``).
+            #
             # The Active speaker ENTRY screen, not the generic /correction/
             # hub. The hub is the Room-correction wizard, whose first act is
             # a browser-mic HTTPS-transition interstitial -- a different
@@ -1929,6 +1952,22 @@ KEEP_ITERATING_TEXT = (
     "playing — measuring again is how the rest of the way gets found."
 )
 
+#: The same row, when the round could not grade how flat the result is.
+#:
+#: Since the bites ruling an ungradable objective keeps the series open rather
+#: than ending it (see
+#: :func:`~.crossover_v2.verification.evaluate_iteration_headroom`), so this
+#: row is now reachable with NO measured flatness behind it — an Express tier
+#: walks no post-apply cloud, and a report whose bands all fell below the
+#: trusted floor grades nothing either. :data:`KEEP_ITERATING_TEXT` opens with
+#: "Everything measured is inside the target", which on that round would be a
+#: claim nothing supports, so the row keys on the reason as well.
+KEEP_ITERATING_UNGRADED_TEXT = (
+    "This is the best sound measured so far, and it is what the speaker is "
+    "playing. There was not enough of a full result to tell how much flatter "
+    "it could get — measuring again is how that gets answered."
+)
+
 #: The household copy for a round that PASSED and ENDED the series (#2602).
 #:
 #: Keyed by the headroom axis's own reason, because "there is nothing left to
@@ -1983,6 +2022,12 @@ def _series_complete_text(reason: str) -> str:
             "Everything measured is inside the target. That was the last "
             "round of this tuning, so it is finished here."
         ),
+        # Reachable only from a receipt banked BEFORE the bites ruling, when
+        # ungradable objectives still resolved to EXHAUSTED and so still
+        # landed this row. Kept rather than deleted because the done screen
+        # reads persisted receipts, and a household re-opening an older one is
+        # owed the sentence that round actually decided. A round graded by
+        # this build reaches ``KEEP_ITERATING_UNGRADED_TEXT`` instead.
         HEADROOM_NO_OBJECTIVES: (
             "Everything measured is inside the target. There was not enough of "
             "a full result to tell whether more rounds would help, so the "
@@ -2012,6 +2057,21 @@ def _round_summary(status: Mapping[str, Any]) -> dict[str, str] | None:
         "adoption": adoption,
         "reason": str(receipt.get("reason") or ""),
     }
+
+
+def _round_is_iterating(v2: Mapping[str, Any]) -> bool:
+    """Did the last graded round say another bite is coming?
+
+    Keyed on the ROW for :func:`_round_adoption_nudges`' reason — two rows
+    share the ``keep_for_iteration`` outcome and this needs both of them, so
+    reading the outcome would work today and break the moment a third row
+    joins it. Reads the same ``round_receipt`` the copy does, so the screen
+    can never promise another round in prose and withhold the button, or the
+    reverse.
+    """
+
+    row = str(_mapping(v2.get("round_receipt")).get("row") or "")
+    return row in {ADOPTION_ROW_KEEP_FOR_ITERATION, ADOPTION_ROW_KEEP_ITERATING}
 
 
 def _round_adoption_nudges(v2: Mapping[str, Any]) -> list[dict[str, str]]:
@@ -2046,10 +2106,18 @@ def _round_adoption_nudges(v2: Mapping[str, Any]) -> list[dict[str, str]]:
             "text": _series_complete_text(reason),
         }]
     if row == ADOPTION_ROW_KEEP_ITERATING:
+        from .crossover_v2.verification import HEADROOM_NO_OBJECTIVES
+
         return [{
             "code": "crossover_v2_keep_iterating",
             "severity": "info",
-            "text": KEEP_ITERATING_TEXT,
+            # One row, two pieces of news, told apart by the deciding axis's
+            # own reason — the same rule the row/outcome split above follows.
+            "text": (
+                KEEP_ITERATING_UNGRADED_TEXT
+                if reason == HEADROOM_NO_OBJECTIVES
+                else KEEP_ITERATING_TEXT
+            ),
         }]
     if row == ADOPTION_ROW_KEEP_FOR_ITERATION:
         return [{
@@ -3804,6 +3872,25 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                 "href": "/correction/room/",
             },
         ]
+        # The two iterating rows PROMISE another round in their own copy
+        # ("measuring again is how that gets closer") and, until now, offered
+        # no way to take it: this screen's only exits were Undo and Room
+        # correction. A screen that names an action and does not carry it is
+        # the same defect as #2641's inert Keep button, one screen over.
+        #
+        # It is the SAME re-measure the review screen mints — one endpoint,
+        # one empty body, the tier inherited from the lapsed session — rather
+        # than a second way to open a round. First in the list because on a
+        # round that says another bite is coming, taking it is the recommended
+        # next step; "Continue to Room correction" is the household declining
+        # by moving on, which this screen has always offered.
+        if _round_is_iterating(v2):
+            alternate_actions.insert(0, {
+                "id": "round_remeasure",
+                "label": "Try again with what we learned",
+                "endpoint": "/correction/crossover/v2/session",
+                "body": {},
+            })
         if is_express:
             alternate_actions.append({
                 "id": "run_full_measurement",

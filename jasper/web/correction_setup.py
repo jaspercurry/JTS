@@ -441,6 +441,8 @@ _POST_ROUTES = frozenset({
     "/crossover/v2/verify",
     "/crossover/v2/apply",
     "/crossover/v2/restore",
+    # The review screen's "Keep current sound", which #2641 found inert.
+    "/crossover/v2/decline",
     # The remote commission tier's position release — an EXTERNAL driver's
     # report that it has moved the microphone to the angle the envelope named.
     "/crossover/v2/position-ready",
@@ -6096,6 +6098,26 @@ def _handle_crossover_v2_restore(handler: BaseHTTPRequestHandler) -> dict[str, A
     return v2host.handle_v2_restore(_run_async, _camilla)
 
 
+def _handle_crossover_v2_decline(
+    handler: BaseHTTPRequestHandler,
+) -> tuple[dict[str, Any], HTTPStatus]:
+    """POST /crossover/v2/decline: the review screen's "Keep current sound".
+
+    Touches no DSP and holds no relay, so unlike its apply/restore siblings it
+    needs neither ``_run_async`` nor ``_camilla`` — it records a decision and
+    re-renders. The relay snapshot rides the response for the same reason
+    ``/crossover/reset``'s does: the page renders one envelope per round trip.
+    """
+    raw = _read_json_body(handler)
+
+    from . import correction_crossover_flow
+
+    return correction_crossover_flow.handle_v2_decline(
+        raw,
+        relay=_get_relay_capture_for("crossover_sweep:", "level_ramp:crossover"),
+    )
+
+
 def _handle_crossover_reset() -> tuple[dict[str, Any], HTTPStatus]:
     """POST /crossover/reset: in-flow "start over" for the crossover flow.
 
@@ -7128,6 +7150,20 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                             else HTTPStatus.CONFLICT
                         ),
                     )
+                except ValueError as e:
+                    self._send_json(
+                        {"ok": False, "error": str(e)},
+                        status=HTTPStatus.BAD_REQUEST,
+                    )
+                except (OSError, RuntimeError, TypeError) as e:
+                    logger.exception("%s failed", path)
+                    self._send_json({"ok": False, "error": str(e)}, status=500)
+                return
+
+            if path == "/crossover/v2/decline":
+                try:
+                    payload, status = _handle_crossover_v2_decline(self)
+                    self._send_json(payload, status=int(status))
                 except ValueError as e:
                     self._send_json(
                         {"ok": False, "error": str(e)},

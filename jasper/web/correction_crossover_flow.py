@@ -236,6 +236,94 @@ def handle_reset(
     return envelope, HTTPStatus.OK
 
 
+#: What a recorded review decision looks like in durable v2 state.
+#:
+#: One key, one shape, one writer (:func:`handle_v2_decline`), one reader (the
+#: phase resolver). ``decision`` is a word rather than a bool so a later
+#: "deferred" or "snoozed" needs no migration — but nothing mints a second
+#: value today and nothing should until a screen asks for one.
+REVIEW_DECISION_DECLINED = "declined"
+
+
+def handle_v2_decline(
+    body: Mapping[str, Any] | None = None,
+    *,
+    relay: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], HTTPStatus]:
+    """POST /crossover/v2/decline: "Keep current sound", as a real action.
+
+    **What #2641 measured.** The review screen's decline was minted with an
+    ``href`` and no endpoint, so the click reloaded the page and landed back on
+    the SAME decision screen — a household that had decided was asked again,
+    indefinitely — and the round record could not tell "the household declined"
+    from "the household never looked". The second half is the one the machinery
+    needs: a series that offers another bite has to know when the answer was no.
+
+    **What this does NOT do**, deliberately, because the review screen's own
+    docstring is the contract: it does not touch the speaker (declining changes
+    nothing), and it does not delete the candidate (an accidental tap would
+    otherwise cost ten captures to undo). The proposal stays reviewable until a
+    newer measurement replaces it. What is recorded is the DECISION.
+
+    ``expected_candidate_fingerprint`` is the same guard ``/v2/apply`` carries
+    and refuses on the same way: a decline recorded against a candidate that
+    has since been replaced would close a review the household never saw. An
+    empty expectation is accepted — the review screen mints one when there is
+    no candidate at all, and "there is nothing to propose, keep what you have"
+    is a real decline.
+
+    Returns the freshly-built envelope, the shape :func:`handle_reset` returns,
+    so the page re-renders from its resting screen in one round trip rather
+    than polling for it.
+    """
+    from .correction_crossover_v2 import load_v2_state, save_v2_state
+
+    payload = body if isinstance(body, Mapping) else {}
+    expected = str(payload.get("expected_candidate_fingerprint") or "")
+
+    state = load_v2_state()
+    candidate = (state or {}).get("candidate")
+    current = (
+        str(candidate.get("fingerprint") or "")
+        if isinstance(candidate, Mapping) else ""
+    )
+    if expected and expected != current:
+        log_event(
+            logger, "correction.crossover_v2_review_decline_superseded",
+            level=logging.WARNING,
+            expected_candidate_fingerprint=expected,
+        )
+        return {
+            "ok": False,
+            "error": (
+                "The crossover candidate changed while this screen was open. "
+                "Review the current one."
+            ),
+            "issues": [{
+                "code": "baseline_candidate_fingerprint_mismatch",
+                "message": "the reviewed candidate is no longer the current one",
+            }],
+        }, HTTPStatus.CONFLICT
+
+    if state is not None:
+        # TODO(#2641 follow-up, same PR): move this read-modify-write into
+        # ``correction_crossover_v2``'s own locked writer beside
+        # ``observe_restore``. It lives here only because that module is under
+        # concurrent review, and the state module owns the lock this pair
+        # should be taken under.
+        state["review_decision"] = {
+            "decision": REVIEW_DECISION_DECLINED,
+            "candidate_fingerprint": current,
+        }
+        save_v2_state(state, durable=True)
+        log_event(
+            logger, "correction.crossover_v2_review_declined",
+            candidate_fingerprint=current,
+        )
+
+    return handle_envelope(relay=relay)
+
+
 def playback_issue_text(payload: Any, fallback: str) -> str:
     """The one operator-facing reason a capture-sweep payload failed.
 

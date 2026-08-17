@@ -1263,13 +1263,18 @@ def _flat_report():
     )
 
 
-def _headroom(*, report=None, previous=None, ordinal=1, cap=3, plateau=0.25):
+def _headroom(
+    *, report=None, previous=None, ordinal=1, cap=3, plateau=0.25,
+    floor_hz=None, previous_floor_hz=None,
+):
     return evaluate_iteration_headroom(
         objectives=flatness_objectives(report),
         previous=previous,
         round_ordinal=ordinal,
         round_cap=cap,
         plateau_db=plateau,
+        trusted_floor_hz=floor_hz,
+        previous_trusted_floor_hz=previous_floor_hz,
     )
 
 
@@ -1342,15 +1347,18 @@ def test_the_worst_objective_is_a_max_so_a_large_tilt_cannot_hide():
             {"report": _round_three_report(), "ordinal": 3},
             IterationHeadroom.EXHAUSTED, HEADROOM_CAP_REACHED,
         ),
+        # The bites ruling reversed both of these: missing evidence is not a
+        # plateau, so the reason still names what was missing and the STATUS
+        # keeps the series open.
         (
             "no post-apply cloud, so nothing to grade",
             {"report": None},
-            IterationHeadroom.EXHAUSTED, HEADROOM_NO_OBJECTIVES,
+            IterationHeadroom.REACHABLE, HEADROOM_NO_OBJECTIVES,
         ),
         (
             "a report whose every band fell below the trusted floor",
             {"report": _headroom_report(_headroom_band(lo=250.0, hi=2000.0, evaluable=False))},
-            IterationHeadroom.EXHAUSTED, HEADROOM_NO_OBJECTIVES,
+            IterationHeadroom.REACHABLE, HEADROOM_NO_OBJECTIVES,
         ),
     ],
     ids=[
@@ -1364,6 +1372,52 @@ def test_the_headroom_table(case, kwargs, status, reason):
     verdict = _headroom(**kwargs)
     assert verdict.status is status, case
     assert verdict.reason == reason, case
+
+
+def test_ungradable_objectives_do_not_end_a_series():
+    """The ethos's own sentence, as a guard.
+
+    *Only the round budget, the plateau, and the safety class end a series.*
+    An ungradable objective is missing evidence — a tier that walked no
+    post-apply cloud, or a report whose bands all fell below the trusted floor
+    — and reading that as "nothing better is reachable" is the conflation the
+    ruling forbids. Held separately from the table above because the table
+    would still pass if a later change flipped the status back and updated the
+    expectation with it; this states WHICH statuses are allowed to end a
+    series, so a fourth ending cannot be added by accident.
+    """
+
+    ended = {
+        reason
+        for reason in (
+            HEADROOM_CAP_REACHED, HEADROOM_NO_OBJECTIVES,
+            HEADROOM_WITHIN_PLATEAU, HEADROOM_PLATEAUED, HEADROOM_REACHABLE,
+        )
+        for verdict in [_verdict_for_reason(reason)]
+        if verdict.status is IterationHeadroom.EXHAUSTED
+    }
+
+    assert ended == {
+        HEADROOM_CAP_REACHED, HEADROOM_WITHIN_PLATEAU, HEADROOM_PLATEAUED,
+    }
+
+
+def _verdict_for_reason(reason: str):
+    """The smallest input that makes the headroom axis answer with ``reason``."""
+
+    if reason == HEADROOM_CAP_REACHED:
+        return _headroom(report=_round_three_report(), ordinal=3)
+    if reason == HEADROOM_NO_OBJECTIVES:
+        return _headroom(report=None)
+    if reason == HEADROOM_WITHIN_PLATEAU:
+        return _headroom(report=_flat_report())
+    if reason == HEADROOM_PLATEAUED:
+        return _headroom(
+            report=_round_three_report(),
+            previous=FlatnessObjectives(tilt_db=2.40, ripple_db=0.9),
+            ordinal=2,
+        )
+    return _headroom(report=_round_three_report())
 
 
 def test_the_cap_outranks_every_other_ending():
@@ -1966,3 +2020,104 @@ def test_the_evaluator_is_pure():
     assert first == second
     assert evaluate_spec(_report()) == evaluate_spec(_report())
     assert _adopt() == _adopt()
+
+
+# --------------------------------------------------------------------------- #
+# The graded FRAME, beside the objectives (#2609 SF5)
+# --------------------------------------------------------------------------- #
+
+
+def _plateau_case(**floors):
+    """The exact input that fires the plateau stop, plus the two floors.
+
+    2.37 dB out with 0.03 dB of movement — the shape
+    ``test_the_headroom_table``'s ``plateaued`` case pins. Isolating it here
+    means the floor tests differ from that case in the floors alone.
+    """
+    return _headroom(
+        report=_round_three_report(),
+        previous=FlatnessObjectives(tilt_db=2.40, ripple_db=0.9),
+        ordinal=2,
+        **floors,
+    )
+
+
+def test_two_rounds_graded_over_different_floors_refuse_the_comparison():
+    """#2609 SF5, and the number that forced it.
+
+    Measured on an UNCHANGED curve, a 7 ms vs 10 ms gate alone moves these
+    objectives by ±0.518 dB — 2.1x the plateau bar. Differencing across that
+    reads a gate-length artefact as progress, or manufactures a plateau out of
+    one. The round still runs; only the movement CLAIM is withheld.
+    """
+    verdict = _plateau_case(floor_hz=100.0, previous_floor_hz=143.0)
+
+    assert verdict.status is IterationHeadroom.REACHABLE
+    assert verdict.reason == HEADROOM_REACHABLE
+    assert verdict.evidence["movement_comparable"] is False
+    # The arithmetic is still reported — withholding the CLAIM is not hiding
+    # the number a support read needs.
+    assert verdict.evidence["movement_db"] == pytest.approx(0.03)
+    assert verdict.evidence["trusted_floor_hz"] == 100.0
+    assert verdict.evidence["previous_trusted_floor_hz"] == 143.0
+
+
+def test_the_same_floor_still_plateaus():
+    """The control. Without it the test above would pass on a change that
+    disabled the plateau stop outright."""
+    verdict = _plateau_case(floor_hz=143.0, previous_floor_hz=143.0)
+
+    assert verdict.status is IterationHeadroom.EXHAUSTED
+    assert verdict.reason == HEADROOM_PLATEAUED
+    assert verdict.evidence["movement_comparable"] is True
+
+
+@pytest.mark.parametrize(
+    ("case", "floors"),
+    [
+        ("neither round banked a floor", {}),
+        ("only this round did", {"floor_hz": 143.0}),
+        ("only the previous round did", {"previous_floor_hz": 143.0}),
+        (
+            "a float that survived a JSON round trip",
+            {"floor_hz": 143.00000000000003, "previous_floor_hz": 143.0},
+        ),
+    ],
+    ids=["neither", "this_only", "previous_only", "json_noise"],
+)
+def test_only_positive_evidence_of_a_moved_floor_refuses(case, floors):
+    """The fail direction, which is the whole design of the check.
+
+    An unknown floor is not evidence that the frame moved. Refusing on it
+    would disable the plateau stop the ruling names — on every round until
+    every path threads a floor, and forever on a tier that banks none. So the
+    refusal needs two KNOWN floors that actually disagree, and nothing else.
+    """
+    verdict = _plateau_case(**floors)
+
+    assert verdict.status is IterationHeadroom.EXHAUSTED, case
+    assert verdict.reason == HEADROOM_PLATEAUED, case
+    assert verdict.evidence["movement_comparable"] is True, case
+
+
+def test_a_non_finite_floor_banks_as_unknown_rather_than_as_a_number():
+    """A NaN would compare false against everything, which is a silent
+    permanent refusal wearing the costume of a measurement."""
+    verdict = _plateau_case(
+        floor_hz=float("nan"), previous_floor_hz=float("inf"),
+    )
+
+    assert verdict.evidence["trusted_floor_hz"] is None
+    assert verdict.evidence["previous_trusted_floor_hz"] is None
+    assert verdict.evidence["movement_comparable"] is True
+
+
+def test_the_floor_is_banked_even_when_it_decides_nothing():
+    """The NEXT round is what reads it back, so a first round has to bank it
+    too — otherwise round 2 has this round's objectives and no frame to check
+    them against, which is the state SF5 exists to end."""
+    verdict = _headroom(report=_round_three_report(), floor_hz=143.0)
+
+    assert verdict.status is IterationHeadroom.REACHABLE
+    assert verdict.evidence["trusted_floor_hz"] == 143.0
+    assert verdict.evidence["previous_trusted_floor_hz"] is None

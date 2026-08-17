@@ -537,10 +537,18 @@ class RoundEvaluation:
     headroom: Verdict[IterationHeadroom]
     adoption: AdoptionDecision
     #: The post-apply pooled spec residual, lower-is-better, or ``None``.
-    #: Separated out because it has a second consumer: it is the acoustic
-    #: grade :func:`~jasper.active_speaker.attempts_loop.decide_next` differences
-    #: across attempts. One computation, two readers — the benefit verdict and
-    #: the attempts ledger — rather than two that can disagree.
+    #: Separated out so the round's own pooled number is legible without
+    #: re-deriving it from the curve.
+    #:
+    #: **Its readership is the round's journal line, and that is the whole
+    #: list.** Earlier text here claimed a second consumer — that
+    #: :func:`~jasper.active_speaker.attempts_loop.decide_next` differences it
+    #: across attempts — which is false and was checked: the attempts ledger's
+    #: ``grade_db`` is read from ``analysis.verify_tracking``'s
+    #: ``max_db_notch_excluded`` by ``crossover_v2_flow.
+    #: attempt_record_from_verify``, never from here. The claim is corrected
+    #: rather than deleted because it is the kind a reader would otherwise
+    #: re-invent (the design brief's §4.2 loose end).
     post_residual_db: float | None = None
     post_residual_bins: int | None = None
 
@@ -590,6 +598,8 @@ def evaluate_round(
     restore_failed: bool = False,
     margin_db: float = MEASURED_BENEFIT_MARGIN_DB,
     previous_objectives: FlatnessObjectives | None = None,
+    trusted_floor_hz: float | None = None,
+    previous_trusted_floor_hz: float | None = None,
     round_ordinal: int = 1,
     round_cap: int = ROUND_SERIES_CAP,
     plateau_db: float = ITERATION_PLATEAU_DB,
@@ -650,6 +660,11 @@ def evaluate_round(
         ``None`` is the first round — no movement to judge yet, which the
         headroom axis reads as "the plateau stop cannot fire", not as "it did
         not move".
+      trusted_floor_hz / previous_trusted_floor_hz: the frames those two sets
+        of objectives were graded in (#2609 SF5), carried forward beside them.
+        ``None`` on either side means the frame is unknown, which
+        :func:`~.verification._floors_comparable` reads as "no evidence the
+        frame moved" rather than as a refusal — see there for the direction.
       round_ordinal: 1-based position in the series. Defaults to the first
         round, which is the safe default in the direction that matters: an
         ordinal that is too LOW can only offer another round, never suppress a
@@ -731,6 +746,8 @@ def evaluate_round(
         round_ordinal=round_ordinal,
         round_cap=round_cap,
         plateau_db=plateau_db,
+        trusted_floor_hz=trusted_floor_hz,
+        previous_trusted_floor_hz=previous_trusted_floor_hz,
     )
     adoption = decide_adoption(
         trust=trust,
@@ -803,6 +820,7 @@ def build_round_receipt(
     restore_result: Mapping[str, Any] | None,
     evidence_identities: Mapping[str, Any] | None,
     created_at: str,
+    round_measurements: Mapping[str, Any] | None = None,
 ) -> RoundReceipt:
     """Assemble #2291's immutable round receipt from the round's own facts.
 
@@ -830,6 +848,16 @@ def build_round_receipt(
     :class:`~.contracts.RoundReceipt` owns the closed vocabulary
     (:data:`~.contracts.PROPOSAL_FINGERPRINT_KINDS`) and re-checking it here
     would be a second owner of the same rule.
+
+    ``round_measurements`` is the round's own measured numbers that no verdict
+    collapsed — the band-resolved realization and the per-position residual.
+    Defaulted because a round can honestly produce neither (a tier that walks
+    no post-apply cloud and ran no probe), and an absent mapping and an empty
+    one mean the same thing to every reader: nothing was measured to bank. It
+    is the one field here whose absence costs the NEXT round rather than this
+    one, which is why it is passed through rather than derived: the caller
+    holds the instruments, and deriving it here would give those numbers a
+    second owner.
     """
 
     return RoundReceipt(
@@ -850,6 +878,7 @@ def build_round_receipt(
         # is only actionable to the NEXT round if the targets travel with it.
         round_axes=evaluation.axes(),
         restore_result=restore_result,
+        round_measurements=round_measurements,
         evidence_identities=evidence_identities,
         created_at=created_at,
     )

@@ -95,6 +95,7 @@ every time.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Generic, Iterable, Mapping, TypeVar
@@ -1138,23 +1139,25 @@ class FlatnessObjectives:
     rule :func:`~jasper.active_speaker.flat_spec.spec_band_tilt` already
     follows for the band levels it skips.
 
-    **Residual assumption, stated because the plateau stop rests on it:
-    frame-invariance is necessary for cross-round differencing but not
-    sufficient.** Both numbers are invariant to the reference *level*, and
-    neither is invariant to which BINS were graded. The session's trusted floor
-    sets each band's ``graded_lo_hz``, so a round whose gate came out shorter
-    re-scopes the lowest band and moves both objectives with no acoustic change
-    at all — the same mechanism
+    **Frame-invariance is necessary for cross-round differencing but not
+    sufficient, and the missing half is the graded BAND.** Both numbers are
+    invariant to the reference *level*, and neither is invariant to which BINS
+    were graded. The session's trusted floor sets each band's ``graded_lo_hz``,
+    so a round whose gate came out shorter re-scopes the lowest band and moves
+    both objectives with no acoustic change at all — the same mechanism
     :func:`~jasper.active_speaker.crossover_v2_flow.cloud_trusted_floor_hz`
     documents for the 1-4 kHz band across 3/5/7/10 ms gates. Measured on an
     UNCHANGED curve, a 7↔10 ms gate change alone produces ±0.518 dB of spurious
     movement here, which is 2.1× :data:`~.round_evidence.ITERATION_PLATEAU_DB`
-    — enough to mask a plateau or invent one. Bounded, because a wrong answer
-    here can only add or withhold a round and never take a graph off a speaker;
-    the fix is to bank ``trusted_floor_hz`` beside these numbers so a later
-    round can refuse a cross-floor comparison outright, filed as
-    `#2609 <https://github.com/jaspercurry/JTS/issues/2609>`_ and deliberately
-    not done here.
+    — enough to mask a plateau or invent one.
+
+    **#2609 SF5 closes it**: the floor these numbers were graded against is
+    banked beside them (``trusted_floor_hz`` in
+    :func:`evaluate_iteration_headroom`'s evidence, carried onto the round
+    receipt), and a round whose floor differs from the previous round's
+    **refuses the movement comparison** rather than reading a gate-length
+    artefact as progress. Only positive evidence of a floor change refuses; two
+    unknown floors compare exactly as they did before.
     """
 
     #: Largest level step between two graded bands — the owner's 2.37 dB.
@@ -1215,6 +1218,44 @@ def flatness_objectives(report: FlatSpecReport | None) -> FlatnessObjectives:
     )
 
 
+#: How closely two rounds' trusted floors must agree to be one graded frame.
+#:
+#: A relative tolerance, and a wide margin on purpose: it exists to admit the
+#: same float after a JSON round trip, not to tolerate a real change. The
+#: mechanism it screens for moves the floor by tens of percent — the 1-4 kHz
+#: band's ``graded_lo_hz`` across a 7↔10 ms gate — so anything a genuine gate
+#: change produces is orders of magnitude outside this and refuses, while a
+#: floor that merely travelled through ``json.dumps`` and back compares equal.
+FLOOR_COMPARABILITY_RTOL = 1e-3
+
+
+def _floors_comparable(
+    this_floor_hz: float | None, previous_floor_hz: float | None
+) -> bool:
+    """May two rounds' objectives be differenced? (#2609 SF5)
+
+    ``True`` unless there is POSITIVE evidence of a floor change, and the
+    direction is the whole point. An unknown floor on either side — a tier that
+    banked none, a receipt from before SF5 — is not evidence that the frame
+    moved, and refusing on it would disable the plateau stop the ruling names
+    on every round until every path threads a floor. Two KNOWN floors that
+    disagree by more than :data:`FLOOR_COMPARABILITY_RTOL` is the one case that
+    refuses, because then the movement between them contains a gate-length term
+    no round controls.
+    """
+
+    if this_floor_hz is None or previous_floor_hz is None:
+        return True
+    if not (math.isfinite(this_floor_hz) and math.isfinite(previous_floor_hz)):
+        return True
+    return math.isclose(
+        float(this_floor_hz),
+        float(previous_floor_hz),
+        rel_tol=FLOOR_COMPARABILITY_RTOL,
+        abs_tol=0.0,
+    )
+
+
 def evaluate_iteration_headroom(
     *,
     objectives: FlatnessObjectives,
@@ -1222,6 +1263,8 @@ def evaluate_iteration_headroom(
     round_ordinal: int,
     round_cap: int,
     plateau_db: float,
+    trusted_floor_hz: float | None = None,
+    previous_trusted_floor_hz: float | None = None,
 ) -> Verdict[IterationHeadroom]:
     """Should the series run another round? The #2602 axis.
 
@@ -1231,7 +1274,7 @@ def evaluate_iteration_headroom(
     could, because quality grades **what this round did** and this grades
     **what a next one could still get**.
 
-    Four ways a series is over, checked most-binding first so the reason names
+    Three ways a series is over, checked most-binding first so the reason names
     the fact that actually ended it:
 
     1. **The round cap.** Checked first because it is the one stop no evidence
@@ -1239,16 +1282,11 @@ def evaluate_iteration_headroom(
        to have headroom for, however much is left on the table. Naming a
        plateau here would imply more rounds would not have helped, which the
        measurement did not say.
-    2. **No gradable objectives.** Fail-closed, and the direction is the whole
-       point: a tier that walked no post-apply cloud, or a report whose bands
-       all fell below the session's trusted floor, cannot show that anything is
-       reachable. "We cannot tell" stops the series — it never spends a
-       household's rounds on a target nothing is steering toward.
-    3. **Already flat enough.** Both objectives inside ``plateau_db``. There is
+    2. **Already flat enough.** Both objectives inside ``plateau_db``. There is
        nothing left worth a round, which is a genuinely different answer from
        "we stopped improving" and gets its own reason so the screen can say the
        good news rather than the resigned one.
-    4. **Plateaued.** The objectives moved less than ``plateau_db`` since the
+    3. **Plateaued.** The objectives moved less than ``plateau_db`` since the
        previous round. This is the stop the ruling names by its number, and it
        is measured on the OBJECTIVES rather than on the pooled residual for a
        structural reason: a round only reaches
@@ -1258,6 +1296,23 @@ def evaluate_iteration_headroom(
        never fire on the row that needs it. Movement toward *flat* and movement
        of the *pooled residual* are not the same quantity, and it is the first
        one the series is iterating on.
+
+    **Ungradable objectives are NOT a fourth stop, and that reversal is the
+    ethos's** (``docs/audio-commissioning-roadmap.md``, "Least-bad measured,
+    honed in bites", owner-ratified 2026-08-16): *only the round budget, the
+    plateau, and the safety class end a series.* Until this change a tier that
+    walked no post-apply cloud, or a report whose bands all fell below the
+    session's trusted floor, resolved to :attr:`~.contracts.IterationHeadroom.
+    EXHAUSTED` under :data:`HEADROOM_NO_OBJECTIVES` — "we cannot tell" ended the
+    series. That reads missing evidence as a plateau, which is exactly the
+    conflation the ruling forbids: a round that could not grade how flat the
+    result is has not shown that a flatter one is out of reach. So the reason
+    survives (a household is still owed the specific ending, and a receipt from
+    before this change still carries it) and the STATUS is now
+    :attr:`~.contracts.IterationHeadroom.REACHABLE`. The blast radius is bounded
+    by the cap above and by the household: another round is only ever *offered*,
+    the graph is untouched either way, and the review screen's decline closes
+    the series on request.
 
     ``previous is None`` is the first round of a series: there is no movement
     to judge yet, so the plateau stop cannot fire and the answer rests on
@@ -1275,6 +1330,12 @@ def evaluate_iteration_headroom(
         many rounds are worth running, and how much movement counts, are loop
         policy and this module owns none. Their single definitions live in
         :mod:`.round_evidence` beside the benefit margin.
+      trusted_floor_hz: the floor ``objectives`` were graded against, and
+        ``previous_trusted_floor_hz`` the one the previous round's were
+        (#2609 SF5). Banked in the evidence beside the objectives whether or
+        not they decide anything here, because the NEXT round is what reads
+        them back. See :func:`_floors_comparable` for the one case that
+        refuses the movement comparison and why an unknown floor does not.
     """
 
     cap = int(round_cap)
@@ -1285,6 +1346,9 @@ def evaluate_iteration_headroom(
     movement_db = (
         None if worst is None or previous_worst is None
         else previous_worst - worst
+    )
+    movement_comparable = _floors_comparable(
+        trusted_floor_hz, previous_trusted_floor_hz
     )
     evidence: dict[str, Any] = {
         "round_ordinal": ordinal,
@@ -1298,21 +1362,44 @@ def evaluate_iteration_headroom(
         # convention ``improvement_db`` uses on the benefit verdict, so the two
         # numbers on one journal line never read in opposite directions.
         "movement_db": movement_db,
+        # #2609 SF5. The frame the two objectives above were graded in, banked
+        # BESIDE them so the next round can check the frame rather than assume
+        # it. ``movement_comparable`` is the answer this round reached about
+        # the pair, recorded rather than left to be re-derived from them.
+        "trusted_floor_hz": _optional_floor(trusted_floor_hz),
+        "previous_trusted_floor_hz": _optional_floor(previous_trusted_floor_hz),
+        "movement_comparable": movement_comparable,
     }
 
     if ordinal >= cap:
         return Verdict(IterationHeadroom.EXHAUSTED, HEADROOM_CAP_REACHED, evidence)
     if worst is None:
+        # REACHABLE, not EXHAUSTED — see the docstring. Missing evidence is not
+        # a plateau, and the reason still names which ending this was.
         return Verdict(
-            IterationHeadroom.EXHAUSTED, HEADROOM_NO_OBJECTIVES, evidence
+            IterationHeadroom.REACHABLE, HEADROOM_NO_OBJECTIVES, evidence
         )
     if worst <= plateau:
         return Verdict(
             IterationHeadroom.EXHAUSTED, HEADROOM_WITHIN_PLATEAU, evidence
         )
-    if movement_db is not None and movement_db < plateau:
+    if movement_comparable and movement_db is not None and movement_db < plateau:
         return Verdict(IterationHeadroom.EXHAUSTED, HEADROOM_PLATEAUED, evidence)
     return Verdict(IterationHeadroom.REACHABLE, HEADROOM_REACHABLE, evidence)
+
+
+def _optional_floor(value: float | None) -> float | None:
+    """A finite floor, or ``None`` — the same unknown-vs-zero rule as elsewhere.
+
+    A non-finite floor is an unreadable one: banking a NaN would give the next
+    round a number that compares false against everything, which is a silent
+    permanent refusal rather than an honest absence.
+    """
+
+    if value is None or isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
 
 
 # --------------------------------------------------------------------------

@@ -53,6 +53,7 @@ F. **Real-data acceptance** against the 2026-07-25 S0 session — the
 """
 from __future__ import annotations
 
+import dataclasses
 import math
 import os
 from dataclasses import dataclass, replace
@@ -110,6 +111,7 @@ from jasper.audio_measurement.spatial_combine import (
     assess_geometry,
     combine_positions,
     detect_echo,
+    position_residuals,
     usable_echo_estimates,
 )
 
@@ -734,7 +736,9 @@ def test_the_per_position_fields_are_additive():
     from dataclasses import fields
 
     names = [field.name for field in fields(CombinedResponse)]
-    assert names[-2:] == ["per_position_db", "per_position_diag_db"]
+    assert names[-3:] == [
+        "per_position_db", "per_position_diag_db", "position_roles",
+    ]
 
     _freqs, _true, captures = _cloud(_dispersed_taus(3))
     result = combine_positions(captures)
@@ -4685,3 +4689,141 @@ def test_ground_plane_cloud_reads_as_thin_evidence_free(ground_plane_irs):
         e is not None and e.refusal == REFUSAL_TAU_AT_WINDOW_LOWER_EDGE
         for e in combined.per_position_echo
     ), [e.refusal for e in combined.per_position_echo if e is not None]
+
+
+# --------------------------------------------------------------------------- #
+# Per-position residual — the design brief's §4.2 trend surface
+# --------------------------------------------------------------------------- #
+
+
+def _roled(captures, roles):
+    """The same captures, each carrying a role. One line, like the flow's."""
+    return [
+        dataclasses.replace(capture, role=role)
+        for capture, role in zip(captures, roles, strict=True)
+    ]
+
+
+def test_the_role_rides_through_the_combination_without_touching_it():
+    """Carried, never read: the reduction must be byte-identical either way.
+
+    The one property that makes the role safe to add — it labels a number, it
+    does not weight one. A combiner that started consulting roles would be a
+    weighted combiner, which the brief's cut list forbids explicitly.
+    """
+    _freqs, _true, captures = _cloud(_dispersed_taus(4))
+
+    plain = combine_positions(captures)
+    roled = combine_positions(_roled(captures, ["onax", "offax", "xovr", ""]))
+
+    assert roled.position_roles == ("onax", "offax", "xovr", "")
+    assert plain.position_roles == ("", "", "", "")
+    np.testing.assert_array_equal(roled.power_mean_db, plain.power_mean_db)
+    np.testing.assert_array_equal(roled.median_db, plain.median_db)
+    np.testing.assert_array_equal(roled.excluded, plain.excluded)
+
+
+def test_a_position_that_sat_off_the_mean_reports_a_bigger_residual():
+    """The whole point of the number, as an ordering rather than a constant.
+
+    An absolute dB target here would pin the synthetic fixture rather than the
+    estimator. What has to hold is the DISCRIMINATION: the position pushed
+    away from the group reports a larger residual than the ones that were not,
+    and the role travels with it so a reader can say WHICH position.
+    """
+    freqs, _true, captures = _cloud(_dispersed_taus(4))
+    captures = _roled(captures, ["onax", "offax", "offax", "xovr"])
+    # One position 4 dB hot across the whole band — a broadband level offset,
+    # which is exactly the anchor-outlier signature this surface exists to see.
+    captures[1] = dataclasses.replace(
+        captures[1], magnitude_db=captures[1].magnitude_db + 4.0,
+    )
+
+    rows = position_residuals(combine_positions(captures))
+
+    assert [row.position_id for row in rows] == ["p0", "p1", "p2", "p3"]
+    assert [row.role for row in rows] == ["onax", "offax", "offax", "xovr"]
+    offset = next(row for row in rows if row.position_id == "p1")
+    others = [row for row in rows if row.position_id != "p1"]
+    assert offset.rms_db is not None
+    assert all(row.rms_db is not None for row in others)
+    assert all(offset.rms_db > row.rms_db for row in others), (
+        [(row.position_id, row.rms_db) for row in rows]
+    )
+    assert all(row.n_bins > 0 for row in rows)
+
+
+def test_the_residual_band_is_the_callers_and_narrows_what_is_counted():
+    """The trusted band is a session fact, so the module takes it rather than
+    inventing one. A narrower band must grade fewer bins — otherwise the
+    argument is decorative."""
+    _freqs, _true, captures = _cloud(_dispersed_taus(3))
+    combined = combine_positions(captures)
+
+    whole = position_residuals(combined)
+    narrow = position_residuals(combined, band_hz=(500.0, 4000.0))
+
+    assert all(row.n_bins > 0 for row in narrow)
+    assert all(
+        n.n_bins < w.n_bins for n, w in zip(narrow, whole, strict=True)
+    ), [(n.n_bins, w.n_bins) for n, w in zip(narrow, whole, strict=True)]
+
+
+def test_a_band_that_selects_nothing_reports_absence_not_zero():
+    """``0.0 dB`` would read as "this position agreed perfectly" — the exact
+    over-claim every other honesty instrument in this module refuses."""
+    _freqs, _true, captures = _cloud(_dispersed_taus(2))
+
+    rows = position_residuals(
+        combine_positions(captures), band_hz=(1.0e6, 2.0e6),
+    )
+
+    assert rows
+    assert all(row.rms_db is None and row.n_bins == 0 for row in rows)
+
+
+def test_a_record_with_no_retained_curves_reports_nothing():
+    """A hand-built or deserialised ``CombinedResponse`` has no per-position
+    array, and inventing residuals from the mean alone would be fabrication."""
+    _freqs, _true, captures = _cloud(_dispersed_taus(3))
+    result = combine_positions(captures)
+    stripped = dataclasses.replace(
+        result, per_position_db=np.empty((0, 0)), per_position_diag_db=np.empty((0, 0)),
+    )
+
+    assert position_residuals(stripped) == ()
+
+
+def test_the_raw_curves_could_not_have_answered_this(monkeypatch):
+    """Why the estimator reads the SMOOTHED pair, kept as a measurement.
+
+    The design brief specified ``per_position_db - power_mean_db``. Run that
+    way, a broadband +4 dB offset on one position of four does NOT make it the
+    worst position: each position's own interference comb contributes ~2.5 dB
+    and swamps the level term. This re-measures that on the same fixture the
+    test above uses, so the choice stays a finding rather than a preference —
+    and so a future edit that quietly swaps the operands back fails here.
+    """
+    freqs, _true, captures = _cloud(_dispersed_taus(4))
+    captures = _roled(captures, ["onax", "offax", "offax", "xovr"])
+    captures[1] = dataclasses.replace(
+        captures[1], magnitude_db=captures[1].magnitude_db + 4.0,
+    )
+    combined = combine_positions(captures)
+
+    def _raw_rms(index: int) -> float:
+        deviation = (
+            np.asarray(combined.per_position_db)[index]
+            - np.asarray(combined.power_mean_db)
+        )
+        keep = ~np.asarray(combined.excluded, dtype=bool)
+        return float(np.sqrt(np.mean(deviation[keep] ** 2)))
+
+    raw = [_raw_rms(i) for i in range(combined.n_positions)]
+    assert raw[1] < max(raw[0], raw[2], raw[3]), (
+        "the raw form is comb-dominated; if this ever stops being true, "
+        "revisit the smoothed choice rather than assuming it", raw,
+    )
+    # …and the shipped estimator, on the same input, does see it.
+    rows = position_residuals(combined)
+    assert rows[1].rms_db == max(row.rms_db for row in rows)

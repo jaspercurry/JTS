@@ -86,6 +86,7 @@ from jasper.active_speaker.crossover_v2.contracts import (
 from jasper.active_speaker.crossover_v2.verification import (
     ADOPTION_MEASURED_REGRESSION,
     ADOPTION_REALIZED_AND_IMPROVED,
+    HEADROOM_CAP_REACHED,
     HEADROOM_NO_OBJECTIVES,
     HEADROOM_REACHABLE,
     ADOPTION_UNPROVEN,
@@ -413,8 +414,14 @@ def test_a_measurably_improved_round_keeps_the_graph_and_the_verdict(monkeypatch
     #2537 folded spec into the decision and was corrected back out (the
     permutation invariant — "spec is any in every row" — is load-bearing and
     is what this Express-tier fixture would otherwise have tripped, since it
-    walks no post-apply cloud and so never has a spec report at all). So this
-    still lands on the bare ``KEEP``.
+    walks no post-apply cloud and so never has a spec report at all).
+
+    **Bites update.** The graph is still kept and the household still lands on
+    the ordinary verified screen — that is what this control pins. What moved
+    is which KEEP row: an Express round grades no objectives, and under the
+    ethos ("only the round budget, the plateau, and the safety class end a
+    series") missing evidence may no longer end one, so the round keeps AND
+    offers another bite instead of keeping terminally.
     """
     _seed_round_state()
     conductor, attempts = _restoring_stage_2(monkeypatch)
@@ -427,11 +434,13 @@ def test_a_measurably_improved_round_keeps_the_graph_and_the_verdict(monkeypatch
 
     assert verdict.accepted is True
     evaluation = conductor.round_evaluation
-    assert evaluation.adoption.outcome is AdoptionOutcome.KEEP
-    # #2602: a tier that walks no post-apply cloud has no spec report, so
-    # the fourth axis cannot see whether a flatter result is reachable and
-    # stops the series fail-closed. The graph is still KEPT — only the
-    # reason names the ending now.
+    # KEEP_FOR_ITERATION, not RESTORE: the graph stays on the speaker. The two
+    # keeping outcomes leave the speaker in the same state — what differs is
+    # whether another round is offered.
+    assert evaluation.adoption.outcome is AdoptionOutcome.KEEP_FOR_ITERATION
+    assert evaluation.adoption.row == ADOPTION_ROW_KEEP_ITERATING
+    # The reason still NAMES the ungradable objectives — the status changed,
+    # the diagnosis did not.
     assert evaluation.adoption.reason == HEADROOM_NO_OBJECTIVES
     # The disclosure target list still names the unwalked spatial arm — spec
     # not deciding the status is not spec vanishing from the receipt.
@@ -734,11 +743,16 @@ def test_the_retry_after_a_rejected_verify_is_the_capture_that_gets_graded(
     retry = _consume_verify(conductor, _post_apply_analysis(conductor), attempt=2)
 
     assert retry.accepted is True
-    assert conductor.round_evaluation.adoption.outcome is AdoptionOutcome.KEEP
-    # #2602: a tier that walks no post-apply cloud has no spec report, so
-    # the fourth axis cannot see whether a flatter result is reachable and
-    # stops the series fail-closed. The graph is still KEPT — only the
-    # reason names the ending now.
+    # A KEEPING outcome — the point of this test is that the round describes
+    # the accepted retry rather than the rejected first attempt, whose
+    # ``recovery_required`` would have been unmistakable here.
+    assert (
+        conductor.round_evaluation.adoption.outcome
+        is AdoptionOutcome.KEEP_FOR_ITERATION
+    )
+    # An Express tier walks no post-apply cloud, so the fourth axis has no
+    # objectives to grade. Since the bites ruling that is not an ending: the
+    # reason names the missing evidence and the series stays open.
     assert conductor.round_evaluation.adoption.reason == HEADROOM_NO_OBJECTIVES
     assert conductor.round_receipt_identity is not None
     assert attempts == []
@@ -1152,11 +1166,12 @@ def test_the_round_receipt_lands_in_the_bundle_fingerprinted_and_readable(
     receipt = _round_receipt_json(real_bundle, _MINTED_RELAY_SESSION_ID)
 
     assert receipt["round_id"] == _MINTED_RELAY_SESSION_ID
-    assert receipt["adoption"]["outcome"] == AdoptionOutcome.KEEP.value
-    # #2602: a tier that walks no post-apply cloud has no spec report, so
-    # the fourth axis cannot see whether a flatter result is reachable and
-    # stops the series fail-closed. The graph is still KEPT — only the
-    # reason names the ending now.
+    assert receipt["adoption"]["outcome"] == (
+        AdoptionOutcome.KEEP_FOR_ITERATION.value
+    )
+    # An Express tier walks no post-apply cloud, so the fourth axis has no
+    # objectives to grade. Since the bites ruling that is not an ending: the
+    # reason names the missing evidence and the series stays open.
     assert receipt["adoption"]["reason"] == HEADROOM_NO_OBJECTIVES
     assert receipt["entry_baseline"]["program_id"] == (
         conductor.measure_entry_baseline.program_id
@@ -1495,6 +1510,12 @@ def test_a_failing_receipt_store_costs_the_round_nothing(monkeypatch, caplog):
     mismatch, or a bundle that closed under us must not reverse a verdict,
     refuse a capture, or crash the capture path — it is a WARN and a journal
     line.
+
+    **#2609 splits what the loss actually costs.** The ARTIFACT is lost and
+    says so (both fingerprints empty). The series' MEMORY is not: the ordinal
+    and objectives are read off the round's own evaluation, so a durably broken
+    evidence store can no longer pin every round at 1 and quietly disable both
+    the cap and the plateau stop.
     """
     _seed_round_state()
     conductor, attempts = _restoring_stage_2(monkeypatch)
@@ -1513,10 +1534,25 @@ def test_a_failing_receipt_store_costs_the_round_nothing(monkeypatch, caplog):
 
     # The verdict survived, whole.
     assert verdict.accepted is True
-    assert conductor.round_evaluation.adoption.outcome is AdoptionOutcome.KEEP
+    assert (
+        conductor.round_evaluation.adoption.outcome
+        is AdoptionOutcome.KEEP_FOR_ITERATION
+    )
     assert attempts == []
-    # The loss is recorded rather than silent, and nothing claims a receipt.
-    assert conductor.round_receipt_identity is None
+    # Nothing CLAIMS a receipt: both fingerprints are empty, which is how a
+    # reader tells "no artifact was banked" from "here is where it landed".
+    identity = conductor.round_receipt_identity
+    assert identity is not None
+    assert identity["artifact_fingerprint"] == ""
+    assert identity["receipt_fingerprint"] == ""
+    # …and the series still knows where it is, which is the #2609 half. Fed
+    # back exactly as the host persists it.
+    assert identity["round_ordinal"] == 1
+    assert "objectives" in identity
+    assert coordinator.series_position_from_state(
+        {"round_receipt": identity}
+    ).ordinal == 2
+    # The loss is recorded rather than silent.
     failures = [
         record for record in caplog.records
         if "event=correction.crossover_v2_round_receipt_failed" in record.getMessage()
@@ -2543,3 +2579,306 @@ def test_the_status_block_forwards_the_receipt_to_the_screen():
     assert block["round_receipt"] == receipt, (
         "the screen cannot name a round the status block never forwards"
     )
+
+
+# --------------------------------------------------------------------------- #
+# 9. every round banks its receipt (the ethos's fifth principle)
+#
+# A direct ``run_round`` harness rather than the conductor fixtures above:
+# these are properties of the COORDINATOR — which arms bank, what the identity
+# carries, what survives a broken store — and driving them through a full
+# stage-2 session would make the failure mode "somewhere in twelve hundred
+# lines" instead of "this arm".
+# --------------------------------------------------------------------------- #
+
+
+_USABLE_ANALYSIS = SimpleNamespace(
+    capture_integrity=SimpleNamespace(failed=(), not_evaluated=()),
+    verify_tracking={"max_db_notch_excluded": 0.1, "n_bins": 10},
+    summed_response=None,
+    program_id="prog-1",
+)
+
+
+def _direct_round(
+    *,
+    analysis=_USABLE_ANALYSIS,
+    publish=None,
+    rollback=None,
+    rollback_available=None,
+    boosts=False,
+    round_ordinal=1,
+    previous_objectives=None,
+    previous_trusted_floor_hz=None,
+    trusted_floor_hz=None,
+    delta_probe=None,
+    position_residuals=(),
+):
+    ports = coordinator.RoundPorts(
+        rollback=rollback,
+        rollback_available=rollback_available,
+        applied_boosts=(lambda: boosts),
+        entry_graph_fingerprint=(lambda: "graph-1"),
+        publish_round_receipt=publish,
+    )
+    evidence = coordinator.RoundEvidence(
+        session_id="cap_direct",
+        tier="express",
+        post_analysis=analysis,
+        entry_baseline=None,
+        spec_report=None,
+        proposal_fingerprint="a" * 64,
+        commanded_delta_present=False,
+        realization_tolerance_db=1.0,
+        reference_mark="design_axis",
+        proposal_fingerprint_kind="candidate",
+        candidate_fingerprint="b" * 64,
+        delta_probe=delta_probe,
+        round_ordinal=round_ordinal,
+        previous_objectives=previous_objectives,
+        previous_trusted_floor_hz=previous_trusted_floor_hz,
+        trusted_floor_hz=trusted_floor_hz,
+        position_residuals=position_residuals,
+    )
+    return coordinator.run_round(evidence, ports)
+
+
+@pytest.mark.parametrize(
+    ("case", "kwargs", "outcome"),
+    [
+        (
+            "kept, and another bite is coming",
+            {},
+            AdoptionOutcome.KEEP_FOR_ITERATION,
+        ),
+        (
+            "restored, because the capture was unmeasurable",
+            {
+                "analysis": None,
+                "rollback": lambda _reason: True,
+                "rollback_available": lambda: True,
+            },
+            AdoptionOutcome.RESTORE,
+        ),
+        (
+            "the restore itself failed",
+            {
+                "analysis": None,
+                "rollback": lambda _reason: False,
+                "rollback_available": lambda: True,
+            },
+            AdoptionOutcome.RECOVERY_REQUIRED,
+        ),
+        (
+            "no anchor to restore to",
+            {"analysis": None},
+            AdoptionOutcome.RECOVERY_REQUIRED,
+        ),
+    ],
+    ids=["keep_for_iteration", "restore", "restore_failed", "no_anchor"],
+)
+def test_every_arm_of_the_adoption_act_banks_a_receipt(case, kwargs, outcome):
+    """The ethos's fifth principle, as a guard on every exit.
+
+    *Every round, kept or restored or refused, banks its measurement into the
+    series state so the next bite is commanded from it.* Parametrized over the
+    three arms of ``_act_on_adoption`` rather than over the outcomes, because
+    the arms are the code paths — an outcome added later routes through one of
+    them and inherits this pin.
+
+    What forced it into writing: the 2026-08-16 shortfall rollback wrote no
+    round receipt on its failed verify, leaving that round's realization in
+    journal events only.
+    """
+    banked = []
+    decision = _direct_round(publish=lambda receipt: banked.append(receipt) or "art",
+                             **kwargs)
+
+    assert decision.evaluation.adoption.outcome is outcome, case
+    assert len(banked) == 1, case
+    assert decision.receipt_identity is not None, case
+    assert decision.receipt_identity["artifact_fingerprint"] == "art", case
+    # The banked artifact and the identity describe the same decision.
+    assert banked[0]["adoption"]["outcome"] == outcome.value, case
+    assert decision.receipt_identity["adoption"] == outcome.value, case
+
+
+def test_a_round_with_no_publishing_seam_still_remembers_where_it_sat():
+    """A host that cannot bank an artifact must not lose the series' count.
+
+    This used to return ``None`` outright, so a caller with no publish seam
+    produced no identity at all — and ``series_position_from_state`` reads the
+    ordinal off exactly that identity. The empty fingerprints are how the
+    record says no artifact was written.
+    """
+    decision = _direct_round(publish=None)
+
+    identity = decision.receipt_identity
+    assert identity is not None
+    assert identity["artifact_fingerprint"] == ""
+    assert identity["receipt_fingerprint"] == ""
+    assert identity["round_ordinal"] == 1
+    assert coordinator.series_position_from_state(
+        {"round_receipt": identity}
+    ).ordinal == 2
+
+
+def test_the_cap_still_bites_when_every_receipt_write_fails():
+    """#2609's actual acceptance: three rounds, a broken store, and a stop.
+
+    The gate drove twelve rounds proving the old shape — a persistently
+    failing receipt write pinned the ordinal at 1, which disabled the cap AND
+    the plateau stop, and the series then ended only when the measurement
+    itself said "flat enough". Walked here as a real series: each round's
+    identity feeds the next round's reader, exactly as the host carries it.
+    """
+    def _explode(_receipt):
+        raise OSError("no space left on device")
+
+    ordinals = []
+    reasons = []
+    state = {}
+    for _ in range(3):
+        position = coordinator.series_position_from_state(state)
+        decision = _direct_round(
+            publish=_explode,
+            round_ordinal=position.ordinal,
+            previous_objectives=position.previous_objectives,
+            previous_trusted_floor_hz=position.previous_trusted_floor_hz,
+        )
+        ordinals.append(position.ordinal)
+        reasons.append(decision.evaluation.headroom.reason)
+        state = {"round_receipt": decision.receipt_identity}
+
+    assert ordinals == [1, 2, 3], "the series must count past a broken store"
+    assert reasons[-1] == HEADROOM_CAP_REACHED
+    assert (
+        coordinator.series_position_from_state(state).ordinal == 4
+    ), "and the cap keeps biting after it"
+
+
+def test_the_receipt_banks_the_probes_band_resolved_realization_verbatim():
+    """#2649's numbers are the next bite's command inputs, not a log line.
+
+    Banked VERBATIM off the probe's own ``to_dict`` rather than reshaped here:
+    the probe owns what a realization report says, and a second shaping in the
+    receipt writer is a second owner of the same fact.
+    """
+    realization = {
+        "pooled": 0.664,
+        "graded_band_hz": [250.0, 16000.0],
+        "trusted_floor_hz": 143.0,
+        "trust_ceiling_hz": 16444.9,
+        "bands": {
+            "crossover": {
+                "band_hz": [1000.0, 4000.0], "n_bins": 40,
+                "ratio": 1.31, "graded": True,
+            },
+        },
+    }
+    probe = SimpleNamespace(
+        verdict="matched", reason="",
+        to_dict=lambda: {"verdict": "matched", "realization": realization},
+    )
+    banked = []
+
+    _direct_round(publish=lambda r: banked.append(r) or "art", delta_probe=probe)
+
+    assert banked[0]["round_measurements"]["realization"] == realization
+
+
+@pytest.mark.parametrize(
+    ("case", "probe"),
+    [
+        ("no probe ran at all", None),
+        (
+            "a probe from a build with no band-resolved report",
+            SimpleNamespace(verdict="matched", to_dict=lambda: {"verdict": "matched"}),
+        ),
+        (
+            "a probe whose to_dict raises",
+            SimpleNamespace(
+                verdict="matched",
+                to_dict=lambda: (_ for _ in ()).throw(ValueError("boom")),
+            ),
+        ),
+    ],
+    ids=["absent", "older_build", "raising"],
+)
+def test_a_probe_that_cannot_report_costs_the_receipt_nothing_else(case, probe):
+    """Three honest absences, none of them an error.
+
+    The realization block is optional evidence. Losing the whole receipt over
+    a probe that cannot answer would be exactly the trade this module refuses
+    everywhere else — and the round's verdict, which is what protects the
+    speaker, must be untouched by it.
+    """
+    banked = []
+
+    decision = _direct_round(
+        publish=lambda r: banked.append(r) or "art", delta_probe=probe,
+    )
+
+    assert len(banked) == 1, case
+    assert "realization" not in banked[0]["round_measurements"], case
+    assert decision.evaluation.adoption.outcome is AdoptionOutcome.KEEP_FOR_ITERATION
+
+
+def test_the_receipt_banks_the_per_position_residual_role_labelled():
+    """§4.2: "on-axis 0.4 dB, off-axis 2.9 dB" is an instruction.
+
+    The role is the half that makes the number readable — a residual with no
+    role says the cloud disagreed, and one with a role says which listening
+    position it disagreed at, which is what separates a speaker defect from a
+    room feature.
+    """
+    residuals = (
+        {"position_id": "p0", "role": "onax", "rms_db": 0.42, "n_bins": 380},
+        {"position_id": "p1", "role": "offax", "rms_db": 2.91, "n_bins": 380},
+    )
+    banked = []
+
+    _direct_round(
+        publish=lambda r: banked.append(r) or "art", position_residuals=residuals,
+    )
+
+    assert banked[0]["round_measurements"]["position_residuals"] == [
+        dict(row) for row in residuals
+    ]
+
+
+def test_a_round_with_no_cloud_banks_no_residuals_rather_than_empty_ones():
+    """An Express tier walks no positions, and a zero-length list of measured
+    numbers is a claim that measuring happened and found nothing."""
+    banked = []
+
+    _direct_round(publish=lambda r: banked.append(r) or "art")
+
+    assert banked[0]["round_measurements"] == {}
+
+
+def test_the_trusted_floor_rides_the_identity_and_reads_back(monkeypatch):
+    """#2609 SF5's round trip: the frame travels with the objectives.
+
+    Without it the next round differences two numbers graded over different
+    band edges — worth ±0.518 dB on an unchanged curve across a 7↔10 ms gate,
+    2.1x the plateau bar — and calls the difference progress.
+    """
+    decision = _direct_round(publish=lambda _r: "art", trusted_floor_hz=143.0)
+
+    identity = decision.receipt_identity
+    assert identity["trusted_floor_hz"] == 143.0
+    position = coordinator.series_position_from_state({"round_receipt": identity})
+    assert position.previous_trusted_floor_hz == 143.0
+
+
+def test_a_receipt_from_before_the_floor_shipped_reads_back_as_unknown():
+    """Absent is not zero. A missing floor must not compare equal to a real
+    one, and must not refuse every comparison either — see
+    ``_floors_comparable`` for which direction unknown takes."""
+    position = coordinator.series_position_from_state({"round_receipt": {
+        "round_ordinal": 1,
+        "objectives": {"tilt_db": 2.37, "ripple_db": 0.9},
+    }})
+
+    assert position.previous_trusted_floor_hz is None
