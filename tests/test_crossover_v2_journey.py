@@ -711,3 +711,64 @@ def test_the_journey_is_pure_the_same_inputs_give_the_same_plan():
     ) == open_stage(
         STAGE_VERIFY_CAPABILITIES, index_phase_map=VERIFY_ONLY_MAP
     )
+
+
+def test_mark_restored_is_mark_applieds_inverse():
+    """#2616 — the flag can go back, so the journey can own it in both
+    directions."""
+    journey = _journey()
+    journey.mark_applied()
+    assert journey.applied is True
+    journey.mark_restored()
+    assert journey.applied is False
+
+
+def test_applied_cannot_go_false_to_true_without_a_fresh_apply():
+    """Only ``mark_applied`` sets it, and a restore does not un-set itself.
+
+    The defect #2616 fixes was a SECOND owner writing the flag back: the
+    durable state's restore cleared it, and the next conductor persist
+    re-asserted it from a snapshot taken before the restore. This pins the half
+    that lives here — nothing but a fresh apply raises the flag, so once the
+    journey is told about a restore, only a real apply can undo that.
+    """
+    journey = _journey()
+    journey.mark_applied()
+    journey.mark_restored()
+    assert journey.applied is False
+
+    # Every other transition this object has, exercised against a restored
+    # journey: none of them may raise the flag.
+    for phase, index in ((PHASE_CHECK, 1), (PHASE_MEASURE, 2)):
+        journey.accept(phase, index)
+        assert journey.applied is False
+    journey.mark_restored()
+    assert journey.applied is False
+
+    # ...and the one transition that may, does.
+    journey.mark_applied()
+    assert journey.applied is True
+
+
+def test_restoring_a_journey_that_never_applied_is_a_no_op():
+    """No illegal-transition guard, matching the class's stated posture."""
+    journey = _journey()
+    journey.mark_restored()
+    assert journey.applied is False
+
+
+def test_the_restore_re_opens_the_applying_interlude():
+    """The derivation ``applied`` feeds moves back with it.
+
+    ``mark_applied`` collapses the PHASE_APPLYING interlude into VERIFY; its
+    inverse has to re-open it, or the flag would be reversible while the screen
+    the household sees would not.
+    """
+    journey = _journey(
+        VERIFY_ONLY_MAP, accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
+        applied=True,
+    )
+    applied_phase = journey.current_phase
+    journey.mark_restored()
+    assert journey.current_phase != applied_phase
+    assert journey.current_phase == PHASE_APPLYING

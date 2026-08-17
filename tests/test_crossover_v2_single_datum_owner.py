@@ -1,0 +1,498 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""#2609 — one measurement owns the level datum, and no threshold arbitrates it.
+
+Replaces ``test_crossover_v2_level_frame_dispute.py``, whose subject was
+deleted with the mechanism it pinned. That file pinned a three-case rule in
+:func:`jasper.active_speaker.crossover_v2.intervention.anchor_trims` under which
+two per-driver estimators voted and a 3.0 dB cliff decided whether their
+reconciliation was admitted. This file pins that there is no vote left, that
+the surviving check cannot move a number, and that the safety normalize the
+migration ran past is intact.
+
+**What went wrong, in one paragraph.** The anchor was
+``base + giveback + level_frame_offset``, and the offset carried a
+reconciliation between the trim solve's power-band average about Fc and the
+fit's median over each driver's own radiating band. Those two routinely
+disagree. When they disagreed past tolerance every offset was zeroed. On the
+2026-08-16 shortfall round they disagreed by 3.326 dB against a 3.0 dB bar —
+**a miss of 0.326 dB** — the zeroing fired, and the tweeter moved from a raw
+measured trim of ``-10.835`` to a committed ``-7.043``, +3.79 dB hotter than
+the measurement had asked for. The crossover band then realized +3.10 dB over
+commanded, VERIFY's absolute check failed at -2.83 dB @ 1935 Hz, and the probe
+rolled the round back.
+"""
+
+from __future__ import annotations
+
+import inspect
+
+import pytest
+
+from jasper.active_speaker.crossover_v2 import intervention as iv
+from jasper.audio_measurement.program_analysis import (
+    REALIZED_LEVEL_MATCH_TOLERANCE_DB,
+)
+
+# --------------------------------------------------------------------------- #
+# the 2026-08-16 jts3 terms
+# --------------------------------------------------------------------------- #
+
+_ROLES = ("woofer", "tweeter")
+
+#: The incident round's anchor terms, RECONSTRUCTED from the four numbers
+#: #2609 states rather than copied from a bundle this repo does not hold.
+#:
+#: Stated on the issue: the raw measured tweeter trim ``-10.835`` and the
+#: overlap-band estimate ``-6.893`` (the 12:27 comment), and the committed
+#: ``-7.043`` with ``normalize_shift_db = 2.878`` (the conviction comment).
+#: The woofer was the loud branch — it is what set the shift — so its
+#: unnormalized term EQUALS the shift, and the rest follows::
+#:
+#:     giveback_t = committed + shift - base_used = -7.043 + 2.878 + 6.893
+#:                = 2.728
+#:     tba_w      = shift - giveback_t            = 0.150
+#:     giveback_w = shift - tba_w                 = 2.728
+#:
+#: The reconstruction is checked rather than asserted: the first test below
+#: replays the DELETED rule on these terms and gets the incident's own
+#: ``-7.043`` back, and the move between the two rules comes out +3.792 dB
+#: against the owner's stated +3.79. A fixture that reproduces the known bad
+#: number under the old rule is the incident's; one that only produced the
+#: good number under the new rule would prove nothing.
+#:
+#: ``scripts/derive-crossover-incident-fixture.py`` builds this shape from a
+#: real bundle when one is on the laptop; these terms are the in-repo
+#: equivalent, so the pin runs in CI with no gitignored evidence.
+_RAW_TRIM_DB = {"woofer": 0.0, "tweeter": -10.835}
+_TRIM_BAND_AVERAGE_DB = {"woofer": 0.150, "tweeter": -6.893}
+_GIVEBACK_DB = {"woofer": 2.728, "tweeter": 2.728}
+
+#: What the deleted rule committed, and what the measurement asked for.
+_INCIDENT_COMMITTED_TWEETER_DB = -7.043
+_MEASURED_TWEETER_DB = -10.8
+#: The owner's conviction bar: the committed trim must land within 0.6 dB of
+#: the measurement (the reigning tune's -10.214 sits inside the same window).
+_INCIDENT_TOLERANCE_DB = 0.6
+
+
+def _anchor(**overrides):
+    kwargs = dict(
+        roles=_ROLES,
+        anchor_base_db=_RAW_TRIM_DB,
+        giveback_db=_GIVEBACK_DB,
+    )
+    kwargs.update(overrides)
+    return iv.anchor_trims(**kwargs)
+
+
+# --------------------------------------------------------------------------- #
+# (c) the contract: no branch keyed on a tolerance
+# --------------------------------------------------------------------------- #
+
+
+def test_anchor_trims_takes_no_tolerance_and_no_disagreement():
+    """The three arbitration parameters are gone from the signature.
+
+    A signature test rather than a behaviour one because the defect was
+    structural: as long as ``anchor_trims`` can be TOLD a disagreement and a
+    tolerance, some branch can compare them, and the cliff comes back. Its
+    inputs are now exactly the two terms the anchor is made of.
+    """
+    params = set(inspect.signature(iv.anchor_trims).parameters)
+    assert params == {"roles", "anchor_base_db", "giveback_db"}
+    for gone in ("tolerance_db", "disagreement_db", "has_frame",
+                 "level_frame_offset_db"):
+        assert gone not in params
+
+
+def test_anchor_trims_body_carries_no_threshold_comparison():
+    """No surviving branch in the function compares against a tolerance.
+
+    The signature test above closes the door the cliff came through; this one
+    checks nobody re-opened it from inside by reaching for a module constant.
+    Source inspection is the honest instrument here — the branch it forbids is
+    one that fires on inputs a passing behaviour test would not supply.
+    """
+    body = inspect.getsource(iv.anchor_trims)
+    _, _, code = body.partition('"""')
+    _, _, code = code.partition('"""')
+    for token in ("TOLERANCE", "tolerance", "disagreement"):
+        assert token not in code, f"anchor_trims body still reaches for {token!r}"
+
+
+def test_the_anchor_is_base_plus_giveback_and_nothing_else():
+    anchored, shift = _anchor()
+    unnormalized = {
+        role: _RAW_TRIM_DB[role] + _GIVEBACK_DB[role] for role in _ROLES
+    }
+    expected_shift = max(0.0, max(unnormalized.values()))
+    assert shift == pytest.approx(expected_shift)
+    for role in _ROLES:
+        assert anchored[role] == pytest.approx(unnormalized[role] - expected_shift)
+
+
+# --------------------------------------------------------------------------- #
+# (a) the incident replay
+# --------------------------------------------------------------------------- #
+
+
+def test_the_fixture_reproduces_the_incidents_own_committed_trim():
+    """The deleted rule, replayed on these terms, gives back its own -7.043.
+
+    This is what makes the fixture the INCIDENT's rather than three numbers
+    chosen to make the next test pass. The deleted third case zeroed every
+    per-role offset and anchored on the overlap-band estimate, which is
+    exactly ``place(trim_band_average + giveback)`` — reproduced here by hand
+    because the branch that did it no longer exists to call.
+    """
+    unnormalized = {
+        role: _TRIM_BAND_AVERAGE_DB[role] + _GIVEBACK_DB[role] for role in _ROLES
+    }
+    shift = max(0.0, max(unnormalized.values()))
+    committed = {r: v - shift for r, v in unnormalized.items()}
+    assert shift == pytest.approx(2.878, abs=1e-3)
+    assert committed["tweeter"] == pytest.approx(
+        _INCIDENT_COMMITTED_TWEETER_DB, abs=1e-3
+    )
+
+
+def test_the_incident_round_commits_the_measured_tweeter_trim():
+    """The 2026-08-16 shortfall round, replayed: the anchor lands near -10.8.
+
+    The whole claim of the migration in one assertion. Under the deleted rule
+    this pair committed -7.043 while the raw measurement asked for -10.835 and
+    the reigning tune sat at -10.214. With no branch left to take, the anchor
+    commits what the measurement said.
+    """
+    anchored, _ = _anchor()
+    assert anchored["tweeter"] == pytest.approx(
+        _MEASURED_TWEETER_DB, abs=_INCIDENT_TOLERANCE_DB
+    )
+    # And explicitly NOT the value the exclusion branch shipped.
+    assert abs(
+        anchored["tweeter"] - _INCIDENT_COMMITTED_TWEETER_DB
+    ) > _INCIDENT_TOLERANCE_DB
+
+
+def test_the_move_the_migration_removes_is_the_owners_stated_plus_3_79_db():
+    """Old rule minus new rule == +3.79 dB, the number the forensic named."""
+    unnormalized = {
+        role: _TRIM_BAND_AVERAGE_DB[role] + _GIVEBACK_DB[role] for role in _ROLES
+    }
+    old_shift = max(0.0, max(unnormalized.values()))
+    old_tweeter = unnormalized["tweeter"] - old_shift
+    new_tweeter, _ = _anchor()
+    assert old_tweeter - new_tweeter["tweeter"] == pytest.approx(3.79, abs=0.01)
+
+
+def test_no_disagreement_can_change_the_committed_pair():
+    """A suspect capture ships the same trims as an agreeing one.
+
+    The behavioural half of "the check cannot move a number". Two consistency
+    verdicts as far apart as the tolerance allows, one committed pair.
+    """
+    baseline, baseline_shift = _anchor()
+    agreeing = iv.check_level_consistency(
+        summed_level_reference_db=_RAW_TRIM_DB,
+        trim_band_average_db=_RAW_TRIM_DB,
+        core_proposal_db=_RAW_TRIM_DB,
+    )
+    wild = iv.check_level_consistency(
+        summed_level_reference_db=_RAW_TRIM_DB,
+        trim_band_average_db={"woofer": 0.0, "tweeter": -30.0},
+        core_proposal_db={"woofer": 0.0, "tweeter": 12.0},
+    )
+    assert agreeing is not None and not agreeing.suspect
+    assert wild is not None and wild.suspect
+    # Same inputs to the anchor, same answer, whatever the check said.
+    again, again_shift = _anchor()
+    assert again == baseline and again_shift == baseline_shift
+
+
+# --------------------------------------------------------------------------- #
+# the safety invariant the migration ran past
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "giveback",
+    [
+        {"woofer": 0.0, "tweeter": 0.0},
+        {"woofer": 2.811, "tweeter": 6.717},
+        # Give-back far exceeding the raw attenuation on BOTH roles: the case
+        # the normalize exists for.
+        {"woofer": 40.0, "tweeter": 40.0},
+    ],
+)
+def test_no_committed_trim_is_ever_a_boost(giveback):
+    """Every returned trim is <= 0. The hearing-safety invariant, unchanged.
+
+    The migration moved where the anchor's base number comes from. It did not
+    touch the clamp around it, and this is what says so: a branch whose own
+    cuts give back more than its raw attenuation must still land non-positive,
+    because the emitter refuses a positive trim and the hardware must never
+    see one.
+    """
+    anchored, shift = _anchor(giveback_db=giveback)
+    assert shift >= 0.0
+    for role, value in anchored.items():
+        assert value <= 0.0, f"{role} committed a boost: {value}"
+
+
+def test_the_normalize_preserves_relative_placement_exactly():
+    """The shift is common-mode, so it cannot change the inter-driver balance."""
+    anchored, shift = _anchor()
+    hot, hot_shift = _anchor(
+        giveback_db={role: v + 12.0 for role, v in _GIVEBACK_DB.items()}
+    )
+    assert hot_shift == pytest.approx(shift + 12.0)
+    spread = anchored["tweeter"] - anchored["woofer"]
+    assert hot["tweeter"] - hot["woofer"] == pytest.approx(spread)
+
+
+# --------------------------------------------------------------------------- #
+# the consistency check: symmetric, advisory, three-state
+# --------------------------------------------------------------------------- #
+
+
+def test_no_owner_means_no_verdict_not_an_agreement():
+    """``None`` is a third state, and not a quiet synonym for "they agreed"."""
+    assert iv.check_level_consistency(
+        summed_level_reference_db=None,
+        trim_band_average_db=_RAW_TRIM_DB,
+        core_proposal_db=_RAW_TRIM_DB,
+    ) is None
+    assert iv.check_level_consistency(
+        summed_level_reference_db={},
+        trim_band_average_db=_RAW_TRIM_DB,
+        core_proposal_db=_RAW_TRIM_DB,
+    ) is None
+
+
+def test_neither_estimator_is_preferred():
+    """The ruling, as a test: the two estimators are graded identically.
+
+    #2609 carries two owner comments pointing opposite ways on the same numeric
+    pair. The later ruling resolves it by declining to pick: neither per-driver
+    estimator is reliably right, so both are subordinate and both are measured
+    the same way. Swapping which estimator carries the error must not change
+    the verdict or the worst delta.
+    """
+    owner = {"woofer": 0.0, "tweeter": -10.0}
+    good = {"woofer": 0.0, "tweeter": -10.0}
+    bad = {"woofer": 0.0, "tweeter": -2.0}
+
+    trim_is_wrong = iv.check_level_consistency(
+        summed_level_reference_db=owner,
+        trim_band_average_db=bad,
+        core_proposal_db=good,
+    )
+    core_is_wrong = iv.check_level_consistency(
+        summed_level_reference_db=owner,
+        trim_band_average_db=good,
+        core_proposal_db=bad,
+    )
+    assert trim_is_wrong is not None and core_is_wrong is not None
+    assert trim_is_wrong.suspect is core_is_wrong.suspect is True
+    assert trim_is_wrong.worst_delta_db == pytest.approx(
+        core_is_wrong.worst_delta_db
+    )
+    # ...and each names the estimator that actually disagreed, so "symmetric"
+    # does not mean "indistinguishable".
+    assert trim_is_wrong.trim_band_delta_db["tweeter"] == pytest.approx(8.0)
+    assert trim_is_wrong.core_level_delta_db["tweeter"] == pytest.approx(0.0)
+    assert core_is_wrong.core_level_delta_db["tweeter"] == pytest.approx(8.0)
+    assert core_is_wrong.trim_band_delta_db["tweeter"] == pytest.approx(0.0)
+
+
+def test_the_comparison_is_relative_not_absolute():
+    """A common-mode offset between instruments is not a disagreement.
+
+    Three instruments with three references — a summed at-the-mark sweep, a
+    power-band average, a core-band median — are not comparable in absolute
+    level. What IS comparable is how far apart each puts the two roles, which
+    is what the anchor commits.
+    """
+    owner = {"woofer": 0.0, "tweeter": -10.0}
+    shifted = {role: value - 25.0 for role, value in owner.items()}
+    verdict = iv.check_level_consistency(
+        summed_level_reference_db=owner,
+        trim_band_average_db=shifted,
+        core_proposal_db=shifted,
+    )
+    assert verdict is not None
+    assert verdict.worst_delta_db == pytest.approx(0.0)
+    assert not verdict.suspect
+
+
+def test_the_tolerance_is_the_realized_level_one_and_is_owned_once():
+    """One threshold, one owner — and it is the number it always was."""
+    assert iv.LEVEL_ESTIMATOR_TOLERANCE_DB == REALIZED_LEVEL_MATCH_TOLERANCE_DB
+    default = inspect.signature(
+        iv.check_level_consistency
+    ).parameters["tolerance_db"].default
+    assert default == iv.LEVEL_ESTIMATOR_TOLERANCE_DB
+
+
+def test_the_incident_disagreement_now_flags_instead_of_zeroing():
+    """3.326 dB against a 3.0 dB bar: suspect, and the pair ships anyway.
+
+    The same numbers that took the deleted third branch. The verdict still
+    fires — the migration did not widen the bar — but what it produces is a
+    flag, not a placement.
+    """
+    owner = {"woofer": 0.0, "tweeter": -10.835}
+    estimate = {"woofer": 0.0, "tweeter": -10.835 + 3.326}
+    verdict = iv.check_level_consistency(
+        summed_level_reference_db=owner,
+        trim_band_average_db=estimate,
+        core_proposal_db=owner,
+    )
+    assert verdict is not None
+    assert verdict.suspect
+    assert verdict.reason == iv.LEVEL_ESTIMATOR_SUSPECT_REASON
+    assert verdict.worst_delta_db == pytest.approx(3.326, abs=1e-6)
+    # The anchor is untouched by it: same base, same committed pair.
+    anchored, _ = _anchor(anchor_base_db=owner)
+    assert anchored["tweeter"] == pytest.approx(
+        _MEASURED_TWEETER_DB, abs=_INCIDENT_TOLERANCE_DB
+    )
+
+
+def test_a_verdict_just_under_the_bar_is_not_suspect():
+    """The boundary is `>`, so exactly-at-tolerance is not a finding."""
+    owner = {"woofer": 0.0, "tweeter": -10.0}
+    at_bar = {
+        "woofer": 0.0,
+        "tweeter": -10.0 + iv.LEVEL_ESTIMATOR_TOLERANCE_DB,
+    }
+    verdict = iv.check_level_consistency(
+        summed_level_reference_db=owner,
+        trim_band_average_db=at_bar,
+        core_proposal_db=owner,
+    )
+    assert verdict is not None
+    assert not verdict.suspect
+    assert verdict.reason == ""
+
+
+def test_a_role_the_owner_does_not_cover_is_not_a_disagreement():
+    verdict = iv.check_level_consistency(
+        summed_level_reference_db={"woofer": 0.0},
+        trim_band_average_db={"woofer": 0.0, "tweeter": -40.0},
+        core_proposal_db={"woofer": 0.0},
+    )
+    assert verdict is not None
+    assert not verdict.suspect
+    assert set(verdict.trim_band_delta_db) == {"woofer"}
+
+
+def test_the_verdict_serializes_flat_for_the_journal():
+    verdict = iv.check_level_consistency(
+        summed_level_reference_db={"woofer": 0.0, "tweeter": -10.0},
+        trim_band_average_db={"woofer": 0.0, "tweeter": -2.0},
+        core_proposal_db={"woofer": 0.0, "tweeter": -10.0},
+    )
+    assert verdict is not None
+    payload = verdict.to_dict()
+    assert set(payload) == {
+        "suspect", "reason", "tolerance_db", "worst_delta_db",
+        "trim_band_delta_db", "core_level_delta_db",
+    }
+    assert payload["suspect"] is True
+    assert payload["worst_delta_db"] == pytest.approx(8.0)
+
+
+# --------------------------------------------------------------------------- #
+# the deleted machinery stays deleted
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["LevelFrameAdmission", "LEVEL_FRAME_DISPUTED_REASON"],
+)
+def test_the_arbitration_vocabulary_is_gone(name):
+    assert not hasattr(iv, name)
+    assert name not in iv.__all__
+
+
+@pytest.mark.parametrize(
+    "name", ["SharedLevelFrame", "solve_shared_level_frame"],
+)
+def test_the_frame_solver_is_gone(name):
+    from jasper.active_speaker import linearization_fit
+
+    assert not hasattr(linearization_fit, name)
+
+
+def test_the_request_no_longer_carries_a_level_tolerance():
+    from dataclasses import fields
+
+    names = {f.name for f in fields(iv.LinearizationRequest)}
+    assert "level_frame_tolerance_db" not in names
+    assert "summed_level_reference_db" in names
+
+
+def _minimal_request(**overrides):
+    """One minimal, valid request — the shape the request guards are tested on."""
+    from dataclasses import replace
+
+    from jasper.active_speaker.branch_chain import CrossoverSection
+    from jasper.active_speaker.crossover_v2.contracts import (
+        CandidateAcousticContext,
+    )
+
+    fc_hz = 1600.0
+    sections = {
+        "woofer": (CrossoverSection(fc_hz=fc_hz, order=4, highpass=False),),
+        "tweeter": (CrossoverSection(fc_hz=fc_hz, order=4, highpass=True),),
+    }
+    evidence = iv.DriverEvidence(
+        role="woofer", response=object(), excited_band_hz=(100.0, 2000.0),
+    )
+    kwargs = dict(
+        context=CandidateAcousticContext.from_sections(sections),
+        woofer=evidence,
+        tweeter=replace(evidence, role="tweeter"),
+        raw_trim_db={},
+        trim_band_average_db={},
+        predicted_ripple_db=0.0,
+        polarity_sign=1,
+        delay_us=0.0,
+        anchor_delay_us=None,
+        mic_tier="reference",
+        branch_floor_hz=None,
+        post_apply_verifies=True,
+        cloud_phase_planned=False,
+    )
+    kwargs.update(overrides)
+    return iv.LinearizationRequest(**kwargs)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_a_non_finite_level_owner_is_refused_at_the_door(bad):
+    """NaN in the owner would place the pair at NaN with no clamp to catch it.
+
+    ``max`` against NaN is not a clamp — every comparison against NaN is False —
+    so the non-positive normalize would not misfire, it would stop existing.
+    The guard therefore has to be where the datum enters, not where it is used.
+    """
+    with pytest.raises(iv.PlannerInputError, match="not finite"):
+        _minimal_request(summed_level_reference_db={"tweeter": bad})
+
+
+def test_a_finite_level_owner_is_accepted_and_snapshotted():
+    """The guard admits a real number, and the frozen request holds a copy.
+
+    The snapshot half matters for the same reason the other trim mappings are
+    snapshotted: a frozen dataclass holding a live dict is frozen in name only,
+    and this one is read at the anchor and again by the consistency check.
+    """
+    live = {"woofer": 0.0, "tweeter": -10.8}
+    request = _minimal_request(summed_level_reference_db=live)
+    live["tweeter"] = 999.0
+    assert request.summed_level_reference_db["tweeter"] == pytest.approx(-10.8)

@@ -2995,7 +2995,6 @@ def test_a_held_round_is_not_refused_by_the_accountability_prediction_gate():
     from jasper.active_speaker.crossover_v2 import accountability
     from jasper.active_speaker.crossover_v2.candidates import LinearizationState
     from jasper.active_speaker.crossover_v2_flow import (
-        LEVEL_FRAME_AGREEMENT_TOLERANCE_DB,
         PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
         spec_report_for_predicted_sum,
     )
@@ -3014,7 +3013,6 @@ def test_a_held_round_is_not_refused_by_the_accountability_prediction_gate():
             raw_predicted_sum=raw,
             state=LinearizationState(outcome="fitted", linearized_predicted_sum=predicted),
             grade_prediction=spec_report_for_predicted_sum,
-            level_frame_tolerance_db=LEVEL_FRAME_AGREEMENT_TOLERANCE_DB,
             material_improvement_db=PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
             reason_levels_disagree="driver_levels_disagree",
             reason_not_an_improvement="correction_not_an_improvement",
@@ -6642,10 +6640,9 @@ def test_build_candidate_ripple_trim_sanity_guard_falls_back_with_warning(
 # traced it while solving MEASURE's level per driver (#1825): the reading that
 # looked like a drive delta was a sensitivity delta, precisely because the
 # drive divides out. (docs/linearization-integrity-plan.md:95-96 states the
-# same thing for the trim-vs-fit frame comparison.) Its consumers —
+# same thing for the trim-vs-fit frame comparison.) Its consumer —
 # ``linearization_fit.driver_core_level_db`` (reads ``DriverResponse``'s own
-# magnitude curve) and ``solve_shared_level_frame`` (reconciles those core
-# levels against the candidate trims) — all assume it silently. Build the
+# magnitude curve) — assumes it silently. Build the
 # reference at unit amplitude instead, or normalize the stimulus before
 # inversion, and every one of them inherits an inter-driver level error of
 # exactly the woofer/tweeter gain difference: the same failure SHAPE as the
@@ -7055,70 +7052,6 @@ def test_the_radiating_band_core_level_converges_on_the_trim_frame(monkeypatch):
     # point is the margin, not a flipped verdict (the flip is pinned end to
     # end on a synthetic in tests/test_crossover_v2_conductor.py).
     assert disagreement["declared_span"] < REALIZED_LEVEL_MATCH_TOLERANCE_DB
-
-
-@requires_cdhorn
-def test_the_frame_gate_ruling_does_not_reach_a_session_whose_frames_agree(
-    monkeypatch,
-):
-    """**#1866 hardware regression: the ruling is inert on an ordinary
-    session.**
-
-    The owner's 2026-07-30 frame-gate ruling adds a branch that fires only on
-    a disagreement OVER ``LEVEL_FRAME_AGREEMENT_TOLERANCE_DB``. Run 5 is the
-    corpus's healthy capture, so the branch must be unreachable on it — no
-    finding is banked, nothing is published, and every number this module
-    already pins on these bytes is untouched.
-
-    Read this test as the negative control for the ruling: the change is
-    supposed to be invisible to every session whose two estimators agree, and
-    the archived bytes are the only place that claim can be made against real
-    hardware rather than a fixture. It re-derives nothing — it asserts the
-    ruling's own precondition against the values the test above measured, on
-    the same analysis, so the two cannot drift into disagreeing about which
-    session this is.
-    """
-    from jasper.active_speaker.branch_chain import (
-        CrossoverSection, radiating_band_hz,
-    )
-    from jasper.active_speaker.crossover_v2_flow import (
-        LEVEL_FRAME_AGREEMENT_TOLERANCE_DB,
-    )
-    from jasper.active_speaker.linearization_fit import (
-        driver_core_level_db, solve_shared_level_frame,
-    )
-
-    analysis, _program, _capture, _offset, _cal = _cdhorn_run5_analysis(monkeypatch)
-    responses = {r.role: r for r in analysis.driver_responses}
-    core_levels_db = {}
-    for role in CDHORN_RUN5_BANDS_HZ:
-        envelope = _cdhorn_run5_envelope(role, responses[role])
-        core_levels_db[role] = driver_core_level_db(
-            responses[role],
-            envelope,
-            radiating_band_hz=radiating_band_hz((
-                CrossoverSection(
-                    fc_hz=CDHORN_RUN5_FC_HZ, order=4, highpass=(role == "tweeter"),
-                ),
-            )),
-        )
-    frame = solve_shared_level_frame(
-        core_levels_db, dict(analysis.candidate.trim_band_average_db)
-    )
-    disagreement_db = max(abs(v) for v in frame.offset_db.values())
-
-    # The number the gate reads, on the archived bytes, is the one the test
-    # above measured — so this session's verdict is the same one it always
-    # was, and the ruling's branch is not entered.
-    assert disagreement_db == pytest.approx(
-        L1929_RUN5_DISAGREEMENT_DB["radiating_band"], abs=0.05
-    )
-    assert disagreement_db < LEVEL_FRAME_AGREEMENT_TOLERANCE_DB
-    # With 2.49 dB of margin, this is not a session sitting on the threshold:
-    # a change that moved the estimator enough to start banking findings on
-    # healthy hardware would have to move it by more than four times the
-    # residual #1929 left behind.
-    assert LEVEL_FRAME_AGREEMENT_TOLERANCE_DB - disagreement_db > 2.0
 
 
 # --------------------------------------------------------------------------- #

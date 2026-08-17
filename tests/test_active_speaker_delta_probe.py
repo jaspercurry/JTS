@@ -21,6 +21,9 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.delta_probe import (
+    DELTA_PROBE_BAND_ABOVE_CEILING,
+    DELTA_PROBE_BAND_CROSSOVER,
+    DELTA_PROBE_REALIZATION_BANDS,
     DELTA_PROBE_HF_SPLIT_HZ,
     DELTA_PROBE_MIN_BINS,
     DELTA_PROBE_MIN_COMMANDED_DB,
@@ -2120,3 +2123,131 @@ def test_to_dict_carries_the_direction_evidence_the_deferral_rests_on():
     assert payload["direction"]["seam_rollback_deferral"] == (
         SEAM_DEFERRED_QUIETER_THAN_COMMANDED
     )
+
+
+# --------------------------------------------------------------------------- #
+# #2649 — band-resolved realization, and the mic-trust ceiling
+# --------------------------------------------------------------------------- #
+
+
+def _shortfall_manufactured_above_the_ceiling() -> tuple[np.ndarray, np.ndarray]:
+    """The 2026-08-16 shape: clean in the trusted band, a hole above it.
+
+    That round's pooled realization read 0.664 while the trusted HF had
+    realized 96-101% of commanded — ~90% of the squared error came from a
+    -3.04 dB hole ABOVE the mic-trust ceiling, where the fit envelope is
+    exactly zero and so nothing was ever commanded.
+    """
+    commanded = np.where(
+        (_WIDE_GRID_HZ >= 1_000.0) & (_WIDE_GRID_HZ <= 6_000.0), 6.0, 0.0
+    )
+    realized = commanded.copy()
+    above = _WIDE_GRID_HZ > _TRUSTED_CEILING_HZ
+    commanded = np.where(above, 4.0, commanded)
+    realized = np.where(above, 4.0 - 3.04, realized)
+    return realized, commanded
+
+
+def test_above_ceiling_bins_cannot_move_the_verdict():
+    """The mic-trust ceiling excludes them from grading, and the verdict flips.
+
+    The control below is the same curves with no ceiling supplied: they roll
+    back. **The fitter may not command above the ceiling; the probe may not
+    grade there** — so with the ceiling in hand the same measurement is a pass.
+    """
+    realized, commanded = _shortfall_manufactured_above_the_ceiling()
+    capped = classify_delta_probe(
+        _WIDE_GRID_HZ, realized, commanded,
+        band_hz=(_LIVE_TRUSTED_FLOOR_HZ, float(_WIDE_GRID_HZ[-1])),
+        trust_ceiling_hz=_TRUSTED_CEILING_HZ,
+    )
+    assert capped.verdict == VERDICT_MATCHED
+    assert capped.rollback is False
+    assert capped.graded_band_hz is not None
+    assert capped.graded_band_hz[1] == pytest.approx(_TRUSTED_CEILING_HZ)
+
+
+def test_the_mutation_control_without_a_ceiling_still_rolls_back():
+    """Same curves, no ceiling: the above-ceiling hole reaches the verdict.
+
+    Without this the test above would pass on a probe that had simply stopped
+    finding anything.
+    """
+    realized, commanded = _shortfall_manufactured_above_the_ceiling()
+    ungated = classify_delta_probe(
+        _WIDE_GRID_HZ, realized, commanded,
+        band_hz=(_LIVE_TRUSTED_FLOOR_HZ, float(_WIDE_GRID_HZ[-1])),
+    )
+    assert ungated.rollback is True
+    assert ungated.graded_band_hz is not None
+    assert ungated.graded_band_hz[1] > _TRUSTED_CEILING_HZ
+
+
+def test_the_above_ceiling_band_is_reported_but_never_graded():
+    """A ceiling that removes bins says so, rather than dropping them silently."""
+    realized, commanded = _shortfall_manufactured_above_the_ceiling()
+    probe = classify_delta_probe(
+        _WIDE_GRID_HZ, realized, commanded,
+        band_hz=(_LIVE_TRUSTED_FLOOR_HZ, float(_WIDE_GRID_HZ[-1])),
+        trust_ceiling_hz=_TRUSTED_CEILING_HZ,
+    )
+    bands = probe.band_realization
+    assert set(bands) == set(DELTA_PROBE_REALIZATION_BANDS)
+    assert bands[DELTA_PROBE_BAND_ABOVE_CEILING]["graded"] is False
+    assert bands[DELTA_PROBE_BAND_ABOVE_CEILING]["n_bins"] > 0
+    assert bands[DELTA_PROBE_BAND_CROSSOVER]["graded"] is True
+    # The crossover band realized what it was told; the pooled slope agrees
+    # once the untrusted bins are out of it.
+    assert bands[DELTA_PROBE_BAND_CROSSOVER]["ratio"] == pytest.approx(
+        1.0, abs=0.05
+    )
+
+
+def test_the_realization_block_carries_the_trusted_band_provenance():
+    """The keys a receipt banks: per-band ratios, the graded band, both bounds."""
+    realized, commanded = _shortfall_manufactured_above_the_ceiling()
+    payload = classify_delta_probe(
+        _WIDE_GRID_HZ, realized, commanded,
+        band_hz=(_LIVE_TRUSTED_FLOOR_HZ, float(_WIDE_GRID_HZ[-1])),
+        trust_ceiling_hz=_TRUSTED_CEILING_HZ,
+    ).to_dict()["realization"]
+
+    assert set(payload) == {
+        "pooled", "bands", "graded_band_hz", "trusted_floor_hz",
+        "trust_ceiling_hz",
+    }
+    assert set(payload["bands"]) == set(DELTA_PROBE_REALIZATION_BANDS)
+    assert set(payload["bands"][DELTA_PROBE_BAND_CROSSOVER]) == {
+        "band_hz", "n_bins", "ratio", "graded",
+    }
+    assert payload["trusted_floor_hz"] == pytest.approx(_LIVE_TRUSTED_FLOOR_HZ)
+    assert payload["trust_ceiling_hz"] == pytest.approx(_TRUSTED_CEILING_HZ)
+    assert payload["graded_band_hz"][1] == pytest.approx(_TRUSTED_CEILING_HZ)
+
+
+def test_a_shortfall_confined_to_one_band_is_a_shape_error_not_a_level_one():
+    """``level_dependent_shortfall`` needs EVERY graded band to fall short.
+
+    A driver that fails to deliver level fails everywhere it was asked. A miss
+    confined to one band is a shape error, which is what ``model_error`` means
+    — and this is strictly the narrower direction for a verdict whose
+    consequence is restoring the household's previous sound.
+    """
+    grid = _WIDE_GRID_HZ
+    commanded = np.where(grid >= 500.0, 6.0, 0.0)
+    realized = np.where(grid >= DELTA_PROBE_HF_SPLIT_HZ, 6.0 * 0.4, commanded)
+    probe = classify_delta_probe(
+        grid, realized, commanded, band_hz=(500.0, _TRUSTED_CEILING_HZ),
+    )
+    assert probe.verdict != VERDICT_LEVEL_DEPENDENT_SHORTFALL
+
+
+def test_a_proportional_shortfall_across_every_graded_band_still_fires():
+    """The control for the test above: uniform undershoot is still a shortfall."""
+    grid = _WIDE_GRID_HZ
+    commanded = np.where(grid >= 500.0, 6.0, 0.0)
+    realized = commanded * 0.4
+    probe = classify_delta_probe(
+        grid, realized, commanded, band_hz=(500.0, _TRUSTED_CEILING_HZ),
+    )
+    assert probe.verdict == VERDICT_LEVEL_DEPENDENT_SHORTFALL
