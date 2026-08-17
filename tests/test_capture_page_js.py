@@ -330,6 +330,76 @@ def test_the_digest_covers_the_shared_module_the_build_copies_in():
     assert 'cp "${SHARED}" "${DIST}/js/measurement-audio.js"' in build_sh
 
 
+def _build_capture_page_bundle(tmp_path: Path) -> tuple[Path, subprocess.CompletedProcess]:
+    """Run the real ``build.sh`` against a throwaway copy of the two trees it reads.
+
+    Hermetic on purpose: the script hardcodes ``capture-page/dist`` and opens
+    with ``rm -rf``, so running it in the checkout would race any other test and
+    churn the developer's own bundle.
+    """
+    fake_repo = tmp_path / "repo"
+    shutil.copytree(
+        _REPO / "capture-page",
+        fake_repo / "capture-page",
+        ignore=shutil.ignore_patterns("dist"),
+    )
+    shared = fake_repo / "deploy/assets/shared/js/measurement-audio.js"
+    shared.parent.mkdir(parents=True)
+    shutil.copy2(_REPO / "deploy/assets/shared/js/measurement-audio.js", shared)
+    proc = subprocess.run(
+        ["bash", str(fake_repo / "capture-page" / "build.sh")],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    return fake_repo / "capture-page" / "dist", proc
+
+
+def test_the_build_actually_emits_every_file_the_bundle_publishes(tmp_path):
+    """#1961: the vendoring step is checked against the ARTIFACT, not the source.
+
+    The sibling above greps ``build.sh`` for the ``cp`` line, which cannot see
+    a build that stops producing the file for any other reason — a moved
+    ``DIST``, an ``rm -rf`` that lands after the copy, a rename of the shared
+    asset. CI only ever ran ``bash -n`` and ``shellcheck`` over this script, so
+    nothing executed it at all. The failure mode is a 404 on the phone capture
+    page, which is loud but only after a deploy.
+    """
+    dist, proc = _build_capture_page_bundle(tmp_path)
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert (dist / "index.html").is_file()
+    assert (dist / "version.json").is_file()
+    for name, source in _published_capture_page_js():
+        published = dist / "js" / name
+        assert published.is_file(), f"build.sh did not publish js/{name}"
+        assert published.read_bytes() == source.read_bytes(), (
+            f"js/{name} in the bundle differs from {source}"
+        )
+
+
+def test_the_build_refuses_rather_than_publishing_without_the_shared_helper(tmp_path):
+    """``build.sh`` promises an error when the canonical helper is missing.
+
+    Pinned because the alternative — publishing a bundle whose page imports a
+    file that is not there — is exactly the 404 this guard exists to prevent.
+    """
+    dist, _ = _build_capture_page_bundle(tmp_path)
+    shutil.rmtree(dist)
+    (dist.parent.parent / "deploy/assets/shared/js/measurement-audio.js").unlink()
+
+    proc = subprocess.run(
+        ["bash", str(dist.parent / "build.sh")],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "canonical measurement-audio.js not found" in proc.stderr
+    assert not dist.exists(), "a refused build must not leave a partial bundle"
+
+
 # The published state of capture-page/js/**, paired with the build stamp it
 # ships under. See the test below for why a digest rather than a rule.
 _CAPTURE_PAGE_JS_DIGEST = (
