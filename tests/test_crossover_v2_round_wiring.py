@@ -2876,6 +2876,100 @@ def test_a_round_with_no_cloud_banks_no_residuals_rather_than_empty_ones():
     assert banked[0]["round_measurements"] == {}
 
 
+# --------------------------------------------------------------------------- #
+# #2662 G5 — the opaque maps get an enumerated key set
+# --------------------------------------------------------------------------- #
+
+#: Every key the round's three ``Mapping[str, Any]`` receipt fields may carry,
+#: enumerated at their writers: ``round_axes`` from ``RoundEvaluation.axes``,
+#: and the other two from ``_write_round_receipt``/``_round_measurements`` in
+#: :mod:`~jasper.active_speaker.crossover_v2.coordinator`.
+RECEIPT_MAP_KEYS = {
+    "round_axes": {"trust", "safety", "quality", "headroom"},
+    "evidence_identities": {
+        "session_id",
+        "tier",
+        "entry_baseline_artifact",
+        "commanded_delta_present",
+        "candidate_fingerprint",
+    },
+    # Both optional; the empty and single-key cases are pinned above. This is
+    # the widest the map gets.
+    "round_measurements": {"realization", "position_residuals"},
+}
+
+_KEY_DRIFT_REMEDY = (
+    "The receipt's opaque maps are enumerated because seven of RoundReceipt's "
+    "fifteen fields are Mapping[str, Any], so a new inner key nests with no "
+    "schema behind it. Adding one is fine — say so here, and bump "
+    "contracts.SCHEMA_VERSION in the same diff."
+)
+
+
+def _key_drift(actual, expected):
+    """``(added, missing)`` for one mapping against its enumerated key set."""
+
+    return set(actual) - set(expected), set(expected) - set(actual)
+
+
+def _widest_receipt():
+    """One banked receipt with BOTH optional instruments reporting."""
+
+    probe = SimpleNamespace(
+        verdict="matched", reason="",
+        to_dict=lambda: {"verdict": "matched", "realization": {"pooled": 0.664}},
+    )
+    banked = []
+    _direct_round(
+        publish=lambda r: banked.append(r) or "art",
+        delta_probe=probe,
+        position_residuals=({"position_id": "p0", "role": "onax", "rms_db": 0.4},),
+    )
+    return banked[0]
+
+
+def test_the_receipt_key_guard_sees_a_planted_key(monkeypatch):
+    """The key-set guard's own positive control, planted through the REAL path.
+
+    Set arithmetic on a hand-built dict would prove only that ``-`` works. This
+    plants the key where one would actually arrive — in the writer — and reads
+    it back off a banked receipt, so it also proves the drive below reaches
+    that writer at all. A guard whose ``_direct_round`` stopped producing
+    ``round_measurements`` would otherwise report an empty diff and read as
+    compliance.
+    """
+    real = coordinator._round_measurements
+    monkeypatch.setattr(
+        coordinator,
+        "_round_measurements",
+        lambda evidence: {**real(evidence), "smuggled_in": 1},
+    )
+
+    added, missing = _key_drift(
+        _widest_receipt()["round_measurements"],
+        RECEIPT_MAP_KEYS["round_measurements"],
+    )
+
+    assert added == {"smuggled_in"}
+    assert missing == set()
+
+
+def test_the_receipts_opaque_maps_carry_only_their_enumerated_keys():
+    """#2662 G5: accretion into the three opaque maps becomes a real diff.
+
+    ``SCHEMA_VERSION`` sat at ``1`` through three field additions in one week
+    and is stamped into every ``to_dict`` payload, so a reader cannot tell two
+    shapes apart by it. That is not fixed by bumping it once; it is fixed by
+    something failing when the shape moves, which is this.
+    """
+    receipt = _widest_receipt()
+
+    for field, expected in RECEIPT_MAP_KEYS.items():
+        added, missing = _key_drift(receipt[field], expected)
+        assert not added, f"{field} grew {sorted(added)}. {_KEY_DRIFT_REMEDY}"
+        assert not missing, f"{field} lost {sorted(missing)}. {_KEY_DRIFT_REMEDY}"
+
+
 def test_the_trusted_floor_rides_the_identity_and_reads_back(monkeypatch):
     """#2609 SF5's round trip: the frame travels with the objectives.
 
