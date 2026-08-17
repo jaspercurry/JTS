@@ -5,9 +5,11 @@
 """Driver-aware protection and closed-loop level policy.
 
 This module is intentionally deterministic and side-effect free. It decides
-whether a commissioning tone may be considered for a driver role/style, and
-how a mic observation should move the separate commissioning test level. It
-does not play audio, write CamillaDSP state, or persist level changes.
+whether a commissioning tone may be considered for a driver role/style, how a
+mic observation should move the separate commissioning test level, and — since
+the 2026-08-17 ruling — what a driver's LOW LIMIT is and which fields derive
+from it. It does not play audio, write CamillaDSP state, or persist level
+changes.
 """
 
 from __future__ import annotations
@@ -38,6 +40,13 @@ HIGH_FREQUENCY_ROLES = frozenset({"tweeter"})
 SUPPORTED_AUDIBLE_ROLES = LOW_FREQUENCY_ROLES | HIGH_FREQUENCY_ROLES
 
 _UNKNOWN_HF_STYLE = "unknown_high_frequency"
+# Per-style high-pass figures. Since the 2026-08-17 ruling (decisions 8-9,
+# issue #2603) this table is NOT a veto over sourced manufacturer data: a
+# published minimum recommended crossover wins outright, including below the
+# figure here. Its two remaining jobs are (1) the DEFAULT answer when a
+# manufacturer publishes nothing, and (2) the anchor for the plausibility band
+# that refuses a declared low limit as garbage -- see
+# ``resolve_driver_low_limit`` and ``driver_low_limit_plausibility_band_hz``.
 _STYLE_HIGH_PASS_HZ = {
     "compression_driver": 2000.0,
     "horn_compression_driver": 2000.0,
@@ -283,6 +292,321 @@ def format_protection_hz(value: float) -> str:
     """
 
     return f"{float(value):g} Hz"
+
+
+# --- A driver's low limit: one declared owner, every consumer derives -------
+#
+# Owner ruling, 2026-08-17 (docs/active-speaker-tuning-layers-design.md
+# decisions 8 and 9; issue #2603). A driver's bottom allowed frequency IS the
+# manufacturer's minimum recommended crossover frequency, carrying whatever
+# slope condition the manufacturer attaches to it. It is entered ONCE, at
+# component entry, as ``recommended_highpass_hz`` plus its optional
+# ``recommended_highpass_slope_db_per_octave``. That pair is the OWNER.
+#
+# Everything the same fact used to be co-declared as is DERIVED here, by named
+# code, with the rationale carried on the result rather than left implicit:
+#
+#   required_protection_filters[highpass].cutoff_hz  = the owner's frequency
+#   required_protection_filters[highpass].minimum_slope_db_per_octave
+#                                                    = the owner's slope raised
+#                                                      to the commissioning
+#                                                      floor below
+#   hard_excitation_band_hz[0]                       = the owner's frequency
+#   measurement_band_hz[0]                           = max(published, owner)
+#   do_not_test_below_hz                             = the owner's frequency
+#
+# ``measurement_band_hz`` itself stays a SEPARATE published fact -- the
+# datasheet's frequency-response range -- and only has its lower edge clamped
+# up into the allowed band, because an analysis window cannot honestly extend
+# below the frequency the driver may not be excited under. For the B&C DE250
+# the published range is 1.0-18.0 kHz while the published minimum crossover is
+# 1.6 kHz, so the stored window is [1600, 18000] and the two facts stay
+# distinguishable.
+#
+# The slope split is decision 9 implemented literally: the DECLARATION carries
+# what the manufacturer printed ("12 dB/oct. or higher slope high-pass filter"
+# for the DE250), and the commissioning safety margin is computed HERE, named,
+# rather than smuggled into a datasheet field as though the manufacturer had
+# published it.
+
+#: Commissioning floor on a derived protective high-pass slope, dB/octave. The
+#: manufacturer's published minimum is the FLOOR of what the driver tolerates;
+#: this build has always commissioned at 24 dB/octave or steeper (the research
+#: ask said so, and ``crossover_preview`` warns below it), so the derived
+#: REQUIREMENT is ``max(published, this)``. Raising a published 12 dB/oct to 24
+#: cannot hurt the driver -- a steeper filter passes strictly less energy below
+#: the corner -- and it keeps every already-emitted graph legal.
+PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE = 24.0
+
+#: How far a DECLARED low limit may sit from its style's default before it is
+#: refused as garbage rather than believed. The style table is no longer a veto
+#: over sourced manufacturer data (a published 1.6 kHz for a compression driver
+#: must win over the 2 kHz class default); it is a plausibility anchor. A
+#: factor of 4 admits every real datasheet the field publishes -- large-format
+#: compression drivers publish recommended crossovers as low as 500-800 Hz and
+#: small ones as high as 8 kHz, both inside the compression-driver band -- while
+#: still catching a transposed digit or a woofer's number pasted into a tweeter
+#: row. One factor rather than a per-style band on purpose: the anchor is
+#: already per-style, and a second table would be a second thing to keep in
+#: sync (including its JS mirror) for a bound nothing has earned.
+LOW_LIMIT_PLAUSIBILITY_FACTOR = 4.0
+
+LOW_LIMIT_DECLARED = "declared"
+LOW_LIMIT_LEGACY_PROTECTION_FILTER = "legacy_protection_filter"
+LOW_LIMIT_STYLE_DEFAULT = "style_default"
+
+
+@dataclass(frozen=True)
+class DriverLowLimit:
+    """One driver's bottom allowed frequency, and where the number came from.
+
+    ``frequency_hz`` is the low limit itself. ``slope_db_per_octave`` is the
+    manufacturer's published slope CONDITION and is ``None`` when the maker
+    prints none (BMS's 4590 is a real example) -- it is deliberately NOT
+    defaulted here, because a code default wearing a datasheet's clothes is the
+    exact failure decision 9 was written against. The derived commissioning
+    requirement is :attr:`protection_slope_db_per_octave`.
+    """
+
+    frequency_hz: float
+    slope_db_per_octave: float | None
+    provenance: str
+    rationale: str
+
+    @property
+    def protection_slope_db_per_octave(self) -> float:
+        """The slope the emitted protective high-pass must meet, dB/octave."""
+
+        published = self.slope_db_per_octave
+        return max(
+            float(published) if published is not None else 0.0,
+            PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "frequency_hz": self.frequency_hz,
+            "slope_db_per_octave": self.slope_db_per_octave,
+            "protection_slope_db_per_octave": self.protection_slope_db_per_octave,
+            "provenance": self.provenance,
+            "rationale": self.rationale,
+        }
+
+
+def _declared_highpass_filter(driver: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    filters = driver.get("required_protection_filters")
+    if not isinstance(filters, list):
+        return None
+    best: Mapping[str, Any] | None = None
+    for item in filters:
+        if not isinstance(item, Mapping):
+            continue
+        if str(item.get("kind") or "").strip().lower() != "highpass":
+            continue
+        cutoff = _finite_float(item.get("cutoff_hz"))
+        if cutoff is None or cutoff <= 0:
+            continue
+        if best is None or cutoff > float(best["cutoff_hz"]):
+            best = item
+    return best
+
+
+def driver_low_limit_plausibility_band_hz(
+    role: Any,
+    *,
+    driver_style: Any = None,
+) -> tuple[float, float] | None:
+    """The band a declared low limit must land inside, or ``None`` if no anchor.
+
+    Anchored on the style default. Roles with no style entry (every
+    low-frequency role) have no anchor and therefore no plausibility bound --
+    inventing one we cannot justify is the nanny behaviour the 2026-08-14
+    ruling excludes.
+    """
+
+    anchor = driver_protection_profile(role, driver_style=driver_style).min_highpass_hz
+    if anchor is None:
+        return None
+    return (
+        anchor / LOW_LIMIT_PLAUSIBILITY_FACTOR,
+        anchor * LOW_LIMIT_PLAUSIBILITY_FACTOR,
+    )
+
+
+def driver_low_limit_plausible(
+    frequency_hz: float,
+    *,
+    role: Any,
+    driver_style: Any = None,
+) -> bool:
+    """Whether a declared low limit is believable for this driver style.
+
+    Inclusive at both edges. A garbage catcher, never a judgement about whether
+    a published number is wise: what actually protects the driver at a low
+    declared figure is the derived protective high-pass sitting AT that
+    frequency (proved in the emitted graph by ``graph_safety``), the absolute
+    corner floor that module owns, the commissioning high-pass at a multiple of
+    the crossover corner, the ``path_safety`` load gate, and the excitation
+    level ceilings -- none of which this factor touches.
+    """
+
+    band = driver_low_limit_plausibility_band_hz(role, driver_style=driver_style)
+    if band is None:
+        return True
+    return band[0] <= float(frequency_hz) <= band[1]
+
+
+def resolve_driver_low_limit(
+    driver: Any,
+    *,
+    role: Any,
+    driver_style: Any = None,
+) -> DriverLowLimit | None:
+    """Resolve one driver's low limit from its declaration.
+
+    Order, and why:
+
+    1. The OWNER (``recommended_highpass_hz``). A sourced manufacturer figure
+       wins outright, including below the style default -- that is the whole
+       point of the 2026-08-17 ruling.
+    2. A stored ``required_protection_filters`` high-pass, when no owner is
+       declared. This is the backwards-compatible read for drafts and profiles
+       written before the owner existed; it is labelled as inferred, never as a
+       datasheet fact, and it resolves to the STRICTER of the two numbers a
+       legacy artifact carries, so an already-deployed box never loosens.
+    3. The style default, when the manufacturer publishes nothing at all.
+       ``absent`` is a legitimate research answer (decision 9), so this path is
+       ordinary rather than exceptional -- but it is labelled as a code
+       default, never as published data, and see
+       :func:`apply_driver_low_limit` for the one thing it may not do.
+
+    ``None`` means the driver has no low limit at all: no owner, no stored
+    high-pass requirement, and no style anchor (every low-frequency role).
+    Consumers must read that as "unchanged behaviour", never as a floor of
+    zero.
+    """
+
+    if not isinstance(driver, Mapping):
+        return None
+    declared = _finite_float(driver.get("recommended_highpass_hz"))
+    if declared is not None and declared > 0:
+        return DriverLowLimit(
+            frequency_hz=declared,
+            slope_db_per_octave=_finite_float(
+                driver.get("recommended_highpass_slope_db_per_octave")
+            ),
+            provenance=LOW_LIMIT_DECLARED,
+            rationale=(
+                "the manufacturer's declared minimum recommended crossover "
+                "frequency"
+            ),
+        )
+    legacy = _declared_highpass_filter(driver)
+    if legacy is not None:
+        return DriverLowLimit(
+            frequency_hz=float(legacy["cutoff_hz"]),
+            slope_db_per_octave=_finite_float(
+                legacy.get("minimum_slope_db_per_octave")
+            ),
+            provenance=LOW_LIMIT_LEGACY_PROTECTION_FILTER,
+            rationale=(
+                "inferred from a stored protective high-pass requirement; no "
+                "minimum recommended crossover frequency is declared"
+            ),
+        )
+    anchor = driver_protection_profile(role, driver_style=driver_style).min_highpass_hz
+    if anchor is None:
+        return None
+    return DriverLowLimit(
+        frequency_hz=anchor,
+        slope_db_per_octave=None,
+        provenance=LOW_LIMIT_STYLE_DEFAULT,
+        rationale=(
+            "code default for this driver style; the manufacturer publishes "
+            "no minimum recommended crossover frequency"
+        ),
+    )
+
+
+def _band_pair(value: Any) -> tuple[float, float] | None:
+    if not isinstance(value, list) or len(value) != 2:
+        return None
+    low = _finite_float(value[0])
+    high = _finite_float(value[1])
+    if low is None or high is None:
+        return None
+    return low, high
+
+
+def apply_driver_low_limit(
+    driver: Any,
+    *,
+    role: Any,
+    driver_style: Any = None,
+) -> dict[str, Any]:
+    """Return ``driver`` with every low-limit-derived field recomputed.
+
+    The projection half of the one-owner rule: the caller supplies a driver
+    declaration, this returns the same declaration with the derived fields
+    stamped from :func:`resolve_driver_low_limit`. Idempotent -- stamping an
+    already-stamped payload changes nothing, which is what lets the safety
+    profile's shape validator re-derive and refuse a hand-edited artifact whose
+    derived fields no longer match its own declared owner.
+
+    A band whose upper edge sits at or below the low limit is left ALONE rather
+    than stamped into an inverted range: that declaration is broken, and the
+    existing ``<role>:highpass_cutoff_outside_hard_band`` /
+    ``measurement_band_outside_hard_band`` vocabulary is what names it.
+
+    **A code default may UNBLOCK; it may never REFUSE.** A ``style_default``
+    low limit is deliberately NOT stamped. The stamped
+    ``required_protection_filters`` high-pass is what
+    :func:`declared_protection_highpass_floor_hz` reads into the preset, the
+    derived protection clamp, and the ``path_safety`` load gate -- so inventing
+    one where the operator declared nothing would refuse a design the household
+    chose, on a number this module made up. That is exactly the nanny behaviour
+    the 2026-08-14 ruling excludes (and the #2491 regression it would cause is
+    pinned), which is why the style figure stays what it is: the plausibility
+    anchor and the research prompt's worked number.
+    """
+
+    if not isinstance(driver, Mapping):
+        return {}
+    out = dict(driver)
+    limit = resolve_driver_low_limit(driver, role=role, driver_style=driver_style)
+    if limit is None or limit.provenance == LOW_LIMIT_STYLE_DEFAULT:
+        return out
+    frequency = limit.frequency_hz
+    out["recommended_highpass_hz"] = frequency
+    if limit.slope_db_per_octave is None:
+        out.pop("recommended_highpass_slope_db_per_octave", None)
+    else:
+        out["recommended_highpass_slope_db_per_octave"] = limit.slope_db_per_octave
+    out["do_not_test_below_hz"] = frequency
+    filters = [
+        dict(item)
+        for item in (driver.get("required_protection_filters") or [])
+        if isinstance(item, Mapping)
+        and str(item.get("kind") or "").strip().lower() != "highpass"
+    ]
+    filters.append(
+        {
+            "kind": "highpass",
+            "cutoff_hz": frequency,
+            "minimum_slope_db_per_octave": limit.protection_slope_db_per_octave,
+            "family_or_equivalent": "equivalent_or_steeper",
+        }
+    )
+    out["required_protection_filters"] = sorted(
+        filters, key=lambda item: str(item["kind"])
+    )
+    hard = _band_pair(driver.get("hard_excitation_band_hz"))
+    if hard is not None and frequency < hard[1]:
+        out["hard_excitation_band_hz"] = [frequency, hard[1]]
+    measurement = _band_pair(driver.get("measurement_band_hz"))
+    if measurement is not None and frequency < measurement[1]:
+        out["measurement_band_hz"] = [max(measurement[0], frequency), measurement[1]]
+    return out
 
 
 def _highpass_satisfied(
