@@ -213,7 +213,24 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # enumerated" stay distinguishable. ``BaseException`` is still not caught.
 # The tokenized B-L-E-0-0-1 count fits the existing ceiling (618 -> 619), so
 # only the total moves: 808 -> 809.
-MAX_NOQA_MARKERS = 809
+#
+# 809 -> 810 (#2285 P7, 2026-08-17): ONE availability wrap in
+# jasper/fanin/converge.py::_reemit_graph_at_ring, and the argument is made here
+# rather than absorbed by the number. That frame invokes an ENTIRE CLI
+# (jasper.cli.active_speaker.main). The CLI's own converter turns exactly three
+# classes into parser.exit -- ActiveSpeakerConfigError, OutputTopologyError,
+# OSError -- so every other class its whole tree can raise arrives at the caller
+# live, and the failure set of a CLI is not enumerable the way a module's own
+# reads are. The convergence step promises to cost a box its CONVERGENCE and
+# never its RECONCILE; a narrowed catch here was measured to break that promise
+# on reachable shapes (a mid-deploy ImportError -- this pass runs while
+# install.sh rsyncs Python under it, and both modules lazy-import -- and a
+# type-confused applied record). Same shape and same reason as
+# coupling_reconcile.py's camilla-reconcile wrap. The step's OTHER two catches
+# stay narrow: they guard that module's own reads, whose raise set IS derived.
+# BaseException is still not caught, and the B-L-E-0-0-1 count (615) sits under
+# its own unchanged ceiling, so only the total moves.
+MAX_NOQA_MARKERS = 810
 MAX_BLE001_MARKERS = 619
 # (Total reflects two independent +1 entries dated 2026-06-21: the AirPlay
 # latency-fit /state snapshot and the barge-in truncate wire-send guard.)

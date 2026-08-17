@@ -238,8 +238,26 @@ def _reemit_graph_at_ring() -> tuple[bool, str]:
     argv = ["baseline-reemit", "--endpoint", "ring", "--statefile", statefile]
     try:
         rc = int(cli.main(argv))
+    # SystemExit FIRST. It is not an ``Exception`` subclass so the order cannot
+    # change what is caught, but reading it after a bare ``Exception`` invites
+    # the next editor to "tidy" the pair in the direction that would.
     except SystemExit as exc:  # the CLI's own parser.exit on a config error
         rc = int(exc.code or 0)
+    except Exception as exc:  # noqa: BLE001 - availability wrap around an ENTIRE CLI
+        # BREADTH IS THE POINT HERE, and it is the one frame in this module where
+        # that is true. main()'s own converter turns exactly THREE classes into
+        # parser.exit — ActiveSpeakerConfigError, OutputTopologyError, OSError —
+        # so everything else the CLI's whole tree can raise (KeyError, TypeError,
+        # AttributeError, ImportError, RuntimeError, ...) arrives here live. Past
+        # this frame the box loses its RECONCILE, not merely its convergence,
+        # which is the contract this step exists to keep. The failure set of an
+        # entire CLI cannot be enumerated, and a narrowed catch here was measured
+        # to abort the unattended pass on reachable shapes: a mid-deploy
+        # ImportError (this pass runs WHILE install.sh rsyncs Python under it,
+        # and both modules lazy-import) and a type-confused applied record.
+        # The two NARROW catches elsewhere in this module stay narrow — they
+        # guard this module's own reads, whose raise set really is derived.
+        return False, f"baseline-reemit raised: {type(exc).__name__}: {exc}"
     if rc == 0:
         return True, ""
     return False, f"baseline-reemit refused (rc={rc}); nothing was written"

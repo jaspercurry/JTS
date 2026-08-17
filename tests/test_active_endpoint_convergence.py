@@ -35,6 +35,11 @@ import jasper.cli.output_topology_reset  # noqa: F401
 import jasper.correction.runtime_safety  # noqa: F401
 from jasper.fanin import converge
 
+#: The REAL re-emit, captured before any fixture replaces the attribute.
+#: ``_Box`` stubs ``converge._reemit_graph_at_ring``, so a test that wants the
+#: genuine article back cannot read it off the module — by then it is the stub.
+_REAL_REEMIT = converge._reemit_graph_at_ring
+
 
 class _Box:
     """A roleful box, admitted by every gate, graph not yet at the ring."""
@@ -383,3 +388,67 @@ def test_a_convergence_that_raises_costs_the_box_its_convergence_not_its_reconci
     assert rc == 0
     assert reached == ["pass ran"], "the reconcile must still run"
     assert any("converge_raised" in r.getMessage() for r in caplog.records)
+
+
+def test_a_non_derived_raise_inside_the_cli_costs_only_the_convergence(
+    box, monkeypatch
+):
+    """THE AVAILABILITY WRAP, and why it is broad where its neighbours are narrow.
+
+    ``cli.main`` converts exactly THREE classes into ``parser.exit``:
+    ``ActiveSpeakerConfigError``, ``OutputTopologyError``, ``OSError``. Every
+    other class the CLI's whole tree can raise arrives at this caller live —
+    and a narrowed catch here was measured to abort the entire unattended pass
+    on reachable shapes: a mid-deploy ``ImportError`` (this pass runs WHILE
+    install.sh rsyncs Python under it, and both modules lazy-import) and a
+    type-confused applied record. That is the box losing its RECONCILE, not
+    merely its convergence, which is the contract this step exists to keep.
+
+    INJECTED AT ``_cmd_baseline_reemit``, NOT at ``cli.main``, and the
+    distinction is the whole test: patching ``cli.main`` would raise OUTSIDE
+    the frame whose converter is being characterised, so the pin would pass
+    without ever exercising the escape path.
+
+    Asserts on the PASS, not only on the step.
+    """
+    import types
+
+    from jasper.fanin import converge as cv
+    from jasper.fanin import coupling_reconcile as cr
+
+    def _boom(*a, **k):
+        raise TypeError("a type-confused applied record")
+
+    monkeypatch.setattr("jasper.cli.active_speaker._cmd_baseline_reemit", _boom)
+
+    # 1. The step itself: refuses, typed, and moves nothing.
+    ok, detail = _REAL_REEMIT()
+    assert ok is False
+    assert "baseline-reemit raised: TypeError" in detail
+    assert "type-confused" in detail
+
+    # 2. The step in context: the REAL re-emit runs under the real convergence,
+    #    which refuses rather than raising.
+    monkeypatch.setattr(cv, "_reemit_graph_at_ring", _REAL_REEMIT)
+    assert box.run() == "reemit_refused"
+    assert box.kicks == [], "a refused re-emit must not kick the reconciler"
+
+    # 3. The whole pass: its non-convergence duties still run.
+    monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
+    reached: list[str] = []
+    monkeypatch.setattr(
+        cr,
+        "reconcile_auto",
+        lambda **k: reached.append("pass ran")
+        or types.SimpleNamespace(
+            owned=True, coupling="loopback", gadget_present=False,
+            usb_intent_enabled=False, combo_armed=False, usb_combo_changed=False,
+            restarted_fanin_for_combo=False, ok=True, reason="", detail="",
+        ),
+    )
+    args = types.SimpleNamespace(
+        auto=True, no_apply=False, coupling=None, reason="test"
+    )
+
+    assert cr._run_entry_verb(args) == 0
+    assert reached == ["pass ran"], "the reconcile must still run"
