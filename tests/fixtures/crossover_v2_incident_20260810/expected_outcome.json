@@ -1,5 +1,6 @@
 {
   "_provenance": {
+    "anchor_replay_note": "anchor_replay re-derived 2026-08-17 for #2609: the anchor is raw trim + correction_giveback_db, shared-shift normalized non-positive (docs/active-speaker-tuning-layers-design.md, 'Anchored give-back (the trim)'). The prior values carried PR-L5's level_frame_offset_db term (woofer +1.5644, tweeter 0.0), which was the two-voter arbitration's limb and is deleted; the tweeter therefore moves -6.713 -> -5.149.",
     "bundle_dir_name": "jts3-incident-20260810-issue2291",
     "candidate_fingerprint": "3df7a4da7f33f5dfaa55866334cfaf7ebdb32bfa76dd0405f41fcc8a79d0941d",
     "derived_by": "scripts/derive-crossover-incident-fixture.py",
@@ -20,16 +21,16 @@
     "stage2_relay_session_id": "cap_VlE2sNj8v5ego--UqbNDUQ"
   },
   "anchor_replay": {
-    "anchor_drift_db": 6.299962355202764,
+    "anchor_drift_db": 7.86435074107762,
     "anchored_trim_db": {
-      "tweeter": -6.713017008584265,
+      "tweeter": -5.148628622709409,
       "woofer": 0.0
     },
     "derived": true,
-    "normalize_shift_db": 2.8997471111579145,
+    "normalize_shift_db": 1.3353587252830579,
     "unnormalized_anchor_db": {
-      "tweeter": -3.81326989742635,
-      "woofer": 2.8997471111579145
+      "tweeter": -3.813269897426351,
+      "woofer": 1.3353587252830579
     }
   },
   "applied": {

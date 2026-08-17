@@ -293,32 +293,29 @@ def promote_carve_outs(
 #:
 #: Three claims, each true at the moment of minting and no more:
 #:
-#: * two measurements of the same thing disagreed;
-#: * a further check found the tuning itself lands the two ranges level;
-#: * the disagreement is recorded.
+#: * two cross-checks disagreed with the measurement the tuning was set from;
+#: * the tuning nonetheless used that measurement, so nothing was guessed at;
+#: * re-running the room pass is worth the household's time.
 #:
-#: It says "offered", not "applied" or "kept" — the candidate is a PROPOSAL
-#: the review screen shows, and the apply is a separate household action
-#: (two-stage split, PR-T3). Copy claiming the tuning was applied would be
-#: false for every session that is refused, retaken, or simply never
-#: confirmed. It names no part of the speaker: §3.1's hardware-noun
+#: **The second claim is the one the single-datum-owner migration made true.**
+#: The copy this replaced said a further check "found the tuning itself lands
+#: the two ranges level, so it was offered rather than refused" — which was an
+#: honest description of a mechanism that no longer exists, and would now be
+#: false twice over: no check adjudicates the placement any more (the summed
+#: capture measures it), and a disagreement cannot refuse anything.
+#:
+#: It asks for a re-measure rather than reporting an outcome, because that is
+#: what a suspect capture earns: the datum was never discarded, so there is no
+#: repair to offer — only better evidence to collect. It names no part of the
+#: speaker: §3.1's hardware-noun
 #: prohibition is enforced by :class:`~jasper.attribution.findings.Finding`
 #: itself, so a future edit that reaches for "woofer" fails at construction
 #: rather than in front of a household.
-#:
-#: **It no longer says "independent", and that word was doing real work.** The
-#: check is ``realized_branch_level_match``, whose own docstring is explicit
-#: that it is "One estimator, not a second opinion" — the same power-band
-#: average over the same halves that set the trim, re-read on the pair about to
-#: ship. It is independent of the FIT's median and it is genuinely non-vacuous,
-#: but "an independent check" invites a household to read it as a second
-#: opinion that settled which measurement was right, and no instrument in this
-#: session did that. Household copy may be simple; it may not be false.
 LEVEL_FRAME_HOUSEHOLD_COPY = (
-    "Two measurements of how this speaker's high and low ranges balance "
-    "disagreed. A further check found the tuning itself lands the two ranges "
-    "level, so it was offered rather than refused, and the disagreement "
-    "recorded."
+    "Two cross-checks of how this speaker's high and low ranges balance "
+    "disagreed with the measurement the tuning was set from. The tuning used "
+    "the measurement, so nothing was guessed at — but this room pass is worth "
+    "re-running when you have a few minutes."
 )
 
 #: The band keys, which become ``band_hz`` rather than evidence. Named so the
@@ -333,44 +330,38 @@ def promote_level_frame_disagreement(
     session: SessionIdentity,
     cites: Iterable[EvidenceRef],
 ) -> Finding | None:
-    """Promote one banked level-frame disagreement to an M7 finding.
+    """Promote one banked estimator disagreement to an M7 finding.
 
-    The owner's 2026-07-30 ruling on #1866: when
-    ``solve_shared_level_frame``'s two estimators disagree beyond
-    ``LEVEL_FRAME_AGREEMENT_TOLERANCE_DB`` but ``realized_branch_level_match``
-    PASSES, the fit banks the disagreement as an M7-class finding and proceeds.
-    This function is the "banks it as a finding" half; the flow owns the
-    decision, and the *only* records that reach here are ones it already
-    decided to bank.
+    **What this finding now means (#2609).** The two per-driver level estimates
+    — the trim solve's overlap-band average and the fit's core-band median — no
+    longer vote on anything. They are compared to EACH OTHER as a consistency
+    check
+    (:func:`jasper.active_speaker.crossover_v2.intervention.check_level_consistency`),
+    and a record reaches here when their relative placements of the pair sit
+    further APART than
+    :data:`~jasper.active_speaker.crossover_v2.intervention.LEVEL_ESTIMATOR_TOLERANCE_DB`.
+    There is no third measurement to hunt for: nothing adjudicates between them,
+    because the pair is anchored on the raw measured trim whatever they say.
+    That is a claim about the CAPTURE, not about the tuning: the same trims
+    shipped either way, and what the household is being
+    offered is a reason to re-measure.
 
-    **One phrase from the ruling is still not repeated here, because the code
-    does not do what it says** — the flow's own gate comment derives it:
+    **What it used to mean, and why the change is a narrowing.** Under the
+    owner's 2026-07-30 ruling on #1866 this recorded that two estimators had
+    disagreed past a 3.0 dB bar, that a closed-loop realized-level check had
+    nonetheless passed, and that the session had proceeded on a placement one of
+    those two disputed estimators produced. The finding therefore had to carry
+    the whole argument for shipping past a gate. It no longer does, because
+    nothing ships past a gate here: the disagreement changes no committed
+    number. #2609's conviction comment records what the old arrangement cost —
+    a 0.326 dB miss at that bar moved a tweeter +3.79 dB hotter than its own
+    measurement asked, and the round was rolled back.
 
-    * *"the estimator the realized check corroborates"*. The realized check is
-      a closed-loop read of the pair about to ship ("One estimator, not a
-      second opinion" — its own docstring), so it grades the OUTCOME and cannot
-      referee two frames against each other. The trim solve places the anchor
-      because the other estimator is disputed, not because this check endorsed
-      it. Refereeing the two needs a third instrument that does not exist yet.
-
-    The ruling's *other* phrase, *"proceeds on the near-Fc anchor (the trim
-    solve)"*, was in the same position until #2599 and no longer is. Before it,
-    proceeding changed nothing about the trims — the trim term cancelled out of
-    the anchor, so the committed placement came from the CORE-MEDIAN frame, the
-    *disputed* estimator. A frame disputed past
-    ``LEVEL_FRAME_AGREEMENT_TOLERANCE_DB`` now does not place the anchor at all
-    (:func:`jasper.active_speaker.crossover_v2.intervention.anchor_trims`), so
-    the phrase describes the shipped mechanism.
-
-    Neither the correction nor the fix changes what is banked or when. What
-    reaches this function, and the threshold that sent it here, are the gate's
-    and are untouched.
-
-    **It re-decides nothing.** There is no threshold here, no comparison of
-    the disagreement against the tolerance, no re-reading of the realized
-    check — all three are the gate's, and duplicating any of them would be the
-    second computation of one verdict §3.1 forbids. A record that arrives is
-    promoted or is refused as malformed; there is no third answer.
+    **It re-decides nothing.** There is no threshold here, no comparison of the
+    disagreement against the tolerance, no re-reading of the realized check —
+    all three are the planner's and the gate's, and duplicating any of them
+    would be the second computation of one verdict §3.1 forbids. A record that
+    arrives is promoted or is refused as malformed; there is no third answer.
 
     **Every non-band key is evidence, by rule rather than by list.** The
     carve-out path names its evidence keys explicitly because it reads a
@@ -426,10 +417,18 @@ def promote_level_frame_disagreement(
             # a healthy speaker — a pair identical by construction reads
             # 0.910 dB apart, and ordinary woofer passband tilt adds roughly
             # 1.33 dB per dB/octave (both measured, see
-            # `LEVEL_FRAME_AGREEMENT_TOLERANCE_DB`'s own comment). A single
+            # `LEVEL_ESTIMATOR_TOLERANCE_DB`'s own comment). A single
             # session cannot separate "the drivers really sit that far apart"
             # from "these two estimators read different spans of a curve that
             # is not flat in the same way over both", so it does not claim to.
+            #
+            # `unsure` survived the single-datum-owner migration on purpose and
+            # is now MORE right, not less: the finding's claim narrowed to "this
+            # capture is worth re-taking", and a suspicion about a capture is
+            # exactly an unsure one. The raw measured trim owns the PLACEMENT,
+            # which is why no committed number is in doubt; nothing adjudicates
+            # WHY the two estimates read differently, which is what this
+            # records.
             confidence=CONFIDENCE_UNSURE,
             # `refit`, never `eq`. M7 declares both, and the split is exactly
             # plan §4's: `eq` when a driver's level is genuinely low, `refit`

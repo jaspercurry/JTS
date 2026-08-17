@@ -3087,6 +3087,32 @@ def persist_conductor_state(
         else None
     )
     prior = load_v2_state() or {}
+    # #2616: let the journey learn about a restore it could not see.
+    #
+    # ``observe_restore`` clears the durable ``applied`` in place and holds no
+    # conductor, so a LIVE session that rolled back — the delta probe's own
+    # ``rollback`` seam, or the round's adoption restore — kept ``applied``
+    # True in memory. The write below reads that stale True off the snapshot
+    # and put it straight back over the clear, which is one fact with two
+    # owners and the durable one losing.
+    #
+    # Resolved in the owner's favour rather than by special-casing the write:
+    # the durable state is the authority on whether a restore HAPPENED, the
+    # journey is the owner of the flag, so this tells the journey and then
+    # writes what it says. Scoped to the SAME session, because a prior
+    # session's restore says nothing about this one.
+    #
+    # This is not the SF1 carry-forward's inverse and does not weaken it. That
+    # guard (below) only ever sets True, protecting a stop that lands while an
+    # apply is in flight; it reads ``prior`` too, so after this correction it
+    # sees ``applied`` already False and correctly declines to fire.
+    if (
+        prior.get("applied") is False
+        and prior.get("session_id") == snap.session_id
+        and snap.applied
+    ):
+        conductor.note_restore_observed()
+        snap = conductor.snapshot()
     if hasattr(snap, "attempt_history"):
         attempts_loop_state: dict[str, Any] | None = {
             "history": [
@@ -4686,7 +4712,7 @@ def bind_findings_publisher(
     :func:`bind_evidence_publishers`' ``publish_candidate`` wrote moments
     earlier, for three reasons: it is the thing the finding is ABOUT (the
     trims committed under a frame whose estimators disagreed), it carries the
-    frame's own per-role ``level_frame_offset_db`` inside its ``linearization``
+    candidate's own per-role ``correction_giveback_db`` inside its ``linearization``
     block, and it is guaranteed to exist and to be durable at this point in the
     session — which a citation must be, since
     :func:`~jasper.attribution.storage.read_finding_set` re-hashes it on every

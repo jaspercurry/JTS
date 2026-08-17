@@ -49,11 +49,11 @@ JSON set these tests read is derived from it by
 ``scripts/derive-crossover-incident-fixture.py``, which has a ``--check`` mode.
 
 **What replays exactly, and what does not.** Every scalar the decision path
-consumes — the raw trim, both fits' give-back and level-frame offset, the
-correction filters, the ripple scan's own result, the session and candidate
-corners — is the incident's, so the anchor, the drift verdict, the outcome
-string, the commit choice and the committed pair are all computed by
-production from banked numbers and match the incident exactly.
+consumes — the raw trim, both fits' give-back, the correction filters, the
+ripple scan's own result, the session and candidate corners — is the
+incident's, so the anchor, the drift verdict, the outcome string, the commit
+choice and the committed pair are all computed by production from banked
+numbers and match the incident exactly.
 
 The per-driver measured RESPONSES do not replay, and the reason is size, not
 absence. They were never retained as arrays; re-deriving them offline from
@@ -112,6 +112,7 @@ from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import RoleBand
 from jasper.audio_measurement.program_analysis import (
+    REALIZED_LEVEL_MATCH_TOLERANCE_DB,
     ALIGNMENT_OK,
     AlignmentEstimate,
     CrossoverCandidate,
@@ -142,6 +143,19 @@ EXPECTED_OUTCOME = _fixture("expected_outcome")
 CONFIGURED_FC_HZ = SESSION_CONTEXT["configured_fc_hz"]
 SELECTED_FC_HZ = SESSION_CONTEXT["selected_fc_hz"]
 COMMITTED_DB = EXPECTED_OUTCOME["committed_attenuations_db"]
+# The anchor these numbers pin is the one design SSOT:
+# docs/active-speaker-tuning-layers-design.md, "Anchored give-back (the trim)"
+# — the committed RAW trim plus that branch's measured
+# ``correction_giveback_db``, shared-shift normalized non-positive. No third
+# term.
+#
+# Re-derived 2026-08-17 (#2609). The prior banked pair carried PR-L5's
+# ``level_frame_offset_db`` (woofer +1.5644, tweeter 0.0), which was the
+# two-voter arbitration's limb rather than an independent measured fact: it
+# substituted the shared-frame solve for the raw trim. Deleting it moves the
+# tweeter -6.713 -> -5.149 and the shift 2.900 -> 1.335. The tweeter's raw
+# measured trim here is -10.8846 — and #2609's conviction is that THAT was the
+# right number all along (the reigning tune sat at -10.214).
 ANCHORED_DB = EXPECTED_OUTCOME["anchor_replay"]["anchored_trim_db"]
 
 
@@ -154,9 +168,9 @@ def _incident_fit(role: str) -> LinearizationFit:
     """Rebuild one role's ``LinearizationFit`` from the banked candidate.
 
     ``candidate.json``'s per-role linearization block IS the serialized fit, so
-    this is deserialization, not reconstruction — the give-back and the
-    level-frame offset the anchor is built from are the fit engine's own
-    numbers from the incident, not numbers this test chose.
+    this is deserialization, not reconstruction — the give-back the anchor is
+    built from is the fit engine's own number from the incident, not a number
+    this test chose.
     """
     banked = dict(CANDIDATE_FIT["linearization"][role])
     return LinearizationFit(
@@ -186,7 +200,6 @@ def _incident_fit(role: str) -> LinearizationFit:
         measured_deficit_at_ceiling_db=banked["measured_deficit_at_ceiling_db"],
         correction_giveback_db=banked["correction_giveback_db"],
         headroom_cost_db=banked["headroom_cost_db"],
-        level_frame_offset_db=banked["level_frame_offset_db"],
         lift_requested_db=banked["lift_requested_db"],
         lift_from_boost_db=banked["lift_from_boost_db"],
         lift_from_reduced_cuts_db=banked["lift_from_reduced_cuts_db"],
@@ -633,8 +646,8 @@ def test_a_rejected_trim_is_not_the_trim_that_ships(monkeypatch, caplog):
     renamed.
 
     Everything asserted here is production's own arithmetic on banked inputs:
-    the anchor from the incident's give-back and level-frame offsets, the drift
-    against the shipped margin constant, and the commit choice.
+    the anchor from the incident's give-back, the drift against the shipped
+    margin constant, and the commit choice.
     """
     caplog.set_level("WARNING", logger="jasper.active_speaker.crossover_v2_flow")
     replay = _run_replay(monkeypatch)
@@ -687,15 +700,28 @@ def test_a_rejected_trim_is_not_the_trim_that_ships(monkeypatch, caplog):
     # the anchor here.
     #
     # That is not an argument for dropping the fallback policy, and the number
-    # above says why: the drift is 6.300 dB, so the anchor is committed under
-    # ANCHORED_COMMITTED_AFTER_SANITY_DRIFT — the rejection, not the grading —
-    # and the policy is what covers the session-corner-wild regime where the
-    # grading points the other way. Asserted rather than left implicit, because
-    # a synthetic branch pair that reproduced the OLD ordering would mean this
-    # replay had drifted from the corner it claims to be planning at.
-    assert abs(anchor["difference_db"]) < abs(scan["difference_db"]), (
-        "at the candidate's corner the anchor should level better; the "
-        "opposite ordering is the session-corner world"
+    # above says why: the drift is 7.864 dB against a 6.0 dB margin, so the
+    # anchor is committed under ANCHORED_COMMITTED_AFTER_SANITY_DRIFT — the
+    # REJECTION, not the grading — and the policy is what covers the
+    # session-corner-wild regime where the grading points the other way.
+    #
+    # The two pairs now grade to a TIE, and that is the honest pin (#2609
+    # re-derivation). With PR-L5's offset term deleted the anchor levels at
+    # 3.940 dB against the scan's 3.924 — 0.016 dB apart, where the banked
+    # arbitration numbers had the anchor clearly ahead. A strict inequality on
+    # a 0.016 dB margin pins nothing but rounding, so what is asserted is the
+    # tie plus the mechanism that actually decides: the drift policy, not the
+    # grading. Both pairs miss the 3.0 dB realized-level tolerance, which is
+    # why this session refuses either way — the fail-closed direction, and the
+    # thing this replay exists to reproduce.
+    assert abs(abs(anchor["difference_db"]) - abs(scan["difference_db"])) < 0.1, (
+        "the two pairs should grade to a tie at the candidate's corner; a "
+        "wide separation means this replay has drifted from the corner it "
+        "claims to be planning at"
+    )
+    assert abs(anchor["difference_db"]) > REALIZED_LEVEL_MATCH_TOLERANCE_DB, (
+        "the incident's anchor misses the realized-level tolerance, which is "
+        "what makes this a refusing session"
     )
 
 

@@ -105,7 +105,6 @@ from ..linearization_fit import (
     driver_core_level_db,
     fit_driver_linearization,
     measurement_hole_bands_hz,
-    solve_shared_level_frame,
 )
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_OK,
@@ -130,10 +129,11 @@ __all__ = [
     "CloudFitTerms",
     "DriverEvidence",
     "JournalRecord",
-    "LEVEL_FRAME_DISPUTED_REASON",
+    "LEVEL_ESTIMATOR_SUSPECT_REASON",
+    "LEVEL_ESTIMATOR_TOLERANCE_DB",
     "LINEARIZATION_MIN_PAIRED_OCCURRENCES",
     "LINEARIZATION_TRIM_SANITY_MARGIN_DB",
-    "LevelFrameAdmission",
+    "LevelConsistency",
     "LinearizationPlan",
     "LinearizationRequest",
     "MIN_TRIM_SANITY_MARGIN_RATIO",
@@ -142,6 +142,7 @@ __all__ = [
     "SIGMA_TOLERABLE_DB",
     "TrimDecision",
     "anchor_trims",
+    "check_level_consistency",
     "compose_sigma_db",
     "decide_trim",
     "driver_response_by_role",
@@ -552,7 +553,16 @@ class LinearizationRequest:
     """``candidate.trim_db`` — the raw solve's applied per-role attenuation."""
 
     trim_band_average_db: Mapping[str, float]
-    """``candidate.trim_band_average_db`` — the level-match term the frame uses."""
+    """``candidate.trim_band_average_db`` — one SUBORDINATE level estimate.
+
+    The trim solve's own per-role level-match term, taken as a power-band
+    average each side of Fc BEFORE the ripple-optimal polish moves it. It used
+    to be one of two voters arbitrated into the trim anchor; since the
+    single-datum-owner migration it is an input to
+    :func:`check_level_consistency` and nothing else. It does not place the
+    pair, and it is not preferred over the fit's own core-level estimate — see
+    that function for why neither is.
+    """
 
     predicted_ripple_db: float
     polarity_sign: int
@@ -576,22 +586,6 @@ class LinearizationRequest:
 
     cloud: CloudFitTerms | None = None
     trim_sanity_margin_db: float = LINEARIZATION_TRIM_SANITY_MARGIN_DB
-
-    level_frame_tolerance_db: float = REALIZED_LEVEL_MATCH_TOLERANCE_DB
-    """Past this, the shared level frame is DISPUTED and does not place the anchor.
-
-    The SAME threshold the host's accountability seam banks a disagreement at —
-    the flow spells it ``LEVEL_FRAME_AGREEMENT_TOLERANCE_DB`` and defines it as
-    this very constant, so the planner reads the owner one hop away rather than
-    importing the flow (which imports this module). The two must not drift:
-    the planner excluding a frame the gate still considers agreed, or the
-    reverse, would put two thresholds on one question.
-    ``tests/test_crossover_v2_level_frame_dispute.py`` pins the equality.
-
-    A parameter rather than a module constant for the same reason
-    ``trim_sanity_margin_db`` is one: it is the knob a test moves to reach the
-    branch without fabricating a disagreement the fixture does not have.
-    """
 
     def __post_init__(self) -> None:
         if not isinstance(self.context, CandidateAcousticContext):
@@ -628,19 +622,27 @@ class LinearizationRequest:
                 "could then commit a pair louder than the scan by more than the "
                 "accountability gate can detect"
             )
-        # The same NaN hazard, one guard down, and for the same reason it is
-        # tested separately above: ``disagreement > tolerance`` is False for
-        # every disagreement when the tolerance is NaN, so the dispute guard
-        # would not misfire — it would stop existing, and a disputed frame
-        # would silently go back to placing the anchor.
-        if not math.isfinite(float(self.level_frame_tolerance_db)):
-            raise PlannerInputError(
-                "level_frame_tolerance_db must be finite; a non-finite "
-                "tolerance silently admits every disputed level frame rather "
-                "than widening the band in which one is admitted"
-            )
+        # A non-finite trim would reach ``anchor_trims.place`` and be COMMITTED:
+        # the non-positive normalize is a ``max``, and every comparison against
+        # NaN is False, so the clamp does not misfire — it stops existing, and
+        # a NaN or +inf trim goes to the emitter. Guarded at the door, where the
+        # value enters, for the same reason ``trim_sanity_margin_db`` is above.
+        # With the level datum now the raw trim itself, this and the give-back
+        # assertion at the anchor's own call site are the complete set of doors
+        # into that expression.
+        for name, mapping in (
+            ("raw_trim_db", self.raw_trim_db),
+            ("trim_band_average_db", self.trim_band_average_db),
+        ):
+            for role, value in mapping.items():
+                if not math.isfinite(float(value)):
+                    raise PlannerInputError(
+                        f"{name}[{role!r}] is not finite; a non-finite trim "
+                        "reaches the emitter because the non-positive "
+                        "normalize compares against NaN and does nothing"
+                    )
         # Snapshot the caller's trim mappings. A frozen dataclass holding a
-        # live dict is frozen in name only, and these two are read at four
+        # live dict is frozen in name only, and these are read at several
         # points spread across the plan — a caller mutating one mid-plan would
         # produce a result that matches no single input.
         object.__setattr__(self, "raw_trim_db", dict(self.raw_trim_db))
@@ -679,92 +681,174 @@ class LinearizationRequest:
 
 
 # --------------------------------------------------------------------------- #
-# the level frame's admission, and the anchor it places
+# the level datum's one owner, its subordinate checks, and the anchor it places
 # --------------------------------------------------------------------------- #
 
-#: Why a shared level frame's per-role offsets were kept out of the trim anchor.
+#: Why a capture was flagged: the two per-driver level estimates disagree.
 #:
-#: Both halves of the condition are in the name. *disagreement*: the frame's own
-#: two estimators read the same physical relationship differently by more than
-#: :attr:`LinearizationRequest.level_frame_tolerance_db`. *unadjudicated*: nothing
-#: has since settled which of them was right. The second half is true **by
-#: construction today, not by inspection of an input** — the disagreement is
-#: promoted to an M7 finding whose ``confidence`` is ``unsure``, whose
-#: ``fix_class`` is ``refit``, and whose ``probes_run`` is empty, because as
-#: :mod:`jasper.attribution.mechanisms` states in its own words, no §5 probe
-#: DECIDES M7. There is therefore no resolution channel to read here, and this
-#: module deliberately does not invent a parameter for one: when a probe that
-#: adjudicates M7 lands, it gains a second condition at this constant, and the
-#: contract test on the finding's ``probes_run`` is what will fail first.
-LEVEL_FRAME_DISPUTED_REASON = "frame_disagreement_unadjudicated"
+#: The name says what is measured and nothing more. *level_estimators*: the two
+#: SUBORDINATE per-driver derivations — the trim solve's overlap-band average
+#: (``trim_band_average_db``) and the fit's own core-band median
+#: (``driver_core_level_db``). *disagree*: their relative placements of the
+#: pair sit further apart than :data:`LEVEL_ESTIMATOR_TOLERANCE_DB`.
+#:
+#: **It flags a capture; it never changes a number.** The pair is anchored on
+#: the raw measured trim whatever this says — disclose and recommend, never
+#: discard the datum. What it earns the household is a RETRIABLE capture: a
+#: suspicion worth re-measuring, not a refusal.
+LEVEL_ESTIMATOR_SUSPECT_REASON = "level_estimators_disagree"
+
+#: How far the two per-driver level estimates may sit apart before the capture
+#: is called suspect.
+#:
+#: The same 3.0 dB the realized-level gate holds a shipped pair to
+#: (``REALIZED_LEVEL_MATCH_TOLERANCE_DB``), and deliberately so on three
+#: counts. It is the repo's existing answer to "how far apart may two reads of
+#: the same inter-driver relationship sit before that matters"; reusing it
+#: means the suspicion fires on exactly the population the deleted exclusion
+#: cliff used to fire on, so the change is legible in the corpus rather than
+#: confounded by a second threshold move; and — the reason a number too tight
+#: for a hard decision is right for a soft one — crossing it now costs a flag
+#: rather than a discarded datum, so the cost of being slightly wrong has
+#: changed from "ship a placement nobody measured" to "suggest a re-measure
+#: that was not needed".
+#:
+#: One threshold, one owner. Nothing else in the level path holds a tolerance.
+LEVEL_ESTIMATOR_TOLERANCE_DB = REALIZED_LEVEL_MATCH_TOLERANCE_DB
 
 
 @dataclass(frozen=True)
-class LevelFrameAdmission:
-    """Whether the shared level frame placed the trim anchor, and what it cost.
+class LevelConsistency:
+    """How far apart the two per-driver level estimates place the pair.
 
-    One value, three readers — the giveback/exclusion journal, the candidate's
-    :class:`~.candidates.LinearizationState`, and the banked M7 finding record.
-    None of them recomputes the verdict; a second derivation of "was the frame
-    disputed" is exactly the drift this class exists to prevent.
+    A suspicion, not a placement — and that distinction is the whole point of
+    the class. Its predecessor (``LevelFrameAdmission``) reported an
+    ARBITRATION over the same two numbers: they voted, a 3.0 dB cliff decided
+    whether their reconciliation was admitted, and crossing it zeroed every
+    per-role offset. On 2026-08-16 a disagreement that missed that cliff by
+    0.326 dB moved a tweeter +3.79 dB hotter than its own raw measurement
+    asked, and the round was rolled back for the overshoot that followed.
 
-    ``None`` in place of this value means **no frame was solved at all**, which
-    is a third state and not a quiet synonym for either of these two.
+    The comparison survived; the CONSEQUENCE did not. The pair is anchored on
+    the raw measured trim (:func:`anchor_trims`), so neither estimate places
+    anything and this verdict cannot move a number.
+
+    ``None`` in place of this value means **one of the two estimates covered no
+    role**, so there was nothing to compare — a third state, and not a quiet
+    synonym for "the estimators agreed".
     """
 
-    admitted: bool
-    """Did the frame's per-role offsets enter the anchor?"""
+    suspect: bool
+    """Did either estimator, on either role, sit past the tolerance?"""
 
     reason: str
-    """:data:`LEVEL_FRAME_DISPUTED_REASON` when excluded, ``""`` when admitted."""
+    """:data:`LEVEL_ESTIMATOR_SUSPECT_REASON` when suspect, ``""`` when not."""
 
-    disagreement_db: float
     tolerance_db: float
 
-    excluded_offset_db: Mapping[str, float]
-    """The per-role offsets that were dropped; ``{}`` when admitted.
+    worst_delta_db: float
+    """The largest single per-role gap between the two estimates, in dB."""
 
-    The number, not just the fact — a reader asking "how much placement did the
-    disputed estimator want?" must not have to re-derive it from two other
-    events.
-    """
-
-    anchor_delta_db: Mapping[str, float]
-    """Committed anchor MINUS the anchor the offsets would have produced.
-
-    The dB consequence of the exclusion, per role, and the only field here that
-    costs anything to compute (one extra normalize of two floats, on the
-    excluded path only). Positive means this role ships that many dB LOUDER —
-    less cut — than it would have under the disputed frame. ``{}`` when
-    admitted, where the counterfactual is the committed pair itself.
-    """
+    estimator_delta_db: Mapping[str, float]
+    """Per role: |overlap-band placement − core-median placement|, in dB."""
 
     def to_dict(self) -> dict[str, Any]:
         """This verdict as the JOURNAL's payload — its only caller.
 
-        Deliberately NOT a shared serialization, and the difference matters to
-        anyone adding a field: the receipt reads ``reason`` and
-        ``anchor_delta_db`` straight off the attributes because
-        :func:`~.accountability.level_frame_finding_record` needs them flat and
-        role-suffixed, and the candidate carries the value itself. One verdict
-        owner, one adapter per surface — so a field added here changes the
-        journal line and nothing else.
+        Deliberately NOT a shared serialization, and for the reason its
+        predecessor's docstring gave: the banked finding needs these numbers
+        flat and role-suffixed and builds them itself off the attributes. One
+        verdict owner, one adapter per surface.
         """
 
         return {
-            "admitted": bool(self.admitted),
+            "suspect": bool(self.suspect),
             "reason": self.reason,
-            "disagreement_db": round(float(self.disagreement_db), 3),
             "tolerance_db": round(float(self.tolerance_db), 3),
-            "excluded_offset_db": {
+            "worst_delta_db": round(float(self.worst_delta_db), 3),
+            "estimator_delta_db": {
                 role: round(float(value), 3)
-                for role, value in self.excluded_offset_db.items()
-            },
-            "anchor_delta_db": {
-                role: round(float(value), 3)
-                for role, value in self.anchor_delta_db.items()
+                for role, value in self.estimator_delta_db.items()
             },
         }
+
+
+def _relative_placement_db(levels: Mapping[str, float]) -> dict[str, float]:
+    """One estimator's placement of the pair, referred to its own loudest role.
+
+    Absolute levels from different instruments are not comparable — a
+    power-band average about Fc and a core-band median each carry their own
+    reference. What IS comparable, and what the anchor actually commits, is how
+    far apart an estimator puts the two roles. Subtracting the
+    loudest role makes every estimator state that same relative claim, so
+    ``|a − b|`` per role is a difference of PLACEMENTS rather than a difference
+    of references.
+    """
+
+    if not levels:
+        return {}
+    loudest = max(float(v) for v in levels.values())
+    return {role: float(value) - loudest for role, value in levels.items()}
+
+
+def check_level_consistency(
+    *,
+    trim_band_average_db: Mapping[str, float],
+    core_proposal_db: Mapping[str, float],
+    tolerance_db: float = LEVEL_ESTIMATOR_TOLERANCE_DB,
+) -> LevelConsistency | None:
+    """Do the two per-driver level estimates agree? Advisory, never a placement.
+
+    ``core_proposal_db`` is the fit's core-median estimate expressed as the
+    system-referred level each role's own passband proposes
+    (``core_level + trim``) — the same quantity the deleted shared level frame
+    solved on, so the estimator compared here is the one that used to vote.
+
+    **What changed is the CONSEQUENCE, not the comparison.** These two numbers
+    were compared before #2609 as well; the difference is that their
+    disagreement used to arbitrate the trim anchor through a 3.0 dB cliff, and
+    now it does nothing but bank a finding. The anchor is the raw measured trim
+    whatever this says (:func:`anchor_trims`), so a disagreement is a statement
+    about the CAPTURE — worth re-taking — and never about the pair that ships.
+
+    **Neither estimator is preferred, and that is a ruling rather than a
+    hedge.** #2609 carries two owner comments pointing opposite ways on the
+    same numeric pair two rounds apart: the 2026-08-16 12:27 analysis found the
+    overlap-band estimate right and the core-median estimate 3.3–3.9 dB off and
+    proposed preferring the former; the 2026-08-17 conviction found the
+    measured outcome condemned the placement that estimate produced. What that
+    establishes is not that the other estimator wins — it is that **neither is
+    reliably right**, which is exactly why neither places the pair any more.
+    The comparison is symmetric and stays symmetric: it reports a distance, not
+    a winner.
+
+    Compared in a RELATIVE frame — each estimate referred to its own loudest
+    role — because the two carry different references and only their PLACEMENT
+    of the pair is comparable.
+
+    Returns ``None`` when either estimate covers no role.
+    """
+
+    if not trim_band_average_db or not core_proposal_db:
+        return None
+    trim_rel = _relative_placement_db(trim_band_average_db)
+    core_rel = _relative_placement_db(core_proposal_db)
+    # Only roles BOTH instruments read. A role one estimator skipped is not a
+    # disagreement.
+    delta = {
+        role: abs(trim_rel[role] - core_rel[role])
+        for role in core_rel
+        if role in trim_rel
+    }
+    worst = max(delta.values(), default=0.0)
+    suspect = worst > float(tolerance_db)
+    return LevelConsistency(
+        suspect=suspect,
+        reason=LEVEL_ESTIMATOR_SUSPECT_REASON if suspect else "",
+        tolerance_db=float(tolerance_db),
+        worst_delta_db=float(worst),
+        estimator_delta_db=delta,
+    )
 
 
 def anchor_trims(
@@ -772,137 +856,62 @@ def anchor_trims(
     roles: tuple[str, ...],
     anchor_base_db: Mapping[str, float],
     giveback_db: Mapping[str, float],
-    level_frame_offset_db: Mapping[str, float],
-    has_frame: bool,
-    disagreement_db: float,
-    tolerance_db: float,
-) -> tuple[dict[str, float], float, LevelFrameAdmission | None]:
-    """Place the anchored trim pair, and say whether the frame placed it.
+) -> tuple[dict[str, float], float]:
+    """Place the anchored trim pair and normalize it non-positive.
 
-    Returns ``(anchored_db, normalize_shift_db, admission)``.
+    Returns ``(anchored_db, normalize_shift_db)``. The anchor is
+    ``base + giveback``, and there is no third term, no branch, and no
+    threshold — the function is now what its name always said.
 
-    **A DISPUTED frame does not get to be the reference the speaker hangs
-    from.** The anchor is ``base + giveback + offset``, and the frame's offset
-    term is what decides the inter-driver placement — the base cancels out of
-    it (``offset = system − trim − core`` leaves ``giveback + system − core``,
-    derived at the anchor's own call site). So when the frame's two estimators
-    disagree past tolerance, the pipeline was taking its placement, and its
-    ``normalize_shift_db``, from the estimator the session itself had just
-    marked unresolved. On the 2026-08-15 jts3 run that was the woofer's
-    ``+3.264`` dB offset becoming the shift, which shipped the tweeter
-    ``−10.214`` dB where the undisputed arithmetic gives ``−6.950``.
+    **What used to be here, and why its removal IS the fix.** Until the
+    single-datum-owner migration this took three more parameters
+    (``level_frame_offset_db``, ``has_frame``, ``disagreement_db``,
+    ``tolerance_db``) and ran a three-case arbitration between two per-driver
+    level estimators, excluding every per-role offset when their disagreement
+    crossed 3.0 dB. That cliff was the located mechanism of the 2026-08-16
+    shortfall round: a disagreement of 3.326 dB missed the bar by 0.326 dB,
+    every offset was zeroed, and the tweeter moved from a raw measured trim of
+    ``−10.835`` to a committed ``−7.043`` — **+3.79 dB hotter than the
+    measurement asked**. The crossover band then realized +3.10 dB over its
+    commanded value, VERIFY's absolute check failed at −2.83 dB @ 1935 Hz, and
+    the probe rolled the round back.
 
-    Excluding the offset does not invent a placement — it returns to the one
-    the other instrument measured, the trim solve's own level-match term, which
-    is what the owner's #1866 ruling said the banked path proceeds on. The
-    accountability gate's comment and
-    :func:`~jasper.attribution.promotion.promote_level_frame_disagreement` both
-    already record that the code did NOT do this; this is the half that makes
-    the sentence true, and both of those texts now describe it rather than
-    disclaiming it.
+    The old docstring closed by naming its own fix: *"the proper fix is a third
+    instrument that can referee the two estimators — a broadband arbitration
+    measurement."* The summed at-the-mark sweep this pipeline captures every
+    round is the obvious candidate and is NOT usable as one yet: it rides the
+    applied incumbent graph while the per-branch sweeps ride the
+    protected-neutral graph, so combining them double-counts the incumbent's
+    own trims (see ``plan_linearization``'s anchor block for the worked case).
+    ``anchor_base_db`` is therefore the raw measured trim — the number the
+    branch solve measured — so there is nothing left
+    to arbitrate and no cliff to sit next to. The two per-driver estimators
+    became :func:`check_level_consistency`, which banks a finding, flags a
+    capture as retriable, and moves no number.
 
-    **The rule, in full — three cases and no fourth.**
-
-    ===================================  ===================  ================
-    frame state                          offsets in anchor    admission
-    ===================================  ===================  ================
-    no frame solved                      none exist (0.0)     ``None``
-    ``disagreement <= tolerance``        applied              ``admitted``
-    ``disagreement > tolerance``         **all excluded**     ``not admitted``
-    ===================================  ===================  ================
-
-    **The dispute is a property of the FRAME, never of one role**, which is
-    what makes "what if BOTH drivers' offsets are disputed?" a question with no
-    separate answer: ``disagreement_db`` is a single ``max(|offset|)`` over
-    every role, so one role past tolerance and all of them past tolerance take
-    the identical path — every offset is dropped. That is deliberate rather
-    than incidental. :func:`~..linearization_fit.solve_shared_level_frame`
-    places all roles jointly against one ``system_level_db``; keeping one
-    role's offset while dropping another's would ship a placement that NEITHER
-    estimator proposed, a third frame nobody measured. Dropping all of them
-    lands on one that was measured.
-
-    **What this can do to loudness, bounded on both sides.** Excluding a
-    positive offset lowers ``normalize_shift_db`` by that offset, so a role can
-    ship up to the disagreement LOUDER — 3.264 dB on the run above. It cannot
-    become a boost: every returned trim is still ``<= 0`` by the same
-    normalize, and ``base + giveback`` restores a branch to the level the raw
-    candidate's own trim solve already accepted, so the pair cannot exceed the
-    branch's pre-correction system level any more than the pre-PR-L5 anchor
-    could. And the pair still faces the realized-level assertion at the host's
-    accountability seam.
-
-    **What it gives up, named.** That seam grades the pair that ships, so a
-    session whose trim-solve placement does not realize level within tolerance
-    now REFUSES where it previously banked the disagreement and shipped a pair
-    placed by the disputed estimator. That is the same gate on an undisputed
-    pair, not a new stop — and an honest refusal beats a tune whose reference
-    the system had already flagged as unresolved.
-
-    **Usually the two-pair grading absorbs it, measured rather than assumed.**
-    :func:`decide_trim` grades the anchor AND the ripple scan's polish and
-    commits whichever levels better. On the #1866 tilted-woofer fixture the
-    excluded anchor realizes ``−4.295`` dB — past the 3.0 dB tolerance on its
-    own — and the scan's pair realizes ``−1.195`` and ships, so that session
-    still proceeds. The shape that has no such rescue is a ONE-SIDED ripple
-    band, where the scan is skipped and the anchor is the only pair there is;
-    the one-sided conductor fixture moves from ``+2.758`` to ``−3.042`` dB and
-    refuses. Both are pinned end to end in
-    ``tests/test_crossover_v2_conductor.py``.
-
-    **Not implemented here, and named so it is not mistaken for done:** the
-    proper fix is a third instrument that can referee the two estimators — a
-    broadband arbitration measurement. The realized-level check cannot do it
-    ("One estimator, not a second opinion" — its own docstring); it grades the
-    outcome. Until that instrument exists, refusing to hang the speaker from a
-    disputed number is the available correctness, not the final one.
+    **The non-positive normalize is unchanged, and is the hearing-safety
+    invariant here.** Every returned trim is ``<= 0``: a branch whose own cuts
+    give back more than its raw attenuation would otherwise land POSITIVE (a
+    boost), which the emitter refuses and the hardware must never see. The
+    shift is subtracted from every role identically, so it preserves relative
+    leveling exactly and is honest extra ledger rather than a tonal change.
+    Nothing in this migration touches it — what moved is where the base number
+    comes FROM, never the clamp around it.
     """
 
-    offsets = {role: float(level_frame_offset_db.get(role, 0.0)) for role in roles}
+    # Normalize to non-positive: a branch whose own cuts give back more than
+    # its raw attenuation would otherwise land POSITIVE (a boost), which the
+    # emitter refuses and the hardware must never see. Subtracting the same
+    # shift from every role preserves the relative leveling exactly and is
+    # honest extra ledger.
+    unnormalized = {
+        role: float(anchor_base_db.get(role, 0.0))
+        + float(giveback_db.get(role, 0.0))
+        for role in roles
+    }
+    shift = max(0.0, max(unnormalized.values()))
+    return {r: v - shift for r, v in unnormalized.items()}, shift
 
-    def place(offset_terms: Mapping[str, float]) -> tuple[dict[str, float], float]:
-        # Normalize to non-positive: a branch whose own cuts give back more
-        # than its raw attenuation would otherwise land POSITIVE (a boost),
-        # which the emitter refuses and the hardware must never see.
-        # Subtracting the same shift from every role preserves the relative
-        # leveling exactly and is honest extra ledger.
-        unnormalized = {
-            role: float(anchor_base_db.get(role, 0.0))
-            + float(giveback_db.get(role, 0.0))
-            + float(offset_terms.get(role, 0.0))
-            for role in roles
-        }
-        shift = max(0.0, max(unnormalized.values()))
-        return {r: v - shift for r, v in unnormalized.items()}, shift
-
-    if not has_frame:
-        # Every offset is 0.0 for a frameless fit, so this is the same
-        # arithmetic either way; the ``None`` is what keeps "no frame" from
-        # reading downstream as "a frame we admitted".
-        anchored, shift = place(offsets)
-        return anchored, shift, None
-
-    if not (float(disagreement_db) > float(tolerance_db)):
-        anchored, shift = place(offsets)
-        return anchored, shift, LevelFrameAdmission(
-            admitted=True,
-            reason="",
-            disagreement_db=float(disagreement_db),
-            tolerance_db=float(tolerance_db),
-            excluded_offset_db={},
-            anchor_delta_db={},
-        )
-
-    anchored, shift = place(dict.fromkeys(roles, 0.0))
-    would_have, _ = place(offsets)
-    return anchored, shift, LevelFrameAdmission(
-        admitted=False,
-        reason=LEVEL_FRAME_DISPUTED_REASON,
-        disagreement_db=float(disagreement_db),
-        tolerance_db=float(tolerance_db),
-        excluded_offset_db=offsets,
-        anchor_delta_db={role: anchored[role] - would_have[role] for role in roles},
-    )
 
 
 # --------------------------------------------------------------------------- #
@@ -1107,14 +1116,21 @@ class LinearizationPlan:
     role_attenuations_db: Mapping[str, float]
     linearization: Mapping[str, Any]
     trim: TrimDecision
-    level_frame: Any | None
-    level_frame_disagreement_db: float
-    level_frame_cores: Mapping[str, Mapping[str, Any]]
-    level_frame_trims: Mapping[str, float]
-    level_frame_admission: LevelFrameAdmission | None
-    """Did the frame place this candidate's anchor, and what the answer cost.
+    core_level_evidence: Mapping[str, Mapping[str, Any]]
+    """Per role: the fit's core-band median, and the two bands behind it.
 
-    ``None`` when no frame was solved. See :func:`anchor_trims`.
+    Named for what it is now that no level frame exists to reconcile. Still the
+    same read, still the same disclosure — it is subordinate evidence and the
+    banked finding's per-role provenance, never a placement.
+    """
+    trim_band_estimate_db: Mapping[str, float]
+    """Per role: the trim solve's own level-match term. The other subordinate."""
+    level_consistency: LevelConsistency | None
+    """The two per-driver level estimates, graded against each other.
+
+    ``None`` when one of the two estimates covered no role. See
+    :func:`check_level_consistency`. It flags a capture as retriable; it never
+    moved this candidate's anchor and cannot.
     """
     linearized_predicted_sum: tuple[np.ndarray, np.ndarray]
     headroom_charge_db: Mapping[str, float]
@@ -1329,41 +1345,34 @@ def plan_linearization(
         )
         is not None
     }
-    # The frame reconciles two LEVEL-MATCH estimates, so its trim term is the
-    # trim solve's own level-match result (``trim_band_average_db``) — not
+    # The trim solve's own level-match result (``trim_band_average_db``) — not
     # ``trim_db``, which is that result AFTER the ripple-optimal polish moved it
-    # for summed flatness. Reading the applied trim made the gate sensitive to a
-    # refinement it is not measuring: the polish is bounded by the sanity margin
-    # (6.0), DOUBLE the gate's tolerance, so an ordinary 3-6 dB polish hard-
+    # for summed flatness. Reading the applied trim made the check sensitive to
+    # a refinement it is not measuring: the polish is bounded by the sanity
+    # margin (6.0), DOUBLE the tolerance, so an ordinary 3-6 dB polish hard-
     # stopped an otherwise healthy session (adversarial review S5). Falls back
     # to ``trim_db`` only for a legacy candidate constructed before the field
     # existed.
-    frame_trims_db = dict(request.trim_band_average_db or request.raw_trim_db)
-    level_frame = (
-        solve_shared_level_frame(core_levels_db, frame_trims_db)
-        if core_levels_db
-        else None
-    )
-    # The frame's own honesty evidence, and the reason it is not just applied.
     #
-    # ``offset_db[role]`` is how far that role's own proposal
-    # (``core_level + trim``) sits below the loudest — which is exactly the
-    # DISAGREEMENT between two measured estimates of the same physical
-    # relationship: the trim solve's power-band average on each side of Fc, and
-    # the fit's median over each driver's own RADIATING band (#1929). A small
-    # offset is an honest reconciliation. A LARGE one means the two instruments
-    # are measuring different things again — so it is returned here and
-    # adjudicated at the host's accountability seam rather than silently
-    # applied.
-    #
-    # How close "close" actually is, measured rather than asserted: on the
-    # archived run-5 capture the two land 0.510 dB apart (1.076 before #1929),
-    # and on a pair that is identical by construction they still land 0.910 dB
-    # apart. The residual is real and #1929 did not close it.
-    level_frame_disagreement_db = (
-        max((abs(v) for v in level_frame.offset_db.values()), default=0.0)
-        if level_frame is not None
-        else 0.0
+    # It is a CHECK INPUT now, not a voter: since the single-datum-owner
+    # migration nothing derived from it places the pair.
+    trim_band_estimate_db = dict(request.trim_band_average_db or request.raw_trim_db)
+    # The other subordinate estimator, in the frame the check compares in: the
+    # system-referred level each role's own passband proposes. This is the
+    # quantity the deleted ``solve_shared_level_frame`` reconciled, kept
+    # verbatim so the estimator being graded is the one that used to vote.
+    core_proposal_db = {
+        role: float(level) + float(trim_band_estimate_db.get(role, 0.0))
+        for role, level in core_levels_db.items()
+    }
+    # The two estimates against each other. Symmetric, advisory, and unable
+    # to move a number — see :func:`check_level_consistency`. Where a 3.0 dB cliff
+    # used to zero the anchor's per-role offsets, crossing the same 3.0 dB now
+    # flags the capture retriable and the round proceeds on the raw measured
+    # trim.
+    level_consistency = check_level_consistency(
+        trim_band_average_db=trim_band_estimate_db,
+        core_proposal_db=core_proposal_db,
     )
     # The frame's own INPUTS, for the refusal's journal line (#1929). A refusal
     # that names only the disagreement asks whoever reads it to re-derive which
@@ -1392,7 +1401,7 @@ def plan_linearization(
         )
         for role in (woofer_role, tweeter_role)
     }
-    level_frame_cores = {
+    core_level_evidence = {
         role: {
             "level_db": round(float(level), 3),
             "band_hz": rounded_band_hz(core_bands_hz[role]),
@@ -1416,13 +1425,13 @@ def plan_linearization(
         [core_bands_hz[role] for role in (woofer_role, tweeter_role)]
     )
 
-    # The OTHER estimator, for the #1866 finding. Restricted to the roles the
-    # frame was actually solved over, so the banked pair is the pair that
-    # disagreed rather than every role the trim solve happened to return.
-    level_frame_trims = {
-        role: float(frame_trims_db[role])
+    # The overlap-band estimator, for the banked finding. Restricted to the
+    # roles the core median was actually read over, so the banked pair is the
+    # pair that was compared rather than every role the trim solve returned.
+    banked_trim_estimate_db = {
+        role: float(trim_band_estimate_db[role])
         for role in core_levels_db
-        if role in frame_trims_db
+        if role in trim_band_estimate_db
     }
 
     # Boost permission is EVIDENCE-gated, and this is the gate. ONE necessary
@@ -1477,7 +1486,6 @@ def plan_linearization(
             resp,
             envelopes[role],
             vocabulary=vocabulary,
-            level_frame=level_frame,
             radiating_band_hz=radiating_bands[role],
             # #2599: the spans no branch measured. Same list for both roles —
             # a hole belongs to the pair, not to whichever branch happens to
@@ -1620,78 +1628,65 @@ def plan_linearization(
     # overlap-band frame itself, but the anchor stays: measured give-back beats
     # any solver prediction for restoring a corrected branch's own level.
     #
-    # PR-L5 adds ONE term: ``level_frame_offset_db``, how far this branch must
-    # move to reach the session's shared level frame. The anchor already returns
-    # a branch to its OWN pre-correction system level; the offset then places
-    # that level where the frame says it belongs. The two together mean
-    # ``target + trim`` is the same number for every branch by construction. It
-    # is 0.0 for the frame's own reference role and for any session with no
-    # frame, so a fit that predates the frame anchors byte-identically.
+    # The anchor's base is the RAW MEASURED TRIM, unconditionally. There is no
+    # third term and no branch: the pair is placed where the branch solve
+    # measured it, plus each branch's own measured give-back.
     #
-    # That term is ADMITTED CONDITIONALLY (#2599). A frame whose two estimators
-    # disagree past ``level_frame_tolerance_db`` is disputed and unadjudicated,
-    # and a disputed number does not get to place the pair or become the
-    # session's ``normalize_shift_db``. :func:`anchor_trims` owns the rule and
-    # the disclosure; every claim below about the offset entering the anchor is
-    # scoped to the admitted case, which is the ordinary one.
+    # **What this replaced.** Until #2609 the base was one of two per-driver
+    # estimators, and a third term (``level_frame_offset_db``) carried their
+    # reconciliation, admitted only while the two agreed within 3.0 dB. The
+    # cliff at that threshold shipped a tweeter +3.79 dB hotter than its own
+    # measurement asked on 2026-08-16 (raw ``-10.835`` → committed ``-7.043``).
+    # Both the third term and the cliff are deleted; :func:`anchor_trims`
+    # carries the full account.
+    #
+    # **Why the summed at-the-mark capture does NOT own this number**, though
+    # it is the obvious candidate and an earlier cut of this migration tried
+    # it: the two captures are in different frames BY CONSTRUCTION, so the
+    # arithmetic that would combine them double-counts. The per-branch MEASURE
+    # sweeps ride the protected-NEUTRAL graph — no crossover, no delay, no
+    # linearization, no trims (``camilla_yaml.emit_active_speaker_program_config``
+    # says so in its own docstring) — so ``raw_trim_db`` is an ABSOLUTE
+    # per-branch number. The entry baseline rides the APPLIED incumbent graph,
+    # trims included. Reading a per-role level off the incumbent and
+    # subtracting it from an absolute trim charges the same attenuation twice:
+    # on a flat incumbent with a 10 dB-hot tweeter the derivation returns −20.
+    # Making the summed capture the level owner therefore needs a frame
+    # reconciliation that does not exist yet, and it needs the anchor re-placed
+    # after the baseline lands (stage 1 captures it AFTER the fit) — neither is
+    # worth anything without the other, and they are tracked together.
+    #
+    # The summed capture keeps every role where the frames ARE coherent by
+    # construction — VERIFY tracking, the benefit verdict, realization grading
+    # — all of which compare summed against summed.
     raw_trim = dict(request.raw_trim_db)
-    # The anchor's base trim is the SAME term the frame was solved on, so the
-    # two cannot disagree about which trim they are anchoring to. With a frame
-    # this is ``trim_band_average_db``; without one it is the applied trim,
-    # byte-identical to the pre-PR-L5 anchor.
-    #
-    # Using the applied ``trim_db`` here while the frame used the band average
-    # would let the raw candidate's ripple polish survive into the anchor —
-    # which it never did before, because with the offset ADMITTED the trim term
-    # cancels out of ``raw_trim + giveback + offset`` (the offset subtracts the
-    # same trim the base adds, leaving ``giveback + system − core``). Precisely:
-    # the RELATIVE level between branches is exact either way, and the emitted
-    # pair is identical whenever ``normalize_shift_db`` clamps (the ordinary
-    # case). When it does not — which needs a net-BOOSTED core band — the pair
-    # shifts in COMMON MODE by the change in ``system_level_db``; every emitted
-    # trim is still ≤ 0, and a common shift is a volume-knob difference, not a
-    # tonal one.
-    #
-    # On the DISPUTED path the cancellation does not happen and this base is
-    # therefore load-bearing rather than incidental: with no offset to subtract
-    # it, ``base + giveback`` IS the placement, and the base being the frame's
-    # own level-match term (not the ripple-polished applied trim) is what makes
-    # that placement the trim solve's measured one rather than a third number.
-    anchor_base_db = frame_trims_db if level_frame is not None else raw_trim
-    # ...and PR-L5's ONE term is admitted only while the frame that produced it
-    # is not itself in dispute. :func:`anchor_trims` owns that rule, the
-    # normalize, and the disclosure value; its docstring carries the three-case
-    # table and why a disputed frame must not become ``normalize_shift_db``.
-    anchored, normalize_shift_db, level_frame_admission = anchor_trims(
+    # The anchor's OTHER term, checked rather than trusted for the reason the
+    # request's trims are checked at the door: a non-finite give-back lands in
+    # the same ``max`` and the same clamp does nothing about it. Whether
+    # ``correction_giveback_db`` can be non-finite in production is a question
+    # this guard makes moot — it is cheap, and the failure it prevents is a
+    # NaN trim reaching the emitter.
+    giveback_db = {}
+    for role in (woofer_role, tweeter_role):
+        value = float(fits[role].correction_giveback_db)
+        if not math.isfinite(value):
+            raise PlannerInputError(
+                f"correction_giveback_db[{role!r}] is not finite; the anchor's "
+                "non-positive normalize cannot clamp a non-finite term"
+            )
+        giveback_db[role] = value
+    anchored, normalize_shift_db = anchor_trims(
         roles=(woofer_role, tweeter_role),
-        anchor_base_db=anchor_base_db,
-        giveback_db={
-            role: float(fits[role].correction_giveback_db)
-            for role in (woofer_role, tweeter_role)
-        },
-        level_frame_offset_db={
-            role: float(fits[role].level_frame_offset_db)
-            for role in (woofer_role, tweeter_role)
-        },
-        has_frame=level_frame is not None,
-        disagreement_db=level_frame_disagreement_db,
-        tolerance_db=request.level_frame_tolerance_db,
+        anchor_base_db=raw_trim,
+        giveback_db=giveback_db,
     )
-    if level_frame_admission is not None and not level_frame_admission.admitted:
-        # The one block, at the site that decided it. WARNING because the
-        # committed placement differs from what the pipeline shipped before
-        # this rule existed, and a reader diagnosing a level change must find
-        # the reason without re-deriving it — ``anchor_delta_db`` is the dB
-        # consequence, per role, already computed.
-        emit(
-            "correction.crossover_v2_linearization_level_frame_excluded",
-            {
-                **level_frame_admission.to_dict(),
-                "anchored_trim_db": {k: round(v, 3) for k, v in anchored.items()},
-                "normalize_shift_db": round(float(normalize_shift_db), 3),
-            },
-            logging.WARNING,
-        )
+    # NO disclosure here, deliberately. The estimator disagreement has exactly
+    # one journal owner — the host's accountability seam
+    # (``EVENT_LEVEL_ESTIMATOR_FINDING``), which also banks it as the M7
+    # finding. Its predecessor emitted a WARNING at THIS site because the
+    # planner had made a decision worth disclosing: it had just declined a
+    # placement and moved the pair. It no longer decides anything, so a second
+    # event here would be one fact with two writers and no new information.
 
     # Ripple fine-tune around the anchor: the anchor sets the LEVEL, the scan
     # only polishes summed flatness near it.
@@ -1774,32 +1769,16 @@ def plan_linearization(
                 role: round(float(fits[role].target_level_db), 3)
                 for role in (woofer_role, tweeter_role)
             },
-            # PR-L5: the shared frame the two targets were reconciled into, and
-            # the per-role move it asked for. A large offset is the 10 dB-dark
-            # shape being CORRECTED, not a new problem.
-            "level_frame_system_db": (
-                round(float(level_frame.system_level_db), 3)
-                if level_frame is not None
-                else None
+            # What the two per-driver estimators made of each other. Neither
+            # moved ``anchored_trim_db`` and neither can — the anchor is the
+            # raw measured trim. ``None`` means one of them covered no role.
+            "level_estimator_suspect": (
+                None if level_consistency is None else level_consistency.suspect
             ),
-            "level_frame_reference_role": (
-                level_frame.reference_role if level_frame is not None else None
-            ),
-            "level_frame_offset_db": {
-                role: round(float(fits[role].level_frame_offset_db), 3)
-                for role in (woofer_role, tweeter_role)
-            },
-            # Whether the line above ENTERED ``anchored_trim_db``, read off the
-            # one value that decided it rather than re-tested here. Without it
-            # this record shows an offset next to an anchor that may not
-            # contain it, which is the misreading #2599 was diagnosed through.
-            # ``None`` means no frame was solved, so there was no offset to
-            # admit; the excluded case has its own record with the dB
-            # consequence.
-            "level_frame_offsets_admitted": (
+            "level_estimator_worst_delta_db": (
                 None
-                if level_frame_admission is None
-                else level_frame_admission.admitted
+                if level_consistency is None
+                else round(float(level_consistency.worst_delta_db), 3)
             ),
         },
     )
@@ -2046,11 +2025,9 @@ def plan_linearization(
         role_attenuations_db=role_attenuations_db,
         linearization=linearization,
         trim=trim,
-        level_frame=level_frame,
-        level_frame_disagreement_db=level_frame_disagreement_db,
-        level_frame_cores=level_frame_cores,
-        level_frame_trims=level_frame_trims,
-        level_frame_admission=level_frame_admission,
+        core_level_evidence=core_level_evidence,
+        trim_band_estimate_db=banked_trim_estimate_db,
+        level_consistency=level_consistency,
         linearized_predicted_sum=linearized_predicted_sum,
         headroom_charge_db=charge_db,
         chain_peak_db=peak_db,

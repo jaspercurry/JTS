@@ -240,7 +240,6 @@ from jasper.audio_measurement.program_analysis import (
     MeasurementGeometry,
     MeasurementPriors,
     ProgramAnalysis,
-    REALIZED_LEVEL_MATCH_TOLERANCE_DB,
     polarity_label,
 )
 from jasper.capture_relay.session import CaptureBeginDeferred, CaptureBeginRefused
@@ -2799,53 +2798,14 @@ def _worst_pilot_snr_db(analysis: ProgramAnalysis) -> float | None:
 # irreversible half. See
 # docs/active-speaker-tuning-layers-design.md "Layer 1a concretely".
 
-# How far the two measured level estimates may disagree before the session is
-# refused (linearization-integrity PR-L5). The estimates are the trim solve's
-# power-band average on each side of Fc (`program_analysis.solve_branch_trims`)
-# and the fit's median over each driver's own RADIATING band since #1929
-# (`linearization_fit.driver_core_level_db`), reconciled by
-# `solve_shared_level_frame` into one frame whose per-role offset IS their
-# disagreement.
-#
-# DELIBERATELY the same number as `program_analysis.
-# REALIZED_LEVEL_MATCH_TOLERANCE_DB`, and imported from it rather than written
-# twice: both answer one question — do two estimates of where these drivers sit
-# agree — and PR-L4 already derived 3.0 dB for it from this exact evidence (the
-# 2026-07-27 profile that shipped 9-11 dB dark sat at 8.76 dB). A second number
-# for the same question is how two instruments start disagreeing about what
-# "agree" means.
-#
-# The FLOOR argument moved with #1929 and is no longer 1.08-1.30 dB. That range
-# was PR-L3's measurement with the median over each driver's whole DECLARED
-# capture span, which counted the driver's own crossover stopband as driver
-# level. On archived run 5 — the capture this repo replays, in
-# `tests/test_audio_measurement_program_analysis.py` — banding the median takes
-# the same session's disagreement from 1.076 dB to 0.510 dB. The other four
-# archived captures have not been re-measured under the band, so the honest
-# statement is "the one capture we replay halved", not a new range.
-#
-# What the tolerance still does NOT buy is a small residual. A pair that is
-# identical by construction still reads 0.910 dB, and the number climbs with
-# ordinary driver shape at roughly 1.33 dB per dB/octave of woofer passband
-# tilt (measured on the session fixture: 0.910 flat, 2.251 at -1 dB/oct,
-# 3.574 at -2, 4.883 at -3), so a -2 dB/oct woofer — an unremarkable driver —
-# refuses while the realized-level instrument reads 1.41 dB and passes.
-#
-# That gradient is the honest read of this constant: about 1.6 dB/oct of real
-# passband tilt is the whole budget, because 0.910 dB is spent before the
-# speaker contributes anything. #1929 removed one structural bias; it did not
-# make the two estimators agree, and the next field refusal comes from what is
-# left. Closing THAT is the comparator family's work (plan section 4 M7 /
-# WO-4), and the frame-gate SEMANTICS ruling on #1866 is the next step of it.
-#
-# EXTERNAL FIELD EVIDENCE, not reproducible from this repo: an offline re-fit
-# of the 2026-07-30 field bundle puts that session at 3.2307 dB under this
-# banded estimator — still refused. Provenance and fidelity are recorded on
-# #1870; the bundle is laptop-side and gitignored, so no test replays it and
-# nothing here should be read as if one did. The archived-corpus numbers above
-# ARE in-repo and are a different session's bytes — both true, neither derived
-# from the other.
-LEVEL_FRAME_AGREEMENT_TOLERANCE_DB = REALIZED_LEVEL_MATCH_TOLERANCE_DB
+# The level-frame agreement tolerance used to live here, as a flow-side alias
+# the planner and the accountability gate both read. It is deleted with the
+# arbitration it gated (single-datum-owner migration, #2609): the summed
+# at-the-mark capture owns the level datum, the two per-driver estimates became
+# an advisory consistency check, and the one surviving tolerance is owned by
+# `crossover_v2.intervention.LEVEL_ESTIMATOR_TOLERANCE_DB` — which still
+# resolves to `program_analysis.REALIZED_LEVEL_MATCH_TOLERANCE_DB`, for the
+# reason it always did. Nothing in this file holds a level tolerance.
 
 
 # --------------------------------------------------------------------------- #
@@ -6339,6 +6299,22 @@ class CrossoverV2Session:
             session_id=self.session_id,
         )
 
+    def note_restore_observed(self) -> None:
+        """The restore-observed host event — disarms the VERIFY hold (#2616).
+
+        :meth:`note_apply_complete`'s mirror, and the same split of duties: the
+        journey owns the flag and says nothing, this says it. The host calls it
+        when the DURABLE state shows a restore this in-memory session did not
+        see — the delta probe's rollback seam and the round's adoption restore
+        both clear the durable flag through ``observe_restore``, which holds no
+        conductor and so could not tell the owner.
+        """
+        self._journey.mark_restored()
+        log_event(
+            logger, "correction.crossover_v2_restore_observed",
+            session_id=self.session_id,
+        )
+
     def _apply_observed(self) -> bool:
         if self._journey.applied:
             return True
@@ -8864,7 +8840,7 @@ class CrossoverV2Session:
             self._seams.publish_findings(record)
         except (OSError, RuntimeError, TypeError, ValueError):
             log_event(
-                logger, "correction.crossover_v2_level_frame_finding_failed",
+                logger, "correction.crossover_v2_level_estimator_finding_failed",
                 level=logging.WARNING, session_id=self.session_id, exc_info=True,
             )
 
@@ -8879,6 +8855,61 @@ class CrossoverV2Session:
         if not isinstance(linearization, Mapping):
             return 0.0
         return worst_headroom_cost_db(linearization)
+
+    def _mic_trust_ceiling_hz(self, freqs: Any) -> float | None:
+        """The frequency above which the FITTER was not allowed to command.
+
+        Read off the envelope module's own ``mic_trust_limit`` curve rather than
+        from a table copied here: the first grid bin where the allowed depth is
+        exactly 0 dB IS the ceiling, by that function's construction, so the
+        probe's ceiling and the fit's cannot drift. On a ``reference`` mic that
+        lands at about 16.4 kHz — the first bin past the table's 16 kHz taper
+        zero.
+
+        **The fitter may not command there; the probe may not grade there**
+        (#2649). Grading bins above it graded a microphone nobody trusts against
+        a command that was never issued: on the 2026-08-16 round that produced
+        ~90% of the squared error behind a 0.664 pooled realization, while the
+        trusted HF had realized 96-101% of commanded.
+
+        The tier reaches VERIFY through the published candidate's own fits —
+        ``_analyze_verify`` does not stamp ``mic_tier`` on its analysis, and the
+        MEASURE analysis that carries one is released after the fit. Same route
+        and same guard shape as :meth:`_candidate_headroom_cost_db`.
+
+        ``None`` — no ceiling, so the graded band is the caller's requested one,
+        byte-identically to before this existed — when no candidate is bound, no
+        fit recorded a tier, the tier is not one this build knows, or the curve
+        never reaches zero on this grid.
+        """
+        linearization = getattr(self._candidate, "linearization", None)
+        if not isinstance(linearization, Mapping):
+            return None
+        tier = ""
+        for entry in linearization.values():
+            if isinstance(entry, Mapping) and entry.get("mic_tier"):
+                tier = str(entry["mic_tier"])
+                break
+        if not tier:
+            return None
+        from jasper.active_speaker.linearization_envelope import mic_trust_limit
+
+        try:
+            grid = np.asarray(freqs, dtype=float)
+            allowed = mic_trust_limit(grid, tier=tier)
+        except (ValueError, TypeError):
+            # An unknown tier raises by design in the envelope module. Here that
+            # is missing evidence, not a broken session: fall back to no ceiling
+            # and keep grading what the gate trusted.
+            log_event(
+                logger, "correction.crossover_v2_mic_trust_ceiling_unavailable",
+                level=logging.WARNING, session_id=self.session_id, mic_tier=tier,
+            )
+            return None
+        zeros = np.flatnonzero(allowed <= 0.0)
+        if zeros.size == 0:
+            return None
+        return float(grid[zeros[0]])
 
     def _refuse(self, code: str) -> "CaptureBeginRefused":
         """Build the refusal for ``code``, with that code's household copy, and
@@ -8934,23 +8965,24 @@ class CrossoverV2Session:
         household as its own sentence rather than as "the measurement link
         timed out" (see :meth:`_refuse`).
 
-        The four inputs the gate is TOLD rather than reaches for are the two
-        thresholds and the two household reason codes; that module's docstring
-        records why each stays owned here.
+        The three inputs the gate is TOLD rather than reaches for are the
+        prediction threshold and the two household reason codes; that module's
+        docstring records why each stays owned here.
 
         **Write-then-say, and the ordering that matters.** The stash is
         installed before the journal is emitted, which differs from the
         method this replaced only where nothing can observe it: a decision
-        carries a stash only when it got past the frame and realized-level
-        gates, so no refusal arm writes one. That is pinned rather than
-        argued, from both arms, in ``test_crossover_v2_accountability``.
+        carries a stash only when it got past the realized-level gate, so no
+        refusal arm writes one. That is pinned rather than argued in
+        ``test_crossover_v2_accountability``. It used to say "both arms": the
+        estimator-consistency gate had a refusal arm of its own until #2609,
+        and now banks and proceeds without one.
         """
         decision = _accountability.assess_accountability(
             predicted_sum=predicted_sum,
             raw_predicted_sum=raw_predicted_sum,
             state=linearization,
             grade_prediction=spec_report_for_predicted_sum,
-            level_frame_tolerance_db=LEVEL_FRAME_AGREEMENT_TOLERANCE_DB,
             material_improvement_db=PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
             reason_levels_disagree=REASON_DRIVER_LEVELS_DISAGREE,
             reason_not_an_improvement=REASON_CORRECTION_NOT_AN_IMPROVEMENT,
@@ -10401,6 +10433,7 @@ class CrossoverV2Session:
             probe = classify_delta_probe(
                 freqs, (measured_s - predicted_s) + declared_db, declared_db,
                 band_hz=band_hz, spatial=spatial,
+                trust_ceiling_hz=self._mic_trust_ceiling_hz(freqs),
                 expected_offset_db=self._applied_offset_db(),
                 state_axis_only=True,
             )
@@ -10412,6 +10445,7 @@ class CrossoverV2Session:
             probe = classify_delta_probe(
                 freqs, realized_db, commanded_db, band_hz=band_hz,
                 declared_transfer_db=declared_db,
+                trust_ceiling_hz=self._mic_trust_ceiling_hz(freqs),
                 spatial=spatial,
                 expected_offset_db=self._applied_offset_db(),
                 entry_delta_db=self._entry_delta_db(freqs, predicted_s, commanded_db),

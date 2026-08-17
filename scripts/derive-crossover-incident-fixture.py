@@ -260,19 +260,20 @@ def derive(bundle: Path) -> dict[str, dict[str, Any]]:
     }
 
     # The trim anchor, recomputed from the banked scalars with the formula
-    # plan_linearization documents: each branch's own level-match trim, plus
-    # the level its emitted cascade gave back, plus its offset to the shared
-    # level frame, all shifted down so no branch lands positive.
+    # anchor_trims documents: anchor_base plus giveback, no third term. This
+    # incident predates the single-datum-owner migration's summed-capture
+    # datum, so anchor_base is the raw measured trim — anchor_trims' own
+    # no-summed-capture fallback, byte for byte — which is this banked
+    # session's ``trim_band_average_db``.
     #
     # Recorded here as an EXPECTATION, not as an authority. The replay test
     # asserts production's own anchor equals it, so a drift in either this
-    # script or plan_linearization fails that test; --check catches a drift in
-    # this script alone.
+    # script or anchor_trims fails that test; --check catches a drift in this
+    # script alone.
     unnormalized = {
         role: (
             float(analysis["trim_band_average_db"][role])
             + float(candidate["linearization"][role]["correction_giveback_db"])
-            + float(candidate["linearization"][role]["level_frame_offset_db"])
         )
         for role in ROLES
     }

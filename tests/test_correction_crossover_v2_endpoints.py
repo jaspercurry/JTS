@@ -11067,3 +11067,61 @@ def test_the_automatic_rollback_journals_the_same_code_the_undo_does(
 
     assert len(probe_lines) == 1, probe_lines
     assert "code=restore_target_changed" in probe_lines[0]
+
+
+def test_a_persist_after_a_rollback_cannot_resurrect_applied(
+    monkeypatch, tmp_path,
+):
+    """#2616 — the live session's stale ``applied`` must not overwrite the clear.
+
+    The production shape exactly: a stage-2 conductor is minted ``applied=True``
+    (``prepare_v2_verify``'s own ``_open``), the delta probe's rollback seam
+    restores through ``handle_v2_restore`` — which clears the DURABLE flag and
+    holds no conductor — and then the ordinary post-capture
+    ``persist_conductor_state`` runs. Before the fix that persist wrote the
+    conductor's in-memory ``applied=True`` straight back over the clear, and the
+    household's screen went on offering a correction the speaker was no longer
+    playing.
+
+    The two existing rollback tests above pass today only because neither runs a
+    persist AFTER the restore; this one does, which is the whole regression.
+    """
+    _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
+
+    conductor = CrossoverV2Session(
+        session_id="cap_2616",
+        source_preset=_preset(),
+        roles_bands=_roles(),
+        fc_hz=FC_HZ,
+        driver_caps_dbfs=CAPS,
+        session_volume_db=SESSION_VOLUME_DB,
+        seams=V2FlowSeams(
+            play=lambda *a, **k: None,
+            analyze=lambda *a, **k: None,
+            publish_check=lambda *a, **k: None,
+            publish_candidate=lambda *a, **k: None,
+            apply_complete=v2host._applied_gate,
+            apply_failed=v2host._apply_failure_gate,
+        ),
+        driver_spacing_m=0.15,
+        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
+        applied=True,
+        index_phase_map={1: PHASE_VERIFY},
+    )
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    assert (v2host.load_v2_state() or {})["applied"] is True
+    assert conductor.applied is True
+
+    rollback = v2host.bind_delta_probe_rollback(_bg_run_async, _FakeApplyCam)
+    assert rollback("realized_shape_differs_from_commanded") is True
+    assert (v2host.load_v2_state() or {})["applied"] is False
+
+    # The regression: an ordinary persist, from the same live session.
+    v2host.persist_conductor_state(conductor, failure_code=None)
+
+    assert (v2host.load_v2_state() or {})["applied"] is False
+    # ...and the in-memory owner was corrected rather than merely out-voted, so
+    # a SECOND persist cannot bring it back either.
+    assert conductor.applied is False
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    assert (v2host.load_v2_state() or {})["applied"] is False

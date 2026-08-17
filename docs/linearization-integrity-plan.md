@@ -206,7 +206,7 @@ order's plain reading and are recorded here rather than only in the code:
   the other four have not been re-measured under the band. A small offset is
   an honest reconciliation and is folded into the anchored trim. A LARGE one
   is refused
-  (`LEVEL_FRAME_AGREEMENT_TOLERANCE_DB`, deliberately the same 3.0 dB as
+  (`LEVEL_ESTIMATOR_TOLERANCE_DB` since #2609, deliberately the same 3.0 dB as
   `REALIZED_LEVEL_MATCH_TOLERANCE_DB` and imported from it): silently
   preferring either estimator by 10 dB would be the same "nothing ever
   compared these" failure pointed a new direction. This moves which instrument
@@ -318,7 +318,7 @@ own agreement gate accepts at those frequencies, so HF noise cannot fabricate a
 rollback), `DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES = 1/3` (one full smoothing
 window — texture versus structure), `DELTA_PROBE_SHORTFALL_GAIN_CEILING = 0.85`,
 `DELTA_PROBE_SPREAD_WIDENING_TOLERANCE_DB = 1.0`,
-`LEVEL_FRAME_AGREEMENT_TOLERANCE_DB = 3.0`.
+`LEVEL_ESTIMATOR_TOLERANCE_DB = 3.0` (renamed from `LEVEL_FRAME_AGREEMENT_TOLERANCE_DB` by #2609, which also made crossing it advisory rather than a refusal).
 
 Owner-ruled 2026-07-27 (recorded in FORENSICS-SYNTHESIS.md):
 

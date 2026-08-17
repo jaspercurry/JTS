@@ -67,7 +67,6 @@ from jasper.active_speaker.linearization_fit import (
     linearization_filters_by_role,
     measurement_hole_bands_hz,
     reduce_cuts_for_lift,
-    solve_shared_level_frame,
 )
 from jasper.active_speaker.branch_target import (
     SIGNIFICANT_GAIN_DB,
@@ -2291,65 +2290,6 @@ def test_the_lift_stage_does_not_unwind_the_cd_horn_give_back():
     )
 
 
-# --- the shared level frame ------------------------------------------------
-
-
-def test_the_shared_frame_puts_every_role_at_one_system_level():
-    """The structural close of PR-L4 item 1: ``target + trim`` is the SAME
-    number for every role, by construction rather than by later comparison."""
-    trims = {"woofer": 0.0, "tweeter": -24.74}
-    frame = solve_shared_level_frame({"woofer": -21.13, "tweeter": -7.24}, trims)
-    for role in ("woofer", "tweeter"):
-        assert frame.target_level_db[role] + trims[role] == pytest.approx(
-            frame.system_level_db
-        )
-
-
-def test_the_shared_frame_reproduces_the_2026_07_27_frame_error():
-    """Built from the incident's own numbers — the tweeter fitted at −7.24 dB
-    behind a −24.74 dB trim, against a woofer at −21.13 dB with no trim. The
-    frame reports 10.85 dB of disagreement, which is the 10.9 dB PR-L3
-    independently measured as the trim's own frame error on the same capture.
-    Two instruments, one number: that is what makes the offset trustworthy
-    enough to gate on."""
-    frame = solve_shared_level_frame(
-        {"woofer": -21.13, "tweeter": -7.24},
-        {"woofer": 0.0, "tweeter": -24.74},
-    )
-    assert frame.reference_role == "woofer"
-    assert frame.offset_db["woofer"] == pytest.approx(0.0)
-    assert frame.offset_db["tweeter"] == pytest.approx(10.85, abs=0.01)
-
-
-def test_the_shared_frame_never_cuts_a_driver_merely_to_match_another():
-    """The loudest proposal is the reference, so the offset is never negative:
-    only the driver that is actually out of place moves, and it moves UP. The
-    quietest reference would spend real max SPL to reach a level nothing
-    wanted."""
-    frame = solve_shared_level_frame({"a": -10.0, "b": -20.0, "c": -14.0}, {})
-    assert frame.reference_role == "a"
-    assert all(v >= 0.0 for v in frame.offset_db.values())
-    assert frame.offset_db["b"] == pytest.approx(10.0)
-
-
-def test_the_shared_frame_is_topology_agnostic():
-    """One role (a passive box's summed chain) is the trivial frame; three is
-    the same code. No way-count, no crossover, no role vocabulary."""
-    one = solve_shared_level_frame({"summed": -12.0}, {})
-    assert one.system_level_db == pytest.approx(-12.0)
-    assert one.offset_db["summed"] == pytest.approx(0.0)
-    three = solve_shared_level_frame(
-        {"woofer": -20.0, "midrange": -18.0, "tweeter": -22.0}, {},
-    )
-    assert set(three.offset_db) == {"woofer", "midrange", "tweeter"}
-    assert three.reference_role == "midrange"
-
-
-def test_an_empty_frame_raises_rather_than_being_invented():
-    with pytest.raises(ValueError, match="at least one role"):
-        solve_shared_level_frame({}, {})
-
-
 def test_driver_core_level_matches_the_fits_own_target_exactly():
     """Not a second estimator: with no radiating band supplied, the frame's
     level and the fit's target are the same resample → smooth → core-mask →
@@ -2379,16 +2319,6 @@ def test_an_unmeasurable_driver_is_left_out_of_the_frame_not_defaulted():
     )
     assert driver_core_level_db(resp, empty) is None
     assert driver_core_level_db(resp, envelope) is not None
-
-
-def test_the_frame_offset_is_reported_per_role_on_the_fit():
-    resp, envelope = _dip_response()
-    frame = solve_shared_level_frame({"woofer": -3.0, "tweeter": 0.0}, {})
-    fit = fit_driver_linearization(resp, envelope, level_frame=frame)
-    assert fit.level_frame_offset_db == pytest.approx(3.0)
-    assert fit.to_dict()["level_frame_offset_db"] == pytest.approx(3.0)
-    # No frame supplied -> 0.0, and the fit is otherwise unchanged.
-    assert fit_driver_linearization(resp, envelope).level_frame_offset_db == 0.0
 
 
 def test_reduce_cuts_survives_a_production_shaped_headroom_array():

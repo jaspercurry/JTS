@@ -423,9 +423,7 @@ def refit(session: Session, analysis: Any, *, arm: str) -> dict[str, Fit]:
     from jasper.active_speaker.linearization_envelope import compose_envelope
     from jasper.active_speaker.linearization_fit import (
         FitVocabulary,
-        driver_core_level_db,
         fit_driver_linearization,
-        solve_shared_level_frame,
     )
     from jasper.audio_measurement.spatial_combine import BandSpread
 
@@ -461,9 +459,7 @@ def refit(session: Session, analysis: Any, *, arm: str) -> dict[str, Fit]:
     radiating = {role: radiating_band_hz(s) for role, s in role_sections.items()}
 
     # Compose BOTH envelopes before fitting either — the conductor's PR-L5
-    # ordering. The session's one shared level frame is read off them, so a
-    # per-role fit-then-move loop would fit the first driver to a frame the
-    # second had not yet contributed to.
+    # ordering.
     envelopes = {
         role: compose_envelope(
             role, responses[role],
@@ -480,25 +476,6 @@ def refit(session: Session, analysis: Any, *, arm: str) -> dict[str, Fit]:
         )
         for role in ("woofer", "tweeter")
     }
-    # The frame is recomputed per arm ON PURPOSE: severing the cloud moves the
-    # envelope, which moves each driver's core level, which moves the frame.
-    # Reusing the wired frame in the severed arm would sever one input and
-    # silently keep a second derived from it.
-    core_levels_db = {
-        role: level
-        for role in ("woofer", "tweeter")
-        if (level := driver_core_level_db(
-            responses[role], envelopes[role], radiating_band_hz=radiating[role],
-        )) is not None
-    }
-    analysis_block = session.candidate["analysis"]
-    frame_trims_db = dict(
-        analysis_block.get("trim_band_average_db") or analysis_block["trim_db"]
-    )
-    level_frame = (
-        solve_shared_level_frame(core_levels_db, frame_trims_db)
-        if core_levels_db else None
-    )
 
     out: dict[str, Fit] = {}
     for role in ("woofer", "tweeter"):
@@ -506,7 +483,6 @@ def refit(session: Session, analysis: Any, *, arm: str) -> dict[str, Fit]:
         fit = fit_driver_linearization(
             response, envelope,
             vocabulary=vocabulary,
-            level_frame=level_frame,
             radiating_band_hz=radiating[role],
             target=branch_target(role_sections[role], envelope.freqs_hz),
         )

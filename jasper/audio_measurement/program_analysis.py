@@ -604,10 +604,12 @@ RIPPLE_TRIM_MIN_DB = -60.0
 #   the driver's radiating band and the range moved with it — archived run 5
 #   goes 1.076 -> 0.510 dB. The floor argument is unaffected in DIRECTION (the
 #   disagreement shrank, so 3.0 dB is if anything more generous than when it
-#   was derived), which is why the constant did not move; but the number a
-#   reader should quote today lives beside the importing gate, at
-#   ``jasper.active_speaker.crossover_v2_flow.LEVEL_FRAME_AGREEMENT_TOLERANCE_DB``,
-#   together with what #1929 did NOT close.
+#   was derived), which is why the constant did not move. The importing reader
+#   is now ``jasper.active_speaker.crossover_v2.intervention.
+#   LEVEL_ESTIMATOR_TOLERANCE_DB``, and what it gates changed with it: since the
+#   single-datum-owner migration a disagreement past it flags a capture as
+#   retriable rather than refusing a session, because the summed at-the-mark
+#   capture — not either of these two estimates — places the pair.
 # * CEILING — the level error at which the flat spec must fail anyway. An
 #   inter-branch level error of D dB appears in the summed response as a step
 #   across Fc; the spec's reference is a power mean spanning BOTH sides
@@ -4279,6 +4281,9 @@ def solve_branch_trims(
     return target - level_w, target - level_t, level_w, level_t
 
 
+
+
+
 @dataclass(frozen=True)
 class RealizedLevelMatch:
     """What the two branches ACTUALLY hand off at, once the trim is applied.
@@ -6795,6 +6800,35 @@ def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
             # the crossover frequency and the declared driver bands. ``None``
             # when the selected band carried no id: never a stand-in label.
             out[f"{role}_snr_band"] = worst.get("band_id")
+            # The ALIGNMENT-class trio, beside the MAGNITUDE one (#2640). Same
+            # shape, same source pattern, no decision change — these three are
+            # published because the number they carry DECIDES polarity and
+            # delay (`_select_alignment_pair` refuses the pair when this
+            # verdict is `insufficient`) and reached no surface at all: the
+            # only alignment-SNR footprint anywhere was a single OR'd boolean
+            # on `event=program_analysis.alignment_selection`, with no dB, no
+            # role attribution, and no band.
+            #
+            # A separate trio rather than a widened one because they answer
+            # different questions under different laws: magnitude trusts 25 dB
+            # and has a `reduced` rung, alignment demands 35 dB and has none
+            # (`snr_policy._band_verdict`). Collapsing them would let a capture
+            # that is fine for a trim read as fine for a null depth.
+            #
+            # `.get(...) or {}` twice over, deliberately: a block written
+            # before this key existed carries no `alignment` at all, and this
+            # function's contract is that a foreign or partial analysis
+            # degrades to an emptier summary rather than raising past the
+            # caller's best-effort guard.
+            alignment = resp.snr.get(DRIVER_SNR_ALIGNMENT_KEY) or {}
+            alignment_worst = alignment.get("worst_relevant") or {}
+            out[f"{role}_alignment_snr_db"] = alignment_worst.get(
+                "estimated_snr_db"
+            )
+            out[f"{role}_alignment_snr_verdict"] = driver_alignment_snr_verdict(
+                resp
+            )
+            out[f"{role}_alignment_snr_band"] = alignment_worst.get("band_id")
 
     for pilot in getattr(analysis, "pilots", None) or ():
         role = pilot.role
