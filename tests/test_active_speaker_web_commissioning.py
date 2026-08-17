@@ -874,72 +874,6 @@ def test_async_commission_tone_select_cancellation_settles_and_releases_gate(
     assert calls == expected_calls
 
 
-def test_play_commission_tone_cancellation_during_select_releases_before_exit(
-    monkeypatch,
-):
-    """The continuous-tone caller cannot lose ownership before it gets a gate.
-
-    This caller has no payload/FaninGateContext yet while TEST_SELECT is in
-    flight. Its cancellation therefore depends on the async selection boundary
-    completing owner-scoped cleanup before the request exits.
-    """
-
-    select_started = threading.Event()
-    allow_select_response = threading.Event()
-    cleanup_finished = threading.Event()
-    calls: list[str] = []
-
-    def delayed_mux_command(cmd: str) -> dict:
-        calls.append(cmd)
-        if len(calls) == 1:
-            select_started.set()
-            assert allow_select_response.wait(timeout=2.0)
-        else:
-            cleanup_finished.set()
-        return {"active_source": "correction"}
-
-    monkeypatch.setattr(web, "_commission_tone_mux_command", delayed_mux_command)
-    monkeypatch.setattr(
-        web,
-        "_commission_tone_signal_plan",
-        lambda **_kwargs: {"status": "ready", "frequency_hz": 180.0},
-    )
-    monkeypatch.setattr(web, "_commission_tone_wav_path", lambda **_kwargs: "tone.wav")
-    monkeypatch.setattr(
-        web.subprocess,
-        "Popen",
-        lambda *_args, **_kwargs: pytest.fail("playback started after cancellation"),
-    )
-
-    async def wait_for_thread_event(event: threading.Event) -> None:
-        while not event.is_set():
-            await asyncio.sleep(0)
-
-    async def scenario() -> None:
-        task = asyncio.create_task(
-            web.play_commission_tone(
-                role="woofer",
-                level_dbfs=-30.0,
-                playback_id="cancel-before-select-response",
-            )
-        )
-        await wait_for_thread_event(select_started)
-        task.cancel()
-        allow_select_response.set()
-
-        with pytest.raises(asyncio.CancelledError):
-            await task
-
-        assert cleanup_finished.is_set()
-
-    asyncio.run(scenario())
-
-    assert calls == [
-        "TEST_SELECT correction active-speaker-commissioning",
-        "TEST_RELEASE active-speaker-commissioning",
-    ]
-
-
 def _driver_capture_sweep_boundary(monkeypatch, *, play_admitted=None):
     """Boundary mocks for a play_driver_capture_sweep() run that leave the
     REAL _commission_tone_select/release_fanin_lane() in place — only the
@@ -1597,17 +1531,52 @@ def test_a_path_match_with_a_stale_topology_is_not_already_loaded(monkeypatch):
 
     stale = _staged_anchor_for(topology, staged_path)
     stale["topology"] = dict(stale["topology"], topology_id="a-topology-since-replaced")
-
-    # The path term ALONE is satisfied: same path in, same path staged.
     matched = _staged_anchor_for(topology, staged_path)
-    assert web._config_paths_match(staged_path, staged_path)
 
-    from jasper.active_speaker.startup_load import staged_topology_match_status
+    # THE GATE ITSELF IS DRIVEN, not its two predicates. An earlier version of
+    # this pin asserted `_config_paths_match(p, p)` (a string against itself)
+    # and `staged_topology_match_status(...)` — a helper this change does not
+    # touch — and never called `_ensure_commission_startup_anchor` at all, so
+    # reverting the port left it green. Composition is the subject; the
+    # predicates were already covered by their own module's tests.
+    #
+    # The spy is enough because the fast path returns BEFORE `_stage_startup_config`
+    # is reached, so "was it called" IS "was the fast path skipped" — no real
+    # staging, no `preset` plumbing, and the re-stage is proved rather than
+    # inferred from the absence of `already_loaded`.
+    staged_calls: list[str] = []
 
-    # Both terms true -> the gate may take its fast path.
-    assert staged_topology_match_status(topology, matched)["matched"] is True
-    # Path true, topology false -> it may not. This is the term that was missing.
-    assert staged_topology_match_status(topology, stale)["matched"] is False
+    def _spy_stage(_topology, *, preset=None, crossover_preview=None):
+        staged_calls.append("staged")
+        return {"status": "blocked"}
+
+    monkeypatch.setattr(web, "_stage_startup_config", _spy_stage)
+    monkeypatch.setattr(web, "request_missing_software_guards", lambda t: (t, False))
+
+    def _run(staged_config):
+        staged_calls.clear()
+        return asyncio.run(
+            web._ensure_commission_startup_anchor(
+                group="mono",
+                role="woofer",
+                staged_config=staged_config,
+                current_config_path=staged_path,  # the PATH term IS satisfied
+                camilla_factory=object,
+                preset=None,
+                crossover_preview=None,
+            )
+        )
+
+    # Path true, topology FALSE -> no fast path, and a RE-STAGE really happened.
+    stale_result = _run(stale)
+    assert stale_result.get("status") != "already_loaded", stale_result
+    assert staged_calls == ["staged"]
+
+    # Both terms true -> the fast path, and nothing is re-staged. Without this
+    # half a gate that never took the fast path would also pass.
+    matched_result = _run(matched)
+    assert matched_result.get("status") == "already_loaded", matched_result
+    assert staged_calls == []
 
 
 def test_level_match_teardown_leaves_anchor_for_first_sweep_attempt(monkeypatch):

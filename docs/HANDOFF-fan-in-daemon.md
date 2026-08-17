@@ -962,8 +962,9 @@ ordered `jasper-fanin-coupling-reconcile` transition, and the plan still owns
 its route-support policy so the doctor, operator explain CLI, and writer
 cannot drift. As of the P3/P4 default-flip the
 reconciler also has an `--auto` mode (`jasper.fanin.coupling_auto`) that resolves
-the SHIPPED default coupling (`shm_ring` on a validated full-profile,
-ring-eligible box; loopback on streambox or any failed gate) and the independent
+the SHIPPED default coupling (`shm_ring` on a ring-eligible box; loopback on
+any failed gate — since #2285 no gate refuses a box for its install profile)
+and the independent
 USB combo flags on deploy + boot, unless the operator-choice marker
 `JASPER_FANIN_COUPLING_CHOICE=operator` freezes the box — see
 [HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md).

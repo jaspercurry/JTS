@@ -82,17 +82,74 @@ def test_is_operator_choice(raw, expected):
     assert ca.is_operator_choice(raw) is expected
 
 
-def test_a_streambox_is_judged_on_its_own_evidence_not_its_class(monkeypatch):
-    """#2285: no install-profile gate. A streambox arms on the same proof as any box.
+def test_no_gate_refuses_a_box_for_its_install_profile(monkeypatch):
+    """#2285 deleted the class gate. This runs against the REAL gate list.
 
-    ``ring_install_profile_ready`` used to refuse automatic ``shm_ring`` on a
-    Zero-class box purely because the ring had not been VALIDATED there — a
-    class-shaped refusal standing in for a per-box proof the other gates already
-    make. It is deleted, so a streambox now takes the ring exactly when its own
-    hardware evidence says it can.
+    The first version of this pin called `_stub_ring_gates`, which replaces
+    `default_ring_gates` wholesale — so it never saw the real list, its
+    install-profile monkeypatch was inert, and re-adding the deleted gate
+    verbatim left it green. Anything asserting on a stubbed list cannot notice
+    a gate being put back, which is the only regression direction that matters
+    here.
 
-    BOTH directions are asserted, because only the first would pass equally well
-    if the whole gate list had been dropped instead of one entry.
+    Two halves, both against the real list:
+
+    1. NAME — no class-shaped gate is in it. This is what dies if someone
+       resurrects `("install_profile", …)`.
+    2. BEHAVIOUR — a real streambox, resolved through the real list, is refused
+       (if at all) by a RING gate naming ring evidence, never by its profile.
+       On a dev box the ring assets are genuinely absent, so the refusal is
+       real rather than arranged.
+    """
+
+    from jasper import install_profile
+
+    real_gates = cr.default_ring_gates()
+    names = [name for name, _ in real_gates]
+
+    # (1) The deleted gate's name, and the class question in any spelling.
+    assert "install_profile" not in names, names
+    for name in names:
+        assert "profile" not in name, f"{name} looks like a class gate: {names}"
+
+    # (2) A real streambox through the real gates. `read_install_profile` is
+    # patched at its own module so ANY surviving reader on the resolve path
+    # would still see a streambox — the point is that nothing reads it.
+    monkeypatch.setattr(
+        install_profile,
+        "read_install_profile",
+        lambda: install_profile.STREAMBOX_INSTALL_PROFILE,
+    )
+    decision = ca.resolve_auto_decision(
+        marker_raw=None,
+        gadget_present=True,
+        usb_intent_enabled=True,
+        ring_gates=real_gates,
+    )
+
+    assert "streambox" not in decision.reason.lower(), decision.reason
+    assert "install profile" not in decision.reason.lower(), decision.reason
+    if decision.coupling == COUPLING_LOOPBACK:
+        # Refused — it must name the ring gate that refused, so an operator is
+        # told what to fix rather than that their box is the wrong kind.
+        assert any(f"({name})" in decision.reason for name in names), decision.reason
+
+    # USB DIRECT eligibility stays independent of the ring question — the
+    # original gate's other justification, which must survive its deletion.
+    assert decision.combo_armed is True
+    assert decision.usb_combo_actions
+    assert all(a.value == "enabled" for a in decision.usb_combo_actions)
+
+
+def test_a_streambox_arms_when_its_own_ring_evidence_passes(monkeypatch):
+    """The other direction, with the gate ANSWERS stubbed but the shape real.
+
+    `_SHARED_RING_PREFLIGHTS` holds direct function references, so the gate
+    answers cannot be monkeypatched through the real tuple — this half
+    substitutes the list to make every gate pass and asserts a streambox then
+    takes the ring, which the class gate forbade outright. It is deliberately
+    NOT the pin for the deletion (see the test above); it pins that nothing
+    else refuses a streambox once its evidence is good.
     """
 
     from jasper import install_profile
@@ -102,38 +159,15 @@ def test_a_streambox_is_judged_on_its_own_evidence_not_its_class(monkeypatch):
         "read_install_profile",
         lambda: install_profile.STREAMBOX_INSTALL_PROFILE,
     )
-
-    # Gates pass -> a streambox resolves the ring, which the class gate forbade.
     _stub_ring_gates(monkeypatch, eligible=True)
-    armed = ca.resolve_auto_decision(
+    decision = ca.resolve_auto_decision(
         marker_raw=None,
         gadget_present=True,
         usb_intent_enabled=True,
         ring_gates=cr.default_ring_gates(),
     )
-    assert armed.coupling == COUPLING_SHM_RING, armed.reason
 
-    # Gates refuse -> still loopback (the fail-safe the class gate used to give
-    # for free), but the reason names the GATE that refused rather than the
-    # profile, so an operator is told what to fix.
-    _stub_ring_gates(monkeypatch, eligible=False)
-    refused = ca.resolve_auto_decision(
-        marker_raw=None,
-        gadget_present=True,
-        usb_intent_enabled=True,
-        ring_gates=cr.default_ring_gates(),
-    )
-    assert refused.coupling == COUPLING_LOOPBACK
-    assert "streambox" not in refused.reason.lower(), refused.reason
-    assert "ring_assets" in refused.reason or "ring_topology" in refused.reason
-
-    # USB DIRECT eligibility stays independent of the ring question, in both
-    # directions — that separation was the original gate's other justification
-    # and it must survive the deletion.
-    for decision in (armed, refused):
-        assert decision.combo_armed is True
-        assert decision.usb_combo_actions
-        assert all(a.value == "enabled" for a in decision.usb_combo_actions)
+    assert decision.coupling == COUPLING_SHM_RING, decision.reason
 
 
 def test_usbsink_effective_gate_reads_canonical_source_state_and_role(monkeypatch):
@@ -744,7 +778,9 @@ def test_auto_jts4_streambox_no_fanin_stack_exits_clean(tmp_path, monkeypatch):
     """Legacy jts4 shape: ineligible ring and no gadget exits cleanly.
 
     Current streamboxes run this owner because they share fan-in and may need
-    USB DIRECT; the install-profile gate independently keeps ring on loopback.
+    USB DIRECT. Since #2285 nothing keeps ring on loopback for the profile's
+    sake -- THIS box resolves loopback because its ring evidence is absent, and
+    that is the shape under test.
     """
     fanin = tmp_path / "fanin.env"
     outputd = tmp_path / "outputd.env"

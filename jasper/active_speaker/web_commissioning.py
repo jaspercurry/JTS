@@ -20,8 +20,6 @@ import math
 import os
 import socket
 import subprocess
-import threading
-import time
 from collections.abc import Coroutine
 from dataclasses import dataclass
 from pathlib import Path
@@ -80,7 +78,6 @@ from jasper.active_speaker.topology_tone import build_summed_topology_tone_plan
 # steady state about which transport the box is on.
 from jasper.audio_measurement.correction_lane import (
     correction_play_device,
-    popen_correction_play,
 )
 from jasper.camilla import CamillaUnavailable
 from jasper.camilla_config_contract import DEFAULT_VOLUME_LIMIT_DB
@@ -116,8 +113,6 @@ DEFAULT_AUTOMATIC_SUMMED_CONFIG_PATH = Path(
 AUTOMATIC_SUMMED_CONFIG_PATH_ENV = "JASPER_ACTIVE_SPEAKER_SUMMED_MEASUREMENT_CONFIG"
 COMMISSION_TONE_MUX_SOCKET = "/run/jasper-mux/control.sock"
 COMMISSION_TONE_FANIN_LABEL = "correction"
-_COMMISSION_TONE_LOCK = threading.Lock()
-_COMMISSION_TONE_SESSION: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -917,235 +912,6 @@ def _commission_tone_payload(
     return payload
 
 
-def _stop_commission_tone_locked(*, reason: str) -> dict[str, Any]:
-    global _COMMISSION_TONE_SESSION
-
-    session = _COMMISSION_TONE_SESSION
-    _COMMISSION_TONE_SESSION = None
-    if not session:
-        return {"status": "idle", "reason": reason}
-    proc = session.get("process")
-    was_running = bool(proc is not None and proc.poll() is None)
-    if was_running and proc is not None:
-        try:
-            proc.terminate()
-            proc.wait(timeout=0.75)
-        except subprocess.TimeoutExpired:
-            try:
-                proc.kill()
-                proc.wait(timeout=0.75)
-            except (OSError, ProcessLookupError, subprocess.TimeoutExpired):
-                pass
-        except ProcessLookupError:
-            pass
-    return {
-        "status": "stopped" if was_running else "expired",
-        "reason": reason,
-        "playback_id": session.get("playback_id"),
-        "target_key": session.get("target_key"),
-    }
-
-
-def stop_commission_tone(*, reason: str) -> dict[str, Any]:
-    """Stop the continuous per-driver tone and release the test fan-in lane."""
-
-    with _COMMISSION_TONE_LOCK:
-        payload = _stop_commission_tone_locked(reason=reason)
-    payload["fanin_gate"] = _commission_tone_release_fanin_lane(reason=reason)
-    log_event(
-        logger,
-        "active_speaker.web_commission_tone",
-        action="stop",
-        reason=reason,
-        status=payload.get("status"),
-    )
-    return payload
-
-
-async def play_commission_tone(
-    *,
-    role: str,
-    level_dbfs: float,
-    playback_id: str,
-    group_id: str | None = None,
-    target: dict[str, Any] | None = None,
-    topology: Any = None,
-    preset: Any = None,
-    crossover_preview: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Ensure one bounded continuous commissioning tone is playing."""
-
-    global _COMMISSION_TONE_SESSION
-
-    role = str(role or "").strip().lower()
-    signal_plan = _commission_tone_signal_plan(
-        role=role,
-        group_id=group_id,
-        topology=topology,
-        preset=preset,
-        crossover_preview=crossover_preview,
-    )
-    frequency_hz = signal_plan.get("frequency_hz")
-    if signal_plan.get("status") != "ready" or frequency_hz is None:
-        log_event(
-            logger,
-            "active_speaker.web_commission_tone",
-            level=logging.WARNING,
-            action="plan",
-            status="blocked",
-            group=group_id,
-            role=role,
-        )
-        return _commission_tone_payload(
-            status="blocked",
-            playback_id=playback_id,
-            role=role,
-            level_dbfs=level_dbfs,
-            frequency_hz=None,
-            target=target,
-            group_id=group_id,
-            audio_emitted=False,
-            issues=[
-                issue for issue in signal_plan.get("issues", [])
-                if isinstance(issue, dict)
-            ],
-            signal_plan=signal_plan,
-        )
-    target_key = _commission_tone_target_key(role=role, group_id=group_id, target=target)
-    try:
-        wav_path = _commission_tone_wav_path(frequency_hz=frequency_hz)
-        fanin_gate = await _commission_tone_select_fanin_lane_async()
-    except _COMMISSION_START_ERRORS as exc:
-        return _commission_tone_payload(
-            status="failed",
-            playback_id=playback_id,
-            role=role,
-            level_dbfs=level_dbfs,
-            frequency_hz=frequency_hz,
-            target=target,
-            group_id=group_id,
-            audio_emitted=False,
-            issues=[_commission_tone_issue(exc)],
-            signal_plan=signal_plan,
-        )
-
-    started_proc = None
-    try:
-        with _COMMISSION_TONE_LOCK:
-            session = _COMMISSION_TONE_SESSION
-            if session and session.get("process") is not None:
-                proc = session["process"]
-                elapsed = time.monotonic() - float(session.get("started_monotonic", 0.0))
-                remaining = COMMISSION_TONE_DURATION_S - elapsed
-                if (
-                    session.get("target_key") == target_key
-                    and abs(float(session.get("frequency_hz", 0.0)) - frequency_hz)
-                    < 0.01
-                    and proc.poll() is None
-                    and remaining > COMMISSION_TONE_RESTART_MARGIN_S
-                ):
-                    session["playback_id"] = playback_id
-                    return _commission_tone_payload(
-                        status="completed",
-                        playback_id=playback_id,
-                        role=role,
-                        level_dbfs=level_dbfs,
-                        frequency_hz=frequency_hz,
-                        target=target,
-                        group_id=group_id,
-                        audio_emitted=True,
-                        issues=[],
-                        session_reused=True,
-                        fanin_gate=fanin_gate,
-                        signal_plan=signal_plan,
-                    )
-                _stop_commission_tone_locked(reason="replace")
-
-            proc = popen_correction_play(
-                wav_path,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            if proc.poll() is not None:
-                raise RuntimeError(f"aplay exited immediately with rc={proc.returncode}")
-            started_proc = proc
-            _COMMISSION_TONE_SESSION = {
-                "process": proc,
-                "playback_id": playback_id,
-                "target_key": target_key,
-                "frequency_hz": frequency_hz,
-                "started_monotonic": time.monotonic(),
-            }
-    except (OSError, RuntimeError) as exc:
-        await _commission_tone_release_fanin_lane_async(reason="start_failed")
-        return _commission_tone_payload(
-            status="failed",
-            playback_id=playback_id,
-            role=role,
-            level_dbfs=level_dbfs,
-            frequency_hz=frequency_hz,
-            target=target,
-            group_id=group_id,
-            audio_emitted=False,
-            issues=[_commission_tone_issue(exc)],
-            fanin_gate=fanin_gate,
-            signal_plan=signal_plan,
-        )
-    if started_proc is not None:
-        proc = started_proc
-        await asyncio.sleep(COMMISSION_TONE_STARTUP_CHECK_S)
-        if proc.poll() is not None:
-            with _COMMISSION_TONE_LOCK:
-                if (
-                    _COMMISSION_TONE_SESSION
-                    and _COMMISSION_TONE_SESSION.get("process") is proc
-                ):
-                    _COMMISSION_TONE_SESSION = None
-            await _commission_tone_release_fanin_lane_async(reason="startup_exit")
-            return _commission_tone_payload(
-                status="failed",
-                playback_id=playback_id,
-                role=role,
-                level_dbfs=level_dbfs,
-                frequency_hz=frequency_hz,
-                target=target,
-                group_id=group_id,
-                audio_emitted=False,
-                issues=[
-                    _commission_tone_issue(
-                        RuntimeError(
-                            f"aplay exited during startup with rc={proc.returncode}"
-                        )
-                    )
-                ],
-                fanin_gate=fanin_gate,
-                signal_plan=signal_plan,
-            )
-
-    log_event(
-        logger,
-        "active_speaker.web_commission_tone",
-        action="start",
-        group=group_id,
-        role=role,
-        frequency_hz=frequency_hz,
-        duration_s=COMMISSION_TONE_DURATION_S,
-    )
-    return _commission_tone_payload(
-        status="completed",
-        playback_id=playback_id,
-        role=role,
-        level_dbfs=level_dbfs,
-        frequency_hz=frequency_hz,
-        target=target,
-        group_id=group_id,
-        audio_emitted=True,
-        issues=[],
-        fanin_gate=fanin_gate,
-        signal_plan=signal_plan,
-    )
-
-
 def _plan_with_issues(
     plan: dict[str, Any],
     issues: list[dict[str, str]],
@@ -1180,10 +946,20 @@ def commission_status_payload() -> dict[str, Any]:
 # ``_active_speaker_commission_ramp_*_payload`` -> ``jasper.active_speaker
 # .commission_ramp`` -- which superseded this layer and kept its own routes.
 # Wiring these up instead would have given one household feature two
-# orchestrations, which is the drift this campaign exists to remove. The
-# primitives they composed (``abort_ramp``, ``load_ramp_state``,
-# ``stop_commission_tone``, ``commission_load_config``) are untouched: the ramp
-# path is their live caller.
+# orchestrations, which is the drift this campaign exists to remove.
+#
+# WHAT SURVIVED AND WHAT WENT WITH THEM, re-derived rather than asserted after
+# the first version of this comment named a live caller that did not exist.
+# ``abort_ramp``, ``load_ramp_state`` and ``commission_load_config`` are
+# untouched -- /sound/'s ramp routes are their live callers. ``stop_commission_tone``
+# and ``play_commission_tone`` were NOT: their only callers were the wrappers
+# above, so the same commit that removed those orphaned these, and they are
+# deleted here with the module-local session state they owned
+# (``_stop_commission_tone_locked`` and its ``_COMMISSION_TONE_SESSION`` /
+# ``_COMMISSION_TONE_LOCK`` pair). /sound/ keeps its own same-named locals --
+# see the note at ``jasper/web/sound_setup.py``'s commission-tone import block,
+# which is why the shared-owner contract in
+# tests/test_commission_tone_single_owner.py deliberately excludes them.
 
 
 def _crossover_frequency_for_group(

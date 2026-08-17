@@ -155,10 +155,31 @@ _SUMMED_TEST_FAILURE_FAMILIES: tuple[tuple[tuple[str, ...], str], ...] = (
     # a sentence of their own: their remedy is the same two steps, and this
     # sentence names the control to press instead of saying "retry" abstractly.
     #
-    # Placed ABOVE `summed_test_output_mismatch` because the tone-backend codes
-    # must keep beating it, and below every routing family above because "go
-    # back to <step>" / "open System status" is a better answer than "retry"
-    # whenever one of those codes is also present.
+    # ORDER, stated in full because the merge moved more than the two codes it
+    # folded. First-code-present-wins, so collapsing three transport families
+    # into one and folding the tone codes in here promoted BOTH this 21-code
+    # family and the 4-code transport family above `summed_test_output_mismatch`
+    # AND `summed_test_already_active` — 25 codes crossed, not 2.
+    #
+    # vs `summed_test_output_mismatch`: REACHABLE, and this is the correct
+    # order. `measurement.record_summed_test_artifact` does
+    # `issues.extend(playback_issues)` and THEN appends the mismatch, so
+    # co-occurrence is structural. The existing pin's own rationale — a backend
+    # that never played beats a mismatch measured from what played — now extends
+    # from the 2 tone codes to all 25: telling a household to "re-check Confirm
+    # outputs" when the graph never loaded is the misdirection.
+    #
+    # vs `summed_test_already_active`: UNREACHABLE together, so the promotion is
+    # inert rather than judged. Every `_summed_playback_with_issue` call site in
+    # sound_setup.py is a mutually-exclusive early return carrying ONE issue, and
+    # the already-active site is gated behind `start_tone_playback` having
+    # returned `completed` — a quiet/transport code cannot ride the same list.
+    # Its order relative to `summed_test_output_mismatch` is preserved (both
+    # moved down together).
+    #
+    # Below every routing family above, because "go back to <step>" / "open
+    # System status" is a better answer than "retry" whenever one of those codes
+    # is also present.
     (
         (
             "tone_backend_failed",
