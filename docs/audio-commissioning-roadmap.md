@@ -198,13 +198,13 @@ it returns.
 frequency *is* the manufacturer's minimum recommended crossover frequency
 with its slope condition, entered once at component entry, and every
 consumer derives from that one field. As of the ruling, jts3 carries two
-values for it. #2603 owns the collapse and the companion fix to the research prompt
-that produced the second one; the rule, the datasheet evidence, and the
-published-field convention live in
+values for it. #2603 owns the collapse and the companion fix to the
+research prompt that produced the second one; the rule, the datasheet
+evidence, and the published-field convention live in
 [`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md)
-decisions 8–9. Small, and sequenced early because that one constant shapes
-both the safety posture and the integration-claim grading band, so anything
-measured before it grades itself against a number nobody stands behind.
+decisions 8–9. Small, and sequenced early for the reason recorded in
+decision 8 — anything measured before it grades itself against a number
+nobody stands behind.
 
 **Sequencing note (not a pre-run item).** The same ruling set puts a second
 piece of work between this wave and the next tuning series: correction

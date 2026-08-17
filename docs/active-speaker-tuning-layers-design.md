@@ -171,14 +171,16 @@ morning after the series-1 convergence run on jts3.
 
    **How the fact is actually published, so the prompt asks for the right
    field (researched 2026-08-17).** Horn/compression-driver makers give it a
-   dedicated spec-sheet line — "Recommended Crossover" (B&C, BMS),
+   dedicated spec-sheet line — "Recommended Crossover" (B&C, BMS, 18 Sound:
+   three of the five horn makers checked use that exact phrase), or
    "Minimum Crossover Frequency" / "Recommended min. crossover" (FaitalPro,
-   18 Sound, Celestion) — as a single frequency, usually paired with an
-   explicit slope condition, which may sit in a footnote (B&C, FaitalPro:
-   "12 dB/oct. or higher slope high-pass filter") or inside the field name
-   itself (Celestion). It is not universal: BMS's 4590 field carries no slope
-   qualifier. **Dome tweeters usually have no such line at all** — SB
-   Acoustics and Scan-Speak instead express it as the test condition
+   Celestion) — as a single frequency, usually paired with an explicit slope
+   condition, which may sit in a numbered footnote of near-identical wording
+   (B&C "12 dB/oct. or higher slope high-pass filter"; 18 Sound "12 dB/oct or
+   higher slope high pass filter"; FaitalPro the same template) or inside the
+   field name itself (Celestion). It is not universal: BMS's 4590 field
+   carries no slope qualifier. **Dome tweeters usually have no such line at
+   all** — SB Acoustics and Scan-Speak instead express it as the test condition
    footnoted to the *power-handling* rating ("IEC 268-5, high-pass
    Butterworth, 2600 Hz, 12 dB/oct."; "X-over: 2. order HP Butterworth,
    2.5 kHz"), phrased as a filter order rather than a dB/octave figure.
@@ -485,7 +487,7 @@ measuring. Three mechanisms, each evidenced, say why:
 - **The per-driver instrument is blind exactly there.** Three of the four
   candidates (r1/r2/r4) carry a woofer `blind_zone_placements` record over
   **1291.4–2077.2 Hz** — the gap between the woofer's core-band top and the
-  tweeter's core-band bottom (#2600 item 4) — centred at 1857.4 Hz,
+  tweeter's core-band bottom (#2600 item 4) — with the placement at 1857.4 Hz,
   acknowledging `measured_excess_db` of 2.09–2.26 dB and emitting only −0.51
   to −0.64 dB against it. That damping is the fit being careful on evidence
   it does not have, not a bug. `_blind_zone_placements` in
@@ -493,12 +495,17 @@ measuring. Three mechanisms, each evidenced, say why:
   already carries the full argument — including why it reports rather than
   refuses — and already names this section's conclusion: the honest separator
   "needs the SUM, which only the alignment/crossover layer sees."
-- **The fit's only boost-shaped lever refused itself, correctly.** The tweeter
-  fit asked for a lift of 0.738 / 0.988 / 0.730 dB in r1/r3/r4 and got
-  `lift_suppressed_reason: no_realizable_boost` each time (r2 asked for none).
-  That lift is the HF-continuation stage's, not a notch filler — the point is
-  that with no realizable boost anywhere in the fit, the levers left were cuts
-  (damped in the blind zone, per the bullet above) and the whole-driver scalar
+- **No lever of the right shape reached the dip.** The tweeter fit asked for a
+  lift of 0.738 / 0.988 / 0.730 dB in r1/r3/r4 and got
+  `lift_suppressed_reason: no_realizable_boost` each time (r2 asked for none);
+  that lift is the HF-continuation stage's, not a notch filler. A boost *did*
+  realize — the woofer emitted a +2.38 to +2.68 dB Peaking filter in all four
+  rounds — but at 422–434 Hz, more than two octaves below the dip. (That is a
+  positive gain in the emitted graph: decision 4 above still describes the
+  retired cut-only posture, and roadmap item 6 owns the sweep that trues those
+  claims up.) So with the tweeter's lift refused and the woofer's only
+  realizable boost that far away, what was left near 1947 Hz were cuts —
+  damped in the blind zone, per the bullet above — and the whole-driver scalar
   trim, which is the wrong shape for a notch.
 - **The prescription never consumed the banked trend.** What accumulates feeds
   the STOP test, not the prescription. Rounds 1–2 were started with
