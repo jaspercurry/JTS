@@ -7849,8 +7849,20 @@ def test_fit_linearization_wires_ripple_optimal_seeded_by_anchored_giveback(
     # is #1668's subject: the scan is SEEDED by the anchored give-back
     # (asserted on `seed_trim_db`/`trim_w_db` above) and what ships is never
     # the raw trim.
-    assert committed_t == pytest.approx(expected_anchored["tweeter"])
-    assert resolved_trim_t == pytest.approx(expected_anchored["tweeter"])
+    #
+    # The two pairs USED to coincide on this fixture, so this asserted equality
+    # with the anchor. They no longer do: deleting PR-L5's offset moved the
+    # anchor ~2.2 dB and the level adjudication now scores the polished pair
+    # better, so the committed value is the scan's. That is the adjudication
+    # working, not a regression — and per the paragraph above, WHICH pair wins
+    # is explicitly not this test's claim. What is asserted is the claim it
+    # does make.
+    assert committed_t == pytest.approx(resolved_trim_t)
+    assert committed_t != pytest.approx(_FIXTURE_RAW_TRIM_DB["tweeter"])
+    assert committed_t in (
+        pytest.approx(expected_anchored["tweeter"]),
+        pytest.approx(resolved_trim_t),
+    )
 
 
 def test_linearized_ripple_polish_is_skipped_on_a_one_sided_band(caplog, monkeypatch):
@@ -8205,6 +8217,34 @@ def test_large_raw_shift_is_accepted_by_the_guard_and_refused_by_the_level_check
     assert fakes.published_candidates == []
 
 
+
+def _neutralize_improvement_floor(monkeypatch) -> None:
+    """Take item 2's material-improvement floor out of a test's way.
+
+    **Why five fit/anchor tests need this since #2609.** Deleting PR-L5's
+    ``level_frame_offset_db`` moved this fixture's anchored tweeter ~2.2 dB
+    (the two per-driver estimates are identical here at -1.773 dB, so the
+    anchor's BASE never moved — only the deleted offset did). A louder tweeter
+    predicts a smaller improvement, and these fixtures then trip
+    ``correction_not_an_improvement`` before reaching what they are about.
+
+    **The refusal is correct and is pinned on its own** — see
+    ``test_the_deleted_offset_can_cost_a_session_the_improvement_floor``. A
+    candidate that cleared the 0.5 dB floor only because the arbitration's
+    offset adjusted the prediction was prediction-flattered shipping, which is
+    the class the ratified direction deletes (2026-08-17 conductor ruling on
+    PR #2652). The floor itself is unchanged; the prediction is now computed
+    from the measured raw solve.
+
+    Neutralizing it HERE rather than re-deriving these five to expect a refusal
+    keeps each one testing its own subject — the wild-drift guard, the rejected
+    scan, the normalize shift, the trim-rejected outcome, the linearized
+    predicted sum. This is the fixture author's own rule, already stated in
+    ``test_anchored_normalization_shift_prevents_a_positive_trim``'s docstring:
+    a test should not ride "a floor it has nothing to say about".
+    """
+    monkeypatch.setattr(flow, "PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB", 0.0)
+
 def test_wild_scan_drift_falls_back_to_anchored_pair_with_warning(caplog, monkeypatch):
     """#1668 anchored give-back, guard pair (b): when the ripple-optimal tweeter
     scan drifts implausibly far from the ANCHOR, the guard fires and the
@@ -8229,6 +8269,7 @@ def test_wild_scan_drift_falls_back_to_anchored_pair_with_warning(caplog, monkey
 
     monkeypatch.setattr(iv, "solve_ripple_optimal_trim", _spy)
 
+    _neutralize_improvement_floor(monkeypatch)
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
     c = _conductor(fakes)
@@ -8316,6 +8357,7 @@ def test_a_rejected_scan_is_not_committed_however_well_it_levels(caplog, monkeyp
     monkeypatch.setattr(
         iv, "realized_level_match", _match,
     )
+    _neutralize_improvement_floor(monkeypatch)
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
     c = _conductor(fakes)
@@ -8447,6 +8489,7 @@ def test_anchored_normalization_shift_prevents_a_positive_trim(monkeypatch):
     monkeypatch.setattr(iv, "solve_ripple_optimal_trim", _spy)
 
     raw_trim = dict(_FIXTURE_RAW_TRIM_DB)
+    _neutralize_improvement_floor(monkeypatch)
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
     c = _conductor(fakes)
@@ -9091,6 +9134,7 @@ def test_candidate_built_linearization_field_trim_rejected(caplog, monkeypatch):
         iv, "solve_ripple_optimal_trim",
         lambda *a, **k: (k["seed_trim_db"] - 20.0, 0.0, k["seed_trim_db"]),
     )
+    _neutralize_improvement_floor(monkeypatch)
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
     c = _conductor(fakes)
@@ -9298,6 +9342,7 @@ def test_measure_predicted_sum_uses_linearized_branches_when_trim_rejected(monke
 
     monkeypatch.setattr(iv, "solve_ripple_optimal_trim", _spy)
 
+    _neutralize_improvement_floor(monkeypatch)
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
     c = _conductor(fakes)
@@ -11607,3 +11652,68 @@ def test_a_hole_centred_BOOST_makes_the_blind_zone_emit_a_warning(caplog):
     for record in records:
         assert record.levelno == logging.WARNING, record.getMessage()[:200]
         assert "1404.4032" in record.getMessage()
+
+
+def test_the_deleted_offset_can_cost_a_session_the_improvement_floor(
+    caplog, monkeypatch,
+):
+    """#2609's user-visible flip: this fixture now REFUSES where it shipped.
+
+    **The mechanism, located.** On this fixture the two per-driver level
+    estimates are identical (``trim_db`` and ``trim_band_average_db`` are both
+    ``{woofer: 0.0, tweeter: -1.773}``), so the anchor's BASE never moved.
+    What moved is PR-L5's ``level_frame_offset_db``, ~2.2 dB on the tweeter.
+    A louder tweeter predicts a smaller improvement, and the prediction now
+    lands under item 2's 0.5 dB material-improvement floor.
+
+    **Why that is correct, not a regression** (2026-08-17 conductor ruling on
+    PR #2652). A candidate that cleared the floor only because the
+    arbitration's offset adjusted the prediction was prediction-FLATTERED
+    shipping — the exact class the ratified direction deletes. The floor itself
+    is unchanged at ``PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB``; what changed is
+    that the prediction is computed from the measured raw solve.
+
+    **The household story has to stay coherent, so this pins both halves of
+    it.** The refusal is PRE-APPLY — the reigning graph is untouched and the
+    household keeps their current sound — and it answers "why" on two
+    surfaces: the journal names the numbers, and the refusal carries household
+    copy rather than a bare code. The five fit/anchor tests above neutralize
+    this floor precisely because they have nothing to say about it; this test
+    is where it is said.
+    """
+    caplog.set_level(logging.ERROR, logger=_DIAG_LOGGER)
+
+    # Force the ANCHOR to be the committed pair, which is the population the
+    # flip is scoped to: a wild scan drift trips the sanity guard and the
+    # anchored pair ships. On the ordinary path the ripple polish moves the
+    # pair and the prediction still clears the floor — this is NOT every
+    # session, and the narrowness is the point.
+    monkeypatch.setattr(
+        iv, "solve_ripple_optimal_trim",
+        lambda *a, **k: (k["seed_trim_db"] - 20.0, 0.0, k["seed_trim_db"]),
+    )
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+
+    with pytest.raises(CaptureBeginRefused) as refused:
+        _run_phase(c, 2, 2)
+
+    # Leg 1 — the household sentence, not a bare code. TEMPLATE_HARD_STOP, so
+    # it says what happened and what would change the outcome.
+    assert c.last_failure_code == REASON_CORRECTION_NOT_AN_IMPROVEMENT
+    message = str(refused.value)
+    assert "would not have made this speaker measure better" in message
+    assert "was not applied" in message
+
+    # Leg 2 — the journal names the numbers a support read needs: which floor,
+    # what the prediction scored against it, and both sides of the comparison.
+    assert "event=correction.crossover_v2_prediction_gate" in caplog.text
+    assert f"reason={REASON_CORRECTION_NOT_AN_IMPROVEMENT}" in caplog.text
+    for field in ("before_rms_db=", "after_rms_db=", "improvement_db=",
+                  "required_db="):
+        assert field in caplog.text, field
+
+    # PRE-APPLY: nothing was committed, so the reigning graph is untouched.
+    assert c.candidate is None
