@@ -45,13 +45,14 @@ nothing. `E0_CAPTURE_RELAY_DIR` points that read at another checkout.
 ## Run it
 
 The repo's own virtualenv already has everything the tool imports
-(`requests`, `cryptography`, `urllib3`). Recording needs `sox` on PATH and is
-macOS-only: the recorder asks for the `coreaudio` device named by `--mic`
-(default `UMIK-2`).
+(`requests`, `cryptography`, `urllib3`), so every command below runs from the
+repo root. Recording needs `sox` on PATH and is macOS-only: the recorder asks
+for the `coreaudio` device named by `--mic` (default `UMIK-2`).
 
 The offline self-test is the proof that the client still matches the Pi. It
-makes no network call at all — every check round-trips fabricated data
-in-process or against the live repo's own validator:
+makes no network call at all: its checks round-trip fabricated data
+in-process, run against the repo's own validator, or — best-effort, locally —
+through `sox`.
 
 ```sh
 .venv/bin/python experiments/e0-capture/e0_capture.py --selftest
