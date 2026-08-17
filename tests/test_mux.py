@@ -459,33 +459,55 @@ async def test_alert_during_coalesce_does_not_queue_empty_reconcile(
     second_alert_done = asyncio.Event()
 
     async def record_reconcile(*, trigger, dirty_sources):
-        reconciles.append((trigger, tuple(sorted(s.value for s in dirty_sources))))
-        if trigger == "startup":
+        # Classify on the trigger mux reports, never on position in
+        # `reconciles`. POLL_INTERVAL_SEC is 1.0s, so a patrol may land
+        # anywhere in this sequence; a positional key let that patrol
+        # impersonate the first alert and mis-signal the whole
+        # coordination below, leaving the test correct only while it
+        # finished inside one poll interval. "alert+patrol" is an alert
+        # that was also patrol-due — mux's own rule is this substring
+        # test (see Mux._reconcile).
+        kind = (
+            "startup" if trigger == "startup"
+            else "alert" if "alert" in trigger
+            else "patrol"
+        )
+        reconciles.append((kind, tuple(sorted(s.value for s in dirty_sources))))
+        if kind == "startup":
             startup_done.set()
-        elif len(reconciles) == 2:
+        elif kind == "alert":
             mux._last_alert_reconcile_at = asyncio.get_running_loop().time()
-            first_alert_done.set()
-        elif len(reconciles) == 3:
-            mux._last_alert_reconcile_at = asyncio.get_running_loop().time()
-            second_alert_done.set()
+            alerts_seen = sum(1 for seen, _ in reconciles if seen == "alert")
+            if alerts_seen == 1:
+                first_alert_done.set()
+            elif alerts_seen == 2:
+                second_alert_done.set()
 
     mux._reconcile = record_reconcile
     task = asyncio.create_task(mux.run())
     try:
-        await asyncio.wait_for(startup_done.wait(), timeout=0.2)
+        await wait_signalled(startup_done, "startup reconcile", producer=task)
         mux.notify_source_changed(Source.AIRPLAY, "test")
-        await asyncio.wait_for(first_alert_done.wait(), timeout=0.2)
+        await wait_signalled(
+            first_alert_done, "first alert reconcile", producer=task,
+        )
 
         mux.notify_source_changed(Source.AIRPLAY, "test")
         await asyncio.sleep(0.01)
         mux.notify_source_changed(Source.AIRPLAY, "test")
-        await asyncio.wait_for(second_alert_done.wait(), timeout=0.2)
+        await wait_signalled(
+            second_alert_done, "second alert reconcile", producer=task,
+        )
         await asyncio.sleep(0.02)
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
 
-    assert reconciles == [
+    # A patrol landing here is correct behaviour, not a fault, so it must
+    # not decide whether the test passes. Filtering it out keeps the
+    # property exactly as strong: exactly two alert reconciles, both
+    # carrying airplay, plus the startup one — and no third alert.
+    assert [entry for entry in reconciles if entry[0] != "patrol"] == [
         ("startup", ()),
         ("alert", ("airplay",)),
         ("alert", ("airplay",)),
