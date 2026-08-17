@@ -74,8 +74,9 @@ safety grounds:
 * **Keying on the coupling would arm the fleet by deploy.** Every
   ring-coupled box would flip its renderer the moment this code landed,
   with no per-box source pass — the opposite of how every other per-box
-  arming in this campaign works (the active ring is explicit-CLI-only, and
-  ring width activation is per box and owner-gated).
+  arming in this campaign works (no deploy arms the active ring on coupling
+  alone — since P6 its unattended arm still requires a per-box proven graph,
+  and ring width activation is per box and owner-gated).
 
 So membership is explicit and per box, and ``jasper-fanin`` consults nothing
 else either (see ``Config::lane_is_renderer_ring``).

@@ -2709,6 +2709,68 @@ def _anchor_is_all_muted(graph: LoadedCamillaGraph) -> tuple[bool, str]:
     return True, ""
 
 
+def _staged_anchor_identity(graph: LoadedCamillaGraph) -> tuple[bool, str]:
+    """Is this loaded graph THE artifact the box published as its staged anchor?
+
+    Identity only — nothing about where the graph plays or what it declares.
+    Split out because two callers need this exact fact at two different moments:
+    :func:`ring_endpoint_anchor_converged` asks it of a box ALREADY at the ring
+    endpoint, and :func:`ring_roleful_unattended_ready` asks it of a box that is
+    NOT yet armed. Endpoint and wire are what an arm CHANGES, so they cannot be
+    part of the identity question without making it unanswerable before the arm.
+
+    Fail-CLOSED on every unreadable or self-contradicting record shape.
+    """
+    from jasper.active_speaker.staging import load_staged_startup_config
+
+    staged = load_staged_startup_config()
+    # ``isinstance`` rather than the ``(… or {}).get(…)`` idiom the web
+    # commissioning reader uses: that shape raises AttributeError on a record
+    # whose ``config`` is a truthy NON-mapping, and this reader sits inside the
+    # reconciler's ordered arm, where an escaping exception would skip the
+    # snapshot restore that makes a refused arm non-destructive. A malformed
+    # record is a refusal here, never a raise.
+    status = staged.get("status")
+    config_record = staged.get("config")
+    anchor_path = (
+        config_record.get("path") if isinstance(config_record, Mapping) else None
+    )
+    if not anchor_path:
+        # The record's SHAPE, not merely its absence: "publishes no anchor" while
+        # the record itself says ``status='staged'`` is self-contradicting, and
+        # sends a debugging operator to re-stage when the real defect is a
+        # corrupt record.
+        malformed = config_record is not None and not isinstance(
+            config_record, Mapping
+        )
+        return False, (
+            "this box publishes no usable staged startup anchor "
+            + (
+                "(record present but malformed: config is "
+                f"{type(config_record).__name__}, not a mapping)"
+                if malformed
+                else f"(staged status={status!r})"
+            )
+            + ", so the loaded graph cannot be proved to BE one"
+        )
+    if status != "staged":
+        # The record's LOCATOR without the record's VERDICT is the same trust
+        # gap as the mute proof: a ``blocked`` / ``unreadable`` record still
+        # carries a path, and accepting it would treat a run that the stager
+        # REFUSED as a published anchor.
+        return False, (
+            f"the staged startup anchor record reports status={status!r}, not "
+            "'staged' — a record the stager did not accept is not a published "
+            "anchor"
+        )
+    if os.path.realpath(graph.path) != os.path.realpath(str(anchor_path)):
+        return False, (
+            f"the loaded graph is {graph.path}, which is not this box's "
+            f"published startup anchor ({anchor_path})"
+        )
+    return True, ""
+
+
 def ring_endpoint_anchor_converged(
     *, loaded_config_path: str | None = None
 ) -> tuple[bool, str]:
@@ -2782,7 +2844,6 @@ def ring_endpoint_anchor_converged(
     than left to the arm's preflights.
     """
     from jasper.active_speaker.camilla_yaml import STARTUP_MUTE_GAIN_DB
-    from jasper.active_speaker.staging import load_staged_startup_config
     from jasper.fanin_coupling import (
         RING_ACTIVE_PLAYBACK_DEVICE,
         RING_CAPTURE_DEVICE,
@@ -2792,51 +2853,9 @@ def ring_endpoint_anchor_converged(
     if graph.note:
         return False, f"cannot read the loaded CamillaDSP graph ({graph.note})"
 
-    staged = load_staged_startup_config()
-    # ``isinstance`` rather than the ``(… or {}).get(…)`` idiom the web
-    # commissioning reader uses: that shape raises AttributeError on a record
-    # whose ``config`` is a truthy NON-mapping, and this reader sits inside the
-    # reconciler's ordered arm, where an escaping exception would skip the
-    # snapshot restore that makes a refused arm non-destructive. A malformed
-    # record is a refusal here, never a raise.
-    status = staged.get("status")
-    config_record = staged.get("config")
-    anchor_path = (
-        config_record.get("path") if isinstance(config_record, Mapping) else None
-    )
-    if not anchor_path:
-        # The record's SHAPE, not merely its absence: "publishes no anchor" while
-        # the record itself says ``status='staged'`` is self-contradicting, and
-        # sends a debugging operator to re-stage when the real defect is a
-        # corrupt record.
-        malformed = config_record is not None and not isinstance(
-            config_record, Mapping
-        )
-        return False, (
-            "this box publishes no usable staged startup anchor "
-            + (
-                "(record present but malformed: config is "
-                f"{type(config_record).__name__}, not a mapping)"
-                if malformed
-                else f"(staged status={status!r})"
-            )
-            + ", so the loaded graph cannot be proved to BE one"
-        )
-    if status != "staged":
-        # The record's LOCATOR without the record's VERDICT is the same trust
-        # gap as the mute proof below: a ``blocked`` / ``unreadable`` record
-        # still carries a path, and accepting it would treat a run that the
-        # stager REFUSED as a published anchor.
-        return False, (
-            f"the staged startup anchor record reports status={status!r}, not "
-            "'staged' — a record the stager did not accept is not a published "
-            "anchor"
-        )
-    if os.path.realpath(graph.path) != os.path.realpath(str(anchor_path)):
-        return False, (
-            f"the loaded graph is {graph.path}, which is not this box's "
-            f"published startup anchor ({anchor_path})"
-        )
+    is_anchor, identity_problem = _staged_anchor_identity(graph)
+    if not is_anchor:
+        return False, identity_problem
 
     capture = graph.devices.get("capture_device")
     playback = graph.devices.get("playback_device")
@@ -3138,24 +3157,57 @@ def ring_topology_ready_strict() -> tuple[bool, str]:
     return ring_topology_ready(strict_unreadable=True)
 
 
-def ring_not_roleful_ready() -> tuple[bool, str]:
-    """The UNATTENDED pass's dedicated roleful exclusion — its own gate, on purpose.
+def ring_roleful_unattended_ready() -> tuple[bool, str]:
+    """May the UNATTENDED pass arm a ROLEFUL box? Fail-closed, two proven arms.
 
-    This asks nothing about ring eligibility. It asks whether the box is roleful,
-    and refuses the unattended default if it is, FULL STOP.
+    THE NARROWING, not a deletion. This gate used to refuse every roleful box
+    unconditionally. It still refuses by DEFAULT, and now admits exactly two
+    proven graph shapes. The safety argument for admitting them, the C-B2 hazard
+    it is argued against, and the counter-weight that #2534 turned this gate's
+    safe branch into the silent branch are NOT restated here — they are §4.7 of
+    ``captures/CONVERGENCE-DESIGN-PROPOSAL-2026-08-15.md``, decided by the owner
+    as §12 decision 1 (narrow the gate). Read them there; a second copy here
+    would be one more thing to drift.
 
-    It is deliberately redundant with :func:`ring_topology_ready` today, and the
-    redundancy is the point. That gate now has an arm that ADMITS a roleful
-    topology (when the endpoint is staged), so the auto pass can no longer rely on
-    "roleful boxes fail the topology gate" — and an unattended arm of a roleful
-    box is the C-B2 hazard: a crossover speaker arming itself on boot or deploy
-    with no operator present. Arming the active ring is an explicit-CLI decision;
-    this gate is what keeps that true no matter how the eligibility predicates
-    later evolve.
+    The two arms, and note that both are about the GRAPH's provenance — never
+    about the box's topology SHAPE, which :func:`ring_topology_ready` already
+    owns one gate later:
 
-    Fail-CLOSED on an unreadable topology, matching every other unattended gate:
-    a topology we cannot read is not proof the box is passive.
+    1. **A hardware-fingerprint-matched applied baseline** —
+       :func:`~jasper.active_speaker.baseline_profile.applied_baseline_hardware_match`,
+       the same predicate the emitter fails closed on. What a converging pass
+       then moves is the graph a human already approved for THIS hardware, with
+       driver values byte-preserved. A real DAC swap fails the fingerprint and
+       lands in the default refusal.
+    2. **The all-muted staged anchor** — the loaded graph IS this box's published
+       anchor (:func:`_staged_anchor_identity`) AND every output it declares ends
+       in a wired terminal mute (:func:`_anchor_is_all_muted`). It emits silence,
+       so it cannot be a hearing event on any hardware.
+
+    SCOPE, held deliberately narrow. Arm 1 is the fingerprint compare ONLY.
+    Applied-record DIVERGENCE — ``applied_profile_displacement`` — is phase 0c's
+    question and is NOT asked here; do not pull it forward into this gate.
+
+    Everything else refuses, fail-CLOSED: an unreadable topology, no applied
+    record and no anchor, a stale fingerprint, an anchor that is not terminally
+    muted. The refusal names the runnable arm so a refused box has a way out
+    rather than a verdict.
+
+    A CORRUPT applied record is caught HERE rather than left to the caller.
+    ``load_applied_baseline_profile_state`` returns ``None`` for the shapes its
+    own loader catches, but a non-UTF-8 byte — the documented SD-card /
+    power-cut truncation — raises ``UnicodeDecodeError`` straight past it.
+    ``resolve_auto_decision`` would convert that to a fail-closed refusal on its
+    own (``ValueError`` is in its backstop), but the sentence it renders carries
+    no remediation, which would make this the one refusal in this gate that
+    leaves an operator without a way out. The local catch keeps every refusal
+    the same shape; the backstop stays as belt-and-braces. The SHARED loader is
+    deliberately not widened — it has other callers whose contracts are theirs.
     """
+    from jasper.active_speaker.baseline_profile import (
+        applied_baseline_hardware_match,
+        load_applied_baseline_profile_state,
+    )
     from jasper.active_speaker.runtime_contract import classify_output_contract
     from jasper.output_topology import (
         OutputTopologyError,
@@ -3163,19 +3215,65 @@ def ring_not_roleful_ready() -> tuple[bool, str]:
     )
 
     try:
-        contract = classify_output_contract(load_output_topology_strict())
+        topology = load_output_topology_strict()
+        contract = classify_output_contract(topology)
     except (OutputTopologyError, OSError, ValueError) as exc:
         return False, (
             f"topology unreadable ({exc}); the unattended default cannot prove "
             "this box is not roleful, so it resolves loopback (fail-closed)"
         )
-    if contract.requires_roleful_graph:
-        return False, (
-            "roleful/protected/subwoofer topology — the ACTIVE ring is armed by "
-            "an explicit `jasper-fanin-coupling-reconcile shm_ring` only, never "
-            "by the unattended default pass. Keeping the coupling on loopback."
+    if not contract.requires_roleful_graph:
+        return True, "topology is not roleful"
+
+    # Arm 1 — an applied baseline that still matches this hardware.
+    stale_detail = ""
+    try:
+        applied = load_applied_baseline_profile_state()
+    except (OSError, ValueError) as exc:
+        applied = None
+        stale_detail = (
+            f"the applied active-speaker record could not be read "
+            f"({type(exc).__name__})"
         )
-    return True, "topology is not roleful"
+    if applied is not None:
+        _snapshot, hardware_issues = applied_baseline_hardware_match(
+            topology, applied_profile=applied
+        )
+        if not hardware_issues:
+            return True, (
+                "roleful, and this box's applied active-speaker profile still "
+                "matches the hardware (topology identity and fingerprint both "
+                "current), so a converging pass moves the graph a human already "
+                "approved for these drivers"
+            )
+        stale_detail = "; ".join(
+            str(issue.get("code", "")) for issue in hardware_issues
+        )
+
+    # Arm 2 — the all-muted staged anchor.
+    graph = read_loaded_camilla_graph()
+    anchor_detail = graph.note or ""
+    if not graph.note:
+        is_anchor, identity_problem = _staged_anchor_identity(graph)
+        if is_anchor:
+            muted, mute_problem = _anchor_is_all_muted(graph)
+            if muted:
+                return True, (
+                    "roleful, but the loaded graph IS this box's published "
+                    "all-muted startup anchor, which emits silence on any "
+                    "hardware"
+                )
+            anchor_detail = mute_problem
+        else:
+            anchor_detail = identity_problem
+
+    return False, (
+        "roleful topology, and neither proven arm holds: the applied baseline "
+        f"({stale_detail or 'no applied active-speaker profile on this box'}) "
+        f"and the all-muted staged anchor ({anchor_detail}). Keeping the "
+        "coupling on loopback. To arm this box deliberately, run "
+        "`jasper-fanin-coupling-reconcile shm_ring`."
+    )
 
 
 def default_ring_gates() -> tuple[tuple[str, RingGate], ...]:
@@ -3200,14 +3298,14 @@ def default_ring_gates() -> tuple[tuple[str, RingGate], ...]:
     constants; it now reads the conf.d and both env files, so "cheapest first"
     no longer describes it.
 
-    ``ring_not_roleful`` sits immediately after the box class and BEFORE
+    ``ring_roleful_unattended`` sits immediately after the box class and BEFORE
     ``ring_topology``, because it is the coarser question and its refusal is the
     one an operator of a crossover box needs to read. It is independent of every
     eligibility predicate on purpose — see its docstring.
     """
     return (
         ("install_profile", ring_install_profile_ready),
-        ("ring_not_roleful", ring_not_roleful_ready),
+        ("ring_roleful_unattended", ring_roleful_unattended_ready),
         ("ring_topology", ring_topology_ready_strict),
         ("ring_assets", ring_assets_ready),
         ("ring_wire_caps", ring_wire_caps_ready),
@@ -4302,11 +4400,17 @@ def _disarm(
 # ``reconcile_coupling`` only when the pass OWNS the box; on an OPERATOR-FROZEN
 # box (``JASPER_FANIN_COUPLING_CHOICE=operator``) it preserves the choice and
 # synthesises a confirm result WITHOUT running one, so no deploy clears the
-# record there. That is not a corner case: arming the ACTIVE ring is
-# explicit-CLI-only and stamps that very marker, so every active-ring box is
-# operator-frozen by construction. On such a box the record is cleared by the
-# operator's own next `jasper-fanin-coupling-reconcile <coupling>` — or it ages
-# out of the 24 h window.
+# record there. That is not a corner case: an OPERATOR arm of the ACTIVE ring
+# stamps that very marker, so an operator-armed active-ring box is frozen by
+# construction. On such a box the record is cleared by the operator's own next
+# `jasper-fanin-coupling-reconcile <coupling>` — or it ages out of the 24 h
+# window.
+#
+# SINCE P6 that no longer covers EVERY active-ring box, and the difference is
+# this record's, not a corner of it. A roleful box the unattended pass converged
+# itself (``ring_roleful_unattended_ready``'s two proven arms) carries no
+# operator marker and stays AUTO-OWNED, so a deploy does reach a transition
+# there and clears the record exactly as it does on any auto-owned box.
 RING_CONFIRM_STRIKE_STATE = "/var/lib/jasper/ring-confirm-strikes.json"
 RING_CONFIRM_STRIKE_LIMIT = 2
 RING_CONFIRM_STRIKE_WINDOW_SEC = 24 * 3600

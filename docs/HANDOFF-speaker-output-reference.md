@@ -459,11 +459,18 @@ What exists:
   roleful (active-crossover) box has a third ring of its own:
   `jts_ring_active_playback` -> `/dev/shm/jts-ring/active-content.ring`,
   carrying POST-crossover per-driver channels rather than a full-range stereo
-  program. It is never armed by the unattended pass — arming is the explicit
-  three-step ladder documented in
+  program. Reaching it the FIRST time is the explicit three-step ladder
+  documented in
   [HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md)
   ("The ACTIVE-ring arm/rollback lifecycle"), which is the single home for that
-  ordering.
+  ordering. Since P6 (#2285, §12 decision 1) the unattended pass is no longer
+  categorically excluded from it: a roleful box already carrying a proven graph
+  — a hardware-fingerprint-matched applied baseline, or the all-muted staged
+  anchor — is admitted by `ring_roleful_unattended_ready`. Concretely, a box
+  that has completed ladder steps 1 and 2 but not step 3 now has step 3
+  completed for it by the auto pass, because step 2 alone satisfies
+  `active_ring_endpoint_proof` while the operator-freeze marker is stamped only
+  by step 3. A box carrying neither proven graph still refuses, fail-closed.
 
   What matters HERE is the refusal an operator will meet. `Config::from_env`
   enforces a biconditional under the `shm_ring` bridge: **the active ring path

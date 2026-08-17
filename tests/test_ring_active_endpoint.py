@@ -910,46 +910,61 @@ def test_the_active_ring_is_a_recognized_output_endpoint():
 # --------------------------------------------------------------------------
 
 
-def test_the_unattended_pass_has_its_own_roleful_exclusion():
+def test_the_unattended_pass_has_its_own_roleful_gate():
     """Independent of every eligibility predicate, on purpose.
 
-    ``ring_topology_ready`` now has an arm that ADMITS a roleful topology, so the
-    auto pass can no longer rely on "roleful boxes fail the topology gate". This
-    gate asks only whether the box is roleful and refuses if it is — so a future
-    change to any eligibility predicate cannot re-open unattended arming of a
-    crossover speaker.
+    ``ring_topology_ready`` has an arm that ADMITS a roleful topology, so the
+    auto pass cannot rely on "roleful boxes fail the topology gate". This gate
+    asks the roleful question on its own — so a future change to any eligibility
+    predicate cannot re-open unattended arming of a crossover speaker by accident.
     """
     from jasper.fanin.coupling_reconcile import default_ring_gates
 
     names = [name for name, _gate in default_ring_gates()]
-    assert "ring_not_roleful" in names
+    assert "ring_roleful_unattended" in names
     # ...and it runs BEFORE the topology gate, so its coarser refusal is the one
     # an operator of a crossover box reads.
-    assert names.index("ring_not_roleful") < names.index("ring_topology")
+    assert names.index("ring_roleful_unattended") < names.index("ring_topology")
 
 
-def test_the_roleful_exclusion_refuses_a_roleful_box_and_permits_a_passive_one(
-    monkeypatch,
+def _no_applied_profile_and_no_anchor(monkeypatch, tmp_path):
+    """A roleful box carrying NEITHER proven arm — the design's N8 case."""
+    monkeypatch.setattr(
+        "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(tmp_path / "absent.yml"))
+
+
+def test_the_roleful_gate_admits_a_passive_box_and_refuses_a_roleful_one(
+    monkeypatch, tmp_path
 ):
+    """The fail-closed DEFAULT, both polarities.
+
+    Not-roleful is admitted exactly as before the narrowing. Roleful with
+    neither proven arm is still refused — that is N8, and the refusal names a
+    RUNNABLE remediation rather than leaving the operator with a verdict.
+    """
     from jasper.fanin import coupling_reconcile
 
+    _no_applied_profile_and_no_anchor(monkeypatch, tmp_path)
     monkeypatch.setattr(
         "jasper.output_topology.load_output_topology_strict",
         lambda *a, **k: _active_topology("mono", "active_2_way"),
     )
-    ok, detail = coupling_reconcile.ring_not_roleful_ready()
+    ok, detail = coupling_reconcile.ring_roleful_unattended_ready()
     assert ok is False
-    assert "explicit" in detail
+    assert "jasper-fanin-coupling-reconcile shm_ring" in detail
 
     monkeypatch.setattr(
         "jasper.output_topology.load_output_topology_strict",
         lambda *a, **k: _full_range_stereo(),
     )
-    ok, _detail = coupling_reconcile.ring_not_roleful_ready()
+    ok, _detail = coupling_reconcile.ring_roleful_unattended_ready()
     assert ok is True
 
 
-def test_the_roleful_exclusion_fails_closed_on_an_unreadable_topology(monkeypatch):
+def test_the_roleful_gate_fails_closed_on_an_unreadable_topology(monkeypatch):
     from jasper.fanin import coupling_reconcile
     from jasper.output_topology import OutputTopologyError
 
@@ -957,9 +972,374 @@ def test_the_roleful_exclusion_fails_closed_on_an_unreadable_topology(monkeypatc
         raise OutputTopologyError("corrupt")
 
     monkeypatch.setattr("jasper.output_topology.load_output_topology_strict", _boom)
-    ok, detail = coupling_reconcile.ring_not_roleful_ready()
+    ok, detail = coupling_reconcile.ring_roleful_unattended_ready()
     assert ok is False
     assert "fail-closed" in detail
+
+
+# --- the steps-1-2 corollary: the auto pass now finishes step 3 --------------
+
+
+def _steps_one_and_two_box(monkeypatch, tmp_path):
+    """Stage a roleful box that has completed ladder steps 1 and 2, NOT step 3.
+
+    Every state here comes from the REAL writers' artifacts rather than a
+    synthetic gate flag:
+
+    * **step 1** (``baseline-reemit --endpoint ring``) leaves the box's
+      published all-muted anchor loaded AT the ring endpoint — the graph, the
+      statefile and the staged record are real files, via ``_stage_box``;
+    * **step 2** (``jasper-audio-hardware-reconcile``) writes outputd's endpoint
+      marker into ``outputd.env`` and renders the conf.d block at this box's
+      resolved active width (4 for the composite);
+    * **step 3** (``jasper-fanin-coupling-reconcile shm_ring``) is the ONLY
+      writer of the operator-choice marker, and it is exactly what has not run.
+
+    ``force_ring_gates_pass`` covers the infrastructure gates (asset presence,
+    geometry, the ioplug provenance record a dev host has no way to satisfy). It
+    does NOT stub the roleful gate, the topology gate, or the endpoint proof —
+    the three this test is actually about — so the chain stays non-vacuous.
+    """
+    import jasper.ring_assets as ra
+    from jasper.fanin import coupling_reconcile as cr
+    from jasper.fanin_coupling import (
+        OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR,
+        RING_ACTIVE_PLAYBACK_DEVICE,
+        RING_CAPTURE_DEVICE,
+    )
+    from tests.test_composite_ring_arm_enabling import _composite_active_2way
+    from tests.test_fanin_coupling_reconcile import force_ring_gates_pass
+    from tests.test_ring_anchor_arm_acceptance import _graph_yaml, _stage_box
+
+    force_ring_gates_pass(monkeypatch)
+
+    _stage_box(
+        tmp_path,
+        monkeypatch,
+        graph_yaml=_graph_yaml(
+            capture_device=RING_CAPTURE_DEVICE,
+            playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+            fmt="S32_LE",
+        ),
+    )
+    monkeypatch.setattr(
+        "jasper.output_topology.load_output_topology_strict", _composite_active_2way
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
+        lambda *a, **k: None,
+    )
+
+    outputd_env = tmp_path / "outputd.env"
+    outputd_env.write_text(
+        f"{OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR}=1\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(cr, "OUTPUTD_ENV_PATH", str(outputd_env))
+
+    conf_d = tmp_path / "60-jts-ring.conf"
+    conf_d.write_text(
+        "pcm.jts_ring_capture {\n    format S32_LE\n}\n"
+        "pcm.jts_ring_playback {\n    format S32_LE\n}\n"
+        f"pcm.{ra.RING_ACTIVE_CONF_PCM} {{\n"
+        "    format S32_LE\n    channels 4\n}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ra, "RING_CONF_D", str(conf_d))
+
+
+def test_the_auto_pass_finishes_step_three_on_a_steps_one_and_two_box(
+    monkeypatch, tmp_path
+):
+    """THE COROLLARY of the narrowing, pinned because nothing else pins it.
+
+    Step 2 alone satisfies ``active_ring_endpoint_proof``; the operator-freeze
+    marker is stamped only by step 3; and after P6 the roleful gate no longer
+    blocks. So a box parked between steps 2 and 3 — which used to sit there
+    until a human ran the third command — is now converged by the next boot or
+    deploy. This is the newly-enabled behaviour, and it is the exact set for
+    which "never armed by the unattended pass" stopped being true.
+    """
+    from jasper.fanin.coupling_auto import resolve_auto_decision
+    from jasper.fanin.coupling_reconcile import default_ring_gates
+    from jasper.fanin_coupling import COUPLING_SHM_RING
+
+    _steps_one_and_two_box(monkeypatch, tmp_path)
+
+    decision = resolve_auto_decision(
+        marker_raw=None,  # step 3 never ran, so no operator choice is stamped
+        gadget_present=False,
+        usb_intent_enabled=False,
+        ring_gates=default_ring_gates(),
+    )
+    assert decision.owned is True
+    assert decision.coupling == COUPLING_SHM_RING, decision.gate_details
+
+
+def test_a_fully_armed_operator_frozen_box_never_evaluates_the_gates(
+    monkeypatch, tmp_path
+):
+    """The other polarity: step 3 HAS run, so the operator marker freezes it.
+
+    A fully-armed box is owned by the operator, and ``resolve_auto_decision``
+    returns before the gate loop — so the narrowed roleful gate cannot re-open,
+    re-arm, or re-decide anything on a box a human already committed. Proved by
+    a spy rather than by the verdict, because the verdict alone cannot tell
+    "gates passed" from "gates never ran".
+    """
+    from jasper.fanin.coupling_auto import resolve_auto_decision
+    from jasper.fanin.coupling_reconcile import default_ring_gates
+    from jasper.fanin_coupling import COUPLING_SHM_RING
+
+    _steps_one_and_two_box(monkeypatch, tmp_path)
+
+    evaluated: list[str] = []
+    spied = tuple(
+        (name, (lambda n=name, g=gate: (evaluated.append(n), g())[1]))
+        for name, gate in default_ring_gates()
+    )
+    decision = resolve_auto_decision(
+        marker_raw="operator",
+        gadget_present=False,
+        usb_intent_enabled=False,
+        ring_gates=spied,
+        current_coupling=COUPLING_SHM_RING,
+    )
+    assert decision.owned is False
+    assert decision.coupling == COUPLING_SHM_RING
+    assert evaluated == []
+
+
+# --- the two proven arms (§4.7, owner ruling §12 decision 1) -----------------
+
+
+def _applied_profile_for(topology, *, fingerprint: str | None = None):
+    """An applied Layer-A record whose snapshot matches ``topology`` by default."""
+    from jasper.active_speaker.baseline_profile import topology_config_fingerprint
+
+    return {
+        "status": "applied",
+        "recomposition_snapshot": {
+            "schema_version": 1,
+            "domain": "full",
+            "topology_id": topology.topology_id,
+            "topology_fingerprint": (
+                topology_config_fingerprint(topology)
+                if fingerprint is None
+                else fingerprint
+            ),
+        },
+    }
+
+
+def test_arm_one_admits_an_applied_baseline_that_still_matches_the_hardware(
+    monkeypatch, tmp_path
+):
+    """Arm 1: the graph a human already approved for THESE drivers."""
+    from jasper.fanin import coupling_reconcile
+
+    topology = _active_topology("mono", "active_2_way")
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(tmp_path / "absent.yml"))
+    monkeypatch.setattr(
+        "jasper.output_topology.load_output_topology_strict", lambda *a, **k: topology
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
+        lambda *a, **k: _applied_profile_for(topology),
+    )
+
+    ok, detail = coupling_reconcile.ring_roleful_unattended_ready()
+    assert ok is True
+    assert "applied active-speaker profile" in detail
+
+
+def test_arm_one_refuses_a_baseline_whose_fingerprint_no_longer_matches(
+    monkeypatch, tmp_path
+):
+    """A real DAC swap: the record is applied, the hardware moved under it.
+
+    The gate falls through to the fail-closed default and NAMES the emitter's
+    own blocker code, so the refusal says which fact failed.
+    """
+    from jasper.fanin import coupling_reconcile
+
+    topology = _active_topology("mono", "active_2_way")
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(tmp_path / "absent.yml"))
+    monkeypatch.setattr(
+        "jasper.output_topology.load_output_topology_strict", lambda *a, **k: topology
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
+        lambda *a, **k: _applied_profile_for(topology, fingerprint="a-different-box"),
+    )
+
+    ok, detail = coupling_reconcile.ring_roleful_unattended_ready()
+    assert ok is False
+    assert "applied_baseline_snapshot_topology_stale" in detail
+    assert "jasper-fanin-coupling-reconcile shm_ring" in detail
+
+
+def test_arm_two_admits_the_all_muted_anchor_before_it_reaches_the_ring(
+    monkeypatch, tmp_path
+):
+    """Arm 2, and the reason it cannot be ``ring_endpoint_anchor_converged``.
+
+    The anchor is staged at the ALSA endpoint a roleful box plays BEFORE it is
+    armed. Endpoint and wire are what an arm CHANGES, so an identity question
+    that included them would refuse every box this arm exists to admit.
+    """
+    from jasper.active_speaker.runtime_contract import OUTPUTD_ACTIVE_PLAYBACK_DEVICE
+    from jasper.fanin import coupling_reconcile
+    from tests.test_composite_ring_arm_enabling import _composite_active_2way
+    from tests.test_ring_anchor_arm_acceptance import _graph_yaml, _stage_box
+
+    monkeypatch.setattr(
+        "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
+        lambda *a, **k: None,
+    )
+    _stage_box(
+        tmp_path,
+        monkeypatch,
+        graph_yaml=_graph_yaml(
+            capture_device="hw:Loopback,1,7",
+            playback_device=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+            fmt="S32_LE",
+        ),
+    )
+    monkeypatch.setattr(
+        "jasper.output_topology.load_output_topology_strict",
+        _composite_active_2way,
+    )
+
+    ok, detail = coupling_reconcile.ring_roleful_unattended_ready()
+    assert ok is True
+    assert "all-muted" in detail
+
+
+def test_arm_two_refuses_an_anchor_that_is_not_terminally_muted(monkeypatch, tmp_path):
+    """The anchor's whole safety claim is the mute. One live output withdraws it."""
+    from jasper.active_speaker.runtime_contract import OUTPUTD_ACTIVE_PLAYBACK_DEVICE
+    from jasper.fanin import coupling_reconcile
+    from tests.test_composite_ring_arm_enabling import _composite_active_2way
+    from tests.test_ring_anchor_arm_acceptance import _graph_yaml, _stage_box
+
+    monkeypatch.setattr(
+        "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
+        lambda *a, **k: None,
+    )
+    _stage_box(
+        tmp_path,
+        monkeypatch,
+        graph_yaml=_graph_yaml(
+            capture_device="hw:Loopback,1,7",
+            playback_device=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+            fmt="S32_LE",
+            mute_gains_db={1: -20.0},
+        ),
+    )
+    monkeypatch.setattr(
+        "jasper.output_topology.load_output_topology_strict",
+        _composite_active_2way,
+    )
+
+    ok, detail = coupling_reconcile.ring_roleful_unattended_ready()
+    assert ok is False
+    assert "jasper-fanin-coupling-reconcile shm_ring" in detail
+
+
+def test_the_roleful_gate_refuses_a_corrupt_applied_record_with_a_remedy(
+    monkeypatch, tmp_path
+):
+    """A corrupt applied record refuses LOCALLY, with the runnable arm named.
+
+    ``_load_saved_state`` catches ``FileNotFoundError``/``OSError``/
+    ``JSONDecodeError`` and returns ``None``, but a non-UTF-8 byte — the
+    documented SD-card / power-cut truncation — raises ``UnicodeDecodeError``
+    (a ``ValueError``) straight past it. ``resolve_auto_decision``'s backstop
+    would fail closed on that anyway, but its sentence carries NO remediation.
+    Caught in the gate so every refusal keeps the same shape.
+    """
+    import jasper.active_speaker.baseline_profile as bp
+    from jasper.fanin import coupling_reconcile
+
+    record = tmp_path / "baseline_profile.json"
+    record.write_bytes(b'{"status": "applied", "x": "\xff\xfe not utf-8"}')
+    monkeypatch.setattr(bp, "baseline_profile_state_path", lambda *a, **k: record)
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(tmp_path / "absent.yml"))
+    monkeypatch.setattr(
+        "jasper.output_topology.load_output_topology_strict",
+        lambda *a, **k: _active_topology("mono", "active_2_way"),
+    )
+
+    # The raise really does escape the shared loader — otherwise this test would
+    # be pinning the gate against a hazard that no longer exists.
+    with pytest.raises(UnicodeDecodeError):
+        bp.load_applied_baseline_profile_state()
+
+    ok, detail = coupling_reconcile.ring_roleful_unattended_ready()
+    assert ok is False
+    assert "could not be read" in detail
+    assert "jasper-fanin-coupling-reconcile shm_ring" in detail
+
+
+def test_the_roleful_gate_does_not_ask_the_divergence_question(monkeypatch, tmp_path):
+    """SCOPE PIN: ``applied_profile_displacement`` is phase 0c's, not this gate's.
+
+    The convergence design places applied-record DIVERGENCE at phase 0c (N5) and
+    arm 1 at the fingerprint compare only. Pulling the displacement read forward
+    into this gate would move a P7 decision into a P6 predicate, so a spy proves
+    it is never consulted.
+
+    ALL THREE outcomes are driven, and the third is why this reads the way it
+    does: an earlier version set an absent statefile in every config, so
+    ``graph.note`` was always set and ARM 2'S BRANCH NEVER RAN — a displacement
+    read placed there would have passed the spy. The anchor config below is what
+    makes the guard cover the branch it claims to.
+    """
+    import jasper.active_speaker.baseline_profile as bp
+    from jasper.active_speaker.runtime_contract import OUTPUTD_ACTIVE_PLAYBACK_DEVICE
+    from jasper.fanin import coupling_reconcile
+    from tests.test_composite_ring_arm_enabling import _composite_active_2way
+    from tests.test_ring_anchor_arm_acceptance import _graph_yaml, _stage_box
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        bp,
+        "applied_profile_displacement",
+        lambda *a, **k: calls.append("asked") or "",
+    )
+
+    # 1 + 2: the default refusal, and arm 1 admitting.
+    topology = _active_topology("mono", "active_2_way")
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(tmp_path / "absent.yml"))
+    monkeypatch.setattr(
+        "jasper.output_topology.load_output_topology_strict", lambda *a, **k: topology
+    )
+    outcomes = []
+    for profile in (None, _applied_profile_for(topology)):
+        monkeypatch.setattr(
+            bp, "load_applied_baseline_profile_state", lambda *a, **k: profile
+        )
+        outcomes.append(coupling_reconcile.ring_roleful_unattended_ready()[0])
+
+    # 3: arm 2's branch, actually entered — a readable staged anchor.
+    monkeypatch.setattr(bp, "load_applied_baseline_profile_state", lambda *a, **k: None)
+    _stage_box(
+        tmp_path,
+        monkeypatch,
+        graph_yaml=_graph_yaml(
+            capture_device="hw:Loopback,1,7",
+            playback_device=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+            fmt="S32_LE",
+        ),
+    )
+    monkeypatch.setattr(
+        "jasper.output_topology.load_output_topology_strict", _composite_active_2way
+    )
+    outcomes.append(coupling_reconcile.ring_roleful_unattended_ready()[0])
+
+    # Refuse, arm 1, arm 2 — three distinct paths, so the spy covers them all.
+    assert outcomes == [False, True, True]
+    assert calls == []
 
 
 def test_a_roleful_topology_is_admitted_only_with_a_staged_endpoint(monkeypatch):
@@ -1212,7 +1592,9 @@ def test_the_floor_render_ok_names_the_roleful_reason_a_box_cannot_ring(monkeypa
 
     The check reads the DAC floor against the conf.d. On any box whose DAC
     declares a matching floor that pair reads green — and a ROLEFUL box still
-    does not ring, because the active ring is explicit-arm-only. Reporting only
+    may not ring, because the unattended pass arms the active ring only for a
+    box already carrying a proven graph (``ring_roleful_unattended_ready``).
+    Reporting only
     "period_frames matches" there answers a question nobody asked and leaves the
     real one ("why is this box on loopback?") unanswered, which is the same
     defect #2294 fixed for the floor half.

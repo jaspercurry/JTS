@@ -2625,9 +2625,12 @@ def check_ring_conf_floor_render() -> CheckResult:
     axis.
 
     THE FLOOR IS NOT THE ONLY REASON, and R7b changed what this check can say
-    about the other one. A ROLEFUL (active-crossover) box is never armed by the
-    unattended default pass however good its floor is: its ring is the ACTIVE
-    ring, and that is explicit-arm-only. So on a roleful box a green period line
+    about the other one. A ROLEFUL (active-crossover) box does not ring on the
+    strength of its floor however good it is: its ring is the ACTIVE ring, which
+    the unattended pass arms only for a box already carrying a proven graph
+    (``ring_roleful_unattended_ready``'s two arms — a hardware-fingerprint-matched
+    applied baseline, or the all-muted anchor) and refuses otherwise. So on a
+    roleful box a green period line
     means "the conf.d is ready", NOT "this box will ring" — and saying only the
     former is how an operator concludes the arm is broken when nothing is. Every
     OK branch below therefore carries the rolefulness sentence when it applies,
@@ -2676,13 +2679,17 @@ def check_ring_conf_floor_render() -> CheckResult:
     # commissioning finishes. It is not.
     roleful_note = (
         " This box is ROLEFUL (active crossover), so even a rendered conf.d "
-        "does not make it ring on its own: the ACTIVE ring is armed only by an "
-        "explicit `jasper-active-speaker baseline-reemit --endpoint ring` "
-        "followed by jasper-audio-hardware-reconcile and "
-        "`jasper-fanin-coupling-reconcile shm_ring`, never by the unattended "
-        "default pass. That first step works on a mid-commission box too — it "
-        "re-stages the all-muted startup anchor when no applied baseline is "
-        "saved yet."
+        "does not make it ring on its own. Commissioning it onto the ACTIVE "
+        "ring the first time is the explicit ladder: `jasper-active-speaker "
+        "baseline-reemit --endpoint ring`, then "
+        "jasper-audio-hardware-reconcile, then "
+        "`jasper-fanin-coupling-reconcile shm_ring`. The unattended default "
+        "pass converges a roleful box that ALREADY carries a proven graph — a "
+        "hardware-fingerprint-matched applied baseline, or the all-muted "
+        "startup anchor — so a box left after step 2 is finished by the next "
+        "boot or deploy; one carrying neither still refuses. That first step "
+        "works on a mid-commission box too — it re-stages the all-muted "
+        "startup anchor when no applied baseline is saved yet."
         if _requires_roleful_graph()
         else ""
     )

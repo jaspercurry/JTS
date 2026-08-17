@@ -66,10 +66,14 @@ accepts the risk of an indeterminate read. **It no longer does** — its stated
 backstop (outputd's own guard) was shown to fail open on the same error, so both
 paths are now fail-CLOSED and this module's direction is simply the shared one.
 
-The unattended pass additionally refuses a ROLEFUL box outright
-(``ring_not_roleful_ready``), independent of every eligibility predicate: a
-crossover speaker's ring is armed by an explicit operator command only, never by
-a boot or a deploy.
+The unattended pass additionally holds a ROLEFUL box to its own gate
+(``ring_roleful_unattended_ready``), ahead of every eligibility predicate. It
+refuses by DEFAULT and admits only two proven graph shapes — a
+hardware-fingerprint-matched applied baseline, or the all-muted staged anchor,
+the same two legal roleful boot graphs the operator ladder's step 1 accepts.
+The narrowing and its safety argument live in that gate's docstring and in §4.7
+of the convergence design (owner ruling, §12 decision 1); they are not restated
+here.
 """
 
 from __future__ import annotations
@@ -203,13 +207,14 @@ def resolve_auto_decision(
       canonical source intent because the operator marker freezes transport
       topology, not permission to capture a household-Off source.
     - Else the auto pass owns the box:
-        * ``coupling`` = ``shm_ring`` iff EVERY ring gate returns ``ok`` (not
-          roleful, assets present, topology ring-eligible, geometry coherent on
-          both axes, route supports the ring); the first failing gate
-          short-circuits to ``loopback`` with its detail as the reason, so a box
-          this pass must not arm — jts3 roleful (whose ACTIVE ring is
-          explicit-arm-only), jts5 composite, a grouped box — resolves loopback
-          with a crisp explanation.
+        * ``coupling`` = ``shm_ring`` iff EVERY ring gate returns ``ok``
+          (roleful boxes only via ``ring_roleful_unattended_ready``'s two proven
+          graph shapes, assets present, topology ring-eligible, geometry
+          coherent on both axes, route supports the ring); the first failing
+          gate short-circuits to ``loopback`` with its detail as the reason, so
+          a box this pass must not arm — a roleful box carrying NEITHER a
+          hardware-matched applied baseline nor an all-muted anchor, a grouped
+          box, a streambox — resolves loopback with a crisp explanation.
         * combo = ARMED iff ``gadget_present AND usb_intent_enabled`` (see
           :func:`combo_is_armed`);
           ``usb_combo_actions`` carries explicit on/off writes either way (the

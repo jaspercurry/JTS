@@ -546,29 +546,34 @@ def test_active_emit_devices_needs_no_composite_change():
 # --- the enable != arm rule --------------------------------------------------
 
 
-def test_the_unattended_pass_still_refuses_every_roleful_box():
+def test_the_unattended_pass_refuses_a_composite_carrying_neither_proven_arm(
+    monkeypatch, tmp_path
+):
     """D5's rule, mechanically: landing 1b-1e ENABLES arming and ARMS NOTHING.
 
-    A composite ``active_2_way`` is roleful, and ``ring_not_roleful_ready`` is
-    the unattended pass's dedicated roleful exclusion — so no boot, deploy, or
-    reconcile can auto-arm a composite. Arming stays an explicit operator CLI
-    action, gated further on item 2 (#2255) landing.
+    A composite ``active_2_way`` is roleful, so it meets
+    ``ring_roleful_unattended_ready``. With neither proven arm on the box — no
+    applied baseline, no staged anchor — the gate's fail-closed default holds
+    and no boot, deploy, or reconcile auto-arms this composite. The narrowing
+    (§12 decision 1) changed which roleful boxes are admitted, never whether a
+    bare one is.
     """
     from jasper.fanin import coupling_reconcile
 
     gate_names = [name for name, _ in coupling_reconcile.default_ring_gates()]
-    assert "ring_not_roleful" in gate_names
+    assert "ring_roleful_unattended" in gate_names
 
-    import jasper.output_topology as ot
-
-    original = ot.load_output_topology_strict
-    ot.load_output_topology_strict = _composite_active_2way
-    try:
-        ok, detail = coupling_reconcile.ring_not_roleful_ready()
-    finally:
-        ot.load_output_topology_strict = original
+    monkeypatch.setattr(
+        "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(tmp_path / "absent.yml"))
+    monkeypatch.setattr(
+        "jasper.output_topology.load_output_topology_strict", _composite_active_2way
+    )
+    ok, detail = coupling_reconcile.ring_roleful_unattended_ready()
     assert ok is False
-    assert "explicit" in detail
+    assert "jasper-fanin-coupling-reconcile shm_ring" in detail
 
 
 if __name__ == "__main__":  # pragma: no cover

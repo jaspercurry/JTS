@@ -2623,41 +2623,35 @@ def build_baseline_profile_candidate(
     return payload
 
 
-def recompose_applied_baseline_yaml(
+def applied_baseline_hardware_match(
     topology: OutputTopology,
     *,
     applied_profile: Mapping[str, Any],
-    room_peqs: Sequence[PeqFilter] = (),
-    preference_filters: Sequence[FilterSpec] = (),
-    output_trim_db: float = 0.0,
-    out_path: str | Path | None = None,
-    playback_device: str | None = None,
-    bass_extension_profile: BassExtensionProfile | None | object = (
-        _DEFAULT_PERSISTED_BASS_PROFILE
-    ),
-) -> tuple[str | None, list[dict[str, str]]]:
-    """Re-emit Layer A strictly from the immutable applied-profile snapshot.
+) -> tuple[Mapping[str, Any] | None, list[dict[str, str]]]:
+    """Is this applied profile a usable baseline that STILL MATCHES the hardware?
 
-    This is the production graph-carrier seam. Mutable design drafts,
-    crossover previews, and measurement stores are deliberately not parameters:
-    captures remain candidates until :func:`apply_baseline_profile` snapshots
-    them under an explicit Apply transaction.
+    Returns ``(snapshot, [])`` when it is, and ``(None, [blocker])`` otherwise,
+    following this module's ``(value | None, issues)`` convention. The snapshot
+    comes back because proving it usable and reading it are the same act — a
+    caller that re-fetched ``recomposition_snapshot`` itself would be a second
+    reader of a key this function exists to validate.
 
-    ``playback_device`` is the ONE axis a re-emit may legitimately move, and it
-    is opt-in: ``None`` emits against the device the snapshot recorded,
-    byte-for-byte as before. An explicit value re-points the SAME applied
-    evidence at a different transport for the SAME lane — the
-    active ALSA lane and the ACTIVE RING carry identical post-crossover
-    per-driver program at identical width to the same reader. What differs
-    besides the name is the whole ``devices:`` block the sink implies — its
-    CAPTURE lane (the ring coupling is end-to-end), its wire format, and its
-    CamillaDSP latency/queue geometry — which ``active_emit_devices`` derives
-    FROM the device so this function has one place that knows, not several.
-    Moving the device is what makes the ring arm possible at all: the
-    reconciler derives its endpoint marker FROM the loaded graph, so the graph
-    has to name the ring first. Passing anything that is not a legal active
-    endpoint is refused by the emitter's own forbidden-token and width guards,
-    not here.
+    ONE OWNER, TWO CALLERS, and the second caller is why this is a function.
+    :func:`recompose_applied_baseline_yaml` has always asked these four questions
+    inline before emitting; it still asks them, through here. The new caller is
+    the unattended roleful gate
+    (``jasper.fanin.coupling_reconcile.ring_roleful_unattended_ready``), which
+    must answer "does this box HAVE a hardware-matched applied baseline?" without
+    emitting anything. Re-deriving the compare there would put the definition of
+    "matches the hardware" in two places — the failure mode where one site is
+    fixed and the other silently keeps admitting.
+
+    The four questions, in refusal order, are unchanged and so are their codes:
+    the record is an APPLIED profile; it carries a schema-1 recomposition
+    snapshot (pre-snapshot profiles cannot be recomposed at all); its domain is
+    ``full``; and its recorded topology identity AND fingerprint both still match
+    the topology passed in. The last is the DAC-swap guard — a genuine hardware
+    change refuses here rather than emitting a graph composed for other drivers.
     """
     if applied_profile.get("status") != "applied":
         return None, [_issue(
@@ -2694,6 +2688,50 @@ def recompose_applied_baseline_yaml(
                 "output topology; reapply speaker setup first"
             ),
         )]
+    return snapshot, []
+
+
+def recompose_applied_baseline_yaml(
+    topology: OutputTopology,
+    *,
+    applied_profile: Mapping[str, Any],
+    room_peqs: Sequence[PeqFilter] = (),
+    preference_filters: Sequence[FilterSpec] = (),
+    output_trim_db: float = 0.0,
+    out_path: str | Path | None = None,
+    playback_device: str | None = None,
+    bass_extension_profile: BassExtensionProfile | None | object = (
+        _DEFAULT_PERSISTED_BASS_PROFILE
+    ),
+) -> tuple[str | None, list[dict[str, str]]]:
+    """Re-emit Layer A strictly from the immutable applied-profile snapshot.
+
+    This is the production graph-carrier seam. Mutable design drafts,
+    crossover previews, and measurement stores are deliberately not parameters:
+    captures remain candidates until :func:`apply_baseline_profile` snapshots
+    them under an explicit Apply transaction.
+
+    ``playback_device`` is the ONE axis a re-emit may legitimately move, and it
+    is opt-in: ``None`` emits against the device the snapshot recorded,
+    byte-for-byte as before. An explicit value re-points the SAME applied
+    evidence at a different transport for the SAME lane — the
+    active ALSA lane and the ACTIVE RING carry identical post-crossover
+    per-driver program at identical width to the same reader. What differs
+    besides the name is the whole ``devices:`` block the sink implies — its
+    CAPTURE lane (the ring coupling is end-to-end), its wire format, and its
+    CamillaDSP latency/queue geometry — which ``active_emit_devices`` derives
+    FROM the device so this function has one place that knows, not several.
+    Moving the device is what makes the ring arm possible at all: the
+    reconciler derives its endpoint marker FROM the loaded graph, so the graph
+    has to name the ring first. Passing anything that is not a legal active
+    endpoint is refused by the emitter's own forbidden-token and width guards,
+    not here.
+    """
+    snapshot, hardware_issues = applied_baseline_hardware_match(
+        topology, applied_profile=applied_profile
+    )
+    if snapshot is None:
+        return None, hardware_issues
     if bass_extension_profile is _DEFAULT_PERSISTED_BASS_PROFILE:
         evaluation = evaluate_bass_extension_profile(
             topology=topology,
