@@ -35,14 +35,18 @@ just the start.* So the four verdicts now compose into **four adoption axes**
 — :func:`evaluate_evidence_trust`, :func:`evaluate_applied_safety`,
 :func:`evaluate_round_quality`, and (since #2602)
 :func:`evaluate_iteration_headroom` — and :func:`decide_adoption` selects one of
-six rows from those. Keeping an imperfect measured result and handing its
+seven rows from those. Keeping an imperfect measured result and handing its
 misses forward is a first-class outcome
 (:attr:`~.contracts.AdoptionOutcome.KEEP_FOR_ITERATION`); the hard stops are
 reserved for the safety class and for evidence that does not exist.
 
-#2602's axis is the newest and the narrowest: it decides only whether a round
-that PASSED ends the series or runs another, so it can keep a graph on and it
-can never take one off — *in-tolerance is not done*.
+#2602's axis is the newest and the narrowest: it decides whether a round that
+PASSED ends the series or runs another, and — since #2656 — whether a round
+that MISSED has a round left to run at all. That second question is the ONE
+fact that crosses to the missing cell, and it crosses as the axis's banked
+:data:`HEADROOM_CAP_REACHED` reason rather than as its status, so the plateau
+stops still cannot reach that cell. Either way the axis can keep a graph on
+and it can never take one off — *in-tolerance is not done*.
 
 **This module invents no DSP and owns no threshold.** Every number it
 reports is lifted from a shipped primitive:

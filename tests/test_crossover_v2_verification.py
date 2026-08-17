@@ -1664,24 +1664,34 @@ def test_a_series_that_keeps_missing_terminates_at_the_budget():
             quality=Verdict(QualityStatus.MISSED, ADOPTION_UNPROVEN, {}),
             headroom=headroom,
         )
-        outcomes.append((decision.outcome, decision.row, decision.reason))
+        outcomes.append(
+            (decision.outcome, decision.row, decision.reason, headroom.reason)
+        )
         previous = flatness_objectives(_round_three_report())
 
     ended = [
-        ordinal for ordinal, (outcome, _, _) in enumerate(outcomes, start=1)
+        ordinal for ordinal, (outcome, _, _, _) in enumerate(outcomes, start=1)
         if outcome is not AdoptionOutcome.KEEP_FOR_ITERATION
     ]
     assert ended and ended[0] == cap, (
         f"a MISSED series must end at round {cap}, ended at {ended[:1] or None}"
     )
+    # The plateau ACTUALLY FIRED, asserted rather than assumed. Without this
+    # the docstring's second half is narrative only: a broken plateau (a
+    # refused floor comparison, a movement that never resolves) leaves every
+    # round REACHABLE, and the test still passes on the budget alone — proving
+    # half of what it claims while reading like it proved both.
+    assert outcomes[1][3] == HEADROOM_PLATEAUED, (
+        f"round 2 must be the plateau round, got {outcomes[1][3]!r}"
+    )
     # Every round before the cap kept iterating, plateau and all.
     assert all(
         row == ADOPTION_ROW_KEEP_FOR_ITERATION
-        for _, row, _ in outcomes[: cap - 1]
+        for _, row, _, _ in outcomes[: cap - 1]
     )
     # And every round from the cap on says the same thing, so a driver that
     # ignored the first ending is not offered a fresh one afterwards.
-    for outcome, row, reason in outcomes[cap - 1:]:
+    for outcome, row, reason, _ in outcomes[cap - 1:]:
         assert outcome is AdoptionOutcome.KEEP
         assert row == ADOPTION_ROW_KEEP_MISSED_EXHAUSTED
         assert reason == HEADROOM_CAP_REACHED
