@@ -120,6 +120,7 @@ from .contracts import (
     ADOPTION_ROW_KEEP,
     ADOPTION_ROW_KEEP_FOR_ITERATION,
     ADOPTION_ROW_KEEP_ITERATING,
+    ADOPTION_ROW_KEEP_MISSED_EXHAUSTED,
     ADOPTION_ROW_RESTORE_FAILED,
     ADOPTION_ROW_RESTORE_REGRESSION,
     ADOPTION_ROW_RESTORE_UNSAFE,
@@ -1520,9 +1521,11 @@ _QUALITY_ROWS: Mapping[QualityStatus, tuple[AdoptionOutcome, str]] = {
 #:
 #: The cell above resolves to ``KEEP`` — which used to be the end of the story
 #: — and this decides whether that keep is TERMINAL. Only the passing cell
-#: consults it: a MISSED round already iterates whatever the headroom says (it
-#: has outstanding targets by construction), and a REGRESSED one restores
-#: before this table is ever reached.
+#: consults the STATUS: a MISSED round keeps iterating however flat the axis
+#: says the result is (it has outstanding targets by construction), and a
+#: REGRESSED one restores before this table is ever reached. The one fact that
+#: crosses to the missing cell is the spent BUDGET, and it crosses as the
+#: axis's reason rather than as its status — see :func:`decide_adoption`.
 #:
 #: A second MAPPING for the same reason the first one is one: a lookup with no
 #: default means a third :class:`~.contracts.IterationHeadroom` member raises
@@ -1585,13 +1588,34 @@ def decide_adoption(
     **Nothing else moved.** The split is confined to the one cell
     (:data:`_PASSED_ROWS`) that used to be unconditionally terminal, and every
     other stop the table had is still exactly where it was: a measured
-    regression restores, an unmeasured state restores, a hazard restores, a
-    failed restore escalates, and a MISSED round keeps-for-iteration
-    regardless of headroom. In particular **headroom can never keep a graph
+    regression restores, an unmeasured state restores, a hazard restores, and
+    a failed restore escalates. In particular **headroom can never keep a graph
     the other axes said to take off** — it is read after all three of them,
     and only on the branch they all passed.
 
-    The six rows, by their :data:`~.contracts.ADOPTION_ROWS` identifiers:
+    **What #2656 MODIFIES, and why.** One fact now crosses to the MISSED cell:
+    the spent round budget. The ethos names three series-enders — *only the
+    round budget, the plateau, and the safety class end a series*
+    (``docs/audio-commissioning-roadmap.md``) — with no row exception, and
+    until this the budget had one. A MISSED round never read the fourth axis at
+    all, so a series that kept missing kept being offered another round with no
+    round left to spend: a gate walked 40 consecutive MISSED rounds and every
+    one of them said keep-for-iteration. The bound that existed lived on the
+    done screen's button, which a headless driver never presses.
+
+    **Keyed on the axis's REASON, not its status, and that is the scope.** The
+    budget crosses; the two plateau stops do not. #2537 chose MISSED-iterates
+    deliberately — a missing round has outstanding targets by construction, so
+    "we stopped improving" is not a reason to stop trying — and that choice is
+    untouched below the cap. :data:`HEADROOM_CAP_REACHED` is minted in exactly
+    one place, by the one comparison that owns the budget
+    (:func:`evaluate_iteration_headroom`, which checks it FIRST so the reason
+    names the fact that actually ended the series). Re-deriving
+    ``ordinal >= cap`` here would make this a second enforcer of a rule that
+    has one — the same reason
+    :func:`~.coordinator.series_position_from_state` refuses to clamp.
+
+    The seven rows, by their :data:`~.contracts.ADOPTION_ROWS` identifiers:
 
     ========================================== ============================
     row                                        outcome
@@ -1602,6 +1626,7 @@ def decide_adoption(
     ``row4_untrusted_evidence``                ``RESTORE``
     ``row5_trusted_safe_regressed``            ``RESTORE``
     ``row6_trusted_safe_passed_reachable``     ``KEEP_FOR_ITERATION``
+    ``row7_trusted_safe_missed_exhausted``     ``KEEP``
     ========================================== ============================
 
     Args:
@@ -1669,13 +1694,14 @@ def decide_adoption(
     * **A failed restore outranks everything.** Checked first: the speaker is
       then in neither the entry graph nor the intended one, and no later row
       can describe that better.
-    * **The fourth axis can only ever say "keep going", never "keep".** Both
-      of its answers leave the speaker on the same graph the passing cell
-      already chose; it selects the receipt and the sentence, not the DSP. A
-      headroom evaluator that returned nonsense could make the screen ask for a
-      round nobody needs — it could not leave an unsafe, unmeasured, or
-      regressed graph on a speaker, because all three of those rows return
-      before it is read.
+    * **The fourth axis chooses the sentence, never the graph.** Every one of
+      its answers leaves the speaker on the graph the cell above it already
+      chose — ``KEEP`` and ``KEEP_FOR_ITERATION`` are the same state, differing
+      only in whether another round is coming — so it selects the receipt and
+      the sentence, not the DSP. A headroom evaluator that returned nonsense
+      could ask for a round nobody needs, or end a series a round early; it
+      could not leave an unsafe, unmeasured, or regressed graph on a speaker,
+      because all three of those rows return before it is read.
     """
 
     for name, value, kind in (
@@ -1719,6 +1745,16 @@ def decide_adoption(
         # definition and this branch cannot drift from it.
         outcome, row = _PASSED_ROWS[headroom.status]
         return AdoptionDecision(outcome=outcome, reason=headroom.reason, row=row)
+    if headroom.reason == HEADROOM_CAP_REACHED:
+        # #2656: the budget ends a MISSED series too. Reached only from the
+        # iterating cell — the passing one returned above through
+        # ``_PASSED_ROWS[EXHAUSTED]``, which is the same ending by the same
+        # reason — so this is the missing half of one rule, not a second one.
+        return AdoptionDecision(
+            outcome=AdoptionOutcome.KEEP,
+            reason=headroom.reason,
+            row=ADOPTION_ROW_KEEP_MISSED_EXHAUSTED,
+        )
     return AdoptionDecision(outcome=outcome, reason=quality.reason, row=row)
 
 

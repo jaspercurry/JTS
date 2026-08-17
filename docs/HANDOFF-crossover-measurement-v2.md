@@ -458,14 +458,17 @@ for the per-hop exactness argument, including the one hop no counter can close.
 `verification_result` bundles them. Since #2537 they are then composed into
 **adoption axes** — `evaluate_evidence_trust`, `evaluate_applied_safety`,
 `evaluate_round_quality`, and since #2602 `evaluate_iteration_headroom` — and
-`decide_adoption` selects one of six rows from those. The four-verdict split
+`decide_adoption` selects one of seven rows from those. The four-verdict split
 exists because a realization answer once stood in for an acoustic one and a
 failing round read as passed; the #2537 axis rebuild exists because the table
 those four fed keyed on whether a round could *prove* it helped, and reverted a
 measured, safe, improving candidate that could not. #2602 added the fourth axis
 and split the one row that used to be terminal: a round that passes keeps
 iterating while a flatter, more level result is still reachable, up to
-`ROUND_SERIES_CAP` rounds — *in-tolerance is not done*.
+`ROUND_SERIES_CAP` rounds — *in-tolerance is not done*. #2656 split the MISSING
+row the same way: the budget ends that series too (row 7), because until then a
+round that kept missing kept being offered another one with none left to spend,
+and the only bound was a button a headless driver never presses.
 
 **Only three answers from that axis end a series**, per the ethos's
 "least-bad measured, honed in bites": the round cap, the plateau, and
