@@ -236,15 +236,6 @@ def handle_reset(
     return envelope, HTTPStatus.OK
 
 
-#: What a recorded review decision looks like in durable v2 state.
-#:
-#: One key, one shape, one writer (:func:`handle_v2_decline`), one reader (the
-#: phase resolver). ``decision`` is a word rather than a bool because the fact
-#: being recorded is WHICH answer the household gave, and a bool would name
-#: only one of them. This is the sole value the flow mints.
-REVIEW_DECISION_DECLINED = "declined"
-
-
 def handle_v2_decline(
     body: Mapping[str, Any] | None = None,
     *,
@@ -274,9 +265,11 @@ def handle_v2_decline(
 
     Returns the freshly-built envelope, the shape :func:`handle_reset` returns,
     so the page re-renders from its resting screen in one round trip rather
-    than polling for it.
+    than polling for it. This route reads state to CHECK the guard and hands
+    the write to ``correction_crossover_v2``'s own locked writer, which is
+    where every durable v2 write lives.
     """
-    from .correction_crossover_v2 import load_v2_state, save_v2_state
+    from .correction_crossover_v2 import load_v2_state, observe_review_decline
 
     payload = body if isinstance(body, Mapping) else {}
     expected = str(payload.get("expected_candidate_fingerprint") or "")
@@ -305,22 +298,7 @@ def handle_v2_decline(
             }],
         }, HTTPStatus.CONFLICT
 
-    if state is not None:
-        # TODO(#2641 follow-up, same PR): move this read-modify-write into
-        # ``correction_crossover_v2``'s own locked writer beside
-        # ``observe_restore``. It lives here only because that module is under
-        # concurrent review, and the state module owns the lock this pair
-        # should be taken under.
-        state["review_decision"] = {
-            "decision": REVIEW_DECISION_DECLINED,
-            "candidate_fingerprint": current,
-        }
-        save_v2_state(state, durable=True)
-        log_event(
-            logger, "correction.crossover_v2_review_declined",
-            candidate_fingerprint=current,
-        )
-
+    observe_review_decline(current)
     return handle_envelope(relay=relay)
 
 

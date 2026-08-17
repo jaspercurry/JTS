@@ -783,20 +783,22 @@ def _household_sentence(conductor: Any, code: str) -> str:
 def test_two_restore_triggers_run_one_undo_and_keep_the_honest_sentence(
     monkeypatch,
 ):
-    """Two owners, one closure, one Undo — and the copy proves it.
+    """ONE owner, one Undo — and the source proves there is no second.
 
-    Both the round's adoption path and the delta probe can ask this host to put
-    the previous sound back, and ``handle_v2_restore`` is NOT idempotent: a
-    successful restore flips ``applied`` off, so a second call refuses with
-    "nothing is applied to undo". Without the once-guard the second asker reads
-    that refusal as a FAILED rollback and re-labels its verdict
+    Both the round's adoption path and the delta probe's own seam used to ask
+    this host to put the previous sound back, and ``handle_v2_restore`` is NOT
+    idempotent: a successful restore flips ``applied`` off, so a second call
+    refuses with "nothing is applied to undo". The second asker read that
+    refusal as a FAILED rollback and re-labelled its verdict
     ``correction_rollback_failed`` — whose household copy says the correction is
-    still applied. It is not. That false sentence about their own speaker is
-    the defect.
+    still applied. It is not. That false sentence about their own speaker was
+    the defect, and a once-guarded closure was the mitigation.
 
-    Asserted on the rendered text rather than on ``rollback(...) is True``
-    twice, because the boolean is not what a household reads and a pin on it
-    would survive exactly the regression that matters.
+    **The second owner is now deleted** (the fifth-principle routing): the
+    probe reports and ``coordinator._run_round_restore`` is the only caller of
+    the rollback seam. So this pins the property the once-guard was standing in
+    for — one restore per session — plus the structural fact that makes it hold
+    without a guard at all.
     """
     import numpy as np
 
@@ -805,23 +807,20 @@ def test_two_restore_triggers_run_one_undo_and_keep_the_honest_sentence(
     _install_entry_baseline(conductor, scale=0.4)
     _install_applied_graph(monkeypatch, boosts=False)
 
-    # Trigger 1: the round's adoption path, on a measured regression.
+    # The round's adoption path, on a measured regression.
     first = _consume_verify(conductor, _post_apply_analysis(conductor))
     assert first.code == REASON_CORRECTION_MEASURED_REGRESSION
+    sentence = _household_sentence(conductor, first.code)
+    still_applied = REASON_REGISTRY[REASON_CORRECTION_ROLLBACK_FAILED].message
+    assert "STILL APPLIED" not in sentence
+    assert sentence != still_applied
 
-    # Trigger 2: the delta probe, on the next capture. On the commanded axis
-    # the bridge really rehydrated, the speaker delivered 2 dB MORE than the
-    # applied filters asked for across the whole band — a rollback verdict the
-    # seam still acts on immediately.
-    #
-    # The direction is load-bearing since #2559: the same magnitude in the
-    # QUIETER direction is the one class the seam now defers to the adoption
-    # table, so a fixture pointing that way would exercise the deferral rather
-    # than this test's subject (two askers, one Undo). Louder-than-commanded is
-    # the safety class, and it restores exactly as it always did.
+    # A second capture in the same session, carrying a probe verdict that used
+    # to fire the seam's own immediate rollback: 2 dB LOUDER than the applied
+    # filters commanded, across the whole band. Nothing restores a second time.
     freqs = np.asarray(_COMMANDED_FREQS_HZ, dtype=float)
     predicted = np.zeros_like(freqs)
-    second = _consume_verify(
+    _consume_verify(
         conductor,
         dataclasses.replace(
             _post_apply_analysis(conductor),
@@ -831,20 +830,22 @@ def test_two_restore_triggers_run_one_undo_and_keep_the_honest_sentence(
     )
 
     assert conductor.delta_probe is not None
-    assert conductor.delta_probe.rollback is True
-    assert second.accepted is False
+    assert conductor.delta_probe.rollback is True, (
+        "the probe still MEASURES a rollback class — what moved is who acts"
+    )
     # ONE Undo, not two.
     assert attempts == [1]
-    # The sentence FIRST, because it is the claim: the household must not be
-    # told their speaker is still corrected when it has already been put back.
-    sentence = _household_sentence(conductor, second.code)
-    still_applied = REASON_REGISTRY[REASON_CORRECTION_ROLLBACK_FAILED].message
-    assert "STILL APPLIED" not in sentence
-    assert sentence != still_applied
+
+    # …and there is no second caller left to grow one back. Source-level
+    # because that is the actual invariant: a behavioural pin would pass again
+    # the moment someone re-added a seam behind a different guard.
+    source = Path(flow.__file__).read_text(encoding="utf-8")
+    assert "self._seams.rollback(" not in source, (
+        "the flow must not call the rollback seam directly — restoring is "
+        "coordinator._run_round_restore's, and a second owner is how the "
+        "false STILL-APPLIED sentence came back last time"
+    )
     assert "the previous sound has been put back" in sentence
-    # …which happens because the second asker was handed the FIRST outcome, so
-    # its verdict kept its own specific code.
-    assert second.code != REASON_CORRECTION_ROLLBACK_FAILED
 
 
 def test_the_first_restore_outcome_is_what_a_later_asker_is_handed(monkeypatch):
@@ -1189,19 +1190,21 @@ def test_the_round_receipt_lands_in_the_bundle_fingerprinted_and_readable(
 def test_a_quieter_only_shape_miss_reaches_the_table_instead_of_the_seam(
     monkeypatch, real_bundle, caplog,
 ):
-    """#2559 piece 2, end to end: the seam defers and the round grades.
+    """#2559 piece 2, end to end: the deferral holds and the round grades.
 
     2026-08-15 14:47 (jts3): a ``model_error`` whose realized deviation pointed
     entirely quieter — a −3.32 dB dip at 1330 Hz, nothing realized louder than
     declared anywhere, tracking passed, 2.399 dB of measured improvement — was
-    reverted by the seam. The seam PREEMPTS the adoption table (that round
-    ended ``attempt_decision decision=ungraded``), so ``decide_adoption`` never
-    saw the evidence at all.
+    reverted by the probe's own seam. That seam PREEMPTED the adoption table
+    (the round ended ``attempt_decision decision=ungraded``), so
+    ``decide_adoption`` never saw the evidence at all.
 
-    Three things have to hold together, and none implies another: no Undo runs,
-    the capture is still accepted so the round is graded, and the deferral is on
-    the record. A seam that silently declined to restore would be the same
-    dishonesty in the other direction.
+    The seam is gone and the deferral is not: it now decides whether the
+    QUALITY axis escalates, so the same class still keeps and the same
+    measurement still stands. Three things have to hold together, and none
+    implies another: no Undo runs, the capture is still accepted so the round
+    is graded, and the deferral is on the record. A deferral nobody could see
+    would be the same dishonesty in the other direction.
     """
     import numpy as np
 
@@ -1231,15 +1234,10 @@ def test_a_quieter_only_shape_miss_reaches_the_table_instead_of_the_seam(
     assert attempts == [], "no Undo may run for a quieter-only shape miss"
     assert verdict.accepted is True
 
-    line = next(
-        record.getMessage() for record in caplog.records
-        if "event=correction.crossover_v2_delta_probe_seam_deferred " in
-        record.getMessage()
-    )
-    assert f"reason={SEAM_DEFERRED_QUIETER_THAN_COMMANDED}" in line
-    assert "max_signed_error_db=-2.0" in line
-
     receipt = _round_receipt_json(real_bundle, _MINTED_RELAY_SESSION_ID)
+    # The deferral reaches the record through the axis that now reads it: the
+    # quality axis declined to escalate, and names the class it declined on.
+    assert receipt["round_axes"]["quality"]["evidence"]["probe_rollback_class"] == ""
     safety = receipt["round_axes"]["safety"]
     assert safety["evidence"]["seam_deferred"] == (
         SEAM_DEFERRED_QUIETER_THAN_COMMANDED
@@ -2362,44 +2360,61 @@ def test_exactly_one_of_the_two_round_triggers_fires_in_any_session(
 def test_a_delta_probe_refusal_at_the_cloud_close_burns_no_round(
     monkeypatch, real_bundle,
 ):
-    """The ordering inside the close: refuse FIRST, grade only after.
+    """A probe ROLLBACK at the cloud close banks a receipt — the founding ask.
 
-    ``_close_cloud_group`` runs the delta probe before it grades and returns on
-    a refusal without grading. That ordering is load-bearing and was
-    comment-only: the probe has already rolled back and named itself with the
-    more specific code, a group can be RETAKEN, and the receipt is write-once —
-    so grading here would burn the fire-once guard on evidence the household
-    may yet replace, exactly as it would on a rejected VERIFY.
+    **This test's subject is the reverse of what it used to be, and the
+    reversal is the ruling.** The close used to run the probe, restore from its
+    own seam, and return a refusal BEFORE grading — so a rollback round wrote
+    no receipt at all. The ethos names that as the bug it was written against:
+    *the bug is that no round receipt was written on the failed verify, leaving
+    that round's realization only in journal events.*
 
-    The two shipped tests that drive a refusal through this branch
-    (``test_a_spent_final_slot_terminalizes_its_close_time_refusal`` and its
-    endpoint twin) assert only the terminal code, so swapping the two
-    statements left them green. This asserts the consequence the ordering
-    exists for.
+    Four things have to hold together. The graph still comes off (the class did
+    not become a keep), exactly one Undo runs, the round is GRADED, and the
+    receipt is on disk naming the probe class that took it off. The old shape
+    satisfied only the first two.
     """
+    import numpy as np
+
     _seed_full_round_state()
     conductor, attempts = _full_stage_2(monkeypatch)
     _install_entry_baseline(conductor, scale=1.5)
     _install_applied_graph(monkeypatch, boosts=False)
-    assert _consume_verify(conductor, _post_apply_analysis(conductor)).accepted
 
-    monkeypatch.setattr(
-        flow.CrossoverV2Session, "_delta_probe_refusal",
-        lambda self, _probe: flow.REASON_CORRECTION_MODEL_ERROR,
-    )
+    # 2 dB LOUDER than commanded across the band: a ``model_error`` the #2559
+    # deferral does not spare, which is the class this branch exists for. The
+    # Full tier grades at the cloud close, so VERIFY only stashes it.
+    freqs = np.asarray(_COMMANDED_FREQS_HZ, dtype=float)
+    predicted = np.zeros_like(freqs)
+    assert _consume_verify(
+        conductor,
+        dataclasses.replace(
+            _post_apply_analysis(conductor),
+            verify_tracking_curve=(freqs, predicted + 2.0, predicted),
+        ),
+    ).accepted
 
     verdict = _walk_post_apply_cloud(conductor)
 
     assert verdict.accepted is False
-    assert verdict.code == flow.REASON_CORRECTION_MODEL_ERROR, (
-        "the probe's own, more specific code must reach the household"
+    # The graph came off, once.
+    assert attempts == [1]
+    # …and the round was graded rather than skipped.
+    assert conductor.round_evaluation is not None
+    assert (
+        conductor.round_evaluation.adoption.outcome is AdoptionOutcome.RESTORE
     )
-    # Nothing was graded, nothing was acted on, and nothing was banked.
-    assert conductor.round_evaluation is None
-    assert conductor.round_receipt_identity is None
-    assert attempts == []
-    with pytest.raises(FileNotFoundError):
-        _round_receipt_json(real_bundle, _MINTED_RELAY_SESSION_ID)
+    quality = conductor.round_evaluation.quality
+    assert quality.status is QualityStatus.REGRESSED
+    assert quality.evidence["probe_rollback_class"] == VERDICT_MODEL_ERROR
+
+    # The receipt exists, and records what the restore DID.
+    receipt = _round_receipt_json(real_bundle, _MINTED_RELAY_SESSION_ID)
+    assert receipt["adoption"]["outcome"] == AdoptionOutcome.RESTORE.value
+    assert receipt["restore_result"]["attempted"] is True
+    assert receipt["restore_result"]["restored"] is True
+    assert conductor.round_receipt_identity is not None
+    assert conductor.round_receipt_identity["round_ordinal"] == 1
 
 
 # --------------------------------------------------------------------------

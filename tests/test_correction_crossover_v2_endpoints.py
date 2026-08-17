@@ -58,6 +58,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     PHASE_MEASURE,
     PHASE_VERIFY,
     POSITION_ROLES,
+    PhaseVerdict,
     REASON_APPLY_FAILED,
     REASON_CHANNEL_MAP_MISMATCH,
     REASON_CLOUD_GEOMETRY_LOCKED,
@@ -1753,11 +1754,16 @@ def test_a_spent_final_slot_close_refusal_ends_the_real_runner_immediately():
         phone,
         analyses={"verify": verify_analysis},
     )
-    conductor._delta_probe_refusal = (  # type: ignore[method-assign]
-        lambda _probe: (
-            REASON_CORRECTION_MODEL_ERROR
+    # A close-time refusal, injected where the decision now lives: the probe's
+    # own refusing seam is gone (the fifth-principle routing), and the ROUND is
+    # what refuses at the cloud close. The subject of both tests below is the
+    # runner's reaction to a close-time refusal, not which instrument produced
+    # it, so the injection point moves and nothing else does.
+    conductor._grade_round_once = (  # type: ignore[method-assign]
+        lambda verdict: (
+            PhaseVerdict(False, REASON_CORRECTION_MODEL_ERROR)
             if conductor.current_phase == PHASE_CLOUD_VERIFY
-            else None
+            else verdict
         )
     )
     _run(_build_runner(conductor, VolumeRecorder()), client, session)
@@ -1908,11 +1914,16 @@ def test_a_close_refusal_no_take_can_clear_ends_the_runner_with_tries_left():
     closing_index = spec.capture_plan.capture_target
 
     conductor = _stage2_conductor(backend, session, phone)
-    conductor._delta_probe_refusal = (  # type: ignore[method-assign]
-        lambda _probe: (
-            REASON_CORRECTION_MODEL_ERROR
+    # A close-time refusal, injected where the decision now lives: the probe's
+    # own refusing seam is gone (the fifth-principle routing), and the ROUND is
+    # what refuses at the cloud close. The subject of both tests below is the
+    # runner's reaction to a close-time refusal, not which instrument produced
+    # it, so the injection point moves and nothing else does.
+    conductor._grade_round_once = (  # type: ignore[method-assign]
+        lambda verdict: (
+            PhaseVerdict(False, REASON_CORRECTION_MODEL_ERROR)
             if conductor.current_phase == PHASE_CLOUD_VERIFY
-            else None
+            else verdict
         )
     )
     volume = VolumeRecorder()
@@ -4124,7 +4135,12 @@ def test_the_session_preparer_threads_one_tier_into_the_spec_and_the_map():
     import inspect
 
     source = inspect.getsource(v2host.prepare_v2_session)
-    assert 'resolve_plan_shape(raw.get("tier")' in source
+    # ONE resolution, from ONE requested tier — whether that tier came from the
+    # body or (#2639) was inherited from the lapsed session's durable state.
+    # The literal moved with the inherit; what it pins did not.
+    assert 'requested_tier = (raw.get("tier") if raw else None) or None' in source
+    assert source.count("resolve_plan_shape(") == 1
+    assert "resolve_plan_shape(requested_tier)" in source
     assert "build_v2_session_spec(" in source and "plan_shape=plan_shape" in source
     # Stronger than the old literal: the preparer must READ the one owner of
     # this fact, so the chooser and the session cannot drift (#2098).

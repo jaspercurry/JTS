@@ -103,6 +103,7 @@ from typing import TYPE_CHECKING, Any, Generic, Iterable, Mapping, TypeVar
 import numpy as np
 
 from ..delta_probe import (
+    DELTA_PROBE_ROLLBACK_VERDICTS,
     VERDICT_LEVEL_MISMATCH,
     VERDICT_MATCHED,
     VERDICT_SAFETY_ONLY,
@@ -941,6 +942,24 @@ def evaluate_applied_safety(
 # --------------------------------------------------------------------------
 
 ADOPTION_MEASURED_REGRESSION = "measured_regression"
+#: The delta probe measured the emitted filters not doing what the fit's model
+#: of them says, in one of the classes the project reverts. Distinct from
+#: :data:`ADOPTION_MEASURED_REGRESSION` because they are different instruments
+#: answering different questions — that one is the before/after summed
+#: comparison, this one is realized-vs-commanded — and a receipt that named the
+#: pooled comparison for a probe finding would send the next round looking in
+#: the wrong place.
+#:
+#: **The cause carries the CLASS, as ``<prefix>:<verdict>``**, reusing the
+#: composite-cause shape :func:`decide_adoption` already mints for its
+#: no-anchor row. The three rollback classes have three different household
+#: sentences (:data:`~.vocabulary.DELTA_PROBE_REASON_BY_VERDICT`), and they
+#: were reached through the probe's own seam before the routing move. A bare
+#: prefix would have collapsed all three into one generic restore sentence — a
+#: copy regression smuggled in as plumbing — so
+#: :func:`~.vocabulary.round_restore_reason` reads the class back off the cause
+#: and renders exactly what it always did.
+ADOPTION_PROBE_ROLLBACK_CLASS = "delta_probe_rollback_class"
 ADOPTION_REALIZED_AND_IMPROVED = "realized_and_improved"
 ADOPTION_REALIZATION_FAILED = "realization_failed"
 ADOPTION_UNPROVEN = "benefit_unproven"
@@ -1056,6 +1075,29 @@ def evaluate_round_quality(
     speaker", the targets answer "what should the next one chase". They are
     different questions, and #2291's whole design is about not letting one
     answer stand in for another.
+
+    **What the probe's ROLLBACK CLASSES now do here, and why they moved.** Until
+    the fifth principle landed, three probe verdicts
+    (:data:`~jasper.active_speaker.delta_probe.DELTA_PROBE_ROLLBACK_VERDICTS`)
+    restored the graph from a seam in the flow that ran *before* this table and
+    ended the session on its own code. That seam was a SECOND owner of "restore
+    the previous graph", and it PREEMPTED this table — which is why
+    ``keep_for_iteration`` could never fire on those classes, and why the
+    2026-08-16 shortfall round left its realization in journal events with no
+    receipt behind it. The seam is gone; the class reaches this axis and lands
+    on :attr:`~.contracts.QualityStatus.REGRESSED`, the one quality answer that
+    restores, so :func:`decide_adoption` is the single decider and
+    :func:`~jasper.active_speaker.crossover_v2.coordinator.run_round` banks the
+    round either way.
+
+    **The restore SET is unchanged by that move, deliberately.** The same three
+    verdicts restore, the #2559 deferral still spares the quieter-only
+    ``model_error``, and no class that used to restore now keeps. Narrowing the
+    set — gating ``level_dependent_shortfall`` on a band-resolved realization
+    inside the trusted band, and ``model_error`` on measured-worse — is the
+    design brief's §2.2 re-audit and is deliberately NOT done here: it is a
+    change to WHICH graphs come off a household's speaker, and it belongs in a
+    change that is about that rather than riding a plumbing move.
     """
 
     quality, reason = _QUALITY_TABLE[(realization.status, benefit.status)]
@@ -1071,11 +1113,42 @@ def evaluate_round_quality(
         targets.append(
             f"delta_probe:{str(getattr(probe, 'reason', '') or probe_verdict)}"
         )
+    probe_rollback = _probe_rollback_class(probe, probe_verdict)
+    if probe_rollback:
+        quality = QualityStatus.REGRESSED
+        reason = f"{ADOPTION_PROBE_ROLLBACK_CLASS}:{probe_rollback}"
 
     return Verdict(quality, reason, {
         "targets": targets,
         "spec_bands": _failing_spec_bands(spec_report),
+        # WHICH probe class escalated, or ``""``. Named rather than left to be
+        # re-derived from ``targets``, because the row's reason is a constant
+        # and a reader needs the class behind it.
+        "probe_rollback_class": probe_rollback,
     })
+
+
+def _probe_rollback_class(probe: Any | None, verdict: str) -> str:
+    """The probe verdict that takes this graph off, or ``""``.
+
+    Two owners consulted, neither re-derived here:
+    :data:`~jasper.active_speaker.delta_probe.DELTA_PROBE_ROLLBACK_VERDICTS`
+    for which classes restore, and
+    :func:`~jasper.active_speaker.delta_probe.seam_rollback_deferral` for the
+    one that is spared (#2559 — a ``model_error`` pointing entirely quieter
+    than commanded is a quality miss the series keeps and learns from).
+
+    That deferral function keeps its name even though the seam it was named
+    for is gone: ``seam_rollback_deferral`` is also a KEY on
+    :meth:`~jasper.active_speaker.delta_probe.DeltaProbeMap.to_dict`, and so on
+    every banked receipt. Renaming the symbol without the wire key would be two
+    names for one fact; renaming both would rewrite persisted vocabulary to fix
+    a comment. The reader moved, the name did not.
+    """
+
+    if not verdict or verdict not in DELTA_PROBE_ROLLBACK_VERDICTS:
+        return ""
+    return "" if seam_rollback_deferral(probe) else verdict
 
 
 def _failing_spec_bands(report: FlatSpecReport | None) -> list[dict[str, Any]]:

@@ -678,7 +678,7 @@ journalctl -u jasper-correction-web | grep -E 'event=correction\.session_volume_
 journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(applied|volume_close_failed|volume_abandon_failed|volume_open_failed|volume_recovery_timeout)'
 
 # Why a session refused, and what the speaker actually did with the correction.
-journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(level_estimator_finding|level_match_refused|prediction_gate|predicted_spec_failed|realized_level_match|delta_probe|delta_probe_rollback|delta_probe_restore)'
+journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(level_estimator_finding|level_match_refused|prediction_gate|predicted_spec_failed|realized_level_match|delta_probe|round_restore|round_recovery_required|delta_probe_restore)'
 
 # Calibration handoff / uncalibrated warnings.
 journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(calibration_resolve_failed|uncalibrated_capture|default_calibration_hint_failed)'
@@ -2386,6 +2386,23 @@ a receipt that could not be written is never a lost verdict — but it is logged
 at **ERROR**, not WARN
 (`event=correction.crossover_v2_round_receipt_failed`).
 
+**EVERY round banks one, including a probe rollback.** The three delta-probe
+rollback classes used to restore from a seam of their own
+(`_delta_probe_refusal`) that ran BEFORE `run_round` and ended the session on
+its own code — so a rollback round wrote no receipt at all, which is the bug
+the ethos's fifth principle names by its date ("no round receipt was written on
+the failed verify, leaving that round's realization only in journal events").
+That seam is deleted. The probe reports, `evaluate_round_quality` escalates a
+non-deferred rollback class to `REGRESSED`, the adoption table restores through
+its one restore owner, and the receipt records what the restore did. **The
+restore SET is unchanged** — same three classes, same #2559 deferral for the
+quieter-only `model_error` — and each keeps its own household sentence, because
+the cause carries the class (`delta_probe_rollback_class:<verdict>`) and
+`round_restore_reason` reads it back through
+`DELTA_PROBE_REASON_BY_VERDICT`. Narrowing the set (§2.2's re-audit: gating
+`level_dependent_shortfall` on band-resolved realization, `model_error` on
+measured-worse) is deliberately NOT part of that move.
+
 **Since #2609 the IDENTITY survives what the ARTIFACT does not.** It is
 assembled from the round's own evaluation and returned on every path,
 including an unbound or raising publish seam; only the two fingerprint fields
@@ -2492,7 +2509,20 @@ decision screen, and the record could not tell a decline from a household that
 never looked — the fact a series needs before it offers another bite. Its
 `href` is retained as a presentation hint; the client prefers `endpoint`
 whenever an action carries both, which is what makes every in-flow action
-performable by a driver as well as by a browser.
+performable by a driver as well as by a browser. Once recorded,
+`_phase_from_state` resolves to the journey's resting screen instead of
+`PHASE_REVIEW` — bound to the candidate the decline answered, so a newer
+measurement brings the review back rather than inheriting a stale "no".
+
+**"Measure again" inherits the lapsed session's tier (#2639).** Every
+re-measure action the envelope mints posts an empty body, because the action
+does not know what the session was, and `resolve_plan_shape` resolved an absent
+tier to `TIER_FULL`. A remote session's own retry therefore minted a tier the
+turntable rig cannot walk, and Express households were demoted by the same
+line. `prepare_v2_session` now reads the durable tier when the body omits one,
+matching `prepare_v2_verify`'s `_verify_plan_shape`; an explicit body tier still
+wins, so the tier chooser and the Express done screen's "Run a Full
+measurement" are unaffected.
 
 Apply is enabled only when all three hold: a candidate with a fingerprint
 exists, the prediction is gradeable (`overall_passed is not None` — a graded
@@ -3173,15 +3203,21 @@ after the apply, from the delta probe.) All three raise through
 `relay_timeout` when it is unset — so raising any other way would render a
 deliberate refusal as a manufactured timeout.
 
-**The delta probe verifies the apply, and rolls it back itself** (PR-L5). The
-three `correction_*` rows above are the only refusals in this flow that fire
-after the speaker has already changed, so each one UNDOES the correction before
-it names itself — the household copy says "the previous sound has been put
-back" and that is already true when they read it. The rollback runs the same
-`handle_v2_restore` the Undo button runs (bound as the conductor's `rollback`
-seam by `bind_delta_probe_rollback`), never a second restore path that could
-drift from it; a conductor with no binding still refuses and says so on
-`event=correction.crossover_v2_delta_probe_rollback`.
+**The delta probe verifies the apply; the ROUND rolls it back** (PR-L5, rerouted
+by the fifth principle). The three `correction_*` rows above are the only
+refusals in this flow that fire after the speaker has already changed, so each
+one UNDOES the correction before it names itself — the household copy says "the
+previous sound has been put back" and that is already true when they read it.
+The probe used to fire that restore from a seam of its own, which was a second
+owner of "restore the previous graph" AND preempted the adoption table, so a
+rollback round wrote no receipt. Now the probe reports, `evaluate_round_quality`
+escalates a non-deferred rollback class, and
+`coordinator._run_round_restore` runs the same `handle_v2_restore` the Undo
+button runs (bound as the conductor's `rollback` seam by
+`bind_delta_probe_rollback`) — one restore path, and the receipt records what it
+did. A conductor with no binding still refuses and says so on
+`event=correction.crossover_v2_round_recovery_required`; a successful restore is
+`event=correction.crossover_v2_round_restore`.
 
 What the probe is, and what it is not: it classifies
 `measured − predicted` — the SAME comparison the `verify_out_of_tolerance`
@@ -5365,11 +5401,13 @@ corrections came from that gate's review of PR #2545, and every figure in them
 was measured on this branch. **The date below is deliberately NOT bumped**, for
 the same reason as the two addenda above.
 
-Last verified: 2026-08-17 (#2609/#2641 — the three paragraphs this round's
+Last verified: 2026-08-17 (#2609/#2641/#2639 — the paragraphs this round's
 change falsified were re-read against code and corrected: the headroom axis's
 endings against `evaluate_iteration_headroom`, the receipt paragraph against
-`coordinator._write_round_receipt`, and the review screen's decline against
-`_review_envelope` + `handle_v2_decline`. Carried forward: #2602 — the live
+`coordinator._write_round_receipt` and `evaluate_round_quality`'s probe
+escalation, and the review screen's decline and re-measure tier against
+`_review_envelope`, `handle_v2_decline`, `_phase_from_state`, and
+`prepare_v2_session`. Carried forward: #2602 — the live
 spine's adoption-axis count, row count, and file-map rows re-read against
 `decide_adoption`; #2611 — the delta-probe section's commanded-axis and
 chained-round paragraphs re-read against `crossover_v2.commanded` and

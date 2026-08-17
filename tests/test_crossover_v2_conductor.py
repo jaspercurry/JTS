@@ -72,6 +72,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     DELTA_PROBE_REASON_BY_VERDICT,
     REASON_CORRECTION_MODEL_ERROR,
     REASON_CORRECTION_ROLLBACK_FAILED,
+    REASON_CORRECTION_UNSAFE_RESULT,
     ALIGNMENT_CONFIDENCE_TRUST_FLOOR,
     AUTO_ADVANCE_COUNTDOWN,
     AUTO_ADVANCE_COUNTDOWN_S,
@@ -4582,13 +4583,17 @@ def test_a_spent_final_slot_terminalizes_its_close_time_refusal():
         accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
         applied=True,
     )
-    # Isolate the close seam under test from delta-probe arithmetic; the real
-    # classifier's mapping/copy is independently exhaustive below.
-    c._delta_probe_refusal = (  # type: ignore[method-assign]
-        lambda _probe: (
-            REASON_CORRECTION_MODEL_ERROR
+    # Isolate the close seam under test from delta-probe AND round-grading
+    # arithmetic; the real classifier's mapping/copy is independently
+    # exhaustive below. Injected at ``_grade_round_once`` rather than at the
+    # probe's own seam because the fifth-principle routing deleted that seam:
+    # a close-time refusal is now the ROUND's answer, and this is where it
+    # enters the close.
+    c._grade_round_once = (  # type: ignore[method-assign]
+        lambda verdict: (
+            flow.PhaseVerdict(False, REASON_CORRECTION_MODEL_ERROR)
             if c.current_phase == PHASE_CLOUD_VERIFY
-            else None
+            else verdict
         )
     )
 
@@ -9578,8 +9583,22 @@ def test_delta_probe_offset_seam_that_misbehaves_is_nothing_known():
 def test_delta_probe_model_error_rolls_back_automatically_and_refuses(caplog):
     """The load-bearing behaviour: a realized-vs-commanded map that does not
     match is undone BEFORE the household is told, so the copy ("the previous
-    sound has been put back") is already true when they read it."""
-    caplog.set_level(logging.ERROR, logger=_DIAG_LOGGER)
+    sound has been put back") is already true when they read it.
+
+    **Which SENTENCE they read moved, and the move is the routing working.**
+    The probe's own seam refused under the probe's class and consulted nothing
+    else. The round consults every axis, and this fixture's ±5 dB tilt trips
+    the SAFETY axis too — a commanded boost realized above its declared bound —
+    which the table checks before quality. So the graph comes off under the
+    stronger true sentence rather than the shape one. The unsafe-result code is
+    not a demotion of the finding: the probe's own verdict is still
+    ``model_error`` and still on the record, one assertion below.
+    """
+    # The COORDINATOR's logger, at INFO: a SUCCESSFUL restore is not an error,
+    # and the line moved there with the decision.
+    caplog.set_level(
+        logging.INFO, logger="jasper.active_speaker.crossover_v2.coordinator",
+    )
     calls: list[str] = []
     fakes = FakeSeams()
     c = _probed_conductor(fakes, rollback=lambda reason: calls.append(reason) or True)
@@ -9592,15 +9611,19 @@ def test_delta_probe_model_error_rolls_back_automatically_and_refuses(caplog):
     )
     verdict = _run_phase(c, 3, 3)
     assert verdict["accepted"] is False
-    assert verdict["code"] == REASON_CORRECTION_MODEL_ERROR
-    assert c.verify_outcome == "fail"
+    assert verdict["code"] == REASON_CORRECTION_UNSAFE_RESULT
     assert c.delta_probe.verdict == VERDICT_MODEL_ERROR
-    # The rollback ran, and it ran with the reason the household will see.
-    assert calls == [REASON_CORRECTION_MODEL_ERROR]
-    assert "event=correction.crossover_v2_delta_probe_rollback" in caplog.text
+    # The rollback ran, exactly once, and it ran with the cause the round
+    # decided on rather than a second copy of it.
+    from jasper.active_speaker.crossover_v2.verification import (
+        SAFETY_BOOST_OVER_DECLARED_BOUND,
+    )
+
+    assert calls == [SAFETY_BOOST_OVER_DECLARED_BOUND]
+    assert "event=correction.crossover_v2_round_restore" in caplog.text
     assert "restored=true" in caplog.text
     # The refusal names itself to the host (the same contract PR-L4 relies on).
-    assert c.last_failure_code == REASON_CORRECTION_MODEL_ERROR
+    assert c.last_failure_code == REASON_CORRECTION_UNSAFE_RESULT
 
 
 def test_delta_probe_refuses_honestly_when_no_rollback_seam_is_bound(caplog):
@@ -9628,7 +9651,12 @@ def test_delta_probe_refuses_honestly_when_no_rollback_seam_is_bound(caplog):
     assert verdict["code"] == REASON_CORRECTION_ROLLBACK_FAILED
     # The finding itself is still recorded and still specific.
     assert c.delta_probe.verdict == VERDICT_MODEL_ERROR
-    assert "restored=false" in caplog.text
+    # LOUD on the journal, from the one owner that now decides it. The table
+    # knows before it tries that there is no anchor, so it does not attempt a
+    # restore it cannot make — and says so, which is what keeps the STILL
+    # APPLIED sentence below true.
+    assert "event=correction.crossover_v2_round_recovery_required" in caplog.text
+    assert "rollback_anchor_available=false" in caplog.text
     message = REASON_REGISTRY[REASON_CORRECTION_ROLLBACK_FAILED].message
     assert "STILL APPLIED" in message
     assert "put back" not in message.replace("put the previous sound back", "")
@@ -11333,8 +11361,14 @@ def test_absolute_tolerance_is_derived_from_the_spec_table_not_chosen():
 def test_the_delta_probe_still_refuses_first_so_its_rollback_is_never_displaced():
     """R18 is purely additive to the refusal order (resilience review finding).
 
-    The probe's refusals carry an AUTOMATIC remedy. Gating ahead of it would
-    let a capture that fails this claim AND warrants a rollback get neither.
+    A probe-class refusal carries an AUTOMATIC remedy — the graph comes off.
+    Gating ahead of it would let a capture that fails this claim AND warrants a
+    rollback get neither.
+
+    Injected at ``_grade_round_once``: since the fifth-principle routing the
+    probe reports and the ROUND decides, so "the probe's refusal" reaches this
+    ordering as the round's. The subject is unchanged — R18's absolute claim
+    must not displace it.
     """
     fakes = FakeSeams()
     c = _verify_to_apply(fakes)
@@ -11343,8 +11377,10 @@ def test_the_delta_probe_still_refuses_first_so_its_rollback_is_never_displaced(
     )
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(
-            flow.CrossoverV2Session, "_delta_probe_refusal",
-            lambda self, verdict: REASON_CORRECTION_MODEL_ERROR,
+            flow.CrossoverV2Session, "_grade_round_once",
+            lambda self, verdict: flow.PhaseVerdict(
+                False, REASON_CORRECTION_MODEL_ERROR,
+            ),
         )
         verdict = _run_phase(c, 3, 3)
     assert verdict["code"] == REASON_CORRECTION_MODEL_ERROR

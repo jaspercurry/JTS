@@ -388,7 +388,7 @@ def test_a_decline_is_recorded_and_a_no_show_is_distinguishable(
         # The resting screen, in one round trip — not a poll for it.
         assert payload["screen"] == "start"
         decision = (v2.load_v2_state() or {})["review_decision"]
-        assert decision["decision"] == flow.REVIEW_DECISION_DECLINED
+        assert decision["decision"] == v2.REVIEW_DECISION_DECLINED
         assert decision["candidate_fingerprint"] == "fp-current"
     finally:
         v2.set_state_path_for_tests(None)
@@ -468,7 +468,7 @@ def test_a_decline_with_no_candidate_to_name_is_still_a_decline(
 
         assert status == 200
         decision = (v2.load_v2_state() or {})["review_decision"]
-        assert decision["decision"] == flow.REVIEW_DECISION_DECLINED
+        assert decision["decision"] == v2.REVIEW_DECISION_DECLINED
         assert decision["candidate_fingerprint"] == ""
     finally:
         v2.set_state_path_for_tests(None)
@@ -504,3 +504,70 @@ def test_the_decline_route_is_reachable_from_the_endpoint_the_envelope_mints():
     assert decline["endpoint"].startswith("/correction/")
     routed = decline["endpoint"][len("/correction"):]
     assert routed in correction_setup._POST_ROUTES
+
+
+def test_a_declined_review_stops_being_served_and_a_new_one_is_not(tmp_path):
+    """#2641's acknowledgement half: the screen closes, and only for THIS one.
+
+    Recording the decline is worthless if the household is handed the same
+    decision screen on the next poll — that was the observed defect (five
+    clicks, five reloads, same screen). And a decline that outlived its own
+    candidate would be worse than the bug: a later measurement's proposal
+    would never be offered, because a "no" the household gave to a different
+    question was still on file.
+    """
+    from jasper.web import correction_crossover_v2 as v2
+
+    v2.set_state_path_for_tests(tmp_path / "v2_state.json")
+    try:
+        v2.save_v2_state({
+            "session_id": "cap_x",
+            "accepted_phases": ["check", "measure"],
+            "session_phases": ["check", "measure"],
+            "applied": False,
+            "candidate": {"fingerprint": "fp-1"},
+        })
+        # Before: the review interlude.
+        assert v2._phase_from_state(v2.load_v2_state()) == "review"
+
+        v2.observe_review_decline("fp-1")
+
+        # After: the journey's resting screen, not the decision again.
+        assert v2._phase_from_state(v2.load_v2_state()) == "check"
+
+        # A NEWER measurement mints a different candidate, and the decline
+        # does not cover it.
+        state = v2.load_v2_state()
+        state["candidate"] = {"fingerprint": "fp-2"}
+        v2.save_v2_state(state)
+        assert v2._phase_from_state(v2.load_v2_state()) == "review"
+    finally:
+        v2.set_state_path_for_tests(None)
+
+
+def test_a_state_that_was_never_declined_reads_as_never_looked(tmp_path):
+    """The control the distinction rests on: absence is not a decline.
+
+    ``review_declined`` must not answer True for a state written by a build
+    that predates the key, for a malformed record, or for a decline naming
+    some other proposal — each of those would close a review nobody answered.
+    """
+    from jasper.web import correction_crossover_v2 as v2
+
+    base = {"candidate": {"fingerprint": "fp-1"}}
+    assert v2.review_declined(None) is False
+    assert v2.review_declined(base) is False
+    assert v2.review_declined({**base, "review_decision": "yes"}) is False
+    assert v2.review_declined({
+        **base, "review_decision": {"decision": "declined",
+                                    "candidate_fingerprint": "fp-other"},
+    }) is False
+    assert v2.review_declined({
+        **base, "review_decision": {"decision": "somethingelse",
+                                    "candidate_fingerprint": "fp-1"},
+    }) is False
+    # …and the one shape that IS a decline.
+    assert v2.review_declined({
+        **base, "review_decision": {"decision": "declined",
+                                    "candidate_fingerprint": "fp-1"},
+    }) is True
