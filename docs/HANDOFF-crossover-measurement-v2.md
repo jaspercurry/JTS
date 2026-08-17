@@ -897,8 +897,12 @@ ruling (#2603), the code-owned class default
 (`driver_protection._STYLE_HIGH_PASS_HZ`, 2000 Hz for a compression driver)
 is no longer enforced as a minimum by `driver_safety._target_issues` — a
 published manufacturer figure wins outright, including below the table's own
-number. The table's remaining jobs are the default answer when nothing is
-published and the plausibility anchor that catches a garbage declaration;
+number. The table keeps three jobs: the default answer when nothing is
+published; the plausibility anchor that catches a garbage declaration; and a
+**commissioning-tone gate** — `driver_protection._highpass_satisfied` compares
+the staged high-pass against that same `min_highpass_hz` to set
+`band_limit_highpass_ok`, so lowering the table moves an *audible-test* gate,
+not only a confirmation one. On top of those,
 `code_owned_policy` is still fingerprint-checked against it, so lowering the
 table's own number still un-confirms every stored profile of that style.
 Consequence: #1654's compression-driver instance no longer needs the table

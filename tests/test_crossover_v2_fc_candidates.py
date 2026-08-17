@@ -214,6 +214,42 @@ def test_proposals_are_geometric_bounded_and_inside_the_open_interval():
     assert max(alts) < beaming_onset_hz(JTS3_DIAMETER_MM)
 
 
+@pytest.mark.parametrize("search_lo", [2500.0, 3000.0, 1501.6, 1750.5])
+def test_a_binding_search_floor_is_proposed_not_refused_as_its_own_violation(
+    search_lo,
+):
+    """The grid's first point must survive the band check the grid itself applies.
+
+    Regression for the bug the exact-is-legal ruling introduced. While the
+    proposals were strictly interior, the ``lo`` clamp could sit an epsilon
+    under the declared search floor harmlessly. Once ``lo`` BECAME the first
+    proposal, that nudge was rounded to one decimal and landed below
+    ``_fc_rejection``'s own tolerance -- which measures from the DECLARED edge,
+    not the nudged one -- so the sweep refused its own first candidate as
+    ``outside_declared_search_band``: one proposal silently lost, and a journal
+    line that reads like the household declared something contradictory.
+
+    Parametrised on search floors whose ``- 0.05`` rounds DOWN. That is the
+    whole reason the suite could not see this: both shipped goldens (1600 and
+    2000) round UP, so every existing case passed on rounding luck.
+    """
+
+    result = fc_candidate_set(
+        configured_hz=2200.0,
+        hf_hard_floor_hz=300.0,
+        lower_driver_hard_ceiling_hz=6000.0,
+        search_band_hz=(search_lo, search_lo + 900.0),
+    )
+
+    assert not [r for r in result.rejected if r[1] == FC_REJECT_OUTSIDE_SEARCH_BAND], (
+        f"the grid refused its own proposal against its own band: {result.rejected}"
+    )
+    # The declared floor is the first proposal, and it is offered rather than
+    # merely un-refused.
+    assert min(result.alternatives) == pytest.approx(search_lo, abs=0.05)
+    assert len(result.alternatives) == flow.MAX_PROPOSED_FC_CANDIDATES
+
+
 def test_asking_for_no_proposals_still_evaluates_the_configured_path():
     result = fc_candidate_set(
         configured_hz=JTS3_CONFIGURED_HZ,

@@ -251,9 +251,13 @@ def fc_candidate_set(
     Proposals are spaced geometrically, because a crossover argument is a
     per-octave one and an arithmetic grid would crowd the top of the range.
 
-    Returns an empty ``candidates`` only when the configured value itself is
-    inadmissible; the caller turns that into the ordinary
-    ``no_admissible_candidate`` refusal rather than guessing a crossover.
+    ``candidates`` is never empty: the configured corner is always its first
+    entry, admissible or not, because §9.8 requires the session to evaluate what
+    the speaker is actually running so a proposal has something to prove itself
+    against. What CAN come back empty is :attr:`FcCandidateSet.alternatives` —
+    an honest keep-configured verdict rather than a guessed crossover, pinned by
+    ``test_a_search_band_that_excludes_everything_leaves_only_configured``.
+    Every bound that removed a proposal is named in ``rejected``.
     """
     from jasper.active_speaker.branch_chain import beaming_onset_hz
 
@@ -268,7 +272,18 @@ def fc_candidate_set(
             float(search_band_hz[0]), float(search_band_hz[1]),
         )
         hi = min(hi, float(search_band_hz[1]))
-        lo = max(lo, float(search_band_hz[0]) - _FC_GRID_EPS_HZ)
+        # No epsilon on THIS clamp. It was harmless while the grid's points were
+        # strictly interior, but the 2026-08-17 ruling made ``lo`` itself the
+        # first proposal -- and a first point placed at ``search_lo - 0.05``
+        # rounds to one decimal, which for roughly half of all search floors
+        # lands BELOW the same band check ``_fc_rejection`` applies just below
+        # (its own +/-eps tolerance is measured from the declared edge, not from
+        # this nudged one). The grid then refused its own first point as
+        # ``outside_declared_search_band`` -- silently losing a proposal and
+        # journaling what reads like a declaration conflict. The tolerance in
+        # ``_fc_rejection`` stays: it absorbs the rounding of INTERIOR points,
+        # which is what it was for.
+        lo = max(lo, float(search_band_hz[0]))
     if lower_driver_diameter_mm is not None:
         ceiling = beaming_onset_hz(float(lower_driver_diameter_mm))
         limits["beaming_ceiling_hz"] = ceiling

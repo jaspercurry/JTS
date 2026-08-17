@@ -43,10 +43,14 @@ _UNKNOWN_HF_STYLE = "unknown_high_frequency"
 # Per-style high-pass figures. Since the 2026-08-17 ruling (decisions 8-9,
 # issue #2603) this table is NOT a veto over sourced manufacturer data: a
 # published minimum recommended crossover wins outright, including below the
-# figure here. Its two remaining jobs are (1) the DEFAULT answer when a
-# manufacturer publishes nothing, and (2) the anchor for the plausibility band
-# that refuses a declared low limit as garbage -- see
-# ``resolve_driver_low_limit`` and ``driver_low_limit_plausibility_band_hz``.
+# figure here. It keeps THREE jobs: (1) the DEFAULT answer when a manufacturer
+# publishes nothing, (2) the anchor for the plausibility band that refuses a
+# declared low limit as garbage -- see ``resolve_driver_low_limit`` and
+# ``driver_low_limit_plausibility_band_hz`` -- and (3) the commissioning-tone
+# gate, since ``_highpass_satisfied`` compares a staged high-pass against
+# ``min_highpass_hz`` to set ``band_limit_highpass_ok``. Job (3) is the one to
+# remember before editing a number here: it decides whether a tone is allowed
+# to PLAY, not merely whether a profile confirms.
 _STYLE_HIGH_PASS_HZ = {
     "compression_driver": 2000.0,
     "horn_compression_driver": 2000.0,

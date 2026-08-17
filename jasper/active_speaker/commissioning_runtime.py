@@ -1858,15 +1858,21 @@ def prepare_summed_excitation(
     try:
         # ``measurement_band_hz[0]`` is the whole low edge here; this used to
         # ALSO take a max over ``hard_excitation_band_hz[0]``, which restated a
-        # rule this module does not own and could never bind. Two independent
-        # guarantees keep ``measurement[0] >= hard[0]`` on every profile that
-        # reaches this line: ``driver_protection.apply_driver_low_limit`` stamps
-        # ``hard[0]`` at the declared low limit and ``measurement[0]`` at
-        # ``max(published response floor, that limit)``, and for a driver whose
-        # limit does not resolve, ``driver_safety._target_issues`` raises
-        # ``<role>:measurement_band_outside_hard_band`` -- which
-        # ``evaluate_driver_safety_profile`` turns into a NOT-confirmed verdict,
-        # refused by the ``confirmed_and_current`` gate above.
+        # rule this module does not own and could never bind.
+        #
+        # The short argument, and it needs nothing from #2603: every confirmed
+        # profile satisfies ``_band_subset(measurement, hard)``, because
+        # ``driver_safety._target_issues`` raises
+        # ``<role>:measurement_band_outside_hard_band`` otherwise and
+        # ``evaluate_driver_safety_profile`` turns any derived issue into a
+        # NOT-confirmed verdict -- which the ``confirmed_and_current`` gate
+        # above already refused. Subset means ``measurement[0] >= hard[0]``, so
+        # the ``hard[0]`` term was dominated on every reachable input.
+        #
+        # #2603 adds a second, independent guarantee for the same inequality:
+        # ``apply_driver_low_limit`` stamps ``hard[0]`` at the declared low
+        # limit and ``measurement[0]`` at ``max(published response floor, that
+        # limit)``.
         #
         # ``excitation_safety_plan.resolve_driver_excitation_ceilings`` keeps its
         # own ``hard[0]`` term and is not wrong to: on its proven-HP

@@ -1469,6 +1469,7 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
             "Dome tweeters usually have no such line at all. Look instead at the test condition footnoted to the POWER HANDLING rating, which states the filter used: \"IEC 268-5, high-pass Butterworth, 2600 Hz, 12 dB/oct\" or \"X-over: 2. order HP Butterworth, 2.5 kHz\". That frequency is the answer.",
             "recommended_highpass_slope_db_per_octave is the slope CONDITION the manufacturer attaches to that frequency, reported separately. Convert a filter order to dB/octave: 2nd order is 12, 3rd is 18, 4th is 24. Send it only when the manufacturer states one — it is not universal, and some datasheets give the frequency with no slope at all.",
             "If the manufacturer publishes no minimum crossover frequency, send null for both and add an entry to unknowns. Absent is a correct answer here. Do NOT estimate this one: a safety margin is computed downstream by this build, and an invented number would be indistinguishable from a datasheet figure.",
+            "The numbers in RESULT SHAPE below are format placeholders, not answers — recommended_highpass_hz especially. Send this driver's own published figure, or null. Never copy the example's number, and never badge a number you did not read on a datasheet as confidence \"high\".",
             "",
             "ESTIMATING THE REMAINING PROTECTION FIELDS",
             "required_protection_filters: send this ONLY for a mid, which needs a low-pass. A high-pass requirement is DERIVED from recommended_highpass_hz and must not be sent. cutoff_hz and minimum_slope_db_per_octave are both numbers, never null.",
@@ -1510,7 +1511,16 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
             '    "driver_class": "compression_horn|soft_dome|metal_dome|beryllium_diamond_dome|ribbon_amt|unknown",',
             '    "radiating_diameter_mm": 25,',
             '    "unknowns": ["facts that could not be established"],',
-            '    "field_provenance": {"recommended_highpass_hz":{"confidence":"high","basis":"datasheet recommended crossover line","source":"manufacturer datasheet","sources":["https://..."]},"level_duration_limits":{"confidence":"low","basis":"estimated: protocol default, no published limit","source":"measurement protocol, no published limit","sources":[]}},',
+            # The high-confidence exemplar is deliberately NOT
+            # recommended_highpass_hz. Every other value in this shape is a
+            # visible placeholder ("echo from TARGETS", "a|b|c", "https://..."),
+            # but that field's example is a concrete number this build COMPUTED
+            # from its own style table -- so badging it high/datasheet modelled
+            # exactly the mistake this prompt forbids two screens up, and is the
+            # shape jts3 shipped: an unpublished 2000 wearing a datasheet badge.
+            # sensitivity_db_2v83_1m carries the published exemplar instead; it
+            # is genuinely a datasheet line, so nothing false is taught.
+            '    "field_provenance": {"sensitivity_db_2v83_1m":{"confidence":"high","basis":"datasheet sensitivity line","source":"manufacturer datasheet","sources":["https://..."]},"level_duration_limits":{"confidence":"low","basis":"estimated: protocol default, no published limit","source":"measurement protocol, no published limit","sources":[]}},',
             '    "notes": "one short sentence",',
             '    "sources": ["https://..."]',
             "  }],",
