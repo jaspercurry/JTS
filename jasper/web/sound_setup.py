@@ -3938,6 +3938,7 @@ async def _active_speaker_commission_rollback_payload(
 ) -> dict[str, Any]:
     """Roll the running graph back to the all-muted staged config (re-mute)."""
 
+    from jasper.active_speaker.commission_ramp import clear_pending_ramp_step
     from jasper.active_speaker.safe_playback import stop_safe_playback_session
     from jasper.active_speaker.startup_load import rollback_driver_commissioning_config
 
@@ -3945,6 +3946,11 @@ async def _active_speaker_commission_rollback_payload(
     cam = camilla_factory()
     load_config, _, _ = commission_seams(cam)
     payload = await rollback_driver_commissioning_config(load_config=load_config)
+    if (payload.get("rollback") or {}).get("status") == "rolled_back":
+        # The graph is proven back on the all-muted anchor, so the step the ramp
+        # was waiting on is gone with it. Only a proven rollback clears it: a
+        # blocked / failed one may still be audible.
+        payload["ramp"] = clear_pending_ramp_step()
     payload["safe_playback"] = stop_safe_playback_session(reason="commission_rollback")
     payload["tone_stop"] = tone_stop
     log_event(

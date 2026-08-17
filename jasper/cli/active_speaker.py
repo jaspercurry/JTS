@@ -45,6 +45,7 @@ from jasper.active_speaker.startup_load import (
 )
 from jasper.active_speaker.commission_ramp import (
     abort_ramp,
+    clear_pending_ramp_step,
     effective_confirmed_roles,
     load_ramp_state,
     ramp_audible_step,
@@ -61,6 +62,7 @@ from jasper.active_speaker.commission_wiring import (
 from jasper.active_speaker.safe_playback import (
     FLOOR_OPERATOR_OUTCOMES,
     load_safe_playback_state,
+    stop_safe_playback_session,
 )
 from jasper.dsp_apply import validate_camilla_config
 from jasper.output_topology import (
@@ -1223,6 +1225,20 @@ def _cmd_commission_rollback(args: argparse.Namespace) -> int:
         )
     )
     rollback = payload.get("rollback") or {}
+    if rollback.get("status") == "rolled_back":
+        # The graph is proven back on the all-muted anchor, so the step the ramp
+        # was waiting on is gone with it. Only a proven rollback clears it: a
+        # blocked / failed one may still be audible.
+        payload["ramp"] = clear_pending_ramp_step()
+    # Unconditional, exactly as the web twin and `abort_ramp` do it: a rollback
+    # ATTEMPT ends the operator's playback authority whatever the graph did, and
+    # revoking it only ever makes the ramp gate stricter. Without this the CLI
+    # would be the one re-mute path that clears the step but leaves the floor
+    # tri-state armed, so `commission-ramp status` would print "pending step:
+    # None" beside "floor_pending_operator" until the session's TTL expired.
+    payload["safe_playback"] = stop_safe_playback_session(
+        reason="commission_rollback"
+    )
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True, default=str))
     else:
@@ -1750,6 +1766,11 @@ def build_parser() -> argparse.ArgumentParser:
     ramp_status = ramp_sub.add_parser(
         "status", help="show the commission-load, ramp, and per-driver floor state"
     )
+    # The handler reads args.topology to merge durable confirmed-role evidence
+    # for the armed group; without this flag the read raises AttributeError on
+    # every box that has ever armed a driver (the armed target outlives a
+    # rollback), which is the whole life of the verb after the first arm.
+    ramp_status.add_argument("--topology", help="optional output-topology JSON path")
     ramp_status.add_argument("--json", action="store_true")
     ramp_status.set_defaults(func=_cmd_commission_ramp_status)
 
