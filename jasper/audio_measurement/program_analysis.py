@@ -239,13 +239,14 @@ SWEEP_LOCATE_CONFIDENCE_FLOOR = 0.3
 # level which widens the gap ALSO trips the rungs below this one, independently.
 # The panel constructed ~160 captures with flip controls and found ZERO rows
 # where removing only the mis-lock removed the wiring hard stop. This module's
-# own fixture agrees: sweeping its room tone from 0.003 to 0.9, every capture
+# own fixture agrees: over the 0.003–0.65 room-tone ramp
+# `test_a_mislocking_room_has_already_failed_a_rung_below` walks, every capture
 # that mis-locked (0.10 and up) had `gain_plan.snr_floor_ok` False as well, and
 # the room was already failing that gate at 0.05, BEFORE the first mis-lock. The
 # margin is therefore the layer that removes the *specific* harm #2644 filed —
 # a household told to rewire on a coin flip — and not a claim to catch every
-# mis-locked capture. The ones it misses are refused on other evidence, which
-# `test_a_mislocking_room_has_already_failed_a_rung_below` is what pins.
+# mis-locked capture; the ones it misses are refused on other evidence, and that
+# test is what pins it.
 #
 # What IS measured, and asserted by
 # `test_the_margin_brackets_the_two_measured_populations`, is narrower and
