@@ -300,6 +300,22 @@ import math
 
 from .sweep import SweepMeta
 
+# How far a harmonic window reaches from its center, as a fraction of the
+# distance to the NEAREST neighbouring order's center. Below 0.5 by
+# construction: two adjacent windows sized this way cannot touch, which is what
+# lets `extract_harmonic_ir` reject an overlap rather than silently mixing two
+# orders. Named because a second reader needs it —
+# `distortion.required_pre_guard_s` predicts this window's leading edge to size
+# the deconvolution pre-guard, and a literal in both places would be two
+# sources of one truth.
+HARMONIC_WINDOW_GAP_FRACTION = 0.4
+
+# Radius of the local-peak search around a harmonic image's predicted center.
+# The prediction is exact for an ideal synchronized sweep; this absorbs the
+# sub-sample rounding and the small group delay a real driver adds between the
+# fundamental's arrival and its harmonic's.
+HARMONIC_PEAK_SEARCH_RADIUS_S = 0.002
+
 
 def harmonic_time_advance_s(meta: SweepMeta, order: int) -> float:
     """Return how far the order-N harmonic image leads the linear IR."""
@@ -327,7 +343,7 @@ def extract_harmonic_ir(
         raise ValueError("sample rate or direct peak is invalid")
     advance = harmonic_time_advance_s(meta, order)
     predicted_center = direct_peak_idx - round(advance * sample_rate)
-    search_radius = round(0.002 * sample_rate)
+    search_radius = round(HARMONIC_PEAK_SEARCH_RADIUS_S * sample_rate)
     search_start = max(0, predicted_center - search_radius)
     search_end = min(len(full_ir), predicted_center + search_radius + 1)
     if search_start >= search_end:
@@ -341,7 +357,9 @@ def extract_harmonic_ir(
         for neighbor in neighboring_orders
     ]
     nearest_gap = min(abs(center - neighbor) for neighbor in neighboring_centers)
-    half_width = max(1, int(math.floor(0.4 * nearest_gap)))
+    half_width = max(
+        1, int(math.floor(HARMONIC_WINDOW_GAP_FRACTION * nearest_gap))
+    )
     start = center - half_width
     end = center + half_width + 1
     if start < 0 or end > len(full_ir):
