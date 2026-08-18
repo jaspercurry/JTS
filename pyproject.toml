@@ -34,7 +34,7 @@ streambox = [
 ]
 
 full = [
-    "google-genai==2.9.0",
+    "google-genai==2.18.1",
     # OpenAI Realtime SDK — used by jasper.voice.openai_session for
     # the gpt-realtime-2 backend, and (via the OpenAI-compatible WS
     # endpoint) by jasper.voice.grok_session for the xAI Grok Voice
@@ -79,7 +79,7 @@ full = [
     # use the maintained schema bindings and keep the shared protobuf
     # runtime explicit because ONNX Runtime and the Google client stack
     # consume it too.
-    "gtfs-realtime-bindings==2.1.0",
+    "gtfs-realtime-bindings==2.2.0",
     "protobuf==7.35.1",
     "rapidfuzz>=3.6,<4",
     # XVF3800 control: jasper.xvf.xvf_host talks to the chip's USB
