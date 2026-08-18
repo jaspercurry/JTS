@@ -15,15 +15,17 @@
 # coupling reconciler's decision, not this file's. Campaign context:
 # docs/HANDOFF-audio-graph-consolidation.md.
 #
-# Three assets, all installed here:
+# Three kinds of asset, all installed here:
 #   1. libasound_module_pcm_jts_ring.so — compiled on the Pi from
 #      c/jts-ring-ioplug via `make plugin`, installed to the arch ALSA
 #      plugin dir. sha256-compared like the Rust daemons so an unchanged
 #      build does not churn.
-#   2. /etc/alsa/conf.d/60-jts-ring.conf — the system-wide (0644,
-#      renderer-user resolvable) pcm.jts_ring_capture / pcm.jts_ring_playback /
-#      pcm.jts_ring_active_playback definitions. Shipped from
-#      deploy/alsa/conf.d/60-jts-ring.conf verbatim.
+#   2. the system-wide (0644, renderer-user resolvable) /etc/alsa/conf.d
+#      drop-ins, each shipped verbatim from deploy/alsa/conf.d:
+#      60-jts-ring.conf (the coupling's three PCMs), 61-jts-renderer-lanes.conf
+#      (the renderer-ingress lanes) and 62-jts-ring-grouping.conf (the bonded
+#      endpoint's snapcast ingress). One block per install step below, so a
+#      missing source file names itself.
 #   3. /etc/tmpfiles.d/jts-ring.conf — the /dev/shm/jts-ring directory
 #      lifecycle (group-writable, setgid), shipped from
 #      deploy/tmpfiles/jts-ring.conf and applied via systemd-tmpfiles.
@@ -312,6 +314,22 @@ install_jts_ring_conf_assets() {
         echo "  WARN: ${lanes_src} missing; renderer-ingress lane PCMs not installed" >&2
     fi
 
+    # 1c. Grouping-ingress ring PCM (#2508). Same shape and same reason as the
+    #     two blocks above: system-wide 0644 so any user can resolve the name.
+    #     The device ships ahead of its consumers — no `--soundcard` and no
+    #     CamillaDSP capture device names pcm.jts_ring_grouping, and a PCM
+    #     definition is not an open. What it costs to place it is one file
+    #     alsa-lib parses; what it buys is that the geometry can be proven on
+    #     metal before any transport moves onto it.
+    local grouping_src="${REPO_DIR}/deploy/alsa/conf.d/62-jts-ring-grouping.conf"
+    if [[ -f "${grouping_src}" ]]; then
+        install -d -m 0755 /etc/alsa/conf.d
+        install -m 0644 "${grouping_src}" /etc/alsa/conf.d/62-jts-ring-grouping.conf
+        echo "  Installed /etc/alsa/conf.d/62-jts-ring-grouping.conf (pcm.jts_ring_grouping; the bonded endpoint's snapcast ingress)"
+    else
+        echo "  WARN: ${grouping_src} missing; grouping-ingress ring PCM not installed" >&2
+    fi
+
     # 2. /dev/shm/jts-ring directory via tmpfiles.d. Group-writable +
     #    setgid so the (root today) ring writer + reader share it, and a
     #    non-root RENDERER in group `jts-ring` can create and write its lane's
@@ -370,6 +388,37 @@ install_jts_ring_platform() {
     #
     # RING FILES ONLY, never the sibling `.writer.lock` / `.open.lock`:
     # unlinking a lock opens a silent inode-tear window between two holders.
+    #
+    # AND ONLY THESE THREE. `grouping.ring` — the bonded endpoint's snapcast
+    # ingress, pcm.jts_ring_grouping in 62-jts-ring-grouping.conf — is
+    # deliberately absent, and stays absent when its consumers arrive.
+    #
+    # The reason is a FAILURE-ESCALATION ASYMMETRY between the two ends' units,
+    # not a difference in which daemon is running at this instant:
+    #   - A stale-geometry ring on the coupling path is a FATAL attach for
+    #     jasper-fanin, whose unit carries StartLimitBurst=5 and
+    #     StartLimitAction=reboot. It burns the burst and REBOOTS the box
+    #     mid-install, before write_build_manifest can stamp the manifest —
+    #     the trap documented in tests/test_install_ring_platform_sequencing.py
+    #     (test_ring_platform_deletes_stale_tmpfs_rings_before_systemd_units).
+    #     Unlinking those three is MANDATORY: not unlinking them costs a
+    #     reboot loop.
+    #   - jasper-snapclient.service carries StartLimitBurst=4 and NO
+    #     StartLimitAction, by explicit design — its own unit comment says
+    #     "follower degrades, visible; never reboots the household." A stale
+    #     grouping.ring therefore costs four retries and one `failed` unit,
+    #     surfaced on /state and by jasper-doctor. Unlinking buys nothing
+    #     against an outcome that is already bounded and already visible.
+    #
+    # Do NOT re-derive this from install ORDER. Order is real and is pinned by
+    # test_install_ring_platform_sequencing, but it does not separate the two
+    # cases: the three rings above also have live writers at this instant, and
+    # the park set that stops snapclient has a third call site
+    # (park_low_memory_build_units, gated on a low-memory box) that runs before
+    # this step, so no statement about who is parked here holds on every box.
+    # The escalation asymmetry holds in every ordering, which is why it is the
+    # reason recorded. Design §3.4:
+    # captures/DESIGN-PROPOSAL-grouping-ring-2026-08-17.md.
     rm -f /dev/shm/jts-ring/program.ring
     rm -f /dev/shm/jts-ring/content.ring
     rm -f /dev/shm/jts-ring/active-content.ring

@@ -444,10 +444,11 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      docs, Avahi service templates, systemd units, renderer configs,
      udev rules, ALSA templates, and helper binaries.
    - Render /etc/asound.conf through /usr/local/sbin/jasper-render-asound-conf.
-   - Install the jts_ring device definitions
-     (/etc/alsa/conf.d/60-jts-ring.conf) and the /dev/shm/jts-ring
-     directory lifecycle (/etc/tmpfiles.d/jts-ring.conf). Placing them
-     opens nothing; the coupling reconciler decides whether this box arms.
+   - Install the jts_ring device definitions (the /etc/alsa/conf.d
+     drop-ins for the coupling rings, the renderer-ingress lanes and the
+     grouping ingress) and the /dev/shm/jts-ring directory lifecycle
+     (/etc/tmpfiles.d/jts-ring.conf). Placing them opens nothing; each
+     ring's arm decision belongs to its own reconciler.
    - Write output hardware state before Camilla statefile seed.
    - Render outputd flat startup config with active DAC latency floor.
    - Re-assert ownership and modes on the /var/lib/jasper-intsecrets
@@ -609,12 +610,13 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      nginx config, Avahi service templates, systemd
      units, udev rules, ALSA templates, and helper binaries.
    - Render /etc/asound.conf through /usr/local/sbin/jasper-render-asound-conf.
-   - Install the jts_ring device definitions
-     (/etc/alsa/conf.d/60-jts-ring.conf, pcm.jts_ring_capture +
-     pcm.jts_ring_playback + pcm.jts_ring_active_playback) and the
-     /dev/shm/jts-ring directory lifecycle
+   - Install the jts_ring device definitions (the /etc/alsa/conf.d
+     drop-ins for the coupling rings, the renderer-ingress lanes and the
+     grouping ingress — each names itself in the transcript as it is
+     placed) and the /dev/shm/jts-ring directory lifecycle
      (/etc/tmpfiles.d/jts-ring.conf, applied immediately). Placing them
-     opens nothing; the coupling reconciler decides whether this box arms.
+     opens nothing; each ring's arm decision belongs to its own
+     reconciler.
    - Write output hardware state before Camilla statefile seed.
    - Render outputd flat startup config with active DAC latency floor.
 
