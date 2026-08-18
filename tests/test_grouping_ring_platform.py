@@ -134,10 +134,16 @@ def test_the_grouping_confd_is_structurally_one_block_and_nothing_else():
       sorts LAST in conf.d — after 60- and 61- — so it would hold override
       authority over a PCM another file already defined.
 
-    Empirically established rather than argued: an identical stray-closing-brace
-    mutation is caught by the shipped guards for 60-jts-ring.conf and
-    61-jts-renderer-lanes.conf, and was NOT caught for this file before this
-    test existed.
+    Measured rather than argued — and the measurement corrects the direction it
+    came from. ``jasper.ring_assets``' value parsers scope to a block body by
+    brace MATCHING, so a brace OUTSIDE every block is invisible to all of them:
+    with one appended ``}``, every per-block value stays identical for
+    ``60-jts-ring.conf``, ``61-jts-renderer-lanes.conf`` AND this file. (A brace
+    INSIDE a block truncates the body, so ``n_slots`` goes ``None`` and the
+    existing value guards do catch it — again for all three.) The
+    outside-the-block form, which is also the alias's shape, was therefore
+    caught for NO ring conf.d in this repo. This guard closes it for the file it
+    owns; ``60-`` and ``61-`` still have no structural guard.
 
     The one-block form is asserted exactly, so a nested block (an ALSA
     ``hint { … }``, which the ioplug does skip) fails here rather than silently
