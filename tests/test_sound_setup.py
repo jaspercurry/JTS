@@ -95,6 +95,18 @@ class _RuntimeMutation:
 
 
 def _commit_topology_runtime(_topology, commit, **_kwargs):
+    from jasper.active_speaker.runtime_convergence import OUTPUTD_UNIT
+    from jasper.control.restart_broker import manage_units
+
+    stopped = manage_units(
+        OUTPUTD_UNIT,
+        verb="stop",
+        reason="output topology replace",
+        no_block=False,
+        timeout=15.0,
+    )
+    if not stopped.get("ok"):
+        raise RuntimeError(str(stopped.get("error") or "could not stop outputd"))
     return _RuntimeMutation(commit())
 
 
@@ -108,9 +120,14 @@ def _no_privileged_unit_actions(monkeypatch, tmp_path: Path):
     root). Tests that assert on the broker contract re-patch this in their own
     body, which wins because it is applied after the fixture.
     """
+    def fake_manage_units(*units, **_kwargs):
+        if units == ("jasper-outputd.service",):
+            return {"ok": True}
+        return {"ok": False, "error": "stubbed in tests"}
+
     monkeypatch.setattr(
         "jasper.control.restart_broker.manage_units",
-        lambda *units, **kwargs: {"ok": False, "error": "stubbed in tests"},
+        fake_manage_units,
     )
     # Topology saves now stop the active-speaker safety session before parking.
     # Keep that real state transition inside each test's isolated writable
@@ -2355,6 +2372,8 @@ def test_topology_save_kicks_hardware_and_grouping_reconcile(
 
     def fake_manage_units(*units, **kwargs):
         calls.append({"units": units, **kwargs})
+        if units == ("jasper-outputd.service",):
+            return {"ok": True}
         if "jasper-grouping-reconcile.service" in units:
             grouping_env.write_text("JASPER_OUTPUTD_DAC_CONTENT_FIFO=\n")
         return sentinel
@@ -2378,15 +2397,17 @@ def test_topology_save_kicks_hardware_and_grouping_reconcile(
         _innomaker_topology_payload(active=False)
     )
 
-    assert calls and calls[0]["units"] == (
+    assert calls[0]["units"] == ("jasper-outputd.service",)
+    assert calls[0]["verb"] == "stop"
+    assert calls[1]["units"] == (
         "jasper-audio-hardware-reconcile.service",
         "jasper-grouping-reconcile.service",
     )
-    assert calls[0]["verb"] == "start"
-    assert calls[0]["reason"] == "output_topology_save"
+    assert calls[1]["verb"] == "start"
+    assert calls[1]["reason"] == "output_topology_save"
     # A topology replacement first parks audio, then waits for the root
     # reconciler to make outputd agree with the final saved topology.
-    assert calls[0]["no_block"] is False
+    assert calls[1]["no_block"] is False
     assert grouping_env.read_text() == "JASPER_OUTPUTD_DAC_CONTENT_FIFO=\n"
     assert saved["reconcile"] is sentinel
     assert set(saved["hardware_adoption"]) == {"allowed", "identity"}

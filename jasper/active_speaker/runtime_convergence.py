@@ -7,7 +7,8 @@
 ``runtime_contract`` owns which graph is safe. This module owns the effectful
 topology transaction after that proof. It deliberately does not render DAC
 configs, reconcile hardware, or write outputd state; those belong to the root
-audio-hardware reconciler.
+audio-hardware reconciler. It only stops outputd before topology publication so
+an already-armed direct DAC lane cannot bypass the parked CamillaDSP graph.
 """
 
 from __future__ import annotations
@@ -25,6 +26,8 @@ from jasper.active_speaker.runtime_contract import (
     safe_graph_for_current_topology,
 )
 from jasper.output_topology import OutputTopology
+
+OUTPUTD_UNIT = "jasper-outputd.service"
 
 
 @dataclass(frozen=True)
@@ -248,6 +251,7 @@ async def _park_and_commit_topology(
         camilla_graph_mutation,
     )
     from jasper.fanin.coupling_reconcile import read_persisted_coupling
+    from jasper.control.restart_broker import manage_units
 
     controller = _controller(controller_factory)
     lock_path = getattr(
@@ -257,6 +261,17 @@ async def _park_and_commit_topology(
         source="output_topology.replace",
         lock_path=lock_path,
     ):
+        outputd_stop = manage_units(
+            OUTPUTD_UNIT,
+            verb="stop",
+            reason="output topology replace",
+            no_block=False,
+            timeout=15.0,
+        )
+        if not outputd_stop.get("ok"):
+            raise RuntimeError(
+                str(outputd_stop.get("error") or "could not stop outputd safely")
+            )
         resolved_coupling = (
             coupling if coupling is not None else read_persisted_coupling()
         )

@@ -49,21 +49,77 @@ class _Controller:
         return raw
 
 
+@pytest.fixture(autouse=True)
+def _successful_outputd_stop(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "jasper.control.restart_broker.manage_units",
+        lambda *_units, **_kwargs: {"ok": True},
+    )
+
+
 def test_commit_failure_keeps_proved_parked_graph_inside_transaction(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     topology = _topology([])
     controller = _Controller(tmp_path / "graph.lock")
+    events: list[str] = []
+
+    def stop_outputd(*units, **kwargs):
+        assert units == (runtime_convergence.OUTPUTD_UNIT,)
+        assert kwargs["verb"] == "stop"
+        assert kwargs["no_block"] is False
+        events.append("stop-outputd")
+        return {"ok": True}
+
+    def fail_commit():
+        events.append("commit")
+        raise ValueError("commit failed")
+
+    monkeypatch.setattr(
+        "jasper.control.restart_broker.manage_units",
+        stop_outputd,
+    )
 
     with pytest.raises(ValueError, match="commit failed"):
         runtime_convergence.park_and_commit_topology(
             topology,
-            lambda: (_ for _ in ()).throw(ValueError("commit failed")),
+            fail_commit,
             controller_factory=lambda: controller,
         )
 
+    assert events == ["stop-outputd", "commit"]
     assert controller.path_sets == []
     assert len(controller.raw_sets) == 1
+
+
+def test_outputd_stop_failure_prevents_park_and_commit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    topology = _topology([])
+    controller = _Controller(tmp_path / "graph.lock")
+    committed = False
+
+    def commit():
+        nonlocal committed
+        committed = True
+        return topology
+
+    monkeypatch.setattr(
+        "jasper.control.restart_broker.manage_units",
+        lambda *_units, **_kwargs: {"ok": False, "error": "stop failed"},
+    )
+
+    with pytest.raises(RuntimeError, match="stop failed"):
+        runtime_convergence.park_and_commit_topology(
+            topology,
+            commit,
+            controller_factory=lambda: controller,
+        )
+
+    assert committed is False
+    assert controller.raw_sets == []
 
 
 def test_committed_unconfigured_topology_persists_parked_path_through_camilla(
