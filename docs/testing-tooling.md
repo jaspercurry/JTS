@@ -34,6 +34,7 @@
 | Check that the DSP actually realizes a linearization the way the fit says it will (the shelf-Q class), offline and without a microphone | [Offline emit loop](#offline-emit-loop) |
 | Replay recorded tuning attempts through the S3 improve/stop policy, and see whether the loop would have claimed an improvement that was only noise | [Attempts-loop replay](#attempts-loop-replay) |
 | Find out whether a banked session's cloud null evidence actually *bound* the linearization fit, and what the fit does without it | [Severed-twin replay](#severed-twin-replay) |
+| Read a driver's harmonic distortion (H2/H3 vs frequency) out of MEASURE captures already on disk, with no new recording | [Harmonic-distortion replay](#harmonic-distortion-replay) |
 | Hold a specific field incident still in CI — minimize a gitignored bank to a committed fixture and characterize the defect it produced | [Committed incident replay](#committed-incident-replay) |
 | Ask why a banked session's pooled flatness reads worse than its on-axis response sounds — re-read the same evaluation per octave and per position role | [Metric-honesty views](#metric-honesty-views) |
 | Grade the boost-permission gate's decision against a defect you injected on purpose (rather than one a room happened to produce) | [`tests/test_crossover_v2_boost_scenarios.py`](../tests/test_crossover_v2_boost_scenarios.py) — synthetic spatial scenarios, the validation ladder's third rung |
@@ -1213,6 +1214,76 @@ the same four pairs and eleven of thirteen logs contain all four, at two
 different angle assignments. When the covering logs disagree the join is
 declined and every view degrades to role-only, which is honest; a wrong angle
 would be a plausible-looking lie on every row.
+
+---
+
+## Harmonic-distortion replay
+
+[`scripts/harmonic-distortion-replay.py`](../scripts/harmonic-distortion-replay.py)
+reads **H2 and H3 versus frequency** out of MEASURE captures that are already
+banked. No new recording, no Pi, no microphone: every JTS sweep is
+Novak-synchronized, so the harmonic images have always been sitting at exact
+pre-arrival offsets in each deconvolution. The math lives in the product module
+[`jasper/audio_measurement/distortion.py`](../jasper/audio_measurement/distortion.py);
+this script is the lab driver over a banked corpus.
+
+```sh
+PYTHONPATH=. .venv/bin/python scripts/harmonic-distortion-replay.py \
+  --state captures/xover-series2-2026-08-17/series2-state-r1b-preapply.json \
+  --captures captures/xover-series2-2026-08-17/e0-r1b \
+  --dumps captures/xover-series2-2026-08-17/dumps-r1b \
+  --calibration captures/flat-linearization-20260725/umik2-cal/umik2-b7343c0c625b.txt
+```
+
+**It needs a corpus with per-capture sidecars.** The series-2 rounds have them
+(`dumps-r1b/`, `dumps-r2/`); the 2026-08-18 armrun does not, so it cannot be
+fidelity-gated and the tool will bind nothing there.
+
+**What the output means, and what it cannot mean.** Every number is *dB below
+the fundamental at the same excitation frequency, at the drive this capture
+used*, printed next to that drive in dBFS — the corpus records no SPL anywhere,
+so there is no absolute figure to be had. A ratio is a fraction, so it rises
+wherever the FUNDAMENTAL dips: the table carries a fundΔ column (pooled
+fundamental re its own band median) and the summary names the bin where the
+harmonic's *absolute* energy peaks — read a ratio peak against both before
+attributing it to the driver. Each row also carries a **measured noise floor**,
+taken from a phantom window between the harmonic images where no image can be;
+a value a majority of sweeps read within 6 dB of their own floors is starred
+and is an upper bound on the driver, not a reading of it. The tweeter comes
+back 100% floor-limited on both banked rounds, because MEASURE solves its gain
+for room SNR and lands it ~27 dB below the woofer in stimulus gain (~17 dB at
+the capture).
+
+**Two band edges bite, and neither is Nyquist.** Order *N* is only real up to
+`f2/N` — the deconvolution divides by `|X|² + ε` and the sweep puts no energy
+above `f2`, so harmonic products above it are annihilated along with the noise.
+A 150–4000 Hz woofer sweep therefore yields honest H2 to 2 kHz and H3 to
+1333 Hz. The bottom `BAND_EDGE_TRIM_OCTAVES` (0.25 oct) is trimmed because the
+sweep's fade-in puts an excursion at `f1` that a provably-linear synthetic path
+shows sitting 25.8 dB above the floor.
+
+**Why the production deconvolution window cannot be used.**
+`program_analysis.DECONV_PRE_GUARD_S` is 0.25 s and the H3 image leads the linear
+IR by `L·ln 3` ≈ 1.34 s, so at that window every image has wrapped off the front
+of the circular deconvolution. The read re-deconvolves the same bytes at
+`distortion.required_pre_guard_s` — an analysis-side value for a parameter
+`_deconvolve_window` already exposes. Production behaviour is untouched, and
+`tests/test_audio_measurement_distortion.py` pins the relationship in both
+directions.
+
+**It validates itself twice and refuses when it cannot.** The program is rebuilt
+from the round's banked `gain_plan_db` and must reproduce the session's recorded
+`program_id` (a SHA-256 over the whole schedule, so a match proves the sweep `L`
+the offsets derive from); the session volume, which no artifact records, is
+*solved* against that same id. Then the shipped `analyze_program_capture` is
+re-run and its diagnostics compared on whatever gate fields the sidecar
+carries — fail-closed: a sidecar carrying none of them is refused rather than
+read ungated, and the summary prints the count actually compared, never the
+field-list length. `max_residual_samples` and
+`glitch_detected` are deliberately excluded — D7 (`b98e9380f`) replaced the
+estimator behind both *after* this corpus was banked, so comparing them would
+report a product improvement as a broken reconstruction. A capture whose banked
+`glitch_detected` disagrees is read but **disclosed by name**.
 
 ---
 
