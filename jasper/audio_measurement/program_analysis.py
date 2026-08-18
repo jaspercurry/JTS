@@ -3605,6 +3605,15 @@ def crossover_region_band_hz(
     the spec gauge's convention. This function's consumer smooths at
     :data:`VERIFY_TRACKING_SMOOTHING_FRACTION` (1/6 octave), which resolves a
     narrow dip more sharply, so the two numbers are not expected to match.
+
+    **Who reads this band.** Its one caller is ``_verify_absolute_result``, and
+    since decision 10 that claim's ``band_hz`` is ALSO the region the blend
+    correction is solved and graded over
+    (``crossover_v2.round_evidence._crossover_region_band_hz`` reads it back).
+    The correction consumes this function's output through that consumer rather
+    than calling it again, so the band a household is shown and the band a
+    filter is cut over are the same number by construction rather than by
+    agreement — and this stays a one-caller function.
     """
     if not math.isfinite(fc_hz) or fc_hz <= 0.0:
         return None

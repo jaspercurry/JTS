@@ -627,6 +627,92 @@ def _pooled_residual(
     return float(residual.rms_db), int(residual.n_bins)
 
 
+#: The region benefit claim had no crossover region to grade over — the VERIFY
+#: absolute claim was not evaluated, so there is no band. Distinct from
+#: :data:`BENEFIT_RESIDUAL_UNEVALUABLE`, which means there WAS a band and the
+#: curve could not be graded over it.
+BENEFIT_NO_REGION_BAND = "no_region_band"
+
+
+def evaluate_region_benefit(
+    *,
+    entry_baseline: MeasurementComparand | None,
+    post: MeasurementComparand | None,
+    band_hz: tuple[float, float] | None,
+    margin_db: float,
+) -> Verdict[BenefitStatus]:
+    """The benefit claim again, restricted to the crossover blend region.
+
+    **Why this exists.** :func:`evaluate_benefit` pools its residual across all
+    three ``SPEC_BANDS`` — 250 Hz to 16 kHz. A win confined to a two-octave
+    blend region is diluted across that whole span and lands inside the margin,
+    so a correction that worked reads as ``residual_within_margin``. That is
+    not a broken axis; it is a correct verdict about the wrong question. This
+    asks the narrow one.
+
+    **A second reported claim, never a second gate.** The pooled verdict stays
+    the adoption input. Decision 10 changes the owner and the allowed tool in
+    this region; it does not add a safety class or a new hard stop, and making
+    a localized claim gate a round would be exactly that. Disclose and
+    recommend.
+
+    **Everything except the band is unchanged**, deliberately: the same
+    estimator, the same curves, the same comparability rules, and the SAME
+    0.5 dB margin. The margin is this model's own measured tracking error on
+    jts3 — claiming an improvement smaller than the gap between what is
+    modelled and what the hardware realizes is claiming something the
+    instrument cannot resolve, and narrowing the band does not sharpen the
+    instrument.
+
+    **One consequence, stated rather than discovered.** Narrowing the mask
+    re-routes ``evaluate_flat_spec``'s own centering: its reference level comes
+    from ``REFERENCE_BAND_HZ`` intersected with what survives, so a
+    region-masked evaluation is referenced to the REGION's surviving bins
+    rather than to 250 Hz–8 kHz. For a SHAPE claim about a region that is the
+    right frame — it matches the VERIFY absolute claim's own mean-removal, and
+    it makes the verdict blind to a level change, which is the trim's fact and
+    not this one's. It is also why the blend SOLVER does not use this framing:
+    a filter derived against a region-local mean would cut the shoulders of a
+    region that is merely quiet, trading a narrow dip for a wide one. Grading
+    a shape and prescribing a cut are different questions with different right
+    references; see
+    :func:`~.blend_correction.solve_blend_correction` for the other half.
+
+    The exclusion narrowing is applied to BOTH sides identically, so
+    :func:`_comparability_mismatch`'s "identical exclusion masks" guarantee is
+    preserved rather than forfeited.
+    """
+
+    if band_hz is None:
+        return Verdict(BenefitStatus.INDETERMINATE, BENEFIT_NO_REGION_BAND, {})
+    lo, hi = float(band_hz[0]), float(band_hz[1])
+    return evaluate_benefit(
+        entry_baseline=_region_masked(entry_baseline, lo, hi),
+        post=_region_masked(post, lo, hi),
+        margin_db=margin_db,
+    )
+
+
+def _region_masked(
+    comparand: MeasurementComparand | None, lo_hz: float, hi_hz: float,
+) -> MeasurementComparand | None:
+    """``comparand`` with every bin outside ``[lo_hz, hi_hz]`` also excluded."""
+
+    if comparand is None:
+        return None
+    return MeasurementComparand(
+        program_id=comparand.program_id,
+        reference_mark=comparand.reference_mark,
+        curve=comparand.curve,
+        exclusion_mask=[
+            bool(excluded or hz < lo_hz or hz > hi_hz)
+            for excluded, hz in zip(
+                comparand.exclusion_mask, comparand.curve.hz, strict=True,
+            )
+        ],
+    )
+
+
 # --------------------------------------------------------------------------
 # 4. spec
 # --------------------------------------------------------------------------

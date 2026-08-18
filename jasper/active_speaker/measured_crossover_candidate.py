@@ -56,7 +56,7 @@ from __future__ import annotations
 import dataclasses
 import math
 from dataclasses import dataclass, field
-from typing import Any, Mapping, NoReturn
+from typing import Any, Mapping, NoReturn, Sequence
 
 from jasper.audio_measurement.evidence_identity import (
     EvidenceIdentityError,
@@ -282,6 +282,27 @@ class MeasuredCrossoverCandidate:
     amount. Stated here for the same reason the `/state` projection states its
     own: this is the largest thing PR-6b adds to a persisted artifact, and a
     reader deciding whether to keep it should see the number.
+
+    ``blend_correction`` (design doc decision 10) is the crossover blend
+    region's bounded, cuts-first shape correction — the flat list
+    ``[{biquad_type, freq, q, gain}, ...]``
+    ``crossover_v2.blend_correction.solve_blend_correction`` designed from the
+    PREVIOUS round's summed evidence, emitted pre-split on the stereo bus.
+    Flat rather than per-role because it describes the SUM, not a driver: see
+    ``camilla_yaml._emit_baseline_pipeline`` for why that placement is what
+    makes it common-mode. Same optional-field conventions as ``linearization``
+    — frozen through the exact-JSON-data walk, omitted from the fingerprint
+    when empty, accepted absent on ``from_mapping``. Empty means "this round
+    applied no blend correction", which is what every candidate before decision
+    10 implicitly claimed, and what the first round of any series claims
+    honestly (there is no previous VERIFY to derive one from).
+
+    It is also the round's own INCUMBENT record: the next round reads this
+    field off the candidate that was actually applied to know what its summed
+    measurement was taken through. That is why it is persisted on the candidate
+    rather than only banked on the receipt — a restored graph or a hand-applied
+    config must be able to report "no readable incumbent" rather than have one
+    assumed for it (#2653's refuse-when-unreconcilable, applied here).
     """
 
     program_id: str
@@ -292,6 +313,7 @@ class MeasuredCrossoverCandidate:
     linearization: Mapping[str, Any] = field(default_factory=dict)
     linearization_outcome: str = ""
     exclusion_evidence: Mapping[str, Any] = field(default_factory=dict)
+    blend_correction: Sequence[Mapping[str, Any]] = ()
     fingerprint: str = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -376,6 +398,28 @@ class MeasuredCrossoverCandidate:
                 f"exclusion_evidence must be exact JSON data: {exc}",
             )
         object.__setattr__(self, "exclusion_evidence", frozen_exclusion)
+        # Decision 10's blend correction. A list, not a mapping, so the shape
+        # check differs from its neighbours above; the exact-JSON-data walk and
+        # the freeze are the same. Cuts-only is NOT re-checked here — the
+        # emitter refuses a positive gain at the graph boundary
+        # (``camilla_yaml._validated_blend_correction``), which is the boundary
+        # that matters, and a second policy copy here would be a second thing
+        # to keep in step with the solver.
+        if (
+            not isinstance(self.blend_correction, Sequence)
+            or isinstance(self.blend_correction, (str, bytes, Mapping))
+        ):
+            _refuse("blend_correction_invalid", "blend_correction must be a list")
+        try:
+            frozen_blend = DspPredecessor(
+                {"blend_correction": [dict(entry) for entry in self.blend_correction]}
+            ).state["blend_correction"]
+        except (NullWalkError, AttributeError, TypeError, ValueError) as exc:
+            _refuse(
+                "blend_correction_invalid",
+                f"blend_correction must be exact JSON data: {exc}",
+            )
+        object.__setattr__(self, "blend_correction", frozen_blend)
         if self.linearization_outcome not in _LINEARIZATION_OUTCOME_VALUES:
             _refuse(
                 "linearization_outcome_invalid",
@@ -404,14 +448,18 @@ class MeasuredCrossoverCandidate:
         refusal. ``to_dict()`` does NOT mirror this omission (see its own
         docstring) — the two intentionally disagree.
 
-        ``linearization_outcome`` (gauge fix, 2026-07-24) and
-        ``exclusion_evidence`` (plan PR-6b) follow the exact same
-        omit-when-empty convention, for the same era-tolerance reason: an empty
-        value means "not evaluated" / "no cloud evidence entered this fit,"
+        ``linearization_outcome`` (gauge fix, 2026-07-24),
+        ``exclusion_evidence`` (plan PR-6b) and ``blend_correction`` (decision
+        10) follow the exact same omit-when-empty convention, for the same
+        era-tolerance reason: an empty value means "not evaluated" / "no cloud
+        evidence entered this fit" / "this round applied no blend correction,"
         identical to every candidate produced before those fields existed. A
         NON-empty ``exclusion_evidence`` is fingerprinted like everything else,
         so the recorded reason for refusing to correct a band cannot be edited
         out of a persisted candidate without tripping ``candidate_tampered``.
+        The same protection is what makes ``blend_correction`` usable as the
+        next round's incumbent: the filters a capture rode cannot be edited
+        after the fact without the candidate refusing to reopen.
         """
         core: dict[str, Any] = {
             "schema_version": SCHEMA_VERSION,
@@ -428,6 +476,8 @@ class MeasuredCrossoverCandidate:
             core["linearization_outcome"] = self.linearization_outcome
         if self.exclusion_evidence:
             core["exclusion_evidence"] = dict(self.exclusion_evidence)
+        if self.blend_correction:
+            core["blend_correction"] = [dict(f) for f in self.blend_correction]
         return core
 
     def to_dict(self) -> dict[str, Any]:
@@ -448,6 +498,7 @@ class MeasuredCrossoverCandidate:
             "linearization": dict(self.linearization),
             "linearization_outcome": self.linearization_outcome,
             "exclusion_evidence": dict(self.exclusion_evidence),
+            "blend_correction": [dict(f) for f in self.blend_correction],
             "fingerprint": self.fingerprint,
         }
 
@@ -479,6 +530,8 @@ class MeasuredCrossoverCandidate:
         ``linearization_outcome`` means the same thing an explicit ``""``
         means: "not evaluated." Absent ``exclusion_evidence`` means the same
         thing an explicit ``{}`` means: "no cloud evidence entered this fit."
+        Absent ``blend_correction`` (decision 10) means the same thing an
+        explicit ``[]`` means: "this round applied no blend correction."
         Every other field stays strictly required,
         matching every prior era of this schema.
         """
@@ -493,7 +546,10 @@ class MeasuredCrossoverCandidate:
             "alignment",
             "fingerprint",
         }
-        optional = {"linearization", "linearization_outcome", "exclusion_evidence"}
+        optional = {
+            "linearization", "linearization_outcome", "exclusion_evidence",
+            "blend_correction",
+        }
         if not isinstance(raw, Mapping) or set(raw) - optional != required:
             _refuse(
                 "candidate_malformed",
@@ -542,6 +598,18 @@ class MeasuredCrossoverCandidate:
                 "exclusion_evidence_malformed",
                 "candidate exclusion_evidence is malformed",
             )
+        # Absent -> [] (era tolerance, see the docstring above); present ->
+        # validated by __post_init__'s exact-JSON walk, and re-validated for
+        # cuts-only at the emitter boundary.
+        blend_correction_raw = raw.get("blend_correction", [])
+        if (
+            not isinstance(blend_correction_raw, Sequence)
+            or isinstance(blend_correction_raw, (str, bytes, Mapping))
+        ):
+            _refuse(
+                "blend_correction_malformed",
+                "candidate blend_correction is malformed",
+            )
         try:
             candidate = cls(
                 program_id=str(raw["program_id"]),
@@ -556,6 +624,7 @@ class MeasuredCrossoverCandidate:
                 linearization=dict(linearization_raw),
                 linearization_outcome=linearization_outcome_raw,
                 exclusion_evidence=dict(exclusion_evidence_raw),
+                blend_correction=list(blend_correction_raw),
             )
         except (TypeError, ActiveSpeakerConfigError) as exc:
             raise MeasuredCrossoverCandidateError(
@@ -580,6 +649,7 @@ class MeasuredCrossoverCandidate:
         raw_for_comparison.setdefault("linearization", {})
         raw_for_comparison.setdefault("linearization_outcome", "")
         raw_for_comparison.setdefault("exclusion_evidence", {})
+        raw_for_comparison.setdefault("blend_correction", [])
         if candidate.to_dict() != raw_for_comparison:
             _refuse(
                 "candidate_tampered",
@@ -712,6 +782,7 @@ def compile_candidate_config(
         playback_device=playback_device,
         corrections=corrections,
         linearization=linearization,
+        blend_correction=list(candidate.blend_correction),
         **emit_kwargs,
     )
 

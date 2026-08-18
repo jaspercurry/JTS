@@ -2462,6 +2462,54 @@ def test_done_screen_names_the_crossover_region_finding_and_the_unchecked_claims
     assert "each driver on its own was not checked" in env["expert_details"]
 
 
+def test_the_done_screen_says_what_the_next_round_will_do_about_the_blend():
+    """Decision 10's one household sentence, under the number it answers.
+
+    A household that sees the same blend defect reported round after round,
+    with nothing saying a lever is aimed at it, reasonably concludes the loop
+    is doing nothing. The line is read off the durable receipt, never
+    re-derived, so the screen and the graph cannot disagree about what is
+    coming.
+    """
+    env = build_crossover_envelope_v2(_status(
+        phase="done",
+        verify={
+            "outcome": "pass", "graded_band_hz": [2000.0, 4000.0],
+            "claims": _R18_CLAIMS_FAIL,
+        },
+        cloud=_cloud_flatness_status(passed=True),
+        candidate=_candidate_summary(),
+        round_receipt={"blend": {"filters": [
+            {"biquad_type": "Peaking", "freq": 1700.0, "q": 2.0, "gain": -2.5},
+            {"biquad_type": "Peaking", "freq": 2600.0, "q": 2.0, "gain": -1.0},
+        ], "residual_db": 1.4}},
+    ))
+
+    details = env["expert_details"]
+    assert "the next round trims this region (2 cuts, deepest -2.5 dB)" in details
+    # Directly under the finding it answers, not floating elsewhere.
+    finding = next(i for i, line in enumerate(details) if "crossover blend" in line)
+    trims = next(i for i, line in enumerate(details) if "trims this region" in line)
+    assert trims == finding + 1
+
+
+def test_the_done_screen_says_nothing_when_no_blend_correction_is_coming():
+    """Absence is silence, not a line saying "no cuts" — the screen does not
+    narrate a stage that has nothing to report."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done",
+        verify={
+            "outcome": "pass", "graded_band_hz": [2000.0, 4000.0],
+            "claims": _R18_CLAIMS_FAIL,
+        },
+        cloud=_cloud_flatness_status(passed=True),
+        candidate=_candidate_summary(),
+        round_receipt={"blend": None},
+    ))
+
+    assert not any("trims this region" in line for line in env["expert_details"])
+
+
 def test_verify_fail_screen_names_the_crossover_region_finding():
     """Same disclosure on the failure screen, where the household chooses."""
     env = build_crossover_envelope_v2(_status(

@@ -623,6 +623,7 @@ def build_candidate(
     plan: Callable[..., LinearizationPlan],
     exclusion_evidence: Callable[[CloudFitEvidence], Mapping[str, Any]],
     journal: Callable[[Any], None],
+    blend_correction: Sequence[Mapping[str, Any]] = (),
 ) -> tuple[Any, LinearizationState]:
     """Build one candidate, and return what its linearization produced.
 
@@ -787,4 +788,12 @@ def build_candidate(
         # than a session field, so the candidate and the state beside it
         # cannot describe different builds.
         linearization_outcome=state.outcome,
+        # Decision 10's blend correction, carried through VERBATIM from what
+        # the previous round's summed evidence prescribed. This module neither
+        # solves nor re-derives it: the solve happens at the previous round's
+        # tail, where the cloud and the incumbent are both in hand, and a
+        # second derivation here would be a second owner of a filter that
+        # reaches hardware. Empty on the first round of a series, which is
+        # honest — there is no previous VERIFY to derive one from.
+        blend_correction=[dict(entry) for entry in blend_correction],
     ), state

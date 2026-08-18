@@ -1286,6 +1286,56 @@ driver_linearization_peak_name = _driver_linearization_peak_name
 driver_linearization_taper_name = _driver_linearization_taper_name
 
 
+def _validated_biquad_entry(
+    entry: Any,
+    *,
+    label: str,
+    allowed_types: frozenset[str],
+    max_gain_db: float,
+) -> dict[str, Any]:
+    """Re-validate ONE persisted biquad record, or raise.
+
+    Shared by every emitter gate that accepts a caller-supplied biquad list —
+    Layer-1a linearization and the crossover blend correction today. Extracted
+    rather than copied: both lists cross a JSON round trip before they reach
+    this module, both are re-validated here on the never-trust-the-caller rule,
+    and two hand-written copies of "is this a legal biquad" is exactly the
+    second-source-of-truth shape that lets one of them silently fall behind a
+    tightening applied to the other.
+
+    What stays with each caller is its own POLICY: which biquad types it
+    permits, what its gain ceiling is, how many entries it allows, and any
+    structural rule about their order. This function owns only the per-entry
+    field contract, and it raises rather than clamping — a value out of range
+    means the persisted record was not written by the code that claims to own
+    it, which is not a condition a clamp can repair.
+
+    ``label`` names the owner in the message, so a household-visible refusal
+    still says which stage refused.
+    """
+
+    if not isinstance(entry, Mapping):
+        raise ActiveSpeakerConfigError(f"{label} filter must be a mapping")
+    biquad_type = entry.get("biquad_type")
+    if biquad_type not in allowed_types:
+        raise ActiveSpeakerConfigError(
+            f"{label} biquad_type must be one of "
+            f"{sorted(allowed_types)}, not {biquad_type!r}"
+        )
+    freq = _finite_float(entry.get("freq"), f"{label} freq")
+    q = _finite_float(entry.get("q"), f"{label} q")
+    gain = _finite_float(entry.get("gain"), f"{label} gain")
+    if freq <= 0:
+        raise ActiveSpeakerConfigError(f"{label} freq must be positive")
+    if q <= 0:
+        raise ActiveSpeakerConfigError(f"{label} q must be positive")
+    if gain > max_gain_db:
+        raise ActiveSpeakerConfigError(
+            f"{label} gain must not exceed {max_gain_db} dB"
+        )
+    return {"biquad_type": biquad_type, "freq": freq, "q": q, "gain": gain}
+
+
 def _validated_linearization(
     preset: ActiveSpeakerPreset,
     linearization: Mapping[str, Sequence[Mapping[str, Any]]] | None,
@@ -1322,42 +1372,95 @@ def _validated_linearization(
             )
         role_filters: list[dict[str, Any]] = []
         for entry in filters:
-            if not isinstance(entry, Mapping):
-                raise ActiveSpeakerConfigError(
-                    f"linearization filter for {role} must be a mapping"
-                )
-            biquad_type = entry.get("biquad_type")
-            if biquad_type not in _LINEARIZATION_BIQUAD_TYPES:
-                raise ActiveSpeakerConfigError(
-                    f"linearization biquad_type for {role} must be one of "
-                    f"{sorted(_LINEARIZATION_BIQUAD_TYPES)}, not {biquad_type!r}"
-                )
-            freq = _finite_float(entry.get("freq"), f"{role} linearization freq")
-            q = _finite_float(entry.get("q"), f"{role} linearization q")
-            gain = _finite_float(entry.get("gain"), f"{role} linearization gain")
-            if freq <= 0:
-                raise ActiveSpeakerConfigError(
-                    f"linearization freq for {role} must be positive"
-                )
-            if q <= 0:
-                raise ActiveSpeakerConfigError(
-                    f"linearization q for {role} must be positive"
-                )
-            if gain > MAX_LINEARIZATION_BOOST_DB:
-                raise ActiveSpeakerConfigError(
-                    f"linearization gain for {role} must not exceed "
-                    f"{MAX_LINEARIZATION_BOOST_DB} dB"
-                )
-            role_filters.append({
-                "biquad_type": biquad_type,
-                "freq": freq,
-                "q": q,
-                "gain": gain,
-            })
+            role_filters.append(_validated_biquad_entry(
+                entry,
+                label=f"linearization {role}",
+                allowed_types=_LINEARIZATION_BIQUAD_TYPES,
+                max_gain_db=MAX_LINEARIZATION_BOOST_DB,
+            ))
         _validate_linearization_shelf_structure(role, role_filters)
         if role_filters:
             safe[role] = role_filters
     return safe
+
+
+# Ceiling on how many blend-correction cuts a candidate may carry, held here
+# for the same reason ``MAX_LINEARIZATION_FILTERS_PER_DRIVER`` is: the emitter
+# independently re-validates whatever a persisted candidate claims rather than
+# importing the solver's own policy constant and inheriting a future change to
+# it silently. A pinning test asserts the two stay numerically equal.
+MAX_BLEND_CORRECTION_FILTERS = 2
+
+# The blend correction is CUTS-ONLY, and this is the emitter's own half of that
+# invariant (the solver's ``−max(deviation, 0)`` construction is the other).
+# Two independent places, deliberately: the solver cannot represent a boost,
+# and this gate refuses one — because between them sits a JSON round trip
+# through a persisted candidate, which is precisely where a value the solver
+# never produced could appear.
+#
+# A REFUSAL rather than a clamp, matching ``_validated_linearization``'s choice
+# for the same reason: a positive gain here means the record was not written by
+# the solver that claims to own it, and silently clamping it would emit a graph
+# from a document nobody can vouch for.
+MAX_BLEND_CORRECTION_GAIN_DB = 0.0
+
+_BLEND_CORRECTION_BIQUAD_TYPES = frozenset({"Peaking"})
+
+
+def _blend_correction_name(index: int) -> str:
+    return f"as_blend_{index}"
+
+
+# Public alias, matching the linearization name helpers above: the runtime
+# safety verifier re-proves this stage against the EMITTED graph text and must
+# spell the names identically rather than re-deriving the format.
+blend_correction_name = _blend_correction_name
+
+
+def _validated_blend_correction(
+    blend_correction: Sequence[Mapping[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Normalize + independently re-validate the pre-split blend correction.
+
+    The crossover blend region's bounded shape correction (design doc decision
+    10) — ``[{biquad_type, freq, q, gain}, ...]``, solved by
+    ``crossover_v2.blend_correction`` from the summed at-the-mark measurement
+    and emitted on the stereo program bus, before the split mixer.
+
+    Fail-closed, like every other correction field this module re-validates.
+    Per-entry fields go through the shared ``_validated_biquad_entry``; the
+    policy this gate adds on top is the part that is specific to the stage:
+    Peaking only (a shelf across a two-octave blend would re-level the region,
+    which is the trim's job), at most
+    :data:`MAX_BLEND_CORRECTION_FILTERS` entries, and every ``gain`` at or
+    below :data:`MAX_BLEND_CORRECTION_GAIN_DB` — i.e. cuts only.
+
+    An empty/absent correction returns ``[]``, so a candidate that carries none
+    emits no stage and its graph is byte-identical to one written before this
+    stage existed.
+    """
+
+    if blend_correction is None:
+        return []
+    if (
+        not isinstance(blend_correction, Sequence)
+        or isinstance(blend_correction, (str, bytes))
+    ):
+        raise ActiveSpeakerConfigError("blend correction must be a list")
+    if len(blend_correction) > MAX_BLEND_CORRECTION_FILTERS:
+        raise ActiveSpeakerConfigError(
+            f"blend correction filter count exceeds "
+            f"{MAX_BLEND_CORRECTION_FILTERS}"
+        )
+    return [
+        _validated_biquad_entry(
+            entry,
+            label="blend correction",
+            allowed_types=_BLEND_CORRECTION_BIQUAD_TYPES,
+            max_gain_db=MAX_BLEND_CORRECTION_GAIN_DB,
+        )
+        for entry in blend_correction
+    ]
 
 
 def _validate_linearization_shelf_structure(
@@ -1818,6 +1921,7 @@ def _emit_baseline_filter_definitions(
     output_trim_db: float = 0.0,
     bass_extension: dict[str, Any] | None = None,
     linearization: dict[str, list[dict[str, Any]]] | None = None,
+    blend_correction: Sequence[Mapping[str, Any]] = (),
 ) -> str:
     lines: list[str] = []
     room_peqs = tuple(room_peqs)
@@ -1828,6 +1932,26 @@ def _emit_baseline_filter_definitions(
                 freq=peq.freq,
                 q=peq.q,
                 gain=peq.gain,
+            )
+        )
+    # Crossover blend correction (decision 10) — same Peaking primitive the
+    # room PEQs above use, and wired beside them pre-split.
+    #
+    # It charges NO headroom below, and the reason is that it CANNOT BOOST —
+    # ``_validated_blend_correction`` refuses a positive gain — not that the
+    # common attenuation covers it. ``blend_correction`` is deliberately absent
+    # from ``total_headroom_db``'s expression, and a boost posture would have
+    # to ADD a term there: position above the gain is necessary for absorption
+    # and is not sufficient for it. A boosting stage left un-termed would
+    # silently spend the room layer's allocation instead of charging its own.
+    # Pinned by ``test_the_blend_stage_charges_no_headroom_and_is_not_a_term``.
+    for i, entry in enumerate(blend_correction, start=1):
+        lines.extend(
+            emit_peaking_biquad(
+                _blend_correction_name(i),
+                freq=float(entry["freq"]),
+                q=float(entry["q"]),
+                gain=float(entry["gain"]),
             )
         )
     # Program-domain headroom for the pre-split room PEQ (Layer B) and
@@ -1932,6 +2056,7 @@ def _emit_baseline_pipeline(
     preference_filter_names: Sequence[str] = (),
     bass_extension: dict[str, Any] | None = None,
     linearization: dict[str, list[dict[str, Any]]] | None = None,
+    blend_correction_names: Sequence[str] = (),
 ) -> str:
     lines: list[str] = []
     # Room PEQs (Layer B) run on the stereo program bus before the common
@@ -1939,6 +2064,41 @@ def _emit_baseline_pipeline(
     # headroom so the active path stays one-preamp-shaped.
     if room_peq_names:
         names = ", ".join(room_peq_names)
+        lines.extend([
+            "  - type: Filter",
+            "    channels: [0, 1]",
+            f"    names: [{names}]",
+        ])
+    # Crossover blend correction (decision 10) — the summed measurement's
+    # bounded, cuts-first shape correction across the crossover region. Three
+    # properties come from this placement and no other, which is why it is here
+    # and not in a per-role chain:
+    #
+    #  1. ONE summed fact, ONE filter. The correction describes the SUM.
+    #     Pre-split is the only place where "one filter = one summed fact" is
+    #     true by construction; per-role emission would be N copies of one fact
+    #     whose only defence against drift is a test.
+    #  2. Common-mode by construction. Applying the same B(f) to every role
+    #     gives Σ_r sign_r·B·C_r·D_r = B · Σ_r sign_r·C_r·D_r — the sum scales,
+    #     the inter-driver complex ratio is untouched. An asymmetric
+    #     application would change the interference pattern, which is ALIGNMENT
+    #     work; alignment keeps its own tools (contract clause (c)). Here,
+    #     asymmetry is unrepresentable rather than merely tested against.
+    #  3. Upstream of protection. In the durable baseline the crossover
+    #     high-pass at the tweeter's own chain IS that driver's protection
+    #     (re-proved by _assert_tweeter_outputs_protected). A pre-split filter
+    #     sits above it and cannot push energy past it, whatever a future boost
+    #     posture decides.
+    #
+    # BEFORE active_baseline_headroom, beside the room PEQs, so that the stage
+    # sits where a boost WOULD be absorbable. That placement is necessary and
+    # not sufficient: absorption happens because a layer is a TERM in
+    # ``total_headroom_db``, and this one deliberately is not (it cannot boost).
+    # A future boost posture needs both — the position it already has, and a
+    # term it does not. Emitted only when present, so a candidate carrying none
+    # stays byte-identical to a pre-decision-10 graph.
+    if blend_correction_names:
+        names = ", ".join(blend_correction_names)
         lines.extend([
             "  - type: Filter",
             "    channels: [0, 1]",
@@ -3336,6 +3496,7 @@ def emit_active_speaker_baseline_config(
     baseline_id: str | None = None,
     bass_extension_profile: BassExtensionProfile | None = None,
     linearization: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+    blend_correction: Sequence[Mapping[str, Any]] | None = None,
 ) -> str:
     """Build an accepted active-speaker baseline candidate.
 
@@ -3387,6 +3548,20 @@ def emit_active_speaker_baseline_config(
     Pinned by
     tests/test_active_speaker_linearization_emission.py::test_linearization_rejects_boost_above_the_per_filter_cap
     and ::test_linearization_boost_is_accepted_and_absorbed_by_baseline_headroom.
+
+    ``blend_correction`` (decision 10) is the crossover blend region's
+    summed-response-owned shape correction — the flat list
+    ``[{biquad_type, freq, q, gain}, ...]``
+    ``crossover_v2.blend_correction.solve_blend_correction`` designs from the
+    post-apply spatial cloud. Flat rather than per-role on purpose: it
+    describes the SUM, and it is emitted ONCE on program channels [0, 1]
+    before the split mixer, which is what makes it common-mode by construction
+    (see ``_emit_baseline_pipeline`` for the three properties that placement
+    buys). Independently re-validated here (``_validated_blend_correction``):
+    Peaking only, finite positive ``freq``/``q``, at most
+    ``MAX_BLEND_CORRECTION_FILTERS`` entries, and NON-POSITIVE ``gain`` — the
+    cuts-only invariant, refused rather than clamped. The empty default keeps
+    every existing caller byte-identical.
     """
 
     preset.validate()
@@ -3434,6 +3609,7 @@ def emit_active_speaker_baseline_config(
     safe_corrections = _validated_driver_corrections(preset, corrections)
     bass_extension = _bass_extension_emission(preset, bass_extension_profile)
     safe_linearization = _validated_linearization(preset, linearization)
+    safe_blend_correction = _validated_blend_correction(blend_correction)
 
     # Drop inactive bands (a near-zero gain rounds to a no-op) exactly like the
     # stereo emitter's build_sound_filters does, so an "all flat" preference
@@ -3465,6 +3641,7 @@ def emit_active_speaker_baseline_config(
         output_trim_db=output_trim_db,
         bass_extension=bass_extension,
         linearization=safe_linearization,
+        blend_correction=safe_blend_correction,
     )
     # apply_region_polarity=False: this graph carries polarity through
     # ``safe_corrections`` (a per-driver Gain filter below), so the mixer must
@@ -3476,6 +3653,10 @@ def emit_active_speaker_baseline_config(
         preference_filter_names=[spec.name for spec in active_preference_filters],
         bass_extension=bass_extension,
         linearization=safe_linearization,
+        blend_correction_names=[
+            _blend_correction_name(i)
+            for i in range(1, len(safe_blend_correction) + 1)
+        ],
     )
     metadata_comments = [f"# preset_id={preset.preset_id}"]
     if baseline_id:

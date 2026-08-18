@@ -89,7 +89,15 @@ __all__ = [
     "detached_json",
 ]
 
-SCHEMA_VERSION = 1
+#: Bumped to 2 by decision 10 (#2600), which added the ``blend`` key to
+#: ``RoundReceipt.round_measurements``. The bump is what the receipt key-set
+#: guard's own remedy asks for: the version sat at 1 through three field
+#: additions in one week, so a reader could not tell two shapes apart by it,
+#: and the guard exists so that stops being true silently. A reader that
+#: branches on this should treat 1 as "no blend record, ever" rather than as
+#: "the blend record is absent for this round" — the two are different facts
+#: and only the version can separate them.
+SCHEMA_VERSION = 2
 
 
 class CrossoverV2ContractError(ValueError):

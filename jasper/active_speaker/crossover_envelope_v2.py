@@ -521,6 +521,26 @@ def _verify_claims_lines(status: Mapping[str, Any]) -> list[str]:
             f"crossover blend {worst_db:+.2f} dB at {worst_hz:.0f} Hz "
             f"over {lo:.0f}–{hi:.0f} Hz (limit {tolerance_db:.1f} dB)"
         )
+    # Decision 10: what is being DONE about the number directly above. Placed
+    # here rather than on a card of its own because this is exactly where a
+    # reader asks it — a household that sees the same blend number reported
+    # round after round, with nothing saying the loop has a lever aimed at it,
+    # reasonably concludes nothing is happening. Read off the durable receipt,
+    # never re-derived, so the screen and the graph cannot disagree.
+    blend = _mapping(_v2(status).get("round_receipt")).get("blend")
+    cuts = _mapping(blend).get("filters")
+    depths: list[float] = []
+    if isinstance(cuts, (list, tuple)):
+        for entry in cuts:
+            gain = _finite(_mapping(entry).get("gain"))
+            if gain is not None:
+                depths.append(gain)
+    if depths:
+        lines.append(
+            f"the next round trims this region "
+            f"({len(depths)} cut{'s' if len(depths) > 1 else ''}, "
+            f"deepest {min(depths):+.1f} dB)"
+        )
     if _mapping(claims.get("woofer_branch")).get("reason") == CLAIM_NO_PER_BRANCH_CAPTURE:
         # Household terms: the reason code is about a capture plan, the
         # sentence is about what nobody knows yet.
