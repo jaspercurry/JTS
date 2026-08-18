@@ -2309,6 +2309,81 @@ def test_two_driver_profile_composition_intersects_existing_limits(
     assert prepared.minimum_cooldown_s == 2.0
 
 
+def test_summed_low_edge_is_owned_by_the_declared_measurement_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The summed low edge is the highest declared ``measurement_band_hz[0]``.
+
+    The band above binds on the shared ``MIN_DRIVER_TEST_FREQUENCY_HZ``
+    constant at both drivers, so nothing there exercises the low edge's own
+    rule. This does: both measurement floors sit above the constant, and the
+    higher of the two must win.
+
+    #2603 removed a second ``max()`` over ``hard_excitation_band_hz[0]`` from
+    this edge. No test can DISCRIMINATE that removal, because the term was
+    dead on every input the function can receive -- ``apply_driver_low_limit``
+    stamps ``measurement[0]`` at or above ``hard[0]``, and a profile that
+    escapes that nesting is refused by ``_target_issues`` before
+    ``confirmed_and_current`` can be true. So this pins the rule that SURVIVES,
+    with a fixture that honours the nesting invariant the removal rests on
+    (each ``measurement`` band sits inside its own ``hard`` band).
+    """
+
+    topology = mono_output_topology()
+    current = runtime.active_driver_targets(topology)
+    fingerprints = tuple(target["target_fingerprint"] for target in current)
+    profile = {
+        "targets": [
+            {
+                "target_fingerprint": fingerprints[0],
+                "hard_excitation_band_hz": [100.0, 40000.0],
+                "measurement_band_hz": [500.0, 30000.0],
+                "required_protection_filters": [{"kind": "lowpass"}],
+                "level_duration_limits": {
+                    "max_effective_peak_dbfs": -24.0,
+                    "max_sweep_duration_s": 20.0,
+                    "max_repeat_count": 3,
+                    "minimum_cooldown_s": 0.5,
+                },
+            },
+            {
+                "target_fingerprint": fingerprints[1],
+                "hard_excitation_band_hz": [200.0, 50000.0],
+                "measurement_band_hz": [900.0, 20000.0],
+                "required_protection_filters": [{"kind": "highpass"}],
+                "level_duration_limits": {
+                    "max_effective_peak_dbfs": -48.0,
+                    "max_sweep_duration_s": 10.0,
+                    "max_repeat_count": 2,
+                    "minimum_cooldown_s": 2.0,
+                },
+            },
+        ]
+    }
+    monkeypatch.setattr(
+        runtime,
+        "evaluate_driver_safety_profile",
+        lambda *_args: SimpleNamespace(
+            confirmed_and_current=True, profile_fingerprint=_HASH_B
+        ),
+    )
+
+    prepared = runtime.prepare_summed_excitation(
+        topology,
+        profile,
+        target_fingerprints=fingerprints,
+        evidence_target_fingerprint=_HASH_A,
+        band=FrequencyBand(1000.0, 1100.0),
+        effective_peak_dbfs=-50.0,
+        duration_s=0.8,
+        excitation_plan_fingerprint=_HASH_D,
+    )
+
+    # 900 is the higher declared measurement floor -- not 500 (the lower one),
+    # not 200 (the higher HARD floor), and not the 20 Hz shared constant.
+    assert prepared.limits.permitted_band == FrequencyBand(900.0, 20000.0)
+
+
 def test_summed_excitation_uses_role_pair_ssot_not_channel_tuple_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

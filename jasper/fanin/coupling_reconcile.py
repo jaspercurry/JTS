@@ -499,6 +499,13 @@ def _reconcile_camilla(
     own detail so the outcome is never confused with a re-emit. Every other
     ``skipped`` — a different refusal code, a commissioning load, an anchor that
     is not coherent — fails exactly as before.
+
+    NO acceptance here survives a payload that came over the STATEFILE
+    (``transport=statefile``, #2664). That payload's ``current_config_path`` is
+    the durable pointer rather than the daemon's answer, and this rung's contract
+    is "re-emit AND LOAD" — with CamillaDSP down nothing was loaded. One guard
+    ahead of all three branches, so the rule cannot be true of one acceptance and
+    forgotten by the next.
     """
     import asyncio
 
@@ -509,6 +516,30 @@ def _reconcile_camilla(
     except Exception as e:  # noqa: BLE001 - report, never raise out of the reconcile
         return False, f"camilla reconcile raised: {e}"
     status = payload.get("status")
+    # THE ONE PLACE this rung decides a statefile answer is not good enough.
+    # ``transport`` names which reader answered "which graph is loaded". Since
+    # #2664 the reconcile COMPLETES over the statefile when CamillaDSP is down —
+    # it converges the graph the box will boot, which is the right outcome for a
+    # deploy, and the wrong one to accept here. This rung's contract is "re-emit
+    # AND LOAD", and over the statefile CamillaDSP loaded nothing because it is
+    # not running.
+    #
+    # Ahead of every acceptance on purpose. Before #2664 all three were protected
+    # for free: ``reconcile_current_dsp`` RAISED with the daemon down and the
+    # except above turned that into ``(False, …)``. Guarding only the anchor
+    # branch would leave the two common ones — a commissioned box and a flat box
+    # both answer ``reconciled`` — reporting success about a dead daemon, which
+    # clears the ring-confirm strike record and disables the two-strike
+    # escalation to loopback that is the only unattended path back to audio. The
+    # escalation would then survive for the mid-commission special case and be
+    # gone for the production fleet.
+    #
+    # This does NOT slow #2664's own heal: install performs that through the
+    # ``jasper-sound`` CLI, which never enters this function, and by the time the
+    # coupling pass runs, camilla has been restarted and the websocket path is
+    # taken.
+    if payload.get("transport") == "statefile":
+        return False, f"camilla down: reconcile converged over the statefile ({status})"
     if status in ("reconciled", "unchanged"):
         return True, str(status)
     # A "skipped" reconcile is acceptable only for loopback (a flat box with
@@ -4214,7 +4245,13 @@ def _arm_ring(
         )
 
     # A completed arm is a SUCCESS for the strike record's purpose: CamillaDSP
-    # just loaded the ring config. Leaving stale strikes here would silently
+    # just loaded the ring config. That premise is what makes the clear safe, so
+    # it is enforced rather than assumed — reaching here means ``_reconcile_camilla``
+    # accepted, and since #2664 it refuses any payload that came over the
+    # statefile, which is the one shape where "loaded the ring config" would be
+    # false because the daemon is not running.
+    #
+    # Leaving stale strikes here would silently
     # degrade the two-strike policy to one — an operator's fresh re-arm would be
     # one transient confirm away from being recovered to loopback, with the
     # escalation log citing a failure from before the arm that fixed it.

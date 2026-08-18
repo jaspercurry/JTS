@@ -51,6 +51,9 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
+from jasper.audio_measurement.program_analysis import (
+    ALIGNMENT_EXPLICIT_PRESCRIPTION_OBJECTIVES,
+)
 from jasper.log_event import log_event
 
 from .contracts import ENTRY_GRAPH_FINGERPRINT_UNKNOWN, AdoptionOutcome
@@ -65,7 +68,10 @@ from .verification import FlatnessObjectives, decide_adoption
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from jasper.audio_measurement.program_analysis import ProgramAnalysis
-    from jasper.active_speaker.flat_spec import FlatSpecReport
+    from jasper.active_speaker.crossover_v2.alignment_prescription import (
+        AlignmentPrescription,
+    )
+    from jasper.active_speaker.flat_spec import FlatSpecReport, GradedSpec
 
 logger = logging.getLogger(__name__)
 
@@ -343,6 +349,44 @@ class RoundEvidence:
     #: post-apply cloud, and defaulted for the reason directly above: an empty
     #: tuple and an unsupplied one both mean "no positions to report".
     position_residuals: tuple[Mapping[str, Any], ...] = ()
+    #: The post-apply cloud's flat-spec evaluation with its graded curve and
+    #: MERGED honesty mask (decision 10) — the blend correction's evidence.
+    #: ``None`` on a tier that walks no post-apply cloud, and defaulted for the
+    #: same fail-direction reason the floors above are: absent evidence
+    #: prescribes nothing, which is the safe answer, while a fabricated one
+    #: would prescribe a filter from a mask nobody screened.
+    graded_spec: "GradedSpec | None" = None
+    #: The blend correction the post-apply capture actually rode, read off the
+    #: APPLIED candidate. ``None`` is "could not be established" and refuses to
+    #: prescribe; ``()`` is "it rode none", which every first round honestly is.
+    #:
+    #: **Defaulted to ``None`` rather than ``()`` deliberately.** The two are
+    #: not interchangeable here: assuming an empty incumbent when the real one
+    #: is unknown double-counts the correction the capture was actually taken
+    #: through, which is the precise shape #2653 reverted for the level datum.
+    #: A caller that forgets this keyword gets a refusal, not a wrong number.
+    applied_blend_correction: tuple[Mapping[str, Any], ...] | None = None
+    #: The region residual the PREVIOUS round of this series read (decision
+    #: 10), or ``None`` for the first round. Defaulted for the same
+    #: fail-direction reason the floors are: absent only ever lets the loop
+    #: keep prescribing, never freezes it.
+    previous_blend_residual_db: float | None = None
+    #: The inter-driver delay PRESCRIPTION this round's candidate was built
+    #: from, or ``None`` for a round whose delay the aligner chose on its own
+    #: (#2662). Banked verbatim, never graded here: it is provenance — what the
+    #: prescribed number was derived from — and the adoption record's job is to
+    #: say what an adopted arm's timing rests on so a reader can go and check.
+    #: Defaulted, and ``None`` is honest for the overwhelming majority of
+    #: rounds, which prescribe nothing.
+    alignment_prescription: "AlignmentPrescription | None" = None
+    #: WHICH commitment produced the round's delay
+    #: (:data:`~jasper.audio_measurement.program_analysis.ALIGNMENT_COMMITMENTS`),
+    #: or ``""`` when no candidate was committed. Banked beside the
+    #: prescription because the pair is what makes an adoption record honest:
+    #: alone, the prescription says only what was ASKED for, and a reachable
+    #: rail (an ``ALIGNMENT_OK`` estimate with no scorable band) commits the
+    #: estimator's seed while the round still carries the arm's name.
+    alignment_objective: str = ""
 
 
 @dataclass(frozen=True)
@@ -438,6 +482,12 @@ def run_round(evidence: RoundEvidence, ports: RoundPorts) -> RoundDecision:
             # #2609 SF5's frame, carried beside the objectives it scoped.
             trusted_floor_hz=evidence.trusted_floor_hz,
             previous_trusted_floor_hz=evidence.previous_trusted_floor_hz,
+            # Decision 10's two inputs, forwarded rather than re-derived: the
+            # cloud evidence the correction is solved from, and the incumbent
+            # the capture rode.
+            graded_spec=evidence.graded_spec,
+            applied_blend_correction=evidence.applied_blend_correction,
+            previous_blend_residual_db=evidence.previous_blend_residual_db,
         )
     except (OSError, RuntimeError, TypeError, ValueError, KeyError,
             AttributeError, IndexError, ZeroDivisionError):
@@ -473,11 +523,11 @@ def _log_round(evaluation: RoundEvaluation, *, session_id: str) -> None:
         logger, "correction.crossover_v2_round_graded",
         session_id=session_id,
         adoption=evaluation.adoption.outcome.value,
-        # WHICH rule fired, beside what it decided (#2537). Three of the six
-        # rows restore and three keep — and since #2602 two of those three
-        # keeping rows share one outcome — so ``adoption`` alone cannot say,
-        # and the reason travels from whichever axis spoke. The row is the
-        # stable thing to grep a journal for.
+        # WHICH rule fired, beside what it decided (#2537). Three of the seven
+        # rows restore and four keep the graph — and the four share only two
+        # outcomes between them, since #2602 and #2656 each split a cell — so
+        # ``adoption`` alone cannot say, and the reason travels from whichever
+        # axis spoke. The row is the stable thing to grep a journal for.
         row=evaluation.adoption.row,
         reason=evaluation.adoption.reason,
         capture=record["verdicts"]["capture"]["status"],
@@ -486,6 +536,15 @@ def _log_round(evaluation: RoundEvaluation, *, session_id: str) -> None:
         spec=record["verdicts"]["spec"]["status"],
         trust=record["axes"]["trust"]["status"],
         safety=record["axes"]["safety"]["status"],
+        # The only axis whose REASON rides this line beside its status, and it
+        # is the hearing one (series-2 D1 fix round). ``safe`` has two readings
+        # — the realized-energy check looked and found nothing, or it could not
+        # look at all — and a first-ever round takes the second by construction.
+        # Every other axis's reason is either the deciding one (``reason``
+        # above) or a number in ``evidence``; this one is a claim about what was
+        # CHECKED, and a journal that cannot tell the two apart is where the
+        # 2026-08-17 class of defect hides.
+        safety_reason=record["axes"]["safety"]["reason"],
         quality=record["axes"]["quality"]["status"],
         # #2602: WHETHER another round is coming, and where this one sat in
         # the series — the two facts a support read needs to tell "the series
@@ -496,6 +555,16 @@ def _log_round(evaluation: RoundEvaluation, *, session_id: str) -> None:
         round_ordinal=evaluation.headroom.evidence.get("round_ordinal"),
         post_residual_db=evaluation.post_residual_db,
         post_residual_bins=evaluation.post_residual_bins,
+        # Decision 10: which arm the blend region took, and how many filters it
+        # prescribed. The receipt is the forensic record and is sufficient on
+        # its own, but a tail that shows every other verdict and is silent
+        # about a stage that CHANGED THE GRAPH reads as a stage that did
+        # nothing — and grepping a journal is the first thing a support read
+        # does, before it knows an artifact exists.
+        blend=None if evaluation.blend is None else evaluation.blend.reason,
+        blend_filters=(
+            None if evaluation.blend is None else len(evaluation.blend.filters)
+        ),
         evidence={**record["verdicts"], **record["axes"]},
     )
 
@@ -770,7 +839,7 @@ def _write_round_receipt(
             # the reason the assembler states: the instruments are the
             # caller's, and deriving these there would give them a second
             # owner.
-            round_measurements=_round_measurements(evidence),
+            round_measurements=_round_measurements(evidence, evaluation),
             evidence_identities={
                 "session_id": evidence.session_id,
                 "tier": evidence.tier,
@@ -818,6 +887,22 @@ def _write_round_receipt(
     return identity
 
 
+#: The two adoption outcomes that leave the round's own graph playing. The
+#: other two (``RESTORE``, ``RECOVERY_REQUIRED``) mean the speaker is not on the
+#: graph this round's measurement was taken through — the first deliberately,
+#: the second because a restore was attempted and did not complete, which is
+#: the state where assuming ANYTHING about the live graph is least safe.
+_GRAPH_KEPT_OUTCOMES = frozenset({
+    AdoptionOutcome.KEEP, AdoptionOutcome.KEEP_FOR_ITERATION,
+})
+
+
+def _round_kept_its_graph(evaluation: RoundEvaluation) -> bool:
+    """Is the speaker still on the graph this round measured?"""
+
+    return evaluation.adoption.outcome in _GRAPH_KEPT_OUTCOMES
+
+
 def _round_identity(
     evaluation: RoundEvaluation, evidence: RoundEvidence,
 ) -> dict[str, Any]:
@@ -857,13 +942,50 @@ def _round_identity(
         "round_ordinal": evaluation.headroom.evidence.get("round_ordinal"),
         "objectives": evaluation.headroom.evidence.get("objectives"),
         "trusted_floor_hz": evaluation.headroom.evidence.get("trusted_floor_hz"),
+        # Decision 10's prescription for the NEXT round, carried on the same
+        # durable record the objectives are — because it is the same kind of
+        # fact (what this round learned that only the next one can use) and
+        # because a series that remembered its objectives from one record and
+        # its prescription from another would be remembering two pasts. Read
+        # back by ``series_position_from_state`` directly below.
+        #
+        # **``None`` when the round did not KEEP its graph** (panel ruling,
+        # 2026-08-18). A prescription is derived from a measurement taken
+        # through a specific incumbent; a restored round threw that graph away,
+        # so its prescription describes a speaker that no longer exists and
+        # applying it next would compose a correction onto the wrong base. The
+        # next round instead derives its incumbent from the APPLIED (restored)
+        # profile — see ``_blend_prescription`` on the apply path. What the
+        # round COMMANDED is still recorded, in the banked artifact's
+        # ``round_measurements.blend``: that is history, and history survives a
+        # restore. This key is not history, it is an instruction.
+        # Two facts, one key, because they are one fact: what to apply next,
+        # and what the region read when that was decided. The next round needs
+        # BOTH — the filters to build its candidate, and the residual to know
+        # whether the region is still improving (the narrow-defect stop in
+        # ``blend_correction.solve_blend_correction``). Splitting them across
+        # two keys would let a series remember a prescription from one round
+        # and a reading from another.
+        "blend": (
+            None
+            if evaluation.blend is None or not _round_kept_its_graph(evaluation)
+            else {
+                "filters": [dict(f) for f in evaluation.blend.filters],
+                "residual_db": (
+                    None if evaluation.blend.reading is None
+                    else evaluation.blend.reading.residual_db
+                ),
+            }
+        ),
     }
 
 
-def _round_measurements(evidence: RoundEvidence) -> dict[str, Any]:
+def _round_measurements(
+    evidence: RoundEvidence, evaluation: RoundEvaluation,
+) -> dict[str, Any]:
     """The round's own measured numbers, for the receipt's third mapping.
 
-    Two instruments, both optional, neither graded here:
+    Three instruments, all optional, none graded here:
 
     * the delta probe's band-resolved realization (#2649) — read off the
       probe's own ``to_dict`` so the receipt banks exactly what the probe
@@ -872,6 +994,26 @@ def _round_measurements(evidence: RoundEvidence) -> dict[str, Any]:
       report shipped; both are honest absences and neither is an error.
     * the post-apply cloud's per-position residuals (§4.2), already
       JSON-shaped by the caller.
+    * the blend region's commanded-vs-realized pair (decision 10/11) — the
+      filters prescribed for the next round, the incumbent they were derived
+      from, the damping, and what the incumbent actually achieved in the
+      region. Decision 11 makes that pair deterministic forever no matter who
+      eventually prescribes, which is why it is banked with the numbers rather
+      than only logged.
+
+      **Its reason code rides here, with the numbers, not on ``round_axes``.**
+      ``round_axes`` is the four ADOPTION axes and every value in it is a
+      ``Verdict``; a blend reason is neither an adoption axis nor a verdict, and
+      a fifth key of a different shape would read as one — which decision 10
+      explicitly forbids ("not a new safety class"). Keeping the reason beside
+      the numbers is also what lets a reader tell "the region was already
+      clean" from "the instrument refused" in one place.
+
+      **Deliberately NOT nested under ``realization.bands.crossover``.** That
+      band is the graded tier below ``DELTA_PROBE_HF_SPLIT_HZ``
+      (``[953.5, 9999.98] Hz`` on the series-1 rig) and its own comment says it
+      is named for what it contains rather than derived from any Fc — which
+      this one is. Same word, different band.
 
     Never raises. A probe object that cannot answer costs the receipt one
     optional mapping, and losing the whole receipt over it would be exactly the
@@ -886,6 +1028,55 @@ def _round_measurements(evidence: RoundEvidence) -> dict[str, Any]:
         measurements["position_residuals"] = [
             dict(row) for row in evidence.position_residuals
         ]
+    blend = evaluation.blend
+    # Banked only when there WAS a crossover region to speak about. A round on
+    # a tier that walks no cloud, or one whose absolute claim was never
+    # evaluated, has no blend question — and a record saying so would be the
+    # same false claim the empty position-residual list above is refused for:
+    # that the question was asked and answered. Once there IS a band, the
+    # record always rides, emitted or not, because "the region was already
+    # clean" and "the instrument refused" are then genuinely different answers.
+    if blend is not None and blend.band_hz is not None:
+        record = blend.to_dict()
+        region_benefit = evaluation.region_benefit
+        if region_benefit is not None:
+            # Labelled for the same reason ``realized`` is: this record now
+            # carries two residuals over the same band, referenced differently
+            # and therefore numerically different. The label is what stops a
+            # reader treating the gap as a defect in one of them.
+            record["region_benefit"] = {
+                "instrument": "region_local_reference",
+                **region_benefit.to_dict(),
+            }
+        measurements["blend"] = record
+    # #2662's provenance, banked verbatim. It rides HERE, with the numbers,
+    # rather than on ``round_axes`` for the reason the blend reason code does:
+    # ``round_axes`` is the four adoption axes and every value in it is a
+    # ``Verdict``, and provenance is neither. It is also not an INSTRUCTION for
+    # the next round — unlike ``blend``, which the next round reads back as its
+    # incumbent — so it is deliberately absent from ``_round_identity``: each
+    # arm of a delay sweep is prescribed explicitly, and a receipt that carried
+    # one forward would be how an arm gets re-run without being asked for.
+    prescription = evidence.alignment_prescription
+    if prescription is not None:
+        objective = str(evidence.alignment_objective or "")
+        measurements["alignment_prescription"] = {
+            **prescription.to_dict(),
+            # The OUTCOME beside the request, and the reason both are here.
+            # ``objective`` names which commitment the machinery actually
+            # reached; ``committed`` is that one bit spelled out so a grader
+            # does not have to import a frozenset to read it, derived HERE from
+            # ``objective`` at the single site that banks either — one writer,
+            # never two facts that could disagree. ``None`` is the third
+            # answer, and it is not "no": a round whose fit never committed a
+            # candidate has no objective to report, and saying ``False`` there
+            # would claim the machinery declined an arm it never reached.
+            "objective": objective,
+            "committed": (
+                None if not objective
+                else objective in ALIGNMENT_EXPLICIT_PRESCRIPTION_OBJECTIVES
+            ),
+        }
     return measurements
 
 
@@ -930,6 +1121,27 @@ class SeriesPosition:
     ordinal: int
     #: What the previous round measured, or ``None`` when there was none.
     previous_objectives: FlatnessObjectives | None
+    #: The blend correction the NEXT round should apply (decision 10), or
+    #: ``None`` for "no instruction" — no previous round, a receipt written
+    #: before decision 10, a round that did not keep its graph, or a record
+    #: this reader cannot vouch for. A TOTAL, not a delta: the whole
+    #: correction, incumbent included, so the candidate build applies it
+    #: verbatim rather than composing it with anything.
+    #:
+    #: **``None`` and ``()`` are different instructions**, and the apply path
+    #: turns on the difference: ``()`` says "apply no blend correction" and is
+    #: what a round that measured a clean region with no incumbent prescribes;
+    #: ``None`` says "this series has no instruction for you", and the next
+    #: candidate then derives its correction from the APPLIED graph instead of
+    #: reverting to nothing. Collapsing them would make a restored round, or a
+    #: fresh series on an already-corrected speaker, silently drop an adopted
+    #: correction.
+    previous_blend_correction: tuple[Mapping[str, Any], ...] | None = None
+    #: The region residual the previous round read (decision 10), or ``None``.
+    #: Travels in this pair for the reason the pair exists: a residual read
+    #: from one round and a prescription from another would be a series
+    #: remembering two pasts.
+    previous_blend_residual_db: float | None = None
     #: The frame those objectives were graded in (#2609 SF5), or ``None`` for
     #: no previous round, a receipt written before SF5, or a round whose tier
     #: banked no floor. Travels in this pair rather than beside it for the
@@ -944,6 +1156,7 @@ class SeriesPosition:
 
         return cls(
             ordinal=1, previous_objectives=None, previous_trusted_floor_hz=None,
+            previous_blend_correction=None,
         )
 
 
@@ -995,6 +1208,8 @@ def series_position_from_state(raw: Any) -> SeriesPosition:
         return SeriesPosition(
             ordinal=previous_ordinal + 1,
             previous_objectives=None,
+            previous_blend_correction=_blend_from_receipt(receipt),
+            previous_blend_residual_db=_blend_residual_from_receipt(receipt),
             previous_trusted_floor_hz=None,
         )
     return SeriesPosition(
@@ -1003,11 +1218,58 @@ def series_position_from_state(raw: Any) -> SeriesPosition:
             tilt_db=_optional_db(objectives.get("tilt_db")),
             ripple_db=_optional_db(objectives.get("ripple_db")),
         ),
+        # Absent on every receipt written before decision 10, and on every
+        # round that did not keep its graph — both mean "no instruction", which
+        # the apply path reads as "derive from the applied graph" rather than
+        # as "revert to nothing".
+        previous_blend_correction=_blend_from_receipt(receipt),
+        previous_blend_residual_db=_blend_residual_from_receipt(receipt),
         # Absent on every receipt written before SF5, which the headroom axis
         # reads as "no evidence the frame moved" — the same non-refusing
         # direction an unknown floor has everywhere else.
         previous_trusted_floor_hz=_optional_db(receipt.get("trusted_floor_hz")),
     )
+
+
+def _blend_from_receipt(
+    receipt: Mapping[str, Any],
+) -> tuple[Mapping[str, Any], ...] | None:
+    """The blend instruction a banked receipt carries, or ``None`` for none.
+
+    ``None`` — no instruction — for an absent key (a receipt from before
+    decision 10, or a round that did not keep its graph), and for a record this
+    reader cannot vouch for. The apply path reads that as "derive from the
+    applied graph", which is the safe direction: an unreadable instruction must
+    not be able to REMOVE an adopted correction any more than it can invent
+    one. Cuts-only is re-proved at the emitter regardless; this reader refuses
+    earlier so a malformed record never reaches it.
+
+    An explicit ``[]`` is a real instruction — "apply no blend correction" —
+    and survives as ``()``. That is what a round with no incumbent and a clean
+    region prescribes, and it must not be confused with the absence above.
+    """
+
+    from .blend_correction import blend_filters_from_mapping
+
+    blend = receipt.get("blend")
+    if not isinstance(blend, Mapping):
+        return None
+    return blend_filters_from_mapping(blend.get("filters"))
+
+
+def _blend_residual_from_receipt(receipt: Mapping[str, Any]) -> float | None:
+    """The region residual the previous round read, or ``None``.
+
+    ``None`` — no comparison available — for every shape the instruction reader
+    above refuses, and for a round that read no region. The stop it feeds only
+    ever WITHHOLDS a new prescription, so an absent reading resolves to "keep
+    prescribing", which is the direction that cannot silently freeze a series.
+    """
+
+    blend = receipt.get("blend")
+    if not isinstance(blend, Mapping):
+        return None
+    return _optional_db(blend.get("residual_db"))
 
 
 def _optional_db(value: Any) -> float | None:

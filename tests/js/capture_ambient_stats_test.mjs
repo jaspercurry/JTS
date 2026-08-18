@@ -10,9 +10,10 @@
 // data: URL — the same strip-and-eval pattern the other capture-page
 // harnesses use (see capture_level_events_test.mjs).
 //
-// Schema conformance is cross-checked against the REAL Python parser in
-// tests/test_capture_page_ambient_stats_bridge.py — this harness only proves
-// the JS-side computation and wire shape.
+// This harness proves the JS-side computation and wire shape. There is no
+// Pi-side consumer to cross-check against: the event is emitted
+// forward-compatibly and ignored by the Pi (#2662 deleted the never-called
+// Pi parser and its cross-language bridge test).
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -91,11 +92,13 @@ function testBandEdgesAreValid() {
   ok();
 }
 
-// 4. buildAmbientStatsEvent's wire shape matches parse_ambient_stats_event's
-//    schema EXACTLY: top-level ambient_stats key, schema=1 (int, not bool),
-//    run_token echoed verbatim, duration_s a number, clipped a bool, bands
-//    a non-empty array of {lo_hz, hi_hz, rms_dbfs}.
-function testEventShapeMatchesPiSchema() {
+// 4. buildAmbientStatsEvent's wire shape is the page's OWN published schema
+//    (#2662 deleted the unused Pi parser, so this pin is what holds the
+//    shape stable for a future consumer): top-level ambient_stats key,
+//    schema=1 (int, not bool), run_token echoed verbatim, duration_s a
+//    number, clipped a bool, bands a non-empty array of
+//    {lo_hz, hi_hz, rms_dbfs}.
+function testEventWireShapeIsStable() {
   const event = buildAmbientStatsEvent(toneSamples({}), 48000, "run-token-abc", 0.8);
   assert.deepEqual(Object.keys(event), ["ambient_stats"]);
   const stats = event.ambient_stats;
@@ -118,8 +121,8 @@ function testEventShapeMatchesPiSchema() {
   ok();
 }
 
-// 5. A clipping capture is reported clipped:true — the Pi's parser treats a
-//    clipped ambient as untrustworthy and falls back regardless of bands.
+// 5. A clipping capture is reported clipped:true — a consumer must treat a
+//    clipped ambient as untrustworthy and fall back regardless of bands.
 function testClippedCaptureIsReported() {
   const samples = toneSamples({ amplitude: 1.5 }); // clips at the +-1.0 float rail
   const event = buildAmbientStatsEvent(samples, 48000, "run-token-abc", 0.8);
@@ -140,7 +143,7 @@ const tests = [
   testLoudestBandContainsTheTone,
   testBandCountUnderMax,
   testBandEdgesAreValid,
-  testEventShapeMatchesPiSchema,
+  testEventWireShapeIsStable,
   testClippedCaptureIsReported,
   testMissingRunTokenCoercesToEmptyString,
 ];

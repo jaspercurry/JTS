@@ -1053,3 +1053,37 @@ def test_record_ramp_state_writes_group_readable_mode(tmp_path):
     assert path.exists()
     mode = _stat.S_IMODE(path.stat().st_mode)
     assert mode == 0o640
+
+
+def test_clear_pending_ramp_step_bare_keeps_group_and_ordering_memory(tmp_path):
+    """The bare (no-argument) call is what both rollback surfaces make, and its
+    docstring promises it keeps the group AND the woofer-before-tweeter memory
+    while dropping only the step awaiting an ACK. Both halves, pinned.
+
+    The memory half is the fail-SAFE direction if it regressed (a lost ordering
+    memory makes the gate stricter, never looser) — which is exactly why nothing
+    else would catch it.
+    """
+    import json as _json
+
+    from jasper.active_speaker.commission_ramp import clear_pending_ramp_step
+
+    path = tmp_path / "ramp.json"
+    path.write_text(
+        _json.dumps(
+            {
+                "speaker_group_id": "left",
+                "confirmed_roles": ["woofer"],
+                "pending": {"role": "tweeter", "gain_db": -80.0, "playback_id": "abc"},
+                "last_action": "step",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cleared = clear_pending_ramp_step(state_path=path)
+
+    assert cleared["pending"] is None
+    assert cleared["speaker_group_id"] == "left"
+    assert cleared["confirmed_roles"] == ["woofer"]
+    assert load_ramp_state(state_path=path)["confirmed_roles"] == ["woofer"]

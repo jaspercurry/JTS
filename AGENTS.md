@@ -3418,6 +3418,26 @@ branch sat while `main` advanced 23 commits and silently went un-mergeable.
     reasoning as item 10. Both recorded in the
     [#2161](https://github.com/jaspercurry/JTS/issues/2161) close-out.
 
+12. **A tree-scanning guard is checked against the merge result, not your
+    branch.** A PR that adds or widens one — e.g. `tests/test_async_wait_contract.py`,
+    `tests/test_atomic_io_conventions.py`, `tests/test_lint_contracts.py`,
+    `tests/test_ci_classifier.py`, `tests/test_web_wizard_conventions.py` —
+    has a CI outcome that depends on files it never touches, so your branch
+    and `main` can each be green while the merge is red: anything that landed
+    while you worked can trip your new detector. Item 3's
+    up-to-date-before-merging is deliberately OFF (it would make every merge
+    pay a full CI cycle), and this is the cheap substitute for the one class
+    where staleness genuinely changes the answer — not a reopening of that
+    decision. Compute the merge with no checkout and no working-tree mutation:
+    `git merge-tree --write-tree origin/main HEAD` prints a tree OID; run the
+    guard's own detector over `git ls-tree -r --name-only <oid>` /
+    `git show "${oid}:<path>"` rather than over the working tree (braces are
+    load-bearing under zsh — a bare `$oid:tests/…` is eaten by the `:t`
+    modifier). #2684 added a
+    tree-scanning detector this way — merged tree clean across all 872 test
+    files, while a scan of `origin/main` alone false-alarmed on the very sites
+    that PR deletes. **Scan the merge result, not either side.**
+
 
 ## Worktree hygiene — clean up agent worktrees
 

@@ -34,7 +34,9 @@
 | Check that the DSP actually realizes a linearization the way the fit says it will (the shelf-Q class), offline and without a microphone | [Offline emit loop](#offline-emit-loop) |
 | Replay recorded tuning attempts through the S3 improve/stop policy, and see whether the loop would have claimed an improvement that was only noise | [Attempts-loop replay](#attempts-loop-replay) |
 | Find out whether a banked session's cloud null evidence actually *bound* the linearization fit, and what the fit does without it | [Severed-twin replay](#severed-twin-replay) |
+| Read a driver's harmonic distortion (H2/H3 vs frequency) out of MEASURE captures already on disk, with no new recording | [Harmonic-distortion replay](#harmonic-distortion-replay) |
 | Hold a specific field incident still in CI — minimize a gitignored bank to a committed fixture and characterize the defect it produced | [Committed incident replay](#committed-incident-replay) |
+| Ask why a banked session's pooled flatness reads worse than its on-axis response sounds — re-read the same evaluation per octave and per position role | [Metric-honesty views](#metric-honesty-views) |
 | Grade the boost-permission gate's decision against a defect you injected on purpose (rather than one a room happened to produce) | [`tests/test_crossover_v2_boost_scenarios.py`](../tests/test_crossover_v2_boost_scenarios.py) — synthetic spatial scenarios, the validation ladder's third rung |
 | Validate two Apple USB-C DACs as a lab-only output topology | [Dual Apple DAC lab runner](#dual-apple-dac-lab-runner) |
 | Manually detect, probe, or move the experimental USB turntable on JTS3 | [USB turntable experiment](#usb-turntable-experiment) |
@@ -57,6 +59,8 @@
 | Build or verify the first-party Pi ARM64 runtime bundle | [First-party ARM64 release artifact](#first-party-arm64-release-artifact) |
 | Pin a documented invariant / convention with a test (registry coverage, SSOT readers, env-var codification, cross-language wire shapes) | [Guard & contract test patterns](#guard--contract-test-patterns) |
 | Point a laptop-durable flat-linearization corpus at a non-default location, or re-derive a pinned reading after a detector/reading change | [`tests/_flat_lin_corpus.py`](../tests/_flat_lin_corpus.py) — `JTS_FLAT_LIN_S0` / `JTS_FLAT_LIN_CORPUS` env vars; re-derivation procedure lives in `tests/test_spatial_combine.py::test_band_deficit_separates_honest_captures_from_stopband_residue` |
+| Find out what a measurement change actually moved — including the readings a tolerance absorbed and the prose homes that restate them, neither of which any lane can go red on | [Reading comparator (pre/post value diff)](#reading-comparator-prepost-value-diff) |
+| Reproduce a flake that only appears when the box is busy, without leaking a CPU burner onto a machine other agent sessions are sharing | [Reproducing a load-dependent flake](#reproducing-a-load-dependent-flake) |
 | Fix a test that only flakes in a loaded full-suite run (spawn/thread/FD exhaustion), without papering over a real failure | [Guard & contract test patterns](#guard--contract-test-patterns) — transient-resource retry row |
 | Find out *why* a loaded run runs out of file descriptors, instead of retrying around it | [Guard & contract test patterns](#guard--contract-test-patterns) — fd-leak row |
 | Understand why a test failed with "Timeout … from pytest-timeout", or bound a legitimately slow test | [Hang backstop (pytest-timeout)](#hang-backstop-pytest-timeout) |
@@ -138,6 +142,44 @@ fails in ~10 s *and names the producing task's exception*, and the guard
 in `tests/test_async_wait_contract.py` catches the pattern at CI time —
 where quiet Linux runners mean the backstop never fires. See the
 bounded-wait row in [Guard & contract test patterns](#guard--contract-test-patterns).
+
+---
+
+## Reproducing a load-dependent flake
+
+Some flakes only appear when the box is busy (#1909, #2681, the macOS
+subprocess class), so reproducing one means generating CPU load on
+purpose — on a machine **shared with other agent sessions running their
+own pytest lanes**, where an orphaned burner steals their wall clock and
+can manufacture the very timing flake someone else is diagnosing. Three
+measured traps turn the obvious cleanup into a silent no-op:
+
+```sh
+PIDS=""
+for _ in 1 2 3 4 5 6 7 8; do
+  ( end=$((SECONDS+55)); while [ $SECONDS -lt $end ]; do :; done ) &
+  PIDS="$PIDS $!"
+done
+# ... run the flaky test ...
+for p in ${=PIDS}; do kill "$p"; done      # NOT 2>/dev/null
+```
+
+- **A non-interactive shell reports no jobs.** With two live background
+  jobs, `jobs -p | wc -l` measured `0`, so `kill $(jobs -p)` dies with
+  `kill: not enough arguments` and cleans up nothing. Keep the `$!`
+  values yourself.
+- **zsh does not word-split** (the agent shells here are zsh 5.9), so
+  `for p in $PIDS` iterates **once** with the whole space-joined string
+  and calls `kill "11802 11803"` → `kill: illegal pid`. `${=PIDS}`
+  splits; plain SIGTERM is then enough, and `kill -9` is not needed.
+- **Never `2>/dev/null` the cleanup.** Both messages above *are* the
+  diagnosis — unsuppressed they name the bug on the first run. A cleanup
+  that prints nothing is not evidence it cleaned anything; confirm with
+  `ps -o pid=,command= -p <pid>`.
+
+Time-bound the loop body as well, keeping the bound comfortably above your
+repro's own runtime, so a cleanup you lose anyway self-heals in under a
+minute instead of burning a core until someone else notices.
 
 ---
 
@@ -230,7 +272,7 @@ the closest one rather than inventing a new guard style:
 | Pin a bash-writer ↔ Python-reader file contract end-to-end | [`tests/test_install_web_assets.py`](../tests/test_install_web_assets.py) — runs the real installer bash function (sed-extracted, sandboxed via env-injected roots) over the real `deploy/assets/` tree, then has the real doctor check parse the manifest it wrote; unit tests fake one side each, the round-trip catches format drift between the two languages. Plus a tree-shape conventions guard: any repo asset the copy loop's globs would silently skip fails CI (the silent-404 class) |
 | Stop a test flaking when the OS momentarily refuses a resource it needs (process spawn, handler thread) under a loaded parallel run | **Retry the acquisition, narrowly and loudly.** Two sites today, deliberately not shared: [`tests/test_wifi_guardian_script.py`](../tests/test_wifi_guardian_script.py)'s `_run_guardian` (transient `fork()`/`posix_spawn` errnos + the bash text a failed child fork prints) and [`tests/test_restart_broker.py`](../tests/test_restart_broker.py)'s `_retry_transient_broker_io` (the socketserver accept-then-close race, whose *two* client-visible shapes are a chained `BrokenPipeError`/`ConnectionResetError` and a **causeless** `BrokerUnavailable("empty broker response")`). The classifiers are genuinely different — subprocess output vs exception shape — so a shared module would be premature; the *shape* is what to copy. Every instance owes: a narrow classifier (never a blanket `except`), bounded attempts with a final re-raise, one dedicated `UserWarning` subclass per retry so a persistently-degraded machine leaves a breadcrumb in pytest's warnings summary, no warn/sleep on the final attempt, and — critically — a way to tell the harness hiccup from a **real** failure wearing the same signature. `test_restart_broker.py`'s `_HANDLER_ACTIVITY` counters are the worked example: a broker handler that runs and crashes closes the connection with nothing written, identical at the client to the race, so the retry declines a failure only when a handler both **entered and crashed**. Both conjuncts are load-bearing — "a handler ran" alone wrongly vetoes the retry when a handler completes normally and the client still blips. That over-strict version passed every serial loop and then failed 1-in-64 under 8-wide concurrent load; the real-world producer of that case has since been fixed at the source, so the conjunct is now pinned synthetically rather than by reproducing it |
 | Stop a loaded run from running *out* of file descriptors, rather than retrying around the symptom | **Close what you open — and attribute the leak before fixing it.** The retry row above absorbs the symptom; this is the other half. `loop.stop()` ends `run_forever` but frees nothing: a loop's selector fd and self-pipe pair survive until GC finalizes the object, so a function-scoped fixture that stops without closing leaks 3 fds per test. A dev box hides this (soft `RLIMIT_NOFILE` ~1e6); a CI runner's is 1024, and the casualty would never be the leaker — it would be whichever unlucky test next spawns a subprocess. **Resist the tempting next step of pinning that to an incident.** Chasing issue #1935 this way produced a wrong diagnosis: the `errno=24 (Too many open files)` lines in its logs are *injected* by two intentional negative tests in [`tests/test_wifi_guardian_script.py`](../tests/test_wifi_guardian_script.py) and appear in every green run, and the suite's measured fd high-water is ~43 against that 1024 limit. Leaked descriptors are worth fixing on their own merits; a log line that names a resource is not evidence the resource ran out. **Attribute before fixing:** a ~30-line pytest plugin that samples `len(os.listdir("/dev/fd"))` in `pytest_runtest_teardown` and rolls the deltas up per file names the leaker in one serial run — theorising from grep alone had fingered the wrong file. Distinguish *accumulation* (count climbs monotonically) from *transient* spikes that GC reclaims; only the former exhausts a limit. The invariant is pinned statically by [`tests/test_lint_contracts.py`](../tests/test_lint_contracts.py)'s `test_test_event_loops_are_closed_not_just_stopped`, which walks the **AST** rather than the text — three successive text-based versions of that guard were each fooled, by comments naming the anti-pattern, then by docstrings, then by Python 3.12 splitting f-strings into sub-tokens. A guard for a rule about accuracy has to be immune to prose about itself. The shape to copy is [`jasper/control/supervisor_runtime.py`](../jasper/control/supervisor_runtime.py)'s `build_asyncio_thread` — **the thread that owns the loop closes it** (`def _run(): try: loop.run_forever() finally: loop.close()`), which survives a teardown that raises before it reaches a fixture-level `close()`. Deliver `stop()` from a `finally` too, or `run_forever` never returns and the thread's own `finally` never runs |
-| Keep a concurrency test's coordination waits bounded (no infinite hangs) | [`tests/test_async_wait_contract.py`](../tests/test_async_wait_contract.py) — repo-wide AST guard with a two-sided shrink-only `KNOWN_UNBOUNDED_WAITS` ratchet: a bare `await <event>.wait()` in ANY async test's own body fails unless allowlisted, and a stale allowlist entry fails too, so the burn-down list can only shrink. The `await asyncio.Event().wait()` park-until-cancelled idiom and producer-side waits stay legal. Fix with [`tests/_async_wait.py`](../tests/_async_wait.py)'s `wait_signalled()`, which bounds the wait and reports the *producing task's* exception as the cause — a producer that dies before signalling (a missed `dsp_writer_lock` budget on a loaded box) otherwise hangs the suite forever with its real error swallowed on a task nobody awaits. This is the CI-time net: Linux runners are quiet, so these never hang there and the [hang backstop](#hang-backstop-pytest-timeout) never fires on them |
+| Keep a concurrency test's coordination waits bounded (no infinite hangs) | [`tests/test_async_wait_contract.py`](../tests/test_async_wait_contract.py) — repo-wide AST guard with a two-sided shrink-only `KNOWN_UNBOUNDED_WAITS` ratchet: a bare `await <event>.wait()` in ANY async test's own body fails unless allowlisted, and a stale allowlist entry fails too, so the burn-down list can only shrink. The `await asyncio.Event().wait()` park-until-cancelled idiom and producer-side waits stay legal. Fix with [`tests/_async_wait.py`](../tests/_async_wait.py)'s `wait_signalled()`, which bounds the wait and reports the *producing task's* exception as the cause — a producer that dies before signalling (a missed `dsp_writer_lock` budget on a loaded box) otherwise hangs the suite forever with its real error swallowed on a task nobody awaits. A **second detector in the same file** catches the other half of the class: a `wait_for(<x>.wait(), timeout=…)` bounded **below** the `SMALL_BOUNDED_WAIT_THRESHOLD_S` floor (1.0 s) fails too, on its own two-sided `KNOWN_SMALL_BOUNDED_WAITS` ratchet that starts EMPTY and grandfathers nothing. Such a bound satisfies the first detector but nothing ever reads it as a promise, so it is only a deadline the test can lose on a loaded box — a hang-breaker set near the coordination it is breaking. 1.0 is where the tree already sat (29 of 45 bounded event waits exactly 1.0, nothing between 0.2 and 1.0). Remedy: raise the bound above the floor, or `wait_signalled()` when the wait is on an `asyncio.Event`; a real timing promise is pinned by an explicit `assert elapsed < N` in the test, never by a `wait_for` timeout. This is the CI-time net: Linux runners are quiet, so these never hang there and the [hang backstop](#hang-backstop-pytest-timeout) never fires on them |
 | Prove a long-lived daemon loop actually answers `cancel()` | `tests/test_mux.py::test_run_answers_cancellation_racing_a_wake_alert` — construct the race deterministically instead of sampling it: resolve the awaited event and call `task.cancel()` with **no intervening `await`**, so both wake-ups queue in one loop iteration, then assert the task finished via `asyncio.wait({task}, timeout=…)`. Catches a swallowed `CancelledError`, which makes a `while True` task immortal and hangs every awaiter. `Task.cancelling() >= 1` on a task that is `done=False`/`cancelled=False` is the direct read-out of a swallowed cancel when diagnosing one. Note CPython ≤ 3.11's `asyncio.wait_for` swallows a cancel arriving in the tick its awaited future completes (#1935) — prefer `async with asyncio.timeout(...)` in any loop whose only exit is cancellation. Two more instances of the same race, same construction (resolve the fake reply, `task.cancel()`, no intervening `await`), against the underlying helper directly rather than the loop that calls it: `tests/test_correction_coordinator.py::test_voice_uds_command_answers_cancellation_racing_the_reply` and `tests/test_control_uds.py::test_mux_command_answers_cancellation_racing_the_reply` (#1952). A `wait_for`/`timeout` call reached only through an `asyncio.gather()` child is a different story — `gather`'s own `_cancel_requested` bookkeeping delivers the parent's cancellation regardless of whether a child swallowed its own, so that shape does not need this treatment (verified for the `_read_airplay_db`/`_read_bluetooth_volume` gather children specifically, `jasper/volume_observers.py`, #1952). That clears only those two calls, **not** the enclosing loop, which reached un-insulated `wait_for`s through **four** directly-awaited chains outside the gather, landing on **three** terminal call sites (#2003): (1) every tick, `_tick` → `VolumeCoordinator._active_source` → `RendererClient.selected_source`; (2) on a source transition, `apply_active_source_transition` → `_set_push_source_for_handoff` → `_set_bluetooth` → `bluealsa_probe.list_pcms` and `_busctl_set_property`; (3) on an accepted observation, `_maybe_observe` → `observe_source_volume`, which calls `_active_source` itself; (4) every tick, `maybe_reconcile_camilla`, likewise. Chains 3 and 4 terminate at chain 1's call, so three `asyncio.timeout()` conversions cover all four — but only an enumeration finds them, which is the transferable part: **the gather/direct-await distinction plus "walk the loop's awaited chains, don't grep it for `wait_for`."** Two of these four hide behind names that read as coordinator bookkeeping. Pinned together (not one per module — the invariant is the loop's) by the `#2003` block in `tests/test_volume_observers.py`. Measured on 3.11.15, 5 trials × 3 tick offsets, pre-fix: `_run` immortal 15/15 through `selected_source`; both subprocess helpers returned *normally* 15/15 instead of cancelling. Post-fix: cancelled 75/75. On 3.12+ these pass either way, so the py3.11 CI leg is the only one that ever goes red |
 
 ---
@@ -982,8 +1024,16 @@ Live Pi state without modifying anything:
 | `jasper-active-speaker startup-template <preset.json> --playback-device <device> --output <file.yml>` | Write a muted/protected active-speaker startup template and run `camilladsp --check` when available. It does not load or apply the config. |
 | `jasper-active-speaker runtime-safe-graph [--write-statefile] [--json]` | Classify the saved output topology against the current/staged CamillaDSP graph and select the only legal persisted outputd statefile target. Flat full-range graphs are allowed only for topology shapes that can safely receive them; active/protected topologies require a validated all-muted active startup graph, and are parked silent (exit 0) when none has been staged yet — printing any topology blockers rather than refusing on them (#2145). A staged graph that exists but fails its safety proof still exits 1. |
 | `jasper-active-speaker path-audit --requirements` / `path-audit <evidence.json>` | List or evaluate the active-speaker audible-path safety checklist. Operator evidence can satisfy requirements but does not permit active config loading; `ok_to_load_active_config` stays false until future hardware-probe-backed evidence passes. |
+| `jasper-active-speaker path-probe [--topology <file.json>] [--current-config <file.yml>] [--output <file>] [--json]` | Generate no-audio startup-load path-safety evidence — the hardware-probe-backed evidence `environment-probe` and the load gate require. `--current-config` names the config to treat as the rollback target; **omitting it writes blocked evidence**, so the gate stays shut rather than passing on a probe that had no rollback target. Writes to `JASPER_ACTIVE_SPEAKER_PATH_SAFETY_EVIDENCE` or `/var/lib/jasper` unless `--output` overrides. |
 | `jasper-active-speaker environment-probe [--config <file.yml>] [--json]` | Read ALSA playback devices and the current/provided CamillaDSP config/statefile shape without playback, reloads, or mutation. Blocks the load gate unless the config is an active startup candidate, `camilladsp --check` passes, and hardware-probe-backed path-safety evidence is provided. Also reports the read-only safe-playback environment block; audible authority lives in the product routes below, not in the probe itself. |
-| `/sound/active-speaker/{environment,safe-playback,commissioning-view,design-draft,channel-identity,calibration-level,stop,commission-state,commission-load,commission-ramp-step,commission-ramp-ack,commission-ramp-abort,summed-test,summed-validation,baseline-profile,baseline-profile/apply}` | Web active-speaker status/session/design/identity/level/test/commissioning surface. `environment`, `safe-playback`, `commissioning-view`, `design-draft`, `channel-identity`, `calibration-level`, `commission-state`, `baseline-profile`, and related status routes are read-only GETs where exposed; `design-draft`, `stop`, `channel-identity`, `calibration-level`, the `commission-*`, summed validation, and baseline apply routes are CSRF-protected POSTs from `/sound/`. Active 2/3-way groups use `commission-load` + `commission-ramp-step`/`ack`/`abort`; each ramp step loads the protected one-driver graph, injects a bounded tone through the commissioning lane, and rolls back on tone failure. Passive/full-range groups have no separate active driver test in the product UI. `design-draft` persists operator driver names, notes, bounded research JSON, and a saved topology snapshot as non-authoritative evidence; it does not load CamillaDSP, apply filters, authorize playback, or emit sound. Generic `aplay` tone playback is explicit lab mode only and requires `JASPER_AUDIO_LAB_TONE_BACKEND=aplay` and `JASPER_AUDIO_LAB_TEST_PCM` pointing at a dedicated non-daemon test PCM. Product outputd/CamillaDSP lanes are forbidden as direct test writers. The list is owned by `FORBIDDEN_TEST_PCM_TOKENS` in `jasper/active_speaker/playback.py` — a case-insensitive substring test covering every outputd program/content lane, `jasper_out`, `outputd_dac`, and all three ring PCMs, the ACTIVE ring included (it needs its own entry because `jts_ring_playback` is not a substring of `jts_ring_active_playback`). Read the tuple rather than a restatement here. `outputd_active_content_playback`/`outputd_active_content_capture` no longer resolve to a real PCM since P9-C deleted their `asoundrc.jasper` definitions, but the ban holds for a re-introduction or a rolled-back box that still names them. No endpoint changes normal listening volume. |
+| `jasper-active-speaker baseline-reemit [--topology <file.json>] [--applied-baseline-state <file.json>] [--endpoint ring] [--statefile <file.yml>] [--out <file.yml>] [--force] [--json]` | Re-emit this box's roleful boot graph against a playback endpoint, publishing over the live artifact and repointing the statefile. **`--endpoint ring` is the FIRST step of the active-ring arm and has no rollback** — the reconciler derives its endpoint marker from the loaded graph, so the graph must move first; `ring` is the only choice, and omitting `--endpoint` keeps whatever the box already resolves. Two graph classes are accepted: `approved_active_runtime` (a commissioned box's applied baseline, re-emitted from its immutable snapshot) and `all_muted_active_startup` (a mid-commission box's all-muted anchor, re-staged from its own design draft and crossover preview); an applied baseline wins when both are present, and any other class — parked, unrecognised, or a topology with no roleful outputs — is refused **by name** rather than guessed at. `--out` is the preview: it writes the YAML there and touches nothing else — no live artifact, no canonical copy, no statefile. `--force` re-stages the anchor even while a per-driver commissioning load is active, and is refused by default because that anchor is what `commission-rollback` and the ramp's `abort` / `ack --outcome too_loud` reload — moving it mid-load re-points the operator's own stop control. |
+| `jasper-active-speaker commission-load --group <id> --role <role> [--preset <file.json>] [--topology <file.json>] [--dry-run] [--force] [--json]` | Load a per-driver commissioning config into the **running** CamillaDSP graph, arming one driver of the single active group at the protected floor — **silent**; audible level is `commission-ramp`'s job, one gated step at a time. Default preset is the saved crossover preview, matching protected staging; `--preset` is the preset-fallback override. `--dry-run` runs the guarded preflight only — it writes the candidate config, loads nothing, and emits no audio. `--force` re-arms over an already-active commissioning load (single-flight override). |
+| `jasper-active-speaker commission-rollback [--json]` | Re-mute: reload the all-muted staged config, ending a per-driver commissioning load and returning every channel to muted. It always ends the operator's safe-playback session, and on a **proven** rollback (`status == "rolled_back"`) it also clears the ramp's pending step, keeping the group and the woofer-before-tweeter ordering memory. A `blocked` / `rollback_failed` rollback keeps the pending step — the driver may still be audible, so its ACK is still owed (#2669). |
+| `jasper-active-speaker commission-ramp step --group <id> --role <role> [--preset <file.json>] [--topology <file.json>] [--json]` | Take one gated audible gain step on the armed driver, woofer before tweeter. Each step loads the protected one-driver graph, injects a bounded tone through the commissioning lane, and rolls back on tone failure. Refused unless every gate holds, including the prior step's operator ACK. |
+| `jasper-active-speaker commission-ramp ack --outcome {heard_correct_driver,heard_wrong_driver,silent,too_loud} [--json]` | Record the operator's verdict for the pending audible step. `heard_correct_driver` confirms and advances the confirmed-role ordering authority; `too_loud` / `heard_wrong_driver` re-mute; `silent` allows a louder retry. Returns `no_pending_ramp_step` (rc=1) when no step is pending — including after a rollback cleared one, so a verdict can never confirm a driver nobody could have heard. |
+| `jasper-active-speaker commission-ramp status [--topology <file.json>] [--json]` | Read-only: print the commission-load, ramp, and per-driver floor state. `--topology` merges durable confirmed-role evidence for the armed group; the handler reads it on every box that has ever armed a driver, because the armed target outlives a rollback (#2667). |
+| `jasper-active-speaker commission-ramp abort [--json]` | Re-mute mid-ramp: roll back to the all-muted staged config and reset the ramp state. Stops the tone and ends the safe-playback session. |
+| `/sound/active-speaker/{environment,safe-playback,commissioning-view,design-draft,channel-identity,calibration-level,stop,commission-state,commission-load,commission-rollback,commission-ramp-step,commission-ramp-ack,commission-ramp-abort,summed-test,summed-validation,baseline-profile,baseline-profile/apply}` | Web active-speaker status/session/design/identity/level/test/commissioning surface. `environment`, `safe-playback`, `commissioning-view`, `design-draft`, `channel-identity`, `calibration-level`, `commission-state`, `baseline-profile`, and related status routes are read-only GETs where exposed; `design-draft`, `stop`, `channel-identity`, `calibration-level`, the `commission-*`, summed validation, and baseline apply routes are CSRF-protected POSTs from `/sound/`. Active 2/3-way groups use `commission-load` + `commission-ramp-step`/`ack`/`abort`; each ramp step loads the protected one-driver graph, injects a bounded tone through the commissioning lane, and rolls back on tone failure. Passive/full-range groups have no separate active driver test in the product UI. `design-draft` persists operator driver names, notes, bounded research JSON, and a saved topology snapshot as non-authoritative evidence; it does not load CamillaDSP, apply filters, authorize playback, or emit sound. Generic `aplay` tone playback is explicit lab mode only and requires `JASPER_AUDIO_LAB_TONE_BACKEND=aplay` and `JASPER_AUDIO_LAB_TEST_PCM` pointing at a dedicated non-daemon test PCM. Product outputd/CamillaDSP lanes are forbidden as direct test writers. The list is owned by `FORBIDDEN_TEST_PCM_TOKENS` in `jasper/active_speaker/playback.py` — a case-insensitive substring test covering every outputd program/content lane, `jasper_out`, `outputd_dac`, and all three of the COUPLING's ring PCMs, the ACTIVE ring included (it needs its own entry because `jts_ring_playback` is not a substring of `jts_ring_active_playback`). The renderer-lane rings and the grouping-ingress ring are deliberately absent on the consequence asymmetry the tuple's own comment states — they are ingress into fan-in / CamillaDSP, not a sink past the crossover. Read the tuple rather than a restatement here. `outputd_active_content_playback`/`outputd_active_content_capture` no longer resolve to a real PCM since P9-C deleted their `asoundrc.jasper` definitions, but the ban holds for a re-introduction or a rolled-back box that still names them. No endpoint changes normal listening volume. |
 | `rust/jasper-dual-dac-lab/target/release/jasper-dual-dac-lab probe` / `run` | Lab-only dual Apple USB-C DAC validator. `probe` is passive. `run` opens two serial-pinned direct `hw:` PCMs, writes silence first, caps level, and aborts both outputs on xrun/suspend/disconnect/delay divergence. Not installed as a product daemon. |
 
 ## Correction capture diagnostic
@@ -1092,7 +1142,7 @@ sidecar's recorded `diagnostic` block against the banked `candidate.json`'s
 
 *It validates itself and refuses when it cannot.* That same sidecar block is
 the analysis as PERFORMED, so it is ground truth for the replay's own fidelity.
-The tool reproduces 20 of its values and prints no fit unless every one matches
+The tool reproduces 19 of its values and prints no fit unless every one matches
 (exit 1 otherwise, and a field the sidecar never recorded is a refusal too), so
 an era-drifted reconstruction fails loudly instead of quietly re-reading the
 evidence. Its own module docstring states the two things that gate does **not**
@@ -1107,6 +1157,133 @@ filters were produced by whatever build recorded it, so its numbers and a fresh
 replay's will differ wherever the fit has moved since; that is cross-era
 evolution, not a fidelity failure, and the wired-vs-severed diff is a
 within-run comparison precisely so it does not depend on the difference.
+
+---
+
+## Metric-honesty views
+
+Severed-twin and the committed replay both ask *was the fit bound by the right
+evidence*. This one asks a different question of the same banked receipts:
+**is the pooled flatness number answering the question a listener asked?**
+
+Two properties of the shipped pooling say no, and both are visible in the
+receipt itself. The cloud grades on the linear `rfft` axis, so a band's graded
+bin count tracks its width in hertz rather than octaves — on the 2026-08-18
+arm-run that is 5,462 bins in the one octave 8–16 kHz against 1,121 across the
+2.485 graded octaves of 250 Hz–2 kHz, a 12.1:1 per-octave overweight. And
+`combine_positions` is an unweighted power mean, so a coverage-edge position
+enters the headline with the same weight as the listening-seat one.
+
+[`scripts/render-metric-views.py`](../scripts/render-metric-views.py) re-reads
+every `cloud_verify.json` under a receipts tree without those two properties,
+printing the result beside the number the product shipped:
+
+```sh
+PYTHONPATH=. .venv/bin/python scripts/render-metric-views.py \
+    captures/xover-armrun-2026-08-18/receipts \
+    --walk-logs captures/xover-armrun-2026-08-18/logs \
+    --json /tmp/metric-views.json
+```
+
+Every **measurement** in the output comes from
+[`jasper/active_speaker/flat_spec_views.py`](../jasper/active_speaker/flat_spec_views.py)
+— product code, pure, pinned by
+[`tests/test_flat_spec_views.py`](../tests/test_flat_spec_views.py) — so the
+tool cannot print a residual, offset, or weight the product will not later
+compute identically. The script owns what is lab-only: walking the tree,
+rehydrating a persisted `FlatSpecReport`, joining positions to the walk log
+that drove them, and two presentation-layer subtractions the table needs and
+no consumer does — the `gap` column, and the bins-per-octave `ratio` in the
+band-weight block. Both are differences of published numbers, and both embed
+a *display* choice (which "other" role to show when there are several) that
+would become product policy if it moved onto the result types.
+
+Three views, none of which grades anything: `log_pooled_residual` re-pools the
+report's own per-band figures with equal weight per octave;
+`role_split_flatness` reports on-axis and off-axis as separate numbers and
+never averages them; `directivity_table` normalises every position to the
+on-axis reference and emits a JSON table a prescriber can consume. The
+session's one verdict stays the report's `overall_passed` — a test fails the
+build if any view grows a `passed` field.
+
+`--walk-logs` is optional and best-effort. The cloud does not bank a numeric
+microphone angle, only a role, so angles are recovered by joining
+`(index, attempt, role)` against the walk driver's `released …` lines.
+`(index, attempt)` alone is **not** unique — on the arm-run every arm carries
+the same four pairs and eleven of thirteen logs contain all four, at two
+different angle assignments. When the covering logs disagree the join is
+declined and every view degrades to role-only, which is honest; a wrong angle
+would be a plausible-looking lie on every row.
+
+---
+
+## Harmonic-distortion replay
+
+[`scripts/harmonic-distortion-replay.py`](../scripts/harmonic-distortion-replay.py)
+reads **H2 and H3 versus frequency** out of MEASURE captures that are already
+banked. No new recording, no Pi, no microphone: every JTS sweep is
+Novak-synchronized, so the harmonic images have always been sitting at exact
+pre-arrival offsets in each deconvolution. The math lives in the product module
+[`jasper/audio_measurement/distortion.py`](../jasper/audio_measurement/distortion.py);
+this script is the lab driver over a banked corpus.
+
+```sh
+PYTHONPATH=. .venv/bin/python scripts/harmonic-distortion-replay.py \
+  --state captures/xover-series2-2026-08-17/series2-state-r1b-preapply.json \
+  --captures captures/xover-series2-2026-08-17/e0-r1b \
+  --dumps captures/xover-series2-2026-08-17/dumps-r1b \
+  --calibration captures/flat-linearization-20260725/umik2-cal/umik2-b7343c0c625b.txt
+```
+
+**It needs a corpus with per-capture sidecars.** The series-2 rounds have them
+(`dumps-r1b/`, `dumps-r2/`); the 2026-08-18 armrun does not, so it cannot be
+fidelity-gated and the tool will bind nothing there.
+
+**What the output means, and what it cannot mean.** Every number is *dB below
+the fundamental at the same excitation frequency, at the drive this capture
+used*, printed next to that drive in dBFS — the corpus records no SPL anywhere,
+so there is no absolute figure to be had. A ratio is a fraction, so it rises
+wherever the FUNDAMENTAL dips: the table carries a fundΔ column (pooled
+fundamental re its own band median) and the summary names the bin where the
+harmonic's *absolute* energy peaks — read a ratio peak against both before
+attributing it to the driver. Each row also carries a **measured noise floor**,
+taken from a phantom window between the harmonic images where no image can be;
+a value a majority of sweeps read within 6 dB of their own floors is starred
+and is an upper bound on the driver, not a reading of it. The tweeter comes
+back 100% floor-limited on both banked rounds, because MEASURE solves its gain
+for room SNR and lands it ~27 dB below the woofer in stimulus gain (~17 dB at
+the capture).
+
+**Two band edges bite, and neither is Nyquist.** Order *N* is only real up to
+`f2/N` — the deconvolution divides by `|X|² + ε` and the sweep puts no energy
+above `f2`, so harmonic products above it are annihilated along with the noise.
+A 150–4000 Hz woofer sweep therefore yields honest H2 to 2 kHz and H3 to
+1333 Hz. The bottom `BAND_EDGE_TRIM_OCTAVES` (0.25 oct) is trimmed because the
+sweep's fade-in puts an excursion at `f1` that a provably-linear synthetic path
+shows sitting 25.8 dB above the floor.
+
+**Why the production deconvolution window cannot be used.**
+`program_analysis.DECONV_PRE_GUARD_S` is 0.25 s and the H3 image leads the linear
+IR by `L·ln 3` ≈ 1.34 s, so at that window every image has wrapped off the front
+of the circular deconvolution. The read re-deconvolves the same bytes at
+`distortion.required_pre_guard_s` — an analysis-side value for a parameter
+`_deconvolve_window` already exposes. Production behaviour is untouched, and
+`tests/test_audio_measurement_distortion.py` pins the relationship in both
+directions.
+
+**It validates itself twice and refuses when it cannot.** The program is rebuilt
+from the round's banked `gain_plan_db` and must reproduce the session's recorded
+`program_id` (a SHA-256 over the whole schedule, so a match proves the sweep `L`
+the offsets derive from); the session volume, which no artifact records, is
+*solved* against that same id. Then the shipped `analyze_program_capture` is
+re-run and its diagnostics compared on whatever gate fields the sidecar
+carries — fail-closed: a sidecar carrying none of them is refused rather than
+read ungated, and the summary prints the count actually compared, never the
+field-list length. `max_residual_samples` and
+`glitch_detected` are deliberately excluded — D7 (`b98e9380f`) replaced the
+estimator behind both *after* this corpus was banked, so comparing them would
+report a product improvement as a broken reconstruction. A capture whose banked
+`glitch_detected` disagrees is read but **disclosed by name**.
 
 ---
 
@@ -1198,6 +1375,111 @@ before copying either one:
   quotes a banked number, name the frame it was computed in beside it; a
   derived comparand (here `BOX_COMMITTED_RIPPLE_DB`, reconstructed from the
   banked pair's own anchor-ripple and improvement) is worth the extra line.
+
+---
+
+## Reading comparator (pre/post value diff)
+
+[`scripts/compare-readings.py`](../scripts/compare-readings.py) answers **what
+did this measurement change actually move?** — at value level, across the whole
+set of readings a change touches, not just the ones a test happens to pin.
+
+It exists because a lane can only ever go red on one of the three places a
+reading lives. PR #2062 (issue #2045) is the worked example: PR #1991
+legitimately moved one S0 capture's gate, **31 of 155 compared readings moved**
+with it, and two of the three classes were invisible —
+
+* **12 pins went red.** The corpus lane finds these.
+* **1 reading was absorbed by a tolerance** — the 1.8 kHz dip depth landed
+  inside `pytest.approx(5.19, abs=0.05)` with **0.0041 dB to spare**, so the
+  suite passed on a stale number, and the next honest re-read would have tipped
+  it red as a phantom regression.
+* **7 prose homes restated the same facts**, three pinned by nothing at all,
+  and one had been contradicting the very test it names.
+
+The instrument that found classes 2 and 3 was built by hand during that
+diagnosis and thrown away. This is that comparator, committed under issue
+[#1884](https://github.com/jaspercurry/JTS/issues/1884) rider (d).
+
+**It does not replace the human-executed corpus lane, and it is not CI.** The
+standing ruling on #1884 is that corpus-gated tests stay laptop-local and
+human-run; this sits *on top of* that lane. There is no runner, no nightly job
+and no corpus in CI. It reads two JSON files and the source files those files
+declare, and nothing else.
+
+Dump the readings once on the base commit, once on the branch, then:
+
+```sh
+PYTHONPATH=. .venv/bin/python scripts/compare-readings.py before.json after.json
+```
+
+**Producing the dumps is the caller's job, deliberately.** Which readings
+matter is a property of the change under test, so a measurement PR writes a
+throwaway dump script that drives the shipped code paths and serializes what it
+got. The tool owns the comparison and the classification, not the enumeration.
+A dump maps a reading's name to a bare value, or to a record that also declares
+the tolerance guarding it and the other files that restate it:
+
+```json
+{
+  "s0.cloud_04.floor_hz": 1777.7777777777778,
+  "nulls.dip_1800.depth_db": {
+    "value": 5.144103951440755,
+    "tolerance": 0.05,
+    "homes": ["jasper/audio_measurement/interference_nulls.py"]
+  }
+}
+```
+
+`tolerance` and `homes` are read from the **after** dump, so one file owns that
+metadata and the two cannot disagree. Home paths resolve relative to the
+current working directory.
+
+**Five properties worth knowing before you trust its output.**
+
+*A tolerance-absorbed move is a reported class, not a pass.* It prints with the
+headroom the move left, because that number is what says how close the pin came
+to going red. Silence there was the #2062 failure, so every section prints its
+count even at zero, and a reading present in only one dump is named rather than
+dropped.
+
+*Prose-home hits are candidate sites for a human to judge, not proof of drift.*
+For each moved or absorbed reading, the declared homes are scanned for
+renderings of the **before** value at 0–6 decimal places — that same S0 floor
+is written both as "1778" (`jasper/audio_measurement/gating.py`) and as
+"1777.8" (`jasper/active_speaker/crossover_v2_flow.py`) — with one hit per line
+at the most specific rendering that matched. A rendering that is also a
+rendering of the after value is skipped, so a site that already reads correctly
+is not flagged. The scan matches a number; it cannot know which fact that
+number is stating. A declared home that is not on disk is reported too.
+
+*Two kinds of rendering carry no information, and both are dropped before the
+scan.* One is under three characters — an `n_rungs` of 12 would match half a
+source file. The other has rounded its last significant digit away: 0.029 at
+one decimal place is `"0.0"`, which matches every ordinary `0.0` literal in
+the file it scans, and on a real `interference_nulls.py` that buries the one
+hit stating the reading under 35 that state nothing. Neither rule subsumes the
+other, and the band matters — this corpus quotes rung deltas of `-0.029` and
+`-0.004`, and #2062's own headroom is `0.0041 dB`.
+
+*A home it could not scan is its own reported class.* When the before value has
+no rendering to search for — a short int, a short string, a bool, anything that
+leaves nothing to look for — the file is **never opened**, so it prints under
+`HOMES NOT SCANNED` with the before value, to be checked by hand. "Not looked
+at" must not print the same as "looked at, clean"; that is #2062 class 3 all
+over again, in the tool built to end it. A float never lands here: its `repr`
+round-trips exactly. Note the boundary against the paragraph above: a value
+whose renderings all read correctly for the after value is *not* flagged and
+*not* listed here — that home has nothing to find.
+
+*It is advisory and exits 0 whatever it found.* Same contract as
+[`scripts/tense-grep.sh`](../scripts/tense-grep.sh). It exits 2 only when it
+could not do the comparison at all — a malformed or unreadable dump — so "I
+could not compare" never reads as "nothing moved".
+
+Hardware-free coverage is
+[`tests/test_reading_comparator.py`](../tests/test_reading_comparator.py),
+which grades it on one synthetic case per #2062 class.
 
 ---
 

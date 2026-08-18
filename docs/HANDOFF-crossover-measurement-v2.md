@@ -24,9 +24,9 @@ changed — repeating that apply-and-re-measure round, up to three times, while
 the result is still getting flatter (#2602).
 
 - **Two tiers, chosen every session** on the `/correction/` wizard. At the
-  shipped defaults `TIER_FULL` is **15 captures — 9 then 6**, and
-  `TIER_EXPRESS` is **10 — the same 9, then 1**. The tiers differ in
-  **stage 2 only**: stage 1 is 9 captures for both. Do not restate those
+  shipped defaults `TIER_FULL` is **9 captures — 3 then 6**, and
+  `TIER_EXPRESS` is **4 — the same 3, then 1**. The tiers differ in
+  **stage 2 only**: stage 1 is 3 captures for both. Do not restate those
   numbers anywhere a plan change cannot reach them —
   `tier_display_info()` derives them from the plans themselves and is what
   the household-facing chooser reads (`TIER_FULL` / `TIER_EXPRESS` /
@@ -34,7 +34,7 @@ the result is still getting flatter (#2602).
   [`crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py)).
   This doc describes Full unless it says otherwise.
 - **A third tier, `TIER_REMOTE`, is API-only and experimental.** It is
-  **14 — the same 9, then 5**: Full's walk driven by an external mic
+  **8 — the same 3, then 5**: Full's walk driven by an external mic
   positioner instead of by hand, so it drops exactly the one pose a
   positioner cannot reach (the vertical) and states every other pose as an
   ANGLE. The chooser never offers it — consenting to it means owning a
@@ -148,21 +148,35 @@ The class they were named after — `CrossoverV2Conductor` — was dissolved in
 The journey is **two relay sessions** with an untimed household decision
 between them. Both use `crossover_v2:session` / `crossover_v2:verify`.
 
-**Stage 1 — `POST /correction/crossover/v2/session`, 9 captures — the same 9 on both tiers.**
+**Stage 1 — `POST /correction/crossover/v2/session`, 3 captures — the same 3 on both tiers.**
 
 | index | phase | what it is |
 |---|---|---|
 | 1 | `check` | microphone check |
 | 2 | `measure` | design-axis anchor, per-driver |
-| 3–8 | `lateral` | 6 prompted poses off the design axis |
-| 9 | `entry_baseline` | summed sweep back at the mark — the round's measured "before" |
+| 3 | `entry_baseline` | summed sweep at the mark — the round's measured "before" |
 
 Which phases stage 1 walks is three flags in the flow file, not a guess:
-`STAGE1_INCLUDES_LATERAL` and `STAGE1_INCLUDES_ENTRY_BASELINE` are `True`,
-`STAGE1_INCLUDES_CLOUD_MEASURE` is `False`, so a shipped session emits no
-`cloud_measure` phase or prompt. The entry baseline is **last** on purpose:
-the less the room, the mic and the household have moved between it and the
-graph change, the more of the before→after difference is the graph.
+`STAGE1_INCLUDES_ENTRY_BASELINE` is `True`, and `STAGE1_INCLUDES_CLOUD_MEASURE`
+and `STAGE1_INCLUDES_LATERAL` are `False`, so a shipped session emits no
+`cloud_measure` and no `lateral` phase or prompt. The entry baseline is
+**last** on purpose: the less the room, the mic and the household have moved
+between it and the graph change, the more of the before→after difference is
+the graph.
+
+**The 6-pose `lateral` walk is PAUSED, not retired (2026-08-18).** It ran as
+indexes 3–8 from R17 until the pause. The flag comment on
+`STAGE1_INCLUDES_LATERAL` carries the owner-ratified evidence; in short, over
+the 8 banked rounds it was 59.4% of all session audio, never changed an
+outcome, and the scalar it feeds adjudicates below its own 3.54 dB repeat
+noise. The pose measurements themselves are sound, so every piece of the walk
+stays in place — prompts, screens, ladder, curve builder, relay arithmetic —
+and forcing the flag back to `True` restores the 9-capture shape unchanged.
+It re-enables when a redesigned lateral statistic shows rank separation above
+its measured noise floor. **The R17 Fc candidate sweep pauses with it**: the
+sweep fires only in a session that walks, so a shipped round now commits its
+configured Fc without scoring alternatives — the verdict all 8 banked rounds
+reached anyway.
 
 The set is held open past its capture target until the phone posts
 `complete_capture_set` — the household's "Continue". That signal closes the
@@ -193,7 +207,7 @@ particular hardware, and the vocabulary is *remote* / *external positioner* /
 
 | | Full | Remote |
 |---|---|---|
-| stage 1 | 9 captures | the same 9 |
+| stage 1 | 3 captures | the same 3 |
 | stage 2 | 6 captures | 5 — Full's walk minus the vertical pose |
 | per-entry advance | `AUTO_ADVANCE_TAP` | `AUTO_ADVANCE_COUNTDOWN` + `countdown_s` |
 | pose copy | "12 cm to the LEFT of the mark" | "Turn the microphone to −7°" |
@@ -205,7 +219,8 @@ is the longest prefix of `CLOUD_POSITION_PROMPTS` containing no
 stranding it. `position_angle_deg()` likewise derives each bearing from the
 pose's own `offset_cm` at `MARK_DISTANCE_M`, signed by the row's LEFT/RIGHT
 word — there is no second table of angles to drift. At the shipped offsets the
-walk is **0°, −7°, +7°, −22°, +22°** (stage 1 opens and closes on 0°). Roles
+walk is **0°, −7°, +7°, −22°, +22°** (stage 1's paused lateral walk opened and
+closed on 0°). Roles
 still come from the existing `WIDE_OFFSET_MIN_CM` rule, so a remote group's
 durable evidence stays comparable with a hand-walked one's.
 
@@ -368,7 +383,7 @@ does not wait forever: `REMOTE_POSITION_HOLD_BUDGET_S` (600 s) refuses it as
 `position_hold_expired`, because a dead driver would otherwise pin the
 measurement volume, the paused voice, and the relay slot indefinitely. That is
 a **per-hold** bound and not the operative total — the session's own wall-clock
-ceiling (`session_wall_clock_ceiling_s`, 2520 s for stage 1 and 2040 s for
+ceiling (`session_wall_clock_ceiling_s`, 1800 s for stage 1 and 2040 s for
 stage 2 at the shipped shape) covers the whole walk, so a driver that answers
 every position but answers slowly ends on that ceiling with no single hold ever
 expiring. That death has its own name too, since
@@ -458,14 +473,17 @@ for the per-hop exactness argument, including the one hop no counter can close.
 `verification_result` bundles them. Since #2537 they are then composed into
 **adoption axes** — `evaluate_evidence_trust`, `evaluate_applied_safety`,
 `evaluate_round_quality`, and since #2602 `evaluate_iteration_headroom` — and
-`decide_adoption` selects one of six rows from those. The four-verdict split
+`decide_adoption` selects one of seven rows from those. The four-verdict split
 exists because a realization answer once stood in for an acoustic one and a
 failing round read as passed; the #2537 axis rebuild exists because the table
 those four fed keyed on whether a round could *prove* it helped, and reverted a
 measured, safe, improving candidate that could not. #2602 added the fourth axis
 and split the one row that used to be terminal: a round that passes keeps
 iterating while a flatter, more level result is still reachable, up to
-`ROUND_SERIES_CAP` rounds — *in-tolerance is not done*.
+`ROUND_SERIES_CAP` rounds — *in-tolerance is not done*. #2656 split the MISSING
+row the same way: the budget ends that series too (row 7), because until then a
+round that kept missing kept being offered another one with none left to spend,
+and the only bound was a button a headless driver never presses.
 
 **Only three answers from that axis end a series**, per the ethos's
 "least-bad measured, honed in bites": the round cap, the plateau, and
@@ -482,6 +500,71 @@ current rows.
 The two measurements a round compares, reduced to comparands and carrying the
 margin below which a difference is not a change, are
 [`crossover_v2/round_evidence.py`](../jasper/active_speaker/crossover_v2/round_evidence.py).
+
+### The blend region — a second owner, and a second reported claim (#2600)
+
+Per-driver linearization is deliberately blind across the crossover blend:
+neither branch's own sweep can say what the SUM does there. Decision 10 of
+[`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md)
+gives that region a second owner — the summed at-the-mark measurement — and
+one bounded tool. The solve is
+[`crossover_v2/blend_correction.py`](../jasper/active_speaker/crossover_v2/blend_correction.py);
+read its module docstring for the argument, not a second copy here.
+
+Three things about it are worth knowing before touching the round:
+
+- **It is emitted PRE-SPLIT**, with the room PEQs and above
+  `active_baseline_headroom`. That placement is the safety argument, not a
+  convenience: one summed fact gets one filter, the correction is common-mode
+  by construction (the sum scales, the inter-driver ratio does not), and it
+  sits upstream of the crossover high-pass that IS the tweeter's protection in
+  the durable baseline. Moving it per-role would make it alignment work wearing
+  a shape-correction hat.
+- **The loop is incumbent-accounted, and it holds rather than reverts.**
+  Per-branch MEASURE sweeps ride the protected-neutral graph, so the trim is
+  re-derived absolutely each round and that is correct. The summed VERIFY
+  capture rides the APPLIED graph, so its deviation already contains the
+  incumbent's own correction — re-deriving absolutely there oscillates rather
+  than converges. Every refusal arm re-prescribes the adopted incumbent
+  unchanged: a round whose evidence failed has no standing to remove a
+  correction adopted on measured evidence. The one exception is an incumbent
+  that cannot be ESTABLISHED, which prescribes none — #2653's condition applied
+  to this quantity, and the one state where there is nothing to hold.
+- **A round that does not KEEP its graph issues no instruction.** A
+  prescription describes a speaker measured through a specific incumbent, so a
+  restored round's prescription describes a speaker that no longer exists. The
+  next candidate then derives its correction from the applied (restored)
+  profile instead. What the round commanded is still banked — that is history,
+  and history survives a restore. A household **Undo** is the other door to
+  that same state and takes the same withdrawal (#2698): `observe_restore`
+  clears the receipt's `blend` sub-object — the instruction and the residual it
+  was decided against — while keeping `round_ordinal`, so the series does not
+  lose its place against the round cap.
+- **It stops re-prescribing once the region stops improving.** A defect
+  narrower than the correction can represent (`Q > 2`) cannot be matched, so
+  the fit over-corrects its shoulders and the loop limit-cycles; the stop
+  bounds that. It bounds the wander rather than guaranteeing improvement — the
+  overshoot that triggers it has already been applied. See the module's own
+  docstring for the measured series.
+- **`benefit` now reports twice.** The pooled verdict is unchanged and is still
+  the only adoption input. Beside it, `evaluate_region_benefit` runs the same
+  estimator with only the band narrowed, because a win confined to two octaves
+  cannot show itself in a residual pooled over six — which is why every
+  series-1 round banked `residual_within_margin` about a speaker that had in
+  fact not moved. The region claim discloses; it does not gate.
+
+The region itself is **not** re-derived: it is read off the VERIFY absolute
+claim's `band_hz`, which is
+`program_analysis.crossover_region_band_hz`'s output. That function is
+deliberately not `overlap_band_hz` — see its docstring — and the difference is
+load-bearing rather than academic: on jts3 the per-branch band's floor is
+1600 Hz and the series-1 dip sat at 1938 Hz, so both bands contain the dip and
+only the summed one contains the octave below it.
+
+Receipts bank the region's commanded-vs-realized pair under
+`round_measurements.blend`, with the reason code beside the numbers so a round
+that prescribed nothing says which arm fired — "the region was already clean"
+and "the instrument refused" are different facts.
 
 ## File map
 
@@ -506,8 +589,9 @@ the module, not a second copy here.
 | [`crossover_v2/intervention.py`](../jasper/active_speaker/crossover_v2/intervention.py) | The deterministic prescription planner as pure functions — assembly around existing DSP primitives, never a second fitter. |
 | [`crossover_v2/accountability.py`](../jasper/active_speaker/crossover_v2/accountability.py) | Whether a built candidate may be PROPOSED at all — three assertions, most-specific first. |
 | [`crossover_v2/proposal.py`](../jasper/active_speaker/crossover_v2/proposal.py) | One committed candidate gathered into the fingerprinted `InterventionProposal` the round receipt names. Computes nothing; refuses rather than raising. |
-| [`crossover_v2/verification.py`](../jasper/active_speaker/crossover_v2/verification.py) | The four verification verdicts, the four adoption axes they compose into, and the six-row table. |
+| [`crossover_v2/verification.py`](../jasper/active_speaker/crossover_v2/verification.py) | The four verification verdicts, the four adoption axes they compose into, and the seven-row table. |
 | [`crossover_v2/round_evidence.py`](../jasper/active_speaker/crossover_v2/round_evidence.py) | The two measurements one round compares, the margin that makes a difference a change, and the series policy the headroom axis is handed (round cap, plateau margin). |
+| [`crossover_v2/blend_correction.py`](../jasper/active_speaker/crossover_v2/blend_correction.py) | Decision 10's blend-region shape correction: the bounded cuts-first solve over the summed response, its four ceilings, the damped incumbent-accounted iteration, and the four refusals that make it a no-op instead of a boost. |
 | [`crossover_v2/round_anchor.py`](../jasper/active_speaker/crossover_v2/round_anchor.py) | What an apply displaced, what it put live, whether the running graph is still that, and whether a restore is aimed at what the round displaced. |
 | [`crossover_v2/coordinator.py`](../jasper/active_speaker/crossover_v2/coordinator.py) | The round's tail: grade, act on the adoption table, restore, bank the receipt. |
 | [`crossover_v2/attempt_grading.py`](../jasper/active_speaker/crossover_v2/attempt_grading.py) | Whether a VERIFY capture is a new tuning attempt, and how it grades against the cross-session ledger. |
@@ -519,6 +603,8 @@ the module, not a second copy here.
 | [`camilla_yaml.py`](../jasper/active_speaker/camilla_yaml.py) | The baseline emitter, and the independent re-validation of every linearization filter before it reaches CamillaDSP. |
 | [`crossover_envelope_v2.py`](../jasper/active_speaker/crossover_envelope_v2.py) | The pure `status → envelope` renderer: step list, screen dispatch, registry copy. |
 | [`web/correction_crossover_v2.py`](../jasper/web/correction_crossover_v2.py) | The web host: endpoint bindings, durable v2 state, the real seams, apply/restore, `resolve_conductor_context`, `persist_conductor_state`. |
+| [`web/correction_crossover_v2_relay.py`](../jasper/web/correction_crossover_v2_relay.py) | The relay capture provider (#2662): the plan-walk hosting (`build_v2_run_and_consume`), the phone phase ladder, purge grace, and link-TTL policy. The host re-publishes its names. |
+| [`crossover_v2/capture_source.py`](../jasper/active_speaker/crossover_v2/capture_source.py) | The capture-source seam's contract (decision 13): provider identities and the WAV+metadata answer any source owes the session. |
 | [`audio_measurement/program.py`](../jasper/audio_measurement/program.py) | The excitation-program model and its composers. Pure data, no safety decisions. |
 | [`audio_measurement/program_analysis.py`](../jasper/audio_measurement/program_analysis.py) | The pure analysis: locate/segment, drift, gated transfer functions, prediction, VERIFY tracking. |
 | [`audio_measurement/spatial_combine.py`](../jasper/audio_measurement/spatial_combine.py) | The spatial-cloud combiner and the echo/geometry diagnostics. numpy only. |
@@ -609,9 +695,12 @@ the module, not a second copy here.
     is one of the things it classifies.
 11. **Linearization emission is independently re-validated at every boundary,
     never trust-the-caller.** The emitter and the runtime-safety verifier each
-    re-prove biquad type ∈ {Peaking, Highshelf, Lowshelf}, non-positive gain,
-    and the shelf-placement structure from scratch — the fit engine's own
-    cut-only invariant is not assumed to have survived a JSON round-trip. The
+    re-prove biquad type ∈ {Peaking, Highshelf, Lowshelf}, gain at or under
+    `MAX_LINEARIZATION_BOOST_DB`, and the shelf-placement structure from
+    scratch — the fit engine's own vocabulary and per-filter-cap invariants are
+    not assumed to have survived a JSON round-trip. (This bullet said
+    "non-positive gain" and "cut-only invariant" until #2603's sweep; PR-L5's
+    boost ruling had already moved both re-proofs to the cap.) The
     safety-posture rationale is owned by
     [`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md).
 12. **A submitted graph is proven live before anything plays.**
@@ -885,12 +974,23 @@ the whole 0.0003; the 4-dp rounding is incidental, and in fact moved the figure
 0.00005 *toward* the true value. The margin is deterministic (filter math over
 declared numbers, not a measurement) but it is thin, and the DECLARATION
 spends it: a household declaring a hard floor more than ~0.39 octave under its
-protection corner gets a hard MEASURE stop. The corner is not free to follow
-the floor down — it is a code-owned class default
+protection corner gets a hard MEASURE stop. The corner now follows the
+DECLARED low limit rather than a fixed class default: since the 2026-08-17
+ruling (#2603), the code-owned class default
 (`driver_protection._STYLE_HIGH_PASS_HZ`, 2000 Hz for a compression driver)
-enforced as a minimum by `driver_safety._target_issues`, and `code_owned_policy`
-is fingerprint-checked, so lowering it un-confirms every stored profile of that
-style. Open question tracked on #1654.
+is no longer enforced as a minimum by `driver_safety._target_issues` — a
+published manufacturer figure wins outright, including below the table's own
+number. The table keeps three jobs: the default answer when nothing is
+published; the plausibility anchor that catches a garbage declaration; and a
+**commissioning-tone gate** — `driver_protection._highpass_satisfied` compares
+the staged high-pass against that same `min_highpass_hz` to set
+`band_limit_highpass_ok`, so lowering the table moves an *audible-test* gate,
+not only a confirmation one. On top of those,
+`code_owned_policy` is still fingerprint-checked against it, so lowering the
+table's own number still un-confirms every stored profile of that style.
+Consequence: #1654's compression-driver instance no longer needs the table
+lowered at all — the operator declares B&C's published 1.6 kHz instead, and
+the corner follows it — but the general #1654 question stays open.
 
 **Outside those bins** the same exact ratio still applies, magnitude-saturated
 at the policy's own +12 dB ceiling — provably inactive where the policy binds,
@@ -1346,17 +1446,17 @@ between them (two-stage commission work order D1/D2, PR-T3). Both use
 `authorize_begin` / `on_armed` / `consume_capture` to `run_capture_plan`
 (`jasper/capture_relay/session.py`) in each.
 
-**Stage 1 — 9 captures at either tier.** `STAGE1_INCLUDES_LATERAL` is `True`
-(R17's Fc selector flipped it, #2173), `STAGE1_INCLUDES_ENTRY_BASELINE` is
-`True` (#2291 Phase 3c), and `STAGE1_INCLUDES_CLOUD_MEASURE` stays `False`
-(R15, #2106), so a shipped session runs the anchor pair, then the lateral walk,
-then one summed capture back at the mark, and emits no `cloud_measure` phase or
-prompt. Production passes
+**Stage 1 — 3 captures at either tier.** `STAGE1_INCLUDES_ENTRY_BASELINE` is
+`True` (#2291 Phase 3c), and `STAGE1_INCLUDES_CLOUD_MEASURE` (R15, #2106) and
+`STAGE1_INCLUDES_LATERAL` are both `False`, so a shipped session runs the
+anchor pair, then one summed capture at the mark, and emits no `cloud_measure`
+and no `lateral` phase or prompt. Production passes
 the same resolved protection mapping to the protected-neutral emitter and
 configured-path analysis. Stage 2 is unchanged. (R15's two-capture stage 1 —
 `check` then `measure`, hardware-proven 2026-08-05 — is what this replaced.)
 
-Gate 0 pairs every producer with a current consumer, and the walk's is
+R17 (#2173) flipped `STAGE1_INCLUDES_LATERAL` on, because Gate 0 pairs every
+producer with a current consumer and the walk's is
 `fc_selector.score_candidate`'s lateral robustness term — the only evidence in
 a session that a candidate's handoff survives off the design axis. The
 **structural** blocker cleared first: #1654 made the HF sweep floor follow the
@@ -1367,11 +1467,28 @@ sweep floor itself stay unscorable — at Fc 1600 the handoff sits exactly on th
 band edge — so the honest downward limit is **Fc strictly above the declared
 hard floor**.
 
+**The walk was paused on 2026-08-18**, owner-ratified on a recompute over the
+8 banked rounds carrying an `fc_selection`: it was 59.4% of all banked session
+audio (1,649 of 2,776 s) and the largest retake source (9 of 13 rejected
+captures), it never changed an outcome (8 of 8 committed the configured Fc),
+and the max-over-poses scalar it feeds adjudicates below its own noise —
+3.54 dB same-arm repeat noise against rank-1-to-rank-2 gaps of 0.004–2.13 dB,
+with the closing at-mark repeat frequently carrying the argmax in 4 of the 8.
+The pose measurements are sound (inter-driver drift 0.6–1.9 dB against a
+0.09–0.32 dB mark-return floor; ±40 cm ~2.2× the ±12 cm pair in 8 of 8), so
+the machinery below is intact and unmodified — this is a paused producer
+awaiting a redesigned statistic, not a retired one. **The Fc candidate sweep
+is dormant with it**, since it fires only in a session that walks.
+
+Everything from here to the end of this subsection describes the walk **as it
+runs when the flag is forced back to `True`** — indexes 3–8, stage 1 back to
+9 captures:
+
 | index | phase | gate | what it is |
 |---|---|---|---|
 | 1 | `check` | tap | microphone check |
 | 2 | `measure` | tap | design-axis anchor, per-driver |
-| 3–8 | `lateral` | tap each | 6 prompted poses (plan §4.4) |
+| 3–8 | `lateral` | tap each | 6 prompted poses (plan §4.4) — **paused, flag-off today** |
 | 9 | `entry_baseline` | tap | summed sweep at the mark, the round's measured "before" (#2291) |
 
 The walk is the mark, ±12 cm and ±40 cm left/right, and a return to the mark.
@@ -1407,11 +1524,13 @@ schema. Each pose holds one `LateralPoseCurve` per role: complex values
 × 2 roles × 6 poses. Deliberately coarse — #1968 calls lateral samples a coarse
 gate, and this is not a polar measurement.
 
-The RAW-WAV side is not free, though: flag-on takes stage 1 from 2 captures to
-8, so an operator running with the dump ring enabled ("Operator capture
-retention" below) keeps roughly a quarter as many past sessions in the same
+The RAW-WAV side is not free, though: flag-on takes stage 1 from 3 captures to
+9, so an operator running with the dump ring enabled ("Operator capture
+retention" below) keeps roughly a third as many past sessions in the same
 fixed-size ring. Worth knowing before a debugging session that expects last
-week's captures to still be there.
+week's captures to still be there. It is also the largest single cost of the
+walk, and half the reason for the pause above: six replays of the anchor
+program were 59.4% of all banked session audio.
 
 `lateral_mark_return_drift_db()` is the walk's own honesty screen: per-role
 worst |Δ dB| between the two at-mark poses, in band. **Reported, never gated** —
@@ -1419,12 +1538,15 @@ no evidence in this campaign fixes a threshold — and `None`, never `0.0`, when
 a bracket pose is missing. Journalled at the walk's close as
 `event=correction.crossover_v2_lateral_walk_closed`.
 
-**The fit runs at the last capture before the apply**, and R16 makes the walk's
-close that capture (`_close_lateral_walk`) rather than MEASURE's accept. Same
-rule the cloud's own deferral implements, for the same reason: a proposal built
-before the walk would predate five minutes of evidence the household was just
-asked to produce. A walk whose FINAL pose is dropped still closes — the anchor's
-coefficients were never the poses' to withhold.
+**The fit runs at the last capture of the last GROUP**, and R16 makes the
+walk's close that capture (`_close_lateral_walk`) rather than MEASURE's accept.
+Same rule the cloud's own deferral implements, for the same reason: a proposal
+built before the walk would predate five minutes of evidence the household was
+just asked to produce. A walk whose FINAL pose is dropped still closes — the
+anchor's coefficients were never the poses' to withhold. With the walk paused
+there is no group to wait for, so the fit runs at MEASURE's accept; #2291's
+entry baseline follows it without deferring it, because that capture is the
+round's "before" rather than an input to the fit.
 
 **Deployed pre-R15 Stage 1 (`POST /crossover/v2/session`), 10 captures at Full:**
 
@@ -1898,9 +2020,11 @@ together. Design rationale:
 - **Session budget.** `session_wall_clock_ceiling_s(plan)` scales the
   walked-away measurement-volume ceiling with plan length
   (1800 s + 120 s per capture beyond the 3-entry baseline), and each STAGE
-  arms its own from its own plan since the two-stage split: Full 2640 s
-  (stage 1, 10 captures) / 2160 s (stage 2, 6), Express 2160 s / 1800 s,
-  hard-capped by `session_volume_plan.MAX_WALL_CLOCK_CEILING_S` = 3600 s. The
+  arms its own from its own plan since the two-stage split: Full 1800 s
+  (stage 1, 3 captures) / 2160 s (stage 2, 6), Express 1800 s / 1800 s,
+  hard-capped by `session_volume_plan.MAX_WALL_CLOCK_CEILING_S` = 3600 s.
+  Stage 1 sits at the baseline itself now that the lateral walk is paused, so
+  the longest stage in the journey is Full's stage 2. The
   restore ladder and the restore-once latch are unchanged: a walked-away
   household can never leave the speaker at measurement volume.
 - **Resume is unchanged (§5.6).** A new relay session invalidates every
@@ -2253,17 +2377,97 @@ seems dumb… the first application is not the end point, it is just the start*)
 discriminator.** A −2.3 dB uncommanded level shift is `row2` (the household
 loses some output; the next round learns something); a +2.3 dB one is `row3`
 (energy nobody asked for). Same magnitude, opposite answer. The three hazards
-are: a commanded boost realized above its declared bound
+are: a boost realized above the probe's tolerance
 (`delta_probe.boost_overshoot`, the one directional exceedance rule in that
 module), an uncommanded shift measured LOUDER than declared, and a clipped
 capture. A band-scoped level claim (#2533) narrows *where* a level was
 measured, never *whether* it happened, so a positive band-scoped shift is still
 a hard stop.
 
+**All three are measurements of the SPEAKER, and the first one had to be
+repaired to become one (series-2 D1).** Until 2026-08-18 it graded
+`realized − commanded`, in which the commanded term cancels identically — so the
+quantity was `(measured − predicted) − expected_offset`, the acoustic model's
+own error. On 2026-08-17 that restored the flattest tune this program has
+measured, for a +3.9 dB model error at 1384 Hz that both rounds of that series
+shared (corr 0.954, 0.350 dB rms apart), in a band the applied graph declares a
+3.67 dB CUT in, on a round whose probe verdict was `matched` and which measured
+2.42 dB QUIETER. The finding is now the **anchored** excess —
+`(measured_post − measured_pre) − expected_offset − commanded`, differenced
+against the entry capture per bin — so a standing model error cancels and
+delivered energy does not. The old reason string
+`boost_realized_above_declared_bound` named a "declared bound" that was the
+probe's own 1.5 dB measurement tolerance; it is now
+`boost_realized_above_probe_tolerance`. Receipts banked before this carry the
+old string, and they were reporting the old quantity, so the two spellings mark
+two instruments.
+
+**No anchor, no finding — and the round SAYS so.** Without a pre-apply capture
+there is only the model's error, so the two directional findings are not made.
+That is not an edge case: a **first-ever round reaches it by construction** (no
+prior applied profile ⇒ no nameable previous graph ⇒ `state_axis_only`), as does
+every committed alternative-Fc round and every capture with too few quiet bins
+to anchor. So the safety axis has two SAFE reasons, not one:
+`no_unsafe_finding` (the realized-energy check looked, found nothing) and
+`no_unsafe_finding_realized_energy_unmeasured` (it could not look). The status
+and the adoption row are identical — refusing on an absent measurement would
+revert every first round — and what differs is what the receipt and the journal
+claim was checked. #1868's rule on this axis: *"we do not know" must have
+somewhere to live rather than defaulting to the success value.*
+
+It is on five surfaces: the axis reason (on the round receipt),
+`safety_anchored` in the safety evidence and on the map, `safety_anchored=` on
+`event=correction.crossover_v2_delta_probe`, `safety_reason=` on
+`event=correction.crossover_v2_round_graded`, and `safety_anchored` in the
+durable `verify.delta_probe` summary. That last one is a **forensic state key**
+— it is where `/state`, the doctor and the done screen would read it from, and
+**no renderer reads it today**; it is there so a live surface can, which a
+write-once receipt cannot support.
+`event=correction.crossover_v2_delta_probe_no_entry_anchor` names which arm
+produced it (`no_entry_baseline` / `incomparable_program` /
+`incomparable_reference_mark` / `unusable_record`), at WARNING — every one of
+those three is exceptional, including the first: a **first-ever round never
+reaches that arm at all**, because it has no commanded axis and takes the
+`state_axis_only` branch without calling `_entry_delta_db`.
+
+What still holds with no anchor: on an ordinary round the **level** rule does —
+`residual_offset_db` is gated on having quiet bins, not on having an anchor. On
+the `safety_only` path it does not (`residual_offset_db` is `None` there). The
+clipped check always does, and underneath all three sits the graph's own
+electrical bound — a deterministic biquad chain whose peak cost is computed and
+pre-paid under `devices.volume_limit = 0.0`.
+
+**The anchor must be COMPARABLE, and that is checked.** An anchor is a
+subtraction, so a curve measured through another program cancels a real finding
+as readily as a phantom. `crossover_v2_flow._entry_delta_db` refuses a baseline
+whose `program_id` disagrees with this round's VERIFY program — the same two
+identity fields `round_evidence` uses and `evaluate_benefit` refuses on, asked
+here rather than re-derived. Unknown on either side is "nothing known" and does
+not refuse.
+
+**What the anchored rule can and cannot see.** It catches a hazard the moment it
+APPEARS: a band this apply left alone whose output rises across the apply reads
+its full size (#2614's case). It does **not** see one already present in BOTH
+captures — a band running hot since an earlier round subtracts to zero here,
+identically, because "nothing changed" is what the two captures say. That is the
+price of an instrument that cannot be fooled by the model. The onset is where a
+standing hazard is catchable, and it is caught there.
+
+**The model's departure is still measured, and lands on QUALITY.**
+`DeltaProbeMap.model_departure_over_tolerance` / `max_signed_error_db` is the
+unanchored reading — exactly what `realized_louder_than_commanded` carried
+before D1 — and `evaluate_round_quality` appends it as a next-round target
+(`model_departure:<dB>@<Hz>`). It is a real defect, and the blend region is
+where this model is known blind (#2600); it is not a hazard, and it moves no
+status.
+
 **What "safe" does not claim.** `SAFETY_NO_FINDING` means no instrument that ran
 reported a hazard — an absent or ungraded probe reports no finding rather than
 one, matching `DELTA_PROBE_ROLLBACK_VERDICTS`'s own rule that an absent
-measurement is not evidence. The verdict's evidence carries `probe_graded` so a
+measurement is not evidence. Since D1 the *reason* carries half of that
+distinction on its own: `SAFETY_NO_FINDING_UNMEASURED` is the same SAFE status
+with the realized-energy check unrun. The verdict's evidence carries
+`probe_graded`, `probe_shape_graded` and `safety_anchored` for the rest, so a
 reader can tell "safe because nothing was found" from "safe because nothing
 looked."
 
@@ -2280,11 +2484,22 @@ seam restored on, it still restores on — `level_dependent_shortfall`,
 tolerance (unstructured, so one bin withholds the deferral),
 `boost_over_declared_bound`, and every ungradeable map, which never reached a
 seam rollback in the first place. The measurement behind it is
-`DeltaProbeMap.realized_louder_than_commanded` / `max_signed_error_db`, taken on
-the RAW realized curve for `boost_overshoot`'s reason: this asks how much energy
-reached the driver, not whether the shape is right. Both are measured over the
-probe's SAFETY bins since #2614 — this apply's graded changes UNION the applied
-graph's own declared transfer — for the same reason. A deferral is never silent —
+`DeltaProbeMap.realized_louder_than_commanded`, taken on the raw curves for
+`boost_overshoot`'s reason: this asks how much energy reached the driver, not
+whether the shape is right. It is measured over the probe's SAFETY bins since
+#2614 — this apply's graded changes UNION the applied graph's own declared
+transfer — for the same reason, and over the ANCHORED excess since series-2 D1:
+the fence withholds lenience on a positive bin, so a fence fed by model error
+withheld it wrongly.
+
+**An unanchored map does NOT simply defer**, and the fence has a third guard
+for it. A fence's polarity is the opposite of a finding's: "no anchor, no claim"
+is right for a hazard, and applied here it would make absence *grant* the
+lenience — a round measured +20 dB louder taking `row2_trusted_safe_missed`
+with `model_error_quieter_than_commanded` banked on it. So an unanchored map
+falls back to `model_departure_over_tolerance`, which is exactly what the fence
+read before D1: an unanchored louder map does not defer, and an unanchored
+quieter-only one still gets #2559's lenience. A deferral is never silent —
 it journals `event=correction.crossover_v2_delta_probe_seam_deferred` (WARNING)
 and rides the safety axis's evidence as `seam_deferred`, so the receipt records
 the restore that did **not** happen.
@@ -2828,7 +3043,7 @@ prefill, so every step carries a `PHASE_LADDER_START_SKEW_S` bias
 *intended* to land late rather than early. **ON-DEVICE:** that interval has
 not been measured; the skew is a safe-direction estimate, not a guarantee,
 and is named in
-[`jasper/web/correction_crossover_v2.py`](../jasper/web/correction_crossover_v2.py).
+[`jasper/web/correction_crossover_v2_relay.py`](../jasper/web/correction_crossover_v2_relay.py).
 Measure it on hardware before tuning, and prefer an observed playback start
 over a smaller guess.
 
@@ -2907,6 +3122,14 @@ slot is last-write-wins, and `capture_set_complete` routinely overwrites the
 final `capture_result` before the page's ~250 ms poll reads it.
 
 ### Recommending an Fc
+
+> **Dormant since 2026-08-18.** The sweep that gathers this evidence fires only
+> in a session that walks the lateral poses, and that walk is paused (see
+> "Stage 1" above and the `STAGE1_INCLUDES_LATERAL` flag comment). A shipped
+> round therefore produces no `fc_selection`, always takes the configured-Fc
+> path below, and never renders **Use N Hz and apply**. Nothing here was
+> removed or changed: re-arming the walk re-arms all of it. The section
+> describes what runs when it is armed.
 
 R17. The session evaluates the crossover frequencies the DECLARATIONS admit and
 tells the household which one measured best. A configured-Fc winner keeps the
@@ -3261,6 +3484,13 @@ commanded one as `verify_priors.declared_transfer`; its absence narrows those
 two rules back to the change axis and says so on the journal
 (`event=correction.crossover_v2_declared_transfer_unavailable`).
 
+Neither curve contributes a VALUE to those rules — they choose bins, and since
+series-2 D1 the value is the anchored excess. That is also why a union mask
+bridging a run the graded mask would break is sound for them and is not for
+`_structured_exceedance`: a bin the correction commanded nothing at corroborates
+nothing about the model's SHAPE, but a speaker measuring 4 dB hotter there than
+before the apply is direct evidence about a driver wherever it sits.
+
 **That band is intersected with the capture's own TRUSTED band, and there is no
 fallback** (#2521). The band comes from
 `gate_disclosure.evaluation_band_hz` — this capture's gate-derived trusted floor
@@ -3345,29 +3575,35 @@ reason=crossover_corner_moved`, and `reason=applied_profile_names_no_corner` for
 an era-older record that cannot say. `entry_anchor_offset_db` discloses what was
 removed and is **not** a warrant that the residual beside it is clean.
 
-**A refused change axis costs the SHAPE grade, never the hearing-safety one**
-(#2614). Every committed alternative-Fc candidate hits that refusal by
-construction, and while `_run_delta_probe` bailed on it the two directional
-findings never ran at all: `evaluate_applied_safety` answered SAFE on a round
-where nothing had looked, and no surface said so. The STATE axis needs no corner
-match — both of its sides are the candidate's own — so it is computed and
-persisted at every swept corner, and the probe now runs its safety half on that
-alone:
+**A refused change axis costs the SHAPE grade, and since series-2 D1 the
+hearing-safety one too — disclosed, not silently** (#2614). Every committed
+alternative-Fc candidate hits that refusal by construction, and while
+`_run_delta_probe` bailed on it nothing ran at all: `evaluate_applied_safety`
+answered SAFE on a round where nothing had looked, and no surface said so. The
+STATE axis needs no corner match — both of its sides are the candidate's own —
+so it is computed and persisted at every swept corner, and the probe runs on
+that alone:
 
 - verdict `safety_only`, reason `commanded_axis_unavailable`
   (`delta_probe.VERDICT_SAFETY_ONLY`), journalled at WARNING;
-- `boost_over_declared_bound` / `realized_louder_than_commanded` are real, so a
-  state-axis overshoot still reaches the adoption table's hard stop and
-  restores;
+- `model_departure_over_tolerance` / `max_signed_error_db` are real: how far the
+  room sat from a two-branch model just rebuilt at a different corner;
+- **`boost_over_declared_bound` / `realized_louder_than_commanded` are NOT.**
+  This path has no pre-apply capture to difference against, so the anchored
+  excess does not exist and `safety_anchored` is false. #2614 made those two
+  fire here on the unanchored curve, which on this path carries no change term
+  at all — the D1 defect at its purest. What still holds: the clipped check, and
+  the graph's own pre-paid electrical bound;
 - **no shape or level scalar at all** — residual, gain, frame and exceedance
   would each be a claim in the state frame, where the residual is the
   chained-round contaminant #2611 removed;
-- the safety evidence carries `probe_shape_graded: false` beside `probe_graded`,
-  and the done screen shows a third caveat ("This check could compare loudness
-  but not the correction's shape this round.") beside the Verified badge. That
-  copy names no CAUSE on purpose: four paths reach this verdict — corner moved,
-  applied record displaced, record names no graph, record names no corner — and
-  the journal is where the specific one is named.
+- the safety evidence carries `probe_shape_graded: false` and
+  `safety_anchored: false` beside `probe_graded`, and the done screen shows a
+  third caveat ("This check could not confirm the correction's shape or its
+  loudness this round.") beside the Verified badge. That copy names no CAUSE on
+  purpose: four paths reach this verdict — corner moved, applied record
+  displaced, record names no graph, record names no corner — and the journal is
+  where the specific one is named.
 
 With neither axis the probe is absent exactly as before, and
 `event=correction.crossover_v2_declared_transfer_unavailable` names why.
@@ -4830,8 +5066,9 @@ no retries-as-bodge). Treat these as regression fences.
     precise reason, since an earlier draft of this entry overstated it —
     threading the 1 s window there would change **no verdict today**,
     because `analysis.channel_map_ok` is routed on at exactly one site
-    (`_check_verdict`). MEASURE/cloud/VERIFY compute the flag and never
-    branch on it. What it would do is leave a False flag ARMED on those
+    (`_check_verdict`, through `capture_dispatch.check_screens`, which
+    refuses on an explicit `False` only). MEASURE/cloud/VERIFY compute the
+    flag and never branch on it. What it would do is leave a False flag ARMED on those
     analyses for whoever next adds a routing branch, at which point a pilot
     pair a few dB over the floor would hard-stop with copy blaming the
     speaker wiring. **The general rule:** when a guard's input
@@ -5096,7 +5333,7 @@ no retries-as-bodge). Treat these as regression fences.
     the process has been continuously busy past
     `_systemd.HOLD_LEAK_WARN_AFTER_SEC` (7200 s = 2× the volume plan's
     `MAX_WALL_CLOCK_CEILING_S`, so no legitimate session — not even the
-    longest stage, Full's 2640 s stage 1 — can trip it), so a leaked hold
+    longest stage, Full's 2160 s stage 2 — can trip it), so a leaked hold
     can never buy
     silent immortality. **The escalation is a log level, not a reaper.**
     Before this fix the 600 s exit incidentally killed a *wedged* worker
@@ -5249,8 +5486,10 @@ R16 lateral-evidence diff and its tests. The lateral walk is code-complete,
 can until `STAGE1_INCLUDES_LATERAL` flips with R17, so every claim about it is
 about what the code does, not about what a household or a microphone did.
 Position groups, failure taxonomy, benchmarks, and history were not re-verified.
-*Superseded — R17 (#2173) flipped the flag; the capture-flow section above has
-the shipped shape.*
+*Superseded twice — R17 (#2173) flipped the flag on, and the 2026-08-18 pause
+flipped it back off; the capture-flow section above has the shipped shape.
+Note the walk is still hardware-unproven: the pause landed before the owner-run
+selection walk this note was waiting on.*
 
 **2026-08-06 #1654 scope:** three sections only — the conditioning-policy
 margin, the R16-stage-1 blocker paragraph, and the level-match frame's
@@ -5405,7 +5644,25 @@ corrections came from that gate's review of PR #2545, and every figure in them
 was measured on this branch. **The date below is deliberately NOT bumped**, for
 the same reason as the two addenda above.
 
-Last verified: 2026-08-17 (#2609/#2641/#2639 — the paragraphs this round's
+Last verified: 2026-08-18 (the lateral pause — the stage-1 capture flow, both
+capture tables, the tier capture/duration totals, the remote wall-clock
+ceiling, the fit-timing rule, and the "Recommending an Fc" section were
+re-verified against the shipped `STAGE1_INCLUDES_LATERAL = False` and the
+values `tier_display_info()` / `session_wall_clock_ceiling_s` actually return.
+**Scope: only those sections.** The prior pass's reading, carried forward
+unchanged: 2026-08-17 — series-2 D1 — the safety-axis section was rewritten
+against the code in the same diff: the anchored directional findings, the two
+SAFE reasons and their five surfaces, the comparability rule, what the anchored
+rule cannot see, and the `safety_only` block. Two paragraphs that D1's own fix
+round falsified were re-read against code and corrected in it — the seam-fence
+paragraph, which had said the fence "needed no edit" and that an unanchored map
+defers, and the surface count. **The date is deliberately NOT bumped**: nothing
+outside the safety axis and the delta-probe section was re-verified.
+Carried forward: #2600 — the "round, graded" section gained the
+blend-region subsection, whose every claim was written against the code it
+describes in the same diff, and the file map gained
+`crossover_v2/blend_correction.py`. Nothing else in the live spine was
+re-verified that pass. Carried forward: #2609/#2641/#2639 — the paragraphs that round's
 change falsified were re-read against code and corrected: the headroom axis's
 endings against `evaluate_iteration_headroom`, the receipt paragraph against
 `coordinator._write_round_receipt` and `evaluate_round_quality`'s probe
@@ -5422,7 +5679,11 @@ level-estimator event paragraphs re-read against
 payload, and the `…_linearization_giveback` emit. All three named a level-datum
 owner the code does not have, through two symbols
 (`summed_level_reference_db`, `trim_band_delta_db`/`core_level_delta_db`) that
-do not exist repo-wide. **Scope: only the paragraphs named above were
-re-verified this pass**; the rest of the live spine carries its 2026-08-16
-reading, and the appendix's dated narrative was NOT re-verified and still shows
-the pre-#2602 five-row table, as its own status callout says it will)
+do not exist repo-wide. Carried forward: #2698 — the blend-region section's
+restored-graph bullet re-read against `_blend_prescription`,
+`coordinator._write_round_receipt`, and `observe_restore`, and extended to name
+the household-Undo door the same rule now closes. **Scope: only the paragraphs
+named above were re-verified this pass**; the rest of the live spine carries
+its 2026-08-16 reading, and the appendix's dated narrative was NOT re-verified
+and still shows the pre-#2602 five-row table, as its own status callout says
+it will)

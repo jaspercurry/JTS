@@ -291,6 +291,9 @@ def test_context_caps_equal_admission_caps_with_jts3_declaration(monkeypatch):
             "hard_excitation_band_hz": [500, 20_000],
             "measurement_band_hz": [500, 10_000],
             "crossover_search_band_hz": [1500, 2500],
+            # #2603: the tweeter declares its low limit once, and its hard
+            # floor derives from it rather than sharing the woofer's 500 Hz.
+            **({"recommended_highpass_hz": 1500} if role == "tweeter" else {}),
             "level_duration_limits": {
                 "max_effective_peak_dbfs": peak,
                 "max_sweep_duration_s": 6,
@@ -381,11 +384,15 @@ def test_context_caps_equal_admission_caps_with_jts3_declaration(monkeypatch):
             declared_sensitivities=context.declared_sensitivities,
         )
         assert context.driver_caps_dbfs[role] == pytest.approx(admission_cap)
-    # Flat-linearization plan PR-4: the tweeter's declared measurement_band_hz
-    # (500-10_000 in this fixture's _driver() helper) resolves onto the
-    # context — the field resolve_driver_excitation_ceilings reads and
-    # validates internally but does not return.
-    assert context.tweeter_measurement_band_hz == (500.0, 10_000.0)
+    # Flat-linearization plan PR-4: the tweeter's confirmed measurement_band_hz
+    # resolves onto the context — the field resolve_driver_excitation_ceilings
+    # reads and validates internally but does not return.
+    #
+    # Its LOWER edge is 1500, not the 500 this fixture types, because #2603
+    # clamps the analysis window up into the allowed band: a window cannot
+    # honestly extend below the frequency the driver may not be excited under.
+    # The upper edge is untouched — that half is still a declared fact.
+    assert context.tweeter_measurement_band_hz == (1500.0, 10_000.0)
 
 
 def test_tweeter_measurement_band_hz_is_none_when_unresolvable(monkeypatch):
@@ -432,6 +439,9 @@ def test_declared_driver_class_and_pad_reach_the_conductor_context(monkeypatch):
             "hard_excitation_band_hz": [500, 20_000],
             "measurement_band_hz": [500, 10_000],
             "crossover_search_band_hz": [1500, 2500],
+            # #2603: the tweeter declares its low limit once, and its hard
+            # floor derives from it rather than sharing the woofer's 500 Hz.
+            **({"recommended_highpass_hz": 1500} if role == "tweeter" else {}),
             "level_duration_limits": {
                 "max_effective_peak_dbfs": peak,
                 "max_sweep_duration_s": 6,

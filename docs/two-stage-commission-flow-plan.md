@@ -259,6 +259,11 @@ cloud-verify (`DEFAULT_CLOUD_VERIFY_POSITIONS = 6`). So **stage 1 is
 10 captures and stage 2 is 6**. Express is 7 entries (N = 5, M = 1) →
 **stage 1 is 6, stage 2 is 1**.
 
+*(Design-time arithmetic, kept as written. The shipped stage 1 has been
+smaller since R15 turned the pre-apply cloud off — today it is 3 captures at
+either tier. `tier_display_info()` is the derivation of record; see
+`HANDOFF-crossover-measurement-v2.md`.)*
+
 **The split reduces the time-budget pressure; it does not resolve it —
 do not claim otherwise.** The number to compare is the *realized*
 ceiling, not an observed session duration.

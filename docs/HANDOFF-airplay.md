@@ -11,11 +11,18 @@ shairport-sync path. It bundles:
   source-cited mechanism details, the diagnostic experiments we've run)
 - An escalation ladder for unknown failure modes
 
-The current outputd path is **green** as of 2026-05-28 in live Pi lab
-validation — synced mode was already glitch-free on the Apple USB-C
-dongle with:
+The 2026-08-18 JTS4 SHM-ring short-run result is **green for the observed
+regular out-of-date packet/order event class**. The shipped AirPlay sync values
+are now `drift_tolerance=0.002`, `resync_threshold=0.2`, and
+`audio_backend_buffer_desired_length=0.5`. In the controlled A/B comparison,
+2 ms eliminated those events while ring occupancy remained 15/16. Thus 15/16
+occupancy alone was not sufficient to cause them. This short trial does not
+establish long-run, WiFi-disruption, or end-to-end A/V behavior. The 64 ms
+backend target also remains experimental and is not shipped. Earlier live Pi
+validation established:
+
 - [PR #83](https://github.com/jaspercurry/JTS/pull/83)'s shairport
-  `resync_threshold=0.2` fix (Pattern B);
+  `resync_threshold=0.2` fix for the snd-aloop Pattern B failure;
 - CamillaDSP `target_level: 2048` on the dsnoop path (Pattern A2);
 - The Tier 2A fan-in topology
   ([docs/HANDOFF-fan-in-daemon.md](HANDOFF-fan-in-daemon.md))
@@ -95,18 +102,37 @@ or `shairport_ring_lane` (the SHM ring) when the `airplay` lane is armed.
 The conf re-renders at every unit start, so a conf that disagrees with
 the armed set means the unit has not restarted since the map changed;
 `jasper-doctor`'s "shairport-sync.conf: output_device" check names that
-state with the restart remedy. **This document's mechanism claims are
-aloop-path claims**: the loopback-ring-fill `snd_pcm_delay()` lie, the
-fill-ramp cadence behind Pattern B, and the tuned constants
-(`drift_tolerance=0.1`, `resync_threshold=0.2`,
-`audio_backend_buffer_desired_length=0.5`, the derived latency offset)
-were all derived and validated on the aloop transport. The ring ioplug
-reports an honest occupancy-derived delay instead, so on an armed box the
-delay signal has different dynamics — keep `resync_threshold=0.2` through
-the migration and re-derive on measurement in that box's per-lane source
-pass (see `deploy/shairport-sync.conf.template`'s provenance note and
-docs/HANDOFF-audio-graph-consolidation.md's U3 arc row; the arm CLI
-prints the same advisory).
+state with the restart remedy. Transport labels in this document are
+load-bearing. The loopback-ring-fill `snd_pcm_delay()` mechanism and Pattern B
+below are historical, not current ring guidance. On the current SHM-ring path,
+`drift_tolerance=0.002` has direct evidence for the observed event class.
+`resync_threshold=0.2`, `audio_backend_buffer_desired_length=0.5`, and the
+derived latency offset were held unchanged in that trial. Keep them unchanged
+until their own ring reliability and A/V validation (see
+`deploy/shairport-sync.conf.template`; the arm CLI prints the same advisory).
+
+### JTS4 SHM-ring validation (2026-08-18)
+
+Four 120-second trials changed only drift tolerance and Shairport's desired
+backend fill. Each used the 16-slot AirPlay ring (256 frames per slot, about
+85.3 ms total capacity).
+
+| Trial | Drift tolerance | Backend target | Out-of-date drops / order warnings | Ring occupancy |
+|---|---:|---:|---:|---:|
+| A — prior shipped settings | 100 ms | 500 ms | 11 / 11 | median 15/16 |
+| B — drift only | 2 ms | 500 ms | **0 / 0** | median 15/16 |
+| C — backend target only | 100 ms | 64 ms | 10 / 10 | median 15/16 |
+| D — both | 2 ms | 64 ms | **0 / 0** | median 9-10/16 |
+
+Downstream underruns, resets, and new DAC xruns were zero in every trial.
+B stayed at 15/16 and was clean, while A produced events at the same median
+occupancy. Therefore 15/16 occupancy alone was not sufficient to produce this
+event class, and lowering drift tolerance eliminated it under the tested JTS4
+conditions. This does not rule out a ring-fill interaction under other loads or
+longer runs. The 2 ms value is the shipped fleet default, but long-run,
+WiFi-disruption, and end-to-end A/V validation remain open. The 64 ms target
+created useful headroom only in D; keep the shipped target at 500 ms until that
+separate tuning passes longer reliability and lip-sync validation.
 
 If you're hearing artifacts, something has changed (active
 correction profile, DAC swap, software update, network change,
@@ -153,6 +179,7 @@ guide.
 
 | Symptom (audible) | Symptom (in logs) | Likely cause | Section |
 |---|---|---|---|
+| Regular click/drop about every 9-10 s on an SHM-ring AirPlay lane | 1:1 `Dropping out of date packet` and `Player: packets out of sequence`; ring may sit at 15/16; downstream faults stay zero | Drift tolerance still at the old 100 ms value; ring fullness and WiFi loss are not established by these messages | [JTS4 SHM-ring validation](#jts4-shm-ring-validation-2026-08-18) |
 | Glitches every ~5–15 s, broken audio | CamillaDSP `Capture read short` floods + `Prepare playback after buffer underrun` every ~5 s | rate_adjust + AsyncSinc oscillating | [Pattern A](#pattern-a--camilladsp-rate_adjust--asyncsinc-oscillation) |
 | Periodic small tears, shairport clean | CamillaDSP `Prepare playback after buffer underrun`, no `Capture read short` flood | CamillaDSP playback target too shallow for dsnoop/dmix path | [Pattern A2](#pattern-a2--camilladsp-playback-buffer-too-shallow) |
 | Occasional clicks/discontinuities during steady-state playback (esp. AirPlay), no obvious pattern in shairport stats | shairport `Dropping out of date packet ... Lead time is 0.115-0.120 seconds` at ~5-15 s intervals, tight lead-time cluster, 1:1 with "Player: packets out of sequence" warnings | Dmix-induced player-thread timing slip × WiFi A-MPDU burst delivery (fixed by topology cutover to fanin) | [Pattern A3](#pattern-a3--dmix-induced-burst-head-drops-the-wifi-aggregation-interaction) |
@@ -219,7 +246,16 @@ short-read count, or journald's native "messages suppressed" line for
 capped below the true event rate.
 
 Decision rule:
-- shairport `Dropping out of date packet` events with tightly clustered lead times (~0.115-0.120 s) AND `Player: packets out of sequence` warnings at the same 1:1 cadence → **Pattern A3** first. Verify the deployed fan-in wiring: `/etc/asound.conf` should have `pcm.jasper_capture` on `hw:Loopback,1,7`, `shairport_substream` in `/etc/shairport-sync.conf`, and `jasper-fanin.service` active.
+- On an SHM-ring AirPlay lane, regularly paired `Dropping out of date packet`
+  and `Player: packets out of sequence` events with no downstream faults →
+  first verify the rendered config has `drift_tolerance_in_seconds = 0.002`.
+  JTS4's 2026-08-18 controlled trial showed the old 100 ms tolerance caused
+  this event class even when ring occupancy stayed unchanged.
+- On the historical snd-aloop/dmix path, tightly clustered lead times
+  (~0.115-0.120 s) with the same 1:1 warnings → **Pattern A3** first. Verify
+  the deployed fan-in wiring: `/etc/asound.conf` should have
+  `pcm.jasper_capture` on `hw:Loopback,1,7`, `shairport_substream` in
+  `/etc/shairport-sync.conf`, and `jasper-fanin.service` active.
 - shairport `Large positive`/`Large negative` events non-zero → Pattern B/C/D first.
 - Camilla short reads non-zero → Pattern A first.
 - Camilla underruns non-zero while shairport and short reads are zero → Pattern A2 first.
@@ -235,7 +271,12 @@ sudo journalctl -u shairport-sync --since '10 minutes ago' -o cat \
   | sort | uniq -c | sort -rn | head -10
 ```
 
-A tight cluster (most events within ~3 ms of each other, around 0.118 s) — combined with 1:1 "Player: packets out of sequence" warnings — is Pattern A3 (dmix-induced burst-head drops). A wide spread (50-500 ms varied) is network/sender (Pattern D).
+A tight cluster (most events within ~3 ms of each other, around 0.118 s)
+combined with 1:1 "Player: packets out of sequence" warnings identified
+Pattern A3 on the historical snd-aloop/dmix path. It is not transport-neutral:
+on the SHM ring, use the drift-tolerance check above. A wide spread
+(50-500 ms varied) still points toward network/sender investigation
+(Pattern D).
 
 ### System dashboard readout
 
@@ -943,7 +984,9 @@ is the trigger value; the -485 ms is shairport reading the now-empty
 buffer after its own `do_flush` and concluding "I'm way ahead."
 
 ### Fix
-In `deploy/shairport-sync.conf.template`:
+
+At the time of this snd-aloop Pattern B investigation, the relevant settings
+were:
 
 ```libconfig
 general = {
@@ -953,6 +996,11 @@ general = {
     ...
 };
 ```
+
+That is a historical configuration, not the current template. The fleet
+default returned to `drift_tolerance_in_seconds = 0.002` after the separate
+2026-08-18 SHM-ring validation. Pattern B's fix remains the 0.2 s resync
+threshold.
 
 Raising `resync_threshold_in_seconds` to 0.2 above the peak fill swing
 (~50 ms above setpoint, max ~150 ms) keeps shairport in the **continuous
@@ -974,8 +1022,11 @@ ExecStartPre).
 5-min log scan: zero events.
 
 ### What does NOT fix this
-- `drift_tolerance_in_seconds` (any value). It gates a different code
-  path; see [the deep dive](#why-drift_tolerance-is-the-wrong-knob).
+- For this snd-aloop Pattern B failure, changing
+  `drift_tolerance_in_seconds` did not prevent the discrete resync branch. It
+  gates a different code path; see
+  [the deep dive](#why-drift_tolerance-was-the-wrong-knob-for-pattern-b).
+  Do not generalize that result to SHM-ring out-of-date packet drops.
 - `audio_backend_buffer_desired_length_in_seconds` increases (already
   at 0.5; raising further just delays the trigger by seconds).
 - `disable_synchronization=yes` (the old workaround). It eliminates the
@@ -1343,9 +1394,9 @@ real audio clock.
 
 | Component | Setting | Why |
 |---|---|---|
-| `deploy/shairport-sync.conf.template` | `resync_threshold_in_seconds = 0.2` | THE fix — keeps shairport in continuous path |
-| `deploy/shairport-sync.conf.template` | `drift_tolerance_in_seconds = 0.1` | Gates the continuous path; lets ±1-sample stuffing work |
-| `deploy/shairport-sync.conf.template` | `audio_backend_buffer_desired_length_in_seconds = 0.5` | Steady-state buffer level |
+| `deploy/shairport-sync.conf.template` | `resync_threshold_in_seconds = 0.2` | Held unchanged in the ring matrix; retains protection against the historical Pattern B discrete large-resync branch. Its own long-run ring validation remains open. |
+| `deploy/shairport-sync.conf.template` | `drift_tolerance_in_seconds = 0.002` | Upstream-normal 2 ms threshold; eliminated regular out-of-date packet/order pairs in JTS4's 120 s SHM-ring A/B while occupancy stayed 15/16. Long-run ring validation remains open. |
+| `deploy/shairport-sync.conf.template` | `audio_backend_buffer_desired_length_in_seconds = 0.5` | Shipped value remains 0.5; the 64 ms trials remain unshipped pending longer WiFi, reliability, and A/V validation |
 | `deploy/shairport-sync.conf.template` + `jasper-apply-airplay-mode` | `audio_backend_latency_offset_in_seconds = -((target_level - chunksize + fanin_output_latency + outputd_dac_latency) / samplerate)` | Compensates fixed downstream delay invisible to shairport's `snd_pcm_delay()`. The fan-in and outputd DAC terms prefer daemon STATUS `snd_pcm_delay_frames`; configured buffers are fallback while daemons are unavailable or old. With current generic fallbacks the value is `-0.106667`; live low-latency DAC floors may render lower. (A fifth `outputd_content_bridge` term existed while the `rate_match` lab bridge did; both are deleted.) Compensation is for video/multi-room sync correctness — Pattern A3 drops require the fan-in topology. |
 | `deploy/shairport-sync.conf.template` | `interpolation = "auto"` | soxr when CPU has slack, basic when buffer shallow |
 | `deploy/systemd/shairport-sync.service` | `Nice=-10, IOSchedulingClass=realtime` | Matches CamillaDSP priority — shairport doesn't lose scheduler races |
@@ -1354,7 +1405,7 @@ real audio clock.
 | `deploy/systemd/jasper-fanin.service` | `Environment="JASPER_FANIN_INPUT_BUFFER_FRAMES=4096"`, `Environment="JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1024"` | Production defaults. Input provides the ~85 ms WiFi-burst absorption capacity the old dmix layer accidentally supplied; output is trimmed to the JTS2-verified stable floor so the downstream path does not carry an unnecessary large queue. Pattern A3 fix companion. |
 | `deploy/modprobe.d/snd-aloop.conf` | Default (no `timer_source`) | Ruled out as load-bearing; default keeps DAC-agnostic |
 | `deploy/install.sh` | Disables NM WiFi power-save | brcmfmac default-ON would micro-stall AP2 RX |
-| Default mode env | `JASPER_AIRPLAY_FREE_RUNNING=no` (synced) | Synced is glitch-free, works for video + multi-room |
+| Default mode env | `JASPER_AIRPLAY_FREE_RUNNING=no` (synced) | Preserves video and multi-room timing; free-running remains the fallback for unvalidated DAC/path-specific issues |
 | `/airplay/` toggle | Available | Safety net for unforeseen DAC issues |
 
 ---
@@ -1663,7 +1714,7 @@ sync_error = should_be_frame - will_be_frame;
   returns that loopback lane's ring fill, not DAC latency.** This is
   the bug class.
 
-### Why `drift_tolerance` is the wrong knob
+### Why `drift_tolerance` was the wrong knob for Pattern B
 
 [`player.c:2950-2989`](https://github.com/mikebrady/shairport-sync/blob/4.3.7/player.c#L2950-L2989)
 is the **in-bounds** path — runs when `abs_sync_error <= resync_threshold * output_rate`.
@@ -1672,9 +1723,11 @@ This path is gated by `config.tolerance` (a.k.a. `drift_tolerance_in_seconds`),
 which is a **separate code branch** from `config.resync_threshold`.
 
 When the discrete (`resync_threshold`) path fires, the continuous
-(`drift_tolerance`) path never runs that cycle. Setting
-`drift_tolerance_in_seconds=0.1` had **zero effect** on the visible
-symptom we were chasing.
+(`drift_tolerance`) path never runs that cycle. In the historical snd-aloop
+Pattern B investigation, setting `drift_tolerance_in_seconds=0.1` had **zero
+effect** on that large-resync symptom. This is not a universal statement about
+drift tolerance: the later JTS4 SHM-ring trial showed 2 ms was causal for its
+separate regular out-of-date packet/order event class.
 
 ### Mike Brady's own diagnosis
 
@@ -1725,7 +1778,7 @@ So future operators don't re-walk the same paths.
 
 | Tried | Outcome |
 |---|---|
-| `drift_tolerance_in_seconds = 0.1` (was 0.002 default) | **No effect** on the Pattern B symptom. Gates a different code branch. (Other parts of PR #75 still useful.) |
+| `drift_tolerance_in_seconds = 0.1` (was 0.002 default) | **No effect** on the historical snd-aloop Pattern B symptom. It gated a different code branch than that large-resync failure. The value was later reverted after separate SHM-ring evidence; other parts of PR #75 remain useful. |
 | `audio_backend_buffer_desired_length_in_seconds = 0.5` (was 0.15) | Marginal — gives more buffer slack but the threshold still trips. Still in production. |
 | `interpolation = "auto"` (was "soxr") | Marginal CPU reduction. Still in production. |
 | shairport-sync.service `Nice=-10, IOSchedulingClass=realtime` | Marginal — eliminates scheduler-stall events that were a separate small contributor. Still in production. |
@@ -1835,7 +1888,11 @@ from somewhere outside the ALSA output handle. Submit upstream.
 
 ---
 
-Last verified: 2026-07-22 (mux AirPlay preemption ordering, native
+Last verified: 2026-08-18 (JTS4 SHM-ring 2x2 validation recorded;
+`drift_tolerance=0.002` promoted to the fleet default with long-run ring and
+WiFi/A-V validation still open; 64 ms backend target left unshipped;
+transport-specific Pattern B and Pattern A3 guidance reconciled).
+Prior 2026-07-22: mux AirPlay preemption ordering, native
 `DropSession`, MPRIS `Stop` compatibility fallback, failure observability,
 and the separate voice-pause contract rechecked against `jasper/mux.py` and
 its contract tests. Prior 2026-07-15: Tier-3 recovery final mutation rechecked as an

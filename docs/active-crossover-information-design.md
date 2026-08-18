@@ -455,7 +455,7 @@ engineering estimate** from the driver's published facts and physics, tagged
 `confidence: "low"` with its derivation in `basis`, and `null` only where there
 is no engineering basis at all. The estimate asked for is deliberately not a
 timid one: safety never lived in a number's modesty but in the bounds below,
-the per-style high-pass floor, the peak ceiling, and the quiet-start ramp,
+the per-style plausibility band, the peak ceiling, and the quiet-start ramp,
 while prompt-level lowballing costs real performance — a needlessly high cutoff
 robs usable range, a needlessly low level under-drives the measurement. Every
 estimate is therefore declared as an estimate and carries one citation in its
@@ -703,13 +703,13 @@ the failing band and the two levers (quiet the room, move the microphone
 closer) — the refusal itself does not invalidate the driver's level lock,
 though the remedy the UI offers today re-runs the guided level check from
 the start (ambient is currently a ramp byproduct; a retained-locks
-re-measure is the planned seam for the phone ambient-stats follow-up).
+re-measure would be the seam if per-band phone ambient were ever wired in).
 `commissioning_gain_db` stays governed by the same non-positive,
 `DriverSweepGeneratorPlan`-validated invariant as before — the solver
 proposes, commissioning admission still validates every ceiling exactly as
-it always has (defense in depth). The phone-side per-band `ambient_stats`
-event is a follow-up page change; until it ships, every solve takes the
-broadband-fallback path.
+it always has (defense in depth). The phone already emits a per-band
+`ambient_stats` event, but nothing Pi-side consumes it (#2662 deleted the
+never-called parser); every solve takes the broadband-fallback path.
 
 **Bounded correction (W2.2) is ONE signed per-target adjustment, applied
 to the solver's assumed ambient, with up to two writes per target per
@@ -1610,10 +1610,18 @@ playback must satisfy all applicable layers; none may be relabeled as another.
 A tweeter's declared `driver_style` (dome, AMT, planar, ribbon, compression
 driver, supertweeter) sets `driver_protection_profile`'s minimum protective
 high-pass floor — 2000 Hz for a compression driver versus the 5000 Hz
-conservative default for an undeclared/unrecognised style. That style floor
-bounds what the *declaration* may say: a confirmed
-`required_protection_filters` high-pass below it is refused
-(`<role>:highpass_below_code_policy`). The floor that then reaches the shipped
+conservative default for an undeclared/unrecognised style. Since the
+2026-08-17 ruling (#2603) that figure does **not** bound what the *declaration*
+may say: the driver's low limit has one declared owner — the manufacturer's
+minimum recommended crossover frequency — and a sourced figure wins outright,
+including below the style number. The table's two remaining jobs are the
+default answer when a manufacturer publishes nothing and a plausibility anchor
+that refuses an unbelievable declaration by name
+(`<role>:low_limit_implausible_for_style`). The derivation and its rationale
+are owned by
+[`driver_protection.py`](../jasper/active_speaker/driver_protection.py)
+(`resolve_driver_low_limit` / `apply_driver_low_limit`); this doc does not
+restate them. The floor that then reaches the shipped
 graph is the confirmed declared cutoff itself — it clamps the derived
 protective high-pass and gates the protected startup load (issue #2491). A
 driver that declares no protective high-pass declares no graph floor; nothing

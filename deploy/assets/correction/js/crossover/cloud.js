@@ -133,10 +133,12 @@ function chartPayloadFor(cloud, cloudChart, tier, prediction) {
     // rather than borrowing another phase's reference frame.
     predictedReferenceDb: prediction ? prediction.reference_db : null,
     // Review B-1 (PR-7): each curve is plotted relative to its OWN
-    // reference — linearization is cut-only, so VERIFY's reference is
-    // always at or below MEASURE's, and a single shared reference
-    // displaced the whole "Before" curve by a level change the spec never
-    // grades. Both reference_db values already ride the compact block
+    // reference — a fit moves VERIFY's reference off MEASURE's (below it on
+    // a cut-only fit, and either way since the boost ruling #2106), and a
+    // single shared reference displaced the whole "Before" curve by a level
+    // change the spec never grades. Per-curve holds whichever way it moved;
+    // the old wording assumed one direction (#2603's sweep trued it up).
+    // Both reference_db values already ride the compact block
     // (every phase entry carries its own), so no new server data is needed.
     measureReferenceDb: measure ? measure.reference_db : null,
     verifyReferenceDb: verify ? verify.reference_db : null,

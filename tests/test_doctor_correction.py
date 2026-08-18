@@ -848,6 +848,9 @@ def test_active_speaker_runtime_graph_fails_corrupt_saved_topology(
     assert r.status == "fail"
     assert "saved output topology is unavailable or invalid" in r.detail
     assert "not valid JSON" in r.detail
+    # An unreadable topology is not proof of silence — it is proof of not
+    # knowing, so this branch must not claim it (#2471).
+    assert r.speaker_silent is False
 
 
 def test_active_speaker_runtime_graph_fails_flat_graph_on_tweeter_topology(
@@ -908,6 +911,8 @@ def test_active_speaker_runtime_graph_accepts_staged_active_startup(
 
     assert r.status == "ok"
     assert "all_muted_active_startup" in r.detail
+    # A legal graph is not silence: the flag stays off (#2471).
+    assert r.speaker_silent is False
 
 
 def test_active_speaker_runtime_graph_warns_when_parked(monkeypatch, tmp_path):
@@ -938,6 +943,9 @@ def test_active_speaker_runtime_graph_warns_when_parked(monkeypatch, tmp_path):
 
     assert r.status == "warn"
     assert PARKED_MUTED_EXITS in r.detail
+    # #2471: this is the speaker-is-silent state, so the summary composer must
+    # be able to name it instead of ending on "warning(s) — non-critical".
+    assert r.speaker_silent is True
 
 
 def test_active_speaker_topology_blockers_registered_in_sync_checks():
@@ -991,6 +999,14 @@ _ALL_MARKS = (
 )
 
 
+# #2471: exactly one of the six branches proves the speaker emits nothing.
+# `_MARK_PROBE_FAILED` is deliberately NOT here — it has blockers but could not
+# classify the graph, so it does not know; `_MARK_NOT_PARKED` knows the box is
+# playing. Asserting the flag inside `_assert_only_branch` pins the partition
+# across every branch at once, with no extra fixtures.
+_SILENT_MARKS = frozenset({_MARK_PARKED})
+
+
 def _assert_only_branch(result, expected_mark: str) -> None:
     """The detail names its own branch and no other."""
     assert expected_mark in result.detail, (
@@ -1001,6 +1017,10 @@ def _assert_only_branch(result, expected_mark: str) -> None:
             assert mark not in result.detail, (
                 f"detail also matched a different branch's marker {mark!r}"
             )
+    assert result.speaker_silent is (expected_mark in _SILENT_MARKS), (
+        f"branch {expected_mark!r} claims speaker_silent="
+        f"{result.speaker_silent}; only the parked branch may claim it"
+    )
 
 
 def test_topology_blockers_ok_without_roleful_outputs(monkeypatch, tmp_path):

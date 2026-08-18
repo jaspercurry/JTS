@@ -20,14 +20,16 @@ dispatch branches in :mod:`jasper.web.correction_setup`) and the pure conductor
   CamillaController-backed program playback via
   :func:`jasper.active_speaker.crossover_v2_flow.bind_program_playback_seams`,
   and the apply gate reading the durable applied flag;
-* the **plan runner host** (:func:`build_v2_run_and_consume`) that drives the
-  REAL :func:`jasper.capture_relay.session.run_capture_plan` on a worker
-  thread, mirroring ``build_crossover_relay_plan_run_and_consume``'s thread
-  model (``asyncio.to_thread`` + shielded cancel-drain + purge on teardown +
-  ``stop_event``/``stop_lock`` stop semantics);
-* the **host-owned error mapping**: ``CaptureTimeout`` / relay-session death →
-  ``relay_timeout`` failure state + volume abandon; conductor failure codes →
-  ``status["crossover_v2"]["failure"]``.
+* the **session assembly for the capture provider** (#2662): the preparers
+  below gate, build the conductor, and hand the walk to the capture source —
+  today the relay provider, :mod:`jasper.web.correction_crossover_v2_relay`,
+  which owns the plan-walk hosting (``build_v2_run_and_consume``), the phone
+  progress choreography, and the translation of relay-internal deaths into
+  the flow's reason vocabulary. This host stays the single writer of the
+  persisted failure state those reasons land in
+  (``status["crossover_v2"]["failure"]`` — ``relay_timeout``,
+  ``user_stopped``, …), and of the walked-away volume guarantee the provider
+  drives through ``V2VolumeHooks``.
 
 Session binding (§5.6): the durable state is keyed to the relay session id. A
 new ``/v2/session`` POST hydrates through
@@ -112,6 +114,32 @@ from jasper.active_speaker.crossover_v2.verification import (
 )
 from jasper.dsp_apply import DSP_PROOF_INACTIVE_RESULTS
 from jasper.log_event import log_event
+# The RELAY capture provider (#2662 strangler slice 1). The plan-walk hosting,
+# the phone progress ladder, the purge grace, and the link-TTL policy are the
+# relay source's private choreography and moved behind the capture-source seam
+# (jasper.active_speaker.crossover_v2.capture_source), into
+# jasper.web.correction_crossover_v2_relay. The names stay published HERE —
+# same PEP 484 redundant-alias form as the journey block above — because they
+# are this host's existing surface: the preparers below call them, and
+# correction_setup and the test suite address them at this module. EAGER, and
+# safely so: the provider module never imports this one at module scope (its
+# host reach-backs are call-time), so the pair cannot deadlock an import.
+#
+# Patch contract for test doubles: this HOST calls build_v2_run_and_consume,
+# relay_link_ttl_s, and PlaybackStartSignal through these bindings, so
+# patching them on this module reaches the preparers. The other three are
+# re-published for external callers only — the host never invokes them — so
+# a double for program_phase_schedule / start_program_phase_ladder /
+# TERMINAL_FAILURE_PURGE_GRACE_S must patch the provider module, or it
+# rebinds a name nothing here reads.
+from jasper.web.correction_crossover_v2_relay import (
+    TERMINAL_FAILURE_PURGE_GRACE_S as TERMINAL_FAILURE_PURGE_GRACE_S,
+    PlaybackStartSignal as PlaybackStartSignal,
+    build_v2_run_and_consume as build_v2_run_and_consume,
+    program_phase_schedule as program_phase_schedule,
+    relay_link_ttl_s as relay_link_ttl_s,
+    start_program_phase_ladder as start_program_phase_ladder,
+)
 
 if TYPE_CHECKING:
     from jasper.active_speaker.crossover_v2_flow import AnalyzeCapture
@@ -763,7 +791,12 @@ def observe_restore() -> None:
     envelope resolves ``not_applicable``, and ``prepare_v2_verify`` refuses
     without ``applied``) because that argument makes the field correct by
     accident, and the accident is one screen-routing change away from being a
-    stale caveat on a live session."""
+    stale caveat on a live session.
+
+    ``round_receipt`` is the fifth (#2698), and the one field here cleared IN
+    PART rather than wholesale — it is the SERIES' memory, not the session's,
+    so the blend instruction is withdrawn while the ordinal that bounds the
+    series survives. The argument for that split is at the line itself."""
     state = load_v2_state()
     if state is None:
         return
@@ -804,6 +837,25 @@ def observe_restore() -> None:
     # record would describe a graph that is no longer live and a displacement
     # that has already been undone.
     state[ROUND_ANCHOR_STATE_KEY] = None
+    # ``round_receipt`` is the fifth field to meet the trap above (#2698), and
+    # the only one cleared IN PART. It is the SERIES' memory rather than the
+    # session's — nulling it would send the series back to round 1 and let an
+    # Undo→measure cycle repeat past the round cap forever, so the ordinal, the
+    # objectives that frame it, and the trusted floor all survive an Undo by
+    # design. What cannot is the round's blend INSTRUCTION: since #2698 the
+    # measuring stage builds its candidate from it
+    # (``CrossoverV2Session._blend_prescription``), so a surviving one would
+    # compose a correction onto the graph the household just removed. That is
+    # the same ruling ``coordinator._write_round_receipt`` already applies to a
+    # round that restores its OWN graph — a prescription describes a speaker
+    # measured through a specific incumbent, and this Undo is the other door to
+    # the same state. ``blend`` holds the filters and the residual they were
+    # decided against as one fact, so one clear withdraws both, and ``None`` is
+    # the shape that writer already uses for "this round issues no
+    # instruction".
+    receipt = state.get("round_receipt")
+    if isinstance(receipt, Mapping):
+        state["round_receipt"] = {**receipt, "blend": None}
     # fsync'd (#2291), the mirror of ``observe_apply_success``: this write
     # CLEARS the rollback anchor and flips ``applied`` after the previous graph
     # is already back on the speaker, so a power cut that loses it leaves the
@@ -2120,6 +2172,30 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     fc = fc if isinstance(fc, Mapping) else {}
     fc_verdict = str(fc.get("verdict") or "")
     comparison_complete = fc.get("comparison_complete") is True
+    # **A sweep that never ran is ABSENT, not incomplete** (2026-08-18, the
+    # lateral pause). Two gates below — ``comparison_complete`` and
+    # ``authorized_winner`` — encode "the Fc comparison finished, and the corner
+    # on the speaker is the one it authorized". Neither question EXISTS when no
+    # candidate sweep ran: the sweep fires only in a session that walks the
+    # lateral poses, so since the pause ``fc_selection`` is absent on every
+    # shipped session. Reading that absence as an unfinished comparison made
+    # ``RESULT_VERIFIED_TARGET``/``_BEST_EVALUATED`` structurally unreachable —
+    # a successful commission told the household "not enough complete evidence
+    # to grade… this report changed nothing automatically" over a tune that IS
+    # applied, and dropped the Undo pointer exactly where a dissatisfied
+    # household reaches for it.
+    #
+    # This function's own question is the one in its title: was the applied
+    # correction checked AFTERWARDS. VERIFY and the post-apply group answer
+    # that by themselves and neither consults the selector, which is why the
+    # exemption is sound rather than merely convenient.
+    #
+    # **Scoped to absence only.** A sweep that RAN and did not finish still
+    # fails both gates — that is a real incomplete comparison about a session
+    # that really did evaluate alternatives, and this exemption must never
+    # reach it. Both directions are pinned in
+    # ``tests/test_correction_crossover_v2_endpoints.py``.
+    sweep_ran = bool(fc)
 
     if not block.get("applied"):
         failure = block.get("failure")
@@ -2171,10 +2247,13 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     required_db = _finite(comparison.get("required_db"))
     absolute_miss_db, absolute_worst_hz = _finite(absolute.get("max_db")), _finite(absolute.get("worst_hz"))
     result_evidence = bool(fc or comparison or integration or absolute)
-    authorized_winner = (
-        bool(str(candidate.get("fingerprint") or ""))
-        and baseline_score is not None
-        and fc_verdict == SELECTION_KEEP_CONFIGURED
+    authorized_winner = bool(str(candidate.get("fingerprint") or "")) and (
+        # No sweep ran, so there was no alternative for a winner to beat: the
+        # published candidate IS the configured corner, which is precisely what
+        # a ``keep_configured`` verdict authorizes. The fingerprint stays
+        # required — it is the evidence that a candidate was published at all.
+        not sweep_ran
+        or (baseline_score is not None and fc_verdict == SELECTION_KEEP_CONFIGURED)
     )
     material_improvement = (
         str(comparison.get("reason") or "") == "improved"
@@ -2200,7 +2279,7 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     elif (
         outcome == "inconclusive"
         or tracking_status not in {CLAIM_PASS, CLAIM_FAIL}
-        or not comparison_complete
+        or (sweep_ran and not comparison_complete)
     ):
         result_outcome = RESULT_INCONCLUSIVE
     elif fc_verdict == SELECTION_RECOMMEND:
@@ -2607,6 +2686,33 @@ def entry_baseline_prior_from_state(state: Mapping[str, Any] | None) -> Any:
     priors = (state or {}).get("verify_priors")
     record = priors.get("entry_baseline") if isinstance(priors, Mapping) else None
     return EntryBaseline.from_dict(record)
+
+
+def alignment_prescription_prior_from_state(state: Mapping[str, Any] | None) -> Any:
+    """The stage-1 delay prescription, as the conductor's ctor takes it (#2662).
+
+    The read side of :func:`persist_conductor_state`'s
+    ``verify_priors.alignment_prescription`` and the exact mirror of
+    :func:`entry_baseline_prior_from_state`: durable state in, the
+    ``alignment_prescription`` argument out. Named and module-level for the
+    same reason — the seeding PATH is then drivable in a test without a relay.
+
+    ``None`` is "this round prescribed no delay", and it also covers a state
+    file written before this key shipped and a truncated or hand-edited record;
+    the reader below says which of the last two in a WARNING, and the round
+    does not branch on it. The BOUND is deliberately not re-applied here —
+    :mod:`~jasper.active_speaker.crossover_v2.alignment_prescription` states
+    why: it has one owner, and it is the request boundary.
+    """
+    from jasper.active_speaker.crossover_v2.alignment_prescription import (
+        alignment_prescription_from_mapping,
+    )
+
+    priors = (state or {}).get("verify_priors")
+    record = (
+        priors.get("alignment_prescription") if isinstance(priors, Mapping) else None
+    )
+    return alignment_prescription_from_mapping(record)
 
 
 def pilot_transfer_prior_from_state(
@@ -3096,6 +3202,20 @@ def _delta_probe_summary(probe: Any) -> dict[str, Any]:
     return {
         "verdict": str(getattr(probe, "verdict", "") or ""),
         "reason": str(getattr(probe, "reason", "") or ""),
+        # Whether the realized-energy half of the safety axis ran (series-2 D1).
+        # Here for ``residual_offset_db``'s reason one step further: that number
+        # needed the record to say what was subtracted to make it a change, and
+        # this one needs the record to say whether the subtraction was possible
+        # at all — a first-ever round takes the ``state_axis_only`` branch, so
+        # its axis reports SAFE with that half unrun.
+        #
+        # A FORENSIC state key: no renderer reads it today (the done screen's
+        # caveat keys on the probe's verdict). It is here because the round
+        # receipt is write-once and this record is the LIVE one — the surface
+        # ``/state``, the doctor and the done screen would each have to read it
+        # from — so a fact only the receipt holds is a fact no live surface can
+        # ever show.
+        "safety_anchored": bool(getattr(probe, "safety_anchored", False)),
         "expected_offset_db": getattr(probe, "expected_offset_db", 0.0),
         "residual_offset_db": getattr(probe, "residual_offset_db", None),
         "entry_anchor_offset_db": getattr(probe, "entry_anchor_offset_db", None),
@@ -3508,6 +3628,26 @@ def persist_conductor_state(
             # key's own absence already means downstream.
             "verify_measured": _decimate_verify_measured(
                 getattr(conductor, "verify_tracking_curve", None)
+            ),
+            # #2662's provenance. It crosses for exactly ``commanded_delta``'s
+            # reason — produced by the stage that MEASURES the arm, banked by
+            # the stage that GRADES it, and those are different sessions in
+            # different processes — and is read the same way, through
+            # ``getattr``, so a duck-typed stand-in without the property means
+            # "no prescription", which is what the key's own absence already
+            # means downstream.
+            "alignment_prescription": getattr(
+                conductor, "alignment_prescription_record", None
+            ),
+            # …and WHICH commitment the fit reached, the fact that turns the
+            # block above from "this arm was asked for" into "this arm ran".
+            # Its own key rather than a field inside the prescription: the
+            # prescription is the REQUEST and this is the OUTCOME, they are
+            # written at different moments by different owners, and nesting one
+            # in the other would make a round that prescribed nothing have
+            # nowhere to record an objective it still has.
+            "alignment_objective": getattr(
+                conductor, "measure_alignment_objective", "",
             ),
             # #2291's measured "before": the summed capture stage 1 takes at
             # the mark immediately before apply, which stage 2's benefit
@@ -4939,236 +5079,6 @@ def bind_cloud_publisher(
     return publish_cloud
 
 
-# --------------------------------------------------------------------------- #
-# pre-tone phase ladder (#1824 D3/D4)
-# --------------------------------------------------------------------------- #
-
-# The phone-visible names for what the speaker is ACTUALLY doing. Only
-# ``sweep_started``/``sweep_complete`` existed before, and ``sweep_started`` was
-# posted synchronously in ``on_armed`` — ~4.6 s before any sound on a courtesy-
-# prelude program (0.6 s of beeps + a 3.0 s settle + the 1.0 s pre-pilot
-# ambient window), so the phone said "Playing the measurement tone…" through
-# the entire quiet stretch the household is being asked to be quiet in. The two
-# names below are that missing middle. ``ambient_started`` in particular had NO
-# producer anywhere on the Pi — the capture page's countdown consumer for it
-# has been shipped-but-dead since the producer it was written against was
-# deleted (see docs/HANDOFF-correction.md).
-HOST_PHASE_PRELUDE_STARTED = "prelude_started"
-HOST_PHASE_AMBIENT_STARTED = "ambient_started"
-HOST_PHASE_SWEEP_STARTED = "sweep_started"
-HOST_PHASE_SWEEP_COMPLETE = "sweep_complete"
-
-# NAMED RESIDUAL — ON-DEVICE: the size of this bias is NOT measured. The ladder
-# is anchored where the host HANDS a program to the playback path, which leads
-# real audio by the verified-source read plus the ALSA/output prefill: tens to a
-# few hundred ms, device-dependent, and not one number we can look up. Delaying
-# every step is INTENDED to bias late, so the residual lands on the safe side —
-# a phase line appearing late is harmless, a phone claiming the tone is playing
-# while the room is silent is the failure this ladder exists to remove. It is
-# not a guarantee: a prefill longer than this value would still put the sweep
-# line marginally early.
-#
-# Two things push the same way and are worth knowing before tuning it: the
-# phone only repaints on its own poll (``progress_poll_ms``, ≤1 s), which adds
-# further late bias on the rendered line; and the household reads copy, not
-# timestamps. Measure the real anchor-to-audio interval on hardware before
-# changing this, and prefer replacing the whole estimate with an observed
-# playback start over shrinking the number from reasoning alone.
-PHASE_LADDER_START_SKEW_S = 0.35
-
-
-class PlaybackStartSignal:
-    """The seam between the play binding and the runner's phone-phase posts.
-
-    ``bind_production_play`` is built inside ``_open`` — before the runner
-    exists — so the play path cannot post to the phone itself. It fires this
-    signal at the instant a program's WAV reaches the playback call; the runner
-    installs a handler for the duration of ONE armed capture and clears it
-    afterwards, so a late fire from a play that outlived its capture is a no-op
-    rather than a phase post against the wrong capture.
-    """
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._handler: Callable[[Any], None] | None = None
-
-    def install(self, handler: Callable[[Any], None]) -> None:
-        with self._lock:
-            self._handler = handler
-
-    def clear(self) -> None:
-        with self._lock:
-            self._handler = None
-
-    def fire(self, program: Any) -> None:
-        with self._lock:
-            handler = self._handler
-        if handler is None:
-            return
-        try:
-            handler(program)
-        except (
-            OSError, RuntimeError, ValueError, AttributeError, KeyError, TypeError,
-        ):
-            # Progress reporting must never be able to stop a measurement, and
-            # this fires from INSIDE the play path — an escape here would abort
-            # a sweep over a status line. The handler reads a program object it
-            # does not own (AttributeError/TypeError/KeyError on an unexpected
-            # shape) and starts a thread (RuntimeError), so the list covers what
-            # it can actually raise; pinned by
-            # test_playback_signal_handler_failure_never_stops_the_measurement.
-            logger.warning("v2 playback-start signal handler failed", exc_info=True)
-
-
-def program_phase_schedule(
-    program: Any,
-) -> tuple[tuple[float, str, dict[str, Any]], ...]:
-    """When each phone-visible phase of ``program`` actually becomes audible.
-
-    Returns ``((offset_s, phase, extra_fields), …)`` ordered by offset, where
-    ``offset_s`` is measured from the start of the program WAV and
-    ``extra_fields`` are the wire fields that phase carries (empty for phases
-    that carry none).
-
-    Offsets are read off the program's OWN segment table
-    (``start_sample``/``sample_rate_hz``), never re-derived from the composer's
-    constants: a program that stops carrying a courtesy prelude or an ambient
-    window simply stops emitting that phase, and a composer that moves either
-    one moves this schedule with it. A program with no segments (or an
-    unreadable rate) yields an empty schedule — the caller then posts nothing,
-    which is what an older/simpler program should produce.
-
-    ``ambient_started`` carries ``quiet_requested``, and it is a MEASUREMENT
-    fact, not a presentation one. The two ambient windows are opposites:
-
-    * MEASURE/VERIFY's 1 s pre-pilot window sits AFTER the courtesy beeps and
-      "MUST be measured with the room already quiet" — the phone should ask.
-    * CHECK's 12 s window is the SESSION's room-noise measurement, "deliberately
-      taken before the household is asked to go quiet" (both quotes:
-      :mod:`jasper.audio_measurement.program`'s module docstring). The ambient
-      band-floor report and the gain solve read it. A phone that asked for quiet
-      during THAT window would change the very floor it is measuring — a copy
-      string silently editing the measurement.
-
-    Derived from the composed order (is this window after the beeps?), so a
-    composer that moves either window moves the flag with it.
-    """
-    from jasper.audio_measurement.program import (
-        AMBIENT_SEGMENT_ID,
-        KIND_COURTESY_TONE,
-        STIMULUS_KINDS,
-    )
-
-    try:
-        rate = float(getattr(program, "sample_rate_hz", 0) or 0)
-    except (TypeError, ValueError):
-        return ()
-    segments = tuple(getattr(program, "segments", ()) or ())
-    if rate <= 0 or not segments:
-        return ()
-
-    steps: list[tuple[float, str, dict[str, Any]]] = []
-    beeps = [s for s in segments if s.kind == KIND_COURTESY_TONE]
-    beep_end = (
-        max(s.start_sample + s.n_samples for s in beeps) if beeps else None
-    )
-    if beeps:
-        steps.append(
-            (
-                min(s.start_sample for s in beeps) / rate,
-                HOST_PHASE_PRELUDE_STARTED,
-                {},
-            )
-        )
-    ambient = [s for s in segments if s.segment_id == AMBIENT_SEGMENT_ID]
-    if ambient:
-        first = min(ambient, key=lambda s: s.start_sample)
-        steps.append(
-            (
-                first.start_sample / rate,
-                HOST_PHASE_AMBIENT_STARTED,
-                {
-                    "duration_s": first.n_samples / rate,
-                    # No prelude at all ⇒ no warning was played ⇒ do not ask.
-                    "quiet_requested": (
-                        beep_end is not None and first.start_sample >= beep_end
-                    ),
-                },
-            )
-        )
-    stimulus = [s for s in segments if s.kind in STIMULUS_KINDS]
-    if stimulus:
-        steps.append(
-            (
-                min(s.start_sample for s in stimulus) / rate,
-                HOST_PHASE_SWEEP_STARTED,
-                {},
-            )
-        )
-    steps.sort(key=lambda step: step[0])
-    return tuple(steps)
-
-
-def start_program_phase_ladder(
-    post_phase: Callable[..., None],
-    program: Any,
-    *,
-    skew_s: float | None = None,
-) -> Callable[[], None]:
-    """Post ``program``'s phase ladder on the program's own clock.
-
-    Runs on one short-lived daemon thread (the play call owns the caller's
-    thread for the whole program) and returns a cancel callable the caller
-    invokes when playback returns — so a program that ends early, fails, or is
-    stopped cannot leave a timer behind that posts a phase for a capture that
-    is already over.
-
-    ``skew_s`` defaults to :data:`PHASE_LADDER_START_SKEW_S`, read at CALL time
-    so the constant stays the single place the bias is expressed (and a test
-    can drive the ladder without waiting it out).
-    """
-    schedule = program_phase_schedule(program)
-    if not schedule:
-        return lambda: None
-
-    skew = PHASE_LADDER_START_SKEW_S if skew_s is None else float(skew_s)
-    done = threading.Event()
-
-    def _run() -> None:
-        started = time.monotonic()
-        for offset_s, phase, extra in schedule:
-            delay = (offset_s + skew) - (time.monotonic() - started)
-            if delay > 0 and done.wait(delay):
-                return
-            if done.is_set():
-                return
-            post_phase(phase, **extra)
-
-    thread = threading.Thread(
-        target=_run, name="crossover-v2-phase-ladder", daemon=True
-    )
-    thread.start()
-
-    def _cancel() -> None:
-        done.set()
-        # UNBOUNDED join, deliberately. The relay's host-event slot is
-        # last-write-wins, so a ladder post still in flight when this returns
-        # would land AFTER whatever the caller posts next — overwriting a
-        # `sweep_complete`, or worse a terminal `capture_result`, and putting
-        # the phone back to polling a refusal it can no longer see (the
-        # expired-link pathology this PR removes elsewhere). A bounded join
-        # would leave exactly that race open on a slow post.
-        #
-        # Safe to wait: the only thing this thread does is
-        # ``client.post_host_event``, whose urllib transport carries
-        # ``capture_relay.client.DEFAULT_TIMEOUT_S`` (15 s) and whose failures
-        # the caller already swallows as OSError — so the wait is bounded by
-        # the transport, not by hope.
-        thread.join()
-
-    return _cancel
-
-
 def bind_production_play(
     *,
     run_async: Any,
@@ -5399,8 +5309,13 @@ def bind_production_play(
 
 
 # --------------------------------------------------------------------------- #
-# the plan-runner host (S1a/S1c)
+# what the host hands the capture provider (S1a/S1c)
 # --------------------------------------------------------------------------- #
+#
+# The plan runner itself (build_v2_run_and_consume) is the relay provider's —
+# jasper.web.correction_crossover_v2_relay, re-published above. These two stay
+# HERE because they are host policy the provider merely drives: the volume
+# lifecycle it is handed, and the eager-fit starter it calls back into.
 
 
 @dataclass(frozen=True)
@@ -5410,18 +5325,6 @@ class V2VolumeHooks:
     open: Callable[[], Any]      # async
     close: Callable[[], Any]     # async
     abandon: Callable[[], Any]   # async
-
-
-# W6 hardware run 3 finding H: the catch-all cleanup arm below posts a
-# terminal host event (§5.10's ``capture_result``) so the phone stops
-# recording into silence, then purges the relay session. Purging
-# immediately after can race the phone's very next poll — the driver saw a
-# bare 404 on the session's own status endpoint ~1 s after the terminal
-# event, because the session was already gone. This grace gives the just-
-# posted event a bounded window to actually reach the phone (over the
-# public relay) before the session disappears; it does not delay the
-# household's volume restore, which stays immediate.
-TERMINAL_FAILURE_PURGE_GRACE_S = 3.0
 
 
 def _start_speculative_group_close(conductor: Any) -> threading.Thread | None:
@@ -5470,732 +5373,6 @@ def _start_speculative_group_close(conductor: Any) -> threading.Thread | None:
         )
         return None
     return thread
-
-
-def build_v2_run_and_consume(
-    conductor: Any,
-    *,
-    volume: V2VolumeHooks,
-    stop_event: threading.Event,
-    stop_lock: Any,
-    position_gate: "PositionGate | None" = None,
-    evidence_refs: Mapping[str, Any] | None = None,
-    poll_interval_s: float | None = None,
-    timeout_s: float | None = None,
-    first_begin_timeout_s: float | None = None,
-    playback_started: PlaybackStartSignal | None = None,
-) -> Callable[[Any, Any], Any]:
-    """The async ``run_and_consume(client, pi_session)`` for one v2 session.
-
-    Mirrors ``build_crossover_relay_plan_run_and_consume``'s thread model: the
-    REAL :func:`jasper.capture_relay.session.run_capture_plan` runs on a
-    worker thread (``asyncio.to_thread``), the awaiting task shields it
-    through cancellation (Stop drains the runner before purging), and the
-    relay session is purged on every exit path.
-
-    **No session applies anything (two-stage commission work order D1).** This
-    runner took ``run_async``/``camilla_factory``/``idle_hold`` until PR-T3 for
-    one reason: to fire ``handle_v2_apply`` on a background thread the instant
-    the pre-apply cloud closed, and to keep the socket-activated wizard alive
-    while that thread ran (#1854). Apply is now the household's own POST from
-    the review screen — served in-request, so the idle tracker's ordinary
-    in-flight-request accounting covers it — and this runner needs none of the
-    three. What replaced them is the ``complete_capture_set`` seam below: the
-    household's explicit "Continue" closes the group, fits the candidate, and
-    persists it, and the journey stops there.
-
-    Host-owned error mapping (S1c):
-
-    * ``CaptureTimeout`` / ``RelayError`` / ``OSError`` / generic
-      ``CaptureFailed`` — relay-session death ⇒ ``relay_timeout`` failure
-      state + volume ABANDON (the §5.5 walked-away guarantee). The
-      ``OSError`` here is genuinely the relay TRANSPORT (e.g.
-      ``run_capture_plan``'s poll loop reaching an unreachable host) — a
-      LOCAL play/analyze seam OSError never reaches this arm: ``on_armed``/
-      ``consume`` below convert it to :class:`CrossoverV2LocalSeamError`
-      first (W6 hardware run 3 finding G), so it falls through to the
-      catch-all arm's ``internal_error`` instead.
-    * ``CaptureAborted`` — a deliberate phone Stop (``reason == "stopped"``)
-      gets its own honest ``user_stopped`` failure state; every other abort
-      reason (backgrounded / vanished) still reads as ``relay_timeout``. Both
-      abandon the volume identically — only the persisted reason differs.
-    * ``CaptureBeginRefused`` — the conductor already recorded the phase's own
-      failure code (including the PR-L4 accountability veto refusing ON the
-      household's group-close confirmation); persist it + abandon.
-    * ``CaptureStopped`` / cancellation — expected control flow: abandon the
-      volume, no failure code.
-    * ANY other ``Exception`` — the W6.1 catch-all cleanup arm: the seams
-      raise open-endedly (``CamillaUnavailable`` is a bare Exception), so
-      every non-relay failure posts a terminal host event, persists
-      ``program_unplayable`` (program/admission/flow classes) or
-      ``internal_error`` (everything else — including
-      ``CrossoverV2LocalSeamError``), abandons the volume (releasing the
-      session measurement pause), waits a bounded grace period (finding H —
-      the just-posted terminal host event must reach the phone before the
-      relay session is purged out from under its next poll), purges, and
-      re-raises.
-    * Plan complete with every phase this session ran accepted ⇒ CLOSE (exact
-      restore); a completed plan that did not reach done (attempt budget
-      exhausted) abandons. Stage 1 takes the CLOSE path like any other complete
-      session: its phases are all accepted, the household is walking back to a
-      browser rather than to another capture, and an exact restore is the
-      honest end for a measurement that finished.
-    """
-
-    async def _run_and_consume(client: Any, pi_session: Any) -> None:
-        from jasper.capture_relay.client import RelayError
-        from jasper.capture_relay.session import (
-            HOST_PHASE_CAPTURE_RESULT,
-            HOST_PHASE_CAPTURE_SET_EXHAUSTED,
-            CaptureAborted,
-            CaptureBeginRefused,
-            CaptureFailed,
-            CaptureStopped,
-            TIME_BUDGET_NONE,
-            CaptureTimeout,
-            expired_time_budget,
-            purge,
-            run_capture_plan,
-        )
-        from jasper.active_speaker.crossover_v2_flow import (
-            PHASE_APPLYING,
-            PHASE_DONE,
-            REASON_INTERNAL_ERROR,
-            REASON_REGISTRY,
-            REASON_RELAY_TIMEOUT,
-            REASON_REVIEW_HOLD_TIMEOUT,
-            REASON_USER_STOPPED,
-            V2_FIRST_BEGIN_TIMEOUT_S,
-            TRANSIENT_AUTO_RETRY_CODES,
-        )
-        from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
-        from jasper.correction.coordinator import MeasurementWindowError
-
-        def complete_capture_set() -> None:
-            """The household's "all spots measured — Continue" tap (D1).
-
-            **This is the group-close seam at the host boundary**, and the
-            only thing that fits a correction in stage 1. It replaces the
-            inference this runner used to make — that VERIFY's begin, the one
-            index past the walked cloud, WAS the confirmation — which stage 1
-            structurally cannot supply because it has no VERIFY entry.
-
-            What it deliberately does NOT do any more is apply. Until PR-T3
-            this function's predecessor (``_fire_auto_apply``) started the
-            apply transaction on its own background thread the instant the
-            group closed: unconditionally, inside the relay session, three
-            seconds before VERIFY, with the household holding a phone. The
-            2026-07-28 ruling made the review interlude the apply decision
-            point, so the candidate this builds is a PROPOSAL and the apply is
-            the household's own POST to ``/correction/crossover/v2/apply``.
-
-            The persist is load-bearing and must happen here: ``handle_v2_apply``
-            reads the candidate off the DURABLE state, not off the conductor,
-            so a confirmation whose fit never reached disk would leave the
-            review screen with nothing to review.
-
-            A refusal (the PR-L4 accountability veto raises
-            ``CaptureBeginRefused``) propagates to the runner, which publishes
-            it to the phone and ends the session exactly as an admission
-            refusal does.
-            """
-            # Persist FIRST, before the close runs. The combine plus the fit
-            # are the slowest thing in the session, the wizard renders from
-            # durable state, and until this write landed the speaker page kept
-            # telling the household to confirm on their phone for the several
-            # seconds after they already had.
-            conductor.note_group_close_started()
-            persist_conductor_state(
-                conductor, failure_code=None, evidence=evidence_refs,
-            )
-            confirmed = conductor.confirm_cloud_measure_group()
-            if confirmed is not None:
-                persist_conductor_state(
-                    conductor, failure_code=None, evidence=evidence_refs,
-                )
-
-        def authorize(index: int, attempt: int, entry: Any = None) -> None:
-            # Admission, and ONLY admission. The group close used to run here
-            # first, inferred from a begin whose index was past the walked
-            # cloud, and fired the apply behind it; both moved to
-            # ``complete_capture_set`` above, on the household's explicit
-            # signal (work order D1). Nothing on this path applies anything.
-            with stop_lock:
-                if stop_event.is_set():
-                    raise CaptureStopped("capture stopped")
-            # The remote tier's POSITION GATE, ahead of the conductor and
-            # deliberately so: a hold is not an admission decision, and routing
-            # it through ``authorize_begin`` would spend ledger and stamp
-            # failure state on a capture that has not been refused anything. It
-            # raises ``CaptureBeginDeferred`` past this frame to the runner,
-            # which the conductor therefore never sees. A hand-walked session
-            # has no gate and this line is not reached.
-            if position_gate is not None:
-                position_gate.gate(index, attempt, entry)
-            conductor.authorize_begin(index, attempt, entry)
-
-        def completion_signal_required() -> bool:
-            """Whether this set is the household's to end (D1).
-
-            True exactly while the pre-apply cloud is walked and unconfirmed —
-            the window in which a voluntary retake of the final position still
-            means something, and the window the runner must not close by
-            arithmetic. Every other session shape (the post-apply session, the
-            recovery re-verify) never stashes a pre-apply group, so this is
-            always False there and the runner ends those sets exactly as it
-            always has.
-
-            **This is decoupled from the candidate, and has to stay that way**
-            (eager-fit rider on #1806, shipped 2026-07-30). The predicate used
-            to resolve through ``self._candidate is None``, which is ALSO the
-            group close's fire-once guard — so the rider, which fits a
-            candidate BEFORE the household confirms, would have flipped this to
-            False and un-held the runner's set, shutting the retake window in
-            the same instant, silently. It now resolves through
-            ``_group_confirmed``: the held-set question is "has the household
-            confirmed?", never "does a candidate exist?". An eagerly-fitted
-            candidate parks in ``_speculative_close`` and is invisible here.
-
-            The two must not be re-merged. If you are tempted, the discriminator
-            is ``test_an_eager_fit_failure_surfaces_on_the_confirm_not_before``:
-            after a close that RAISED, ``_candidate`` is unset (T3's
-            retryability) but the household has confirmed, so this must read
-            False. Only the decoupled predicate gets that right. See the
-            predicate's own docstring on the conductor.
-            """
-            return bool(conductor.cloud_measure_group_awaiting_confirm())
-
-        def _post_sweep_phase_best_effort(phase: str, **extra: Any) -> None:
-            """Post one phone-visible progress phase (§5.10 progress).
-
-            The capture page's ``waitForSweepComplete``
-            (``capture-page/js/main.js``) polls ``host_event.phase`` around its
-            own play wait and otherwise sits until ITS OWN timeout elapses —
-            the v2 runner posted nothing (W6 run 5), so a real phone could
-            never complete a v2 capture.
-
-            The phases this posts, in the order one capture produces them:
-            ``prelude_started`` (the courtesy beeps), ``ambient_started``
-            (the room-listening window; carries ``duration_s`` and
-            ``quiet_requested``), ``sweep_started`` (the tone) — all three from
-            :func:`start_program_phase_ladder`, on the program's own clock —
-            and finally ``sweep_complete``, the ONLY phase that makes the
-            phone's wait return. ``**extra`` carries whatever fields a phase
-            declares; the relay relays them verbatim.
-
-            Best-effort: a transient post failure here is a progress-only miss,
-            not a capture failure — the existing terminal host event (or the
-            phone's own wait timeout) still resolves the phone's wait on any
-            real failure.
-            """
-            armed = conductor.armed_capture
-            index, attempt = armed if armed is not None else (None, None)
-            try:
-                client.post_host_event(
-                    pi_session.session_id,
-                    pi_session.pull_token,
-                    {"phase": phase, "index": index, "attempt": attempt, **extra},
-                )
-            except (OSError, RuntimeError, ValueError):
-                logger.warning(
-                    "v2 sweep progress host-event post failed", exc_info=True
-                )
-
-        def on_armed(state: Any) -> None:
-            if stop_event.is_set():
-                raise CaptureStopped("capture stopped")
-            # The pre-tone phase ladder (#1824 D4). ``sweep_started`` used to be
-            # posted right here, synchronously, BEFORE the play seam had done
-            # anything at all — so the phone announced the measurement tone
-            # ~4.6 s before the first sound of a courtesy-prelude program and
-            # stayed on that line through the beeps, the settle and the room-
-            # listening window. The ladder instead posts each phase when it
-            # actually becomes audible, anchored at the play path's own WAV
-            # handoff (``PlaybackStartSignal``).
-            #
-            # Backwards-compatible in the one direction that matters: when no
-            # play-start signal is wired (a host binding its own play seam, or
-            # a test fake), keep the legacy eager post so the phone's wait still
-            # resolves rather than sitting until its own timeout.
-            cancel_ladder: Callable[[], None] = lambda: None
-
-            def _start_ladder(program: Any) -> None:
-                nonlocal cancel_ladder
-                cancel_ladder = start_program_phase_ladder(
-                    _post_sweep_phase_best_effort, program
-                )
-
-            if playback_started is not None:
-                playback_started.install(_start_ladder)
-            else:
-                _post_sweep_phase_best_effort(HOST_PHASE_SWEEP_STARTED)
-            # Finding G: on_armed's ``conductor.on_armed`` → ``seams.play`` is a
-            # LOCAL seam (the DSP writer lock, CamillaController) — an OSError
-            # here (e.g. EROFS opening the lock file) is not a relay-transport
-            # death and must not be caught by the relay-death arm below.
-            try:
-                conductor.on_armed(state)
-            except OSError as exc:
-                raise CrossoverV2LocalSeamError(str(exc)) from exc
-            finally:
-                if playback_started is not None:
-                    playback_started.clear()
-                cancel_ladder()
-            _post_sweep_phase_best_effort(HOST_PHASE_SWEEP_COMPLETE)
-
-        def consume(index: int, attempt: int, result: Any, entry: Any = None):
-            # Same local-seam boundary as on_armed, for consume_capture's
-            # analyze seam.
-            try:
-                verdict = conductor.consume_capture(index, attempt, result, entry)
-            except OSError as exc:
-                raise CrossoverV2LocalSeamError(str(exc)) from exc
-            code = verdict.get("code") if isinstance(verdict, Mapping) else None
-            persist_conductor_state(
-                conductor,
-                failure_code=code if not verdict.get("accepted") else None,
-                evidence=evidence_refs,
-            )
-            # (An ``auto_apply``-keyed branch lived here until
-            # flow-simplification PR-U1, and the flag it read is itself gone
-            # since PR-T3 removed auto-apply. It fired the apply off whichever
-            # capture verdict carried the flag — MEASURE's accept originally,
-            # the CLOUD_MEASURE group close after the 2026-07-27 timing move.
-            # §2.6 moved the trigger off a capture verdict entirely and onto
-            # the household's confirmation past the walked cloud, so the flag
-            # no longer reaches any verdict a production session emits and the
-            # branch became unreachable. It is DELETED rather than left as a
-            # comment-that-lies: ``authorize`` above is now the only place that
-            # fires ``_fire_auto_apply``, which is the whole point of putting
-            # the confirm seam at the host boundary.)
-            #
-            # The EAGER FIT trigger (owner UX direction, 2026-07-30). This
-            # verdict flag marks the one accept that leaves a walked, unconfirmed
-            # pre-apply cloud — the group close — and a voluntary retake raises
-            # it again on ITS accept, which is exactly when a re-fit is wanted:
-            # the retake dropped the previous bank when it re-stashed the
-            # combine. Started after the persist so the durable state the wizard
-            # renders is already the held-window state, and the fit is racing the
-            # household's walk rather than the write.
-            if verdict.get("awaiting_confirm"):
-                _start_speculative_group_close(conductor)
-            return verdict
-
-        async def _purge_best_effort() -> None:
-            try:
-                purged = await asyncio.to_thread(purge, client, pi_session)
-            except (OSError, RuntimeError, ValueError) as exc:
-                log_event(
-                    logger,
-                    "correction.crossover_v2_cleanup_failed",
-                    level=logging.WARNING,
-                    session_id=pi_session.session_id,
-                    component="relay_purge",
-                    error_type=type(exc).__name__,
-                )
-                return
-            log_event(
-                logger,
-                (
-                    "correction.crossover_v2_cleanup_complete"
-                    if purged is not False
-                    else "correction.crossover_v2_cleanup_failed"
-                ),
-                level=(logging.INFO if purged is not False else logging.WARNING),
-                session_id=pi_session.session_id,
-                component="relay_purge",
-            )
-
-        async def _abandon_best_effort() -> None:
-            try:
-                await volume.abandon()
-            except (OSError, RuntimeError, ValueError) as exc:
-                log_event(
-                    logger,
-                    "correction.crossover_v2_volume_abandon_failed",
-                    level=logging.CRITICAL,
-                    session_id=pi_session.session_id,
-                    component="volume_abandon",
-                    error_type=type(exc).__name__,
-                )
-                return
-            log_event(
-                logger,
-                "correction.crossover_v2_cleanup_complete",
-                session_id=pi_session.session_id,
-                component="volume_abandon",
-            )
-
-        async def _post_terminal_failure_host_event(code: str) -> None:
-            """Tell the phone the session is over so it stops waiting (§5.10).
-
-            A play-seam failure escapes ``run_capture_plan`` WITHOUT posting a
-            capture verdict, so the phone records into silence and then polls
-            ``capture_result`` forever (W6.1 hardware run 2 froze at
-            ``capture_authorized``). Address a terminal ``capture_result``
-            (accepted=false, carrying the §5.10 reason so the phone can render
-            the failure screen) to the armed capture; fall back to
-            ``capture_set_exhausted`` when no capture was armed. Best-effort —
-            the operator wizard also shows the persisted failure.
-
-            Issue #2089: the exhausted fallback used to carry only
-            ``{"phase": ...}`` — no ``budget``, no cause. Only the catch-all
-            program-failure classifier below can reach this branch in
-            practice: the OTHER caller (the ``CaptureBeginRefused`` arm)
-            never does, because every refusal that can fire before anything
-            is armed sets ``relay_published_refusal`` first inside
-            ``authorize_begin``, which gates that caller's own post.
-
-            The wire now carries an honest cause: ``budget`` is always
-            ``TIME_BUDGET_NONE`` (the same "neither clock ran out" bucket PR
-            #2084 shipped for ``_post_session_over_host_event``), plus
-            ``code``/``reason``/``banner`` whenever the failure code
-            resolves. **This does not change what the phone shows today** —
-            its only pre-arm observer, ``waitForCaptureAuthorized``, ignores
-            ``budget`` entirely and renders generic session-ended /
-            "Link expired" copy from the relay spec, never from this event.
-            Rendering the honest cause is issue #2446, which must NOT route
-            a pre-arm failure through ``renderPlanExhausted``'s
-            transport-flavored copy — that renderer describes a session that
-            had already begun.
-            """
-            spec = REASON_REGISTRY.get(code)
-            armed = conductor.armed_capture
-            if armed is not None and spec is not None:
-                index, attempt = armed
-                event: dict[str, Any] = {
-                    "phase": HOST_PHASE_CAPTURE_RESULT,
-                    "index": index,
-                    "attempt": attempt,
-                    "accepted": False,
-                    "code": spec.code,
-                    "template": spec.template,
-                    "reason": spec.message or spec.banner,
-                    "banner": spec.banner,
-                    "auto_retry": spec.code in TRANSIENT_AUTO_RETRY_CODES,
-                }
-            else:
-                event = {
-                    "phase": HOST_PHASE_CAPTURE_SET_EXHAUSTED,
-                    "budget": TIME_BUDGET_NONE,
-                }
-                if spec is not None:
-                    event.update(
-                        code=spec.code,
-                        reason=spec.message or spec.banner,
-                        banner=spec.banner,
-                    )
-            try:
-                await asyncio.to_thread(
-                    client.post_host_event,
-                    pi_session.session_id,
-                    pi_session.pull_token,
-                    event,
-                )
-            except (OSError, RuntimeError, ValueError):
-                logger.warning(
-                    "v2 terminal host-event post failed", exc_info=True
-                )
-
-        async def _post_session_over_host_event(budget: str = "") -> None:
-            """Tell the phone the whole SESSION ended so its deferred-retry loop
-            stops waiting (W6.10 blocker #3).
-
-            ``budget`` names WHICH clock ran out (work order D8, issue #1807),
-            or ``""`` when the death was not a timeout at all. The wire always
-            carries the field: ``""`` is published as ``TIME_BUDGET_NONE``
-            rather than omitted (issue #2083). Omitting it made the phone render
-            this event as ``renderPlanExhausted`` — "the speaker reached its
-            measurement attempt limit" — which is untrue of BOTH the cases that
-            reach here. It is untrue of an expiry (no attempt limit was reached,
-            a clock ran out) and untrue of a transport death (no clock ran out
-            either, the relay went away), and the three want different things
-            from the household. An older page treats the explicit ``"none"`` as
-            an unnamed budget and behaves exactly as it does today.
-
-            A watchdog collapse during the "waiting for apply" REVIEW hold
-            (``CaptureTimeout``) otherwise left the phone re-posting the same
-            ``begin_capture`` against a still-200 relay session with NO terminal
-            signal — it sat on the hold screen forever (Chrome round 2: "the
-            phone saw nothing"). Unlike ``_post_terminal_failure_host_event``
-            this is session-level (``capture_set_exhausted``), not addressed to
-            the last-armed capture (MEASURE was accepted — a per-index
-            ``capture_result`` there would misreport it): the collapse is not a
-            per-capture verdict. Best-effort — the purge-driven 404 the phone
-            reads as ``deadSession`` is the backstop, and this post fails
-            harmlessly when the failure was the relay transport itself.
-            """
-            try:
-                await asyncio.to_thread(
-                    client.post_host_event,
-                    pi_session.session_id,
-                    pi_session.pull_token,
-                    {
-                        "phase": HOST_PHASE_CAPTURE_SET_EXHAUSTED,
-                        "budget": budget or TIME_BUDGET_NONE,
-                    },
-                )
-            except (OSError, RuntimeError, ValueError):
-                logger.warning(
-                    "v2 session-over host-event post failed", exc_info=True
-                )
-
-        try:
-            opened = await volume.open()
-        except (SessionVolumePlanError, MeasurementWindowError) as exc:
-            # volume.open() raised BEFORE the capture loop owns cleanup — the
-            # relay session is already minted (run 2's retry leaked one here
-            # when the prior session's volume state was still open, firing
-            # SessionVolumePlanError). Purge it best-effort before surfacing so
-            # it cannot linger to worker TTL; the volume hook already released
-            # any measurement pause it took.
-            log_event(
-                logger,
-                "correction.crossover_v2_volume_open_failed",
-                level=logging.WARNING,
-                reason=type(exc).__name__,
-            )
-            await _purge_best_effort()
-            raise CaptureFailed(
-                "the measurement volume could not be opened"
-            ) from exc
-        opened_value = getattr(opened, "value", opened)
-        if opened is not None and str(opened_value) != "opened":
-            # The plan drained itself (emergency attenuation / failure); the
-            # recovery screen keys on needs_recovery via the status block.
-            # The freshly-minted relay session must not linger to worker TTL
-            # when no capture will ever run against it.
-            await _purge_best_effort()
-            raise CaptureFailed(
-                "the fixed measurement volume could not be confirmed"
-            )
-        plan_kwargs: dict[str, Any] = {}
-        if poll_interval_s is not None:
-            plan_kwargs["poll_interval_s"] = poll_interval_s
-        if timeout_s is not None:
-            plan_kwargs["timeout_s"] = timeout_s
-        # The FIRST begin gets the wider v2 placement-reading budget (fold-in);
-        # every later window (arm/upload/between-capture) keeps the tight
-        # per-phase backstop. The REVIEW hold's own rescope lives in the runner.
-        plan_kwargs["first_begin_timeout_s"] = (
-            first_begin_timeout_s if first_begin_timeout_s is not None
-            else V2_FIRST_BEGIN_TIMEOUT_S
-        )
-        capture_task = asyncio.create_task(
-            asyncio.to_thread(
-                run_capture_plan,
-                client,
-                pi_session,
-                authorize_begin=authorize,
-                on_armed=on_armed,
-                consume_capture=consume,
-                stop_requested=stop_event.is_set,
-                # The held-set pair (work order D1): stage 1's final cloud
-                # position IS its capture target, so without these the runner
-                # would end the set on arithmetic — the fit would never run,
-                # the household's retake window would shut at the same moment,
-                # and the review screen would have nothing to review.
-                completion_signal_required=completion_signal_required,
-                on_completion_signal=complete_capture_set,
-                **plan_kwargs,
-            )
-        )
-        try:
-            try:
-                await asyncio.shield(capture_task)
-            except asyncio.CancelledError:
-                stop_event.set()
-                while not capture_task.done():
-                    try:
-                        await asyncio.shield(capture_task)
-                    except asyncio.CancelledError:
-                        continue
-                    except (OSError, RuntimeError, ValueError):
-                        break
-                if capture_task.done() and not capture_task.cancelled():
-                    capture_task.exception()
-                await _abandon_best_effort()
-                await _purge_best_effort()
-                raise
-        except CaptureStopped:
-            await _abandon_best_effort()
-            await _purge_best_effort()
-            raise
-        except CaptureBeginRefused as refusal:
-            # The conductor's own budget refusal — its failure code is already
-            # in _last_reason. Publish that exact named verdict before cleanup.
-            #
-            # The POSITION GATE refuses from the same seam but AHEAD of the
-            # conductor, so it leaves `last_failure_code` unset: without the
-            # middle term a gate refusal fell through to REASON_RELAY_TIMEOUT
-            # and told the household "the measurement link timed out" about a
-            # transport that never failed. The refusal carries its own code;
-            # trust it only when the registry knows it, so an unregistered code
-            # from some future raiser degrades to the old fallback rather than
-            # reaching a screen with no copy.
-            gate_code = str(getattr(refusal, "code", "") or "")
-            if gate_code not in REASON_REGISTRY:
-                gate_code = ""
-            code = conductor.last_failure_code or gate_code or REASON_RELAY_TIMEOUT
-            _persist_terminal_failure(conductor, code)
-            # Only where the relay published nothing itself: on the
-            # authorize_begin path it already posted `capture_refused` for the
-            # REFUSED index, and this slot is last-write-wins (panel SF1). On
-            # the consume path nothing precedes it and the phone waits forever.
-            #
-            # A gate refusal is an authorize_begin refusal too — `run_capture_plan`
-            # posts `capture_refused` with the gate's own code and message before
-            # re-raising — but nothing sets the conductor's flag for it, because
-            # the conductor never saw it. Re-posting here would overwrite that
-            # honest, index-bearing event with a terminal one in the same
-            # last-write-wins slot.
-            already_published = (
-                conductor.relay_published_refusal
-                or gate_code in POSITION_GATE_TERMINAL_CODES
-            )
-            if not already_published:
-                await _post_terminal_failure_host_event(code)
-            await _abandon_best_effort()
-            await asyncio.sleep(TERMINAL_FAILURE_PURGE_GRACE_S)
-            await _purge_best_effort()
-            raise
-        except (CaptureTimeout, CaptureAborted, CaptureFailed, RelayError, OSError) as exc:
-            # Relay-session death (§5.10): relay_timeout ⇒ session restart; the
-            # walked-away user's volume is always drained. Tell the phone the
-            # session is over BEFORE purging (W6.10 blocker #3) — mirror the
-            # catch-all arm's terminal-then-grace-then-purge so a watchdog
-            # collapse during the apply hold reaches the phone's deferred-retry
-            # loop instead of leaving it polling a still-live session forever.
-            #
-            # A deliberate phone Stop (CaptureAborted, reason == "stopped") is
-            # NOT a relay-transport death — it is the household explicitly
-            # ending the measurement. Splitting it out gives it its own honest
-            # copy instead of the dishonest "the measurement link timed out"
-            # claim every other death in this tuple gets.
-            code = REASON_RELAY_TIMEOUT
-            if isinstance(exc, CaptureAborted) and exc.reason == "stopped":
-                code = REASON_USER_STOPPED
-            elif (
-                isinstance(exc, CaptureTimeout)
-                and conductor.current_phase == PHASE_APPLYING
-            ):
-                # The deferred apply/"review" hold (CaptureBeginDeferred
-                # "awaiting_apply") expired: MEASURE was accepted but the
-                # conductor's own auto-apply never landed within
-                # REVIEW_HOLD_BUDGET_S. RETAINED but unreached since PR-T3
-                # (D10): no shipped session parks on that hold any more, so
-                # this arm cannot fire in production — kept with the hold it
-                # classifies. current_phase is PHASE_APPLYING ONLY in
-                # that exact window (MEASURE accepted, VERIFY pending, apply not
-                # observed), so it cleanly separates a hold expiry from a
-                # generic transport death (#1605) — name the real cause instead
-                # of the dishonest "the measurement link timed out". A rare
-                # apply-landed-but-phone-bailed race still renders honestly: the
-                # envelope's applied-keyed override keys on durable
-                # ``applied``, not on this phase.
-                code = REASON_REVIEW_HOLD_TIMEOUT
-            # WHICH clock ran out, named once and disclosed everywhere (work
-            # order D8, issue #1807). Both a step expiry and the relay TTL
-            # arrive in this arm and both persist as REASON_RELAY_TIMEOUT, so
-            # before this line the only surface that could tell them apart was
-            # the exception's own message — and the household saw "the speaker
-            # reached its measurement attempt limit", which is neither of them.
-            budget = expired_time_budget(exc)
-            if budget:
-                log_event(
-                    logger,
-                    "correction.crossover_v2_time_budget_expired",
-                    level=logging.WARNING,
-                    budget=budget,
-                    phase=str(getattr(exc, "phase", "") or ""),
-                    conductor_phase=conductor.current_phase,
-                    # What the expiry PRESERVED: the phases whose captures were
-                    # accepted before the clock ran out. They are on disk as
-                    # evidence; they are not a set the next session resumes
-                    # from, and the phone's copy says so rather than implying a
-                    # resume that does not exist.
-                    accepted_phases=",".join(sorted(conductor.accepted_phases)),
-                )
-            verdict_preserved = _persist_terminal_failure(conductor, code)
-            if not verdict_preserved:
-                await _post_session_over_host_event(budget)
-            await _abandon_best_effort()
-            await asyncio.sleep(TERMINAL_FAILURE_PURGE_GRACE_S)
-            await _purge_best_effort()
-            raise
-        except Exception as exc:  # noqa: BLE001 — cleanup-and-reraise, see below
-            # CATCH-ALL cleanup arm (W6.1 gate ruling). The seams raise
-            # open-endedly — CamillaUnavailable is a bare Exception (a DSP
-            # wedge in load/restore escaped the previously-enumerated arms:
-            # volume left active, relay session leaked, phone frozen at
-            # capture_authorized), analyze/emit raise ValueError/RuntimeError,
-            # the held measurement window raises MeasurementWindowError — so
-            # ANY non-relay failure gets the same honest cleanup: tell the
-            # phone (still polling capture_result), persist a terminal
-            # failure, drain the volume (whose hook also releases the session
-            # measurement pause), purge the relay session, then RE-RAISE so
-            # the outer relay net still logs and flips /status.relay to
-            # failed. Program-side classes keep their own honest code via
-            # ``classify_program_failure`` (issue #1820: a not-confirmed safety
-            # profile is NOT the same failure as a level ceiling, and the
-            # underlying refusal slugs ride out with it); everything else is
-            # internal_error.
-            classified = classify_program_failure(exc)
-            code = classified[0] if classified else REASON_INTERNAL_ERROR
-            refusals = classified[1] if classified else ()
-            if classified:
-                log_event(
-                    logger,
-                    "correction.crossover_v2_program_failure",
-                    level=logging.WARNING,
-                    code=code,
-                    refusals=",".join(refusals),
-                    error_type=type(exc).__name__,
-                    # confirm_graph_is_live's three failures share a type and
-                    # a code; this is what distinguishes them (panel nit).
-                    detail=str(exc),
-                )
-            await _post_terminal_failure_host_event(code)
-            _persist_terminal_failure(conductor, code, refusals=refusals)
-            await _abandon_best_effort()
-            # Finding H: give the just-posted terminal host event a bounded
-            # grace window to reach the phone before the session is purged
-            # out from under its next poll. Volume restore above stays
-            # immediate — only the purge waits.
-            await asyncio.sleep(TERMINAL_FAILURE_PURGE_GRACE_S)
-            await _purge_best_effort()
-            raise
-        # Plan finished without a transport failure.
-        done = conductor.current_phase == PHASE_DONE
-        persist_conductor_state(
-            conductor,
-            failure_code=None if done else conductor.last_failure_code,
-            evidence=evidence_refs,
-        )
-        if done:
-            try:
-                await volume.close()
-            except (OSError, RuntimeError, ValueError) as exc:
-                log_event(
-                    logger,
-                    "correction.crossover_v2_volume_close_failed",
-                    level=logging.CRITICAL,
-                    session_id=pi_session.session_id,
-                    component="volume_close",
-                    error_type=type(exc).__name__,
-                )
-            else:
-                log_event(
-                    logger,
-                    "correction.crossover_v2_cleanup_complete",
-                    session_id=pi_session.session_id,
-                    component="volume_close",
-                )
-        else:
-            await _abandon_best_effort()
-        await _purge_best_effort()
-
-    return _run_and_consume
 
 
 # --------------------------------------------------------------------------- #
@@ -6779,11 +5956,16 @@ def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
 #: **This is a PER-HOLD bound, and it is not the operative total.** The session's
 #: own wall-clock ceiling
 #: (:func:`~jasper.active_speaker.crossover_v2_flow.session_wall_clock_ceiling_s`,
-#: derived per plan — 2520 s for remote's stage 1 and 2040 s for its stage 2 at
+#: derived per plan — 1800 s for remote's stage 1 and 2040 s for its stage 2 at
 #: the shipped shape) covers the WHOLE walk, so a run spending anywhere near
 #: this budget on several holds ends on that ceiling long before any individual
-#: hold expires: stage 1's ceiling is only 4.2 holds' worth, so the FIFTH full
-#: hold of a nine-capture walk exceeds it. A driver that stalls once is caught
+#: hold expires: stage 1's ceiling is exactly 3 holds' worth of a 3-capture
+#: stage, so a remote stage 1 that spent a FULL hold at every position would
+#: land precisely on its ceiling. (Before the 2026-08-18 lateral pause the same
+#: sentence read 2520 s, 4.2 holds' worth, and the FIFTH full hold of a
+#: nine-capture walk exceeding it — the pause dropped both the ceiling and the
+#: captures, and left more hold per position, not less.)
+#: A driver that stalls once is caught
 #: here by name; a driver that is merely slow at every position is caught by the
 #: ceiling, and since issue #2506 that death has its OWN name too —
 #: :data:`SESSION_CEILING_EXPIRED_CODE`, raised by :meth:`PositionGate.gate`
@@ -6792,22 +5974,6 @@ def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
 #: from the ceiling and the capture count is still open; the two bounds are
 #: named separately on purpose, because they describe different drivers.
 REMOTE_POSITION_HOLD_BUDGET_S = 600.0
-
-#: Headroom added to a remote stage's own wall-clock ceiling when its relay link
-#: is minted (issue #2509).
-#:
-#: The ceiling bounds the WALK. The link has to outlive it, for two reasons that
-#: both sit outside the walk: the TTL clock starts at mint, a few seconds before
-#: the measurement volume opens and the ceiling's clock starts; and the ceiling
-#: drains the volume rather than ending the session, so the final blob pull, its
-#: analysis, and the purge all happen on the far side of it.
-#:
-#: 300 s is deliberately coarse — nothing has timed those tails, and this is a
-#: BUDGET ALLOWANCE, not a measurement. It is chosen at the same magnitude as
-#: the longest single pause the flow already admits (``V2_FIRST_BEGIN_TIMEOUT_S``
-#: — a reference point, not a derivation), because being generous costs only a
-#: dead link sitting in relay storage a few minutes longer than it had to.
-REMOTE_RELAY_TTL_MARGIN_S = 300
 
 #: Machine reasons the gate answers a begin with. Stable strings: a driver
 #: branches on these, and the phone renders the message beside them.
@@ -6836,39 +6002,6 @@ POSITION_GATE_TERMINAL_CODES = frozenset(
 
 #: The endpoint an external driver POSTs to report the microphone in place.
 POSITION_READY_ENDPOINT = "/correction/crossover/v2/position-ready"
-
-
-def relay_link_ttl_s(plan_shape: Any, wall_clock_ceiling_s: float) -> int:
-    """The relay link TTL a stage about to be minted should ask for (#2509).
-
-    ``capture_relay.session.DEFAULT_TTL_S`` (900 s) is an ABSOLUTE clock —
-    ``TIME_BUDGET_LINK``, counted from the mint and refreshed by nothing. A
-    hand-walked stage finishes well inside it. A REMOTE stage does not fit: its
-    own wall-clock ceiling is 2520 s (stage 1) / 2040 s (stage 2) at the shipped
-    shape, and a single stalled position may spend
-    :data:`REMOTE_POSITION_HOLD_BUDGET_S` of that on its own. The first real
-    remote run died at ~890 s with the phone still posting, on a 404 from a link
-    that had run out under it (issue #2509).
-
-    So a remote stage sizes its link from the ceiling it is already arming —
-    ``wall_clock_ceiling_s``, the caller's own
-    :func:`~jasper.active_speaker.crossover_v2_flow.session_wall_clock_ceiling_s`
-    value, passed in rather than recomputed so the link and the volume can never
-    describe different sessions — plus :data:`REMOTE_RELAY_TTL_MARGIN_S`, and
-    clamped at what the Worker grants.
-
-    Hand-walked shapes (and the tier-less recovery re-arm, ``plan_shape=None``)
-    keep the default, which is the scope of the observed failure: no
-    hand-walked run has been observed to reach 900 s. This is the seam a
-    hand-walked shape would be widened at.
-    """
-    from jasper.capture_relay.session import DEFAULT_TTL_S, MAX_TTL_S
-
-    if plan_shape is None or not plan_shape.externally_positioned:
-        return DEFAULT_TTL_S
-    return min(
-        MAX_TTL_S, math.ceil(wall_clock_ceiling_s) + REMOTE_RELAY_TTL_MARGIN_S
-    )
 
 
 class PositionGate:
@@ -7522,6 +6655,11 @@ def prepare_v2_session(
     chooser is how a household changes instrument.
     """
     from jasper.active_speaker.branch_chain import confirmed_protection_sections
+    from jasper.active_speaker.crossover_v2.alignment_prescription import (
+        ALIGNMENT_PRESCRIPTION_KEY,
+        AlignmentPrescriptionRefused,
+        read_alignment_prescription,
+    )
     from jasper.active_speaker.crossover_v2_flow import (
         STAGE1_INCLUDES_CLOUD_MEASURE,
         STAGE1_INCLUDES_ENTRY_BASELINE,
@@ -7529,6 +6667,7 @@ def prepare_v2_session(
         CrossoverV2Session,
         CrossoverV2FlowError,
         V2ConductorSnapshot,
+        alignment_delay_search_bounds_us,
         attempt_history_from_state,
         build_v2_cloud_index_phase_map,
         build_v2_session_spec,
@@ -7536,6 +6675,9 @@ def prepare_v2_session(
         session_wall_clock_ceiling_s,
     )
     from jasper.capture_relay import correction_adapter
+    from jasper.active_speaker.crossover_v2.coordinator import (
+        series_position_from_state,
+    )
 
     requested_tier = (raw.get("tier") if raw else None) or None
     if requested_tier is None:
@@ -7574,6 +6716,37 @@ def prepare_v2_session(
     except ValueError as exc:
         raise CrossoverV2Refused(
             "The confirmed driver protection cannot be used for this measurement."
+        ) from exc
+    # #2662, and it happens HERE for three reasons. It is the untrusted-input
+    # boundary, so a malformed or out-of-lobe prescription is refused before any
+    # evidence store, relay registration, or capture — an operator walking a
+    # delay sweep learns at the tap, not after a ten-minute measurement. It is
+    # the first point holding the crossover corner the bound is a half-period
+    # of. And it sits AFTER the two speaker-level gates above rather than before
+    # them: whether this speaker can be measured at all is a prior question to
+    # whether this request's prescription is good, and answering them in the
+    # other order would hand a household a prescription error for a speaker
+    # whose protection cannot be used either way.
+    #
+    # Never inherited from the lapsed session's durable state the way ``tier``
+    # above deliberately is: a prescription is one round's explicit instruction,
+    # and a "measure again" that silently re-ran an arm would put that arm's
+    # name on a round nobody asked for.
+    try:
+        alignment_prescription = read_alignment_prescription(
+            (raw or {}).get(ALIGNMENT_PRESCRIPTION_KEY),
+            fc_hz=context.fc_hz,
+            # The preset's own declared window, from its single owner. It is
+            # the one bound here that does not rest on a number the request
+            # supplied — and it already existed as the Fix-3 plausibility
+            # screen, ten minutes downstream, wearing household copy that asks
+            # the user to move the microphone. Asking it HERE is what stops a
+            # prescribed arm being blamed on a mic.
+            declared_bounds_us=alignment_delay_search_bounds_us(context.preset),
+        )
+    except AlignmentPrescriptionRefused as exc:
+        raise CrossoverV2Refused(
+            f"the alignment prescription was refused ({exc.reason}): {exc.detail}"
         ) from exc
     include_cloud_measure = STAGE1_INCLUDES_CLOUD_MEASURE
     # R16's lateral walk (plan §4.4). Read here beside the cloud flag so the
@@ -7736,6 +6909,16 @@ def prepare_v2_session(
             tweeter_measurement_band_hz=context.tweeter_measurement_band_hz,
             attempt_floor=attempt_store.floor,
             speaker_id=context.topology.topology_id,
+            alignment_prescription=alignment_prescription,
+            # #2698. The same series fact the grading stage reads, from the
+            # same reader and off the same durable state this snapshot is
+            # built from — because stage 1 reads it too, and reads it FIRST.
+            # ``_blend_prescription`` runs at candidate-build time, here in
+            # MEASURE, and an absent position there is not a no-op: it falls
+            # back to the incumbent, so a measuring session with no position
+            # silently discards every blend instruction the previous round
+            # banked and the series can never converge.
+            series_position=series_position_from_state(prior_raw),
         )
         persist_conductor_state(conductor, failure_code=None, evidence=refs)
         holder["run"] = build_v2_run_and_consume(
@@ -7922,6 +7105,15 @@ def prepare_v2_verify(
     # declared to the capability journal below so the verdict's reason is not
     # the first place anyone learns it was missing.
     entry_baseline = entry_baseline_prior_from_state(state)
+    # #2662, rehydrated on entry_baseline's route and for its reason: stage 2
+    # never opened a session with a prescription (it takes no MEASURE capture),
+    # so this durable record is the only way the round it grades can name what
+    # its delay was derived from.
+    alignment_prescription = alignment_prescription_prior_from_state(state)
+    alignment_objective = str(
+        (priors_raw.get("alignment_objective") if isinstance(priors_raw, Mapping)
+         else "") or ""
+    )
     gate_ms = (
         priors_raw.get("gate_window_ms") if isinstance(priors_raw, Mapping) else None
     )
@@ -8051,6 +7243,8 @@ def prepare_v2_verify(
             measure_declared_transfer=declared_transfer,
             measure_proposal_fingerprint=proposal_fingerprint,
             measure_entry_baseline=entry_baseline,
+            alignment_prescription=alignment_prescription,
+            measure_alignment_objective=alignment_objective,
             measure_gate_window_ms=(
                 float(gate_ms) if isinstance(gate_ms, (int, float)) else None
             ),
@@ -8059,10 +7253,11 @@ def prepare_v2_verify(
             # #2602: where the next round sits in the flattening series, read
             # off the receipt the previous round banked and carried forward
             # across sessions — the series outlives the session that started
-            # it. Wired HERE and only here because this is the stage that
-            # grades a round: stage 1 walks CHECK/MEASURE and never reaches
-            # ``_grade_round``, so a series position on its snapshot would be
-            # state nothing reads.
+            # it. This stage reads it in ``_grade_round_once``, the stage that
+            # grades a round. It is wired on BOTH stages since #2698:
+            # #2687 gave stage 1 its own reader (``_blend_prescription``, at
+            # candidate-build time), which falsified the argument this line
+            # once carried for being the series' only wiring site.
             series_position=series_position_from_state(state),
             attempt_floor=attempt_store.floor,
             last_attempt_decision=(

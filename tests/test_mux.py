@@ -265,9 +265,11 @@ async def test_startup_reconcile_failure_recovers_on_patrol_without_restart(
     mux._reconcile = reconcile
     task = asyncio.create_task(mux.run())
     try:
-        await asyncio.wait_for(control_started.wait(), timeout=0.2)
-        await asyncio.wait_for(adapter_started.wait(), timeout=0.2)
-        await asyncio.wait_for(recovered.wait(), timeout=0.2)
+        await wait_signalled(control_started, "control server started", producer=task)
+        await wait_signalled(adapter_started, "adapter tasks started", producer=task)
+        await wait_signalled(
+            recovered, "recovery after startup reconcile failure", producer=task,
+        )
         assert not task.done()
     finally:
         task.cancel()
@@ -439,7 +441,16 @@ async def test_alert_during_coalesce_does_not_queue_empty_reconcile(
 ):
     import jasper.source_events as source_events
 
-    mux.POLL_INTERVAL_SEC = 1.0
+    # Push the fixed patrol out past every wait below so no patrol can
+    # land inside this test at all. A disabling value, not a deadline the
+    # test races: 30.0s sits above wait_signalled's own 10s bound, so no
+    # single wait can approach it alone — the real margin comes from the
+    # test finishing in ~0.2s in practice. The
+    # alternative — filtering patrol-tagged reconciles out of the
+    # assertion — would discard the very bug this test forbids: an EMPTY
+    # reconcile reaches the trigger constructor in Mux.run with `dirty`
+    # empty, and that constructor labels it "patrol".
+    mux.POLL_INTERVAL_SEC = 30.0
     mux._fanin_none_best_effort = AsyncMock()
     monkeypatch.setattr(
         source_events,
@@ -457,28 +468,46 @@ async def test_alert_during_coalesce_does_not_queue_empty_reconcile(
     second_alert_done = asyncio.Event()
 
     async def record_reconcile(*, trigger, dirty_sources):
+        # Key the coordination on the trigger mux reports, never on
+        # position in `reconciles`: a patrol landing between the alerts
+        # could otherwise impersonate the first one and mis-signal
+        # everything below, leaving the test correct only while it
+        # finished inside one poll interval. Substring, because an alert
+        # that was also patrol-due arrives as "alert+patrol" — the whole
+        # vocabulary is fixed by the trigger constructor in Mux.run.
         reconciles.append((trigger, tuple(sorted(s.value for s in dirty_sources))))
         if trigger == "startup":
             startup_done.set()
-        elif len(reconciles) == 2:
+        elif "alert" in trigger:
             mux._last_alert_reconcile_at = asyncio.get_running_loop().time()
-            first_alert_done.set()
-        elif len(reconciles) == 3:
-            mux._last_alert_reconcile_at = asyncio.get_running_loop().time()
-            second_alert_done.set()
+            alerts_seen = sum(1 for seen, _ in reconciles if "alert" in seen)
+            if alerts_seen == 1:
+                first_alert_done.set()
+            elif alerts_seen == 2:
+                second_alert_done.set()
 
     mux._reconcile = record_reconcile
     task = asyncio.create_task(mux.run())
     try:
-        await asyncio.wait_for(startup_done.wait(), timeout=0.2)
+        await wait_signalled(startup_done, "startup reconcile", producer=task)
         mux.notify_source_changed(Source.AIRPLAY, "test")
-        await asyncio.wait_for(first_alert_done.wait(), timeout=0.2)
+        await wait_signalled(
+            first_alert_done, "first alert reconcile", producer=task,
+        )
 
         mux.notify_source_changed(Source.AIRPLAY, "test")
         await asyncio.sleep(0.01)
         mux.notify_source_changed(Source.AIRPLAY, "test")
-        await asyncio.wait_for(second_alert_done.wait(), timeout=0.2)
-        await asyncio.sleep(0.02)
+        await wait_signalled(
+            second_alert_done, "second alert reconcile", producer=task,
+        )
+        # Watch PAST the coalesce interval. An empty reconcile does not
+        # arrive with the alert that strands its wake — it arrives one
+        # ALERT_COALESCE_SEC later (measured at +51ms, against a 20ms
+        # window before this line grew). Strip both of mux's protections
+        # and the extra `("patrol", ())` lands inside this window; leave
+        # them in and nothing else can, because the patrol is 30s out.
+        await asyncio.sleep(mux_module.ALERT_COALESCE_SEC * 3)
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)

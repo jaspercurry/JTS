@@ -29,7 +29,11 @@ from .driver_protection import (
     DRIVER_PROTECTION_POLICY_VERSION,
     HF_MEASUREMENT_ABS_CEILING_DBFS,
     HIGH_FREQUENCY_ROLES,
+    apply_driver_low_limit,
+    driver_low_limit_plausibility_band_hz,
+    driver_low_limit_plausible,
     driver_protection_profile,
+    resolve_driver_low_limit,
 )
 from .measurement import active_driver_targets, physical_driver_target
 from .test_signal_plan import MIN_DRIVER_TEST_FREQUENCY_HZ
@@ -73,6 +77,7 @@ _MANUAL_DRIVER_FIELDS = {
     "sensitivity_db_2v83_1m",
     "usable_frequency_range_hz",
     "recommended_highpass_hz",
+    "recommended_highpass_slope_db_per_octave",
     "recommended_lowpass_hz",
     "do_not_test_below_hz",
     "gain_offset_db",
@@ -112,6 +117,19 @@ _MANUAL_CANDIDATE_FIELDS = {
 
 class DriverSafetyProfileError(ValueError):
     """Raised when research or safety-profile input is malformed."""
+
+
+class DriverSafetyProfileStaleLowLimitError(DriverSafetyProfileError):
+    """A stored profile predates the one-owner low-limit collapse (#2603).
+
+    Its own bands and protective high-pass disagree about where the driver
+    stops, which is what the 2026-08-17 ruling exists to end. Split out from
+    the generic malformed case so the household is told the ACTIONABLE thing --
+    re-confirm the driver profile at /sound/ -- rather than "schema invalid",
+    which reads as corruption and suggests no remedy. Playback is unaffected:
+    the staged CamillaDSP graph is a separate artifact, so the speaker keeps
+    working while the profile waits to be re-confirmed.
+    """
 
 
 @dataclass(frozen=True)
@@ -678,6 +696,34 @@ def normalise_driver_safety_fields(
     if not isinstance(value, Mapping):
         raise DriverSafetyProfileError(f"{field_name} must be an object")
     out: dict[str, Any] = {}
+    # The OWNER of this driver's low limit (2026-08-17 ruling, #2603) is parsed
+    # here rather than alongside the advisory display fields, because that is
+    # what it is: a safety field, and the one every other low-limit field
+    # derives from. Parsing it at this shared point is what gives it a single
+    # parse site across the design draft, the research result, and the safety
+    # profile's own manual settings.
+    low_limit_hz = _positive_float(
+        value.get("recommended_highpass_hz"),
+        f"{field_name}.recommended_highpass_hz",
+    )
+    low_limit_slope = _positive_float(
+        value.get("recommended_highpass_slope_db_per_octave"),
+        f"{field_name}.recommended_highpass_slope_db_per_octave",
+    )
+    if low_limit_slope is not None:
+        if low_limit_hz is None:
+            raise DriverSafetyProfileError(
+                f"{field_name}.recommended_highpass_slope_db_per_octave has no "
+                "recommended_highpass_hz to condition"
+            )
+        if low_limit_slope > 96:
+            raise DriverSafetyProfileError(
+                f"{field_name}.recommended_highpass_slope_db_per_octave must be <= 96"
+            )
+    if low_limit_hz is not None:
+        out["recommended_highpass_hz"] = low_limit_hz
+    if low_limit_slope is not None:
+        out["recommended_highpass_slope_db_per_octave"] = low_limit_slope
     for key in (
         "hard_excitation_band_hz",
         "measurement_band_hz",
@@ -746,6 +792,7 @@ _V2_RESEARCH_DRIVER_FIELDS = {
     "sensitivity_db_2v83_1m",
     "usable_frequency_range_hz",
     "recommended_highpass_hz",
+    "recommended_highpass_slope_db_per_octave",
     "recommended_lowpass_hz",
     "do_not_test_below_hz",
     "hard_excitation_band_hz",
@@ -1206,7 +1253,7 @@ _PROMPT_TARGET_KEYS = (
 # remaining fields are advisory prefill an operator reviews anyway.
 _PROMPT_PROVENANCE_KEYS = (
     "hard_excitation_band_hz",
-    "do_not_test_below_hz",
+    "recommended_highpass_hz",
     "required_protection_filters",
     "level_duration_limits",
     "sensitivity_db_2v83_1m",
@@ -1238,12 +1285,15 @@ def _prompt_example_highpass_hz(request: Mapping[str, Any]) -> float:
     """The worked RESULT SHAPE example's tweeter cutoff, in Hz.
 
     Read from policy for the same reason ``_driver_research_prompt_limits``
-    is: a fixed constant here is only legal for the styles whose floor it
-    happens to clear.  A hard-coded 3000 reads as a worked answer to a ribbon
-    (floor 5000) or supertweeter (floor 8000) target whose own LIMITS line one
-    screen above says otherwise — the reply then lands
-    ``tweeter:highpass_below_code_policy``, which is precisely the deadlock
-    #2186 exists to end.
+    is: a fixed constant here suits only the styles whose class default it
+    happens to sit near.  A hard-coded 3000 reads as a worked answer to a
+    ribbon (class default 5000) or supertweeter (8000) target whose own LIMITS
+    line one screen above states a plausibility band anchored somewhere else —
+    a worked example arguing with the bounds printed beside it is precisely the
+    deadlock #2186 exists to end.  (Until the 2026-08-17 ruling that mismatch
+    was also REFUSED, as ``tweeter:highpass_below_code_policy``; a sourced
+    figure now wins outright, so the cost is a confusing example rather than a
+    rejected reply.)
 
     The strictest high-frequency floor among this request's targets is used, so
     a mixed request cannot teach a cutoff that is illegal for one of its own
@@ -1296,10 +1346,14 @@ def _driver_research_prompt_limits(request: Mapping[str, Any]) -> list[str]:
             driver_style=target.get("driver_style"),
         )
         bounds: list[str] = []
-        if policy.min_highpass_hz is not None:
+        band = driver_low_limit_plausibility_band_hz(
+            str(target.get("role") or ""),
+            driver_style=target.get("driver_style"),
+        )
+        if band is not None:
             bounds.append(
-                "required high-pass cutoff_hz at or above "
-                f"{policy.min_highpass_hz:g}"
+                "recommended_highpass_hz between "
+                f"{band[0]:g} and {band[1]:g} if published, else null"
             )
         bounds.append(
             f"max_effective_peak_dbfs at or below {policy.max_auto_level_dbfs:g}"
@@ -1339,7 +1393,7 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
     researcher's best reality-grounded number from the driver's published facts
     and physics, declared as an estimate, with one citation.  Safety never
     lived in a number's timidity: it lives in ``_target_issues`` (below), the
-    per-style high-pass floor, the peak ceiling, and the quiet-start ramp.  A
+    per-style plausibility band, the peak ceiling, and the quiet-start ramp.  A
     wrong best-estimate degrades a measurement; it cannot blow a driver, while
     prompt-level lowballing costs real performance — a needlessly high cutoff
     robs usable range, a needlessly low level under-drives the measurement —
@@ -1349,7 +1403,7 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
 
     What did **not** move is the protection itself.  ``_target_issues`` still
     refuses an estimate that lands outside code policy — the per-style
-    high-pass floor, the peak ceiling, band nesting — and refuses it by name
+    plausibility band, the peak ceiling, band nesting — and refuses it by name
     rather than silently clamping it, so an operator sees the bound and decides.
     The quiet-start commissioning ramp and its acknowledgements are untouched.
     Widening the *sourcing* of a proposed number is a different question from
@@ -1407,19 +1461,30 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
             "Use null only for a field with no engineering basis at all, and add one entry to that driver's unknowns saying which fact is missing.",
             "Never infer physical installation choices such as enclosure kind or horn or waveguide use. Treat operator_declared_context as authoritative; if an installation choice is undeclared, leave it unknown.",
             "For cabinet geometry, research radiator count, effective radiating diameter, and baffle width only when supported by evidence, while preserving any operator-declared enclosure choice.",
-            "For a tweeter or compression driver, do_not_test_below_hz and required_protection_filters are the priority lookups.",
+            "For a tweeter or compression driver, recommended_highpass_hz is the priority lookup.",
             "",
-            "ESTIMATING THE PROTECTION FIELDS",
-            "required_protection_filters: cutoff_hz and minimum_slope_db_per_octave are both numbers, never null. Estimate the cutoff from the driver's type and size — a small dome or ribbon needs a higher cutoff than a large compression driver — at 24 dB/octave or steeper. A mid needs both a high-pass and a low-pass.",
-            "hard_excitation_band_hz: the published usable range when there is one, otherwise the range typical for that type, tightened at both ends.",
-            "measurement_band_hz and crossover_search_band_hz are protocol choices, not driver facts. A filter cutoff is not a brick wall. Keep the hard excitation band distinct from required filter cutoff/slope, the measurement band, and the crossover-search band.",
-            "Nest the three bands: the crossover-search band sits inside the measurement band, the measurement band sits inside the hard excitation band, and every filter cutoff sits inside the hard excitation band. A reply that does not nest is refused.",
+            "THE MINIMUM CROSSOVER FREQUENCY, AND HOW IT IS PUBLISHED",
+            "recommended_highpass_hz is the manufacturer's minimum recommended crossover frequency for this driver. It is the single most important number in this reply: this build derives the driver's protective high-pass, the bottom of its allowed excitation band, and the bottom of its analysis window from it.",
+            "Horn and compression-driver makers print it on a dedicated spec line. The exact wording varies — \"Recommended Crossover\" (B&C, BMS, 18 Sound), \"Minimum Crossover Frequency\" or \"Recommended min. crossover\" (FaitalPro, Celestion) — so match the meaning, not the phrase.",
+            "Dome tweeters usually have no such line at all. Look instead at the test condition footnoted to the POWER HANDLING rating, which states the filter used: \"IEC 268-5, high-pass Butterworth, 2600 Hz, 12 dB/oct\" or \"X-over: 2. order HP Butterworth, 2.5 kHz\". That frequency is the answer.",
+            "recommended_highpass_slope_db_per_octave is the slope CONDITION the manufacturer attaches to that frequency, reported separately. Convert a filter order to dB/octave: 2nd order is 12, 3rd is 18, 4th is 24. Send it only when the manufacturer states one — it is not universal, and some datasheets give the frequency with no slope at all.",
+            "If the manufacturer publishes no minimum crossover frequency, send null for both and add an entry to unknowns. Absent is a correct answer here. Do NOT estimate this one: a safety margin is computed downstream by this build, and an invented number would be indistinguishable from a datasheet figure.",
+            "The numbers in RESULT SHAPE below are format placeholders, not answers — recommended_highpass_hz especially. Send this driver's own published figure, or null. Never copy the example's number, and never badge a number you did not read on a datasheet as confidence \"high\".",
+            "",
+            "ESTIMATING THE REMAINING PROTECTION FIELDS",
+            "required_protection_filters: send this ONLY for a mid, which needs a low-pass. A high-pass requirement is DERIVED from recommended_highpass_hz and must not be sent. cutoff_hz and minimum_slope_db_per_octave are both numbers, never null.",
+            'A mid therefore adds exactly one entry, in this shape: "required_protection_filters": [{"kind":"lowpass","cutoff_hz":3000,"minimum_slope_db_per_octave":24,"family_or_equivalent":"equivalent_or_steeper"}]. No other role sends this key.',
+            "hard_excitation_band_hz: the published usable range when there is one, otherwise the range typical for that type, tightened at both ends. Its LOWER edge is derived from recommended_highpass_hz, so what matters here is the upper edge.",
+            "measurement_band_hz is the driver's published frequency-response range — for example a compression driver rated 1.0-18.0 kHz sends [1000, 18000]. Send the published range even when it extends below the minimum crossover; this build clamps the analysis window up into the allowed band itself.",
+            "crossover_search_band_hz is a protocol choice, not a driver fact. A filter cutoff is not a brick wall.",
+            "Nest the bands: the crossover-search band sits inside the measurement band, and the measurement band sits inside the hard excitation band. A reply that does not nest is refused.",
             "level_duration_limits: measurement-protocol discipline, not datasheet facts. Send all four numbers, and unless a datasheet says stricter use max_sweep_duration_s 4, max_repeat_count 3, minimum_cooldown_s 2.",
             "For max_effective_peak_dbfs, use -20 for a woofer, mid, or full-range driver. For a tweeter with no published level limit, send exactly the ceiling listed under LIMITS: that hands the level choice to this build's own protection logic, which raises it only once a protective high-pass is proven in the signal path.",
             "Send a lower tweeter number only when you mean it as a deliberate quieter limit — anything below the ceiling is taken literally and is never raised. Never send a value above the ceiling.",
             "",
             "LIMITS",
             "This build refuses a reply outside these bounds. They are outer bounds, not recommended values: when a published requirement is stricter, the published one wins.",
+            "The minimum-crossover bound is a PLAUSIBILITY range, not a target. A published figure inside it is believed even when it sits below what is typical for the driver type; a figure outside it is refused as a mis-read rather than believed.",
             *_driver_research_prompt_limits(request),
             "",
             "RESULT SHAPE",
@@ -1437,17 +1502,25 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
             '    "sensitivity_db_2v83_1m": 90,',
             f'    "usable_frequency_range_hz": [{hp - 1000}, 20000],',
             f'    "recommended_highpass_hz": {hp},',
-            f'    "do_not_test_below_hz": {hard_low},',
+            '    "recommended_highpass_slope_db_per_octave": 12,',
             f'    "hard_excitation_band_hz": [{hard_low}, 20000],',
-            f'    "required_protection_filters": [{{"kind":"highpass","cutoff_hz":{hp},"minimum_slope_db_per_octave":24,"family_or_equivalent":"equivalent_or_steeper"}}],',
-            f'    "measurement_band_hz": [{hp}, 18000],',
+            f'    "measurement_band_hz": [{hp - 1000}, 18000],',
             f'    "crossover_search_band_hz": [{hp + 500}, {search_high}],',
             '    "level_duration_limits": {"max_effective_peak_dbfs":-65,"max_sweep_duration_s":4,"max_repeat_count":3,"minimum_cooldown_s":2},',
             '    "cabinet": {"enclosure_kind":"sealed|vented|passive_radiator|open_baffle|transmission_line|unknown","radiator_count":1,"effective_radiating_diameter_mm":null,"baffle_width_mm":null},',
             '    "driver_class": "compression_horn|soft_dome|metal_dome|beryllium_diamond_dome|ribbon_amt|unknown",',
             '    "radiating_diameter_mm": 25,',
             '    "unknowns": ["facts that could not be established"],',
-            '    "field_provenance": {"do_not_test_below_hz":{"confidence":"high","basis":"datasheet minimum crossover","source":"manufacturer datasheet","sources":["https://..."]},"level_duration_limits":{"confidence":"low","basis":"estimated: protocol default, no published limit","source":"measurement protocol, no published limit","sources":[]}},',
+            # The high-confidence exemplar is deliberately NOT
+            # recommended_highpass_hz. Every other value in this shape is a
+            # visible placeholder ("echo from TARGETS", "a|b|c", "https://..."),
+            # but that field's example is a concrete number this build COMPUTED
+            # from its own style table -- so badging it high/datasheet modelled
+            # exactly the mistake this prompt forbids two screens up, and is the
+            # shape jts3 shipped: an unpublished 2000 wearing a datasheet badge.
+            # sensitivity_db_2v83_1m carries the published exemplar instead; it
+            # is genuinely a datasheet line, so nothing false is taught.
+            '    "field_provenance": {"sensitivity_db_2v83_1m":{"confidence":"high","basis":"datasheet sensitivity line","source":"manufacturer datasheet","sources":["https://..."]},"level_duration_limits":{"confidence":"low","basis":"estimated: protocol default, no published limit","source":"measurement protocol, no published limit","sources":[]}},',
             '    "notes": "one short sentence",',
             '    "sources": ["https://..."]',
             "  }],",
@@ -1793,20 +1866,26 @@ def _target_issues(target: Mapping[str, Any]) -> list[str]:
             cutoff = float(item["cutoff_hz"])
             if not hard[0] <= cutoff <= hard[1]:
                 reasons.append(f"{role}:{item.get('kind')}_cutoff_outside_hard_band")
-    if policy.min_highpass_hz is not None:
-        highpass = next(
-            (
-                item
-                for item in filters
-                if isinstance(item, Mapping) and item.get("kind") == "highpass"
-            ),
-            None,
-        )
-        if (
-            isinstance(highpass, Mapping)
-            and float(highpass["cutoff_hz"]) < policy.min_highpass_hz
-        ):
-            reasons.append(f"{role}:highpass_below_code_policy")
+    # The style table used to VETO here: a declared high-pass below the class
+    # default landed ``<role>:highpass_below_code_policy`` and the profile
+    # refused to confirm. The 2026-08-17 ruling (#2603) reversed that -- a
+    # sourced manufacturer figure wins outright, and B&C's published 1.6 kHz
+    # for the DE250 is exactly the number the 2 kHz class default was rejecting.
+    # What remains is a plausibility bound: a declared low limit wildly away
+    # from its style is garbage (a transposed digit, a woofer's number pasted
+    # into a tweeter row) rather than a datasheet, and refusing garbage IS the
+    # safety class. Within the band the declaration is believed.
+    low_limit = resolve_driver_low_limit(
+        target,
+        role=role,
+        driver_style=target.get("driver_style"),
+    )
+    if low_limit is not None and not driver_low_limit_plausible(
+        low_limit.frequency_hz,
+        role=role,
+        driver_style=target.get("driver_style"),
+    ):
+        reasons.append(f"{role}:low_limit_implausible_for_style")
     return reasons
 
 
@@ -1877,13 +1956,59 @@ def _profile_core(
                 unknown = f"{field}: operator override has no matching research source"
                 if unknown not in unknowns:
                     unknowns.append(unknown)
+        # One owner, every consumer derives (#2603). The stored target carries
+        # the PROJECTION of this driver's declared low limit, not four
+        # independently-typed numbers -- so the Fc sweep's floor, the
+        # linearization fit band, the protection posture, and the grading bands
+        # cannot disagree about where this driver stops.
+        style = driver_styles.get(target_id) or "unspecified"
+        derived = apply_driver_low_limit(visible, role=role, driver_style=style)
+        for field in ("hard_excitation_band_hz", "measurement_band_hz",
+                      "required_protection_filters"):
+            if _canonical_json(derived.get(field)) == _canonical_json(visible.get(field)):
+                continue
+            low_limit = resolve_driver_low_limit(visible, role=role, driver_style=style)
+            provenance[field] = {
+                "confidence": "unknown",
+                "basis": (
+                    "Derived from the declared minimum recommended crossover "
+                    "frequency; not an independently sourced value."
+                ),
+                "sources": [],
+            }
+            derived_note = (
+                f"{field}: derived from recommended_highpass_hz "
+                f"({low_limit.frequency_hz:g} Hz, {low_limit.provenance})"
+                if low_limit is not None
+                else f"{field}: derived from the declared driver low limit"
+            )
+            # "Derived" alone hides the case that actually costs an operator
+            # something: a value they TYPED, replaced. /sound/ still renders an
+            # editable high-pass cutoff and slope, and the derivation overwrites
+            # both -- so a household that deliberately entered a stricter
+            # number was told only that the field was derived, never that their
+            # own entry had been superseded and by what. Naming it is what
+            # makes the replacement reviewable at the confirm gate, where every
+            # unknown is shown before anything is frozen.
+            replaced = _superseded_typed_highpass(visible, derived) if (
+                field == "required_protection_filters"
+            ) else ()
+            for was, now, what in replaced:
+                supersede_note = (
+                    f"{field}: the typed high-pass {what} {was:g} was replaced "
+                    f"by the derived {now:g}"
+                )
+                if supersede_note not in unknowns:
+                    unknowns.append(supersede_note)
+            if derived_note not in unknowns:
+                unknowns.append(derived_note)
         entry: dict[str, Any] = {
             "target_id": target_id,
             "target_fingerprint": str(physical["target_fingerprint"]),
             "speaker_group_id": str(physical["speaker_group_id"]),
             "speaker_group_mode": str(physical["speaker_group_mode"]),
             "role": role,
-            "driver_style": driver_styles.get(target_id) or "unspecified",
+            "driver_style": style,
             "target_values_binding": (
                 "explicit_target"
                 if target_id in manual_by_target
@@ -1894,12 +2019,12 @@ def _profile_core(
             "physical_output_index": physical.get("output_index"),
             "model": visible.get("model"),
             "manufacturer": visible.get("manufacturer"),
-            "hard_excitation_band_hz": visible.get("hard_excitation_band_hz"),
-            "required_protection_filters": visible.get(
+            "hard_excitation_band_hz": derived.get("hard_excitation_band_hz"),
+            "required_protection_filters": derived.get(
                 "required_protection_filters", []
             ),
-            "measurement_band_hz": visible.get("measurement_band_hz"),
-            "crossover_search_band_hz": visible.get("crossover_search_band_hz"),
+            "measurement_band_hz": derived.get("measurement_band_hz"),
+            "crossover_search_band_hz": derived.get("crossover_search_band_hz"),
             "level_duration_limits": visible.get("level_duration_limits", {}),
             "cabinet": visible.get(
                 "cabinet",
@@ -2288,6 +2413,24 @@ def _validate_driver_safety_profile_shape(profile: Mapping[str, Any]) -> None:
             raise DriverSafetyProfileError(
                 f"{field_name} safety fields are not canonical"
             )
+        # ... and they must still be the PROJECTION of this target's own
+        # declared low limit (#2603). A stored profile whose bands and
+        # protective high-pass disagree about where the driver stops is exactly
+        # the drift this ruling collapsed; it is refused rather than read,
+        # because reading it would pick one of two answers silently.
+        rederived = apply_driver_low_limit(
+            normalised_safety,
+            role=target.get("role"),
+            driver_style=target.get("driver_style"),
+        )
+        rederived_safety = {
+            key: rederived[key] for key in safety_fields if key in rederived
+        }
+        if _canonical_json(raw_safety) != _canonical_json(rederived_safety):
+            raise DriverSafetyProfileStaleLowLimitError(
+                f"{field_name} safety fields no longer match this driver's "
+                "declared low limit; re-confirm the driver profile at /sound/"
+            )
         normalised_unknowns = _normalise_unknowns(
             target.get("unknowns"),
             f"{field_name}.unknowns",
@@ -2366,6 +2509,83 @@ def _validate_driver_safety_profile_shape(profile: Mapping[str, Any]) -> None:
             )
 
 
+def _superseded_typed_highpass(
+    visible: Mapping[str, Any],
+    derived: Mapping[str, Any],
+) -> tuple[tuple[float, float, str], ...]:
+    """``(typed, derived, what)`` for each high-pass value the projection replaced.
+
+    Only reports a value that actually MOVED. A declaration whose typed
+    high-pass already equals its derivation -- the ordinary case, including
+    every profile whose low limit was inferred from that same filter -- reports
+    nothing, so the disclosure stays a signal rather than a line on every save.
+    """
+
+    def highpass(source: Mapping[str, Any]) -> Mapping[str, Any] | None:
+        entries = source.get("required_protection_filters")
+        if not isinstance(entries, list):
+            return None
+        for item in entries:
+            if not isinstance(item, Mapping):
+                continue
+            if str(item.get("kind") or "").strip().lower() == "highpass":
+                return item
+        return None
+
+    def number(value: Any) -> float | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value) if math.isfinite(float(value)) else None
+
+    typed = highpass(visible)
+    now = highpass(derived)
+    if typed is None or now is None:
+        return ()
+    out: list[tuple[float, float, str]] = []
+    for key, what in (
+        ("cutoff_hz", "cutoff"),
+        ("minimum_slope_db_per_octave", "slope"),
+    ):
+        was_value = number(typed.get(key))
+        now_value = number(now.get(key))
+        if was_value is None or now_value is None or was_value == now_value:
+            continue
+        out.append((was_value, now_value, what))
+    return tuple(out)
+
+
+def _stale_low_limit_rebuild_issues(profile: Mapping[str, Any]) -> tuple[str, ...]:
+    """The blocking issues a REBUILD of this stale profile would carry.
+
+    Same derivation and same issue vocabulary the rebuild itself uses, applied
+    to the stored targets, so the two cannot disagree about whether confirming
+    is possible. Total by construction: a target this cannot read contributes
+    nothing rather than raising, because this runs inside an except branch
+    whose whole contract is to REPORT instead of raise.
+    """
+
+    targets = profile.get("targets")
+    if not isinstance(targets, list):
+        return ()
+    issues: list[str] = []
+    for target in targets:
+        if not isinstance(target, Mapping):
+            continue
+        try:
+            derived = apply_driver_low_limit(
+                target,
+                role=target.get("role"),
+                driver_style=target.get("driver_style"),
+            )
+            found = _target_issues(derived)
+        except (KeyError, TypeError, ValueError):
+            continue
+        for issue in found:
+            if issue not in issues:
+                issues.append(issue)
+    return tuple(issues)
+
+
 def evaluate_driver_safety_profile(
     profile: Any,
     topology: OutputTopology,
@@ -2378,6 +2598,31 @@ def evaluate_driver_safety_profile(
         )
     try:
         _validate_driver_safety_profile_shape(profile)
+    except DriverSafetyProfileStaleLowLimitError:
+        # Named separately from the generic malformed case so /sound/ can say
+        # "re-confirm" instead of "corrupt". Still a RETURN, never a raise, so a
+        # box carrying a pre-#2603 split declaration reports and waits rather
+        # than crash-looping a daemon.
+        #
+        # The reasons carry MORE than the name, because the name alone cannot
+        # answer the only question the household has: will re-confirming work?
+        # Deriving the low limit moves the hard band's lower edge up to it, and
+        # that can push an already-declared crossover-search band outside its
+        # own hard band -- at which point ``build_driver_safety_profile``
+        # REFUSES to confirm. Appending the rebuild's own blocking issues lets
+        # /sound/ decide whether to offer the button at all, and name the
+        # remedy when it cannot, instead of offering it and raising on the
+        # first click. jts3 is exactly this shape.
+        fingerprint = profile.get("profile_fingerprint")
+        return DriverSafetyProfileEvaluation(
+            "malformed",
+            False,
+            str(fingerprint) if isinstance(fingerprint, str) else None,
+            (
+                "driver_safety_profile_low_limit_stale",
+                *_stale_low_limit_rebuild_issues(profile),
+            ),
+        )
     except DriverSafetyProfileError:
         fingerprint = profile.get("profile_fingerprint")
         return DriverSafetyProfileEvaluation(

@@ -173,11 +173,15 @@ check(polarityRowText() === "Kept as set",
 // delay half of the same refusal commits a DIFFERENT objective when the
 // speaker already carries an applied alignment to hold (#2617), and its
 // polarity is just as unmeasured. A one-string check here is what would let
-// that second commitment reach a household as "Inverted (measured)".
+// that second commitment reach a household as "Inverted (measured)". #2662's
+// prescribed delay is the fourth: the DELAY there was measured, on a bench,
+// but the polarity beside it still was not — so it belongs in this loop and
+// not in the measured one below.
 for (const objective of [
   "declared_committed_after_low_snr",
   "applied_alignment_held_after_low_snr",
   "no_delay_committed_after_unreadable_apply",
+  "explicit_prescription_held_after_low_snr",
 ]) {
   for (const polarity of ["keep", "invert"]) {
     render({
@@ -207,6 +211,7 @@ for (const objective of [
   "declared_committed_after_low_snr",
   "applied_alignment_held_after_low_snr",
   "no_delay_committed_after_unreadable_apply",
+  "explicit_prescription_held_after_low_snr",
 ]) {
   render({
     ...baseEnvelope,

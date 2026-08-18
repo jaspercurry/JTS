@@ -1551,6 +1551,153 @@ def test_midcapture_splice_is_attributed_to_a_discontinuity_not_drift():
     assert res.drift.discontinuity_after_segment == "sweep_w"
 
 
+# --- D7: the desync guard vs. its own estimator's resolution -------------------
+#
+# Series-2 diagnosis (2026-08-17). The guard's 1.5-sample threshold used to be
+# compared against a residual built from `_locate_in_window`'s INTEGER
+# `int(np.argmax(...))` of the dry stimulus against the room-convolved capture,
+# whose argmax hops between adjacent early lobes by a few samples — so 1.5 sat
+# below the instrument's own noise. The two tests below pin both directions of
+# the fix: a clean capture whose locate hopped must be ACCEPTED, and a capture
+# carrying a real timeline step must still be REJECTED, with the gate's
+# sensitivity numerically unchanged.
+
+
+def _pre_d7_max_residual(prog, locations, epsilon):
+    """The residual statistic exactly as it was computed before D7.
+
+    Straight from `located_start` — the integer locate — rather than from
+    `_subsample_separation`. The global offset cancels in the per-role
+    demeaning, so it is not a parameter here.
+    """
+    groups: dict[str, list[float]] = {}
+    for loc in locations:
+        if loc.kind != program_analysis.KIND_SWEEP:
+            continue
+        start = prog.segment(loc.segment_id).start_sample
+        groups.setdefault(loc.role, []).append(
+            loc.located_start - start * (1.0 + epsilon)
+        )
+    out = 0.0
+    for resids in groups.values():
+        mean = sum(resids) / len(resids)
+        out = max(out, max(abs(r - mean) for r in resids))
+    return out
+
+
+def test_integer_locate_lobe_hop_on_a_clean_capture_is_not_a_desync():
+    """D7 — the guard must not fire below the resolution of its own estimator.
+
+    Eight physically-clean series-2 captures were rejected `residual_desync` at
+    a reported 2.00-3.13 samples — the band this test asserts into; the rest of
+    that forensic sits on `GLITCH_RESIDUAL_SAMPLES`, which owns it. This
+    reproduces the signature at the seam it came from: one clean capture, its
+    own locations, and a few samples of
+    integer-locate error injected on ONE occurrence. The AUDIO is untouched, so
+    the honest verdict is "no desync" — and the fixed guard, which measures the
+    occurrences against each other rather than against their located starts,
+    returns essentially the answer it gave before the injection: the reported
+    max moves by 1.166e-6 samples, against a threshold of 1.5. The tolerance is
+    1e-5 because the movement is fixture- and hop-size-dependent — sweeping the
+    injection over ±1..9 samples on either tweeter occurrence peaks at 1.65e-6,
+    so 1e-5 keeps ~6x headroom over that, with room left for FFT-backend
+    variation across CI's three Python versions and a different OS.
+    """
+    prog = build_measure_program(
+        {"woofer": -11.0, "tweeter": -13.0}, _roles(),
+        sweep_durations={"woofer": 0.8, "tweeter": 0.6},
+    )
+    cap = _synthesize(
+        prog,
+        woofer_ir=_band_impulse(200, 150.0, 6000.0, 1.0),
+        tweeter_ir=_band_impulse(260, 300.0, 20000.0, 0.7),
+        epsilon=40e-6,
+    )
+    res = analyze_program_capture(
+        prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
+    )
+    assert not res.glitch_detected
+
+    # Inject on a TWEETER occurrence deliberately: on this fixture the tweeter
+    # owns the reported max (0.0148 against the woofer's 0.0013), so perturbing
+    # a woofer occurrence would leave `max_residual_samples` untouched to the
+    # bit and the comparison below could not fail whatever the guard did.
+    hopped_locations = [
+        dataclasses.replace(loc, located_start=loc.located_start + 4)
+        if loc.segment_id == "sweep_t_rep"
+        else loc
+        for loc in res.locations
+    ]
+    clean = program_analysis._estimate_drift(prog, cap, SR, res.locations)
+    hopped = program_analysis._estimate_drift(prog, cap, SR, hopped_locations)
+
+    # The defect is reproduced: read off the integer locate, those same
+    # locations land squarely in the banked 2.00-3.13 band and trip the gate.
+    pre_d7 = _pre_d7_max_residual(prog, hopped_locations, hopped.epsilon_ppm / 1e6)
+    assert pre_d7 == pytest.approx(3.0, abs=0.05)
+    assert pre_d7 > program_analysis.GLITCH_RESIDUAL_SAMPLES
+
+    # The shipped guard is unmoved — a locate that hopped is not a capture that
+    # desynced. Four samples of injected locate error move the answer by six
+    # orders of magnitude less than the threshold it is compared against.
+    assert hopped.max_residual_samples == pytest.approx(
+        clean.max_residual_samples, abs=1e-5
+    )
+    assert hopped.max_residual_samples < 0.5
+    assert "residual_desync" not in hopped.glitch_inputs
+    assert not hopped.glitch_detected
+
+
+@pytest.mark.parametrize(
+    "after_segment, insert_samples, expect_rejected, expect_spread",
+    [
+        # #2533's shape, at its own program position: a deterministic
+        # ~128-sample playback insertion in the gap after the SECOND tweeter
+        # sweep, which broke every lateral capture of the 2026-08-15 campaign.
+        ("sweep_t_rep", 128, True, 42.667),
+        # The gate's small end, pinned so a future edit cannot quietly widen
+        # the hole D7 was accused of widening.
+        ("sweep_w", 4, True, 2.0),
+        ("sweep_w", 2, False, 1.0),
+    ],
+)
+def test_desync_guard_keeps_its_teeth_after_d7(
+    after_segment, insert_samples, expect_rejected, expect_spread
+):
+    """D7's other direction: a sharper instrument must not be a blunter gate.
+
+    A real timeline step is a real separation, so both estimators measure it —
+    pinned here by asserting the pre-D7 statistic and the shipped one agree on
+    every one of these captures. What D7 changed is the noise floor underneath
+    them, never the sensitivity; the measured before/after for that floor is
+    recorded on `GLITCH_RESIDUAL_SAMPLES` rather than restated here.
+    """
+    prog = build_measure_program(
+        {"woofer": -11.0, "tweeter": -13.0}, _roles(),
+        sweep_durations={"woofer": 0.8, "tweeter": 0.6},
+    )
+    cap = _synthesize(
+        prog,
+        woofer_ir=_band_impulse(200, 150.0, 6000.0, 1.0),
+        tweeter_ir=_band_impulse(225, 300.0, 20000.0, 0.7),
+        epsilon=0.0,
+    )
+    seg = prog.segment(after_segment)
+    cut = GLOBAL_OFFSET + seg.start_sample + seg.n_samples + 4_000
+    spliced = np.concatenate([cap[:cut], np.zeros(insert_samples), cap[cut:]])
+
+    res = analyze_program_capture(
+        prog, spliced, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
+    )
+    assert res.drift.max_residual_samples == pytest.approx(expect_spread, abs=0.05)
+    assert ("residual_desync" in res.drift.glitch_inputs) is expect_rejected
+    # …and the pre-D7 statistic agrees, on a real step, to within a hundredth of
+    # a sample. The two estimators only part company on the noise.
+    assert _pre_d7_max_residual(
+        prog, res.locations, res.drift.epsilon_ppm / 1e6
+    ) == pytest.approx(res.drift.max_residual_samples, abs=0.01)
+
+
 def test_diagnostic_summary_says_WHY_the_gate_window_is_what_it_is():
     """#1966 — the sidecar must distinguish "reflection found" from "capped".
 
@@ -5137,9 +5284,12 @@ def test_check_refuses_a_capture_with_no_program_in_it_at_all():
     here: with no ambient evidence `_channel_map_ok` documents a fallback to
     the original total-in-band-energy-fraction test (no rise concept without
     an ambient window), and white noise against the tweeter's 2.5-20 kHz
-    declared band does put most of its energy in band — a true statement about
-    a capture that contains no program. Per-role protection is pinned on the
-    realistic miswire fixture above, where the offset is sound.
+    declared band does put most of its energy in band — which since #2052
+    resolves that role to UNKNOWN rather than to a PASS it did not earn. The
+    woofer's own band still fails the fraction outright, and a FAILURE
+    outranks an unknown in the fold, so the session verdict is ``False``.
+    Per-role protection is pinned on the realistic miswire fixture above,
+    where the offset is sound.
     """
     roles = _check_roles()
     chk = build_check_program(roles, ambient_s=1.0, pilot_duration_s=0.5)
@@ -5154,6 +5304,192 @@ def test_check_refuses_a_capture_with_no_program_in_it_at_all():
     assert res.linearity_ok is False
     assert res.gain_plan is not None
     assert res.gain_plan.snr_floor_ok is False
+
+
+# --------------------------------------------------------------------------- #
+# CHECK channel map — honest-unknown on the no-ambient fallback (issue #2052)
+#
+# The fallback runs whenever the ambient window is absent or unusable. Three
+# facts are pinned below and they are one design: the fallback's PASS is not
+# evidence (so it is UNKNOWN), its FAIL still is (so it stays a finding), and
+# the fold over the roles is tri-state rather than `all()`.
+# --------------------------------------------------------------------------- #
+
+
+def _deep_plant(delay: int, f_lo: float, f_hi: float, amp: float) -> np.ndarray:
+    """A synthetic driver IR with a ~-88 dB stopband.
+
+    Doubling `_band_impulse`'s ~-44 dB single-mask stopband, for the same
+    reason `test_channel_map_fails_on_swapped_channels` does it: at -44 dB a
+    driver fed fully out-of-band content still leaks a coherent in-band ghost
+    above the noise floor, which is a fixture artifact rather than anything a
+    physical driver does.
+    """
+    single = _band_impulse(delay, f_lo, f_hi, 1.0)
+    return amp * fftconvolve(single, single)
+
+
+def _degraded_check_capture(
+    woofer_plant: np.ndarray | None,
+    tweeter_plant: np.ndarray | None,
+    seed: int,
+    *,
+    late_samples: int = 0,
+):
+    """A CHECK capture whose ambient window is gone, so the fallback runs.
+
+    Two independent ways to lose the window, both reproduced by the callers:
+    starting the recording ``late_samples`` after the program (the #1818 shape
+    — below `AMBIENT_MIN_USABLE_FRACTION` of the scheduled window survives, so
+    `_ambient_from_capture` answers "no evidence"), or silencing the driver
+    that anchors offset recovery, which leaves the window's scheduled span
+    almost entirely before the capture began.
+    """
+    roles = [
+        RoleBand("woofer", 0, FrequencyBand(150.0, 1200.0)),
+        RoleBand("tweeter", 1, FrequencyBand(2500.0, 20000.0)),
+    ]
+    chk = build_check_program(roles, ambient_s=1.0, pilot_duration_s=0.5)
+    pcm = render_program_pcm(chk)
+    mono = np.zeros(pcm.shape[0])
+    for channel, plant in ((0, woofer_plant), (1, tweeter_plant)):
+        if plant is not None:
+            mono = mono + fftconvolve(pcm[:, channel], plant)[: pcm.shape[0]]
+    cap = np.concatenate([np.zeros(500), mono, np.zeros(5000)])
+    cap = cap + np.random.default_rng(seed).normal(0.0, 3e-5, cap.size)
+    return chk, (cap[late_samples:] if late_samples else cap)
+
+
+#: 0.9 s of a 1.0 s scheduled window, plus the fixture's own 500-sample lead —
+#: comfortably under `AMBIENT_MIN_USABLE_FRACTION` (0.5).
+_LATE_SAMPLES = int(0.9 * SR) + 500
+
+
+def test_channel_map_fallback_pass_is_unknown_and_fail_is_a_finding():
+    """The no-ambient fallback is ONE-SIDED evidence, reported one-sided.
+
+    Direct unit coverage of `_channel_map_ok`'s fallback branch, because the
+    asymmetry IS the design and a symmetric rewrite in either direction is a
+    real regression:
+
+    * folding the FAIL to ``None`` too drops the only channel-map evidence a
+      capture with no ambient window still carries (pinned end-to-end by
+      `test_degraded_miswire_still_names_the_wiring_not_the_room`);
+    * leaving the PASS as ``True`` republishes the #2042 false pass (pinned by
+      `test_channel_map_fallback_never_passes_a_driver_that_never_played`).
+
+    Both rise numbers stay ``None`` on this path — there is no rise concept
+    without an ambient reference — so the tell that the fallback ran, rather
+    than the rise test, is unchanged.
+    """
+    # The real scheduled segment, not a hand-built twin: its declared band IS
+    # the fact under test, and a local copy is a second statement of it.
+    chk = build_check_program(
+        [
+            RoleBand("woofer", 0, FrequencyBand(150.0, 1200.0)),
+            RoleBand("tweeter", 1, FrequencyBand(2500.0, 20000.0)),
+        ],
+        ambient_s=1.0, pilot_duration_s=0.5,
+    )
+    seg = chk.segment("pilot_woofer_hi")
+    noise = np.random.default_rng(2052).normal(0.0, 1.0, seg.n_samples)
+    in_band = fftconvolve(noise, _band_impulse(0, 150.0, 1200.0, 1.0))[: seg.n_samples]
+    out_of_band = fftconvolve(noise, _band_impulse(0, 4000.0, 20000.0, 1.0))[: seg.n_samples]
+
+    ok, target_rise, cross_rise = program_analysis._channel_map_ok(
+        in_band, SR, seg, ambient_samples=None,
+    )
+    assert ok is None                       # cleared the fraction — not evidence
+    assert target_rise is None and cross_rise is None
+
+    ok, target_rise, cross_rise = program_analysis._channel_map_ok(
+        out_of_band, SR, seg, ambient_samples=None,
+    )
+    assert ok is False                      # missed its own band — a finding
+    assert target_rise is None and cross_rise is None
+
+
+def test_channel_map_fallback_never_passes_a_driver_that_never_played():
+    """#2042's flagged false PASS, removed (issue #2052).
+
+    The realistic miswire — one driver silent — recorded so late that the
+    ambient window is unusable. The rise test cannot run, and the fallback's
+    fraction is cleared by the silent role's window of pure ROOM NOISE, because
+    a 2.5-20 kHz declared band holds most of broadband noise's energy. Before
+    #2052 that published ``channel_map_ok=True`` for a driver that produced
+    nothing at all.
+
+    What must hold: neither role claims a PASS, the session verdict is UNKNOWN
+    rather than a PASS, and — the `all()` trap — an unknown beside a pass is
+    NOT laundered into the ``channel_map_mismatch`` hard stop, which would tell
+    this household to open a speaker on evidence that was never taken.
+    """
+    chk, cap = _degraded_check_capture(
+        _deep_plant(200, 150.0, 1200.0, 1.0), None, 5, late_samples=_LATE_SAMPLES,
+    )
+    res = analyze_program_capture(chk, cap, SR, priors=MeasurementPriors())
+
+    assert res.ambient_report["bands"] == []           # the fallback really ran
+    by_role = {p.role: p for p in res.pilots}
+    assert by_role["tweeter"].channel_map_ok is None   # was True before #2052
+    assert by_role["woofer"].channel_map_ok is None
+    assert all(p.channel_map_target_rise_db is None for p in res.pilots)
+    assert res.channel_map_ok is None
+    # Still refused, on the rungs whose evidence this capture DOES carry.
+    assert res.linearity_ok is False
+
+
+def test_degraded_miswire_still_names_the_wiring_not_the_room():
+    """The fallback's FAIL is the only wiring evidence a lost window leaves.
+
+    Both miswire shapes that destroy offset recovery outright — a swapped
+    pair, and a silent ANCHOR driver (`_global_offset` anchors on
+    ``pilot_woofer_lo``) — take the fallback with no ambient window at all.
+    Their surviving role misses its own declared band, so the fallback fails
+    and the session verdict stays an explicit ``False``, which
+    `capture_dispatch.check_screens` maps to ``channel_map_mismatch`` — a
+    wiring remedy for a wiring fault.
+
+    This is the half of #2052 that a blanket "unknown whenever the window is
+    gone" would have cost: measured on this branch, both shapes would have
+    dropped to ``None`` and fallen from `check_screens`' rung 3 to its rung 5,
+    with copy blaming the room instead. Refusal held either way; the
+    household's remedy did not.
+    """
+    woofer = _deep_plant(200, 150.0, 1200.0, 1.0)
+    tweeter = _deep_plant(225, 2500.0, 20000.0, 0.8)
+    for tag, (ch0, ch1, seed) in {
+        "swapped pair": (tweeter, woofer, 12),
+        "silent anchor driver": (None, tweeter, 7),
+    }.items():
+        chk, cap = _degraded_check_capture(ch0, ch1, seed)
+        res = analyze_program_capture(chk, cap, SR, priors=MeasurementPriors())
+        assert res.ambient_report["bands"] == [], tag   # the fallback really ran
+        assert res.channel_map_ok is False, tag
+
+
+def test_channel_map_aggregate_is_tri_state():
+    """The channel-map fold, pinned on the same table as ``linearity_ok``.
+
+    Both go through `_aggregate_tri_state_ok` — one fold, because "what does
+    unknown mean here" is one decision. FAILURE outranks UNKNOWN outranks
+    PASS: a role that genuinely landed in the wrong band must not be laundered
+    by an unreadable sibling, and a readable sibling must not upgrade an
+    unknown into "the map is right".
+
+    Pinned directly because the reduction was ``all(...)`` until #2052, and
+    Python folds ``None`` to False there — so the moment the fallback started
+    answering ``None``, a plain ``all()`` would have turned every unknown into
+    ``channel_map_mismatch``: a hard stop telling a household to rewire its
+    speaker, decided on evidence nobody took.
+    """
+    aggregate = program_analysis._aggregate_tri_state_ok
+    assert aggregate([]) is None
+    assert aggregate([True, True]) is True
+    assert aggregate([True, None]) is None
+    assert aggregate([None, None]) is None
+    assert aggregate([False, None]) is False
+    assert aggregate([False, True]) is False
 
 
 # --------------------------------------------------------------------------- #

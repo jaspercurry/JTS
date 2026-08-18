@@ -290,12 +290,12 @@ writer epoch: the apply is a live websocket load, not a CamillaDSP restart.
 [#2339](https://github.com/jaspercurry/JTS/issues/2339) are closed against that
 evidence.
 
-The measurement/commissioning **wizard** flows are a separate case and **stay
-off the armed box until an on-device sweep passes** —
+The measurement/commissioning **wizard** flows are a separate case, and the
+**commissioning half is now hardware-proven on an armed ring** —
 [#2344](https://github.com/jaspercurry/JTS/issues/2344), addressed by PR
-[#2363](https://github.com/jaspercurry/JTS/pull/2363) (up 2026-08-12, not
-merged). **Read the restriction as what it now is: an unvalidated-hardware
-restriction, not a code refusal.** #2412's Wave 3
+[#2363](https://github.com/jaspercurry/JTS/pull/2363) (merged 2026-08-12,
+`a6e6ae9c2`). **Read what remains as what it is: an unvalidated-hardware
+restriction on the measurement half, not a code refusal.** #2412's Wave 3
 (PR [#2633](https://github.com/jaspercurry/JTS/pull/2633)) replaces the blanket
 code-level refusal with two positive gates (below), so the code does not enforce
 this on its own; the operating restriction stands on the missing hardware
@@ -321,14 +321,26 @@ than one:
   (`commissioning_transport_supported`, id kept, predicate inverted) plus an
   armed-transport gate at the load preflight (`commissioning_transport_armed` —
   the coupling and the ACTIVE-endpoint marker, read fresh). The hardware claim
-  the refusal deferred is not discharged by that: **no commissioning sweep has
-  run through the armed ring** (see the restriction below).
+  the refusal deferred is not discharged by the gates themselves; it was
+  discharged separately, on hardware (see below).
 
-**No COMMISSIONING/WIZARD sweep has been run through the armed ring**, so the
-first bullet is code-correct and hardware-unvalidated, and the restriction stands
-until an on-device wizard sweep passes. A MEASURE-lane sweep is a different
-claim and has already been made: the arm3 finale's `correction_substream` sweep
-traverses the armed ring, which is what proved the lane clean.
+**A COMMISSIONING/WIZARD flow HAS now run through the armed ring, and the
+armed-box restriction is lifted 2026-08-17.** The §8.7 hardware pass drove the
+per-driver commissioning routes at level on jts.local (armed ring, dummy loads,
+build `620065dff`), and the ring is what it drove: `driver_commission_prepared`
+carrying `transport=ring capture=jts_ring_capture
+playback=jts_ring_active_playback wire=S32_LE`, with the level model closing
+arithmetically on the CamillaDSP wire rather than reading the silence this issue
+is about (−105.76 dBFS predicted vs −105.81 measured; a +10 dB step moved the
+wire exactly +10). Evidence `captures/8.7-EVIDENCE-jts-local-2026-08-17.md`
+(laptop-side), ruled in [#2412's closing
+comment](https://github.com/jaspercurry/JTS/issues/2412#issuecomment-5318721559).
+Note the proving box was **jts.local**, not jts3. What that pass did NOT
+exercise is the **first** bullet — the applied-summed measurement graph — so
+that half stays code-correct and hardware-unvalidated, which is why #2344 stays
+open. A MEASURE-lane sweep is a different claim again and has already been
+made: the arm3 finale's `correction_substream` sweep traverses the armed ring,
+which is what proved the lane clean.
 
 Certified USB route-latency baseline to compare against: **p50 36.35 /
 p95 37.93 / p99 38.29 ms** over 1094 impulses / 32.6 minutes. The quick
@@ -535,7 +547,7 @@ detail.
 | [#2338](https://github.com/jaspercurry/JTS/issues/2338) | Unify `build_baseline_profile_candidate` onto `active_emit_devices` — the second emit site never learned the both-halves lesson | **Closed** by PR [#2359](https://github.com/jaspercurry/JTS/pull/2359) (merged 2026-08-12, `f6e2ea640`) — filed at #2335's merge, same family as #2337/#2339. It routes the candidate builder's capture lane, wire format and latency geometry through `active_emit_devices` and walks the contract at four forwarding sites instead of two |
 | [#2339](https://github.com/jaspercurry/JTS/issues/2339) | `reconcile-current-dsp` clobbered an armed ring graph, so arm step 3 and every deploy silently de-armed a roleful box | **Closed** by PR [#2343](https://github.com/jaspercurry/JTS/pull/2343) (merged 2026-08-11) — found live on jts3 during the arm, and proven fixed there the same day: a full deploy left the arm intact, the seam firing exactly as before onto an identical graph. Restriction **lifted 2026-08-11** (`captures/endpoint-deploy-jts3-20260811T185255Z`) |
 | [#2340](https://github.com/jaspercurry/JTS/issues/2340) | Deploying to jts.local over its USB management address self-severs the deploy's own ssh — install succeeds on the Pi while the laptop hangs on a half-open socket | **Closed** by PR [#2358](https://github.com/jaspercurry/JTS/pull/2358) (merged `1caff2304`, 2026-08-11) — the deploy preflight now warns when `PI_HOST` resolves inside the USB gadget's management subnet, and `SSH_BATCH_OPTS` carries keepalives so a severed transport surfaces as an ssh error in about a minute instead of an unbounded hang |
-| [#2344](https://github.com/jaspercurry/JTS/issues/2344) | A `web_commissioning` measurement sweep on an armed box excites the unfed aloop lane and measures silence | Open. The mechanism is **two** defects, not one, and they take opposite fixes: the applied-summed measurement graph inherited the snapshot's lane and now reads `resolve_live_active_endpoint` like the rest of that family, while the per-driver/summed **commissioning** graph resolved the ring by name but used to forward none of the rest of `active_emit_devices` (completed by #2412's Wave 1, behind the refusal) and refused on an armed box instead of emitting a ring sink over the aloop capture. **That refusal is retired by Wave 3, and it did not become a return to the aloop path**: the owner ruled forward-only on 2026-08-13 ([#2412](https://github.com/jaspercurry/JTS/issues/2412)), superseding the earlier de-arm → chip-AEC commission on the aloop path → re-arm shape this row used to describe, and #2412's ruling of 2026-08-16 has commissioning learn the ring first. #2412's sealed design swaps this blocker for ring-transport gates at its **Wave 3, PR [#2633](https://github.com/jaspercurry/JTS/pull/2633), MERGED 2026-08-16, `40d117229`**: a both-ends coherence proof at prepare and an armed-transport gate at the load preflight, with `commissioning_ring_transport_unsupported` retired in favour of three codes that name which end is wrong. The aloop pipeline is deleted even though commissioning/corpus mode still depends on it, corpus mode is a small debug/experimental feature that may stay broken in the interim, and the failure stays fail-closed and loud. Code in PR [#2363](https://github.com/jaspercurry/JTS/pull/2363) (up 2026-08-12, not merged), mutation-proved; on-device armed-ring sweep **pending**, so the jts3 restriction is **ENFORCED** until it passes and this issue closes on the sweep validating the *first* half's route |
+| [#2344](https://github.com/jaspercurry/JTS/issues/2344) | A `web_commissioning` measurement sweep on an armed box excites the unfed aloop lane and measures silence | Open. The mechanism is **two** defects, not one, and they take opposite fixes: the applied-summed measurement graph inherited the snapshot's lane and now reads `resolve_live_active_endpoint` like the rest of that family, while the per-driver/summed **commissioning** graph resolved the ring by name but used to forward none of the rest of `active_emit_devices` (completed by #2412's Wave 1, behind the refusal) and refused on an armed box instead of emitting a ring sink over the aloop capture. **That refusal is retired by Wave 3, and it did not become a return to the aloop path**: the owner ruled forward-only on 2026-08-13 ([#2412](https://github.com/jaspercurry/JTS/issues/2412)), superseding the earlier de-arm → chip-AEC commission on the aloop path → re-arm shape this row used to describe, and #2412's ruling of 2026-08-16 has commissioning learn the ring first. #2412's sealed design swaps this blocker for ring-transport gates at its **Wave 3, PR [#2633](https://github.com/jaspercurry/JTS/pull/2633), MERGED 2026-08-16, `40d117229`**: a both-ends coherence proof at prepare and an armed-transport gate at the load preflight, with `commissioning_ring_transport_unsupported` retired in favour of three codes that name which end is wrong. The aloop pipeline is deleted even though commissioning/corpus mode still depends on it, corpus mode is a small debug/experimental feature that may stay broken in the interim, and the failure stays fail-closed and loud. Code in PR [#2363](https://github.com/jaspercurry/JTS/pull/2363) (**merged 2026-08-12**, `a6e6ae9c2`), mutation-proved. The armed-box restriction is **lifted 2026-08-17**: the §8.7 hardware pass drove the per-driver commissioning routes at level on an armed ring (jts.local — not jts3 — dummy loads, build `620065dff`), with `driver_commission_prepared` carrying `transport=ring capture=jts_ring_capture playback=jts_ring_active_playback wire=S32_LE` and the level model closing on the CamillaDSP wire rather than on silence (`captures/8.7-EVIDENCE-jts-local-2026-08-17.md`, ruled in [#2412's closing comment](https://github.com/jaspercurry/JTS/issues/2412#issuecomment-5318721559)). Still open, because that pass exercised the commissioning half only: this issue closes on a sweep validating the *first* half's route |
 | [#2345](https://github.com/jaspercurry/JTS/issues/2345) | fan-in emits `tts.assistant_loudness.final_gain_db=+3.0` while the doctor asserts the clamp is `[-60, 0]` — the assistant can be boosted past a bound the doctor believes is enforced | **Closed** by PR [#2355](https://github.com/jaspercurry/JTS/pull/2355) (merged 2026-08-11, `3ef3e74cd`). **The doctor's assertion was the stale half.** The engine has had no fixed positive ceiling since `6304556a4` "Remove fixed TTS gain ceiling" (2026-07-01), which updated `audio-paths.md` and `HANDOFF-volume.md` and missed the doctor; positive gain there is intentional, because a pre-DSP decision pre-compensates for CamillaDSP's downstream attenuation. The `+3.0` was not a clamp at all but the computed peak cap (`max_peak_dbfs=-3.0` minus the uncalibrated fallback source peak `-6.0`) holding a `+5.0` request down, so whether ordinary music re-anchors the target positively never had to be answered. The doctor now asserts the per-decision contract `max(floor, min(requested_gain_db, peak_cap_gain_db))` — the real floor and the computed peak cap — rather than a positive ceiling nothing enforces. |
 | [#2348](https://github.com/jaspercurry/JTS/issues/2348) | Gain-structure normalization at prescribe time — push the static trim set to the computed headroom ceiling | Open — [#2291](https://github.com/jaspercurry/JTS/issues/2291)'s prescribe stage, raised by the gain structures the arm's re-emit exposed on jts3 |
 
@@ -823,7 +835,13 @@ and step 1 already put the graph at the endpoint. It reports
 refusal is `result=camilla_anchor_not_converged`, WARNING, carrying the reason)
 and on the operator's stdout line — so a converged arm is never read as one that
 wrote a graph. A commissioned box's applied baseline still RECONCILES exactly as
-before, and every other `skipped` still fails and recovers to loopback: a
+before **whenever CamillaDSP is running** — which is the only case it can, since
+the rung's contract is "re-emit AND LOAD". With the daemon down the reconcile
+still succeeds, over the statefile (`transport=statefile`, #2664), and the rung
+refuses that answer ahead of every acceptance: nothing was loaded, so nothing is
+confirmed, and the box takes a confirm strike toward the two-strike escalation
+back to loopback rather than reporting itself armed against a dead reader.
+Every other `skipped` still fails and recovers to loopback: a
 different refusal code, a per-driver commissioning load (told apart by PATH,
 since it classifies like the anchor), an anchor still at the aloop endpoint,
 one that moved only its sink, one at the wrong wire, or one that is not muted.
@@ -1668,6 +1686,22 @@ of it. The **R6 rung, the U1 arc row, and the P8 P-row** were saying jts.local
 was still owner-gated and unarmed, contradicting the Fleet row — all three
 corrected. **No box was probed in this pass**; every hardware fact here is
 carried from a dated reading already in this file.
+
+**2026-08-17 (the #2344 armed-box restriction, lifted on §8.7's evidence):**
+re-verified only the #2344 restriction and its two statement sites — the
+primary prose above the R-ladder tables, and the issue-ledger row — each
+against the source rather than against this file. The hardware claim was read
+from [#2412's closing
+comment](https://github.com/jaspercurry/JTS/issues/2412#issuecomment-5318721559),
+the durable source, because the capture it cites is laptop-side and
+gitignored; #2344's still-OPEN state from `gh`; and PR #2363's merge from
+`git merge-base --is-ancestor a6e6ae9c2 d10924a9f` (exit 0), which is what
+falsified both sites' "not merged". Rewritten: the restriction now reads
+lifted for the **commissioning** half and outstanding for the **measurement**
+half, so #2344's own closure condition survives the lift. **No box was probed
+in this pass** — it records the §8.7 pass of the same date, run on jts.local
+elsewhere, rather than claiming a new one. Nothing else in this file was
+re-read.
 
 Everything else — both appendices, the egress and source-half facts, the wire
 resolution, the P6/P7 arcs beyond the one verdict named above, and the

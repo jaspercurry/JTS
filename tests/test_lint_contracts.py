@@ -369,6 +369,15 @@ def test_noqa_debt_does_not_grow() -> None:
 # that had two, not a smaller file, and a ratchet that quietly booked it as a
 # saving would be lying about which kind of win it was.
 #
+# `crossover_envelope_v2` sits at 4,076 rather than the 4,048 it was set at, and
+# the 28 lines are #2656's: a capped MISSED series now ends in the adoption
+# table, which mints an ending this screen had no sentence for. The lines are
+# one household sentence, its rationale, and the branch that reaches it — the
+# household-copy work this module exists to own, not a concern leaking in. The
+# guard's question is whether a file is accreting things its filename does not
+# describe; the honest answer here is no, and compressing correct prose to keep
+# the number flat would be gaming it.
+#
 # `crossover_v2_flow` sits at 12,510 rather than the 12,508 the deletions left,
 # and the two lines are the ratchet catching its own author: the fix round for
 # this PR's gate review corrected a comment at `:2801` that named the wrong
@@ -376,11 +385,318 @@ def test_noqa_debt_does_not_grow() -> None:
 # account takes two lines more than the false claim did. Compressing correct
 # prose to keep a number flat would be gaming the guard; raising it by exactly
 # the two lines earned, in the diff that earned them, is the guard working.
+#
+# `program_analysis` sits at 6,969 rather than 6,932, and #2052 is the first
+# change to meet this ceiling. The diff is +6 executable lines and +31 of
+# prose. The six are the whole change: one shared tri-state fold where two
+# `all(...)` reductions stood (`all()` folds `None` to False, which would have
+# turned an unknown channel map into a hard stop telling a household to rewire
+# its speaker), two widened signatures, and a four-line branch where a
+# one-line `return <bool>` stood. The prose is the one-sidedness rule stated
+# once at its owner, `_channel_map_ok` — a review round trimmed it there and
+# at the two upstream sites that had begun restating it, which is where 10 of
+# these lines went back. What is left is a safety rule whose two halves are
+# each pinned by a fixture, and compressing that to keep a number flat would
+# be gaming the guard rather than passing it.
+#
+# 2026-08-17 (#2637): `crossover_v2_flow` 12,510 -> 12,537, in two bumps in one
+# PR. The caps were set at the tree's exact counts, so the file had zero
+# headroom and ANY addition trips the guard — which is the guard working, not a
+# verdict that the addition is wrong.
+#
+# The first +18 is one env reader (`v2_first_begin_timeout_s`) plus its import
+# and export entry, buying a first-begin budget an operator can widen in
+# jasper.env instead of a rebuild. The second +9 is that PR's own gate round:
+# the reader advertised a range four times wider than a hand-walked stage's
+# relay link can honour, and the correction is a derived ceiling plus the
+# paragraph saying why the bound is not written here. Prose that stops an
+# operator setting a value the link clock will kill is worth nine lines.
+#
+# Neither bump was clawed back out of correct prose elsewhere in the file.
+#
+# Decision 10 (#2600) raises three of the four, and the fourth is the point.
+# The blend region's shape correction is a NEW capability, and the ratchet's
+# question is not "did a file grow" but "did it grow things its filename does
+# not describe":
+#
+#  * `crossover_v2_flow` 12,548 -> 12,645 (rebased over #2637's +27 and
+#    #2603's +11). 97 lines: 49 of wiring, then 48 the panel's combined fix
+#    round earned — the strict-reader route both lenses independently asked
+#    for, and `_blend_prescription`, whose 26 lines are the argument for why
+#    "no instruction" reads the applied graph rather than reverting to
+#    nothing (the ruling that keeps a restored round from dropping an adopted
+#    correction). The solve, the fit, the bounds, the
+#    iteration and its refusals are ~470 lines in a NEW module,
+#    `crossover_v2/blend_correction.py`, which is where a ratchet-respecting
+#    change puts them. What landed here is 49 lines of wiring and no policy:
+#    widening one existing sink so the graded curve travels with the verdict
+#    that describes it, one reader for the applied incumbent (the shape
+#    `applied_boosts` already has, for the reason it has it), and two argument
+#    hand-offs. Every number the correction is bounded by lives in the new
+#    module; this file learned no new fact about blends.
+#  * `crossover_envelope_v2` 4,076 -> 4,096. One household sentence, its
+#    rationale, and the branch that reaches it — the same shape as #2656's 28
+#    lines directly above, and the same argument: this file's job is household
+#    copy, and a screen that reports the blend defect round after round with
+#    nothing saying a lever is aimed at it reads as a loop doing nothing.
+#  * `program_analysis` 6,969 -> 6,978. Nine lines, all prose, zero executable:
+#    `crossover_region_band_hz` now names its second READER. The correction
+#    consumes that band through the claim that already calls it rather than
+#    calling it again, which is what keeps this a one-caller function — and a
+#    docstring is where "who reads this band" has to be answerable, since the
+#    call graph no longer says it.
+#  * `correction_crossover_v2` stays at 9,186. Decision 10 adds no endpoint, no
+#    screen, and no state key the host must own, so the host that has only ever
+#    grown does not grow here.
+# 2026-08-18 (#2662, the explicit delay prescription). Three ceilings move,
+# and the honest accounting is that most of the room is PROSE this repository
+# charges for on purpose — the #2603 note below says compressing a reason out
+# to keep a number flat is gaming the guard, and that rule does not stop
+# applying when the number is inconvenient.
+#  * `program_analysis` 6,978 -> 7,155. The largest bump, and the one owed the
+#    most explanation. About a third is executable: two commitment objectives
+#    and the two sets that classify them, one prior field, `half_period_us`,
+#    the selector's prescribed-delay arms, and the disclosure that fires when a
+#    prescription reaches no commitment. The rest is this file's own
+#    convention — every objective constant here carries a paragraph saying
+#    WHICH FACT produced the commitment, because a forensic reader of a
+#    persisted candidate has nothing else to read, and the two new ones each
+#    have a membership argument to make (one keeps its residual, one gives it
+#    up with the rest of the low-SNR refusal). `half_period_us`'s docstring is
+#    load-bearing for the same reason: it is the single geometry two modules
+#    now share, and the sentence naming BOTH callers is what stops a third
+#    spelling appearing.
+#    THE SEAM, named rather than taken: the `ALIGNMENT_*` objective vocabulary
+#    plus `half_period_us` and the alignment dataclasses are ~200 lines of pure
+#    vocabulary with no logic, and extracting them to an `alignment` sibling
+#    would pay this bump back several times over. It is not taken HERE because
+#    two sibling implementers are live in this same file tonight (the
+#    delta-probe axis and the capture-integrity work), and a 200-line move
+#    under them is a merge collision, not a cleanup. It is the right next cut.
+#  * `crossover_v2_flow` 12,645 -> 12,682. Fifteen executable lines and no
+#    policy: one ctor argument, one field, one property, and three hand-offs —
+#    the session HOLDS a prescription the boundary already validated and never
+#    re-judges it. Every rule about what a prescription may be lives in the new
+#    `crossover_v2/alignment_prescription.py`; this file learned no new fact
+#    about delays.
+#  * `correction_crossover_v2` 9,186 -> 9,258. Twenty-eight executable lines:
+#    the request gate's call and its refusal translation, one durable key, one
+#    reader beside its eight siblings, and two hand-offs. The comment block at
+#    the gate is most of the rest, and it is where the ORDER is recorded — the
+#    two speaker-level gates run first, because whether this speaker can be
+#    measured at all is a prior question to whether this request is good.
+#  * `crossover_envelope_v2` stays at 4,096. The prescription adds no household
+#    screen: the fourth declared-polarity objective reuses the sentence the
+#    other three already earned.
+#
+# 2026-08-18 (#2662, the two-lens panel's fix round). Three more, all paying for
+# findings rather than for features — which is the ratchet doing exactly what it
+# is for, since a fix round that could not afford its own explanation would ship
+# the fix and lose the reason.
+#  * `program_analysis` 7,155 -> 7,193. The cross-check's second derivation is
+#    DELETED here and the answer is carried on the candidate instead, so the
+#    executable count barely moves; what costs the lines is the field's own
+#    paragraph (a reader has to know why it is carried and not computed, which
+#    is the whole defect), the `not-committed` disclosure gaining the delay that
+#    was committed instead, and the two Fc guards on the lobe tripwire finally
+#    saying why neither covers the other.
+#  * `crossover_v2_flow` 12,682 -> 12,720. One more ctor argument, one field,
+#    one property and one read off the candidate's frozen evidence — the same
+#    route `measure_proposal_fingerprint` already takes, and the comment says so
+#    rather than re-deriving it.
+#  * `correction_crossover_v2` 9,258 -> 9,282. One durable key, one rehydrate,
+#    one hand-off, and the sentence recording that the preset's declared window
+#    is now asked at the tap instead of ten minutes later at a screen that
+#    blames the microphone.
 MAX_LINES_BY_PATH = {
-    "jasper/active_speaker/crossover_v2_flow.py": 12_510,
-    "jasper/web/correction_crossover_v2.py": 9_186,
-    "jasper/active_speaker/crossover_envelope_v2.py": 4_048,
-    "jasper/audio_measurement/program_analysis.py": 6_932,
+    # 2026-08-17 (#2603): +11 on top of the two bumps above, and the ratchet
+    # catching its own author again. The representative RoleBand pair at
+    # `_DISPLAY_ROLES_BANDS` was flagged as a fourth declaration of a driver's
+    # low limit; it is not one, and the owner ruled it stays. Recording WHY it
+    # is not derived -- a declaration exists by the time that screen renders,
+    # but the resolution path is refuse-if-not-ready and regenerates the
+    # preview file as a side effect, and a memoized read would go stale -- is
+    # what costs the lines. Paying them here, in the diff that earned them, is
+    # the guard working; compressing the reason out to keep a number flat would
+    # be gaming it.
+    #
+    # 2026-08-18 (series-2 D1): `crossover_envelope_v2` 4,096 -> 4,103. Zero
+    # executable lines. One household sentence changed from a claim that had
+    # become FALSE -- "This check could compare loudness but not the
+    # correction's shape this round", on a path that since D1 compares neither
+    # -- and seven lines saying why the old wording was not merely stale but
+    # was the incident's own confusion reaching a household screen: what that
+    # copy called a loudness comparison was a comparison against the model.
+    # This file's job is household copy, so the argument for a sentence belongs
+    # beside it; and a caveat that overstates what was checked is the one kind
+    # of copy defect this screen cannot afford.
+    #
+    # 2026-08-18 (series-2 D1, panel fix round): two more, and both are the
+    # SAME defect class as the change that earned them -- an instrument's name
+    # sitting over a quantity it did not measure.
+    #
+    #  * `crossover_v2_flow` 12,720 -> 12,766. +46 physical, ~11 logical. The
+    #    delta probe's anchor became the input to a hard stop, so
+    #    `_entry_delta_db` gained the two things an input to a hard stop owes:
+    #    it says on the journal WHY there is no anchor (its most reachable arm
+    #    -- a first-ever round -- returned None silently), and it refuses a
+    #    baseline measured through another program, because an anchor is a
+    #    subtraction and a foreign one cancels a real finding as readily as a
+    #    phantom. Comparability keeps its single owner: this asks
+    #    `round_evidence`'s two identity fields, it does not re-derive the rule.
+    #    The probe's journal line also gained `safety_anchored`. The remaining
+    #    lines are the argument for each, which is what this ratchet is for.
+    #  * `correction_crossover_v2` 9,282 -> 9,292. +10, of which 1 executes.
+    #    `_delta_probe_summary` carries `safety_anchored`, because the round
+    #    receipt is write-once and `/state`, the doctor and the done screen read
+    #    THIS record -- so a fact only the receipt held was a fact no live
+    #    surface could show. The nine lines say why it sits here rather than
+    #    only there. Decision 10's note above ("stays at 9,186") described a
+    #    change that added no state key; this one adds exactly one, and it is
+    #    the key that tells "nothing was found" from "nothing looked".
+    #
+    # 2026-08-18 (series-2 D1, panel delta): `crossover_v2_flow` 12,766 ->
+    # 12,790. +24, ZERO executable. The panel's hearing lens rebuilt the phase
+    # maps and found three comments in this PR attributing `_entry_delta_db`'s
+    # baseline-is-None arm to "every first-ever round" -- which is false, and
+    # falsely reassuring in the worst direction: a first-ever round DOES capture
+    # an entry baseline, and never reaches that arm at all, because it takes the
+    # `state_axis_only` branch first. Saying which route each round actually
+    # takes, and why this asks ONE of comparability's two fields rather than
+    # both, is what costs the lines. Prose that is confidently wrong about
+    # reachability on a hearing-safety path is the same defect class this whole
+    # PR is about, so it is paid rather than compressed.
+    #
+    # 2026-08-18 (series-2 D1, panel delta round 2): 12,790 -> 12,810. +20, of
+    # which ~13 execute. Both lenses converged on the same ask: the anchor guard
+    # claimed comparability's two identity fields and compared one. It now asks
+    # BOTH through `verification.identity_mismatch` -- the identity half of
+    # `_comparability_mismatch`, extracted so the order and the two reason
+    # constants have one owner rather than a parallel spelling here -- and the
+    # MARK is the field that earned it: a baseline captured at another position
+    # is the same program on the same grid, so nothing else on this path would
+    # catch it subtracting a different room bin by bin. The identity read also
+    # moved INSIDE the fail-soft try, which is a line of nesting for a method
+    # whose whole contract is that it never loses a verdict.
+    # 2026-08-18 (#2699): 12,810 -> 12,813 earns stage-1 series-position
+    # hydration here; 9,296 -> 9,333 below earns Undo clearing the banked blend
+    # instruction it reverses. Both ceilings equal the measured current files.
+    #
+    # 2026-08-18 (lateral pause): 12,813 -> 12,874, +61 net (93 added, 32
+    # removed), counted rather than estimated. Every line is PROSE — the flag
+    # flip itself is one character:
+    #   34  the `STAGE1_INCLUDES_LATERAL` comment, which is the canonical
+    #       record of an owner ratification: four evidence findings with their
+    #       numbers, the named re-enable condition, and the non-obvious
+    #       consequence that R17's Fc sweep goes dormant with its producer
+    #   13  the MEASURE non-deferring branch, whose comment claimed NO
+    #       production caller builds that shape — the pause makes it the
+    #       shipped one, and #2291's entry baseline needed saying why it
+    #       follows the fit without deferring it
+    #   11  the sweep-trigger and module-docstring notes: where a reader lands
+    #       asking "why is there no fc_selection?"
+    #    7  the relay-capacity arithmetic, now labelled as the WALK-ARMED case
+    #       with a do-not-spend-this-slack rule, so a later round cannot raise
+    #       N on the strength of a paused count and make re-arming a refusal
+    #   -4  net trims where the old prose was simply replaced
+    # No seam to cut: this diff adds no logic, and extracting comments from the
+    # constants they explain is how a flag stops carrying its own reasons.
+    # (+1 more in the gate fix round: the module docstring's OTHER stage-1
+    # count, 56 lines below the one the pause corrected, still said "10 entries
+    # at the full tier's shipped defaults" — stale since R15 turned the
+    # pre-apply cloud off, and a docstring that contradicts itself twice on one
+    # screen is worse than either number alone. 12,813 + 62 = 12,875.)
+    "jasper/active_speaker/crossover_v2_flow.py": 12_875,
+    # ...and 9,292 -> 9,296, +4 physical / 0 logical: the sweep caught that
+    # comment overclaiming its own readership ("the surface /state, the doctor
+    # and the done screen read" — no renderer reads it today). It is a forensic
+    # state key, and saying which it is costs four lines on a surface whose
+    # whole job this round is telling "measured" from "not measured".
+    #
+    # 2026-08-18 (#2662, capture-source seam slice 1): 9,333 -> 8,349, the
+    # file's first cut since this ratchet was set — the wheels-report
+    # direction ("the host sheds relay interleaving") finally moving. From
+    # main's banked 9,333 baseline (the ratchet repaired directly in
+    # cb3e4f462): the relay extraction moves 1,017 lines out (the plan-walk
+    # hosting, the phone phase ladder, the purge grace, the link-TTL policy
+    # — now `correction_crossover_v2_relay.py`, capped below so the relay
+    # choreography cannot quietly re-accrete host concerns either) and adds
+    # 25 back (the re-export block and the two seam comments), net −992; the
+    # PR's gate fix round adds 8 more — the re-export block's PATCH
+    # CONTRACT, stating which three names the host actually calls (a double
+    # patched there reaches the preparers) and which three it merely
+    # re-publishes (a double must patch the provider, or it rebinds a name
+    # nothing reads). The reviewer probed exactly that trap; prose that
+    # stops the next test author shipping a silent no-op patch is worth
+    # eight lines. 9,333 − 992 + 8 = 8,349.
+    #
+    # ...and 8,349 -> 8,381 (lateral pause), +32 net (40 added, 8 removed),
+    # counted rather than estimated:
+    #   25  `_post_apply_grade`'s absent-vs-incomplete rule. The pause exposed
+    #       a hidden coupling: with no candidate sweep there is no
+    #       `fc_selection`, and two gates read its absence as an unfinished
+    #       comparison — so every successful commission graded INCONCLUSIVE and
+    #       told the household a tune that IS applied "changed nothing
+    #       automatically", dropping the Undo pointer. The prose is the
+    #       finding: it states why absence is exempt, why the exemption is
+    #       sound (this grade asks "was it checked afterwards", which VERIFY
+    #       answers alone), and that a sweep which RAN and did not finish is
+    #       NOT exempt. Both directions are pinned.
+    #    3  `authorized_winner` restructured to carry that distinction
+    #    5  the remote hold budget, which quotes stage 1's wall-clock ceiling —
+    #       the pause moves it 2520 -> 1800 s, leaving the ceiling at exactly 3
+    #       holds of a 3-capture stage, which is the reader's next question
+    #   -1  net from the gate-A line replaced in place
+    "jasper/web/correction_crossover_v2.py": 8_381,
+    # Born 2026-08-18 (#2662 slice 1) at exactly this size: the relay capture
+    # provider — the choreography only the phone-relay source has. It should
+    # grow only when the RELAY grows; the wired provider is its own module.
+    # (1,080 at birth; the gate fix round deleted a reader-less identity
+    # constant, -4.) UNCHANGED by the lateral pause: `relay_link_ttl_s` moved
+    # here with the extraction and its docstring quoted stage 1's old 2520 s
+    # ceiling, so the pause corrects one number in place, +0.
+    "jasper/web/correction_crossover_v2_relay.py": 1_076,
+    # ...and 4,103 -> 4,107 (lateral pause), +4 net: the entry-baseline screen
+    # said the household is "BACK on the mark", true only after a walk. With
+    # the walk paused this capture follows MEASURE, where the microphone never
+    # left, so the copy drops one word and the comment says why it has to read
+    # correctly from either predecessor.
+    "jasper/active_speaker/crossover_envelope_v2.py": 4_107,
+    # 2026-08-18 (D7, series-2 diagnosis): +82 net on `program_analysis.py`
+    # (95 added, 13 removed), counted rather than estimated —
+    #   40  the argument written next to `GLITCH_RESIDUAL_SAMPLES`
+    #   26  correcting two now-FALSE claims the discontinuity block inherited
+    #       as settled (D7's second clause: "every glitch is a step" and "a
+    #       clean capture's integer-located residuals sit well under a sample",
+    #       both falsified by series 2) plus the observable that correction
+    #       leaves behind
+    #   14  the residual block's own comment
+    #   15  the sub-sample residual loop itself, against 13 removed: the
+    #       EXECUTABLE change is +2 lines. Everything else is why.
+    # The 40 is the load-bearing part. That absence WAS the defect:
+    # a 1.5-sample threshold with nothing recording the resolution of the
+    # estimator feeding it sat below its own instrument noise for two series,
+    # rejected eight physically-clean captures, and took a round to exactly
+    # its retake budget. A threshold in samples is not a fact on its own, so
+    # the number and its instrument are now one comment; compressing that out
+    # to keep this integer flat is precisely how it happens again.
+    #
+    # The seam this file wants is real and deliberately NOT cut here: the
+    # drift/glitch estimator (`DriftEstimate`, `_sweep_occurrence*`,
+    # `_repeat_epsilon`, `_subsample_separation`, `_locate_discontinuity`,
+    # `_estimate_drift`) is one coherent "capture timing coherence" concern
+    # with a clean boundary. Moving it is a ~300-line relocation inside a file
+    # other live sessions of this fix wave are also editing, which is a
+    # collision, not a cleanup. Take it in a quiet window and lower this back.
+    #
+    # …and #2662's prescription lands on top of D7's, in the same file and the
+    # same night — the two sessions D7's own note above names as the reason its
+    # seam was not cut. Both bumps are real and neither subsumes the other, so
+    # the number carries both: 7,060 (D7) + 215 (#2662's own two entries above,
+    # measured after the rebase rather than added on paper) = 7,275. The seam
+    # both notes name is now named twice by two independent sessions in one
+    # night, which is the strongest argument either could make for cutting it.
+    "jasper/audio_measurement/program_analysis.py": 7_275,
 }
 
 

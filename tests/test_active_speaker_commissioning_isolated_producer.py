@@ -95,6 +95,9 @@ def test_production_driver_captures_build_exact_complete_isolated_evidence(
                     "target_id": "mono:tweeter",
                     "role": "tweeter",
                     "model": "Example T1",
+                    # #2603: one declared low limit; the hard floor and the
+                    # protective high-pass both derive from it.
+                    "recommended_highpass_hz": 4000,
                     "required_protection_filters": [
                         {
                             "kind": "highpass",

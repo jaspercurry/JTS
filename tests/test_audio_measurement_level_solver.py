@@ -6,8 +6,8 @@
 
 Pins the 2026-07-16 jts3 regression numbers (see the module docstring on
 ``jasper.audio_measurement.level_solver``), each ceiling binding in
-isolation, the refusal path, the ambient-stats event parser, and the SSOT
-contract that the solver's own effective-peak ledger matches
+isolation, the refusal path, and the SSOT contract that the solver's own
+effective-peak ledger matches
 ``DriverSweepGeneratorPlan.effective_peak_dbfs`` exactly (no second,
 drifting computation of the same ledger).
 """
@@ -23,7 +23,6 @@ from jasper.audio_measurement.level_solver import (
     AmbientBand,
     LevelSolveRefusal,
     SolvedLevel,
-    parse_ambient_stats_event,
     solve_level,
 )
 from jasper.audio_measurement.quality_model import DRIVER, QualityModel
@@ -611,108 +610,3 @@ def test_custom_snr_floor_and_margin_shift_the_target():
     )
     assert isinstance(solved, SolvedLevel)
     assert solved.predicted_worst_band_snr_db >= 12.0 - 1e-9
-
-
-# ---------------------------------------------------------------------------
-# Ambient-stats event parser (Pi-side parse only; PR-b phone emitter is
-# a follow-up -- see the module docstring)
-# ---------------------------------------------------------------------------
-
-_RUN_TOKEN = "abc123"
-
-
-def _valid_event(**overrides):
-    payload = {
-        "ambient_stats": {
-            "schema": level_solver.AMBIENT_STATS_SCHEMA_VERSION,
-            "run_token": _RUN_TOKEN,
-            "duration_s": 1.5,
-            "clipped": False,
-            "bands": [
-                {"lo_hz": 40.0, "hi_hz": 200.0, "rms_dbfs": -50.0},
-                {"lo_hz": 200.0, "hi_hz": 400.0, "rms_dbfs": -55.0},
-            ],
-        }
-    }
-    payload["ambient_stats"].update(overrides)
-    return payload
-
-
-def test_parse_valid_ambient_stats_event():
-    bands = parse_ambient_stats_event(_valid_event(), expected_run_token=_RUN_TOKEN)
-    assert bands == (
-        AmbientBand(lo_hz=40.0, hi_hz=200.0, rms_dbfs=-50.0),
-        AmbientBand(lo_hz=200.0, hi_hz=400.0, rms_dbfs=-55.0),
-    )
-
-
-def test_parse_absent_event_falls_back():
-    assert parse_ambient_stats_event(None, expected_run_token=_RUN_TOKEN) is None
-    assert parse_ambient_stats_event({}, expected_run_token=_RUN_TOKEN) is None
-    assert (
-        parse_ambient_stats_event({"other": 1}, expected_run_token=_RUN_TOKEN) is None
-    )
-
-
-def test_parse_run_token_mismatch_falls_back():
-    event = _valid_event(run_token="stale-token")
-    assert parse_ambient_stats_event(event, expected_run_token=_RUN_TOKEN) is None
-
-
-def test_parse_unknown_schema_falls_back():
-    event = _valid_event(schema=999)
-    assert parse_ambient_stats_event(event, expected_run_token=_RUN_TOKEN) is None
-
-
-def test_parse_clipped_capture_falls_back():
-    event = _valid_event(clipped=True)
-    assert parse_ambient_stats_event(event, expected_run_token=_RUN_TOKEN) is None
-
-
-def test_parse_malformed_bands_fall_back():
-    for bad_bands in ([], "not-a-list", [{"lo_hz": 1.0}], [{"lo_hz": "x", "hi_hz": 2, "rms_dbfs": 3}]):
-        event = _valid_event(bands=bad_bands)
-        assert parse_ambient_stats_event(event, expected_run_token=_RUN_TOKEN) is None
-
-
-def test_parse_non_int_schema_falls_back():
-    event = _valid_event(schema="1")
-    assert parse_ambient_stats_event(event, expected_run_token=_RUN_TOKEN) is None
-    event = _valid_event(schema=True)
-    assert parse_ambient_stats_event(event, expected_run_token=_RUN_TOKEN) is None
-
-
-def test_parse_oversized_band_list_falls_back():
-    """A band list beyond AMBIENT_STATS_MAX_BANDS is malformed (or hostile)
-    input -- same fail-soft path as any other malformed event."""
-
-    oversized = [
-        {"lo_hz": 20.0 + i, "hi_hz": 21.0 + i, "rms_dbfs": -50.0}
-        for i in range(level_solver.AMBIENT_STATS_MAX_BANDS + 1)
-    ]
-    event = _valid_event(bands=oversized)
-    assert parse_ambient_stats_event(event, expected_run_token=_RUN_TOKEN) is None
-
-    at_cap = oversized[: level_solver.AMBIENT_STATS_MAX_BANDS]
-    event = _valid_event(bands=at_cap)
-    parsed = parse_ambient_stats_event(event, expected_run_token=_RUN_TOKEN)
-    assert parsed is not None
-    assert len(parsed) == level_solver.AMBIENT_STATS_MAX_BANDS
-
-
-def test_parsed_ambient_bands_feed_the_solver_end_to_end():
-    event = _valid_event()
-    bands = parse_ambient_stats_event(event, expected_run_token=_RUN_TOKEN)
-    solved = solve_level(
-        gain_map_db=1.9,
-        admitted_band_hz=(40.0, 400.0),
-        commissioning_gain_baseline_db=_COMMISSIONING_BASELINE_DB,
-        main_volume_cap_db=_MAIN_VOLUME_CAP_DB,
-        max_effective_peak_dbfs=_MAX_EFFECTIVE_PEAK_DBFS,
-        ambient_broadband_dbfs=_AMBIENT_BROADBAND_DBFS,
-        ambient_bands=bands,
-        model=DRIVER,
-    )
-    assert isinstance(solved, SolvedLevel)
-    reported = {round(b.ambient_dbfs, 2) for b in solved.band_detail}
-    assert reported == {-50.0, -55.0}

@@ -86,7 +86,11 @@ def test_sound_setup_migrates_the_complete_event_vocabulary():
 
 
 def test_every_bool_or_optional_percent_s_field_is_prerendered_as_text():
-    """Pin all 116 affected parent `%s` positions, not hand-picked examples."""
+    """Pin all 117 affected parent `%s` positions, not hand-picked examples.
+
+    This includes the topology transaction wrappers and #2603's
+    ``safety_profile_evaluation`` design-draft field.
+    """
     wrapped_fields: list[str] = []
     for call in _sound_event_calls():
         event = call.args[1].value
@@ -107,9 +111,9 @@ def test_every_bool_or_optional_percent_s_field_is_prerendered_as_text():
     # stopped-session statuses on reset. The digest catches a missed, swapped,
     # or newly invented wrapper without checking in the full tuple.
     signature = "\n".join(wrapped_fields).encode()
-    assert len(wrapped_fields) == 116
+    assert len(wrapped_fields) == 117
     assert hashlib.sha256(signature).hexdigest() == (
-        "e175f69b35692b81e8971b8281e050a1eabfc7259f9ae48b67b34f871c04bbd2"
+        "9042492d64c676ce14ee570dcbd751784d1951ace151280703f69e3fdde98166"
     )
 
 

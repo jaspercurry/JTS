@@ -232,8 +232,15 @@ def _driver_research(
             "role": "tweeter",
             "manufacturer": "Eminence",
             "model": "F110M-8",
-            "recommended_highpass_hz": frequency_hz,
-            "do_not_test_below_hz": 1200,
+            # #2603: one owner. This used to declare the tweeter's minimum
+            # recommended crossover AS the crossover frequency, with a separate
+            # lower do_not_test_below_hz doing the actual refusing. Those are
+            # now the same number, so the fixture states the real shape -- a
+            # driver whose minimum is BELOW where the design crosses it -- and
+            # do_not_test_below_hz is RETIRED rather than derived
+            # (driver_protection.py's ruling block says why deriving it would
+            # have made #2491's load gate unreachable).
+            "recommended_highpass_hz": 1500,
             "sources": ["https://example.test/tweeter"],
         },
     ]

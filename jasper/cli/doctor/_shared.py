@@ -73,6 +73,23 @@ class CheckResult:
     name: str
     status: str  # "ok" | "warn" | "fail"
     detail: str = ""
+    # True when THIS result's meaning is "the speaker emits nothing right
+    # now". Only a check that can prove that sets it, because only the check
+    # knows: a name-matching renderer would have to re-derive the meaning of
+    # every branch of every check, which is the same fact in a second voice.
+    #
+    # `render` reads it on a `warn` or a `fail` and never reads it on an `ok`:
+    # a check returning `ok` while asserting silence contradicts itself. A
+    # `fail` may carry it — a silent speaker is no less silent for also being
+    # broken.
+    #
+    # It exists so `render`'s summary line can LEAD with the silence instead
+    # of ending a parked box's run on "N warning(s) - non-critical". It does
+    # NOT change severity or exit code: a parked box is silent, not broken,
+    # and `jasper-doctor` must stay exit-0 there so a mid-commission speaker
+    # keeps taking deploys (#2145). The wording carries the severity; the exit
+    # code keeps its one meaning.
+    speaker_silent: bool = False
 
 DoctorCheck = Callable[[], CheckResult] | tuple[str, Callable[[], CheckResult]]
 

@@ -977,7 +977,17 @@ original combined Sound page was the first wizard on this system; see AGENTS.md
 1. Loads the saved `SoundProfile` and `SoundSettings`.
 2. Enters the same DSP writer lock used by the Sound and correction mutation
    paths.
-3. Reads the active CamillaDSP config path with `best_effort=False`.
+3. Reads the active CamillaDSP config path with `best_effort=False`. When the
+   daemon is unreachable, it falls back ONCE to CamillaDSP's statefile — the
+   config the daemon opens on its next start — and carries the rest of the pass
+   (dry run, apply, rollback, confirm) over that disk transport instead of
+   aborting. The result line names which reader answered as
+   `transport=websocket` or `transport=statefile`. This is a transport
+   fallback, never a graph choice: the carrier still comes from the config the
+   statefile already names, so a roleful box re-emits its own roleful graph and
+   graph SELECTION stays `jasper.active_speaker.runtime_contract`'s job (#2664).
+   A `CamillaConfigRejected` — a daemon that answered and refused the content —
+   is not an absent daemon and still raises.
 4. Skips `sound_audition.yml` so an unsaved preview stays reversible.
 5. Skips unknown/custom/non-hostable graphs with a structured reason instead
    of overwriting them.
@@ -1001,7 +1011,15 @@ original combined Sound page was the first wizard on this system; see AGENTS.md
    [HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md)
    ("The ACTIVE-ring arm/rollback lifecycle").
 9. install.sh runs the CLI fail-open under an outer process timeout; a failed
-   reconcile leaves the current legal graph in place and does not gate install.
+   reconcile leaves the current graph in place and does not gate install. Read
+   "legal" narrowly there: the statefile pointer is proved legal for the saved
+   TOPOLOGY, and that proof does not cover sample format
+   (`classify_camilla_config_text` reads playback device, channels, and
+   volume limit — never the format). A graph can therefore be legal and still
+   un-openable, which is what killed jts4 on 2026-08-17 when a width flip
+   stopped CamillaDSP before this pass and the pass then aborted on the refused
+   websocket. Step 3's statefile fallback is what closes that; a fail-open
+   reconcile is a degraded outcome to investigate, not a safe one.
 
 Normal topology convergence uses the same saved-intent render boundary without
 running the reconcile transaction: after an explicit passive layout authorizes
@@ -1048,7 +1066,14 @@ journal while the user drags a slider.
 Deploy/startup reconciliation emits `event=sound.reconcile_current_dsp` for
 every outcome: `result=reconciled`,
 `result=unchanged reason=running_config_matches_intent`, or
-`result=skipped reason=<code>`. On the `unchanged` line, `current=` and
+`result=skipped reason=<code>`. Every result line from the reconcile ITSELF also
+carries `transport=websocket` or `transport=statefile`, naming whether the
+running daemon or its statefile answered "which graph is loaded" — a `statefile`
+line means CamillaDSP was down for that pass. The CLI's own fail-open line
+(`result=failed`) has no `transport`: it is emitted by `jasper-sound` after the
+reconcile raised, so no reader ever answered. `_print_reconcile` does not print
+the field either, so read it in the journal rather than in the install
+transcript, which runs without `--json`. On the `unchanged` line, `current=` and
 `candidate=` name the running config and the file that was not written — they
 differ exactly when a non-`sound_current.yml` graph was deliberately left in
 place (see step 6 above). CLI fail-open failures emit the same event with

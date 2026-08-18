@@ -134,6 +134,46 @@ class ConfiguredPathConditioningError(ValueError):
 
 # A capture is rejected when the drift baselines disagree by more than this many
 # samples-equivalent, or the primary drift exceeds the ppm bound (design §5.6.3).
+#
+# A threshold in samples is only meaningful against the RESOLUTION of the
+# estimator that feeds it, so the two facts are owned here together (D7,
+# series-2 diagnosis 2026-08-17).
+#
+# What went wrong: until D7 the residual was measured from
+# `_locate_in_window`'s integer `located_start`, i.e. the plain
+# `int(np.argmax(...))` of a full-band correlation of the DRY stimulus against
+# the ROOM-CONVOLVED capture (`capture_relay.alignment.cross_correlation_alignment`
+# — no band-limiting, no envelope, no sub-sample refinement). That correlation
+# yields the room impulse response rather than a symmetric autocorrelation
+# peak, so its argmax hops between adjacent early lobes by a few samples, and
+# 1.5 sat BELOW its own instrument noise. Across series 2 that rejected eight
+# physically-clean captures at a reported 2.00-3.13 samples. The diagnosis's
+# own independent re-derivation put those eight at 0.022-0.076, LOWER than the
+# twenty accepted captures' 0.027-0.110, with Pearson r = -0.059 between what
+# the guard reported and the real quantity. Cost: ~13 minutes of hardware time,
+# and round 2 spent its 3-extra retake budget exactly, one draw from a lost
+# round.
+#
+# Why 1.5 is right NOW: `_estimate_drift` measures the residual with
+# `_subsample_separation` (occurrence-vs-occurrence — same stimulus, same room
+# IR, so the peak is sharp). Replaying those same 28 hardware captures through
+# it reports 0.038-0.299 samples (mean 0.116) and rejects NONE of them, so 1.5
+# clears this estimator's measured floor by ~5x. The eight land at 0.083-0.229,
+# INSIDE the twenty accepted captures' 0.038-0.299 — the same "the rejected
+# ones are not the anomalous ones" result the diagnosis got independently.
+#
+# The guard's TEETH are unchanged, and that is measured rather than argued: on
+# a capture carrying a real timeline step the two estimators return the SAME
+# number to three decimals, because a real step is a real separation and both
+# instruments measure it. #1765's +64-sample insertion lands the within-role
+# spread at 32.0 samples and #2533's +128-sample shape at 42.7; an insertion as
+# small as +4 samples still rejects (spread 2.0) and +2 still passes (spread
+# 1.0), before and after D7 alike. What changed is only the noise floor
+# underneath those numbers: on the hardware corpus it fell from 0.23-3.13
+# samples to 0.04-0.30. Both directions are pinned by
+# `tests/test_audio_measurement_program_analysis.py` — raise this number and
+# the splice guard loosens; lower it and the estimator's own floor starts
+# rejecting clean captures again.
 GLITCH_RESIDUAL_SAMPLES = 1.5
 MAX_DRIFT_PPM = 500.0
 
@@ -156,8 +196,8 @@ REPEAT_LEVEL_TOLERANCE_DB = 0.3
 
 # Timeline-discontinuity change-point (2026-07-27 forensics, issue #1765).
 #
-# Every glitch this system has actually produced was a DISCRETE timeline step,
-# never clock drift: across the 2026-07-22..27 JTS3 journal (57 MEASURE
+# Every glitch this system has produced by a real TIMELINE fault was a DISCRETE
+# step, never clock drift: across the 2026-07-22..27 JTS3 journal (57 MEASURE
 # captures) both `program_analysis.glitch` events fired on the residual guard
 # with epsilon comfortably INSIDE MAX_DRIFT_PPM — 2026-07-23 at 30.53 ppm /
 # 798.46 samples, 2026-07-27 at 94.12 ppm / 32.36 samples. The 500 ppm bound
@@ -171,6 +211,15 @@ REPEAT_LEVEL_TOLERANCE_DB = 0.3
 # pair sits entirely after it, so 32.097 ppm = the TRUE drift; demeaned
 # residual 32.2 predicted vs 32.357 observed).
 #
+# That "real timeline fault" qualifier is load-bearing, and series 2 is why
+# (D7). The unqualified version of the sentence above — every glitch is a step —
+# was inherited as settled and is false: a THIRD class exists in which nothing
+# happened to the capture at all and the residual guard fired on its own
+# estimator's noise, with epsilon in the normal branch and no step resolvable.
+# Eight of those in one series. See `GLITCH_RESIDUAL_SAMPLES` for the finding
+# and the fix; the 2026-07 forensic above stands unchanged as a description of
+# the step class it actually studied.
+#
 # So the reported `epsilon_ppm` on a glitched capture is an ARTEFACT of the
 # step, not a drift measurement, and "the baselines disagree" says nothing
 # about what actually broke. This estimator names it: fit a single-step
@@ -178,10 +227,21 @@ REPEAT_LEVEL_TOLERANCE_DB = 0.3
 # where it landed. Diagnostic ONLY — like `per_role_epsilon_ppm` it never
 # gates `glitch_detected`, so no capture's accept/reject changes.
 #
-# Thresholds: a clean capture's integer-located residuals sit well under a
-# sample, so a fitted step this large cannot come from locate noise; the RSS
-# ratio additionally requires the step model to EXPLAIN the capture rather
-# than merely soak up one extra degree of freedom.
+# Thresholds: a fitted step this large should not come from locate noise, and
+# the RSS ratio additionally requires the step model to EXPLAIN the capture
+# rather than merely soak up one extra degree of freedom. NOTE (D7): this fit
+# still reads the INTEGER `located_start` — unlike the residual guard, which
+# no longer does — and the margin here is thinner than it looks. The premise
+# was "a clean capture's integer-located residuals sit well under a sample";
+# series 2 measured 2.00-3.13 on eight clean captures, so 4.0 is nearer 1.5x
+# that noise than the comfortable multiple it was chosen as. This estimator
+# gates nothing (diagnostic only), so it is recorded rather than retuned here.
+# What a journal reader will now see, because D7 changed the verdict beside it
+# and not this fit: replaying the ten r1b laterals, two resolve a spurious
+# -4.2 / -4.0 step after `sweep_w_rep2` next to an ACCEPTED capture. Pre-D7
+# both were rejected, so the same spurious step rode along with a rejection
+# and read as corroboration. It never was; treat a step this close to 4.0 as
+# locate noise until this threshold is re-derived from a real distribution.
 DISCONTINUITY_MIN_SAMPLES = 4.0
 DISCONTINUITY_RSS_RATIO = 0.25
 
@@ -458,6 +518,32 @@ ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR = "applied_alignment_held_after_l
 ALIGNMENT_COMMITTED_NONE_AFTER_UNREADABLE_APPLY = (
     "no_delay_committed_after_unreadable_apply"
 )
+#: The delay came from a bounded, provenance-carrying EXPLICIT PRESCRIPTION the
+#: host validated and handed down
+#: (:data:`MeasurementPriors.explicit_alignment_delay_us`), not from this
+#: capture's own search. Its POLARITY is still the flat-sum objective's answer,
+#: scored at that one delay — which is why this is NOT a member of
+#: :data:`ALIGNMENT_DECLARED_POLARITY_OBJECTIVES`: the capture passed its SNR
+#: verdict, so its anchor is trustworthy and its residual (``prescribed −
+#: anchor``) is a real fact about the speaker that the summed model must carry.
+ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION = "explicit_prescription_committed"
+#: The same prescription on a capture the SNR verdict refused for alignment.
+#: The prescription itself is unaffected by that refusal — it never came from
+#: this capture — so it is still the delay committed, ahead of the applied-held
+#: / declared / unreadable ladder below it, which exist to answer "what do we
+#: commit when nothing better is known". Something better IS known here.
+#: The POLARITY, however, is this capture's question, and the capture was
+#: refused: it commits the declaration, which is why this value (and not the one
+#: above) joins :data:`ALIGNMENT_DECLARED_POLARITY_OBJECTIVES`.
+#:
+#: Deliberately not spelled as :data:`ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION`
+#: plus a suffix — that would make the plain value a strict PREFIX of this one,
+#: and a consumer matching an objective by substring (the hazard
+#: :data:`EVENT_FIT_FAILED_JOURNAL_DROPPED` documents one module over) would
+#: read the two as the same commitment.
+ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR = (
+    "explicit_prescription_held_after_low_snr"
+)
 ALIGNMENT_COMMITTED_SEED_NO_SCORING_BAND = "seed_committed_no_scoring_band"
 ALIGNMENT_COMMITTED_SEED_ALIGNMENT_REFUSED = "seed_committed_alignment_refused"
 ALIGNMENT_COMMITMENTS = frozenset({
@@ -465,6 +551,8 @@ ALIGNMENT_COMMITMENTS = frozenset({
     ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR,
     ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR,
     ALIGNMENT_COMMITTED_NONE_AFTER_UNREADABLE_APPLY,
+    ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION,
+    ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR,
     ALIGNMENT_COMMITTED_SEED_NO_SCORING_BAND,
     ALIGNMENT_COMMITTED_SEED_ALIGNMENT_REFUSED,
 })
@@ -493,6 +581,38 @@ ALIGNMENT_DECLARED_POLARITY_OBJECTIVES = frozenset({
     ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR,
     ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR,
     ALIGNMENT_COMMITTED_NONE_AFTER_UNREADABLE_APPLY,
+    ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR,
+})
+#: The commitments an explicit PRESCRIPTION produced — both arms of it. Public
+#: because it answers a question the host must be able to ask of a finished
+#: candidate without re-deriving it: "the prescription I handed down — was it
+#: actually committed?"
+#:
+#: Its consumer is
+#: ``crossover_v2.coordinator._round_measurements``, which banks the committed
+#: ``alignment_objective`` on the round receipt beside the prescription and
+#: spells membership here out as that block's ``committed`` bit. That pairing
+#: is load-bearing rather than decorative: a prescription alone records only
+#: what a round ASKED for, and there is a reachable rail — an ``ALIGNMENT_OK``
+#: estimate whose band holds no scorable bin, so :func:`_select_alignment_pair`
+#: returns ``None`` and the seed is committed — on which a round can carry an
+#: arm's name while having measured the estimator's own answer instead.
+ALIGNMENT_EXPLICIT_PRESCRIPTION_OBJECTIVES = frozenset({
+    ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION,
+    ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR,
+})
+#: The commitments where the flat-sum objective chose the POLARITY — the only
+#: ones that may answer ``polarity_agrees_with_sum``. A set rather than a bare
+#: ``== ALIGNMENT_COMMITTED_FLAT_SUM`` since #2662's explicit prescription: that
+#: path fixes the DELAY axis and still scores both polarities at it, so the
+#: correlation-vs-objective comparison genuinely happened and reporting ``None``
+#: would hide a real disagreement. The rule for membership is exactly that — the
+#: flat sum answered the polarity question — and it is a narrower claim than
+#: :data:`_SELECTOR_COMMITTED_OBJECTIVES`, which is about the selector having
+#: run at all.
+_FLAT_SUM_POLARITY_OBJECTIVES = frozenset({
+    ALIGNMENT_COMMITTED_FLAT_SUM,
+    ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION,
 })
 #: The commitments the selector itself made — as opposed to the two where it
 #: could not run and the seed simply stood. Only these answer
@@ -500,7 +620,7 @@ ALIGNMENT_DECLARED_POLARITY_OBJECTIVES = frozenset({
 #: and recording "correlation agreed" because nothing disagreed with it is the
 #: exact shape of dishonesty this issue is about.
 _SELECTOR_COMMITTED_OBJECTIVES = frozenset({
-    ALIGNMENT_COMMITTED_FLAT_SUM,
+    *_FLAT_SUM_POLARITY_OBJECTIVES,
     *ALIGNMENT_DECLARED_POLARITY_OBJECTIVES,
 })
 
@@ -996,6 +1116,22 @@ class MeasurementPriors:
     the same ``0.0`` under a different objective, because that number is then
     a fallback rather than the design's answer.
 
+    ``explicit_alignment_delay_us`` is the host-validated inter-driver delay
+    PRESCRIPTION for this session (#2662), in :class:`AlignmentEstimate`'s
+    signed frame — the delay a prescriber computed from a named measured basis
+    and the request boundary bounded to ±half a period at Fc from that basis
+    (:func:`jasper.active_speaker.crossover_v2.alignment_prescription.read_alignment_prescription`).
+    Like ``applied_alignment`` it is a fact the host holds and hands down rather
+    than one this module could reach for, and it is read on exactly one path:
+    :func:`_select_alignment_pair`, which commits it as the delay and lets the
+    flat-sum objective keep the polarity. ``None`` — the default and every
+    ordinary session — leaves the automatic selection byte-identical. A bare
+    ``float | None`` rather than ``AppliedAlignment``'s wrapper because this
+    question has only TWO answers: a prescription was made, or none was. There
+    is no third "one was made and cannot be read" state to distinguish — an
+    unreadable one never becomes a prior at all, it is refused at the boundary
+    with a named reason.
+
     ``mic_tier`` (#1668 PR-C) is the correction-envelope trust tier
     (``jasper.active_speaker.linearization_envelope.MIC_TIERS`` — "reference"
     / "consumer" / "phone") the measurement mic resolved to, threaded in by
@@ -1015,6 +1151,7 @@ class MeasurementPriors:
     measure_woofer_sweep_hi_hz: float | None = None
     alignment_delay_bounds_us: tuple[float, float] | None = None
     applied_alignment: AppliedAlignment | None = None
+    explicit_alignment_delay_us: float | None = None
     mic_tier: str | None = None
     # Host-evaluated transfers, NOT product objects: the kernel may not import
     # jasper.active_speaker, so it is handed `freqs -> complex response`.
@@ -1395,6 +1532,16 @@ class CrossoverCandidate:
     alignment_objective: str = ""
     seed_polarity_sign: int | None = None
     left_anchor_lobe: bool = False
+    #: Did correlation's polarity answer survive the objective that chose it?
+    #: Carried from :attr:`AlignmentPairSelection.polarity_agrees_with_sum`
+    #: rather than re-derived, so this repository holds ONE opinion about which
+    #: commitments answer that question. It was re-derived here for a while,
+    #: with the two derivations gated on different objective sets after #2662
+    #: widened one of them — the journal then said the comparison ran and
+    #: agreed while three durable surfaces recorded "never asked", on rounds
+    #: where a prescription had actually overridden correlation and flipped the
+    #: polarity. ``None`` means no flat sum ever answered it.
+    polarity_agrees_with_sum: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -1441,6 +1588,11 @@ class PilotObservation:
     and VERIFY could produce, because their programs carried no ambient
     window at all — so the guard was structurally dead on both phases.
 
+    ``channel_map_ok`` is tri-state for the reason ``linearity_ok`` is
+    (issue #2052): ``None`` means the evidence to judge this role's map was
+    not there, never that it passed. The fallback path reaches it — see
+    `_channel_map_ok`.
+
     ``channel_map_target_rise_db``/``channel_map_cross_rise_db`` are the two
     rise numbers `_channel_map_ok` computed on the way to ``channel_map_ok``
     (this driver's own band above ambient, and the worst/failing other
@@ -1468,7 +1620,7 @@ class PilotObservation:
     programmed_delta_db: float
     captured_delta_db: float
     linearity_ok: bool | None
-    channel_map_ok: bool
+    channel_map_ok: bool | None
     snr_valid: bool = True
     peak_lo_dbfs: float = DBFS_FLOOR
     peak_hi_dbfs: float = DBFS_FLOOR
@@ -2630,7 +2782,6 @@ def _estimate_drift(
     program: ExcitationProgram,
     capture: np.ndarray,
     sample_rate: int,
-    global_offset: int,
     locations: Sequence[SegmentLocation],
 ) -> DriftEstimate:
     occurrences_by_role = _sweep_occurrences_by_role(locations)
@@ -2677,13 +2828,36 @@ def _estimate_drift(
     # drivers (three occurrences each); an old-shaped 3-sweep program still
     # gets it for the woofer pair only, the single-sweep tweeter covered by
     # the ε ppm bound alone.
-    groups: dict[Any, list[float]] = {}
+    #
+    # Each occurrence is placed against its group's FIRST by
+    # `_subsample_separation`, never read off `located_start` — the resolution
+    # argument, and why 1.5 is the right number against this estimator, is
+    # owned by `GLITCH_RESIDUAL_SAMPLES` (D7). Placing them relatively also
+    # cancels the global offset and the driver's constant acoustic delay
+    # structurally, which is why `global_offset` is no longer a parameter; the
+    # demeaning stays because the within-role SPREAD is the statistic.
+    # Grouped here rather than through `_sweep_occurrences_by_role` (used above
+    # for the epsilon gate) on purpose: that owner drops a role-less sweep,
+    # where this guard has always grouped them together. The two agree for
+    # every program that can reach here — `RoleBand.__post_init__` refuses a
+    # role that is not a non-empty string, so a role-less MEASURE sweep cannot
+    # be composed — so this is scope discipline, not drift.
+    groups: dict[Any, list[SegmentLocation]] = {}
     for loc in stimulus_locs:
-        start = program.segment(loc.segment_id).start_sample
-        residual = loc.located_start - (global_offset + start * (1.0 + epsilon))
-        groups.setdefault(loc.role, []).append(residual)
+        groups.setdefault(loc.role, []).append(loc)
     max_residual = 0.0
-    for resids in groups.values():
+    for members in groups.values():
+        reference = members[0]
+        ref_seg = program.segment(reference.segment_id)
+        resids = [0.0]
+        for loc in members[1:]:
+            scheduled_sep = (
+                program.segment(loc.segment_id).start_sample - ref_seg.start_sample
+            )
+            measured_sep = _subsample_separation(
+                capture, reference.located_start, loc.located_start, ref_seg.n_samples,
+            )
+            resids.append(measured_sep - scheduled_sep * (1.0 + epsilon))
         mean = sum(resids) / len(resids)
         for r in resids:
             max_residual = max(max_residual, abs(r - mean))
@@ -3600,6 +3774,15 @@ def crossover_region_band_hz(
     the spec gauge's convention. This function's consumer smooths at
     :data:`VERIFY_TRACKING_SMOOTHING_FRACTION` (1/6 octave), which resolves a
     narrow dip more sharply, so the two numbers are not expected to match.
+
+    **Who reads this band.** Its one caller is ``_verify_absolute_result``, and
+    since decision 10 that claim's ``band_hz`` is ALSO the region the blend
+    correction is solved and graded over
+    (``crossover_v2.round_evidence._crossover_region_band_hz`` reads it back).
+    The correction consumes this function's output through that consumer rather
+    than calling it again, so the band a household is shown and the band a
+    filter is cut over are the same number by construction rather than by
+    agreement — and this stays a one-caller function.
     """
     if not math.isfinite(fc_hz) or fc_hz <= 0.0:
         return None
@@ -3832,6 +4015,32 @@ def summed_model_residual_delay_us(
     return float(applied_delay_us) - float(anchor_delay_us)
 
 
+def half_period_us(fc_hz: float) -> float:
+    """Half of one period at ``fc_hz``, in microseconds. ONE spelling.
+
+    The radius of the comb lobe a crossover corner owns, and therefore the
+    delay-ambiguity budget: two delays more than this far apart put the
+    summation on adjacent lobes, where a correlation peak — or a hand-written
+    number — can land on the wrong one and look just as good locally.
+
+    Two callers, and they must be the same number or the repository would hold
+    two different opinions about where a lobe ends: ``_select_alignment_pair``'s
+    ``left_anchor_lobe`` tripwire (which asks whether a COMMITTED delay left the
+    lobe its anchor owns) and
+    :func:`jasper.active_speaker.crossover_v2.alignment_prescription.read_alignment_prescription`'s
+    bound (which asks the same question of a PRESCRIBED delay against its
+    declared measured basis, and refuses rather than warning). One observes, one
+    gates; the geometry is identical, so it is written once.
+
+    ``fc_hz`` must be positive and finite — the quantity is undefined otherwise,
+    and pretending would make a bound vacuous, which is the one direction a
+    fail-closed gate must never fail. Callers guard first: the tripwire returns
+    ``False`` (nothing to compare against) and the prescription reader refuses
+    with a named reason.
+    """
+    return 0.5e6 / float(fc_hz)
+
+
 def _ripple_db(freqs: np.ndarray, magnitude: np.ndarray, lo: float, hi: float) -> float:
     mask = (freqs >= lo) & (freqs <= hi)
     if not np.any(mask):
@@ -3906,7 +4115,7 @@ class AlignmentPairSelection:
         never happened, which is the same dishonesty
         :data:`_SELECTOR_COMMITTED_OBJECTIVES` refuses for the seed fallbacks.
         """
-        if self.objective != ALIGNMENT_COMMITTED_FLAT_SUM:
+        if self.objective not in _FLAT_SUM_POLARITY_OBJECTIVES:
             return None
         return self.polarity_sign == self.seed_polarity_sign
 
@@ -3932,6 +4141,7 @@ def _select_alignment_pair(
     delay_bounds_us: tuple[float, float] | None = None,
     branch_snr_insufficient: bool = False,
     applied_alignment: AppliedAlignment | None = None,
+    explicit_delay_us: float | None = None,
 ) -> AlignmentPairSelection | None:
     """Commit the (polarity, delay) pair whose predicted blend sums flattest.
 
@@ -4012,6 +4222,23 @@ def _select_alignment_pair(
     ``anchor_delay_us`` fields on ``event=program_analysis.alignment_selection``
     (the held number and the declined one).
 
+    ``explicit_delay_us`` is the host-validated PRESCRIPTION (#2662): the delay
+    a prescriber computed from a named measured basis, bounded to ±half a period
+    at Fc from that basis, and refused at the request boundary if it is not.
+    When present it FIXES the delay axis — the grid is that one point, so the
+    committed delay is exactly the prescribed number and never a nearby grid
+    point that scored better — and the polarity axis is searched as usual, so
+    the objective still owns the question it owns. It outranks the low-SNR
+    ladder, because that ladder answers "what do we commit when nothing better
+    is known" and a bench-measured prescription IS something better; what the
+    refusal still costs is the POLARITY, which is this capture's question.
+
+    Deliberately NOT an anchor substitute. Re-centring the search on the
+    prescription would let the objective wander off the prescribed value, and
+    the arm measured would then not be the arm asked for — the one property a
+    delay-sweep harness cannot give up. The seed pair is still scored, so the
+    record always shows what the prescription displaced.
+
     Returns ``None`` when the objective cannot be evaluated at all — no
     frequency bin inside ``[lo_hz, hi_hz]``, or no candidate with a finite score
     — leaving the caller on the seed and saying which in a WARNING.
@@ -4034,12 +4261,37 @@ def _select_alignment_pair(
         return _ripple_db(freqs_band, summed, lo_hz, hi_hz)
 
     def _left_anchor_lobe(delay_us: float) -> bool:
-        """Did the commitment leave the comb lobe the anchor owns?"""
-        if anchor_delay_us is None or fc_hz <= 0.0:
+        """Did the commitment leave the comb lobe the anchor owns?
+
+        The two Fc guards are not redundant and neither covers the other:
+        ``not (fc_hz > 0.0)`` rejects zero, negatives AND NaN (every NaN
+        comparison is False), while ``isfinite`` rejects ``+inf`` — which
+        passes ``> 0.0`` and would make :func:`half_period_us` return ``0.0``,
+        turning this tripwire into one that fires on every commitment.
+        """
+        if anchor_delay_us is None or not (fc_hz > 0.0) or not math.isfinite(fc_hz):
             return False
-        return abs(delay_us - anchor_delay_us) > 0.5e6 / fc_hz
+        return abs(delay_us - anchor_delay_us) > half_period_us(fc_hz)
 
     seed_ripple_db = _ripple_at(seed_polarity_sign, seed_delay_us)
+
+    if explicit_delay_us is not None and branch_snr_insufficient:
+        # The prescription stands (it did not come from this capture); the
+        # polarity does not (it did). Declared relative polarity ``+1``, for the
+        # reason the arm below states.
+        prescribed_us = float(explicit_delay_us)
+        return AlignmentPairSelection(
+            polarity_sign=1,
+            delay_us=prescribed_us,
+            ripple_db=_ripple_at(1, prescribed_us),
+            seed_polarity_sign=seed_polarity_sign,
+            seed_delay_us=seed_delay_us,
+            seed_ripple_db=seed_ripple_db,
+            objective=ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR,
+            grid_points=1,
+            grid_step_us=0.0,
+            left_anchor_lobe=_left_anchor_lobe(prescribed_us),
+        )
 
     if branch_snr_insufficient:
         # Neither `anchor_delay_us` nor `seed_delay_us` may be read here: both
@@ -4073,7 +4325,17 @@ def _select_alignment_pair(
     # walking a grid of identical scores and calling the winner a selection.
     grid_step_us = 0.0
     delays = [seed_delay_us]
-    if anchor_delay_us is not None and fc_hz > 0.0:
+    # A prescription fixes the delay axis to exactly one point and leaves the
+    # polarity axis to the objective. The seed is NOT appended here (it is
+    # everywhere else): appending it would let the search return the seed's
+    # delay whenever the seed happened to score within the flat-minimum
+    # epsilon, and an arm that silently measures the estimator's answer instead
+    # of the prescribed one is the failure this whole path exists to remove.
+    # `seed_ripple_db` above already scored the seed, so the record still shows
+    # what was displaced.
+    if explicit_delay_us is not None:
+        delays = [float(explicit_delay_us)]
+    elif anchor_delay_us is not None and fc_hz > 0.0:
         span_us = ALIGNMENT_FLATNESS_SPAN_PERIODS * 1e6 / fc_hz
         n_steps = int(round(span_us / ALIGNMENT_FLATNESS_STEP_US))
         n_steps = max(1, min(n_steps, ALIGNMENT_FLATNESS_MAX_STEPS))
@@ -4139,7 +4401,11 @@ def _select_alignment_pair(
         seed_polarity_sign=seed_polarity_sign,
         seed_delay_us=seed_delay_us,
         seed_ripple_db=seed_ripple_db,
-        objective=ALIGNMENT_COMMITTED_FLAT_SUM,
+        objective=(
+            ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION
+            if explicit_delay_us is not None
+            else ALIGNMENT_COMMITTED_FLAT_SUM
+        ),
         grid_points=len(delays),
         grid_step_us=grid_step_us,
         left_anchor_lobe=_left_anchor_lobe(committed_delay_us),
@@ -4837,7 +5103,8 @@ def _pilot_observations(
        thresholds were derived from. Judging a 12 dB rise against it would be
        reading a threshold off an estimator it was never fitted to.
     2. **Pre-emption.** ``analysis.channel_map_ok`` is routed on at exactly
-       ONE site today — ``crossover_v2_flow._check_verdict``, which maps it to
+       ONE site today — ``crossover_v2_flow._check_verdict``, through
+       ``capture_dispatch.check_screens``, which maps an explicit ``False`` to
        the hard-stop ``channel_map_mismatch``. MEASURE, the cloud positions
        and VERIFY compute the flag and never branch on it, so threading the
        window here would currently change no verdict at all. It would instead
@@ -4847,7 +5114,8 @@ def _pilot_observations(
        the speaker wiring, on evidence never calibrated for a 1 s window.
 
     Their channel-map check therefore keeps the total-in-band-energy-fraction
-    fallback it has always used.
+    fallback it has always used, whose one-sided reporting since #2052 is
+    `_channel_map_ok`'s to state.
 
     The located segment's fixed composer fade (`_pilot_trim_fade`) is trimmed
     before measuring so the RMS estimate rides the steady-state portion, not
@@ -4972,28 +5240,41 @@ def _pilot_observations(
     return out
 
 
-def _aggregate_linearity_ok(
-    pilots: Sequence[PilotObservation],
+def _aggregate_tri_state_ok(
+    verdicts: Sequence[bool | None],
 ) -> bool | None:
-    """Reduce per-pilot ``linearity_ok`` over the roles, tri-state aware.
+    """Reduce per-role tri-state verdicts to one, FAILURE-dominant.
 
-    A FAILURE anywhere is the verdict; otherwise an UNKNOWN anywhere (a
-    pilot whose SNR was too low to judge — D7, issue #1838) makes the whole
-    verdict unknown, because "the roles we could read were fine" is not the
-    same claim as "the pilots were linear". ``None`` for no pilots at all,
-    unchanged. Written out rather than left as ``all(...)``: Python's
-    ``all()`` folds ``None`` to False, which would have turned every
-    unknown into a linearity FAILURE — precisely the mic accusation the
-    low-SNR routing exists to prevent.
+    A FAILURE anywhere is the verdict; otherwise an UNKNOWN anywhere makes
+    the whole verdict unknown, because "the roles we could read were fine"
+    is not the same claim as "every role was fine". ``None`` for no roles at
+    all — no evidence, the same value the caller published before any of
+    these verdicts were tri-state.
+
+    Written out rather than left as ``all(...)``: Python's ``all()`` folds
+    ``None`` to False, so an unknown would leave here as a FAILURE. For
+    ``linearity_ok`` (D7, issue #1838) that is the mic accusation the
+    low-SNR routing exists to prevent; for ``channel_map_ok`` (issue #2052)
+    it is worse — a hard stop telling a household to open its speaker and
+    rewire it, decided on evidence that was never there.
+
+    One fold for both because that is one decision, not two — a second copy
+    is a second place for "what does unknown mean here" to drift.
     """
-    if not pilots:
+    if not verdicts:
         return None
-    verdicts = [p.linearity_ok for p in pilots]
     if any(v is False for v in verdicts):
         return False
     if any(v is None for v in verdicts):
         return None
     return True
+
+
+def _aggregate_linearity_ok(
+    pilots: Sequence[PilotObservation],
+) -> bool | None:
+    """Per-pilot ``linearity_ok`` over the roles, through the shared fold."""
+    return _aggregate_tri_state_ok([p.linearity_ok for p in pilots])
 
 
 def _pilot_verdicts(
@@ -5019,15 +5300,17 @@ def _pilot_verdicts(
     schedule offset and hands it to the level/SNR path. The channel-map check
     still uses `_channel_map_ok`'s total-in-band-energy-fraction fallback —
     see `_pilot_observations` for why that short window must not feed the
-    rise test. A program without the window (legacy, or composed with no
-    leading pilots) behaves exactly as before.
+    rise test. That fallback is one-sided since #2052 (`_channel_map_ok`), so
+    these phases publish ``None`` unless a role actually failed it. The SNR
+    path is unaffected; a program without the window (legacy, or composed
+    with no leading pilots) reaches it exactly as before.
     """
     pilots = _pilot_observations(
         program, capture, sample_rate, locations,
         ambient_samples=_pilot_ambient_samples(program, capture, global_offset),
     )
     linearity_ok = _aggregate_linearity_ok(pilots)
-    channel_map_ok = all(p.channel_map_ok for p in pilots) if pilots else None
+    channel_map_ok = _aggregate_tri_state_ok([p.channel_map_ok for p in pilots])
     pilot_snr_ok = all(p.snr_valid for p in pilots) if pilots else None
     return tuple(pilots), linearity_ok, channel_map_ok, pilot_snr_ok
 
@@ -5039,7 +5322,7 @@ def _channel_map_ok(
     *,
     ambient_samples: np.ndarray | None = None,
     other_bands: Sequence[tuple[float, float]] = (),
-) -> tuple[bool, float | None, float | None]:
+) -> tuple[bool | None, float | None, float | None]:
     """Band-relative channel-map sanity (design note above `CHANNEL_MAP_*`).
 
     Given a leading ambient (room-noise) window — CHECK's own 12 s ambient
@@ -5063,10 +5346,22 @@ def _channel_map_ok(
     "two ambient parameters" note) — and the path any legacy program with no
     window at all takes.
 
+    **That fallback is ONE-SIDED evidence, and since issue #2052 it is
+    reported one-sided.** A cleared fraction is ``None`` (UNKNOWN, the posture
+    #1838 gave ``linearity_ok``): broadband room noise clears it too, so it
+    does not say the RIGHT driver put the energy there. A failed fraction
+    keeps its ``False``: energy that is NOT in the band the pilot was
+    scheduled in is a positive observation about this window, and it is the
+    only channel-map evidence a capture with no ambient window still carries.
+    Both halves are load-bearing and each is pinned by the fixture that
+    measured it — `test_channel_map_fallback_never_passes_a_driver_that_never_played`
+    and `test_degraded_miswire_still_names_the_wiring_not_the_room`.
+
     Returns ``(ok, target_rise_db, cross_rise_db)`` — the two rise numbers are
     ADDITIVE diagnostic evidence for operator logging (surfaced on
-    ``PilotObservation``); the pass/fail decision below is byte-identical to
-    before this return shape grew. ``cross_rise_db`` is the rise that failed
+    ``PilotObservation``); the RISE path's pass/fail decision below is
+    byte-identical to before this return shape grew (the fallback's is the
+    one #2052 changed). ``cross_rise_db`` is the rise that failed
     the CROSS test when ``ok`` is False, or the worst (highest) rise observed
     across every other band when ``ok`` is True. Both rises are ``None`` in
     the no-ambient-window fallback path (no rise concept there);
@@ -5085,7 +5380,10 @@ def _channel_map_ok(
         total = float(np.sum(spectrum))
         if total <= 0:
             return False, None, None
-        return float(np.sum(spectrum[in_band])) / total > 0.5, None, None
+        # One-sided (#2052): the fail is a finding, the pass is not evidence.
+        if float(np.sum(spectrum[in_band])) / total > 0.5:
+            return None, None, None
+        return False, None, None
 
     target_rise = (
         _band_rms_dbfs(x, sample_rate, seg.f1_hz, seg.f2_hz)
@@ -5577,7 +5875,7 @@ def _analyze_check(
         channel_map_ambient_samples=ambient_samples,
     )
     linearity_ok = _aggregate_linearity_ok(pilots)
-    channel_map_ok = all(p.channel_map_ok for p in pilots) if pilots else None
+    channel_map_ok = _aggregate_tri_state_ok([p.channel_map_ok for p in pilots])
     pilot_snr_ok = all(p.snr_valid for p in pilots) if pilots else None
     gain_plan = _solve_gain_plan(program, pilots, ambient_report, priors)
     return ProgramAnalysis(
@@ -5736,7 +6034,7 @@ def _analyze_measure(
     if priors.crossover_fc_hz is None:
         raise ValueError("MEASURE analysis requires priors.crossover_fc_hz")
     fc_hz = float(priors.crossover_fc_hz)
-    drift = _estimate_drift(program, capture, sample_rate, global_offset, locations)
+    drift = _estimate_drift(program, capture, sample_rate, locations)
 
     seg_w = program.segment("sweep_w")
     seg_t = program.segment("sweep_t")
@@ -5828,6 +6126,7 @@ def _analyze_measure(
         alignment_delay_bounds_us=priors.alignment_delay_bounds_us,
         branch_snr_insufficient=branch_snr_insufficient,
         applied_alignment=priors.applied_alignment,
+        explicit_alignment_delay_us=priors.explicit_alignment_delay_us,
     )
     # `_build_candidate` owns the selection; the estimate published here is the
     # one every downstream consumer reads (`alignment_to_candidate_fields`
@@ -5838,15 +6137,16 @@ def _analyze_measure(
             alignment,
             polarity=candidate.polarity,
             polarity_sign=polarity_sign_of(candidate.polarity),
-            # Only the flat-sum commitment answers the cross-check: the
-            # low-SNR path commits the declared design precisely BECAUSE the
-            # evidence a flat sum would read is untrustworthy, so it reports
-            # "not asked" rather than a comparison that never happened.
-            polarity_agrees_with_sum=(
-                polarity_sign_of(candidate.polarity) == candidate.seed_polarity_sign
-                if candidate.alignment_objective == ALIGNMENT_COMMITTED_FLAT_SUM
-                else None
-            ),
+            # READ, not re-derived. The rule — only a commitment whose POLARITY
+            # the flat sum actually chose may answer this — belongs to
+            # :attr:`AlignmentPairSelection.polarity_agrees_with_sum`, and the
+            # candidate carried its answer here. A second derivation lived at
+            # this line and drifted the moment #2662 widened that rule: it kept
+            # testing one objective, so a prescribed round that overrode
+            # correlation and FLIPPED the polarity published "never asked"
+            # while the journal, one function away, said the comparison ran and
+            # disagreed.
+            polarity_agrees_with_sum=candidate.polarity_agrees_with_sum,
         )
     # The delay half keeps its own condition: the anchor path is exactly where
     # the committed delay can differ from the estimate's GCC seed, and reading
@@ -5900,6 +6200,7 @@ def _build_candidate(
     alignment_delay_bounds_us: tuple[float, float] | None = None,
     branch_snr_insufficient: bool = False,
     applied_alignment: AppliedAlignment | None = None,
+    explicit_alignment_delay_us: float | None = None,
 ) -> tuple[CrossoverCandidate, tuple[np.ndarray, np.ndarray]]:
     freqs, W, gate_w = _aligned_branch_tf(woofer_full_ir, sample_rate, n_fft, calibration=calibration)
     _f2, T, gate_t = _aligned_branch_tf(tweeter_full_ir, sample_rate, n_fft, calibration=calibration)
@@ -6021,6 +6322,7 @@ def _build_candidate(
             delay_bounds_us=alignment_delay_bounds_us,
             branch_snr_insufficient=branch_snr_insufficient,
             applied_alignment=applied_alignment,
+            explicit_delay_us=explicit_alignment_delay_us,
         )
         if alignment.status == ALIGNMENT_OK
         else None
@@ -6097,6 +6399,14 @@ def _build_candidate(
                 else round(float(applied_alignment.delay_us), 3)
             ),
             applied_alignment_present=applied_alignment is not None,
+            # The same disclosure for the same reason, one rung further out: a
+            # delay this capture did not supply, and where it came from. `None`
+            # on every ordinary session, which is what makes a non-None value
+            # greppable as "this round's delay was prescribed, not searched".
+            prescribed_delay_us=(
+                None if explicit_alignment_delay_us is None
+                else round(float(explicit_alignment_delay_us), 3)
+            ),
             anchor_delay_us=(
                 None if anchor_delay_us is None
                 else round(float(anchor_delay_us), 3)
@@ -6106,6 +6416,33 @@ def _build_candidate(
             # the anchor and Fc) so the candidate, the journal and the receipt
             # all read one derivation.
             left_anchor_lobe=selection.left_anchor_lobe,
+        )
+    # A prescription that never reached a commitment is the one failure a delay
+    # sweep must not absorb quietly: the operator asked for an arm and the round
+    # would otherwise measure a fallback under that arm's name. The aligner's
+    # own refusals are still respected — a railed delay search leaves the branch
+    # pair in an unknown frame, and an unscorable band leaves the estimator's
+    # seed standing — what changes is that the round SAYS SO, here, rather than
+    # leaving a reader to infer it from an objective string that mentions a seed.
+    #
+    # Emitted AFTER the block above so it can name what WAS committed instead:
+    # the selection is ``None`` on exactly the rails worth disclosing, so
+    # reading its objective would print ``null`` in the one case an operator
+    # most needs the answer. ``committed_delay_us`` rides beside it because the
+    # gap between asked-for and committed is the whole finding.
+    if (
+        explicit_alignment_delay_us is not None
+        and alignment_objective not in ALIGNMENT_EXPLICIT_PRESCRIPTION_OBJECTIVES
+    ):
+        log_event(
+            logger, "program_analysis.alignment_prescription_not_committed",
+            level=logging.WARNING,
+            woofer_role=woofer_role, tweeter_role=tweeter_role,
+            fc_hz=round(float(fc_hz), 3),
+            prescribed_delay_us=round(float(explicit_alignment_delay_us), 3),
+            committed_delay_us=round(float(delay_us), 3),
+            alignment_status=alignment.status,
+            objective=alignment_objective,
         )
     snap_delta_us = None if anchor_delay_us is None else delay_us - anchor_delay_us
     # #1667: re-solve the tweeter trim for minimum summed-response ripple
@@ -6271,6 +6608,12 @@ def _build_candidate(
         alignment_objective=alignment_objective,
         seed_polarity_sign=alignment.polarity_sign,
         left_anchor_lobe=left_anchor_lobe,
+        # From the selection that MADE the comparison, never re-derived. A
+        # selection-less arm (no scoring band, or a refused estimate) asked
+        # nothing, and ``None`` is what that is.
+        polarity_agrees_with_sum=(
+            None if selection is None else selection.polarity_agrees_with_sum
+        ),
     )
     return candidate, (freqs, predicted_db)
 

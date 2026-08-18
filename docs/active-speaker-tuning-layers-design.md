@@ -29,6 +29,18 @@
 > ruling adds decision 13 — the commissioning flow gets two first-class
 > capture sources, a microphone plugged into the Pi beside the existing relay
 > flow. Layer ownership is again unchanged; the seam is anchored by #2662.
+> **Boundary ruling (2026-08-17):** a corner exactly at the declared limit is
+> legal — the recommended crossover is a sanctioned operating point, no nanny
+> margin.
+> **Measurement Program v2 (ratified 2026-08-18, not built):** a seventh
+> ruling adds decision 14 and one new section,
+> ["Measurement Program v2 — the capture schedule"](#measurement-program-v2--the-capture-schedule-ratified-2026-08-18).
+> The five-layer ownership is unchanged again. What it rules on is the
+> *instrument's schedule* — what is played, at which angles, how often, and in
+> which unit — not who owns which correction. **The program is not built**;
+> where that section states shipped behavior it says so and cites the symbol.
+> Operational truth for the shipped flow stays
+> [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md).
 
 ## Why this exists (one paragraph of history)
 
@@ -101,8 +113,10 @@ visibly.
    tolerance from validity floor to 16 kHz"). Envelope/report copy must
    never let one imply the other — that conflation is how this gap stayed
    invisible.
-4. **Safety posture unchanged:** per-driver correction gains stay
-   non-positive in the emitted graph; an HF shelf is emitted as attenuation
+4. **Safety posture unchanged:** per-driver linearization gains may be
+   positive, up to `MAX_LINEARIZATION_BOOST_DB` (12 dB) per filter —
+   refused rather than clamped above that cap, and absorbed by
+   `active_baseline_headroom` (PR-L5); an HF shelf is emitted as attenuation
    elsewhere + headroom accounting, never a positive ceiling raise; the
    two-invariant protection model and declared-sensitivity ceilings stand
    (#1665 adds pad/component declarations so effective sensitivities track
@@ -242,6 +256,20 @@ morning after the series-1 convergence run on jts3.
     `experiments/` — tracked, usable, explicitly experimental, deprecated only
     by the owner — while the browser flow stays first-class for human drivers
     (#2636).
+
+**The ruling below was ratified on 2026-08-18, and is not built.**
+
+14. **A measurement is (stimulus regime) × (angle) × (level); angle is an
+    ATTRIBUTE, not an identity (2026-08-18).** The schedule the flow grew —
+    a CHECK, a MEASURE, a lateral walk, a cloud — named captures after the
+    *role of a position*, which is how an angle became four different kinds of
+    measurement instead of one measurement's tag. Under this ruling every
+    capture is banked as `{regime, angle_deg, repeats, level_re_anchor}`, two
+    stimulus regimes cover the whole grid, and the session walks it
+    position-major. The unit is degrees everywhere, for a measurement reason
+    rather than a convenience one. Full contract, its evidence, and its
+    sequencing:
+    ["Measurement Program v2 — the capture schedule"](#measurement-program-v2--the-capture-schedule-ratified-2026-08-18).
 
 ## Layer 1a concretely — UX and data flow
 
@@ -532,9 +560,9 @@ measuring. Three mechanisms, each evidenced, say why:
   that lift is the HF-continuation stage's, not a notch filler. A boost *did*
   realize — the woofer emitted a +2.38 to +2.68 dB Peaking filter in all four
   rounds — but at 422–434 Hz, more than two octaves below the dip. (That is a
-  positive gain in the emitted graph: decision 4 above still describes the
-  retired cut-only posture, and roadmap item 6 owns the sweep that trues those
-  claims up.) So with the tweeter's lift refused and the woofer's only
+  positive gain in the emitted graph: decision 4 above and the boost-path
+  prose were trued up by roadmap item 6's sweep, #2603.) So with the
+  tweeter's lift refused and the woofer's only
   realizable boost that far away, what was left near 1947 Hz were cuts —
   damped in the blind zone, per the bullet above — and the whole-driver scalar
   trim, which is the wrong shape for a notch.
@@ -605,6 +633,255 @@ deferring cheap: everything except the trend engine itself — the contract,
 the vocabulary, the bounds, the harness, the receipts — is **common to both
 paths**, so nothing built now is wasted by either choice.
 
+## Measurement Program v2 — the capture schedule (ratified 2026-08-18)
+
+> **Status: ratified design, NOT built.** Owner-ratified 2026-08-18. **The
+> program is not implemented.** The section does state shipped behavior in
+> places — deliberately, because a schedule is only legible against the one it
+> replaces — and every such claim says so in the sentence and names the symbol
+> it was read from. Read anything not marked that way as ratified plan.
+> Operational truth is
+> [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md).
+> Sequencing, and what this reverses or supersedes, are at the end of this
+> section.
+
+### The schema
+
+A measurement is **(stimulus regime) × (angle) × (level)**. Angle is an
+**attribute** of a capture, not an identity: every capture banks as
+`{regime, angle_deg, repeats, level_re_anchor}`.
+
+That is the whole ruling, and it is a vocabulary ruling before it is a
+schedule. The shipped phase names — `check`, `measure`, `lateral`,
+`cloud_measure`, `cloud_verify`, `entry_baseline`, `verify`
+(`CAPTURE_PHASES` / `GROUP_PHASES` in
+[`jasper/active_speaker/crossover_v2/journey.py`](../jasper/active_speaker/crossover_v2/journey.py))
+— name a *position's role* rather than what is played, which is how one angle
+became several kinds of measurement instead of one measurement's tag. Those
+names are **superseded as a design frame** and survive as implementation
+internals until the capture-plan rebuild lands.
+
+### Two stimulus regimes, and the session's one-timers
+
+- **D — per-driver.** Each driver swept alone. **×3 repeats at 0°, ×1 at every
+  other angle.** Yields that angle's per-driver transfer function, phase,
+  distortion, and drift.
+- **S — summed.** One sweep through the applied (or candidate) graph, **×1 at
+  every angle.** Yields the system response at that angle — the before/after
+  evidence.
+
+Three things are **session-level one-timers at 0°**, not per-capture work:
+
+1. the room-noise listen and the chain-gain tones;
+2. the **SPL anchor** — `RampController`
+   ([`jasper/audio_measurement/ramp.py`](../jasper/audio_measurement/ramp.py))
+   re-targeted to **~75–80 dB SPL at the microphone**, read through the
+   calibration file's sensitivity, with an operator abort control. This rides
+   the leveling redesign; it is not a separate build. Two prerequisites belong
+   to that build and are named here so they are not discovered late: the ramp
+   settles on a **dBFS window** today (`window_low_dbfs = -20.0` /
+   `window_high_dbfs = -12.0` in `MeasurementRamp`), and the calibration reader
+   ([`jasper/audio_measurement/calibration.py`](../jasper/audio_measurement/calibration.py))
+   carries a frequency-shaped `correction_db` curve, **not** an absolute
+   sensitivity — so the anchor's input has to be read before it can be
+   targeted. The band is legal under the declared commissioning ceiling, with
+   **no headroom on some speakers, which is worth saying plainly**:
+   `SafetyEnvelope` declares `initial_sweep_level_db_spl` (default 65.0) and
+   `max_commissioning_level_db_spl` (default 85.0), each validated into 45–85
+   ([`jasper/active_speaker/profile.py`](../jasper/active_speaker/profile.py)),
+   and the ramp reads neither. The reference preset
+   (`bc_de250_dayton_e150he44_v1.json`) declares 85, but the Epique preset
+   (`epique_e150he44_eminence_f110m8_safe_v1.json`) and the preview-staging
+   path both declare **80** — so on those the ratified band's top sits exactly
+   at the ceiling. That is legal by the 2026-08-17 boundary ruling above (a
+   value at the declared limit is a sanctioned operating point, no nanny
+   margin) and is a real constraint for the anchor to respect, not a spare
+   5 dB;
+3. **~2 s per-driver drift sentinels between phases**, which replace the
+   per-capture pilot on the wired path (see constraint 4 below).
+
+### The position set, and the unit
+
+**0°, ±7°, ±22°.** The numbers are tunable; the **structure** is what is
+ratified — one center plus symmetric pairs. That is why an odd total is
+correct rather than an off-by-one: 5 = 1 center + 2 mirrored pairs.
+
+**Degrees everywhere**, for a measurement reason and not a convenience one:
+
+- The lab arm speaks degrees natively, and the shipped flow already derives
+  these exact bearings — `position_angle_deg` reads ±7° from 12 cm and ±22°
+  from 40 cm at `MARK_DISTANCE_M = 1.0`
+  ([`jasper/active_speaker/crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py)).
+  The angles are not new; the canonical unit is.
+- The household method is the owner's **string-and-protractor** technique: a
+  string fixed under the speaker, cut to listening distance, swung to the
+  protractor angle. Its virtue is geometric, not ergonomic — **a taut string
+  is a constant-radius arc**, the same geometry the arm has, which removes the
+  distance-change confound the lateral-cm prompts carry. At the shipped 1 m
+  mark a 40 cm lateral slide puts the microphone 107.7 cm out: **≈0.64 dB** of
+  pure inverse-square level change with no acoustics in it (12 cm ≈ 0.06 dB).
+  Today that confound is addressed in prose — `_WIDE_LATERAL_DETAIL` asks the
+  walker to "step a little toward the speaker as you go out", and
+  `position_angle_deg`'s own docstring names the chord-versus-arc gap a
+  hand-walked session settles for. A string makes it structural.
+- The cm-based prompts retire with the old walk.
+
+### The schedule — position-major (the microphone moves once per stop)
+
+| stop | angle | what runs | budget |
+|---|---|---|---|
+| 1 | 0° | room-noise listen + chain-gain tones + SPL anchor | ~40 s |
+| 2 | 0° | **D ×3 + S** — the deep reference | ~55 s |
+| 3 | +7° | D + S | ~30 s |
+| 4 | −7° | D + S | ~30 s |
+| 5 | +22° | D + S | ~30 s |
+| 6 | −22° | D + S | ~30 s |
+| 7 | 0° (return) | short D probe — **the session's noise floor** | short † |
+| after apply | all five | **S at each angle** | † |
+
+† Stops 1–6 are the figures the ratification fixed, and they sum to **215 s**.
+The stop-7 probe and the five post-apply summed captures are the **~145 s
+balance** of the ≈6 min below; the ratified number is the total, and the plan
+builder owns the split once this is built.
+
+Two properties fall out of the grid rather than needing a measurement of their
+own:
+
+- **The session's own noise floor.** Stop 7 repeats stop 2's position, so
+  anything that "moved" between them is measurement noise, not the speaker.
+- **Moved-versus-fixed attribution.** A feature that tracks angle belongs to
+  the speaker; one that stays put belongs to the room.
+
+And post-apply verification happens **across angles**, not on-axis only.
+
+**The budget claim, and exactly what it is.** ≈**6 min** of measurement. The
+baseline it is measured against is **moving under two PRs in flight**, so all
+three numbers are stated rather than the flattering one:
+
+| baseline | Full journey | source |
+|---|---|---|
+| shipped at ratification | 15 captures, **13 min** | `tier_display_info()['full']`, re-derived at HEAD 2026-08-18 |
+| after the session trims | 14 captures, **12 min** | [PR #2715](https://github.com/jaspercurry/JTS/pull/2715)'s own derivation |
+| after the lateral-walk pause | 9 captures, **7 min** | [PR #2717](https://github.com/jaspercurry/JTS/pull/2717); re-derived here by flipping `STAGE1_INCLUDES_LATERAL` off and clearing the display cache (stage 1: 9 → 3 captures) |
+
+So the honest contrast is **≈6 min against 7**, near break-even — because the
+pause buys its time by not measuring off-axis at all, which is exactly what
+v2 reinstates. **The case for v2 does not rest on time**; it rests on the
+grid's information richness (the S half at every angle, the noise floor, the
+attribution property) at roughly the time cost of measuring nothing off-axis.
+The ≈6 min itself is a **design projection** from measured 2026-08-18 session
+evidence — that day's per-capture census plus gate evidence, with the relay's
+per-capture wall-clock cost (≈11.5 s, distinct from the shipped
+`CAPTURE_PLAN_PER_CAPTURE_OVERHEAD_MS = 20_000` plan-budget allowance)
+measured across the day's ten banked walk journals — not a stopwatch on a
+built flow. When it is built, `CapturePlan.estimated_minutes()` owns the
+number, exactly as it does today.
+
+**The machinery this reuses is built, and currently paused.** Stage 1's
+lateral walk replays the MEASURE program verbatim at 0°, ±7°, ±22°, 0° —
+`LATERAL_POSE_PROMPTS`' six poses, each a representative ~41.6 s at the
+display constants (`_DISPLAY_ROLES_BANDS` / `_DISPLAY_FC_HZ`; the exact
+duration is topology-dependent), and `lateral` is absent from
+`SUMMED_SWEEP_PHASES`, so those poses are per-driver captures. **The D half of
+this grid exists in the tree**, and [PR #2717](https://github.com/jaspercurry/JTS/pull/2717)
+pauses it behind one flag rather than deleting it — the poses, the prompts,
+and `position_angle_deg`'s bearings all stay, and that PR records that forcing
+the flag back on reproduces the shipped plan byte for byte. That is a
+*stronger* footing for v2 than a shipped walk would be: what v2 needs is
+already written and merely gated, and its own evidence says the poses are
+clean while the reduction over them is not. What v2 adds on top is the **S
+half at every angle** (today only the at-mark entry baseline is summed before
+apply — `SUMMED_SWEEP_PHASES` again), the session-level one-timers, the
+explicit repeat and noise-floor structure, and a schedule that stops paying
+per-capture relay cost at every pose.
+
+### Constraints carried forward
+
+Four, each from evidence this section cites rather than restates:
+
+1. **Off-axis pose data must not feed a selector statistic** until it clears
+   the re-introduction bar set by the 2026-08-18 lateral-statistic redesign
+   study: (i) candidate dependence enters through the *operator*, not through
+   the band; (ii) the rank-1-versus-rank-2 gap exceeds same-arm repeat noise;
+   (iii) band-edge neutrality; (iv) immunity to a zero-offset pose. Nothing
+   computable from what is banked today clears it — every such statistic is
+   exactly candidate-blind — and the **enabling change is banking
+   `branch_operator_by_role` per candidate**
+   ([#2711](https://github.com/jaspercurry/JTS/issues/2711), which holds the
+   study's finding and the retention-guard caveat). The switch this bar
+   governs is `STAGE1_INCLUDES_LATERAL`, and
+   [PR #2717](https://github.com/jaspercurry/JTS/pull/2717) records the
+   re-enable condition on the flag itself as the canonical place — point
+   there, do not restate it.
+2. **Inter-driver phase read off these captures is contaminated** by per-role
+   integer-sample alignment quantization (±20.833 µs at 48 kHz) —
+   [#2710](https://github.com/jaspercurry/JTS/issues/2710). It is to be located
+   before the D14 aligner root fix leans on measured inter-driver timing.
+3. **D's repeats stay 3.** Three shipped policy floors read that structure, so
+   the repeat count is not a schedule knob: the linearization eligibility gate
+   (`ineligible_reason` → `ineligible_repeats`, against
+   `LINEARIZATION_MIN_PAIRED_OCCURRENCES = 3`), the σ composition that feeds
+   the envelope's repeatability term (`compose_sigma_db` returns *no evidence*
+   below the floor — and absent σ is the tightest constraint, not the
+   loosest), and the HF agreement gate (`_HF_MIN_OCCURRENCES = 3` →
+   `insufficient_repeats`). `MEASURE_REPEAT_COUNT = 3` is the composer's
+   matching default.
+4. **The per-capture pilot cut is wired-path-only** and rides the leveling
+   build, not this schedule. What it removes is the ~2.6 s behavioural-linearity
+   pilot pair every MEASURE- and VERIFY-shaped capture opens on
+   (`DEFAULT_PILOT_DURATION_S` 0.8 ×2 + `DEFAULT_PILOT_GAP_S` 0.5 ×2), plus its
+   1.0 s `PILOT_AMBIENT_WINDOW_S`; what replaces it is the drift sentinel
+   above. The relay path keeps its per-capture pilots, because on that path the
+   pilot is also the evidence that the phone heard the speaker at all.
+
+### Deferred axis — elevation (v2+)
+
+Flagged by the owner on 2026-08-18 as a planned future extension, **not built
+and not scheduled here**. Four things are worth recording now. The ratified
+schema accommodates it without redesign: the angle attribute generalizes from
+one bearing to (azimuth, elevation) with the same center-plus-symmetric-pairs
+structure. The household method does **not** generalize as stated — a floor
+protractor reads azimuth only; a candidate technique, noted and not committed,
+is the same taut string swung upward (constant radius still holds) with a phone
+laid along it as an inclinometer. The interim state is worth knowing plainly:
+once the cloud verify walk sits at its floor of five positions
+([PR #2715](https://github.com/jaspercurry/JTS/pull/2715)), the measurement
+program samples **zero** vertical offsets — that PR's own disclosure names the
+position it drops as the Full journey's only above/below-mark-height sample,
+and owns the reasoning. And the lab arm's elevation capability is
+**undetermined** (mast height is set by hand), so a v2 elevation build states
+its rig support before it states a schedule.
+
+### Sequencing, and what this reverses or supersedes when it ships
+
+Ratified 2026-08-18; **not implemented**. It builds on decision 13's
+capture-source seam ([#2662](https://github.com/jaspercurry/JTS/issues/2662);
+the layer contract and what slice 1 landed are stated once above, under
+["Composition & code seams"](#composition--code-seams-verified-present)) —
+**after** the wired provider (W2b) and **together with** the SPL-anchor
+leveling build, which shares its machinery. The wired-only ruling is the frame: speaker
+calibration is wired-microphone only, while the relay/phone path survives for
+room correction, a later rework where the string method serves seat-position
+prompts too.
+
+Interim steps already landed or in flight. The verbs differ, and the
+difference is the point:
+
+- **Superseded** — the cloud 6→5 trim and the courtesy-prelude grouping
+  ([PR #2715](https://github.com/jaspercurry/JTS/pull/2715)): this schedule
+  replaces the walk they trim.
+- **Reversed** — the lateral walk's pause
+  ([PR #2717](https://github.com/jaspercurry/JTS/pull/2717), in flight
+  2026-08-18). v2 reinstates off-axis measurement, which is what that PR
+  switches off; it does not supersede it, and until v2 ships the pause is what
+  moves the baseline above. The pause is deliberately reversible for this
+  reason — one flag, nothing deleted.
+- **Subsumed** — the shape the walk was to return as: a 4-capture per-driver
+  off-axis **reporter, never a score term**, which is the redesign study's
+  conclusion as recorded in
+  [PR #2717](https://github.com/jaspercurry/JTS/pull/2717). Stops 3–6 plus the
+  stop-7 return are that reporter, inside a schedule.
+
 ## Session operating model (how the implementing session runs)
 
 Fable is the brains, not the hands: architect, coordinator, debugger, and
@@ -636,6 +913,18 @@ seam — different owner, different cadence). The measured tweeter/woofer TFs
 that the fit consumes are already produced by every MEASURE
 (`analyze_program_capture` → `DriverResponse` to 18 kHz with per-serial cal
 applied) — the data pipeline needs zero new capture work for 2-way.
+
+**The capture-source seam (decision 13, #2662 — slice 1 landed).** The
+capture → analysis layer contract is: one provider per source answers each
+capture with WAV + metadata (mic identity, mic/cal identity reference, and
+the frame-ledger integrity counters), the provider mints the session id the
+durable state and evidence key on, and the host owns the mapping onto the
+persisted failure codes — the provider speaks only the flow's reason
+vocabulary. The contract itself lives in
+[jasper/active_speaker/crossover_v2/capture_source.py](../jasper/active_speaker/crossover_v2/capture_source.py)
+(do not restate it here); the relay provider's private choreography is
+[jasper/web/correction_crossover_v2_relay.py](../jasper/web/correction_crossover_v2_relay.py),
+and the wired (Pi-mic) provider is the seam's next occupant.
 
 ## Speaker-class applicability (#1671)
 
@@ -739,3 +1028,31 @@ instrument blindness · #2603 the driver low-limit's two declared values ·
 frame-coherence condition · #2662 the capture-source seam. Campaign-wide wave
 state lives in
 [`audio-commissioning-roadmap.md`](audio-commissioning-roadmap.md), not here.
+
+Load-bearing for decision 14 (2026-08-18), both from that day's
+lateral-statistic redesign study: #2710 per-role integer-sample alignment
+quantization · #2711 bank `branch_operator_by_role` per Fc candidate — the
+enabling change for any candidate-sensitive lateral statistic.
+
+This pass (#2603) verified decisions 8–9 and the low-limit claims — including
+correcting decision 4's cut-only claim above — against the code in this
+change: `driver_protection.py`'s owner-ruling derivation, the B&C DE250
+published-figure fact, and the linearization boost cap in `camilla_yaml.py` /
+`linearization_fit.py`. Decisions 1–3, 5–7, and 10–13, the region-based
+adjustment contract, the prescriber seam, and the rest of the historical/
+appendix material were not re-verified in this pass.
+
+The 2026-08-18 pass added decision 14 and the Measurement Program v2 section
+only, and verified that section's own code claims at HEAD: the phase
+vocabulary and `SUMMED_SWEEP_PHASES` membership, `position_angle_deg`'s
+±7°/±22° derivation at `MARK_DISTANCE_M`, the shipped Full-tier plan
+(15 captures, 13 displayed minutes) and its 9 → 3 stage-1 shape under a
+`STAGE1_INCLUDES_LATERAL` flag flip, the ramp's dBFS window and the
+calibration reader's lack of a sensitivity term, the declared commissioning
+SPL fields including the two 80 dB presets, the three N≥3 policy floors, and
+the pilot pair's duration. The per-pose ~41.6 s is a representative figure at
+the display constants, not a fixed one — it moves with topology — so it is
+cited as representative rather than verified. Nothing else in this doc was
+re-verified in that pass.
+
+Last verified: 2026-08-18

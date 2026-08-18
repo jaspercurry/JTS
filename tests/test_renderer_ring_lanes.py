@@ -2116,11 +2116,14 @@ def test_arming_airplay_prints_the_transport_advisory(
     monkeypatch, tmp_path, capsys
 ):
     """A NEWLY armed lane with an `arm_advisory` prints it — the operator
-    carries AirPlay's derived-on-aloop sync facts to the box's source pass
-    from this terminal, not from remembering to open a doc."""
+    carries AirPlay's ring validation boundary to the box's source pass from
+    this terminal, not from remembering to open a doc."""
     out = _arm_via_cli(monkeypatch, tmp_path, capsys, ["airplay"])
     assert "advisory airplay: " in out
-    assert "derived on the snd-aloop transport" in out
+    assert "drift_tolerance" in out
+    assert "SHM-ring validation" in out
+    assert "those settings and the latency offset were held unchanged" in out
+    assert "ring reliability and A/V validation" in out
     lane = rl.lane_by_label("airplay")
     assert lane is not None and lane.arm_advisory
     assert lane.arm_advisory in out, (
@@ -2140,20 +2143,32 @@ def test_arming_a_lane_without_an_advisory_prints_none(
     assert lane is not None and lane.arm_advisory is None
 
 
-def test_the_advisorys_resync_number_is_the_templates_live_value():
-    """The advisory instructs "keep resync_threshold at <x>" — a decimal
-    claim about the template's LIVE value, which is exactly the kind of
-    restated number that drifts (found unpinned by a P6d survive-shape
-    mutation: an advisory saying 0.3 against a 0.2 template passed the
-    suite). If the shipped threshold is ever retuned, the migration-posture
-    instruction changes meaning and must be rewritten, not inherited."""
+def test_the_advisorys_sync_numbers_match_the_templates_live_values():
+    """Every sync number in the advisory must follow the shipped template.
+
+    The advisory is operator-facing but the template owns the values. Pin all
+    three restated numbers so retuning any one cannot leave stale arm guidance.
+    """
     template = (REPO / "deploy" / "shairport-sync.conf.template").read_text()
-    m = re.search(r"^\s*resync_threshold_in_seconds = ([0-9.]+);", template, re.M)
-    assert m, "the template no longer sets resync_threshold_in_seconds"
-    live = m.group(1)
+
+    def live_value(setting: str) -> str:
+        matches = re.findall(
+            rf"^\s*{re.escape(setting)}\s*=\s*([0-9.]+);\s*$",
+            template,
+            re.MULTILINE,
+        )
+        assert len(matches) == 1, f"expected one live {setting} assignment"
+        return matches[0]
+
     lane = rl.lane_by_label("airplay")
     assert lane is not None and lane.arm_advisory
-    assert f"resync_threshold at {live} " in lane.arm_advisory, (
-        f"the advisory's resync number must be the template's live value "
-        f"({live}); rewrite the advisory when the threshold is retuned"
+    expected = (
+        f"drift_tolerance={live_value('drift_tolerance_in_seconds')}",
+        f"resync_threshold at {live_value('resync_threshold_in_seconds')}",
+        "audio_backend_buffer_desired_length at "
+        f"{live_value('audio_backend_buffer_desired_length_in_seconds')}",
     )
+    for claim in expected:
+        assert claim in lane.arm_advisory, (
+            f"the advisory must carry the template's live value: {claim}"
+        )

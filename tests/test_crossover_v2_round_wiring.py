@@ -57,7 +57,7 @@ import logging
 import os
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Mapping
 
 import pytest
 
@@ -75,6 +75,7 @@ from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope
 from jasper.active_speaker.crossover_v2 import coordinator
 from jasper.active_speaker.crossover_v2.contracts import (
     ADOPTION_ROW_KEEP_ITERATING,
+    AdoptionDecision,
     AdoptionOutcome,
     IterationHeadroom,
 )
@@ -154,6 +155,16 @@ from tests.test_crossover_v2_stage_bridge import (
 # --------------------------------------------------------------------------- #
 
 
+def _hydrated_series_position(conductor: Any) -> Any:
+    """The :class:`SeriesPosition` this conductor was SEEDED with.
+
+    Distinct from anything the session computes for itself: it is purely what
+    the preparer resolved off durable state and handed over, and there is no
+    public reader because a session may only carry it, never re-derive it.
+    """
+    return conductor._series_position
+
+
 def _install_entry_baseline(conductor: Any, *, scale: float) -> EntryBaseline:
     """Give a stage-2 conductor the "before" stage 1 would have handed it.
 
@@ -186,6 +197,67 @@ def _install_entry_baseline(conductor: Any, *, scale: float) -> EntryBaseline:
     )
     conductor._measure_entry_baseline = baseline
     return baseline
+
+
+def _tracking_curve_change_from_entry(
+    conductor: Any, *, change_db: float, louder_spike_db: float | None = None,
+) -> tuple:
+    """A post-apply tracking curve that missed by ``change_db``, both ways.
+
+    ``(freqs, measured, predicted)`` for ``verify_tracking_curve``, built so the
+    delta probe's TWO readings of the miss agree and are both flat ``change_db``:
+
+        measured_post − predicted_post                   (the model's departure)
+        (measured_post − measured_pre) − commanded       (the anchored excess)
+
+    which needs ``predicted_post == measured_pre + commanded`` — the statement
+    that the applied graph's prediction IS the entry measurement plus what the
+    apply commands, i.e. a model that was right about the speaker going in.
+
+    Since series-2 D1 the two directional findings are differenced against the
+    pre-apply capture, so a fixture claiming "the speaker came out 2 dB quieter
+    than it was asked for" has to say that about **two captures of one speaker**.
+    Stating it against a flat model curve alone — which is what these fixtures
+    did while the finding was ``realized − commanded`` — leaves the direction to
+    whatever shape the entry baseline happens to carry, and that shape is the
+    fixture's BENEFIT knob, not its direction knob. Production reads one entry
+    baseline for both, so a fixture that decouples them is testing a wiring the
+    speaker does not have.
+
+    ``louder_spike_db`` adds that much at ONE bin. It is what separates a
+    ``model_error`` the #2559 deferral does not spare from a hearing hazard, and
+    the separation is the structured-run rule: one bin is enough for
+    ``realized_louder_than_commanded`` (unstructured, so the lenience is
+    withheld) and far too narrow for ``boost_over_declared_bound`` (which needs
+    a 1/3-octave run before it will call anything a hazard). A fixture that
+    wants the probe's rollback CLASS to take the graph off — rather than the
+    safety axis, which outranks it — has to sit in exactly that gap.
+
+    Requires ``_install_entry_baseline`` to have run.
+    """
+    import numpy as np
+
+    freqs = np.asarray(_COMMANDED_FREQS_HZ, dtype=float)
+    baseline = conductor.measure_entry_baseline
+    assert baseline is not None, "install the entry baseline first"
+    measured_pre = np.interp(
+        freqs,
+        np.asarray(baseline.curve.hz, dtype=float),
+        np.asarray(baseline.curve.db, dtype=float),
+    )
+    commanded = conductor.measure_commanded_delta
+    assert commanded is not None, "the commanded axis is what change_db is relative to"
+    commanded_db = np.interp(
+        freqs,
+        np.asarray(commanded[0], dtype=float),
+        np.asarray(commanded[1], dtype=float),
+    )
+    predicted = measured_pre + commanded_db
+    measured = predicted + change_db
+    if louder_spike_db is not None:
+        measured = measured.copy()
+        measured[len(measured) // 2] += louder_spike_db
+    return (freqs, measured, predicted)
 
 
 def _install_applied_graph(monkeypatch, *, boosts: bool) -> None:
@@ -804,7 +876,6 @@ def test_two_restore_triggers_run_one_undo_and_keep_the_honest_sentence(
     for — one restore per session — plus the structural fact that makes it hold
     without a guard at all.
     """
-    import numpy as np
 
     _seed_round_state()
     conductor, attempts = _restoring_stage_2(monkeypatch)
@@ -822,13 +893,13 @@ def test_two_restore_triggers_run_one_undo_and_keep_the_honest_sentence(
     # A second capture in the same session, carrying a probe verdict that used
     # to fire the seam's own immediate rollback: 2 dB LOUDER than the applied
     # filters commanded, across the whole band. Nothing restores a second time.
-    freqs = np.asarray(_COMMANDED_FREQS_HZ, dtype=float)
-    predicted = np.zeros_like(freqs)
     _consume_verify(
         conductor,
         dataclasses.replace(
             _post_apply_analysis(conductor),
-            verify_tracking_curve=(freqs, predicted + 2.0, predicted),
+            verify_tracking_curve=_tracking_curve_change_from_entry(
+                conductor, change_db=-2.0, louder_spike_db=+4.0,
+            ),
         ),
         attempt=2,
     )
@@ -1210,21 +1281,19 @@ def test_a_quieter_only_shape_miss_reaches_the_table_instead_of_the_seam(
     is graded, and the deferral is on the record. A deferral nobody could see
     would be the same dishonesty in the other direction.
     """
-    import numpy as np
-
     _seed_round_state()
     conductor, attempts = _restoring_stage_2(monkeypatch)
     _install_entry_baseline(conductor, scale=1.5)
     _install_applied_graph(monkeypatch, boosts=False)
     caplog.set_level(logging.WARNING, logger=flow.logger.name)
 
-    freqs = np.asarray(_COMMANDED_FREQS_HZ, dtype=float)
-    predicted = np.zeros_like(freqs)
     verdict = _consume_verify(
         conductor,
         dataclasses.replace(
             _post_apply_analysis(conductor),
-            verify_tracking_curve=(freqs, predicted - 2.0, predicted),
+            verify_tracking_curve=_tracking_curve_change_from_entry(
+                conductor, change_db=-2.0,
+            ),
         ),
     )
 
@@ -1261,25 +1330,24 @@ def test_a_louder_shape_miss_still_restores_at_the_seam(monkeypatch, real_bundle
     ends on its own verdict, and no round receipt is written — the shipped
     behaviour for every seam rollback, unchanged.
     """
-    import numpy as np
-
     _seed_round_state()
     conductor, attempts = _restoring_stage_2(monkeypatch)
     _install_entry_baseline(conductor, scale=1.5)
     _install_applied_graph(monkeypatch, boosts=False)
 
-    freqs = np.asarray(_COMMANDED_FREQS_HZ, dtype=float)
-    predicted = np.zeros_like(freqs)
     verdict = _consume_verify(
         conductor,
         dataclasses.replace(
             _post_apply_analysis(conductor),
-            verify_tracking_curve=(freqs, predicted + 2.0, predicted),
+            verify_tracking_curve=_tracking_curve_change_from_entry(
+                conductor, change_db=+2.0,
+            ),
         ),
     )
 
     assert conductor.delta_probe is not None
     assert conductor.delta_probe.verdict == VERDICT_MODEL_ERROR
+    assert conductor.delta_probe.safety_anchored is True
     assert conductor.delta_probe.realized_louder_than_commanded is True
     assert attempts == [1]
     assert verdict.accepted is False
@@ -2378,7 +2446,6 @@ def test_a_probe_rollback_at_the_cloud_close_banks_its_round(
     receipt is on disk naming the probe class that took it off. The old shape
     satisfied only the first two.
     """
-    import numpy as np
 
     _seed_full_round_state()
     conductor, attempts = _full_stage_2(monkeypatch)
@@ -2388,13 +2455,18 @@ def test_a_probe_rollback_at_the_cloud_close_banks_its_round(
     # 2 dB LOUDER than commanded across the band: a ``model_error`` the #2559
     # deferral does not spare, which is the class this branch exists for. The
     # Full tier grades at the cloud close, so VERIFY only stashes it.
-    freqs = np.asarray(_COMMANDED_FREQS_HZ, dtype=float)
-    predicted = np.zeros_like(freqs)
+    #
+    # Stated against the ENTRY capture, not against a flat model curve: the
+    # direction that withholds the deferral is a measured change since
+    # series-2 D1, and a decoupled fixture would let the entry baseline's own
+    # shape decide it — which is the fixture testing itself.
     assert _consume_verify(
         conductor,
         dataclasses.replace(
             _post_apply_analysis(conductor),
-            verify_tracking_curve=(freqs, predicted + 2.0, predicted),
+            verify_tracking_curve=_tracking_curve_change_from_entry(
+                conductor, change_db=-2.0, louder_spike_db=+4.0,
+            ),
         ),
     ).accepted
 
@@ -2616,6 +2688,20 @@ _USABLE_ANALYSIS = SimpleNamespace(
     verify_tracking={"max_db_notch_excluded": 0.1, "n_bins": 10},
     summed_response=None,
     program_id="prog-1",
+)
+
+#: The same analysis, plus the VERIFY absolute claim that names a crossover
+#: region. Decision 10's blend record rides only when there IS a region, so a
+#: round graded from the analysis above banks none — which is what
+#: ``test_a_round_with_no_cloud_banks_no_residuals_rather_than_empty_ones``
+#: pins, and why the widest-receipt fixture needs this one instead.
+#: ``[824.35, 3297.4]`` is the band every series-1 round actually graded.
+_REGION_ANALYSIS = SimpleNamespace(
+    capture_integrity=SimpleNamespace(failed=(), not_evaluated=()),
+    verify_tracking={"max_db_notch_excluded": 0.1, "n_bins": 10},
+    summed_response=None,
+    program_id="prog-1",
+    verify_absolute={"band_hz": [824.35, 3297.4], "worst_db": -2.9},
 )
 
 
@@ -2895,7 +2981,14 @@ RECEIPT_MAP_KEYS = {
     },
     # Both optional; the empty and single-key cases are pinned above. This is
     # the widest the map gets.
-    "round_measurements": {"realization", "position_residuals"},
+    # ``blend`` (decision 10) rides only when the round had a crossover region
+    # to speak about — see ``_round_measurements``. It carries the region's
+    # commanded-vs-realized pair AND the reason code for a round that
+    # prescribed nothing, deliberately together rather than split across
+    # ``round_axes``: that map is the four ADOPTION axes and every value in it
+    # is a Verdict, which a blend reason is not — a fifth key of a different
+    # shape there would read as a fifth axis, which decision 10 forbids.
+    "round_measurements": {"realization", "position_residuals", "blend"},
 }
 
 _KEY_DRIFT_REMEDY = (
@@ -2922,6 +3015,7 @@ def _widest_receipt():
     banked = []
     _direct_round(
         publish=lambda r: banked.append(r) or "art",
+        analysis=_REGION_ANALYSIS,
         delta_probe=probe,
         position_residuals=({"position_id": "p0", "role": "onax", "rms_db": 0.4},),
     )
@@ -2942,7 +3036,9 @@ def test_the_receipt_key_guard_sees_a_planted_key(monkeypatch):
     monkeypatch.setattr(
         coordinator,
         "_round_measurements",
-        lambda evidence: {**real(evidence), "smuggled_in": 1},
+        lambda evidence, evaluation: {
+            **real(evidence, evaluation), "smuggled_in": 1,
+        },
     )
 
     added, missing = _key_drift(
@@ -2968,6 +3064,395 @@ def test_the_receipts_opaque_maps_carry_only_their_enumerated_keys():
         added, missing = _key_drift(receipt[field], expected)
         assert not added, f"{field} grew {sorted(added)}. {_KEY_DRIFT_REMEDY}"
         assert not missing, f"{field} lost {sorted(missing)}. {_KEY_DRIFT_REMEDY}"
+
+
+def test_a_kept_round_banks_its_blend_instruction_and_it_reads_back():
+    """Decision 10's series carry: prescription out, prescription back.
+
+    Banked as a mapping rather than a bare list because the next round needs
+    BOTH halves — the filters to build its candidate, and the region residual
+    to know whether the region is still improving. Splitting them across two
+    keys would let a series remember a prescription from one round and a
+    reading from another.
+    """
+
+    decision = _direct_round(publish=lambda _r: "art",
+                             analysis=_REGION_ANALYSIS)
+
+    identity = decision.receipt_identity
+    assert identity["adoption"].startswith("keep")
+    assert isinstance(identity["blend"], Mapping)
+    assert set(identity["blend"]) == {"filters", "residual_db"}
+
+    position = coordinator.series_position_from_state({"round_receipt": identity})
+    assert position.previous_blend_correction is not None
+
+
+#: The 2026-08-18 round's own banked instruction, and a DIFFERENT readable
+#: correction for the speaker to be playing. The two blend tests below share
+#: them so "the instruction" and "the applied graph" are provably the same two
+#: answers in both, rather than two pairs that happen to differ.
+_BANKED_INSTRUCTION = ({"biquad_type": "Peaking", "freq": 2120.3384, "q": 2.0,
+                        "gain": -0.7171},)
+_APPLIED_INCUMBENT = ({"biquad_type": "Peaking", "freq": 1200.0, "q": 2.0,
+                       "gain": -2.5},)
+
+
+def _state_carrying_a_banked_instruction() -> dict[str, Any]:
+    """Durable state as a kept round 8 leaves it: ordinal, objectives, blend."""
+    return {
+        "round_receipt": {
+            "round_ordinal": 8,
+            "objectives": {"tilt_db": 0.4, "ripple_db": 0.9},
+            "trusted_floor_hz": 143.0,
+            "blend": {
+                "filters": [dict(f) for f in _BANKED_INSTRUCTION],
+                "residual_db": 0.7304,
+            },
+        },
+    }
+
+
+def test_a_banked_instruction_reaches_the_next_rounds_measure_stage(monkeypatch):
+    """#2698 — the hop the test above stops one step short of.
+
+    That test proves the receipt CARRIES the instruction and that the reader
+    parses it back. Neither fact iterates anything: ``_blend_prescription`` is
+    read at candidate-build time, which runs in the MEASURE stage, so a series
+    converges only if the MEASURING session is hydrated with its position too.
+    Before #2698 it was not: the one ``series_position=`` line lived in
+    ``prepare_v2_verify`` alone, ``self._series_position`` was ``None`` on
+    every measuring session, and the build silently fell back to the incumbent.
+    Measured on 2026-08-18: a round banked ``Peaking 2120.34 Hz, -0.7171 dB``
+    and the next round emitted zero blend filters, with the done screen still
+    promising the region would be trimmed.
+
+    Driven through the REAL stage-1 preparer, and DISCRIMINATING: the applied
+    profile carries a different, readable correction, so "carried the
+    instruction" and "fell back to the graph" are two distinguishable answers
+    rather than one. A fixture with no incumbent would pass against ``()`` for
+    the wrong reason.
+    """
+
+    banked, incumbent = _BANKED_INSTRUCTION, _APPLIED_INCUMBENT
+    monkeypatch.setattr(
+        "jasper.active_speaker.baseline_profile."
+        "load_applied_baseline_profile_state",
+        lambda: {"blend_correction": [dict(f) for f in incumbent]},
+    )
+    v2host.save_v2_state(_state_carrying_a_banked_instruction())
+
+    prepared = v2host.prepare_v2_session(
+        {}, status=_status(), run_async=None, camilla_factory=None,
+    )
+    conductor, _state = _open_prepared(monkeypatch, prepared)
+
+    # The series survived into the MEASURING session, ordinal and all — a
+    # position resolved to ``first()`` would carry no instruction and the
+    # assertion below would then be testing the fallback.
+    assert _hydrated_series_position(conductor).ordinal == 9
+    # …and what ``_build_candidate`` hands the emitter is that instruction,
+    # not the graph the speaker is already playing.
+    assert conductor._blend_prescription() == banked
+    # The control that makes the assertion above mean something: the fallback
+    # is reachable, readable, and a DIFFERENT answer.
+    assert flow.CrossoverV2Session._applied_blend_correction(
+        SimpleNamespace()
+    ) == incumbent
+
+
+def test_a_household_undo_withdraws_the_instruction_but_not_the_series(
+    monkeypatch,
+):
+    """The second door into the hop above, and the ruled contract it must obey.
+
+    "A round that does not KEEP its graph issues no instruction" is decided at
+    the receipt writer, for the round's OWN restore. A household Undo reverses
+    an apply from outside that path: ``observe_restore`` clears the journey
+    field by field, which its own docstring calls a standing trap, and
+    ``round_receipt`` is the fifth durable field to meet it. While stage 1
+    derived its blend from the applied graph the trap cost nothing — the
+    restore itself answered. Since #2698 stage 1 reads the receipt, so the
+    instruction has to be withdrawn explicitly or the next round composes a
+    correction onto a base the household just removed.
+
+    **What must NOT be withdrawn with it**: the ordinal. Nulling the whole
+    receipt would send the series back to round 1, and an Undo→measure cycle
+    could then be repeated past the round cap forever. Objectives and the
+    trusted floor go with the ordinal for the same reason — they frame it.
+    """
+
+    restored = _APPLIED_INCUMBENT
+    monkeypatch.setattr(
+        "jasper.active_speaker.baseline_profile."
+        "load_applied_baseline_profile_state",
+        lambda: {"blend_correction": [dict(f) for f in restored]},
+    )
+    v2host.save_v2_state(_state_carrying_a_banked_instruction())
+    # The premise, asserted rather than assumed: there really is an instruction
+    # to withdraw, or every assertion below passes for the wrong reason.
+    assert coordinator.series_position_from_state(
+        v2host.load_v2_state()
+    ).previous_blend_correction == _BANKED_INSTRUCTION
+
+    v2host.observe_restore()
+
+    position = coordinator.series_position_from_state(v2host.load_v2_state())
+    assert position.previous_blend_correction is None, (
+        "an Undo left its instruction standing"
+    )
+    assert position.previous_blend_residual_db is None, (
+        "the reading the instruction was decided against outlived it"
+    )
+    # The series itself is untouched: the cap still counts round 8, so an
+    # Undo→measure cycle cannot be repeated past it.
+    assert position.ordinal == 9
+    assert position.previous_objectives is not None
+    assert position.previous_trusted_floor_hz == 143.0
+
+    # End to end, at the surface the household feels: the next measuring
+    # session prescribes the graph Undo put back, not the discarded
+    # instruction.
+    prepared = v2host.prepare_v2_session(
+        {}, status=_status(), run_async=None, camilla_factory=None,
+    )
+    conductor, _state = _open_prepared(monkeypatch, prepared)
+
+    assert conductor._blend_prescription() == restored
+
+
+#: "the session resolved no position at all", distinct from "it resolved one
+#: carrying no instruction" — both must hold the applied graph.
+_ABSENT = object()
+
+
+def test_the_production_incumbent_reader_refuses_a_corrupt_profile(monkeypatch):
+    """The converged panel finding, asserted at the PRODUCTION method.
+
+    ``tests/test_crossover_v2_blend_correction.py`` drives the two readers in
+    sequence; that proves they compose correctly and cannot notice
+    ``_applied_blend_correction`` ceasing to call the strict one — which is
+    exactly the shape of the original defect (a guard pointed at the wrong
+    reader). This drives the shipped method.
+    """
+
+    from jasper.active_speaker import crossover_v2_flow as flow
+
+    reader = flow.CrossoverV2Session._applied_blend_correction
+
+    def _profile(payload):
+        monkeypatch.setattr(
+            "jasper.active_speaker.baseline_profile."
+            "load_applied_baseline_profile_state",
+            lambda: payload,
+        )
+        return reader(SimpleNamespace())
+
+    corrupt = [{"biquad_type": "Peaking", "freq": "1900", "q": 2.0,
+                "gain": -1.0}]
+    assert _profile({"blend_correction": corrupt}) is None
+    assert _profile({"blend_correction": [{"biquad_type": "Peaking",
+                                           "freq": 1900.0, "q": 2.0,
+                                           "gain": 0.5}]}) is None
+    # Positive control: a real record must still read through, or "everything
+    # is unknown" would satisfy every assertion above while making the
+    # correction permanently unreachable.
+    good = [{"biquad_type": "Peaking", "freq": 1900.0, "q": 2.0, "gain": -2.5}]
+    assert _profile({"blend_correction": good}) == tuple(good)
+    assert _profile(None) is None
+
+
+def test_no_instruction_makes_the_next_candidate_hold_the_applied_graph(
+    monkeypatch,
+):
+    """Panel ruling 2, at the hop that carries it out.
+
+    ``_blend_prescription`` is the only place the difference between "no
+    instruction" and "apply nothing" becomes a graph. A series instruction
+    wins; its ABSENCE falls back to what the speaker is already playing, which
+    is what stops a restored round — or a fresh series on an
+    already-corrected speaker — from silently dropping an adopted correction.
+    """
+
+    from jasper.active_speaker import crossover_v2_flow as flow
+
+    prescribe = flow.CrossoverV2Session._blend_prescription
+    applied = ({"biquad_type": "Peaking", "freq": 1900.0, "q": 2.0,
+                "gain": -2.5},)
+    monkeypatch.setattr(
+        "jasper.active_speaker.baseline_profile."
+        "load_applied_baseline_profile_state",
+        lambda: {"blend_correction": [dict(f) for f in applied]},
+    )
+
+    def _session(instruction):
+        # The REAL incumbent reader, so the fallback is proved to go through
+        # the same strict path the solve's incumbent does rather than a stub
+        # that could disagree with it.
+        return SimpleNamespace(
+            _series_position=(
+                None if instruction is _ABSENT
+                else SimpleNamespace(previous_blend_correction=instruction)
+            ),
+            _applied_blend_correction=lambda: (
+                flow.CrossoverV2Session._applied_blend_correction(
+                    SimpleNamespace()
+                )
+            ),
+        )
+
+    # No instruction -> hold what is applied.
+    assert prescribe(_session(_ABSENT)) == applied
+    assert prescribe(_session(None)) == applied
+    # An EXPLICIT empty instruction -> apply nothing, overriding the graph.
+    assert prescribe(_session(())) == ()
+    # A real instruction -> that, not the applied graph.
+    fresh = ({"biquad_type": "Peaking", "freq": 1200.0, "q": 2.0,
+              "gain": -1.0},)
+    assert prescribe(_session(fresh)) == fresh
+
+
+def test_a_restored_round_banks_no_blend_instruction(monkeypatch):
+    """Panel ruling, 2026-08-18: a restore does not propagate its prescription.
+
+    A prescription is derived from a measurement taken THROUGH a specific
+    incumbent. A restored round threw that graph away, so applying its
+    prescription next would compose a correction onto a base that no longer
+    exists. The next round instead derives from the applied (restored) profile
+    — which is what a ``None`` instruction tells the apply path to do.
+
+    What the round COMMANDED is still history and still banked, in the
+    artifact's ``round_measurements.blend``. This key is not history; it is an
+    instruction, and a discarded round has no standing to issue one.
+    """
+
+    # A USABLE capture that still restores. The unusable-capture path would
+    # short-circuit the blend solve to ``None`` and pass this test without ever
+    # reaching the gate — the mutation that removes the gate survived exactly
+    # that fixture. The adoption verdict is forced instead, so the round
+    # genuinely has a blend record and genuinely restores.
+    restore = AdoptionDecision(
+        outcome=AdoptionOutcome.RESTORE,
+        row="row4_untrusted_evidence",
+        reason="forced_for_this_test",
+    )
+    # Patched at ``verification``, which is where ``evaluate_round`` imports
+    # it from at call time — patching the coordinator's own name would bind
+    # nothing and the round would quietly keep its graph.
+    monkeypatch.setattr(
+        "jasper.active_speaker.crossover_v2.verification.decide_adoption",
+        lambda **_k: restore,
+    )
+
+    decision = _direct_round(
+        publish=lambda _r: "art",
+        analysis=_REGION_ANALYSIS,
+        rollback=lambda _reason: True,
+        rollback_available=lambda: True,
+    )
+
+    identity = decision.receipt_identity
+    assert identity["adoption"] == "restore"
+    assert decision.evaluation.blend is not None, (
+        "the fixture must reach the blend solve, or the gate is untested"
+    )
+    assert identity["blend"] is None
+
+    position = coordinator.series_position_from_state({"round_receipt": identity})
+    assert position.previous_blend_correction is None, (
+        "a restored round handed the next one an instruction"
+    )
+    assert position.previous_blend_residual_db is None
+
+
+def test_no_instruction_and_an_empty_instruction_are_different_answers():
+    """The distinction the apply path turns on.
+
+    ``None`` means "this series has no instruction for you" and the next
+    candidate derives from the APPLIED graph; ``()`` means "apply no blend
+    correction" and it does exactly that. Collapsing them would make a
+    restored round — or a fresh series on an already-corrected speaker —
+    silently drop an adopted correction.
+    """
+
+    empty = coordinator.series_position_from_state({"round_receipt": {
+        "round_ordinal": 1, "objectives": {"tilt_db": 0.0, "ripple_db": 0.0},
+        "blend": {"filters": [], "residual_db": 1.0},
+    }})
+    absent = coordinator.series_position_from_state({"round_receipt": {
+        "round_ordinal": 1, "objectives": {"tilt_db": 0.0, "ripple_db": 0.0},
+    }})
+
+    assert empty.previous_blend_correction == ()
+    assert absent.previous_blend_correction is None
+
+
+@pytest.mark.parametrize(
+    "blend",
+    [
+        {"filters": "not-a-list", "residual_db": 1.0},
+        {"filters": [{"biquad_type": "Peaking", "freq": 1.9e3, "q": 2.0,
+                      "gain": 0.5}], "residual_db": 1.0},
+        {"filters": [{"biquad_type": "Peaking", "freq": "1900", "q": 2.0,
+                      "gain": -1.0}], "residual_db": 1.0},
+        "not-a-mapping",
+        [{"biquad_type": "Peaking", "freq": 1.9e3, "q": 2.0, "gain": -1.0}],
+    ],
+    ids=["bad-filters", "boost", "string-freq", "string", "legacy-list"],
+)
+def test_an_unreadable_instruction_reads_as_no_instruction(blend):
+    """An instruction nobody can vouch for must not be able to REMOVE an
+    adopted correction any more than it can invent one — so it resolves to
+    "no instruction", not to "apply nothing"."""
+
+    position = coordinator.series_position_from_state({"round_receipt": {
+        "round_ordinal": 1, "objectives": {"tilt_db": 0.0, "ripple_db": 0.0},
+        "blend": blend,
+    }})
+
+    assert position.previous_blend_correction is None
+
+
+def test_the_two_region_residuals_on_the_receipt_name_their_instruments():
+    """Panel correctness SF3.
+
+    The receipt carries two residuals over the same band, referenced
+    differently and therefore numerically different. Unlabelled, a reader
+    reasonably takes the gap for a defect in one of them.
+    """
+
+    # The identity carries the instruction; the artifact carries the numbers.
+    # Drive the measurements builder directly for the labelled pair.
+    from jasper.active_speaker.crossover_v2 import blend_correction as bc
+    from jasper.active_speaker.crossover_v2.verification import Verdict
+    from jasper.active_speaker.crossover_v2.contracts import BenefitStatus
+
+    blend = bc.BlendCorrection(
+        filters=(), reason=bc.BLEND_NOTHING_TO_CUT, band_hz=(824.35, 3297.4),
+        reading=bc.BlendRegionReading(
+            band_hz=(824.35, 3297.4), residual_db=1.0006, n_bins=109,
+            worst_db=-2.9, worst_hz=1938.0,
+        ),
+    )
+    measurements = coordinator._round_measurements(
+        SimpleNamespace(
+            delta_probe=None, position_residuals=(), alignment_prescription=None,
+        ),
+        SimpleNamespace(
+            blend=blend,
+            region_benefit=Verdict(
+                BenefitStatus.INDETERMINATE, "residual_within_margin",
+                {"post_residual_db": 0.8902},
+            ),
+        ),
+    )
+
+    assert measurements["blend"]["realized"]["instrument"] == (
+        "cloud_flat_reference"
+    )
+    assert measurements["blend"]["region_benefit"]["instrument"] == (
+        "region_local_reference"
+    )
 
 
 def test_the_trusted_floor_rides_the_identity_and_reads_back(monkeypatch):

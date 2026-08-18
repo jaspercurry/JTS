@@ -3980,11 +3980,11 @@ def test_state_audio_metrics_sanitize_non_finite_values(
         async def get_volume_db(self, *, best_effort=False):  # noqa: ARG002
             return -12.345
 
-        async def get_playback_rms(self, *, best_effort=False):  # noqa: ARG002
-            return float("-inf"), -32.1234
+        async def get_playback_rms_all(self, *, best_effort=False):  # noqa: ARG002
+            return [float("-inf"), -32.1234]
 
-        async def get_playback_peak(self, *, best_effort=False):  # noqa: ARG002
-            return float("nan"), -3.456
+        async def get_playback_peak_all(self, *, best_effort=False):  # noqa: ARG002
+            return [float("nan"), -3.456]
 
         async def get_clipped_samples(self, *, best_effort=False):  # noqa: ARG002
             return 7
@@ -4007,6 +4007,46 @@ def test_state_audio_metrics_sanitize_non_finite_values(
     assert body["audio"]["playback_rms_dbfs"] == [None, -32.12]
     assert body["audio"]["playback_peak_dbfs"] == [None, -3.46]
     assert body["audio"]["clipped_samples"] == 7
+
+
+def test_state_audio_metrics_publish_every_playback_channel(
+    server_with_coordinator, monkeypatch, tmp_path,
+):
+    """#2668: a 4-output active-crossover box must publish four levels.
+
+    The fixture is the live reading taken off CamillaDSP's websocket during
+    the §8.7 dummy-load sweep, mid-woofer-ramp: outputs 0/2 are the two
+    woofers at the audible floor, 1/3 the two tweeters at digital silence.
+    Publishing only the front pair hides an entire speaker.
+    """
+    import jasper.camilla as camilla_mod
+
+    class FakeCamilla:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def get_volume_db(self, *, best_effort=False):
+            return -25.757576
+
+        async def get_playback_rms_all(self, *, best_effort=False):
+            return [-108.03, -1000.0, -108.03, -1000.0]
+
+        async def get_playback_peak_all(self, *, best_effort=False):
+            return [-105.81, -1000.0, -105.81, -1000.0]
+
+        async def get_clipped_samples(self, *, best_effort=False):
+            return 0
+
+    base, _ = server_with_coordinator
+    monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(tmp_path / "speaker_volume.json"))
+    monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(tmp_path / "missing.json"))
+    monkeypatch.setattr(camilla_mod, "CamillaController", FakeCamilla)
+
+    status, body = _get(f"{base}/state")
+
+    assert status == 200
+    assert body["audio"]["playback_rms_dbfs"] == [-108.03, -1000.0, -108.03, -1000.0]
+    assert body["audio"]["playback_peak_dbfs"] == [-105.81, -1000.0, -105.81, -1000.0]
 
 
 def test_state_prefers_mux_winner_over_raw_renderer_probe(
@@ -4367,8 +4407,8 @@ def test_state_camilla_probe_times_out_fail_soft(
             await asyncio.sleep(5)
 
         get_volume_db = _hang
-        get_playback_rms = _hang
-        get_playback_peak = _hang
+        get_playback_rms_all = _hang
+        get_playback_peak_all = _hang
         get_clipped_samples = _hang
         get_config_file_path = _hang
 
@@ -4415,8 +4455,8 @@ async def test_state_aggregate_budget_fails_loud_on_runaway_probe(
             await asyncio.sleep(5)
 
         get_volume_db = _hang
-        get_playback_rms = _hang
-        get_playback_peak = _hang
+        get_playback_rms_all = _hang
+        get_playback_peak_all = _hang
         get_clipped_samples = _hang
         get_config_file_path = _hang
 

@@ -307,14 +307,27 @@ They may not:
 Holding the anchor solution fixed at the sides is load-bearing: re-aligning at
 each pose would erase the off-axis consequence the samples are meant to expose.
 
-*Implemented scope (R16), LIVE since R17.* `STAGE1_INCLUDES_LATERAL` is `True`:
-Gate 0 pairs every producer with a current consumer, and R16's consumer — R17's
+*Implemented scope (R16), LIVE from R17, PAUSED since 2026-08-18.*
+`STAGE1_INCLUDES_LATERAL` was flipped `True` at R17 because Gate 0 pairs every
+producer with a current consumer, and R16's consumer — R17's
 Fc selector — landed. It was held dormant through R16 because at the
 checkpoint's declared 2 kHz tweeter measurement floor every sub-2 kHz candidate
 had its own handoff clamped out of `overlap_band_hz`; #1654 swept the HF driver
 to its declared 1600 Hz floor and removed that clamp. The household-visible
-cost of the flip is stage 1 going from 2 captures to 8 and the chooser's honest
-quote for Full from 6 to 12 minutes. The walk is six prompted poses — the mark, ±12 cm
+cost of the flip was stage 1 going from 3 captures to 9 and the chooser's
+honest quote for Full from 7 to 13 minutes.
+
+The flag is **`False` today**, owner-ratified on a recompute over the 8 banked
+rounds: the walk was 59.4% of all banked session audio and the largest retake
+source, it never changed an outcome (8 of 8 committed the configured Fc), and
+the max-over-poses scalar it feeds adjudicates below its own 3.54 dB repeat
+noise. The measurements are sound — inter-driver drift 0.6–1.9 dB against a
+0.09–0.32 dB mark-return floor — so the implemented scope below stands
+unmodified and describes what runs when the flag is `True`; the pause waits on
+a redesigned statistic, and the Fc selector is dormant with it. The flag's own
+comment in `crossover_v2_flow.py` is the canonical record.
+
+The walk is six prompted poses — the mark, ±12 cm
 and ±40 cm left/right, and a return to the mark — as a stage-1 position group
 (`PHASE_LATERAL`) that replays the **anchor's own MEASURE program object**
 through the protected-neutral graph, so each pose carries both drivers on one
@@ -546,6 +559,9 @@ comment on [#1894](https://github.com/jaspercurry/JTS/issues/1894#issuecomment-5
 the multi-candidate path proves equivalence and then improvement.
 
 **R17 outcome — the selector RECOMMENDS; `/sound` remains Fc's only writer.**
+*(Dormant since 2026-08-18: the selector's producer — R16's lateral walk — is
+paused, so no shipped session scores candidates. Code intact; see the
+*Implemented scope* note above.)*
 Three structural discoveries reshaped the round, each verified in code before
 it was acted on, and each recorded on
 [#1894](https://github.com/jaspercurry/JTS/issues/1894):

@@ -29,15 +29,20 @@ per-driver distributed transaction with this shape: the Pi compiles one
 excitation program per phase, plays it as one continuous stream, and analyzes
 ``(program, capture) → analysis`` as a pure function. The session owns the
 phase state machine that drives the relay session. At the shipped defaults a
-FULL-tier commission is 15 captures (9 in stage 1, then 6) and an express one
-is 10 (the same 9, then 1, ``TIER_EXPRESS``) — the tiers differ in stage 2
+FULL-tier commission is 9 captures (3 in stage 1, then 6) and an express one
+is 4 (the same 3, then 1, ``TIER_EXPRESS``) — the tiers differ in stage 2
 only. :func:`tier_display_info` derives both from the plans themselves and is
 what the household-facing chooser reads; do not restate the numbers where a
 plan change cannot reach them. The spatial cloud replaced the original three:
 
-    CHECK → gain solve → MEASURE → the lateral walk → the entry baseline
+    CHECK → gain solve → MEASURE → the entry baseline
       → fit + candidate → [the household reviews, then POSTs the apply]
       → VERIFY → the post-apply position group → done
+
+The 6-pose lateral walk sat between MEASURE and the entry baseline from R17
+until it was paused on 2026-08-18; ``STAGE1_INCLUDES_LATERAL`` carries why, and
+forcing it back to ``True`` restores that arm of the diagram and the 9-capture
+stage 1 unchanged.
 
 **Owner decision (2026-07-27): the fit is the last thing before the apply.**
 The candidate used to be built the moment MEASURE was accepted, which put it
@@ -48,8 +53,9 @@ fit correct the envelope around the interference the cloud identified and
 refuse to fill it (flat-linearization plan, interpretation call (A)). MEASURE
 keeps every trust gate it owned: they read the analysis, not the candidate, so
 a session doomed at sweep two still fails at sweep two rather than after a nine
--position walk. A session with no pre-apply group (the pre-cloud 3-entry shape
-this class still defaults to) has nothing to wait for and still builds at
+-position walk. A session with no pre-apply group (the shape this class
+defaults to — and, since the lateral pause, the shipped stage 1 as well) has
+nothing to wait for and still builds at
 MEASURE, with the same accept, the same payload keys and the same apply timing
 it had before the move — its ``candidate.json`` does gain an always-empty
 ``exclusion_evidence`` key, which leaves the fingerprint unchanged.
@@ -79,8 +85,9 @@ lifecycle hooks the host needs (:meth:`note_apply_complete`,
 :meth:`snapshot`/:meth:`hydrate` for phase persistence + session binding). One
 journey spans TWO relay sessions since the two-stage split (work order D1/D2,
 issue #1806), each a heterogeneous ``CapturePlan``: **stage 1** is check /
-measure / the pre-apply position group (10 entries at the full tier's shipped
-defaults, 6 on express), and **stage 2** is verify / the post-apply position
+measure / #2291's entry baseline (3 entries at either tier — the pre-apply
+position group is off, and so is the lateral walk that ran between them until
+the 2026-08-18 pause), and **stage 2** is verify / the post-apply position
 group (6 at Full, 1 on express, which omits the group entirely). See
 "position-group choreography" below. **Nothing is applied inside a session** —
 stage 1 ends on the household's explicit set-completion signal, which closes
@@ -125,6 +132,9 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     # :mod:`jasper.active_speaker.flat_spec` through
     # :mod:`jasper.active_speaker.crossover_v2.verification`, and this module
     # already imports ``flat_spec`` lazily everywhere else for that reason.
+    from jasper.active_speaker.crossover_v2.alignment_prescription import (
+        AlignmentPrescription,
+    )
     from jasper.active_speaker.crossover_v2.coordinator import (
         RoundPorts,
         SeriesPosition,
@@ -241,6 +251,7 @@ from jasper.audio_measurement.program_analysis import (
     polarity_label,
 )
 from jasper.capture_relay.session import CaptureBeginDeferred, CaptureBeginRefused
+from jasper.env_load import bounded_env_float
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -379,13 +390,20 @@ MIN_CLOUD_MEASURE_POSITIONS = 6
 #
 # **12 → 11 when #2291's entry baseline landed**, because that claim is what
 # this number IS, and one more stage-1 entry left the old value one blob index
-# over. The arithmetic the guard runs, spelled out:
+# over. The arithmetic, spelled out for the WALK-ARMED case — which is the one
+# that binds, and the reason this stays 11 through the lateral pause:
 #
 #     cloud_plan_max_attempts(N, M=6)                  = 1 + N + 6 + 2 + 5
 #     + len(LATERAL_POSE_PROMPTS)                      = 6
 #     + the entry baseline                             = 1
 #     ------------------------------------------------------------------
 #     N=12 -> 33, N=11 -> 32 = MAX_CAPTURE_PLAN_ATTEMPTS
+#
+# The guard itself is flag-aware, so with the walk paused it computes 26 at
+# N=11 and this ceiling has six indexes of slack. Do NOT spend that slack:
+# ``STAGE1_INCLUDES_LATERAL`` is paused, not retired, and raising N on the
+# strength of the paused count would make re-arming the walk a capacity refusal
+# mid-session rather than a flag flip.
 #
 # Nothing shipped changes: ``DEFAULT_CLOUD_MEASURE_POSITIONS`` is 9 and stage 1
 # does not run the pre-apply cloud at all (``STAGE1_INCLUDES_CLOUD_MEASURE``).
@@ -1126,10 +1144,11 @@ def remote_cloud_measure_positions() -> int:
     """Remote's PRE-APPLY group size — Full's N, and the trip-wire that guards it.
 
     Remote takes Full's ``N`` because its stage 1 IS Full's stage 1. That is
-    only safe because the shipped stage 1 walks the LATERAL poses, which are
-    lateral by construction: :data:`STAGE1_INCLUDES_CLOUD_MEASURE` is ``False``,
-    so the ``[:N - 1]`` prefix of :data:`CLOUD_POSITION_PROMPTS` — which at
-    ``N = 9`` DOES contain vertical rows — is never walked.
+    safe because :data:`STAGE1_INCLUDES_CLOUD_MEASURE` is ``False``, so the
+    ``[:N - 1]`` prefix of :data:`CLOUD_POSITION_PROMPTS` — which at ``N = 9``
+    DOES contain vertical rows — is never walked. That one flag is the whole
+    load-bearing fact; the lateral walk is beside the point here, being lateral
+    by construction whether it is armed or (as since 2026-08-18) paused.
 
     Flipping that flag back on would ask an external positioner for a pose it
     cannot reach. Today that surfaces as :func:`position_angle_deg` raising
@@ -1474,7 +1493,7 @@ def _shape_from_kwargs(
 
 from jasper.active_speaker.crossover_v2.fc_sweep import (
     FC_REJECT_ABOVE_LOWER_DRIVER_BAND as FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
-    FC_REJECT_AT_OR_BELOW_FLOOR as FC_REJECT_AT_OR_BELOW_FLOOR,
+    FC_REJECT_BELOW_DECLARED_FLOOR as FC_REJECT_BELOW_DECLARED_FLOOR,
     FC_REJECT_BEAMING as FC_REJECT_BEAMING,
     FC_REJECT_OUTSIDE_SEARCH_BAND as FC_REJECT_OUTSIDE_SEARCH_BAND,
     FC_SWEEP_COMPUTE_BUDGET_S as FC_SWEEP_COMPUTE_BUDGET_S,
@@ -1667,24 +1686,51 @@ def cloud_plan_max_attempts(
 # chooser cannot advertise a walk the session does not take (#2098's pattern).
 STAGE1_INCLUDES_CLOUD_MEASURE = False
 
-# R16 (plan §4.4, Gate 0 2026-08-05): stage 1 walks the lateral poses after the
-# anchor. Its own flag rather than a reuse of the one above, because the two
+# R16 (plan §4.4, Gate 0 2026-08-05): does stage 1 walk the lateral poses after
+# the anchor? Its own flag rather than a reuse of the one above, because the two
 # groups answer different questions and are separately authorized — the
-# pre-apply cloud stays off.
+# pre-apply cloud stays off either way.
 #
-# **ON since R17.** Gate 0 pairs every producer with a CURRENT consumer, and
-# R16's is R17's Fc selector — now landed, so the walk has one. It was held off
-# through R16 because at the then-declared tweeter measurement floor (2000 Hz,
-# equal to the configured Fc) every candidate below 2 kHz had its own handoff
-# clamped out of ``overlap_band_hz`` and could not be honestly scored; #1654
-# swept the HF driver to its declared 1600 Hz floor and removed that clamp.
-# What the walk buys: the lateral robustness term in ``fc_selector.
-# score_candidate``, which is the only evidence in the session that a
-# candidate's handoff survives OFF the design axis.
+# ON at R17 (#2173), which landed the consumer Gate 0 requires: the lateral
+# robustness term in ``fc_selector.score_candidate``, the only evidence in a
+# session about whether a candidate's handoff survives OFF the design axis.
+#
+# **OFF since 2026-08-18 — PAUSED, not retired**, pending a redesign of the
+# statistic it feeds. Owner-ratified on a recompute over the 8 banked rounds
+# that have an ``fc_selection`` (armrun control/a250/a350/a450/a550/adopt350,
+# series2 r1b/r2):
+#   * It is the session's largest cost — 59.4% of all banked session audio
+#     (1,649 of 2,776 s: six verbatim replays of the ~39.5 s MEASURE program at
+#     the loudest solved level) and the largest single retake source (9 of the
+#     corpus's 13 rejected captures).
+#   * It has never changed an outcome: all 8 rounds committed the configured
+#     Fc with the walk on.
+#   * The statistic adjudicates BELOW ITS OWN NOISE. Same-arm repeat noise is
+#     3.54 dB (a350 vs adopt350, both -350 us — the run log's own free
+#     repeatability check) while the rank-1-to-rank-2 excess gap is 0.004-2.13
+#     dB in all 8 rounds. In 4 of them the argmax pose is frequently the
+#     CLOSING AT-MARK REPEAT — a zero-offset pose — so the term substantially
+#     reports repeat noise rather than off-axis behaviour.
+#   * What is NOT in doubt is the measurement: inter-driver drift runs
+#     0.6-1.9 dB against a 0.09-0.32 dB mark-return floor, and +-40 cm is
+#     ~2.2x the +-12 cm pair in 8 of 8. The poses are clean; it is the max-over-
+#     poses reduction into one scalar that cannot separate candidates.
+# Re-enable when a redesigned lateral statistic demonstrates rank separation
+# above its measured noise floor on the banked rounds.
+#
+# **The R17 candidate sweep pauses with it, by construction**: the sweep fires
+# only on an accepted MEASURE that a walk will follow, and adjudicates only at
+# the walk's close (``_consume_measure``'s guard, ``_close_lateral_walk``). With
+# no walk the session publishes the configured Fc at MEASURE — the same verdict
+# all 8 banked rounds reached with the walk on.
+#
+# Everything else stays: the pose table, the prompts, the per-pose screens and
+# ladder, ``lateral_pose_curve``, ``lateral_mark_return_drift_db``, the relay
+# capacity arithmetic, and this flag. Forcing it True restores the full walk.
 # Applied at the PRODUCTION seams (``_stage1_capture_target``,
 # ``prepare_v2_session``), not as a builder default — the two builders keep
 # whatever a caller asks for, exactly like ``STAGE1_INCLUDES_CLOUD_MEASURE``.
-STAGE1_INCLUDES_LATERAL = True
+STAGE1_INCLUDES_LATERAL = False
 
 # #2291's minimum new measurement: stage 1 takes ONE summed sweep at the mark
 # immediately before the household applies, so the round has a "before" to
@@ -4473,7 +4519,7 @@ def assemble_cloud_group_result(
     tier: str = "",
     position_records: Sequence[Mapping[str, Any]] = (),
     crossover_region_hz: tuple[float, float] | None = None,
-    spec_report_sink: Callable[[Any], None] | None = None,
+    graded_spec_sink: Callable[[Any], None] | None = None,
 ) -> dict[str, Any]:
     """The wiring contract (issue #1742 item 4) -- THE single function that
     consumes the exclusion mask, ``geometry.locked``, and the null registry
@@ -4645,6 +4691,7 @@ def assemble_cloud_group_result(
         return {"available": False, "reason": "combine_failed"}
     try:
         from jasper.active_speaker.flat_spec import (
+            GradedSpec,
             evaluate_flat_spec,
             spec_flatness_gauge,
         )
@@ -4686,8 +4733,15 @@ def assemble_cloud_group_result(
         # A sink rather than a second return value because every other caller
         # (and every test) reads the dict, and widening the return type would
         # change all of them to serve one consumer.
-        if spec_report_sink is not None:
-            spec_report_sink(spec_report)
+        if graded_spec_sink is not None:
+            # The curve, the mask, and the verdict as ONE record: decision 10's
+            # blend correction reads all three, and this is the only place all
+            # three exist together. Handing them over separately would let a
+            # consumer pair a curve with a mask from a different evaluation.
+            graded_spec_sink(GradedSpec(
+                combined.freqs_hz, combined.power_mean_spec_db, merged_mask,
+                spec_report,
+            ))
         geometry_dict = {
             "locked": bool(combined.geometry.locked),
             "reason": str(combined.geometry.reason),
@@ -4955,6 +5009,7 @@ class CrossoverV2Session:
         measure_entry_baseline: "EntryBaseline | None" = None,
         measure_gate_window_ms: float | None = None,
         measure_proposal_fingerprint: str = "",
+        measure_alignment_objective: str = "",
         verify_pilot_transfer_prior: Mapping[str, Any] | None = None,
         driver_class_by_role: Mapping[str, str] | None = None,
         radiating_diameter_mm_by_role: Mapping[str, float] | None = None,
@@ -4972,6 +5027,7 @@ class CrossoverV2Session:
         speaker_id: str = "",
         tuning_attempt_id: str = "",
         sound_design_revision: int | None = None,
+        alignment_prescription: "AlignmentPrescription | None" = None,
     ) -> None:
         roles = tuple(roles_bands)
         if len(roles) != 2:
@@ -4988,6 +5044,12 @@ class CrossoverV2Session:
         self._roles = roles
         self._woofer, self._tweeter = roles[0], roles[1]
         self._fc_hz = float(fc_hz)
+        # #2662. Already validated by the request boundary that accepted it —
+        # this session holds it, it does not re-judge it, and a session that was
+        # handed none runs the automatic alignment exactly as before. Held as
+        # the record rather than the bare float so the round receipt can name
+        # the measured basis without a second copy of it living anywhere.
+        self._alignment_prescription = alignment_prescription
         # PR-4: the contract-derived analysis bands for the cloud-group
         # honesty pipeline (combine's echo/signal bands, the null gate's
         # search band) -- computed once here so every group-close event uses
@@ -5022,11 +5084,14 @@ class CrossoverV2Session:
         self._attempt_history = list(attempt_history)[
             -AttemptBudget().hard_cap_attempts:
         ]
-        # #2602's series memory, resolved by the host from durable state and
-        # held opaquely: this class never reads inside it. ``None`` normalizes
-        # to the opening round at the one use site, which is also the only
-        # place ``coordinator`` is imported (see the TYPE_CHECKING note above —
-        # importing it here would pull ``flat_spec`` into every flow import).
+        # #2602's series memory, resolved by the host from durable state — on
+        # BOTH stages since #2698, because the two readers run on different
+        # ones. ``_grade_round_once`` (stage 2) normalizes ``None`` to the
+        # opening round and imports ``coordinator`` to do it (see the
+        # TYPE_CHECKING note above — importing it here would pull
+        # ``flat_spec`` into every flow import); ``_blend_prescription``
+        # (stage 1, since #2687) reads ``previous_blend_correction`` and takes
+        # its own documented direction on ``None``.
         self._series_position = series_position
         self._attempt_floor = attempt_floor
         self._last_attempt_decision = (
@@ -5163,7 +5228,7 @@ class CrossoverV2Session:
         # (``verification.evaluate_spec``) reads ``overall_passed`` and each
         # band's ``evaluable``/``passed`` — structure ``to_dict`` flattens.
         # Not persisted: it is a live object, and the dict is the durable copy.
-        self._group_spec_report: dict[str, Any] = {}
+        self._group_graded_spec: dict[str, Any] = {}
         # #1872: which phases' evidence artifact has already been PUBLISHED —
         # the one part of a group close that is a genuine per-phase
         # singleton (the evidence store is write-once; see
@@ -5314,6 +5379,15 @@ class CrossoverV2Session:
         # stage 1 predates #2392. The receipt reads it as the candidate arm,
         # never as a missing proposal.
         self._measure_proposal_fingerprint: str = str(measure_proposal_fingerprint or "")
+        # WHICH commitment produced the committed candidate's delay (#2662),
+        # travelling the same route as the fingerprint above and for the same
+        # reason: it is written by the stage that FITS and read by the stage
+        # that GRADES, and those are different sessions. ``""`` is "no
+        # candidate has been committed yet", which is a third answer from
+        # either "the prescription was committed" or "it was not" — a round
+        # receipt that collapsed them would let an arm the machinery never ran
+        # be graded as one that did.
+        self._measure_alignment_objective: str = str(measure_alignment_objective or "")
         # The proposal itself, for THIS session only — an
         # ``InterventionProposal``, a ``PlanRefusal``, or ``None`` before the
         # commit. Deliberately not persisted: the fingerprint above is the
@@ -5660,6 +5734,10 @@ class CrossoverV2Session:
             # which is not a priors concern.
             alignment_delay_bounds_us=alignment_delay_search_bounds_us(self._preset),
             applied_alignment=self._applied_alignment(),
+            explicit_alignment_delay_us=(
+                None if self._alignment_prescription is None
+                else self._alignment_prescription.delay_us
+            ),
         )
 
     def _applied_alignment(self) -> AppliedAlignment | None:
@@ -5719,6 +5797,83 @@ class CrossoverV2Session:
                 tweeter_role=self._tweeter.role,
             ),
         )
+
+    def _applied_blend_correction(self) -> tuple[Mapping[str, Any], ...] | None:
+        """The blend correction the post-apply capture rode, or ``None``.
+
+        Read from the applied-profile SSOT rather than from a session field,
+        for the reason ``applied_boosts`` is: the stage that GRADES a round is
+        a fresh session holding no candidate, so a session read would be
+        ``None`` on every shipped round and the incumbent would silently be
+        assumed empty — which is the one assumption this quantity must never
+        make (see ``profile_blend_correction``).
+
+        Fails to ``None`` — refuse to prescribe — on every unreadable path,
+        which is the opposite direction from ``applied_boosts``'s fail-closed
+        ``True`` and correct for the same reason: there, not knowing must
+        restore a graph; here, not knowing must leave the graph alone.
+
+        **Through the STRICT reader** (``blend_filters_from_mapping``), which
+        both panel lenses independently found missing here. The profile reader
+        answers the structural question ("is there a list, and where"); the
+        strict one answers the question this quantity actually turns on — is
+        every entry a record this system wrote? Without it, a corrupt entry
+        took one of two wrong paths and neither was ``no_incumbent``: a
+        non-numeric ``freq`` RAISED out of ``evaluate_round`` into the
+        coordinator's broad except, costing the round its receipt AND its
+        restore; and garbage entries collapsed to ``()``, which claims the
+        capture rode a flat graph — the unknown-vs-empty conflation this module
+        forbids in four docstrings. ``blend_filters_from_mapping``'s
+        None-on-unreadable IS the contract, so this is the reader that belongs
+        on the path that establishes the incumbent.
+        """
+        from jasper.active_speaker.baseline_profile import (
+            load_applied_baseline_profile_state,
+            profile_blend_correction,
+        )
+
+        from .crossover_v2.blend_correction import blend_filters_from_mapping
+
+        try:
+            raw = profile_blend_correction(load_applied_baseline_profile_state())
+        except (OSError, TypeError, ValueError):
+            return None
+        if raw is None:
+            return None
+        return blend_filters_from_mapping(list(raw))
+
+    def _blend_prescription(self) -> tuple[Mapping[str, Any], ...]:
+        """The blend correction the next candidate should carry (decision 10).
+
+        Two sources, in this order, and the order is the panel's second ruling:
+
+        1. **The series' instruction**, if the previous round left one —
+           ``SeriesPosition.previous_blend_correction``. A round that KEEPS its
+           graph banks the total it solved, and that supersedes everything.
+        2. **What the speaker is already playing**, otherwise. ``None`` from
+           the series means there is no instruction: no previous round, a
+           receipt from before decision 10, an unreadable one, or a round that
+           RESTORED. Reverting to nothing there would be wrong in every one of
+           those cases — most sharply after a restore, where the round threw
+           away the graph its prescription was derived through, and after a
+           fresh series on a speaker that already carries an adopted
+           correction.
+
+        The fallback reads the same applied-profile SSOT, through the same
+        strict reader, that ``_applied_blend_correction`` uses to establish the
+        incumbent — so "what we hold" and "what we measured through" can never
+        be two different answers derived two different ways. An unreadable
+        profile yields ``()``: at that point nothing about the applied graph
+        can be established, and the candidate build is deriving the whole graph
+        from that same unreadable profile anyway.
+        """
+        instruction = (
+            None if self._series_position is None
+            else self._series_position.previous_blend_correction
+        )
+        if instruction is not None:
+            return tuple(instruction)
+        return self._applied_blend_correction() or ()
 
     def _lateral_priors(self) -> MeasurementPriors:
         return _priors.lateral_priors(
@@ -6017,6 +6172,36 @@ class CrossoverV2Session:
         ``""`` is "nothing proposed", never "the proposal is unknown".
         """
         return self._measure_proposal_fingerprint
+
+    @property
+    def measure_alignment_objective(self) -> str:
+        """Which commitment produced this round's delay, or ``""`` (#2662).
+
+        Read by the host's durable persist and handed back to the stage that
+        grades the round, exactly like :attr:`measure_proposal_fingerprint`.
+        Its one consumer is the round receipt, which pairs it with the
+        prescription so an adopted arm's record says not only what was ASKED
+        for but whether the machinery actually committed it — the difference
+        between an arm that ran and an arm that silently did not.
+        """
+        return self._measure_alignment_objective
+
+    @property
+    def alignment_prescription_record(self) -> dict[str, Any] | None:
+        """This session's delay prescription as the receipt banks it (#2662).
+
+        Read by the host's durable persist and handed back to the stage that
+        grades the round, exactly like :attr:`measure_proposal_fingerprint`:
+        the grading stage builds a fresh session and holds no candidate, so
+        durable state is the only channel a stage-1 fact has.
+
+        ``None`` is "no prescription was made" — the automatic path — and is
+        what an ordinary round banks. The receipt's absence of a provenance
+        block and its presence therefore mean exactly one thing each.
+        """
+        if self._alignment_prescription is None:
+            return None
+        return self._alignment_prescription.to_dict()
 
     @property
     def last_intervention_proposal(self) -> Any:
@@ -6661,6 +6846,13 @@ class CrossoverV2Session:
             # accepted MEASURE that a walk will follow — a rejected capture has
             # no evidence to adjudicate from, and a session with no walk has no
             # lateral robustness term and no close to adjudicate at.
+            #
+            # Since the 2026-08-18 lateral pause, no walk is the SHIPPED stage-1
+            # session: this sweep does not run and ``fc_selection`` stays
+            # ``None``, so the round commits its configured Fc — the verdict all
+            # 8 banked rounds reached with the walk on. Re-arming the walk
+            # (``STAGE1_INCLUDES_LATERAL``) re-arms the sweep with it; that
+            # flag's comment carries why the pause sits on the walk.
             if verdict.accepted and PHASE_LATERAL in self._journey.plan.phases:
                 self._sweep_fc_candidates(program, result, analysis)
         elif phase == PHASE_LATERAL:
@@ -7331,15 +7523,25 @@ class CrossoverV2Session:
         if PHASE_CLOUD_MEASURE in self._journey.plan.phases or PHASE_LATERAL in self._journey.plan.phases:
             self._measure_analysis = analysis
             return PhaseVerdict(True, payload={"measurement_phase": PHASE_MEASURE})
-        # The pre-cloud 3-entry shape, which NO production caller constructs
-        # any more (``prepare_v2_session`` always builds a cloud map,
-        # ``prepare_v2_verify`` maps VERIFY alone). It keeps folding the
-        # candidate payload into this verdict, but note that since
-        # flow-simplification §2.6 moved the trigger onto the confirm seam,
-        # the host no longer reads ``auto_apply`` off a capture verdict — so a
-        # future caller reviving this shape has to wire its own apply trigger
-        # rather than inherit one. Kept honest here rather than discovered
-        # later by a session that measures and never applies.
+        # The no-deferral shape — and since the 2026-08-18 lateral pause it is
+        # the SHIPPED stage-1 branch again, not the dormant one it was between
+        # R17 and that pause: with both group flags off ``prepare_v2_session``
+        # builds ``CHECK, MEASURE, ENTRY_BASELINE``, so the configured Fc's
+        # candidate is published right here.
+        #
+        # #2291's entry baseline follows MEASURE without joining the condition
+        # above, and deliberately: it is not the fit's input — it is the "before"
+        # the round grades its "after" against, screened and retained by
+        # ``_consume_entry_baseline`` alone. Deferring the fit past it would buy
+        # no evidence and would only age the proposal. The bold rule still
+        # holds; what it protects against is a group whose captures the fit
+        # would otherwise predate.
+        #
+        # It keeps folding the candidate payload into this verdict, but note
+        # that since flow-simplification §2.6 moved the trigger onto the confirm
+        # seam, the host no longer reads ``auto_apply`` off a capture verdict —
+        # the apply is still the household's explicit POST, on this branch
+        # exactly as on the deferring ones.
         return PhaseVerdict(
             True,
             payload={
@@ -8709,6 +8911,17 @@ class CrossoverV2Session:
             if isinstance(planned, InterventionProposal)
             else ""
         )
+        # #2662. Read off the candidate's own frozen evidence rather than from
+        # a live analysis object: ``planning.analysis_json`` already puts
+        # ``alignment_objective`` there, so this is the SAME answer the
+        # candidate's fingerprint covers and not a second reading of it. Both
+        # commit sites reach this seam, so both record it.
+        analysis_evidence = getattr(candidate, "analysis", None)
+        self._measure_alignment_objective = str(
+            (analysis_evidence or {}).get("alignment_objective") or ""
+            if isinstance(analysis_evidence, Mapping)
+            else ""
+        )
         self._seams.publish_candidate(candidate)
         self._publish_level_frame_finding(level_frame_finding)
 
@@ -9189,8 +9402,8 @@ class CrossoverV2Session:
             # ``combined`` this method already stashes. The round's SPEC
             # verdict needs the object; the dict below keeps the serialized
             # copy every other surface reads.
-            spec_report_sink=lambda report: self._group_spec_report.__setitem__(
-                phase, report
+            graded_spec_sink=lambda graded: self._group_graded_spec.__setitem__(
+                phase, graded
             ),
         )
         self._group_cloud_result[phase] = result
@@ -9531,6 +9744,7 @@ class CrossoverV2Session:
         # the fail-safe reading of both: it can only offer another round, never
         # suppress a stop the evidence asked for.
         position = self._series_position or coordinator.SeriesPosition.first()
+        graded_verify = self._group_graded_spec.get(PHASE_CLOUD_VERIFY)
         decision = coordinator.run_round(
             coordinator.RoundEvidence(
                 session_id=self.session_id,
@@ -9540,7 +9754,24 @@ class CrossoverV2Session:
                 # The post-apply CLOUD's report — ``None`` on a tier that walks
                 # no cloud, which the evaluator reads as "no report" rather than
                 # as a pass (#2160's honest wire).
-                spec_report=self._group_spec_report.get(PHASE_CLOUD_VERIFY),
+                spec_report=(
+                    None if graded_verify is None else graded_verify.report
+                ),
+                # Decision 10's evidence: the SAME evaluation the spec verdict
+                # reads, with its curve and merged honesty mask.
+                graded_spec=graded_verify,
+                applied_blend_correction=self._applied_blend_correction(),
+                previous_blend_residual_db=position.previous_blend_residual_db,
+                # #2662. Rehydrated from stage 1's durable ``verify_priors`` on
+                # the same route as the entry baseline and the commanded delta,
+                # for the same reason stated below about the proposal
+                # fingerprint: this stage builds a fresh session and holds no
+                # candidate to derive one from.
+                alignment_prescription=self._alignment_prescription,
+                # …and whether the machinery COMMITTED it. Rehydrated on the
+                # same route, because an arm's provenance without its outcome
+                # is a receipt that can credit a round the arm never ran.
+                alignment_objective=self._measure_alignment_objective,
                 # WHAT THIS ROUND PROPOSED (#2392), preferred over what it
                 # applied. The fingerprint travelled here from the committing
                 # stage through durable ``verify_priors``, exactly as the
@@ -10396,8 +10627,80 @@ class CrossoverV2Session:
         """
         baseline = self._measure_entry_baseline
         if baseline is None:
+            # NAMED, not silent (series-2 D1 fix round). Since D1 this arm
+            # decides whether the realized-energy half of the safety axis runs,
+            # so a reader asking "why did nothing check the driver" must find an
+            # answer here rather than infer it from an absent field.
+            #
+            # **Not a first-ever round** — that one never arrives here at all.
+            # It has no nameable previous graph, so its commanded axis is
+            # absent, and the caller takes the ``state_axis_only`` branch below
+            # without ever calling this method. What reaches this arm is a round
+            # that HAS a commanded axis and no usable baseline record: the three
+            # cases ``correction_crossover_v2.entry_baseline_prior_from_state``
+            # enumerates — a state file written before that key shipped, a
+            # stage 1 whose baseline capture never landed, and a truncated or
+            # hand-edited record. All three are exceptional, which is why this
+            # is WARNING.
+            log_event(
+                logger, "correction.crossover_v2_delta_probe_no_entry_anchor",
+                level=logging.WARNING, session_id=self.session_id,
+                reason="no_entry_baseline",
+            )
             return None
         try:
+            # COMPARABLE, or it is not an anchor. An anchor is a subtraction, so
+            # a curve measured through another program, or from another mic
+            # position, cancels a real finding as readily as a phantom — and
+            # since D1 the subtrahend feeds a hard stop rather than only the
+            # disclosed residual.
+            #
+            # BOTH identity fields, asked through the rule's own owner:
+            # ``verification.identity_mismatch`` is the identity half of
+            # ``_comparability_mismatch``, so the order and the two reason
+            # constants live in one place rather than in a parallel spelling
+            # here. The MARK is the field that earned the second clause — a
+            # program mismatch usually changes the grid and surfaces in the
+            # arithmetic below, while a baseline captured at another position is
+            # the same program on the same grid and subtracts a different room
+            # bin by bin, which nothing else on this path would catch.
+            #
+            # Unknown on either side is "nothing known" and does not refuse —
+            # the module's rule everywhere. A MAGNITUDE bound is deliberately
+            # not added: identity is answerable from the record, plausibility is
+            # not, and a curve that is comparable and merely wrong is what
+            # capture integrity screens for.
+            from jasper.active_speaker.crossover_v2.verification import (
+                identity_mismatch,
+            )
+
+            want_program = str(
+                getattr(
+                    self.program_for_phase(PHASE_VERIFY), "program_id", "",
+                ) or ""
+            )
+            got_program = str(getattr(baseline, "program_id", "") or "")
+            got_mark = str(getattr(baseline, "reference_mark", "") or "")
+            mismatch = (
+                identity_mismatch(
+                    program_id=got_program,
+                    reference_mark=got_mark,
+                    other_program_id=want_program,
+                    other_reference_mark=REFERENCE_MARK_DESIGN_AXIS,
+                )
+                if want_program and got_program and got_mark
+                else None
+            )
+            if mismatch is not None:
+                log_event(
+                    logger, "correction.crossover_v2_delta_probe_no_entry_anchor",
+                    level=logging.WARNING, session_id=self.session_id,
+                    reason=mismatch,
+                    baseline_program_id=got_program,
+                    baseline_reference_mark=got_mark,
+                    verify_program_id=want_program,
+                )
+                return None
             curve = baseline.curve
             entry_hz = np.asarray(curve.hz, dtype=float)
             entry_db = np.asarray(curve.db, dtype=float)
@@ -10409,9 +10712,16 @@ class CrossoverV2Session:
             measured_pre = np.interp(freqs, entry_hz, entry_db)
             return (measured_pre - predicted_s) + commanded_db
         except (ValueError, TypeError, IndexError, AttributeError) as exc:
+            # One arm for the whole body, and the identity read is INSIDE it on
+            # purpose: ``program_for_phase`` is bound at construction and cannot
+            # raise today, but a fail-soft method that computes anything outside
+            # its own guard is one refactor from losing a verdict to an
+            # accounting term. The reason names the record, not the curve,
+            # because the arm now covers both.
             log_event(
                 logger, "correction.crossover_v2_delta_probe_no_entry_anchor",
-                level=logging.WARNING, session_id=self.session_id, error=str(exc),
+                level=logging.WARNING, session_id=self.session_id,
+                reason="unusable_record", error=str(exc),
             )
             return None
 
@@ -10589,6 +10899,17 @@ class CrossoverV2Session:
                 None if probe.frame.band_hz is None
                 else tuple(round(v, 1) for v in probe.frame.band_hz)
             ),
+            # Whether the realized-energy half ran at all (series-2 D1). The
+            # forensic surface an operator greps, beside the numbers it governs:
+            # ``boost_over_declared_bound=false`` reads as "measured, nothing
+            # found" and is "not measured" whenever this is false. Two routes
+            # reach that, and a first-ever round takes the FIRST: no nameable
+            # previous graph, so no commanded axis, so the state-axis branch
+            # above — which has no change reference to anchor against by
+            # construction. The second is an ordinary round whose banked entry
+            # baseline is missing or incomparable, which
+            # ``…delta_probe_no_entry_anchor`` names on its own line.
+            safety_anchored=probe.safety_anchored,
             frame_removed_max_db=(
                 None if probe.frame_removed_max_db is None
                 else round(probe.frame_removed_max_db, 3)
@@ -11101,6 +11422,10 @@ class CrossoverV2Session:
             plan=self._plan_linearization,
             exclusion_evidence=self._exclusion_evidence_json,
             journal=self._journal_linearization,
+            # Decision 10: what the previous round's summed evidence
+            # prescribed, or — when there is no instruction — what the speaker
+            # is already playing. See ``_blend_prescription``.
+            blend_correction=self._blend_prescription(),
         )
 
     def _exclusion_evidence_json(self, cloud: _CloudFitEvidence) -> dict[str, Any]:
@@ -11267,6 +11592,31 @@ AUTO_ADVANCE_ON_APPLY = "on_apply"
 # widens only this first window. Every later window keeps the tight per-phase
 # arm/upload backstop; re-derive from W6 bench observation.
 V2_FIRST_BEGIN_TIMEOUT_S = 300.0
+
+
+def v2_first_begin_timeout_s() -> float:
+    """The first-begin budget in force — the constant above, env-overridable.
+
+    Four commissioning sessions on the 2026-08-16 walk died at exactly the 300 s
+    default in ``phase=awaiting_begin``. Widening it is a ``jasper.env`` edit
+    (``JASPER_V2_FIRST_BEGIN_TIMEOUT_S``) rather than a rebuild; out-of-range or
+    unparseable values fall back to the default, mirroring the
+    ``JASPER_CAPTURE_ALIGNMENT_THRESHOLD`` pattern.
+
+    The ceiling is DERIVED from ``capture_relay.session.MAX_TTL_S`` rather than
+    written here: nothing outliving the longest link the Worker grants can be
+    honoured, whatever this knob says, and a second copy of that bound would be
+    free to drift from it. Below the ceiling a hand-walked stage still spends
+    this window out of its own ``DEFAULT_TTL_S`` link — ``.env.example`` carries
+    what an operator has to weigh, and is the only place that says it.
+    """
+
+    from jasper.capture_relay.session import MAX_TTL_S
+
+    return bounded_env_float(
+        "JASPER_V2_FIRST_BEGIN_TIMEOUT_S", V2_FIRST_BEGIN_TIMEOUT_S,
+        lo=30.0, hi=float(MAX_TTL_S),
+    )
 
 
 def _program_duration_ms(program: ExcitationProgram) -> int:
@@ -11595,9 +11945,12 @@ def build_v2_capture_plan(
     # #2291's "before" measurement, LAST. Its duration is the summed sweep's
     # (``verify_ms``) because it replays the VERIFY program verbatim — the
     # identity ``program_for_phase`` guarantees and the benefit comparison
-    # depends on. A tap, like every other entry: the household has just walked
-    # the lateral poses and has to come back to the mark first, so a countdown
-    # would fire into a hand still in flight.
+    # depends on. A tap, like every other entry — and it stays a tap through the
+    # lateral pause. The original reason was that the household had just walked
+    # the poses and had to come back to the mark first; with the walk off they
+    # arrive here straight from MEASURE, already at the mark, so what a tap now
+    # buys is the same thing every other entry gets it for: nothing starts
+    # recording until a person says they are ready.
     for capture_index in [
         i for i, p in sorted(index_phase.items()) if p == PHASE_ENTRY_BASELINE
     ]:
@@ -11954,6 +12307,17 @@ WALL_CLOCK_CEILING_PER_ENTRY_S = 120.0
 # a too-low f1 biased the estimated sweep duration (and so the displayed
 # minutes) SHORT, the wrong failure direction for a number the household
 # reads as a promise.
+#
+# NOT derived from the household's declared driver low limit (#2603), and that
+# is deliberate rather than an oversight. A declaration DOES exist by the time
+# this screen renders, but the only resolution path for it
+# (``resolve_conductor_context``) is refuse-if-not-ready and can regenerate the
+# crossover preview file as a SIDE EFFECT -- unacceptable for a value this
+# module recomputes on every ~1.5 s poll. Reading it into this memoized,
+# argument-less function instead would go stale the moment the operator edits
+# the declaration, which is a worse failure than a fixed representative pair.
+# So this stays a display-only fallback with its own safe-bias rationale, and
+# a per-poll side-effect-free read is tracked as separate cosmetic work.
 _DISPLAY_ROLES_BANDS = (
     RoleBand("woofer", 0, FrequencyBand(150.0, 6000.0)),
     RoleBand("tweeter", 1, FrequencyBand(1800.0, 20000.0)),
@@ -12447,6 +12811,7 @@ __all__ = [
     "CAPTURE_PLAN_TARGET",
     "CAPTURE_PLAN_MAX_ATTEMPTS",
     "V2_FIRST_BEGIN_TIMEOUT_S",
+    "v2_first_begin_timeout_s",
     "ALIGNMENT_CONFIDENCE_TRUST_FLOOR",
     "MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB",
     "SWEEP_SCHEDULE_RESIDUAL_CEILING_MS",

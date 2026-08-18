@@ -1160,6 +1160,12 @@ def _frozen_applied_profile(
         # persists it — see test_frozen_applied_profile_carries_linearization_top_level's
         # own docstring for the identical Gap 3c bug class this mirrors.
         "linearization_outcome": str(applied.get("linearization_outcome") or ""),
+        # Crossover blend correction (design doc decision 10). Mirrors
+        # "linearization" above exactly: an ALLOWLIST entry, so omitting it
+        # would silently strip on every read a field the write side persists —
+        # the Gap 3c bug class. A list, not a mapping, because it describes the
+        # SUM rather than a driver.
+        "blend_correction": list(applied.get("blend_correction") or []),
         "tuning_owner": str(applied.get("tuning_owner") or ""),
         # Quality state belongs to the immutable applied anchor too.  Dropping
         # it here lets an older sensitivity-only profile masquerade as a
@@ -1245,6 +1251,55 @@ def profile_program_headroom_db(profile: Mapping[str, Any] | None) -> float:
     return linearization_headroom_db(
         linearization, branch_context=_profile_branch_context(profile),
     )
+
+
+def profile_blend_correction(
+    profile: Mapping[str, Any] | None,
+) -> tuple[Any, ...] | None:
+    """The blend correction an applied profile carries, or ``None`` if unknown.
+
+    Same snapshot-first authority rule :func:`profile_linearization` states —
+    the ``recomposition_snapshot`` copy is the one a recompose re-emits, so it
+    is the one that describes the graph; the top-level mirror is the fallback
+    for a profile written before the snapshot carried it.
+
+    **``None`` and ``()`` are different answers and both are load-bearing.**
+    ``()`` means "this profile applied no blend correction" — true of every
+    profile written before decision 10, and of every first round. ``None``
+    means "there is no readable applied profile", i.e. the incumbent cannot be
+    established at all. The round refuses to prescribe on ``None`` rather than
+    assuming zero, because assuming zero would double-count the correction the
+    measurement was actually taken through — the precise shape #2653 reverted
+    for the level datum.
+
+    What this CANNOT detect, stated rather than implied: a graph applied out of
+    band, by hand, that the profile no longer describes. The applied profile is
+    this speaker's single record of what is running, and every other consumer
+    of it (linearization, boosts, alignment) trusts it the same way.
+
+    **This answers WHERE, not WHETHER-VALID, and it deliberately does not
+    filter.** Entry-level validation belongs to
+    ``crossover_v2.blend_correction.blend_filters_from_mapping``, which is the
+    single owner of "is this a record this system wrote". An earlier version
+    dropped non-mapping entries here, which silently TRUNCATED a corrupt list
+    into a shorter valid-looking one — a caller would then have applied a
+    partial correction believing it was whole. Every entry is passed through
+    exactly as persisted so the strict reader can refuse the list.
+    """
+
+    if not isinstance(profile, Mapping):
+        return None
+    snapshot = profile.get("recomposition_snapshot")
+    raw = (
+        snapshot.get("blend_correction") if isinstance(snapshot, Mapping) else None
+    )
+    if raw is None:
+        raw = profile.get("blend_correction")
+    if raw is None:
+        return ()
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes, Mapping)):
+        return None
+    return tuple(raw)
 
 
 def profile_linearization(profile: Mapping[str, Any] | None) -> Mapping[str, Any]:
@@ -2265,6 +2320,14 @@ def build_baseline_profile_candidate(
     linearization_outcome = str(
         getattr(measured_candidate, "linearization_outcome", "") or ""
     )
+    # Decision 10's blend correction, already in the emitter's flat shape (the
+    # solver writes it that way). ``getattr`` with a default for the same
+    # reason the two above use one: a legacy MeasuredElectricalCandidate has no
+    # such attribute at all.
+    blend_correction = [
+        dict(entry)
+        for entry in (getattr(measured_candidate, "blend_correction", ()) or ())
+    ]
     if preserved_applied_profile is not None:
         preserved_corrections = (
             preserved_applied_profile.get("corrections")
@@ -2418,6 +2481,7 @@ def build_baseline_profile_candidate(
                 baseline_id=f"baseline-{_safe_id(topology.topology_id)}",
                 bass_extension_profile=bass_extension_profile,
                 linearization=linearization,
+                blend_correction=blend_correction,
             )
             # A v2 measured candidate carrying delay/polarity re-proves its
             # exact requested delay binding against the freshly compiled text
@@ -2553,6 +2617,12 @@ def build_baseline_profile_candidate(
         # wizard surfaces the in-session equivalent straight off the live
         # candidate.
         "linearization_outcome": linearization_outcome,
+        # Crossover blend correction (decision 10) — top-level convenience
+        # copy, mirroring "linearization" above. The authoritative copy the
+        # recompose re-emits lives inside recomposition_snapshot below; this
+        # one is what a "what is applied right now" read (`/state`, the apply
+        # observability line) uses without unpacking the snapshot.
+        "blend_correction": blend_correction,
         "automatic_candidate": automatic_candidate,
         "tuning_owner": tuning_owner,
         # An unmeasured per-driver trim is explicitly provisional. Surfaced in
@@ -2601,6 +2671,13 @@ def build_baseline_profile_candidate(
             # profile saved before this stage existed (era-tolerant on read;
             # see that function's own snapshot.get("linearization", {})).
             "linearization": linearization,
+            # Decision 10's blend correction: an INPUT every future recompose
+            # (room/preference EQ, /sound) must re-emit verbatim, so it belongs
+            # in the immutable snapshot on the same test "linearization" passes
+            # — is this something a later recompose needs to rebuild the graph?
+            # It is: dropping it here would silently revert the blend
+            # correction on the next preference-EQ save.
+            "blend_correction": blend_correction,
             **candidate_graph_context,
         },
     }
@@ -2826,6 +2903,19 @@ def recompose_applied_baseline_yaml(
         if isinstance(linearization_raw, Mapping)
         else {}
     )
+    # Decision 10's blend correction, read era-tolerantly for exactly the
+    # reason above and against exactly the same gap: absent on every snapshot
+    # written before the stage existed -> [] -> no stage emitted, and a
+    # /sound preference-EQ save on a corrected speaker must NOT silently
+    # revert the blend correction the household is listening to.
+    blend_correction_raw = snapshot.get("blend_correction")
+    blend_correction = (
+        [dict(entry) for entry in blend_correction_raw
+         if isinstance(entry, Mapping)]
+        if isinstance(blend_correction_raw, Sequence)
+        and not isinstance(blend_correction_raw, (str, bytes, Mapping))
+        else []
+    )
     yaml = emit_active_speaker_baseline_config(
         preset,
         playback_device=emit_playback_device,
@@ -2851,6 +2941,7 @@ def recompose_applied_baseline_yaml(
             else None
         ),
         linearization=linearization,
+        blend_correction=blend_correction,
     )
     return yaml, []
 

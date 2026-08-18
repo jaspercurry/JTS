@@ -104,10 +104,10 @@ class _FakeCamillaController:
     async def get_volume_db(self, **_kwargs):
         return None
 
-    async def get_playback_rms(self, **_kwargs):
+    async def get_playback_rms_all(self, **_kwargs):
         return None
 
-    async def get_playback_peak(self, **_kwargs):
+    async def get_playback_peak_all(self, **_kwargs):
         return None
 
     async def get_clipped_samples(self, **_kwargs):

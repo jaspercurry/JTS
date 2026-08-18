@@ -1106,10 +1106,15 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }[role] || humanRole(role);
   }
   // Operator-facing catalog of tweeter driver styles. Display-only: the
-  // authoritative style -> protective high-pass floor table lives in
-  // jasper/active_speaker/driver_protection.py (_STYLE_HIGH_PASS_HZ). Keep the
-  // floor_hz values here in sync with that table if it changes.
-  // "horn_compression_driver" is a valid style value (same 2000 Hz floor as
+  // authoritative table lives in jasper/active_speaker/driver_protection.py
+  // (_STYLE_HIGH_PASS_HZ). Keep the floor_hz values here in sync with it
+  // (tests/test_driver_style_floor_contract.py enforces that).
+  // The `floor_hz` KEY NAME predates #2603 and is now a misnomer worth reading
+  // carefully: since that ruling the figure is not a floor the declaration must
+  // clear. It is the default when a datasheet publishes nothing, the anchor of
+  // the plausibility band, and the commissioning-tone gate. A published figure
+  // BELOW it is accepted outright.
+  // "horn_compression_driver" is a valid style value (same 2000 Hz figure as
   // compression_driver) but is not offered as a separate option here — one
   // driver type should not appear twice in the picker.
   function hfDriverStyles() {
@@ -1133,8 +1138,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   // jasper.active_speaker.linearization_envelope.compose_envelope's
   // class_prior_limit() term (a more conservative correction ceiling for a
   // class known to run out of linear excursion or HF extension sooner).
-  // Distinct from driver_style above (topology-owned, drives ONLY the
-  // tweeter's protective high-pass floor): driver_class applies to every
+  // Distinct from driver_style above (topology-owned; it drives the tweeter's
+  // default minimum crossover, the plausibility band, and the commissioning-
+  // tone gate — see driver_protection.py): driver_class applies to every
   // role and is saved on manual_settings.drivers, mirroring DRIVER_CLASSES
   // in jasper/active_speaker/_common.py.
   function driverClasses() {
@@ -1209,10 +1215,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       if (target.role !== 'tweeter') return;
       var entry = hfDriverStyleEntry(target.driver_style);
       var note = entry
-        ? entry.label + ', ' + entry.floor_hz + ' Hz protective floor'
+        ? entry.label + ', ' + entry.floor_hz + ' Hz default minimum crossover'
         : (target.driver_style
           ? driverStyleLabel(target.driver_style)
-          : 'style not set, conservative 5000 Hz protective floor');
+          : 'style not set, cautious 5000 Hz default');
       if (!seen[note]) { seen[note] = true; notes.push(note); }
     });
     return notes.length ? ' Tweeter: ' + notes.join('; ') + '.' : '';
@@ -1636,6 +1642,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         'sensitivity_db_2v83_1m',
         'nominal_impedance_ohm',
         'recommended_highpass_hz',
+        // #2603: the low limit's slope condition travels with the frequency it
+        // conditions. Dropping it here would leave the owner half-declared.
+        'recommended_highpass_slope_db_per_octave',
         'recommended_lowpass_hz',
         'do_not_test_below_hz',
         'gain_offset_db',
@@ -1839,6 +1848,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         'sensitivity_db_2v83_1m',
         'nominal_impedance_ohm',
         'recommended_highpass_hz',
+        // #2603: the low limit's slope condition travels with the frequency it
+        // conditions. Dropping it here would leave the owner half-declared.
+        'recommended_highpass_slope_db_per_octave',
         'recommended_lowpass_hz',
         'do_not_test_below_hz',
         'gain_offset_db'
@@ -2630,8 +2642,16 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       'high-pass cutoff sits outside its hard excitation band',
     lowpass_cutoff_outside_hard_band:
       'low-pass cutoff sits outside its hard excitation band',
-    highpass_below_code_policy:
-      'high-pass cutoff is below what JTS allows for that driver',
+    // The band this refusal is measured against is anchored on the driver's
+    // declared type, and an UNDECLARED type is anchored on the cautious
+    // unknown-tweeter default — which is how a genuinely published 800 Hz on a
+    // large-format horn gets refused on a box whose type nobody set. The copy
+    // therefore names the declaration as the first thing to check, rather than
+    // asserting a "driver type" the household may never have chosen.
+    low_limit_implausible_for_style:
+      'the minimum crossover frequency is not believable for its driver type ' +
+      '(check the tweeter type above is set — an undeclared type is judged ' +
+      'against a cautious default)',
     max_effective_peak_above_code_policy:
       'level ceiling is louder than what JTS allows for that driver'
   };
@@ -2654,6 +2674,25 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function driverSafetyHasMissing(reasons) {
     return (reasons || []).some(function(raw) {
       return /_missing$/.test(String(raw));
+    });
+  }
+  // #2603. A profile confirmed before a driver's low limit had one declared
+  // owner can no longer match its own derivation, so it evaluates 'malformed'
+  // under this name rather than the generic schema-invalid one.
+  var SAFETY_LOW_LIMIT_STALE = 'driver_safety_profile_low_limit_stale';
+  function driverSafetyLowLimitStale(reasons) {
+    return (reasons || []).indexOf(SAFETY_LOW_LIMIT_STALE) >= 0;
+  }
+  // Reasons that mean a REBUILD would REFUSE, not merely that the stored
+  // artifact is out of date. The page cannot rebuild, so the server appends
+  // them to the stale evaluation's reasons (driver_safety.py's
+  // `_stale_low_limit_rebuild_issues`) in the same `<role>:<code>` vocabulary
+  // the incomplete path already uses. Without this the Confirm button was
+  // offered on a profile whose rebuild raises, and the operator's first click
+  // returned a bare reason code.
+  function driverSafetyRebuildBlockers(reasons) {
+    return (reasons || []).filter(function(raw) {
+      return String(raw).indexOf(':') > 0;
     });
   }
   function renderDriverResearchSummary(options) {
@@ -2794,36 +2833,54 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     return enclosureFieldHtml(target.target_id, setting);
   }
+  // #2603: this hint sits exactly where the operator prepares the research
+  // prompt, so it must not still describe the number as a floor the
+  // declaration has to clear. Since the ruling the style figure is the DEFAULT
+  // used when a datasheet publishes nothing — a published figure wins outright,
+  // including a lower one. The un-styled cases name the missing declaration and
+  // the control that fixes it, rather than quoting 5000 Hz as if it were this
+  // driver's own number.
   function tweeterProtectionHintHtml(target) {
     if (target.role !== 'tweeter') return '';
     if (!target.driver_style || target.driver_style === 'unknown') {
       return '<p class="setting-row__hint driver-research__field--wide">' +
         (target.driver_style === 'unknown'
-          ? 'Tweeter type is not known — using the conservative 5000 Hz floor.'
+          ? 'Tweeter type is not known, so JTS assumes the cautious 5000 Hz ' +
+            'default. Choose a type above to use your driver type’s own figure.'
           : 'Tweeter style not set — choose a type above before copying the prompt.') +
         '</p>';
     }
     var entry = hfDriverStyleEntry(target.driver_style);
     return '<p class="setting-row__hint driver-research__field--wide">' +
       'Tweeter style: ' + escapeHtml(driverStyleLabel(target.driver_style)) +
-      (entry ? ' — protective high-pass floor ' +
-        escapeHtml(String(entry.floor_hz)) + ' Hz.' : '.') +
+      (entry ? ' — default minimum crossover ' +
+        escapeHtml(String(entry.floor_hz)) +
+        ' Hz, used only when the datasheet publishes none.' : '.') +
     '</p>';
   }
   function renderDriverSafetyLimits(targetId, setting, evidence) {
     return '<section class="driver-research__advanced-group">' +
       '<div><h5 class="setting-row__title">Protection and measurement limits</h5>' +
       '<p class="setting-row__hint">Hard limits are never-test-beyond edges. Measurement and crossover-search ranges must sit inside them. Filter cutoff and slope are separate because a crossover still passes some energy beyond its cutoff.</p>' +
+      '<p class="setting-row__hint">Minimum crossover is the one number to enter for a driver’s bottom end — the figure its datasheet publishes. The required high-pass, the never-test-below edge and the measure-from edge are all derived from it, so a value you type into those is replaced on the next save.</p>' +
       '</div>' +
       '<div class="driver-research__fields">' +
+        // #2603 decision 8: the driver's low limit is entered ONCE, here, as
+        // the manufacturer's minimum recommended crossover. Until this input
+        // existed the operator's only routes were pasting research or typing
+        // the high-pass cutoff below — which the derivation then overwrote,
+        // so a deliberate edit could vanish with no way to express it. It
+        // leads the panel because everything under it derives from it.
+        driverSafetyNumberField(targetId, setting, 'recommended_highpass_hz', 'Minimum crossover (datasheet)', {min: 1, placeholder: 'Hz'}) +
+        driverSafetyNumberField(targetId, setting, 'recommended_highpass_slope_db_per_octave', 'Slope the datasheet states', {min: 1, max: 96, step: 6, placeholder: 'dB/oct'}) +
         driverSafetyNumberField(targetId, setting, 'hard_excitation_min_hz', 'Never test below', {min: 1, placeholder: 'Hz'}) +
         driverSafetyNumberField(targetId, setting, 'hard_excitation_max_hz', 'Never test above', {min: 1, placeholder: 'Hz'}) +
         driverSafetyNumberField(targetId, setting, 'measurement_min_hz', 'Measure from', {min: 1, placeholder: 'Hz'}) +
         driverSafetyNumberField(targetId, setting, 'measurement_max_hz', 'Measure through', {min: 1, placeholder: 'Hz'}) +
         driverSafetyNumberField(targetId, setting, 'crossover_search_min_hz', 'Try crossovers from', {min: 1, placeholder: 'Hz'}) +
         driverSafetyNumberField(targetId, setting, 'crossover_search_max_hz', 'Try crossovers through', {min: 1, placeholder: 'Hz'}) +
-        driverSafetyNumberField(targetId, setting, 'required_highpass_cutoff_hz', 'Required high-pass cutoff', {min: 1, placeholder: 'Hz'}) +
-        driverSafetyNumberField(targetId, setting, 'required_highpass_min_slope_db_per_octave', 'Minimum high-pass slope', {min: 1, max: 96, step: 6, placeholder: 'dB/oct'}) +
+        driverSafetyNumberField(targetId, setting, 'required_highpass_cutoff_hz', 'Required high-pass cutoff (derived)', {min: 1, placeholder: 'Hz'}) +
+        driverSafetyNumberField(targetId, setting, 'required_highpass_min_slope_db_per_octave', 'Minimum high-pass slope (derived)', {min: 1, max: 96, step: 6, placeholder: 'dB/oct'}) +
         '<label class="driver-research__field"><span>High-pass family / equivalent</span>' +
           '<input type="text" data-manual-driver="' + escapeHtml(targetId) + '" data-manual-field="required_highpass_family_or_equivalent" value="' + escapeHtml(setting.required_highpass_family_or_equivalent || '') + '" placeholder="equivalent or steeper"></label>' +
         driverSafetyNumberField(targetId, setting, 'required_lowpass_cutoff_hz', 'Required low-pass cutoff', {min: 1, placeholder: 'Hz'}) +
@@ -3258,11 +3315,24 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         read: function(setting) { return echoBandText(setting, 'hard_excitation'); }
       },
       {
-        key: 'do_not_test_below_hz',
-        label: 'Never test below',
+        // #2603: this row used to echo do_not_test_below_hz, which is retired.
+        // What replaced it is the low limit's OWNER -- the manufacturer's
+        // minimum recommended crossover frequency -- and the slope condition
+        // the manufacturer attaches to it. Both render, because the operator
+        // entered both and a half-echoed declaration is exactly the round-trip
+        // gap this panel exists to close. The commissioning margin JTS derives
+        // from them is deliberately NOT shown: the panel echoes what the reply
+        // said, never what the server computed on top of it.
+        key: 'recommended_highpass_hz',
+        label: 'Minimum crossover',
         read: function(setting) {
-          var value = manualNumberValue(setting.do_not_test_below_hz);
-          return value == null ? '' : fmtFreq(value);
+          var value = manualNumberValue(setting.recommended_highpass_hz);
+          if (value == null) return '';
+          var slope = manualNumberValue(
+            setting.recommended_highpass_slope_db_per_octave
+          );
+          return fmtFreq(value) +
+            (slope == null ? '' : ', ' + slope + ' dB/oct or steeper');
         }
       },
       {
@@ -3464,6 +3534,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       !driverResearch.safetyDirty;
     var needsConfirmation = permitted && !!topology && !!status &&
       status !== 'missing' && !confirmed;
+    var reasons = Array.isArray(evaluation.reasons) ? evaluation.reasons : [];
     return {
       needsConfirmation: needsConfirmation,
       // build_driver_safety_profile REFUSES a confirm while ANY issue stands,
@@ -3472,9 +3543,16 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       // on the issues themselves — a missing value and a band relationship
       // that does not line up are different actions (#2191) — so carry the
       // evaluation's own reason codes rather than assuming one cause.
-      canConfirm: needsConfirmation && status !== 'incomplete',
+      //
+      // #2603 adds the second way a rebuild can refuse: a profile whose stored
+      // values predate the one-owner low limit evaluates 'malformed', not
+      // 'incomplete', so the status test alone let the button through onto a
+      // rebuild that raises. Any `<role>:<code>` in the reasons is the server
+      // telling us the rebuild would refuse, whatever the status says.
+      canConfirm: needsConfirmation && status !== 'incomplete' &&
+        !driverSafetyRebuildBlockers(reasons).length,
       status: status,
-      reasons: Array.isArray(evaluation.reasons) ? evaluation.reasons : []
+      reasons: reasons
     };
   }
   function driverSafetyConfirmHint(state) {
@@ -3493,6 +3571,24 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         'Nothing is missing, but some safety limits do not line up: ') +
         joinListText(conflicts, {two: ' and ', final: ', and '}) +
         '. Fix them under Advanced, then confirm.';
+    }
+    // #2603. Named before the generic 'stale'/unconfirmed text, because the
+    // cause is specific and so is the fix: this profile was confirmed when a
+    // driver's minimum crossover could be declared in two places, and the two
+    // no longer agree. Re-confirming is the remedy — unless deriving the one
+    // number pushed something else out of range, which the server tells us.
+    if (driverSafetyLowLimitStale(state.reasons)) {
+      var stale = driverSafetyConflicts(state.reasons);
+      if (!stale.length) {
+        return 'These limits were confirmed before JTS kept one declared ' +
+          'minimum crossover per driver. Review the visible values, then ' +
+          'confirm them again.';
+      }
+      return 'These limits were confirmed before JTS kept one declared ' +
+        'minimum crossover per driver, and re-confirming needs one fix first: ' +
+        joinListText(stale, {two: ' and ', final: ', and '}) +
+        '. Under Advanced, either enter the minimum crossover the datasheet ' +
+        'publishes for that driver, or move the range that no longer fits.';
     }
     if (state.status === 'stale') {
       return 'The outputs changed since these limits were confirmed. Review ' +
@@ -3571,8 +3667,18 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           '</section>' +
           '<section class="driver-research__advanced-section driver-research__advanced-section--actions">' +
             '<div class="driver-research__actions driver-research__actions--save">' +
+              // Same gate as the hoisted callout's button. This one was
+              // reachable whenever Advanced was open, whatever the evaluation
+              // said, so the dead click the callout carefully withheld was
+              // still one disclosure away — and this is the panel the operator
+              // is IN while fixing the very values that make a rebuild refuse.
+              // `disabled` rather than absent: the button belongs to the
+              // Advanced editor's own save row, and removing it there would
+              // read as the row losing an action rather than the action being
+              // unavailable.
               '<button type="button" class="btn btn--ghost" data-act="confirm-driver-safety"' +
-                (saveDisabled ? ' disabled' : '') + '>' +
+                (saveDisabled || !driverSafetyConfirmState(topology).canConfirm
+                  ? ' disabled' : '') + '>' +
                 escapeHtml(driverResearch.saving ? 'Saving' : 'Confirm safety limits') +
               '</button>' +
             '</div>' +

@@ -387,11 +387,20 @@ def test_on_the_live_declaration_the_selector_proposes_nothing_and_says_who_bloc
 def test_widening_the_tweeter_declaration_blooms_the_sweep_with_nothing_else_changed():
     """The same inputs with the tweeter widened to its declared 1600 Hz hard
     floor reopen the downward set — six candidates, spanning the ~1.7 kHz the
-    physics prior and the measured dip both point at."""
+    physics prior and the measured dip both point at.
+
+    Re-baselined by #2603's exact-is-legal ruling. The set is still six wide and
+    still spans the same region, but the grid is now half-open ``[floor,
+    ceiling)`` instead of strictly interior, so **the declared 1600 Hz floor is
+    itself the first proposal** rather than the nearest point above it. That is
+    the ruling arriving at the surface a household actually sees: the number the
+    manufacturer recommends is offered, not kept at a margin.
+    """
     _, live = _candidates_for(JTS3_LIVE_BANDS)
     _, widened = _candidates_for(JTS3_WIDENED_BANDS)
     assert len(live.candidates) == 1
-    assert widened.candidates == (2000.0, 1648.7, 1698.9, 1750.6, 1803.9, 1858.9)
+    assert widened.candidates == (2000.0, 1600.0, 1658.6, 1719.4, 1782.4, 1847.7)
+    assert 1600.0 in widened.candidates, "#2603: the declared floor is offered"
     assert 2000.0 in widened.candidates, "§9.8: configured is always evaluated"
 
     # …and the selector can then actually recommend one.
@@ -407,10 +416,54 @@ def test_widening_the_tweeter_declaration_blooms_the_sweep_with_nothing_else_cha
 
 
 def test_configured_is_first_and_duplicate_alternatives_are_removed():
+    """A squeezed ceiling collapses the grid onto a handful of shared points.
+
+    Re-baselined by #2603: the grid is half-open ``[floor, ceiling)`` now, so
+    the 1000.0 floor is proposed too and the surviving set is one wider.
+    """
     candidates = fc_candidate_set(
         configured_hz=2000.0,
         hf_hard_floor_hz=1000.0,
         lower_driver_hard_ceiling_hz=1000.2,
         count=5,
     )
-    assert candidates.candidates == (2000.0, 1000.1, 1000.2)
+    assert candidates.candidates == (2000.0, 1000.0, 1000.1, 1000.2)
+
+
+def test_a_configured_corner_sitting_on_the_declared_floor_is_not_duplicated():
+    """The coincidence #2603 made reachable: configured Fc **is** the floor.
+
+    Before the exact-is-legal ruling this could not happen — the floor was
+    refused, so it was never proposed and could never collide with the
+    configured corner that is always evaluated first. Now the floor is the
+    grid's first point, so a household already crossed AT its driver's declared
+    minimum produces the same number twice.
+
+    Asserted as a PAIR against a control that differs only in the configured
+    value, so the collapse is visible rather than inferred: the coincidence set
+    is the control's minus exactly the repeated entry, the configured corner is
+    still first, and every entry is still distinct.
+    """
+    control = fc_candidate_set(
+        configured_hz=2500.0,
+        hf_hard_floor_hz=1600.0,
+        lower_driver_hard_ceiling_hz=3200.0,
+        count=5,
+    )
+    coincident = fc_candidate_set(
+        configured_hz=1600.0,
+        hf_hard_floor_hz=1600.0,
+        lower_driver_hard_ceiling_hz=3200.0,
+        count=5,
+    )
+
+    assert control.candidates == (2500.0, 1600.0, 1837.9, 2111.2, 2425.1, 2785.8)
+    assert coincident.candidates == (1600.0, 1837.9, 2111.2, 2425.1, 2785.8)
+
+    assert coincident.candidates[0] == coincident.configured_hz == 1600.0
+    assert len(set(coincident.candidates)) == len(coincident.candidates)
+    # Exactly one entry collapsed — not a silently truncated sweep.
+    assert len(coincident.candidates) == len(control.candidates) - 1
+    assert set(coincident.candidates) == set(control.candidates) - {2500.0}
+    # The floor is proposed, so it is never left sitting in the refused list.
+    assert coincident.rejected == ()

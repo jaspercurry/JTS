@@ -619,6 +619,122 @@ def test_commission_rollback_cli_reloads_staged_all_muted(
     assert load_commission_load_state()["status"] == "rolled_back"
 
 
+def test_commission_rollback_cli_clears_pending_ramp_step(
+    monkeypatch, tmp_path: Path, capsys
+):
+    """#2669: a bare rollback re-mutes the graph, so the step the ramp was
+    waiting on is gone with it — but the group memory is not."""
+    from jasper.active_speaker import load_ramp_state
+    from jasper.active_speaker.safe_playback import load_safe_playback_state
+
+    _controller, _env, floor = _arm_woofer(monkeypatch, tmp_path, capsys)
+    assert main(["commission-ramp", "step", "--group", "mono", "--role", "woofer"]) == 0
+    capsys.readouterr()
+    assert load_ramp_state()["pending"]["role"] == "woofer"
+    assert load_ramp_state()["pending"]["gain_db"] == floor
+
+    code = main(["commission-rollback", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["rollback"]["status"] == "rolled_back"
+    assert load_ramp_state()["pending"] is None
+    assert load_ramp_state()["speaker_group_id"] == "mono"
+    # …and the OTHER ramp marker moves with it. A re-mute that cleared the step
+    # but left the floor tri-state armed would leave the two disagreeing for the
+    # session's whole TTL.
+    assert payload["safe_playback"]["quiet_start"]["status"] == "floor_required"
+    assert load_safe_playback_state()["quiet_start"]["status"] == "floor_required"
+
+    # The cleared step does NOT open the audible-step gate: nothing is armed
+    # any more, so a step is refused before the pending check is even reached.
+    code = main([
+        "commission-ramp", "step", "--group", "mono", "--role", "woofer", "--json"
+    ])
+    step = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert step["status"] == "blocked"
+    assert [i["code"] for i in step["issues"]] == ["commission_not_loaded"]
+
+
+def test_commission_rollback_cli_keeps_pending_when_rollback_fails(
+    monkeypatch, tmp_path: Path, capsys
+):
+    """Fail-closed: a rollback that did NOT reach the anchor leaves the step
+    alone — the driver may still be audible and still needs its ACK."""
+    from jasper.active_speaker import load_ramp_state
+
+    _controller, env, _floor = _arm_woofer(monkeypatch, tmp_path, capsys)
+    assert main(["commission-ramp", "step", "--group", "mono", "--role", "woofer"]) == 0
+    capsys.readouterr()
+    assert load_ramp_state()["pending"]["role"] == "woofer"
+
+    # The all-muted anchor is gone, so the rollback cannot reach it.
+    Path(env["staged_path"]).unlink()
+
+    code = main(["commission-rollback", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert payload["rollback"]["status"] == "rollback_failed"
+    assert "ramp" not in payload
+    # The step is still outstanding, because the graph may still be audible.
+    assert load_ramp_state()["pending"]["role"] == "woofer"
+
+
+# --- commission-ramp status (the read-only operator surface) -----------------
+#
+# #2667: the handler merges durable confirmed-role evidence for the armed group,
+# which needs args.topology — a flag the status subparser never registered. The
+# armed target OUTLIVES a rollback, so the verb died on every box from its first
+# arm onward. One pin per state the sweep walked through.
+
+
+def test_commission_ramp_status_cli_never_armed(monkeypatch, tmp_path: Path, capsys):
+    _commission_env(monkeypatch, tmp_path, _FakeController("placeholder"))
+
+    code = main(["commission-ramp", "status", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["commission_load"]["status"] == "idle"
+    assert payload["ramp"]["pending"] is None
+    assert payload["ramp"]["confirmed_roles"] == []
+
+
+def test_commission_ramp_status_cli_mid_ramp(monkeypatch, tmp_path: Path, capsys):
+    _controller, _env, floor = _arm_woofer(monkeypatch, tmp_path, capsys)
+    assert main(["commission-ramp", "step", "--group", "mono", "--role", "woofer"]) == 0
+    capsys.readouterr()
+
+    code = main(["commission-ramp", "status", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["commission_load"]["target"]["speaker_group_id"] == "mono"
+    assert payload["ramp"]["pending"]["role"] == "woofer"
+    assert payload["ramp"]["pending"]["gain_db"] == floor
+    assert payload["safe_playback"]["quiet_start"]["status"] == "floor_pending_operator"
+
+
+def test_commission_ramp_status_cli_after_rollback(monkeypatch, tmp_path: Path, capsys):
+    from jasper.active_speaker import load_commission_load_state
+
+    _controller, _env, _floor = _arm_woofer(monkeypatch, tmp_path, capsys)
+    assert main(["commission-ramp", "step", "--group", "mono", "--role", "woofer"]) == 0
+    assert main(["commission-rollback"]) == 0
+    capsys.readouterr()
+    # The armed target survives the rollback, so the handler still resolves a
+    # non-empty group — the exact state the missing flag died on.
+    assert load_commission_load_state()["target"]["speaker_group_id"] == "mono"
+
+    code = main(["commission-ramp", "status"])  # text mode, the operator default
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "Commission load: rolled_back" in out
+    assert "group=mono" in out
+    # The revived verb must not print a self-contradictory pair: no step
+    # outstanding AND the operator still owing a floor confirmation.
+    assert "pending step: None" in out
+    assert "Per-driver floor tri-state: floor_required" in out
+
+
 def test_environment_probe_cli_json_reports_payload(monkeypatch, capsys):
     monkeypatch.setattr(
         "jasper.cli.active_speaker.probe_active_speaker_environment",

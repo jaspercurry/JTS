@@ -68,12 +68,18 @@ fingerprint, the mark, and the timestamp, and the host persists the record.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Iterable, Mapping
+from typing import TYPE_CHECKING, Any, Iterable, Mapping, Sequence
 
 import numpy as np
 
-from ..flat_spec import FlatSpecReport, evaluate_flat_spec, spec_convergence_residual
+from ..flat_spec import (
+    FlatSpecReport,
+    GradedSpec,
+    evaluate_flat_spec,
+    spec_convergence_residual,
+)
 from .contracts import (
     AdoptionDecision,
     BenefitStatus,
@@ -97,6 +103,8 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     # scipy-backed module, and a reduction helper should not drag it into every
     # import of the package. Only three attributes are read at runtime.
     from jasper.audio_measurement.program_analysis import ProgramAnalysis
+
+    from .blend_correction import BlendCorrection
 
 __all__ = [
     "BENEFIT_CURVE_MAX_BINS",
@@ -551,6 +559,15 @@ class RoundEvaluation:
     #: re-invent (the design brief's §4.2 loose end).
     post_residual_db: float | None = None
     post_residual_bins: int | None = None
+    #: Decision 10's blend-region prescription for the NEXT round, and the
+    #: reading it was derived from. Never an adoption input: the contract
+    #: changes who may act in this region, not what may stop a round.
+    blend: "BlendCorrection | None" = None
+    #: The benefit claim restricted to the blend region — a SECOND reported
+    #: claim beside the pooled one, for the reason
+    #: :func:`~.verification.evaluate_region_benefit` states: a win confined to
+    #: two octaves cannot show itself in a residual pooled over six.
+    region_benefit: Verdict[BenefitStatus] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -565,6 +582,11 @@ class RoundEvaluation:
             "adoption": self.adoption.to_dict(),
             "post_residual_db": self.post_residual_db,
             "post_residual_bins": self.post_residual_bins,
+            "blend": None if self.blend is None else self.blend.to_dict(),
+            "region_benefit": (
+                None if self.region_benefit is None
+                else self.region_benefit.to_dict()
+            ),
         }
 
     def axes(self) -> dict[str, Any]:
@@ -603,6 +625,9 @@ def evaluate_round(
     round_ordinal: int = 1,
     round_cap: int = ROUND_SERIES_CAP,
     plateau_db: float = ITERATION_PLATEAU_DB,
+    graded_spec: "GradedSpec | None" = None,
+    applied_blend_correction: Sequence[Mapping[str, Any]] | None = None,
+    previous_blend_residual_db: float | None = None,
 ) -> RoundEvaluation:
     """Grade one round: the four questions, the four axes, then the table.
 
@@ -672,12 +697,28 @@ def evaluate_round(
       round_cap / plateau_db: series policy, same defaulted-from-this-module
         rule as ``margin_db`` above and the same reason — one definition, no
         call site free to pass a different budget.
+      graded_spec: the post-apply spatial cloud's flat-spec evaluation with its
+        graded curve and MERGED honesty mask, or ``None`` on a tier that walks
+        no cloud. The blend correction's evidence, and it must be the cloud's:
+        the merged mask is the only structural protection against prescribing
+        a cut at an interference null, and #2600 item 1 records that the null
+        detector is uncalibrated across the entire blend window of any
+        crossover below 4 kHz. ``None`` means no blend correction is
+        prescribed — never one prescribed from thinner evidence.
+      applied_blend_correction: the blend correction the post-apply capture
+        actually rode, read off the APPLIED candidate. ``None`` means it could
+        not be established (a restored graph, a hand-applied config, a profile
+        from before decision 10) and the round refuses to prescribe rather than
+        assuming zero — #2653's condition applied to this quantity. ``()`` is
+        the ordinary "it rode none", which every first round honestly is.
     """
 
+    from .blend_correction import solve_blend_correction
     from .verification import (
         decide_adoption,
         evaluate_applied_safety,
         evaluate_benefit,
+        evaluate_region_benefit,
         evaluate_capture_validity,
         evaluate_evidence_trust,
         evaluate_iteration_headroom,
@@ -699,6 +740,12 @@ def evaluate_round(
         )
         spec: Any = Verdict(SpecStatus.UNEVALUABLE, capture.reason, capture.evidence)
         post_residual: tuple[float, int] | None = None
+        # An unusable capture prescribes nothing, on the same rule the three
+        # verdicts above follow: what is logged must be what was decided, and a
+        # correction derived from a capture the round refuses to trust would be
+        # a prescription nothing supports.
+        blend: Any = None
+        region_benefit: Any = None
     else:
         realization = evaluate_realization(
             tracking=tracking, tolerance_db=realization_tolerance_db
@@ -720,6 +767,25 @@ def evaluate_round(
             None
             if after is None
             else _post_residual(after, benefit_reason=benefit.reason)
+        )
+        # The band is the VERIFY absolute claim's own — which is
+        # ``program_analysis.crossover_region_band_hz``'s output, reached
+        # through that function's existing production consumer rather than
+        # re-derived here. Two things follow and both are the point: the region
+        # corrected over is byte-identically the one the household is shown on
+        # the done screen, and every ``not_evaluated`` arm of that claim
+        # (no Fc, no crossover target, no trusted region) becomes "no band"
+        # for free instead of needing its own translation.
+        band_hz = _crossover_region_band_hz(post_analysis)
+        blend = solve_blend_correction(
+            graded=graded_spec,
+            band_hz=band_hz,
+            incumbent=applied_blend_correction,
+            previous_residual_db=previous_blend_residual_db,
+        )
+        region_benefit = evaluate_region_benefit(
+            entry_baseline=before, post=after, band_hz=band_hz,
+            margin_db=margin_db,
         )
 
     result = verification_result(
@@ -771,7 +837,53 @@ def evaluate_round(
         adoption=adoption,
         post_residual_db=None if post_residual is None else post_residual[0],
         post_residual_bins=None if post_residual is None else post_residual[1],
+        blend=blend,
+        region_benefit=region_benefit,
     )
+
+
+def _crossover_region_band_hz(
+    post_analysis: "ProgramAnalysis | None",
+) -> tuple[float, float] | None:
+    """The blend region, read off the VERIFY absolute claim, or ``None``.
+
+    **The band's owner is
+    :func:`~jasper.audio_measurement.program_analysis.crossover_region_band_hz`,
+    and this reads its output rather than calling it a second time.** That
+    function is deliberately NOT ``overlap_band_hz``: the latter clamps the
+    lower edge UP to the tweeter's own sweep floor because its consumers read a
+    single branch, which below that floor is deconvolution noise from a driver
+    that was never excited. A summed capture has no such problem, and the null
+    a two-way blends into lands exactly in the span the per-branch clamp would
+    remove — on jts3 that clamp is 1600 Hz and the series-1 dip sat at
+    1921–1938 Hz, so the per-branch band would amputate the bottom half of the
+    thing this correction exists to address.
+
+    Reading it here rather than re-calling it buys two properties a second call
+    could not: the region corrected over is byte-identically the one rendered
+    on the done screen (``crossover_envelope_v2``'s "crossover blend … over
+    lo–hi Hz"), and this module needs neither Fc nor the radiated band threaded
+    into it — so it holds no copy of the corner, and moves with it for free
+    when the declared driver limits change.
+
+    ``None`` for every ``not_evaluated`` arm of that claim, which is the honest
+    "there is no region to grade" and the reason the solver's
+    ``no_trusted_band`` refusal needs no separate translation.
+    """
+
+    absolute = getattr(post_analysis, "verify_absolute", None)
+    if not isinstance(absolute, Mapping):
+        return None
+    band = absolute.get("band_hz")
+    if not isinstance(band, (list, tuple)) or len(band) != 2:
+        return None
+    try:
+        lo, hi = float(band[0]), float(band[1])
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(lo) and math.isfinite(hi)) or lo <= 0.0 or hi <= lo:
+        return None
+    return (lo, hi)
 
 
 def _post_residual(

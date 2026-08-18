@@ -724,10 +724,15 @@ def test_to_dict_canonical_shape_always_includes_linearization_key():
     # same reason: a fresh empty write and a freshly-built raw dict must agree
     # byte-for-byte or from_mapping's tamper check needs a special case.
     assert raw["exclusion_evidence"] == {}
+    # Decision 10's ``blend_correction`` joins the same always-written set, for
+    # the same reason. Its empty value is a LIST, not a mapping: it describes
+    # the summed response rather than a driver, so it is a flat filter list.
+    assert raw["blend_correction"] == []
     assert set(raw) == {
         "schema_version", "kind", "program_id", "analysis", "source_preset",
         "role_attenuations_db", "alignment", "linearization",
-        "linearization_outcome", "exclusion_evidence", "fingerprint",
+        "linearization_outcome", "exclusion_evidence", "blend_correction",
+        "fingerprint",
     }
 
 

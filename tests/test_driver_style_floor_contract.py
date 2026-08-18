@@ -65,14 +65,22 @@ def test_js_style_floor_table_matches_python_policy() -> None:
 
 
 def test_js_conservative_default_copy_matches_python_unknown_floor() -> None:
-    """Every 'conservative N Hz' string in the page copy must state Python's
-    unknown-style floor -- the number an undeclared tweeter actually gets."""
+    """Every hedged 'N Hz' string in the page copy must state Python's
+    unknown-style default -- the number an undeclared tweeter actually gets.
+
+    The adjective is matched as an alternation because #2603 moved the copy
+    from "conservative" to "cautious": that ruling made the figure a DEFAULT
+    used when a datasheet publishes nothing rather than a floor a declaration
+    must clear, and "conservative floor" was telling the operator the old
+    story. Both spellings are accepted so this contract keeps checking the
+    NUMBER -- which is its job -- instead of failing over a word.
+    """
     text = SOUND_JS.read_text(encoding="utf-8")
-    matches = re.findall(r"conservative (\d+(?:\.\d+)?) Hz", text)
-    assert matches, "expected the undeclared-style copy to name the floor"
+    matches = re.findall(r"(?:conservative|cautious) (\d+(?:\.\d+)?) Hz", text)
+    assert matches, "expected the undeclared-style copy to name the default"
     unknown_floor = _STYLE_HIGH_PASS_HZ[_UNKNOWN_HF_STYLE]
     for value in matches:
         assert float(value) == unknown_floor, (
-            f"page copy says 'conservative {value} Hz' but Python's "
-            f"unknown-style floor is {unknown_floor}"
+            f"page copy hedges at '{value} Hz' but Python's unknown-style "
+            f"default is {unknown_floor}"
         )

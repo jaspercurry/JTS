@@ -2402,6 +2402,21 @@ def _active_speaker_design_draft_save_payload(
         safety_profile_status=str(
             (payload.get("driver_safety_profile") or {}).get("status")
         ),
+        # #2603: the EVALUATION, not just the stored status. A re-confirm wave
+        # left no journal trace at all — a fleet owner had no way to find the
+        # boxes whose profile went un-confirmed under the one-owner collapse.
+        # Carried on the existing save event rather than a new one, so there is
+        # no second grep contract to keep in sync.
+        safety_profile_evaluation=str(
+            (payload.get("driver_safety_profile_evaluation") or {}).get("status")
+        ),
+        safety_profile_reasons=",".join(
+            str(reason)
+            for reason in (
+                (payload.get("driver_safety_profile_evaluation") or {}).get("reasons")
+                or ()
+            )
+        ),
         issues=len(payload.get("issues") or []),
     )
     return payload
@@ -3970,6 +3985,7 @@ async def _active_speaker_commission_rollback_payload(
 ) -> dict[str, Any]:
     """Roll the running graph back to the all-muted staged config (re-mute)."""
 
+    from jasper.active_speaker.commission_ramp import clear_pending_ramp_step
     from jasper.active_speaker.safe_playback import stop_safe_playback_session
     from jasper.active_speaker.startup_load import rollback_driver_commissioning_config
 
@@ -3977,6 +3993,11 @@ async def _active_speaker_commission_rollback_payload(
     cam = camilla_factory()
     load_config, _, _ = commission_seams(cam)
     payload = await rollback_driver_commissioning_config(load_config=load_config)
+    if (payload.get("rollback") or {}).get("status") == "rolled_back":
+        # The graph is proven back on the all-muted anchor, so the step the ramp
+        # was waiting on is gone with it. Only a proven rollback clears it: a
+        # blocked / failed one may still be audible.
+        payload["ramp"] = clear_pending_ramp_step()
     payload["safe_playback"] = stop_safe_playback_session(reason="commission_rollback")
     payload["tone_stop"] = tone_stop
     log_event(

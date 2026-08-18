@@ -97,8 +97,11 @@ def test_the_session_preparer_threads_the_lateral_walk_into_both_surfaces():
     source = inspect.getsource(v2host.prepare_v2_session)
 
     # The preparer READS the one owner of the fact, rather than restating it.
+    # That read is the whole point of this assertion and is unaffected by which
+    # way the flag points; the value is stated beside it so a flip is visible
+    # here too. Paused since 2026-08-18 — see the flag's own comment.
     assert "include_lateral = STAGE1_INCLUDES_LATERAL" in source
-    assert STAGE1_INCLUDES_LATERAL is True
+    assert STAGE1_INCLUDES_LATERAL is False
     # …and threads that one read into both surfaces: the spec and the map.
     assert source.count("include_lateral=include_lateral") == 2
 

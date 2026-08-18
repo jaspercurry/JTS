@@ -2434,10 +2434,17 @@ def check_ring_reader_stall() -> CheckResult:
     clause goes false exactly when the drops begin. See
     :class:`jasper.ring_assets.RingStallVerdict` for the full derivation.
 
-    Judges all THREE rings, because the fault is a property of a ring file rather
-    than of a coupling, and reports per-ring so an operator knows which daemon to
-    look at. Absent / idle rings are silent: ``present=False`` covers the unarmed
-    fleet, where none of these files exists at all.
+    The GROUPING ring is judged for the same reason and rides the same shape: its
+    writer is snapclient through that same C ioplug, so it has no witness either,
+    and its reader is the bonded endpoint's CamillaDSP. It is SILENT until
+    something creates the file — ``present=False`` — so listing it here costs one
+    stat on every box and self-arms on the box where the ring exists.
+
+    Judges every ring in the tuple below, because the fault is a property of a
+    ring file rather than of a coupling, and reports per-ring so an operator
+    knows which daemon to look at. Absent / idle rings are silent:
+    ``present=False`` covers the unarmed fleet, where none of these files exists
+    at all.
 
     Returns:
       - ok when no ring is stalled (including every unarmed box, where there is
@@ -2446,6 +2453,7 @@ def check_ring_reader_stall() -> CheckResult:
         daemon to check. WARN not FAIL: the ring self-recovers the instant the
         reader resumes, and the household's remedy is the same either way.
     """
+    from jasper.multiroom.grouping_ring import GROUPING_RING_FILE
     from jasper.ring_assets import (
         RING_A_PROGRAM_FILE,
         RING_ACTIVE_CONTENT_FILE,
@@ -2458,6 +2466,9 @@ def check_ring_reader_stall() -> CheckResult:
         ("Ring A (fan-in -> CamillaDSP)", RING_A_PROGRAM_FILE),
         ("Ring B (CamillaDSP -> outputd)", RING_B_CONTENT_FILE),
         ("ACTIVE ring (CamillaDSP -> outputd)", RING_ACTIVE_CONTENT_FILE),
+        # Path imported from the grouping transport's own identity module, not
+        # respelled here — one owner for the name and the file.
+        ("GROUPING ring (snapclient -> CamillaDSP)", GROUPING_RING_FILE),
     )
     stalled: list[str] = []
     judged: list[str] = []

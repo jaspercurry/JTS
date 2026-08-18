@@ -831,6 +831,81 @@ def test_commission_ramp_step_and_ack_payloads(monkeypatch, tmp_path):
     assert load_commission_load_state()["status"] == "rolled_back"
 
 
+def test_commission_rollback_payload_clears_pending_ramp_step(monkeypatch, tmp_path):
+    """#2669: the web Stop-short — a bare rollback — re-mutes the graph, so the
+    step it was waiting on goes with it. The ordering memory does not."""
+    controller = _FakeController("placeholder")
+    _web_commission_env(monkeypatch, tmp_path, controller)
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_commission_tone",
+        lambda *, reason: {"status": "stopped", "reason": reason},
+    )
+    asyncio.run(
+        sound_setup._active_speaker_commission_load_payload(
+            {"group": "mono", "role": "woofer"}, camilla_factory=lambda: controller
+        )
+    )
+    step = asyncio.run(
+        sound_setup._active_speaker_commission_ramp_step_payload(
+            {"group": "mono", "role": "woofer"}, camilla_factory=lambda: controller
+        )
+    )
+    assert step["ramp"]["pending"]["role"] == "woofer"
+
+    payload = asyncio.run(
+        sound_setup._active_speaker_commission_rollback_payload(
+            camilla_factory=lambda: controller
+        )
+    )
+    assert payload["rollback"]["status"] == "rolled_back"
+    assert payload["ramp"]["pending"] is None
+    # A surface reading the ramp file between this rollback and the next arm
+    # sees no audible step outstanding — because there isn't one.
+    assert load_ramp_state()["pending"] is None
+    assert load_ramp_state()["speaker_group_id"] == "mono"
+
+
+def test_commission_rollback_payload_keeps_pending_when_rollback_fails(
+    monkeypatch, tmp_path
+):
+    """Fail-closed on the surface the household actually drives: a rollback that
+    did NOT reach the anchor leaves the step alone — the driver may still be
+    audible and still needs its ACK. Twin of the CLI pin in
+    tests/test_active_speaker_cli.py."""
+    controller = _FakeController("placeholder")
+    env = _web_commission_env(monkeypatch, tmp_path, controller)
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_commission_tone",
+        lambda *, reason: {"status": "stopped", "reason": reason},
+    )
+    asyncio.run(
+        sound_setup._active_speaker_commission_load_payload(
+            {"group": "mono", "role": "woofer"}, camilla_factory=lambda: controller
+        )
+    )
+    step = asyncio.run(
+        sound_setup._active_speaker_commission_ramp_step_payload(
+            {"group": "mono", "role": "woofer"}, camilla_factory=lambda: controller
+        )
+    )
+    assert step["ramp"]["pending"]["role"] == "woofer"
+
+    # The all-muted anchor is gone, so the rollback cannot reach it.
+    Path(env["staged_path"]).unlink()
+
+    payload = asyncio.run(
+        sound_setup._active_speaker_commission_rollback_payload(
+            camilla_factory=lambda: controller
+        )
+    )
+    assert payload["rollback"]["status"] == "rollback_failed"
+    assert "ramp" not in payload
+    # The step is still outstanding, because the graph may still be audible.
+    assert load_ramp_state()["pending"]["role"] == "woofer"
+
+
 def test_confirm_output_identity_audition_can_play_tweeter_before_driver_sequence(
     monkeypatch,
     tmp_path,

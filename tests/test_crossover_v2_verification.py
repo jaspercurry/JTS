@@ -2,7 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""#2291 Phase 3b's four verdicts, and #2537's three axes and five rows.
+"""#2291 Phase 3b's four verdicts, and the adoption table those became.
+
+Four axes since #2602 and seven rows since #2656; #2537 built the first three
+and five of them.
 
 Every row of the adoption table is a named test here, and so is every override
 rule stated beside it: safety outranks trust, trust outranks quality, a failed
@@ -32,6 +35,7 @@ from jasper.active_speaker.crossover_v2.contracts import (
     ADOPTION_ROW_KEEP,
     ADOPTION_ROW_KEEP_FOR_ITERATION,
     ADOPTION_ROW_KEEP_ITERATING,
+    ADOPTION_ROW_KEEP_MISSED_EXHAUSTED,
     ADOPTION_ROW_RESTORE_FAILED,
     ADOPTION_ROW_RESTORE_REGRESSION,
     ADOPTION_ROW_RESTORE_UNSAFE,
@@ -93,6 +97,7 @@ from jasper.active_speaker.crossover_v2.verification import (
     SAFETY_BOOST_OVER_DECLARED_BOUND,
     SAFETY_CLIPPED_CAPTURE,
     SAFETY_NO_FINDING,
+    SAFETY_NO_FINDING_UNMEASURED,
     SAFETY_UNCOMMANDED_LEVEL_LOUDER,
     SPEC_BAND_OUT_OF_TOLERANCE,
     SPEC_IN_TOLERANCE,
@@ -780,6 +785,7 @@ class _Probe:
         residual_offset_tolerance_db=1.5,
         boost_over_declared_bound=False,
         boost_overshoot_db=None,
+        safety_anchored=True,
     ):
         self.verdict = verdict
         self.reason = reason
@@ -787,6 +793,11 @@ class _Probe:
         self.residual_offset_tolerance_db = residual_offset_tolerance_db
         self.boost_over_declared_bound = boost_over_declared_bound
         self.boost_overshoot_db = boost_overshoot_db
+        # Whether the realized-energy check ran (series-2 D1). Defaults to the
+        # round that HAD a pre-apply capture, because that is the ordinary
+        # shape every other assertion in this file means; the unanchored one is
+        # its own test.
+        self.safety_anchored = safety_anchored
 
 
 class _Integrity:
@@ -858,6 +869,69 @@ def test_no_finding_is_reported_as_safe_and_says_what_looked():
     # because nothing looked" — see the function's own docstring.
     assert verdict.evidence["probe_graded"] is True
     assert verdict.evidence["integrity_graded"] is True
+
+
+def test_no_finding_says_whether_the_realized_energy_check_could_run():
+    """"Safe" had two readings and now has two reasons (series-2 D1).
+
+    ``no_unsafe_finding`` says the realized-energy check looked and found
+    nothing. ``no_unsafe_finding_realized_energy_unmeasured`` says it could not
+    look — there was no pre-apply capture to difference this one against — and a
+    first-ever round reaches that BY CONSTRUCTION, so it is the common case
+    rather than an edge one. The status and the adoption row are identical,
+    deliberately: refusing on an absent measurement would revert every first
+    round. What differs is what the receipt and the journal claim was checked.
+    """
+    checked = evaluate_applied_safety(
+        probe=_Probe(safety_anchored=True), integrity=_Integrity(),
+    )
+    unchecked = evaluate_applied_safety(
+        probe=_Probe(safety_anchored=False), integrity=_Integrity(),
+    )
+
+    assert checked.status is unchecked.status is SafetyStatus.SAFE
+    assert checked.reason == SAFETY_NO_FINDING
+    assert unchecked.reason == SAFETY_NO_FINDING_UNMEASURED
+    assert checked.reason != unchecked.reason
+    assert checked.evidence["safety_anchored"] is True
+    assert unchecked.evidence["safety_anchored"] is False
+
+
+def test_the_model_departure_target_quotes_its_OWN_frequency():
+    """Two reductions over two bin sets, and the target must not cross them.
+
+    ``max_signed_error_db`` is the worst POSITIVE departure over the SAFETY
+    bins; ``worst_hz`` is the worst ABSOLUTE error over the GRADED ones. On the
+    banked series-2 r1b they sit 563 Hz apart and name two different acoustic
+    features — the standing model error, and the dip the next round went on to
+    close. A target is an instruction to the next round, so quoting one bin's dB
+    at the other bin's frequency sends it after the wrong one.
+    """
+    from jasper.active_speaker.crossover_v2.verification import (
+        QUALITY_MODEL_DEPARTURE,
+        _model_departure_target,
+    )
+
+    probe = types.SimpleNamespace(
+        model_departure_over_tolerance=True,
+        max_signed_error_db=3.891,
+        max_signed_error_hz=1384.1,
+        # The decoy: a real field, on a real map, measuring something else.
+        worst_hz=1947.2,
+    )
+    assert _model_departure_target(probe) == [
+        f"{QUALITY_MODEL_DEPARTURE}:3.89dB@1384Hz"
+    ]
+
+    # Nothing when the departure did not clear the probe's own tolerance — the
+    # boolean is read rather than a threshold re-derived here.
+    assert _model_departure_target(
+        types.SimpleNamespace(
+            model_departure_over_tolerance=False,
+            max_signed_error_db=3.891, max_signed_error_hz=1384.1,
+        )
+    ) == []
+    assert _model_departure_target(None) == []
 
 
 def test_an_absent_probe_is_reported_as_safe_but_ungraded():
@@ -1533,12 +1607,17 @@ def test_a_passing_round_with_no_headroom_left_ends_the_series(reason):
     "headroom_status", list(IterationHeadroom), ids=lambda s: s.value
 )
 def test_headroom_never_moves_a_round_that_did_not_pass(headroom_status):
-    """The split is confined to the one cell that used to be terminal.
+    """#2602's split is confined to the one cell that used to be terminal.
 
-    A MISSED round iterates whatever the headroom says — it has outstanding
-    targets by construction — and a REGRESSED one restores. If headroom leaked
-    into either, "keep going" and "put the old sound back" would start
-    depending on how flat the speaker happens to be.
+    A MISSED round iterates however FLAT the headroom axis says the result is —
+    it has outstanding targets by construction — and a REGRESSED one restores.
+    If flatness leaked into either, "keep going" and "put the old sound back"
+    would start depending on how flat the speaker happens to be.
+
+    The one fact that does cross to the MISSED row is the spent budget, and it
+    crosses as the axis's REASON (#2656) — which is why this walk over the two
+    STATUSES still holds unchanged, and why it carries a reason that is not
+    :data:`HEADROOM_CAP_REACHED`.
     """
 
     headroom = Verdict(headroom_status, "h", {})
@@ -1560,6 +1639,132 @@ def test_headroom_never_moves_a_round_that_did_not_pass(headroom_status):
     assert regressed.outcome is AdoptionOutcome.RESTORE
     assert regressed.row == ADOPTION_ROW_RESTORE_REGRESSION
     assert regressed.reason == ADOPTION_MEASURED_REGRESSION
+
+
+# --------------------------------------------------------------------------
+# 6d. the missing cell, bounded by the budget (#2656)
+# --------------------------------------------------------------------------
+
+
+def test_a_missed_round_at_the_budget_ends_the_series():
+    """The cell the gate found unpinned: MISSED, with no round left to spend.
+
+    The gate walked 40 consecutive MISSED rounds against this function and
+    every one of them said keep-for-iteration, because only the PASSED cell
+    read the fourth axis at all. The ethos names the budget as a series-ender
+    with no row exception, so this row ends it.
+
+    Three claims, and the third is the reason the row exists at all:
+
+    * the series ENDS — the outcome is not ``keep_for_iteration``, which is
+      what a driver and the done screen's button both read;
+    * the graph STAYS — ``keep`` leaves the speaker exactly where
+      ``keep_for_iteration`` did, on the best measured state known;
+    * it does not fake a PASS — row 1's identifier says *passed* and this
+      round did not, so the ending gets its own row.
+    """
+
+    decision = _adopt(
+        quality=Verdict(QualityStatus.MISSED, ADOPTION_UNPROVEN, {}),
+        headroom=Verdict(
+            IterationHeadroom.EXHAUSTED, HEADROOM_CAP_REACHED, {},
+        ),
+    )
+
+    assert decision.outcome is AdoptionOutcome.KEEP
+    assert decision.row == ADOPTION_ROW_KEEP_MISSED_EXHAUSTED
+    assert decision.row != ADOPTION_ROW_KEEP
+    assert decision.reason == HEADROOM_CAP_REACHED
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [HEADROOM_REACHABLE, HEADROOM_WITHIN_PLATEAU, HEADROOM_PLATEAUED,
+     HEADROOM_NO_OBJECTIVES],
+)
+@pytest.mark.parametrize(
+    "headroom_status", list(IterationHeadroom), ids=lambda s: s.value
+)
+def test_below_the_budget_a_missed_round_still_iterates(headroom_status, reason):
+    """#2537's choice, untouched by #2656 on every ending that is not the cap.
+
+    A MISSED round has outstanding targets by construction, so "we stopped
+    improving" is not a reason to stop trying — and the plateau stops still
+    cannot fire on this row. Walked over BOTH statuses with every non-cap
+    reason the axis mints, so a change that widened the new branch from the
+    budget to the whole ``EXHAUSTED`` status fails here rather than quietly
+    ending a household's series two rounds early.
+    """
+
+    decision = _adopt(
+        quality=Verdict(QualityStatus.MISSED, ADOPTION_UNPROVEN, {}),
+        headroom=Verdict(headroom_status, reason, {}),
+    )
+
+    assert decision.outcome is AdoptionOutcome.KEEP_FOR_ITERATION
+    assert decision.row == ADOPTION_ROW_KEEP_FOR_ITERATION
+    assert decision.reason == ADOPTION_UNPROVEN
+
+
+def test_a_series_that_keeps_missing_terminates_at_the_budget():
+    """The gate's 40-round walk, bounded — and through the REAL axis.
+
+    The two tests above hand ``decide_adoption`` a headroom verdict directly,
+    which pins the table and not the composition. This walks the shipped
+    :func:`evaluate_iteration_headroom` for each round of a series that keeps
+    missing, so what is asserted is what a driver chaining rounds actually
+    gets.
+
+    The series is deliberately one that PLATEAUS immediately — every round
+    measures the same objectives, so movement is zero from round 2 on. That is
+    the second half of the claim: a plateau does not end a MISSED series
+    (#2537), and the budget does (#2656), and only walking both together shows
+    the two stops did not get folded into one.
+    """
+
+    cap = 3
+    previous = None
+    outcomes = []
+    for ordinal in range(1, 8):
+        headroom = _headroom(
+            report=_round_three_report(), previous=previous,
+            ordinal=ordinal, cap=cap,
+        )
+        decision = _adopt(
+            quality=Verdict(QualityStatus.MISSED, ADOPTION_UNPROVEN, {}),
+            headroom=headroom,
+        )
+        outcomes.append(
+            (decision.outcome, decision.row, decision.reason, headroom.reason)
+        )
+        previous = flatness_objectives(_round_three_report())
+
+    ended = [
+        ordinal for ordinal, (outcome, _, _, _) in enumerate(outcomes, start=1)
+        if outcome is not AdoptionOutcome.KEEP_FOR_ITERATION
+    ]
+    assert ended and ended[0] == cap, (
+        f"a MISSED series must end at round {cap}, ended at {ended[:1] or None}"
+    )
+    # The plateau ACTUALLY FIRED, asserted rather than assumed. Without this
+    # the docstring's second half is narrative only: a broken plateau (a
+    # refused floor comparison, a movement that never resolves) leaves every
+    # round REACHABLE, and the test still passes on the budget alone — proving
+    # half of what it claims while reading like it proved both.
+    assert outcomes[1][3] == HEADROOM_PLATEAUED, (
+        f"round 2 must be the plateau round, got {outcomes[1][3]!r}"
+    )
+    # Every round before the cap kept iterating, plateau and all.
+    assert all(
+        row == ADOPTION_ROW_KEEP_FOR_ITERATION
+        for _, row, _, _ in outcomes[: cap - 1]
+    )
+    # And every round from the cap on says the same thing, so a driver that
+    # ignored the first ending is not offered a fresh one afterwards.
+    for outcome, row, reason, _ in outcomes[cap - 1:]:
+        assert outcome is AdoptionOutcome.KEEP
+        assert row == ADOPTION_ROW_KEEP_MISSED_EXHAUSTED
+        assert reason == HEADROOM_CAP_REACHED
 
 
 @pytest.mark.parametrize(
@@ -1619,7 +1824,7 @@ def test_a_round_at_the_cap_stops_even_with_everything_left_to_fix():
 
 
 # --------------------------------------------------------------------------
-# 6. adoption — the six rows (#2537, #2602)
+# 6. adoption — the seven rows (#2537, #2602, #2656)
 # --------------------------------------------------------------------------
 
 
@@ -1873,24 +2078,31 @@ def test_every_axis_combination_lands_on_exactly_one_known_row():
     """
 
     seen = set()
-    for trust, safety, quality, headroom, boosted, rollback in itertools.product(
+    for (
+        trust, safety, quality, headroom, headroom_reason, boosted, rollback
+    ) in itertools.product(
         EvidenceTrust, SafetyStatus, QualityStatus, IterationHeadroom,
+        # #2656 added the REASON dimension, and it is load-bearing rather than
+        # thorough: one row is selected by the headroom axis's reason, so a
+        # walk over statuses alone cannot reach it — and would have reported a
+        # complete table while a row sat unreachable.
+        ("h", HEADROOM_CAP_REACHED),
         (False, True), (False, True),
     ):
         decision = _adopt(
             trust=Verdict(trust, "t", {}),
             safety=Verdict(safety, "s", {}),
             quality=Verdict(quality, "q", {}),
-            headroom=Verdict(headroom, "h", {}),
+            headroom=Verdict(headroom, headroom_reason, {}),
             boosted=boosted,
             rollback_available=rollback,
         )
         assert decision.row in ADOPTION_ROWS
         assert decision.row != ADOPTION_ROW_RESTORE_FAILED
         seen.add(decision.row)
-    # #2602 widened this from four reachable rows to five: the walk now covers
-    # the fourth axis, so row 6 is reachable and must be REACHED — an
-    # unreachable row in the table is a row nothing tests.
+    # #2602 widened this from four reachable rows to five and #2656 to six: the
+    # walk covers the fourth axis, so rows 6 and 7 are reachable and must be
+    # REACHED — an unreachable row in the table is a row nothing tests.
     assert seen == ADOPTION_ROWS - {ADOPTION_ROW_RESTORE_FAILED}
 
 

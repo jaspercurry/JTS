@@ -177,23 +177,41 @@ literal 1 GB Pi is the unmeasured number, and it is the one to get. Decide
 the next stage-1 capture has zero retake headroom.
 
 **6. Sweep the boost path for stale cut-only claims, before the first
-hardware boost run.** Two known sites describe a cut-only world the code
-left behind at PR-L5: `LinearizationFilter.gain` in
-`jasper/active_speaker/linearization_fit.py` is annotated
+hardware boost run.** [Done — #2603.] Two known sites described a cut-only
+world the code left behind at PR-L5: `LinearizationFilter.gain` in
+`jasper/active_speaker/linearization_fit.py` was annotated
 `dB; always <= 0 (cut-only invariant)` on the field that carries boosts,
-and the emitter docstring in `jasper/active_speaker/camilla_yaml.py` calls
+and the emitter docstring in `jasper/active_speaker/camilla_yaml.py` called
 `linearization` "the per-driver cut-only EQ/shelf stage" requiring a
-"non-positive `gain`" while `_validated_linearization` accepts up to
-`MAX_LINEARIZATION_BOOST_DB` (12.0). **That enumeration is a hypothesis,
+"non-positive `gain`" while `_validated_linearization` accepted up to
+`MAX_LINEARIZATION_BOOST_DB` (12.0). **That enumeration was a hypothesis,
 not a bound** — a review of the first revision of this doc found a third
 cut-only sentence on the same path (`camilla_yaml.py`'s
 `_validated_linearization` docstring, citing "the fit engine's own
-explicit-raise cut-only invariant"). So the item is a mechanical sweep,
-not a hand list: run `bash scripts/tense-grep.sh` plus a grep for
-cut-only and non-positive-gain claims across the boost path, and fix what
-it returns.
+explicit-raise cut-only invariant"). All four were trued up:
+`LinearizationFilter.gain`'s comment, the `_validated_linearization`
+docstring's cut-only-invariant phrase, the emitter's "non-positive `gain`"
+clause, and the emitter's stage NAME — "the per-driver cut-only EQ/shelf
+stage" — which is the same staleness class, a name asserting cut-only while
+a 12 dB boost cap exists.
 
-**7. Collapse the driver low-limit to one declared owner (#2603).** Ruled
+And the caveat earned its keep a second time: a mechanical re-run after those
+four returned **six more**, none of them on the hand list. Also trued up —
+`linearization_fit.py`'s module docstring and `fit_driver_linearization`'s own
+first line (both said "cut-only" while the same docstrings described the boost
+vocabulary below); this file's live-spine sibling
+[`HANDOFF-crossover-measurement-v2.md`](HANDOFF-crossover-measurement-v2.md)
+invariant 11, which claimed the emitter re-proves a *non-positive gain* when it
+re-proves the cap; the duplicated cut-only justification in
+`deploy/assets/correction/js/crossover/{chart,cloud}.js` (the per-curve
+reference rule there never depended on the sign, so only the premise moved);
+and a dated superseded note on
+[`flat-linearization-plan.md`](flat-linearization-plan.md)'s S3 paragraph,
+which still asks for the owner amendment that was granted 2026-07-27.
+
+**7. Collapse the driver low-limit to one declared owner (#2603).**
+[Code path delivered in this PR; jts3's own stored value has not been
+re-entered — that is owner/operator work, still outstanding.] Ruled
 2026-08-17 after the series-1 convergence run: a driver's bottom allowed
 frequency *is* the manufacturer's minimum recommended crossover frequency
 with its slope condition, entered once at component entry, and every
@@ -215,8 +233,9 @@ and it is owned by
 ("The region-based adjustment contract", decisions 10–12) — this roadmap
 carries only its position in the order: upstream truth (item 7) → the
 contract → a hardware series that proves the dip moves → then the
-capture-source seam (#2662), pulled forward if lateral aborts recur during
-the series. Series 1 is why: four rounds converged a trim prescription
+capture-source seam (#2662), whose "pull forward if lateral aborts recur
+during the series" trigger can no longer fire: the lateral walk was paused on
+2026-08-18, so the series runs no lateral captures to abort. Series 1 is why: four rounds converged a trim prescription
 against a crossover-region dip that a scalar trim cannot address.
 
 ---

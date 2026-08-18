@@ -59,6 +59,7 @@ __all__ = [
     "ADOPTION_ROW_KEEP",
     "ADOPTION_ROW_KEEP_FOR_ITERATION",
     "ADOPTION_ROW_KEEP_ITERATING",
+    "ADOPTION_ROW_KEEP_MISSED_EXHAUSTED",
     "ADOPTION_ROW_RESTORE_FAILED",
     "ADOPTION_ROW_RESTORE_REGRESSION",
     "ADOPTION_ROW_RESTORE_UNSAFE",
@@ -88,7 +89,15 @@ __all__ = [
     "detached_json",
 ]
 
-SCHEMA_VERSION = 1
+#: Bumped to 2 by decision 10 (#2600), which added the ``blend`` key to
+#: ``RoundReceipt.round_measurements``. The bump is what the receipt key-set
+#: guard's own remedy asks for: the version sat at 1 through three field
+#: additions in one week, so a reader could not tell two shapes apart by it,
+#: and the guard exists so that stops being true silently. A reader that
+#: branches on this should treat 1 as "no blend record, ever" rather than as
+#: "the blend record is absent for this round" — the two are different facts
+#: and only the version can separate them.
+SCHEMA_VERSION = 2
 
 
 class CrossoverV2ContractError(ValueError):
@@ -1001,8 +1010,9 @@ class AdoptionDecision:
     ``row`` is the decision table's own stable identifier (#2537) — one of
     :data:`ADOPTION_ROWS`.  It exists because ``outcome`` and ``reason``
     together still cannot say *which rule fired*: two rows can share an
-    outcome (three of the six restore, three keep) and a reason travels from
-    whichever
+    outcome (three of the seven restore, and the four that keep the graph split
+    two-and-two between ``keep`` and ``keep_for_iteration``) and a reason
+    travels from whichever
     axis decided, so a driver chaining rounds mechanically would have to
     re-derive the rule from the reason string.  The row is the thing that does
     not move when a reason's wording does.
@@ -1051,19 +1061,20 @@ class AdoptionDecision:
         }
 
 
-#: The adoption table's six rows, as stable identifiers (#2537, #2602).
+#: The adoption table's seven rows, as stable identifiers (#2537, #2602, #2656).
 #:
 #: Numbered after the owner's own ruling, which named four; row 5 is the fifth
 #: the ruling's principle *requires* and did not enumerate — see
 #: :class:`QualityStatus.REGRESSED` for why a measured regression is not a
-#: "keep for iteration".  Row 6 is #2602's, and it is the rule working exactly
+#: "keep for iteration".  Rows 6 and 7 are the rule working exactly
 #: as written below: a future row APPENDS, it never renumbers, so splitting the
-#: passing cell left row 1 meaning what it always meant.  The numbers are part
+#: passing cell left row 1 meaning what it always meant, and splitting the
+#: missing one left row 2 meaning what it always meant.  The numbers are part
 #: of the identifier so a reader can line a receipt up against the table
 #: without a lookup.
 #:
-#: Seven identifiers for six rows: :data:`ADOPTION_ROW_RESTORE_FAILED` is row 0
-#: and sits OUTSIDE the table, for the reason its own comment gives.
+#: Eight identifiers for seven rows: :data:`ADOPTION_ROW_RESTORE_FAILED` is row
+#: 0 and sits OUTSIDE the table, for the reason its own comment gives.
 ADOPTION_ROW_KEEP = "row1_trusted_safe_passed"
 ADOPTION_ROW_KEEP_FOR_ITERATION = "row2_trusted_safe_missed"
 ADOPTION_ROW_RESTORE_UNSAFE = "row3_unsafe"
@@ -1076,6 +1087,18 @@ ADOPTION_ROW_RESTORE_REGRESSION = "row5_trusted_safe_regressed"
 #: the two now differ in the only way that matters to a household, which is
 #: whether another round is coming.
 ADOPTION_ROW_KEEP_ITERATING = "row6_trusted_safe_passed_reachable"
+#: #2656's row, and the mirror of row 6: a round that MISSED on quality, on a
+#: series whose round budget is spent. Row 2 means "missed, and another round
+#: is coming"; this means "missed, and that was the last one". They differ in
+#: the only way that matters to a household, which is the same way rows 1 and 6
+#: differ — whether another round is coming.
+#:
+#: NOT folded into :data:`ADOPTION_ROW_KEEP`, whose identifier says *passed*
+#: and this round did not. The OUTCOME is the same ``keep`` — the measured
+#: graph stays live, exactly as it does on row 2, because it is still the
+#: best measured state known — and this row is what stops that keep from
+#: reading as a pass on a receipt, a journal line, or a screen.
+ADOPTION_ROW_KEEP_MISSED_EXHAUSTED = "row7_trusted_safe_missed_exhausted"
 #: Outside the table: a restore was attempted and did not complete, which no
 #: row describes because it is not a decision about the evidence at all.
 ADOPTION_ROW_RESTORE_FAILED = "row0_restore_failed"
@@ -1087,6 +1110,7 @@ ADOPTION_ROWS: frozenset[str] = frozenset({
     ADOPTION_ROW_RESTORE_UNTRUSTED,
     ADOPTION_ROW_RESTORE_REGRESSION,
     ADOPTION_ROW_KEEP_ITERATING,
+    ADOPTION_ROW_KEEP_MISSED_EXHAUSTED,
     ADOPTION_ROW_RESTORE_FAILED,
 })
 

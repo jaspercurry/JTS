@@ -16,6 +16,8 @@ from jasper.music_sources import Source
 from jasper import source_events
 from jasper.source_events import classify_source_signal, inotify_changed_names
 
+from ._async_wait import wait_signalled
+
 
 def test_airplay_signal_is_only_a_wake_hint_for_relevant_properties():
     assert classify_source_signal(
@@ -82,7 +84,9 @@ async def test_spotify_adapter_retries_until_state_directory_returns(
         lambda source, via: notifications.append((source, via)),
     ))
     try:
-        await asyncio.wait_for(recovered.wait(), timeout=0.2)
+        await wait_signalled(
+            recovered, "recovery after state directory returns", producer=task,
+        )
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -157,7 +161,7 @@ async def test_dbus_adapter_reconnects_and_delivers_signal(monkeypatch):
         lambda source, via: notifications.append((source, via)),
     ))
     try:
-        await asyncio.wait_for(recovered.wait(), timeout=0.2)
+        await wait_signalled(recovered, "recovery after dbus reconnect", producer=task)
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)

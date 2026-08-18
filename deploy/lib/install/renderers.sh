@@ -187,14 +187,11 @@ install_renderers() {
     rm -f /usr/local/sbin/jasper-audio-topology
     rm -rf /etc/jasper/audio-topology
     rm -f /usr/local/sbin/jasper-derive-device-name
-    # Default to synced: with shairport-sync.conf.template setting
-    # resync_threshold_in_seconds=0.2, synced mode is glitch-free on
-    # this chain (empirically verified over multiple 5-min samples
-    # after the fix; see docs/HANDOFF-airplay.md). Synced is the
-    # right default because it gives users video A/V sync + multi-room
-    # AirPlay sync for free. Users can still flip to free-running via
-    # /airplay/ if they hit DAC-specific issues. Existing env files
-    # are preserved across reinstalls.
+    # Default to synced. The shipped template owns the sync values;
+    # docs/HANDOFF-airplay.md owns their ring evidence and remaining gaps.
+    # Synced preserves video A/V and multi-room AirPlay timing. Users can
+    # still flip to free-running via /airplay/. Existing env files are
+    # preserved across reinstalls.
     if [[ ! -e /var/lib/jasper/airplay_mode.env ]]; then
         ensure_state_dir
         printf 'JASPER_AIRPLAY_FREE_RUNNING=no\n' \

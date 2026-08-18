@@ -152,6 +152,16 @@ def test_shairport_template_keeps_renderer_placeholder():
     assert "output_rate = 44100" in conf
 
 
+def test_shairport_template_ships_two_ms_drift_tolerance():
+    conf = (REPO / "deploy" / "shairport-sync.conf.template").read_text()
+    assignments = re.findall(
+        r"^\s*drift_tolerance_in_seconds\s*=\s*([0-9]+(?:\.[0-9]+)?);\s*$",
+        conf,
+        re.MULTILINE,
+    )
+    assert assignments == ["0.002"]
+
+
 def test_install_writes_fanin_asound_conf_and_ships_no_switcher():
     install = installer_text()
     assert "jasper_asound_render_template" in install

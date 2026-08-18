@@ -126,11 +126,13 @@ DOCS_ROUTING_MAP = "docs/doc-map.toml"
 #   - Generic directory sweeps.  tests/test_env_vars_codified.py walks
 #     `path.rglob("*")`, so no statically visible pattern names a document.
 #   - Child-process reads.  tests/test_script_help_excludes_spdx.py runs
-#     `bash scripts/doc-freshness.sh 90 --all`, which enumerates every doc in
-#     a subprocess -- opens a Python audit hook can never observe.
+#     `bash scripts/doc-freshness.sh 90 --all`, which enumerates the doc tree
+#     in a subprocess -- opens a Python audit hook can never observe.
 #     doc-freshness.sh is the ONLY script under scripts/, deploy/, or .github/
-#     that enumerates `*.md`, and this is its only test-side caller, so
-#     registering it closes this class completely.
+#     that enumerates `*.md`, and this is its only test-side caller, so that
+#     one entry closes this class completely.  It no longer needs a HAND
+#     registration: since #2064 its archival-prune guards glob `docs/**/*.md`
+#     themselves, so static discovery finds the file on its own.
 #
 # Deliberately NOT registered despite opening a .md during the audit:
 # tests/test_shell_awk_environ_convention.py shebang-probes every file under
@@ -166,13 +168,6 @@ DOCS_HAND_REGISTERED_READERS = {
     # above.  Kept because over-registering is safe; on the reach argument alone
     # this entry could now be dropped from both registries together.
     "tests/test_env_vars_codified.py": "rglob('*') over non-docs surfaces",
-    # Child-process reads, which a Python audit hook can never observe.
-    # doc-freshness.sh is the ONLY script under scripts/, deploy/ or .github/
-    # that enumerates `*.md`, and this is its only test-side invoker, so
-    # registering it closes this class completely.
-    "tests/test_script_help_excludes_spdx.py": (
-        "shells out to doc-freshness.sh, which enumerates every doc"
-    ),
     # Incidental, not a contract: scripts/_run_wake_training_phase0.py records
     # `artifacts["readme"] = "README.md"` as a bare relative name and hashes it
     # via `Path(value)`, which resolves against CWD -- so under pytest it

@@ -35,14 +35,18 @@ just the start.* So the four verdicts now compose into **four adoption axes**
 — :func:`evaluate_evidence_trust`, :func:`evaluate_applied_safety`,
 :func:`evaluate_round_quality`, and (since #2602)
 :func:`evaluate_iteration_headroom` — and :func:`decide_adoption` selects one of
-six rows from those. Keeping an imperfect measured result and handing its
+seven rows from those. Keeping an imperfect measured result and handing its
 misses forward is a first-class outcome
 (:attr:`~.contracts.AdoptionOutcome.KEEP_FOR_ITERATION`); the hard stops are
 reserved for the safety class and for evidence that does not exist.
 
-#2602's axis is the newest and the narrowest: it decides only whether a round
-that PASSED ends the series or runs another, so it can keep a graph on and it
-can never take one off — *in-tolerance is not done*.
+#2602's axis is the newest and the narrowest: it decides whether a round that
+PASSED ends the series or runs another, and — since #2656 — whether a round
+that MISSED has a round left to run at all. That second question is the ONE
+fact that crosses to the missing cell, and it crosses as the axis's banked
+:data:`HEADROOM_CAP_REACHED` reason rather than as its status, so the plateau
+stops still cannot reach that cell. Either way the axis can keep a graph on
+and it can never take one off — *in-tolerance is not done*.
 
 **This module invents no DSP and owns no threshold.** Every number it
 reports is lifted from a shipped primitive:
@@ -120,6 +124,7 @@ from .contracts import (
     ADOPTION_ROW_KEEP,
     ADOPTION_ROW_KEEP_FOR_ITERATION,
     ADOPTION_ROW_KEEP_ITERATING,
+    ADOPTION_ROW_KEEP_MISSED_EXHAUSTED,
     ADOPTION_ROW_RESTORE_FAILED,
     ADOPTION_ROW_RESTORE_REGRESSION,
     ADOPTION_ROW_RESTORE_UNSAFE,
@@ -196,6 +201,8 @@ __all__ = [
     "SAFETY_BOOST_OVER_DECLARED_BOUND",
     "SAFETY_CLIPPED_CAPTURE",
     "SAFETY_NO_FINDING",
+    "SAFETY_NO_FINDING_UNMEASURED",
+    "identity_mismatch",
     "SAFETY_UNCOMMANDED_LEVEL_LOUDER",
     "SPEC_BAND_OUT_OF_TOLERANCE",
     "SPEC_IN_TOLERANCE",
@@ -576,6 +583,39 @@ def evaluate_benefit(
     return Verdict(BenefitStatus.INDETERMINATE, BENEFIT_WITHIN_MARGIN, evidence)
 
 
+def identity_mismatch(
+    *,
+    program_id: str,
+    reference_mark: str,
+    other_program_id: str,
+    other_reference_mark: str,
+) -> str | None:
+    """Are two captures the same PROGRAM at the same MARK? (series-2 D1)
+
+    The identity half of :func:`_comparability_mismatch`, extracted because it
+    grew a second caller and a second caller is how one rule becomes two. The
+    delta probe asks it of its pre-apply anchor, which since D1 is the
+    subtrahend under a hearing-safety hard stop: a curve from another program or
+    another mic position subtracts a different room from this one, bin by bin,
+    and cancels a real finding as readily as a phantom.
+
+    Public because that caller is in another module. Ordered most-identifying
+    first, so the reason names the root difference — the same order and the same
+    two constants the benefit axis reports, never a parallel spelling.
+
+    The GRID and the MASK are deliberately not here: they are comparability
+    questions too, and they are the *arithmetic's* to answer, which each caller
+    does its own way (the benefit axis refuses; the probe interpolates onto its
+    own grid and NaNs the excluded bins).
+    """
+
+    if program_id != other_program_id:
+        return BENEFIT_PROGRAM_MISMATCH
+    if reference_mark != other_reference_mark:
+        return BENEFIT_MARK_MISMATCH
+    return None
+
+
 def _comparability_mismatch(
     baseline: MeasurementComparand, post: MeasurementComparand
 ) -> str | None:
@@ -585,10 +625,14 @@ def _comparability_mismatch(
     a different program makes the grids differing uninteresting.
     """
 
-    if baseline.program_id != post.program_id:
-        return BENEFIT_PROGRAM_MISMATCH
-    if baseline.reference_mark != post.reference_mark:
-        return BENEFIT_MARK_MISMATCH
+    identity = identity_mismatch(
+        program_id=baseline.program_id,
+        reference_mark=baseline.reference_mark,
+        other_program_id=post.program_id,
+        other_reference_mark=post.reference_mark,
+    )
+    if identity is not None:
+        return identity
     if baseline.curve.hz != post.curve.hz:
         return BENEFIT_GRID_MISMATCH
     if baseline.exclusion_mask != post.exclusion_mask:
@@ -620,6 +664,92 @@ def _pooled_residual(
     if not residual.evaluable or residual.rms_db is None:
         return None
     return float(residual.rms_db), int(residual.n_bins)
+
+
+#: The region benefit claim had no crossover region to grade over — the VERIFY
+#: absolute claim was not evaluated, so there is no band. Distinct from
+#: :data:`BENEFIT_RESIDUAL_UNEVALUABLE`, which means there WAS a band and the
+#: curve could not be graded over it.
+BENEFIT_NO_REGION_BAND = "no_region_band"
+
+
+def evaluate_region_benefit(
+    *,
+    entry_baseline: MeasurementComparand | None,
+    post: MeasurementComparand | None,
+    band_hz: tuple[float, float] | None,
+    margin_db: float,
+) -> Verdict[BenefitStatus]:
+    """The benefit claim again, restricted to the crossover blend region.
+
+    **Why this exists.** :func:`evaluate_benefit` pools its residual across all
+    three ``SPEC_BANDS`` — 250 Hz to 16 kHz. A win confined to a two-octave
+    blend region is diluted across that whole span and lands inside the margin,
+    so a correction that worked reads as ``residual_within_margin``. That is
+    not a broken axis; it is a correct verdict about the wrong question. This
+    asks the narrow one.
+
+    **A second reported claim, never a second gate.** The pooled verdict stays
+    the adoption input. Decision 10 changes the owner and the allowed tool in
+    this region; it does not add a safety class or a new hard stop, and making
+    a localized claim gate a round would be exactly that. Disclose and
+    recommend.
+
+    **Everything except the band is unchanged**, deliberately: the same
+    estimator, the same curves, the same comparability rules, and the SAME
+    0.5 dB margin. The margin is this model's own measured tracking error on
+    jts3 — claiming an improvement smaller than the gap between what is
+    modelled and what the hardware realizes is claiming something the
+    instrument cannot resolve, and narrowing the band does not sharpen the
+    instrument.
+
+    **One consequence, stated rather than discovered.** Narrowing the mask
+    re-routes ``evaluate_flat_spec``'s own centering: its reference level comes
+    from ``REFERENCE_BAND_HZ`` intersected with what survives, so a
+    region-masked evaluation is referenced to the REGION's surviving bins
+    rather than to 250 Hz–8 kHz. For a SHAPE claim about a region that is the
+    right frame — it matches the VERIFY absolute claim's own mean-removal, and
+    it makes the verdict blind to a level change, which is the trim's fact and
+    not this one's. It is also why the blend SOLVER does not use this framing:
+    a filter derived against a region-local mean would cut the shoulders of a
+    region that is merely quiet, trading a narrow dip for a wide one. Grading
+    a shape and prescribing a cut are different questions with different right
+    references; see
+    :func:`~.blend_correction.solve_blend_correction` for the other half.
+
+    The exclusion narrowing is applied to BOTH sides identically, so
+    :func:`_comparability_mismatch`'s "identical exclusion masks" guarantee is
+    preserved rather than forfeited.
+    """
+
+    if band_hz is None:
+        return Verdict(BenefitStatus.INDETERMINATE, BENEFIT_NO_REGION_BAND, {})
+    lo, hi = float(band_hz[0]), float(band_hz[1])
+    return evaluate_benefit(
+        entry_baseline=_region_masked(entry_baseline, lo, hi),
+        post=_region_masked(post, lo, hi),
+        margin_db=margin_db,
+    )
+
+
+def _region_masked(
+    comparand: MeasurementComparand | None, lo_hz: float, hi_hz: float,
+) -> MeasurementComparand | None:
+    """``comparand`` with every bin outside ``[lo_hz, hi_hz]`` also excluded."""
+
+    if comparand is None:
+        return None
+    return MeasurementComparand(
+        program_id=comparand.program_id,
+        reference_mark=comparand.reference_mark,
+        curve=comparand.curve,
+        exclusion_mask=[
+            bool(excluded or hz < lo_hz or hz > hi_hz)
+            for excluded, hz in zip(
+                comparand.exclusion_mask, comparand.curve.hz, strict=True,
+            )
+        ],
+    )
 
 
 # --------------------------------------------------------------------------
@@ -779,17 +909,49 @@ def evaluate_evidence_trust(
 # 6. safety — the only axis that pulls a measured graph off
 # --------------------------------------------------------------------------
 
-#: A commanded boost realized MORE lift than it declared
+#: A boost measured MORE lift across the apply than the graph declared
 #: (:func:`~jasper.active_speaker.delta_probe.boost_overshoot`).
-SAFETY_BOOST_OVER_DECLARED_BOUND = "boost_realized_above_declared_bound"
+#:
+#: **The bound this names is the probe's own per-bin measurement tolerance**
+#: (:data:`~jasper.active_speaker.delta_probe.DELTA_PROBE_TOLERANCE_LOW_DB`),
+#: not a declared boost limit — which is what the pre-series-2 spelling,
+#: ``boost_realized_above_declared_bound``, said. On a hearing-safety surface a
+#: reason string that names the wrong quantity has a measurable cost: it sent
+#: the first reading of the 2026-08-17 incident looking for a headroom
+#: accounting error, in a round whose headroom accounting was correct to
+#: 0.04 dB. Receipts banked before this change carry the old string; they were
+#: also reporting a different quantity (see
+#: :attr:`~jasper.active_speaker.delta_probe.DeltaProbeMap.boost_overshoot_db`),
+#: so the two spellings marking two instruments is the honest outcome.
+SAFETY_BOOST_OVER_DECLARED_BOUND = "boost_realized_above_probe_tolerance"
 #: The speaker measured LOUDER than declared where nothing was commanded.
 SAFETY_UNCOMMANDED_LEVEL_LOUDER = "uncommanded_level_shift_louder"
 #: A stimulus segment carried a full-scale run.
 SAFETY_CLIPPED_CAPTURE = "clipped_capture"
-#: Nothing in the evidence available says this state is unsafe. **Not the same
-#: claim as "this state is safe"** — see :func:`evaluate_applied_safety`, whose
-#: evidence mapping reports which instruments actually looked.
+#: Nothing in the evidence available says this state is unsafe, **and the
+#: realized-energy check was one of the instruments that looked.**
 SAFETY_NO_FINDING = "no_unsafe_finding"
+#: Nothing says this state is unsafe, and the realized-energy check **did not
+#: run** — there was no pre-apply capture to difference this one against, so
+#: the only instrument that can see energy in a driver the graph did not
+#: declare was not able to look (series-2 D1 fix round).
+#:
+#: **Why this is a separate reason and not a footnote in the evidence.** The
+#: axis had one SAFE reason, and "we checked and found nothing" and "we could
+#: not check" collapsed into it. That is the same dishonesty D1 is about —
+#: an instrument's name over a quantity it did not measure — one layer up, and
+#: it is not rare: a first-ever round reaches it BY CONSTRUCTION (no prior
+#: applied profile ⇒ no nameable previous graph ⇒ ``state_axis_only``), as does
+#: every committed alternative-Fc round and every capture whose quiet bins are
+#: too few to anchor. This is :class:`~.contracts.BenefitStatus.INDETERMINATE`'s
+#: argument on this axis (#1868: *"we do not know" must have somewhere to live*
+#: rather than defaulting to the success value).
+#:
+#: The STATUS stays :attr:`~.contracts.SafetyStatus.SAFE` and the adoption row
+#: is unchanged, deliberately: refusing on an absent measurement would revert
+#: every first-ever round, which is the one thing this module declines to do
+#: everywhere else. What changes is what the receipt and the journal SAY.
+SAFETY_NO_FINDING_UNMEASURED = "no_unsafe_finding_realized_energy_unmeasured"
 
 #: The integrity check name a clipped stimulus segment fails. The literal is
 #: :data:`jasper.audio_measurement.program_analysis.INTEGRITY_CHECK_CLIPPED_RUN`,
@@ -810,13 +972,49 @@ def evaluate_applied_safety(
     graph off for something other than the absence of evidence. Three findings,
     each read from a shipped instrument and none of them re-derived here:
 
-    * a commanded **boost realized above its declared bound**
+    * a **boost realized above the probe's tolerance**
       (:attr:`~jasper.active_speaker.delta_probe.DeltaProbeMap.boost_over_declared_bound`)
       — energy in a driver the graph did not declare;
     * an uncommanded level shift measured **LOUDER** than declared
       (:data:`~jasper.active_speaker.delta_probe.VERDICT_LEVEL_MISMATCH` with a
       positive residual past its own tolerance);
     * a **clipped** stimulus segment in the post-apply capture.
+
+    **All three are measurements of the SPEAKER, and the first one had to be
+    repaired to become one** (series-2 D1). Until then it read
+    ``realized − commanded``, in which the commanded term cancels identically,
+    so it graded how far the room departed from our two-branch model — an
+    electrical-domain claim taken off a mic-domain quantity. On 2026-08-17 that
+    took the flattest tune this program has measured off a speaker, for a
+    +3.9 dB model error at 1384 Hz that both rounds shared, in a band the
+    applied graph declares a 3.67 dB CUT in, on a round whose probe verdict was
+    ``matched`` and which measured 2.42 dB QUIETER. The finding is now the
+    anchored excess — measured post minus measured pre, with the apply's own
+    commanded change and declared level move removed — so a standing model error
+    cancels and delivered energy does not. The model's departure still travels
+    in ``evidence``, as the next-round target it is.
+
+    **The FIRST finding cannot be measured without a pre-apply capture, and the
+    axis says so rather than passing.** ``safety_anchored`` in ``evidence`` is
+    the probe's own answer to "did that half run at all", and it is False on an
+    unanchored map and on the ``safety_only`` path. Refusing on the unanchored
+    quantity instead is the defect above; refusing on absence is the thing this
+    module already declines to do everywhere else (see the ``probe_graded`` note
+    below).
+
+    What still holds with no anchor, measured rather than assumed: the **level**
+    rule does — ``residual_offset_db`` is gated on having quiet bins, not on
+    having an anchor, so an ordinary unanchored round measured +6 dB whole-band
+    still reaches :data:`SAFETY_UNCOMMANDED_LEVEL_LOUDER` (it reports the
+    absolute quiet-bin disagreement rather than a change, which is the pre-#2533
+    reading of that number). The **clipped** check needs no probe at all. Only
+    on the ``safety_only`` path does the level rule also fall away, because
+    there ``residual_offset_db`` is ``None`` by construction — that path grades
+    the model's departure and nothing else. Underneath all three sits the
+    electrical bound the graph carries whatever any of them say: a deterministic
+    biquad chain whose peak cost is computed and pre-paid
+    (``linearization_fit.worst_headroom_cost_db``) under the project's
+    ``devices.volume_limit = 0.0`` ceiling.
 
     **Direction is the discriminator, and it is load-bearing.** The same
     magnitude of uncommanded level shift is a hard stop in one direction and a
@@ -900,6 +1098,18 @@ def evaluate_applied_safety(
             if isinstance(residual_tolerance, (int, float))
             and not isinstance(residual_tolerance, bool) else None
         ),
+        # Did the hearing half run at all (series-2 D1)? ``probe_graded`` and
+        # ``probe_shape_graded`` above answer the same question for the shape
+        # half, and this is the third of the set: the two directional findings
+        # below are measurements of the speaker only when a pre-apply capture
+        # anchored them, and ``False`` here means they are absences rather than
+        # passes. Read off the probe, never inferred from the findings being
+        # False — those are also False on a round that measured and found
+        # nothing, which is the opposite claim.
+        "safety_anchored": (
+            bool(getattr(probe, "safety_anchored", False))
+            if probe is not None else False
+        ),
         "boost_over_declared_bound": boost_over_bound,
         "boost_overshoot_db": (
             getattr(probe, "boost_overshoot_db", None) if probe is not None else None
@@ -913,6 +1123,15 @@ def evaluate_applied_safety(
         # preempt; a reader must be able to tell that from a restore.
         "realized_louder_than_commanded": (
             bool(getattr(probe, "realized_louder_than_commanded", False))
+            if probe is not None else False
+        ),
+        # The MODEL's own upward departure, which is a different instrument on a
+        # different reference and belongs to the next round rather than to this
+        # decision (series-2 D1). It rides here because this is the block the
+        # round receipt renders and because a reader comparing receipts across
+        # D1 needs it: it is the quantity the key above used to carry.
+        "model_departure_over_tolerance": (
+            bool(getattr(probe, "model_departure_over_tolerance", False))
             if probe is not None else False
         ),
         "max_signed_error_db": (
@@ -938,7 +1157,16 @@ def evaluate_applied_safety(
         )
     if clipped:
         return Verdict(SafetyStatus.UNSAFE, SAFETY_CLIPPED_CAPTURE, evidence)
-    return Verdict(SafetyStatus.SAFE, SAFETY_NO_FINDING, evidence)
+    # Nothing found — and the reason says whether the instrument that finds it
+    # was able to look. See :data:`SAFETY_NO_FINDING_UNMEASURED` for why that is
+    # a reason of its own rather than an evidence key nobody reads, and why the
+    # status is unchanged.
+    return Verdict(
+        SafetyStatus.SAFE,
+        SAFETY_NO_FINDING if evidence["safety_anchored"]
+        else SAFETY_NO_FINDING_UNMEASURED,
+        evidence,
+    )
 
 
 # --------------------------------------------------------------------------
@@ -1047,9 +1275,10 @@ def evaluate_round_quality(
     a ``user_decision`` nobody rendered), not what decides it.
 
     **The TARGETS are disclosure, and they are a strictly separate question.**
-    Spec verdicts, each failing spec band, and the delta probe's own reason ride
-    in ``evidence`` for the next round to chase. **None of them moves the
-    status**, and for two independent reasons that must both be stated:
+    Spec verdicts, each failing spec band, the delta probe's own reason, and the
+    room's upward departure from the two-branch model ride in ``evidence`` for
+    the next round to chase. **None of them moves the status**, and for two
+    independent reasons that must both be stated:
 
     * *Spec is an outcome, not a proxy for benefit.* Every row of #2291's table
       reads "any" for spec, because "improved and still out of spec" is an
@@ -1094,6 +1323,13 @@ def evaluate_round_quality(
     :func:`~jasper.active_speaker.crossover_v2.coordinator.run_round` banks the
     round either way.
 
+    **Where the per-bin model departure landed** (series-2 D1). It arrives here
+    as a TARGET and nothing else — see :func:`_model_departure_target` for the
+    hard stop it used to be, and why an instrument measuring our own prediction
+    error belongs on the axis that says what to fix next rather than on the one
+    that takes a graph off a speaker. It moves no status, exactly like every
+    other target above.
+
     **The restore SET is unchanged by that move, deliberately.** The same three
     verdicts restore, the #2559 deferral still spares the quieter-only
     ``model_error``, and no class that used to restore now keeps. Narrowing the
@@ -1117,6 +1353,7 @@ def evaluate_round_quality(
         targets.append(
             f"delta_probe:{str(getattr(probe, 'reason', '') or probe_verdict)}"
         )
+    targets.extend(_model_departure_target(probe))
     probe_rollback = _probe_rollback_class(probe, probe_verdict)
     if probe_rollback:
         quality = QualityStatus.REGRESSED
@@ -1130,6 +1367,55 @@ def evaluate_round_quality(
         # and a reader needs the class behind it.
         "probe_rollback_class": probe_rollback,
     })
+
+
+#: The next-round target the room's upward departure from the two-branch model
+#: lands on (series-2 D1). ``<prefix>:<amount>dB@<hz>`` for
+#: :func:`_failing_spec_bands`' reason — a target is what the NEXT round reads,
+#: and "the model under-predicted by 3.9 dB near 1384 Hz" is an instruction
+#: where a bare label is a mood.
+QUALITY_MODEL_DEPARTURE = "model_departure"
+
+
+def _model_departure_target(probe: Any | None) -> list[str]:
+    """The model's upward departure as a next-round target, or nothing.
+
+    **Where the per-bin positive excursion went** (series-2 D1). It used to be a
+    hearing-safety hard stop reading ``realized − commanded``, in which the
+    commanded term cancels — so it graded our own acoustic model's error and,
+    on 2026-08-17, restored the flattest tune the program had measured over a
+    +3.9 dB model error that both rounds of that series shared. The measurement
+    is real and worth chasing; what it is evidence OF is a model, and a model
+    defect is what the next round is for.
+
+    Reported for BOTH references' worth of honesty: the amount is the unanchored
+    ``max_signed_error_db``, and whether it cleared tolerance is the probe's own
+    answer against its own per-bin tolerance curve — which is why that boolean
+    is read rather than a threshold being re-derived here against a scalar. This
+    module owns no tolerance of its own and does not gain one for a target.
+
+    **The frequency is ``max_signed_error_hz``, never ``worst_hz``.** They are
+    two reductions over two bin sets — worst ABSOLUTE error over the graded
+    bins, worst POSITIVE departure over the safety bins — and they sit 563 Hz
+    apart on the banked series-2 r1b. A target quoting one bin's dB at another
+    bin's frequency sends the next round after the wrong feature, which is worse
+    than a target with no frequency in it.
+
+    Nothing for an absent probe, an unmeasured departure, or one inside
+    tolerance. A target list is what the household surface and the next round
+    read, so a line that fires on every round is a line nobody reads.
+    """
+
+    if probe is None:
+        return []
+    if not bool(getattr(probe, "model_departure_over_tolerance", False)):
+        return []
+    amount = _finite_or_none(getattr(probe, "max_signed_error_db", None))
+    if amount is None:
+        return []
+    where = _finite_or_none(getattr(probe, "max_signed_error_hz", None))
+    at = "" if where is None else f"@{where:.0f}Hz"
+    return [f"{QUALITY_MODEL_DEPARTURE}:{amount:.2f}dB{at}"]
 
 
 def _probe_rollback_class(probe: Any | None, verdict: str) -> str:
@@ -1443,8 +1729,8 @@ def evaluate_iteration_headroom(
         # BESIDE them so the next round can check the frame rather than assume
         # it. ``movement_comparable`` is the answer this round reached about
         # the pair, recorded rather than left to be re-derived from them.
-        "trusted_floor_hz": _optional_floor(trusted_floor_hz),
-        "previous_trusted_floor_hz": _optional_floor(previous_trusted_floor_hz),
+        "trusted_floor_hz": _finite_or_none(trusted_floor_hz),
+        "previous_trusted_floor_hz": _finite_or_none(previous_trusted_floor_hz),
         "movement_comparable": movement_comparable,
     }
 
@@ -1465,12 +1751,22 @@ def evaluate_iteration_headroom(
     return Verdict(IterationHeadroom.REACHABLE, HEADROOM_REACHABLE, evidence)
 
 
-def _optional_floor(value: float | None) -> float | None:
-    """A finite floor, or ``None`` — the same unknown-vs-zero rule as elsewhere.
+def _finite_or_none(value: float | None) -> float | None:
+    """A finite number, or ``None`` — the same unknown-vs-zero rule as elsewhere.
 
-    A non-finite floor is an unreadable one: banking a NaN would give the next
-    round a number that compares false against everything, which is a silent
-    permanent refusal rather than an honest absence.
+    Worked example, and the reason it exists: a non-finite trusted floor is an
+    unreadable one, and banking a NaN would give the next round a number that
+    compares false against everything — a silent permanent refusal rather than
+    an honest absence. The same holds for every optional number this module
+    lifts off an evidence object, which is why it is not named for the floor.
+
+    Named for what it RETURNS, matching
+    :mod:`jasper.attribution.position_evidence`'s helper of the same name and
+    the same shape. The ``_finite_number`` spelling is taken by five private
+    helpers, three of which raise on a bad value
+    (``(value, *, field) -> float``). Private names cannot collide; this is
+    about which one a reader has already learned, and a reader who knows those
+    would read this call site backwards.
     """
 
     if value is None or isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -1520,9 +1816,11 @@ _QUALITY_ROWS: Mapping[QualityStatus, tuple[AdoptionOutcome, str]] = {
 #:
 #: The cell above resolves to ``KEEP`` — which used to be the end of the story
 #: — and this decides whether that keep is TERMINAL. Only the passing cell
-#: consults it: a MISSED round already iterates whatever the headroom says (it
-#: has outstanding targets by construction), and a REGRESSED one restores
-#: before this table is ever reached.
+#: consults the STATUS: a MISSED round keeps iterating however flat the axis
+#: says the result is (it has outstanding targets by construction), and a
+#: REGRESSED one restores before this table is ever reached. The one fact that
+#: crosses to the missing cell is the spent BUDGET, and it crosses as the
+#: axis's reason rather than as its status — see :func:`decide_adoption`.
 #:
 #: A second MAPPING for the same reason the first one is one: a lookup with no
 #: default means a third :class:`~.contracts.IterationHeadroom` member raises
@@ -1582,16 +1880,37 @@ def decide_adoption(
     :data:`~.contracts.ADOPTION_ROW_KEEP_ITERATING` is the same passing round
     with a flatter result still in reach.
 
-    **Nothing else moved.** The split is confined to the one cell
+    **Nothing else moved with #2602.** Its split is confined to the one cell
     (:data:`_PASSED_ROWS`) that used to be unconditionally terminal, and every
     other stop the table had is still exactly where it was: a measured
-    regression restores, an unmeasured state restores, a hazard restores, a
-    failed restore escalates, and a MISSED round keeps-for-iteration
-    regardless of headroom. In particular **headroom can never keep a graph
+    regression restores, an unmeasured state restores, a hazard restores, and
+    a failed restore escalates. In particular **headroom can never keep a graph
     the other axes said to take off** — it is read after all three of them,
     and only on the branch they all passed.
 
-    The six rows, by their :data:`~.contracts.ADOPTION_ROWS` identifiers:
+    **What #2656 MODIFIES, and why.** One fact now crosses to the MISSED cell:
+    the spent round budget. The ethos names three series-enders — *only the
+    round budget, the plateau, and the safety class end a series*
+    (``docs/audio-commissioning-roadmap.md``) — with no row exception, and
+    until this the budget had one. A MISSED round never read the fourth axis at
+    all, so a series that kept missing kept being offered another round with no
+    round left to spend: a gate walked 40 consecutive MISSED rounds and every
+    one of them said keep-for-iteration. The bound that existed lived on the
+    done screen's button, which a headless driver never presses.
+
+    **Keyed on the axis's REASON, not its status, and that is the scope.** The
+    budget crosses; the two plateau stops do not. #2537 chose MISSED-iterates
+    deliberately — a missing round has outstanding targets by construction, so
+    "we stopped improving" is not a reason to stop trying — and that choice is
+    untouched below the cap. :data:`HEADROOM_CAP_REACHED` is minted in exactly
+    one place, by the one comparison that owns the budget
+    (:func:`evaluate_iteration_headroom`, which checks it FIRST so the reason
+    names the fact that actually ended the series). Re-deriving
+    ``ordinal >= cap`` here would make this a second enforcer of a rule that
+    has one — the same reason
+    :func:`~.coordinator.series_position_from_state` refuses to clamp.
+
+    The seven rows, by their :data:`~.contracts.ADOPTION_ROWS` identifiers:
 
     ========================================== ============================
     row                                        outcome
@@ -1602,6 +1921,7 @@ def decide_adoption(
     ``row4_untrusted_evidence``                ``RESTORE``
     ``row5_trusted_safe_regressed``            ``RESTORE``
     ``row6_trusted_safe_passed_reachable``     ``KEEP_FOR_ITERATION``
+    ``row7_trusted_safe_missed_exhausted``     ``KEEP``
     ========================================== ============================
 
     Args:
@@ -1669,13 +1989,14 @@ def decide_adoption(
     * **A failed restore outranks everything.** Checked first: the speaker is
       then in neither the entry graph nor the intended one, and no later row
       can describe that better.
-    * **The fourth axis can only ever say "keep going", never "keep".** Both
-      of its answers leave the speaker on the same graph the passing cell
-      already chose; it selects the receipt and the sentence, not the DSP. A
-      headroom evaluator that returned nonsense could make the screen ask for a
-      round nobody needs — it could not leave an unsafe, unmeasured, or
-      regressed graph on a speaker, because all three of those rows return
-      before it is read.
+    * **The fourth axis chooses the sentence, never the graph.** Every one of
+      its answers leaves the speaker on the graph the cell above it already
+      chose — ``KEEP`` and ``KEEP_FOR_ITERATION`` are the same state, differing
+      only in whether another round is coming — so it selects the receipt and
+      the sentence, not the DSP. A headroom evaluator that returned nonsense
+      could ask for a round nobody needs, or end a series a round early; it
+      could not leave an unsafe, unmeasured, or regressed graph on a speaker,
+      because all three of those rows return before it is read.
     """
 
     for name, value, kind in (
@@ -1719,6 +2040,16 @@ def decide_adoption(
         # definition and this branch cannot drift from it.
         outcome, row = _PASSED_ROWS[headroom.status]
         return AdoptionDecision(outcome=outcome, reason=headroom.reason, row=row)
+    if headroom.reason == HEADROOM_CAP_REACHED:
+        # #2656: the budget ends a MISSED series too. Reached only from the
+        # iterating cell — the passing one returned above through
+        # ``_PASSED_ROWS[EXHAUSTED]``, which is the same ending by the same
+        # reason — so this is the missing half of one rule, not a second one.
+        return AdoptionDecision(
+            outcome=AdoptionOutcome.KEEP,
+            reason=headroom.reason,
+            row=ADOPTION_ROW_KEEP_MISSED_EXHAUSTED,
+        )
     return AdoptionDecision(outcome=outcome, reason=quality.reason, row=row)
 
 

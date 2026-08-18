@@ -46,6 +46,7 @@ class _FakeClient:
         self,
         active_raw_value: str | None = None,
         playback_peak_value: list[float | None] | None = None,
+        playback_rms_value: list[float | None] | None = None,
     ) -> None:
         self.volume = _FakeVolume()
         self.config = self
@@ -54,6 +55,7 @@ class _FakeClient:
         self.active_raw_values: list[str] = []
         self.active_raw_value = active_raw_value
         self.playback_peak_value = playback_peak_value
+        self.playback_rms_value = playback_rms_value
         self.queries: list[tuple[str, object]] = []
         self.file_paths: list[str] = []
         self.reload_count = 0
@@ -66,6 +68,9 @@ class _FakeClient:
 
     def playback_peak(self):
         return self.playback_peak_value
+
+    def playback_rms(self):
+        return self.playback_rms_value
 
     def set_file_path(self, path: str) -> None:
         self.file_paths.append(path)
@@ -212,6 +217,37 @@ async def test_get_playback_peak_all_returns_full_channel_list_untruncated():
     cam = _controller(fake)
 
     assert await cam.get_playback_peak_all() == [-3.0, -6.0, -9.0, -12.0]
+
+
+@pytest.mark.asyncio
+async def test_get_playback_rms_all_returns_full_channel_list_untruncated():
+    # Same contract as get_playback_peak_all — and the reason /state can show
+    # all four drivers of an active-crossover box instead of the front pair.
+    fake = _FakeClient(playback_rms_value=[-108.03, -1000.0, -108.03, -1000.0])
+    cam = _controller(fake)
+
+    assert await cam.get_playback_rms_all() == [-108.03, -1000.0, -108.03, -1000.0]
+
+
+@pytest.mark.asyncio
+async def test_get_playback_rms_all_missing_data_returns_empty_list():
+    fake = _FakeClient(playback_rms_value=None)
+    cam = _controller(fake)
+
+    assert await cam.get_playback_rms_all() == []
+
+
+@pytest.mark.asyncio
+async def test_get_playback_rms_all_best_effort_returns_none_when_unavailable():
+    fake = _FakeClient()
+    cam = _controller(fake)
+
+    async def call(fn):
+        raise CamillaUnavailable("offline")
+
+    cam._call = call  # type: ignore[method-assign]
+
+    assert await cam.get_playback_rms_all(best_effort=True) is None
 
 
 @pytest.mark.asyncio
