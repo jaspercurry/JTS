@@ -650,7 +650,7 @@ migrate_grouping() {
     # Mirror jasper.multiroom.config's env keys. Duplicated here because
     # install.sh runs before the venv Python is guaranteed importable.
     local keys=(
-        JASPER_GROUPING_ENABLED
+        JASPER_GROUPING
         JASPER_GROUPING_ROLE
         JASPER_GROUPING_CHANNEL
         JASPER_GROUPING_BOND_ID
