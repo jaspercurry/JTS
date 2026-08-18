@@ -471,6 +471,25 @@ def test_report_carries_every_seam_counter_key_and_the_zero_run_keys():
     assert "truncated" not in report
 
 
+def test_report_keeps_the_two_frame_counts_independent():
+    """``frames`` is the reader's accumulator, ``encoded_frames`` the
+    encoder's own count — the report must never derive one from the other,
+    or a frame lost between read and encode vanishes instead of unbalancing
+    the ledger."""
+    recording = _record([(32, [(1, 1)] * 32)])
+    report = build_capture_integrity_report(
+        recording, encoded_frames=recording.frames - 1,
+        zero_run_count=0, zero_runs=[],
+    )
+    assert report[REPORT_KEY_FRAMES] == recording.frames
+    assert report[REPORT_KEY_ENCODED_FRAMES] == recording.frames - 1
+    ledger = reconcile_capture_frames(
+        report, received_frames=recording.frames - 1
+    )
+    assert not ledger.balanced
+    assert "worklet->encoder" in ledger.lost_at
+
+
 def test_report_counters_are_the_recorders_own_numbers():
     recording = _record([(32, [(1, 1)] * 32), "overrun", (32, [(1, 1)] * 32)])
     report = build_capture_integrity_report(

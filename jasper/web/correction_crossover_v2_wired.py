@@ -481,6 +481,7 @@ def build_v2_wired_run_and_consume(
         def _capture_one(index: int, attempt: int, entry: Any) -> Mapping[str, Any]:
             recorder = _make_recorder(_capture_budget_s(entry))
             recorder.start()
+            played = False
             try:
                 try:
                     # Plays the phase's program through the real DSP chain and
@@ -493,9 +494,13 @@ def build_v2_wired_run_and_consume(
                     # not a transport death and must land in the
                     # internal-error arm.
                     raise _host.CrossoverV2LocalSeamError(str(exc)) from exc
-            except BaseException:
-                recorder.abort()
-                raise
+                played = True
+            finally:
+                # ANY escape — a seam error, a cancellation — must release
+                # the live ALSA device. Flag-in-finally rather than a broad
+                # except: nothing is caught, only cleaned up after.
+                if not played:
+                    recorder.abort()
             recording = recorder.finish(tail_s=WIRED_POST_ROLL_S)
             answer = _mint_answer(recording)
             log_event(

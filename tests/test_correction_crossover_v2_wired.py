@@ -43,6 +43,12 @@ from jasper.active_speaker.crossover_v2.capture_source import (
     SOURCE_RELAY,
     SOURCE_WIRED,
 )
+from jasper.active_speaker.crossover_v2.journey import PHASE_DONE
+from jasper.active_speaker.crossover_v2.vocabulary import (
+    REASON_INTERNAL_ERROR,
+    REASON_SESSION_CEILING_EXPIRED,
+    REASON_VERIFY_INCONCLUSIVE,
+)
 from jasper.audio_measurement.frame_ledger import reconcile_capture_frames
 from jasper.audio_measurement.wired_capture import (
     WiredCaptureError,
@@ -261,14 +267,6 @@ def test_build_source_run_gives_each_provider_its_own_extras(monkeypatch):
 # 3. the wired runner (fake conductor)
 # --------------------------------------------------------------------------- #
 
-from jasper.active_speaker.crossover_v2.journey import PHASE_DONE  # noqa: E402
-from jasper.active_speaker.crossover_v2.vocabulary import (  # noqa: E402
-    REASON_INTERNAL_ERROR,
-    REASON_SESSION_CEILING_EXPIRED,
-    REASON_VERIFY_INCONCLUSIVE,
-)
-
-
 class VolumeRecorder:
     def __init__(self, open_result="opened"):
         self.events: list[str] = []
@@ -481,6 +479,29 @@ def test_the_answer_is_a_capture_answer_with_graded_counters(monkeypatch):
     assert answer.device["wired"] is True
     assert answer.device["channel_selected"] == 0  # signal was on channel 0
     assert answer.device["usb_id"] == UMIK2_USB_ID
+
+
+def test_a_dropout_in_the_capture_reaches_the_answer_as_a_zero_run(monkeypatch):
+    """The re-homed #2557 detector is WIRED THROUGH: a ≥128-exact-zero hole
+    in the selected channel's audio arrives on the answer's integrity report,
+    where the retained sidecar (and any future grader) reads it."""
+    hole = [(0, 0)] * 128
+    signal = [(1000, 0)] * 64
+    conductor = FakeConductor()
+    runner = _build(
+        conductor, VolumeRecorder(), monkeypatch=monkeypatch, persists=[],
+        recorder_factory=_recorder_factory(
+            [(64, signal), (128, hole), (64, signal)]
+        ),
+    )
+    _run(runner)
+    (answer,) = conductor.answers
+    report = answer.capture_integrity
+    # The idle tail is silence too, so the hole plus the tail yield >= 1 run;
+    # the FIRST recorded run is the injected hole, at its exact offset.
+    assert report["zero_run_count"] >= 1
+    assert report["zero_runs"][0]["offset"] == 64
+    assert report["zero_runs"][0]["len"] >= 128
 
 
 def test_a_rejected_verdict_retries_the_same_index_next_attempt(monkeypatch):

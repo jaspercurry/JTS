@@ -291,8 +291,18 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # 813 -> 814 (topology commit rollback, 2026-08-18): this boundary must catch
 # arbitrary callback exceptions so it can restore the prior graph before
 # re-raising the original failure.
-MAX_NOQA_MARKERS = 814
-MAX_BLE001_MARKERS = 617
+#
+# 814 -> 815 (#2662 W2b, 2026-08-18): +1 BLE001 for the WIRED provider's
+# catch-all cleanup arm (correction_crossover_v2_wired.build_v2_wired_run_
+# and_consume) -- the SAME W6.1 gate ruling the relay runner's arm carries,
+# for the same reason: the seams raise open-endedly, and a wired
+# capture-chain fault (WiredCaptureError) must persist an honest code and
+# drain the walked-away volume rather than escape with the measurement
+# volume active. Cleanup-and-reraise only; never a silent path. The wired
+# runner is the relay runner's sibling, so it inherits the slot the relay's
+# arm already argued for, restated per-site as this ratchet requires.
+MAX_NOQA_MARKERS = 815
+MAX_BLE001_MARKERS = 618
 # (Total reflects two independent +1 entries dated 2026-06-21: the AirPlay
 # latency-fit /state snapshot and the barge-in truncate wire-send guard.)
 
@@ -699,7 +709,30 @@ MAX_LINES_BY_PATH = {
     # session's opening capture, the compared pair carries beeps the position
     # groups do not, and a diagnostic copy that says otherwise misleads the
     # replay it exists for.
-    "jasper/web/correction_crossover_v2.py": 8_395,
+    #
+    # 2026-08-18 (#2662 W2b, the wired provider): 8,395 -> 8,571, +176 on the
+    # session-trims baseline above. The slice-1 note records the host
+    # shedding the relay's choreography; this bump is the OTHER half of the
+    # same seam becoming real — the host must now CHOOSE a provider, and the
+    # choosing is host policy no provider may own. What landed, counted:
+    # `drive_group_close` (+27 with its docstring — the D1 group-close
+    # sequence hoisted to ONE owner, so the relay's closure and the wired
+    # runner drive the identical persist/confirm/persist instead of two
+    # restatements); the per-source resolve/mint/build helpers
+    # `_resolve_prepare_capture_source` / `_mint_source_session` /
+    # `_build_source_run` (+106 — the fork stated once, called from both
+    # preparers, so stage 1 and stage 2 cannot resolve the source
+    # differently; #2706's `result_wait_s` threads through the mint helper's
+    # relay branch, which is where 3 of the lines went); the two preparers'
+    # fork call sites and the wired completion signal (+27); and
+    # `V2PreparedSession`'s two new fields with their contracts (+16). The
+    # wired choreography itself — the walk, the recorder, the integrity
+    # accounting — is ~1,370 lines in its OWN modules
+    # (`correction_crossover_v2_wired.py` and
+    # `audio_measurement/wired_capture.py`, both capped below), which is
+    # where a ratchet-respecting change puts them; this file learned no new
+    # fact about ALSA. 8,395 + 176 = 8,571.
+    "jasper/web/correction_crossover_v2.py": 8_571,
     # Born 2026-08-18 (#2662 slice 1) at exactly this size: the relay capture
     # provider — the choreography only the phone-relay source has. It should
     # grow only when the RELAY grows; the wired provider is its own module.
@@ -714,7 +747,16 @@ MAX_LINES_BY_PATH = {
     # tell a household to carry on through the one window that has to be quiet
     # (the pilot SNR guard's). A silent-wrong-answer site earns the lines that
     # stop it being "simplified" back.
-    "jasper/web/correction_crossover_v2_relay.py": 1_085,
+    # 2026-08-18 (#2662 W2b): the group-close hoist to the host banked -4
+    # (the closure now delegates to `drive_group_close`): 1,085 -> 1,081.
+    "jasper/web/correction_crossover_v2_relay.py": 1_081,
+    # Born 2026-08-18 (#2662 W2b) at exactly this size: the WIRED capture
+    # provider — source resolution, the local plan walk, and the answer
+    # mint. Its ALSA/scan/encode mechanics live in
+    # `jasper/audio_measurement/wired_capture.py` (the measurement kernel,
+    # importable by non-web callers, capped below), so this module should
+    # grow only when the wired SESSION choreography grows.
+    "jasper/web/correction_crossover_v2_wired.py": 732,
     # ...and 4,103 -> 4,107 (lateral pause), +4 net: the entry-baseline screen
     # said the household is "BACK on the mark", true only after a walk. With
     # the walk paused this capture follows MEASURE, where the microphone never
