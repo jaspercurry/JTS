@@ -10,9 +10,12 @@ voice/wake input: those mics carry no wake or AEC contract, so selecting one
 would silently replace the household's room microphone with an instrument.
 
 The vocabulary is owned by
-``jasper.audio_measurement.calibration.SUPPORTED_MODELS`` and reaches bash
-through this command rather than a second copy of the ids in shell — the same
-bridge shape ``jasper.cli.xvf_profile`` uses for the mic profile.
+``jasper.audio_measurement.mic_identity.SUPPORTED_MODELS`` (the numpy-free
+registry leaf; ``calibration`` re-exports it) and reaches bash through this
+command rather than a second copy of the ids in shell — the same bridge shape
+``jasper.cli.xvf_profile`` uses for the mic profile. Import the leaf, never
+``calibration``: the reconciler spawns this on every managed-XVF hotplug pass
+(the XVF is a USB card), and ``calibration`` costs the full numpy import.
 
 Output contract:
 
@@ -28,7 +31,7 @@ from __future__ import annotations
 
 import sys
 
-from jasper.audio_measurement.calibration import measurement_mic_usb_ids
+from jasper.audio_measurement.mic_identity import measurement_mic_usb_ids
 
 
 def main(argv: list[str] | None = None) -> int:

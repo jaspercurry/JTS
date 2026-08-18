@@ -50,6 +50,16 @@ VOICE_INPUT_ABSENT_MARKER="${JASPER_VOICE_INPUT_ABSENT_MARKER:-/var/lib/jasper/v
 # unconditional restart is what starts it.
 INSTALL_MANIFEST="${JASPER_INSTALL_MANIFEST:-/var/lib/jasper/build.txt}"
 VOICE_RESTART_STAMP="${JASPER_VOICE_RESTART_STAMP:-/run/jasper-aec-reconcile/voice-restart.stamp}"
+# One-shot intent marker: a caller whose kick MEANS "restart the voice/AEC
+# stack" (not "hardware may have drifted") touches this file before starting
+# the unit, because a systemctl kick can carry no arguments. Sole writer
+# today: jasper.cli.enhanced_aec_install._refresh_aec_runtime, whose verified
+# v2 engine changes nothing this script's change tests can see (the engine
+# lives in a venv, not in env files). Consumed (removed) by the next real
+# pass, which then refuses to skip; CHECK-only passes leave it for the pass
+# that can act on it. The path literal is duplicated in that Python writer
+# and pinned by tests/test_aec_reconcile.py.
+VOICE_RESTART_INTENT_MARKER="${JASPER_VOICE_RESTART_INTENT_MARKER:-/run/jasper-aec-reconcile/voice-restart-intent}"
 ASOUND_ROOT="${JASPER_ASOUND_ROOT:-/proc/asound}"
 SYSTEMCTL="${JASPER_SYSTEMCTL:-systemctl}"
 DEFAULT_MIC_DEVICE_CANDIDATES="Array,L16K2Ch,L16K6Ch,C16K2Ch,C16K6Ch"
@@ -321,17 +331,73 @@ voice_relevant_env_key() {
     return 0
 }
 
+# The pass-start snapshot of $ENV_FILE that mark_voice_restart_if_changed
+# compares against. Taken from the SHELL immediately after load_env_file
+# "$ENV_FILE" (so the shared lib's own parse supplies the unquoted values),
+# and never refreshed: the live shell variables are NOT a usable "before",
+# because observe_mic_profile_state and the chip-AEC policy resolver eval
+# resolver payloads over them mid-pass — comparing a resolved value against
+# itself made all ten JASPER_XVF_* writes a tautology that could never trip
+# the gate. Names are captured too (PASS_START_ENV_KEYS) so "absent at pass
+# start" reads as "", the same answer an absent key gave before.
+PASS_START_ENV_KEYS=""
+snapshot_pass_start_env() {
+    local line key
+    PASS_START_ENV_KEYS=""
+    [[ -r "$ENV_FILE" ]] || return 0
+    while IFS= read -r line; do
+        [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue
+        key="${line%%=*}"
+        case " ${PASS_START_ENV_KEYS} " in
+            *" ${key} "*) continue ;;
+        esac
+        printf -v "PASS_START_${key}" '%s' "${!key-}"
+        PASS_START_ENV_KEYS="${PASS_START_ENV_KEYS} ${key}"
+    done < "$ENV_FILE"
+}
+
 # The voice half of mark_outputd_restart_if_changed, and the same test: is the
-# value this pass is about to write different from the one the pass started
-# with? Sticky and one-directional — once a difference is seen, this pass
-# restarts.
+# value this pass is about to write different from the one the pass STARTED
+# with on disk? Sticky and one-directional — once a difference is seen, this
+# pass restarts. The comparison base is the pass-start snapshot above, never
+# ${!key-}: a key the resolver evals before the write would otherwise compare
+# equal by construction, and a forgotten eval site must fail toward
+# restarting, not toward silence.
 mark_voice_restart_if_changed() {
     local key="$1"
     local desired="$2"
-    local current="${!key-}"
+    local snap="PASS_START_${key}"
+    local current=""
+    case " ${PASS_START_ENV_KEYS} " in
+        *" ${key} "*) current="${!snap-}" ;;
+    esac
     if [[ "$current" != "$desired" ]] && voice_relevant_env_key "$key"; then
         VOICE_RESTART_NEEDED=1
     fi
+}
+
+# One-shot intent: consume the marker a caller left when its kick MEANS
+# "restart" (see VOICE_RESTART_INTENT_MARKER above), and treat an install
+# pass the same way. install.sh invokes this script directly with
+# --reason install BEFORE write_build_manifest seals the transaction, so
+# that pass reads the PREVIOUS build's manifest — gating it on "did the
+# manifest change" would skip exactly the restart that rolls the freshly
+# copied /opt/jasper code into the daemon (the Pi-local `sudo bash
+# install.sh` path has no later kick to catch it; the laptop deploy path
+# does, which is also why the old-manifest stamp this pass records is
+# harmless — the post-install kick mismatches it and restarts, the same
+# two-restarts-per-deploy shape every install had before the gate existed).
+consume_voice_restart_intent() {
+    local reason=""
+    if [[ "$REASON" == "install" ]]; then
+        VOICE_RESTART_NEEDED=1
+        log "event=aec_reconcile.voice_restart_intent reason=install"
+    fi
+    [[ -e "$VOICE_RESTART_INTENT_MARKER" ]] || return 0
+    reason="$(cat "$VOICE_RESTART_INTENT_MARKER" 2>/dev/null | tr -cd 'a-zA-Z0-9_.-' || true)"
+    rm -f "$VOICE_RESTART_INTENT_MARKER" 2>/dev/null || true
+    VOICE_RESTART_NEEDED=1
+    log "event=aec_reconcile.voice_restart_intent reason=${reason:-unspecified}"
 }
 
 read_installed_build_id() {
@@ -341,7 +407,7 @@ read_installed_build_id() {
 # What the running jasper-voice was started FROM, beyond $ENV_FILE — whose
 # contents mark_voice_restart_if_changed already compares key by key.
 #
-# Two inputs, and each is here because a real caller depends on it:
+# Three inputs, and each is here because a real caller depends on it:
 #
 #   * the installed build. This reconciler is the only thing that restarts
 #     voice on a deploy (see INSTALL_MANIFEST above).
@@ -350,26 +416,39 @@ read_installed_build_id() {
 #     (jasper.accessories.reconcile.refresh_voice_input) WITHOUT stopping
 #     voice, and the daemon reads the file at startup — so a live daemon has
 #     to be restarted to see a newly-paired remote.
+#   * the grouping-derived voice env another owner publishes
+#     ($GROUPING_VOICE_ENV_FILE, an EnvironmentFile= of jasper-voice.service).
+#     A bond/unbond rewrites it (TTS socket / mix stage / park flag) and hands
+#     the restart to this script (jasper.multiroom.reconcile, step 3b) —
+#     again without stopping voice and without touching $ENV_FILE, so the
+#     stamp is the only place a non-parked leader's route flip is visible.
 #
 # Every other caller that kicks this reconciler either mutates $ENV_FILE (the
-# /wake profile, leg, and AEC-mode endpoints) or stops jasper-voice first (the
-# chip-AEC commissioner's STOP_UNITS, the wake-corpus recorder), and a stopped
-# voice already fails unit_active_and_enabled below. Neither can be skipped.
+# /wake profile, leg, and AEC-mode endpoints), stops jasper-voice first (the
+# chip-AEC commissioner's STOP_UNITS, the wake-corpus recorder), or declares
+# intent explicitly (install passes, the enhanced-AEC activation marker — see
+# voice_restart_intent below). None of those can be silently skipped.
 voice_start_inputs() {
     probe_accessory_mics
-    printf '%s\naccessory_mic_sources=%s\n' \
-        "$INSTALLED_BUILD_ID" "$ACCESSORY_MIC_SOURCES"
+    printf '%s\naccessory_mic_sources=%s\ngrouping_voice_env:\n%s\n' \
+        "$INSTALLED_BUILD_ID" "$ACCESSORY_MIC_SOURCES" \
+        "$(cat "$GROUPING_VOICE_ENV_FILE" 2>/dev/null || true)"
 }
 
 # True only when the running voice daemon was (re)started by a pass of this
-# script that saw the same inputs. An absent manifest, an absent stamp, or an
-# accessory probe that could not answer all resolve to FALSE: "I cannot prove
-# nothing changed" must resolve to restarting.
+# script that saw the same inputs. An absent stamp, an accessory probe that
+# could not answer, or a grouping env that exists but cannot be read all
+# resolve to FALSE: "I cannot prove nothing changed" must resolve to
+# restarting. (An absent manifest needs no guard of its own:
+# record_voice_restart_stamp refuses to write a stamp without one, so the
+# absent-stamp check already covers it.)
 voice_start_inputs_match_stamp() {
     local stamped
-    [[ -n "$INSTALLED_BUILD_ID" ]] || return 1
     probe_accessory_mics
     [[ "$ACCESSORY_MIC_PROBE_STATUS" == "resolved" ]] || return 1
+    if [[ -e "$GROUPING_VOICE_ENV_FILE" && ! -r "$GROUPING_VOICE_ENV_FILE" ]]; then
+        return 1
+    fi
     stamped="$(cat "$VOICE_RESTART_STAMP" 2>/dev/null || true)"
     [[ -n "$stamped" && "$stamped" == "$(voice_start_inputs)" ]]
 }
@@ -1154,7 +1233,11 @@ mic_channels() {
 
 aec_ready() {
     local mic="$1"
-    [[ "$(mic_channels "$mic")" == "6" ]]
+    # Channel count alone is not eligibility: a 6-channel measurement-class
+    # card would pass the format check and put the software-AEC stack on an
+    # instrument. Selection predicates exclude measurement mics everywhere,
+    # including here.
+    [[ "$(mic_channels "$mic")" == "6" ]] && ! measurement_class_card "$mic"
 }
 
 managed_xvf_card_present() {
@@ -1257,10 +1340,13 @@ first_candidate() {
             fi
         done
         # Every candidate is a present measurement mic: a configuration with
-        # no voice microphone at all, where voice parks regardless. Keep the
-        # historical shape (a real card name) rather than inventing a third
-        # meaning for JASPER_MIC_DEVICE.
-        echo "${MIC_CANDIDATES[0]}"
+        # no voice microphone at all. NEVER name the instrument here — this
+        # value seeds JASPER_MIC_DEVICE and JASPER_AEC_MIC_DEVICE, and a later
+        # consumer that trusts the name (a park marker cleared by accessory
+        # pairing, an operator reading jasper.env) must not be handed a
+        # measurement card. The stock first candidate is a real card name on
+        # every supported box and simply parks while absent.
+        echo "${DEFAULT_MIC_DEVICE_CANDIDATES%%,*}"
     else
         echo "$AEC_MIC_DEVICE"
     fi
@@ -1314,10 +1400,15 @@ reset_failed_units() {
 }
 
 stop_disable_aec() {
-    # The mirror of enable_start_aec's flag: if the bridge is UP, stopping it
-    # removes a UDP carrier jasper-voice may be reading, so this pass must also
-    # restart voice. If it is already down this is a no-op and must NOT force a
-    # restart, or every direct-mic and AEC-disabled box would keep bouncing.
+    # The mirror of enable_start_aec's flag, and the reason it keys on
+    # is-active rather than on env deltas: the gate compares FILE states, but
+    # the RUNNING daemon's environment is unobservable — jasper-voice may have
+    # been started under an older udp: topology even when today's file already
+    # names a card. A live bridge is the one observable hint that a UDP
+    # carrier may still be in use, so tearing it down must carry a voice
+    # restart with it. If the bridge is already down this is a no-op and must
+    # NOT force a restart, or every direct-mic and AEC-disabled box would
+    # bounce voice on every pass.
     if "$SYSTEMCTL" is-active --quiet jasper-aec-bridge.service >/dev/null 2>&1; then
         VOICE_RESTART_NEEDED=1
     fi
@@ -1412,12 +1503,14 @@ probe_accessory_mics() {
         ACCESSORY_MIC_PROBE_STATUS="failed"
         log "accessory mic probe failed (see the message above); accessory microphone state is UNKNOWN, not absent"
     fi
-    # Defensive only, and currently unobservable: the sole caller is
-    # accessory_mic_present, whose own [[ ]] supplies the exit status, and
-    # `set -e` does not act on a function called in a condition context. Kept
-    # so a future direct caller cannot inherit the last command's status by
-    # accident — no test can pin it today, which is why it is called out
-    # rather than silently trusted.
+    # Belt-and-braces, and no longer a formality: accessory_mic_present calls
+    # this in condition context (its own [[ ]] supplies the exit status), but
+    # voice_start_inputs and voice_start_inputs_match_stamp call it as a PLAIN
+    # statement under `set -e` — if any branch above ever ends on a non-zero
+    # command, losing this return would abort the whole pass at those call
+    # sites instead of restarting voice. Today every branch already ends 0,
+    # so no test can force the difference; called out rather than silently
+    # trusted.
     return 0
 }
 
@@ -1516,7 +1609,7 @@ activate_managed_chip_aec() {
         && unit_active_and_enabled jasper-aec-init.service \
         && unit_active_and_enabled jasper-aec-bridge.service \
         && voice_restart_can_be_skipped; then
-        log "event=aec_reconcile.chip_aec_bounce_skipped reason=no_voice_relevant_change alignment=ready"
+        log "event=aec_reconcile.chip_aec_bounce_skipped reason=no_voice_relevant_change alignment=ready profile=${AUDIO_INPUT_PROFILE:-unknown} mic=${CURRENT_MIC:-<unset>}"
         return 0
     fi
     # Past this point the sequence stops voice, so the restart_voice at the end
@@ -1683,12 +1776,17 @@ restart_voice_for_accessory_mic() {
 }
 
 load_env_file "$ENV_FILE"
-# Snapshot the installed build BEFORE any env write, so every
-# mark_voice_restart_if_changed comparison and the restart gate below see the
-# same pass-start view of the world.
+# Snapshot the pass-start world BEFORE anything can move it: the env-file
+# values before any resolver eval overwrites them, and the installed build
+# before any env write — so every mark_voice_restart_if_changed comparison
+# and the restart gate below see the same pass-start view.
+snapshot_pass_start_env
 read_installed_build_id
 if [[ "$CHECK_ONLY" != "1" ]]; then
     ensure_mode_file
+    # Declared intent beats change detection — but only on a pass that can
+    # act on it; a --check pass must leave the marker for the real one.
+    consume_voice_restart_intent
 fi
 load_env_file "$MODE_FILE"
 observe_mic_profile_state
