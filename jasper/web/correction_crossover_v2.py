@@ -97,6 +97,10 @@ from jasper.active_speaker.crossover_v2.round_anchor import (
 # they name are module level. A pure-organ leaf like ``journey`` above, so this
 # adds no cycle and no import cost worth deferring — every other flow symbol in
 # this module stays lazily imported inside its own function, as before.
+from jasper.active_speaker.crossover_v2.capture_source import (
+    SOURCE_RELAY,
+    SOURCE_WIRED,
+)
 from jasper.active_speaker.crossover_v2.fc_sweep import fc_sweep_result_wait_s
 from jasper.active_speaker.crossover_v2.vocabulary import (
     REASON_POSITION_HOLD_EXPIRED,
@@ -5316,10 +5320,11 @@ def bind_production_play(
 # what the host hands the capture provider (S1a/S1c)
 # --------------------------------------------------------------------------- #
 #
-# The plan runner itself (build_v2_run_and_consume) is the relay provider's —
-# jasper.web.correction_crossover_v2_relay, re-published above. These two stay
-# HERE because they are host policy the provider merely drives: the volume
-# lifecycle it is handed, and the eager-fit starter it calls back into.
+# The plan runners themselves are the providers'
+# (jasper.web.correction_crossover_v2_relay, re-published above, and
+# jasper.web.correction_crossover_v2_wired). These stay HERE because they are
+# host policy a provider merely drives: the volume lifecycle it is handed, the
+# group-close seam, and the eager-fit starter it calls back into.
 
 
 @dataclass(frozen=True)
@@ -5329,6 +5334,33 @@ class V2VolumeHooks:
     open: Callable[[], Any]      # async
     close: Callable[[], Any]     # async
     abandon: Callable[[], Any]   # async
+
+
+def drive_group_close(conductor: Any, *, evidence: Mapping[str, Any] | None) -> None:
+    """The household's "all spots measured — Continue" group close (D1).
+
+    **The group-close seam at the host boundary, one owner for every
+    provider** (#2662 W2b): the relay runner drives it on the phone's
+    authenticated completion event, the wired runner on its local completion
+    signal, and both must run the identical sequence — persist FIRST (the
+    combine + fit are the slowest thing in the session and the wizard renders
+    from durable state, so a confirmation whose fit never reached disk would
+    leave the review screen with nothing to review), then the conductor's
+    confirm (the only thing that fits a correction in stage 1), then persist
+    the fitted result. A refusal (the PR-L4 accountability veto raises
+    ``CaptureBeginRefused``) propagates to the calling runner, which ends the
+    session exactly as an admission refusal does.
+
+    What this deliberately does NOT do is apply — the review interlude is the
+    apply decision point (2026-07-28 ruling); the full history lives on the
+    relay provider's ``complete_capture_set`` docstring, whose body now
+    delegates here.
+    """
+    conductor.note_group_close_started()
+    persist_conductor_state(conductor, failure_code=None, evidence=evidence)
+    confirmed = conductor.confirm_cloud_measure_group()
+    if confirmed is not None:
+        persist_conductor_state(conductor, failure_code=None, evidence=evidence)
 
 
 def _start_speculative_group_close(conductor: Any) -> threading.Thread | None:
@@ -6246,7 +6278,7 @@ class PositionGate:
 
 @dataclass(frozen=True)
 class V2PreparedSession:
-    """What the correction_setup dispatch needs to host one v2 relay session."""
+    """What the correction_setup dispatch needs to host one v2 session."""
 
     label: str
     open: Callable[..., Any]
@@ -6257,6 +6289,17 @@ class V2PreparedSession:
     #: block the envelope renders, and routes the driver's POST to
     #: :meth:`PositionGate.release`.
     position_gate: PositionGate | None = None
+    #: Which capture source this session opened on (#2662):
+    #: ``capture_source.SOURCE_RELAY`` (the default — the hosting mints a
+    #: relay link) or ``SOURCE_WIRED`` (local capture — no relay client, no
+    #: link, and the hosting must not require a configured relay).
+    capture_source: str = SOURCE_RELAY
+    #: The wired session's completion signal (work order D1) — the local
+    #: stand-in for the phone's authenticated complete-capture-set event.
+    #: ``None`` on a relay session, whose signal rides the relay protocol.
+    #: The W3 wizard surface is what will POST this; it exists now because
+    #: the held-set walk semantics need a signal source to be complete.
+    request_complete: Callable[[], None] | None = None
 
 
 def _volume_hooks(camilla_factory: Any, context: V2ConductorContext) -> V2VolumeHooks:
@@ -6620,6 +6663,109 @@ def bind_v2_stage_seams(
     )
 
 
+def _resolve_prepare_capture_source() -> tuple[str, Any]:
+    """Which capture source this prepare opens on (#2662 W2b).
+
+    Resolved ONCE per prepare and threaded into ``_open`` — the mint, the
+    runner build, and the returned ``capture_source`` must describe one
+    decision, not three reads of a probe that can change between them. The
+    wired provider is imported lazily so a relay session keeps today's
+    import surface. A wired resolution error (an explicit override with no
+    mic present, an unrecognized override value) refuses at the tap, before
+    any evidence store or durable state is touched.
+    """
+    from jasper.audio_measurement.wired_capture import WiredCaptureError
+    from jasper.web import correction_crossover_v2_wired as wired
+
+    try:
+        return wired.resolve_v2_capture_source()
+    except WiredCaptureError as exc:
+        raise CrossoverV2Refused(str(exc)) from exc
+
+
+def _mint_source_session(
+    source: str,
+    wired_device: Any,
+    client: Any,
+    spec: Any,
+    *,
+    base: str,
+    capture_origin: str,
+    return_url: str,
+    plan_shape: Any,
+    ceiling_s: float,
+    result_wait_s: int | None = None,
+) -> Any:
+    """Mint one session on the selected source (#2662 W2b).
+
+    Both mints answer the same shape (``pi_session`` + ``tap_link``); only
+    the relay's talks to a network. The TTL policy and the phone's
+    per-capture ``result_wait_s`` (#2706) are relay-private — a wired
+    session has no link to expire and no phone waiting on a result.
+    """
+    if source == SOURCE_WIRED:
+        from jasper.web import correction_crossover_v2_wired as wired
+
+        return wired.open_wired_capture(spec, device=wired_device)
+    from jasper.capture_relay import correction_adapter
+
+    return correction_adapter.open_capture(
+        client,
+        spec,
+        relay_base=base,
+        capture_origin=capture_origin,
+        return_url=return_url,
+        ttl_s=relay_link_ttl_s(plan_shape, ceiling_s),
+        result_wait_s=result_wait_s,
+    )
+
+
+def _build_source_run(
+    source: str,
+    conductor: Any,
+    *,
+    volume: "V2VolumeHooks",
+    stop_event: threading.Event,
+    stop_lock: Any,
+    position_gate: "PositionGate | None",
+    evidence_refs: dict[str, Any],
+    playback_started: Any,
+    wired_device: Any,
+    ceiling_s: float,
+    complete_event: threading.Event,
+) -> Callable[[Any, Any], Any]:
+    """One provider runner per source, driving the same conductor hooks.
+
+    The relay runner takes the phone-phase signal (its progress ladder); the
+    wired runner takes the device, the session ceiling (its confirm-wait
+    bound) and the local completion signal. Neither takes the other's
+    extras — the seam's rule that a source's choreography stays private.
+    """
+    if source == SOURCE_WIRED:
+        from jasper.web import correction_crossover_v2_wired as wired
+
+        return wired.build_v2_wired_run_and_consume(
+            conductor,
+            volume=volume,
+            stop_event=stop_event,
+            stop_lock=stop_lock,
+            device=wired_device,
+            ceiling_s=ceiling_s,
+            complete_event=complete_event,
+            position_gate=position_gate,
+            evidence_refs=evidence_refs,
+        )
+    return build_v2_run_and_consume(
+        conductor,
+        volume=volume,
+        stop_event=stop_event,
+        stop_lock=stop_lock,
+        position_gate=position_gate,
+        evidence_refs=evidence_refs,
+        playback_started=playback_started,
+    )
+
+
 def prepare_v2_session(
     raw: Mapping[str, Any],
     *,
@@ -6678,7 +6824,6 @@ def prepare_v2_session(
         resolve_plan_shape,
         session_wall_clock_ceiling_s,
     )
-    from jasper.capture_relay import correction_adapter
     from jasper.active_speaker.crossover_v2.coordinator import (
         series_position_from_state,
     )
@@ -6761,10 +6906,15 @@ def prepare_v2_session(
     # captures this session runs, and reading the flag twice is how they get to
     # disagree.
     include_entry_baseline = STAGE1_INCLUDES_ENTRY_BASELINE
+    # #2662 W2b: which capture source answers this session's asks. After the
+    # speaker-level gates (they are prior questions), before any state is
+    # opened (an explicit-override refusal must cost nothing).
+    capture_source, wired_device = _resolve_prepare_capture_source()
     evidence_store, _bundle_id = open_v2_evidence_store(context.topology)
     acknowledgement_binding = secrets.token_urlsafe(24)
     stop_event = threading.Event()
     stop_lock = threading.Lock()
+    complete_event = threading.Event()
     # The remote tier's position gate — built only for an externally
     # positioned shape, so a hand-walked session carries no gate at all and
     # every begin reaches the conductor exactly as it always has.
@@ -6823,20 +6973,24 @@ def prepare_v2_session(
         # volume ceiling is armed from it further down, and those two must
         # describe the same session (issue #2509).
         ceiling_s = session_wall_clock_ceiling_s(spec.capture_plan)
-        rc = correction_adapter.open_capture(
+        rc = _mint_source_session(
+            capture_source,
+            wired_device,
             client,
             spec,
-            relay_base=base,
+            base=base,
             capture_origin=capture_origin,
             return_url=return_url,
-            ttl_s=relay_link_ttl_s(plan_shape, ceiling_s),
+            plan_shape=plan_shape,
+            ceiling_s=ceiling_s,
             # The Fc sweep runs inside THIS session's capture consume, so the
             # phone's per-capture result wait is this flow's to publish — see
             # ``fc_sweep_result_wait_s``. A page that predates the field keeps
-            # its own floor.
+            # its own floor. Relay-only: the wired source has no phone waiting.
             result_wait_s=fc_sweep_result_wait_s(),
         )
-        # The conductor + publishers bind to the MINTED relay session id.
+        # The conductor + publishers bind to the MINTED provider session id
+        # (the seam's identity rule — the wired id rides the same key).
         relay_session_id = rc.pi_session.session_id
         publish_check, publish_candidate, refs = bind_evidence_publishers(
             evidence_store, relay_session_id
@@ -6930,7 +7084,8 @@ def prepare_v2_session(
             series_position=series_position_from_state(prior_raw),
         )
         persist_conductor_state(conductor, failure_code=None, evidence=refs)
-        holder["run"] = build_v2_run_and_consume(
+        holder["run"] = _build_source_run(
+            capture_source,
             conductor,
             volume=_volume_hooks(camilla_factory, context),
             stop_event=stop_event,
@@ -6938,6 +7093,9 @@ def prepare_v2_session(
             position_gate=position_gate,
             evidence_refs=refs,
             playback_started=playback_started,
+            wired_device=wired_device,
+            ceiling_s=ceiling_s,
+            complete_event=complete_event,
         )
         return rc
 
@@ -6954,6 +7112,10 @@ def prepare_v2_session(
         run_and_consume=_run,
         request_stop=_request_stop,
         position_gate=position_gate,
+        capture_source=capture_source,
+        request_complete=(
+            complete_event.set if capture_source == SOURCE_WIRED else None
+        ),
     )
 
 
@@ -7041,7 +7203,6 @@ def prepare_v2_verify(
         build_v2_verify_session_spec,
         session_wall_clock_ceiling_s,
     )
-    from jasper.capture_relay import correction_adapter
     from jasper.active_speaker.crossover_v2.coordinator import (
         series_position_from_state,
     )
@@ -7136,9 +7297,13 @@ def prepare_v2_verify(
     # ``CrossoverV2Session.__init__`` so the "values plus a date, or
     # nothing" rule has one owner.
     pilot_transfer_prior = pilot_transfer_prior_from_state(state)
+    # #2662 W2b: the same one-decision source resolution stage 1 makes, in the
+    # same position — after the speaker-level gates, before any state opens.
+    capture_source, wired_device = _resolve_prepare_capture_source()
     acknowledgement_binding = secrets.token_urlsafe(24)
     stop_event = threading.Event()
     stop_lock = threading.Lock()
+    complete_event = threading.Event()
     # Same rule as stage 1's, with one extra case: ``_verify_plan_shape``
     # returns ``None`` for the recovery re-arm, which has no tier and therefore
     # no gate — it is the one-sweep session a household starts by hand.
@@ -7168,17 +7333,20 @@ def prepare_v2_verify(
         # the ceiling further down size from the same number, exactly as stage 1
         # does (issue #2509).
         ceiling_s = session_wall_clock_ceiling_s(spec.capture_plan)
-        rc = correction_adapter.open_capture(
+        rc = _mint_source_session(
+            capture_source,
+            wired_device,
             client,
             spec,
-            relay_base=base,
+            base=base,
             capture_origin=capture_origin,
             return_url=return_url,
-            ttl_s=relay_link_ttl_s(plan_shape, ceiling_s),
+            plan_shape=plan_shape,
+            ceiling_s=ceiling_s,
             # The Fc sweep runs inside THIS session's capture consume, so the
             # phone's per-capture result wait is this flow's to publish — see
             # ``fc_sweep_result_wait_s``. A page that predates the field keeps
-            # its own floor.
+            # its own floor. Relay-only: the wired source has no phone waiting.
             result_wait_s=fc_sweep_result_wait_s(),
         )
         relay_session_id = rc.pi_session.session_id
@@ -7283,7 +7451,8 @@ def prepare_v2_verify(
         )
         # Keep the durable candidate/applied facts; rebind the session id.
         persist_conductor_state(conductor, failure_code=None, evidence=refs)
-        holder["run"] = build_v2_run_and_consume(
+        holder["run"] = _build_source_run(
+            capture_source,
             conductor,
             volume=_volume_hooks(camilla_factory, context),
             stop_event=stop_event,
@@ -7291,6 +7460,9 @@ def prepare_v2_verify(
             position_gate=position_gate,
             evidence_refs=refs,
             playback_started=playback_started,
+            wired_device=wired_device,
+            ceiling_s=ceiling_s,
+            complete_event=complete_event,
         )
         return rc
 
@@ -7307,6 +7479,10 @@ def prepare_v2_verify(
         run_and_consume=_run,
         request_stop=_request_stop,
         position_gate=position_gate,
+        capture_source=capture_source,
+        request_complete=(
+            complete_event.set if capture_source == SOURCE_WIRED else None
+        ),
     )
 
 

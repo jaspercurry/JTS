@@ -161,6 +161,11 @@ _relay_stop_request: Callable[[], None] | None = None
 # finished session from still advertising a position it is waiting for, and
 # stops a late driver POST from releasing a gate nobody is holding.
 _relay_position_gate: Any | None = None
+# The active WIRED session's completion signal (#2662 W2b), or None — the
+# local stand-in for the phone's authenticated complete-capture-set event,
+# set by the wired session's driver/wizard POST. Same claimed-with-the-slot,
+# dropped-when-not-in-flight lifecycle as the two above.
+_relay_complete_request: Callable[[], None] | None = None
 _RELAY_STOPPABLE_STATUSES = frozenset({"starting", "awaiting_phone"})
 _RELAY_IN_FLIGHT_STATUSES = _RELAY_STOPPABLE_STATUSES | {
     "finishing",
@@ -446,6 +451,9 @@ _POST_ROUTES = frozenset({
     # The remote commission tier's position release — an EXTERNAL driver's
     # report that it has moved the microphone to the angle the envelope named.
     "/crossover/v2/position-ready",
+    # The WIRED session's all-spots-measured confirmation (#2662 W2b) — the
+    # local stand-in for the phone's authenticated completion event.
+    "/crossover/v2/complete",
     "/balance/start",
     "/balance/ramp",
     "/balance/meter",
@@ -465,11 +473,13 @@ _POST_ROUTES = frozenset({
 
 def _set_relay_capture(value: dict[str, Any] | None) -> None:
     global _relay_capture, _relay_stop_request, _relay_position_gate
+    global _relay_complete_request
     with _session_lock:
         _relay_capture = value
         if value is None or value.get("status") not in _RELAY_IN_FLIGHT_STATUSES:
             _relay_stop_request = None
             _relay_position_gate = None
+            _relay_complete_request = None
 
 
 def _get_relay_capture() -> dict[str, Any] | None:
@@ -557,6 +567,7 @@ def _begin_relay_capture(
     *,
     request_stop: Callable[[], None] | None = None,
     position_gate: Any | None = None,
+    request_complete: Callable[[], None] | None = None,
 ) -> bool:
     """Atomically claim the single relay-capture slot. Returns False if one is
     already in flight (so a double-tap can't spawn two relay sessions + a file
@@ -564,6 +575,7 @@ def _begin_relay_capture(
     The slot is released by `_set_relay_capture(None)` on a failed open, or by the
     background runner setting `complete`/`failed`."""
     global _relay_capture, _relay_stop_request, _relay_position_gate
+    global _relay_complete_request
     with _session_lock:
         if (
             _relay_capture
@@ -573,6 +585,7 @@ def _begin_relay_capture(
         _relay_capture = {"status": "starting", "kind": kind_label}
         _relay_stop_request = request_stop
         _relay_position_gate = position_gate
+        _relay_complete_request = request_complete
         return True
 
 
@@ -699,6 +712,15 @@ class RelayCaptureKind:
     #: The remote commission tier's position gate, or None. Only the crossover
     #: v2 kinds ever set it; every other flow leaves it unset and is untouched.
     position_gate: Any | None = None
+    #: True for a LOCAL (wired) kind (#2662 W2b): the orchestrator then
+    #: constructs no RelayClient — there is no relay session, no tap link,
+    #: and no network dependency; ``open``/``run_and_consume`` receive
+    #: ``None`` for the client and ignore it.
+    local: bool = False
+    #: The wired session's completion signal (work order D1), or None. Routed
+    #: to POST /crossover/v2/complete via the slot, with the same lifecycle
+    #: as ``request_stop``.
+    request_complete: Callable[[], None] | None = None
 
 
 def _request_local_return_url(
@@ -885,6 +907,7 @@ def _run_relay_capture(
         kind.label,
         request_stop=kind.request_stop,
         position_gate=kind.position_gate,
+        request_complete=kind.request_complete,
     ):
         raise ValueError("a phone-mic relay capture is already in progress")
     capture_origin = correction_adapter.capture_origin_from_env()
@@ -893,11 +916,15 @@ def _run_relay_capture(
     try:
         # Register in the foreground (the session must exist before the phone opens
         # the tap-link), bounded so a slow/unreachable relay fails fast.
-        client = RelayClient(
-            relay_base,
-            timeout=_RELAY_REGISTER_TIMEOUT_S,
-            registration_token=relay_registration_token_from_env(),
-        )
+        # A LOCAL (wired) kind talks to no relay at all (#2662 W2b): no client
+        # exists, and its `open` mints the session in-process.
+        client = None
+        if not kind.local:
+            client = RelayClient(
+                relay_base,
+                timeout=_RELAY_REGISTER_TIMEOUT_S,
+                registration_token=relay_registration_token_from_env(),
+            )
         rc = kind.open(client, relay_base, capture_origin, return_url)
 
         async def _run() -> None:
@@ -6007,6 +6034,31 @@ def _handle_crossover_v2_position_ready(
     return {"ok": True, "released": released}
 
 
+def _handle_crossover_v2_complete(
+    handler: BaseHTTPRequestHandler,
+) -> dict[str, Any]:
+    """POST /crossover/v2/complete — the wired all-spots-measured signal (D1).
+
+    The wired session's stand-in for the phone's authenticated
+    complete-capture-set event (#2662 W2b): the driver (or the W3 wizard
+    surface) says the household is done measuring, the held pre-apply group
+    closes, and the fit runs. Only a live WIRED session holds the signal — a
+    relay session's completion rides the relay protocol, and a finished
+    session drops it with the slot — so "nothing waiting" is a conflict
+    (stale caller), the position-ready shape.
+    """
+    _read_json_body(handler)  # no fields consumed; drains the request body
+    with _session_lock:
+        request_complete = _relay_complete_request
+    if request_complete is None:
+        raise ValueError(
+            "no wired measurement is waiting for an all-spots-measured "
+            "confirmation right now"
+        )
+    request_complete()
+    return {"ok": True}
+
+
 def _handle_crossover_v2_relay(
     handler: BaseHTTPRequestHandler,
     *,
@@ -6033,7 +6085,6 @@ def _handle_crossover_v2_relay(
 
     from . import correction_crossover_backend, correction_crossover_v2 as v2host
 
-    relay_base = _require_relay_base()
     blocking = _crossover_blocking_phase()
     if blocking is not None:
         raise ValueError(
@@ -6048,12 +6099,22 @@ def _handle_crossover_v2_relay(
         run_async=_run_async,
         camilla_factory=_camilla,
     )
+    # #2662 W2b: the relay origin is required only when the session actually
+    # opens on the relay. Prepare resolves the source, so the gate moved
+    # after it — a wired session must work on a relay-unconfigured Pi (a
+    # local measurement must not depend on a public Worker), and a
+    # relay-configured Pi sees the same refusals in a different order only
+    # when both gates would fire.
+    wired = prepared.capture_source == v2host.SOURCE_WIRED
+    relay_base = "" if wired else _require_relay_base()
     kind = RelayCaptureKind(
         label=prepared.label,
         open=prepared.open,
         run_and_consume=prepared.run_and_consume,
         request_stop=prepared.request_stop,
         position_gate=prepared.position_gate,
+        local=wired,
+        request_complete=prepared.request_complete,
     )
     return {
         "relay": _run_relay_capture(
@@ -7098,6 +7159,25 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     # reason its body was rejected. Same
                     # ``_send_client_error`` (400) the /sync/relay-capture arm
                     # uses for the identical shape.
+                    self._send_client_error(str(e))
+                except ValueError as e:
+                    self._send_json(
+                        {"ok": False, "error": str(e)},
+                        status=HTTPStatus.CONFLICT,
+                    )
+                except (OSError, RuntimeError, TypeError) as e:
+                    logger.exception("%s failed", path)
+                    self._send_json({"ok": False, "error": str(e)}, status=500)
+                return
+
+            if path == "/crossover/v2/complete":
+                # Same shape as position-ready: a malformed body is a 400
+                # (BadRequest subclasses ValueError, so it must be claimed
+                # first), while a signal with no wired session waiting is a
+                # CONFLICT — a stale caller, not a malformed request.
+                try:
+                    self._send_json(_handle_crossover_v2_complete(self))
+                except BadRequest as e:
                     self._send_client_error(str(e))
                 except ValueError as e:
                     self._send_json(
