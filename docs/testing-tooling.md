@@ -175,8 +175,9 @@ for p in ${=PIDS}; do kill "$p"; done      # NOT 2>/dev/null
   that prints nothing is not evidence it cleaned anything; confirm with
   `ps -o pid=,command= -p <pid>`.
 
-Time-bound the loop body as well, so a cleanup you lose anyway self-heals
-in under a minute instead of burning a core until someone else notices.
+Time-bound the loop body as well, keeping the bound comfortably above your
+repro's own runtime, so a cleanup you lose anyway self-heals in under a
+minute instead of burning a core until someone else notices.
 
 ---
 
