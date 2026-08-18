@@ -308,7 +308,17 @@ def test_crossover_guided_cloud_never_promises_a_stationary_mic():
     # the session; "tones" rather than "a tone", because no phase plays exactly
     # one (CHECK: four pilot chirps and no sweep; MEASURE: two pilots then six
     # sweeps; a prompted position: two pilots then one sweep).
-    assert "has three short beeps, a pause, and then rising tones" in orientation
+    #
+    # A third hedge since 2026-08-18: the beeps are quantified over THE FIRST
+    # measurement and the tones over EVERY one, because the courtesy prelude
+    # now announces a session rather than a capture
+    # (``crossover_v2.programs.courtesy_prelude_for_phase``). The retired
+    # wording — "Each measurement has three short beeps" — is pinned OUT, since
+    # a consent screen promising a warning the speaker will not play is the
+    # same defect as one that promises nothing.
+    assert "The first measurement has three short beeps and a pause" in orientation
+    assert "every measurement has rising tones" in orientation
+    assert "Each measurement has three short beeps" not in orientation
 
     # Per-sweep stillness, kept verbatim and made explicit about what follows
     # it. This is the promise an individual capture depends on.

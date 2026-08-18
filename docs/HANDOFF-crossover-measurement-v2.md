@@ -24,7 +24,7 @@ changed — repeating that apply-and-re-measure round, up to three times, while
 the result is still getting flatter (#2602).
 
 - **Two tiers, chosen every session** on the `/correction/` wizard. At the
-  shipped defaults `TIER_FULL` is **9 captures — 3 then 6**, and
+  shipped defaults `TIER_FULL` is **8 captures — 3 then 5**, and
   `TIER_EXPRESS` is **4 — the same 3, then 1**. The tiers differ in
   **stage 2 only**: stage 1 is 3 captures for both. Do not restate those
   numbers anywhere a plan change cannot reach them —
@@ -184,13 +184,13 @@ group and publishes the candidate; until it arrives the final position is
 still retakeable. **Nothing is applied inside this session.**
 
 **Stage 2 — `POST /correction/crossover/v2/verify` with
-`{"stage": "post_apply"}`, 6 captures at Full (1 on Express, 5 on Remote —
+`{"stage": "post_apply"}`, 5 captures at Full (1 on Express, 5 on Remote —
 this stage is the whole difference between the tiers).**
 
 | index | phase | what it is |
 |---|---|---|
 | 1 | `verify` | design-axis anchor, summed |
-| 2–6 | `cloud_verify` | 5 prompted post-apply positions |
+| 2–5 | `cloud_verify` | 4 prompted post-apply positions |
 
 The same endpoint with no `stage` is the 1-entry recovery re-verify.
 
@@ -208,7 +208,7 @@ particular hardware, and the vocabulary is *remote* / *external positioner* /
 | | Full | Remote |
 |---|---|---|
 | stage 1 | 3 captures | the same 3 |
-| stage 2 | 6 captures | 5 — Full's walk minus the vertical pose |
+| stage 2 | 5 captures | the same 5 |
 | per-entry advance | `AUTO_ADVANCE_TAP` | `AUTO_ADVANCE_COUNTDOWN` + `countdown_s` |
 | pose copy | "12 cm to the LEFT of the mark" | "Turn the microphone to −7°" |
 | stage-2 anchor | carries `confirm_title` (a tap) | omits it — the gate makes that promise |
@@ -216,7 +216,13 @@ particular hardware, and the vocabulary is *remote* / *external positioner* /
 `remote_cloud_verify_positions()` **derives** the 5 rather than stating it: it
 is the longest prefix of `CLOUD_POSITION_PROMPTS` containing no
 `POSITION_ROLE_XOVR` pose, so reordering that table moves the walk instead of
-stranding it. `position_angle_deg()` likewise derives each bearing from the
+stranding it. Since 2026-08-18 `DEFAULT_CLOUD_VERIFY_POSITIONS` sits at that
+same 5 (it is `MIN_CLOUD_VERIFY_POSITIONS`, the validated floor), so the two
+walks coincide today and stage 2 no longer differs between Full and Remote. The
+derivation stays because it is what keeps them from diverging silently if
+either the table or the default moves; `REMOTE_VERTICAL_DISCLOSURE` stays for
+the same reason it always existed — a consumer reading this group's roles finds
+no `xovr` member and must read that as *unsampled*, not *flat*. `position_angle_deg()` likewise derives each bearing from the
 pose's own `offset_cm` at `MARK_DISTANCE_M`, signed by the row's LEFT/RIGHT
 word — there is no second table of angles to drift. At the shipped offsets the
 walk is **0°, −7°, +7°, −22°, +22°** (stage 1's paused lateral walk opened and
@@ -1587,12 +1593,12 @@ rule that nothing applies inside this session.
 jts.local and lands on the `review` screen.
 
 **Stage 2 — verify (`POST /crossover/v2/verify` with
-`{"stage": "post_apply"}`), 6 captures at Full:**
+`{"stage": "post_apply"}`), 5 captures at Full:**
 
 | index | phase | gate | what it is |
 |---|---|---|---|
 | 1 | `verify` | tap (confirm-then-tone) | design-axis anchor, summed |
-| 2–6 | `cloud_verify` | tap each | 5 prompted post-apply positions |
+| 2–5 | `cloud_verify` | tap each | 4 prompted post-apply positions |
 
 The same endpoint with no `stage` (every shipped caller, including
 `verify_retry` on a failed screen) is the **1-entry recovery re-verify**,
@@ -1931,7 +1937,7 @@ together. Design rationale:
 
 - **Constants** (`crossover_v2_flow.py`, each with its rationale in
   place): `DEFAULT_CLOUD_MEASURE_POSITIONS` 9 (min 6, max 12),
-  `DEFAULT_CLOUD_VERIFY_POSITIONS` 6, `GEOMETRY_RETRY_POSITIONS` 2 — the
+  `DEFAULT_CLOUD_VERIFY_POSITIONS` 5, `GEOMETRY_RETRY_POSITIONS` 2 — the
   **Full tier's** rules; `MIN_CLOUD_MEASURE_POSITIONS` never moves for
   Express. The counts are wall-clock choices, not statistical optima —
   S0's stability data says more positions is strictly better. **Express**
@@ -2987,13 +2993,35 @@ VERIFY with no household action in between, and each prompted cloud
 position needs its own tap because the household has to move the mic
 first.
 
-**Pre-capture courtesy tone (issue #1677) and the program's audible
-order.** Every capture's program plays three short ~1 kHz beeps + ~3 s of
-silence from the speaker under test itself — a "quiet please, a
-measurement is starting" warning ahead of each capture (16 of them in a
-Full-tier cloud session, 7 on Express, where it used to be 3), replacing
-the 2026-07-23 lab-only interim (a Mac-side `osascript beep`, then a
-fan-in-TTS-lane 3-beep burst).
+**Pre-session courtesy tone (issue #1677) and the program's audible
+order.** The capture that OPENS a session plays three short ~1 kHz beeps +
+~3 s of silence from the speaker under test itself — a "quiet please, a
+measurement is starting" warning from the speaker the room can hear,
+replacing the 2026-07-23 lab-only interim (a Mac-side `osascript beep`,
+then a fan-in-TTS-lane 3-beep burst).
+
+**It announces a session, not a capture (trimmed 2026-08-18).** It shipped on
+every capture — 15 of them on a Full journey, 54 s of held-still silence — and
+`courtesy_prelude_for_phase()` in
+[`jasper/active_speaker/crossover_v2/programs.py`](../jasper/active_speaker/crossover_v2/programs.py)
+is now the one rule that decides. It answers **yes** for `check` (stage 1's
+opener), `verify` (stage 2's), and `entry_baseline`; **no** for everything
+else. The entry baseline is not an opener: it is there because its program
+object must stay identical to stage 2's anchor, and that `program_id` equality
+is #2291's before→after comparison and the delta probe's anchor check. What
+justifies dropping the repeat is that the mux measurement window is held for
+the whole session (no household audio can start mid-session for a sweep to
+collide with — the incident's own hazard is closed at the session boundary) and
+every later capture is begun deliberately, by the household's tap or by the
+remote tier's position gate. Twelve preludes come off a Full journey: 43.2 s.
+
+One consequence to know when reading `program_for_phase`: the summed sweep is
+now TWO held objects, not one. The compared pair (`verify` / `entry_baseline`)
+gets the announced program; the position groups (`cloud_measure` /
+`cloud_verify`) get its prelude-less twin. Restoring the prelude to the groups
+reproduces the anchor's `program_id` byte for byte, which is how
+`tests/test_crossover_v2_programs.py` states that the two differ in the prelude
+and in nothing else — not in the min-cap clamp that is their only level guard.
 
 The audible order, since 2026-07-28 (issues #1810/#1812 — the previous
 revision of this paragraph still described the pre-#1771 "prepended
@@ -3002,9 +3030,11 @@ group" shape, one revision stale):
 | Phase | Order |
 |---|---|
 | CHECK | 12 s session-ambient window (silent) → **beeps** → ~3 s settle → pilots |
-| MEASURE / VERIFY / every cloud position | **beeps** → ~3 s settle → 1 s ambient window (silent) → pilots → guard → sweep(s) |
+| VERIFY / the entry baseline | **beeps** → ~3 s settle → 1 s ambient window (silent) → pilots → guard → sweep |
+| MEASURE / a lateral pose / every cloud position | 1 s ambient window (silent) → pilots → guard → sweep(s) — no beeps |
 
-Two rules hold on every phase, both pinned by composition tests in
+Two rules hold on every phase that HAS a prelude, both pinned by composition
+tests in
 [`tests/test_audio_measurement_program.py`](../tests/test_audio_measurement_program.py):
 **nothing audible precedes the first beep** (PR #1771 left MEASURE/VERIFY
 opening on two full-gain pilot chirps ahead of the quieter beeps — the
@@ -3056,9 +3086,9 @@ program channel from that channel's own loudest scheduled stimulus gain
 positive), and its kind (`KIND_COURTESY_TONE`) is deliberately excluded from
 `STIMULUS_KINDS` so the locate/deconvolution machinery treats it exactly
 like a silence segment — invisible to analysis, present in the recording.
-Default ON with no config switch (see `COURTESY_PRELUDE_ENABLED` in
-`crossover_v2_flow.py`); the phone's per-phase `duration_ms` budget derives
-from the same lengthened program, so it is not a second thing to keep in
+No config switch (see `courtesy_prelude_for_phase` in
+`crossover_v2/programs.py`); the phone's per-entry `duration_ms` budget asks
+the same rule for the same phase, so it is not a second thing to keep in
 sync. See the "courtesy-tone prelude" section of
 [`jasper/audio_measurement/program.py`](../jasper/audio_measurement/program.py)'s
 module docstring for the segment shape.
@@ -5668,6 +5698,13 @@ now states the fabricate and mask cases the adversarial gate constructed. Both
 corrections came from that gate's review of PR #2545, and every figure in them
 was measured on this branch. **The date below is deliberately NOT bumped**, for
 the same reason as the two addenda above.
+
+Addendum 2026-08-18 (session trims): the courtesy-tone section, the stage-2
+tables, the tier capture totals, and the remote-tier comparison were rewritten
+against the code in the same diff — the prelude now announces a SESSION
+(`courtesy_prelude_for_phase`) and `DEFAULT_CLOUD_VERIFY_POSITIONS` sits at its
+floor of 5. **The date below is deliberately NOT bumped**: nothing outside
+those sections was re-verified.
 
 Last verified: 2026-08-18 (the lateral pause — the stage-1 capture flow, both
 capture tables, the tier capture/duration totals, the remote wall-clock

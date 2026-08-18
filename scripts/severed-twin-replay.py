@@ -272,8 +272,9 @@ def replay_measure(
     """
     from jasper.active_speaker.crossover_v2_flow import (
         ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS,
-        COURTESY_PRELUDE_ENABLED,
+        PHASE_MEASURE,
         PILOT_LEVEL_DELTA_DB,
+        courtesy_prelude_for_phase,
     )
     from jasper.audio_measurement.calibration import parse_calibration_text
     from jasper.audio_measurement.program import (
@@ -317,7 +318,12 @@ def replay_measure(
             float(gains["woofer"]) - PILOT_LEVEL_DELTA_DB, float(gains["woofer"]),
         ),
         leading_pilot_role="woofer",
-        courtesy_prelude=COURTESY_PRELUDE_ENABLED,
+        # The shipped rule for the phase this replays. The answer does not move
+        # a diagnostic: ``analyze_program_capture`` locates the first stimulus
+        # by correlation and reads every later segment RELATIVE to it, so a
+        # prelude the recorded session did or did not play is absorbed by the
+        # global offset rather than by the schedule.
+        courtesy_prelude=courtesy_prelude_for_phase(PHASE_MEASURE),
     )
     region = (candidate["source_preset"].get("crossover_regions") or [{}])[0]
     lo_ms, hi_ms = region.get("delay_range_ms") or (0.0, 0.0)

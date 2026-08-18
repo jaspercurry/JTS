@@ -86,7 +86,6 @@ from jasper.active_speaker.crossover_v2_flow import (
     CLOUD_RETAKE_ALLOWANCE,
     CLOUD_WALK_SHAPE_TAIL,
     CLOUD_WALK_SHAPE_TAIL_POST_APPLY,
-    COURTESY_PRELUDE_ENABLED,
     DEFAULT_CLOUD_MEASURE_POSITIONS,
     DEFAULT_CLOUD_VERIFY_POSITIONS,
     GAIN_CAP_BACKOFF_DB,
@@ -104,6 +103,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     PHASE_CLOUD_MEASURE,
     PHASE_CLOUD_VERIFY,
     PHASE_DONE,
+    PHASE_ENTRY_BASELINE,
     PHASE_MEASURE,
     PHASE_VERIFY,
     POSITION_ROLE_ONAX,
@@ -155,6 +155,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     cloud_geometry_retry_reach_cm,
     cloud_walk_reach_cm,
     cloud_walk_shape,
+    courtesy_prelude_for_phase,
     express_cloud_measure_positions,
     format_position_distance,
     locate_failed_diagnosis,
@@ -1466,7 +1467,7 @@ def test_the_tier_chooser_quotes_the_stage_1_the_session_actually_runs():
     assert info["full"]["stage1_captures"] == expected_stage1
     assert info["express"]["stage1_captures"] == expected_stage1
     # Stage 2 is where they still differ, and the chooser copy says so.
-    assert info["full"]["stage2_captures"] == 6
+    assert info["full"]["stage2_captures"] == 5
     assert info["express"]["stage2_captures"] == 1
     for tier, detail in info.items():
         assert detail["capture_target"] == (
@@ -4900,24 +4901,33 @@ def test_cloud_positions_play_the_summed_program_and_get_no_tracking_prior():
 
 def test_summed_sweep_phases_share_one_program_object():
     """The byte-safety invariant issue #1976's fix depends on, pinned
-    directly (adversarial-gate SF2, PR #2028): ``program_for_phase`` must
-    hand VERIFY, CLOUD_MEASURE, and CLOUD_VERIFY the SAME object, not merely
-    an equal one. ``self._verify_program`` is composed once in ``__init__``
-    (see the "Programs" block) and returned unchanged for every
-    ``SUMMED_SWEEP_PHASES`` member — nothing upstream of this test caught a
-    divergence here: mutating ``program_for_phase`` to hand cloud phases a
+    directly (adversarial-gate SF2, PR #2028): ``program_for_phase`` must hand
+    the phases that share a program the SAME object, not merely an equal one.
+    Each object is composed once in ``__init__`` (see the "Programs" block) and
+    returned unchanged — nothing upstream of this test caught a divergence
+    here: mutating ``program_for_phase`` to hand cloud phases a
     freshly-composed (value-equal, object-distinct) program left the wider
     suite green, because everything else asserts on program CONTENT
     (segments, gains, ``.phase``), never object identity. If this ever goes
     false, `jasper/web/correction_crossover_v2.py`'s
     ``bind_production_play._play`` writes a ``summed_program.wav`` that is
-    NOT what a genuine VERIFY capture actually played."""
+    NOT what a genuine capture of that phase actually played.
+
+    Since the 2026-08-18 prelude trim there are TWO such objects rather than
+    one: the compared pair (VERIFY and the entry baseline, whose ``program_id``
+    equality is #2291's before→after check and the delta probe's anchor check)
+    and the position groups' unannounced twin. The identity requirement is the
+    same for each; what it is not is a claim that all four are one program.
+    """
     fakes = FakeSeams()
     c = _conductor(fakes)
     assert c.program_for_phase(PHASE_CLOUD_MEASURE) is c.program_for_phase(
+        PHASE_CLOUD_VERIFY
+    )
+    assert c.program_for_phase(PHASE_ENTRY_BASELINE) is c.program_for_phase(
         PHASE_VERIFY
     )
-    assert c.program_for_phase(PHASE_CLOUD_VERIFY) is c.program_for_phase(
+    assert c.program_for_phase(PHASE_CLOUD_VERIFY) is not c.program_for_phase(
         PHASE_VERIFY
     )
 
@@ -4933,10 +4943,10 @@ def test_capture_plan_entries_carry_auto_advance_policy():
     # 1 + 1 + 8 = 10 at the Full tier's DEFAULT_CLOUD_MEASURE_POSITIONS = 9.
     # It carries no VERIFY and no post-apply group — those are stage 2's plan,
     # pinned in test_the_stage_2_plan_walks_the_tiers_own_verify_shape.
-    # ``cloud_capture_target()`` is unchanged at 16 because it still names the
-    # WHOLE journey (10 + 6), which is what the tier chooser promises.
+    # ``cloud_capture_target()`` still names the WHOLE journey (10 + 5),
+    # which is what the tier chooser promises.
     assert plan.capture_target == 10
-    assert cloud_capture_target() == 16
+    assert cloud_capture_target() == 15
     kinds = [entry.kind_label for entry in plan.entries]
     assert kinds == (
         ["check", "measure"]
@@ -5035,7 +5045,7 @@ def test_express_is_a_derived_shape_not_a_loosened_floor():
     # The full tier is unchanged, and would REFUSE express's own counts.
     full = resolve_plan_shape()
     assert full.tier == TIER_FULL
-    assert (full.capture_target, full.max_attempts) == (16, 23)
+    assert (full.capture_target, full.max_attempts) == (15, 22)
     assert full.has_cloud_verify_group is True
     with pytest.raises(CrossoverV2FlowError):
         resolve_plan_shape(
@@ -5086,7 +5096,7 @@ def test_the_stage_2_plan_walks_the_tiers_own_verify_shape():
     subject (the ``M = 1`` done-screen placement rule) moved out of stage 1's
     builder and into stage 2's along with the post-apply group itself.
 
-    Full's stage 2 is the six-position spatial walk; Express's is the single
+    Full's stage 2 is the multi-position spatial walk; Express's is the single
     anchor at the mark. The phone's END screen rides the LAST entry either way
     (``renderPlanAllDone`` reads the final wire index), and Express's copy
     claims LESS because it verified less (§1.3).
@@ -5094,11 +5104,11 @@ def test_the_stage_2_plan_walks_the_tiers_own_verify_shape():
     from jasper.capture_relay.spec import MAX_CAPTURE_PLAN_ATTEMPTS
 
     full = build_v2_verify_capture_plan(FC_HZ, plan_shape=resolve_plan_shape())
-    assert full.capture_target == DEFAULT_CLOUD_VERIFY_POSITIONS == 6
+    assert full.capture_target == DEFAULT_CLOUD_VERIFY_POSITIONS == 5
     assert [e.kind_label for e in full.entries] == (
         ["verify"] + ["cloud_verify"] * (DEFAULT_CLOUD_VERIFY_POSITIONS - 1)
     )
-    assert [e.index for e in full.entries] == list(range(6))
+    assert [e.index for e in full.entries] == list(range(5))
     assert full.entries[-1].screen["done_title"] == "Your speaker is tuned"
     assert "Run a Full measurement" not in full.entries[-1].screen["done_body"]
     # Stage 1's own plan claims nothing about the result any more.
@@ -5127,15 +5137,15 @@ def test_the_stage_2_plan_walks_the_tiers_own_verify_shape():
     assert "verified-everywhere" not in last.screen["done_body"]
 
     # RE-DERIVED budgets. Stage 2 draws its own, from its own target:
-    # Full 6 + GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE, Express 1 + …
+    # Full 5 + GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE, Express 1 + …
     assert full.max_attempts == (
-        6 + GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE
+        5 + GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE
     ) <= MAX_CAPTURE_PLAN_ATTEMPTS
     assert express.max_attempts == (
         1 + GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE
     ) <= MAX_CAPTURE_PLAN_ATTEMPTS
-    # …and its own walked-away ceiling: 1800 + (6-3)*120 / the plain baseline.
-    assert session_wall_clock_ceiling_s(full) == 2160.0
+    # …and its own walked-away ceiling: 1800 + (5-3)*120 / the plain baseline.
+    assert session_wall_clock_ceiling_s(full) == 2040.0
     assert session_wall_clock_ceiling_s(express) == 1800.0
 
     # An express STAGE 1 is a strictly smaller draw than Full's.
@@ -5695,7 +5705,7 @@ def test_the_consent_tier_line_derives_its_counts_and_duration():
     assert build_v2_capture_plan(_roles(), FC_HZ).estimated_minutes() == 7
     assert (
         build_v2_capture_plan(_roles(), FC_HZ, tier=TIER_EXPRESS).estimated_minutes()
-        == 5
+        == 4
     )
 
 
@@ -6039,23 +6049,43 @@ def test_wide_is_derived_from_the_offset_not_hand_set():
 # The phone's recording window (CapturePlanEntry.duration_ms) is derived from
 # build_v2_capture_plan's OWN nominal composition, entirely separate from the
 # real playback composition (``crossover_v2.programs``'s SessionExcitation
-# methods, reached through the conductor's ``_excitation``). Both must
-# enable the prelude via the SAME COURTESY_PRELUDE_ENABLED constant, or the
-# phone would stop recording before the real (longer) program finishes --
-# mirrors the existing +15 s MEASURE-lengthening proof from sweep-composition
-# PR-A (#1668).
+# methods, reached through the conductor's ``_excitation``). Both must ask the
+# SAME ``courtesy_prelude_for_phase`` rule, or the phone would stop recording
+# before the real (longer) program finishes -- mirrors the existing +15 s
+# MEASURE-lengthening proof from sweep-composition PR-A (#1668).
+#
+# Since the 2026-08-18 trim the rule answers per PHASE, so this is now also
+# where a phase that is announced in the plan but not in playback (or the other
+# way round) is caught: each entry is checked against a nominal program composed
+# at ITS OWN phase's answer.
+
+
+def _courtesy_prelude_ms() -> float:
+    """What one prelude costs, DERIVED from the composer's own constants."""
+    from jasper.audio_measurement.program import (
+        COURTESY_TONE_BEEP_COUNT,
+        COURTESY_TONE_BEEP_DURATION_S,
+        COURTESY_TONE_BEEP_GAP_S,
+        COURTESY_TONE_TRAILING_SILENCE_S,
+    )
+
+    return 1000.0 * (
+        COURTESY_TONE_BEEP_COUNT * COURTESY_TONE_BEEP_DURATION_S
+        + (COURTESY_TONE_BEEP_COUNT - 1) * COURTESY_TONE_BEEP_GAP_S
+        + COURTESY_TONE_TRAILING_SILENCE_S
+    )
 
 
 def test_capture_plan_duration_matches_courtesy_prelude_program_exactly():
-    assert COURTESY_PRELUDE_ENABLED is True
+    assert courtesy_prelude_for_phase(PHASE_CHECK) is True
+    assert courtesy_prelude_for_phase(PHASE_MEASURE) is False
     plan = build_v2_capture_plan(_roles(), FC_HZ)
     check, measure = plan.entries[0], plan.entries[1]
     # The VERIFY-shaped program's duration now rides STAGE 2's anchor (the
-    # split moved the phase, not the arithmetic) — and stage 1's cloud entries,
-    # which play the same program, are checked against it below.
-    verify = build_v2_verify_capture_plan(
-        FC_HZ, plan_shape=resolve_plan_shape(),
-    ).entries[0]
+    # split moved the phase, not the arithmetic) — and the cloud entries, which
+    # play its unannounced twin, are checked against that twin below.
+    stage2 = build_v2_verify_capture_plan(FC_HZ, plan_shape=resolve_plan_shape())
+    verify = stage2.entries[0]
     assert verify.kind_label == "verify"
 
     from jasper.audio_measurement.program import (
@@ -6067,30 +6097,63 @@ def test_capture_plan_duration_matches_courtesy_prelude_program_exactly():
 
     roles = _roles()
     nominal_gains = {rb.role: BASE_STIMULUS_PEAK_DBFS for rb in roles}
-    nominal_check = build_check_program(roles, courtesy_prelude=True)
+    nominal_check = build_check_program(
+        roles, courtesy_prelude=courtesy_prelude_for_phase(PHASE_CHECK),
+    )
     nominal_measure = build_measure_program(
         nominal_gains, roles,
         leading_pilot_gains_db=(
             BASE_STIMULUS_PEAK_DBFS - PILOT_LEVEL_DELTA_DB, BASE_STIMULUS_PEAK_DBFS
         ),
-        courtesy_prelude=True,
+        courtesy_prelude=courtesy_prelude_for_phase(PHASE_MEASURE),
     )
     nominal_verify = build_verify_program(
         FC_HZ,
         leading_pilot_gains_db=(
             BASE_STIMULUS_PEAK_DBFS - PILOT_LEVEL_DELTA_DB, BASE_STIMULUS_PEAK_DBFS
         ),
-        courtesy_prelude=True,
+        courtesy_prelude=courtesy_prelude_for_phase(PHASE_VERIFY),
+    )
+    nominal_cloud = build_verify_program(
+        FC_HZ,
+        leading_pilot_gains_db=(
+            BASE_STIMULUS_PEAK_DBFS - PILOT_LEVEL_DELTA_DB, BASE_STIMULUS_PEAK_DBFS
+        ),
+        courtesy_prelude=courtesy_prelude_for_phase(PHASE_CLOUD_VERIFY),
     )
     assert check.duration_ms == _program_duration_ms(nominal_check) + CAPTURE_ENTRY_MARGIN_MS
     assert measure.duration_ms == _program_duration_ms(nominal_measure) + CAPTURE_ENTRY_MARGIN_MS
     assert verify.duration_ms == _program_duration_ms(nominal_verify) + CAPTURE_ENTRY_MARGIN_MS
-    # Every cloud position plays the SAME mono summed sweep VERIFY does, so its
+    # Every prompted position plays the summed sweep's UNANNOUNCED twin, so its
     # recording window must be that program's — a shorter one would truncate
     # the sweep and a longer one would record silence into the analysis.
-    for entry in plan.entries:
-        if entry.kind_label.startswith("cloud_"):
-            assert entry.duration_ms == verify.duration_ms
+    cloud_ms = _program_duration_ms(nominal_cloud) + CAPTURE_ENTRY_MARGIN_MS
+    cloud_entries = [
+        e for e in (*plan.entries, *stage2.entries)
+        if e.kind_label.startswith("cloud_")
+    ]
+    assert cloud_entries
+    for entry in cloud_entries:
+        assert entry.duration_ms == cloud_ms, entry.kind_label
+    # And the trim is real at the phone's own surface: a position's window is
+    # exactly the prelude shorter than the anchor's.
+    assert verify.duration_ms - cloud_ms == pytest.approx(_courtesy_prelude_ms(), abs=1)
+    # The SHIPPED stage-1 plan, whose last entry is the one budget that has to
+    # match a program composed for a DIFFERENT phase: the entry baseline plays
+    # stage 2's anchor object, so it budgets the ANNOUNCED window even though
+    # nothing about its own position asks for a warning.
+    shipped = build_v2_capture_plan(
+        _roles(), FC_HZ,
+        include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
+        include_lateral=flow.STAGE1_INCLUDES_LATERAL,
+        include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
+    )
+    baseline = next(e for e in shipped.entries if e.kind_label == "entry_baseline")
+    assert baseline.duration_ms == verify.duration_ms
+    # A lateral pose replays MEASURE, so it budgets MEASURE's window.
+    for entry in shipped.entries:
+        if entry.kind_label == "lateral":
+            assert entry.duration_ms == measure.duration_ms
 
 
 def test_capture_plan_duration_is_longer_than_the_pre_1677_shape():
@@ -6098,19 +6161,9 @@ def test_capture_plan_duration_is_longer_than_the_pre_1677_shape():
     budget (not just that the two composition paths agree with EACH OTHER,
     which the previous test already pins) -- the "+15 s"-style regression
     check named in the issue."""
-    from jasper.audio_measurement.program import (
-        COURTESY_TONE_BEEP_COUNT,
-        COURTESY_TONE_BEEP_DURATION_S,
-        COURTESY_TONE_BEEP_GAP_S,
-        COURTESY_TONE_TRAILING_SILENCE_S,
-        build_check_program,
-    )
+    from jasper.audio_measurement.program import build_check_program
 
-    expected_prelude_ms = 1000.0 * (
-        COURTESY_TONE_BEEP_COUNT * COURTESY_TONE_BEEP_DURATION_S
-        + (COURTESY_TONE_BEEP_COUNT - 1) * COURTESY_TONE_BEEP_GAP_S
-        + COURTESY_TONE_TRAILING_SILENCE_S
-    )
+    expected_prelude_ms = _courtesy_prelude_ms()
     roles = _roles()
     legacy_check = build_check_program(roles)
     prelude_check = build_check_program(roles, courtesy_prelude=True)
@@ -6144,10 +6197,11 @@ def test_verify_only_capture_plan_duration_includes_courtesy_prelude():
     assert entry.duration_ms == _program_duration_ms(nominal_verify) + CAPTURE_ENTRY_MARGIN_MS
 
 
-def test_conductor_composed_programs_include_courtesy_tone_by_default():
-    """The conductor's REAL playback composition (not the nominal planning
-    path above) also carries the prelude -- COURTESY_PRELUDE_ENABLED wired
-    into every ``SessionExcitation`` composer."""
+def test_conductor_composed_programs_carry_the_prelude_where_the_rule_says():
+    """The conductor's REAL playback composition (not the nominal planning path
+    above) obeys the same ``courtesy_prelude_for_phase`` rule — including the
+    clip-retry rearm, which recomposes MEASURE and must not put the beeps back.
+    """
     fakes = FakeSeams()
     c = _conductor(fakes)
     check_tone_ids = {
@@ -6156,15 +6210,21 @@ def test_conductor_composed_programs_include_courtesy_tone_by_default():
     assert check_tone_ids == {"courtesy_tone_ch0", "courtesy_tone_ch1"}
 
     measure_prog = c._compose_measure_program({"woofer": -11.0, "tweeter": -13.0})
-    measure_tone_ids = {
-        s.segment_id for s in measure_prog.segments if s.kind == KIND_COURTESY_TONE
-    }
-    assert measure_tone_ids == {"courtesy_tone_ch0", "courtesy_tone_ch1"}
+    assert not [s for s in measure_prog.segments if s.kind == KIND_COURTESY_TONE]
 
     verify_tone_ids = {
         s.segment_id for s in c.program_for_phase(PHASE_VERIFY).segments if s.kind == KIND_COURTESY_TONE
     }
     assert verify_tone_ids == {"courtesy_tone_ch0"}  # VERIFY is mono
+    assert verify_tone_ids == {
+        s.segment_id
+        for s in c.program_for_phase(PHASE_ENTRY_BASELINE).segments
+        if s.kind == KIND_COURTESY_TONE
+    }
+    assert not [
+        s for s in c.program_for_phase(PHASE_CLOUD_VERIFY).segments
+        if s.kind == KIND_COURTESY_TONE
+    ]
 
 
 def test_bind_program_playback_seams_uses_inline_setconfig(tmp_path):
@@ -6313,12 +6373,12 @@ def test_shipped_v2_plans_keep_their_retry_budget_when_the_relay_ceiling_moves()
     # journey any more. Stage 1 is 1 + N = 10 captures with
     # 10 + GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE = 17 attempts;
     # ``cloud_capture_target()``/``cloud_plan_max_attempts()`` keep their
-    # whole-journey meaning (16 / 23), which is what the relay-capacity guard
+    # whole-journey meaning (15 / 22), which is what the relay-capacity guard
     # and jasper-doctor read as the conservative bound.
     assert cloud.capture_target == 10
     assert cloud.max_attempts == 17
-    assert cloud_capture_target() == 16
-    assert cloud_plan_max_attempts() == 23
+    assert cloud_capture_target() == 15
+    assert cloud_plan_max_attempts() == 22
     assert cloud.max_attempts < cloud_plan_max_attempts()
     assert one_entry.capture_target == 1
     assert one_entry.max_attempts == CAPTURE_PLAN_MAX_ATTEMPTS
@@ -6359,13 +6419,13 @@ def test_worst_case_cloud_plan_fits_the_relay_index_space():
         + DEFAULT_CLOUD_VERIFY_POSITIONS
         + GEOMETRY_RETRY_POSITIONS
     ) <= MAX_CAPTURE_PLAN_ATTEMPTS
-    assert worst_entries == 18
+    assert worst_entries == 17
     assert (
         cloud_plan_max_attempts(
             cloud_measure_positions=MAX_CLOUD_MEASURE_POSITIONS,
             cloud_verify_positions=DEFAULT_CLOUD_VERIFY_POSITIONS,
         )
-        == 25
+        == 24
         <= MAX_CAPTURE_PLAN_ATTEMPTS
     )
     # …and the two stage-1 groups the cloud arithmetic above does not count.
@@ -6423,7 +6483,7 @@ def test_session_wall_clock_ceiling_scales_with_the_plan_and_is_capped():
     assert session_wall_clock_ceiling_s(shipped) == 2640.0
     assert session_wall_clock_ceiling_s(
         build_v2_verify_capture_plan(FC_HZ, plan_shape=resolve_plan_shape())
-    ) == 2160.0
+    ) == 2040.0
     biggest = build_v2_capture_plan(
         _roles(), FC_HZ,
         cloud_measure_positions=MAX_CLOUD_MEASURE_POSITIONS,

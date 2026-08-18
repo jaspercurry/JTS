@@ -152,8 +152,8 @@ def program_phase_schedule(
     ``ambient_started`` carries ``quiet_requested``, and it is a MEASUREMENT
     fact, not a presentation one. The two ambient windows are opposites:
 
-    * MEASURE/VERIFY's 1 s pre-pilot window sits AFTER the courtesy beeps and
-      "MUST be measured with the room already quiet" — the phone should ask.
+    * every non-CHECK phase's 1 s pre-pilot window "MUST be measured with the
+      room already quiet" — the phone should ask.
     * CHECK's 12 s window is the SESSION's room-noise measurement, "deliberately
       taken before the household is asked to go quiet" (both quotes:
       :mod:`jasper.audio_measurement.program`'s module docstring). The ambient
@@ -161,12 +161,14 @@ def program_phase_schedule(
       during THAT window would change the very floor it is measuring — a copy
       string silently editing the measurement.
 
-    Derived from the composed order (is this window after the beeps?), so a
-    composer that moves either window moves the flag with it.
+    Asked of the program's own ``phase``, which is what distinguishes the two
+    windows — see the flag's own comment for why it is no longer derived from
+    where the courtesy beeps sit.
     """
     from jasper.audio_measurement.program import (
         AMBIENT_SEGMENT_ID,
         KIND_COURTESY_TONE,
+        PHASE_CHECK,
         STIMULUS_KINDS,
     )
 
@@ -180,9 +182,6 @@ def program_phase_schedule(
 
     steps: list[tuple[float, str, dict[str, Any]]] = []
     beeps = [s for s in segments if s.kind == KIND_COURTESY_TONE]
-    beep_end = (
-        max(s.start_sample + s.n_samples for s in beeps) if beeps else None
-    )
     if beeps:
         steps.append(
             (
@@ -200,9 +199,19 @@ def program_phase_schedule(
                 HOST_PHASE_AMBIENT_STARTED,
                 {
                     "duration_s": first.n_samples / rate,
-                    # No prelude at all ⇒ no warning was played ⇒ do not ask.
+                    # WHICH window this is, asked of the program's own phase.
+                    # CHECK's is the session room-noise measurement and the
+                    # only one that must NOT be hushed; every other phase's is
+                    # the 1 s pre-pilot window the pilot SNR guard reads.
+                    #
+                    # It used to ask "does this window sit after the courtesy
+                    # beeps?", which answered the same while every capture
+                    # carried a prelude. Since the 2026-08-18 trim only a
+                    # session's OPENING capture does, so that question would
+                    # answer "no warning played, do not ask" on the
+                    # mid-session captures whose window has to be quiet.
                     "quiet_requested": (
-                        beep_end is not None and first.start_sample >= beep_end
+                        str(getattr(program, "phase", "")) != PHASE_CHECK
                     ),
                 },
             )

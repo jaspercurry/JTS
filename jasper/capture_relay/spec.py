@@ -2073,10 +2073,20 @@ def build_crossover_sweep_spec(
         #     and a prompted cloud position plays two pilots then one sweep.
         #     The plural is the one shape true of all three; a count here would
         #     need three different sentences for three different phases.
+        #
+        # It says "THE FIRST measurement" of the beeps and "EVERY measurement"
+        # of the tones, because since 2026-08-18 those are two different
+        # populations: the courtesy prelude announces a SESSION rather than a
+        # capture (``crossover_v2.programs.courtesy_prelude_for_phase``), so it
+        # rides this session's opening capture and no other. The sentence used
+        # to say "Each measurement has three short beeps", which described what
+        # the household then heard and no longer does — and a consent screen
+        # that over-promises what the speaker will do is the same defect as one
+        # that under-promises it.
         steps.append(
-            "Each measurement has three short beeps, a pause, and then rising "
-            "tones — loud, but no louder than JTS needs to hear itself over the "
-            "room"
+            "The first measurement has three short beeps and a pause; every "
+            "measurement has rising tones — loud, but no louder than JTS needs "
+            "to hear itself over the room"
         )
     steps.extend(
         [

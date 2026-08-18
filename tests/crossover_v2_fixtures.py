@@ -1230,20 +1230,38 @@ def _dummy_program():
 # FOUR unchanged digests are the load-bearing check in this revision, and the
 # +5 is the whole diff: a noun swap that reached one screen and nothing else.
 # No target, attempt budget, entry count, screen key, or program duration moved.
+#
+# RE-DERIVED 2026-08-18 — the two session trims. NO COPY MOVED; what moved is
+# per-entry ``duration_ms`` (the courtesy prelude now rides only the capture
+# that OPENS a session, ``crossover_v2.programs.courtesy_prelude_for_phase``)
+# and stage 2's entry COUNT (``DEFAULT_CLOUD_VERIFY_POSITIONS`` 6 → 5).
+#
+#   stage1-full     2918 B → 2918 B  (length UNCHANGED; MEASURE + 6 lateral
+#                                     entries each −3600 ms, same digit count)
+#   stage1-express  1945 B → 1945 B  (length UNCHANGED; same reason)
+#   stage2-full     1942 B → 1683 B  (−259; one prompted position dropped, and
+#                                     the four that remain are −3600 ms each)
+#   stage2-express   630 B →  630 B  (UNCHANGED, digest included)
+#   1-entry          329 B →  329 B  (UNCHANGED, digest included)
+#
+# The two UNCHANGED DIGESTS are the load-bearing check again, and they check
+# the trim's scope precisely: both are plans whose only entry is the announced
+# anchor, so a byte-identical digest says the prelude rule left the announced
+# capture alone while it took 3.6 s off every other one.
 _GOLDEN_V2_PLAN_BYTES = {
     "stage1-full": (
         2918,
-        "b2c34282a518658d908acda6de53e69e777938c9480c415ed4e4649832e65949",
+        "2127852c43a515dd855042e2c99f37a35d877cc32d0d78ba94299c019d19ad3b",
     ),
     "stage1-express": (
         1945,
-        "259c69948dc954b28a408335419336f312f9045aa9307820999f19db6a2b4ff7",
+        "74e9e4d773d5f7bfb717c7429421f098f4e89f0276a59340f32928e61826cb64",
     ),
     # Moved by #1964: Full's done_body no longer pre-commits "Verified and
     # applied." before the first tone plays.
     "stage2-full": (
-        1942,
-        "575ae0cb9e0a43a9f24492c43bc1e6192740164f96d9e9b7eb639d1bba629446",
+        1683,
+        "0afe4f32026b70fbc72f0c0c799d793221cb43e88949ea1b50a45e73fae8dce6",
     ),
     # Moved by #1964's fix round: Express's upgrade-path phrase drops the
     # withdrawn "verified-everywhere" overclaim for the B2 wording jts.local

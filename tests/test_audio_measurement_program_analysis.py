@@ -4279,7 +4279,8 @@ def test_check_gain_plan_uses_peak_referenced_level_not_ambient_subtracted():
 #
 # The shipped CHECK program is 12 s of ambient silence at [0, 12 s) followed
 # IMMEDIATELY by the courtesy prelude — 0.6 s of -18 dBFS beeps at
-# [12.0, 12.6) s (`crossover_v2_flow.COURTESY_PRELUDE_ENABLED` is True). A
+# [12.0, 12.6) s (`courtesy_prelude_for_phase(PHASE_CHECK)` is True — CHECK
+# opens stage 1, so it is one of the phases that keeps the prelude). A
 # window whose end is computed from the CLAMPED start walks forward onto those
 # beeps on a capture that began late. Measured on that shipped geometry over a
 # -70 dBFS floor: a 0.6 s late start read the window RMS 39.5 dB hot (-70.00
