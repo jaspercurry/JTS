@@ -2123,10 +2123,14 @@ def test_to_dict_carries_the_direction_evidence_the_deferral_rests_on():
         "realized_louder_than_commanded",
         "model_departure_over_tolerance",
         "max_signed_error_db",
+        "max_signed_error_hz",
         "seam_rollback_deferral",
     }
     assert payload["direction"]["realized_louder_than_commanded"] is False
     assert payload["direction"]["max_signed_error_db"] <= 0.0
+    # The amount and the frequency it was measured at travel together, and that
+    # frequency is NOT ``worst_hz`` — different reduction, different bin set.
+    assert payload["direction"]["max_signed_error_hz"] > 0.0
     assert payload["direction"]["seam_rollback_deferral"] == (
         SEAM_DEFERRED_QUIETER_THAN_COMMANDED
     )

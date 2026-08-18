@@ -409,4 +409,28 @@ def test_the_model_error_is_still_measured_and_reaches_the_next_round():
         if t.startswith(f"{QUALITY_MODEL_DEPARTURE}:")
     )
     assert "3.89dB" in target
-    assert "Hz" in target
+    # The frequency the AMOUNT was measured at, which is not always the one
+    # ``worst_hz`` names — see the next test. Here they coincide.
+    assert probe.max_signed_error_hz == pytest.approx(OVERSHOOT_HZ, abs=1.0)
+    assert f"@{OVERSHOOT_HZ:.0f}Hz" in target
+
+
+def test_the_departures_own_frequency_is_not_the_worst_absolute_errors():
+    """Two reductions over two bin sets, and r1b is where they part company.
+
+    ``worst_hz`` is the worst ABSOLUTE error over the GRADED bins;
+    ``max_signed_error_hz`` is the worst POSITIVE departure over the SAFETY
+    bins. On this round they sit 563 Hz apart — far enough that a next-round
+    target quoting the first frequency beside the second amount would point at
+    a different acoustic feature entirely (1947 Hz is the dip r2 went on to
+    close; 1384 Hz is the standing model error this whole file is about).
+    """
+    probe = _probe("r1b")
+    assert probe.worst_hz == pytest.approx(1947.2, abs=1.0)
+    assert probe.max_signed_error_hz == pytest.approx(1384.1, abs=1.0)
+    assert probe.max_signed_error_db == pytest.approx(1.219, abs=5e-3)
+
+    # ...and the pair travels on the record together.
+    direction = probe.to_dict()["direction"]
+    assert direction["max_signed_error_db"] == probe.max_signed_error_db
+    assert direction["max_signed_error_hz"] == probe.max_signed_error_hz

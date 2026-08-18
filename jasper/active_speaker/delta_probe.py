@@ -979,6 +979,13 @@ class DeltaProbeMap:
     #: measurement. ``None`` when no bin was in the safety mask, never 0.0
     #: (``gain_factor``'s distinction).
     max_signed_error_db: float | None = None
+    #: The frequency :attr:`max_signed_error_db` was measured at, Hz. **Not
+    #: :attr:`worst_hz`** — that is the worst ABSOLUTE error over the GRADED
+    #: bins, and this is the worst POSITIVE departure over the SAFETY bins. The
+    #: two are 563 Hz apart on the banked series-2 r1b. It rides beside the
+    #: amount because a next-round target quoting one bin's dB at another bin's
+    #: frequency points at the wrong feature. ``None`` whenever the amount is.
+    max_signed_error_hz: float | None = None
     #: How much of what was commanded arrived, PER BAND (#2649), keyed by
     #: :data:`DELTA_PROBE_REALIZATION_BANDS`. Each entry is
     #: ``{band_hz, n_bins, ratio, graded}``; ``ratio`` is ``None`` for a band
@@ -1088,6 +1095,7 @@ class DeltaProbeMap:
                     self.model_departure_over_tolerance
                 ),
                 "max_signed_error_db": self.max_signed_error_db,
+                "max_signed_error_hz": self.max_signed_error_hz,
                 "seam_rollback_deferral": seam_rollback_deferral(self),
             },
             # The frame's own terms and the grades taken with it removed, nested
@@ -1162,6 +1170,7 @@ def _safety_only(
     realized_louder_than_commanded: bool,
     model_departure_over_tolerance: bool,
     max_signed_error_db: float | None,
+    max_signed_error_hz: float | None,
 ) -> DeltaProbeMap:
     """A map carrying the model's departure and NO grade of anything else (#2614).
 
@@ -1205,6 +1214,7 @@ def _safety_only(
         realized_louder_than_commanded=realized_louder_than_commanded,
         model_departure_over_tolerance=model_departure_over_tolerance,
         max_signed_error_db=max_signed_error_db,
+        max_signed_error_hz=max_signed_error_hz,
     )
 
 
@@ -2016,6 +2026,19 @@ def classify_delta_probe(
     model_departure_over_tolerance, max_signed_error_db = louder_than_commanded(
         model_excess, tolerance_full, safety_mask,
     )
+    # WHERE it peaks, and it is a different bin from ``worst_hz`` above often
+    # enough to matter: that one is the worst ABSOLUTE error over the GRADED
+    # bins, this one the worst POSITIVE departure over the SAFETY bins — two
+    # reductions over two sets. On the banked series-2 r1b they are 1947.2 Hz
+    # and 1384.1 Hz. A number and the frequency it was measured at travel
+    # together here (``max_error_db``/``worst_hz``, ``residual_offset_db``/
+    # ``quiet_core_band_hz``), and a target pairing this amount with the other
+    # bin's frequency would point the next round at the wrong feature.
+    max_signed_error_hz: float | None = (
+        float(freqs[safety_mask][int(np.argmax(model_excess[safety_mask]))])
+        if max_signed_error_db is not None
+        else None
+    )
 
     # The caller had no CHANGE axis and said so (#2614): what it handed in as
     # ``commanded`` is the applied graph's own declared transfer, so every shape
@@ -2046,6 +2069,7 @@ def classify_delta_probe(
             realized_louder_than_commanded=realized_louder,
             model_departure_over_tolerance=model_departure_over_tolerance,
             max_signed_error_db=max_signed_error_db,
+            max_signed_error_hz=max_signed_error_hz,
         )
 
     def _map(verdict: str, reason: str) -> DeltaProbeMap:
@@ -2083,6 +2107,7 @@ def classify_delta_probe(
             realized_louder_than_commanded=realized_louder,
             model_departure_over_tolerance=model_departure_over_tolerance,
             max_signed_error_db=max_signed_error_db,
+            max_signed_error_hz=max_signed_error_hz,
             band_realization=realization,
             trust_ceiling_hz=(
                 None if trust_ceiling_hz is None else float(trust_ceiling_hz)

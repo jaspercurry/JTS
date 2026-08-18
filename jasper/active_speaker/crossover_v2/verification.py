@@ -1316,6 +1316,13 @@ def _model_departure_target(probe: Any | None) -> list[str]:
     is read rather than a threshold being re-derived here against a scalar. This
     module owns no tolerance of its own and does not gain one for a target.
 
+    **The frequency is ``max_signed_error_hz``, never ``worst_hz``.** They are
+    two reductions over two bin sets — worst ABSOLUTE error over the graded
+    bins, worst POSITIVE departure over the safety bins — and they sit 563 Hz
+    apart on the banked series-2 r1b. A target quoting one bin's dB at another
+    bin's frequency sends the next round after the wrong feature, which is worse
+    than a target with no frequency in it.
+
     Nothing for an absent probe, an unmeasured departure, or one inside
     tolerance. A target list is what the household surface and the next round
     read, so a line that fires on every round is a line nobody reads.
@@ -1328,7 +1335,7 @@ def _model_departure_target(probe: Any | None) -> list[str]:
     amount = _finite_number(getattr(probe, "max_signed_error_db", None))
     if amount is None:
         return []
-    where = _finite_number(getattr(probe, "worst_hz", None))
+    where = _finite_number(getattr(probe, "max_signed_error_hz", None))
     at = "" if where is None else f"@{where:.0f}Hz"
     return [f"{QUALITY_MODEL_DEPARTURE}:{amount:.2f}dB{at}"]
 
