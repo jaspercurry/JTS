@@ -870,9 +870,21 @@ def evaluate_evidence_trust(
 # 6. safety — the only axis that pulls a measured graph off
 # --------------------------------------------------------------------------
 
-#: A commanded boost realized MORE lift than it declared
+#: A boost measured MORE lift across the apply than the graph declared
 #: (:func:`~jasper.active_speaker.delta_probe.boost_overshoot`).
-SAFETY_BOOST_OVER_DECLARED_BOUND = "boost_realized_above_declared_bound"
+#:
+#: **The bound this names is the probe's own per-bin measurement tolerance**
+#: (:data:`~jasper.active_speaker.delta_probe.DELTA_PROBE_TOLERANCE_LOW_DB`),
+#: not a declared boost limit — which is what the pre-series-2 spelling,
+#: ``boost_realized_above_declared_bound``, said. On a hearing-safety surface a
+#: reason string that names the wrong quantity has a measurable cost: it sent
+#: the first reading of the 2026-08-17 incident looking for a headroom
+#: accounting error, in a round whose headroom accounting was correct to
+#: 0.04 dB. Receipts banked before this change carry the old string; they were
+#: also reporting a different quantity (see
+#: :attr:`~jasper.active_speaker.delta_probe.DeltaProbeMap.boost_overshoot_db`),
+#: so the two spellings marking two instruments is the honest outcome.
+SAFETY_BOOST_OVER_DECLARED_BOUND = "boost_realized_above_probe_tolerance"
 #: The speaker measured LOUDER than declared where nothing was commanded.
 SAFETY_UNCOMMANDED_LEVEL_LOUDER = "uncommanded_level_shift_louder"
 #: A stimulus segment carried a full-scale run.
@@ -901,13 +913,39 @@ def evaluate_applied_safety(
     graph off for something other than the absence of evidence. Three findings,
     each read from a shipped instrument and none of them re-derived here:
 
-    * a commanded **boost realized above its declared bound**
+    * a **boost realized above the probe's tolerance**
       (:attr:`~jasper.active_speaker.delta_probe.DeltaProbeMap.boost_over_declared_bound`)
       — energy in a driver the graph did not declare;
     * an uncommanded level shift measured **LOUDER** than declared
       (:data:`~jasper.active_speaker.delta_probe.VERDICT_LEVEL_MISMATCH` with a
       positive residual past its own tolerance);
     * a **clipped** stimulus segment in the post-apply capture.
+
+    **All three are measurements of the SPEAKER, and the first one had to be
+    repaired to become one** (series-2 D1). Until then it read
+    ``realized − commanded``, in which the commanded term cancels identically,
+    so it graded how far the room departed from our two-branch model — an
+    electrical-domain claim taken off a mic-domain quantity. On 2026-08-17 that
+    took the flattest tune this program has measured off a speaker, for a
+    +3.9 dB model error at 1384 Hz that both rounds shared, in a band the
+    applied graph declares a 3.67 dB CUT in, on a round whose probe verdict was
+    ``matched`` and which measured 2.42 dB QUIETER. The finding is now the
+    anchored excess — measured post minus measured pre, with the apply's own
+    commanded change and declared level move removed — so a standing model error
+    cancels and delivered energy does not. The model's departure still travels
+    in ``evidence``, as the next-round target it is.
+
+    **Two of the three cannot be measured without a pre-apply capture, and the
+    axis says so rather than passing.** ``safety_anchored`` in ``evidence`` is
+    the probe's own answer to "did the hearing half run at all", and it is False
+    on an unanchored map and on the ``safety_only`` path. Refusing on the
+    unanchored quantity instead is the defect above; refusing on absence is the
+    thing this module already declines to do everywhere else (see the
+    ``probe_graded`` note below). What still holds with no anchor: the clipped
+    check, which needs none, and the electrical bound the graph carries by
+    construction — a deterministic biquad chain whose peak cost is computed and
+    pre-paid (``linearization_fit.worst_headroom_cost_db``) under the project's
+    ``devices.volume_limit = 0.0`` ceiling.
 
     **Direction is the discriminator, and it is load-bearing.** The same
     magnitude of uncommanded level shift is a hard stop in one direction and a
@@ -991,6 +1029,18 @@ def evaluate_applied_safety(
             if isinstance(residual_tolerance, (int, float))
             and not isinstance(residual_tolerance, bool) else None
         ),
+        # Did the hearing half run at all (series-2 D1)? ``probe_graded`` and
+        # ``probe_shape_graded`` above answer the same question for the shape
+        # half, and this is the third of the set: the two directional findings
+        # below are measurements of the speaker only when a pre-apply capture
+        # anchored them, and ``False`` here means they are absences rather than
+        # passes. Read off the probe, never inferred from the findings being
+        # False — those are also False on a round that measured and found
+        # nothing, which is the opposite claim.
+        "safety_anchored": (
+            bool(getattr(probe, "safety_anchored", False))
+            if probe is not None else False
+        ),
         "boost_over_declared_bound": boost_over_bound,
         "boost_overshoot_db": (
             getattr(probe, "boost_overshoot_db", None) if probe is not None else None
@@ -1004,6 +1054,15 @@ def evaluate_applied_safety(
         # preempt; a reader must be able to tell that from a restore.
         "realized_louder_than_commanded": (
             bool(getattr(probe, "realized_louder_than_commanded", False))
+            if probe is not None else False
+        ),
+        # The MODEL's own upward departure, which is a different instrument on a
+        # different reference and belongs to the next round rather than to this
+        # decision (series-2 D1). It rides here because this is the block the
+        # round receipt renders and because a reader comparing receipts across
+        # D1 needs it: it is the quantity the key above used to carry.
+        "model_departure_over_tolerance": (
+            bool(getattr(probe, "model_departure_over_tolerance", False))
             if probe is not None else False
         ),
         "max_signed_error_db": (
@@ -1138,9 +1197,10 @@ def evaluate_round_quality(
     a ``user_decision`` nobody rendered), not what decides it.
 
     **The TARGETS are disclosure, and they are a strictly separate question.**
-    Spec verdicts, each failing spec band, and the delta probe's own reason ride
-    in ``evidence`` for the next round to chase. **None of them moves the
-    status**, and for two independent reasons that must both be stated:
+    Spec verdicts, each failing spec band, the delta probe's own reason, and the
+    room's upward departure from the two-branch model ride in ``evidence`` for
+    the next round to chase. **None of them moves the status**, and for two
+    independent reasons that must both be stated:
 
     * *Spec is an outcome, not a proxy for benefit.* Every row of #2291's table
       reads "any" for spec, because "improved and still out of spec" is an
@@ -1185,6 +1245,13 @@ def evaluate_round_quality(
     :func:`~jasper.active_speaker.crossover_v2.coordinator.run_round` banks the
     round either way.
 
+    **Where the per-bin model departure landed** (series-2 D1). It arrives here
+    as a TARGET and nothing else — see :func:`_model_departure_target` for the
+    hard stop it used to be, and why an instrument measuring our own prediction
+    error belongs on the axis that says what to fix next rather than on the one
+    that takes a graph off a speaker. It moves no status, exactly like every
+    other target above.
+
     **The restore SET is unchanged by that move, deliberately.** The same three
     verdicts restore, the #2559 deferral still spares the quieter-only
     ``model_error``, and no class that used to restore now keeps. Narrowing the
@@ -1208,6 +1275,7 @@ def evaluate_round_quality(
         targets.append(
             f"delta_probe:{str(getattr(probe, 'reason', '') or probe_verdict)}"
         )
+    targets.extend(_model_departure_target(probe))
     probe_rollback = _probe_rollback_class(probe, probe_verdict)
     if probe_rollback:
         quality = QualityStatus.REGRESSED
@@ -1221,6 +1289,48 @@ def evaluate_round_quality(
         # and a reader needs the class behind it.
         "probe_rollback_class": probe_rollback,
     })
+
+
+#: The next-round target the room's upward departure from the two-branch model
+#: lands on (series-2 D1). ``<prefix>:<amount>dB@<hz>`` for
+#: :func:`_failing_spec_bands`' reason — a target is what the NEXT round reads,
+#: and "the model under-predicted by 3.9 dB near 1384 Hz" is an instruction
+#: where a bare label is a mood.
+QUALITY_MODEL_DEPARTURE = "model_departure"
+
+
+def _model_departure_target(probe: Any | None) -> list[str]:
+    """The model's upward departure as a next-round target, or nothing.
+
+    **Where the per-bin positive excursion went** (series-2 D1). It used to be a
+    hearing-safety hard stop reading ``realized − commanded``, in which the
+    commanded term cancels — so it graded our own acoustic model's error and,
+    on 2026-08-17, restored the flattest tune the program had measured over a
+    +3.9 dB model error that both rounds of that series shared. The measurement
+    is real and worth chasing; what it is evidence OF is a model, and a model
+    defect is what the next round is for.
+
+    Reported for BOTH references' worth of honesty: the amount is the unanchored
+    ``max_signed_error_db``, and whether it cleared tolerance is the probe's own
+    answer against its own per-bin tolerance curve — which is why that boolean
+    is read rather than a threshold being re-derived here against a scalar. This
+    module owns no tolerance of its own and does not gain one for a target.
+
+    Nothing for an absent probe, an unmeasured departure, or one inside
+    tolerance. A target list is what the household surface and the next round
+    read, so a line that fires on every round is a line nobody reads.
+    """
+
+    if probe is None:
+        return []
+    if not bool(getattr(probe, "model_departure_over_tolerance", False)):
+        return []
+    amount = _finite_number(getattr(probe, "max_signed_error_db", None))
+    if amount is None:
+        return []
+    where = _finite_number(getattr(probe, "worst_hz", None))
+    at = "" if where is None else f"@{where:.0f}Hz"
+    return [f"{QUALITY_MODEL_DEPARTURE}:{amount:.2f}dB{at}"]
 
 
 def _probe_rollback_class(probe: Any | None, verdict: str) -> str:
@@ -1534,8 +1644,8 @@ def evaluate_iteration_headroom(
         # BESIDE them so the next round can check the frame rather than assume
         # it. ``movement_comparable`` is the answer this round reached about
         # the pair, recorded rather than left to be re-derived from them.
-        "trusted_floor_hz": _optional_floor(trusted_floor_hz),
-        "previous_trusted_floor_hz": _optional_floor(previous_trusted_floor_hz),
+        "trusted_floor_hz": _finite_number(trusted_floor_hz),
+        "previous_trusted_floor_hz": _finite_number(previous_trusted_floor_hz),
         "movement_comparable": movement_comparable,
     }
 
@@ -1556,12 +1666,14 @@ def evaluate_iteration_headroom(
     return Verdict(IterationHeadroom.REACHABLE, HEADROOM_REACHABLE, evidence)
 
 
-def _optional_floor(value: float | None) -> float | None:
-    """A finite floor, or ``None`` — the same unknown-vs-zero rule as elsewhere.
+def _finite_number(value: float | None) -> float | None:
+    """A finite number, or ``None`` — the same unknown-vs-zero rule as elsewhere.
 
-    A non-finite floor is an unreadable one: banking a NaN would give the next
-    round a number that compares false against everything, which is a silent
-    permanent refusal rather than an honest absence.
+    Worked example, and the reason it exists: a non-finite trusted floor is an
+    unreadable one, and banking a NaN would give the next round a number that
+    compares false against everything — a silent permanent refusal rather than
+    an honest absence. The same holds for every optional number this module
+    lifts off an evidence object, which is why it is not named for the floor.
     """
 
     if value is None or isinstance(value, bool) or not isinstance(value, (int, float)):

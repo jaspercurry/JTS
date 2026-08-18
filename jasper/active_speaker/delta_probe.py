@@ -191,6 +191,56 @@ What the frame may and may not do is asymmetric on purpose:
   — disclosed, never silent, and never a rollback (owner ruling 2026-08-15:
   least-bad is adoptable with disclosure; hard stops are reserved for the safety
   class). It is the tilt-carrying sibling of :data:`VERDICT_LEVEL_MISMATCH`.
+
+**THE TWO DIRECTIONAL SAFETY FINDINGS ARE MEASURED AS A CHANGE, AND THAT IS
+WHAT MAKES THEM SAFETY FINDINGS AT ALL** (series-2 D1). They are the only rules
+here that answer a hearing question — *did the speaker put out more than the
+applied graph declared* — and until this they could not, by algebra:
+
+    realized − commanded  ≡  (measured_post − predicted_post) − expected_offset
+
+The ``commanded`` term is added by the caller and subtracted by the rule; it
+cancels identically, so the quantity carried **no information about what the
+graph commands**. What it carried is the acoustic model's own error, and
+``commanded`` / ``declared`` survived only as a bin-selection mask. On the
+2026-08-17 jts3 series that inverted a round: a standing model-vs-mic error of
++3.9 dB at 1384 Hz — **round-invariant** (corr 0.954 with the previous round,
+0.350 dB rms apart) and sitting in a band the applied graph *declares a
+3.67 dB CUT* in — hard-stopped the flattest result the program had measured,
+because the round-over-round command at that bin happened to flip from −0.49 to
++0.86 dB and admitted the bin to the boosted mask. The round that came off had
+``probe_verdict = matched``, ``gain_factor = 0.8469`` (under-realized) and a
+speaker measured 2.42 dB QUIETER. The model was wrong; the speaker was not.
+
+So the same anchor :attr:`DeltaProbeMap.residual_offset_db` already uses is
+applied **per bin**, and the identity is the reason it works:
+
+    (realized − commanded) − entry_delta  ==  (measured_post − measured_pre)
+                                              − expected_offset − commanded
+
+Measurement minus measurement, with the two things the apply DECLARED — its own
+commanded change and its own level move — taken out. A standing model error
+appears in both captures and cancels; energy the speaker actually delivered
+appears in only one and survives. The two cases are separated **by
+construction** rather than by a threshold: replayed on the banked series-2
+curves the false stop falls from +3.891 dB to +1.000 dB (under tolerance, no
+finding), while a boost realized 4 dB above its declared transfer still reads
+exactly +4.000 dB and still stops.
+
+Two consequences follow, and both are deliberate:
+
+* **No anchor, no finding.** The pre-apply capture is what makes the quantity a
+  measurement of the speaker; without it there is only the model's error, which
+  is the thing that just cost a round. :attr:`DeltaProbeMap.safety_anchored`
+  says which, so "safe" can be read as "measured and nothing found" or "not
+  measured" and never as the wrong one of the two.
+* **The model's own departure is still reported** — as
+  :attr:`DeltaProbeMap.max_signed_error_db` and
+  :attr:`DeltaProbeMap.model_departure_over_tolerance`, which is the quantity
+  the pre-fix ``realized_louder_than_commanded`` was measuring all along. It is
+  a real defect and a real next-round target (the blend region is where this
+  model is known blind, #2600); it is not a hazard, and it no longer pulls a
+  measured, safe, improving graph off a household's speaker.
 """
 from __future__ import annotations
 
@@ -359,13 +409,23 @@ def seam_rollback_deferral(probe: Any | None) -> str:
       :data:`VERDICT_SPATIALLY_COSTLY` never defer. The first is a claim about a
       driver's headroom and the second about the room's own spread; neither is
       the shape claim this ruling is about.
-    * A map with ANY graded bin realized louder than commanded past tolerance
-      never defers, whatever else it measured.
+    * A map with ANY safety bin measured louder than this apply declared, past
+      tolerance, never defers, whatever else it measured.
     * ``boost_over_declared_bound`` never defers. That is implied by the bin
       rule above — an overshooting boost IS a bin realized louder — and it is
       stated anyway, because a fence that holds only through a numeric
       implication between two independently-tunable bounds is not a fence. Both
       halves are pinned.
+
+    **Both fences read the ANCHORED excess since series-2 D1**, and this
+    function needed no edit for that: they are the same two attributes, and what
+    changed is that they are now measurements of the speaker rather than of our
+    model of it. The direction that matters here is the generous one — a
+    positive bin WITHHOLDS the lenience — so a fence fed by model error withheld
+    it wrongly, which is the shape of the round D1 was opened for. An unanchored
+    map now defers, on the module's own rule that an absent measurement is not
+    evidence of a bad correction; the map still grades ``model_error`` and the
+    adoption table still decides.
 
     ``""`` for an absent probe and for a non-rollback verdict: those never
     reached a seam rollback, so there is nothing for them to defer and saying
@@ -845,35 +905,60 @@ class DeltaProbeMap:
     #: residual was measured, or when the graded band spans no octaves at all
     #: for a coverage to be a fraction OF.
     quiet_probe_coverage: float | None = None
+    #: Were the two directional findings below measured against the PRE-APPLY
+    #: capture — that is, are they statements about what the speaker did, or was
+    #: there nothing to make them that? (series-2 D1) ``False`` means neither
+    #: fired because neither ran: no entry curve, too few bins carrying one, or
+    #: the ``safety_only`` path, which has no change reference by construction.
+    #:
+    #: It is on the record because "safe" has two very different readings and a
+    #: household surface must not be free to pick either — see
+    #: :func:`~jasper.active_speaker.crossover_v2.verification.evaluate_applied_safety`,
+    #: which already distinguishes "nothing was found" from "nothing looked" and
+    #: now carries this for the hearing half specifically.
+    safety_anchored: bool = False
     #: Did a BOOST realize more lift than the applied graph declared,
     #: structurally? (#2537) The adoption table's one delta-probe-sourced hard
     #: stop — see :func:`boost_overshoot` for the rule, why it is the one
     #: directional exceedance in this module, and why since #2614 it is asked
     #: over the SAFETY bins (this apply's changes UNION the applied graph's own
-    #: declared transfer) rather than the graded ones alone. ``False`` both when
-    #: nothing overshot and when no safety bin carried a boost; the two are told
-    #: apart by :attr:`boost_overshoot_db`, ``None`` only in the second case.
+    #: declared transfer) rather than the graded ones alone. ``False`` when
+    #: nothing overshot, when no safety bin carried a boost, and when
+    #: :attr:`safety_anchored` is False; the first is told from the rest by
+    #: :attr:`boost_overshoot_db`, ``None`` in the other two.
     boost_over_declared_bound: bool = False
-    #: The worst signed ``realized − commanded``, dB, over the safety bins where
-    #: a boost was on the table. Positive is over-realized. ``None`` when none
-    #: was — "not measured", never 0.0.
+    #: The worst signed ANCHORED excess, dB, over the safety bins where a boost
+    #: was on the table — ``(measured_post − measured_pre) − expected_offset −
+    #: commanded``, so positive is energy this apply delivered and did not
+    #: declare (series-2 D1; before it, this was the model's own error, which is
+    #: what :attr:`max_signed_error_db` reports now). ``None`` when no boosted
+    #: bin was measured, including every unanchored map — "not measured", never
+    #: 0.0.
     boost_overshoot_db: float | None = None
     #: The widest contiguous run, in octaves, over which that excess cleared
     #: this probe's per-bin tolerance. ``0.0`` means nothing cleared it.
     boost_overshoot_octaves: float = 0.0
-    #: Did ANY safety bin realize LOUDER than commanded, past that bin's own
-    #: tolerance? (#2559) The direction of the shape miss, measured over every
-    #: safety bin rather than only the boosted ones — see
-    #: :func:`louder_than_commanded` for why it is unstructured, why it is
-    #: taken on the raw realized curve, and which mask reaches it. ``False`` on
-    #: an unavailable map, where :attr:`max_signed_error_db` is ``None`` to say
-    #: nothing was measured.
+    #: Did ANY safety bin come out LOUDER than this apply declared, past that
+    #: bin's own tolerance? (#2559) The direction of the miss, measured over
+    #: every anchored safety bin rather than only the boosted ones, and on the
+    #: same anchored excess :attr:`boost_overshoot_db` reports — see
+    #: :func:`louder_than_commanded` for why it is unstructured, why it is taken
+    #: on the raw curves, and which mask reaches it. ``False`` on an unavailable
+    #: or unanchored map, where nothing about the speaker was measured.
     realized_louder_than_commanded: bool = False
-    #: The most POSITIVE ``realized − commanded`` over the safety bins, dB.
-    #: Negative on a map whose every bin realized quieter than commanded — which
-    #: is a measurement, and the one :attr:`realized_louder_than_commanded`
-    #: reduces to a finding against the per-bin tolerance. ``None`` when no bin
-    #: was in the safety mask, never 0.0 (``gain_factor``'s distinction).
+    #: Did the room depart from the two-branch MODEL, upward, past tolerance,
+    #: anywhere in the safety bins? The unanchored reading of the same rule —
+    #: ``(measured_post − predicted_post) − expected_offset`` — and exactly the
+    #: quantity :attr:`realized_louder_than_commanded` reported before series-2
+    #: D1 separated the two. A next-round target (the blend region is where this
+    #: model is known blind, #2600), never a hazard: it is a claim about our
+    #: prediction, and it fires on rounds where the speaker measured quieter.
+    model_departure_over_tolerance: bool = False
+    #: The most POSITIVE unanchored ``realized − commanded`` over the safety
+    #: bins, dB — the amount behind :attr:`model_departure_over_tolerance`.
+    #: Negative on a map whose every bin sat under the model, which is a
+    #: measurement. ``None`` when no bin was in the safety mask, never 0.0
+    #: (``gain_factor``'s distinction).
     max_signed_error_db: float | None = None
     #: How much of what was commanded arrived, PER BAND (#2649), keyed by
     #: :data:`DELTA_PROBE_REALIZATION_BANDS`. Each entry is
@@ -952,6 +1037,12 @@ class DeltaProbeMap:
                 "probe_coverage": self.quiet_probe_coverage,
                 "entry_anchor_offset_db": self.entry_anchor_offset_db,
             },
+            # Whether the hearing half was measured at all (series-2 D1). Top
+            # level rather than inside either block below because it governs
+            # BOTH of them, and a key repeated in two blocks is two owners of
+            # one fact. ``False`` there means every directional finding under it
+            # is an absence, not a pass.
+            "safety_anchored": self.safety_anchored,
             # The directional boost finding, nested for the same reason: a
             # reader judging a hard stop needs the answer, the amount, and how
             # wide it ran as one set (#2537).
@@ -960,12 +1051,22 @@ class DeltaProbeMap:
                 "overshoot_db": self.boost_overshoot_db,
                 "overshoot_octaves": self.boost_overshoot_octaves,
             },
-            # Which WAY the graded bins missed, nested for the boost block's
-            # reason (#2559): the finding and the amount behind it are one set,
-            # and a reader asking whether a rollback was deferred needs both.
+            # Which WAY the bins missed, nested for the boost block's reason
+            # (#2559): the finding and the amount behind it are one set, and a
+            # reader asking whether a rollback was deferred needs both.
+            #
+            # TWO findings, on two references, and they are not interchangeable
+            # (series-2 D1): the first is what the SPEAKER did across the apply
+            # and is the one a hazard is read off; the second is how far the
+            # room departed from our MODEL and is a next-round target. A corpus
+            # reader comparing receipts across this change wants the second —
+            # it is the quantity the first key alone used to carry.
             "direction": {
                 "realized_louder_than_commanded": (
                     self.realized_louder_than_commanded
+                ),
+                "model_departure_over_tolerance": (
+                    self.model_departure_over_tolerance
                 ),
                 "max_signed_error_db": self.max_signed_error_db,
                 "seam_rollback_deferral": seam_rollback_deferral(self),
@@ -1035,27 +1136,36 @@ def _safety_only(
     requested_band_hz: tuple[float, float],
     probe_band_hz: tuple[float, float],
     n_bins: int,
+    safety_anchored: bool,
     boost_over_declared_bound: bool,
     boost_overshoot_db: float | None,
     boost_overshoot_octaves: float,
     realized_louder_than_commanded: bool,
+    model_departure_over_tolerance: bool,
     max_signed_error_db: float | None,
 ) -> DeltaProbeMap:
-    """A map carrying the two directional findings and NO shape grade (#2614).
+    """A map carrying the model's departure and NO grade of anything else (#2614).
 
-    Deliberately shaped like :func:`_unavailable` plus five fields. Every shape
-    and level scalar keeps its dataclass default — 0.0 error, ``None`` gain,
-    ``None`` residual, an unfitted frame — because on this path the classifier
-    was handed the STATE axis in the commanded slot, and every one of those
-    numbers computed against a state axis would be a claim in the wrong frame:
-    the residual is the chained-round contaminant #2611 removed, and the frame
-    fit sits on quiet bins that mean something else. Returning them "for
-    information" is how a wrong number gets read as a right one, so they are
-    not returned at all.
+    Deliberately shaped like :func:`_unavailable` plus the safety block. Every
+    shape and level scalar keeps its dataclass default — 0.0 error, ``None``
+    gain, ``None`` residual, an unfitted frame — because on this path the
+    classifier was handed the STATE axis in the commanded slot, and every one of
+    those numbers computed against a state axis would be a claim in the wrong
+    frame: the residual is the chained-round contaminant #2611 removed, and the
+    frame fit sits on quiet bins that mean something else. Returning them "for
+    information" is how a wrong number gets read as a right one, so they are not
+    returned at all.
 
-    The two that ARE returned survive the frame change because they are
-    measured on ``realized − commanded``, which is ``measured_post −
-    predicted_post`` whichever graph the two sides are stated against.
+    **What survives the frame change is the MODEL's departure, and only that**
+    (series-2 D1). ``realized − commanded`` is ``measured_post −
+    predicted_post`` whichever graph the two sides are stated against, so it is
+    well-defined here — but it is a statement about our prediction, and this
+    path has no pre-apply capture to turn it into a statement about the speaker
+    (a change measurement shares no reference with a state axis). So
+    ``safety_anchored`` is False, the two directional findings are absences, and
+    the map says the hearing half did not run rather than reporting a pass it
+    did not measure. Until D1 those findings fired here on the unanchored curve,
+    which on THIS path carries no change term at all.
     """
     return DeltaProbeMap(
         verdict=VERDICT_SAFETY_ONLY,
@@ -1069,10 +1179,12 @@ def _safety_only(
         spatial=spatial,
         expected_offset_db=expected_offset_db,
         requested_band_hz=requested_band_hz,
+        safety_anchored=safety_anchored,
         boost_over_declared_bound=boost_over_declared_bound,
         boost_overshoot_db=boost_overshoot_db,
         boost_overshoot_octaves=boost_overshoot_octaves,
         realized_louder_than_commanded=realized_louder_than_commanded,
+        model_departure_over_tolerance=model_departure_over_tolerance,
         max_signed_error_db=max_signed_error_db,
     )
 
@@ -1171,7 +1283,7 @@ def _structured_exceedance(
 
 def boost_overshoot(
     freqs_hz: np.ndarray,
-    realized_db: np.ndarray,
+    excess_db: np.ndarray,
     commanded_db: np.ndarray,
     tolerance_db: np.ndarray,
     probe_mask: np.ndarray,
@@ -1179,12 +1291,23 @@ def boost_overshoot(
 ) -> tuple[bool, float | None, float]:
     """Did a BOOST realize MORE lift than the graph declared? (#2537)
 
-    ``(over the declared bound, worst signed excess in dB, widest run in
-    octaves)``, measured only in graded bins where a **boost** is on the table.
-    Every array is on the full grid, exactly as :func:`_structured_exceedance`
-    requires and for the same run-contiguity reason.
+    ``(over the bound, worst signed excess in dB, widest run in octaves)``,
+    measured only in bins where a **boost** is on the table. Every array is on
+    the full grid, exactly as :func:`_structured_exceedance` requires and for
+    the same run-contiguity reason.
 
-    **Two axes select those bins, and the second one is what makes this a STATE
+    **``excess_db`` is a measured CHANGE, and the caller owes that** (series-2
+    D1). It is ``(measured_post − measured_pre) − expected_offset − commanded``
+    — what the speaker did across the apply, minus what the apply declared it
+    would do. This function takes it as ONE array rather than deriving it from
+    a realized and a commanded curve, because that derivation is exactly where
+    the defect lived: ``realized − commanded`` cancels the commanded term and
+    leaves the acoustic model's own error, which is not evidence about a
+    driver. The signature carries the fix — a caller that has no pre-apply
+    capture cannot express this quantity and must not call this rule at all.
+    See the module docstring for the algebra and the round it cost.
+
+    **Two axes select the bins, and the second one is what makes this a STATE
     question** (#2614). ``commanded_db`` is a CHANGE — what this apply asks the
     summed response to do relative to the graph it replaces — so on a repeat
     round it is ~0 across every band the apply leaves alone, including a band
@@ -1198,6 +1321,13 @@ def boost_overshoot(
     the pre-#2614 behaviour and exactly right for a first-ever apply — there
     the graph being replaced is the raw crossover, so the two curves are one.
 
+    Neither curve contributes a VALUE — they choose bins and nothing else. That
+    is why a union mask bridging a run the graded mask would break is sound
+    here and is not in :func:`_structured_exceedance`: a bin the correction
+    commanded nothing at corroborates nothing about the model's SHAPE, but the
+    speaker measuring 4 dB hotter there than before the apply is direct
+    evidence about a driver wherever it sits.
+
     **Directional, where every other exceedance rule here is not.** The rest of
     this module asks "did realized and commanded disagree", takes ``abs``, and
     is right to: a shape defect is a defect in either direction. This one asks
@@ -1209,41 +1339,59 @@ def boost_overshoot(
 
     The bound is this probe's own per-bin tolerance, which is why it is an
     argument rather than a second constant: a bin is over the bound when
-    ``realized − commanded > tolerance(f)``, the same slack the graded verdict
-    already concedes. And the finding is STRUCTURED on the same rule as every
-    other one here (:data:`DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES`), so a single
-    noisy bin cannot pull a household's correction off the speaker.
+    ``excess > tolerance(f)``, the same slack the graded verdict already
+    concedes. It is measurement uncertainty, NOT a declared boost limit — the
+    pre-D1 reason string named it one and sent the first reading of the
+    2026-08-17 incident looking at headroom accounting that was correct to
+    0.04 dB. And the finding is STRUCTURED on the same rule as every other one
+    here (:data:`DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES`), so a single noisy bin
+    cannot pull a household's correction off the speaker.
 
-    The middle value is ``None`` when no graded bin carried a boost on either
-    axis — "not measured", never 0.0, which would read as "measured, and it did
-    not overshoot" (the distinction ``gain_factor`` and ``residual_offset_db``
-    both draw). A cut-only graph reaches that, and so does a boost whose bins
-    all fell under the graded floor.
+    The middle value is ``None`` when no bin carried a boost on either axis —
+    "not measured", never 0.0, which would read as "measured, and it did not
+    overshoot" (the distinction ``gain_factor`` and ``residual_offset_db`` both
+    draw). A cut-only graph reaches that, and so does a boost whose bins all
+    fell under the graded floor.
     """
     declared = commanded_db if declared_db is None else declared_db
     boosted = probe_mask & ((commanded_db > 0.0) | (declared > 0.0))
     if not bool(boosted.any()):
         return False, None, 0.0
-    excess = realized_db - commanded_db
-    worst = float(np.max(excess[boosted]))
+    worst = float(np.max(excess_db[boosted]))
     widest, _ = widest_exceedance_octaves(
-        freqs_hz, boosted & (excess > tolerance_db)
+        freqs_hz, boosted & (excess_db > tolerance_db)
     )
     return widest >= DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES, worst, float(widest)
 
 
 def louder_than_commanded(
-    realized_db: np.ndarray,
-    commanded_db: np.ndarray,
+    excess_db: np.ndarray,
     tolerance_db: np.ndarray,
     probe_mask: np.ndarray,
 ) -> tuple[bool, float | None]:
-    """Did ANY graded bin realize LOUDER than commanded, past tolerance? (#2559)
+    """Did ANY bin come out LOUDER than the excess curve's reference? (#2559)
 
-    ``(over the bound anywhere, the most POSITIVE realized − commanded in dB)``.
-    The direction of a shape miss, which this module measured nowhere before:
-    every other exceedance rule here takes ``abs`` — right for "is the shape
-    wrong", useless for "which way".
+    ``(over the bound anywhere, the most POSITIVE excess in dB)``. The direction
+    of a miss, which this module measured nowhere before: every other exceedance
+    rule here takes ``abs`` — right for "is the shape wrong", useless for "which
+    way".
+
+    **Called twice, on two different curves, and the reference decides what the
+    answer means** (series-2 D1). Both readings are on the record and neither is
+    re-derived anywhere else:
+
+    * on the **anchored** excess — ``(measured_post − measured_pre) −
+      expected_offset − commanded`` — it is a hearing fact about the speaker,
+      and it is what withholds #2559's lenience
+      (:attr:`DeltaProbeMap.realized_louder_than_commanded`);
+    * on the **unanchored** ``realized − commanded``, which is identically
+      ``(measured_post − predicted_post) − expected_offset``, it is a fact about
+      the acoustic MODEL and nothing else
+      (:attr:`DeltaProbeMap.model_departure_over_tolerance`). It is a real
+      next-round target and it is not a hazard.
+
+    Reading the second as the first is the D1 defect, and the module docstring
+    carries the round it cost.
 
     **Deliberately unstructured, where every sibling rule is structured.**
     :func:`boost_overshoot` and :func:`_structured_exceedance` require a
@@ -1269,20 +1417,17 @@ def louder_than_commanded(
     itself declares a transfer in. Same reason :func:`boost_overshoot` takes a
     second axis — the lenience is withheld on evidence about how much energy
     reached the driver, and a band a repeat round left alone still has a driver
-    in it.
+    in it. The anchored call narrows it further, to the bins a pre-apply
+    capture actually reached.
 
     ``None`` for the scalar only when the mask selects nothing — "not measured",
-    never 0.0. ``classify_delta_probe`` never reaches here with an empty mask
-    (:data:`DELTA_PROBE_MIN_BINS` is checked on the graded mask, which the
-    safety mask contains), so this arm serves a direct caller rather than a
-    production path.
+    never 0.0.
     """
     if not bool(probe_mask.any()):
         return False, None
-    excess = realized_db - commanded_db
     return (
-        bool((probe_mask & (excess > tolerance_db)).any()),
-        float(np.max(excess[probe_mask])),
+        bool((probe_mask & (excess_db > tolerance_db)).any()),
+        float(np.max(excess_db[probe_mask])),
     )
 
 
@@ -1431,11 +1576,20 @@ def classify_delta_probe(
     for ``verify_measured_curve_from_state``'s reason: a truncated optional
     record should read as "no anchor", not reach the classifier as a bad grid.
 
+    **It is also what makes the two directional SAFETY findings possible at
+    all** (series-2 D1), and there the absence rule is stricter than "leave it
+    visible": without this curve there is no measurement of the speaker to grade,
+    only the model's error, so the findings are not made rather than made on the
+    wrong quantity. ``safety_anchored`` reports which happened. Per bin here,
+    not as the whole-band scalar ``residual_offset_db`` removes — a scalar
+    cannot cancel a standing error that lives at one frequency, which is exactly
+    the shape that took a round off a speaker on 2026-08-17.
+
     ``declared_transfer_db`` is the STATE axis the two directional safety rules
-    read, and it exists because ``commanded_delta_db`` stopped being one (#2614).
-    It is the applied graph's OWN predicted transfer against the uncorrected
-    crossover — what the graph declares it does, not what this apply changes —
-    on the same grid. :func:`boost_overshoot` and
+    select bins with, and it exists because ``commanded_delta_db`` stopped being
+    one (#2614). It is the applied graph's OWN predicted transfer against the
+    uncorrected crossover — what the graph declares it does, not what this apply
+    changes — on the same grid. :func:`boost_overshoot` and
     :func:`louder_than_commanded` are then measured over the UNION of the two
     axes' graded bins, so a repeat round that leaves an existing boost band
     untouched still has that band watched. Optional, on the same rule as
@@ -1453,12 +1607,13 @@ def classify_delta_probe(
     candidate: its branches are composed through a crossover the previous graph
     never ran, so the previous side is refused and the change axis with it —
     while the applied graph's own declared transfer is well-defined at every
-    swept corner. The two directional findings then still hold, because they
-    are measured on ``realized − commanded``; nothing else does, so nothing
-    else is returned. The verdict is :data:`VERDICT_SAFETY_ONLY` and the map
-    carries no shape or level grade at all. Do NOT also pass
-    ``entry_delta_db`` on that path — it is a change measurement and shares no
-    reference with a state axis.
+    swept corner. What still holds there is the MODEL's departure, measured on
+    ``realized − commanded``; nothing else does, so nothing else is returned.
+    The verdict is :data:`VERDICT_SAFETY_ONLY` and the map carries no shape or
+    level grade at all — and since series-2 D1, no directional safety finding
+    either, because those need the pre-apply capture this path has none of. Do
+    NOT pass ``entry_delta_db`` on that path — it is a change measurement and
+    shares no reference with a state axis.
 
     **CHAINED ROUNDS: the reference graph is shared, and that is what makes the
     residual meaningful** (#2611 closed the #2545 hazard). ``commanded_delta_db``
@@ -1778,35 +1933,86 @@ def classify_delta_probe(
     )
     frame_error = frame_error_full[mask]
 
-    # Did a commanded boost realize MORE than it asked for? (#2537) Measured on
-    # the RAW realized curve, not the frame-removed one, and that is the point:
-    # a frame is removed to answer whether the correction's SHAPE is right, and
-    # this asks how much energy actually reached the driver. Subtracting a
-    # fitted offset first would hide exactly the whole-band overshoot the
-    # adoption table's hard stop exists for.
+    # THE TWO DIRECTIONAL SAFETY FINDINGS, and the anchor that makes them
+    # findings about the SPEAKER rather than about our model of it (series-2
+    # D1). Two curves are built here and both stay on the record:
+    #
+    #   model_excess    = realized − commanded  ==  (measured_post − predicted)
+    #                                               − expected_offset
+    #   safety_excess   = model_excess − entry  ==  (measured_post − measured_pre)
+    #                                               − expected_offset − commanded
+    #
+    # The first cancels ``commanded`` identically, so it grades how far the room
+    # departed from the two-branch model and nothing else — see the module
+    # docstring for the algebra and for the 2026-08-17 round it took off a
+    # speaker. The second subtracts the pre-apply capture in the same frame, so
+    # a standing model error present in BOTH captures cancels and only what the
+    # speaker actually delivered across the apply survives. It is the same
+    # anchor, the same bins-argument and the same owner ``residual_offset_db``
+    # already uses — one reference for every rule on this axis, which the
+    # pre-D1 code did not have (its residual was anchored and its two
+    # directional rules were not, so the same standing feature scored ~1.66 dB
+    # harder in one round than in the round before it).
+    #
+    # Measured on the RAW curves, not the frame-removed one, and that is
+    # unchanged: a frame is removed to answer whether the correction's SHAPE is
+    # right, and this asks how much energy actually reached the driver.
+    # Subtracting a fitted offset first would hide exactly the whole-band
+    # overshoot the adoption table's hard stop exists for.
     #
     # On the SAFETY mask, not the graded one (#2614) — see its construction
     # above: a repeat round's graded mask does not contain the bands the apply
     # left alone, and an untouched boost is still a boost.
-    boost_over_bound, boost_overshoot_db, boost_overshoot_octaves = boost_overshoot(
-        freqs, realized, commanded, tolerance_full, safety_mask,
-        declared_db=declared,
+    model_excess = realized - commanded
+    safety_excess = model_excess if entry is None else model_excess - entry
+    # No anchor, no finding. A bin with no usable pre-apply level cannot say
+    # what the speaker DID there, and the unanchored quantity is the one that
+    # just cost a round — so it is reported (below) and never refused on. The
+    # bar is the module's own minimum, so a handful of surviving bins cannot
+    # carry a hard stop either.
+    safety_bins = safety_mask & np.isfinite(safety_excess)
+    safety_anchored = (
+        entry is not None and int(safety_bins.sum()) >= DELTA_PROBE_MIN_BINS
     )
-    # WHICH WAY the safety bins missed (#2559), on the raw curve for the same
-    # reason the boost finding above is: this asks how much energy reached the
-    # driver, not whether the shape is right.
-    realized_louder, max_signed_error_db = louder_than_commanded(
-        realized, commanded, tolerance_full, safety_mask,
+    if safety_anchored:
+        boost_over_bound, boost_overshoot_db, boost_overshoot_octaves = (
+            boost_overshoot(
+                freqs, safety_excess, commanded, tolerance_full, safety_bins,
+                declared_db=declared,
+            )
+        )
+        realized_louder, _ = louder_than_commanded(
+            safety_excess, tolerance_full, safety_bins,
+        )
+    else:
+        boost_over_bound, boost_overshoot_db, boost_overshoot_octaves = (
+            False, None, 0.0,
+        )
+        realized_louder = False
+    # ...and the MODEL's own departure, always, on the unanchored curve. This
+    # is the quantity the pre-D1 ``realized_louder_than_commanded`` measured,
+    # kept under a name that says so: a real defect for the next round to chase
+    # — the blend region is where this model is known blind (#2600) — and never
+    # a hazard.
+    model_departure_over_tolerance, max_signed_error_db = louder_than_commanded(
+        model_excess, tolerance_full, safety_mask,
     )
 
     # The caller had no CHANGE axis and said so (#2614): what it handed in as
-    # ``commanded`` is the applied graph's own declared transfer, so the two
-    # findings above are honest and every shape and level scalar computed above
-    # is a claim in the wrong frame. Return the first and none of the second.
-    # The shape work above is not skipped, only discarded — the alternative is a
-    # second exit path through half this function, and one lstsq and one frame
-    # fit per session is a smaller price than two orders of statements about
-    # what was measured.
+    # ``commanded`` is the applied graph's own declared transfer, so every shape
+    # and level scalar computed above is a claim in the wrong frame. Return the
+    # model's departure and none of it. The shape work above is not skipped,
+    # only discarded — the alternative is a second exit path through half this
+    # function, and one lstsq and one frame fit per session is a smaller price
+    # than two orders of statements about what was measured.
+    #
+    # The two directional findings do not survive here either, and since D1 that
+    # is explicit rather than incidental: this path has no pre-apply capture to
+    # anchor against by construction (a change measurement shares no reference
+    # with a state axis, which is why the caller is told not to pass one), so
+    # ``safety_anchored`` is False and the map says the hearing half did not
+    # run. Before D1 it ran on the unanchored curve, which on THIS path is the
+    # model's error with no change term in it at all — the defect at its purest.
     if state_axis_only:
         return _safety_only(
             spatial,
@@ -1814,10 +2020,12 @@ def classify_delta_probe(
             requested_band_hz=requested_band_hz,
             probe_band_hz=probe_band_hz,
             n_bins=int(f.size),
+            safety_anchored=safety_anchored,
             boost_over_declared_bound=boost_over_bound,
             boost_overshoot_db=boost_overshoot_db,
             boost_overshoot_octaves=boost_overshoot_octaves,
             realized_louder_than_commanded=realized_louder,
+            model_departure_over_tolerance=model_departure_over_tolerance,
             max_signed_error_db=max_signed_error_db,
         )
 
@@ -1849,10 +2057,12 @@ def classify_delta_probe(
             quiet_n_bins=quiet_n_bins,
             quiet_core_band_hz=quiet_core_band_hz,
             quiet_probe_coverage=quiet_probe_coverage,
+            safety_anchored=safety_anchored,
             boost_over_declared_bound=boost_over_bound,
             boost_overshoot_db=boost_overshoot_db,
             boost_overshoot_octaves=boost_overshoot_octaves,
             realized_louder_than_commanded=realized_louder,
+            model_departure_over_tolerance=model_departure_over_tolerance,
             max_signed_error_db=max_signed_error_db,
             band_realization=realization,
             trust_ceiling_hz=(
