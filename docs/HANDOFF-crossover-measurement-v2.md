@@ -3001,7 +3001,7 @@ replacing the 2026-07-23 lab-only interim (a Mac-side `osascript beep`,
 then a fan-in-TTS-lane 3-beep burst).
 
 **It announces a session, not a capture (trimmed 2026-08-18).** It shipped on
-every capture — 15 of them on a Full journey, 54 s of held-still silence — and
+every capture — 9 of them on a Full journey, 32.4 s of held-still silence — and
 `courtesy_prelude_for_phase()` in
 [`jasper/active_speaker/crossover_v2/programs.py`](../jasper/active_speaker/crossover_v2/programs.py)
 is now the one rule that decides. It answers **yes** for `check` (stage 1's
@@ -3013,7 +3013,8 @@ justifies dropping the repeat is that the mux measurement window is held for
 the whole session (no household audio can start mid-session for a sweep to
 collide with — the incident's own hazard is closed at the session boundary) and
 every later capture is begun deliberately, by the household's tap or by the
-remote tier's position gate. Twelve preludes come off a Full journey: 43.2 s.
+remote tier's position gate. Five of a Full journey's eight captures no longer
+pay it: 18.0 s, on top of the 37.2 s the shorter verify walk saves.
 
 One consequence to know when reading `program_for_phase`: the summed sweep is
 now TWO held objects, not one. The compared pair (`verify` / `entry_baseline`)

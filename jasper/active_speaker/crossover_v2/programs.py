@@ -109,11 +109,13 @@ PILOT_LEVEL_DELTA_DB = abs(DEFAULT_PILOT_LEVELS_DB[1] - DEFAULT_PILOT_LEVELS_DB[
 #: session gets the warning.
 #:
 #: :data:`PHASE_ENTRY_BASELINE` is not an opener — it is stage 1's LAST capture.
-#: It is here because its program object must stay identical to
-#: :data:`PHASE_VERIFY`'s: ``program_id`` equality between those two IS #2291's
-#: before→after comparison and the delta probe's anchor check
-#: (``CrossoverV2Session._delta_probe``), so they carry the same prelude or the
-#: round grades :data:`~.verification.BENEFIT_PROGRAM_MISMATCH`.
+#: It is a member because it PLAYS the announced program: ``program_for_phase``
+#: hands it and :data:`PHASE_VERIFY` the same object, and it is that OBJECT
+#: DISPATCH — not this set — which makes their ``program_id``s equal (#2291's
+#: before→after comparison and ``_delta_probe``'s anchor check). What this
+#: membership decides is the other reader: ``build_v2_capture_plan`` sizes the
+#: entry baseline's recording window from it, so dropping it here would budget
+#: the phone 3.6 s short of the program the speaker actually plays.
 COURTESY_PRELUDE_PHASES = frozenset(
     {PHASE_CHECK, PHASE_VERIFY, PHASE_ENTRY_BASELINE}
 )
@@ -147,8 +149,8 @@ def courtesy_prelude_for_phase(phase: str) -> bool:
 
     A repeat therefore carries no information the household does not have, and
     it costs 3.6 s (0.6 s of beeps + a 3.0 s settle) of held-still silence each
-    time. Twelve of the fifteen captures a Full journey played when this rule
-    landed paid it; they no longer do.
+    time. Every capture used to pay it; on a Full journey only the three that
+    open or anchor a session still do.
 
     **Why it is one shared rule rather than a decision at each site.** Every
     ``build_v2_capture_plan`` / ``build_v2_verify_capture_plan`` entry (the

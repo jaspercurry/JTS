@@ -185,8 +185,13 @@ def test_the_walk_is_paused_and_stage_1_is_the_pinned_three_capture_shape():
     raw = json.dumps(plan.to_dict(), separators=(",", ":")).encode("utf-8")
     assert b"lateral" not in raw
     assert b"entry_baseline" in raw
+    # RE-DERIVED 2026-08-18 (session trims): the courtesy prelude now rides
+    # only the capture that OPENS a session, so MEASURE budgets 3600 ms less
+    # while CHECK and the entry baseline are untouched. The byte LENGTH is
+    # unchanged (same digit count), which is why the digest is the part that
+    # moved.
     assert (len(raw), hashlib.sha256(raw).hexdigest()) == (
-        1107, "6ac9a2d24b80031faa9c9f0f745ab2c77b39176c349ed6d149e62f232a0265b9",
+        1107, "d2f5c5a40bc2466dd3660c7ec783dff6bd3c05109fbd246dc7daf7978c5d2b77",
     ), "the shipped stage-1 plan's wire bytes moved"
 
     # …and the consent screen no longer tells the household they will be
@@ -225,8 +230,12 @@ def test_forcing_the_walk_back_on_restores_it_byte_for_byte():
     assert plan.max_attempts == 3 + poses + flow.CLOUD_RETAKE_ALLOWANCE
 
     raw = json.dumps(plan.to_dict(), separators=(",", ":")).encode("utf-8")
+    # RE-DERIVED 2026-08-18 (session trims), same cause and same byte length as
+    # the paused shape above: MEASURE and every pose that replays it budget one
+    # prelude less. R17's plan SHAPE is what this pins — entry count, order and
+    # copy — and none of that moved.
     assert (len(raw), hashlib.sha256(raw).hexdigest()) == (
-        2692, "7737d2b3cecd04bae6c43aa40f872da0617d86319a0544d431558df8ce9c8940",
+        2692, "c5cfa51f34c770aa83b9907c6a66b6d75a006b8f84a0f58eb888400739b76da2",
     ), "re-arming the walk no longer reproduces the plan R17 shipped"
 
     # The consent copy comes back with it — the household is told they will be

@@ -1113,6 +1113,9 @@ def test_capture_page_announcement_matches_the_speakers_own_consent_line():
         acknowledgement_binding="placement_abcdefghijklmnopqrstuv",
         capture_plan=plan,
         guided_captures=plan.capture_target,
+        # A walk must name the captures that announce themselves — see
+        # ``_courtesy_beeps_step``. Stage 1's shape: first and last.
+        announced_captures=(1, plan.capture_target),
         guided_tier="express",
     )
     steps = next(c for c in spec.screen if c["type"] == "steps")["items"]

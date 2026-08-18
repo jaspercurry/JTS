@@ -1236,8 +1236,11 @@ def _dummy_program():
 # that OPENS a session, ``crossover_v2.programs.courtesy_prelude_for_phase``)
 # and stage 2's entry COUNT (``DEFAULT_CLOUD_VERIFY_POSITIONS`` 6 → 5).
 #
-#   stage1-full     2918 B → 2918 B  (length UNCHANGED; MEASURE + 6 lateral
-#                                     entries each −3600 ms, same digit count)
+#   stage1-full     2918 B → 2918 B  (length UNCHANGED; MEASURE and the 8
+#                                     prompted positions each −3600 ms, same
+#                                     digit count. These two entries build the
+#                                     BUILDER's bare defaults — pre-apply cloud
+#                                     on, lateral off — not the shipped stage 1)
 #   stage1-express  1945 B → 1945 B  (length UNCHANGED; same reason)
 #   stage2-full     1942 B → 1683 B  (−259; one prompted position dropped, and
 #                                     the four that remain are −3600 ms each)

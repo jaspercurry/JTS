@@ -1847,6 +1847,28 @@ def build_v2_cloud_index_phase_map(
     return mapping
 
 
+def announced_capture_indexes(index_phase: Mapping[int, str]) -> tuple[int, ...]:
+    """The 1-based captures of this plan that play the courtesy prelude.
+
+    The consent screen tells the household what it will hear, and since the
+    prelude announces a SESSION rather than a capture
+    (:func:`~jasper.active_speaker.crossover_v2.programs.courtesy_prelude_for_phase`)
+    "what it will hear" is no longer the same sentence for every measurement.
+    Stage 1 announces its FIRST (CHECK) and its LAST (the entry baseline, which
+    plays stage 2's anchor object); stage 2's walk announces its first alone.
+
+    Derived from the SAME ``index -> phase`` map the plan's own entries are
+    built from, so the sentence and the schedule cannot describe different
+    sessions — the reason that map exists at all. Reading the plan's
+    ``kind_label``s instead would work only because those strings happen to
+    spell the phases, which is a coincidence, not a contract.
+    """
+    return tuple(
+        index for index, phase in sorted(index_phase.items())
+        if courtesy_prelude_for_phase(phase)
+    )
+
+
 def build_v2_verify_index_phase_map(
     *,
     plan_shape: V2PlanShape | None = None,
@@ -12280,6 +12302,11 @@ def build_v2_verify_session_spec(
             "walk_shape": cloud_walk_shape(
                 plan.capture_target, post_apply=True
             ),
+            # Stage 2 announces its anchor and nothing behind it — same
+            # derivation as stage 1's, off the same index -> phase map.
+            "announced_captures": announced_capture_indexes(
+                build_v2_verify_index_phase_map(plan_shape=plan_shape)
+            ),
         }
         if walked
         else {"reverify_lead": REVERIFY_NO_REWALK_HEADLINE}
@@ -12570,6 +12597,21 @@ def build_v2_session_spec(
         # the count is every capture the household is prompted through, which
         # is the plan's own target.
         guided_captures=plan.capture_target if walked else 0,
+        # …and WHICH of those announce themselves, so the consent screen
+        # states what this session plays rather than a shape that was true
+        # when every capture announced.
+        announced_captures=(
+            announced_capture_indexes(
+                build_v2_cloud_index_phase_map(
+                    plan_shape=shape,
+                    include_cloud_measure=include_cloud_measure,
+                    include_lateral=include_lateral,
+                    include_entry_baseline=include_entry_baseline,
+                )
+            )
+            if walked
+            else ()
+        ),
         # …and which INSTRUMENT that walk is, so the announcement screen can
         # say "quick tune" vs "full measurement" without the spec builder
         # re-deriving a shape it does not own (§1.4 / §2.3).

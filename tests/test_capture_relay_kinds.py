@@ -250,6 +250,9 @@ def test_crossover_guided_cloud_never_promises_a_stationary_mic():
         driver_role="summed",
         acknowledgement_binding="placement_abcdefghijklmnopqrstuv",
         guided_captures=16,
+        # A walk must say which of its captures announce themselves — see
+        # ``_courtesy_beeps_step``. This shape is stage 1's: first and last.
+        announced_captures=(1, 16),
     )
 
     assert spec.acknowledgement is not None
@@ -309,14 +312,25 @@ def test_crossover_guided_cloud_never_promises_a_stationary_mic():
     # one (CHECK: four pilot chirps and no sweep; MEASURE: two pilots then six
     # sweeps; a prompted position: two pilots then one sweep).
     #
-    # A third hedge since 2026-08-18: the beeps are quantified over THE FIRST
-    # measurement and the tones over EVERY one, because the courtesy prelude
-    # now announces a session rather than a capture
-    # (``crossover_v2.programs.courtesy_prelude_for_phase``). The retired
-    # wording — "Each measurement has three short beeps" — is pinned OUT, since
-    # a consent screen promising a warning the speaker will not play is the
-    # same defect as one that promises nothing.
-    assert "The first measurement has three short beeps and a pause" in orientation
+    # A third hedge since 2026-08-18: the beeps are quantified over the
+    # captures that ACTUALLY announce and the tones over every one, because the
+    # courtesy prelude now announces a session rather than a capture
+    # (``crossover_v2.programs.courtesy_prelude_for_phase``). This spec is
+    # built here with ``announced_captures=(1, 16)`` — stage 1's shape — so the
+    # sentence must name both ends. The retired wording ("Each measurement has
+    # three short beeps") is pinned OUT: a consent screen promising a warning
+    # the speaker will not play is the same defect as one that promises
+    # nothing.
+    #
+    # This pin is a LITERAL one and is therefore only as good as the shape
+    # above. What checks the sentence against a real plan — the defect a
+    # literal pin is structurally blind to — is
+    # ``test_the_consent_beeps_sentence_matches_what_the_session_plays`` in
+    # tests/test_crossover_v2_conductor.py, which walks the composed programs.
+    assert (
+        "The first and last measurements each have three short beeps and a "
+        "pause" in orientation
+    )
     assert "every measurement has rising tones" in orientation
     assert "Each measurement has three short beeps" not in orientation
 

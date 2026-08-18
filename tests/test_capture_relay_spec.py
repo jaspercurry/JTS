@@ -726,6 +726,7 @@ def test_no_crossover_consent_screen_ships_a_dead_level_meter():
         "summed-stationary": dict(driver_label="crossover", driver_role="summed"),
         "guided-cloud": dict(
             driver_label="crossover", driver_role="summed", guided_captures=16,
+            announced_captures=(1, 16),
         ),
     }
     for label, kwargs in shapes.items():

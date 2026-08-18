@@ -339,9 +339,10 @@ def sweep_anchor(captured: np.ndarray, segment: Any) -> int:
     48000-sample INSERTION, not a permutation — and the 2026-08-18 prelude
     trim then took the 172800-sample prelude back off this phase, because a
     prompted position no longer opens a session
-    (``crossover_v2.programs.courtesy_prelude_for_phase``). So ``sweep_verify``
-    starts at 245048 under today's composer against 369324 in every archived
-    2026-07-24/25 capture. A reader that registers on the archived program but takes
+    (``crossover_v2.programs.courtesy_prelude_for_phase``). That prelude length
+    is fixed and crossover-independent, so ``sweep_verify`` starts at
+    417324 − 172800 = **244524** under today's composer against 369324 in every
+    archived 2026-07-24/25 capture. A reader that registers on the archived program but takes
     ``start_sample`` from a freshly composed one therefore deconvolves into the
     wrong part of a 6.0 s sweep — 1.0 s late before the trim, 2.6 s early
     after it. That is not hypothetical: it is what happened to

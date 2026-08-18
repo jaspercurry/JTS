@@ -621,7 +621,22 @@ MAX_LINES_BY_PATH = {
     #       stated reason is the shape most likely to be "simplified" back.
     # No seam: the delegate is three lines of dispatch, and its whole job is to
     # be the substitutable seam production binds (#2354).
-    "jasper/active_speaker/crossover_v2_flow.py": 12_883,
+    #
+    # 2026-08-18 (session trims): 12,883 -> 12,974, this PR's own net of +91
+    # (124 added, 33 removed) on top of the ceiling as it stands. Roughly a
+    # sixth executes: both capture-plan builders compose the position groups'
+    # unannounced summed sweep and size their cloud entries from it, the
+    # session holds that program as a fourth, and `announced_capture_indexes`
+    # threads into both session-spec builders — which is what lets the consent
+    # screen state WHICH captures beep instead of asserting a shape. (The
+    # asserted shape SHIPPED and was false: stage 1 announces two captures. A
+    # hand-written sentence is exactly what cannot be checked against a plan.)
+    # The rest is why: which phases the courtesy prelude announces and why the
+    # entry baseline is one of them, and what `DEFAULT_CLOUD_VERIFY_POSITIONS`
+    # at its floor gives up — the walk's only above/below-mark-height pose.
+    # Both are decisions a reader has to be able to re-derive from the file,
+    # and neither is visible in the code that implements it.
+    "jasper/active_speaker/crossover_v2_flow.py": 12_974,
     # ...and 9,292 -> 9,296, +4 physical / 0 logical: the sweep caught that
     # comment overclaiming its own readership ("the surface /state, the doctor
     # and the done screen read" — no renderer reads it today). It is a forensic
@@ -677,7 +692,14 @@ MAX_LINES_BY_PATH = {
     # Both sites carry it because both mint a stage-1 session that sweeps; a
     # helper wrapping one call and one comment would be indirection, not a
     # seam.
-    "jasper/web/correction_crossover_v2.py": 8_392,
+    #
+    # 2026-08-18 (session trims): 8,392 -> 8,395, +3. The `summed_program.wav`
+    # fill-if-absent comment stopped claiming its content is byte-identical
+    # across every summed-sweep phase — since the courtesy prelude rides only a
+    # session's opening capture, the compared pair carries beeps the position
+    # groups do not, and a diagnostic copy that says otherwise misleads the
+    # replay it exists for.
+    "jasper/web/correction_crossover_v2.py": 8_395,
     # Born 2026-08-18 (#2662 slice 1) at exactly this size: the relay capture
     # provider — the choreography only the phone-relay source has. It should
     # grow only when the RELAY grows; the wired provider is its own module.
@@ -685,7 +707,14 @@ MAX_LINES_BY_PATH = {
     # constant, -4.) UNCHANGED by the lateral pause: `relay_link_ttl_s` moved
     # here with the extraction and its docstring quoted stage 1's old 2520 s
     # ceiling, so the pause corrects one number in place, +0.
-    "jasper/web/correction_crossover_v2_relay.py": 1_076,
+    # 2026-08-18 (session trims): 1,076 -> 1,085, +9 (18 added, 9 removed) and
+    # 0 executable growth — the `quiet_requested` derivation swapped one
+    # expression for another. The comment IS the change: the flag used to be
+    # read off where the courtesy beeps sit, which since the prelude trim would
+    # tell a household to carry on through the one window that has to be quiet
+    # (the pilot SNR guard's). A silent-wrong-answer site earns the lines that
+    # stop it being "simplified" back.
+    "jasper/web/correction_crossover_v2_relay.py": 1_085,
     # ...and 4,103 -> 4,107 (lateral pause), +4 net: the entry-baseline screen
     # said the household is "BACK on the mark", true only after a walk. With
     # the walk paused this capture follows MEASURE, where the microphone never

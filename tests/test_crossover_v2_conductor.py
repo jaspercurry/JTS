@@ -129,6 +129,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     TIER_EXPRESS,
     WIDE_OFFSET_MIN_CM,
     TIER_FULL,
+    TIER_REMOTE,
     TRANSIENT_AUTO_RETRY_CODES,
     VERIFY_ANCHOR_HOLD_MESSAGE,
     VERIFY_PILOT_TRANSFER_STEP_CEILING_DB,
@@ -6227,6 +6228,150 @@ def test_conductor_composed_programs_carry_the_prelude_where_the_rule_says():
     ]
 
 
+@pytest.mark.parametrize("lateral_armed", [False, True])
+@pytest.mark.parametrize("tier", [TIER_FULL, TIER_EXPRESS, TIER_REMOTE])
+def test_the_consent_beeps_sentence_matches_what_the_session_plays(
+    tier, lateral_armed, monkeypatch,
+):
+    """The consent screen's beeps sentence, checked against the PROGRAMS.
+
+    The 2026-08-18 gate round found a hand-written "The first measurement has
+    three short beeps" shipped against a stage 1 that beeps TWICE — its entry
+    baseline plays stage 2's anchor object and announces too. The literal pin
+    in ``tests/test_capture_relay_kinds.py`` could not see it: a substring
+    assertion is true of a sentence that is false of the session.
+
+    So this walks the other way round. For each capture index it asks the
+    SESSION what that phase plays and looks for a courtesy tone in the composed
+    segments — the ground truth, what the speaker actually does — and then
+    requires the rendered sentence to be the one that describes that set. A
+    rule change that moves the announced set without moving the copy (or the
+    reverse) fails here whichever way it drifts.
+
+    **Both lateral states, and the ARMED one is the case that binds.** With the
+    walk paused (2026-08-18) stage 1 is three captures at the mark, so it is not
+    a guided walk and renders no beeps sentence at all — which would leave the
+    two-announcement shape unexercised and this pin quietly vacuous. The walk is
+    paused, not retired: re-arming it is a flag flip, and the sentence it will
+    then render is the one that was WRONG when the gate found it.
+    """
+    from jasper.audio_measurement.program import KIND_COURTESY_TONE
+    from jasper.active_speaker.capture_geometry import (
+        CLOUD_WALK_PLACEMENT_POLICY_ID,
+    )
+
+    monkeypatch.setattr(flow, "STAGE1_INCLUDES_LATERAL", lateral_armed)
+    shape = resolve_plan_shape(tier)
+    stages = (
+        (
+            build_v2_session_spec(
+                _roles(), FC_HZ, acknowledgement_binding="b" * 24,
+                plan_shape=shape,
+                include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
+                include_lateral=flow.STAGE1_INCLUDES_LATERAL,
+                include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
+            ),
+            build_v2_cloud_index_phase_map(
+                plan_shape=shape,
+                include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
+                include_lateral=flow.STAGE1_INCLUDES_LATERAL,
+                include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
+            ),
+        ),
+        (
+            build_v2_verify_session_spec(
+                FC_HZ, acknowledgement_binding="b" * 24, plan_shape=shape,
+            ),
+            flow.build_v2_verify_index_phase_map(plan_shape=shape),
+        ),
+    )
+    conductor = _conductor(FakeSeams(), gain_plan_db={"woofer": -30.0, "tweeter": -36.0})
+
+    for spec, index_phase in stages:
+        walk = len(index_phase)
+        played = tuple(
+            index for index, phase in sorted(index_phase.items())
+            if any(
+                seg.kind == KIND_COURTESY_TONE
+                for seg in conductor.program_for_phase(phase).segments
+            )
+        )
+        steps = next(c for c in spec.screen if c["type"] == "steps")["items"]
+        sentence = next((i for i in steps if "beeps" in i), "")
+        if not sentence:
+            # The GUIDED consent surface was not rendered, so there is no
+            # sentence to be wrong — and that is checked rather than assumed,
+            # because "no sentence" must never be how a guided session passes.
+            # Two shipped shapes land here: a single held-still sweep (Express's
+            # stage 2, the recovery re-arm) and, since the 2026-08-18 lateral
+            # pause, stage 1 itself — three captures all at the mark, so the
+            # flow's ``walked`` is False and the stationary copy applies.
+            #
+            # NOTE the consequence, which is not this PR's to fix: stage 1
+            # announces two of its three captures and its consent screen says
+            # nothing about beeps, because the stationary copy never carried
+            # that sentence. Re-arming the walk restores it.
+            assert (
+                spec.acknowledgement.id != CLOUD_WALK_PLACEMENT_POLICY_ID
+            ), (tier, walk)
+            continue
+        assert played, (tier, walk)
+        if played == tuple(range(1, walk + 1)):
+            expected = "Each measurement has"
+        elif played == (1,):
+            expected = "The first measurement has"
+        elif played == (1, walk):
+            expected = "The first and last measurements each have"
+        else:  # pragma: no cover - a shape the copy refuses to state
+            raise AssertionError(f"unstateable announced set {played} of {walk}")
+        assert sentence.startswith(expected), (tier, walk, played, sentence)
+        # …and the OTHER two openers are pinned out, so a sentence that merely
+        # contains the right words in the wrong quantifier cannot pass.
+        for other in (
+            "Each measurement has",
+            "The first measurement has",
+            "The first and last measurements each have",
+        ):
+            if other != expected:
+                assert other not in sentence, (tier, other)
+
+
+def test_a_consent_walk_must_say_which_captures_announce():
+    """A guided walk with no announced set is REFUSED, not silently phrased.
+
+    The fail-loud half of the pin above. ``build_crossover_sweep_spec`` is a
+    public builder and a caller that declares a walk without saying what it
+    announces has no truthful sentence available — rendering "The first
+    measurement has…" by default is exactly how the shipped defect happened.
+    """
+    from jasper.capture_relay.spec import CaptureSpecError, build_crossover_sweep_spec
+
+    def _spec(announced):
+        return build_crossover_sweep_spec(
+            driver_label="crossover",
+            driver_role="summed",
+            acknowledgement_binding="placement_abcdefghijklmnopqrstuv",
+            guided_captures=9,
+            announced_captures=announced,
+        )
+
+    for announced in ((), (0, 3), (1, 99), (2,), (1, 4)):
+        with pytest.raises(CaptureSpecError):
+            _spec(announced)
+
+    # …and the third stateable shape, which has no shipped producer since the
+    # prelude trim but is the truthful sentence for a plan that announces
+    # everything — the pre-trim rule's own shape, and what a re-enable would
+    # render. Kept because refusing to describe a describable session is the
+    # worse failure, and pinned here so it is exercised rather than assumed.
+    steps = next(
+        c for c in _spec(tuple(range(1, 10))).screen if c["type"] == "steps"
+    )["items"]
+    assert any(
+        i.startswith("Each measurement has three short beeps") for i in steps
+    )
+
+
 def test_bind_program_playback_seams_uses_inline_setconfig(tmp_path):
     """The production seams keep the statefile boot anchor untouched: load and
     restore both ride ``set_active_config_raw`` (SetConfig), never
@@ -6439,15 +6584,21 @@ def test_worst_case_cloud_plan_fits_the_relay_index_space():
         cloud_measure_positions=MAX_CLOUD_MEASURE_POSITIONS,
         cloud_verify_positions=DEFAULT_CLOUD_VERIFY_POSITIONS,
     )
+    #
+    # Both numbers came down by one on 2026-08-18 when
+    # ``DEFAULT_CLOUD_VERIFY_POSITIONS`` moved to its floor. Stated as a bound
+    # PLUS the number rather than as an equality with the ceiling: the
+    # walk-armed case used to saturate it exactly, and an assertion that reads
+    # "the guard is designed to sit at 32" invites spending the difference.
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(flow, "STAGE1_INCLUDES_LATERAL", True)
         assert flow.relay_plan_attempts_required(
             **worst
-        ) == MAX_CAPTURE_PLAN_ATTEMPTS == 32
+        ) == 31 <= MAX_CAPTURE_PLAN_ATTEMPTS == 32
     # What the paused build actually draws — the walk's six indexes are slack
     # held in reserve for re-arming, not headroom for a new entry.
     assert flow.STAGE1_INCLUDES_LATERAL is False
-    assert flow.relay_plan_attempts_required(**worst) == 26
+    assert flow.relay_plan_attempts_required(**worst) == 25
 
 
 @pytest.mark.parametrize("positions", [MIN_CLOUD_MEASURE_POSITIONS - 1,
