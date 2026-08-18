@@ -15,15 +15,17 @@
 # coupling reconciler's decision, not this file's. Campaign context:
 # docs/HANDOFF-audio-graph-consolidation.md.
 #
-# Three assets, all installed here:
+# Three kinds of asset, all installed here:
 #   1. libasound_module_pcm_jts_ring.so — compiled on the Pi from
 #      c/jts-ring-ioplug via `make plugin`, installed to the arch ALSA
 #      plugin dir. sha256-compared like the Rust daemons so an unchanged
 #      build does not churn.
-#   2. /etc/alsa/conf.d/60-jts-ring.conf — the system-wide (0644,
-#      renderer-user resolvable) pcm.jts_ring_capture / pcm.jts_ring_playback /
-#      pcm.jts_ring_active_playback definitions. Shipped from
-#      deploy/alsa/conf.d/60-jts-ring.conf verbatim.
+#   2. the system-wide (0644, renderer-user resolvable) /etc/alsa/conf.d
+#      drop-ins, each shipped verbatim from deploy/alsa/conf.d:
+#      60-jts-ring.conf (the coupling's three PCMs), 61-jts-renderer-lanes.conf
+#      (the renderer-ingress lanes) and 62-jts-ring-grouping.conf (the bonded
+#      endpoint's snapcast ingress). One block per install step below, so a
+#      missing source file names itself.
 #   3. /etc/tmpfiles.d/jts-ring.conf — the /dev/shm/jts-ring directory
 #      lifecycle (group-writable, setgid), shipped from
 #      deploy/tmpfiles/jts-ring.conf and applied via systemd-tmpfiles.
@@ -312,6 +314,22 @@ install_jts_ring_conf_assets() {
         echo "  WARN: ${lanes_src} missing; renderer-ingress lane PCMs not installed" >&2
     fi
 
+    # 1c. Grouping-ingress ring PCM (#2508). Same shape and same reason as the
+    #     two blocks above: system-wide 0644 so any user can resolve the name.
+    #     The device ships ahead of its consumers — no `--soundcard` and no
+    #     CamillaDSP capture device names pcm.jts_ring_grouping, and a PCM
+    #     definition is not an open. What it costs to place it is one file
+    #     alsa-lib parses; what it buys is that the geometry can be proven on
+    #     metal before any transport moves onto it.
+    local grouping_src="${REPO_DIR}/deploy/alsa/conf.d/62-jts-ring-grouping.conf"
+    if [[ -f "${grouping_src}" ]]; then
+        install -d -m 0755 /etc/alsa/conf.d
+        install -m 0644 "${grouping_src}" /etc/alsa/conf.d/62-jts-ring-grouping.conf
+        echo "  Installed /etc/alsa/conf.d/62-jts-ring-grouping.conf (pcm.jts_ring_grouping; the bonded endpoint's snapcast ingress)"
+    else
+        echo "  WARN: ${grouping_src} missing; grouping-ingress ring PCM not installed" >&2
+    fi
+
     # 2. /dev/shm/jts-ring directory via tmpfiles.d. Group-writable +
     #    setgid so the (root today) ring writer + reader share it, and a
     #    non-root RENDERER in group `jts-ring` can create and write its lane's
@@ -370,6 +388,27 @@ install_jts_ring_platform() {
     #
     # RING FILES ONLY, never the sibling `.writer.lock` / `.open.lock`:
     # unlinking a lock opens a silent inode-tear window between two holders.
+    #
+    # AND ONLY THESE THREE. `grouping.ring` — the bonded endpoint's snapcast
+    # ingress, pcm.jts_ring_grouping in 62-jts-ring-grouping.conf — is
+    # deliberately absent, and stays absent when its consumers arrive. The
+    # asymmetry is not an oversight:
+    #   - The three above MUST be unlinked (an older default's geometry is a
+    #     fatal attach mismatch), and the deploy's own core-graph bounce is
+    #     what re-creates and re-attaches them.
+    #   - Nothing has stopped the grouping ingress's writer at this point.
+    #     `jasper-snapclient.service` is parked by
+    #     park_audio_clients_for_core_graph_restart and started again by
+    #     reconcile_grouping_state — BOTH inside install_systemd_units, which
+    #     runs after this function. So an unlink here lands under a live bonded
+    #     writer: snapclient would keep writing an inode nothing can name while
+    #     its reader creates and attaches a fresh file, with no error on either
+    #     side. That is the ring-file twin of the pathname-vs-inode residual
+    #     c/jts-ring-ioplug/jts_ring_shm.c records for the writer lock.
+    # The residual of NOT deleting it is smaller and loud: after a conf.d
+    # geometry change, a box that already created the ring since boot meets
+    # -EINVAL at open until a reboot clears the tmpfs. Design §3.4:
+    # captures/DESIGN-PROPOSAL-grouping-ring-2026-08-17.md.
     rm -f /dev/shm/jts-ring/program.ring
     rm -f /dev/shm/jts-ring/content.ring
     rm -f /dev/shm/jts-ring/active-content.ring

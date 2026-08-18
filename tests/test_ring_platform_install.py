@@ -155,6 +155,7 @@ def test_conf_asset_echoes_state_what_was_placed_not_what_the_box_is_doing(tmp_p
     for rel in (
         "deploy/alsa/conf.d/60-jts-ring.conf",
         "deploy/alsa/conf.d/61-jts-renderer-lanes.conf",
+        "deploy/alsa/conf.d/62-jts-ring-grouping.conf",
         "deploy/tmpfiles/jts-ring.conf",
     ):
         (repo / rel).write_text("# fixture\n", encoding="utf-8")
