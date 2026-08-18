@@ -815,9 +815,10 @@ its rig support before it states a schedule.
 
 Ratified 2026-08-18; **not implemented**. It builds on decision 13's
 capture-source seam ([#2662](https://github.com/jaspercurry/JTS/issues/2662);
-slice 1 is [PR #2701](https://github.com/jaspercurry/JTS/pull/2701)) — **after**
-the wired provider (W2b) and **together with** the SPL-anchor leveling build,
-which shares its machinery. The wired-only ruling is the frame: speaker
+the layer contract and what slice 1 landed are stated once above, under
+["Composition & code seams"](#composition--code-seams-verified-present)) —
+**after** the wired provider (W2b) and **together with** the SPL-anchor
+leveling build, which shares its machinery. The wired-only ruling is the frame: speaker
 calibration is wired-microphone only, while the relay/phone path survives for
 room correction, a later rework where the string method serves seat-position
 prompts too.
