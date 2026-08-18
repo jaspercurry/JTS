@@ -584,7 +584,30 @@ MAX_LINES_BY_PATH = {
     # and the done screen read" — no renderer reads it today). It is a forensic
     # state key, and saying which it is costs four lines on a surface whose
     # whole job this round is telling "measured" from "not measured".
-    "jasper/web/correction_crossover_v2.py": 9_333,
+    #
+    # 2026-08-18 (#2662, capture-source seam slice 1): 9,333 -> 8,349, the
+    # file's first cut since this ratchet was set — the wheels-report
+    # direction ("the host sheds relay interleaving") finally moving. From
+    # main's banked 9,333 baseline (the ratchet repaired directly in
+    # cb3e4f462): the relay extraction moves 1,017 lines out (the plan-walk
+    # hosting, the phone phase ladder, the purge grace, the link-TTL policy
+    # — now `correction_crossover_v2_relay.py`, capped below so the relay
+    # choreography cannot quietly re-accrete host concerns either) and adds
+    # 25 back (the re-export block and the two seam comments), net −992; the
+    # PR's gate fix round adds 8 more — the re-export block's PATCH
+    # CONTRACT, stating which three names the host actually calls (a double
+    # patched there reaches the preparers) and which three it merely
+    # re-publishes (a double must patch the provider, or it rebinds a name
+    # nothing reads). The reviewer probed exactly that trap; prose that
+    # stops the next test author shipping a silent no-op patch is worth
+    # eight lines. 9,333 − 992 + 8 = 8,349.
+    "jasper/web/correction_crossover_v2.py": 8_349,
+    # Born 2026-08-18 (#2662 slice 1) at exactly this size: the relay capture
+    # provider — the choreography only the phone-relay source has. It should
+    # grow only when the RELAY grows; the wired provider is its own module.
+    # (1,080 at birth; the gate fix round deleted a reader-less identity
+    # constant, -4.)
+    "jasper/web/correction_crossover_v2_relay.py": 1_076,
     "jasper/active_speaker/crossover_envelope_v2.py": 4_103,
     # 2026-08-18 (D7, series-2 diagnosis): +82 net on `program_analysis.py`
     # (95 added, 13 removed), counted rather than estimated —

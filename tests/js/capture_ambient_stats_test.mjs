@@ -10,9 +10,10 @@
 // data: URL — the same strip-and-eval pattern the other capture-page
 // harnesses use (see capture_level_events_test.mjs).
 //
-// Schema conformance is cross-checked against the REAL Python parser in
-// tests/test_capture_page_ambient_stats_bridge.py — this harness only proves
-// the JS-side computation and wire shape.
+// This harness proves the JS-side computation and wire shape. There is no
+// Pi-side consumer to cross-check against: the event is emitted
+// forward-compatibly and ignored by the Pi (#2662 deleted the never-called
+// parser, `level_solver.parse_ambient_stats_event`, and its bridge test).
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";

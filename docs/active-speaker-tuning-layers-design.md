@@ -642,6 +642,18 @@ that the fit consumes are already produced by every MEASURE
 (`analyze_program_capture` → `DriverResponse` to 18 kHz with per-serial cal
 applied) — the data pipeline needs zero new capture work for 2-way.
 
+**The capture-source seam (decision 13, #2662 — slice 1 landed).** The
+capture → analysis layer contract is: one provider per source answers each
+capture with WAV + metadata (mic identity, mic/cal identity reference, and
+the frame-ledger integrity counters), the provider mints the session id the
+durable state and evidence key on, and the host owns the mapping onto the
+persisted failure codes — the provider speaks only the flow's reason
+vocabulary. The contract itself lives in
+[jasper/active_speaker/crossover_v2/capture_source.py](../jasper/active_speaker/crossover_v2/capture_source.py)
+(do not restate it here); the relay provider's private choreography is
+[jasper/web/correction_crossover_v2_relay.py](../jasper/web/correction_crossover_v2_relay.py),
+and the wired (Pi-mic) provider is the seam's next occupant.
+
 ## Speaker-class applicability (#1671)
 
 Component entry (#1665) declares the class; the class drives which layers'

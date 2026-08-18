@@ -97,6 +97,7 @@ from jasper.capture_relay.session import (
 )
 from jasper.dsp_apply import config_file_sha256
 from jasper.web import correction_crossover_v2 as v2host
+from jasper.web import correction_crossover_v2_relay as v2relay
 
 from tests.test_capture_relay_plan import FakePlanRelayBackend, PhonePlanDriver
 from tests.crossover_v2_fixtures import (
@@ -10874,7 +10875,9 @@ def test_phase_ladder_replaces_the_eager_sweep_started_post(monkeypatch):
     the host posts the LADDER from inside the play instead of the eager
     `sweep_started` it used to post at arm time — the ~4.6 s claim of a tone
     that had not started (#1824 D4)."""
-    monkeypatch.setattr(v2host, "PHASE_LADDER_START_SKEW_S", 0.0)
+    # The skew knob lives with the ladder in the relay provider module; a patch
+    # must land where the ladder reads it (#2662 slice 1 moved both together).
+    monkeypatch.setattr(v2relay, "PHASE_LADDER_START_SKEW_S", 0.0)
     backend = FakePlanRelayBackend()
     spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
 
