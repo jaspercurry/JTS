@@ -124,6 +124,14 @@ from jasper.log_event import log_event
 # correction_setup and the test suite address them at this module. EAGER, and
 # safely so: the provider module never imports this one at module scope (its
 # host reach-backs are call-time), so the pair cannot deadlock an import.
+#
+# Patch contract for test doubles: this HOST calls build_v2_run_and_consume,
+# relay_link_ttl_s, and PlaybackStartSignal through these bindings, so
+# patching them on this module reaches the preparers. The other three are
+# re-published for external callers only — the host never invokes them — so
+# a double for program_phase_schedule / start_program_phase_ladder /
+# TERMINAL_FAILURE_PURGE_GRACE_S must patch the provider module, or it
+# rebinds a name nothing here reads.
 from jasper.web.correction_crossover_v2_relay import (
     TERMINAL_FAILURE_PURGE_GRACE_S as TERMINAL_FAILURE_PURGE_GRACE_S,
     PlaybackStartSignal as PlaybackStartSignal,

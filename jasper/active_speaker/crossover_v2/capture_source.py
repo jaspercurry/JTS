@@ -35,10 +35,14 @@ accident:
 
 * **The provider mints the session identity.** The durable v2 state, the
   evidence publishers, and the phase artifacts are all keyed by the session id
-  the provider's open returned (today: the relay session id —
-  ``jasper.web.correction_crossover_v2.v2_session_identity``). A second source
+  the provider's open returned (today: the relay session id). A second source
   supplies its own id on the same key; the persisted key vocabulary does not
-  change per source.
+  change per source. One scoping clause: for ATTRIBUTION the **bundle**
+  session id stays canonical — the bundle is the retention unit — and the
+  provider's id rides as an alias
+  (``jasper.web.correction_crossover_v2.v2_session_identity``, alias key
+  ``ALIAS_RELAY_SESSION_ID``). A new provider aliases its own id the same
+  way; it does not mint a new canonical identity.
 * **The host owns the persisted-code mapping.** What crosses the seam when a
   session dies is the flow's own reason vocabulary
   (``REASON_RELAY_TIMEOUT``, ``REASON_USER_STOPPED``, … —

@@ -1340,9 +1340,12 @@ async function captureAmbientNoise(recorder, spec, note = "") {
 }
 
 // Per-octave-band ambient-noise stats (Wave 2, W2.1/W2.4 closed-loop SNR
-// level solve — jasper.audio_measurement.level_solver.parse_ambient_stats_event).
-// Scoped to driver sweeps (crossover_sweep) since that solver only ever runs
-// per-driver; room_sweep/balance_burst/sync_marker have no such consumer.
+// level solve). Emitted forward-compatibly — nothing Pi-side consumes the
+// event today (#2662 deleted the never-called parser; the Pi computes
+// ambient from the capture itself). Scoped to driver sweeps
+// (crossover_sweep), the one kind whose per-driver level solve could ever
+// use per-band ambient; room_sweep/balance_burst/sync_marker have no such
+// consumer.
 // Returns `{}` (spread-safe, no-op) for every other kind or an empty/failed
 // capture, so this rides for free on every capture protocol version — v1,
 // v2, and the v3 plan loop all call captureAmbientNoise() the same way.

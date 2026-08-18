@@ -15,16 +15,15 @@ provider's names; the provider never imports the host at module scope).
 """
 from __future__ import annotations
 
-import ast
 import io
+import subprocess
+import sys
 import wave
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Mapping
 
 from jasper.active_speaker.crossover_v2.capture_source import (
     INTEGRITY_COUNTER_KEYS,
-    SOURCE_RELAY,
     CaptureAnswer,
 )
 from jasper.audio_measurement.frame_ledger import reconcile_capture_frames
@@ -150,10 +149,6 @@ def test_the_integrity_counter_keys_are_the_ledgers_real_read_set():
     assert unrelated.render_gap_frames is None
 
 
-def test_the_relay_provider_declares_the_relay_identity():
-    assert v2relay.SOURCE == SOURCE_RELAY == "relay"
-
-
 def test_the_host_republishes_the_providers_names():
     """The host's published surface survives the extraction (#2662 slice 1).
 
@@ -174,32 +169,27 @@ def test_the_host_republishes_the_providers_names():
 
 
 def test_the_provider_reaches_the_host_only_at_call_time():
-    """No module-scope import of the host from the provider.
+    """Importing the provider does not import the host — behavioral pin.
 
     The host imports the provider EAGERLY (to re-publish its names), so the
-    pair stays import-safe only while the provider's reach-backs are
-    call-time. This walks the provider's AST and rejects a top-level import
-    of the host module — the one edit that would deadlock the pair — while
-    leaving function-local imports (the intended shape) alone.
+    pair stays import-safe only while the provider's host reach-backs are
+    call-time. Asserted on the real interpreter rather than by scanning
+    import statements: a fresh process imports the provider and checks
+    ``sys.modules`` for the host — which also catches an INDIRECT route (a
+    dependency of the provider growing a host import) that a source scan of
+    the one file cannot see. The ``find_spec`` line is the probe's positive
+    control: it proves the name asserted absent is a real, loadable module,
+    so a renamed host cannot make this pass vacuously.
     """
-    module = (
-        Path(v2relay.__file__)
-        if hasattr(v2relay, "__file__")
-        else None
+    probe = (
+        "import importlib.util, sys\n"
+        "import jasper.web.correction_crossover_v2_relay\n"
+        "assert 'jasper.web.correction_crossover_v2' not in sys.modules, "
+        "'the provider imported the host at module scope'\n"
+        "assert importlib.util.find_spec("
+        "'jasper.web.correction_crossover_v2') is not None\n"
     )
-    assert module is not None
-    tree = ast.parse(module.read_text(encoding="utf-8"))
-    offenders = []
-    for node in tree.body:  # top-level statements only, by construction
-        if isinstance(node, ast.Import):
-            names = [alias.name for alias in node.names]
-        elif isinstance(node, ast.ImportFrom):
-            names = [node.module or ""]
-        else:
-            continue
-        offenders += [
-            name for name in names
-            if name == "jasper.web.correction_crossover_v2"
-            or name == "jasper.web"
-        ]
-    assert offenders == []
+    completed = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True,
+    )
+    assert completed.returncode == 0, completed.stderr

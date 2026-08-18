@@ -43,16 +43,12 @@ import threading
 import time
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
-from jasper.active_speaker.crossover_v2.capture_source import SOURCE_RELAY
 from jasper.log_event import log_event
 
 if TYPE_CHECKING:
     from jasper.web.correction_crossover_v2 import PositionGate, V2VolumeHooks
 
 logger = logging.getLogger(__name__)
-
-#: Which capture source this provider is, in the seam's vocabulary.
-SOURCE = SOURCE_RELAY
 
 # --------------------------------------------------------------------------- #
 # pre-tone phase ladder (#1824 D3/D4)
