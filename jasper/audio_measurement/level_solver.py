@@ -53,10 +53,10 @@ Two solver-owned ceilings have no other owner:
 * ``MIC_CLIP_CEILING_DBFS`` -- the predicted mic peak must stay this far
   below true digital full scale, so a "successful" solve cannot itself
   corrupt the capture it is trying to enable.
-* ``LF_AMBIENT_MARGIN_DB`` -- when no per-band ambient measurement is
-  available (the phone-side ``ambient_stats`` event is a later PR; see
-  :func:`parse_ambient_stats_event`), the fallback synthesizes per-band
-  ambient from one broadband reading. Low-frequency room noise (HVAC,
+* ``LF_AMBIENT_MARGIN_DB`` -- no shipped caller supplies a per-band ambient
+  measurement (every production solve passes ``ambient_bands=None``), so the
+  fallback synthesizes per-band ambient from one broadband reading.
+  Low-frequency room noise (HVAC,
   traffic, appliance rumble) routinely runs louder than a broadband RMS
   average suggests, so bands whose center sits at or below
   ``LF_MARGIN_FULL_HZ`` get the full conservative margin added; bands at or
@@ -108,7 +108,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Sequence
 
 from .excitation import AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS
 from .quality_model import QualityModel
@@ -161,16 +161,6 @@ LF_MARGIN_ZERO_HZ = 2000.0
 FALLBACK_BAND_COUNT = 4
 
 REFUSAL_ROOM_TOO_NOISY = "room_too_noisy_for_safe_measurement"
-
-# The ambient-stats event schema this Pi build understands. PR-a (this
-# module) only ever PARSES the event; the phone-side emitter is a later PR.
-AMBIENT_STATS_SCHEMA_VERSION = 1
-
-# Upper bound on the per-band list a phone event may carry. Real emitters
-# send a handful of octave / 1/3-octave rows; anything larger is malformed
-# (or hostile) input and takes the same fail-soft fallback path as any other
-# malformed event -- never an unbounded parse.
-AMBIENT_STATS_MAX_BANDS = 64
 
 
 @dataclass(frozen=True)
@@ -343,11 +333,10 @@ def solve_level(
     is the driver-safety-confirmed ceiling on
     ``DriverSweepGeneratorPlan.effective_peak_dbfs``.
 
-    ``ambient_bands``, when given (from a validated phone ``ambient_stats``
-    event -- see :func:`parse_ambient_stats_event`), is used directly, no LF
-    weighting. When absent or empty after clipping to the admitted band, the
-    solver synthesizes a conservative per-band estimate from
-    ``ambient_broadband_dbfs`` (see the module docstring).
+    ``ambient_bands``, when given, is used directly, no LF weighting — no
+    shipped caller supplies one today. When absent or empty after clipping to
+    the admitted band, the solver synthesizes a conservative per-band estimate
+    from ``ambient_broadband_dbfs`` (see the module docstring).
 
     ``mic_clip_gain_map_db`` overrides ``gain_map_db`` for the mic-clip
     ceiling ONLY (hardware run 18: a single 250 Hz lock tone underestimated a
@@ -463,64 +452,3 @@ def solve_level(
         band_detail=band_detail,
         achieved_target=achieved_target,
     )
-
-
-def parse_ambient_stats_event(
-    raw: Mapping[str, Any] | None,
-    *,
-    expected_run_token: str,
-) -> tuple[AmbientBand, ...] | None:
-    """Validate one phone ``ambient_stats`` event; ``None`` means fall back.
-
-    PR-a (this module) only parses this event -- the phone-side emitter
-    lands in a later PR, so today every caller feeds ``None`` and always
-    takes the broadband-fallback path in :func:`solve_level`. The parser
-    exists now so the wire contract is pinned before the emitter exists,
-    and so a future emitter (or a stale/old phone page) that omits or
-    malforms the event degrades cleanly rather than crashing.
-
-    Returns ``None`` (never raises) for: a missing/non-mapping event, a
-    ``run_token`` mismatch (a stale event from a previous attempt), a
-    ``schema`` this build does not understand, a ``clipped`` capture (the
-    phone's own quiet-window recording clipped -- its levels cannot be
-    trusted), or malformed/empty/oversized ``bands`` (more than
-    ``AMBIENT_STATS_MAX_BANDS`` rows).
-    """
-
-    if not isinstance(raw, Mapping):
-        return None
-    stats = raw.get("ambient_stats")
-    if not isinstance(stats, Mapping):
-        return None
-    if str(stats.get("run_token") or "") != expected_run_token:
-        return None
-    schema = stats.get("schema")
-    if not isinstance(schema, int) or bool(isinstance(schema, bool)):
-        return None
-    if schema != AMBIENT_STATS_SCHEMA_VERSION:
-        # Unknown schema: WARN-and-fallback is the caller's job (it has the
-        # logger); this pure parser just declines to produce bands.
-        return None
-    if stats.get("clipped") is True:
-        return None
-    raw_bands = stats.get("bands")
-    if (
-        not isinstance(raw_bands, (list, tuple))
-        or not raw_bands
-        or len(raw_bands) > AMBIENT_STATS_MAX_BANDS
-    ):
-        return None
-    bands: list[AmbientBand] = []
-    for entry in raw_bands:
-        if not isinstance(entry, Mapping):
-            return None
-        try:
-            band = AmbientBand(
-                lo_hz=float(entry["lo_hz"]),
-                hi_hz=float(entry["hi_hz"]),
-                rms_dbfs=float(entry["rms_dbfs"]),
-            )
-        except (KeyError, TypeError, ValueError):
-            return None
-        bands.append(band)
-    return tuple(bands)

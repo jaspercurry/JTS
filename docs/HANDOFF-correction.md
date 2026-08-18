@@ -795,8 +795,9 @@ never redirected.
   can Stop a driver sweep or level ramp itself — a new "stop" screen action
   wired to the same abort() path the visibility-abort case already used
   (`capture-page/js/main.js`'s `stopCapture`). **Producer, 2026-07-28
-  (issue #1824):** the crossover-v2 host
-  ([`jasper/web/correction_crossover_v2.py`](../jasper/web/correction_crossover_v2.py))
+  (issue #1824):** the crossover-v2 relay provider
+  ([`jasper/web/correction_crossover_v2_relay.py`](../jasper/web/correction_crossover_v2_relay.py),
+  split out of the v2 host by #2662)
   posts the whole pre-tone ladder — `prelude_started` (the courtesy beeps and
   their settle), `ambient_started` (carrying the room-listening window's own
   `duration_s` plus `quiet_requested`), then `sweep_started` — from

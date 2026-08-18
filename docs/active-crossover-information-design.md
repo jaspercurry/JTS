@@ -703,13 +703,13 @@ the failing band and the two levers (quiet the room, move the microphone
 closer) — the refusal itself does not invalidate the driver's level lock,
 though the remedy the UI offers today re-runs the guided level check from
 the start (ambient is currently a ramp byproduct; a retained-locks
-re-measure is the planned seam for the phone ambient-stats follow-up).
+re-measure would be the seam if per-band phone ambient were ever wired in).
 `commissioning_gain_db` stays governed by the same non-positive,
 `DriverSweepGeneratorPlan`-validated invariant as before — the solver
 proposes, commissioning admission still validates every ceiling exactly as
-it always has (defense in depth). The phone-side per-band `ambient_stats`
-event is a follow-up page change; until it ships, every solve takes the
-broadband-fallback path.
+it always has (defense in depth). The phone already emits a per-band
+`ambient_stats` event, but nothing Pi-side consumes it (#2662 deleted the
+never-called parser); every solve takes the broadband-fallback path.
 
 **Bounded correction (W2.2) is ONE signed per-target adjustment, applied
 to the solver's assumed ambient, with up to two writes per target per

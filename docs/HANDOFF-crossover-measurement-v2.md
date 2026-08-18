@@ -588,6 +588,8 @@ the module, not a second copy here.
 | [`camilla_yaml.py`](../jasper/active_speaker/camilla_yaml.py) | The baseline emitter, and the independent re-validation of every linearization filter before it reaches CamillaDSP. |
 | [`crossover_envelope_v2.py`](../jasper/active_speaker/crossover_envelope_v2.py) | The pure `status → envelope` renderer: step list, screen dispatch, registry copy. |
 | [`web/correction_crossover_v2.py`](../jasper/web/correction_crossover_v2.py) | The web host: endpoint bindings, durable v2 state, the real seams, apply/restore, `resolve_conductor_context`, `persist_conductor_state`. |
+| [`web/correction_crossover_v2_relay.py`](../jasper/web/correction_crossover_v2_relay.py) | The relay capture provider (#2662): the plan-walk hosting (`build_v2_run_and_consume`), the phone phase ladder, purge grace, and link-TTL policy. The host re-publishes its names. |
+| [`crossover_v2/capture_source.py`](../jasper/active_speaker/crossover_v2/capture_source.py) | The capture-source seam's contract (decision 13): provider identities and the WAV+metadata answer any source owes the session. |
 | [`audio_measurement/program.py`](../jasper/audio_measurement/program.py) | The excitation-program model and its composers. Pure data, no safety decisions. |
 | [`audio_measurement/program_analysis.py`](../jasper/audio_measurement/program_analysis.py) | The pure analysis: locate/segment, drift, gated transfer functions, prediction, VERIFY tracking. |
 | [`audio_measurement/spatial_combine.py`](../jasper/audio_measurement/spatial_combine.py) | The spatial-cloud combiner and the echo/geometry diagnostics. numpy only. |
@@ -3002,7 +3004,7 @@ prefill, so every step carries a `PHASE_LADDER_START_SKEW_S` bias
 *intended* to land late rather than early. **ON-DEVICE:** that interval has
 not been measured; the skew is a safe-direction estimate, not a guarantee,
 and is named in
-[`jasper/web/correction_crossover_v2.py`](../jasper/web/correction_crossover_v2.py).
+[`jasper/web/correction_crossover_v2_relay.py`](../jasper/web/correction_crossover_v2_relay.py).
 Measure it on hardware before tuning, and prefer an observed playback start
 over a smaller guess.
 

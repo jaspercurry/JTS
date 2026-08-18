@@ -50,7 +50,7 @@ sanitizes it again before rendering a plain navigation link to the local Pi page
 | `js/wakelock.js` | Screen Wake Lock + `visibilitychange` abort | `capture_wakelock_test.mjs` |
 | `js/capture-integrity.js` | Per-take focus/visibility log + block-accounting summary (#2151) + the page end of the host's end-to-end frame ledger (#2094) + the pre-upload scan for a zero-filled render quantum (#2557) + the splice predicate the auto-retake reads (#2557 phase B) | `capture_integrity_test.mjs`, `capture_plan_loop_test.mjs`, `capture_frame_report_emit.mjs` |
 | `js/level-events.js` | Batched phone-side mic-level events for the level-match ramp | `capture_level_events_test.mjs` |
-| `js/ambient-stats.js` | Per-octave-band ambient-noise stats for a driver sweep's quiet window (Wave 2) | `capture_ambient_stats_test.mjs`, `test_capture_page_ambient_stats_bridge.py` |
+| `js/ambient-stats.js` | Per-octave-band ambient-noise stats for a driver sweep's quiet window (Wave 2; emitted forward-compatibly — no Pi-side consumer today) | `capture_ambient_stats_test.mjs` |
 | `js/config.js` | `RELAY_BASE` (one relay origin for the fleet) | — |
 | `js/main.js` | Browser orchestration: one tap → record + arm → encrypt → upload; session-spanning capture plans; Pi-owned Room ready-screen delegation | `capture_plan_loop_test.mjs`, `capture_calibration_confirm_test.mjs`, on-device |
 | `index.html` | Static shell + CSP + base styles | `node --check` |

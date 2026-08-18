@@ -702,17 +702,17 @@ Tokens are bearer tokens in a header. Sessions + blobs auto-expire at `ttl_s`
   so the Pi can trigger the stimulus (auth: upload_token). Capture events include
   passive `noise_floor`, phone-reported `device`, and only the frozen setup
   binding — not raw calibration contents. A `crossover_sweep` capture's `armed`
-  event ALSO carries `ambient_stats` (Wave 2, `capture-page/js/ambient-stats.js`
-  → `jasper.audio_measurement.level_solver.parse_ambient_stats_event`):
+  event ALSO carries `ambient_stats` (Wave 2, `capture-page/js/ambient-stats.js`):
   per-octave-band RMS dBFS over the same quiet window `noise_floor` summarizes,
   `{schema, run_token, duration_s, clipped, bands:[{lo_hz,hi_hz,rms_dbfs}]}`
   (≤64 bands). It rides the SAME already-awaited `armed` post rather than a
   separate event — the relay's phone-event slot is last-write-wins, so a
   standalone post would almost always be overwritten before the Pi's ~0.75s
-  poll ever saw it. No shipped Pi caller reads it from the event yet (the
-  solver only consumes it when a caller passes `ambient_bands=`), so it is
-  presently inert — the emission is forward-compatible plumbing, not a wired
-  feature.
+  poll ever saw it. Nothing Pi-side reads it — ambient is measured from the
+  capture itself, and the never-called Pi parser was deleted (#2662) — so the
+  emission is forward-compatible plumbing, not a wired feature (the solver
+  consumes per-band ambient only if a caller passes `ambient_bands=`, and no
+  shipped caller does).
   After the recorder stops and **before** the blob, a capture-plan round posts
   its armed payload ONCE MORE carrying `capture_integrity` (issue #2151,
   `capture-page/js/capture-integrity.js`): whether the page held the foreground
