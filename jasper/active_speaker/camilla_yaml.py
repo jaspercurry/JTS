@@ -1935,10 +1935,16 @@ def _emit_baseline_filter_definitions(
             )
         )
     # Crossover blend correction (decision 10) — same Peaking primitive the
-    # room PEQs above use, and wired beside them pre-split. It charges no
-    # headroom below: the stage is cuts-only, so its ``total_positive_boost_db``
-    # is 0.0 by construction and there is nothing for the common attenuation to
-    # absorb.
+    # room PEQs above use, and wired beside them pre-split.
+    #
+    # It charges NO headroom below, and the reason is that it CANNOT BOOST —
+    # ``_validated_blend_correction`` refuses a positive gain — not that the
+    # common attenuation covers it. ``blend_correction`` is deliberately absent
+    # from ``total_headroom_db``'s expression, and a boost posture would have
+    # to ADD a term there: position above the gain is necessary for absorption
+    # and is not sufficient for it. A boosting stage left un-termed would
+    # silently spend the room layer's allocation instead of charging its own.
+    # Pinned by ``test_the_blend_stage_charges_no_headroom_and_is_not_a_term``.
     for i, entry in enumerate(blend_correction, start=1):
         lines.extend(
             emit_peaking_biquad(
@@ -2084,10 +2090,13 @@ def _emit_baseline_pipeline(
     #     sits above it and cannot push energy past it, whatever a future boost
     #     posture decides.
     #
-    # BEFORE active_baseline_headroom, beside the room PEQs, so that any future
-    # boost posture is absorbed by the same common attenuation automatically
-    # rather than needing a second mechanism. Emitted only when present, so a
-    # candidate carrying none stays byte-identical to a pre-decision-10 graph.
+    # BEFORE active_baseline_headroom, beside the room PEQs, so that the stage
+    # sits where a boost WOULD be absorbable. That placement is necessary and
+    # not sufficient: absorption happens because a layer is a TERM in
+    # ``total_headroom_db``, and this one deliberately is not (it cannot boost).
+    # A future boost posture needs both — the position it already has, and a
+    # term it does not. Emitted only when present, so a candidate carrying none
+    # stays byte-identical to a pre-decision-10 graph.
     if blend_correction_names:
         names = ", ".join(blend_correction_names)
         lines.extend([

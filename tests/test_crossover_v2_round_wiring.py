@@ -57,7 +57,7 @@ import logging
 import os
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Mapping
 
 import pytest
 
@@ -75,6 +75,7 @@ from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope
 from jasper.active_speaker.crossover_v2 import coordinator
 from jasper.active_speaker.crossover_v2.contracts import (
     ADOPTION_ROW_KEEP_ITERATING,
+    AdoptionDecision,
     AdoptionOutcome,
     IterationHeadroom,
 )
@@ -2992,6 +2993,260 @@ def test_the_receipts_opaque_maps_carry_only_their_enumerated_keys():
         added, missing = _key_drift(receipt[field], expected)
         assert not added, f"{field} grew {sorted(added)}. {_KEY_DRIFT_REMEDY}"
         assert not missing, f"{field} lost {sorted(missing)}. {_KEY_DRIFT_REMEDY}"
+
+
+def test_a_kept_round_banks_its_blend_instruction_and_it_reads_back():
+    """Decision 10's series carry: prescription out, prescription back.
+
+    Banked as a mapping rather than a bare list because the next round needs
+    BOTH halves — the filters to build its candidate, and the region residual
+    to know whether the region is still improving. Splitting them across two
+    keys would let a series remember a prescription from one round and a
+    reading from another.
+    """
+
+    decision = _direct_round(publish=lambda _r: "art",
+                             analysis=_REGION_ANALYSIS)
+
+    identity = decision.receipt_identity
+    assert identity["adoption"].startswith("keep")
+    assert isinstance(identity["blend"], Mapping)
+    assert set(identity["blend"]) == {"filters", "residual_db"}
+
+    position = coordinator.series_position_from_state({"round_receipt": identity})
+    assert position.previous_blend_correction is not None
+
+
+#: "the session resolved no position at all", distinct from "it resolved one
+#: carrying no instruction" — both must hold the applied graph.
+_ABSENT = object()
+
+
+def test_the_production_incumbent_reader_refuses_a_corrupt_profile(monkeypatch):
+    """The converged panel finding, asserted at the PRODUCTION method.
+
+    ``tests/test_crossover_v2_blend_correction.py`` drives the two readers in
+    sequence; that proves they compose correctly and cannot notice
+    ``_applied_blend_correction`` ceasing to call the strict one — which is
+    exactly the shape of the original defect (a guard pointed at the wrong
+    reader). This drives the shipped method.
+    """
+
+    from jasper.active_speaker import crossover_v2_flow as flow
+
+    reader = flow.CrossoverV2Session._applied_blend_correction
+
+    def _profile(payload):
+        monkeypatch.setattr(
+            "jasper.active_speaker.baseline_profile."
+            "load_applied_baseline_profile_state",
+            lambda: payload,
+        )
+        return reader(SimpleNamespace())
+
+    corrupt = [{"biquad_type": "Peaking", "freq": "1900", "q": 2.0,
+                "gain": -1.0}]
+    assert _profile({"blend_correction": corrupt}) is None
+    assert _profile({"blend_correction": [{"biquad_type": "Peaking",
+                                           "freq": 1900.0, "q": 2.0,
+                                           "gain": 0.5}]}) is None
+    # Positive control: a real record must still read through, or "everything
+    # is unknown" would satisfy every assertion above while making the
+    # correction permanently unreachable.
+    good = [{"biquad_type": "Peaking", "freq": 1900.0, "q": 2.0, "gain": -2.5}]
+    assert _profile({"blend_correction": good}) == tuple(good)
+    assert _profile(None) is None
+
+
+def test_no_instruction_makes_the_next_candidate_hold_the_applied_graph(
+    monkeypatch,
+):
+    """Panel ruling 2, at the hop that carries it out.
+
+    ``_blend_prescription`` is the only place the difference between "no
+    instruction" and "apply nothing" becomes a graph. A series instruction
+    wins; its ABSENCE falls back to what the speaker is already playing, which
+    is what stops a restored round — or a fresh series on an
+    already-corrected speaker — from silently dropping an adopted correction.
+    """
+
+    from jasper.active_speaker import crossover_v2_flow as flow
+
+    prescribe = flow.CrossoverV2Session._blend_prescription
+    applied = ({"biquad_type": "Peaking", "freq": 1900.0, "q": 2.0,
+                "gain": -2.5},)
+    monkeypatch.setattr(
+        "jasper.active_speaker.baseline_profile."
+        "load_applied_baseline_profile_state",
+        lambda: {"blend_correction": [dict(f) for f in applied]},
+    )
+
+    def _session(instruction):
+        # The REAL incumbent reader, so the fallback is proved to go through
+        # the same strict path the solve's incumbent does rather than a stub
+        # that could disagree with it.
+        return SimpleNamespace(
+            _series_position=(
+                None if instruction is _ABSENT
+                else SimpleNamespace(previous_blend_correction=instruction)
+            ),
+            _applied_blend_correction=lambda: (
+                flow.CrossoverV2Session._applied_blend_correction(
+                    SimpleNamespace()
+                )
+            ),
+        )
+
+    # No instruction -> hold what is applied.
+    assert prescribe(_session(_ABSENT)) == applied
+    assert prescribe(_session(None)) == applied
+    # An EXPLICIT empty instruction -> apply nothing, overriding the graph.
+    assert prescribe(_session(())) == ()
+    # A real instruction -> that, not the applied graph.
+    fresh = ({"biquad_type": "Peaking", "freq": 1200.0, "q": 2.0,
+              "gain": -1.0},)
+    assert prescribe(_session(fresh)) == fresh
+
+
+def test_a_restored_round_banks_no_blend_instruction(monkeypatch):
+    """Panel ruling, 2026-08-18: a restore does not propagate its prescription.
+
+    A prescription is derived from a measurement taken THROUGH a specific
+    incumbent. A restored round threw that graph away, so applying its
+    prescription next would compose a correction onto a base that no longer
+    exists. The next round instead derives from the applied (restored) profile
+    — which is what a ``None`` instruction tells the apply path to do.
+
+    What the round COMMANDED is still history and still banked, in the
+    artifact's ``round_measurements.blend``. This key is not history; it is an
+    instruction, and a discarded round has no standing to issue one.
+    """
+
+    # A USABLE capture that still restores. The unusable-capture path would
+    # short-circuit the blend solve to ``None`` and pass this test without ever
+    # reaching the gate — the mutation that removes the gate survived exactly
+    # that fixture. The adoption verdict is forced instead, so the round
+    # genuinely has a blend record and genuinely restores.
+    restore = AdoptionDecision(
+        outcome=AdoptionOutcome.RESTORE,
+        row="row4_untrusted_evidence",
+        reason="forced_for_this_test",
+    )
+    # Patched at ``verification``, which is where ``evaluate_round`` imports
+    # it from at call time — patching the coordinator's own name would bind
+    # nothing and the round would quietly keep its graph.
+    monkeypatch.setattr(
+        "jasper.active_speaker.crossover_v2.verification.decide_adoption",
+        lambda **_k: restore,
+    )
+
+    decision = _direct_round(
+        publish=lambda _r: "art",
+        analysis=_REGION_ANALYSIS,
+        rollback=lambda _reason: True,
+        rollback_available=lambda: True,
+    )
+
+    identity = decision.receipt_identity
+    assert identity["adoption"] == "restore"
+    assert decision.evaluation.blend is not None, (
+        "the fixture must reach the blend solve, or the gate is untested"
+    )
+    assert identity["blend"] is None
+
+    position = coordinator.series_position_from_state({"round_receipt": identity})
+    assert position.previous_blend_correction is None, (
+        "a restored round handed the next one an instruction"
+    )
+    assert position.previous_blend_residual_db is None
+
+
+def test_no_instruction_and_an_empty_instruction_are_different_answers():
+    """The distinction the apply path turns on.
+
+    ``None`` means "this series has no instruction for you" and the next
+    candidate derives from the APPLIED graph; ``()`` means "apply no blend
+    correction" and it does exactly that. Collapsing them would make a
+    restored round — or a fresh series on an already-corrected speaker —
+    silently drop an adopted correction.
+    """
+
+    empty = coordinator.series_position_from_state({"round_receipt": {
+        "round_ordinal": 1, "objectives": {"tilt_db": 0.0, "ripple_db": 0.0},
+        "blend": {"filters": [], "residual_db": 1.0},
+    }})
+    absent = coordinator.series_position_from_state({"round_receipt": {
+        "round_ordinal": 1, "objectives": {"tilt_db": 0.0, "ripple_db": 0.0},
+    }})
+
+    assert empty.previous_blend_correction == ()
+    assert absent.previous_blend_correction is None
+
+
+@pytest.mark.parametrize(
+    "blend",
+    [
+        {"filters": "not-a-list", "residual_db": 1.0},
+        {"filters": [{"biquad_type": "Peaking", "freq": 1.9e3, "q": 2.0,
+                      "gain": 0.5}], "residual_db": 1.0},
+        {"filters": [{"biquad_type": "Peaking", "freq": "1900", "q": 2.0,
+                      "gain": -1.0}], "residual_db": 1.0},
+        "not-a-mapping",
+        [{"biquad_type": "Peaking", "freq": 1.9e3, "q": 2.0, "gain": -1.0}],
+    ],
+    ids=["bad-filters", "boost", "string-freq", "string", "legacy-list"],
+)
+def test_an_unreadable_instruction_reads_as_no_instruction(blend):
+    """An instruction nobody can vouch for must not be able to REMOVE an
+    adopted correction any more than it can invent one — so it resolves to
+    "no instruction", not to "apply nothing"."""
+
+    position = coordinator.series_position_from_state({"round_receipt": {
+        "round_ordinal": 1, "objectives": {"tilt_db": 0.0, "ripple_db": 0.0},
+        "blend": blend,
+    }})
+
+    assert position.previous_blend_correction is None
+
+
+def test_the_two_region_residuals_on_the_receipt_name_their_instruments():
+    """Panel correctness SF3.
+
+    The receipt carries two residuals over the same band, referenced
+    differently and therefore numerically different. Unlabelled, a reader
+    reasonably takes the gap for a defect in one of them.
+    """
+
+    # The identity carries the instruction; the artifact carries the numbers.
+    # Drive the measurements builder directly for the labelled pair.
+    from jasper.active_speaker.crossover_v2 import blend_correction as bc
+    from jasper.active_speaker.crossover_v2.verification import Verdict
+    from jasper.active_speaker.crossover_v2.contracts import BenefitStatus
+
+    blend = bc.BlendCorrection(
+        filters=(), reason=bc.BLEND_NOTHING_TO_CUT, band_hz=(824.35, 3297.4),
+        reading=bc.BlendRegionReading(
+            band_hz=(824.35, 3297.4), residual_db=1.0006, n_bins=109,
+            worst_db=-2.9, worst_hz=1938.0,
+        ),
+    )
+    measurements = coordinator._round_measurements(
+        SimpleNamespace(delta_probe=None, position_residuals=()),
+        SimpleNamespace(
+            blend=blend,
+            region_benefit=Verdict(
+                BenefitStatus.INDETERMINATE, "residual_within_margin",
+                {"post_residual_db": 0.8902},
+            ),
+        ),
+    )
+
+    assert measurements["blend"]["realized"]["instrument"] == (
+        "cloud_flat_reference"
+    )
+    assert measurements["blend"]["region_benefit"]["instrument"] == (
+        "region_local_reference"
+    )
 
 
 def test_the_trusted_floor_rides_the_identity_and_reads_back(monkeypatch):

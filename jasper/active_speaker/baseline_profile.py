@@ -1255,7 +1255,7 @@ def profile_program_headroom_db(profile: Mapping[str, Any] | None) -> float:
 
 def profile_blend_correction(
     profile: Mapping[str, Any] | None,
-) -> tuple[Mapping[str, Any], ...] | None:
+) -> tuple[Any, ...] | None:
     """The blend correction an applied profile carries, or ``None`` if unknown.
 
     Same snapshot-first authority rule :func:`profile_linearization` states —
@@ -1276,6 +1276,15 @@ def profile_blend_correction(
     band, by hand, that the profile no longer describes. The applied profile is
     this speaker's single record of what is running, and every other consumer
     of it (linearization, boosts, alignment) trusts it the same way.
+
+    **This answers WHERE, not WHETHER-VALID, and it deliberately does not
+    filter.** Entry-level validation belongs to
+    ``crossover_v2.blend_correction.blend_filters_from_mapping``, which is the
+    single owner of "is this a record this system wrote". An earlier version
+    dropped non-mapping entries here, which silently TRUNCATED a corrupt list
+    into a shorter valid-looking one — a caller would then have applied a
+    partial correction believing it was whole. Every entry is passed through
+    exactly as persisted so the strict reader can refuse the list.
     """
 
     if not isinstance(profile, Mapping):
@@ -1290,7 +1299,7 @@ def profile_blend_correction(
         return ()
     if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes, Mapping)):
         return None
-    return tuple(dict(entry) for entry in raw if isinstance(entry, Mapping))
+    return tuple(raw)
 
 
 def profile_linearization(profile: Mapping[str, Any] | None) -> Mapping[str, Any]:

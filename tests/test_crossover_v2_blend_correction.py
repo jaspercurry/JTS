@@ -471,10 +471,15 @@ def _emitted(blend) -> str:
 def test_the_blend_block_is_pre_split_and_above_the_headroom_gain():
     """Placement IS the safety argument, so placement is asserted, not assumed.
 
-    Above ``active_baseline_headroom`` so any future boost posture is absorbed
-    by the same common attenuation automatically; above the split mixer so the
-    stage is upstream of every per-driver crossover, limiter, and the tweeter
-    high-pass that is its only protection in the durable baseline.
+    Above the split mixer, so the stage is upstream of every per-driver
+    crossover, limiter, and the tweeter high-pass that is its only protection
+    in the durable baseline.
+
+    Above ``active_baseline_headroom``, so the stage sits where a boost WOULD
+    be absorbable — necessary for absorption, and not sufficient for it. See
+    ``test_the_blend_stage_charges_no_headroom_and_is_not_a_term`` for the
+    other half, and for why the earlier claim here (that position alone
+    absorbed a future boost) was false.
     """
 
     yaml = _emitted([
@@ -524,21 +529,44 @@ def test_a_candidate_with_no_blend_correction_emits_the_same_graph_as_before():
     assert "as_blend" not in _emitted(None)
 
 
-def test_a_cuts_only_blend_correction_charges_no_headroom():
-    """Its ``total_positive_boost_db`` is 0.0 by construction, so the common
-    attenuation has nothing to absorb and the graph's gain staging is
-    unchanged. A future boost posture would change this; today it must not."""
+def _headroom_gain(yaml: str) -> str:
+    block = yaml.split("active_baseline_headroom:", 1)[1]
+    return block.split("gain:", 1)[1].splitlines()[0].strip()
+
+
+def test_the_blend_stage_charges_no_headroom_and_is_not_a_term():
+    """Two halves, and the second is the one the panel had to find.
+
+    **It charges nothing** — the graph's gain staging is byte-identical with
+    and without the stage.
+
+    **And it is not a TERM in the charge**, which is a different fact and the
+    reason the first one holds. ``total_headroom_db`` sums baseline headroom,
+    the room PEQs' positive boost, the linearization charge, and the output
+    trim; ``blend_correction`` appears nowhere in it. Today that is correct
+    precisely because the stage cannot boost. A future boost posture that
+    changed only the refusal — reasoning that position above the gain buys
+    absorption — would charge 0 for a real boost and silently spend the room
+    layer's allocation.
+
+    So the assertion is on the EXPRESSION, not only on the number: an author
+    who makes this stage boostable trips here and has to add the term.
+    """
+
+    import inspect
 
     plain = _emitted(None)
     with_blend = _emitted([
         {"biquad_type": "Peaking", "freq": 1900.0, "q": 2.0, "gain": -3.0},
     ])
+    assert _headroom_gain(plain) == _headroom_gain(with_blend)
 
-    def _headroom(yaml: str) -> str:
-        block = yaml.split("active_baseline_headroom:", 1)[1]
-        return block.split("gain:", 1)[1].splitlines()[0].strip()
-
-    assert _headroom(plain) == _headroom(with_blend)
+    source = inspect.getsource(camilla_yaml._emit_baseline_filter_definitions)
+    expression = source.split("total_headroom_db = (", 1)[1].split("\n    )", 1)[0]
+    assert "blend" not in expression, (
+        "the blend stage became a headroom term — if it can now boost, this "
+        "test should be updated deliberately; if it cannot, the term is dead"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -721,6 +749,190 @@ def test_a_genuinely_empty_incumbent_is_empty_not_unknown():
 
 
 # --------------------------------------------------------------------------- #
+# the PRODUCTION incumbent path (panel: correctness SF1 == safety SF3)
+# --------------------------------------------------------------------------- #
+
+
+_CORRUPT_PROFILE_SHAPES = [
+    [{"biquad_type": "Peaking", "freq": "1900", "q": 2.0, "gain": -1.0}],
+    [{"biquad_type": "Peaking", "freq": 1900.0, "q": 2.0, "gain": 0.5}],
+    [{"biquad_type": "Highshelf", "freq": 1900.0, "q": 2.0, "gain": -1.0}],
+    [{"biquad_type": "Peaking", "freq": 1900.0, "q": 2.0}],
+    [{"biquad_type": "Peaking", "freq": 1900.0, "q": 2.0, "gain": -1.0},
+     "not-a-mapping"],
+    [{"biquad_type": "Peaking", "freq": float("nan"), "q": 2.0, "gain": -1.0}],
+    [{"biquad_type": "Peaking", "freq": 1e3 + i, "q": 2.0, "gain": -1.0}
+     for i in range(bc.BLEND_MAX_FILTERS + 1)],
+    ["not-a-mapping"],
+]
+
+
+@pytest.mark.parametrize(
+    "corrupt", _CORRUPT_PROFILE_SHAPES, ids=range(len(_CORRUPT_PROFILE_SHAPES)),
+)
+def test_a_corrupt_applied_profile_reads_as_unknown_through_production(corrupt):
+    """The guard, re-pointed at the reader production actually uses.
+
+    Both panel lenses found this independently: the strict reader guarded the
+    APPLY path while the SOLVE's incumbent came from
+    ``baseline_profile.profile_blend_correction``, which answers "where is it"
+    and not "is it valid". Every shape below took one of two wrong paths and
+    neither was ``no_incumbent`` — a non-numeric ``freq`` RAISED, and garbage
+    collapsed to ``()``, which claims the capture rode a flat graph.
+
+    This drives the two production functions in sequence, exactly as
+    ``crossover_v2_flow._applied_blend_correction`` does, so a fix applied to
+    the wrong reader cannot satisfy it.
+    """
+
+    from jasper.active_speaker.baseline_profile import profile_blend_correction
+
+    located = profile_blend_correction({"blend_correction": corrupt})
+    assert located is not None, "the structural reader lost the list entirely"
+    assert len(located) == len(corrupt), (
+        "the structural reader TRUNCATED a corrupt list into a shorter "
+        "valid-looking one"
+    )
+    assert bc.blend_filters_from_mapping(list(located)) is None
+
+
+def test_the_production_reader_does_not_raise_on_any_corrupt_shape():
+    """A corrupt entry must never cost a round its receipt or its restore.
+
+    The escape shape matters as much as the verdict: ``evaluate_round`` is
+    called inside the coordinator's broad except, so a raise here does not
+    surface as an error — it produces a ``RoundDecision`` of ``None``s, which
+    means no receipt banked AND a round that should restore silently not
+    restoring. Every shape must resolve to a VALUE.
+    """
+
+    from jasper.active_speaker.baseline_profile import profile_blend_correction
+
+    for corrupt in [*_CORRUPT_PROFILE_SHAPES, "text", 7, {"a": 1}, None]:
+        located = profile_blend_correction({"blend_correction": corrupt})
+        resolved = (
+            None if located is None
+            else bc.blend_filters_from_mapping(list(located))
+        )
+        assert resolved is None or isinstance(resolved, tuple)
+
+
+def test_a_well_formed_applied_profile_still_reads_through():
+    """The positive control: the strict reader must not refuse a real record.
+
+    Without this, "everything reads as unknown" would pass every assertion
+    above while making the correction permanently unreachable.
+    """
+
+    from jasper.active_speaker.baseline_profile import profile_blend_correction
+
+    good = [{"biquad_type": "Peaking", "freq": 1900.0, "q": 2.0, "gain": -2.5}]
+    located = profile_blend_correction({"blend_correction": good})
+    assert bc.blend_filters_from_mapping(list(located)) == tuple(good)
+
+
+# --------------------------------------------------------------------------- #
+# ruling 1 — a refusal HOLDS the adopted incumbent, it does not revert it
+# --------------------------------------------------------------------------- #
+
+
+_INCUMBENT = (
+    {"biquad_type": "Peaking", "freq": 1900.0, "q": 2.0, "gain": -3.0},
+    {"biquad_type": "Peaking", "freq": 2600.0, "q": 2.0, "gain": -2.0},
+)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "reason"),
+    [
+        ({"graded": None, "band_hz": SERIES1_BAND_HZ},
+         bc.BLEND_NOT_COMPARABLE),
+        ({"graded": None, "band_hz": None},
+         bc.BLEND_NO_TRUSTED_BAND),
+    ],
+    ids=["not_comparable", "no_trusted_band"],
+)
+def test_a_refusal_re_prescribes_the_incumbent_rather_than_reverting(
+    kwargs, reason,
+):
+    """Panel ruling, 2026-08-18.
+
+    Every refusal arm used to write ``[]``, which on the next apply silently
+    removed up to the full composed ceiling of ADOPTED cut — a change to what
+    a household hears, decided by an instrument that had just said it could
+    not measure. A round whose evidence failed has no standing to remove a
+    correction adopted on measured evidence.
+
+    The hop asserted is the NEXT GRAPH — ``filters``, which is what the
+    candidate build applies — not merely the reason code. The sibling
+    re-prescribe path was already tested while these were not, which is the
+    half-guarded-site pattern the lens named.
+    """
+
+    result = bc.solve_blend_correction(incumbent=_INCUMBENT, **kwargs)
+
+    assert result.reason == reason
+    assert result.filters == _INCUMBENT, "an adopted correction was reverted"
+    assert result.incumbent == _INCUMBENT
+
+
+def test_nothing_to_cut_holds_the_incumbent_too():
+    """The arm that was already right, pinned beside the two that were not.
+
+    The incumbent here is shallower than :data:`~.blend_correction.
+    BLEND_MIN_CUT_DB`, which is what makes ``nothing_to_cut`` reachable WITH
+    one: a deeper incumbent is re-derived by the fit (the prescription is a
+    total, so re-emitting it is ``corrected``, not ``nothing_to_cut``), and
+    only a correction too shallow to earn a filter leaves the fit empty. That
+    is the case where the arm's hold has to carry the incumbent itself.
+    """
+
+    shallow = ({"biquad_type": "Peaking", "freq": 1900.0, "q": 2.0,
+                "gain": -0.3},)
+
+    result = _solve(_bell(SERIES1_DIP_HZ, -4.3), incumbent=shallow)
+
+    assert result.reason == bc.BLEND_NOTHING_TO_CUT
+    assert result.filters == shallow
+
+
+def test_only_an_unestablished_incumbent_prescribes_nothing():
+    """The one arm that cannot hold, because it is the state of not knowing
+    what to hold. Kept distinct from the three above so a future change that
+    made refusals revert again cannot hide behind this one legitimately
+    empty case."""
+
+    result = bc.solve_blend_correction(
+        graded=None, band_hz=SERIES1_BAND_HZ, incumbent=None,
+    )
+
+    assert result.reason == bc.BLEND_NO_INCUMBENT
+    assert result.filters == ()
+
+
+def test_every_reason_code_has_a_pinned_next_graph():
+    """The completeness check behind the four tests above.
+
+    A new arm added without a next-graph assertion is exactly the
+    half-guarded-site shape this section exists to close, and an enumeration
+    that is checked is the only thing that notices one.
+    """
+
+    pinned = {
+        bc.BLEND_CORRECTED, bc.BLEND_NOTHING_TO_CUT, bc.BLEND_NOT_COMPARABLE,
+        bc.BLEND_NO_TRUSTED_BAND, bc.BLEND_NO_INCUMBENT,
+        bc.BLEND_REGION_NOT_IMPROVING,
+    }
+    declared = {
+        getattr(bc, name) for name in dir(bc)
+        if name.startswith("BLEND_") and isinstance(getattr(bc, name), str)
+    }
+    assert declared == pinned, (
+        "a blend outcome exists with no test pinning what graph it leaves"
+    )
+
+
+# --------------------------------------------------------------------------- #
 # malformed evidence
 # --------------------------------------------------------------------------- #
 
@@ -762,6 +974,14 @@ def test_the_region_residual_is_the_pooled_one_with_a_narrower_bin_set():
     recomputation of the production expression: one side comes from this
     module's arrays, the other from ``spec_convergence_residual``'s per-band
     records.
+
+    **What the fixture has to do to make them comparable, stated rather than
+    hidden**: the mask below also removes every bin outside the reference band.
+    Without it the two grade different bin SETS — ``spec_convergence_residual``
+    pools ``SPEC_BANDS[2]`` (8–16 kHz) as well, and the reference band stops at
+    8 kHz — so they would differ for a reason that has nothing to do with the
+    estimator. The equivalence being asserted is "same formula, same bins",
+    and the extra masking is how the second half is arranged.
     """
 
     curve = _bell(1500.0, 3.0, q=4.0) + _bell(600.0, -2.0, q=3.0)
@@ -867,6 +1087,96 @@ def test_the_region_claim_narrows_both_sides_so_comparability_survives():
 
     assert verdict.reason != "incomparable_exclusion_mask"
     assert verdict.status is not None
+
+
+# --------------------------------------------------------------------------- #
+# the narrow-defect stop (panel: correctness SF2)
+# --------------------------------------------------------------------------- #
+
+
+def _defect_series(defect_q: float, rounds: int, *, stop: bool) -> list[float]:
+    """Region rms per round for a defect of ``defect_q``.
+
+    ``stop=False`` drives the pre-fix loop — the previous reading withheld —
+    so the guard below has the contrast that makes it a claim rather than a
+    restatement.
+    """
+
+    underlying = _bell(1500.0, 4.0, q=defect_q)
+    incumbent: tuple = ()
+    previous: float | None = None
+    residuals = []
+    for _ in range(rounds):
+        result = bc.solve_blend_correction(
+            graded=_graded(underlying + _cascade_db(incumbent)),
+            band_hz=SERIES1_BAND_HZ,
+            incumbent=incumbent,
+            previous_residual_db=previous if stop else None,
+        )
+        if result.reading is not None:
+            previous = result.reading.residual_db
+        incumbent = result.filters
+        residuals.append(_region_rms(underlying + _cascade_db(incumbent)))
+    return residuals
+
+
+@pytest.mark.parametrize("defect_q", [3.0, 4.0, 6.0])
+def test_a_defect_narrower_than_the_filter_stops_instead_of_wandering(defect_q):
+    """A ``Q = 2`` cut cannot match a narrower defect, so each round's fit
+    over-corrects the shoulders and the over-correction becomes next round's
+    defect. Unstopped, that limit-cycles — and at ``Q = 4`` it ends worse than
+    round 1 (0.496 → 0.814 over six rounds, the panel's own measurement).
+
+    The stop holds the incumbent once the region stops improving. What it buys
+    is a BOUND, not a guarantee of improvement: the overshoot that triggers it
+    has already been applied. So the assertion is that the loop settles — and
+    that it settles no worse than the unstopped one, which is the whole claim.
+    """
+
+    stopped = _defect_series(defect_q, 6, stop=True)
+    wandering = _defect_series(defect_q, 6, stop=False)
+
+    assert stopped[-1] == pytest.approx(stopped[-2], abs=1e-9), (
+        f"the region is still moving at round 6: {stopped}"
+    )
+    assert stopped[-1] <= max(wandering) + 1e-9, (
+        f"the stop settled above the unstopped loop's own range: "
+        f"stopped={stopped} wandering={wandering}"
+    )
+
+
+def test_the_stop_does_not_fire_on_a_defect_the_loop_can_converge_on():
+    """The positive control: a stop that always fired would pass every
+    assertion above while destroying the convergence this module exists for."""
+
+    stopped = _defect_series(bc.BLEND_FILTER_Q, 6, stop=True)
+
+    assert stopped == sorted(stopped, reverse=True), f"not monotone: {stopped}"
+    assert stopped[-1] < stopped[0] * 0.1, f"stop fired too early: {stopped}"
+
+
+def test_the_stop_reports_its_own_arm_and_holds_the_incumbent():
+    result = bc.solve_blend_correction(
+        graded=_graded(_bell(1500.0, 4.0, q=6.0)),
+        band_hz=SERIES1_BAND_HZ,
+        incumbent=_INCUMBENT,
+        previous_residual_db=0.0,
+    )
+
+    assert result.reason == bc.BLEND_REGION_NOT_IMPROVING
+    assert result.filters == _INCUMBENT
+
+
+def test_an_absent_previous_reading_keeps_the_loop_prescribing():
+    """The stop's fail direction: absent evidence must never freeze a series."""
+
+    hot = _bell(1500.0, 6.0, q=bc.BLEND_FILTER_Q)
+
+    assert _solve(hot).reason == bc.BLEND_CORRECTED
+    assert bc.solve_blend_correction(
+        graded=_graded(hot), band_hz=SERIES1_BAND_HZ, incumbent=(),
+        previous_residual_db=float("nan"),
+    ).reason == bc.BLEND_CORRECTED
 
 
 # --------------------------------------------------------------------------- #

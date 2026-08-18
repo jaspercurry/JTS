@@ -505,13 +505,28 @@ Three things about it are worth knowing before touching the round:
   sits upstream of the crossover high-pass that IS the tweeter's protection in
   the durable baseline. Moving it per-role would make it alignment work wearing
   a shape-correction hat.
-- **The loop is incumbent-accounted.** Per-branch MEASURE sweeps ride the
-  protected-neutral graph, so the trim is re-derived absolutely each round and
-  that is correct. The summed VERIFY capture rides the APPLIED graph, so its
-  deviation already contains the incumbent's own correction — re-deriving
-  absolutely there oscillates rather than converges. An incumbent that cannot
-  be established refuses rather than being assumed zero, which is #2653's
-  condition applied to this quantity.
+- **The loop is incumbent-accounted, and it holds rather than reverts.**
+  Per-branch MEASURE sweeps ride the protected-neutral graph, so the trim is
+  re-derived absolutely each round and that is correct. The summed VERIFY
+  capture rides the APPLIED graph, so its deviation already contains the
+  incumbent's own correction — re-deriving absolutely there oscillates rather
+  than converges. Every refusal arm re-prescribes the adopted incumbent
+  unchanged: a round whose evidence failed has no standing to remove a
+  correction adopted on measured evidence. The one exception is an incumbent
+  that cannot be ESTABLISHED, which prescribes none — #2653's condition applied
+  to this quantity, and the one state where there is nothing to hold.
+- **A round that does not KEEP its graph issues no instruction.** A
+  prescription describes a speaker measured through a specific incumbent, so a
+  restored round's prescription describes a speaker that no longer exists. The
+  next candidate then derives its correction from the applied (restored)
+  profile instead. What the round commanded is still banked — that is history,
+  and history survives a restore.
+- **It stops re-prescribing once the region stops improving.** A defect
+  narrower than the correction can represent (`Q > 2`) cannot be matched, so
+  the fit over-corrects its shoulders and the loop limit-cycles; the stop
+  bounds that. It bounds the wander rather than guaranteeing improvement — the
+  overshoot that triggers it has already been applied. See the module's own
+  docstring for the measured series.
 - **`benefit` now reports twice.** The pooled verdict is unchanged and is still
   the only adoption input. Beside it, `evaluate_region_benefit` runs the same
   estimator with only the band narrowed, because a win confined to two octaves

@@ -416,9 +416,13 @@ def test_noqa_debt_does_not_grow() -> None:
 # question is not "did a file grow" but "did it grow things its filename does
 # not describe":
 #
-#  * `crossover_v2_flow` 12,548 -> 12,597 (rebased over #2637's +27 and
-#    #2603's +11; the 49 this PR adds are unchanged by either). The solve,
-#    the fit, the bounds, the
+#  * `crossover_v2_flow` 12,548 -> 12,645 (rebased over #2637's +27 and
+#    #2603's +11). 97 lines: 49 of wiring, then 48 the panel's combined fix
+#    round earned — the strict-reader route both lenses independently asked
+#    for, and `_blend_prescription`, whose 26 lines are the argument for why
+#    "no instruction" reads the applied graph rather than reverting to
+#    nothing (the ruling that keeps a restored round from dropping an adopted
+#    correction). The solve, the fit, the bounds, the
 #    iteration and its refusals are ~470 lines in a NEW module,
 #    `crossover_v2/blend_correction.py`, which is where a ratchet-respecting
 #    change puts them. What landed here is 49 lines of wiring and no policy:
@@ -427,7 +431,7 @@ def test_noqa_debt_does_not_grow() -> None:
 #    `applied_boosts` already has, for the reason it has it), and two argument
 #    hand-offs. Every number the correction is bounded by lives in the new
 #    module; this file learned no new fact about blends.
-#  * `crossover_envelope_v2` 4,076 -> 4,095. One household sentence, its
+#  * `crossover_envelope_v2` 4,076 -> 4,096. One household sentence, its
 #    rationale, and the branch that reaches it — the same shape as #2656's 28
 #    lines directly above, and the same argument: this file's job is household
 #    copy, and a screen that reports the blend defect round after round with
@@ -452,9 +456,9 @@ MAX_LINES_BY_PATH = {
     # what costs the lines. Paying them here, in the diff that earned them, is
     # the guard working; compressing the reason out to keep a number flat would
     # be gaming it.
-    "jasper/active_speaker/crossover_v2_flow.py": 12_597,
+    "jasper/active_speaker/crossover_v2_flow.py": 12_645,
     "jasper/web/correction_crossover_v2.py": 9_186,
-    "jasper/active_speaker/crossover_envelope_v2.py": 4_095,
+    "jasper/active_speaker/crossover_envelope_v2.py": 4_096,
     "jasper/audio_measurement/program_analysis.py": 6_978,
 }
 

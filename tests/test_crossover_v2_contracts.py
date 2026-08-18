@@ -374,6 +374,23 @@ def test_a_proposal_round_trips_its_declared_fingerprint():
     assert payload["schema_version"] == SCHEMA_VERSION
 
 
+def test_the_schema_version_is_pinned_to_its_value():
+    """The VALUE, not just the constant — which is what makes it a version.
+
+    Reading ``SCHEMA_VERSION`` above proves the payload and the constant agree;
+    it cannot notice the constant moving. The receipt key-set guard catches a
+    new KEY, so between them the only unguarded change was the version itself
+    — and this field exists precisely because it sat at 1 through three shape
+    changes and a reader could not tell two shapes apart by it.
+
+    2 since decision 10 (#2600) added ``round_measurements.blend``. A reader
+    branching on this should treat 1 as "no blend record can exist" rather than
+    "this round has none". Bumping it is fine; bumping it silently is not.
+    """
+
+    assert SCHEMA_VERSION == 2
+
+
 # --------------------------------------------------------------------------
 # PlanRefusal
 # --------------------------------------------------------------------------

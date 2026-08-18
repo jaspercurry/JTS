@@ -627,6 +627,7 @@ def evaluate_round(
     plateau_db: float = ITERATION_PLATEAU_DB,
     graded_spec: "GradedSpec | None" = None,
     applied_blend_correction: Sequence[Mapping[str, Any]] | None = None,
+    previous_blend_residual_db: float | None = None,
 ) -> RoundEvaluation:
     """Grade one round: the four questions, the four axes, then the table.
 
@@ -780,6 +781,7 @@ def evaluate_round(
             graded=graded_spec,
             band_hz=band_hz,
             incumbent=applied_blend_correction,
+            previous_residual_db=previous_blend_residual_db,
         )
         region_benefit = evaluate_region_benefit(
             entry_baseline=before, post=after, band_hz=band_hz,

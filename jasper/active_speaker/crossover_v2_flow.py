@@ -5743,16 +5743,68 @@ class CrossoverV2Session:
         which is the opposite direction from ``applied_boosts``'s fail-closed
         ``True`` and correct for the same reason: there, not knowing must
         restore a graph; here, not knowing must leave the graph alone.
+
+        **Through the STRICT reader** (``blend_filters_from_mapping``), which
+        both panel lenses independently found missing here. The profile reader
+        answers the structural question ("is there a list, and where"); the
+        strict one answers the question this quantity actually turns on — is
+        every entry a record this system wrote? Without it, a corrupt entry
+        took one of two wrong paths and neither was ``no_incumbent``: a
+        non-numeric ``freq`` RAISED out of ``evaluate_round`` into the
+        coordinator's broad except, costing the round its receipt AND its
+        restore; and garbage entries collapsed to ``()``, which claims the
+        capture rode a flat graph — the unknown-vs-empty conflation this module
+        forbids in four docstrings. ``blend_filters_from_mapping``'s
+        None-on-unreadable IS the contract, so this is the reader that belongs
+        on the path that establishes the incumbent.
         """
         from jasper.active_speaker.baseline_profile import (
             load_applied_baseline_profile_state,
             profile_blend_correction,
         )
 
+        from .crossover_v2.blend_correction import blend_filters_from_mapping
+
         try:
-            return profile_blend_correction(load_applied_baseline_profile_state())
+            raw = profile_blend_correction(load_applied_baseline_profile_state())
         except (OSError, TypeError, ValueError):
             return None
+        if raw is None:
+            return None
+        return blend_filters_from_mapping(list(raw))
+
+    def _blend_prescription(self) -> tuple[Mapping[str, Any], ...]:
+        """The blend correction the next candidate should carry (decision 10).
+
+        Two sources, in this order, and the order is the panel's second ruling:
+
+        1. **The series' instruction**, if the previous round left one —
+           ``SeriesPosition.previous_blend_correction``. A round that KEEPS its
+           graph banks the total it solved, and that supersedes everything.
+        2. **What the speaker is already playing**, otherwise. ``None`` from
+           the series means there is no instruction: no previous round, a
+           receipt from before decision 10, an unreadable one, or a round that
+           RESTORED. Reverting to nothing there would be wrong in every one of
+           those cases — most sharply after a restore, where the round threw
+           away the graph its prescription was derived through, and after a
+           fresh series on a speaker that already carries an adopted
+           correction.
+
+        The fallback reads the same applied-profile SSOT, through the same
+        strict reader, that ``_applied_blend_correction`` uses to establish the
+        incumbent — so "what we hold" and "what we measured through" can never
+        be two different answers derived two different ways. An unreadable
+        profile yields ``()``: at that point nothing about the applied graph
+        can be established, and the candidate build is deriving the whole graph
+        from that same unreadable profile anyway.
+        """
+        instruction = (
+            None if self._series_position is None
+            else self._series_position.previous_blend_correction
+        )
+        if instruction is not None:
+            return tuple(instruction)
+        return self._applied_blend_correction() or ()
 
     def _lateral_priors(self) -> MeasurementPriors:
         return _priors.lateral_priors(
@@ -9582,6 +9634,7 @@ class CrossoverV2Session:
                 # reads, with its curve and merged honesty mask.
                 graded_spec=graded_verify,
                 applied_blend_correction=self._applied_blend_correction(),
+                previous_blend_residual_db=position.previous_blend_residual_db,
                 # WHAT THIS ROUND PROPOSED (#2392), preferred over what it
                 # applied. The fingerprint travelled here from the committing
                 # stage through durable ``verify_priors``, exactly as the
@@ -11142,15 +11195,10 @@ class CrossoverV2Session:
             plan=self._plan_linearization,
             exclusion_evidence=self._exclusion_evidence_json,
             journal=self._journal_linearization,
-            # Decision 10: what the PREVIOUS round's summed evidence
-            # prescribed, read off the same durable series record the
-            # objectives travel on. Empty for the first round of a series and
-            # for a host that resolved no position — both mean "apply no blend
-            # correction", which is the honest graph in both cases.
-            blend_correction=(
-                self._series_position.previous_blend_correction
-                if self._series_position is not None else ()
-            ),
+            # Decision 10: what the previous round's summed evidence
+            # prescribed, or — when there is no instruction — what the speaker
+            # is already playing. See ``_blend_prescription``.
+            blend_correction=self._blend_prescription(),
         )
 
     def _exclusion_evidence_json(self, cloud: _CloudFitEvidence) -> dict[str, Any]:

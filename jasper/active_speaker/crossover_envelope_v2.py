@@ -527,7 +527,8 @@ def _verify_claims_lines(status: Mapping[str, Any]) -> list[str]:
     # round after round, with nothing saying the loop has a lever aimed at it,
     # reasonably concludes nothing is happening. Read off the durable receipt,
     # never re-derived, so the screen and the graph cannot disagree.
-    cuts = _mapping(_v2(status).get("round_receipt")).get("blend")
+    blend = _mapping(_v2(status).get("round_receipt")).get("blend")
+    cuts = _mapping(blend).get("filters")
     depths: list[float] = []
     if isinstance(cuts, (list, tuple)):
         for entry in cuts:

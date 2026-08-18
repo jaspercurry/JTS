@@ -62,14 +62,38 @@ lands outside even that, which series-1 shows it can (band gains ranged 0.136
 to 11.736). See :data:`BLEND_DAMPING` for why the distinction is stated rather
 than blurred.
 
-**It fails to a no-op, never to a boost.** Every refusal arm returns zero
-filters and a reason naming which one fired, so a round that corrected nothing
-says *why* — "the region was already clean" and "the instrument refused" are
-different facts. An unreadable incumbent is one of those arms: it is #2653's
-"refuse when the reconciliation cannot be established", applied to this
-module's own quantity. Unlike the level datum #2653 is about, that
-reconciliation is cheap here — the incumbent is a filter list the system itself
-wrote and persisted, not a per-role level a summed capture cannot separate.
+**It fails to a HOLD, never to a boost and never to a silent revert.** Every
+arm names itself on the receipt, so a round that changed nothing says *why* —
+"the region was already clean" and "the instrument refused" are different
+facts. What each arm PRESCRIBES is the part worth stating precisely, because
+the prescription becomes the next round's graph:
+
+===========================  ================================================
+arm                          what the next round applies
+===========================  ================================================
+:data:`BLEND_CORRECTED`      the newly solved total
+:data:`BLEND_NOTHING_TO_CUT` the incumbent, unchanged
+:data:`BLEND_NOT_COMPARABLE` the incumbent, unchanged
+:data:`BLEND_NO_TRUSTED_BAND` the incumbent, unchanged
+:data:`BLEND_REGION_NOT_IMPROVING` the incumbent, unchanged
+:data:`BLEND_NO_INCUMBENT`   nothing — there is no incumbent to hold
+===========================  ================================================
+
+**Refusals hold rather than revert** (panel ruling, 2026-08-18). A round whose
+evidence failed for reasons unrelated to the correction — an unusable capture,
+a region the gate could not trust — has no standing to remove a correction that
+was adopted on measured evidence. Writing an empty prescription there would
+silently drop up to the full composed ceiling of adopted cut on the next apply,
+which is a change to what a household hears made by an instrument that just
+said it could not measure. The least-bad-measured principle runs the other way:
+what plays stays until measured evidence says otherwise.
+
+:data:`BLEND_NO_INCUMBENT` is the one arm that cannot hold, because it is
+exactly the state of not knowing what to hold. It is #2653's "refuse when the
+reconciliation cannot be established", applied to this module's own quantity.
+Unlike the level datum #2653 is about, that reconciliation is cheap here — the
+incumbent is a filter list the system itself wrote and persisted, not a
+per-role level a summed capture cannot separate.
 
 **Scope tripwire.** This module reads the summed response against an analytic,
 offset-invariant reference and commands a common-mode filter. It never asks how
@@ -86,6 +110,10 @@ from typing import Any
 
 import numpy as np
 
+# No intra-package import at all: this module is a LEAF of the crossover_v2
+# DAG, which is what lets it be read, tested and mutated without loading the
+# round. Its two dependencies are the module that owns flat-spec grading and
+# the ONE biquad evaluator in this codebase.
 from jasper.active_speaker.branch_chain import chain_response
 from jasper.active_speaker.flat_spec import GradedSpec
 
@@ -102,6 +130,7 @@ __all__ = [
     "BLEND_NOT_COMPARABLE",
     "BLEND_NO_INCUMBENT",
     "BLEND_NO_TRUSTED_BAND",
+    "BLEND_REGION_NOT_IMPROVING",
     "BlendCorrection",
     "BlendRegionReading",
     "blend_filters_from_mapping",
@@ -203,6 +232,12 @@ BLEND_NO_INCUMBENT = "no_incumbent"
 #: is most likely to hit.
 BLEND_NOTHING_TO_CUT = "nothing_to_cut"
 
+#: The region was read and did not improve on the previous round's reading, so
+#: the incumbent is held rather than deepened. The narrow-defect stop: see
+#: :func:`solve_blend_correction` on why the bar is "improved at all" rather
+#: than "improved provably".
+BLEND_REGION_NOT_IMPROVING = "region_not_improving"
+
 #: Filters were prescribed.
 BLEND_CORRECTED = "corrected"
 
@@ -239,8 +274,20 @@ class BlendRegionReading:
     worst_db: float
     worst_hz: float
 
+    #: Which instrument produced :attr:`residual_db`, written into the record.
+    #: The receipt carries TWO region residuals over the same band — this one
+    #: and ``region_benefit.evidence.post_residual_db`` — and they legitimately
+    #: differ (1.0006 vs 0.8902 on the panel's fixture) because they are
+    #: referenced differently: this one against the speaker's broadband flat
+    #: level, the benefit axis's against the region's own surviving bins after
+    #: its band mask. Both are right for their own question; a reader holding
+    #: two unlabelled numbers cannot know that, and would reasonably read the
+    #: difference as a bug in one of them.
+    INSTRUMENT = "cloud_flat_reference"
+
     def to_dict(self) -> dict[str, Any]:
         return {
+            "instrument": self.INSTRUMENT,
             "band_hz": [self.band_hz[0], self.band_hz[1]],
             "residual_db": self.residual_db,
             "n_bins": self.n_bins,
@@ -290,12 +337,29 @@ class BlendCorrection:
         }
 
 
-def _refusal(reason: str, *, band_hz: tuple[float, float] | None = None,
-             incumbent: tuple[dict[str, Any], ...] = (),
-             reading: BlendRegionReading | None = None) -> BlendCorrection:
+def _hold(reason: str, *, band_hz: tuple[float, float] | None = None,
+          incumbent: tuple[dict[str, Any], ...] = (),
+          reading: BlendRegionReading | None = None) -> BlendCorrection:
+    """Prescribe the incumbent unchanged, and say which arm decided that.
+
+    The refusal shape for every arm except :data:`BLEND_NO_INCUMBENT`: the
+    round could not improve on what is applied, so what is applied continues.
+    ``filters`` is the incumbent rather than ``()`` — see the module docstring
+    on why an instrument that just said it could not measure has no standing to
+    remove an adopted correction.
+    """
+
     return BlendCorrection(
-        filters=(), reason=reason, band_hz=band_hz, incumbent=incumbent,
+        filters=incumbent, reason=reason, band_hz=band_hz, incumbent=incumbent,
         reading=reading,
+    )
+
+
+def _no_incumbent(band_hz: tuple[float, float] | None) -> BlendCorrection:
+    """The one arm that cannot hold: there is nothing established to hold."""
+
+    return BlendCorrection(
+        filters=(), reason=BLEND_NO_INCUMBENT, band_hz=band_hz, incumbent=(),
     )
 
 
@@ -331,12 +395,19 @@ def blend_filters_from_mapping(raw: Any) -> tuple[dict[str, Any], ...] | None:
             return None
         if entry.get("biquad_type") != "Peaking":
             return None
-        try:
-            freq = float(entry["freq"])
-            q = float(entry["q"])
-            gain = float(entry["gain"])
-        except (KeyError, TypeError, ValueError):
+        raw = (entry.get("freq"), entry.get("q"), entry.get("gain"))
+        # Real numbers, NOT anything ``float()`` will coerce. A ``"1900"``
+        # parses cleanly and would sail through — but this system writes
+        # floats, so a string is by definition a record something else wrote,
+        # which is exactly the question this reader exists to ask. ``bool`` is
+        # excluded for the usual reason: it is an ``int`` subclass, and
+        # ``gain=True`` would read as a +1 dB boost.
+        if any(
+            not isinstance(value, (int, float)) or isinstance(value, bool)
+            for value in raw
+        ):
             return None
+        freq, q, gain = (float(value) for value in raw)
         if not (math.isfinite(freq) and math.isfinite(q) and math.isfinite(gain)):
             return None
         if freq <= 0.0 or q <= 0.0 or gain > 0.0:
@@ -444,6 +515,7 @@ def solve_blend_correction(
     graded: GradedSpec | None,
     band_hz: Any,
     incumbent: Sequence[Mapping[str, Any]] | None,
+    previous_residual_db: float | None = None,
 ) -> BlendCorrection:
     """Prescribe the next round's blend-region correction from summed evidence.
 
@@ -464,6 +536,9 @@ def solve_blend_correction(
       incumbent: the blend correction the measured capture rode. ``None`` means
         it could not be established and the round refuses; ``()`` means it rode
         none, which is the ordinary first round.
+      previous_residual_db: the region residual the PREVIOUS round read, or
+        ``None`` for the first round of a series. The narrow-defect stop below
+        turns on it.
 
     Returns:
       A :class:`BlendCorrection`. Its ``filters`` are a TOTAL — the whole
@@ -476,6 +551,41 @@ def solve_blend_correction(
     look like it has hot shoulders around its dip, and cutting those shoulders
     trades one narrow notch for a wide hole across the whole presence band. The
     contract's target is flat: one level for the spectrum, so one reference.
+
+    **The narrow-defect stop, and exactly what it does and does not buy.** The
+    convergence this module claims is verified where the defect is at most as
+    narrow as the correction can represent (``Q <= BLEND_FILTER_Q``). A
+    NARROWER defect cannot be matched by a ``Q = 2`` cut, so each round's fit
+    over-corrects the shoulders, the over-correction reads as next round's
+    defect, and the loop limit-cycles instead of converging — measured on a
+    4 dB defect at 1500 Hz, region rms across six rounds::
+
+        defect Q=2.0  0.973 0.528 0.239 0.112 0.057 0.034   converges
+        defect Q=3.0  0.575 0.344 0.400 0.344 0.400 0.344   two-cycles
+        defect Q=4.0  0.496 0.639 0.493 0.733 0.814 0.814   ends worse
+        defect Q=6.0  0.642 1.034 0.767 1.120 0.767 1.120   two-cycles
+
+    Every cap held at every Q — never past the per-filter or composed ceiling,
+    never a boost — so this is a quality defect, not a safety one. The stop:
+    **once the region stops improving, hold the incumbent and stop
+    re-prescribing** (:data:`BLEND_REGION_NOT_IMPROVING`).
+
+    The bar is "improved at all", not "improved provably", and that choice is
+    deliberate. A provable-improvement bar needs a round-to-round noise
+    estimate for this residual, which this program does not have — and the
+    nearest available number (:data:`BLEND_MIN_CUT_DB`, a per-band model
+    tracking error) is the wrong quantity for an RMS over a hundred bins, large
+    enough to stop the CONVERGING case at its second round. Rather than invent
+    a threshold, this compares the two readings it actually has.
+
+    **What it does not buy, said plainly:** it does not guarantee the region
+    ends no worse than round 1. The overshoot that triggers the stop has
+    already been applied, so the loop can settle one round past its best
+    reading (Q=4 above holds at 0.639 rather than reaching 0.814). It converts
+    an unbounded wander into a bounded one, and the region benefit claim
+    reports where it settled. Undoing that last step would need the round to
+    carry its PREVIOUS prescription as well as its current one, which is a
+    second history this program has not earned yet.
     """
 
     # The band is resolved FIRST so that every refusal after it still names the
@@ -485,13 +595,16 @@ def solve_blend_correction(
     # next actions — and the receipt writer uses exactly this field to decide
     # whether the round had a blend question worth banking.
     band = _band_from(band_hz)
-    if band is None:
-        return _refusal(BLEND_NO_TRUSTED_BAND)
     if incumbent is None:
-        return _refusal(BLEND_NO_INCUMBENT, band_hz=band)
+        # Checked before the band, because "no incumbent" is the one arm whose
+        # disposition does not depend on having a region: with nothing
+        # established to hold, there is nothing to prescribe either way.
+        return _no_incumbent(band)
     incumbent_filters = tuple(dict(entry) for entry in incumbent)
+    if band is None:
+        return _hold(BLEND_NO_TRUSTED_BAND, incumbent=incumbent_filters)
     if graded is None:
-        return _refusal(
+        return _hold(
             BLEND_NOT_COMPARABLE, band_hz=band, incumbent=incumbent_filters,
         )
 
@@ -501,16 +614,16 @@ def solve_blend_correction(
         mask = np.asarray(graded.excluded, dtype=bool)
         reference_db = float(graded.report.reference_db)
     except (TypeError, ValueError, AttributeError):
-        return _refusal(
+        return _hold(
             BLEND_NOT_COMPARABLE, band_hz=band, incumbent=incumbent_filters,
         )
     if freqs.ndim != 1 or freqs.shape != curve.shape or freqs.shape != mask.shape:
-        return _refusal(
+        return _hold(
             BLEND_NOT_COMPARABLE, band_hz=band, incumbent=incumbent_filters,
         )
     if not (np.all(np.isfinite(freqs)) and np.all(np.isfinite(curve))
             and math.isfinite(reference_db)):
-        return _refusal(
+        return _hold(
             BLEND_NOT_COMPARABLE, band_hz=band, incumbent=incumbent_filters,
         )
 
@@ -526,8 +639,8 @@ def solve_blend_correction(
         & ~mask
     )
     if int(np.count_nonzero(region)) < BLEND_MIN_REGION_BINS:
-        return _refusal(BLEND_NO_TRUSTED_BAND, band_hz=band,
-                        incumbent=incumbent_filters)
+        return _hold(BLEND_NO_TRUSTED_BAND, band_hz=band,
+                     incumbent=incumbent_filters)
 
     deviation = curve - reference_db
     in_region = np.where(region, np.abs(deviation), -np.inf)
@@ -540,15 +653,36 @@ def solve_blend_correction(
         worst_hz=float(freqs[worst]),
     )
 
+    if (
+        previous_residual_db is not None
+        and math.isfinite(previous_residual_db)
+        and reading.residual_db >= previous_residual_db
+    ):
+        return _hold(
+            BLEND_REGION_NOT_IMPROVING, band_hz=band,
+            incumbent=incumbent_filters, reading=reading,
+        )
+
     # The incumbent-accounted, damped total. `desired` is clamped non-positive
     # so the fit below can only ever ask for attenuation — the first of the two
     # independent places cuts-only is enforced (the emitter is the second).
     incumbent_db = _cascade_db(incumbent_filters, freqs)
     desired = np.minimum(incumbent_db - BLEND_DAMPING * deviation, 0.0)
     filters = _fit_cuts(freqs, desired, region)
+    if not filters:
+        # HOLD, not revert, on the same rule as the refusal arms: an empty fit
+        # means nothing in the region EARNED a cut, which is not evidence that
+        # an adopted correction should be removed. Reachable with a non-empty
+        # incumbent only when that incumbent is shallower than the minimum
+        # emittable cut — a deeper one is re-derived by the fit above, since
+        # the prescription is a total.
+        return _hold(
+            BLEND_NOTHING_TO_CUT, band_hz=band, incumbent=incumbent_filters,
+            reading=reading,
+        )
     return BlendCorrection(
         filters=filters,
-        reason=BLEND_CORRECTED if filters else BLEND_NOTHING_TO_CUT,
+        reason=BLEND_CORRECTED,
         band_hz=band,
         incumbent=incumbent_filters,
         reading=reading,
