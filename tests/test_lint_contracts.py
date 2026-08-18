@@ -575,13 +575,16 @@ MAX_LINES_BY_PATH = {
     # catch it subtracting a different room bin by bin. The identity read also
     # moved INSIDE the fail-soft try, which is a line of nesting for a method
     # whose whole contract is that it never loses a verdict.
-    "jasper/active_speaker/crossover_v2_flow.py": 12_810,
+    # 2026-08-18 (#2699): 12,810 -> 12,813 earns stage-1 series-position
+    # hydration here; 9,296 -> 9,333 below earns Undo clearing the banked blend
+    # instruction it reverses. Both ceilings equal the measured current files.
+    "jasper/active_speaker/crossover_v2_flow.py": 12_813,
     # ...and 9,292 -> 9,296, +4 physical / 0 logical: the sweep caught that
     # comment overclaiming its own readership ("the surface /state, the doctor
     # and the done screen read" — no renderer reads it today). It is a forensic
     # state key, and saying which it is costs four lines on a surface whose
     # whole job this round is telling "measured" from "not measured".
-    "jasper/web/correction_crossover_v2.py": 9_296,
+    "jasper/web/correction_crossover_v2.py": 9_333,
     "jasper/active_speaker/crossover_envelope_v2.py": 4_103,
     # 2026-08-18 (D7, series-2 diagnosis): +82 net on `program_analysis.py`
     # (95 added, 13 removed), counted rather than estimated —
