@@ -37,8 +37,9 @@
 > ["Measurement Program v2 — the capture schedule"](#measurement-program-v2--the-capture-schedule-ratified-2026-08-18).
 > The five-layer ownership is unchanged again. What it rules on is the
 > *instrument's schedule* — what is played, at which angles, how often, and in
-> which unit — not who owns which correction. **Nothing in that section
-> describes shipped behavior**; the shipped flow stays
+> which unit — not who owns which correction. **The program is not built**;
+> where that section states shipped behavior it says so and cites the symbol.
+> Operational truth for the shipped flow stays
 > [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md).
 
 ## Why this exists (one paragraph of history)
@@ -634,12 +635,15 @@ paths**, so nothing built now is wasted by either choice.
 
 ## Measurement Program v2 — the capture schedule (ratified 2026-08-18)
 
-> **Status: ratified design, NOT built.** Owner-ratified 2026-08-18. Every
-> sentence below states what the ratified program *is*, not what the speaker
-> does — no part of it is implemented. Today's shipped flow is
-> [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md),
-> and the two disagree on purpose until this ships. Sequencing and what it
-> supersedes are at the end of this section.
+> **Status: ratified design, NOT built.** Owner-ratified 2026-08-18. **The
+> program is not implemented.** The section does state shipped behavior in
+> places — deliberately, because a schedule is only legible against the one it
+> replaces — and every such claim says so in the sentence and names the symbol
+> it was read from. Read anything not marked that way as ratified plan.
+> Operational truth is
+> [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md).
+> Sequencing, and what this reverses or supersedes, are at the end of this
+> section.
 
 ### The schema
 
@@ -680,12 +684,19 @@ Three things are **session-level one-timers at 0°**, not per-capture work:
    ([`jasper/audio_measurement/calibration.py`](../jasper/audio_measurement/calibration.py))
    carries a frequency-shaped `correction_db` curve, **not** an absolute
    sensitivity — so the anchor's input has to be read before it can be
-   targeted. The band itself is legal under the declared commissioning
-   ceiling: `SafetyEnvelope` declares `initial_sweep_level_db_spl` (default
-   65.0) and `max_commissioning_level_db_spl` (default 85.0), each validated
-   into 45–85
+   targeted. The band is legal under the declared commissioning ceiling, with
+   **no headroom on some speakers, which is worth saying plainly**:
+   `SafetyEnvelope` declares `initial_sweep_level_db_spl` (default 65.0) and
+   `max_commissioning_level_db_spl` (default 85.0), each validated into 45–85
    ([`jasper/active_speaker/profile.py`](../jasper/active_speaker/profile.py)),
-   and the preset staging path writes both — while the ramp reads neither;
+   and the ramp reads neither. The reference preset
+   (`bc_de250_dayton_e150he44_v1.json`) declares 85, but the Epique preset
+   (`epique_e150he44_eminence_f110m8_safe_v1.json`) and the preview-staging
+   path both declare **80** — so on those the ratified band's top sits exactly
+   at the ceiling. That is legal by the 2026-08-17 boundary ruling above (a
+   value at the declared limit is a sanctioned operating point, no nanny
+   margin) and is a real constraint for the anchor to respect, not a spare
+   5 dB;
 3. **~2 s per-driver drift sentinels between phases**, which replace the
    per-capture pilot on the wired path (see constraint 4 below).
 
@@ -725,8 +736,13 @@ correct rather than an off-by-one: 5 = 1 center + 2 mirrored pairs.
 | 4 | −7° | D + S | ~30 s |
 | 5 | +22° | D + S | ~30 s |
 | 6 | −22° | D + S | ~30 s |
-| 7 | 0° (return) | short D probe — **the session's noise floor** | short |
-| after apply | all five | **S at each angle** | — |
+| 7 | 0° (return) | short D probe — **the session's noise floor** | short † |
+| after apply | all five | **S at each angle** | † |
+
+† Stops 1–6 are the figures the ratification fixed, and they sum to **215 s**.
+The stop-7 probe and the five post-apply summed captures are the **~145 s
+balance** of the ≈6 min below; the ratified number is the total, and the plan
+builder owns the split once this is built.
 
 Two properties fall out of the grid rather than needing a measurement of their
 own:
@@ -738,26 +754,46 @@ own:
 
 And post-apply verification happens **across angles**, not on-axis only.
 
-**The budget claim, and exactly what it is.** ≈**6 min** of measurement,
-against **13 min** for a Full journey today — that 13 is the flow's own
-derived estimate (`tier_display_info()['full']`, 15 captures; re-derived at
-HEAD 2026-08-18), and the session trims in flight take it to 12
-([PR #2715](https://github.com/jaspercurry/JTS/pull/2715)). The ≈6 min is a
-**design projection** from measured 2026-08-18 session evidence — that day's
-per-capture census plus gate evidence, with the capture-relay per-capture
-overhead (≈11.5 s) measured across the day's ten banked walk journals — not a
-stopwatch on a built flow. When it is built, `CapturePlan.estimated_minutes()`
-owns the number, exactly as it does today.
+**The budget claim, and exactly what it is.** ≈**6 min** of measurement. The
+baseline it is measured against is **moving under two PRs in flight**, so all
+three numbers are stated rather than the flattering one:
 
-**What is genuinely new, stated against the shipped walk**, because most of
-this grid already exists and the record should not overclaim. Stage 1's
-lateral walk already replays the MEASURE program verbatim at 0°, ±7°, ±22°,
-0° — six poses at 42.18 s each, and `lateral` is absent from
+| baseline | Full journey | source |
+|---|---|---|
+| shipped at ratification | 15 captures, **13 min** | `tier_display_info()['full']`, re-derived at HEAD 2026-08-18 |
+| after the session trims | 14 captures, **12 min** | [PR #2715](https://github.com/jaspercurry/JTS/pull/2715)'s own derivation |
+| after the lateral-walk pause | 9 captures, **7 min** | [PR #2717](https://github.com/jaspercurry/JTS/pull/2717); re-derived here by flipping `STAGE1_INCLUDES_LATERAL` off and clearing the display cache (stage 1: 9 → 3 captures) |
+
+So the honest contrast is **≈6 min against 7**, near break-even — because the
+pause buys its time by not measuring off-axis at all, which is exactly what
+v2 reinstates. **The case for v2 does not rest on time**; it rests on the
+grid's information richness (the S half at every angle, the noise floor, the
+attribution property) at roughly the time cost of measuring nothing off-axis.
+The ≈6 min itself is a **design projection** from measured 2026-08-18 session
+evidence — that day's per-capture census plus gate evidence, with the relay's
+per-capture wall-clock cost (≈11.5 s, distinct from the shipped
+`CAPTURE_PLAN_PER_CAPTURE_OVERHEAD_MS = 20_000` plan-budget allowance)
+measured across the day's ten banked walk journals — not a stopwatch on a
+built flow. When it is built, `CapturePlan.estimated_minutes()` owns the
+number, exactly as it does today.
+
+**The machinery this reuses is built, and currently paused.** Stage 1's
+lateral walk replays the MEASURE program verbatim at 0°, ±7°, ±22°, 0° —
+`LATERAL_POSE_PROMPTS`' six poses, each a representative ~41.6 s at the
+display constants (`_DISPLAY_ROLES_BANDS` / `_DISPLAY_FC_HZ`; the exact
+duration is topology-dependent), and `lateral` is absent from
 `SUMMED_SWEEP_PHASES`, so those poses are per-driver captures. **The D half of
-the grid is substantially shipped.** What v2 adds is the **S half at every
-angle** (today only the at-mark entry baseline is summed before apply), the
-session-level one-timers, the explicit repeat and noise-floor structure, and a
-schedule that stops paying per-capture overhead at every pose.
+this grid exists in the tree**, and [PR #2717](https://github.com/jaspercurry/JTS/pull/2717)
+pauses it behind one flag rather than deleting it — the poses, the prompts,
+and `position_angle_deg`'s bearings all stay, and that PR records that forcing
+the flag back on reproduces the shipped plan byte for byte. That is a
+*stronger* footing for v2 than a shipped walk would be: what v2 needs is
+already written and merely gated, and its own evidence says the poses are
+clean while the reduction over them is not. What v2 adds on top is the **S
+half at every angle** (today only the at-mark entry baseline is summed before
+apply — `SUMMED_SWEEP_PHASES` again), the session-level one-timers, the
+explicit repeat and noise-floor structure, and a schedule that stops paying
+per-capture relay cost at every pose.
 
 ### Constraints carried forward
 
@@ -772,7 +808,11 @@ Four, each from evidence this section cites rather than restates:
    exactly candidate-blind — and the **enabling change is banking
    `branch_operator_by_role` per candidate**
    ([#2711](https://github.com/jaspercurry/JTS/issues/2711), which holds the
-   study's finding and the retention-guard caveat).
+   study's finding and the retention-guard caveat). The switch this bar
+   governs is `STAGE1_INCLUDES_LATERAL`, and
+   [PR #2717](https://github.com/jaspercurry/JTS/pull/2717) records the
+   re-enable condition on the flag itself as the canonical place — point
+   there, do not restate it.
 2. **Inter-driver phase read off these captures is contaminated** by per-role
    integer-sample alignment quantization (±20.833 µs at 48 kHz) —
    [#2710](https://github.com/jaspercurry/JTS/issues/2710). It is to be located
@@ -788,8 +828,9 @@ Four, each from evidence this section cites rather than restates:
    matching default.
 4. **The per-capture pilot cut is wired-path-only** and rides the leveling
    build, not this schedule. What it removes is the ~2.6 s behavioural-linearity
-   pilot pair (plus its 1.0 s pre-pilot ambient window) that every MEASURE- and
-   VERIFY-shaped capture opens on; what replaces it is the drift sentinel
+   pilot pair every MEASURE- and VERIFY-shaped capture opens on
+   (`DEFAULT_PILOT_DURATION_S` 0.8 ×2 + `DEFAULT_PILOT_GAP_S` 0.5 ×2), plus its
+   1.0 s `PILOT_AMBIENT_WINDOW_S`; what replaces it is the drift sentinel
    above. The relay path keeps its per-capture pilots, because on that path the
    pilot is also the evidence that the phone heard the speaker at all.
 
@@ -811,7 +852,7 @@ and owns the reasoning. And the lab arm's elevation capability is
 **undetermined** (mast height is set by hand), so a v2 elevation build states
 its rig support before it states a schedule.
 
-### Sequencing, and what this supersedes when it ships
+### Sequencing, and what this reverses or supersedes when it ships
 
 Ratified 2026-08-18; **not implemented**. It builds on decision 13's
 capture-source seam ([#2662](https://github.com/jaspercurry/JTS/issues/2662);
@@ -823,14 +864,23 @@ calibration is wired-microphone only, while the relay/phone path survives for
 room correction, a later rework where the string method serves seat-position
 prompts too.
 
-Interim steps already landed or in flight, each superseded by this schedule
-when it ships:
+Interim steps already landed or in flight. The verbs differ, and the
+difference is the point:
 
-- the cloud 6→5 trim and the courtesy-prelude grouping
-  ([PR #2715](https://github.com/jaspercurry/JTS/pull/2715));
-- the lateral walk's pause (in flight 2026-08-18);
-- the walk's future 4-capture reporter form — subsumed by stops 3–6 plus the
-  stop-7 return.
+- **Superseded** — the cloud 6→5 trim and the courtesy-prelude grouping
+  ([PR #2715](https://github.com/jaspercurry/JTS/pull/2715)): this schedule
+  replaces the walk they trim.
+- **Reversed** — the lateral walk's pause
+  ([PR #2717](https://github.com/jaspercurry/JTS/pull/2717), in flight
+  2026-08-18). v2 reinstates off-axis measurement, which is what that PR
+  switches off; it does not supersede it, and until v2 ships the pause is what
+  moves the baseline above. The pause is deliberately reversible for this
+  reason — one flag, nothing deleted.
+- **Subsumed** — the shape the walk was to return as: a 4-capture per-driver
+  off-axis **reporter, never a score term**, which is the redesign study's
+  conclusion as recorded in
+  [PR #2717](https://github.com/jaspercurry/JTS/pull/2717). Stops 3–6 plus the
+  stop-7 return are that reporter, inside a schedule.
 
 ## Session operating model (how the implementing session runs)
 
@@ -996,9 +1046,13 @@ The 2026-08-18 pass added decision 14 and the Measurement Program v2 section
 only, and verified that section's own code claims at HEAD: the phase
 vocabulary and `SUMMED_SWEEP_PHASES` membership, `position_angle_deg`'s
 ±7°/±22° derivation at `MARK_DISTANCE_M`, the shipped Full-tier plan
-(15 captures, 13 displayed minutes, six 42.18 s lateral poses), the ramp's
-dBFS window and the calibration reader's lack of a sensitivity term, the
-declared commissioning SPL fields, the three N≥3 policy floors, and the pilot
-pair's duration. Nothing else in this doc was re-verified in that pass.
+(15 captures, 13 displayed minutes) and its 9 → 3 stage-1 shape under a
+`STAGE1_INCLUDES_LATERAL` flag flip, the ramp's dBFS window and the
+calibration reader's lack of a sensitivity term, the declared commissioning
+SPL fields including the two 80 dB presets, the three N≥3 policy floors, and
+the pilot pair's duration. The per-pose ~41.6 s is a representative figure at
+the display constants, not a fixed one — it moves with topology — so it is
+cited as representative rather than verified. Nothing else in this doc was
+re-verified in that pass.
 
 Last verified: 2026-08-18
