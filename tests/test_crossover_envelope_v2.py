@@ -980,15 +980,18 @@ def test_a_safety_only_probe_caveats_the_pass_screen():
         verify={
             "outcome": "pass",
             # ``overshoot_db`` is ``None`` because since series-2 D1 this path
-            # measures no directional finding at all — it has no pre-apply
-            # capture to difference against. The record's own ``safety_anchored``
-            # is deliberately NOT here: ``_delta_probe_summary`` does not persist
-            # it (the round receipt's safety evidence does), and a fixture
-            # carrying a key the durable record will not have is a fixture
-            # testing a surface that does not exist.
+            # measures no directional finding at all — there is no change
+            # reference on a state axis to difference against.
+            #
+            # ``safety_anchored`` IS on the durable record (``_delta_probe_summary``
+            # carries it), so the fixture carries it too: this is the shape the
+            # renderer will actually be handed. Nothing in the envelope reads it
+            # yet — the caveat below keys on ``verdict`` — and it is here so the
+            # fixture cannot quietly drift from the record it stands in for.
             "delta_probe": {
                 "verdict": "safety_only",
                 "reason": "commanded_axis_unavailable",
+                "safety_anchored": False,
                 "boost": {"over_declared_bound": False, "overshoot_db": None},
             },
         },

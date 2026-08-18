@@ -202,6 +202,7 @@ __all__ = [
     "SAFETY_CLIPPED_CAPTURE",
     "SAFETY_NO_FINDING",
     "SAFETY_NO_FINDING_UNMEASURED",
+    "identity_mismatch",
     "SAFETY_UNCOMMANDED_LEVEL_LOUDER",
     "SPEC_BAND_OUT_OF_TOLERANCE",
     "SPEC_IN_TOLERANCE",
@@ -582,6 +583,39 @@ def evaluate_benefit(
     return Verdict(BenefitStatus.INDETERMINATE, BENEFIT_WITHIN_MARGIN, evidence)
 
 
+def identity_mismatch(
+    *,
+    program_id: str,
+    reference_mark: str,
+    other_program_id: str,
+    other_reference_mark: str,
+) -> str | None:
+    """Are two captures the same PROGRAM at the same MARK? (series-2 D1)
+
+    The identity half of :func:`_comparability_mismatch`, extracted because it
+    grew a second caller and a second caller is how one rule becomes two. The
+    delta probe asks it of its pre-apply anchor, which since D1 is the
+    subtrahend under a hearing-safety hard stop: a curve from another program or
+    another mic position subtracts a different room from this one, bin by bin,
+    and cancels a real finding as readily as a phantom.
+
+    Public because that caller is in another module. Ordered most-identifying
+    first, so the reason names the root difference — the same order and the same
+    two constants the benefit axis reports, never a parallel spelling.
+
+    The GRID and the MASK are deliberately not here: they are comparability
+    questions too, and they are the *arithmetic's* to answer, which each caller
+    does its own way (the benefit axis refuses; the probe interpolates onto its
+    own grid and NaNs the excluded bins).
+    """
+
+    if program_id != other_program_id:
+        return BENEFIT_PROGRAM_MISMATCH
+    if reference_mark != other_reference_mark:
+        return BENEFIT_MARK_MISMATCH
+    return None
+
+
 def _comparability_mismatch(
     baseline: MeasurementComparand, post: MeasurementComparand
 ) -> str | None:
@@ -591,10 +625,14 @@ def _comparability_mismatch(
     a different program makes the grids differing uninteresting.
     """
 
-    if baseline.program_id != post.program_id:
-        return BENEFIT_PROGRAM_MISMATCH
-    if baseline.reference_mark != post.reference_mark:
-        return BENEFIT_MARK_MISMATCH
+    identity = identity_mismatch(
+        program_id=baseline.program_id,
+        reference_mark=baseline.reference_mark,
+        other_program_id=post.program_id,
+        other_reference_mark=post.reference_mark,
+    )
+    if identity is not None:
+        return identity
     if baseline.curve.hz != post.curve.hz:
         return BENEFIT_GRID_MISMATCH
     if baseline.exclusion_mask != post.exclusion_mask:
@@ -1722,10 +1760,12 @@ def _finite_or_none(value: float | None) -> float | None:
     an honest absence. The same holds for every optional number this module
     lifts off an evidence object, which is why it is not named for the floor.
 
-    Named ``_or_none`` rather than ``_finite_number`` because six other modules
-    already have a private ``_finite_number`` and every one of them RAISES on a
-    bad value (``(value, *, field) -> float``). This one returns ``None``. Two
-    private names would not collide, but a reader who knows the other five
+    Named for what it RETURNS, matching
+    :mod:`jasper.attribution.position_evidence`'s helper of the same name and
+    the same shape. The ``_finite_number`` spelling is taken by five private
+    helpers, three of which raise on a bad value
+    (``(value, *, field) -> float``). Private names cannot collide; this is
+    about which one a reader has already learned, and a reader who knows those
     would read this call site backwards.
     """
 

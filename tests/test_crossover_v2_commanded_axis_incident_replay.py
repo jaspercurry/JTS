@@ -1421,6 +1421,9 @@ def test_an_anchor_measured_through_another_program_is_refused(caplog):
     import dataclasses
     import logging
 
+    from jasper.active_speaker.crossover_v2.verification import (
+        BENEFIT_PROGRAM_MISMATCH,
+    )
     from tests.crossover_v2_fixtures import FakeSeams
 
     applied_db, commanded_db, declared_db, _band = _repeat_round_axes()
@@ -1448,20 +1451,78 @@ def test_an_anchor_measured_through_another_program_is_refused(caplog):
     assert foreign.safety_anchored is False
     assert foreign.boost_over_declared_bound is False
     assert foreign.boost_overshoot_db is None
-    # ...and it is named, because a refused anchor that says nothing is the
-    # same silence the refusal exists to prevent.
+    # ...and it is named, in the OWNER's own vocabulary rather than a second
+    # spelling of it, because a refused anchor that says nothing is the same
+    # silence the refusal exists to prevent.
     assert "crossover_v2_delta_probe_no_entry_anchor" in caplog.text
-    assert "reason=incomparable_program" in caplog.text
+    assert f"reason={BENEFIT_PROGRAM_MISMATCH}" in caplog.text
+
+
+def test_an_anchor_captured_at_another_mark_is_refused_too(caplog):
+    """The mark, and it is the MORE distorting of the two identity fields.
+
+    A different program usually changes the grid and shows up in the arithmetic.
+    A baseline captured at another mic position does not: it is the same
+    program, the same grid, the same bins — and it subtracts a different room
+    from this one, bin by bin. Since series-2 D1 that subtrahend sits under a
+    hearing-safety hard stop, and nothing else on this path would catch it.
+
+    Same fixture, same 4 dB of undeclared energy, one field moved — and the
+    record is REHYDRATED through ``EntryBaseline.from_dict``, which is the path
+    a stage-2 round actually takes and which coerces ``reference_mark`` without
+    validating it. So the foreign mark really does reach the probe, exactly as
+    it would from a state file, rather than being planted on an in-memory
+    object the production path never builds.
+    """
+    import logging
+
+    from jasper.active_speaker.crossover_v2.round_evidence import EntryBaseline
+    from jasper.active_speaker.crossover_v2.verification import (
+        BENEFIT_MARK_MISMATCH,
+    )
+    from tests.crossover_v2_fixtures import FakeSeams
+
+    applied_db, commanded_db, declared_db, _band = _repeat_round_axes()
+    measured_post, measured_pre = _repeat_round_curves(hot_db=4.0)
+
+    session = _session(FakeSeams().seams())
+    session._measure_commanded_delta = (FREQS_HZ, commanded_db)
+    session._measure_declared_transfer = (FREQS_HZ, declared_db)
+    session._verify_tracking_curve = (FREQS_HZ, measured_post, applied_db)
+    session._verify_trusted_band_hz = TRUSTED_BAND_HZ
+
+    record = _entry_baseline(session, measured_pre).to_dict()
+    record["reference_mark"] = "a_mark_from_another_position"
+    rehydrated = EntryBaseline.from_dict(record)
+    assert rehydrated is not None, "the rehydrator accepts the foreign mark"
+    assert rehydrated.reference_mark == "a_mark_from_another_position"
+    session._measure_entry_baseline = rehydrated
+
+    with caplog.at_level(logging.WARNING):
+        probe = session._run_delta_probe()
+
+    assert probe.safety_anchored is False
+    assert probe.boost_over_declared_bound is False
+    assert probe.boost_overshoot_db is None
+    assert f"reason={BENEFIT_MARK_MISMATCH}" in caplog.text
+    assert "baseline_reference_mark=a_mark_from_another_position" in caplog.text
 
 
 def test_a_round_with_no_entry_baseline_at_all_says_so_on_the_journal(caplog):
-    """The most REACHABLE arm, and it used to return ``None`` in silence.
+    """The arm that used to return ``None`` in silence.
 
-    A first-ever round has no prior applied profile, so it has no pre-apply
-    capture — this is not an edge case, it is every speaker's first commission.
-    Since D1 that decides whether the realized-energy half of the safety axis
-    runs at all, so it is a named journal line rather than an absent field a
-    reader has to infer from.
+    Reached by a round that HAS a commanded axis and no usable baseline record —
+    a state file written before that key shipped, a stage 1 whose baseline
+    capture never landed, or a truncated record
+    (``entry_baseline_prior_from_state`` enumerates the three). **Not** by a
+    first-ever round: that one has no nameable previous graph, so its commanded
+    axis is absent and ``_run_delta_probe`` takes the ``state_axis_only`` branch
+    without calling ``_entry_delta_db`` at all.
+
+    Since D1 this arm decides whether the realized-energy half of the safety
+    axis runs, so it is a named journal line rather than an absent field a
+    reader has to infer from. The baseline is set to ``None`` by hand here
+    because that is the state those three cases produce.
     """
     import logging
 

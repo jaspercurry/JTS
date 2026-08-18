@@ -2370,14 +2370,20 @@ revert every first round — and what differs is what the receipt and the journa
 claim was checked. #1868's rule on this axis: *"we do not know" must have
 somewhere to live rather than defaulting to the success value.*
 
-It is on four surfaces: the axis reason, `safety_anchored` in the safety
-evidence and on the map, `safety_anchored=` on
+It is on five surfaces: the axis reason (on the round receipt),
+`safety_anchored` in the safety evidence and on the map, `safety_anchored=` on
 `event=correction.crossover_v2_delta_probe`, `safety_reason=` on
 `event=correction.crossover_v2_round_graded`, and `safety_anchored` in the
-durable `verify.delta_probe` summary that `/state`, the doctor and the done
-screen read. `event=correction.crossover_v2_delta_probe_no_entry_anchor` names
-which arm produced it (`no_entry_baseline` / `incomparable_program` /
-`unusable_curve`).
+durable `verify.delta_probe` summary. That last one is a **forensic state key**
+— it is where `/state`, the doctor and the done screen would read it from, and
+**no renderer reads it today**; it is there so a live surface can, which a
+write-once receipt cannot support.
+`event=correction.crossover_v2_delta_probe_no_entry_anchor` names which arm
+produced it (`no_entry_baseline` / `incomparable_program` /
+`incomparable_reference_mark` / `unusable_record`), at WARNING — every one of
+those three is exceptional, including the first: a **first-ever round never
+reaches that arm at all**, because it has no commanded axis and takes the
+`state_axis_only` branch without calling `_entry_delta_db`.
 
 What still holds with no anchor: on an ordinary round the **level** rule does —
 `residual_offset_db` is gated on having quiet bins, not on having an anchor. On
@@ -2413,9 +2419,12 @@ status.
 **What "safe" does not claim.** `SAFETY_NO_FINDING` means no instrument that ran
 reported a hazard — an absent or ungraded probe reports no finding rather than
 one, matching `DELTA_PROBE_ROLLBACK_VERDICTS`'s own rule that an absent
-measurement is not evidence. The verdict's evidence carries `probe_graded`,
-`probe_shape_graded` and `safety_anchored` so a reader can tell "safe because
-nothing was found" from "safe because nothing looked."
+measurement is not evidence. Since D1 the *reason* carries half of that
+distinction on its own: `SAFETY_NO_FINDING_UNMEASURED` is the same SAFE status
+with the realized-energy check unrun. The verdict's evidence carries
+`probe_graded`, `probe_shape_graded` and `safety_anchored` for the rest, so a
+reader can tell "safe because nothing was found" from "safe because nothing
+looked."
 
 **The same direction rule reaches the SHAPE axis (#2559).** The delta probe's
 own seam-bound rollback preempts this table — a seam refusal ends the session
@@ -2434,11 +2443,18 @@ seam rollback in the first place. The measurement behind it is
 `boost_overshoot`'s reason: this asks how much energy reached the driver, not
 whether the shape is right. It is measured over the probe's SAFETY bins since
 #2614 — this apply's graded changes UNION the applied graph's own declared
-transfer — for the same reason, and over the ANCHORED excess since series-2 D1,
-which needed no edit here: the fence withholds lenience on a positive bin, so a
-fence fed by model error withheld it wrongly. An unanchored map defers, on the
-module's own rule that an absent measurement is not evidence of a bad
-correction. A deferral is never silent —
+transfer — for the same reason, and over the ANCHORED excess since series-2 D1:
+the fence withholds lenience on a positive bin, so a fence fed by model error
+withheld it wrongly.
+
+**An unanchored map does NOT simply defer**, and the fence has a third guard
+for it. A fence's polarity is the opposite of a finding's: "no anchor, no claim"
+is right for a hazard, and applied here it would make absence *grant* the
+lenience — a round measured +20 dB louder taking `row2_trusted_safe_missed`
+with `model_error_quieter_than_commanded` banked on it. So an unanchored map
+falls back to `model_departure_over_tolerance`, which is exactly what the fence
+read before D1: an unanchored louder map does not defer, and an unanchored
+quieter-only one still gets #2559's lenience. A deferral is never silent —
 it journals `event=correction.crossover_v2_delta_probe_seam_deferred` (WARNING)
 and rides the safety axis's evidence as `seam_deferred`, so the receipt records
 the restore that did **not** happen.
@@ -5573,11 +5589,19 @@ corrections came from that gate's review of PR #2545, and every figure in them
 was measured on this branch. **The date below is deliberately NOT bumped**, for
 the same reason as the two addenda above.
 
-Last verified: 2026-08-17 (#2600 — the "round, graded" section gained the
+Last verified: 2026-08-17 (series-2 D1 — the safety-axis section was rewritten
+against the code in the same diff: the anchored directional findings, the two
+SAFE reasons and their five surfaces, the comparability rule, what the anchored
+rule cannot see, and the `safety_only` block. Two paragraphs that D1's own fix
+round falsified were re-read against code and corrected in it — the seam-fence
+paragraph, which had said the fence "needed no edit" and that an unanchored map
+defers, and the surface count. **The date is deliberately NOT bumped**: nothing
+outside the safety axis and the delta-probe section was re-verified.
+Carried forward: #2600 — the "round, graded" section gained the
 blend-region subsection, whose every claim was written against the code it
 describes in the same diff, and the file map gained
 `crossover_v2/blend_correction.py`. Nothing else in the live spine was
-re-verified this pass. Carried forward: #2609/#2641/#2639 — the paragraphs that round's
+re-verified that pass. Carried forward: #2609/#2641/#2639 — the paragraphs that round's
 change falsified were re-read against code and corrected: the headroom axis's
 endings against `evaluate_iteration_headroom`, the receipt paragraph against
 `coordinator._write_round_receipt` and `evaluate_round_quality`'s probe

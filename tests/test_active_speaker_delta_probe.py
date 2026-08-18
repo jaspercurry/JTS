@@ -2064,6 +2064,40 @@ def test_an_unanchored_map_makes_no_directional_finding_at_all():
     )
 
 
+def test_the_two_amounts_are_measured_against_their_OWN_references():
+    """A NON-zero anchor, which is what makes this test able to fail.
+
+    ``realized_excess_db`` is the anchored amount and ``max_signed_error_db``
+    the unanchored one, and every other fixture in this file anchors at 0.0 —
+    where ``safety_excess == model_excess`` numerically, so feeding the anchored
+    field from the unanchored curve is invisible. It was invisible: the exact
+    pre-D1 mispairing survived a mutation across 1,175 tests with zero failures,
+    because no assertion of that field ever ran against a non-zero anchor.
+
+    Here the anchor is −2.0 dB, so the two amounts MUST differ by exactly that,
+    and the assertion pins the anchored one.
+    """
+    commanded = _commanded_lift()
+    probe = _entry_anchored(
+        commanded, realized=commanded + 5.0, band=_band(), anchor_db=-2.0,
+    )
+
+    assert probe.safety_anchored is True
+    # (measured_post − measured_pre) − commanded == 5.0 − (−2.0)
+    assert probe.realized_excess_db == pytest.approx(7.0, abs=1e-6)
+    # (measured_post − predicted) — the model's departure, unanchored.
+    assert probe.max_signed_error_db == pytest.approx(5.0, abs=1e-6)
+    assert probe.realized_excess_db != pytest.approx(probe.max_signed_error_db)
+    assert (
+        probe.realized_excess_db - probe.max_signed_error_db
+        == pytest.approx(2.0, abs=1e-6)
+    )
+    # ...and the same separation on the wire, where a receipt reader meets it.
+    direction = probe.to_dict()["direction"]
+    assert direction["realized_excess_db"] == pytest.approx(7.0, abs=1e-6)
+    assert direction["max_signed_error_db"] == pytest.approx(5.0, abs=1e-6)
+
+
 def test_a_state_axis_map_refuses_an_anchor_rather_than_mixing_frames():
     """``state_axis_only`` ENFORCES its no-anchor contract (series-2 D1).
 

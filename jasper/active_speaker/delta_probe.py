@@ -2043,6 +2043,12 @@ def classify_delta_probe(
     # that does gets the contract rather than the mixture. A separate name
     # rather than clearing ``entry``, which the residual above already used and
     # whose meaning there is unaffected.
+    #
+    # A CONTRACT guard with zero live blast radius, stated so nobody reads it as
+    # a hole that was closed: the one production caller
+    # (``crossover_v2_flow._run_delta_probe``) passes no anchor on that branch
+    # and never has. This makes the invariant unbreakable by the next caller
+    # rather than fixing a reachable defect.
     safety_anchor = None if state_axis_only else entry
     safety_excess = (
         model_excess if safety_anchor is None else model_excess - safety_anchor
