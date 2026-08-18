@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import threading
 from dataclasses import replace
 from pathlib import Path
@@ -48,7 +49,7 @@ class _Controller:
         return raw
 
 
-def test_commit_failure_restores_prior_graph_inside_transaction(
+def test_commit_failure_keeps_proved_parked_graph_inside_transaction(
     tmp_path: Path,
 ) -> None:
     topology = _topology([])
@@ -61,7 +62,7 @@ def test_commit_failure_restores_prior_graph_inside_transaction(
             controller_factory=lambda: controller,
         )
 
-    assert controller.path_sets == ["/tmp/prior.yml"]
+    assert controller.path_sets == []
     assert len(controller.raw_sets) == 1
 
 
@@ -92,23 +93,80 @@ def test_committed_unconfigured_topology_persists_parked_path_through_camilla(
     assert controller.raw_sets  # temporary park happened before final path load
 
 
-def test_commit_and_restore_failure_is_reported_honestly(tmp_path: Path) -> None:
+def test_transaction_resolves_persisted_coupling_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from jasper.fanin import coupling_reconcile
+
     topology = _topology([])
     controller = _Controller(tmp_path / "graph.lock")
+    coupling_reads: list[str] = []
+    selected_couplings: list[str | None] = []
+    real_select = runtime_convergence.safe_graph_for_current_topology
 
-    async def reject_path(_path, *, best_effort=False):
-        return False
+    def read_coupling() -> str:
+        coupling_reads.append("read")
+        return "shm_ring"
 
-    controller.set_config_file_path = reject_path
-    with pytest.raises(
-        runtime_convergence.TopologyCommitRestoreError,
-        match="could not be restored",
-    ):
+    def capture_coupling(*args, **kwargs):
+        selected_couplings.append(kwargs.get("coupling"))
+        return real_select(*args, **kwargs)
+
+    monkeypatch.setattr(coupling_reconcile, "read_persisted_coupling", read_coupling)
+    monkeypatch.setattr(
+        runtime_convergence, "safe_graph_for_current_topology", capture_coupling
+    )
+    monkeypatch.setattr(
+        runtime_convergence,
+        "materialise_safe_graph_decision",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = runtime_convergence.park_and_commit_topology(
+        topology,
+        lambda: topology,
+        controller_factory=lambda: controller,
+    )
+
+    assert result.convergence.ok is True
+    assert coupling_reads == ["read"]
+    assert selected_couplings == ["shm_ring"]
+
+
+def test_post_publication_fsync_failure_does_not_restore_old_graph(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from jasper.output_topology import load_output_topology, save_output_topology
+
+    topology_path = tmp_path / "output_topology.json"
+    old_topology = replace(_topology([]), name="Old layout")
+    new_topology = replace(_topology([]), name="New layout")
+    save_output_topology(old_topology, topology_path)
+    controller = _Controller(tmp_path / "graph.lock")
+    fsync_calls = 0
+
+    def fail_directory_fsync(_fd: int) -> None:
+        nonlocal fsync_calls
+        fsync_calls += 1
+        if fsync_calls == 2:
+            raise OSError("simulated directory fsync failure")
+
+    def commit():
+        save_output_topology(new_topology, topology_path)
+        return new_topology
+
+    monkeypatch.setattr(os, "fsync", fail_directory_fsync)
+    with pytest.raises(OSError, match="simulated directory fsync failure"):
         runtime_convergence.park_and_commit_topology(
-            topology,
-            lambda: (_ for _ in ()).throw(ValueError("commit failed")),
+            old_topology,
+            commit,
             controller_factory=lambda: controller,
         )
+
+    assert load_output_topology(topology_path) == new_topology
+    assert controller.path_sets == []
+    assert len(controller.raw_sets) == 1
 
 
 def test_graph_writer_cannot_enter_between_park_and_commit(

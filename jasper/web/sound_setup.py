@@ -761,12 +761,7 @@ def _active_speaker_channel_identity_save_payload(
         % (report.get("verified_channel_count"), report.get("assigned_channel_count")),
         blockers=len(evaluation.get("blockers") or []),
     )
-    return {
-        "output_topology": updated.to_dict(include_evaluation=True),
-        "output_hardware": _output_hardware_dict(),
-        "channel_identity": report,
-        "clock_domain": clock_domain_report(updated),
-    }
+    return _output_topology_payload()
 
 
 def _active_speaker_channel_protection_save_payload(
@@ -809,12 +804,7 @@ def _active_speaker_channel_protection_save_payload(
         status=str(report.get("status")),
         blockers=len(evaluation.get("blockers") or []),
     )
-    return {
-        "output_topology": updated.to_dict(include_evaluation=True),
-        "output_hardware": _output_hardware_dict(),
-        "channel_identity": report,
-        "clock_domain": clock_domain_report(updated),
-    }
+    return _output_topology_payload()
 
 
 def _log_live_draft_unavailable(
@@ -4135,14 +4125,7 @@ async def _active_speaker_commission_ramp_ack_payload(
                 )
                 mutation.save(topology_for_measurement)
             identity_promoted = True
-            payload["output_topology"] = topology_for_measurement.to_dict(
-                include_evaluation=True
-            )
-            payload["output_hardware"] = _output_hardware_dict()
-            payload["channel_identity"] = channel_identity_report(
-                topology_for_measurement
-            )
-            payload["clock_domain"] = clock_domain_report(topology_for_measurement)
+            payload.update(_output_topology_payload())
         except (OSError, ValueError) as exc:
             payload["status"] = "failed"
             payload["reason"] = "driver_target_identity_save_failed"

@@ -6881,6 +6881,58 @@ async function testCommissionAutoRampLoopResetsRunningFlagOnRenderThrow() {
   return { commissionAutoRampLoopResetsRunningFlagOnRenderThrow: true };
 }
 
+async function testConfirmedOutputKeepsResetPreconditions() {
+  const initialTopology = activeTwoWayTopologyPayload();
+  initialTopology.speaker_groups[0].channels[0].identity_verified = false;
+  const confirmedTopology = JSON.parse(JSON.stringify(initialTopology));
+  confirmedTopology.speaker_groups[0].channels[0].identity_verified = true;
+  const resetPosts = [];
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response({
+      output_topology: initialTopology,
+      topology_revision: "sha256:loaded",
+      hardware_adoption: { allowed: true, identity: "sha256:hardware-loaded" },
+    })),
+    "./active-speaker/channel-identity": (_path, options = {}) =>
+      Promise.resolve(response({
+        output_topology: confirmedTopology,
+        topology_revision: "sha256:confirmed",
+        hardware_adoption: { allowed: true, identity: "sha256:hardware-confirmed" },
+      })),
+    "./output-topology/reset": (_path, options = {}) => {
+      resetPosts.push(JSON.parse(options.body || "{}"));
+      return Promise.resolve(response({
+        output_topology: emptyTopologyPayload(),
+        topology_revision: "sha256:reset",
+        hardware_adoption: { allowed: true, identity: "sha256:hardware-confirmed" },
+        reset: { status: "reset", message: "Speaker setup was reset." },
+      }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+  globalThis.__jtsConfirm = async () => true;
+
+  harness.dispatchClick({
+    "data-act": "mark-output-identity",
+    "data-group-id": "main",
+    "data-role": "woofer",
+    "data-verified": "true",
+    "data-label": "Main speaker woofer on DAC output 1",
+  });
+  await harness.flush(); await harness.flush(); await harness.flush();
+
+  harness.dispatchClick({ "data-act": "reset-output-topology" });
+  await harness.flush(); await harness.flush(); await harness.flush();
+
+  if (resetPosts.length !== 1 ||
+      resetPosts[0].topology_revision !== "sha256:confirmed" ||
+      resetPosts[0].detected_hardware_identity !== "sha256:hardware-confirmed") {
+    fail("confirming an output must retain fresh reset preconditions", { resetPosts });
+  }
+  return { confirmedOutputKeepsResetPreconditions: true };
+}
+
 async function testResetPartialCleanupSurfacesWarning() {
   const posts = [];
   const fetchHandler = baseFetch({
@@ -7935,6 +7987,7 @@ results.push(await testCommissionToneFailureStopsAutoRamp());
 results.push(await testCommissionRampLimitKeepsConfirmationOpen());
 results.push(await testCommissionAutoRampResetsRunningFlagOnThrow());
 results.push(await testCommissionAutoRampLoopResetsRunningFlagOnRenderThrow());
+results.push(await testConfirmedOutputKeepsResetPreconditions());
 results.push(await testResetPartialCleanupSurfacesWarning());
 results.push(await testFailedResetPreservesCommissioningPanels());
 results.push(await testSavedTopologyReconcileFailureNeedsAttention());

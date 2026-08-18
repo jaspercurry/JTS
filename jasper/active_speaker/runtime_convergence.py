@@ -56,10 +56,6 @@ class TopologyRuntimeMutationResult:
     convergence: RuntimeConvergenceResult
 
 
-class TopologyCommitRestoreError(RuntimeError):
-    """A topology commit failed after park and the prior graph did not restore."""
-
-
 def _controller(controller_factory: Callable[[], Any] | None) -> Any:
     if controller_factory is None:
         from jasper.camilla import primary_controller
@@ -99,18 +95,6 @@ async def _park_locked(
             else "CamillaDSP unreachable or rejected the proved parked graph"
         ),
     )
-
-
-async def _restore_prior_config(controller: Any, prior_path: str | None) -> str | None:
-    if not prior_path:
-        return "CamillaDSP did not report a prior config path"
-    try:
-        restored = bool(
-            await controller.set_config_file_path(prior_path, best_effort=True)
-        )
-    except (OSError, RuntimeError, ValueError, TypeError, AttributeError) as exc:
-        return f"{type(exc).__name__}: {exc}"
-    return None if restored else "CamillaDSP rejected the prior config path"
 
 
 def compose_selected_flat_graph(
@@ -263,6 +247,7 @@ async def _park_and_commit_topology(
         CANONICAL_DSP_WRITER_LOCK_PATH,
         camilla_graph_mutation,
     )
+    from jasper.fanin.coupling_reconcile import read_persisted_coupling
 
     controller = _controller(controller_factory)
     lock_path = getattr(
@@ -272,6 +257,9 @@ async def _park_and_commit_topology(
         source="output_topology.replace",
         lock_path=lock_path,
     ):
+        resolved_coupling = (
+            coupling if coupling is not None else read_persisted_coupling()
+        )
         try:
             prior_path = await controller.get_config_file_path(best_effort=True)
         except (OSError, RuntimeError, ValueError, TypeError, AttributeError):
@@ -281,23 +269,18 @@ async def _park_and_commit_topology(
             raise RuntimeError(
                 parked.error or "could not safely park audio before changing topology"
             )
-        try:
-            committed = commit()
-        except Exception as exc:  # noqa: BLE001 - every commit failure needs rollback
-            restore_error = await _restore_prior_config(controller, prior_path)
-            if restore_error is not None:
-                raise TopologyCommitRestoreError(
-                    "topology commit failed after audio was parked and the prior "
-                    f"graph could not be restored: {restore_error}"
-                ) from exc
-            raise
+        # A durable atomic write can raise while syncing the parent directory
+        # after the new topology has already replaced the old file. The
+        # publication outcome is then unknown, so the only safe response is to
+        # keep the proved all-muted graph and propagate the commit error.
+        committed = commit()
         convergence = await _converge_committed_topology(
             committed,
             controller=controller,
             prior_config_path=prior_path,
             profile_path=profile_path,
             config_dir=config_dir,
-            coupling=coupling,
+            coupling=resolved_coupling,
         )
         return TopologyRuntimeMutationResult(
             parked=parked,
@@ -307,7 +290,6 @@ async def _park_and_commit_topology(
 
 __all__ = [
     "RuntimeConvergenceResult",
-    "TopologyCommitRestoreError",
     "TopologyRuntimeMutationResult",
     "compose_selected_flat_graph",
     "park_and_commit_topology",

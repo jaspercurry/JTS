@@ -4201,6 +4201,8 @@ def test_sound_channel_identity_route_marks_saved_topology_only(
     assert payload["channel_identity"]["verified_channel_count"] == 1
     assert payload["clock_domain"]["multi_device_aggregate_supported"] is False
     assert payload["output_topology"]["status"] == "verified"
+    assert payload["topology_revision"].startswith("sha256:")
+    assert payload["hardware_adoption"]["identity"].startswith("sha256:")
     assert saved["speaker_groups"][0]["channels"][0]["identity_verified"] is True
 
     payload = sound_setup._active_speaker_channel_identity_save_payload({
@@ -4321,6 +4323,8 @@ async def test_commission_ack_can_promote_output_identity_before_driver_proof(
     assert payload["output_topology"]["speaker_groups"][0]["channels"][0][
         "identity_verified"
     ] is True
+    assert payload["topology_revision"].startswith("sha256:")
+    assert payload["hardware_adoption"]["identity"].startswith("sha256:")
     assert saved["speaker_groups"][0]["channels"][0]["identity_verified"] is True
     assert recorded["woofer_identity"] is True
     assert recorded["raw"]["role"] == "woofer"
@@ -4471,6 +4475,8 @@ def test_sound_channel_protection_route_accepts_software_guard_request(
     tweeter = saved["speaker_groups"][0]["channels"][1]
 
     assert payload["output_topology"]["status"] == "valid"
+    assert payload["topology_revision"].startswith("sha256:")
+    assert payload["hardware_adoption"]["identity"].startswith("sha256:")
     assert tweeter["protection_status"] == "software_guard_requested"
     assert "tweeter_software_guard_requested" in {
         issue["code"] for issue in payload["output_topology"]["evaluation"]["warnings"]
@@ -5591,6 +5597,7 @@ def test_sound_module_replays_latest_tab_intent_after_apply_finishes():
     # Distributed-active Slice 4: the module boots in follower mode (tabs + plot
     # absent) and renders the local driver/crossover UI without fetching /state.
     assert {"followerModeRendersLocalDriverUi": True} in out["results"]
+    assert {"confirmedOutputKeepsResetPreconditions": True} in out["results"]
     assert {"resetPartialCleanupSurfacesWarning": True} in out["results"]
     assert {
         "driverResearchImportPreservesOperatorInstalledConfiguration": True
