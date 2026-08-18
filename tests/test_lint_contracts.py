@@ -516,9 +516,20 @@ MAX_LINES_BY_PATH = {
     # what costs the lines. Paying them here, in the diff that earned them, is
     # the guard working; compressing the reason out to keep a number flat would
     # be gaming it.
+    #
+    # 2026-08-18 (series-2 D1): `crossover_envelope_v2` 4,096 -> 4,103. Zero
+    # executable lines. One household sentence changed from a claim that had
+    # become FALSE -- "This check could compare loudness but not the
+    # correction's shape this round", on a path that since D1 compares neither
+    # -- and seven lines saying why the old wording was not merely stale but
+    # was the incident's own confusion reaching a household screen: what that
+    # copy called a loudness comparison was a comparison against the model.
+    # This file's job is household copy, so the argument for a sentence belongs
+    # beside it; and a caveat that overstates what was checked is the one kind
+    # of copy defect this screen cannot afford.
     "jasper/active_speaker/crossover_v2_flow.py": 12_720,
     "jasper/web/correction_crossover_v2.py": 9_282,
-    "jasper/active_speaker/crossover_envelope_v2.py": 4_096,
+    "jasper/active_speaker/crossover_envelope_v2.py": 4_103,
     # 2026-08-18 (D7, series-2 diagnosis): +82 net on `program_analysis.py`
     # (95 added, 13 removed), counted rather than estimated —
     #   40  the argument written next to `GLITCH_RESIDUAL_SAMPLES`

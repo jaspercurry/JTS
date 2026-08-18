@@ -1685,13 +1685,23 @@ def _gate_residuals(conductor) -> tuple[float, float]:
     )
 
 
-def _probed_conductor(fakes: FakeSeams, *, rollback=None):
+def _probed_conductor(fakes: FakeSeams, *, rollback=None, entry_error_db=0.0):
     """A conductor walked to the point where VERIFY is the next capture.
 
     Uses the ELIGIBLE measure fixture because a probe needs something to have
     been commanded: an ineligible session emits no linearization filters, so
     relative to the raw crossover it commands nothing this probe can grade
     (pinned by ``test_the_commanded_delta_is_none_for_a_trims_only_candidate``).
+
+    **The pre-apply anchor is STATED, not inherited** — ``entry_error_db``, the
+    model-vs-measurement disagreement this session went in with, defaulting to
+    the exactly-anchored 0.0. #2533 made the residual a change measured against
+    that capture and three tests started saying so by hand; series-2 D1 made the
+    two directional safety findings a change against it too, per bin, so every
+    probe fixture needs it. Without it the walk's entry capture is an unrelated
+    synthetic response and its anchor is a −4.5 dB phantom that no test intends
+    and none states — which is a fixture measuring itself. Pass a value (or a
+    callable of frequency) to state a different one deliberately.
     """
     fakes.rollback = rollback
     fakes.measure = lambda program: _eligible_measure_analysis(program)
@@ -1699,6 +1709,7 @@ def _probed_conductor(fakes: FakeSeams, *, rollback=None):
     _run_phase(c, 1, 1)
     _run_phase(c, 2, 2)
     c.note_apply_complete()
+    _anchor_entry_baseline(c, entry_error_db)
     return c
 
 
