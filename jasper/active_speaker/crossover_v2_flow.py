@@ -29,7 +29,7 @@ per-driver distributed transaction with this shape: the Pi compiles one
 excitation program per phase, plays it as one continuous stream, and analyzes
 ``(program, capture) → analysis`` as a pure function. The session owns the
 phase state machine that drives the relay session. At the shipped defaults a
-FULL-tier commission is 9 captures (3 in stage 1, then 6) and an express one
+FULL-tier commission is 8 captures (3 in stage 1, then 5) and an express one
 is 4 (the same 3, then 1, ``TIER_EXPRESS``) — the tiers differ in stage 2
 only. :func:`tier_display_info` derives both from the plans themselves and is
 what the household-facing chooser reads; do not restate the numbers where a
@@ -88,7 +88,7 @@ issue #1806), each a heterogeneous ``CapturePlan``: **stage 1** is check /
 measure / #2291's entry baseline (3 entries at either tier — the pre-apply
 position group is off, and so is the lateral walk that ran between them until
 the 2026-08-18 pause), and **stage 2** is verify / the post-apply position
-group (6 at Full, 1 on express, which omits the group entirely). See
+group (5 at Full, 1 on express, which omits the group entirely). See
 "position-group choreography" below. **Nothing is applied inside a session** —
 stage 1 ends on the household's explicit set-completion signal, which closes
 the group and publishes a candidate they then review and choose to apply on
@@ -421,7 +421,18 @@ MAX_CLOUD_MEASURE_POSITIONS = 11
 # pre-apply cloud on purpose: the post-apply pass grades a correction the
 # pre-apply cloud already constrained, and it is paid at the END of a long
 # session where operator patience is the binding resource.
-DEFAULT_CLOUD_VERIFY_POSITIONS = 6
+#
+# It sits AT :data:`MIN_CLOUD_VERIFY_POSITIONS` (owner ruling, 2026-08-18), so
+# the shipped walk is exactly the shape the floor already validates — the anchor
+# plus four prompted lateral moves, both wide offsets included — and it is the
+# walk the remote tier has always taken
+# (:func:`remote_cloud_verify_positions` derives the same 5). What it gives up
+# is the fifth pose, ``12 cm ABOVE``: the journey's only above/below-mark-height
+# sample, since the lateral walk excludes ``POSITION_ROLE_XOVR`` by
+# construction. No claim reads that axis on its own — the group is combined into
+# ONE curve and graded as a spatial average, and the tier's promise ("re-check
+# the result at several spots around the mark") is about spread, not height.
+DEFAULT_CLOUD_VERIFY_POSITIONS = 5
 # The floor a caller may configure for the POST-apply group. It exists for the
 # same reason ``MIN_CLOUD_MEASURE_POSITIONS`` does and is enforced the same way:
 # both groups walk ``CLOUD_POSITION_PROMPTS`` from the front, so a group that
@@ -470,7 +481,8 @@ ATTEMPT_INITIATOR_SPEAKER = _admission.ATTEMPT_INITIATOR_SPEAKER
 # (6 / 5): those are PLAN-DECLARATION floors — how many positions the household
 # is asked to walk — enforced once by ``_validated_cloud_counts`` before any
 # capture happens. Reusing them at runtime would have killed the 2026-08-03
-# verify, which was running usefully at 4-of-6 when it died. Between this floor
+# verify, which was running usefully at 4 positions of the 6 that tier declared
+# then. Between this floor
 # and the declared one the claim is degraded, and degradation is DISCLOSED (the
 # geometry verdict's ``n_positions`` / ``thin_evidence`` already ride the
 # envelope), not gated.
@@ -1201,13 +1213,17 @@ def remote_cloud_verify_positions() -> int:
 
 
 # What a remote session states about the axis its positioner cannot reach.
-# ONE sentence, disclosed once per session (never a block): the walk really did
-# sample less than Full's, and a consumer that reads a remote group's roles
-# finds no ``xovr`` member — the honest reading is "unsampled", not "flat".
+# ONE sentence, disclosed once per session (never a block): a consumer that
+# reads this group's roles finds no ``xovr`` member — the honest reading is
+# "unsampled", not "flat".
+#
+# It used to add "the vertical spot Full measures was not sampled this time";
+# that clause went on 2026-08-18 when :data:`DEFAULT_CLOUD_VERIFY_POSITIONS`
+# came down to the floor and Full's walk became the same vertical-free prefix.
+# The rest is unchanged and still owed: it states a fact about THIS walk.
 REMOTE_VERTICAL_DISCLOSURE = (
     "Measured on the horizontal axis only — a remote positioner cannot raise "
-    "or lower the microphone, so the vertical spot Full measures was not "
-    "sampled this time."
+    "or lower the microphone, so no vertical spot was sampled."
 )
 
 
@@ -1242,8 +1258,9 @@ class V2PlanShape:
     @property
     def verify_capture_target(self) -> int:
         """Accepted captures STAGE 2 runs (``M``) — VERIFY's anchor plus
-        ``M − 1`` prompted post-apply positions. 6 at Full, 1 for express
-        (whose whole post-apply check is the anchor at the mark).
+        ``M − 1`` prompted post-apply positions. 5 at Full
+        (:data:`DEFAULT_CLOUD_VERIFY_POSITIONS`), 1 for express (whose whole
+        post-apply check is the anchor at the mark).
         """
         return self.cloud_verify_positions
 
@@ -1830,6 +1847,28 @@ def build_v2_cloud_index_phase_map(
     return mapping
 
 
+def announced_capture_indexes(index_phase: Mapping[int, str]) -> tuple[int, ...]:
+    """The 1-based captures of this plan that play the courtesy prelude.
+
+    The consent screen tells the household what it will hear, and since the
+    prelude announces a SESSION rather than a capture
+    (:func:`~jasper.active_speaker.crossover_v2.programs.courtesy_prelude_for_phase`)
+    "what it will hear" is no longer the same sentence for every measurement.
+    Stage 1 announces its FIRST (CHECK) and its LAST (the entry baseline, which
+    plays stage 2's anchor object); stage 2's walk announces its first alone.
+
+    Derived from the SAME ``index -> phase`` map the plan's own entries are
+    built from, so the sentence and the schedule cannot describe different
+    sessions — the reason that map exists at all. Reading the plan's
+    ``kind_label``s instead would work only because those strings happen to
+    spell the phases, which is a coincidence, not a contract.
+    """
+    return tuple(
+        index for index, phase in sorted(index_phase.items())
+        if courtesy_prelude_for_phase(phase)
+    )
+
+
 def build_v2_verify_index_phase_map(
     *,
     plan_shape: V2PlanShape | None = None,
@@ -1845,7 +1884,7 @@ def build_v2_verify_index_phase_map(
     ``{1: PHASE_VERIFY}``, byte-identical to what ``prepare_v2_verify``
     hardcoded before the split. A shape supplies the tier's own post-apply walk
     (work order D2, owner-confirmed 2026-07-29): express is ``M = 1`` and so
-    resolves to the same single-entry map; Full is the six-position spatial
+    resolves to the same single-entry map; Full is the multi-position spatial
     walk whose combined curve the after-chart, the post-apply spec verdict, and
     the delta probe all read.
     """
@@ -2221,11 +2260,11 @@ VERIFY_REPEAT_FLOOR_DB = 0.2
 VERIFY_TERMINAL_OUTCOME_DETERMINISTIC = "verify_result_is_deterministic"
 
 # Re-exported from :mod:`jasper.active_speaker.crossover_v2.programs`, which
-# owns it and states why it has no switch and why both the phone's duration
-# budget and the actual playback must read the SAME constant (#2291 Phase
-# 5a-ii). The two capture-plan builders in this module are the other pair of
-# readers.
-COURTESY_PRELUDE_ENABLED = _programs.COURTESY_PRELUDE_ENABLED
+# owns it and states why it has no switch, why the prelude announces a SESSION
+# rather than a capture, and why both the phone's duration budget and the actual
+# playback must read the SAME rule (#2291 Phase 5a-ii). The two capture-plan
+# builders in this module are the other pair of readers.
+courtesy_prelude_for_phase = _programs.courtesy_prelude_for_phase
 
 
 class CrossoverV2FlowError(RuntimeError):
@@ -2877,7 +2916,7 @@ class AnalyzeCapture(Protocol):
 
     ``phase`` is REQUIRED and keyword-only: the SESSION's own flow phase
     (issue #1855) — NOT ``program.phase``. The two are different
-    vocabularies: every cloud position plays ``self._verify_program`` (see
+    vocabularies: every cloud position plays ``self._cloud_program`` (see
     ``program_for_phase``), so ``program.phase`` is always "verify" for
     PHASE_VERIFY, PHASE_CLOUD_MEASURE, and PHASE_CLOUD_VERIFY alike. A seam
     that derives a retained capture's label from ``program.phase`` mislabels
@@ -5288,6 +5327,11 @@ class CrossoverV2Session:
             else None
         )
         self._verify_program = self._excitation.verify_program()
+        # The prompted position groups' twin of it: same sweep, same clamp, no
+        # courtesy prelude (``crossover_v2.programs.courtesy_prelude_for_phase``
+        # — a position does not open a session). Held for the same reason as the
+        # other three: ``program_for_phase`` answers by identity.
+        self._cloud_program = self._excitation.cloud_program()
 
         # Per-SLOT attempt bookkeeping + the last failure reason. A slot is the
         # phase for a single-capture phase and the ``phase:index`` pair inside a
@@ -6803,6 +6847,7 @@ class CrossoverV2Session:
                 check=self._check_program,
                 measure=self._measure_program,
                 verify=self._verify_program,
+                cloud=self._cloud_program,
             )
         except _programs.NoProgramForPhaseError as exc:
             # The flow's own error type is what every caller (and the relay
@@ -6832,7 +6877,7 @@ class CrossoverV2Session:
         # rides along so the parallax correction reaches the analysis.
         # ``phase=phase`` (issue #1855): the flow's OWN phase, threaded
         # explicitly because ``program.phase`` is not a reliable stand-in —
-        # every cloud position plays ``self._verify_program`` and so always
+        # every cloud position plays ``self._cloud_program`` and so always
         # carries ``program.phase == "verify"`` (see ``program_for_phase``).
         analysis = self._seams.analyze(
             program, result, priors, self._geometry, phase=phase,
@@ -11781,29 +11826,41 @@ def build_v2_capture_plan(
     from jasper.capture_relay.spec import CapturePlan, CapturePlanEntry
 
     roles = tuple(roles_bands)
-    # courtesy_prelude=COURTESY_PRELUDE_ENABLED on every composed program below
+    # Every program below asks ``courtesy_prelude_for_phase`` for its OWN phase
     # (issue #1677): this is the phone's DURATION BUDGET, so it must agree with
     # what the session actually plays — ``crossover_v2.programs``'s
-    # ``SessionExcitation`` composers — or the phone stops recording before the
-    # real (prelude-lengthened) program ends.
-    check = build_check_program(roles, courtesy_prelude=COURTESY_PRELUDE_ENABLED)
+    # ``SessionExcitation`` composers, which ask the same function — or the
+    # phone stops recording before the real (prelude-lengthened) program ends.
+    check = build_check_program(
+        roles, courtesy_prelude=courtesy_prelude_for_phase(PHASE_CHECK),
+    )
     nominal_gains = {rb.role: BASE_STIMULUS_PEAK_DBFS for rb in roles}
+    # MEASURE's own entry and every lateral pose, which replays it verbatim.
     measure = build_measure_program(
         nominal_gains, roles,
         leading_pilot_gains_db=(
             BASE_STIMULUS_PEAK_DBFS - PILOT_LEVEL_DELTA_DB, BASE_STIMULUS_PEAK_DBFS
         ),
-        courtesy_prelude=COURTESY_PRELUDE_ENABLED,
+        courtesy_prelude=courtesy_prelude_for_phase(PHASE_MEASURE),
     )
-    # Every prompted cloud position plays the VERIFY-shaped summed sweep, so
-    # its DURATION is the verify program's even though stage 1 runs no VERIFY
-    # phase of its own.
+    # The entry baseline plays the VERIFY-shaped summed sweep, so its DURATION
+    # is the verify program's even though stage 1 runs no VERIFY phase of its
+    # own — and it is the ANNOUNCED one, because its program object is stage 2's
+    # anchor (``program_for_phase``'s compared pair).
     verify = build_verify_program(
         fc_hz,
         leading_pilot_gains_db=(
             BASE_STIMULUS_PEAK_DBFS - PILOT_LEVEL_DELTA_DB, BASE_STIMULUS_PEAK_DBFS
         ),
-        courtesy_prelude=COURTESY_PRELUDE_ENABLED,
+        courtesy_prelude=courtesy_prelude_for_phase(PHASE_ENTRY_BASELINE),
+    )
+    # A prompted position's twin of it: same sweep, no prelude.
+    cloud = build_verify_program(
+        fc_hz,
+        leading_pilot_gains_db=(
+            BASE_STIMULUS_PEAK_DBFS - PILOT_LEVEL_DELTA_DB, BASE_STIMULUS_PEAK_DBFS
+        ),
+        courtesy_prelude=courtesy_prelude_for_phase(PHASE_CLOUD_MEASURE),
     )
     shape = _shape_from_kwargs(
         plan_shape,
@@ -11819,6 +11876,7 @@ def build_v2_capture_plan(
     )
     target = len(index_phase)
     verify_ms = _program_duration_ms(verify) + CAPTURE_ENTRY_MARGIN_MS
+    cloud_ms = _program_duration_ms(cloud) + CAPTURE_ENTRY_MARGIN_MS
     measure_ms = _program_duration_ms(measure) + CAPTURE_ENTRY_MARGIN_MS
     # One policy for every entry of this plan, from the shape (§5.2). The FIRST
     # entry's value is inert either way — the page starts round 1 from the
@@ -11941,7 +11999,7 @@ def build_v2_capture_plan(
             CapturePlanEntry(
                 index=capture_index - 1,
                 kind_label="cloud_measure",
-                duration_ms=verify_ms,
+                duration_ms=cloud_ms,
                 screen=_cloud_entry_screen(
                     progress=capture_progress_label(capture_index, target),
                     title=prompt.headline,
@@ -12026,8 +12084,9 @@ def build_v2_verify_capture_plan(
     anchor at the mark plus ``M − 1`` prompted post-apply positions — so each
     tier keeps its shipped verify shape. Express is ``M = 1`` (its whole
     post-apply check is the anchor, and it makes no cross-position claim);
-    Full is the six-position spatial walk whose combined curve the after-chart,
-    the post-apply spec verdict, and the delta probe all read. Running Full's
+    Full is the multi-position spatial walk whose combined curve the
+    after-chart, the post-apply spec verdict, and the delta probe all read.
+    Running Full's
     stage 2 as a single position would leave its post-apply group with 0 curves
     and no combine at all, and would make ``_TIER_CLAIMS``' "re-check the
     result at several spots around the mark" untrue.
@@ -12040,14 +12099,26 @@ def build_v2_verify_capture_plan(
     """
     from jasper.capture_relay.spec import CapturePlan, CapturePlanEntry
 
+    # The anchor is stage 2's OPENING capture, so it is announced; the prompted
+    # positions behind it are not (``courtesy_prelude_for_phase``). Two nominal
+    # programs because the phone budgets each entry from the program that entry
+    # will actually record.
     verify = build_verify_program(
         fc_hz,
         leading_pilot_gains_db=(
             BASE_STIMULUS_PEAK_DBFS - PILOT_LEVEL_DELTA_DB, BASE_STIMULUS_PEAK_DBFS
         ),
-        courtesy_prelude=COURTESY_PRELUDE_ENABLED,
+        courtesy_prelude=courtesy_prelude_for_phase(PHASE_VERIFY),
+    )
+    cloud = build_verify_program(
+        fc_hz,
+        leading_pilot_gains_db=(
+            BASE_STIMULUS_PEAK_DBFS - PILOT_LEVEL_DELTA_DB, BASE_STIMULUS_PEAK_DBFS
+        ),
+        courtesy_prelude=courtesy_prelude_for_phase(PHASE_CLOUD_VERIFY),
     )
     verify_ms = _program_duration_ms(verify) + CAPTURE_ENTRY_MARGIN_MS
+    cloud_ms = _program_duration_ms(cloud) + CAPTURE_ENTRY_MARGIN_MS
     if plan_shape is None:
         entry = CapturePlanEntry(
             index=0,
@@ -12185,7 +12256,7 @@ def build_v2_verify_capture_plan(
             CapturePlanEntry(
                 index=capture_index - 1,
                 kind_label="cloud_verify",
-                duration_ms=verify_ms,
+                duration_ms=cloud_ms,
                 screen=screen,
             )
         )
@@ -12230,6 +12301,11 @@ def build_v2_verify_session_spec(
             # the same defect, and the group walks the same table.
             "walk_shape": cloud_walk_shape(
                 plan.capture_target, post_apply=True
+            ),
+            # Stage 2 announces its anchor and nothing behind it — same
+            # derivation as stage 1's, off the same index -> phase map.
+            "announced_captures": announced_capture_indexes(
+                build_v2_verify_index_phase_map(plan_shape=plan_shape)
             ),
         }
         if walked
@@ -12521,6 +12597,21 @@ def build_v2_session_spec(
         # the count is every capture the household is prompted through, which
         # is the plan's own target.
         guided_captures=plan.capture_target if walked else 0,
+        # …and WHICH of those announce themselves, so the consent screen
+        # states what this session plays rather than a shape that was true
+        # when every capture announced.
+        announced_captures=(
+            announced_capture_indexes(
+                build_v2_cloud_index_phase_map(
+                    plan_shape=shape,
+                    include_cloud_measure=include_cloud_measure,
+                    include_lateral=include_lateral,
+                    include_entry_baseline=include_entry_baseline,
+                )
+            )
+            if walked
+            else ()
+        ),
         # …and which INSTRUMENT that walk is, so the announcement screen can
         # say "quick tune" vs "full measurement" without the spec builder
         # re-deriving a shape it does not own (§1.4 / §2.3).

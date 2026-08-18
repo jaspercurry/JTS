@@ -1624,9 +1624,10 @@ def test_full_cloud_session_with_a_mid_cloud_retake_through_the_real_runner():
     spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
     # RE-DERIVED (work order D1): stage 1 is 10 captures, not the 16 of the
     # single session it replaced; ``cloud_capture_target()`` still names the
-    # whole journey.
+    # whole journey, now 15 (2026-08-18: the post-apply walk came down to its
+    # floor of 5).
     assert spec.capture_plan.capture_target == 10
-    assert cloud_capture_target() == 16
+    assert cloud_capture_target() == 15
     assert spec.capture_plan.max_attempts > LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS
 
     requests: list = []
@@ -3966,7 +3967,7 @@ def test_the_verify_endpoint_opens_the_tier_matched_stage_2_or_the_recovery():
         resolve_plan_shape,
     )
 
-    for tier, expected in ((TIER_FULL, 6), (TIER_EXPRESS, 1)):
+    for tier, expected in ((TIER_FULL, 5), (TIER_EXPRESS, 1)):
         shape = v2host._verify_plan_shape({"stage": "post_apply"}, {"tier": tier})
         assert shape == resolve_plan_shape(tier)
         assert build_v2_verify_capture_plan(
@@ -10947,9 +10948,51 @@ def test_program_phase_schedule_reads_the_programs_own_segments():
     assert m_extras["ambient_started"]["duration_s"] == pytest.approx(
         PILOT_AMBIENT_WINDOW_S, abs=1e-6
     )
-    # …and this window is the OPPOSITE of CHECK's: it sits after the beeps and
-    # "MUST be measured with the room already quiet", so here the host DOES ask.
+    # …and this window is the OPPOSITE of CHECK's: it is the pre-pilot window
+    # and "MUST be measured with the room already quiet", so here the host
+    # DOES ask.
     assert m_extras["ambient_started"]["quiet_requested"] is True
+
+
+def test_the_quiet_request_survives_a_capture_that_plays_no_prelude():
+    """A mid-session capture asks for quiet even though nothing beeped at it.
+
+    The 2026-08-18 trim took the courtesy prelude off every capture but the one
+    that opens a session, and this flag used to be derived from "does this
+    window sit after the beeps?" — which would have answered "no beeps, do not
+    ask" on the twelve Full-journey captures whose 1 s window is exactly the one
+    that has to be quiet. The window feeds the pilot SNR guard; a household told
+    to carry on through it is a floor measured in the wrong room.
+    """
+    from jasper.audio_measurement.program import (
+        build_check_program,
+        build_measure_program,
+        build_verify_program,
+    )
+
+    roles = _ladder_roles()
+    for program in (
+        build_measure_program(
+            {rb.role: 0.0 for rb in roles}, roles,
+            leading_pilot_gains_db=(-10.0, 0.0), courtesy_prelude=False,
+        ),
+        build_verify_program(
+            FC_HZ, leading_pilot_gains_db=(-10.0, 0.0), courtesy_prelude=False,
+        ),
+    ):
+        ladder = v2host.program_phase_schedule(program)
+        assert "prelude_started" not in [phase for _o, phase, _x in ladder]
+        extras = {phase: extra for _o, phase, extra in ladder}
+        assert extras["ambient_started"]["quiet_requested"] is True, program.phase
+
+    # …and CHECK still answers the other way, prelude or no prelude: its window
+    # is the session's own room-noise measurement either way.
+    for prelude in (True, False):
+        ladder = v2host.program_phase_schedule(
+            build_check_program(roles, courtesy_prelude=prelude)
+        )
+        extras = {phase: extra for _o, phase, extra in ladder}
+        assert extras["ambient_started"]["quiet_requested"] is False, prelude
 
 
 def test_program_phase_schedule_is_empty_for_a_program_it_cannot_read():

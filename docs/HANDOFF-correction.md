@@ -57,8 +57,8 @@ never redirected.
   baseline → the household applies → VERIFY → the
   post-apply position group; the 6-pose lateral walk sat between MEASURE and
   the entry baseline until it was paused on 2026-08-18). At the shipped
-  defaults Full is 9 captures
-  (3 then 6) and Express is 4 (the same 3, then 1) — they differ in stage
+  defaults Full is 8 captures
+  (3 then 5) and Express is 4 (the same 3, then 1) — they differ in stage
   2 only, and `crossover_v2_flow.tier_display_info()` derives both, so read
   it rather than a number written down here (flow-simplification PR-U1,
   both tiers first-class in the wizard's tier chooser). Its canonical operational

@@ -259,8 +259,9 @@ def _session_program(session_dir: Path) -> tuple[Any, Any, int, float]:
     """
     from jasper.active_speaker.crossover_v2_flow import (
         BASE_STIMULUS_PEAK_DBFS,
-        COURTESY_PRELUDE_ENABLED,
+        PHASE_CLOUD_MEASURE,
         PILOT_LEVEL_DELTA_DB,
+        courtesy_prelude_for_phase,
     )
     from jasper.audio_measurement.program import build_verify_program
 
@@ -272,7 +273,12 @@ def _session_program(session_dir: Path) -> tuple[Any, Any, int, float]:
             BASE_STIMULUS_PEAK_DBFS - PILOT_LEVEL_DELTA_DB,
             BASE_STIMULUS_PEAK_DBFS,
         ),
-        courtesy_prelude=COURTESY_PRELUDE_ENABLED,
+        # The corpus is CLOUD POSITIONS, so it asks the shipped rule for that
+        # phase. Which answer comes back does not move a reading either way:
+        # ``sweep_anchor`` locates the sweep by cross-correlating the stimulus
+        # and ignores its declared schedule position entirely — pinned by
+        # ``test_sweep_anchor_owes_nothing_to_the_composers_schedule``.
+        courtesy_prelude=courtesy_prelude_for_phase(PHASE_CLOUD_MEASURE),
     )
     return (
         program,
@@ -327,14 +333,19 @@ def sweep_anchor(captured: np.ndarray, segment: Any) -> int:
     against, and under that old anchor the registration disagreed with the
     sweep-only one by 1-5 samples on 8 of the corpus's 26 captures.
 
-    **A later composer edit did shift it, which is the case this function
+    **Later composer edits did shift it, which is the case this function
     exists for.** #1816's beeps-first reorder (2026-07-28) inserted a 1.0 s
-    pre-pilot ``ambient`` window ahead of the pilots, so ``sweep_verify``
-    starts at 417324 under today's composer against 369324 in every archived
-    2026-07-24/25 capture — a genuine 48000-sample INSERTION, not a
-    permutation. A reader that registers on the archived program but takes
-    ``start_sample`` from a freshly composed one therefore deconvolves 1.0 s
-    late into a 6.0 s sweep. That is not hypothetical: it is what happened to
+    pre-pilot ``ambient`` window ahead of the pilots — a genuine
+    48000-sample INSERTION, not a permutation — and the 2026-08-18 prelude
+    trim then took the 172800-sample prelude back off this phase, because a
+    prompted position no longer opens a session
+    (``crossover_v2.programs.courtesy_prelude_for_phase``). That prelude length
+    is fixed and crossover-independent, so ``sweep_verify`` starts at
+    417324 − 172800 = **244524** under today's composer against 369324 in every
+    archived 2026-07-24/25 capture. A reader that registers on the archived program but takes
+    ``start_sample`` from a freshly composed one therefore deconvolves into the
+    wrong part of a 6.0 s sweep — 1.0 s late before the trim, 2.6 s early
+    after it. That is not hypothetical: it is what happened to
     ``test_spatial_combine``'s cdhorn loader, and issue #1879 is its trace.
     Anchoring here is immune by construction — the sweep is located by its own
     waveform, so where the composer puts it cannot matter.

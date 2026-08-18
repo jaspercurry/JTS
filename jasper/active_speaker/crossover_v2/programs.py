@@ -12,13 +12,13 @@ owner of their own and were answered from six places on
 * **How loud may a driver be driven?**  :func:`back_off_gain` — the one clamp
   that folds a per-driver digital gain through the session volume and holds it
   under that driver's cap.
-* **What does each phase play?**  The three composers below, which are what the
+* **What does each phase play?**  The four composers below, which are what the
   speaker actually plays.  They are not the flow's only callers of
   ``jasper.audio_measurement.program``'s builders: ``build_v2_capture_plan`` and
   ``build_v2_verify_capture_plan`` compose their own NOMINAL programs to derive
   the phone's recording window.  That second pair is the whole reason
-  :data:`COURTESY_PRELUDE_ENABLED` is one shared constant rather than a default
-  in each place — see its own note below.
+  :func:`courtesy_prelude_for_phase` is one shared rule rather than a decision
+  taken in each place — see its own note below.
 * **Which composed program does a phase get?**  :func:`program_for_phase`.
 
 **This module is hearing-safety territory, and its invariants are stated so
@@ -30,13 +30,25 @@ they can be checked rather than trusted:**
    with no play-time admission gate (see
    ``jasper.web.correction_crossover_v2.bind_production_play``), so nothing
    downstream will catch a gain this function gets wrong.
-2. Every member of :data:`SUMMED_SWEEP_PHASES` receives the **identical program
-   object**, not an equal one.  #2291's before→after benefit verdict is checked
-   by ``program_id`` equality, and that equality holds because
-   :func:`program_for_phase` hands both sides the same object.  A copy that
-   merely compared equal today would be a latent
-   :data:`~.verification.BENEFIT_PROGRAM_MISMATCH` the first time composition
-   picked up any per-call state.
+   :meth:`SessionExcitation.cloud_program` is the same sweep at the same clamp
+   — it composes THROUGH ``verify_program`` rather than beside it, so there is
+   one clamp and not two.
+2. The two phases whose captures are **compared** — :data:`PHASE_ENTRY_BASELINE`
+   and :data:`PHASE_VERIFY` — receive the **identical program object**, not an
+   equal one.  #2291's before→after benefit verdict is checked by ``program_id``
+   equality, and that equality holds because :func:`program_for_phase` hands
+   both sides the same object.  A copy that merely compared equal today would be
+   a latent :data:`~.verification.BENEFIT_PROGRAM_MISMATCH` the first time
+   composition picked up any per-call state.  The position groups
+   (:data:`GROUP_SUMMED_SWEEP_PHASES`) share one object with each other for the
+   same reason and differ from the compared pair in exactly one respect: they
+   carry no courtesy prelude (see :func:`courtesy_prelude_for_phase`).  Nothing
+   compares a position's ``program_id`` to anything — a cloud position's
+   retained record does not even carry the field
+   (``jasper.active_speaker.crossover_v2.spatial.cloud_position_record``) — so
+   that split costs no comparability.
+3. A lateral pose replays the MEASURE object verbatim (:func:`program_for_phase`
+   again), so the prelude rule is asked of the OBJECT, never of the pose.
 
 Both are pinned by ``tests/test_crossover_v2_programs.py`` against golden
 identities captured from the pre-extraction conductor.
@@ -92,26 +104,66 @@ GAIN_CAP_BACKOFF_DB = 0.01
 #: The two pilot levels are this far apart (matches the CHECK behavioral check).
 PILOT_LEVEL_DELTA_DB = abs(DEFAULT_PILOT_LEVELS_DB[1] - DEFAULT_PILOT_LEVELS_DB[0])
 
-#: Every v2 program plays the spoken courtesy prelude (issue #1677): default ON,
-#: no env/config switch.
+#: The phases whose capture OPENS a session's playback, and so carries the
+#: courtesy prelude (issue #1677). No env/config switch: a household that runs a
+#: session gets the warning.
 #:
-#: The owner's live-incident report (a headless session's first sweep started
-#: while music was playing, forcing a void + re-run) plus the house
-#: "no-silent-failure" / "no speculative flexibility" rules both point the same
-#: way — every household benefits from the warning, and there is no stated case
-#: for wanting it off.
-#:
-#: **Why it is one shared constant rather than a default in each place.** Every
-#: ``build_v2_capture_plan`` / ``build_v2_verify_capture_plan`` call (the phone's
-#: DURATION BUDGET) and every composer below (the actual playback) passes this
-#: SAME object, so the two can never disagree about whether the prelude is
-#: present — the phone would otherwise budget a shorter recording window than
-#: the program it is actually capturing (see the ``+3.6 s`` proof in
-#: ``tests/test_crossover_v2_conductor.py``, mirroring PR-A's ``+15 s`` MEASURE
-#: lengthening). ``jasper.audio_measurement.program``'s own composers default
-#: ``courtesy_prelude`` to ``False`` so every OTHER caller (tests, future tools)
-#: keeps its byte-identical shape unless it opts in explicitly.
-COURTESY_PRELUDE_ENABLED = True
+#: :data:`PHASE_ENTRY_BASELINE` is not an opener — it is stage 1's LAST capture.
+#: It is a member because it PLAYS the announced program: ``program_for_phase``
+#: hands it and :data:`PHASE_VERIFY` the same object, and it is that OBJECT
+#: DISPATCH — not this set — which makes their ``program_id``s equal (#2291's
+#: before→after comparison and ``_delta_probe``'s anchor check). What this
+#: membership decides is the other reader: ``build_v2_capture_plan`` sizes the
+#: entry baseline's recording window from it, so dropping it here would budget
+#: the phone 3.6 s short of the program the speaker actually plays.
+COURTESY_PRELUDE_PHASES = frozenset(
+    {PHASE_CHECK, PHASE_VERIFY, PHASE_ENTRY_BASELINE}
+)
+
+
+def courtesy_prelude_for_phase(phase: str) -> bool:
+    """Does this phase's capture announce itself with the courtesy prelude?
+
+    **The prelude announces a SESSION, not a capture** (issue #1677, trimmed
+    2026-08-18). #1677 is a live incident: a headless session's first sweep
+    started while the owner was playing music, and the session had to be voided
+    and re-run. What it asked for is a warning before *the first sound a session
+    makes*, from the speaker itself, so the room can go quiet. Stage 1 opens on
+    :data:`PHASE_CHECK` and stage 2 — a separate relay session, begun after the
+    household has reviewed and applied — opens on :data:`PHASE_VERIFY`; both
+    open on a warning.
+
+    What it does NOT ask for is a re-warning before every capture a Full
+    journey plays. Two things that were not true when the prelude shipped make
+    the repeat redundant rather than merely cheap:
+
+    * the mux **measurement window is held for the whole session**, so no
+      household audio can start mid-session for a sweep to collide with — the
+      incident's own hazard is closed at the session boundary, which is where
+      the warning now sits;
+    * every capture after the first is begun deliberately — a hand-walked tier
+      taps "I'm there — play the tone" at each position (``_entry_advance``'s
+      ``AUTO_ADVANCE_TAP``), and an externally positioned one is released by its
+      driver through the position gate — inside a session the room has already
+      been told is running.
+
+    A repeat therefore carries no information the household does not have, and
+    it costs 3.6 s (0.6 s of beeps + a 3.0 s settle) of held-still silence each
+    time. Every capture used to pay it; on a Full journey only the three that
+    open or anchor a session still do.
+
+    **Why it is one shared rule rather than a decision at each site.** Every
+    ``build_v2_capture_plan`` / ``build_v2_verify_capture_plan`` entry (the
+    phone's DURATION BUDGET) and every composer below (the actual playback) asks
+    THIS function, so the two can never disagree about whether the prelude is
+    present — the phone would otherwise budget a shorter recording window than
+    the program it is actually capturing (see the ``+3.6 s`` proof in
+    ``tests/test_crossover_v2_conductor.py``, mirroring PR-A's ``+15 s`` MEASURE
+    lengthening). ``jasper.audio_measurement.program``'s own composers default
+    ``courtesy_prelude`` to ``False`` so every OTHER caller (tests, future tools)
+    keeps its byte-identical shape unless it opts in explicitly.
+    """
+    return phase in COURTESY_PRELUDE_PHASES
 
 
 def back_off_gain(gain_db: float, session_volume_db: float, cap_dbfs: float,
@@ -153,6 +205,20 @@ def back_off_gain(gain_db: float, session_volume_db: float, cap_dbfs: float,
 SUMMED_SWEEP_PHASES = frozenset(
     {PHASE_VERIFY, PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY, PHASE_ENTRY_BASELINE}
 )
+
+#: The :data:`SUMMED_SWEEP_PHASES` members that are prompted POSITION GROUPS.
+#: They play :meth:`SessionExcitation.cloud_program` — the same sweep at the same
+#: clamp as :meth:`SessionExcitation.verify_program`, carrying no courtesy
+#: prelude because a position is not a session opener
+#: (:func:`courtesy_prelude_for_phase`).
+#:
+#: The complement — ``SUMMED_SWEEP_PHASES - GROUP_SUMMED_SWEEP_PHASES`` — is the
+#: COMPARED pair, and it is the pair invariant 2 is about. Splitting the family
+#: here costs no comparability because nothing compares a position's
+#: ``program_id`` to anything: ``spatial.cloud_position_record`` does not carry
+#: the field, and ``spatial.entry_baseline_record`` — which does — belongs to the
+#: other half.
+GROUP_SUMMED_SWEEP_PHASES = frozenset({PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY})
 
 
 class NoProgramForPhaseError(RuntimeError):
@@ -229,13 +295,18 @@ class SessionExcitation:
             self.roles,
             downstream_gain_db=self.session_volume_db,
             role_base_peak_dbfs=role_base,
-            courtesy_prelude=COURTESY_PRELUDE_ENABLED,
+            courtesy_prelude=courtesy_prelude_for_phase(PHASE_CHECK),
         )
 
     def measure_program(
         self, gain_plan_db: Mapping[str, float], *, extra_backoff_db: float = 0.0,
     ) -> ExcitationProgram:
-        """MEASURE's per-driver sweeps at the solved gains, clamped PER ROLE."""
+        """MEASURE's per-driver sweeps at the solved gains, clamped PER ROLE.
+
+        Also what every lateral pose plays, verbatim
+        (:func:`program_for_phase`) — so the prelude question is asked of
+        MEASURE, the object's own phase, and a pose inherits the answer.
+        """
         gains = {}
         for rb in self.roles:
             cap = self.caps_dbfs.get(rb.role, 0.0)
@@ -249,7 +320,7 @@ class SessionExcitation:
             downstream_gain_db=self.session_volume_db,
             leading_pilot_gains_db=self.pilot_gains(gains[self.leading_pilot_role]),
             leading_pilot_role=self.leading_pilot_role,
-            courtesy_prelude=COURTESY_PRELUDE_ENABLED,
+            courtesy_prelude=courtesy_prelude_for_phase(PHASE_MEASURE),
         )
 
     def verify_program(self, *, extra_backoff_db: float = 0.0) -> ExcitationProgram:
@@ -268,6 +339,37 @@ class SessionExcitation:
         quiet clamp surfaces as the existing snr_floor / agc_behavioral_fail
         verdicts, not a precheck (§5.10).
         """
+        return self._summed_sweep(
+            courtesy_prelude=courtesy_prelude_for_phase(PHASE_VERIFY),
+            extra_backoff_db=extra_backoff_db,
+        )
+
+    def cloud_program(self, *, extra_backoff_db: float = 0.0) -> ExcitationProgram:
+        """A prompted position's summed sweep — :meth:`verify_program`, unannounced.
+
+        The SAME sweep through the SAME clamp: both go through
+        :meth:`_summed_sweep`, so invariant 1's "only level guard" stays one
+        function and cannot drift into two. The single difference is the
+        courtesy prelude, which a position does not carry because it does not
+        open a session (:func:`courtesy_prelude_for_phase`) — 3.6 s a household
+        holds a microphone still, per position.
+
+        A separate METHOD rather than a flag on ``verify_program`` because the
+        two are held as distinct objects for a whole session and
+        :func:`program_for_phase` answers by identity: "which object is this"
+        must stay a question about the phase, not about an argument someone
+        passed at a call site.
+        """
+        return self._summed_sweep(
+            courtesy_prelude=courtesy_prelude_for_phase(PHASE_CLOUD_VERIFY),
+            extra_backoff_db=extra_backoff_db,
+        )
+
+    def _summed_sweep(
+        self, *, courtesy_prelude: bool, extra_backoff_db: float,
+    ) -> ExcitationProgram:
+        """The mono summed sweep and its ONE min-cap clamp — see
+        :meth:`verify_program` for why that clamp is the only level guard."""
         binding_cap = min(self.caps_dbfs.values()) if self.caps_dbfs else 0.0
         gain = back_off_gain(
             BASE_STIMULUS_PEAK_DBFS - extra_backoff_db,
@@ -279,7 +381,7 @@ class SessionExcitation:
             gain_db=gain,
             downstream_gain_db=self.session_volume_db,
             leading_pilot_gains_db=self.pilot_gains(gain),
-            courtesy_prelude=COURTESY_PRELUDE_ENABLED,
+            courtesy_prelude=courtesy_prelude,
         )
 
 
@@ -289,14 +391,17 @@ def program_for_phase(
     check: ExcitationProgram,
     measure: ExcitationProgram | None,
     verify: ExcitationProgram,
+    cloud: ExcitationProgram,
 ) -> ExcitationProgram:
     """Which composed program this phase plays — **by identity, not by value**.
 
     The caller passes the objects it is holding and gets one of them back. That
     is the whole mechanism behind invariant 2 in this module's docstring: no
-    branch here composes, copies, or replaces, so every
-    :data:`SUMMED_SWEEP_PHASES` member is answered with the *same* ``verify``
-    object and their captures share one ``program_id``.
+    branch here composes, copies, or replaces, so the COMPARED pair (VERIFY and
+    the entry baseline) is answered with the *same* ``verify`` object and their
+    captures share one ``program_id``. Every :data:`GROUP_SUMMED_SWEEP_PHASES`
+    position is likewise answered with the same ``cloud`` object — the identical
+    sweep at the identical clamp, minus the courtesy prelude no position needs.
 
     ``measure`` is ``None`` until the CHECK gain solve produces a plan;
     requesting MEASURE (or a lateral pose, which replays MEASURE's program
@@ -317,12 +422,18 @@ def program_for_phase(
                 "MEASURE armed before the CHECK gain solve produced a program"
             )
         return measure
+    if phase in GROUP_SUMMED_SWEEP_PHASES:
+        # One composed sweep serves both position groups. Same excitation, same
+        # min-cap clamp, same ``program.phase`` ("verify") so the analyzer
+        # routes it to ``_analyze_verify`` unchanged; what differs from the
+        # compared pair below is the courtesy prelude alone, which is
+        # analysis-invisible by construction (``KIND_COURTESY_TONE`` is not a
+        # ``STIMULUS_KIND``) and which no position needs.
+        return cloud
     if phase in SUMMED_SWEEP_PHASES:
-        # One composed mono summed sweep serves VERIFY and both position groups:
-        # identical excitation, identical min-cap clamp, identical
-        # ``program.phase`` ("verify") so the analyzer routes it to
-        # ``_analyze_verify`` unchanged. What differs between the three is the
-        # PRIORS the session hands the analysis and the verdict it draws —
-        # never the sound the speaker makes.
+        # The COMPARED pair — VERIFY and the entry baseline — is one object, and
+        # that identity is invariant 2. What differs between the two is the
+        # PRIORS the session hands the analysis and the verdict it draws — never
+        # the sound the speaker makes.
         return verify
     raise NoProgramForPhaseError(f"no program for phase {phase!r}")

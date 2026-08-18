@@ -1770,6 +1770,55 @@ def _guided_tier_step(
     )
 
 
+def _courtesy_beeps_step(announced: tuple[int, ...], walk: int) -> str:
+    """WHAT THE SPEAKER DOES, for the session in front of the household.
+
+    ``announced`` is the 1-based captures of this plan that open on the
+    courtesy prelude, derived by the caller from the plan's own index → phase
+    map (``crossover_v2_flow.announced_capture_indexes``). It is a *value*
+    rather than a rule this module re-derives, because which phases announce is
+    the measurement flow's decision and this module owns only how to say it.
+
+    Three shapes are stateable: every capture, the first alone, and the first
+    and the last. Shipped sessions produce the middle one (stage 2's walk); the
+    other two are the shapes a plan change reaches — the first-and-last is what
+    stage 1 renders with the lateral walk re-armed (its entry baseline plays
+    stage 2's anchor object and therefore announces too), and every-capture is
+    the pre-trim rule's own. **Anything else raises.** A consent screen that
+    cannot describe what the speaker will do must not be rendered with a
+    sentence that is nearly right — this is the exact defect the 2026-08-18 gate
+    round found, where "The first measurement has three short beeps" was shipped
+    against a stage 1 that beeps twice.
+
+    "has"/"tones" are load-bearing and survive from #1979 — see the call site.
+    """
+    if not announced or announced[0] < 1 or announced[-1] > walk:
+        raise CaptureSpecError(
+            "announced_captures must be a non-empty subset of this plan's "
+            f"1..{walk} captures, got {announced!r}"
+        )
+    loudness = (
+        " — loud, but no louder than JTS needs to hear itself over the room"
+    )
+    if len(announced) == walk:
+        return (
+            "Each measurement has three short beeps, a pause, and then rising "
+            f"tones{loudness}"
+        )
+    if announced == (1,):
+        opener = "The first measurement has"
+    elif announced == (1, walk):
+        opener = "The first and last measurements each have"
+    else:
+        raise CaptureSpecError(
+            f"no consent copy states beeps on captures {announced!r} of {walk}"
+        )
+    return (
+        f"{opener} three short beeps and a pause; every measurement has "
+        f"rising tones{loudness}"
+    )
+
+
 def build_crossover_sweep_spec(
     *,
     driver_label: str = "driver",
@@ -1788,6 +1837,7 @@ def build_crossover_sweep_spec(
     guided_captures: int = 0,
     guided_tier: str = "",
     walk_shape: str = "",
+    announced_captures: Sequence[int] = (),
     reverify_lead: str = "",
     default_setup_calibration: DefaultSetupCalibration | None = None,
 ) -> CaptureSpec:
@@ -2073,10 +2123,18 @@ def build_crossover_sweep_spec(
         #     and a prompted cloud position plays two pilots then one sweep.
         #     The plural is the one shape true of all three; a count here would
         #     need three different sentences for three different phases.
+        #
+        # WHICH measurements beep is now DERIVED, not stated: since 2026-08-18
+        # the courtesy prelude announces a SESSION rather than a capture
+        # (``crossover_v2.programs.courtesy_prelude_for_phase``), so the beeps
+        # and the tones are two different populations and the caller hands this
+        # builder the first one. A hand-written "The first measurement…" was
+        # shipped and was FALSE for stage 1, whose entry baseline announces too
+        # — a consent screen that over-promises what the speaker will do is the
+        # same defect as one that under-promises it, and a sentence that cannot
+        # be checked against the plan is how either survives review.
         steps.append(
-            "Each measurement has three short beeps, a pause, and then rising "
-            "tones — loud, but no louder than JTS needs to hear itself over the "
-            "room"
+            _courtesy_beeps_step(tuple(int(i) for i in announced_captures), walk)
         )
     steps.extend(
         [

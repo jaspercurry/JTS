@@ -131,7 +131,13 @@ def test_remote_is_a_fixed_shape_that_takes_fulls_stage_1():
     assert remote.tier == TIER_REMOTE
     assert remote.cloud_measure_positions == full.cloud_measure_positions
     assert remote.cloud_verify_positions == remote_cloud_verify_positions()
-    assert remote.cloud_verify_positions < full.cloud_verify_positions
+    # Never LONGER than Full's — ``remote_cloud_verify_positions`` clamps to
+    # Full's default, and a remote walk that asked for more than the tier it
+    # borrows stage 1 from would be a shape nobody chose. Equal is the shipped
+    # state since 2026-08-18: Full's default came down to the floor, which is
+    # the same vertical-free prefix remote derives, so the two coincide until
+    # one of them moves again.
+    assert remote.cloud_verify_positions <= full.cloud_verify_positions
     # A named shape, not a configurable range: a caller stating a different
     # count is a bug, not a preference.
     with pytest.raises(CrossoverV2FlowError, match="the remote tier is a fixed shape"):

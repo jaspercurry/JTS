@@ -5178,13 +5178,16 @@ def bind_production_play(
             # ANY summed-sweep-shaped capture, additive to (never a
             # substitute for) the phase-named files above.
             #
-            # Fill-if-absent: content is guaranteed byte-identical (same
-            # ``program`` object across VERIFY/CLOUD_MEASURE/CLOUD_VERIFY
-            # within one relay session), so an existing file — including
-            # one an earlier phase in this same session already wrote —
-            # is left alone. Best-effort: this is a diagnostic convenience
-            # copy, not the measurement itself, so a full disk or a
-            # permissions fault here must not abort an operator's capture.
+            # Fill-if-absent: the first summed-sweep phase this session
+            # plays wins, and an existing file is left alone. Same sweep at
+            # the same clamp whichever phase wrote it; the one difference is
+            # the courtesy prelude, which the compared pair carries and a
+            # prompted position does not
+            # (``crossover_v2.programs.courtesy_prelude_for_phase``) — and
+            # which is analysis-invisible by construction, so a replay reads
+            # the same either way. Best-effort: this is a diagnostic
+            # convenience copy, not the measurement itself, so a full disk or
+            # a permissions fault here must not abort an operator's capture.
             try:
                 summed_wav_path = (
                     Path(bundle_dir)
@@ -6968,7 +6971,7 @@ def _verify_plan_shape(
 
     Explicit rather than inferred. A shape could be guessed from the durable
     state (has VERIFY been walked? has it been accepted?), but every such
-    inference has a case where it silently downgrades Full's six-position
+    inference has a case where it silently downgrades Full's multi-position
     post-apply walk to one sweep — a household who opened stage 2 and let the
     link expire before the first capture would get the recovery instrument on
     their next tap and lose the spatial "after" evidence with no way to know.
@@ -7016,7 +7019,7 @@ def prepare_v2_verify(
     * ``raw["stage"] == "post_apply"`` — **stage 2**, the tier's own shipped
       verify walk. The tier comes from the durable state the measuring session
       wrote, so the household's choice at the tier chooser governs both stages.
-      Express is one position at the mark; Full is the six-position spatial
+      Express is one position at the mark; Full is the multi-position spatial
       walk whose combined curve the after-chart, the post-apply spec verdict,
       and the delta probe read. Running Full's stage 2 as a single position
       would leave its post-apply group with 0 curves and no combine at all.
