@@ -25,6 +25,7 @@ from jasper.audio_measurement.distortion import (
     DEFAULT_HARMONIC_ORDERS,
     DriveLevel,
     analysis_band_hz,
+    capture_drive_level,
     harmonic_reading_from_ir,
     order_band_hz,
     preceding_silence_s,
@@ -493,6 +494,174 @@ def test_the_ir_seam_is_the_whole_read_and_records_what_it_is_told():
     assert math.isnan(unstated.pre_guard_s)
     assert math.isnan(unstated.preceding_silence_s)
     assert not unstated.images_clean
+
+
+def _ir_layout(meta, rate: int = 48_000) -> tuple[np.ndarray, int]:
+    """An empty IR long enough for every window, with the peak placed for it.
+
+    ``needed`` seconds before the peak (images + phantoms + search margin) and
+    0.5 s after (the fundamental's own window reaches ``0.4·L·ln 2 ≈ 0.34 s``
+    past the arrival).
+    """
+    needed = required_pre_guard_s(meta, DEFAULT_HARMONIC_ORDERS)
+    n = int((needed + 1.0) * rate)
+    return np.zeros(n), n - int(0.5 * rate)
+
+
+def test_the_phantom_window_sees_no_image_and_sits_where_it_claims():
+    """Planted-energy pin of the floor window's geometry, in both directions.
+
+    Energy is planted over the FULL span of every image window (orders 1-3);
+    the phantom must read exactly zero of it — a floor that can see a harmonic
+    is not a noise floor. Then energy at the phantom's own claimed pre-arrival
+    centre must be captured at full weight, which is what fails if the window
+    is ever placed on the wrong side of the arrival or at the rejected
+    upper-gap advance. The taper and the safety margin are pinned with it:
+    a constant input must come back Hann-shaped (zero at the edges), the
+    half-width must be exactly :data:`_PHANTOM_WINDOW_SAFETY` of the geometric
+    clearance, and the returned length ratio exactly the image-to-phantom
+    half-width quotient in samples — the number the caller turns into the
+    ``10·log10`` floor correction.
+    """
+    from jasper.audio_measurement.distortion import (
+        _PHANTOM_WINDOW_SAFETY,
+        _image_half_width_s,
+        _phantom_floor_ir,
+        _phantom_window_s,
+    )
+
+    rate = 48_000
+    meta = segment_sweep_meta(_program().segment("sweep_w"))
+    full_ir, peak = _ir_layout(meta, rate)
+    for order in (1, 2, 3):
+        centre = peak - int(
+            round(deconv.harmonic_time_advance_s(meta, order) * rate)
+        )
+        hw = int(round(_image_half_width_s(meta, order) * rate))
+        full_ir[centre - hw : centre + hw + 1] = 1.0
+
+    for order in DEFAULT_HARMONIC_ORDERS:
+        windowed, ratio = _phantom_floor_ir(full_ir, rate, peak, meta, order)
+        assert float(np.max(np.abs(windowed))) == 0.0, (
+            f"H{order} phantom window overlaps an image window"
+        )
+        advance, half_s = _phantom_window_s(meta, order)
+        assert ratio == pytest.approx(
+            int(round(_image_half_width_s(meta, order) * rate))
+            / max(int(round(half_s * rate)), 1)
+        )
+        # The safety shrink is the exact fraction of the exact clearance.
+        clearance = min(
+            advance
+            - deconv.harmonic_time_advance_s(meta, order - 1)
+            - _image_half_width_s(meta, order - 1),
+            deconv.harmonic_time_advance_s(meta, order)
+            - _image_half_width_s(meta, order)
+            - advance,
+        )
+        assert half_s == pytest.approx(_PHANTOM_WINDOW_SAFETY * clearance)
+        assert 0.0 < _PHANTOM_WINDOW_SAFETY < 1.0
+
+        # Positive control: the window is really AT its claimed pre-arrival
+        # centre — a spike there is captured at the taper's full weight.
+        probe = np.zeros_like(full_ir)
+        probe[peak - int(round(advance * rate))] = 1.0
+        captured, _ratio = _phantom_floor_ir(probe, rate, peak, meta, order)
+        assert float(np.max(np.abs(captured))) == pytest.approx(1.0)
+
+    # Hann taper, not a boxcar: constant input comes back zero-edged.
+    shaped, _ratio = _phantom_floor_ir(
+        np.ones_like(full_ir), rate, peak, meta, 2
+    )
+    assert shaped[0] == pytest.approx(0.0, abs=1e-12)
+    assert float(np.max(shaped)) == pytest.approx(1.0)
+
+
+def test_the_floor_correction_puts_noise_windows_on_the_image_scale():
+    """On pure noise, the corrected floor must EQUAL the image window's read.
+
+    The phantom window is narrower than the image window it describes, so for
+    the same noise density it holds less power; the ``10·log10(length_ratio)``
+    correction exists to put the two on one scale. White noise is the case
+    with a known answer: the harmonic "image" windows and the corrected floor
+    windows read the same density, so ``relative_db − floor_relative_db``
+    must sit at 0 within smoothing scatter. Dropping the correction shifts H3
+    by 3.2 dB, flipping its sign by 6.5 dB (the exact corruption the review's
+    mutation battery showed surviving) — either moves the median far past the
+    tolerance here, while the honest arithmetic reads +0.58 (H2) / +0.73 dB
+    (H3) at this seed: a small positive estimator bias from smoothing curves
+    of different underlying spectral resolution, inherent and well inside the
+    margin in the mutants' direction.
+    """
+    rate = 48_000
+    meta = segment_sweep_meta(_program().segment("sweep_w"))
+    full_ir, peak = _ir_layout(meta, rate)
+    full_ir += np.random.default_rng(7).normal(0.0, 1e-3, full_ir.shape)
+    reading = harmonic_reading_from_ir(
+        full_ir, rate, peak, meta,
+        segment_id="sweep_w", role=None, drive=DriveLevel(0.0, 0.0, 0.0, 0.0),
+    )
+    for order in DEFAULT_HARMONIC_ORDERS:
+        diff = reading.relative_db[order] - reading.floor_relative_db[order]
+        diff = diff[np.isfinite(diff)]
+        assert diff.size > 100
+        assert abs(float(np.median(diff))) < 1.5, (
+            f"H{order}: corrected floor is {float(np.median(diff)):+.2f} dB "
+            f"off the same-density image window"
+        )
+
+
+def test_drive_level_measures_only_the_scheduled_window():
+    """The recorded-side pair describes the SWEEP window, not the whole file.
+
+    A full-scale spike outside the scheduled window must not move either
+    number — the drive attached to a reading has to be the drive of the sweep
+    the reading came from. A window that misses the capture entirely reads
+    ``-inf`` rather than raising: an empty level is a fact about the capture.
+    """
+    program = _program()
+    segment = program.segment("sweep_w")
+    anchor = 5_000
+    capture = np.zeros(anchor + segment.n_samples + 10_000)
+    capture[anchor : anchor + segment.n_samples] = 0.25
+    capture[0] = 1.0
+    capture[-1] = 1.0
+    drive = capture_drive_level(capture, segment, anchor)
+    assert drive.capture_peak_dbfs == pytest.approx(20.0 * math.log10(0.25))
+    assert drive.capture_rms_dbfs == pytest.approx(20.0 * math.log10(0.25))
+
+    empty = capture_drive_level(np.zeros(10), segment, 50)
+    assert empty.capture_peak_dbfs == float("-inf")
+    assert empty.capture_rms_dbfs == float("-inf")
+
+
+def test_a_sidecar_without_gate_fields_is_refused_not_read_ungated():
+    """The replay CLI's fidelity gate fails closed on an empty diagnostic.
+
+    A sidecar with no ``diagnostic`` block has nothing to compare, and zero
+    comparisons must be a refusal, not a silent pass — the armrun bank holds
+    exactly such sidecars. The refusal happens before any analysis, so the
+    stub arguments prove it cannot depend on them.
+    """
+    import importlib.util
+    import sys
+
+    path = Path(__file__).resolve().parents[1] / "scripts" / (
+        "harmonic-distortion-replay.py"
+    )
+    spec = importlib.util.spec_from_file_location("_hd_replay_under_test", path)
+    cli = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = cli
+    try:
+        spec.loader.exec_module(cli)
+        for sidecar in ({}, {"diagnostic": {}}, {"diagnostic": {"epsilon_ppm": None}}):
+            readings, failures, disclosure, compared = cli.read_capture(
+                None, None, None, (2, 3), None, sidecar
+            )
+            assert readings == [] and disclosure is None and compared == 0
+            assert failures and "refused" in failures[0]
+    finally:
+        sys.modules.pop(spec.name, None)
 
 
 # --------------------------------------------------------------------------- #
