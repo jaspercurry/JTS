@@ -1404,6 +1404,88 @@ def test_an_alternative_fc_round_that_is_clean_is_not_reported_as_fully_graded()
     assert safety.evidence["safety_anchored"] is False
 
 
+def test_an_anchor_measured_through_another_program_is_refused(caplog):
+    """An anchor is a subtraction, so a foreign one cancels a real finding.
+
+    Series-2 D1 made the pre-apply capture the input to the adoption table's
+    hard stop, so what was a disclosed scalar's trust problem became a hazard's.
+    Measured here: the SAME 4 dB of undeclared energy, the SAME curves, one
+    variable — whether the baseline was captured through this round's VERIFY
+    program. A baseline that was not is not an anchor, and the round says
+    "not measured" rather than "measured, nothing found".
+
+    Comparability keeps its single owner: this asks ``round_evidence``'s own two
+    identity fields, the ones ``evaluate_benefit`` refuses an incomparable pair
+    on. It does not re-derive the rule.
+    """
+    import dataclasses
+    import logging
+
+    from tests.crossover_v2_fixtures import FakeSeams
+
+    applied_db, commanded_db, declared_db, _band = _repeat_round_axes()
+    measured_post, measured_pre = _repeat_round_curves(hot_db=4.0)
+
+    def _probe_with(program_id):
+        session = _session(FakeSeams().seams())
+        session._measure_commanded_delta = (FREQS_HZ, commanded_db)
+        session._measure_declared_transfer = (FREQS_HZ, declared_db)
+        session._verify_tracking_curve = (FREQS_HZ, measured_post, applied_db)
+        session._verify_trusted_band_hz = TRUSTED_BAND_HZ
+        baseline = _entry_baseline(session, measured_pre)
+        if program_id is not None:
+            baseline = dataclasses.replace(baseline, program_id=program_id)
+        session._measure_entry_baseline = baseline
+        return session._run_delta_probe()
+
+    comparable = _probe_with(None)
+    assert comparable.safety_anchored is True
+    assert comparable.boost_over_declared_bound is True
+    assert comparable.boost_overshoot_db == pytest.approx(4.0, abs=1e-9)
+
+    with caplog.at_level(logging.WARNING):
+        foreign = _probe_with("a-program-from-another-capture")
+    assert foreign.safety_anchored is False
+    assert foreign.boost_over_declared_bound is False
+    assert foreign.boost_overshoot_db is None
+    # ...and it is named, because a refused anchor that says nothing is the
+    # same silence the refusal exists to prevent.
+    assert "crossover_v2_delta_probe_no_entry_anchor" in caplog.text
+    assert "reason=incomparable_program" in caplog.text
+
+
+def test_a_round_with_no_entry_baseline_at_all_says_so_on_the_journal(caplog):
+    """The most REACHABLE arm, and it used to return ``None`` in silence.
+
+    A first-ever round has no prior applied profile, so it has no pre-apply
+    capture — this is not an edge case, it is every speaker's first commission.
+    Since D1 that decides whether the realized-energy half of the safety axis
+    runs at all, so it is a named journal line rather than an absent field a
+    reader has to infer from.
+    """
+    import logging
+
+    from tests.crossover_v2_fixtures import FakeSeams
+
+    applied_db, commanded_db, declared_db, _band = _repeat_round_axes()
+    measured_post, _pre = _repeat_round_curves(hot_db=4.0)
+
+    session = _session(FakeSeams().seams())
+    session._measure_commanded_delta = (FREQS_HZ, commanded_db)
+    session._measure_declared_transfer = (FREQS_HZ, declared_db)
+    session._verify_tracking_curve = (FREQS_HZ, measured_post, applied_db)
+    session._verify_trusted_band_hz = TRUSTED_BAND_HZ
+    session._measure_entry_baseline = None
+
+    with caplog.at_level(logging.WARNING):
+        probe = session._run_delta_probe()
+
+    assert probe is not None
+    assert probe.safety_anchored is False
+    assert "crossover_v2_delta_probe_no_entry_anchor" in caplog.text
+    assert "reason=no_entry_baseline" in caplog.text
+
+
 def test_the_ordinary_round_is_untouched_by_the_state_axis_only_path():
     """(c) A round WITH a change axis grades exactly as it did.
 

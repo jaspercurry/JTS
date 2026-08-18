@@ -897,6 +897,43 @@ def test_no_finding_says_whether_the_realized_energy_check_could_run():
     assert unchecked.evidence["safety_anchored"] is False
 
 
+def test_the_model_departure_target_quotes_its_OWN_frequency():
+    """Two reductions over two bin sets, and the target must not cross them.
+
+    ``max_signed_error_db`` is the worst POSITIVE departure over the SAFETY
+    bins; ``worst_hz`` is the worst ABSOLUTE error over the GRADED ones. On the
+    banked series-2 r1b they sit 563 Hz apart and name two different acoustic
+    features — the standing model error, and the dip the next round went on to
+    close. A target is an instruction to the next round, so quoting one bin's dB
+    at the other bin's frequency sends it after the wrong one.
+    """
+    from jasper.active_speaker.crossover_v2.verification import (
+        QUALITY_MODEL_DEPARTURE,
+        _model_departure_target,
+    )
+
+    probe = types.SimpleNamespace(
+        model_departure_over_tolerance=True,
+        max_signed_error_db=3.891,
+        max_signed_error_hz=1384.1,
+        # The decoy: a real field, on a real map, measuring something else.
+        worst_hz=1947.2,
+    )
+    assert _model_departure_target(probe) == [
+        f"{QUALITY_MODEL_DEPARTURE}:3.89dB@1384Hz"
+    ]
+
+    # Nothing when the departure did not clear the probe's own tolerance — the
+    # boolean is read rather than a threshold re-derived here.
+    assert _model_departure_target(
+        types.SimpleNamespace(
+            model_departure_over_tolerance=False,
+            max_signed_error_db=3.891, max_signed_error_hz=1384.1,
+        )
+    ) == []
+    assert _model_departure_target(None) == []
+
+
 def test_an_absent_probe_is_reported_as_safe_but_ungraded():
     """An absent measurement is not evidence of a hazard.
 

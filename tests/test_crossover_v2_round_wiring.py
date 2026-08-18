@@ -866,7 +866,6 @@ def test_two_restore_triggers_run_one_undo_and_keep_the_honest_sentence(
     for — one restore per session — plus the structural fact that makes it hold
     without a guard at all.
     """
-    import numpy as np
 
     _seed_round_state()
     conductor, attempts = _restoring_stage_2(monkeypatch)
@@ -2437,7 +2436,6 @@ def test_a_probe_rollback_at_the_cloud_close_banks_its_round(
     receipt is on disk naming the probe class that took it off. The old shape
     satisfied only the first two.
     """
-    import numpy as np
 
     _seed_full_round_state()
     conductor, attempts = _full_stage_2(monkeypatch)

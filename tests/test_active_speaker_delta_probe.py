@@ -2064,6 +2064,40 @@ def test_an_unanchored_map_makes_no_directional_finding_at_all():
     )
 
 
+def test_a_state_axis_map_refuses_an_anchor_rather_than_mixing_frames():
+    """``state_axis_only`` ENFORCES its no-anchor contract (series-2 D1).
+
+    A state axis and a change measurement share no reference, so differencing
+    one against the other produces a finding in a mixed frame — a number with no
+    meaning, on the axis that takes graphs off speakers. The caller is told not
+    to pass both; a caller that does gets the contract, not the mixture.
+
+    Asserted against the same call WITHOUT the anchor: identical, which is what
+    "the anchor was refused" means and what "the anchor was used" would break.
+    """
+    from jasper.active_speaker.delta_probe import VERDICT_SAFETY_ONLY
+
+    declared = _commanded_lift()
+    realized = declared + 5.0
+    anchor = np.full_like(_GRID_HZ, -3.0)
+
+    with_anchor = classify_delta_probe(
+        _GRID_HZ, realized, declared, band_hz=_band(),
+        entry_delta_db=anchor, state_axis_only=True,
+    )
+    without = classify_delta_probe(
+        _GRID_HZ, realized, declared, band_hz=_band(), state_axis_only=True,
+    )
+
+    assert with_anchor.verdict == VERDICT_SAFETY_ONLY
+    assert with_anchor.safety_anchored is False
+    assert with_anchor.boost_over_declared_bound is False
+    assert with_anchor.boost_overshoot_db is None
+    assert with_anchor.realized_excess_db is None
+    # Byte-for-byte the same map as the one that supplied no anchor at all.
+    assert with_anchor.to_dict() == without.to_dict()
+
+
 def test_an_unanchored_louder_map_is_not_handed_the_quieter_only_lenience():
     """Absence must not GRANT a lenience, only withhold a finding (series-2 D1).
 
