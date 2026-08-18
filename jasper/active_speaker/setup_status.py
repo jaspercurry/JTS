@@ -1162,7 +1162,7 @@ def read_active_speaker_setup_status(
         profile_summary["automatic_candidate"] = automatic_candidate
 
     blocked = any(issue["severity"] == "blocker" for issue in issues)
-    reason = issues[0]["code"] if issues else None
+    setup_reason = issues[0]["code"] if issues else None
     detail = (
         issues[0]["message"]
         if issues
@@ -1212,7 +1212,7 @@ def read_active_speaker_setup_status(
         "acoustic_commissioning": acoustic_commissioning,
         "commissioning": commissioning,
         "safety_muted": blocked,
-        "reason": reason,
+        "reason": setup_reason,
         "detail": detail,
         "active_config_path": config_path or None,
         "baseline_profile": profile_summary,
