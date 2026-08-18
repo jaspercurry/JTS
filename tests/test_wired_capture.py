@@ -26,7 +26,6 @@ What is pinned, and why each pin exists:
 from __future__ import annotations
 
 import struct
-import threading
 import wave
 import io
 
