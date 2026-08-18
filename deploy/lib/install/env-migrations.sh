@@ -631,9 +631,12 @@ migrate_transit_config() {
 # on conflicts — like transit/weather. This is NOT the full key set
 # jasper.multiroom.config reads (it also parses ROSTER, PEER_ADDR/NAME,
 # TRIM_DB, CLIENT_LATENCY_MS, LEFT/RIGHT_DELAY_MS, CROSSOVER_HZ,
-# MAINS_HIGHPASS, SUBWOOFER_PRESENT); jasper-grouping-reconcile.service
-# loads jasper.env before grouping.env, so an unmigrated hand-set value
-# among those still reaches the daemon — it just isn't cleaned up here.
+# MAINS_HIGHPASS, SUBWOOFER_PRESENT); jasper.multiroom.config.load_config
+# parses only grouping.env — never jasper.env, never the process
+# environment (confirmed: jasper-grouping-reconcile.service stopped
+# loading grouping.env as an EnvironmentFile at c3ea20e1b) — so an
+# unmigrated hand-set value among those is silently INERT, not merely
+# uncleaned: it never reaches the daemon at all.
 #
 # Grouping is OFF BY DEFAULT on a solo speaker: absence of grouping.env
 # means off (jasper.multiroom.config fail-safes to enabled=False). So we
@@ -650,7 +653,7 @@ migrate_grouping() {
     # Mirror jasper.multiroom.config's env keys. Duplicated here because
     # install.sh runs before the venv Python is guaranteed importable.
     local keys=(
-        JASPER_GROUPING_ENABLED
+        JASPER_GROUPING
         JASPER_GROUPING_ROLE
         JASPER_GROUPING_CHANNEL
         JASPER_GROUPING_BOND_ID
