@@ -62,11 +62,13 @@ lands outside even that, which series-1 shows it can (band gains ranged 0.136
 to 11.736). See :data:`BLEND_DAMPING` for why the distinction is stated rather
 than blurred.
 
-**It fails to a HOLD, never to a boost and never to a silent revert.** Every
-arm names itself on the receipt, so a round that changed nothing says *why* —
-"the region was already clean" and "the instrument refused" are different
-facts. What each arm PRESCRIBES is the part worth stating precisely, because
-the prescription becomes the next round's graph:
+**Every arm that HAS an incumbent holds it; a profile with no readable
+incumbent emits none — the one revert path, and it is reachable only on
+corruption the emitter would refuse anyway.** Nothing here can fail to a boost.
+Every arm names itself on the receipt, so a round that changed nothing says
+*why* — "the region was already clean" and "the instrument refused" are
+different facts. What each arm PRESCRIBES is the part worth stating precisely,
+because the prescription becomes the next round's graph:
 
 ===========================  ================================================
 arm                          what the next round applies
@@ -94,6 +96,15 @@ reconciliation cannot be established", applied to this module's own quantity.
 Unlike the level datum #2653 is about, that reconciliation is cheap here — the
 incumbent is a filter list the system itself wrote and persisted, not a
 per-role level a summed capture cannot separate.
+
+**Its cost, stated rather than glossed:** it is the one path that can REMOVE an
+applied correction, so the region can get up to the composed ceiling louder on
+the next apply. That is accepted, not overlooked. The alternative — carrying
+forward a list the strict reader just refused to vouch for — is worse in the
+direction that matters, and the emitter would refuse it at the graph boundary
+anyway. The state is reachable only through a corrupt or absent applied
+profile, which is also the state in which nothing else about the live graph can
+be established either.
 
 **Scope tripwire.** This module reads the summed response against an analytic,
 offset-invariant reference and commands a common-mode filter. It never asks how
@@ -262,8 +273,14 @@ class BlendRegionReading:
     #: RMS deviation over the region's surviving bins, dB. The SAME estimator
     #: :func:`~jasper.active_speaker.flat_spec.spec_convergence_residual` pools
     #: — deviation against the one flat reference, squared, averaged over
-    #: included bins — with only its bin set narrowed to the region. A pinning
-    #: test asserts the two agree when the region spans the graded band.
+    #: included bins — with only its bin set narrowed to the region.
+    #:
+    #: A pinning test asserts the two agree when the region spans the graded
+    #: band, and it has to mask outside ``reference_band_hz`` as well to make
+    #: that comparison meaningful: ``spec_convergence_residual`` also pools
+    #: ``SPEC_BANDS[2]`` (8–16 kHz), which this reading never sees. Unmasked
+    #: the two grade different bin SETS and read 0.873 over 614 bins against
+    #: 0.903 over 736 — a difference in coverage, not in estimator.
     residual_db: float
     #: How many bins that RMS was computed from. Part of the answer, not
     #: decoration: a residual that fell because the honesty mask grew is the
@@ -557,8 +574,22 @@ def solve_blend_correction(
     narrow as the correction can represent (``Q <= BLEND_FILTER_Q``). A
     NARROWER defect cannot be matched by a ``Q = 2`` cut, so each round's fit
     over-corrects the shoulders, the over-correction reads as next round's
-    defect, and the loop limit-cycles instead of converging — measured on a
-    4 dB defect at 1500 Hz, region rms across six rounds::
+    defect, and the loop limit-cycles instead of converging.
+
+    **TWO QUANTITIES, and mixing them is how a reader mis-predicts this stop.**
+    Both are "the region's rms" in English and neither is the other:
+
+    * **applied region rms** — the rms of what the SPEAKER ends up radiating
+      across the region, i.e. the defect plus the emitted cascade. It is the
+      outcome number, and it is what the table below reports.
+    * :attr:`BlendRegionReading.residual_db` — the MEASURED curve's deviation
+      against the speaker's broadband flat reference, over the region
+      intersected with the graded band and minus the honesty mask. It is the
+      instrument number, it is what a round banks, and **it is the only one
+      this stop compares.**
+
+    Measured on a 4 dB defect at 1500 Hz, six rounds, no stop — applied region
+    rms::
 
         defect Q=2.0  0.973 0.528 0.239 0.112 0.057 0.034   converges
         defect Q=3.0  0.575 0.344 0.400 0.344 0.400 0.344   two-cycles
@@ -570,20 +601,34 @@ def solve_blend_correction(
     **once the region stops improving, hold the incumbent and stop
     re-prescribing** (:data:`BLEND_REGION_NOT_IMPROVING`).
 
+    Applying that rule to the table above predicts the wrong round, which is
+    exactly why both quantities are named. Q=4's applied rms rises at round 2
+    (0.496 → 0.639), but the reading the stop actually compares falls until
+    round 5::
+
+        Q=4 residual_db  1.216 0.493 0.450 0.421 0.494 → stops at round 5
+
     The bar is "improved at all", not "improved provably", and that choice is
     deliberate. A provable-improvement bar needs a round-to-round noise
     estimate for this residual, which this program does not have — and the
     nearest available number (:data:`BLEND_MIN_CUT_DB`, a per-band model
     tracking error) is the wrong quantity for an RMS over a hundred bins, large
-    enough to stop the CONVERGING case at its second round. Rather than invent
-    a threshold, this compares the two readings it actually has.
+    enough to stop the CONVERGING case at its second round.
 
     **What it does not buy, said plainly:** it does not guarantee the region
-    ends no worse than round 1. The overshoot that triggers the stop has
-    already been applied, so the loop can settle one round past its best
-    reading (Q=4 above holds at 0.639 rather than reaching 0.814). It converts
+    ends no worse than round 1, because the overshoot that triggers the stop
+    has already been applied. With the stop on, the applied region rms settles
+    at::
+
+        defect Q=3.0  0.344     (unstopped: alternates 0.344 / 0.400)
+        defect Q=4.0  0.733     (unstopped: wanders on to 0.814)
+        defect Q=6.0  1.034     (unstopped: alternates 0.767 / 1.120)
+
+    Q=6 is the honest worst case and is stated rather than buried: the stop
+    settles ABOVE the low half of a cycle the loop cannot stay in anyway, so
+    what it buys there is a stable value rather than a better one. It converts
     an unbounded wander into a bounded one, and the region benefit claim
-    reports where it settled. Undoing that last step would need the round to
+    reports where it settled. Undoing the last step would need the round to
     carry its PREVIOUS prescription as well as its current one, which is a
     second history this program has not earned yet.
     """
