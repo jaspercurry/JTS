@@ -11,16 +11,20 @@ answers R17's question: **given a capture that is alive exactly once, which
 crossover corners may this speaker be asked about, what does each one cost to
 score, and — in a session that walks — which one does the evidence recommend?**
 
-**No shipped session runs this today.**  The sweep fires at MEASURE-consume
-only when a lateral walk follows, and adjudicates only at that walk's close;
-the walk was paused on 2026-08-18 by owner ruling
-(``crossover_v2_flow.STAGE1_INCLUDES_LATERAL``, whose comment carries the
-evidence), so a shipped round commits its configured Fc without scoring
-candidates and ``fc_selection`` stays ``None``.  Nothing here changed and
-nothing here is dead: forcing that flag back on restores this module's callers
-unmodified, and it is kept intact for the redesigned lateral statistic the
-pause is waiting on.  Read every "runs at" and "at the walk's close" below as
-"when a walk is in the plan".
+**Whether anything runs this depends on one flag.**  The sweep fires at
+MEASURE-consume only when a lateral walk follows, and adjudicates only at that
+walk's close, so ``crossover_v2_flow.STAGE1_INCLUDES_LATERAL`` decides whether
+this module is reached at all.  While it is on, a stage-1 session sweeps and
+adjudicates as described below; with it off, no shipped session reaches this
+module — a round commits its configured Fc without scoring candidates and
+``fc_selection`` stays ``None``.
+
+The owner ruled the walk paused on 2026-08-18; the flip lands as PR #2717.
+Read that as a scheduled change, not as this module's state: consult the flag
+for which world you are in.  Either way nothing here changed and nothing here
+is dead — the flag's value is the only input, and the module is kept intact for
+the redesigned lateral statistic the pause is waiting on.  Read every "runs at"
+and "at the walk's close" below as "when a walk is in the plan".
 
 **Why it could not move until now.**  ``evaluate_candidate`` consumes a build
 product, and through it the linearization state and the cloud terms — which is
@@ -822,11 +826,12 @@ def sweep_candidates(
     """Evaluate the proposable Fc set against THIS capture, then release.
 
     Runs at MEASURE-consume — in a session whose plan includes the lateral
-    walk, which since the 2026-08-18 pause is no shipped session (see the
-    module docstring) — because the raw capture is alive only there: the
-    retained anchor holds derived ``DriverResponse``s, and §4.2's own
-    conditioning policy refuses to un-compose them. Adjudication still
-    happens at that walk's close, so nothing publishes early (§4.4).
+    walk, which ``STAGE1_INCLUDES_LATERAL`` decides (see the module docstring
+    for the pause the owner ruled on 2026-08-18 and the PR that flips it) —
+    because the raw capture is alive only there: the retained anchor holds
+    derived ``DriverResponse``s, and §4.2's own conditioning policy refuses to
+    un-compose them. Adjudication still happens at that walk's close, so
+    nothing publishes early (§4.4).
 
     **Never raises**, for anything in :data:`_SWEEP_ERRORS` — which includes
     the ``OSError`` a logging port raises with nowhere to write, and which
@@ -1026,10 +1031,11 @@ def adjudicate(
     """Turn the retained per-candidate evidence into ONE recommendation.
 
     At the lateral walk's close, where §4.4 puts every judgement that reads the
-    whole walk — so a plan without that walk never reaches here at all, which
-    since the 2026-08-18 pause is every shipped plan (see the module docstring).
-    The caller releases the evaluations after: the selection is
-    what the review screen renders, and the evidence behind it has done its job.
+    whole walk — so a plan without that walk never reaches here at all, and
+    ``STAGE1_INCLUDES_LATERAL`` is what decides whether a shipped plan has one
+    (see the module docstring). The caller releases the evaluations after: the
+    selection is what the review screen renders, and the evidence behind it has
+    done its job.
 
     Says nothing itself — see :class:`Adjudication` for why this one disclosure
     travels back as data while the sweep's are handed to a port.
