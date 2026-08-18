@@ -29,7 +29,7 @@ logger = logging.getLogger("jasper.output_topology_runtime")
 
 RECONCILE_UNIT = "jasper-audio-hardware-reconcile.service"
 GROUPING_RECONCILE_UNIT = "jasper-grouping-reconcile.service"
-RECONCILE_UNITS = (RECONCILE_UNIT, GROUPING_RECONCILE_UNIT)
+RECONCILE_UNITS = (GROUPING_RECONCILE_UNIT, RECONCILE_UNIT)
 
 
 def topology_summary(topology: OutputTopology) -> dict[str, Any]:
@@ -63,25 +63,29 @@ def trigger_reconcile(*, reason: str = "output_topology_reset") -> dict[str, Any
 
     from jasper.control.restart_broker import manage_units
 
-    try:
-        result = manage_units(
-            *RECONCILE_UNITS,
-            verb="start",
+    result: dict[str, Any] = {"ok": True}
+    for unit in RECONCILE_UNITS:
+        try:
+            result = manage_units(
+                unit,
+                verb="start",
+                reason=reason,
+                no_block=False,
+                timeout=15.0,
+            )
+        except (OSError, RuntimeError, ValueError, TimeoutError) as exc:
+            result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        log_event(
+            logger,
+            "output_topology.reconcile",
             reason=reason,
-            no_block=False,
-            timeout=15.0,
+            unit=unit,
+            ok=bool(result.get("ok")),
+            error=result.get("error"),
+            level=logging.INFO if result.get("ok") else logging.WARNING,
         )
-    except (OSError, RuntimeError, ValueError, TimeoutError) as exc:
-        result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-    log_event(
-        logger,
-        "output_topology.reconcile",
-        reason=reason,
-        unit=",".join(RECONCILE_UNITS),
-        ok=bool(result.get("ok")),
-        error=result.get("error"),
-        level=logging.INFO if result.get("ok") else logging.WARNING,
-    )
+        if not result.get("ok"):
+            return result
     return result
 
 

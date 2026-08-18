@@ -152,6 +152,26 @@ def test_reset_runs_root_reconciler_after_save(
     assert load_output_topology_strict().speaker_groups == ()
 
 
+def test_grouping_reconcile_failure_blocks_hardware_reconcile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fail_grouping(unit, **_kwargs):
+        calls.append(unit)
+        return {"ok": False, "error": "grouping failed"}
+
+    monkeypatch.setattr(
+        "jasper.control.restart_broker.manage_units",
+        fail_grouping,
+    )
+
+    result = topology_runtime.trigger_reconcile(reason="test")
+
+    assert result == {"ok": False, "error": "grouping failed"}
+    assert calls == [topology_runtime.GROUPING_RECONCILE_UNIT]
+
+
 def test_cleanup_failure_keeps_new_topology_and_does_not_restore_old_graph(
     topo_path: Path,
     monkeypatch: pytest.MonkeyPatch,
