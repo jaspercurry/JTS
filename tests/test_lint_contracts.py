@@ -549,8 +549,11 @@ MAX_LINES_BY_PATH = {
     # …and #2662's prescription lands on top of D7's, in the same file and the
     # same night — the two sessions D7's own note above names as the reason its
     # seam was not cut. Both bumps are real and neither subsumes the other, so
-    # the number carries both.
-    "jasper/audio_measurement/program_analysis.py": 7_193,
+    # the number carries both: 7,060 (D7) + 215 (#2662's own two entries above,
+    # measured after the rebase rather than added on paper) = 7,275. The seam
+    # both notes name is now named twice by two independent sessions in one
+    # night, which is the strongest argument either could make for cutting it.
+    "jasper/audio_measurement/program_analysis.py": 7_275,
 }
 
 
