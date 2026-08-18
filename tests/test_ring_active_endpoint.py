@@ -189,6 +189,17 @@ def _apple_dongle_shipped_default():
     })
 
 
+def _apple_dongle_passive_stereo():
+    """The shipped Apple sink after explicit passive-stereo authorization."""
+    from jasper.output_topology import OutputTopology
+
+    raw = _apple_dongle_shipped_default().to_dict()
+    passive = _full_range_stereo().to_dict()
+    raw["speaker_groups"] = passive["speaker_groups"]
+    raw["routing"] = passive["routing"]
+    return OutputTopology.from_mapping(raw)
+
+
 def _dual_apple_stereo():
     """A composite sink: TWO child devices, so >1 clock domain — no ring at all."""
     from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
@@ -497,7 +508,7 @@ def test_a_roleful_topology_resolves_an_active_width_and_no_ring_b_width(
 @pytest.mark.parametrize(
     "name,factory",
     [
-        ("apple shipped default", _apple_dongle_shipped_default),
+        ("apple passive stereo", _apple_dongle_passive_stereo),
         ("full-range stereo", _full_range_stereo),
     ],
 )
@@ -505,6 +516,12 @@ def test_a_non_roleful_topology_has_ring_b_and_no_active_ring(name, factory):
     topo = factory()
     assert ring_channels_for_topology(topo) == 2
     assert active_ring_channels_for_topology(topo) is None, name
+
+
+def test_an_unconfigured_shipped_default_has_no_ring_b_or_active_ring():
+    topo = _apple_dongle_shipped_default()
+    assert ring_channels_for_topology(topo) is None
+    assert active_ring_channels_for_topology(topo) is None
 
 
 @pytest.mark.parametrize(

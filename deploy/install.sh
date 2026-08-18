@@ -1024,8 +1024,9 @@ install_camilladsp() {
     # overwriting /var/lib/camilladsp/statefile.yml. Do not repair that
     # statefile here: the safe target depends on the saved output topology.
     # This flat graph maps full-range stereo directly to DAC outputs. It is
-    # selectable only for an explicit passive mono/stereo layout; unconfigured
-    # and roleful/protected topologies park instead. After the Python package is installed,
+    # selectable only for an explicit passive mono/stereo layout; unconfigured,
+    # incomplete, and any topology with a tweeter/protected role park instead.
+    # After the Python package is installed,
     # ensure_outputd_camilla_statefile asks jasper.active_speaker's runtime
     # contract which graph is legal and fails closed if no protected graph
     # exists.
@@ -1110,8 +1111,8 @@ render_outputd_cutover_config() {
 ensure_outputd_camilla_statefile() {
     # Runtime graph selection belongs to jasper.active_speaker, not install.sh.
     # This flat graph maps full-range stereo directly to DAC outputs. It is
-    # selectable only for an explicit passive mono/stereo layout; unconfigured
-    # and roleful/protected topologies park instead.
+    # selectable only for an explicit passive mono/stereo layout; unconfigured,
+    # incomplete, and any topology with a tweeter/protected role park instead.
     local output
     echo "  Checking outputd Camilla statefile against active-speaker runtime contract"
     # --ring-flat-config names the shm_ring sibling; runtime-safe-graph reads the

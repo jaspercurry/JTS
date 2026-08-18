@@ -414,7 +414,7 @@ async def _park_and_commit_topology(
             )
         try:
             committed = commit()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - every commit failure needs rollback
             restore_error = await _restore_prior_config(controller, prior_path)
             if restore_error is not None:
                 raise TopologyCommitRestoreError(

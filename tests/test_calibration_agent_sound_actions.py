@@ -8,10 +8,12 @@ from pathlib import Path
 
 from jasper.calibration_agent import actions, response, sound_actions, tools
 from jasper.camilla_config_contract import PeqFilter
+from jasper.output_topology import output_topology_mutation
 from jasper.sound.camilla_yaml import emit_sound_config
 from jasper.sound.profile import SimpleEq, SoundProfile, load_profile, save_profile
 
 from .correction_bundle_fixtures import write_golden_correction_bundle
+from .test_active_speaker_runtime_contract import _full_range_stereo
 
 
 class FakeCamilla:
@@ -69,6 +71,10 @@ def test_sound_audition_executor_loads_ephemeral_sound_config(
         "JASPER_SOUND_SETTINGS_PATH",
         str(tmp_path / "sound_settings.json"),
     )
+    topology_path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    with output_topology_mutation(topology_path) as mutation:
+        mutation.save(_full_range_stereo())
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
     current = config_dir / "correction_abc_123.yml"
