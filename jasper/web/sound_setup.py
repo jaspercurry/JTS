@@ -653,7 +653,7 @@ def _reset_output_topology_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
             saved_revision = mutation.save(after)
             try:
                 setup_reset = clear_active_speaker_setup_state()
-            except Exception as exc:  # noqa: BLE001 - commit already published
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
                 # Cleanup follows the durable intent write. It may require
                 # attention, but it must never roll back that write or restore
                 # the prior audible graph.
@@ -5601,13 +5601,20 @@ def _make_handler(
                             result="error",
                             error=type(e).__name__,
                         )
-                        self._send_json(
-                            {
-                                "error": "JTS could not reset speaker setup. "
-                                "Speaker setup was not changed.",
-                            },
-                            status=502,
+                        message = (
+                            "JTS could not confirm whether speaker setup was reset. "
+                            "Review the current setup and try again."
                         )
+                        try:
+                            payload = _output_topology_payload()
+                        except (OSError, RuntimeError, ValueError):
+                            payload = {}
+                        payload["error"] = message
+                        payload["reset"] = {
+                            "status": "needs_attention",
+                            "message": message,
+                        }
+                        self._send_json(payload, status=502)
                     return
                 if path == "/settings":
                     try:

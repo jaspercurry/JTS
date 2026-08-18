@@ -613,16 +613,21 @@ def outputd_grouping_env(
     cfg: GroupingConfig,
     *,
     active_endpoint: bool = False,
+    flat_output_allowed: bool = False,
 ) -> dict[str, str]:
     """The outputd round-trip lane env derived from a GroupingConfig. PURE.
 
     A DUMB ACTIVE member (enabled + valid, either role, single-DAC) plays the
-    round-tripped stream: outputd reads ``MEMBER_CONTENT_FIFO`` and
+    round-tripped stream only when the saved topology explicitly permits a
+    flat final-output graph: outputd reads ``MEMBER_CONTENT_FIFO`` and
     picks this speaker's channel (Increment 3's ``ChannelPick``; the
     channel-split vocabulary). Everyone else gets EMPTY strings — which
     outputd's ``env_optional`` reads as unset, i.e. the byte-identical
     solo loop — so a stale file can never half-configure the lane
     (mirrors ``_assemble_args``'s disable-clears-stale idiom).
+
+    ``flat_output_allowed`` comes from the canonical output runtime contract.
+    Empty, malformed, or roleful topology never arms a direct DAC bypass.
 
     ``active_endpoint`` (distributed-active Slice 3 — the ACTIVE follower, plus
     the active leader's own drivers): DISABLES the ``dac_content`` ChannelPick
@@ -660,7 +665,7 @@ def outputd_grouping_env(
     route = expected_grouping_tts_route(cfg, active_endpoint=active_endpoint)
 
     if cfg.enabled and cfg.error is None:
-        if active_endpoint:
+        if active_endpoint or not flat_output_allowed:
             # CORNER PRECEDENCE (revision plan §6 default): an ACTIVE main is
             # both a bonded endpoint AND an active-speaker, so it could carry the
             # crossover corner TWICE — the wireless-sub mains high-pass here in
@@ -824,28 +829,40 @@ def desired_snapfifo_path(cfg: GroupingConfig) -> str:
 # ============================================================
 
 
-def _active_speaker_box_state() -> bool | None:
-    """Tri-state ACTIVE (multi-driver) classification from saved topology.
+def _output_topology_state() -> tuple[bool | None, bool]:
+    """Return ACTIVE classification and permission for direct flat output.
 
     ``None`` preserves load/parse uncertainty for hardware-sensitive callers;
     they must not guess passive because that could bypass crossover protection.
+    Both answers come from the same topology read.
     """
     try:
         from jasper.active_speaker.playback_route import (
             active_playback_route_capability,
         )
-        from jasper.output_topology import load_output_topology_strict
+        from jasper.active_speaker.runtime_contract import (
+            classify_output_contract,
+            topology_allows_flat_dac_graph,
+        )
+        from jasper.output_topology import (
+            OutputTopologyError,
+            load_output_topology_strict,
+        )
 
         topology = load_output_topology_strict()
-        return active_playback_route_capability(topology).active_group_count > 0
-    except Exception as e:  # noqa: BLE001
+        active = active_playback_route_capability(topology).active_group_count > 0
+        flat_allowed = topology_allows_flat_dac_graph(
+            classify_output_contract(topology)
+        )
+        return active, flat_allowed
+    except OutputTopologyError as e:
         log_event(
             logger,
             "multiroom.reconcile.active_speaker_probe_failed",
             error=e,
             level=logging.WARNING,
         )
-        return None
+        return None, False
 
 
 def is_active_speaker_box() -> bool:
@@ -862,7 +879,7 @@ def is_active_speaker_box() -> bool:
     dumb follower. Legacy boolean consumers fail-soft unknown to ``False``;
     the grouping reconciler reads :func:`_active_speaker_box_state` directly
     and blocks graph transitions on unknown."""
-    return _active_speaker_box_state() is True
+    return _output_topology_state()[0] is True
 
 
 def _systemctl_unit_state(query: str, unit: str) -> bool | None:
@@ -1817,7 +1834,7 @@ def main(argv: list[str] | None = None) -> int:
     # CamillaDSP in the bonded path (distributed-active Slice 3); a DUMB
     # (single-DAC) follower uses outputd's dac_content ChannelPick. The box's
     # saved topology decides which path this reconcile takes.
-    active_box_state = _active_speaker_box_state()
+    active_box_state, flat_output_allowed = _output_topology_state()
     box_is_active = active_box_state is True
     active_follower = active and cfg.role == "follower" and box_is_active
     # An ACTIVE leader is brains + an endpoint: camilla#1 bakes the program
@@ -1886,6 +1903,13 @@ def main(argv: list[str] | None = None) -> int:
             ),
             path=FOLLOWER_STATUS_FILE,
         )
+        cleared, env_ok = _write_derived_env(
+            outputd_grouping_env(cfg, flat_output_allowed=False),
+            path=OUTPUTD_GROUPING_ENV_FILE,
+            consumer="outputd",
+        )
+        if cleared and env_ok:
+            _restart_outputd()
         return 1
 
     # Ring-armed box: REFUSE to form ANY bond (active or passive) while the fan-in
@@ -2088,7 +2112,11 @@ def main(argv: list[str] | None = None) -> int:
     # Paths passed explicitly (module globals read at CALL time) so the
     # test harness can redirect them; a def-time default would pin the
     # production path.
-    outputd_env = outputd_grouping_env(cfg, active_endpoint=active_endpoint)
+    outputd_env = outputd_grouping_env(
+        cfg,
+        active_endpoint=active_endpoint,
+        flat_output_allowed=flat_output_allowed,
+    )
     env_changed, env_ok = _write_derived_env(
         outputd_env,
         path=OUTPUTD_GROUPING_ENV_FILE,

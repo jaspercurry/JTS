@@ -103,6 +103,21 @@ def test_reset_parks_before_saving_empty_topology(
     assert load_output_topology_strict().speaker_groups == ()
 
 
+def test_reset_recovers_from_corrupt_topology(
+    topo_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    topo_path.write_text("{not-json")
+    seen: list[OutputTopology] = []
+    _stub_park(monkeypatch, seen)
+
+    result = topology_runtime.reset_to_unconfigured(reconcile=False)
+
+    assert result["before"]["readable"] is False
+    assert len(seen) == 1
+    assert seen[0].speaker_groups == ()
+    assert load_output_topology_strict().speaker_groups == ()
+
+
 def test_reset_does_not_write_when_parking_fails(
     topo_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -147,11 +162,7 @@ def test_cleanup_failure_keeps_new_topology_and_does_not_restore_old_graph(
 
     def park_and_commit(_topology, commit, **_kwargs):
         events.append("park")
-        try:
-            commit()
-        except Exception:  # pragma: no cover - this path must stay absent
-            events.append("restore-old-graph")
-            raise
+        commit()
         events.append("converge-new-graph")
         return type(
             "_MutationResult",

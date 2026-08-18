@@ -2487,11 +2487,7 @@ def test_topology_save_does_not_restore_old_graph_for_a_post_write_read_failure(
 
     def park_and_commit(_topology, commit, **_kwargs):
         events.append("park")
-        try:
-            committed = commit()
-        except Exception:  # pragma: no cover - this path must stay absent
-            events.append("restore-old-graph")
-            raise
+        committed = commit()
         events.append("converge-new-graph")
         return _RuntimeMutation(committed)
 
@@ -4960,6 +4956,66 @@ def test_reset_http_requires_revision_and_hardware_identity(
         server.server_close()
 
 
+def test_reset_http_reports_ambiguous_failure_with_current_topology(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    topology_path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    current = sound_setup._output_topology_payload()
+
+    def publish_then_fail(_topology, commit, **_kwargs):
+        commit()
+        raise OSError("simulated directory fsync failure")
+
+    monkeypatch.setattr(
+        "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
+        publish_then_fail,
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.reset.clear_active_speaker_setup_state",
+        lambda: {"status": "cleared", "removed": []},
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_summed_test_tone",
+        lambda **_kwargs: {"status": "idle"},
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_commission_tone",
+        lambda **_kwargs: {"status": "idle"},
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_payload",
+        lambda: {"status": "idle"},
+    )
+
+    try:
+        server, base = _start_sound_server(tmp_path)
+    except PermissionError:
+        pytest.skip("environment does not allow loopback test server bind")
+    try:
+        response = json_post_with_csrf(
+            base,
+            "/output-topology/reset",
+            {
+                "topology_revision": current["topology_revision"],
+                "detected_hardware_identity": current["hardware_adoption"]["identity"],
+            },
+            expect_status=502,
+        )
+        payload = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert "not changed" not in payload["error"]
+    assert payload["reset"]["status"] == "needs_attention"
+    assert payload["output_topology"]["speaker_groups"] == []
+    assert payload["topology_revision"] != current["topology_revision"]
+
+
 def test_reset_output_topology_payload_clears_active_setup_state(
     monkeypatch,
     tmp_path: Path,
@@ -5040,11 +5096,7 @@ def test_reset_cleanup_failure_keeps_new_topology_and_does_not_restore_old_graph
 
     def park_and_commit(_topology, commit, **_kwargs):
         events.append("park")
-        try:
-            committed = commit()
-        except Exception:  # pragma: no cover - the assertion is that this stays absent
-            events.append("restore-old-graph")
-            raise
+        committed = commit()
         events.append("converge-new-graph")
         return _RuntimeMutation(committed)
 

@@ -96,9 +96,20 @@ def reset_to_unconfigured(
 
     target = topology_path(path)
     with output_topology_mutation(target) as mutation:
-        snapshot = mutation.snapshot()
-        before = topology_summary(snapshot.topology)
         after = new_topology_draft()
+        try:
+            snapshot = mutation.snapshot()
+            before = topology_summary(snapshot.topology)
+            park_topology = snapshot.topology
+        except OutputTopologyError as exc:
+            # Corrupt intent cannot describe a safe route. Park with the
+            # topology-independent empty draft, then replace the bad bytes.
+            before = {
+                "readable": False,
+                "error": str(exc),
+                "speaker_groups": [],
+            }
+            park_topology = after
         setup_reset: dict[str, Any]
 
         def commit_unconfigured() -> OutputTopology:
@@ -106,7 +117,7 @@ def reset_to_unconfigured(
             mutation.save(after)
             try:
                 setup_reset = clear_active_speaker_setup_state()
-            except Exception as exc:  # noqa: BLE001 - commit already published
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
                 # The new empty intent remains authoritative. Cleanup failure
                 # is reported, never converted into an old-graph restore.
                 setup_reset = {
@@ -116,7 +127,7 @@ def reset_to_unconfigured(
             return after
 
         runtime = park_and_commit_topology(
-            snapshot.topology,
+            park_topology,
             commit_unconfigured,
             controller_factory=controller_factory,
         )
