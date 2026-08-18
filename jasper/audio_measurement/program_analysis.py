@@ -518,6 +518,32 @@ ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR = "applied_alignment_held_after_l
 ALIGNMENT_COMMITTED_NONE_AFTER_UNREADABLE_APPLY = (
     "no_delay_committed_after_unreadable_apply"
 )
+#: The delay came from a bounded, provenance-carrying EXPLICIT PRESCRIPTION the
+#: host validated and handed down
+#: (:data:`MeasurementPriors.explicit_alignment_delay_us`), not from this
+#: capture's own search. Its POLARITY is still the flat-sum objective's answer,
+#: scored at that one delay — which is why this is NOT a member of
+#: :data:`ALIGNMENT_DECLARED_POLARITY_OBJECTIVES`: the capture passed its SNR
+#: verdict, so its anchor is trustworthy and its residual (``prescribed −
+#: anchor``) is a real fact about the speaker that the summed model must carry.
+ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION = "explicit_prescription_committed"
+#: The same prescription on a capture the SNR verdict refused for alignment.
+#: The prescription itself is unaffected by that refusal — it never came from
+#: this capture — so it is still the delay committed, ahead of the applied-held
+#: / declared / unreadable ladder below it, which exist to answer "what do we
+#: commit when nothing better is known". Something better IS known here.
+#: The POLARITY, however, is this capture's question, and the capture was
+#: refused: it commits the declaration, which is why this value (and not the one
+#: above) joins :data:`ALIGNMENT_DECLARED_POLARITY_OBJECTIVES`.
+#:
+#: Deliberately not spelled as :data:`ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION`
+#: plus a suffix — that would make the plain value a strict PREFIX of this one,
+#: and a consumer matching an objective by substring (the hazard
+#: :data:`EVENT_FIT_FAILED_JOURNAL_DROPPED` documents one module over) would
+#: read the two as the same commitment.
+ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR = (
+    "explicit_prescription_held_after_low_snr"
+)
 ALIGNMENT_COMMITTED_SEED_NO_SCORING_BAND = "seed_committed_no_scoring_band"
 ALIGNMENT_COMMITTED_SEED_ALIGNMENT_REFUSED = "seed_committed_alignment_refused"
 ALIGNMENT_COMMITMENTS = frozenset({
@@ -525,6 +551,8 @@ ALIGNMENT_COMMITMENTS = frozenset({
     ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR,
     ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR,
     ALIGNMENT_COMMITTED_NONE_AFTER_UNREADABLE_APPLY,
+    ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION,
+    ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR,
     ALIGNMENT_COMMITTED_SEED_NO_SCORING_BAND,
     ALIGNMENT_COMMITTED_SEED_ALIGNMENT_REFUSED,
 })
@@ -553,6 +581,30 @@ ALIGNMENT_DECLARED_POLARITY_OBJECTIVES = frozenset({
     ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR,
     ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR,
     ALIGNMENT_COMMITTED_NONE_AFTER_UNREADABLE_APPLY,
+    ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR,
+})
+#: The commitments an explicit PRESCRIPTION produced — both arms of it. Public
+#: because it answers a question the host must be able to ask of a finished
+#: candidate without re-deriving it: "the prescription I handed down — was it
+#: actually committed?" The candidate already carries ``alignment_objective``,
+#: so membership here IS that answer, and the round receipt banks it rather than
+#: inventing a second field that could disagree with the objective.
+ALIGNMENT_EXPLICIT_PRESCRIPTION_OBJECTIVES = frozenset({
+    ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION,
+    ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR,
+})
+#: The commitments where the flat-sum objective chose the POLARITY — the only
+#: ones that may answer ``polarity_agrees_with_sum``. A set rather than a bare
+#: ``== ALIGNMENT_COMMITTED_FLAT_SUM`` since #2662's explicit prescription: that
+#: path fixes the DELAY axis and still scores both polarities at it, so the
+#: correlation-vs-objective comparison genuinely happened and reporting ``None``
+#: would hide a real disagreement. The rule for membership is exactly that — the
+#: flat sum answered the polarity question — and it is a narrower claim than
+#: :data:`_SELECTOR_COMMITTED_OBJECTIVES`, which is about the selector having
+#: run at all.
+_FLAT_SUM_POLARITY_OBJECTIVES = frozenset({
+    ALIGNMENT_COMMITTED_FLAT_SUM,
+    ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION,
 })
 #: The commitments the selector itself made — as opposed to the two where it
 #: could not run and the seed simply stood. Only these answer
@@ -560,7 +612,7 @@ ALIGNMENT_DECLARED_POLARITY_OBJECTIVES = frozenset({
 #: and recording "correlation agreed" because nothing disagreed with it is the
 #: exact shape of dishonesty this issue is about.
 _SELECTOR_COMMITTED_OBJECTIVES = frozenset({
-    ALIGNMENT_COMMITTED_FLAT_SUM,
+    *_FLAT_SUM_POLARITY_OBJECTIVES,
     *ALIGNMENT_DECLARED_POLARITY_OBJECTIVES,
 })
 
@@ -1056,6 +1108,22 @@ class MeasurementPriors:
     the same ``0.0`` under a different objective, because that number is then
     a fallback rather than the design's answer.
 
+    ``explicit_alignment_delay_us`` is the host-validated inter-driver delay
+    PRESCRIPTION for this session (#2662), in :class:`AlignmentEstimate`'s
+    signed frame — the delay a prescriber computed from a named measured basis
+    and the request boundary bounded to ±half a period at Fc from that basis
+    (:func:`jasper.active_speaker.crossover_v2.alignment_prescription.read_alignment_prescription`).
+    Like ``applied_alignment`` it is a fact the host holds and hands down rather
+    than one this module could reach for, and it is read on exactly one path:
+    :func:`_select_alignment_pair`, which commits it as the delay and lets the
+    flat-sum objective keep the polarity. ``None`` — the default and every
+    ordinary session — leaves the automatic selection byte-identical. A bare
+    ``float | None`` rather than ``AppliedAlignment``'s wrapper because this
+    question has only TWO answers: a prescription was made, or none was. There
+    is no third "one was made and cannot be read" state to distinguish — an
+    unreadable one never becomes a prior at all, it is refused at the boundary
+    with a named reason.
+
     ``mic_tier`` (#1668 PR-C) is the correction-envelope trust tier
     (``jasper.active_speaker.linearization_envelope.MIC_TIERS`` — "reference"
     / "consumer" / "phone") the measurement mic resolved to, threaded in by
@@ -1075,6 +1143,7 @@ class MeasurementPriors:
     measure_woofer_sweep_hi_hz: float | None = None
     alignment_delay_bounds_us: tuple[float, float] | None = None
     applied_alignment: AppliedAlignment | None = None
+    explicit_alignment_delay_us: float | None = None
     mic_tier: str | None = None
     # Host-evaluated transfers, NOT product objects: the kernel may not import
     # jasper.active_speaker, so it is handed `freqs -> complex response`.
@@ -3928,6 +3997,32 @@ def summed_model_residual_delay_us(
     return float(applied_delay_us) - float(anchor_delay_us)
 
 
+def half_period_us(fc_hz: float) -> float:
+    """Half of one period at ``fc_hz``, in microseconds. ONE spelling.
+
+    The radius of the comb lobe a crossover corner owns, and therefore the
+    delay-ambiguity budget: two delays more than this far apart put the
+    summation on adjacent lobes, where a correlation peak — or a hand-written
+    number — can land on the wrong one and look just as good locally.
+
+    Two callers, and they must be the same number or the repository would hold
+    two different opinions about where a lobe ends: ``_select_alignment_pair``'s
+    ``left_anchor_lobe`` tripwire (which asks whether a COMMITTED delay left the
+    lobe its anchor owns) and
+    :func:`jasper.active_speaker.crossover_v2.alignment_prescription.read_alignment_prescription`'s
+    bound (which asks the same question of a PRESCRIBED delay against its
+    declared measured basis, and refuses rather than warning). One observes, one
+    gates; the geometry is identical, so it is written once.
+
+    ``fc_hz`` must be positive and finite — the quantity is undefined otherwise,
+    and pretending would make a bound vacuous, which is the one direction a
+    fail-closed gate must never fail. Callers guard first: the tripwire returns
+    ``False`` (nothing to compare against) and the prescription reader refuses
+    with a named reason.
+    """
+    return 0.5e6 / float(fc_hz)
+
+
 def _ripple_db(freqs: np.ndarray, magnitude: np.ndarray, lo: float, hi: float) -> float:
     mask = (freqs >= lo) & (freqs <= hi)
     if not np.any(mask):
@@ -4002,7 +4097,7 @@ class AlignmentPairSelection:
         never happened, which is the same dishonesty
         :data:`_SELECTOR_COMMITTED_OBJECTIVES` refuses for the seed fallbacks.
         """
-        if self.objective != ALIGNMENT_COMMITTED_FLAT_SUM:
+        if self.objective not in _FLAT_SUM_POLARITY_OBJECTIVES:
             return None
         return self.polarity_sign == self.seed_polarity_sign
 
@@ -4028,6 +4123,7 @@ def _select_alignment_pair(
     delay_bounds_us: tuple[float, float] | None = None,
     branch_snr_insufficient: bool = False,
     applied_alignment: AppliedAlignment | None = None,
+    explicit_delay_us: float | None = None,
 ) -> AlignmentPairSelection | None:
     """Commit the (polarity, delay) pair whose predicted blend sums flattest.
 
@@ -4108,6 +4204,23 @@ def _select_alignment_pair(
     ``anchor_delay_us`` fields on ``event=program_analysis.alignment_selection``
     (the held number and the declined one).
 
+    ``explicit_delay_us`` is the host-validated PRESCRIPTION (#2662): the delay
+    a prescriber computed from a named measured basis, bounded to ±half a period
+    at Fc from that basis, and refused at the request boundary if it is not.
+    When present it FIXES the delay axis — the grid is that one point, so the
+    committed delay is exactly the prescribed number and never a nearby grid
+    point that scored better — and the polarity axis is searched as usual, so
+    the objective still owns the question it owns. It outranks the low-SNR
+    ladder, because that ladder answers "what do we commit when nothing better
+    is known" and a bench-measured prescription IS something better; what the
+    refusal still costs is the POLARITY, which is this capture's question.
+
+    Deliberately NOT an anchor substitute. Re-centring the search on the
+    prescription would let the objective wander off the prescribed value, and
+    the arm measured would then not be the arm asked for — the one property a
+    delay-sweep harness cannot give up. The seed pair is still scored, so the
+    record always shows what the prescription displaced.
+
     Returns ``None`` when the objective cannot be evaluated at all — no
     frequency bin inside ``[lo_hz, hi_hz]``, or no candidate with a finite score
     — leaving the caller on the seed and saying which in a WARNING.
@@ -4131,11 +4244,29 @@ def _select_alignment_pair(
 
     def _left_anchor_lobe(delay_us: float) -> bool:
         """Did the commitment leave the comb lobe the anchor owns?"""
-        if anchor_delay_us is None or fc_hz <= 0.0:
+        if anchor_delay_us is None or not (fc_hz > 0.0) or not math.isfinite(fc_hz):
             return False
-        return abs(delay_us - anchor_delay_us) > 0.5e6 / fc_hz
+        return abs(delay_us - anchor_delay_us) > half_period_us(fc_hz)
 
     seed_ripple_db = _ripple_at(seed_polarity_sign, seed_delay_us)
+
+    if explicit_delay_us is not None and branch_snr_insufficient:
+        # The prescription stands (it did not come from this capture); the
+        # polarity does not (it did). Declared relative polarity ``+1``, for the
+        # reason the arm below states.
+        prescribed_us = float(explicit_delay_us)
+        return AlignmentPairSelection(
+            polarity_sign=1,
+            delay_us=prescribed_us,
+            ripple_db=_ripple_at(1, prescribed_us),
+            seed_polarity_sign=seed_polarity_sign,
+            seed_delay_us=seed_delay_us,
+            seed_ripple_db=seed_ripple_db,
+            objective=ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR,
+            grid_points=1,
+            grid_step_us=0.0,
+            left_anchor_lobe=_left_anchor_lobe(prescribed_us),
+        )
 
     if branch_snr_insufficient:
         # Neither `anchor_delay_us` nor `seed_delay_us` may be read here: both
@@ -4169,7 +4300,17 @@ def _select_alignment_pair(
     # walking a grid of identical scores and calling the winner a selection.
     grid_step_us = 0.0
     delays = [seed_delay_us]
-    if anchor_delay_us is not None and fc_hz > 0.0:
+    # A prescription fixes the delay axis to exactly one point and leaves the
+    # polarity axis to the objective. The seed is NOT appended here (it is
+    # everywhere else): appending it would let the search return the seed's
+    # delay whenever the seed happened to score within the flat-minimum
+    # epsilon, and an arm that silently measures the estimator's answer instead
+    # of the prescribed one is the failure this whole path exists to remove.
+    # `seed_ripple_db` above already scored the seed, so the record still shows
+    # what was displaced.
+    if explicit_delay_us is not None:
+        delays = [float(explicit_delay_us)]
+    elif anchor_delay_us is not None and fc_hz > 0.0:
         span_us = ALIGNMENT_FLATNESS_SPAN_PERIODS * 1e6 / fc_hz
         n_steps = int(round(span_us / ALIGNMENT_FLATNESS_STEP_US))
         n_steps = max(1, min(n_steps, ALIGNMENT_FLATNESS_MAX_STEPS))
@@ -4235,7 +4376,11 @@ def _select_alignment_pair(
         seed_polarity_sign=seed_polarity_sign,
         seed_delay_us=seed_delay_us,
         seed_ripple_db=seed_ripple_db,
-        objective=ALIGNMENT_COMMITTED_FLAT_SUM,
+        objective=(
+            ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION
+            if explicit_delay_us is not None
+            else ALIGNMENT_COMMITTED_FLAT_SUM
+        ),
         grid_points=len(delays),
         grid_step_us=grid_step_us,
         left_anchor_lobe=_left_anchor_lobe(committed_delay_us),
@@ -5956,6 +6101,7 @@ def _analyze_measure(
         alignment_delay_bounds_us=priors.alignment_delay_bounds_us,
         branch_snr_insufficient=branch_snr_insufficient,
         applied_alignment=priors.applied_alignment,
+        explicit_alignment_delay_us=priors.explicit_alignment_delay_us,
     )
     # `_build_candidate` owns the selection; the estimate published here is the
     # one every downstream consumer reads (`alignment_to_candidate_fields`
@@ -6028,6 +6174,7 @@ def _build_candidate(
     alignment_delay_bounds_us: tuple[float, float] | None = None,
     branch_snr_insufficient: bool = False,
     applied_alignment: AppliedAlignment | None = None,
+    explicit_alignment_delay_us: float | None = None,
 ) -> tuple[CrossoverCandidate, tuple[np.ndarray, np.ndarray]]:
     freqs, W, gate_w = _aligned_branch_tf(woofer_full_ir, sample_rate, n_fft, calibration=calibration)
     _f2, T, gate_t = _aligned_branch_tf(tweeter_full_ir, sample_rate, n_fft, calibration=calibration)
@@ -6149,10 +6296,32 @@ def _build_candidate(
             delay_bounds_us=alignment_delay_bounds_us,
             branch_snr_insufficient=branch_snr_insufficient,
             applied_alignment=applied_alignment,
+            explicit_delay_us=explicit_alignment_delay_us,
         )
         if alignment.status == ALIGNMENT_OK
         else None
     )
+    # A prescription that never reached a commitment is the one failure a delay
+    # sweep must not absorb quietly: the operator asked for an arm and the round
+    # would otherwise measure the trims-only fallback under that arm's name. The
+    # aligner's own refusal is still respected (a railed delay search leaves the
+    # branch pair in an unknown frame, and `alignment_to_candidate_fields` will
+    # apply no delay at all) — what changes is that the round SAYS SO, here,
+    # where the fact is known, instead of leaving a reader to infer it from an
+    # objective string that mentions the seed.
+    if explicit_alignment_delay_us is not None and (
+        selection is None
+        or selection.objective not in ALIGNMENT_EXPLICIT_PRESCRIPTION_OBJECTIVES
+    ):
+        log_event(
+            logger, "program_analysis.alignment_prescription_not_committed",
+            level=logging.WARNING,
+            woofer_role=woofer_role, tweeter_role=tweeter_role,
+            fc_hz=round(float(fc_hz), 3),
+            prescribed_delay_us=round(float(explicit_alignment_delay_us), 3),
+            alignment_status=alignment.status,
+            objective=None if selection is None else selection.objective,
+        )
     if selection is None:
         polarity_sign = alignment.polarity_sign
         delay_us = seed_delay_us
@@ -6225,6 +6394,14 @@ def _build_candidate(
                 else round(float(applied_alignment.delay_us), 3)
             ),
             applied_alignment_present=applied_alignment is not None,
+            # The same disclosure for the same reason, one rung further out: a
+            # delay this capture did not supply, and where it came from. `None`
+            # on every ordinary session, which is what makes a non-None value
+            # greppable as "this round's delay was prescribed, not searched".
+            prescribed_delay_us=(
+                None if explicit_alignment_delay_us is None
+                else round(float(explicit_alignment_delay_us), 3)
+            ),
             anchor_delay_us=(
                 None if anchor_delay_us is None
                 else round(float(anchor_delay_us), 3)
