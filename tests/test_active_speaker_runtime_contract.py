@@ -1560,12 +1560,15 @@ def test_pending_intent_refuses_unpaired_surrogate_without_raising(
     }
 
 
-def test_no_topology_allows_flat_outputd_cutover() -> None:
+def test_no_topology_refuses_flat_outputd_cutover() -> None:
     topology = _topology([])
     graph = classify_camilla_graph(topology=topology, text=_flat_yaml())
 
     assert graph.classification == GRAPH_FLAT_FULL_RANGE
-    assert graph.allowed is True
+    assert graph.allowed is False
+    assert graph.issues[0]["code"] == (
+        "flat_full_range_graph_illegal_for_unconfigured_topology"
+    )
 
 
 def test_full_range_stereo_allows_flat_outputd_cutover() -> None:
@@ -1916,7 +1919,9 @@ def test_flat_graph_muted_outputs_declines_where_index_mapping_is_unproven() -> 
 
     assert flat_graph_muted_outputs(_full_range_mono_on(0), width=2) == frozenset({1})
     assert flat_graph_muted_outputs(_full_range_mono_on(1), width=2) == frozenset({0})
-    # Stereo, unconfigured, and roleful topologies mute nothing.
+    # Stereo and roleful topologies have no index mute here. An unconfigured
+    # draft also has no renderer mute, but the runtime selector refuses its
+    # flat artifact and parks audio.
     assert flat_graph_muted_outputs(_full_range_stereo(), width=2) == frozenset()
     assert flat_graph_muted_outputs(_topology([]), width=2) == frozenset()
     assert flat_graph_muted_outputs(
@@ -3324,17 +3329,16 @@ def test_flat_program_graph_allowed_for_full_range_stereo() -> None:
     assert flat_program_graph_blocked_reason(_full_range_stereo()) is None
 
 
-def test_flat_program_graph_allowed_for_unconfigured_topology() -> None:
-    assert flat_program_graph_blocked_reason(_topology([])) is None
+def test_flat_program_graph_is_blocked_for_unconfigured_topology() -> None:
+    assert flat_program_graph_blocked_reason(_topology([])) == (
+        "no speaker layout is configured"
+    )
 
 
-def test_flat_program_graph_allowed_for_subwoofer_only_topology() -> None:
-    # Scope: the verdict targets the tweeter-damage hazard (role == "tweeter").
-    # A subwoofer is roleful but not a protected tweeter, so a flat program graph
-    # is not blocked on its account; the broader "flat illegal for any roleful
-    # topology" rule is enforced separately at graph selection
-    # (safe_graph_for_current_topology).
-    assert flat_program_graph_blocked_reason(_subwoofer_topology()) is None
+def test_flat_program_graph_is_blocked_for_subwoofer_only_topology() -> None:
+    # Flat DAC playback requires an explicit passive main layout, not merely a
+    # topology without a protected tweeter.
+    assert flat_program_graph_blocked_reason(_subwoofer_topology()) is not None
 
 
 def test_flat_program_graph_fail_closed_on_corrupt_topology(
@@ -4137,15 +4141,8 @@ def test_active_graph_is_parked_reads_provenance_not_the_filename(
 # --- #2135 panel round: exit B, and the pipeline exactness the panel escaped --
 
 
-def test_passive_topology_never_preserves_a_parked_graph(tmp_path: Path) -> None:
-    """Blocker F2(a): "reset output topology to passive" must actually exit.
-
-    `preserve_current` keeps ANY allowed current graph on a non-roleful topology,
-    and a parked graph is allowed for every topology — so without an explicit
-    exclusion the box would keep /dev/null across deploy after deploy after
-    being reset to passive. The hearing-safety lens reproduced exactly that for
-    three consecutive decisions.
-    """
+def test_explicit_passive_layout_exits_the_parked_reset_state(tmp_path: Path) -> None:
+    """A later passive choice must exit reset's unconfigured parked state."""
     parked_path = tmp_path / "active_speaker_parked.yml"
     text, graph = build_parked_muted_graph(
         _active_topology("mono", "active_2_way"), config_path=parked_path
@@ -4155,18 +4152,17 @@ def test_passive_topology_never_preserves_a_parked_graph(tmp_path: Path) -> None
     flat_path = tmp_path / "outputd-cutover.yml"
     flat_path.write_text(_flat_yaml(), encoding="utf-8")
 
-    # Same box, one minute later: topology reset to passive, statefile still
-    # pointing at the parked graph.
-    for _attempt in range(3):
-        decision = safe_graph_for_current_topology(
-            _full_range_stereo(),
-            current_config_path=parked_path,
-            flat_config_path=flat_path,
-            parked_config_path=parked_path,
-            **_write_authority(tmp_path),
-        )
-        assert decision.status == "select_flat"
-        assert decision.selected_config_path == str(flat_path)
+    # Reset has already parked the box. The household now saves an explicit
+    # passive layout; the old parked graph must not be preserved.
+    decision = safe_graph_for_current_topology(
+        _full_range_stereo(),
+        current_config_path=parked_path,
+        flat_config_path=flat_path,
+        parked_config_path=parked_path,
+        **_write_authority(tmp_path),
+    )
+    assert decision.status == "select_flat"
+    assert decision.selected_config_path == str(flat_path)
 
 
 @pytest.mark.parametrize(

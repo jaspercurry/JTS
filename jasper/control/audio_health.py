@@ -224,7 +224,7 @@ def _transport_state(
 
 
 def _parked_graph_transport() -> dict[str, Any] | None:
-    """Transport state for the PARKED graph (#2135), or None when not parked.
+    """Transport state for the intentional PARKED graph, or None when absent.
 
     Feeds :func:`_parked_signal` through the same ``coherence_errors`` channel
     the transport detector uses, so the parked wording keeps exactly one writer.
@@ -235,21 +235,34 @@ def _parked_graph_transport() -> dict[str, Any] | None:
     from ..active_speaker.environment import read_camilla_statefile_config_path
     from ..active_speaker.playback_route import active_lane_capability_gap
     from ..active_speaker.runtime_contract import (
-        PARKED_MUTED_EXITS,
         active_graph_is_parked,
+        parked_muted_exits,
     )
     from ..audio_runtime_plan import DEFAULT_CAMILLA_STATEFILE_PATH
-    from ..output_topology import load_output_topology
+    from ..output_topology import OutputTopologyError, load_output_topology_strict
 
     config_path = read_camilla_statefile_config_path(DEFAULT_CAMILLA_STATEFILE_PATH)
     if not active_graph_is_parked(config_path):
         return None
-    gap = active_lane_capability_gap(load_output_topology())
+    try:
+        topology = load_output_topology_strict()
+    except OutputTopologyError:
+        # A malformed saved layout must not be reclassified as an empty draft:
+        # that would tell a household to choose a new layout while hiding a
+        # fault the doctor correctly fails. The parked graph remains safe, but
+        # this is not intentional setup silence.
+        return {
+            "coherence_errors": [
+                "Saved speaker layout is unavailable or invalid; run jasper-doctor"
+            ],
+            "coherence_notes": [],
+            "capability_gap": None,
+        }
+    gap = active_lane_capability_gap(topology)
     return {
         "coherence_errors": [
-            "CamillaDSP is holding the parked graph: the saved speaker layout "
-            "has no staged startup graph, so every output is muted "
-            f"({PARKED_MUTED_EXITS})"
+            "CamillaDSP is holding the parked graph, so every output is muted "
+            f"({parked_muted_exits(topology)})"
         ],
         "coherence_notes": [],
         "capability_gap": gap.to_dict() if gap is not None else None,

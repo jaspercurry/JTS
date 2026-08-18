@@ -713,6 +713,53 @@ def test_runtime_safe_graph_cli_writes_staged_config_for_active_topology(
     assert f"config_path: {staged}" in statefile.read_text(encoding="utf-8")
 
 
+def test_runtime_safe_graph_cli_apply_live_fails_when_camilla_rejects(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    """A live-load failure must fail the reconciler's command, not just log."""
+    from jasper.active_speaker.runtime_convergence import RuntimeConvergenceResult
+    from jasper.output_topology import save_output_topology
+    from tests.test_active_speaker_runtime_contract import _flat_yaml, _full_range_stereo
+
+    topology = _full_range_stereo()
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(topology, path=topology_path)
+    flat = tmp_path / "outputd-cutover.yml"
+    flat.write_text(_flat_yaml(), encoding="utf-8")
+    statefile = tmp_path / "outputd-statefile.yml"
+
+    def rejected_live_load(decision, **_kwargs):
+        return RuntimeConvergenceResult(
+            decision=decision,
+            statefile_written=True,
+            live_applied=False,
+            error="CamillaDSP unreachable or rejected the proved graph",
+        )
+
+    monkeypatch.setattr(
+        "jasper.cli.active_speaker.apply_runtime_graph_decision", rejected_live_load
+    )
+
+    code = main([
+        "runtime-safe-graph",
+        "--topology",
+        str(topology_path),
+        "--statefile",
+        str(statefile),
+        "--flat-config",
+        str(flat),
+        "--apply-live",
+        "--json",
+    ])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert payload["live_applied"] is False
+    assert "rejected" in payload["live_error"]
+
+
 def test_runtime_safe_graph_cli_prefers_applied_baseline_state(
     tmp_path: Path,
     capsys,

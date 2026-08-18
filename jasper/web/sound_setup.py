@@ -102,16 +102,22 @@ from jasper.audio_hardware.usb_port_role import (
 )
 from jasper.log_event import log_event
 from jasper.output_topology import (
+    OutputHardware,
     OutputTopology,
     channel_identity_report,
     clock_domain_report,
     load_output_topology,
+    new_topology_draft,
     save_output_topology,
     set_channel_identity_verified,
     set_channel_protection_status,
     topology_path,
 )
-from jasper.output_hardware import load_state as load_output_hardware_state
+from jasper.output_hardware import (
+    detected_hardware_adoption_precondition,
+    load_state as load_output_hardware_state,
+    topology_hardware_from_state,
+)
 from jasper.active_speaker.commission_wiring import (
     commission_seams,
     read_current_config_path,
@@ -247,6 +253,16 @@ _live_draft_unavailable_log_at: dict[str, float] = {}
 
 class OutputTopologyRevisionConflict(ValueError):
     """Raised when a browser posts a topology based on stale saved state."""
+
+
+class OutputTopologyResetConflict(ValueError):
+    """A reset request no longer names the saved topology or hardware."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(
+            "Speaker setup or detected hardware changed. Review it and try again."
+        )
 
 
 class OutputTopologyCapabilityBlocked(ValueError):
@@ -455,11 +471,17 @@ def _output_topology_revision() -> str:
 
 def _output_topology_payload() -> dict[str, Any]:
     topology = load_output_topology()
+    observed_hardware = load_output_hardware_state()
 
     return {
         "output_topology": topology.to_dict(include_evaluation=True),
         "topology_revision": _output_topology_revision(),
-        "output_hardware": _output_hardware_dict(),
+        "output_hardware": (
+            observed_hardware.to_dict() if observed_hardware is not None else None
+        ),
+        "hardware_adoption": detected_hardware_adoption_precondition(
+            observed_hardware
+        ),
         "i2s_hat": _i2s_hat_payload(),
         "channel_identity": channel_identity_report(topology),
         "clock_domain": clock_domain_report(topology),
@@ -500,93 +522,53 @@ def _refuse_undrivable_layout(topology: OutputTopology) -> None:
     )
 
 
-def _trigger_topology_reconcile() -> dict[str, Any]:
-    """Re-derive the runtime env from a freshly-saved layout, best-effort.
-
-    Same broker-mediated ``start`` the reset path uses (only ``start`` of this
-    unit is permitted to non-root clients). Never raises: a failed kick leaves
-    the saved layout intact and the previous graph running, which self-heals on
-    the next reconcile or boot, so it must not turn a successful save into a
-    failed one. The outcome is reported to the page instead.
-
-    This converges intent, it does not apply a layout: the reconciler enters
-    active mode only when a legal active graph is already the live CamillaDSP
-    config. Convergence is real, not inert — on a box running a commissioned
-    active graph, an edit that invalidates it flips the gate back to passive
-    and bounces outputd, so output parks until the layout is re-commissioned
-    or reverted.
-
-    The household can see that state, on the Status dashboard rather than
-    here: ``_parked_signal`` in ``jasper/control/audio_health.py`` is the sole
-    writer of the parked sentence, and the dashboard renders it through
-    ``outputAlert`` (the Audio card that appears at the top of ``/system/``
-    only while the signal path is broken) and through the current-stream card
-    on ``/system/audio/``. This page carries no parked banner of its own — an
-    earlier version of this docstring claimed one that never existed (#2381).
-
-    Unlike the reset command this does NOT wait for the oneshot: the reset is a
-    one-shot operator action, while ``/sound/setup/`` saves a draft at every
-    card, and nothing in the response depends on the converged env. Blocking
-    each save on a multi-second reconcile would stall the wizard for no gain,
-    so ``ok`` here means the start was accepted, not that it finished.
-    """
-
-    from jasper.cli.output_topology_reset import RECONCILE_UNIT
-    from jasper.control.restart_broker import manage_units
-
-    try:
-        result = manage_units(
-            RECONCILE_UNIT,
-            verb="start",
-            reason="sound output topology save",
-            no_block=True,
-        )
-    except (OSError, RuntimeError) as exc:
-        result = {"ok": False, "error": str(exc)}
-    if not result.get("ok"):
-        # Failure only: the happy path is already carried by the save event's
-        # reconcile_ok field, so this line exists to be loud, not to narrate.
-        log_event(
-            logger,
-            "sound.output_topology_save_reconcile",
-            level=logging.WARNING,
-            unit=RECONCILE_UNIT,
-            error=result.get("error"),
-        )
-    return result
-
-
 def _save_output_topology_payload(
     raw: dict[str, Any],
     *,
     require_revision: bool = False,
 ) -> dict[str, Any]:
-    # Hold the write lock across ONLY the revision-compare, the write, and the
-    # post-write revision recapture so they are one atomic critical section (see
-    # _output_topology_write_lock). Under ThreadingHTTPServer two concurrent
-    # saves would otherwise both read the same revision, both pass the
-    # stale-check, and both write — a lost update. The response payload below is
-    # built after release (no I/O held under the lock); ``saved_revision`` is
-    # captured inside the lock so the returned revision is this writer's own
-    # published value, not a racing winner's.
+    """Replace saved speaker intent only after audio is proven parked."""
+
+    from jasper.active_speaker.runtime_convergence import park_for_topology
+    from jasper.output_topology_runtime import trigger_reconcile
+
+    def verify_revision() -> None:
+        if not require_revision:
+            return
+        expected_revision = str(raw.get("topology_revision") or "")
+        if not expected_revision or expected_revision != _output_topology_revision():
+            raise OutputTopologyRevisionConflict(
+                "speaker layout changed in another session; refresh hardware before saving"
+            )
+
+    # Refuse malformed or structurally undrivable intent before interrupting a
+    # working speaker. Applying required software guards is deferred until the
+    # post-park commit because that helper persists its result.
+    raw_topology = raw.get("output_topology", raw)
+    topology = OutputTopology.from_mapping(raw_topology)
+    _refuse_undrivable_layout(topology)
+
+    # Avoid interrupting audio for the routine stale-tab case. Re-check below
+    # after parking; that second check protects the actual topology write.
     with _output_topology_write_lock:
-        if require_revision:
-            expected_revision = str(raw.get("topology_revision") or "")
-            current_revision = _output_topology_revision()
-            if not expected_revision or expected_revision != current_revision:
-                raise OutputTopologyRevisionConflict(
-                    "speaker layout changed in another session; refresh "
-                    "hardware before saving"
-                )
-        raw_topology = raw.get("output_topology", raw)
-        topology = OutputTopology.from_mapping(raw_topology)
-        _refuse_undrivable_layout(topology)
+        verify_revision()
+        topology_to_park = load_output_topology()
+    summed_stop = _active_speaker_stop_summed_test_tone(
+        reason="output_topology_save"
+    )
+    tone_stop = _active_speaker_stop_commission_tone(reason="output_topology_save")
+    safe_stop = _active_speaker_stop_payload()
+    parked = park_for_topology(topology_to_park)
+    if not parked.ok:
+        raise RuntimeError("JTS could not safely park audio. Speaker layout was not changed.")
+
+    with _output_topology_write_lock:
+        verify_revision()
         topology, guards_changed = _active_speaker_request_missing_software_guards(
             topology
         )
         save_output_topology(topology)
-        saved_revision = _output_topology_revision()
-    reconcile = _trigger_topology_reconcile()
+    reconcile = trigger_reconcile(reason="output_topology_save")
     evaluation = topology.evaluation()
     log_event(
         logger,
@@ -600,33 +582,120 @@ def _save_output_topology_payload(
         warnings=len(evaluation["warnings"]),
         software_guards_requested=str(guards_changed),
         reconcile_ok=bool(reconcile.get("ok")),
+        summed_stop=str(summed_stop.get("status")),
+        tone_stop=str(tone_stop.get("status")),
+        safe_stop=str(safe_stop.get("status")),
     )
-    return {
-        "output_topology": topology.to_dict(include_evaluation=True),
-        "topology_revision": saved_revision,
-        "output_hardware": _output_hardware_dict(),
-        "channel_identity": channel_identity_report(topology),
-        "clock_domain": clock_domain_report(topology),
-        "active_playback_route": _active_speaker_playback_route_payload(topology),
-        "reconcile": reconcile,
-    }
+    save = (
+        {
+            "status": "needs_attention",
+            "message": (
+                "Speaker layout was saved, but audio remains off. "
+                "Open Status before continuing."
+            ),
+        }
+        if not reconcile.get("ok")
+        else {"status": "saved", "message": "Saved speaker layout."}
+    )
+    return {**_output_topology_payload(), "reconcile": reconcile, "save": save}
 
 
-def _reset_output_topology_payload() -> dict[str, Any]:
-    from jasper.active_speaker.reset import clear_active_speaker_setup_state
-    from jasper.cli.output_topology_reset import reset_to_detected_passive
+def _reset_request_hardware_locked(raw: Mapping[str, Any]) -> OutputHardware | None:
+    """Validate the browser's topology and detected-hardware snapshot.
+
+    Caller holds ``_output_topology_write_lock``.  The reconciler owns the
+    observed hardware file; this check only proves that the destructive action
+    still names its current contents.
+    """
+
+    expected_revision = raw.get("topology_revision")
+    expected_identity = raw.get("detected_hardware_identity")
+    if not isinstance(expected_revision, str) or not expected_revision:
+        raise ValueError("topology_revision is required")
+    if not isinstance(expected_identity, str) or not expected_identity:
+        raise ValueError("detected_hardware_identity is required")
+    if expected_revision != _output_topology_revision():
+        raise OutputTopologyResetConflict("topology_changed")
+    observed = load_output_hardware_state()
+    adoption = detected_hardware_adoption_precondition(observed)
+    if expected_identity != adoption["identity"]:
+        raise OutputTopologyResetConflict("detected_hardware_changed")
+    if adoption["allowed"]:
+        return OutputHardware.from_mapping(topology_hardware_from_state(observed))
+    return None
+
+
+def _reset_output_topology_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """Clear speaker setup to a silent unconfigured topology.
+
+    A reset is deliberately one operation for the contextual detected-hardware
+    action and the lower recovery control.  The former is merely hidden until
+    the reconciler can name usable hardware; the latter may still clear stale
+    setup when nothing usable is attached.  Neither path loads a flat graph.
+    """
+
+    from jasper.output_topology_runtime import reset_to_unconfigured
+
+    if not isinstance(raw, Mapping):
+        raise ValueError("reset request must be an object")
+
+    # A quick first compare avoids interrupting audio for the normal stale-tab
+    # case. The second compare below is the one that guards destructive work.
+    with _output_topology_write_lock:
+        _reset_request_hardware_locked(raw)
+        topology_to_park = load_output_topology()
 
     summed_stop = _active_speaker_stop_summed_test_tone(reason="output_topology_reset")
     tone_stop = _active_speaker_stop_commission_tone(reason="output_topology_reset")
     safe_stop = _active_speaker_stop_payload()
-    reset = reset_to_detected_passive()
-    setup_reset = clear_active_speaker_setup_state()
+
+    def commit_unconfigured() -> OutputTopology:
+        with _output_topology_write_lock:
+            detected_hardware = _reset_request_hardware_locked(raw)
+            current = load_output_topology()
+            if detected_hardware is not None:
+                after = new_topology_draft(hardware=detected_hardware)
+            else:
+                # Recovery remains possible without attached hardware. Preserve
+                # the last known DAC description only as topology metadata;
+                # zero groups means unconfigured and runtime stays parked.
+                after = new_topology_draft(hardware=current.hardware)
+            save_output_topology(after)
+            return after
+
+    reset_result = reset_to_unconfigured(
+        topology_to_park=topology_to_park,
+        commit_unconfigured=commit_unconfigured,
+    )
+    setup_reset = reset_result["active_speaker_reset"]
+    reconcile = reset_result["reconcile"]
+    saved_revision = _output_topology_revision()
+    adoption = detected_hardware_adoption_precondition(load_output_hardware_state())
+    needs_attention = (
+        setup_reset.get("status") == "partial" or not reconcile.get("ok")
+    )
+    log_event(
+        logger,
+        "sound.output_topology_reset",
+        result="needs_attention" if needs_attention else "reset",
+        topology_revision=saved_revision,
+        hardware_ready=str(bool(adoption["allowed"])),
+        cleanup_status=str(setup_reset.get("status")),
+        reconcile_ok=str(bool(reconcile.get("ok"))),
+        summed_stop=str(summed_stop.get("status")),
+        tone_stop=str(tone_stop.get("status")),
+        safe_stop=str(safe_stop.get("status")),
+    )
     payload = _output_topology_payload()
-    payload["reset"] = reset
-    payload["active_speaker_reset"] = setup_reset
-    payload["summed_test_stop"] = summed_stop
-    payload["tone_stop"] = tone_stop
-    payload["safe_playback"] = safe_stop
+    payload["reset"] = {
+        "status": "needs_attention" if needs_attention else "reset",
+        "message": (
+            "Speaker setup was reset and audio is off. JTS could not finish "
+            "setup cleanup; open Status before continuing."
+            if needs_attention
+            else "Speaker setup was reset. Audio is off until you choose a speaker layout."
+        ),
+    }
     payload["saved"] = True
     return payload
 
@@ -5226,7 +5295,10 @@ def _make_handler(
                         return
                     try:
                         payload, result = _save_i2s_hat_payload(enabled)
-                    except (OSError, RuntimeError, ValueError) as e:
+                    except ValueError as e:
+                        self._send_json({"error": str(e)}, status=HTTPStatus.BAD_REQUEST)
+                        return
+                    except (OSError, RuntimeError) as e:
                         self._send_json({"error": str(e)}, status=502)
                         return
                     if not result.get("ok"):
@@ -5245,7 +5317,7 @@ def _make_handler(
                         self._send_json(
                             _active_speaker_channel_identity_save_payload(raw)
                         )
-                    except OSError as e:
+                    except (OSError, RuntimeError) as e:
                         log_event(
                             logger,
                             "sound.active_speaker_channel_identity",
@@ -5542,7 +5614,7 @@ def _make_handler(
                         payload = _output_topology_payload()
                         payload["error"] = str(e)
                         self._send_json(payload, status=HTTPStatus.CONFLICT)
-                    except OSError as e:
+                    except (OSError, RuntimeError) as e:
                         log_event(
                             logger,
                             "sound.output_topology_save",
@@ -5555,8 +5627,22 @@ def _make_handler(
                     return
                 if path == "/output-topology/reset":
                     try:
-                        self._send_json(_reset_output_topology_payload())
-                    except (OSError, RuntimeError, ValueError) as e:
+                        self._send_json(_reset_output_topology_payload(raw))
+                    except OutputTopologyResetConflict as e:
+                        log_event(
+                            logger,
+                            "sound.output_topology_reset",
+                            level=logging.WARNING,
+                            result="conflict",
+                            conflict=e.code,
+                        )
+                        payload = _output_topology_payload()
+                        payload["error"] = str(e)
+                        payload["conflict"] = e.code
+                        self._send_json(payload, status=HTTPStatus.CONFLICT)
+                    except ValueError as e:
+                        self._send_json({"error": str(e)}, status=HTTPStatus.BAD_REQUEST)
+                    except (OSError, RuntimeError) as e:
                         log_event(
                             logger,
                             "sound.output_topology_reset",
@@ -5565,7 +5651,13 @@ def _make_handler(
                             result="error",
                             error=type(e).__name__,
                         )
-                        self._send_json({"error": str(e)}, status=502)
+                        self._send_json(
+                            {
+                                "error": "JTS could not reset speaker setup. "
+                                "Speaker setup was not changed.",
+                            },
+                            status=502,
+                        )
                     return
                 if path == "/settings":
                     try:

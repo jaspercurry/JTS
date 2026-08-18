@@ -13,6 +13,7 @@ and `/sound/`.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -265,6 +266,79 @@ class OutputHardwareState:
         if self.usb_data_role is not None:
             out["usb_data_role"] = self.usb_data_role.to_dict()
         return out
+
+
+def detected_hardware_identity(state: OutputHardwareState | None) -> str:
+    """Return a stable opaque concurrency token for detected output hardware.
+
+    This is deliberately a snapshot *identity*, not a second hardware record.
+    The output-hardware reconciler remains the only writer of observed facts;
+    callers merely echo this token when an action must prove it still applies.
+    ALSA card indexes and ``observed_at`` are volatile, so neither participates.
+    """
+
+    if state is None:
+        payload: dict[str, Any] = {"status": "missing"}
+    else:
+        children = sorted(
+            [
+                {
+                    "device_id": child.device_id,
+                    "vendor_id": child.vendor_id,
+                    "product_id": child.product_id,
+                    "serial": child.serial,
+                    "stable_path": child.stable_path,
+                    "usb_path": child.usb_path,
+                    "controller": child.controller,
+                    "busnum": child.busnum,
+                    "devpath": child.devpath,
+                    "endpoint_sync": child.endpoint_sync,
+                    "has_playback": child.has_playback,
+                }
+                for child in state.child_devices
+            ],
+            key=lambda child: json.dumps(child, sort_keys=True, separators=(",", ":")),
+        )
+        payload = {
+            "profile_id": state.profile_id,
+            "status": state.status,
+            "physical_output_count": state.physical_output_count,
+            "children": children,
+            "issues": sorted(
+                (str(issue.get("severity") or ""), str(issue.get("code") or ""))
+                for issue in state.issues
+            ),
+        }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def detected_hardware_adoption_precondition(
+    state: OutputHardwareState | None,
+) -> dict[str, Any]:
+    """Project the reconciler-owned state into the reset action precondition.
+
+    ``allowed`` controls only the contextual "Use detected hardware" affordance.
+    The lower recovery reset may still clear a speaker to silent unconfigured
+    state when hardware is absent or not usable.
+    """
+
+    blockers = (
+        any(issue.get("severity") == "blocker" for issue in state.issues)
+        if state is not None
+        else False
+    )
+    allowed = bool(
+        state is not None
+        and state.status == "ready"
+        and state.profile_id != "unknown"
+        and state.physical_output_count > 0
+        and not blockers
+    )
+    return {
+        "allowed": allowed,
+        "identity": detected_hardware_identity(state),
+    }
 
 
 @dataclass(frozen=True)

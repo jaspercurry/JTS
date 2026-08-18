@@ -6888,13 +6888,9 @@ async function testResetPartialCleanupSurfacesWarning() {
       posts.push({ path, body: JSON.parse(options.body || "{}") });
       return Promise.resolve(response({
         output_topology: topologyPayload(),
-        active_speaker_reset: {
-          status: "partial",
-          errors: [{
-            id: "staged_config",
-            path: "/var/lib/jasper/active-speaker-staged.json",
-            error: "PermissionError: no access",
-          }],
+        reset: {
+          status: "needs_attention",
+          message: "Speaker setup was reset and audio is off. JTS could not finish setup cleanup; open Status before continuing.",
         },
       }));
     },
@@ -6909,13 +6905,10 @@ async function testResetPartialCleanupSurfacesWarning() {
     fail("reset button should post to the topology reset endpoint", { posts });
   }
   const status = harness.elements.get("status").textContent;
-  if (!status.includes("could not clear 1 active-speaker setup artifact")) {
+  if (!status.includes("could not finish setup cleanup")) {
     fail("partial active-speaker cleanup should be visible to the operator", { status });
   }
-  if (!status.includes("staged_config")) {
-    fail("partial cleanup warning should name the failed artifact id", { status });
-  }
-  for (const leak of ["/var/lib", "PermissionError"]) {
+  for (const leak of ["/var/lib", "PermissionError", "staged_config"]) {
     if (status.includes(leak)) {
       fail("partial cleanup warning should not leak backend path/error details", {
         leak,
@@ -6924,6 +6917,36 @@ async function testResetPartialCleanupSurfacesWarning() {
     }
   }
   return { resetPartialCleanupSurfacesWarning: true };
+}
+
+async function testSavedTopologyReconcileFailureNeedsAttention() {
+  const fetchHandler = baseFetch({
+    "./output-topology": (path, options = {}) => {
+      if ((options.method || "GET") === "POST") {
+        return Promise.resolve(response({
+          output_topology: topologyPayload(),
+          topology_revision: "sha256:saved",
+          save: {
+            status: "needs_attention",
+            message: "Speaker layout was saved, but audio remains off. Open Status before continuing.",
+          },
+          reconcile: { ok: false },
+        }));
+      }
+      return Promise.resolve(response(topologyPayload()));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await harness.flush(); await harness.flush(); await harness.flush();
+
+  harness.dispatchClick({ "data-act": "save-output-topology" });
+  await harness.flush(); await harness.flush(); await harness.flush();
+
+  const status = harness.elements.get("status").textContent;
+  if (!status.includes("layout was saved, but audio remains off")) {
+    fail("a failed post-save reconcile must not announce a clean save", { status });
+  }
+  return { savedTopologyReconcileFailureNeedsAttention: true };
 }
 
 // Distributed-active Slice 4: a bonded active follower's /sound/ renders the
@@ -7843,6 +7866,7 @@ results.push(await testCommissionRampLimitKeepsConfirmationOpen());
 results.push(await testCommissionAutoRampResetsRunningFlagOnThrow());
 results.push(await testCommissionAutoRampLoopResetsRunningFlagOnRenderThrow());
 results.push(await testResetPartialCleanupSurfacesWarning());
+results.push(await testSavedTopologyReconcileFailureNeedsAttention());
 results.push(await testFollowerModeRendersLocalDriverUi());
 results.push(await testFollowerModeSafeFallbackOnMalformedIsland());
 results.push(await testSubwooferDeadEndOffersWirelessCta());

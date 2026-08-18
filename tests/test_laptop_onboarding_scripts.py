@@ -328,6 +328,9 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         combined = result.stdout + result.stderr
         self.assertEqual(result.returncode, 0, combined)
         self.assertIn("Install profile:   full", result.stdout)
+        self.assertIn("http://jts4.local/sound/setup/", result.stdout)
+        self.assertIn("choose mono/stereo + passive/active", result.stdout)
+        self.assertIn("audio stays off until saved", result.stdout)
         self.assertIn("http://jts4.local/voice/", result.stdout)
         self.assertIn("http://jts4.local/transit/", result.stdout)
         self.assertNotIn("This Streambox provides", result.stdout)

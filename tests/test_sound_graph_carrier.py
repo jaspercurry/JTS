@@ -60,6 +60,17 @@ from tests.test_active_speaker_runtime_contract import (
 _STEREO_HOST_KINDS = {"base_flat", "sound_or_correction"}
 
 
+@pytest.fixture(autouse=True)
+def _saved_passive_layout(tmp_path, monkeypatch):
+    """Carrier unit tests need explicit DAC playback authorization now."""
+
+    from jasper.output_topology import save_output_topology
+
+    path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
+    save_output_topology(_full_range_stereo(), path)
+
+
 def classify_camilla_graph(*args, **kwargs):
     kwargs.setdefault("bass_profile_summary", NO_BASS_EXTENSION_PROFILE_SUMMARY)
     return _classify_camilla_graph(*args, **kwargs)
@@ -1423,26 +1434,29 @@ def test_stereo_host_reemit_is_width_matched_on_a_mono_topology(
     assert graph.details["hard_muted_outputs"] == [1]
 
 
-def test_stereo_host_reemit_on_stereo_and_unconfigured_is_byte_unchanged(
+def test_stereo_host_reemit_requires_explicit_passive_layout(
     tmp_path, monkeypatch
 ):
-    """Every non-mono box re-emits exactly what it did before."""
+    """Only an explicit passive layout may re-emit a flat DAC graph."""
     from jasper.output_topology import new_topology_draft
     from jasper.sound.profile import SimpleEq, SoundProfile
 
     profile = SoundProfile(enabled=True, simple_eq=SimpleEq(bass_db=4.0))
     golden = emit_sound_config(profile, room_peqs=[])
 
-    for index, topology in enumerate((_full_range_stereo(), new_topology_draft())):
-        _persist_topology(topology, tmp_path, monkeypatch)
-        config_dir = tmp_path / f"configs-{index}"
-        config_dir.mkdir()
+    _persist_topology(_full_range_stereo(), tmp_path, monkeypatch)
+    config_dir = tmp_path / "configured"
+    config_dir.mkdir()
+    carrier = carrier_for_loaded_config(str(BASE_CONFIG_PATH), config_dir=config_dir)
+    assert carrier.kind == "base_flat"
+    assert carrier.reemit(profile).yaml == golden
 
-        carrier = carrier_for_loaded_config(
-            str(BASE_CONFIG_PATH), config_dir=config_dir
-        )
-        assert carrier.kind == "base_flat"
-        assert carrier.reemit(profile).yaml == golden
+    _persist_topology(new_topology_draft(), tmp_path, monkeypatch)
+    parked_dir = tmp_path / "unconfigured"
+    parked_dir.mkdir()
+    parked = carrier_for_loaded_config(str(BASE_CONFIG_PATH), config_dir=parked_dir)
+    with pytest.raises(CarrierCannotHostEq, match="no speaker layout is configured"):
+        parked.reemit(profile)
 
 
 def test_channel_split_reemit_is_never_width_matched(tmp_path, monkeypatch):

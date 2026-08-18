@@ -36,6 +36,7 @@ from jasper.active_speaker.runtime_contract import (
     parked_muted_exits,
     safe_graph_for_current_topology,
 )
+from jasper.active_speaker.runtime_convergence import apply_runtime_graph_decision
 from jasper.active_speaker.staging import load_staged_startup_config
 from jasper.active_speaker.startup_load import (
     build_driver_commission_load_preflight,
@@ -308,6 +309,10 @@ def _print_runtime_safe_graph_summary(
                 "(not assigned by the saved topology)"
             )
     print(f"  statefile written: {'yes' if wrote_statefile else 'no'}")
+    if payload.get("live_applied") is not None:
+        print(f"  live applied: {'yes' if payload['live_applied'] else 'no'}")
+        if payload.get("live_error"):
+            print(f"  live error: {payload['live_error']}")
     if payload["status"] == PARKED_MUTED_STATUS:
         # The parked state is an ACTION for the household, not a stack of
         # blockers for an operator to decode. Name the exits and stop —
@@ -350,7 +355,18 @@ def _cmd_runtime_safe_graph(args: argparse.Namespace) -> int:
         consider_applied_baseline=not args.no_applied_baseline,
     )
     wrote = False
-    if args.write_statefile and decision.ok:
+    live_applied: bool | None = None
+    live_error: str | None = None
+    if args.apply_live:
+        result = apply_runtime_graph_decision(
+            decision,
+            topology=topology,
+            statefile_path=args.statefile,
+        )
+        wrote = result.statefile_written
+        live_applied = result.live_applied
+        live_error = result.error
+    elif args.write_statefile and decision.ok:
         try:
             wrote = apply_safe_graph_decision_to_statefile(
                 decision,
@@ -370,6 +386,8 @@ def _cmd_runtime_safe_graph(args: argparse.Namespace) -> int:
     payload = decision.to_dict()
     payload["statefile_written"] = wrote
     payload["statefile_path"] = args.statefile
+    payload["live_applied"] = live_applied
+    payload["live_error"] = live_error
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
@@ -380,6 +398,8 @@ def _cmd_runtime_safe_graph(args: argparse.Namespace) -> int:
             # here cannot come from a second, differently-read topology.
             topology=topology,
         )
+    if args.apply_live:
+        return 0 if decision.ok and live_applied else 1
     return 0 if decision.ok else 1
 
 
@@ -1570,6 +1590,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--write-statefile",
         action="store_true",
         help="write --statefile to the selected safe config path",
+    )
+    runtime.add_argument(
+        "--apply-live",
+        action="store_true",
+        help=(
+            "materialise/write the selected safe graph, then load it through "
+            "the running CamillaDSP instance"
+        ),
     )
     runtime.add_argument("--json", action="store_true")
     runtime.set_defaults(func=_cmd_runtime_safe_graph)

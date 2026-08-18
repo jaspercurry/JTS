@@ -44,6 +44,7 @@ OUTPUT_TOPOLOGY_PATH="${JASPER_OUTPUT_TOPOLOGY_PATH:-/var/lib/jasper/output_topo
 CAMILLA_STATEFILE="${JASPER_CAMILLA_STATEFILE:-/var/lib/camilladsp/outputd-statefile.yml}"
 CAMILLA_CONF_DIR="${JASPER_CAMILLA_CONF_DIR:-/etc/camilladsp}"
 JASPER_SOUND_CLI="${JASPER_SOUND_CLI:-/opt/jasper/.venv/bin/jasper-sound}"
+JASPER_ACTIVE_SPEAKER_CLI="${JASPER_ACTIVE_SPEAKER_CLI:-/opt/jasper/.venv/bin/jasper-active-speaker}"
 CAMILLA2_STATEFILE="${JASPER_CAMILLA2_STATEFILE:-/var/lib/camilladsp/crossover-statefile.yml}"
 REASON="manual"
 PRINT_ENV=0
@@ -1246,8 +1247,8 @@ RING_CONF_D_OVERRIDE="${JASPER_RING_CONF_D:-}"
 # jasper-web's sandbox, which has no /etc/camilladsp write path (WS1-deliberate;
 # do not widen it). Both already kick THIS reconciler, which runs as root, so
 # the render belongs here. Without it a box that was re-laid-out kept booting the
-# previous topology's graph: after a mono box was reset to passive it came back
-# audible on one output and silent on the other, with nothing to explain it.
+# previous topology's graph. Reset now leaves that box unconfigured and parked;
+# a later explicit passive layout gets a freshly rendered flat graph.
 #
 # Write-on-change (the emitter compares before writing), matching this script's
 # set_env_var_if_changed discipline, so boot/udev passes on a converged box do
@@ -1273,6 +1274,39 @@ render_flat_cutover_if_needed() {
     fi
     log_event "flat_cutover" \
         "result=ok changed=${changed} config_dir=${CAMILLA_CONF_DIR} topology=${OUTPUT_TOPOLOGY_PATH}"
+}
+
+# The graph selector is the single owner of topology -> CamillaDSP safety.
+# Render first: the selected passive graph is an on-disk generated artifact,
+# and loading bytes from the previous topology is the reset-only race this
+# shared convergence path replaces.  This does not touch outputd; its lane is
+# derived below from the final statefile after this returns.
+converge_runtime_graph() {
+    local output apply_mode="--write-statefile"
+    if ! command -v "$JASPER_ACTIVE_SPEAKER_CLI" >/dev/null 2>&1; then
+        log_event "runtime_graph" "result=failed reason=cli_unavailable"
+        return 1
+    fi
+    # At boot CamillaDSP may not be running yet. Seed the safe statefile then;
+    # on a live topology replacement require the daemon to accept the graph.
+    if "$SYSTEMCTL" is-active --quiet jasper-camilla.service 2>/dev/null; then
+        apply_mode="--apply-live"
+    fi
+    if ! output="$(
+        JASPER_OUTPUT_TOPOLOGY_PATH="$OUTPUT_TOPOLOGY_PATH" \
+        "$JASPER_ACTIVE_SPEAKER_CLI" runtime-safe-graph \
+            --topology "$OUTPUT_TOPOLOGY_PATH" \
+            --statefile "$CAMILLA_STATEFILE" \
+            --flat-config "${CAMILLA_CONF_DIR}/outputd-cutover.yml" \
+            --ring-flat-config "${CAMILLA_CONF_DIR}/outputd-cutover-ring.yml" \
+            "$apply_mode" 2>&1
+    )"; then
+        log_event "runtime_graph" \
+            "result=failed detail=$(jasper_asound_log_token "$output")"
+        return 1
+    fi
+    log_event "runtime_graph" \
+        "result=ok apply_mode=${apply_mode#--} detail=$(jasper_asound_log_token "$output")"
 }
 
 # The `key value` protocol below is a WHITELIST: an unmatched key is dropped
@@ -1810,16 +1844,41 @@ repair_generated_env_permissions
 render_changed=0
 render_asound_if_needed && render_changed=1
 render_ring_conf_if_needed
-# After the asound/outputd env is settled — the graph reads the active DAC's
-# latency floor from it.
-#
-# This script never restarts jasper-camilla (it bounces outputd only), and
-# CamillaDSP reads its config at LOAD time, so re-rendering here does NOT make
-# the new graph run. It lands on disk for whoever loads next: camilla's own
-# start, a deploy's statefile seed, or `jasper-output-topology-reset`, which
-# blocks on this unit and then re-loads if this render changed the file
-# (`_reload_if_render_changed` in jasper/cli/output_topology_reset.py).
+# The first candidate publishes DAC and latency facts for graph rendering. It
+# is deliberately not the final lane decision: a topology replacement parks
+# before saving, while a boot with a topology/statefile disagreement is refused
+# by the validator. After convergence below, a second validated candidate is
+# the only one that may enable final output.
 render_flat_cutover_if_needed
+runtime_converge_failed=0
+if converge_runtime_graph; then
+    # The first candidate was intentionally built before graph convergence so
+    # it could publish current DAC/floor facts for the renderer. Re-derive the
+    # active-lane pair once the statefile names the graph that is actually live;
+    # this is the only pass whose outputd decision may start final output.
+    stage_outputd_env
+    if apply_audio_runtime_env; then
+        outputd_env_changed=1
+    fi
+    if commit_outputd_env_stage; then
+        env_changed=1
+        outputd_committed=1
+    fi
+    if [[ "$OUTPUTD_ENV_STAGE_REJECTED" == "1" ]]; then
+        # Keep the previously validated preliminary candidate.  Do not restart
+        # any service against a lane that the final graph failed to validate.
+        runtime_converge_failed=1
+        log_event "runtime_graph" \
+            "result=failed reason=post_convergence_outputd_env_rejected action=preserve_preliminary_env"
+        exit 78
+    fi
+else
+    # The topology-replacement caller already parked before saving. Keep the
+    # preliminary non-active outputd candidate rather than deriving an active
+    # lane from an old graph; the statefile remains a safe boot target and the
+    # failed oneshot makes the household-visible operation report attention.
+    runtime_converge_failed=1
+fi
 gate_role_services
 if [[ "$OUTPUT_DAC_RECOGNIZED" == "1" ]]; then
     # A DAC-identity or asound (render) change can move the mic/input profile,
@@ -1848,4 +1907,5 @@ else
 fi
 
 log_event "complete" \
-    "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD} outputd_active_mode=${OUTPUTD_ACTIVE_MODE} outputd_active_channels=$(jasper_asound_log_token "$OUTPUTD_ACTIVE_CHANNELS") recognized=${OUTPUT_DAC_RECOGNIZED} env_changed=${env_changed} render_changed=${render_changed} dac_env_changed=${dac_env_changed} outputd_committed=${outputd_committed}"
+    "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD} outputd_active_mode=${OUTPUTD_ACTIVE_MODE} outputd_active_channels=$(jasper_asound_log_token "$OUTPUTD_ACTIVE_CHANNELS") recognized=${OUTPUT_DAC_RECOGNIZED} env_changed=${env_changed} render_changed=${render_changed} dac_env_changed=${dac_env_changed} outputd_committed=${outputd_committed} runtime_converge_failed=${runtime_converge_failed}"
+[[ "$runtime_converge_failed" == "0" ]]

@@ -50,6 +50,24 @@ def _fake_renderer(tmp_path: Path) -> tuple[Path, Path]:
     return fake, log
 
 
+def _fake_active_speaker_cli(tmp_path: Path) -> Path:
+    """Default success seam for tests not about graph convergence itself."""
+    fake = tmp_path / "jasper-active-speaker"
+    fake.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [[ -n \"${JASPER_FAKE_ACTIVE_SPEAKER_LOG:-}\" ]]; then\n"
+        "  printf '%s\\n' \"$*\" >> \"$JASPER_FAKE_ACTIVE_SPEAKER_LOG\"\n"
+        "fi\n"
+        "if [[ -n \"${JASPER_FAKE_ACTIVE_SPEAKER_HOOK:-}\" ]]; then\n"
+        "  exec \"$JASPER_FAKE_ACTIVE_SPEAKER_HOOK\" \"$@\"\n"
+        "fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    return fake
+
+
 def _run_reconcile(
     tmp_path: Path,
     listing: str,
@@ -66,6 +84,7 @@ def _run_reconcile(
     fake_systemctl, systemctl_log = _fake_systemctl(tmp_path)
     fake_aplay = _fake_aplay(tmp_path, listing)
     fake_renderer, render_log = _fake_renderer(tmp_path)
+    fake_active_speaker = _fake_active_speaker_cli(tmp_path)
     source_template = tmp_path / "asoundrc.jasper.source"
     source_template.write_text(
         "__OUTPUTD_DAC_PCM_BLOCK__\n"
@@ -114,6 +133,7 @@ def _run_reconcile(
             "JASPER_AUDIO_QUALITY_FILE": str(audio_quality),
             "JASPER_RENDER_ASOUND_CONF": str(fake_renderer),
             "JASPER_RENDER_LOG": str(render_log),
+            "JASPER_ACTIVE_SPEAKER_CLI": str(fake_active_speaker),
             "JASPER_SYSTEMCTL": str(fake_systemctl),
             "JASPER_SYSTEMCTL_LOG": str(systemctl_log),
             "JASPER_APLAY": str(fake_aplay),
@@ -911,33 +931,34 @@ def test_env_writer_preserves_existing_jasper_env_ownership() -> None:
     assert 'jasper_env_file_repair_permissions "$FANIN_ENV_FILE" 0640 0750' in text
 
 
-def test_reconcile_script_never_reselects_the_camilla_graph() -> None:
-    """This script converges outputd, NOT the CamillaDSP graph.
-
-    Load-bearing for a claim made in another file: ``jasper/cli/output_topology_reset.py``
-    tells an operator that a failed reset leaves a SAFE residual graph, and that
-    "the reconcile kick converges outputd, not CamillaDSP". This script's own
-    comment says the same thing — "This script never restarts jasper-camilla
-    (it bounces outputd only) … so re-rendering here does NOT make the new
-    graph run" — but a comment is not a guard, and #2164 shipped two operator
-    strings built on exactly this fact.
-
-    So pin the fact where a change would break it: the executable body names
-    neither ``runtime-safe-graph`` nor ``jasper-camilla`` at all. Comment lines
-    are stripped first, and that strip is load-bearing rather than tidiness —
-    the sentence quoted above is the file's only ``jasper-camilla`` occurrence,
-    so without it this assert would fail on the very prose it exists to pin. If
-    this ever must change, the reset's module docstring and both
-    ``_print_summary`` remediation strings change with it.
-    """
+def test_reconcile_script_selects_the_final_graph_before_outputd_gating() -> None:
+    """One root path renders, applies, then derives outputd's active lane."""
     code = "\n".join(
         line
         for line in SCRIPT.read_text().splitlines()
         if not line.lstrip().startswith("#")
     )
-    assert "runtime-safe-graph" not in code
-    assert "safe_graph_for_current_topology" not in code
-    assert "jasper-camilla" not in code
+    assert "runtime-safe-graph" in code
+    assert "converge_runtime_graph" in code
+    # rindex targets the execution block, rather than the function definitions.
+    assert code.rindex("render_flat_cutover_if_needed") < code.rindex(
+        "converge_runtime_graph"
+    )
+    assert code.rindex("converge_runtime_graph") < code.rindex("gate_role_services")
+
+
+def test_reconcile_refuses_a_post_convergence_outputd_rejection() -> None:
+    """The second candidate is the final safety gate, not a best-effort write."""
+    code = SCRIPT.read_text(encoding="utf-8")
+    final_commit = code.rindex("if commit_outputd_env_stage; then")
+    rejection = code.index(
+        'reason=post_convergence_outputd_env_rejected', final_commit
+    )
+    gate = code.index("gate_role_services", final_commit)
+
+    assert final_commit < rejection < gate
+    assert 'runtime_converge_failed=1' in code[final_commit:gate]
+    assert "exit 78" in code[final_commit:gate]
 
 
 def test_reconcile_preserves_asound_template_dir_mode(tmp_path: Path):

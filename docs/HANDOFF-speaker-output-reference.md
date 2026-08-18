@@ -774,22 +774,25 @@ What exists:
   `jasper.active_speaker.runtime_contract`, via
   `jasper-active-speaker runtime-safe-graph`, after deploy copies the
   packaged configs. That boundary reads the saved
-  `jasper.output_topology` contract before choosing a fallback: an absent
-  saved topology or explicit stereo full-range/passive topology may use the
-  flat outputd graph; an explicit mono full-range topology uses a
-  WIDTH-MATCHED one — the ALSA device stays at the DAC's own width, and the
-  emitter hard-mutes the channel the topology does not claim, so no program
+  `jasper.output_topology` contract before choosing a fallback: a missing saved
+  topology, or one with zero speaker groups, is **unconfigured** and selects
+  the generated DAC-less all-muted **parked** graph. It never implies stereo or
+  authorizes a flat DAC graph. Only an explicit valid stereo full-range/passive
+  topology may use the flat outputd graph; an explicit mono full-range topology
+  uses a WIDTH-MATCHED one — the ALSA device stays at the DAC's own width, and
+  the emitter hard-mutes the channel the topology does not claim, so no program
   reaches an undeclared output. The contract re-proves that mute structurally
   off the YAML, so an unmuted surplus channel is still refused; and any
-  topology with a tweeter, protected
-  output, or subwoofer roleful assignment must preserve/select a matching
-  all-muted active startup graph. Guarded commissioning graphs are active test
-  surfaces, not persisted boot/deploy fallbacks. When the missing piece is the
-  staged startup graph, install and recovery helpers seed the generated
-  DAC-less all-muted **parked** graph (issue #2135) instead of repointing
-  Camilla at flat stereo — parking gates on the absence of that staged graph,
-  and (since #2145, below) tolerates topology blockers alongside it rather than
-  requiring the staged graph to be the *only* thing missing. Parking is deliberately narrow: a staged graph that
+  topology with a tweeter, protected output, or subwoofer roleful assignment
+  must preserve/select a matching all-muted active startup graph. Guarded
+  commissioning graphs are active test surfaces, not persisted boot/deploy
+  fallbacks. An incomplete non-passive topology also selects the parked graph;
+  `/state`, audio health, and `jasper-doctor` name its reachable next action.
+  For zero groups that action is to choose and save a mono or stereo speaker
+  layout before audio can run. For a roleful topology it is to finish or undo
+  commissioning. Parking tolerates topology blockers alongside an absent
+  startup graph (since #2145), rather than requiring the staged graph to be the
+  *only* thing missing. Parking is deliberately narrow: a staged graph that
   exists but fails its safety proof still fails closed — that is a
   commissioning bug, not a paused household. A topology-level blocker (for
   example a channel saved `protection_status="required_missing"`) no longer

@@ -32,11 +32,14 @@ from jasper.output_topology import (
     DUAL_APPLE_ACTIVE_DEVICE_ID,
     OUTPUT_TOPOLOGY_KIND,
     OutputTopology,
+    OutputTopologyError,
+    load_output_topology,
 )
 from jasper.output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
     DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
     OutputCardFact,
+    OutputHardwareState,
     classify_output_cards,
     write_state as write_output_hardware_state,
 )
@@ -74,7 +77,7 @@ from ._web_test_helpers import (
 
 
 @pytest.fixture(autouse=True)
-def _no_privileged_unit_actions(monkeypatch):
+def _no_privileged_unit_actions(monkeypatch, tmp_path: Path):
     """Keep the suite from asking systemd to start units.
 
     Saving an output topology kicks ``jasper-audio-hardware-reconcile`` through
@@ -86,6 +89,26 @@ def _no_privileged_unit_actions(monkeypatch):
     monkeypatch.setattr(
         "jasper.control.restart_broker.manage_units",
         lambda *units, **kwargs: {"ok": False, "error": "stubbed in tests"},
+    )
+    # Topology saves now stop the active-speaker safety session before parking.
+    # Keep that real state transition inside each test's isolated writable
+    # directory, as the deployed route does through its configured state path.
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE",
+        str(tmp_path / "safe_playback.json"),
+    )
+    class _Parked:
+        ok = True
+        live_applied = True
+        error = None
+
+        @staticmethod
+        def to_dict():
+            return {"ok": True, "live_applied": True}
+
+    monkeypatch.setattr(
+        "jasper.active_speaker.runtime_convergence.park_for_topology",
+        lambda _topology: _Parked(),
     )
 
 
@@ -130,6 +153,46 @@ def _room_config(peqs: list[PeqFilter] | None = None) -> str:
         SoundProfile(enabled=False),
         room_peqs=peqs or [],
     )
+
+
+def _configure_passive_layout_for_eq(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Give EQ tests a safe, explicit nonzero speaker layout.
+
+    The production contract parks a speaker with no saved groups. These tests
+    exercise EQ composition, so they must model the separate case where a
+    passive full-range speaker has already been configured.
+    """
+
+    from jasper.output_topology import OutputTopology, save_output_topology
+
+    topology_path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    save_output_topology(OutputTopology.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "eq_passive",
+        "name": "EQ passive speaker",
+        "status": "draft",
+        "hardware": {
+            "device_id": "hifiberry_dac8x",
+            "device_label": "HiFiBerry DAC8x",
+            "physical_output_count": 8,
+        },
+        "speaker_groups": [{
+            "id": "main",
+            "label": "Main speaker",
+            "kind": "mono",
+            "mode": "full_range_passive",
+            "channels": [{
+                "role": "full_range",
+                "physical_output_index": 0,
+                "identity_verified": True,
+            }],
+        }],
+        "routing": {"mono_group_id": "main"},
+    }), path=topology_path)
 
 
 def _record_dsp_epoch(path: Path, op_id: str) -> None:
@@ -1103,7 +1166,7 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert 'data-protection-required="' not in js
     assert 'data-protection-status="' not in js
     assert "headers: jsonHeaders()" in js
-    assert "Saved speaker layout. No sound was played." in js
+    assert "Saved speaker layout." in js
     # The map-step footer's dirty-layout fallback wires the save-layout action
     # through the shared descriptor renderer (renderStepFooterButton emits the
     # data-act attribute at runtime) rather than an inline data-act string.
@@ -1120,6 +1183,10 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "channelCount" in js
     assert "Hardware details" in js
     assert "Hardware mismatch" in js
+    assert "Use detected hardware" in js
+    assert "hardwareAdoption" in js
+    assert "outputTopology.loading || outputTopology.saving || outputTopology.resetting" in js
+    assert "detected_hardware_identity" in js
     assert "Saved topology expects" in js
     assert "Detected output hardware" not in js
     assert "supported" in js
@@ -1192,7 +1259,7 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "Starter stereo" not in js
     assert "Starter 2-way" not in js
     assert "protection_status: tweeter ? 'required_missing' : 'not_required'" in js
-    assert "Saved speaker layout. No sound was played." in js
+    assert "Saved speaker layout." in js
 
 
 # --------------------------------------------------------------------------
@@ -2276,6 +2343,17 @@ def test_topology_save_kicks_the_audio_hardware_reconcile(
     monkeypatch.setattr(
         "jasper.control.restart_broker.manage_units", fake_manage_units
     )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_summed_test_tone",
+        lambda **_kwargs: {"status": "idle"},
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_commission_tone",
+        lambda **_kwargs: {"status": "idle"},
+    )
+    monkeypatch.setattr(sound_setup, "_active_speaker_stop_payload", lambda: {"status": "idle"})
 
     saved = sound_setup._save_output_topology_payload(
         _innomaker_topology_payload(active=False)
@@ -2283,10 +2361,160 @@ def test_topology_save_kicks_the_audio_hardware_reconcile(
 
     assert calls and calls[0]["units"] == ("jasper-audio-hardware-reconcile.service",)
     assert calls[0]["verb"] == "start"
-    # Fire-and-forget: the wizard saves a draft at every card, so a save must
-    # not block on a multi-second oneshot.
-    assert calls[0]["no_block"] is True
+    assert calls[0]["reason"] == "output_topology_save"
+    # A topology replacement first parks audio, then waits for the root
+    # reconciler to make outputd agree with the final saved topology.
+    assert calls[0]["no_block"] is False
     assert saved["reconcile"] is sentinel
+    assert set(saved["hardware_adoption"]) == {"allowed", "identity"}
+
+
+def test_topology_save_reconcile_failure_reports_safe_attention_message(
+    monkeypatch, tmp_path: Path,
+):
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "topology.json"))
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_summed_test_tone",
+        lambda **_kwargs: {"status": "idle"},
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_commission_tone",
+        lambda **_kwargs: {"status": "idle"},
+    )
+    monkeypatch.setattr(sound_setup, "_active_speaker_stop_payload", lambda: {"status": "idle"})
+    monkeypatch.setattr(
+        "jasper.output_topology_runtime.trigger_reconcile",
+        lambda **_kwargs: {"ok": False, "error": "private backend detail"},
+    )
+
+    saved = sound_setup._save_output_topology_payload(
+        _innomaker_topology_payload(active=False)
+    )
+
+    assert saved["save"] == {
+        "status": "needs_attention",
+        "message": (
+            "Speaker layout was saved, but audio remains off. "
+            "Open Status before continuing."
+        ),
+    }
+    assert "private backend detail" not in saved["save"]["message"]
+
+
+def test_topology_save_parks_before_replacing_saved_layout(
+    monkeypatch, tmp_path: Path,
+):
+    from jasper.output_topology import new_topology_draft, save_output_topology
+
+    path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
+    original = new_topology_draft(name="Old layout")
+    save_output_topology(original, path=path)
+    seen: list[OutputTopology] = []
+
+    class _Parked:
+        ok = True
+
+    def park(topology):
+        assert load_output_topology() == original
+        seen.append(topology)
+        return _Parked()
+
+    monkeypatch.setattr(
+        "jasper.active_speaker.runtime_convergence.park_for_topology", park
+    )
+    monkeypatch.setattr(
+        "jasper.output_topology_runtime.trigger_reconcile",
+        lambda **_kwargs: {"ok": True},
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_summed_test_tone",
+        lambda **_kwargs: {"status": "idle"},
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_commission_tone",
+        lambda **_kwargs: {"status": "idle"},
+    )
+    monkeypatch.setattr(sound_setup, "_active_speaker_stop_payload", lambda: {"status": "idle"})
+
+    saved = sound_setup._save_output_topology_payload(
+        _innomaker_topology_payload(active=False)
+    )
+
+    assert seen == [original]
+    assert saved["output_topology"]["name"] != original.name
+
+
+def test_topology_save_refuses_invalid_input_before_stopping_or_parking(
+    monkeypatch, tmp_path: Path,
+):
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "topology.json"))
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_summed_test_tone",
+        lambda **_kwargs: pytest.fail("invalid input must not stop audio"),
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_commission_tone",
+        lambda **_kwargs: pytest.fail("invalid input must not stop audio"),
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_payload",
+        lambda: pytest.fail("invalid input must not stop audio"),
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.runtime_convergence.park_for_topology",
+        lambda _topology: pytest.fail("invalid input must not park audio"),
+    )
+
+    with pytest.raises(OutputTopologyError):
+        sound_setup._save_output_topology_payload({"name": "not a topology"})
+
+
+def test_topology_save_stops_audio_sessions_before_parking(
+    monkeypatch, tmp_path: Path,
+):
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "topology.json"))
+    events: list[str] = []
+
+    class _Parked:
+        ok = True
+
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_summed_test_tone",
+        lambda *, reason: events.append(f"summed:{reason}") or {"status": "idle"},
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_commission_tone",
+        lambda *, reason: events.append(f"commission:{reason}") or {"status": "idle"},
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_payload",
+        lambda: events.append("safe") or {"status": "idle"},
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.runtime_convergence.park_for_topology",
+        lambda _topology: (
+            events.append("park") or _Parked()
+            if events == [
+                "summed:output_topology_save",
+                "commission:output_topology_save",
+                "safe",
+            ]
+            else pytest.fail(f"expected all active audio sessions stopped first: {events}")
+        ),
+    )
+
+    sound_setup._save_output_topology_payload(_innomaker_topology_payload(active=False))
 
 
 def test_refused_layout_reaches_the_page_as_a_rendered_error(
@@ -2759,24 +2987,11 @@ def test_output_topology_payload_serializes_with_populated_hardware_state(
     assert envelope["active_playback_route"]["transport_channel_count"] == 2
 
 
-def test_output_hardware_state_only_loaded_inside_conversion_boundary():
-    """Payload builders must go through ``_output_hardware_dict``.
-
-    Pins the fix shape: ``load_output_hardware_state`` returns a frozen
-    dataclass that plain ``json.dumps`` can't encode, so the only call site
-    in this module is the helper that converts it. A new payload embedding
-    the loader directly re-ships the 502.
-    """
-    source = Path(sound_setup.__file__).read_text(encoding="utf-8")
-    lines = [
-        line.strip()
-        for line in source.splitlines()
-        if "load_output_hardware_state(" in line
-    ]
-    assert lines == ["hardware = load_output_hardware_state()"], (
-        "load_output_hardware_state() called outside _output_hardware_dict(); "
-        f"route new payloads through the helper: {lines}"
-    )
+def test_output_hardware_state_payload_is_json_serializable():
+    """The reset precondition is derived from, never a copy of, detection."""
+    payload = sound_setup._output_topology_payload()
+    json.dumps(payload)
+    assert set(payload["hardware_adoption"]) == {"allowed", "identity"}
 
 
 def test_active_speaker_design_draft_route_persists_saved_topology_research(
@@ -4344,7 +4559,7 @@ def test_sound_output_topology_reset_http_route_is_csrf_protected(
     monkeypatch.setattr(
         sound_setup,
         "_reset_output_topology_payload",
-        lambda: calls.append(True) or {"output_topology": {"status": "draft"}},
+        lambda raw: calls.append(raw) or {"output_topology": {"status": "draft"}},
     )
     try:
         server, base = _start_sound_server(tmp_path)
@@ -4354,8 +4569,244 @@ def test_sound_output_topology_reset_http_route_is_csrf_protected(
         resp = json_post_with_csrf(base, "/output-topology/reset", {})
         payload = json.loads(resp.read().decode("utf-8"))
 
-        assert calls == [True]
+        assert calls == [{}]
         assert payload["output_topology"]["status"] == "draft"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_reset_rejects_stale_topology_before_parking_or_cleanup(
+    monkeypatch, tmp_path: Path,
+):
+    from jasper.output_topology import new_topology_draft, save_output_topology
+
+    topology_path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    save_output_topology(new_topology_draft(), path=topology_path)
+    request = sound_setup._output_topology_payload()
+    save_output_topology(new_topology_draft(name="Newer layout"), path=topology_path)
+    before = topology_path.read_bytes()
+    monkeypatch.setattr(
+        "jasper.active_speaker.runtime_convergence.park_for_topology",
+        lambda _topology: pytest.fail("stale reset must not park or delete"),
+    )
+
+    with pytest.raises(sound_setup.OutputTopologyResetConflict) as raised:
+        sound_setup._reset_output_topology_payload({
+            "topology_revision": request["topology_revision"],
+            "detected_hardware_identity": request["hardware_adoption"]["identity"],
+        })
+
+    assert raised.value.code == "topology_changed"
+    assert topology_path.read_bytes() == before
+
+
+def test_reset_rejects_changed_detected_hardware_before_deleting(
+    monkeypatch, tmp_path: Path,
+):
+    from jasper.output_topology import new_topology_draft, save_output_topology
+
+    topology_path = tmp_path / "output_topology.json"
+    hardware_path = tmp_path / "output_hardware.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    monkeypatch.setenv("JASPER_OUTPUT_HARDWARE_STATE_PATH", str(hardware_path))
+    save_output_topology(new_topology_draft(), path=topology_path)
+    write_output_hardware_state(OutputHardwareState(
+        profile_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+        profile_label="Apple USB-C audio adapter", status="ready",
+        physical_output_count=2,
+    ))
+    request = sound_setup._output_topology_payload()
+    before = topology_path.read_bytes()
+    write_output_hardware_state(OutputHardwareState(
+        profile_id="hifiberry_dac8x", profile_label="HiFiBerry DAC8x",
+        status="ready", physical_output_count=8,
+    ))
+    monkeypatch.setattr(
+        "jasper.active_speaker.runtime_convergence.park_for_topology",
+        lambda _topology: pytest.fail("changed hardware must not park or delete"),
+    )
+
+    with pytest.raises(sound_setup.OutputTopologyResetConflict) as raised:
+        sound_setup._reset_output_topology_payload({
+            "topology_revision": request["topology_revision"],
+            "detected_hardware_identity": request["hardware_adoption"]["identity"],
+        })
+
+    assert raised.value.code == "detected_hardware_changed"
+    assert topology_path.read_bytes() == before
+
+
+def test_reset_revalidates_after_parking_before_deleting(
+    monkeypatch, tmp_path: Path,
+):
+    from jasper.output_topology import new_topology_draft, save_output_topology
+
+    topology_path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    save_output_topology(new_topology_draft(name="Initial"), path=topology_path)
+    request = sound_setup._output_topology_payload()
+    newer = new_topology_draft(name="Changed while parking")
+
+    class _Parked:
+        ok = True
+        live_applied = True
+
+        @staticmethod
+        def to_dict():
+            return {"ok": True}
+
+    def park(_topology):
+        save_output_topology(newer, path=topology_path)
+        return _Parked()
+
+    monkeypatch.setattr(
+        "jasper.active_speaker.runtime_convergence.park_for_topology", park
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_summed_test_tone",
+        lambda *, reason: {"status": "idle", "reason": reason},
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_commission_tone",
+        lambda *, reason: {"status": "idle", "reason": reason},
+    )
+    monkeypatch.setattr(sound_setup, "_active_speaker_stop_payload", lambda: {"status": "idle"})
+    monkeypatch.setattr(
+        "jasper.active_speaker.reset.clear_active_speaker_setup_state",
+        lambda: pytest.fail("second-check conflict must not clear setup evidence"),
+    )
+
+    with pytest.raises(sound_setup.OutputTopologyResetConflict) as raised:
+        sound_setup._reset_output_topology_payload({
+            "topology_revision": request["topology_revision"],
+            "detected_hardware_identity": request["hardware_adoption"]["identity"],
+        })
+
+    assert raised.value.code == "topology_changed"
+    assert load_output_topology() == newer
+
+
+def test_reset_second_check_and_empty_write_share_the_write_lock(
+    monkeypatch, tmp_path: Path,
+):
+    from jasper.output_topology import new_topology_draft, save_output_topology
+
+    topology_path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH", str(tmp_path / "staged.yml")
+    )
+    save_output_topology(new_topology_draft(), path=topology_path)
+    request = sound_setup._output_topology_payload()
+    events: list[str] = []
+    original_check = sound_setup._reset_request_hardware_locked
+    original_save = sound_setup.save_output_topology
+    check_count = 0
+
+    def checked(raw):
+        nonlocal check_count
+        check_count += 1
+        result = original_check(raw)
+        if check_count == 2:
+            assert sound_setup._output_topology_write_lock.locked()
+            events.append("second-check")
+        return result
+
+    def save_under_same_lock(topology):
+        assert sound_setup._output_topology_write_lock.locked()
+        events.append("empty-write")
+        original_save(topology)
+
+    monkeypatch.setattr(sound_setup, "_reset_request_hardware_locked", checked)
+    monkeypatch.setattr(sound_setup, "save_output_topology", save_under_same_lock)
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_summed_test_tone",
+        lambda **_kwargs: {"status": "idle"},
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_commission_tone",
+        lambda **_kwargs: {"status": "idle"},
+    )
+    monkeypatch.setattr(sound_setup, "_active_speaker_stop_payload", lambda: {"status": "idle"})
+    monkeypatch.setattr(
+        "jasper.active_speaker.reset.clear_active_speaker_setup_state",
+        lambda: {"status": "cleared", "removed": []},
+    )
+
+    sound_setup._reset_output_topology_payload({
+        "topology_revision": request["topology_revision"],
+        "detected_hardware_identity": request["hardware_adoption"]["identity"],
+    })
+
+    assert events == ["second-check", "empty-write"]
+
+
+def test_reset_accepts_the_response_from_a_normal_save_without_reload(
+    monkeypatch, tmp_path: Path,
+):
+    topology_path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH", str(tmp_path / "staged.yml")
+    )
+    for name in (
+        "_active_speaker_stop_summed_test_tone",
+        "_active_speaker_stop_commission_tone",
+    ):
+        monkeypatch.setattr(
+            sound_setup, name, lambda *, reason: {"status": "idle", "reason": reason}
+        )
+    monkeypatch.setattr(sound_setup, "_active_speaker_stop_payload", lambda: {"status": "idle"})
+    monkeypatch.setattr(
+        "jasper.active_speaker.reset.clear_active_speaker_setup_state",
+        lambda: {"status": "cleared", "removed": []},
+    )
+
+    saved = sound_setup._save_output_topology_payload(
+        _innomaker_topology_payload(active=False)
+    )
+    reset = sound_setup._reset_output_topology_payload({
+        "topology_revision": saved["topology_revision"],
+        "detected_hardware_identity": saved["hardware_adoption"]["identity"],
+    })
+
+    assert reset["saved"] is True
+    assert reset["output_topology"]["speaker_groups"] == []
+
+
+def test_reset_http_requires_revision_and_hardware_identity(
+    monkeypatch, tmp_path: Path,
+):
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "output_topology.json")
+    )
+    try:
+        server, base = _start_sound_server(tmp_path)
+    except PermissionError:
+        pytest.skip("environment does not allow loopback test server bind")
+    try:
+        resp = json_post_with_csrf(
+            base, "/output-topology/reset", {}, expect_status=400
+        )
+        payload = json.loads(resp.read().decode("utf-8"))
+
+        assert payload["error"] == "topology_revision is required"
+
+        current = sound_setup._output_topology_payload()
+        resp = json_post_with_csrf(
+            base,
+            "/output-topology/reset",
+            {"topology_revision": current["topology_revision"]},
+            expect_status=400,
+        )
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert payload["error"] == "detected_hardware_identity is required"
     finally:
         server.shutdown()
         server.server_close()
@@ -4365,8 +4816,13 @@ def test_reset_output_topology_payload_clears_active_setup_state(
     monkeypatch,
     tmp_path: Path,
 ):
-    from jasper.cli import output_topology_reset
-
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "output_topology.json")
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH", str(tmp_path / "staged.yml")
+    )
+    initial = sound_setup._output_topology_payload()
     state_envs = {
         "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE": "design.json",
         "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE": "preview.json",
@@ -4384,10 +4840,22 @@ def test_reset_output_topology_payload_clears_active_setup_state(
         path.write_text('{"stale": true}\n', encoding="utf-8")
         monkeypatch.setenv(env_name, str(path))
         paths.append(path)
+    class _Parked:
+        ok = True
+        live_applied = True
+        error = None
+
+        @staticmethod
+        def to_dict():
+            return {"ok": True, "live_applied": True}
+
     monkeypatch.setattr(
-        output_topology_reset,
-        "reset_to_detected_passive",
-        lambda: {"status": "reset"},
+        "jasper.active_speaker.runtime_convergence.park_for_topology",
+        lambda _topology: _Parked(),
+    )
+    monkeypatch.setattr(
+        "jasper.output_topology_runtime.trigger_reconcile",
+        lambda: {"ok": True},
     )
     monkeypatch.setattr(
         sound_setup,
@@ -4412,17 +4880,14 @@ def test_reset_output_topology_payload_clears_active_setup_state(
         lambda: {"output_topology": {"status": "draft"}},
     )
 
-    payload = sound_setup._reset_output_topology_payload()
+    payload = sound_setup._reset_output_topology_payload({
+        "topology_revision": initial["topology_revision"],
+        "detected_hardware_identity": initial["hardware_adoption"]["identity"],
+    })
 
     assert payload["output_topology"]["status"] == "draft"
-    assert payload["reset"] == {"status": "reset"}
-    assert payload["active_speaker_reset"]["status"] == "cleared"
-    assert payload["summed_test_stop"] == {
-        "status": "stopped",
-        "reason": "output_topology_reset",
-    }
+    assert payload["reset"]["status"] == "reset"
     assert summed_stops == ["output_topology_reset"]
-    assert len(payload["active_speaker_reset"]["cleared"]) == len(paths)
     assert all(not path.exists() for path in paths)
 
 
@@ -5193,6 +5658,7 @@ def test_state_filter_count_signals_effective_eq_for_initial_view():
 
 
 async def test_apply_profile_preserves_active_room_peqs(tmp_path: Path, monkeypatch):
+    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
     monkeypatch.setenv(
         "JASPER_DSP_APPLY_STATE_PATH",
         str(tmp_path / "dsp_apply_state.json"),
@@ -5224,6 +5690,7 @@ async def test_apply_profile_preserves_active_room_peqs(tmp_path: Path, monkeypa
 async def test_reconcile_current_dsp_reemits_saved_profile_without_restamping(
     tmp_path: Path, monkeypatch,
 ):
+    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
     monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
     monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
     config_dir = tmp_path / "configs"
@@ -5312,6 +5779,7 @@ async def test_reconcile_current_dsp_skips_active_audition_without_promoting(
 async def test_reconcile_current_dsp_logs_unchanged_config(
     tmp_path: Path, monkeypatch, caplog,
 ):
+    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
     # Realistic apply-then-redeploy: the wizard save stamped sound_current.yml
     # with a wall-clock ``time.time_ns()`` id, NOT the reconcile id. A redeploy's
     # dry-run re-emits the SAME profile under RECONCILE_PROFILE_ID, so the two
@@ -5330,12 +5798,27 @@ async def test_reconcile_current_dsp_logs_unchanged_config(
     config_dir.mkdir()
     profile = SoundProfile(simple_eq=SimpleEq(bass_db=2.0))
     current = config_dir / "sound_current.yml"
-    current.write_text(emit_sound_config(profile, profile_id="1717000000000000001"))
-    assert "id=1717000000000000001" in current.read_text()
-    assert "id=reconcile-current-dsp" not in current.read_text()
+    current.write_text(_room_config())
     fake = FakeCamilla(str(current))
     profile_path = tmp_path / "sound_profile.json"
     save_profile(profile, profile_path)
+    await reconcile_current_dsp(
+        profile_path=profile_path,
+        config_dir=config_dir,
+        camilla_factory=lambda: fake,
+        force=True,
+    )
+    current.write_text(
+        re.sub(
+            r"id=reconcile-current-dsp",
+            "id=1717000000000000001",
+            current.read_text(),
+            count=1,
+        )
+    )
+    fake.loaded_path = None
+    assert "id=1717000000000000001" in current.read_text()
+    assert "id=reconcile-current-dsp" not in current.read_text()
     caplog.set_level(logging.INFO, logger="jasper.sound.runtime")
 
     payload = await reconcile_current_dsp(
@@ -5389,6 +5872,7 @@ def test_config_id_header_strip_only_touches_the_header_line():
 async def test_apply_profile_no_trim_by_default_so_boosts_boost(
     tmp_path: Path, monkeypatch
 ):
+    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
     monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
@@ -5412,6 +5896,7 @@ async def test_apply_profile_no_trim_by_default_so_boosts_boost(
 async def test_apply_profile_emits_output_trim_when_match_loudness_on(
     tmp_path: Path, monkeypatch
 ):
+    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
     monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
     settings_path = tmp_path / "sound_settings.json"
     settings_path.write_text('{"match_loudness": true}')
@@ -5437,6 +5922,7 @@ async def test_apply_profile_emits_output_trim_when_match_loudness_on(
 async def test_apply_settings_reapplies_with_trim_without_restamping_profile(
     tmp_path: Path, monkeypatch
 ):
+    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
     monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
     settings_path = tmp_path / "sound_settings.json"
     monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
@@ -6034,6 +6520,7 @@ async def test_audition_profile_loads_draft_without_persisting(
     tmp_path: Path,
     monkeypatch,
 ):
+    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
     monkeypatch.setenv(
         "JASPER_DSP_APPLY_STATE_PATH",
         str(tmp_path / "dsp_apply_state.json"),
@@ -6076,6 +6563,7 @@ async def test_live_draft_profile_updates_active_config_without_persisting(
     tmp_path: Path,
     monkeypatch,
 ):
+    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
     state_path = tmp_path / "dsp_apply_state.json"
     monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(state_path))
     _record_dsp_epoch(state_path, "epoch-1")
@@ -6422,6 +6910,7 @@ async def test_apply_profile_rechecks_carrier_under_lock_against_concurrent_swap
     # every read after (in-lock).
     from tests.test_active_speaker_runtime_contract import _active_baseline_yaml
 
+    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
     monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
@@ -6464,6 +6953,7 @@ async def test_apply_profile_rolls_back_when_reload_fails(
     tmp_path: Path,
     monkeypatch,
 ):
+    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
     monkeypatch.setenv(
         "JASPER_DSP_APPLY_STATE_PATH",
         str(tmp_path / "dsp_apply_state.json"),

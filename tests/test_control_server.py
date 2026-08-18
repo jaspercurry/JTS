@@ -271,6 +271,11 @@ def test_state_resilience_parked_snapshot_reads_the_statefile_not_live_camilla(
     parked.write_text(text, encoding="utf-8")
     statefile = tmp_path / "outputd-statefile.yml"
     statefile.write_text(f"config_path: {parked}\n", encoding="utf-8")
+    from jasper.output_topology import save_output_topology
+
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(topology, path=topology_path)
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
     monkeypatch.setattr(
         "jasper.audio_runtime_plan.DEFAULT_CAMILLA_STATEFILE_PATH", str(statefile)
     )
@@ -289,11 +294,70 @@ def test_state_resilience_parked_snapshot_reads_the_statefile_not_live_camilla(
         "detail": None,
     }
 
+
+def test_state_resilience_unconfigured_parked_snapshot_names_layout_action(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    """The `/state` detail is the same owned action doctor/dashboard use."""
+    from jasper.active_speaker.runtime_contract import (
+        UNCONFIGURED_PARKED_EXIT,
+        build_parked_muted_graph,
+    )
+    from jasper.output_topology import save_output_topology
+    from tests.test_active_speaker_runtime_contract import _topology
+
+    topology = _topology([])
+    text, graph = build_parked_muted_graph(topology)
+    assert graph.allowed
+    parked = tmp_path / "speaker_setup_parked.yml"
+    parked.write_text(text, encoding="utf-8")
+    statefile = tmp_path / "outputd-statefile.yml"
+    statefile.write_text(f"config_path: {parked}\n", encoding="utf-8")
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(topology, path=topology_path)
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    monkeypatch.setattr(
+        "jasper.audio_runtime_plan.DEFAULT_CAMILLA_STATEFILE_PATH", str(statefile)
+    )
+
+    assert state_aggregate._active_speaker_parked_snapshot() == {
+        "parked": True,
+        "detail": UNCONFIGURED_PARKED_EXIT,
+    }
+
     # Fail-soft: an unreadable statefile reads as not-parked, never raises.
     statefile.unlink()
     assert state_aggregate._active_speaker_parked_snapshot() == {
         "parked": False,
         "detail": None,
+    }
+
+
+def test_state_resilience_parked_snapshot_surfaces_a_corrupt_layout(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    """Corrupt intent stays visible instead of reading as reset silence."""
+    from jasper.active_speaker.runtime_contract import build_parked_muted_graph
+    from tests.test_active_speaker_runtime_contract import _topology
+
+    text, graph = build_parked_muted_graph(_topology([]))
+    assert graph.allowed
+    parked = tmp_path / "speaker_setup_parked.yml"
+    parked.write_text(text, encoding="utf-8")
+    statefile = tmp_path / "outputd-statefile.yml"
+    statefile.write_text(f"config_path: {parked}\n", encoding="utf-8")
+    topology_path = tmp_path / "output_topology.json"
+    topology_path.write_text("{not json", encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    monkeypatch.setattr(
+        "jasper.audio_runtime_plan.DEFAULT_CAMILLA_STATEFILE_PATH", str(statefile)
+    )
+
+    assert state_aggregate._active_speaker_parked_snapshot() == {
+        "parked": True,
+        "detail": "saved speaker layout is unavailable or invalid; run jasper-doctor",
     }
 
 
@@ -373,7 +437,8 @@ def test_state_resilience_parked_detail_drops_an_impossible_exit(
     assert snapshot["parked"] is True
     assert "finish crossover preview" not in snapshot["detail"]
     assert PASSIVE_ONLY_DAC_LABEL in snapshot["detail"]
-    assert "reset output topology to passive" in snapshot["detail"]
+    assert "reset output setup" in snapshot["detail"]
+    assert "choose an explicit passive layout" in snapshot["detail"]
 
 
 def test_state_resilience_wires_active_speaker_parked_snapshot() -> None:

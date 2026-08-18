@@ -15,13 +15,13 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from jasper.active_speaker.runtime_contract import (
-    CONTRACT_NORMAL_MONO_FULL_RANGE,
     NO_BASS_EXTENSION_PROFILE_SUMMARY,
     PARKED_MUTED_STATUS,
     classify_camilla_graph,
     classify_output_contract,
     flat_program_graph_blocked_reason,
     safe_graph_for_current_topology,
+    topology_allows_flat_dac_graph,
 )
 from jasper.output_topology import (
     OutputTopology,
@@ -66,8 +66,8 @@ def assert_flat_apply_safe(topology: OutputTopology | None = None) -> None:
     reason = flat_program_graph_blocked_reason(topology)
     if reason is not None:
         raise CorrectionRuntimeSafetyError(
-            "room-correction apply would send full-range program to a protected "
-            f"tweeter: {reason}"
+            "room-correction apply requires a saved passive speaker layout: "
+            f"{reason}"
         )
 
 
@@ -82,19 +82,18 @@ def reset_config_path(
     topology = topology or _load_topology_for_correction()
     contract = classify_output_contract(topology)
     base = Path(base_config_path)
-    if not contract.requires_roleful_graph:
-        if contract.classification == CONTRACT_NORMAL_MONO_FULL_RANGE or contract.issues:
-            graph = classify_camilla_graph(
-                base,
-                topology,
-                text=base.read_text(encoding="utf-8"),
-                bass_profile_summary=NO_BASS_EXTENSION_PROFILE_SUMMARY,
+    if topology_allows_flat_dac_graph(contract):
+        graph = classify_camilla_graph(
+            base,
+            topology,
+            text=base.read_text(encoding="utf-8"),
+            bass_profile_summary=NO_BASS_EXTENSION_PROFILE_SUMMARY,
+        )
+        if not graph.allowed:
+            raise CorrectionRuntimeSafetyError(
+                "room-correction reset target is unsafe for the saved "
+                f"output topology: {_first_issue(graph.issues)}"
             )
-            if not graph.allowed:
-                raise CorrectionRuntimeSafetyError(
-                    "room-correction reset target is unsafe for the saved "
-                    f"output topology: {_first_issue(graph.issues)}"
-                )
         return base
 
     decision = safe_graph_for_current_topology(

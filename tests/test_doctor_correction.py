@@ -741,7 +741,9 @@ def test_active_speaker_output_hardware_match_registered_in_sync_checks():
     assert "check_active_speaker_output_hardware_match" in _registered_check_names()
 
 
-def test_active_speaker_runtime_graph_ok_without_topology(monkeypatch, tmp_path):
+def test_active_speaker_runtime_graph_fails_flat_graph_without_a_saved_layout(
+    monkeypatch, tmp_path
+):
     from jasper.output_topology import save_output_topology
     from tests.test_active_speaker_runtime_contract import _flat_yaml, _topology
 
@@ -756,8 +758,38 @@ def test_active_speaker_runtime_graph_ok_without_topology(monkeypatch, tmp_path)
 
     r = doctor.check_active_speaker_runtime_graph()
 
-    assert r.status == "ok"
-    assert "no roleful/protected outputs" in r.detail
+    assert r.status == "fail"
+    assert "No speaker layout is configured" in r.detail
+
+
+def test_active_speaker_runtime_graph_warns_when_unconfigured_is_parked(
+    monkeypatch, tmp_path
+):
+    """Fresh/reset topology is intentional silence with one next action."""
+    from jasper.active_speaker.runtime_contract import (
+        UNCONFIGURED_PARKED_EXIT,
+        build_parked_muted_graph,
+    )
+    from jasper.output_topology import save_output_topology
+    from tests.test_active_speaker_runtime_contract import _topology
+
+    topology = _topology([])
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(topology, path=topology_path)
+    text, graph = build_parked_muted_graph(topology)
+    assert graph.allowed
+    config = tmp_path / "speaker_setup_parked.yml"
+    config.write_text(text, encoding="utf-8")
+    statefile = tmp_path / "statefile.yml"
+    statefile.write_text(f"config_path: {config}\n", encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+
+    r = doctor.check_active_speaker_runtime_graph()
+
+    assert r.status == "warn"
+    assert "unconfigured" in r.detail
+    assert UNCONFIGURED_PARKED_EXIT in r.detail
 
 
 def test_active_speaker_runtime_graph_fails_corrupt_saved_topology(

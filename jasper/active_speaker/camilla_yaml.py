@@ -2342,7 +2342,8 @@ def emit_active_speaker_parked_config(
 # graph parks every physical output hard-muted behind a File sink. It claims no
 # crossover and no driver protection; it exists so the speaker holds SILENCE
 # instead of running an illegal full-range graph. Finish crossover preview to
-# stage a startup graph, or reset the output topology to passive.
+# stage a startup graph, or reset output setup and choose an explicit passive
+# layout.
 
 devices:
   samplerate: {sample_rate}

@@ -1095,8 +1095,9 @@ def check_camilla_volume_limit() -> CheckResult:
 
 @doctor_check(order=28.5, group="audio")
 def check_active_speaker_runtime_graph() -> CheckResult:
-    """Fail closed if a roleful/protected topology is running flat stereo."""
+    """Report the graph selected for saved speaker intent, fail closed if unsafe."""
     from jasper.active_speaker.runtime_contract import (
+        CONTRACT_UNCONFIGURED,
         GRAPH_PARKED_ALL_MUTED,
         classify_bass_extension_graph,
         classify_output_contract,
@@ -1113,7 +1114,13 @@ def check_active_speaker_runtime_graph() -> CheckResult:
             f"saved output topology is unavailable or invalid: {exc}",
         )
     contract = classify_output_contract(topology)
-    if not contract.requires_roleful_graph:
+    # An explicit passive layout has no active-speaker graph to judge. An empty
+    # topology is different: it deliberately selects the proven parked graph,
+    # and doctor must name that intentional silence plus its one next action.
+    if (
+        not contract.requires_roleful_graph
+        and contract.classification != CONTRACT_UNCONFIGURED
+    ):
         return CheckResult(
             "active speaker runtime graph",
             "ok",
@@ -1152,12 +1159,11 @@ def check_active_speaker_runtime_graph() -> CheckResult:
         staged_metadata_path=staged_metadata_path(),
     )
     if graph.classification == GRAPH_PARKED_ALL_MUTED and graph.allowed:
-        # #2135: the box declared roleful outputs but never staged a startup
-        # graph, so the deploy parked it silent instead of failing. Nothing is
-        # broken and nothing is audible — but the household has to finish (or
-        # undo) commissioning, so this warns rather than passing green. The
-        # exits are capability-aware: on a DAC with no active outputd lane
-        # "finish crossover preview" can never succeed, so it is not offered.
+        # A parked graph is intentional silence, not a broken runtime. This
+        # covers both a zero-group topology (the household must choose a layout)
+        # and an incomplete roleful layout (the existing commissioning exits).
+        # The action is owned by ``parked_muted_exits`` so doctor, /state, and
+        # the dashboard cannot invent three versions of it.
         return CheckResult(
             "active speaker runtime graph",
             "warn",
