@@ -410,6 +410,37 @@ def test_noqa_debt_does_not_grow() -> None:
 # operator setting a value the link clock will kill is worth nine lines.
 #
 # Neither bump was clawed back out of correct prose elsewhere in the file.
+#
+# Decision 10 (#2600) raises three of the four, and the fourth is the point.
+# The blend region's shape correction is a NEW capability, and the ratchet's
+# question is not "did a file grow" but "did it grow things its filename does
+# not describe":
+#
+#  * `crossover_v2_flow` 12,548 -> 12,597 (rebased over #2637's +27 and
+#    #2603's +11; the 49 this PR adds are unchanged by either). The solve,
+#    the fit, the bounds, the
+#    iteration and its refusals are ~470 lines in a NEW module,
+#    `crossover_v2/blend_correction.py`, which is where a ratchet-respecting
+#    change puts them. What landed here is 49 lines of wiring and no policy:
+#    widening one existing sink so the graded curve travels with the verdict
+#    that describes it, one reader for the applied incumbent (the shape
+#    `applied_boosts` already has, for the reason it has it), and two argument
+#    hand-offs. Every number the correction is bounded by lives in the new
+#    module; this file learned no new fact about blends.
+#  * `crossover_envelope_v2` 4,076 -> 4,095. One household sentence, its
+#    rationale, and the branch that reaches it — the same shape as #2656's 28
+#    lines directly above, and the same argument: this file's job is household
+#    copy, and a screen that reports the blend defect round after round with
+#    nothing saying a lever is aimed at it reads as a loop doing nothing.
+#  * `program_analysis` 6,969 -> 6,978. Nine lines, all prose, zero executable:
+#    `crossover_region_band_hz` now names its second READER. The correction
+#    consumes that band through the claim that already calls it rather than
+#    calling it again, which is what keeps this a one-caller function — and a
+#    docstring is where "who reads this band" has to be answerable, since the
+#    call graph no longer says it.
+#  * `correction_crossover_v2` stays at 9,186. Decision 10 adds no endpoint, no
+#    screen, and no state key the host must own, so the host that has only ever
+#    grown does not grow here.
 MAX_LINES_BY_PATH = {
     # 2026-08-17 (#2603): +11 on top of the two bumps above, and the ratchet
     # catching its own author again. The representative RoleBand pair at
@@ -421,10 +452,10 @@ MAX_LINES_BY_PATH = {
     # what costs the lines. Paying them here, in the diff that earned them, is
     # the guard working; compressing the reason out to keep a number flat would
     # be gaming it.
-    "jasper/active_speaker/crossover_v2_flow.py": 12_548,
+    "jasper/active_speaker/crossover_v2_flow.py": 12_597,
     "jasper/web/correction_crossover_v2.py": 9_186,
-    "jasper/active_speaker/crossover_envelope_v2.py": 4_076,
-    "jasper/audio_measurement/program_analysis.py": 6_969,
+    "jasper/active_speaker/crossover_envelope_v2.py": 4_095,
+    "jasper/audio_measurement/program_analysis.py": 6_978,
 }
 
 

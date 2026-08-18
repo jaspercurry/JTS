@@ -1253,6 +1253,46 @@ def profile_program_headroom_db(profile: Mapping[str, Any] | None) -> float:
     )
 
 
+def profile_blend_correction(
+    profile: Mapping[str, Any] | None,
+) -> tuple[Mapping[str, Any], ...] | None:
+    """The blend correction an applied profile carries, or ``None`` if unknown.
+
+    Same snapshot-first authority rule :func:`profile_linearization` states —
+    the ``recomposition_snapshot`` copy is the one a recompose re-emits, so it
+    is the one that describes the graph; the top-level mirror is the fallback
+    for a profile written before the snapshot carried it.
+
+    **``None`` and ``()`` are different answers and both are load-bearing.**
+    ``()`` means "this profile applied no blend correction" — true of every
+    profile written before decision 10, and of every first round. ``None``
+    means "there is no readable applied profile", i.e. the incumbent cannot be
+    established at all. The round refuses to prescribe on ``None`` rather than
+    assuming zero, because assuming zero would double-count the correction the
+    measurement was actually taken through — the precise shape #2653 reverted
+    for the level datum.
+
+    What this CANNOT detect, stated rather than implied: a graph applied out of
+    band, by hand, that the profile no longer describes. The applied profile is
+    this speaker's single record of what is running, and every other consumer
+    of it (linearization, boosts, alignment) trusts it the same way.
+    """
+
+    if not isinstance(profile, Mapping):
+        return None
+    snapshot = profile.get("recomposition_snapshot")
+    raw = (
+        snapshot.get("blend_correction") if isinstance(snapshot, Mapping) else None
+    )
+    if raw is None:
+        raw = profile.get("blend_correction")
+    if raw is None:
+        return ()
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes, Mapping)):
+        return None
+    return tuple(dict(entry) for entry in raw if isinstance(entry, Mapping))
+
+
 def profile_linearization(profile: Mapping[str, Any] | None) -> Mapping[str, Any]:
     """One profile's AUTHORITATIVE reduced linearization, or ``{}``.
 

@@ -4474,7 +4474,7 @@ def assemble_cloud_group_result(
     tier: str = "",
     position_records: Sequence[Mapping[str, Any]] = (),
     crossover_region_hz: tuple[float, float] | None = None,
-    spec_report_sink: Callable[[Any], None] | None = None,
+    graded_spec_sink: Callable[[Any], None] | None = None,
 ) -> dict[str, Any]:
     """The wiring contract (issue #1742 item 4) -- THE single function that
     consumes the exclusion mask, ``geometry.locked``, and the null registry
@@ -4646,6 +4646,7 @@ def assemble_cloud_group_result(
         return {"available": False, "reason": "combine_failed"}
     try:
         from jasper.active_speaker.flat_spec import (
+            GradedSpec,
             evaluate_flat_spec,
             spec_flatness_gauge,
         )
@@ -4687,8 +4688,15 @@ def assemble_cloud_group_result(
         # A sink rather than a second return value because every other caller
         # (and every test) reads the dict, and widening the return type would
         # change all of them to serve one consumer.
-        if spec_report_sink is not None:
-            spec_report_sink(spec_report)
+        if graded_spec_sink is not None:
+            # The curve, the mask, and the verdict as ONE record: decision 10's
+            # blend correction reads all three, and this is the only place all
+            # three exist together. Handing them over separately would let a
+            # consumer pair a curve with a mask from a different evaluation.
+            graded_spec_sink(GradedSpec(
+                combined.freqs_hz, combined.power_mean_spec_db, merged_mask,
+                spec_report,
+            ))
         geometry_dict = {
             "locked": bool(combined.geometry.locked),
             "reason": str(combined.geometry.reason),
@@ -5164,7 +5172,7 @@ class CrossoverV2Session:
         # (``verification.evaluate_spec``) reads ``overall_passed`` and each
         # band's ``evaluable``/``passed`` — structure ``to_dict`` flattens.
         # Not persisted: it is a live object, and the dict is the durable copy.
-        self._group_spec_report: dict[str, Any] = {}
+        self._group_graded_spec: dict[str, Any] = {}
         # #1872: which phases' evidence artifact has already been PUBLISHED —
         # the one part of a group close that is a genuine per-phase
         # singleton (the evidence store is write-once; see
@@ -5720,6 +5728,31 @@ class CrossoverV2Session:
                 tweeter_role=self._tweeter.role,
             ),
         )
+
+    def _applied_blend_correction(self) -> tuple[Mapping[str, Any], ...] | None:
+        """The blend correction the post-apply capture rode, or ``None``.
+
+        Read from the applied-profile SSOT rather than from a session field,
+        for the reason ``applied_boosts`` is: the stage that GRADES a round is
+        a fresh session holding no candidate, so a session read would be
+        ``None`` on every shipped round and the incumbent would silently be
+        assumed empty — which is the one assumption this quantity must never
+        make (see ``profile_blend_correction``).
+
+        Fails to ``None`` — refuse to prescribe — on every unreadable path,
+        which is the opposite direction from ``applied_boosts``'s fail-closed
+        ``True`` and correct for the same reason: there, not knowing must
+        restore a graph; here, not knowing must leave the graph alone.
+        """
+        from jasper.active_speaker.baseline_profile import (
+            load_applied_baseline_profile_state,
+            profile_blend_correction,
+        )
+
+        try:
+            return profile_blend_correction(load_applied_baseline_profile_state())
+        except (OSError, TypeError, ValueError):
+            return None
 
     def _lateral_priors(self) -> MeasurementPriors:
         return _priors.lateral_priors(
@@ -9190,8 +9223,8 @@ class CrossoverV2Session:
             # ``combined`` this method already stashes. The round's SPEC
             # verdict needs the object; the dict below keeps the serialized
             # copy every other surface reads.
-            spec_report_sink=lambda report: self._group_spec_report.__setitem__(
-                phase, report
+            graded_spec_sink=lambda graded: self._group_graded_spec.__setitem__(
+                phase, graded
             ),
         )
         self._group_cloud_result[phase] = result
@@ -9532,6 +9565,7 @@ class CrossoverV2Session:
         # the fail-safe reading of both: it can only offer another round, never
         # suppress a stop the evidence asked for.
         position = self._series_position or coordinator.SeriesPosition.first()
+        graded_verify = self._group_graded_spec.get(PHASE_CLOUD_VERIFY)
         decision = coordinator.run_round(
             coordinator.RoundEvidence(
                 session_id=self.session_id,
@@ -9541,7 +9575,13 @@ class CrossoverV2Session:
                 # The post-apply CLOUD's report — ``None`` on a tier that walks
                 # no cloud, which the evaluator reads as "no report" rather than
                 # as a pass (#2160's honest wire).
-                spec_report=self._group_spec_report.get(PHASE_CLOUD_VERIFY),
+                spec_report=(
+                    None if graded_verify is None else graded_verify.report
+                ),
+                # Decision 10's evidence: the SAME evaluation the spec verdict
+                # reads, with its curve and merged honesty mask.
+                graded_spec=graded_verify,
+                applied_blend_correction=self._applied_blend_correction(),
                 # WHAT THIS ROUND PROPOSED (#2392), preferred over what it
                 # applied. The fingerprint travelled here from the committing
                 # stage through durable ``verify_priors``, exactly as the
@@ -11102,6 +11142,15 @@ class CrossoverV2Session:
             plan=self._plan_linearization,
             exclusion_evidence=self._exclusion_evidence_json,
             journal=self._journal_linearization,
+            # Decision 10: what the PREVIOUS round's summed evidence
+            # prescribed, read off the same durable series record the
+            # objectives travel on. Empty for the first round of a series and
+            # for a host that resolved no position — both mean "apply no blend
+            # correction", which is the honest graph in both cases.
+            blend_correction=(
+                self._series_position.previous_blend_correction
+                if self._series_position is not None else ()
+            ),
         )
 
     def _exclusion_evidence_json(self, cloud: _CloudFitEvidence) -> dict[str, Any]:
