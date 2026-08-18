@@ -65,6 +65,9 @@ from .verification import FlatnessObjectives, decide_adoption
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from jasper.audio_measurement.program_analysis import ProgramAnalysis
+    from jasper.active_speaker.crossover_v2.alignment_prescription import (
+        AlignmentPrescription,
+    )
     from jasper.active_speaker.flat_spec import FlatSpecReport, GradedSpec
 
 logger = logging.getLogger(__name__)
@@ -365,6 +368,14 @@ class RoundEvidence:
     #: fail-direction reason the floors are: absent only ever lets the loop
     #: keep prescribing, never freezes it.
     previous_blend_residual_db: float | None = None
+    #: The inter-driver delay PRESCRIPTION this round's candidate was built
+    #: from, or ``None`` for a round whose delay the aligner chose on its own
+    #: (#2662). Banked verbatim, never graded here: it is provenance — what the
+    #: prescribed number was derived from — and the adoption record's job is to
+    #: say what an adopted arm's timing rests on so a reader can go and check.
+    #: Defaulted, and ``None`` is honest for the overwhelming majority of
+    #: rounds, which prescribe nothing.
+    alignment_prescription: "AlignmentPrescription | None" = None
 
 
 @dataclass(frozen=True)
@@ -1018,6 +1029,17 @@ def _round_measurements(
                 **region_benefit.to_dict(),
             }
         measurements["blend"] = record
+    # #2662's provenance, banked verbatim. It rides HERE, with the numbers,
+    # rather than on ``round_axes`` for the reason the blend reason code does:
+    # ``round_axes`` is the four adoption axes and every value in it is a
+    # ``Verdict``, and provenance is neither. It is also not an INSTRUCTION for
+    # the next round — unlike ``blend``, which the next round reads back as its
+    # incumbent — so it is deliberately absent from ``_round_identity``: each
+    # arm of a delay sweep is prescribed explicitly, and a receipt that carried
+    # one forward would be how an arm gets re-run without being asked for.
+    prescription = evidence.alignment_prescription
+    if prescription is not None:
+        measurements["alignment_prescription"] = prescription.to_dict()
     return measurements
 
 

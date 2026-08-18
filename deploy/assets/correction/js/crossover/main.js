@@ -222,8 +222,11 @@ function renderCandidateReview(review) {
   // did not supply — the one the speaker already plays, or none. The page must
   // not call either "measured", the one word a household reads as "we checked".
   //
-  // A SET, not one string: that refusal has three commitments, differing in the
-  // DELAY they commit and agreeing exactly here. Mirrors
+  // A SET, not one string: that refusal has four commitments, differing in the
+  // DELAY they commit and agreeing exactly here. The fourth (#2662) commits an
+  // explicit bench PRESCRIPTION, which the refusal does not touch because it
+  // never came from this capture — but its polarity is still the declaration,
+  // so it words the same way. Mirrors
   // `program_analysis.ALIGNMENT_DECLARED_POLARITY_OBJECTIVES`; a browser module
   // cannot import a Python constant, so `tests/test_crossover_envelope_v2.py`
   // fails when the two lists disagree and
@@ -232,6 +235,7 @@ function renderCandidateReview(review) {
     'declared_committed_after_low_snr',
     'applied_alignment_held_after_low_snr',
     'no_delay_committed_after_unreadable_apply',
+    'explicit_prescription_held_after_low_snr',
   ].includes(review.alignment_objective);
 
   const rows = [];

@@ -120,13 +120,13 @@ def test_the_configured_path_priors_are_all_present_or_all_absent():
         fc_hz=FC_HZ, source_preset=PRESET,
         protection_sections_by_role=PROTECTION,
         ambient_report=None, alignment_delay_bounds_us=None,
-        applied_alignment=None,
+        applied_alignment=None, explicit_alignment_delay_us=None,
     )
     without = priors.measure_priors(
         fc_hz=FC_HZ, source_preset=PRESET,
         protection_sections_by_role=None,
         ambient_report=None, alignment_delay_bounds_us=None,
-        applied_alignment=None,
+        applied_alignment=None, explicit_alignment_delay_us=None,
     )
 
     present = (
@@ -217,7 +217,7 @@ def test_both_priors_paths_ask_the_owner_rather_than_re_spelling_it():
         fc_hz=FC_HZ, source_preset=PRESET,
         protection_sections_by_role=PROTECTION,
         ambient_report=None, alignment_delay_bounds_us=None,
-        applied_alignment=None,
+        applied_alignment=None, explicit_alignment_delay_us=None,
     )
 
     assert got.candidate_required_band_hz_by_role == (

@@ -6119,6 +6119,23 @@ class CrossoverV2Session:
         return self._measure_proposal_fingerprint
 
     @property
+    def alignment_prescription_record(self) -> dict[str, Any] | None:
+        """This session's delay prescription as the receipt banks it (#2662).
+
+        Read by the host's durable persist and handed back to the stage that
+        grades the round, exactly like :attr:`measure_proposal_fingerprint`:
+        the grading stage builds a fresh session and holds no candidate, so
+        durable state is the only channel a stage-1 fact has.
+
+        ``None`` is "no prescription was made" — the automatic path — and is
+        what an ordinary round banks. The receipt's absence of a provenance
+        block and its presence therefore mean exactly one thing each.
+        """
+        if self._alignment_prescription is None:
+            return None
+        return self._alignment_prescription.to_dict()
+
+    @property
     def last_intervention_proposal(self) -> Any:
         """This session's proposal, its refusal, or ``None`` before the commit.
 
@@ -9649,6 +9666,12 @@ class CrossoverV2Session:
                 graded_spec=graded_verify,
                 applied_blend_correction=self._applied_blend_correction(),
                 previous_blend_residual_db=position.previous_blend_residual_db,
+                # #2662. Rehydrated from stage 1's durable ``verify_priors`` on
+                # the same route as the entry baseline and the commanded delta,
+                # for the same reason stated below about the proposal
+                # fingerprint: this stage builds a fresh session and holds no
+                # candidate to derive one from.
+                alignment_prescription=self._alignment_prescription,
                 # WHAT THIS ROUND PROPOSED (#2392), preferred over what it
                 # applied. The fingerprint travelled here from the committing
                 # stage through durable ``verify_priors``, exactly as the

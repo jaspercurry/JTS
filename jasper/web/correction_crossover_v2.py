@@ -2609,6 +2609,33 @@ def entry_baseline_prior_from_state(state: Mapping[str, Any] | None) -> Any:
     return EntryBaseline.from_dict(record)
 
 
+def alignment_prescription_prior_from_state(state: Mapping[str, Any] | None) -> Any:
+    """The stage-1 delay prescription, as the conductor's ctor takes it (#2662).
+
+    The read side of :func:`persist_conductor_state`'s
+    ``verify_priors.alignment_prescription`` and the exact mirror of
+    :func:`entry_baseline_prior_from_state`: durable state in, the
+    ``alignment_prescription`` argument out. Named and module-level for the
+    same reason — the seeding PATH is then drivable in a test without a relay.
+
+    ``None`` is "this round prescribed no delay", and it also covers a state
+    file written before this key shipped and a truncated or hand-edited record;
+    the reader below says which of the last two in a WARNING, and the round
+    does not branch on it. The BOUND is deliberately not re-applied here —
+    :mod:`~jasper.active_speaker.crossover_v2.alignment_prescription` states
+    why: it has one owner, and it is the request boundary.
+    """
+    from jasper.active_speaker.crossover_v2.alignment_prescription import (
+        alignment_prescription_from_mapping,
+    )
+
+    priors = (state or {}).get("verify_priors")
+    record = (
+        priors.get("alignment_prescription") if isinstance(priors, Mapping) else None
+    )
+    return alignment_prescription_from_mapping(record)
+
+
 def pilot_transfer_prior_from_state(
     state: Mapping[str, Any] | None,
 ) -> Mapping[str, Any] | None:
@@ -3508,6 +3535,16 @@ def persist_conductor_state(
             # key's own absence already means downstream.
             "verify_measured": _decimate_verify_measured(
                 getattr(conductor, "verify_tracking_curve", None)
+            ),
+            # #2662's provenance. It crosses for exactly ``commanded_delta``'s
+            # reason — produced by the stage that MEASURES the arm, banked by
+            # the stage that GRADES it, and those are different sessions in
+            # different processes — and is read the same way, through
+            # ``getattr``, so a duck-typed stand-in without the property means
+            # "no prescription", which is what the key's own absence already
+            # means downstream.
+            "alignment_prescription": getattr(
+                conductor, "alignment_prescription_record", None
             ),
             # #2291's measured "before": the summed capture stage 1 takes at
             # the mark immediately before apply, which stage 2's benefit
@@ -7572,23 +7609,6 @@ def prepare_v2_session(
             "a new session"
         )
     context = resolve_conductor_context(status)
-    # #2662, and it happens HERE for two reasons. It is the untrusted-input
-    # boundary, so a malformed or out-of-lobe prescription is refused before any
-    # relay registration, evidence store, or capture — an operator walking a
-    # delay sweep learns at the tap, not after a ten-minute measurement. And it
-    # is the first point holding the crossover corner the bound is a half-period
-    # of. Never inherited from the lapsed session's durable state the way
-    # ``tier`` above deliberately is: a prescription is one round's explicit
-    # instruction, and a "measure again" that silently re-ran an arm would put
-    # that arm's name on a round nobody asked for.
-    try:
-        alignment_prescription = read_alignment_prescription(
-            (raw or {}).get(ALIGNMENT_PRESCRIPTION_KEY), fc_hz=context.fc_hz,
-        )
-    except AlignmentPrescriptionRefused as exc:
-        raise CrossoverV2Refused(
-            f"the alignment prescription was refused ({exc.reason}): {exc.detail}"
-        ) from exc
     try:
         protection_sections = confirmed_protection_sections(
             context.safety_profile, context.role_targets
@@ -7596,6 +7616,29 @@ def prepare_v2_session(
     except ValueError as exc:
         raise CrossoverV2Refused(
             "The confirmed driver protection cannot be used for this measurement."
+        ) from exc
+    # #2662, and it happens HERE for three reasons. It is the untrusted-input
+    # boundary, so a malformed or out-of-lobe prescription is refused before any
+    # evidence store, relay registration, or capture — an operator walking a
+    # delay sweep learns at the tap, not after a ten-minute measurement. It is
+    # the first point holding the crossover corner the bound is a half-period
+    # of. And it sits AFTER the two speaker-level gates above rather than before
+    # them: whether this speaker can be measured at all is a prior question to
+    # whether this request's prescription is good, and answering them in the
+    # other order would hand a household a prescription error for a speaker
+    # whose protection cannot be used either way.
+    #
+    # Never inherited from the lapsed session's durable state the way ``tier``
+    # above deliberately is: a prescription is one round's explicit instruction,
+    # and a "measure again" that silently re-ran an arm would put that arm's
+    # name on a round nobody asked for.
+    try:
+        alignment_prescription = read_alignment_prescription(
+            (raw or {}).get(ALIGNMENT_PRESCRIPTION_KEY), fc_hz=context.fc_hz,
+        )
+    except AlignmentPrescriptionRefused as exc:
+        raise CrossoverV2Refused(
+            f"the alignment prescription was refused ({exc.reason}): {exc.detail}"
         ) from exc
     include_cloud_measure = STAGE1_INCLUDES_CLOUD_MEASURE
     # R16's lateral walk (plan §4.4). Read here beside the cloud flag so the
@@ -7945,6 +7988,11 @@ def prepare_v2_verify(
     # declared to the capability journal below so the verdict's reason is not
     # the first place anyone learns it was missing.
     entry_baseline = entry_baseline_prior_from_state(state)
+    # #2662, rehydrated on entry_baseline's route and for its reason: stage 2
+    # never opened a session with a prescription (it takes no MEASURE capture),
+    # so this durable record is the only way the round it grades can name what
+    # its delay was derived from.
+    alignment_prescription = alignment_prescription_prior_from_state(state)
     gate_ms = (
         priors_raw.get("gate_window_ms") if isinstance(priors_raw, Mapping) else None
     )
@@ -8074,6 +8122,7 @@ def prepare_v2_verify(
             measure_declared_transfer=declared_transfer,
             measure_proposal_fingerprint=proposal_fingerprint,
             measure_entry_baseline=entry_baseline,
+            alignment_prescription=alignment_prescription,
             measure_gate_window_ms=(
                 float(gate_ms) if isinstance(gate_ms, (int, float)) else None
             ),
