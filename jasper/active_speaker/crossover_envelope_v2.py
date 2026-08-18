@@ -1874,9 +1874,16 @@ def _done_nudges(
             # The third caveat, in the two above's register and under the same
             # rules: no hardware noun, no instruction to act, a statement about
             # what the check could and could not confirm (#2614). This one is
-            # not a finding about the speaker at all — the shape check simply
-            # did not run. The loudness half DID run, and it found nothing,
-            # which is why the badge beside this still says Verified.
+            # not a finding about the speaker at all — the checks simply did not
+            # run. Nothing was found, which is why the badge beside this still
+            # says Verified.
+            #
+            # **It names BOTH halves since series-2 D1.** It used to say the
+            # loudness half had run; on this path it cannot. The two directional
+            # findings are differenced against the pre-apply capture, and a
+            # state axis has no pre-apply reference to difference against — so
+            # what the pre-D1 copy called a loudness comparison was a comparison
+            # against the model, which is the confusion D1 exists to end.
             #
             # **No cause clause, deliberately.** FOUR paths reach this verdict —
             # the crossover corner moved, the applied record was displaced, it
@@ -1890,8 +1897,8 @@ def _done_nudges(
             # function down) and is not worth four sentences for a caveat whose
             # action is identical in every case.
             "text": (
-                "This check could compare loudness but not the correction's "
-                "shape this round."
+                "This check could not confirm the correction's shape or its "
+                "loudness this round."
             ),
         })
     return nudges

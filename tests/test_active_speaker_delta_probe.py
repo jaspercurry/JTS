@@ -1796,13 +1796,25 @@ def test_to_dict_carries_the_quiet_evidence_the_level_verdict_rests_on():
 
 
 # --------------------------------------------------------------------------- #
-# the boost-overshoot hard stop (#2537)
+# the boost-overshoot hard stop (#2537, anchored by series-2 D1)
 # --------------------------------------------------------------------------- #
+#
+# Every map below carries a PRE-APPLY anchor, and since D1 that is a
+# precondition rather than a decoration: the two directional findings are
+# measurements of what the speaker did ACROSS the apply, so without a pre-apply
+# capture there is nothing to difference against and they are not made at all
+# (:func:`test_an_unanchored_map_makes_no_directional_finding_at_all`).
+#
+# ``anchor_db=0.0``, the helper's default, is the pre-apply capture that matched
+# the model exactly — ``measured_pre − predicted_previous == 0`` puts
+# ``entry_delta_db`` at 0 everywhere by the caller's own construction — so every
+# number these tests assert is the same one they asserted before D1, measured
+# now against a stated reference instead of an implied one.
 
 
 def test_an_exactly_realized_boost_measures_no_overshoot():
     commanded = _commanded_lift()
-    probe = classify_delta_probe(_GRID_HZ, commanded, commanded, band_hz=_band())
+    probe = _entry_anchored(commanded, realized=commanded, band=_band())
     assert probe.boost_over_declared_bound is False
     assert probe.boost_overshoot_db == pytest.approx(0.0, abs=1e-9)
     assert probe.boost_overshoot_octaves == 0.0
@@ -1811,9 +1823,7 @@ def test_an_exactly_realized_boost_measures_no_overshoot():
 def test_a_boost_realized_far_above_what_it_commanded_clears_the_bound():
     """Energy the graph did not declare, over a structured run of the band."""
     commanded = _commanded_lift()
-    probe = classify_delta_probe(
-        _GRID_HZ, commanded + 5.0, commanded, band_hz=_band()
-    )
+    probe = _entry_anchored(commanded, realized=commanded + 5.0, band=_band())
     assert probe.boost_over_declared_bound is True
     assert probe.boost_overshoot_db == pytest.approx(5.0, abs=1e-6)
     assert probe.boost_overshoot_octaves >= DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES
@@ -1827,12 +1837,8 @@ def test_the_boost_finding_is_DIRECTIONAL_where_every_other_one_is_not():
     rest of the module DOES see it. Only this finding is silent about it.
     """
     commanded = _commanded_lift()
-    under = classify_delta_probe(
-        _GRID_HZ, commanded - 5.0, commanded, band_hz=_band()
-    )
-    over = classify_delta_probe(
-        _GRID_HZ, commanded + 5.0, commanded, band_hz=_band()
-    )
+    under = _entry_anchored(commanded, realized=commanded - 5.0, band=_band())
+    over = _entry_anchored(commanded, realized=commanded + 5.0, band=_band())
 
     assert under.boost_over_declared_bound is False
     assert under.boost_overshoot_db == pytest.approx(-5.0, abs=1e-6)
@@ -1847,7 +1853,7 @@ def test_a_cut_only_correction_reports_not_measured_never_zero():
     as "measured, and it did not overshoot" — the distinction ``gain_factor``
     and ``residual_offset_db`` both draw."""
     commanded = -_commanded_lift()
-    probe = classify_delta_probe(_GRID_HZ, commanded, commanded, band_hz=_band())
+    probe = _entry_anchored(commanded, realized=commanded, band=_band())
     assert probe.boost_overshoot_db is None
     assert probe.boost_over_declared_bound is False
 
@@ -1863,7 +1869,7 @@ def test_a_single_overshooting_bin_is_texture_not_a_hard_stop():
     realized = commanded.copy()
     realized[300] += 9.0
 
-    probe = classify_delta_probe(_GRID_HZ, realized, commanded, band_hz=_band())
+    probe = _entry_anchored(commanded, realized=realized, band=_band())
 
     assert probe.boost_overshoot_db == pytest.approx(9.0, abs=1e-6)
     assert probe.boost_overshoot_octaves < DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES
@@ -1876,8 +1882,8 @@ def test_the_overshoot_is_measured_on_the_raw_curve_not_the_frame_removed_one():
     exactly the whole-band overshoot the hard stop exists for."""
     grid = _LINEAR_GRID_HZ
     commanded = np.where((grid >= 400.0) & (grid <= 12_000.0), 4.0, 0.0)
-    probe = classify_delta_probe(
-        grid, commanded + 3.0, commanded, band_hz=(400.0, 20_000.0)
+    probe = _entry_anchored(
+        commanded, realized=commanded + 3.0, grid=grid, band=(400.0, 20_000.0),
     )
     assert probe.frame.fitted is True
     assert probe.frame.offset_db == pytest.approx(3.0, abs=1e-6)
@@ -1894,21 +1900,23 @@ def test_boost_overshoot_reports_no_finding_when_no_bin_is_boosted():
     commanded = -np.ones_like(grid) * 4.0
     mask = np.ones_like(grid, dtype=bool)
     over, worst, octaves = boost_overshoot(
-        grid, commanded + 9.0, commanded, np.full_like(grid, 1.5), mask
+        grid, np.full_like(grid, 9.0), commanded, np.full_like(grid, 1.5), mask
     )
     assert (over, worst, octaves) == (False, None, 0.0)
 
 
 def test_to_dict_carries_the_boost_evidence_the_hard_stop_rests_on():
     commanded = _commanded_lift()
-    payload = classify_delta_probe(
-        _GRID_HZ, commanded + 5.0, commanded, band_hz=_band()
+    payload = _entry_anchored(
+        commanded, realized=commanded + 5.0, band=_band(),
     ).to_dict()
     assert set(payload["boost"]) == {
         "over_declared_bound", "overshoot_db", "overshoot_octaves",
     }
     assert payload["boost"]["over_declared_bound"] is True
     assert payload["boost"]["overshoot_db"] == pytest.approx(5.0, abs=1e-6)
+    # ...and whether the block above is a measurement at all (series-2 D1).
+    assert payload["safety_anchored"] is True
 
 
 # --------------------------------------------------------------------------- #
@@ -1934,7 +1942,10 @@ def _shape_miss(depth_db: float = 3.32, *, sign: float = -1.0):
     """
     commanded = _commanded_lift(depth_db=8.0, corner_hz=1_000.0)
     realized = commanded + sign * np.where(_DIP_BAND, depth_db, 0.0)
-    return classify_delta_probe(_GRID_HZ, realized, commanded, band_hz=_band())
+    # Anchored against a pre-apply capture that matched the model, so the
+    # direction finding is a statement about the SPEAKER (series-2 D1) — and so
+    # every number below is the one this fixture asserted before it.
+    return _entry_anchored(commanded, realized=realized, band=_band())
 
 
 def _quieter_only_model_error(depth_db: float = 3.32):
@@ -1991,7 +2002,7 @@ def test_one_bin_realized_louder_withholds_the_deferral():
     noisy = int(np.flatnonzero(_DIP_BAND)[10])
     realized[noisy] = commanded[noisy] + 4.0
 
-    probe = classify_delta_probe(_GRID_HZ, realized, commanded, band_hz=_band())
+    probe = _entry_anchored(commanded, realized=realized, band=_band())
 
     assert probe.verdict == VERDICT_MODEL_ERROR
     # The width rule still says this single bin is not structured…
@@ -2010,9 +2021,7 @@ def test_a_boost_realized_over_its_bound_is_always_louder_than_commanded():
     tunable — the explicit guard is what keeps the fence standing.
     """
     commanded = _commanded_lift()
-    probe = classify_delta_probe(
-        _GRID_HZ, commanded + 5.0, commanded, band_hz=_band()
-    )
+    probe = _entry_anchored(commanded, realized=commanded + 5.0, band=_band())
 
     assert probe.boost_over_declared_bound is True
     assert probe.realized_louder_than_commanded is True
@@ -2086,10 +2095,9 @@ def test_a_map_that_never_reached_a_seam_rollback_records_no_deferral(probe):
 def test_the_direction_helper_reports_not_measured_rather_than_zero():
     """``None``, never 0.0 — ``gain_factor``'s own distinction."""
     grid = _GRID_HZ
-    commanded = np.zeros_like(grid)
     empty = np.zeros_like(grid, dtype=bool)
     assert louder_than_commanded(
-        commanded + 9.0, commanded, np.full_like(grid, 1.5), empty
+        np.full_like(grid, 9.0), np.full_like(grid, 1.5), empty
     ) == (False, None)
 
 
@@ -2100,9 +2108,7 @@ def test_the_direction_helper_measures_the_raw_curve_not_a_frame_removed_one():
     commanded = _commanded_lift()
     # A pure +4 dB offset: the frame fit absorbs it, so the frame-removed curve
     # is flat and a check taken there would call this "quieter only".
-    probe = classify_delta_probe(
-        _GRID_HZ, commanded + 4.0, commanded, band_hz=_band()
-    )
+    probe = _entry_anchored(commanded, realized=commanded + 4.0, band=_band())
 
     assert probe.frame.fitted is True
     assert probe.frame.offset_db == pytest.approx(4.0, abs=1e-6)
@@ -2115,6 +2121,7 @@ def test_to_dict_carries_the_direction_evidence_the_deferral_rests_on():
 
     assert set(payload["direction"]) == {
         "realized_louder_than_commanded",
+        "model_departure_over_tolerance",
         "max_signed_error_db",
         "seam_rollback_deferral",
     }

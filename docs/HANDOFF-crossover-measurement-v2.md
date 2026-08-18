@@ -2332,19 +2332,53 @@ seems dumb… the first application is not the end point, it is just the start*)
 discriminator.** A −2.3 dB uncommanded level shift is `row2` (the household
 loses some output; the next round learns something); a +2.3 dB one is `row3`
 (energy nobody asked for). Same magnitude, opposite answer. The three hazards
-are: a commanded boost realized above its declared bound
+are: a boost realized above the probe's tolerance
 (`delta_probe.boost_overshoot`, the one directional exceedance rule in that
 module), an uncommanded shift measured LOUDER than declared, and a clipped
 capture. A band-scoped level claim (#2533) narrows *where* a level was
 measured, never *whether* it happened, so a positive band-scoped shift is still
 a hard stop.
 
+**All three are measurements of the SPEAKER, and the first one had to be
+repaired to become one (series-2 D1).** Until 2026-08-18 it graded
+`realized − commanded`, in which the commanded term cancels identically — so the
+quantity was `(measured − predicted) − expected_offset`, the acoustic model's
+own error. On 2026-08-17 that restored the flattest tune this program has
+measured, for a +3.9 dB model error at 1384 Hz that both rounds of that series
+shared (corr 0.954, 0.350 dB rms apart), in a band the applied graph declares a
+3.67 dB CUT in, on a round whose probe verdict was `matched` and which measured
+2.42 dB QUIETER. The finding is now the **anchored** excess —
+`(measured_post − measured_pre) − expected_offset − commanded`, differenced
+against the entry capture per bin — so a standing model error cancels and
+delivered energy does not. The old reason string
+`boost_realized_above_declared_bound` named a "declared bound" that was the
+probe's own 1.5 dB measurement tolerance; it is now
+`boost_realized_above_probe_tolerance`. Receipts banked before this carry the
+old string, and they were reporting the old quantity, so the two spellings mark
+two instruments.
+
+**No anchor, no finding.** Without a pre-apply capture there is only the model's
+error, so the two directional findings are not made — `safety_anchored` on the
+map and in the safety evidence says which. That is the case on the
+`safety_only` path by construction (a change measurement shares no reference
+with a state axis). What still holds there: the clipped check, and the graph's
+own electrical bound — a deterministic biquad chain whose peak cost is computed
+and pre-paid under `devices.volume_limit = 0.0`.
+
+**The model's departure is still measured, and lands on QUALITY.**
+`DeltaProbeMap.model_departure_over_tolerance` / `max_signed_error_db` is the
+unanchored reading — exactly what `realized_louder_than_commanded` carried
+before D1 — and `evaluate_round_quality` appends it as a next-round target
+(`model_departure:<dB>@<Hz>`). It is a real defect, and the blend region is
+where this model is known blind (#2600); it is not a hazard, and it moves no
+status.
+
 **What "safe" does not claim.** `SAFETY_NO_FINDING` means no instrument that ran
 reported a hazard — an absent or ungraded probe reports no finding rather than
 one, matching `DELTA_PROBE_ROLLBACK_VERDICTS`'s own rule that an absent
-measurement is not evidence. The verdict's evidence carries `probe_graded` so a
-reader can tell "safe because nothing was found" from "safe because nothing
-looked."
+measurement is not evidence. The verdict's evidence carries `probe_graded`,
+`probe_shape_graded` and `safety_anchored` so a reader can tell "safe because
+nothing was found" from "safe because nothing looked."
 
 **The same direction rule reaches the SHAPE axis (#2559).** The delta probe's
 own seam-bound rollback preempts this table — a seam refusal ends the session
@@ -2359,11 +2393,15 @@ seam restored on, it still restores on — `level_dependent_shortfall`,
 tolerance (unstructured, so one bin withholds the deferral),
 `boost_over_declared_bound`, and every ungradeable map, which never reached a
 seam rollback in the first place. The measurement behind it is
-`DeltaProbeMap.realized_louder_than_commanded` / `max_signed_error_db`, taken on
-the RAW realized curve for `boost_overshoot`'s reason: this asks how much energy
-reached the driver, not whether the shape is right. Both are measured over the
-probe's SAFETY bins since #2614 — this apply's graded changes UNION the applied
-graph's own declared transfer — for the same reason. A deferral is never silent —
+`DeltaProbeMap.realized_louder_than_commanded`, taken on the raw curves for
+`boost_overshoot`'s reason: this asks how much energy reached the driver, not
+whether the shape is right. It is measured over the probe's SAFETY bins since
+#2614 — this apply's graded changes UNION the applied graph's own declared
+transfer — for the same reason, and over the ANCHORED excess since series-2 D1,
+which needed no edit here: the fence withholds lenience on a positive bin, so a
+fence fed by model error withheld it wrongly. An unanchored map defers, on the
+module's own rule that an absent measurement is not evidence of a bad
+correction. A deferral is never silent —
 it journals `event=correction.crossover_v2_delta_probe_seam_deferred` (WARNING)
 and rides the safety axis's evidence as `seam_deferred`, so the receipt records
 the restore that did **not** happen.
@@ -3340,6 +3378,13 @@ commanded one as `verify_priors.declared_transfer`; its absence narrows those
 two rules back to the change axis and says so on the journal
 (`event=correction.crossover_v2_declared_transfer_unavailable`).
 
+Neither curve contributes a VALUE to those rules — they choose bins, and since
+series-2 D1 the value is the anchored excess. That is also why a union mask
+bridging a run the graded mask would break is sound for them and is not for
+`_structured_exceedance`: a bin the correction commanded nothing at corroborates
+nothing about the model's SHAPE, but a speaker measuring 4 dB hotter there than
+before the apply is direct evidence about a driver wherever it sits.
+
 **That band is intersected with the capture's own TRUSTED band, and there is no
 fallback** (#2521). The band comes from
 `gate_disclosure.evaluation_band_hz` — this capture's gate-derived trusted floor
@@ -3424,29 +3469,35 @@ reason=crossover_corner_moved`, and `reason=applied_profile_names_no_corner` for
 an era-older record that cannot say. `entry_anchor_offset_db` discloses what was
 removed and is **not** a warrant that the residual beside it is clean.
 
-**A refused change axis costs the SHAPE grade, never the hearing-safety one**
-(#2614). Every committed alternative-Fc candidate hits that refusal by
-construction, and while `_run_delta_probe` bailed on it the two directional
-findings never ran at all: `evaluate_applied_safety` answered SAFE on a round
-where nothing had looked, and no surface said so. The STATE axis needs no corner
-match — both of its sides are the candidate's own — so it is computed and
-persisted at every swept corner, and the probe now runs its safety half on that
-alone:
+**A refused change axis costs the SHAPE grade, and since series-2 D1 the
+hearing-safety one too — disclosed, not silently** (#2614). Every committed
+alternative-Fc candidate hits that refusal by construction, and while
+`_run_delta_probe` bailed on it nothing ran at all: `evaluate_applied_safety`
+answered SAFE on a round where nothing had looked, and no surface said so. The
+STATE axis needs no corner match — both of its sides are the candidate's own —
+so it is computed and persisted at every swept corner, and the probe runs on
+that alone:
 
 - verdict `safety_only`, reason `commanded_axis_unavailable`
   (`delta_probe.VERDICT_SAFETY_ONLY`), journalled at WARNING;
-- `boost_over_declared_bound` / `realized_louder_than_commanded` are real, so a
-  state-axis overshoot still reaches the adoption table's hard stop and
-  restores;
+- `model_departure_over_tolerance` / `max_signed_error_db` are real: how far the
+  room sat from a two-branch model just rebuilt at a different corner;
+- **`boost_over_declared_bound` / `realized_louder_than_commanded` are NOT.**
+  This path has no pre-apply capture to difference against, so the anchored
+  excess does not exist and `safety_anchored` is false. #2614 made those two
+  fire here on the unanchored curve, which on this path carries no change term
+  at all — the D1 defect at its purest. What still holds: the clipped check, and
+  the graph's own pre-paid electrical bound;
 - **no shape or level scalar at all** — residual, gain, frame and exceedance
   would each be a claim in the state frame, where the residual is the
   chained-round contaminant #2611 removed;
-- the safety evidence carries `probe_shape_graded: false` beside `probe_graded`,
-  and the done screen shows a third caveat ("This check could compare loudness
-  but not the correction's shape this round.") beside the Verified badge. That
-  copy names no CAUSE on purpose: four paths reach this verdict — corner moved,
-  applied record displaced, record names no graph, record names no corner — and
-  the journal is where the specific one is named.
+- the safety evidence carries `probe_shape_graded: false` and
+  `safety_anchored: false` beside `probe_graded`, and the done screen shows a
+  third caveat ("This check could not confirm the correction's shape or its
+  loudness this round.") beside the Verified badge. That copy names no CAUSE on
+  purpose: four paths reach this verdict — corner moved, applied record
+  displaced, record names no graph, record names no corner — and the journal is
+  where the specific one is named.
 
 With neither axis the probe is absent exactly as before, and
 `event=correction.crossover_v2_declared_transfer_unavailable` names why.
