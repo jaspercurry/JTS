@@ -373,10 +373,13 @@ point for active crossover commissioning. Opening it shows one primary
 **Active crossover setup** walkthrough, not a separate environment card. The
 walkthrough keeps one task card open at a time: choose speaker layout, add your
 components, confirm outputs and each driver, test the combined
-crossover, then save/apply the active profile. Layout and
-crossover-settings steps do not play sound, load CamillaDSP, or touch live
-audio; detected hardware is supporting context and the hardware refresh control
-is a small utility inside the layout step.
+crossover, then save/apply the active profile. Editing layout and
+crossover-settings drafts does not play sound or touch live audio. Saving a
+layout uses the shared park -> commit -> runtime-converge transaction: explicit
+passive intent can load a safe recomposed graph, while unconfigured or
+incomplete active intent remains parked. Detected hardware is supporting
+context and the hardware refresh control is a small utility inside the layout
+step.
 
 The **Confirm outputs** card owns the guarded driver-check controls.
 The primary UI no longer refreshes the old backend checklist/grid or asks the
@@ -520,11 +523,13 @@ operator-confirmed physical channel identity in the topology contract; it is
 not playback permission and it does not satisfy tweeter protection or later
 path-safety blockers by itself.
 The bottom **Reset speaker setup** action is a recovery control. It stops any
-active-speaker tone/session, resets `/var/lib/jasper/output_topology.json` to a
-detected passive hardware draft, kicks audio-hardware reconcile, and clears the
+active-speaker tone/session, resets `/var/lib/jasper/output_topology.json` to an
+unconfigured zero-group draft, kicks audio-hardware reconcile, and clears the
 active-speaker setup/evidence JSON artifacts so stale staged configs,
 measurements, or baseline candidates cannot masquerade as current after the
-topology reset. It does not emit sound or delete generated CamillaDSP YAML.
+topology reset. Detected hardware is retained only as metadata. Reset does not
+infer passive intent, emit sound, or delete generated CamillaDSP YAML; audio
+stays parked until the household explicitly saves a layout.
 The component card stores a versioned working draft per physical output. Its
 default flow starts with one compact card for every independently amplified
 driver. Each card asks for make/model plus the physical choice the research
@@ -996,6 +1001,17 @@ original combined Sound page was the first wizard on this system; see AGENTS.md
    ("The ACTIVE-ring arm/rollback lifecycle").
 9. install.sh runs the CLI fail-open under an outer process timeout; a failed
    reconcile leaves the current legal graph in place and does not gate install.
+
+Normal topology convergence uses the same saved-intent render boundary without
+running the reconcile transaction: after an explicit passive layout authorizes
+the flat carrier, `materialise_saved_dsp_on_carrier` composes the saved profile,
+saved headroom trim, and compatible room PEQs into atomic `sound_current.yml`.
+The surrounding topology transaction owns graph locking, re-proof, and load.
+Reset does not enter this path: it commits zero speaker groups and stays parked.
+Any future passive-speaker linearization would join this composition only after
+explicit passive authorization; it is not an active crossover and must not
+grant flat-graph authority itself. The detailed contract lives in the
+[speaker-output reference](HANDOFF-speaker-output-reference.md#current-outputd-state).
 
 `/correction/apply`:
 

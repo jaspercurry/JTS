@@ -1551,7 +1551,9 @@ def test_a_path_match_with_a_stale_topology_is_not_already_loaded(monkeypatch):
         return {"status": "blocked"}
 
     monkeypatch.setattr(web, "_stage_startup_config", _spy_stage)
-    monkeypatch.setattr(web, "request_missing_software_guards", lambda t: (t, False))
+    monkeypatch.setattr(
+        web, "_ensure_missing_software_guards", lambda: (topology, False)
+    )
 
     def _run(staged_config):
         staged_calls.clear()
@@ -1881,8 +1883,8 @@ def test_startup_anchor_stages_the_callers_resolved_source(monkeypatch):
     monkeypatch.setattr(web, "load_output_topology", lambda: topology)
     monkeypatch.setattr(
         web,
-        "request_missing_software_guards",
-        lambda current: (current, False),
+        "_ensure_missing_software_guards",
+        lambda: (topology, False),
     )
     monkeypatch.setattr(
         web,

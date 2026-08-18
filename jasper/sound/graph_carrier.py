@@ -59,10 +59,17 @@ class CarrierCannotHostEq(RuntimeError):
     branches on it); ``message`` is household-readable.
     """
 
-    def __init__(self, reason_code: str, message: str) -> None:
+    def __init__(
+        self,
+        reason_code: str,
+        message: str,
+        *,
+        carrier_kind: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.reason_code = reason_code
         self.message = message
+        self.carrier_kind = carrier_kind
 
     def to_payload(self) -> dict[str, str]:
         """Typed body for an HTTP 200 response (no silent failure, no 502)."""
@@ -208,14 +215,31 @@ class _StereoHostCarrier:
         # in-memory live preview and the on-disk write, so a flat graph can never
         # reach the DAC under a protected-tweeter topology.
         if self._eq_block_reason is not None:
+            if self._eq_block_reason == "no speaker layout is configured":
+                raise CarrierCannotHostEq(
+                    "flat_graph_unconfigured",
+                    "No speaker layout is configured, so sound EQ cannot be "
+                    "applied. Save an explicit passive mono or stereo layout, "
+                    "or finish the protected active-speaker setup first. Audio "
+                    "remains parked.",
+                )
+            if "(tweeter/protected)" not in self._eq_block_reason:
+                raise CarrierCannotHostEq(
+                    "flat_graph_not_authorized",
+                    "The saved speaker layout does not authorize a flat sound "
+                    f"graph: {self._eq_block_reason}. Save an explicit passive "
+                    "mono or stereo layout, or finish the protected active-"
+                    "speaker setup first.",
+                )
             raise CarrierCannotHostEq(
                 "flat_graph_protected_tweeter",
                 "This speaker is running a flat full-range setup with no "
                 f"crossover, so it can't safely host sound EQ: "
                 f"{self._eq_block_reason}. Adjusting EQ would send full-range "
-                "audio to a protected tweeter, so it's blocked until the active "
-                "crossover is applied (or the speaker layout is cleared). Your "
-                "driver protection is unchanged.",
+                "audio to a protected tweeter. Save an explicit passive layout "
+                "only if the speaker has a built-in passive crossover, or finish "
+                "the protected active-speaker setup. Your driver protection is "
+                "unchanged.",
             )
         member_kwargs = self._resolve_member_kwargs(member_kwargs)
         self._validate_member_kwargs(member_kwargs)

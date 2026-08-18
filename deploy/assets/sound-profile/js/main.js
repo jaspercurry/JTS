@@ -6755,22 +6755,12 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   async function resetOutputTopology() {
     if (outputTopology.resetting) return;
     var ok = await jtsConfirm(
-      'This replaces the current speaker layout with the hardware JTS detects now. It clears driver details, crossover settings, output confirmations, measurements, and setup history. Audio stays off until you choose a new speaker layout.',
-      {title: 'Reset speaker setup?', confirmLabel: 'Use detected hardware', danger: true}
+      'This clears the current speaker setup. If usable hardware is detected, it will be shown after reset. Audio stays off until you choose a speaker layout.',
+      {title: 'Reset speaker setup?', confirmLabel: 'Reset speaker setup', danger: true}
     );
     if (!ok) return;
-    stopCommissionAutoRamp('');
     outputTopology.resetting = true;
     outputTopology.error = '';
-    patchActiveSpeaker({
-      commission: null,
-      commissioningView: null,
-      measurements: null,
-      baselineProfile: null,
-      error: '',
-      commissionBusy: '',
-      commissionError: ''
-    });
     render();
     try {
       var resp = await fetch('./output-topology/reset', {
@@ -6786,14 +6776,25 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       if (!resp.ok) {
         if (resp.status === 409 && payload.output_topology) {
           ingestOutputTopology(payload);
-          outputTopology.error = payload.error || 'Speaker setup or detected hardware changed. Review it and try again.';
-          status(outputTopology.error, true);
+          var conflictMessage = payload.error ||
+            'Speaker setup or detected hardware changed. Review it and try again.';
+          status(conflictMessage, true);
           render();
           return;
         }
         throw new Error(payload.error || 'speaker setup reset failed');
       }
       ingestOutputTopology(payload);
+      stopCommissionAutoRamp('');
+      patchActiveSpeaker({
+        commission: null,
+        commissioningView: null,
+        measurements: null,
+        baselineProfile: null,
+        error: '',
+        commissionBusy: '',
+        commissionError: ''
+      });
       outputStepOverride = 'layout';
       var resetStatus = payload && payload.reset || {};
       if (resetStatus.status === 'needs_attention') {
@@ -6804,7 +6805,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       }
     } catch (e) {
       outputTopology.resetting = false;
-      outputTopology.error = e.message;
       status('Could not reset speaker setup: ' + e.message, true);
     }
     render();

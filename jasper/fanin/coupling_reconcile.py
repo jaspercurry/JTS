@@ -3063,9 +3063,9 @@ def ring_topology_ready(*, strict_unreadable: bool = False) -> tuple[bool, str]:
     TWO admitting arms, because there are two rings:
 
     - **the STEREO arm** — Ring A/Ring B carry a full-range stereo program on a
-      single coherent ALSA sink, so this is legal for the plain-stereo /
-      unconfigured output contract only. It consults
-      ``topology_supports_shm_ring``, the single stereo-ring-eligibility
+      single coherent ALSA sink, so this is legal only for an explicit valid
+      passive-stereo output contract. An unconfigured speaker stays silent. It
+      consults ``topology_supports_shm_ring``, the single stereo-ring-eligibility
       predicate, so arming a non-eligible box refuses with a crisp reason here
       instead of failing later at outputd's Rust full-range-stereo rejection (a
       confusing daemon-level rollback);

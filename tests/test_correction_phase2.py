@@ -29,6 +29,17 @@ from .correction_session_fixtures import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _saved_passive_layout(tmp_path, monkeypatch):
+    """Legacy direct-apply tests now state their flat-graph authority."""
+    from jasper.output_topology import save_output_topology
+    from tests.test_active_speaker_runtime_contract import _full_range_stereo
+
+    path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
+    save_output_topology(_full_range_stereo(), path)
+
+
 # ---------- Spatial averaging ----------------------------------------------
 
 

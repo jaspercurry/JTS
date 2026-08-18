@@ -961,6 +961,34 @@ def test_reconcile_refuses_a_post_convergence_outputd_rejection() -> None:
     assert "exit 78" in code[final_commit:gate]
 
 
+def test_camilla_boot_requires_successful_runtime_graph_convergence() -> None:
+    """A stale statefile cannot start Camilla after a failed boot reconcile."""
+    camilla_unit = (
+        ROOT / "deploy" / "systemd" / "jasper-camilla.service"
+    ).read_text(encoding="utf-8")
+    hardware_unit = (
+        ROOT
+        / "deploy"
+        / "systemd"
+        / "jasper-audio-hardware-reconcile.service"
+    ).read_text(encoding="utf-8")
+
+    assert "Requires=jasper-audio-hardware-reconcile.service" in camilla_unit
+    after_line = next(
+        line for line in camilla_unit.splitlines() if line.startswith("After=")
+    )
+    assert "jasper-audio-hardware-reconcile.service" in after_line
+    # The required oneshot runs the same reconciler whose final command status
+    # is nonzero when runtime convergence fails.
+    assert (
+        "ExecStart=/usr/local/sbin/jasper-audio-hardware-reconcile"
+        in hardware_unit
+    )
+    assert '[[ "$runtime_converge_failed" == "0" ]]' in SCRIPT.read_text(
+        encoding="utf-8"
+    )
+
+
 def test_reconcile_preserves_asound_template_dir_mode(tmp_path: Path):
     """render_asound_if_needed must NOT re-chmod the existing /etc/jasper.
 
@@ -3459,12 +3487,10 @@ def test_reconcile_refuses_to_render_against_a_corrupt_topology(tmp_path: Path):
 
     `flat_graph_muted_outputs` fails SOFT — mute nothing — which is right for
     every caller that has a guard behind it (install's statefile check, the
-    reset's contract call, the carrier's `can_host_eq`). The reconciler has
-    NOTHING behind it: it renders on boot / udev / topology-save, and CamillaDSP
-    loads the cutover from its statefile on its next start with no ordering to
-    this. So a soft failure here would overwrite a healthy width-matched graph
-    with an unmuted one and log success — silently, in the hazard direction.
-    Keeping the previous file is the fail-closed answer.
+    reset's contract call, the carrier's `can_host_eq`). This renderer must also
+    keep the last proved bytes: the later runtime selector can then reject stale
+    intent, and the boot unit ordering prevents CamillaDSP from starting when
+    that convergence fails.
     """
     conf_dir = tmp_path / "camilladsp"
     conf_dir.mkdir()
@@ -3502,8 +3528,11 @@ def test_reconcile_refuses_to_render_against_a_corrupt_topology(tmp_path: Path):
 
 
 def test_reconcile_renders_the_golden_when_no_topology_is_saved(tmp_path: Path):
-    """MISSING is not CORRUPT. A fresh box declares nothing, so nothing is
-    undeclared, and the golden unmuted graph is the correct render."""
+    """MISSING is not CORRUPT, so rendering can still seed the golden artifact.
+
+    This does not authorize playback. The runtime selector parks a fresh box
+    until the household saves an explicit mono or stereo layout.
+    """
     conf_dir = tmp_path / "camilladsp"
     conf_dir.mkdir()
     # No output_topology.json written at all.
@@ -4057,35 +4086,38 @@ def test_an_unrecognized_dac_parks_and_does_not_kick_the_coupling(tmp_path: Path
     assert events == [], events
 
 
-def test_a_no_change_pass_issues_no_coupling_kick(tmp_path: Path):
-    """THE PING-PONG GUARD, half one (design section 10.4 item 4).
+def test_a_no_change_pass_still_reconciles_topology_coupling(tmp_path: Path):
+    """Topology may change while DAC identity and rendered bytes stay stable."""
+    from jasper.output_topology import OutputTopology, save_output_topology
+    from tests.test_active_speaker_runtime_contract import _full_range_stereo
 
-    The coupling pass kicks THIS script during its arm. If a no-change run of
-    this script started the coupling unit back, the pair would ping-pong. It
-    cannot, because both directions are change-guarded: here is the proof that
-    a second, identical pass issues no start.
-    """
+    configured = _full_range_stereo()
+    unconfigured = configured.to_dict()
+    unconfigured["speaker_groups"] = []
+    unconfigured["routing"] = {}
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(OutputTopology.from_mapping(unconfigured), path=topology_path)
+
     first = _run_reconcile(tmp_path, INNOMAKER_LISTING, "--reason", "udev")
     assert first.returncode == 0, first.stderr
     (tmp_path / "systemctl.log").write_text("", encoding="utf-8")
 
+    # The household now commissions ordinary passive stereo. Hardware and all
+    # generated DAC bytes are unchanged, but auto-coupling must see new intent.
+    save_output_topology(configured, path=topology_path)
     second = _run_reconcile(tmp_path, INNOMAKER_LISTING, "--reason", "udev")
 
     assert second.returncode == 0, second.stderr
+    assert "dac_env_changed=0" in second.stderr
+    assert "render_changed=0" in second.stderr
     starts, events = _coupling_kick_lines(tmp_path, second)
-    assert starts == [], _systemctl_log(tmp_path)
-    assert len(events) == 1 and "result=skipped_no_change" in events[0], events
+    assert starts, _systemctl_log(tmp_path)
+    assert all("--no-block" in line for line in starts), starts
+    assert len(events) == 1 and "result=started" in events[0], events
 
 
-def test_the_kick_guard_reads_neither_the_floor_nor_the_route_flag(tmp_path: Path):
-    """THE GUARD IS THE dac/render PAIR SPECIFICALLY, not "anything moved".
-
-    A latency-floor re-emit is not a DAC change and a route-env change already
-    has its own restart path; neither can alter a coupling verdict. Reading the
-    coarse ``env_changed`` instead would kick on both — which is exactly how the
-    coupling pass's OWN kick (it moves the active-lane marker pair, setting
-    outputd_committed and nothing else) would start yet another coupling pass.
-    """
+def test_successful_runtime_convergence_is_the_coupling_kick_guard():
+    """The trigger is final graph success, not DAC/render byte movement."""
     source = SCRIPT.read_text(encoding="utf-8")
     call = [
         line.strip()
@@ -4093,10 +4125,14 @@ def test_the_kick_guard_reads_neither_the_floor_nor_the_route_flag(tmp_path: Pat
         if "kick_fanin_coupling_auto_if_needed " in line and "()" not in line
     ]
 
-    assert call == ['kick_fanin_coupling_auto_if_needed "$dac_env_changed" "$render_changed"'], call
-    assert "$env_changed" not in call[0]
-    assert "LATENCY_FLOOR_CHANGED" not in call[0]
-    assert "ROUTE_FANIN_CHANGED" not in call[0]
+    assert call == [
+        'kick_fanin_coupling_auto_if_needed "$dac_env_changed" "$render_changed"'
+    ], call
+    call_offset = source.index(call[0])
+    guard_offset = source.rfind(
+        'if [[ "$runtime_converge_failed" == "0" ]]', 0, call_offset
+    )
+    assert guard_offset >= 0
 
 
 def test_the_coupling_kick_never_blocks(tmp_path: Path):

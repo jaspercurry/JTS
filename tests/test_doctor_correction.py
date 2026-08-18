@@ -792,6 +792,49 @@ def test_active_speaker_runtime_graph_warns_when_unconfigured_is_parked(
     assert UNCONFIGURED_PARKED_EXIT in r.detail
 
 
+def test_active_speaker_runtime_graph_fails_incomplete_nonroleful_layout(
+    monkeypatch, tmp_path
+):
+    """Parked is not a healthy substitute for an invalid passive layout."""
+    from dataclasses import replace
+
+    from jasper.active_speaker.runtime_contract import build_parked_muted_graph
+    from jasper.output_topology import save_output_topology
+    from tests.test_active_speaker_runtime_contract import _full_range_stereo
+
+    complete = _full_range_stereo()
+    topology = replace(
+        complete,
+        speaker_groups=tuple(
+            replace(
+                group,
+                channels=tuple(
+                    replace(channel, physical_output_index=None)
+                    if group.kind == "right"
+                    else channel
+                    for channel in group.channels
+                ),
+            )
+            for group in complete.speaker_groups
+        ),
+    )
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(topology, path=topology_path)
+    text, graph = build_parked_muted_graph(topology)
+    assert graph.allowed
+    config = tmp_path / "speaker_setup_parked.yml"
+    config.write_text(text, encoding="utf-8")
+    statefile = tmp_path / "statefile.yml"
+    statefile.write_text(f"config_path: {config}\n", encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+
+    r = doctor.check_active_speaker_runtime_graph()
+
+    assert r.status == "fail"
+    assert "not assigned to a DAC output" in r.detail
+
+
 def test_active_speaker_runtime_graph_fails_corrupt_saved_topology(
     monkeypatch,
     tmp_path,

@@ -362,6 +362,9 @@ def _cmd_runtime_safe_graph(args: argparse.Namespace) -> int:
             decision,
             topology=topology,
             statefile_path=args.statefile,
+            # A running CamillaDSP is the sole statefile writer. The websocket
+            # load persists its own selection; direct writes are boot-only.
+            persist_statefile=False,
         )
         wrote = result.statefile_written
         live_applied = result.live_applied
@@ -1595,8 +1598,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--apply-live",
         action="store_true",
         help=(
-            "materialise/write the selected safe graph, then load it through "
-            "the running CamillaDSP instance"
+            "materialise and load the selected safe graph through the running "
+            "CamillaDSP instance; Camilla persists its own statefile"
         ),
     )
     runtime.add_argument("--json", action="store_true")

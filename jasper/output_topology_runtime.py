@@ -21,7 +21,7 @@ from jasper.output_topology import (
     OutputTopologyError,
     load_output_topology_strict,
     new_topology_draft,
-    save_output_topology,
+    output_topology_mutation,
     topology_path,
 )
 
@@ -61,13 +61,16 @@ def trigger_reconcile(*, reason: str = "output_topology_reset") -> dict[str, Any
 
     from jasper.control.restart_broker import manage_units
 
-    result = manage_units(
-        RECONCILE_UNIT,
-        verb="start",
-        reason=reason,
-        no_block=False,
-        timeout=15.0,
-    )
+    try:
+        result = manage_units(
+            RECONCILE_UNIT,
+            verb="start",
+            reason=reason,
+            no_block=False,
+            timeout=15.0,
+        )
+    except (OSError, RuntimeError, ValueError, TimeoutError) as exc:
+        result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
     log_event(
         logger,
         "output_topology.reconcile",
@@ -84,40 +87,27 @@ def reset_to_unconfigured(
     *,
     path: str | Path | None = None,
     reconcile: bool = True,
-    topology_to_park: OutputTopology | None = None,
-    commit_unconfigured: Callable[[], OutputTopology] | None = None,
+    controller_factory: Callable[[], Any] | None = None,
 ) -> dict[str, Any]:
-    """Park audio, clear setup, save empty intent, then run the reconciler.
-
-    ``commit_unconfigured`` is the web caller's locked second
-    optimistic-concurrency check and sole durable write. It runs after
-    parking; its lock must cover both validation and ``save_output_topology``.
-    The CLI has no browser snapshot, so it uses the normal local commit.
-    """
+    """Park audio, clear setup, save empty intent, then run the reconciler."""
 
     from jasper.active_speaker.reset import clear_active_speaker_setup_state
-    from jasper.active_speaker.runtime_convergence import park_for_topology
+    from jasper.active_speaker.runtime_convergence import park_and_commit_topology
 
     target = topology_path(path)
-    before = read_before(path)
-    if topology_to_park is None:
-        try:
-            topology_to_park = load_output_topology_strict(path)
-        except OutputTopologyError:
-            topology_to_park = new_topology_draft()
-    parked = park_for_topology(topology_to_park)
-    if not parked.ok:
-        raise RuntimeError("could not safely park audio before resetting topology")
-
-    if commit_unconfigured is not None:
-        after = commit_unconfigured()
-    else:
+    with output_topology_mutation(target) as mutation:
+        snapshot = mutation.snapshot()
+        before = topology_summary(snapshot.topology)
         after = new_topology_draft()
-        save_output_topology(after, path)
-    setup_reset = clear_active_speaker_setup_state()
-    reconcile_result = (
-        trigger_reconcile() if reconcile else {"ok": None, "skipped": True}
-    )
+        runtime = park_and_commit_topology(
+            snapshot.topology,
+            lambda: mutation.save(after).topology,
+            controller_factory=controller_factory,
+        )
+        setup_reset = clear_active_speaker_setup_state()
+        reconcile_result = (
+            trigger_reconcile() if reconcile else {"ok": None, "skipped": True}
+        )
     log_event(
         logger,
         "output_topology.reset",
@@ -126,14 +116,16 @@ def reset_to_unconfigured(
         before_groups=len(before.get("speaker_groups") or []),
         after_status=after.status,
         after_groups=len(after.speaker_groups),
-        parked_ok=parked.ok,
+        parked_ok=runtime.parked.ok,
+        runtime_convergence_ok=runtime.convergence.ok,
         reconcile_ok=reconcile_result.get("ok"),
     )
     return {
         "topology_path": str(target),
         "before": before,
         "after": topology_summary(after),
-        "parked": parked.to_dict(),
+        "parked": runtime.parked.to_dict(),
+        "runtime_convergence": runtime.convergence.to_dict(),
         "active_speaker_reset": setup_reset,
         "reconcile": reconcile_result,
     }

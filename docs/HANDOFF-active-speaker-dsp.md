@@ -172,23 +172,24 @@ above; this is only the entry points:
   `check_active_speaker_topology_blockers` warns with the blocker names and
   the wizard step. Only a graph's *own* defects (a bad
   `devices.volume_limit`) still refuse a parked graph.
-  Recovery is automatic and needs no operator action:
+  Recovery is automatic once valid speaker intent exists:
   the parked branch is last in the selector, so the moment commissioning
   stages a startup graph the `select_active_startup` branch wins on the
-  next deploy. (Deploy specifically — `jasper-audio-hardware-reconcile`
-  never re-runs this selection; `tests/test_audio_hardware_reconcile.py`
-  pins that its script names neither `runtime-safe-graph` nor
-  `safe_graph_for_current_topology`.) Both exits out of parked work: the parked graph is
+  next runtime convergence pass. `jasper-audio-hardware-reconcile` now runs
+  that selection on every successful pass, including boot and hotplug. Both
+  exits out of parked work: the parked graph is
   an accepted `path_safety.restore_classifications` rollback target so
   `/sound/setup/` can start commissioning on a parked box, and
   `jasper-output-topology-reset` (and the `/sound/setup/` reset endpoint)
-  converges CamillaDSP in-process over the websocket so a box reset to
-  passive becomes audible immediately instead of at the next deploy.
+  converges CamillaDSP in-process over the websocket. Reset itself writes an
+  unconfigured zero-group topology and remains parked; audio becomes eligible
+  only after the household explicitly saves a passive layout or completes the
+  protected active-speaker setup.
   Surfaces: `jasper-doctor`'s `active speaker
-  runtime graph` WARNs with the two exits ("finish crossover preview to
-  stage a startup graph, or reset output topology to passive" — and on a
-  DAC that declares no active outputd lane, only the reset exit, since
-  commissioning can never complete there),
+  runtime graph` WARNs with the next action (choose and save a speaker layout,
+  or finish crossover preview to stage a startup graph where supported; on a
+  DAC that declares no active outputd lane, active commissioning cannot
+  complete there),
   `/state.resilience.active_speaker_parked` carries the same pair, and
   `/state.audio_health` keeps reporting "Speaker is parked".
 - **The applied baseline candidate is always a source-fingerprinted
@@ -347,9 +348,11 @@ AGENTS.md "Debugging — fetch evidence before guessing".
 > each driver**, and **Validate and apply**. Subwoofer is an optional add-on to the
 > current draft rather than a duplicated template matrix: when an unused
 > physical output exists, the UI adds one `subwoofer` group and records it
-> in `routing.subwoofer_group_ids`. Saving that speaker layout only persists
-> the output topology JSON and runs backend validation; it does not load
-> CamillaDSP or emit sound. The saved topology may describe more physical DAC
+> in `routing.subwoofer_group_ids`. Editing that speaker-layout draft does not
+> load CamillaDSP or emit sound. Saving it uses the shared park -> commit ->
+> runtime-converge transaction; an authorized passive layout may therefore
+> load a recomposed flat graph, while incomplete or unsafe intent remains
+> parked. The saved topology may describe more physical DAC
 > outputs than the current protected active-speaker runtime can test/apply:
 > `/sound/output-topology` also publishes
 > `jts_active_speaker_playback_route_capability`, which separates physical DAC
@@ -387,11 +390,12 @@ AGENTS.md "Debugging — fetch evidence before guessing".
 > safety remain separate blockers.
 > The bottom **Reset speaker setup** recovery action posts to
 > `/sound/output-topology/reset`: it stops any active-speaker tone/session,
-> resets the saved topology to the detected passive hardware draft, kicks
+> resets the saved topology to an unconfigured zero-group draft, kicks
 > audio-hardware reconcile, and clears active-speaker setup/evidence JSON
 > artifacts (design draft, crossover preview, staged config, path safety,
 > startup/commission/ramp state, measurements, and baseline candidate). It does
-> not play sound and does not delete generated CamillaDSP YAML files.
+> not play sound, does not infer passive intent from detected hardware, and
+> does not delete generated CamillaDSP YAML files.
 > `jasper.active_speaker.safe_playback` remains the backend confirmation ledger
 > and Stop substrate, but the browser no longer exposes a separate Arm step.
 > Active crossover commissioning arms through `commission-load` and uses the
@@ -735,8 +739,9 @@ AGENTS.md "Debugging — fetch evidence before guessing".
 > output to `tweeter`, any `protection_required=true` role, or a subwoofer
 > roleful output, flat full-range fallback is illegal. Deploy/install must
 > call `jasper-active-speaker runtime-safe-graph` instead of writing the
-> outputd statefile itself: unconfigured or explicit stereo full-range layouts
-> can select the flat outputd graph, while active/protected layouts must
+> outputd statefile itself: unconfigured layouts select the parked graph; only
+> explicit mono/stereo full-range layouts can select a width-matched flat
+> outputd graph, while active/protected layouts must
 > preserve or select a validated all-muted active startup graph. Guarded
 > commissioning graphs may be legal for an active test session, but they are
 > not legal persisted deploy/restart fallbacks. Explicit mono full-range
@@ -763,12 +768,12 @@ AGENTS.md "Debugging — fetch evidence before guessing".
 > still BLOCKs the deploy there. The blessed one-command fix is
 > `sudo /opt/jasper/.venv/bin/jasper-output-topology-reset` (add `--yes` for
 > non-interactive use, `--dry-run` to preview). It rewrites
-> `/var/lib/jasper/output_topology.json` to a clean passive draft built by
-> `output_topology.new_topology_draft()` from the **detected** hardware
-> (`speaker_groups=[]` → `requires_roleful_graph` false), then kicks
-> `jasper-audio-hardware-reconcile` so the running graph converges to the
-> flat/passive path — leaving a consistent passive-topology + flat-graph box the
-> L0 gate accepts. It uses only the supported generator/persistence functions
+> `/var/lib/jasper/output_topology.json` to an unconfigured zero-group draft,
+> then kicks `jasper-audio-hardware-reconcile`. The running graph remains parked
+> until the household explicitly saves a passive layout or finishes protected
+> active-speaker setup. Detected hardware may remain as metadata, but it does
+> not authorize the flat/passive path. It uses only the supported
+> generator/persistence functions
 > (never hand-edited JSON) and is safe-by-construction: it never produces the
 > dangerous roleful-topology + flat-graph combination. `/sound/output-topology`
 > GET/POST carries a content revision; a browser page loaded before the reset

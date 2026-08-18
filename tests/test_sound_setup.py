@@ -76,6 +76,28 @@ from ._web_test_helpers import (
 )
 
 
+class _RuntimeStep:
+    ok = True
+    live_applied = True
+    error = None
+
+    @staticmethod
+    def to_dict():
+        return {"ok": True, "live_applied": True}
+
+
+class _RuntimeMutation:
+    def __init__(self, committed_topology: OutputTopology) -> None:
+        self.parked = _RuntimeStep()
+        self.convergence = _RuntimeStep()
+        self.committed_topology = committed_topology
+        self.prior_config_path = "/tmp/prior.yml"
+
+
+def _commit_topology_runtime(_topology, commit, **_kwargs):
+    return _RuntimeMutation(commit())
+
+
 @pytest.fixture(autouse=True)
 def _no_privileged_unit_actions(monkeypatch, tmp_path: Path):
     """Keep the suite from asking systemd to start units.
@@ -97,18 +119,13 @@ def _no_privileged_unit_actions(monkeypatch, tmp_path: Path):
         "JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE",
         str(tmp_path / "safe_playback.json"),
     )
-    class _Parked:
-        ok = True
-        live_applied = True
-        error = None
-
-        @staticmethod
-        def to_dict():
-            return {"ok": True, "live_applied": True}
-
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_TOPOLOGY_PATH",
+        str(tmp_path / "output_topology.json"),
+    )
     monkeypatch.setattr(
-        "jasper.active_speaker.runtime_convergence.park_for_topology",
-        lambda _topology: _Parked(),
+        "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
+        _commit_topology_runtime,
     )
 
 
@@ -2414,16 +2431,14 @@ def test_topology_save_parks_before_replacing_saved_layout(
     save_output_topology(original, path=path)
     seen: list[OutputTopology] = []
 
-    class _Parked:
-        ok = True
-
-    def park(topology):
+    def park_and_commit(topology, commit, **_kwargs):
         assert load_output_topology() == original
         seen.append(topology)
-        return _Parked()
+        return _RuntimeMutation(commit())
 
     monkeypatch.setattr(
-        "jasper.active_speaker.runtime_convergence.park_for_topology", park
+        "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
+        park_and_commit,
     )
     monkeypatch.setattr(
         "jasper.output_topology_runtime.trigger_reconcile",
@@ -2469,8 +2484,8 @@ def test_topology_save_refuses_invalid_input_before_stopping_or_parking(
         lambda: pytest.fail("invalid input must not stop audio"),
     )
     monkeypatch.setattr(
-        "jasper.active_speaker.runtime_convergence.park_for_topology",
-        lambda _topology: pytest.fail("invalid input must not park audio"),
+        "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
+        lambda *_args, **_kwargs: pytest.fail("invalid input must not park audio"),
     )
 
     with pytest.raises(OutputTopologyError):
@@ -2482,9 +2497,6 @@ def test_topology_save_stops_audio_sessions_before_parking(
 ):
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "topology.json"))
     events: list[str] = []
-
-    class _Parked:
-        ok = True
 
     monkeypatch.setattr(
         sound_setup,
@@ -2502,9 +2514,9 @@ def test_topology_save_stops_audio_sessions_before_parking(
         lambda: events.append("safe") or {"status": "idle"},
     )
     monkeypatch.setattr(
-        "jasper.active_speaker.runtime_convergence.park_for_topology",
-        lambda _topology: (
-            events.append("park") or _Parked()
+        "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
+        lambda _topology, commit, **_kwargs: (
+            events.append("park") or _RuntimeMutation(commit())
             if events == [
                 "summed:output_topology_save",
                 "commission:output_topology_save",
@@ -3134,18 +3146,17 @@ def test_design_draft_http_conflict_returns_fresh_revision(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
+    from jasper.output_topology import output_topology_mutation
     from tests.active_speaker_fixtures import mono_output_topology
 
     monkeypatch.setenv(
         "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE",
         str(tmp_path / "design_draft.json"),
     )
-    current_topology = {"value": mono_output_topology(card_id=None)}
-    monkeypatch.setattr(
-        sound_setup,
-        "load_output_topology",
-        lambda: current_topology["value"],
-    )
+    topology_path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    with output_topology_mutation(topology_path) as mutation:
+        mutation.save(mono_output_topology(card_id=None))
     try:
         server, base = _start_sound_server(tmp_path)
     except PermissionError:
@@ -3158,11 +3169,12 @@ def test_design_draft_http_conflict_returns_fresh_revision(
         )
         assert json.loads(first.read().decode("utf-8"))["revision"] == 1
 
-        changed = current_topology["value"].to_dict()
-        changed["speaker_groups"][0]["channels"][1][
-            "driver_style"
-        ] = "ribbon_tweeter"
-        current_topology["value"] = OutputTopology.from_mapping(changed)
+        with output_topology_mutation(topology_path) as mutation:
+            changed = mutation.snapshot().topology.to_dict()
+            changed["speaker_groups"][0]["channels"][1][
+                "driver_style"
+            ] = "ribbon_tweeter"
+            mutation.save(OutputTopology.from_mapping(changed))
 
         conflict = json_post_with_csrf(
             base,
@@ -3196,6 +3208,9 @@ def test_preview_preserves_bound_v2_confirmation_and_does_not_rewrite_draft(
     topology = mono_output_topology(card_id=None)
     paths = _set_active_speaker_state_paths(monkeypatch, tmp_path)
     draft_path = paths["JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"]
+    from jasper.output_topology import save_output_topology
+
+    save_output_topology(topology)
     monkeypatch.setattr(sound_setup, "load_output_topology", lambda: topology)
     request = build_driver_research_request(
         topology,
@@ -3234,6 +3249,9 @@ def test_measured_fc_uses_sound_cas_and_preserves_confirmation(
 
     topology = mono_output_topology(card_id=None)
     _set_active_speaker_state_paths(monkeypatch, tmp_path)
+    from jasper.output_topology import save_output_topology
+
+    save_output_topology(topology)
     monkeypatch.setattr(sound_setup, "load_output_topology", lambda: topology)
     manual = _manual_settings()
     manual["crossover_candidates"] = [{
@@ -3286,6 +3304,9 @@ def test_apply_measured_crossover_frequency_saves_durably(
 
     topology = mono_output_topology(card_id=None)
     _set_active_speaker_state_paths(monkeypatch, tmp_path)
+    from jasper.output_topology import save_output_topology
+
+    save_output_topology(topology)
     monkeypatch.setattr(sound_setup, "load_output_topology", lambda: topology)
     manual = _manual_settings()
     manual["crossover_candidates"] = [{
@@ -3957,7 +3978,11 @@ def test_sound_output_topology_save_serializes_concurrent_writers(
     revision and raises ``OutputTopologyRevisionConflict``.
     """
 
-    from jasper.output_topology import new_topology_draft, save_output_topology
+    from jasper.output_topology import (
+        OutputTopologyMutation,
+        new_topology_draft,
+        save_output_topology,
+    )
 
     path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
@@ -3975,11 +4000,11 @@ def test_sound_output_topology_save_serializes_concurrent_writers(
         card_id="DAC_B",
     )
 
-    real_save = sound_setup.save_output_topology
+    real_save = OutputTopologyMutation.save
     a_in_critical_section = threading.Event()
     release_a = threading.Event()
 
-    def parking_save(topology, *args, **kwargs):
+    def parking_save(self, topology):
         # Only the first writer to reach the write parks; the parked writer is
         # holding the critical section (it has already passed the revision
         # compare). Releasing it after B has had its chance to run exercises
@@ -3987,9 +4012,9 @@ def test_sound_output_topology_save_serializes_concurrent_writers(
         if not a_in_critical_section.is_set():
             a_in_critical_section.set()
             assert release_a.wait(timeout=5.0), "writer A was never released"
-        return real_save(topology, *args, **kwargs)
+        return real_save(self, topology)
 
-    monkeypatch.setattr(sound_setup, "save_output_topology", parking_save)
+    monkeypatch.setattr(OutputTopologyMutation, "save", parking_save)
 
     results: dict[str, object] = {}
 
@@ -4268,12 +4293,14 @@ async def test_commission_ack_fails_when_output_identity_cannot_save(
         fake_ack,
     )
 
-    def fail_save(_topology):
+    from jasper.output_topology import OutputTopologyMutation
+
+    def fail_save(_mutation, _topology):
         raise OSError("disk full")
 
     monkeypatch.setattr(
-        sound_setup,
-        "save_output_topology",
+        OutputTopologyMutation,
+        "save",
         fail_save,
     )
     monkeypatch.setattr(
@@ -4588,8 +4615,8 @@ def test_reset_rejects_stale_topology_before_parking_or_cleanup(
     save_output_topology(new_topology_draft(name="Newer layout"), path=topology_path)
     before = topology_path.read_bytes()
     monkeypatch.setattr(
-        "jasper.active_speaker.runtime_convergence.park_for_topology",
-        lambda _topology: pytest.fail("stale reset must not park or delete"),
+        "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
+        lambda *_args, **_kwargs: pytest.fail("stale reset must not park or delete"),
     )
 
     with pytest.raises(sound_setup.OutputTopologyResetConflict) as raised:
@@ -4624,8 +4651,10 @@ def test_reset_rejects_changed_detected_hardware_before_deleting(
         status="ready", physical_output_count=8,
     ))
     monkeypatch.setattr(
-        "jasper.active_speaker.runtime_convergence.park_for_topology",
-        lambda _topology: pytest.fail("changed hardware must not park or delete"),
+        "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
+        lambda *_args, **_kwargs: pytest.fail(
+            "changed hardware must not park or delete"
+        ),
     )
 
     with pytest.raises(sound_setup.OutputTopologyResetConflict) as raised:
@@ -4638,31 +4667,37 @@ def test_reset_rejects_changed_detected_hardware_before_deleting(
     assert topology_path.read_bytes() == before
 
 
-def test_reset_revalidates_after_parking_before_deleting(
+def test_reset_revalidates_hardware_after_parking_before_deleting(
     monkeypatch, tmp_path: Path,
 ):
     from jasper.output_topology import new_topology_draft, save_output_topology
 
     topology_path = tmp_path / "output_topology.json"
+    hardware_path = tmp_path / "output_hardware.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
-    save_output_topology(new_topology_draft(name="Initial"), path=topology_path)
+    monkeypatch.setenv("JASPER_OUTPUT_HARDWARE_STATE_PATH", str(hardware_path))
+    initial = new_topology_draft(name="Initial")
+    save_output_topology(initial, path=topology_path)
+    write_output_hardware_state(OutputHardwareState(
+        profile_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+        profile_label="Apple USB-C audio adapter",
+        status="ready",
+        physical_output_count=2,
+    ))
     request = sound_setup._output_topology_payload()
-    newer = new_topology_draft(name="Changed while parking")
 
-    class _Parked:
-        ok = True
-        live_applied = True
-
-        @staticmethod
-        def to_dict():
-            return {"ok": True}
-
-    def park(_topology):
-        save_output_topology(newer, path=topology_path)
-        return _Parked()
+    def park_and_commit(_topology, commit, **_kwargs):
+        write_output_hardware_state(OutputHardwareState(
+            profile_id="hifiberry_dac8x",
+            profile_label="HiFiBerry DAC8x",
+            status="ready",
+            physical_output_count=8,
+        ))
+        return _RuntimeMutation(commit())
 
     monkeypatch.setattr(
-        "jasper.active_speaker.runtime_convergence.park_for_topology", park
+        "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
+        park_and_commit,
     )
     monkeypatch.setattr(
         sound_setup,
@@ -4686,14 +4721,19 @@ def test_reset_revalidates_after_parking_before_deleting(
             "detected_hardware_identity": request["hardware_adoption"]["identity"],
         })
 
-    assert raised.value.code == "topology_changed"
-    assert load_output_topology() == newer
+    assert raised.value.code == "detected_hardware_changed"
+    assert load_output_topology() == initial
 
 
-def test_reset_second_check_and_empty_write_share_the_write_lock(
+def test_reset_validation_and_empty_write_share_the_topology_transaction(
     monkeypatch, tmp_path: Path,
 ):
-    from jasper.output_topology import new_topology_draft, save_output_topology
+    from jasper.output_topology import (
+        OutputTopologyMutation,
+        new_topology_draft,
+        output_topology_mutation,
+        save_output_topology,
+    )
 
     topology_path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
@@ -4703,26 +4743,30 @@ def test_reset_second_check_and_empty_write_share_the_write_lock(
     save_output_topology(new_topology_draft(), path=topology_path)
     request = sound_setup._output_topology_payload()
     events: list[str] = []
-    original_check = sound_setup._reset_request_hardware_locked
-    original_save = sound_setup.save_output_topology
+    original_check = sound_setup._reset_request_hardware
+    original_save = OutputTopologyMutation.save
     check_count = 0
 
-    def checked(raw):
+    def assert_transaction_held():
+        with pytest.raises(TimeoutError):
+            with output_topology_mutation(topology_path, timeout_sec=0):
+                pass
+
+    def checked(raw, *, revision):
         nonlocal check_count
         check_count += 1
-        result = original_check(raw)
-        if check_count == 2:
-            assert sound_setup._output_topology_write_lock.locked()
-            events.append("second-check")
+        result = original_check(raw, revision=revision)
+        assert_transaction_held()
+        events.append(f"check-{check_count}")
         return result
 
-    def save_under_same_lock(topology):
-        assert sound_setup._output_topology_write_lock.locked()
+    def save_under_same_lock(self, topology):
+        assert_transaction_held()
         events.append("empty-write")
-        original_save(topology)
+        return original_save(self, topology)
 
-    monkeypatch.setattr(sound_setup, "_reset_request_hardware_locked", checked)
-    monkeypatch.setattr(sound_setup, "save_output_topology", save_under_same_lock)
+    monkeypatch.setattr(sound_setup, "_reset_request_hardware", checked)
+    monkeypatch.setattr(OutputTopologyMutation, "save", save_under_same_lock)
     monkeypatch.setattr(
         sound_setup,
         "_active_speaker_stop_summed_test_tone",
@@ -4744,7 +4788,7 @@ def test_reset_second_check_and_empty_write_share_the_write_lock(
         "detected_hardware_identity": request["hardware_adoption"]["identity"],
     })
 
-    assert events == ["second-check", "empty-write"]
+    assert events == ["check-1", "check-2", "empty-write"]
 
 
 def test_reset_accepts_the_response_from_a_normal_save_without_reload(
@@ -4840,22 +4884,9 @@ def test_reset_output_topology_payload_clears_active_setup_state(
         path.write_text('{"stale": true}\n', encoding="utf-8")
         monkeypatch.setenv(env_name, str(path))
         paths.append(path)
-    class _Parked:
-        ok = True
-        live_applied = True
-        error = None
-
-        @staticmethod
-        def to_dict():
-            return {"ok": True, "live_applied": True}
-
-    monkeypatch.setattr(
-        "jasper.active_speaker.runtime_convergence.park_for_topology",
-        lambda _topology: _Parked(),
-    )
     monkeypatch.setattr(
         "jasper.output_topology_runtime.trigger_reconcile",
-        lambda: {"ok": True},
+        lambda **_kwargs: {"ok": True},
     )
     monkeypatch.setattr(
         sound_setup,

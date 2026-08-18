@@ -1252,8 +1252,10 @@ RING_CONF_D_OVERRIDE="${JASPER_RING_CONF_D:-}"
 #
 # Write-on-change (the emitter compares before writing), matching this script's
 # set_env_var_if_changed discipline, so boot/udev passes on a converged box do
-# not churn the file. Best-effort: a failed render leaves the previous graph,
-# which the statefile contract still judges on its own terms.
+# not churn the file. A failed render leaves the previous bytes; runtime graph
+# convergence below still judges them against current intent and returns
+# nonzero if it cannot prove a safe selection. At boot that failure blocks
+# CamillaDSP through its required ordering on this oneshot.
 render_flat_cutover_if_needed() {
     local output
     if ! command -v "$JASPER_SOUND_CLI" >/dev/null 2>&1; then
@@ -1464,7 +1466,8 @@ restart_route_runtime_if_needed() {
         "fanin_env=${FANIN_ENV_FILE} fanin_restarted=${fanin_changed}"
 }
 
-# Ask the coupling reconciler to converge after a real output-hardware move.
+# Ask the coupling reconciler to converge after every successful runtime-graph
+# convergence.
 #
 # THE DAC-SWAP EDGE (#2285 P7, convergence design section 4.1). udev already
 # reaches THIS script on every controlC* add/remove/change, and until now the
@@ -1473,20 +1476,17 @@ restart_route_runtime_if_needed() {
 # be on the ring stayed on loopback until someone typed the arm by hand. This
 # start is the missing edge.
 #
-# GUARDED ON dac_env_changed || render_changed, and the choice is deliberate.
-# Those two are exactly "the output hardware identity or the rendered ring
-# geometry moved" — the only change that can alter a coupling verdict — and
-# they are the same pair the restart tier above uses to select its full path.
-# LATENCY_FLOOR_CHANGED and ROUTE_FANIN_CHANGED are excluded on purpose: a floor
-# re-emit is not a DAC change, and a route-env change already has its own
-# restart_route_runtime_if_needed.
+# Topology can change the coupling verdict without changing DAC identity or any
+# rendered bytes: reset leaves a fresh speaker unconfigured/loopback, then an
+# explicit passive stereo save makes it Ring-B eligible. The final runtime graph
+# convergence is therefore the bounded trigger. The auto pass is idempotent and
+# decides from persisted topology; this script does not duplicate that policy.
 #
 # WHY THE PAIR CANNOT PING-PONG, since the coupling pass kicks this script back.
-# Both directions are change-guarded and both reconcilers are write-on-change.
-# The coupling pass's own kick moves the active-lane marker pair and nothing
-# else, which sets outputd_committed but NOT dac_env_changed and NOT
-# render_changed — so the pass this script starts cannot start another pass.
-# Worst case per real hardware event is one extra round trip.
+# The coupling pass may synchronously kick this script back while its own
+# oneshot is still active. This function uses `systemctl --no-block start`; that
+# start coalesces into the already-active oneshot rather than queueing a restart.
+# Thus each external topology/hardware event causes at most one follow-up pass.
 #
 # --no-block IS LOAD-BEARING, not a nicety. The coupling pass kicks this unit
 # back SYNCHRONOUSLY (up to its own start timeout) during its arm. A blocking
@@ -1494,14 +1494,12 @@ restart_route_runtime_if_needed() {
 # script. systemd also coalesces starts of an already-running oneshot, so a
 # udev storm collapses to one queued pass rather than a queue of them.
 kick_fanin_coupling_auto_if_needed() {
-    local dac_changed="${1:-0}" render_moved="${2:-0}" result="skipped_no_change"
-    if [[ "$dac_changed" == "1" || "$render_moved" == "1" ]]; then
-        if [[ "$NO_RESTART" == "1" ]]; then
-            result="skipped_no_restart"
-        else
-            "$SYSTEMCTL" --no-block start jasper-fanin-coupling-auto.service 2>/dev/null || true
-            result="started"
-        fi
+    local dac_changed="${1:-0}" render_moved="${2:-0}" result=""
+    if [[ "$NO_RESTART" == "1" ]]; then
+        result="skipped_no_restart"
+    else
+        "$SYSTEMCTL" --no-block start jasper-fanin-coupling-auto.service 2>/dev/null || true
+        result="started"
     fi
     log_event "coupling_kick" \
         "result=${result} dac_env_changed=${dac_changed} render_changed=${render_moved}"
@@ -1873,10 +1871,11 @@ if converge_runtime_graph; then
         exit 78
     fi
 else
-    # The topology-replacement caller already parked before saving. Keep the
-    # preliminary non-active outputd candidate rather than deriving an active
-    # lane from an old graph; the statefile remains a safe boot target and the
-    # failed oneshot makes the household-visible operation report attention.
+    # A live topology-replacement caller already parked before saving, so keep
+    # the preliminary non-active outputd candidate rather than deriving an
+    # active lane from an old graph. At boot the statefile may still be stale;
+    # jasper-camilla Requires this oneshot and therefore cannot start after this
+    # nonzero result.
     runtime_converge_failed=1
 fi
 gate_role_services
@@ -1900,7 +1899,9 @@ if [[ "$OUTPUT_DAC_RECOGNIZED" == "1" ]]; then
     # Recognized DACs only. An unrecognized one has just taken park_output_audio
     # below; there is no output for a coupling to converge onto, and the park is
     # the loud end state (#2261), not a state to reconcile out of here.
-    kick_fanin_coupling_auto_if_needed "$dac_env_changed" "$render_changed"
+    if [[ "$runtime_converge_failed" == "0" ]]; then
+        kick_fanin_coupling_auto_if_needed "$dac_env_changed" "$render_changed"
+    fi
 else
     restart_route_runtime_if_needed "$ROUTE_FANIN_CHANGED"
     park_output_audio

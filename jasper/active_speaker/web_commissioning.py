@@ -85,7 +85,7 @@ from jasper.log_event import log_event
 from jasper.output_topology import (
     OutputTopology,
     load_output_topology,
-    save_output_topology,
+    output_topology_mutation,
     set_channel_protection_status,
 )
 
@@ -215,7 +215,7 @@ def _config_paths_match(a: str | Path | None, b: str | Path | None) -> bool:
 def request_missing_software_guards(
     topology: OutputTopology,
 ) -> tuple[OutputTopology, bool]:
-    """Persist software-guard requests needed before active commissioning."""
+    """Return intent with commissioning's required guard requests applied."""
 
     updated = topology
     changed = False
@@ -234,9 +234,18 @@ def request_missing_software_guards(
                 protection_status="software_guard_requested",
             )
             changed = True
-    if changed:
-        save_output_topology(updated)
     return updated, changed
+
+
+def _ensure_missing_software_guards() -> tuple[OutputTopology, bool]:
+    """Fresh-read and persist missing protection requests transactionally."""
+
+    with output_topology_mutation() as mutation:
+        topology = mutation.snapshot().topology
+        updated, changed = request_missing_software_guards(topology)
+        if changed:
+            mutation.save(updated)
+        return updated, changed
 
 
 def regenerate_crossover_preview_from_current_draft(
@@ -268,9 +277,7 @@ def regenerate_crossover_preview_from_current_draft(
     draft = load_design_draft()
     if draft.get("status") not in {"not_saved", "unreadable"}:
         saved_revision = draft.get("revision", 0)
-        topology, _guards_changed = request_missing_software_guards(
-            load_output_topology()
-        )
+        topology, _guards_changed = _ensure_missing_software_guards()
         draft = build_design_draft(
             topology,
             driver_research_request=draft.get("driver_research_request"),
@@ -494,7 +501,7 @@ async def _ensure_commission_startup_anchor(
             reason="staged_topology_mismatch",
         )
 
-    topology, _guards_changed = request_missing_software_guards(topology)
+    topology, _guards_changed = _ensure_missing_software_guards()
     stage = _stage_startup_config(
         topology,
         preset=preset,

@@ -48,6 +48,12 @@ def _reset_paid_call_gate(tmp_path, monkeypatch):
     )
     monkeypatch.delenv("JASPER_DAILY_SPEND_CAP_USD", raising=False)
     monkeypatch.delenv("JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER", raising=False)
+    from jasper.output_topology import save_output_topology
+    from tests.test_active_speaker_runtime_contract import _full_range_stereo
+
+    topology_path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    save_output_topology(_full_range_stereo(), topology_path)
     correction_tuning._tuning_last_paid_call[0] = 0.0
     correction_tuning._tuning_unpriced_warned.clear()
     yield

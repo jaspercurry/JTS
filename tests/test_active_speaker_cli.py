@@ -730,10 +730,13 @@ def test_runtime_safe_graph_cli_apply_live_fails_when_camilla_rejects(
     flat.write_text(_flat_yaml(), encoding="utf-8")
     statefile = tmp_path / "outputd-statefile.yml"
 
-    def rejected_live_load(decision, **_kwargs):
+    call_kwargs = {}
+
+    def rejected_live_load(decision, **kwargs):
+        call_kwargs.update(kwargs)
         return RuntimeConvergenceResult(
             decision=decision,
-            statefile_written=True,
+            statefile_written=False,
             live_applied=False,
             error="CamillaDSP unreachable or rejected the proved graph",
         )
@@ -756,6 +759,8 @@ def test_runtime_safe_graph_cli_apply_live_fails_when_camilla_rejects(
 
     payload = json.loads(capsys.readouterr().out)
     assert code == 1
+    assert call_kwargs["persist_statefile"] is False
+    assert payload["statefile_written"] is False
     assert payload["live_applied"] is False
     assert "rejected" in payload["live_error"]
 

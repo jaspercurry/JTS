@@ -69,9 +69,22 @@ def _active_topology() -> OutputTopology:
 
 
 def _stub_park(monkeypatch: pytest.MonkeyPatch, seen: list[OutputTopology]) -> None:
+    def park_and_commit(topology, commit, **_kwargs):
+        seen.append(topology)
+        committed = commit()
+        return type(
+            "_MutationResult",
+            (),
+            {
+                "parked": _ParkResult(),
+                "convergence": _ParkResult(),
+                "committed_topology": committed,
+            },
+        )()
+
     monkeypatch.setattr(
-        "jasper.active_speaker.runtime_convergence.park_for_topology",
-        lambda topology: seen.append(topology) or _ParkResult(),
+        "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
+        park_and_commit,
     )
 
 
@@ -97,12 +110,11 @@ def test_reset_does_not_write_when_parking_fails(
     stale = _active_topology()
     save_output_topology(stale)
 
-    class _FailedPark:
-        ok = False
-
     monkeypatch.setattr(
-        "jasper.active_speaker.runtime_convergence.park_for_topology",
-        lambda _topology: _FailedPark(),
+        "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
+        lambda _topology, _commit, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("could not park")
+        ),
     )
 
     with pytest.raises(RuntimeError, match="park"):

@@ -6897,12 +6897,24 @@ async function testResetPartialCleanupSurfacesWarning() {
   });
   const harness = setupHarness(fetchHandler);
   await harness.flush(); await harness.flush(); await harness.flush();
+  let confirmation = null;
+  globalThis.__jtsConfirm = async (message, options) => {
+    confirmation = { message, options };
+    return true;
+  };
 
   harness.dispatchClick({ "data-act": "reset-output-topology" });
   await harness.flush(); await harness.flush(); await harness.flush();
 
   if (posts.length !== 1 || posts[0].path !== "./output-topology/reset") {
     fail("reset button should post to the topology reset endpoint", { posts });
+  }
+  if (!confirmation ||
+      !confirmation.message.includes("usable hardware is detected") ||
+      confirmation.options.confirmLabel !== "Reset speaker setup") {
+    fail("both reset controls should use one truthful hardware-agnostic dialog", {
+      confirmation,
+    });
   }
   const status = harness.elements.get("status").textContent;
   if (!status.includes("could not finish setup cleanup")) {
@@ -6917,6 +6929,64 @@ async function testResetPartialCleanupSurfacesWarning() {
     }
   }
   return { resetPartialCleanupSurfacesWarning: true };
+}
+
+async function testFailedResetPreservesCommissioningPanels() {
+  for (const failureStatus of [409, 502]) {
+    const topology = activeTwoWayTopologyPayload();
+    const commissionState = {
+      commission_load: {
+        status: "loaded",
+        target: { speaker_group_id: "main", role: "woofer", audible_gain_db: -80 },
+        rollback_available: true,
+      },
+      ramp: {
+        confirmed_roles: [],
+        pending: { role: "woofer", gain_db: -80, frequency_hz: 250 },
+      },
+      floor: { status: "floor_pending_operator", floor_audio_confirmed: false },
+    };
+    const fetchHandler = baseFetch({
+      "./output-topology": () => Promise.resolve(response({
+        output_topology: topology,
+        topology_revision: "sha256:current",
+      })),
+      "./active-speaker/commission-state": () => Promise.resolve(response(commissionState)),
+      "./active-speaker/commissioning-view": () => Promise.resolve(response(
+        commissioningViewPayload({
+          status: "needs_output_confirmation",
+          current_step: "map",
+          stepStatuses: {
+            layout: "done", research: "done", map: "active",
+            safety: "todo", profile: "todo",
+          },
+        })
+      )),
+      "./output-topology/reset": () => Promise.resolve(response({
+        error: "reset refused",
+        output_topology: topology,
+        topology_revision: "sha256:current",
+      }, false, failureStatus)),
+    });
+    const harness = setupHarness(fetchHandler);
+    await loadAndSetActiveState(harness);
+    const before = harness.elements.get("view-body").innerHTML;
+    if (!before.includes(">Stop</button>")) {
+      fail("fixture must start with the commissioning controls visible", {
+        failureStatus, before,
+      });
+    }
+    globalThis.__jtsConfirm = async () => true;
+    harness.dispatchClick({ "data-act": "reset-output-topology" });
+    await harness.flush(); await harness.flush(); await harness.flush();
+    const after = harness.elements.get("view-body").innerHTML;
+    if (!after.includes(">Stop</button>")) {
+      fail("a failed reset must preserve commissioning panels", {
+        failureStatus, after,
+      });
+    }
+  }
+  return { failedResetPreservesCommissioningPanels: true };
 }
 
 async function testSavedTopologyReconcileFailureNeedsAttention() {
@@ -7866,6 +7936,7 @@ results.push(await testCommissionRampLimitKeepsConfirmationOpen());
 results.push(await testCommissionAutoRampResetsRunningFlagOnThrow());
 results.push(await testCommissionAutoRampLoopResetsRunningFlagOnRenderThrow());
 results.push(await testResetPartialCleanupSurfacesWarning());
+results.push(await testFailedResetPreservesCommissioningPanels());
 results.push(await testSavedTopologyReconcileFailureNeedsAttention());
 results.push(await testFollowerModeRendersLocalDriverUi());
 results.push(await testFollowerModeSafeFallbackOnMalformedIsland());

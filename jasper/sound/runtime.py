@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -21,12 +22,25 @@ from jasper.sound.profile import (
     load_profile,
     save_profile,
 )
-from jasper.sound.settings import load_sound_settings, output_trim_db
+from jasper.sound.settings import SoundSettings, load_sound_settings, output_trim_db
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_DIR = Path("/var/lib/camilladsp/configs")
 RECONCILE_PROFILE_ID = "reconcile-current-dsp"
+
+
+@dataclass(frozen=True)
+class _SavedDspRender:
+    """One carrier render of the persisted preference/settings intent."""
+
+    profile: SoundProfile
+    output_path: Path
+    yaml: str
+    carrier_kind: str
+    output_trim_db: float
+    sound_filter_count: int
+    room_peq_count: int
 
 # The generated YAML header carries a cosmetic ``(id=<profile_id>)`` marker
 # (see ``jasper.sound.camilla_yaml.emit_sound_config`` — it is the ONLY place
@@ -129,6 +143,88 @@ def _paths_match(left: str | Path, right: str | Path) -> bool:
         return Path(left).resolve() == Path(right).resolve()
     except OSError:
         return Path(left) == Path(right)
+
+
+def _render_saved_dsp_on_carrier(
+    base_config_path: str | Path,
+    *,
+    profile_path: str | Path,
+    config_dir: str | Path,
+    coupling: str | None,
+    write: bool,
+    profile: SoundProfile | None = None,
+    settings: SoundSettings | None = None,
+) -> _SavedDspRender:
+    """Compose persisted program DSP onto ``base_config_path``.
+
+    This is the one render boundary shared by the reset-safe materializer and
+    reconcile's dry run. Carrier dispatch owns graph compatibility and room-PEQ
+    preservation; the sound profile/settings files own preference EQ and output
+    trim. ``write=False`` has no filesystem mutation.
+    """
+
+    from jasper.sound.camilla_yaml import sound_config_path
+    from jasper.sound.graph_carrier import CarrierCannotHostEq, carrier_for_loaded_config
+
+    config_path = Path(config_dir)
+    selected_profile = profile if profile is not None else load_profile(profile_path)
+    selected_settings = settings if settings is not None else load_sound_settings()
+    trim_db = output_trim_db(selected_profile, selected_settings)
+    out_path = sound_config_path(config_path)
+    carrier = carrier_for_loaded_config(base_config_path, config_dir=config_path)
+    if write:
+        config_path.mkdir(parents=True, exist_ok=True)
+    try:
+        result = carrier.reemit(
+            selected_profile,
+            out_path=out_path if write else None,
+            profile_id=RECONCILE_PROFILE_ID,
+            output_trim_db=trim_db,
+            fanin_coupling_capture_kwargs=fanin_coupling_capture_kwargs(coupling),
+        )
+    except CarrierCannotHostEq as exc:
+        raise CarrierCannotHostEq(
+            exc.reason_code,
+            exc.message,
+            carrier_kind=carrier.kind,
+        ) from exc
+    return _SavedDspRender(
+        profile=selected_profile,
+        output_path=out_path,
+        yaml=result.yaml,
+        carrier_kind=carrier.kind,
+        output_trim_db=trim_db,
+        sound_filter_count=len(build_sound_filters(selected_profile)),
+        room_peq_count=result.room_peq_count,
+    )
+
+
+def materialise_saved_dsp_on_carrier(
+    base_config_path: str | Path,
+    *,
+    profile_path: str | Path = PROFILE_PATH,
+    config_dir: str | Path = DEFAULT_CONFIG_DIR,
+    coupling: str | None = None,
+) -> Path:
+    """Write saved program DSP onto a proved carrier and return its path.
+
+    The write is atomic and targets canonical ``sound_current.yml``. This
+    function deliberately does not acquire the DSP writer lock, ask CamillaDSP
+    to load the graph, or mutate the saved profile/settings. Its caller owns the
+    surrounding transaction and must re-prove the returned graph before load.
+
+    Carrier incompatibility raises
+    :class:`jasper.sound.graph_carrier.CarrierCannotHostEq`; I/O failures are
+    allowed to propagate. There is no flat-graph fallback.
+    """
+
+    return _render_saved_dsp_on_carrier(
+        base_config_path,
+        profile_path=profile_path,
+        config_dir=config_dir,
+        coupling=coupling,
+        write=True,
+    ).output_path
 
 
 async def load_profile_config(
@@ -247,10 +343,7 @@ async def reconcile_current_dsp(
 
     from jasper.dsp_apply import dsp_writer_lock
     from jasper.sound.camilla_yaml import sound_audition_config_path, sound_config_path
-    from jasper.sound.graph_carrier import (
-        CarrierCannotHostEq,
-        carrier_for_loaded_config,
-    )
+    from jasper.sound.graph_carrier import CarrierCannotHostEq
 
     config_path = Path(config_dir)
     profile = load_profile(profile_path)
@@ -290,17 +383,15 @@ async def reconcile_current_dsp(
                 }
             )
 
-        out_path = sound_config_path(config_path)
-        carrier = carrier_for_loaded_config(current_path, config_dir=config_path)
         try:
-            # Same coupling kwargs the durable load_profile_config emit uses
-            # below, so the dry-run YAML matches what gets written.
-            coupling_capture_kwargs = fanin_coupling_capture_kwargs(coupling)
-            dry = carrier.reemit(
-                profile,
-                profile_id=RECONCILE_PROFILE_ID,
-                output_trim_db=trim_db,
-                fanin_coupling_capture_kwargs=coupling_capture_kwargs,
+            dry = _render_saved_dsp_on_carrier(
+                current_path,
+                profile_path=profile_path,
+                config_dir=config_path,
+                coupling=coupling,
+                write=False,
+                profile=profile,
+                settings=settings,
             )
         except CarrierCannotHostEq as exc:
             return _log_reconcile_result(
@@ -308,12 +399,15 @@ async def reconcile_current_dsp(
                     "status": "skipped",
                     "reason": exc.reason_code,
                     "message": exc.message,
-                    "carrier_kind": carrier.kind,
+                    "carrier_kind": exc.carrier_kind,
                     "current_config_path": str(current_path),
                     "output_trim_db": trim_db,
                     "sound_filter_count": sound_filter_count,
                 }
             )
+
+        out_path = dry.output_path
+        coupling_capture_kwargs = fanin_coupling_capture_kwargs(coupling)
 
         if (
             not force
@@ -323,7 +417,7 @@ async def reconcile_current_dsp(
             # When coupling kwargs are set, fall through to the YAML diff below so
             # the arm actually applies.
             and not coupling_capture_kwargs
-            and carrier.kind == "base_flat"
+            and dry.carrier_kind == "base_flat"
             and sound_filter_count == 0
             and trim_db == 0.0
             and dry.room_peq_count == 0
@@ -332,7 +426,7 @@ async def reconcile_current_dsp(
                 {
                     "status": "skipped",
                     "reason": "flat_profile_noop",
-                    "carrier_kind": carrier.kind,
+                    "carrier_kind": dry.carrier_kind,
                     "current_config_path": str(current_path),
                     "candidate_config_path": str(out_path),
                     "output_trim_db": trim_db,
@@ -353,7 +447,7 @@ async def reconcile_current_dsp(
                 {
                     "status": "unchanged",
                     "reason": "running_config_matches_intent",
-                    "carrier_kind": carrier.kind,
+                    "carrier_kind": dry.carrier_kind,
                     "current_config_path": str(current_path),
                     "candidate_config_path": str(out_path),
                     "output_trim_db": trim_db,
@@ -377,7 +471,7 @@ async def reconcile_current_dsp(
     return _log_reconcile_result(
         {
             "status": "reconciled",
-            "carrier_kind": carrier.kind,
+            "carrier_kind": dry.carrier_kind,
             "current_config_path": str(current_path),
             "candidate_config_path": str(applied_path),
             "active_config_path": apply_state.active_config_path,

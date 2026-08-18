@@ -1,7 +1,8 @@
 [Unit]
 Description=CamillaDSP (always-on, outputd + master_gain ducking node)
-After=sound.target network.target jasper-outputd.service jasper-fanin.service
+After=sound.target network.target jasper-audio-hardware-reconcile.service jasper-outputd.service jasper-fanin.service
 Wants=sound.target jasper-outputd.service jasper-fanin.service
+Requires=jasper-audio-hardware-reconcile.service
 # Camilla must NEVER stay stopped. The audio chain breaks the moment
 # it exits; voice and the AEC bridge deliberately keep only soft
 # dependencies so a brief DSP restart does not also kill mic progress.
@@ -66,9 +67,10 @@ Type=simple
 # camilladsp 4.1.3 exits CLEAN (measured) — which Restart=always +
 # the start-limit recovery handler would otherwise turn into a repeated
 # parked/recovery cycle. The guard repairs the statefile to the base
-# config BEFORE launch so the failing starts never happen. `-` prefix:
-# the guard is fail-open by design, and even a missing script must never
-# block the music chain.
+# config BEFORE launch so the failing starts never happen. This pipe-only
+# repair remains best effort (`-` prefix). The output-hardware reconciler above
+# is the hard startup gate: a failed topology/graph convergence blocks Camilla
+# before it can load a stale statefile.
 ExecStartPre=-/usr/local/sbin/jasper-camilla-pipe-guard
 ExecStart=/opt/camilladsp/camilladsp \
     -p 1234 -a 127.0.0.1 \

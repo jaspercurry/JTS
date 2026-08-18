@@ -2315,9 +2315,10 @@ def test_arm_shm_ring_topology_unreadable_now_fails_closed(
 # passive stereo layout is saved, while the stale-subwoofer refusal stays clear.
 
 
-def test_ring_topology_ready_refuses_real_unconfigured_topology(
+def test_fresh_unconfigured_topology_refuses_ring_then_explicit_stereo_allows_it(
     tmp_path,
     monkeypatch,
+    _ring_assets_present,
 ):
     # Empty speaker_groups is deliberately not passive stereo: it is an
     # unconfigured speaker, so the ring must not create audible output until the
@@ -2331,45 +2332,105 @@ def test_ring_topology_ready_refuses_real_unconfigured_topology(
 
     topo_path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo_path))
-    save_output_topology(
-        OutputTopology.from_mapping(
-            {
-                "artifact_schema_version": 1,
-                "kind": OUTPUT_TOPOLOGY_KIND,
-                "topology_id": "default",
-                "name": "Speaker outputs",
-                "status": "draft",
-                "hardware": {
-                    "device_id": "apple_usb_c_dongle",
-                    "device_label": "Apple USB-C audio adapter",
-                    "physical_output_count": 2,
-                    "card_id": "A",
-                    "outputs": [
-                        {
-                            "index": 0,
-                            "human_label": "Left",
-                            "terminal_label": "1",
-                            "state": "unused",
-                        },
-                        {
-                            "index": 1,
-                            "human_label": "Right",
-                            "terminal_label": "2",
-                            "state": "unused",
-                        },
-                    ],
-                },
-                "speaker_groups": [],
-                "routing": {},
-            }
-        )
+    topology = OutputTopology.from_mapping(
+        {
+            "artifact_schema_version": 1,
+            "kind": OUTPUT_TOPOLOGY_KIND,
+            "topology_id": "default",
+            "name": "Speaker outputs",
+            "status": "draft",
+            "hardware": {
+                "device_id": "apple_usb_c_dongle",
+                "device_label": "Apple USB-C audio adapter",
+                "physical_output_count": 2,
+                "card_id": "A",
+                "outputs": [
+                    {
+                        "index": 0,
+                        "human_label": "Left",
+                        "terminal_label": "1",
+                        "state": "unused",
+                    },
+                    {
+                        "index": 1,
+                        "human_label": "Right",
+                        "terminal_label": "2",
+                        "state": "unused",
+                    },
+                ],
+            },
+            "speaker_groups": [],
+            "routing": {},
+        }
+    )
+    save_output_topology(topology)
+
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(tmp_path / "outputd.env", "")
+    calls, ro, rf, rc = _recorder()
+
+    refused = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
     )
 
     ok, detail = ring_topology_ready()
 
+    assert refused.ok is False
+    assert refused.recovered is True
+    assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
+    assert "camilla:shm_ring" not in calls
     assert ok is False
     assert "no speaker layout is configured" in detail
     assert "passive stereo" in detail
+
+    configured = topology.to_dict()
+    configured["speaker_groups"] = [
+        {
+            "id": "left",
+            "label": "Left",
+            "kind": "left",
+            "mode": "full_range_passive",
+            "channels": [{"role": "full_range", "physical_output_index": 0}],
+        },
+        {
+            "id": "right",
+            "label": "Right",
+            "kind": "right",
+            "mode": "full_range_passive",
+            "channels": [{"role": "full_range", "physical_output_index": 1}],
+        },
+    ]
+    configured["routing"] = {
+        "main_left_group_id": "left",
+        "main_right_group_id": "right",
+    }
+    save_output_topology(OutputTopology.from_mapping(configured))
+
+    ok, detail = ring_topology_ready()
+
+    calls.clear()
+    armed = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+
+    assert ok is True
+    assert "declared passive stereo" in detail
+    assert armed.ok is True
+    assert armed.direction == "arm"
+    assert calls == ["outputd", "fanin", "camilla:shm_ring"]
+    assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
 
 
 def test_ring_topology_ready_refuses_real_stale_subwoofer_with_reset_hint(
