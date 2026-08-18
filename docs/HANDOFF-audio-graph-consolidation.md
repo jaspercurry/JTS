@@ -904,9 +904,13 @@ only ladder there is; the rollback direction this used to be contrasted
 against no longer exists (see the arm lifecycle above). After step 1 the graph on disk
 names the ring while the coupling is still loopback. Nothing in steps 1 or
 2 reloads CamillaDSP — `baseline-reemit` writes the artifact and repoints
-the statefile, and `jasper-audio-hardware-reconcile` bounces outputd but
-never `jasper-camilla` — so the *running* Camilla is still on the previous
-graph and the box usually keeps playing through both rungs. At the next
+the statefile, and `jasper-audio-hardware-reconcile` always uses
+`runtime-safe-graph --write-statefile`; it never live-loads CamillaDSP. The web
+topology transaction owns immediate locked graph convergence, and the coupling
+reconciler owns the ordered outputd -> fan-in -> Camilla route move. At boot,
+`jasper-camilla` requires the hardware reconcile, so the proved statefile lands
+before Camilla starts. The *running* Camilla is still on the previous graph and
+the box usually keeps playing through both rungs. At the next
 Camilla load the new graph takes effect: Camilla captures a ring nobody
 writes and writes a ring nobody reads, while outputd reads an unwritten ALSA
 lane — silence, not wrong audio, on both halves. After

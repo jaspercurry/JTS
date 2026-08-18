@@ -830,6 +830,9 @@ What exists:
   contextual detected-hardware action, not a second reset mode. Every
   successful hardware-reconcile pass re-runs runtime graph selection, so later
   valid intent self-converges without waiting for a deploy.
+  A reset request must present both the topology content revision and detected-
+  hardware identity from its page snapshot. A mismatch returns `409 Conflict`
+  instead of letting a stale tab clear newer intent or adopt changed hardware.
 
   This composition point is also the boundary for any future passive-speaker
   linearization: it may be added only after an explicit passive layout grants

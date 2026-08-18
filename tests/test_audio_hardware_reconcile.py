@@ -947,6 +947,30 @@ def test_reconcile_script_selects_the_final_graph_before_outputd_gating() -> Non
     assert code.rindex("converge_runtime_graph") < code.rindex("gate_role_services")
 
 
+def test_runtime_convergence_only_writes_statefile_when_camilla_is_active(
+    tmp_path: Path,
+) -> None:
+    cli_log = tmp_path / "active-speaker.log"
+
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "test",
+        extra_env={"JASPER_FAKE_ACTIVE_SPEAKER_LOG": str(cli_log)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    call = cli_log.read_text(encoding="utf-8")
+    assert "runtime-safe-graph" in call
+    assert "--write-statefile" in call
+    assert "--apply-live" not in call
+    assert "--preserve-live-transport" not in call
+    assert "is-active --quiet jasper-camilla.service" not in SCRIPT.read_text(
+        encoding="utf-8"
+    )
+
+
 def test_reconcile_refuses_a_post_convergence_outputd_rejection() -> None:
     """The second candidate is the final safety gate, not a best-effort write."""
     code = SCRIPT.read_text(encoding="utf-8")

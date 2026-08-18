@@ -237,7 +237,7 @@ def request_missing_software_guards(
     return updated, changed
 
 
-def _ensure_missing_software_guards() -> tuple[OutputTopology, bool]:
+def ensure_missing_software_guards() -> tuple[OutputTopology, bool]:
     """Fresh-read and persist missing protection requests transactionally."""
 
     with output_topology_mutation() as mutation:
@@ -277,7 +277,7 @@ def regenerate_crossover_preview_from_current_draft(
     draft = load_design_draft()
     if draft.get("status") not in {"not_saved", "unreadable"}:
         saved_revision = draft.get("revision", 0)
-        topology, _guards_changed = _ensure_missing_software_guards()
+        topology, _guards_changed = ensure_missing_software_guards()
         draft = build_design_draft(
             topology,
             driver_research_request=draft.get("driver_research_request"),
@@ -501,7 +501,7 @@ async def _ensure_commission_startup_anchor(
             reason="staged_topology_mismatch",
         )
 
-    topology, _guards_changed = _ensure_missing_software_guards()
+    topology, _guards_changed = ensure_missing_software_guards()
     stage = _stage_startup_config(
         topology,
         preset=preset,

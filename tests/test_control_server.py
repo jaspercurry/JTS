@@ -65,8 +65,19 @@ def _isolate_household_secret(monkeypatch, tmp_path):
     `_pair_household`/`_unpair_household`, which override this.
     """
     import jasper.control.household_credential as hc
-
     monkeypatch.setattr(hc, "SECRET_FILE", str(tmp_path / "household_secret"))
+
+
+@pytest.fixture(autouse=True)
+def _explicit_passive_output_topology(monkeypatch, tmp_path):
+    """Give unrelated control-route tests explicit output permission."""
+
+    from jasper.output_topology import save_output_topology
+    from tests.test_active_speaker_runtime_contract import _full_range_stereo
+
+    topology_path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    save_output_topology(_full_range_stereo(), topology_path)
 
 
 class FakeCoordinator:
@@ -244,6 +255,34 @@ def test_active_speaker_output_safety_snapshot_allows_setup_ready(
 
     assert payload["safety_muted"] is False
     assert payload["reason"] is None
+
+
+def test_inactive_unconfigured_topology_still_blocks_volume_and_grouping(
+    monkeypatch,
+) -> None:
+    import jasper.control.server as srv_mod
+
+    blocked = {
+        "active": False,
+        "configured": False,
+        "volume_allowed": False,
+        "grouping_allowed": False,
+        "reason": "output_topology_unconfigured",
+        "detail": "choose and save a speaker layout before using audio",
+    }
+    monkeypatch.setattr(
+        srv_mod,
+        "read_active_speaker_setup_status",
+        lambda **_kwargs: blocked,
+    )
+
+    assert srv_mod._active_speaker_volume_block() is blocked
+    grouping, setup = srv_mod._active_speaker_grouping_evaluation()
+    assert grouping == {
+        "allowed": False,
+        "detail": "choose and save a speaker layout before using audio",
+    }
+    assert setup is blocked
 
 
 def test_state_resilience_parked_snapshot_reads_the_statefile_not_live_camilla(

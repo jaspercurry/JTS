@@ -123,15 +123,11 @@ class _StereoHostCarrier:
         # sound->active_speaker bridge, like _classify_loaded_config below).
         from jasper.active_speaker.runtime_contract import (
             flat_graph_muted_outputs,
-            flat_program_graph_blocked_reason,
+            flat_program_graph_block,
         )
 
-        self._eq_block_reason = (
-            flat_program_graph_blocked_reason()
-            if guard_flat_topology
-            else None
-        )
-        self.can_host_eq = self._eq_block_reason is None
+        self._eq_block = flat_program_graph_block() if guard_flat_topology else None
+        self.can_host_eq = self._eq_block is None
         # Width match (issue #2179): a stereo-host graph carries FLAT_GRAPH_WIDTH
         # channels, but the saved topology may claim fewer physical outputs. The
         # unclaimed ones must be hard muted or this re-emit lands full-range
@@ -214,32 +210,38 @@ class _StereoHostCarrier:
         # the pre-check), and a backstop for the durable path. Covers BOTH the
         # in-memory live preview and the on-disk write, so a flat graph can never
         # reach the DAC under a protected-tweeter topology.
-        if self._eq_block_reason is not None:
-            if self._eq_block_reason == "no speaker layout is configured":
+        if self._eq_block is not None:
+            from jasper.active_speaker.runtime_contract import (
+                FLAT_PROGRAM_GRAPH_NOT_AUTHORIZED,
+                FLAT_PROGRAM_GRAPH_PROTECTED_TWEETER,
+                FLAT_PROGRAM_GRAPH_UNCONFIGURED,
+            )
+
+            block_code, block_detail = self._eq_block
+            if block_code == FLAT_PROGRAM_GRAPH_UNCONFIGURED:
                 raise CarrierCannotHostEq(
-                    "flat_graph_unconfigured",
+                    block_code,
                     "No speaker layout is configured, so sound EQ cannot be "
                     "applied. Save an explicit passive mono or stereo layout, "
                     "or finish the protected active-speaker setup first. Audio "
                     "remains parked.",
                 )
-            if "(tweeter/protected)" not in self._eq_block_reason:
+            if block_code == FLAT_PROGRAM_GRAPH_PROTECTED_TWEETER:
                 raise CarrierCannotHostEq(
-                    "flat_graph_not_authorized",
-                    "The saved speaker layout does not authorize a flat sound "
-                    f"graph: {self._eq_block_reason}. Save an explicit passive "
-                    "mono or stereo layout, or finish the protected active-"
-                    "speaker setup first.",
+                    block_code,
+                    "This speaker is running a flat full-range setup with no "
+                    f"crossover, so it can't safely host sound EQ: "
+                    f"{block_detail}. Adjusting EQ would send full-range "
+                    "audio to a protected tweeter. Save an explicit passive "
+                    "layout only if the speaker has a built-in passive crossover, "
+                    "or finish the protected active-speaker setup. Your driver "
+                    "protection is unchanged.",
                 )
             raise CarrierCannotHostEq(
-                "flat_graph_protected_tweeter",
-                "This speaker is running a flat full-range setup with no "
-                f"crossover, so it can't safely host sound EQ: "
-                f"{self._eq_block_reason}. Adjusting EQ would send full-range "
-                "audio to a protected tweeter. Save an explicit passive layout "
-                "only if the speaker has a built-in passive crossover, or finish "
-                "the protected active-speaker setup. Your driver protection is "
-                "unchanged.",
+                FLAT_PROGRAM_GRAPH_NOT_AUTHORIZED,
+                "The saved speaker layout does not authorize a flat sound "
+                f"graph: {block_detail}. Save an explicit passive mono or stereo "
+                "layout, or finish the protected active-speaker setup first.",
             )
         member_kwargs = self._resolve_member_kwargs(member_kwargs)
         self._validate_member_kwargs(member_kwargs)

@@ -246,6 +246,23 @@ CONTRACT_SUBWOOFER_PRESENT = "subwoofer_present"
 CONTRACT_PROTECTED_OUTPUTS_PRESENT = "protected_outputs_present"
 CONTRACT_UNKNOWN_OR_INVALID = "unknown_or_invalid"
 
+# Stable refusal codes for a flat full-range program graph.  The runtime
+# contract owns these machine-readable decisions; callers may add their own
+# household-facing prose, but must never infer policy from that prose.
+FlatProgramGraphBlockCode = Literal[
+    "flat_graph_unconfigured",
+    "flat_graph_not_authorized",
+    "flat_graph_protected_tweeter",
+]
+FlatProgramGraphBlock = tuple[FlatProgramGraphBlockCode, str]
+FLAT_PROGRAM_GRAPH_UNCONFIGURED: FlatProgramGraphBlockCode = "flat_graph_unconfigured"
+FLAT_PROGRAM_GRAPH_NOT_AUTHORIZED: FlatProgramGraphBlockCode = (
+    "flat_graph_not_authorized"
+)
+FLAT_PROGRAM_GRAPH_PROTECTED_TWEETER: FlatProgramGraphBlockCode = (
+    "flat_graph_protected_tweeter"
+)
+
 # The snd-aloop ACTIVE lane's playback PCM — RETIRED as an endpoint. #2534
 # deleted its PCM definitions; this change deletes its MEMBERSHIP below, so no
 # graph naming it can be a legal outputd endpoint any more.
@@ -834,19 +851,10 @@ def topology_supports_shm_ring(topology: OutputTopology) -> bool:
     return ring_channels_for_topology(topology) is not None
 
 
-def _protected_tweeter_outputs(contract: OutputContract) -> set[int]:
-    """Physical output indices the saved topology assigns to a protected tweeter."""
-    return {
-        int(item.physical_output_index)
-        for item in contract.protected_assignments
-        if item.role == "tweeter" and item.physical_output_index is not None
-    }
-
-
-def flat_program_graph_blocked_reason(
+def flat_program_graph_block(
     topology: OutputTopology | None = None,
-) -> str | None:
-    """Reason a flat full-range *program* graph must not go live, or ``None``.
+) -> FlatProgramGraphBlock | None:
+    """Typed refusal for a flat full-range *program* graph, or ``None``.
 
     The program lane (``jasper.sound.camilla_yaml.emit_sound_config`` and the
     ``/sound`` / correction callers it backs) emits a 2-channel passthrough with
@@ -855,10 +863,12 @@ def flat_program_graph_blocked_reason(
     subwoofer, and roleful/protected layouts are all blocked; the latter would
     otherwise send full range to a compression-driver tweeter.
 
-    Returns a household-readable detail string when the graph is blocked, or
-    ``None`` only when :func:`topology_allows_flat_dac_graph` permits it. It is a
-    *topology* predicate, not a graph check. Verifying a graph that should be
-    protective — an active baseline — is :func:`classify_camilla_graph`'s job.
+    Returns one stable refusal code plus household-readable detail when the
+    graph is blocked, or ``None`` only when
+    :func:`topology_allows_flat_dac_graph` permits it. Policy callers branch on
+    the code; prose is presentation only. This is a *topology* predicate, not a
+    graph check. Verifying a graph that should be protective — an active
+    baseline — is :func:`classify_camilla_graph`'s job.
 
     Fail-closed: a corrupt/unreadable saved topology returns a reason (block)
     rather than raising, so a caller can never read "safe" out of a topology it
@@ -869,14 +879,30 @@ def flat_program_graph_blocked_reason(
     try:
         contract = classify_output_contract(topology or load_output_topology_strict())
     except OutputTopologyError as exc:
-        return f"the saved output topology is unavailable or invalid ({exc})"
+        return (
+            FLAT_PROGRAM_GRAPH_NOT_AUTHORIZED,
+            f"the saved output topology is unavailable or invalid ({exc})",
+        )
     if topology_allows_flat_dac_graph(contract):
         return None
     if contract.classification == CONTRACT_UNCONFIGURED:
-        return "no speaker layout is configured"
+        return FLAT_PROGRAM_GRAPH_UNCONFIGURED, "no speaker layout is configured"
+    if any(item.role == "tweeter" for item in contract.protected_assignments):
+        return FLAT_PROGRAM_GRAPH_PROTECTED_TWEETER, _protected_output_detail(contract)
     if not contract.requires_roleful_graph:
-        return "saved topology is not a complete passive mono or stereo layout"
-    return _protected_output_detail(contract)
+        detail = "saved topology is not a complete passive mono or stereo layout"
+    else:
+        detail = _protected_output_detail(contract)
+    return FLAT_PROGRAM_GRAPH_NOT_AUTHORIZED, detail
+
+
+def flat_program_graph_blocked_reason(
+    topology: OutputTopology | None = None,
+) -> str | None:
+    """Household-readable flat-program refusal detail, or ``None``."""
+
+    block = flat_program_graph_block(topology)
+    return block[1] if block is not None else None
 
 
 def _statefile_config_path(statefile_path: str | Path | None) -> str | None:

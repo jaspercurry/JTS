@@ -38,6 +38,11 @@ from .crossover_contract import (
 from .design_draft import load_design_draft
 from .measurement import load_measurement_state
 from .profile import ActiveSpeakerConfigError
+from .runtime_contract import (
+    CONTRACT_UNCONFIGURED,
+    classify_output_contract,
+    topology_allows_flat_dac_graph,
+)
 
 SETUP_STATUS_KIND = "jts_active_speaker_setup_status"
 ROOM_ELIGIBILITY_SCHEMA_VERSION = 1
@@ -682,6 +687,58 @@ def _applied_layer_a_binding(
     }
 
 
+def _blocked_setup_status(
+    topology: Any,
+    *,
+    active_group_count: int | None,
+    status: str,
+    acoustic_status: str,
+    reason: str,
+    detail: str,
+    room_detail: str,
+    setup_href: str,
+    active_config_path: str | None,
+    issues: list[dict[str, str]],
+) -> dict[str, Any]:
+    """Build the one fail-closed setup snapshot shared by blocked inputs."""
+
+    commissioning = commissioning_summary(
+        topology, profile=None, applied_profile=None, measurements=None,
+    )
+    commissioning["room_correction_allowed"] = False
+    return {
+        "artifact_schema_version": 1,
+        "kind": SETUP_STATUS_KIND,
+        "active": (
+            active_group_count > 0 if active_group_count is not None else None
+        ),
+        "active_group_count": active_group_count,
+        "status": status,
+        "configured": False,
+        "volume_allowed": False,
+        "grouping_allowed": False,
+        "room_correction_allowed": False,
+        "acoustic_commissioning": {
+            "decision_schema_version": ROOM_ELIGIBILITY_SCHEMA_VERSION,
+            "authority": None,
+            "required": True,
+            "status": acoustic_status,
+            "allowed": False,
+            "reason": reason,
+            "detail": room_detail,
+            "setup_href": setup_href,
+        },
+        "commissioning": commissioning,
+        "safety_muted": True,
+        "reason": reason,
+        "detail": detail,
+        "active_config_path": active_config_path or None,
+        "baseline_profile": None,
+        "protected_profile": None,
+        "issues": issues,
+    }
+
+
 def read_active_speaker_setup_status(
     *,
     active_config_path: str | None = None,
@@ -711,46 +768,58 @@ def read_active_speaker_setup_status(
             "output_topology_unreadable",
             f"output topology cannot be read safely: {exc}",
         ))
-        # No topology/profile/measurements were readable at all -- commissioning
-        # degrades to its own fail-soft idle default, then room_correction_allowed
-        # is overwritten below to mirror this branch's own value (design doc
-        # "Runtime surface": "room_correction_allowed mirrors the existing
-        # acoustic_commissioning.allowed").
-        unreadable_commissioning = commissioning_summary(
-            None, profile=None, applied_profile=None, measurements=None,
+        return _blocked_setup_status(
+            None,
+            active_group_count=None,
+            status="unknown",
+            acoustic_status="unknown",
+            reason="output_topology_unreadable",
+            detail="output topology cannot be read safely",
+            room_detail="Read the output topology before room correction.",
+            setup_href=_CROSSOVER_SETUP_HREF,
+            active_config_path=active_config_path,
+            issues=issues,
         )
-        unreadable_commissioning["room_correction_allowed"] = False
-        return {
-            "artifact_schema_version": 1,
-            "kind": SETUP_STATUS_KIND,
-            "active": True,
-            "active_group_count": None,
-            "status": "unknown",
-            "configured": False,
-            "volume_allowed": False,
-            "grouping_allowed": False,
-            "room_correction_allowed": False,
-            "acoustic_commissioning": {
-                "decision_schema_version": ROOM_ELIGIBILITY_SCHEMA_VERSION,
-                "authority": None,
-                "required": True,
-                "status": "unknown",
-                "allowed": False,
-                "reason": "output_topology_unreadable",
-                "detail": "Read the output topology before room correction.",
-                "setup_href": _CROSSOVER_SETUP_HREF,
-            },
-            "commissioning": unreadable_commissioning,
-            "safety_muted": True,
-            "reason": "output_topology_unreadable",
-            "detail": "output topology cannot be read safely",
-            "active_config_path": active_config_path or None,
-            "baseline_profile": None,
-            "protected_profile": None,
-            "issues": issues,
-        }
 
+    output_contract = classify_output_contract(topology)
     active_group_count = _active_group_count(topology)
+    if (
+        active_group_count == 0
+        and not topology_allows_flat_dac_graph(output_contract)
+    ):
+        unconfigured = output_contract.classification == CONTRACT_UNCONFIGURED
+        reason = (
+            "output_topology_unconfigured"
+            if unconfigured
+            else "output_topology_not_ready"
+        )
+        detail = (
+            "choose and save a speaker layout before using audio"
+            if unconfigured
+            else "choose and save a complete passive mono or stereo layout before using audio"
+        )
+        room_detail = (
+            "Choose and save a speaker layout before room correction."
+            if unconfigured
+            else "Choose and save a complete passive mono or stereo layout before room correction."
+        )
+        issue = _issue(
+            "blocker",
+            reason,
+            detail,
+        )
+        return _blocked_setup_status(
+            topology,
+            active_group_count=0,
+            status="blocked",
+            acoustic_status="incomplete",
+            reason=reason,
+            detail=detail,
+            room_detail=room_detail,
+            setup_href="/sound/setup/",
+            active_config_path=active_config_path,
+            issues=[issue, *(dict(item) for item in output_contract.issues)],
+        )
     if active_group_count == 0:
         passive_commissioning = commissioning_summary(
             topology, profile=None, applied_profile=None, measurements=None,

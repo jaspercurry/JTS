@@ -43,6 +43,8 @@ from jasper.active_speaker.runtime_contract import (
     GRAPH_PARKED_ALL_MUTED,
     GRAPH_PROGRAM_BAKE_PIPE,
     GRAPH_UNSAFE,
+    FLAT_PROGRAM_GRAPH_PROTECTED_TWEETER,
+    FLAT_PROGRAM_GRAPH_UNCONFIGURED,
     OUTPUTD_ENDPOINT_GRAPH_CLASSIFICATIONS,
     PARKED_MUTED_STATUS,
     _normalized_graph_fingerprint,
@@ -59,6 +61,7 @@ from jasper.active_speaker.runtime_contract import (
     classify_camilla_graph as _classify_camilla_graph,
     classify_output_contract,
     apply_safe_graph_decision_to_statefile,
+    flat_program_graph_block,
     flat_program_graph_blocked_reason,
     safe_graph_for_current_topology,
     NO_BASS_EXTENSION_PROFILE_SUMMARY,
@@ -3309,12 +3312,12 @@ def test_preserve_current_uses_exact_persisted_boot_snapshot(
 
 
 def test_flat_program_graph_blocked_for_stereo_active_tweeter() -> None:
-    reason = flat_program_graph_blocked_reason(
-        _active_topology("stereo", "active_2_way")
-    )
-    assert reason is not None
+    block = flat_program_graph_block(_active_topology("stereo", "active_2_way"))
+    assert block is not None
+    code, detail = block
+    assert code == FLAT_PROGRAM_GRAPH_PROTECTED_TWEETER
     # The reason names the protected output(s) so callers surface an honest hint.
-    assert "tweeter" in reason
+    assert "tweeter" in detail
 
 
 def test_flat_program_graph_blocked_for_mono_active_tweeter() -> None:
@@ -3330,6 +3333,10 @@ def test_flat_program_graph_allowed_for_full_range_stereo() -> None:
 
 
 def test_flat_program_graph_is_blocked_for_unconfigured_topology() -> None:
+    assert flat_program_graph_block(_topology([])) == (
+        FLAT_PROGRAM_GRAPH_UNCONFIGURED,
+        "no speaker layout is configured",
+    )
     assert flat_program_graph_blocked_reason(_topology([])) == (
         "no speaker layout is configured"
     )

@@ -106,6 +106,7 @@ from jasper.output_topology import (
     channel_identity_report,
     clock_domain_report,
     load_output_topology,
+    load_output_topology_snapshot,
     new_topology_draft,
     output_topology_mutation,
     set_channel_identity_verified,
@@ -165,6 +166,7 @@ from jasper.active_speaker.web_commissioning import (
     commission_startup_anchor_load_failed_issue,
     commission_startup_anchor_not_staged_issue,
     commission_startup_anchor_path_safety_blocked_issue,
+    ensure_missing_software_guards,
     request_missing_software_guards as _request_missing_software_guards,
     rollback_summed_commission_teardown,
     summed_commission_load_failed_issue,
@@ -439,16 +441,8 @@ def _save_i2s_hat_payload(enabled: bool) -> tuple[dict[str, Any], Mapping[str, A
     return payload, result
 
 
-def _output_topology_revision() -> str:
-    """Content revision for optimistic concurrency on /sound topology writes."""
-
-    with output_topology_mutation() as mutation:
-        return mutation.snapshot().revision
-
-
 def _output_topology_payload() -> dict[str, Any]:
-    with output_topology_mutation() as mutation:
-        snapshot = mutation.snapshot()
+    snapshot = load_output_topology_snapshot()
     topology = snapshot.topology
     observed_hardware = load_output_hardware_state()
 
@@ -537,10 +531,11 @@ def _save_output_topology_payload(
             reason="output_topology_save"
         )
         safe_stop = _active_speaker_stop_payload()
-        runtime = park_and_commit_topology(
-            snapshot.topology,
-            lambda: mutation.save(topology).topology,
-        )
+        def commit_topology() -> OutputTopology:
+            mutation.save(topology)
+            return topology
+
+        runtime = park_and_commit_topology(snapshot.topology, commit_topology)
         reconcile = trigger_reconcile(reason="output_topology_save")
         if not reconcile.get("ok"):
             log_event(
@@ -640,8 +635,11 @@ def _reset_output_topology_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
             reason="output_topology_reset"
         )
         safe_stop = _active_speaker_stop_payload()
+        setup_reset: dict[str, Any]
+        saved_revision: str
 
         def commit_unconfigured() -> OutputTopology:
+            nonlocal saved_revision, setup_reset
             detected_hardware = _reset_request_hardware(
                 raw, revision=snapshot.revision
             )
@@ -652,15 +650,24 @@ def _reset_output_topology_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
                 # the last known DAC description only as topology metadata;
                 # zero groups means unconfigured and runtime stays parked.
                 after = new_topology_draft(hardware=snapshot.topology.hardware)
-            return mutation.save(after).topology
+            saved_revision = mutation.save(after)
+            try:
+                setup_reset = clear_active_speaker_setup_state()
+            except Exception as exc:  # noqa: BLE001 - commit already published
+                # Cleanup follows the durable intent write. It may require
+                # attention, but it must never roll back that write or restore
+                # the prior audible graph.
+                setup_reset = {
+                    "status": "partial",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            return after
 
         runtime = park_and_commit_topology(
             snapshot.topology,
             commit_unconfigured,
         )
-        setup_reset = clear_active_speaker_setup_state()
         reconcile = trigger_reconcile(reason="output_topology_reset")
-        saved_revision = mutation.snapshot().revision
     adoption = detected_hardware_adoption_precondition(load_output_hardware_state())
     needs_attention = (
         setup_reset.get("status") == "partial"
@@ -674,6 +681,7 @@ def _reset_output_topology_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
         topology_revision=saved_revision,
         hardware_ready=str(bool(adoption["allowed"])),
         cleanup_status=str(setup_reset.get("status")),
+        cleanup_error=setup_reset.get("error"),
         runtime_convergence_ok=runtime.convergence.ok,
         reconcile_ok=str(bool(reconcile.get("ok"))),
         summed_stop=str(summed_stop.get("status")),
@@ -2120,18 +2128,6 @@ def _active_speaker_tone_backend_status(
     }
 
 
-def _active_speaker_ensure_missing_software_guards(
-) -> tuple[OutputTopology, bool]:
-    """Fresh-read and persist missing protection requests as one transaction."""
-
-    with output_topology_mutation() as mutation:
-        topology = mutation.snapshot().topology
-        updated, changed = _request_missing_software_guards(topology)
-        if changed:
-            mutation.save(updated)
-        return updated, changed
-
-
 def _active_speaker_safe_playback_payload() -> dict[str, Any]:
     """Return the current no-audio active-speaker safety session."""
 
@@ -2387,7 +2383,7 @@ def _active_speaker_design_draft_save_payload(
         raw.get("confirm_safety_profile"), bool
     ):
         raise ValueError("confirm_safety_profile must be boolean")
-    topology, _guards_changed = _active_speaker_ensure_missing_software_guards()
+    topology, _guards_changed = ensure_missing_software_guards()
     payload = save_design_draft(
         topology,
         driver_research_request=raw.get("driver_research_request"),
@@ -2492,7 +2488,7 @@ def _active_speaker_crossover_preview_save_payload() -> dict[str, Any]:
     draft = load_design_draft()
     if draft.get("status") not in {"not_saved", "unreadable"}:
         saved_revision = draft.get("revision", 0)
-        topology, _guards_changed = _active_speaker_ensure_missing_software_guards()
+        topology, _guards_changed = ensure_missing_software_guards()
         draft = build_design_draft(
             topology,
             driver_research_request=draft.get("driver_research_request"),
@@ -3902,7 +3898,7 @@ async def _active_speaker_commission_load_payload(
     # stale topology can drift to required_missing and then block forever. Arming
     # repairs that drift. The actual high-pass is still enforced by the
     # protection-while-audible gate.
-    topology, guards_changed = _active_speaker_ensure_missing_software_guards()
+    topology, guards_changed = ensure_missing_software_guards()
     if guards_changed:
         log_event(
             logger,

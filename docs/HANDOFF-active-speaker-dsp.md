@@ -344,8 +344,8 @@ AGENTS.md "Debugging — fetch evidence before guessing".
 > speaker groups, assigned/unassigned lanes, safety evidence, and no-audio
 > setup templates for mono/stereo passive, mono/stereo active 2-way, and
 > mono/stereo active 3-way wiring. The active walkthrough step labels are **Choose speaker
-> layout**, **Add driver and crossover values**, **Confirm outputs**, **Test
-> each driver**, and **Validate and apply**. Subwoofer is an optional add-on to the
+> layout**, **Add your components**, **Confirm outputs**, **Test combined
+> drivers**, and **Validate and apply**. Subwoofer is an optional add-on to the
 > current draft rather than a duplicated template matrix: when an unused
 > physical output exists, the UI adds one `subwoofer` group and records it
 > in `routing.subwoofer_group_ids`. Editing that speaker-layout draft does not
@@ -362,9 +362,8 @@ AGENTS.md "Debugging — fetch evidence before guessing".
 > mono active 2-way, mono active 3-way, and stereo active 2-way layouts;
 > stereo active 3-way and active subwoofer add-ons remain modeled but are
 > disabled/blocked until outputd, staging, baseline compilation, and tests are
-> widened together. The UI organizes this work as collapsible task
-> cards — choose layout, add driver and crossover values, confirm outputs, test drivers,
-> validate the summed crossover, then save/apply the active profile. It
+> widened together. The UI organizes this work as collapsible task cards in
+> that order. It
 > defaults to the first unfinished task card,
 > keeps one task card open at a time, prevents opening future prerequisite-gated
 > cards, and uses only transient browser intent when the operator advances or
@@ -775,9 +774,10 @@ AGENTS.md "Debugging — fetch evidence before guessing".
 > not authorize the flat/passive path. It uses only the supported
 > generator/persistence functions
 > (never hand-edited JSON) and is safe-by-construction: it never produces the
-> dangerous roleful-topology + flat-graph combination. `/sound/output-topology`
-> GET/POST carries a content revision; a browser page loaded before the reset
-> gets `409 Conflict` instead of being allowed to replay the old active topology.
+> dangerous roleful-topology + flat-graph combination. Web reset requests are
+> stale-page fenced; the canonical request preconditions and conflict behavior
+> live in the
+> [speaker-output reference](HANDOFF-speaker-output-reference.md#current-outputd-state).
 > Implementation:
 > `jasper/cli/output_topology_reset.py`.
 > `jasper.active_speaker.bringup` and

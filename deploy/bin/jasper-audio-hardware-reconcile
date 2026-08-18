@@ -1284,16 +1284,15 @@ render_flat_cutover_if_needed() {
 # shared convergence path replaces.  This does not touch outputd; its lane is
 # derived below from the final statefile after this returns.
 converge_runtime_graph() {
-    local output apply_mode="--write-statefile"
+    local output
     if ! command -v "$JASPER_ACTIVE_SPEAKER_CLI" >/dev/null 2>&1; then
         log_event "runtime_graph" "result=failed reason=cli_unavailable"
         return 1
     fi
-    # At boot CamillaDSP may not be running yet. Seed the safe statefile then;
-    # on a live topology replacement require the daemon to accept the graph.
-    if "$SYSTEMCTL" is-active --quiet jasper-camilla.service 2>/dev/null; then
-        apply_mode="--apply-live"
-    fi
+    # This hardware owner never mutates live CamillaDSP. Web save/reset owns
+    # immediate locked graph convergence; coupling reconciliation owns ordered
+    # live route transitions. This pass only seeds the proved boot statefile,
+    # including while CamillaDSP is already running.
     if ! output="$(
         JASPER_OUTPUT_TOPOLOGY_PATH="$OUTPUT_TOPOLOGY_PATH" \
         "$JASPER_ACTIVE_SPEAKER_CLI" runtime-safe-graph \
@@ -1301,14 +1300,14 @@ converge_runtime_graph() {
             --statefile "$CAMILLA_STATEFILE" \
             --flat-config "${CAMILLA_CONF_DIR}/outputd-cutover.yml" \
             --ring-flat-config "${CAMILLA_CONF_DIR}/outputd-cutover-ring.yml" \
-            "$apply_mode" 2>&1
+            --write-statefile 2>&1
     )"; then
         log_event "runtime_graph" \
             "result=failed detail=$(jasper_asound_log_token "$output")"
         return 1
     fi
     log_event "runtime_graph" \
-        "result=ok apply_mode=${apply_mode#--} detail=$(jasper_asound_log_token "$output")"
+        "result=ok apply_mode=write-statefile detail=$(jasper_asound_log_token "$output")"
 }
 
 # The `key value` protocol below is a WHITELIST: an unmatched key is dropped

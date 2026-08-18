@@ -34,13 +34,13 @@ RECONCILE_PROFILE_ID = "reconcile-current-dsp"
 class _SavedDspRender:
     """One carrier render of the persisted preference/settings intent."""
 
-    profile: SoundProfile
     output_path: Path
     yaml: str
     carrier_kind: str
     output_trim_db: float
     sound_filter_count: int
     room_peq_count: int
+
 
 # The generated YAML header carries a cosmetic ``(id=<profile_id>)`` marker
 # (see ``jasper.sound.camilla_yaml.emit_sound_config`` — it is the ONLY place
@@ -189,7 +189,6 @@ def _render_saved_dsp_on_carrier(
             carrier_kind=carrier.kind,
         ) from exc
     return _SavedDspRender(
-        profile=selected_profile,
         output_path=out_path,
         yaml=result.yaml,
         carrier_kind=carrier.kind,

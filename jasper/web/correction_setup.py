@@ -2531,24 +2531,20 @@ def _normalize_room_readiness(raw: Any) -> _RoomReadiness:
             )
             or (
                 active is True
-                and (
-                    (
-                        allowed is True
-                        and acoustic_status == "ready"
-                        and authority in {
-                            ROOM_AUTHORITY_MANUAL_APPLIED_PROFILE,
-                            ROOM_AUTHORITY_AUTOMATIC_COMMISSIONING_RECEIPT,
-                        }
-                        and isinstance(layer_a_identity, str)
-                        and bool(layer_a_identity)
-                    )
-                    or (
-                        allowed is False
-                        and acoustic_status in {"incomplete", "unknown"}
-                        and authority is None
-                        and layer_a_identity is None
-                    )
-                )
+                and allowed is True
+                and acoustic_status == "ready"
+                and authority in {
+                    ROOM_AUTHORITY_MANUAL_APPLIED_PROFILE,
+                    ROOM_AUTHORITY_AUTOMATIC_COMMISSIONING_RECEIPT,
+                }
+                and isinstance(layer_a_identity, str)
+                and bool(layer_a_identity)
+            )
+            or (
+                allowed is False
+                and acoustic_status in {"incomplete", "unknown"}
+                and authority is None
+                and layer_a_identity is None
             )
         )
     )

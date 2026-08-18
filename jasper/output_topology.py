@@ -2076,6 +2076,35 @@ class OutputTopologySnapshot:
     revision: str
 
 
+def load_output_topology_snapshot(
+    path: str | Path | None = None,
+) -> OutputTopologySnapshot:
+    """Load topology and revision from one immutable byte snapshot."""
+
+    target = topology_path(path)
+    try:
+        data = target.read_bytes()
+    except FileNotFoundError:
+        return OutputTopologySnapshot(new_topology_draft(), "missing")
+    except OSError as exc:
+        raise OutputTopologyError(
+            f"could not read output topology {target}: {exc}"
+        ) from exc
+    revision = "sha256:" + hashlib.sha256(data).hexdigest()
+    try:
+        raw = json.loads(data.decode("utf-8"))
+        topology = OutputTopology.from_mapping(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise OutputTopologyError(
+            f"output topology {target} is not valid JSON: {exc}"
+        ) from exc
+    except OutputTopologyError as exc:
+        raise OutputTopologyError(
+            f"output topology {target} is invalid: {exc}"
+        ) from exc
+    return OutputTopologySnapshot(topology, revision)
+
+
 class OutputTopologyMutation:
     """One admitted read-modify-write transaction for saved topology intent."""
 
@@ -2085,33 +2114,12 @@ class OutputTopologyMutation:
     def snapshot(self) -> OutputTopologySnapshot:
         """Read topology and revision from one immutable byte snapshot."""
 
-        try:
-            data = self.target.read_bytes()
-        except FileNotFoundError:
-            return OutputTopologySnapshot(new_topology_draft(), "missing")
-        except OSError as exc:
-            raise OutputTopologyError(
-                f"could not read output topology {self.target}: {exc}"
-            ) from exc
-        revision = "sha256:" + hashlib.sha256(data).hexdigest()
-        try:
-            raw = json.loads(data.decode("utf-8"))
-            topology = OutputTopology.from_mapping(raw)
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise OutputTopologyError(
-                f"output topology {self.target} is not valid JSON: {exc}"
-            ) from exc
-        except OutputTopologyError as exc:
-            raise OutputTopologyError(
-                f"output topology {self.target} is invalid: {exc}"
-            ) from exc
-        return OutputTopologySnapshot(topology, revision)
+        return load_output_topology_snapshot(self.target)
 
-    def save(self, topology: OutputTopology) -> OutputTopologySnapshot:
-        """Publish one topology and return the revision of the committed bytes."""
+    def save(self, topology: OutputTopology) -> str:
+        """Publish one topology and return its precomputed byte revision."""
 
-        save_output_topology(topology, self.target)
-        return self.snapshot()
+        return save_output_topology(topology, self.target)
 
 
 @contextmanager
@@ -2238,8 +2246,8 @@ def load_output_topology(path: str | Path | None = None) -> OutputTopology:
 def save_output_topology(
     topology: OutputTopology,
     path: str | Path | None = None,
-) -> None:
-    """Persist a topology atomically. This still does not authorize playback."""
+) -> str:
+    """Persist topology atomically and return the exact published revision."""
 
     target = topology_path(path)
     data = json.dumps(topology.to_dict(), indent=2, sort_keys=True) + "\n"
@@ -2253,4 +2261,6 @@ def save_output_topology(
         mode=0o640,
         group_from_parent=True,
         best_effort_group=True,
+        durable=True,
     )
+    return "sha256:" + hashlib.sha256(data.encode("utf-8")).hexdigest()

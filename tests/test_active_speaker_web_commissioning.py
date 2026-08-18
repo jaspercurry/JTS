@@ -1552,7 +1552,7 @@ def test_a_path_match_with_a_stale_topology_is_not_already_loaded(monkeypatch):
 
     monkeypatch.setattr(web, "_stage_startup_config", _spy_stage)
     monkeypatch.setattr(
-        web, "_ensure_missing_software_guards", lambda: (topology, False)
+        web, "ensure_missing_software_guards", lambda: (topology, False)
     )
 
     def _run(staged_config):
@@ -1883,7 +1883,7 @@ def test_startup_anchor_stages_the_callers_resolved_source(monkeypatch):
     monkeypatch.setattr(web, "load_output_topology", lambda: topology)
     monkeypatch.setattr(
         web,
-        "_ensure_missing_software_guards",
+        "ensure_missing_software_guards",
         lambda: (topology, False),
     )
     monkeypatch.setattr(

@@ -170,12 +170,14 @@ re-asserts before emitting, so the pre-check-less **live-draft** SetConfig path
 is covered too — a flat graph can never reach the DAC under a protected-tweeter
 topology. The active-leader program-bake carrier is the deliberate exception:
 it is flat, but it writes to the Snap FIFO rather than a DAC and must prove that
-pipe-sink condition before emitting. Refusal is
-`CarrierCannotHostEq("flat_graph_protected_tweeter", …)` for DAC-bound flat
-hosts, or `CarrierCannotHostEq("program_bake_pipe_unavailable", …)` for a
-program bake whose grouping pipe-sink predicate no longer holds. Both are
-handled blocked outcomes; fail-closed on a corrupt / unreadable topology. The
-refusal lives at the carrier (and, for the direct correction caller, at
+pipe-sink condition before emitting. The DAC-bound carrier maps the topology
+predicate's typed reason directly into `CarrierCannotHostEq`; the possible
+reasons are `flat_graph_unconfigured`, `flat_graph_not_authorized`, and
+`flat_graph_protected_tweeter`. A program bake whose grouping pipe-sink
+predicate no longer holds instead refuses with
+`CarrierCannotHostEq("program_bake_pipe_unavailable", …)`. All are handled
+blocked outcomes. Refusal lives at the carrier (and, for the direct correction
+caller, at
 `correction.runtime_safety.assert_flat_apply_safe`), **never** on the shared
 `emit_sound_config` leaf — the multiroom solo-restore emit must stay lenient
 (un-bonding must always succeed).

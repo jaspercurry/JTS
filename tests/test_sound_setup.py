@@ -2464,6 +2464,80 @@ def test_topology_save_parks_before_replacing_saved_layout(
     assert saved["output_topology"]["name"] != original.name
 
 
+def test_topology_save_does_not_restore_old_graph_for_a_post_write_read_failure(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from jasper import output_topology as topology_mod
+    from jasper.output_topology import new_topology_draft, save_output_topology
+
+    path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
+    save_output_topology(new_topology_draft(name="Old layout"), path)
+    real_snapshot = topology_mod.load_output_topology_snapshot
+    snapshot_reads = 0
+    events: list[str] = []
+
+    def one_snapshot_only(snapshot_path=None):
+        nonlocal snapshot_reads
+        snapshot_reads += 1
+        if snapshot_reads > 1:
+            raise OSError("post-publication read failed")
+        return real_snapshot(snapshot_path)
+
+    def park_and_commit(_topology, commit, **_kwargs):
+        events.append("park")
+        try:
+            committed = commit()
+        except Exception:  # pragma: no cover - this path must stay absent
+            events.append("restore-old-graph")
+            raise
+        events.append("converge-new-graph")
+        return _RuntimeMutation(committed)
+
+    monkeypatch.setattr(
+        topology_mod,
+        "load_output_topology_snapshot",
+        one_snapshot_only,
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
+        park_and_commit,
+    )
+    monkeypatch.setattr(
+        "jasper.output_topology_runtime.trigger_reconcile",
+        lambda **_kwargs: {"ok": True},
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_output_topology_payload",
+        lambda: {"output_topology": {"status": "verified"}},
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_summed_test_tone",
+        lambda **_kwargs: {"status": "idle"},
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_commission_tone",
+        lambda **_kwargs: {"status": "idle"},
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_payload",
+        lambda: {"status": "idle"},
+    )
+
+    sound_setup._save_output_topology_payload(
+        _innomaker_topology_payload(active=False)
+    )
+
+    assert snapshot_reads == 1
+    assert events == ["park", "converge-new-graph"]
+    assert load_output_topology(path).name != "Old layout"
+
+
 def test_topology_save_refuses_invalid_input_before_stopping_or_parking(
     monkeypatch, tmp_path: Path,
 ):
@@ -2951,6 +3025,25 @@ def test_sound_output_topology_payload_is_no_audio_draft(
     assert envelope["clock_domain"]["multi_device_aggregate_supported"] is False
     assert payload["safety"]["sound_tests_allowed"] is False
     assert payload["evaluation"]["warnings"][0]["code"] == "no_speaker_groups"
+
+
+def test_output_topology_payload_does_not_take_mutation_lock(
+    monkeypatch,
+    tmp_path: Path,
+):
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_TOPOLOGY_PATH",
+        str(tmp_path / "output_topology.json"),
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "output_topology_mutation",
+        lambda: pytest.fail("read-only payload must not take the mutation lock"),
+    )
+
+    envelope = sound_setup._output_topology_payload()
+
+    assert envelope["topology_revision"] == "missing"
 
 
 def test_output_topology_payload_serializes_with_populated_hardware_state(
@@ -3989,7 +4082,7 @@ def test_sound_output_topology_save_serializes_concurrent_writers(
 
     # Seed a known starting topology and capture the revision both writers see.
     save_output_topology(new_topology_draft(), path=path)
-    start_revision = sound_setup._output_topology_revision()
+    start_revision = sound_setup._output_topology_payload()["topology_revision"]
 
     topology_a = _active_speaker_mono_topology_payload(
         protection_status="software_guard_requested",
@@ -4778,9 +4871,14 @@ def test_reset_validation_and_empty_write_share_the_topology_transaction(
         lambda **_kwargs: {"status": "idle"},
     )
     monkeypatch.setattr(sound_setup, "_active_speaker_stop_payload", lambda: {"status": "idle"})
+    def clear_under_same_lock():
+        assert_transaction_held()
+        events.append("setup-cleanup")
+        return {"status": "cleared", "removed": []}
+
     monkeypatch.setattr(
         "jasper.active_speaker.reset.clear_active_speaker_setup_state",
-        lambda: {"status": "cleared", "removed": []},
+        clear_under_same_lock,
     )
 
     sound_setup._reset_output_topology_payload({
@@ -4788,7 +4886,7 @@ def test_reset_validation_and_empty_write_share_the_topology_transaction(
         "detected_hardware_identity": request["hardware_adoption"]["identity"],
     })
 
-    assert events == ["check-1", "check-2", "empty-write"]
+    assert events == ["check-1", "check-2", "empty-write", "setup-cleanup"]
 
 
 def test_reset_accepts_the_response_from_a_normal_save_without_reload(
@@ -4920,6 +5018,71 @@ def test_reset_output_topology_payload_clears_active_setup_state(
     assert payload["reset"]["status"] == "reset"
     assert summed_stops == ["output_topology_reset"]
     assert all(not path.exists() for path in paths)
+
+
+def test_reset_cleanup_failure_keeps_new_topology_and_does_not_restore_old_graph(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from jasper.output_topology import new_topology_draft, save_output_topology
+
+    topology_path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    save_output_topology(new_topology_draft(name="Old intent"), topology_path)
+    request = sound_setup._output_topology_payload()
+    events: list[str] = []
+
+    def park_and_commit(_topology, commit, **_kwargs):
+        events.append("park")
+        try:
+            committed = commit()
+        except Exception:  # pragma: no cover - the assertion is that this stays absent
+            events.append("restore-old-graph")
+            raise
+        events.append("converge-new-graph")
+        return _RuntimeMutation(committed)
+
+    monkeypatch.setattr(
+        "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
+        park_and_commit,
+    )
+
+    def fail_cleanup():
+        events.append("cleanup")
+        raise OSError("cleanup failed")
+
+    monkeypatch.setattr(
+        "jasper.active_speaker.reset.clear_active_speaker_setup_state",
+        fail_cleanup,
+    )
+    monkeypatch.setattr(
+        "jasper.output_topology_runtime.trigger_reconcile",
+        lambda **_kwargs: {"ok": True},
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_summed_test_tone",
+        lambda **_kwargs: {"status": "idle"},
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_commission_tone",
+        lambda **_kwargs: {"status": "idle"},
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_payload",
+        lambda: {"status": "idle"},
+    )
+
+    payload = sound_setup._reset_output_topology_payload({
+        "topology_revision": request["topology_revision"],
+        "detected_hardware_identity": request["hardware_adoption"]["identity"],
+    })
+
+    assert events == ["park", "cleanup", "converge-new-graph"]
+    assert load_output_topology(topology_path).speaker_groups == ()
+    assert payload["reset"]["status"] == "needs_attention"
 
 
 def test_active_speaker_measurement_and_baseline_http_routes_are_exposed(

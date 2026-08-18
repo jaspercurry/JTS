@@ -71,14 +71,13 @@ def _active_topology() -> OutputTopology:
 def _stub_park(monkeypatch: pytest.MonkeyPatch, seen: list[OutputTopology]) -> None:
     def park_and_commit(topology, commit, **_kwargs):
         seen.append(topology)
-        committed = commit()
+        commit()
         return type(
             "_MutationResult",
             (),
             {
                 "parked": _ParkResult(),
                 "convergence": _ParkResult(),
-                "committed_topology": committed,
             },
         )()
 
@@ -136,3 +135,52 @@ def test_reset_runs_root_reconciler_after_save(
 
     assert result["reconcile"] == {"ok": True}
     assert load_output_topology_strict().speaker_groups == ()
+
+
+def test_cleanup_failure_keeps_new_topology_and_does_not_restore_old_graph(
+    topo_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stale = _active_topology()
+    save_output_topology(stale)
+    events: list[str] = []
+
+    def park_and_commit(_topology, commit, **_kwargs):
+        events.append("park")
+        try:
+            commit()
+        except Exception:  # pragma: no cover - this path must stay absent
+            events.append("restore-old-graph")
+            raise
+        events.append("converge-new-graph")
+        return type(
+            "_MutationResult",
+            (),
+            {
+                "parked": _ParkResult(),
+                "convergence": _ParkResult(),
+            },
+        )()
+
+    monkeypatch.setattr(
+        "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
+        park_and_commit,
+    )
+
+    def fail_cleanup():
+        events.append("cleanup")
+        raise OSError("cleanup failed")
+
+    monkeypatch.setattr(
+        "jasper.active_speaker.reset.clear_active_speaker_setup_state",
+        fail_cleanup,
+    )
+
+    result = topology_runtime.reset_to_unconfigured(reconcile=False)
+
+    assert events == ["park", "cleanup", "converge-new-graph"]
+    assert load_output_topology_strict().speaker_groups == ()
+    assert result["active_speaker_reset"] == {
+        "status": "partial",
+        "error": "OSError: cleanup failed",
+    }

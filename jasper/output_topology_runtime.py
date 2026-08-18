@@ -99,12 +99,27 @@ def reset_to_unconfigured(
         snapshot = mutation.snapshot()
         before = topology_summary(snapshot.topology)
         after = new_topology_draft()
+        setup_reset: dict[str, Any]
+
+        def commit_unconfigured() -> OutputTopology:
+            nonlocal setup_reset
+            mutation.save(after)
+            try:
+                setup_reset = clear_active_speaker_setup_state()
+            except Exception as exc:  # noqa: BLE001 - commit already published
+                # The new empty intent remains authoritative. Cleanup failure
+                # is reported, never converted into an old-graph restore.
+                setup_reset = {
+                    "status": "partial",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            return after
+
         runtime = park_and_commit_topology(
             snapshot.topology,
-            lambda: mutation.save(after).topology,
+            commit_unconfigured,
             controller_factory=controller_factory,
         )
-        setup_reset = clear_active_speaker_setup_state()
         reconcile_result = (
             trigger_reconcile() if reconcile else {"ok": None, "skipped": True}
         )
@@ -118,6 +133,8 @@ def reset_to_unconfigured(
         after_groups=len(after.speaker_groups),
         parked_ok=runtime.parked.ok,
         runtime_convergence_ok=runtime.convergence.ok,
+        cleanup_status=setup_reset.get("status"),
+        cleanup_error=setup_reset.get("error"),
         reconcile_ok=reconcile_result.get("ok"),
     )
     return {
