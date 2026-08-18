@@ -125,6 +125,9 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     # :mod:`jasper.active_speaker.flat_spec` through
     # :mod:`jasper.active_speaker.crossover_v2.verification`, and this module
     # already imports ``flat_spec`` lazily everywhere else for that reason.
+    from jasper.active_speaker.crossover_v2.alignment_prescription import (
+        AlignmentPrescription,
+    )
     from jasper.active_speaker.crossover_v2.coordinator import (
         RoundPorts,
         SeriesPosition,
@@ -4964,6 +4967,7 @@ class CrossoverV2Session:
         measure_entry_baseline: "EntryBaseline | None" = None,
         measure_gate_window_ms: float | None = None,
         measure_proposal_fingerprint: str = "",
+        measure_alignment_objective: str = "",
         verify_pilot_transfer_prior: Mapping[str, Any] | None = None,
         driver_class_by_role: Mapping[str, str] | None = None,
         radiating_diameter_mm_by_role: Mapping[str, float] | None = None,
@@ -4981,6 +4985,7 @@ class CrossoverV2Session:
         speaker_id: str = "",
         tuning_attempt_id: str = "",
         sound_design_revision: int | None = None,
+        alignment_prescription: "AlignmentPrescription | None" = None,
     ) -> None:
         roles = tuple(roles_bands)
         if len(roles) != 2:
@@ -4997,6 +5002,12 @@ class CrossoverV2Session:
         self._roles = roles
         self._woofer, self._tweeter = roles[0], roles[1]
         self._fc_hz = float(fc_hz)
+        # #2662. Already validated by the request boundary that accepted it —
+        # this session holds it, it does not re-judge it, and a session that was
+        # handed none runs the automatic alignment exactly as before. Held as
+        # the record rather than the bare float so the round receipt can name
+        # the measured basis without a second copy of it living anywhere.
+        self._alignment_prescription = alignment_prescription
         # PR-4: the contract-derived analysis bands for the cloud-group
         # honesty pipeline (combine's echo/signal bands, the null gate's
         # search band) -- computed once here so every group-close event uses
@@ -5323,6 +5334,15 @@ class CrossoverV2Session:
         # stage 1 predates #2392. The receipt reads it as the candidate arm,
         # never as a missing proposal.
         self._measure_proposal_fingerprint: str = str(measure_proposal_fingerprint or "")
+        # WHICH commitment produced the committed candidate's delay (#2662),
+        # travelling the same route as the fingerprint above and for the same
+        # reason: it is written by the stage that FITS and read by the stage
+        # that GRADES, and those are different sessions. ``""`` is "no
+        # candidate has been committed yet", which is a third answer from
+        # either "the prescription was committed" or "it was not" — a round
+        # receipt that collapsed them would let an arm the machinery never ran
+        # be graded as one that did.
+        self._measure_alignment_objective: str = str(measure_alignment_objective or "")
         # The proposal itself, for THIS session only — an
         # ``InterventionProposal``, a ``PlanRefusal``, or ``None`` before the
         # commit. Deliberately not persisted: the fingerprint above is the
@@ -5669,6 +5689,10 @@ class CrossoverV2Session:
             # which is not a priors concern.
             alignment_delay_bounds_us=alignment_delay_search_bounds_us(self._preset),
             applied_alignment=self._applied_alignment(),
+            explicit_alignment_delay_us=(
+                None if self._alignment_prescription is None
+                else self._alignment_prescription.delay_us
+            ),
         )
 
     def _applied_alignment(self) -> AppliedAlignment | None:
@@ -6103,6 +6127,36 @@ class CrossoverV2Session:
         ``""`` is "nothing proposed", never "the proposal is unknown".
         """
         return self._measure_proposal_fingerprint
+
+    @property
+    def measure_alignment_objective(self) -> str:
+        """Which commitment produced this round's delay, or ``""`` (#2662).
+
+        Read by the host's durable persist and handed back to the stage that
+        grades the round, exactly like :attr:`measure_proposal_fingerprint`.
+        Its one consumer is the round receipt, which pairs it with the
+        prescription so an adopted arm's record says not only what was ASKED
+        for but whether the machinery actually committed it — the difference
+        between an arm that ran and an arm that silently did not.
+        """
+        return self._measure_alignment_objective
+
+    @property
+    def alignment_prescription_record(self) -> dict[str, Any] | None:
+        """This session's delay prescription as the receipt banks it (#2662).
+
+        Read by the host's durable persist and handed back to the stage that
+        grades the round, exactly like :attr:`measure_proposal_fingerprint`:
+        the grading stage builds a fresh session and holds no candidate, so
+        durable state is the only channel a stage-1 fact has.
+
+        ``None`` is "no prescription was made" — the automatic path — and is
+        what an ordinary round banks. The receipt's absence of a provenance
+        block and its presence therefore mean exactly one thing each.
+        """
+        if self._alignment_prescription is None:
+            return None
+        return self._alignment_prescription.to_dict()
 
     @property
     def last_intervention_proposal(self) -> Any:
@@ -8795,6 +8849,17 @@ class CrossoverV2Session:
             if isinstance(planned, InterventionProposal)
             else ""
         )
+        # #2662. Read off the candidate's own frozen evidence rather than from
+        # a live analysis object: ``planning.analysis_json`` already puts
+        # ``alignment_objective`` there, so this is the SAME answer the
+        # candidate's fingerprint covers and not a second reading of it. Both
+        # commit sites reach this seam, so both record it.
+        analysis_evidence = getattr(candidate, "analysis", None)
+        self._measure_alignment_objective = str(
+            (analysis_evidence or {}).get("alignment_objective") or ""
+            if isinstance(analysis_evidence, Mapping)
+            else ""
+        )
         self._seams.publish_candidate(candidate)
         self._publish_level_frame_finding(level_frame_finding)
 
@@ -9635,6 +9700,16 @@ class CrossoverV2Session:
                 graded_spec=graded_verify,
                 applied_blend_correction=self._applied_blend_correction(),
                 previous_blend_residual_db=position.previous_blend_residual_db,
+                # #2662. Rehydrated from stage 1's durable ``verify_priors`` on
+                # the same route as the entry baseline and the commanded delta,
+                # for the same reason stated below about the proposal
+                # fingerprint: this stage builds a fresh session and holds no
+                # candidate to derive one from.
+                alignment_prescription=self._alignment_prescription,
+                # …and whether the machinery COMMITTED it. Rehydrated on the
+                # same route, because an arm's provenance without its outcome
+                # is a receipt that can credit a round the arm never ran.
+                alignment_objective=self._measure_alignment_objective,
                 # WHAT THIS ROUND PROPOSED (#2392), preferred over what it
                 # applied. The fingerprint travelled here from the committing
                 # stage through durable ``verify_priors``, exactly as the

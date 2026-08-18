@@ -487,8 +487,8 @@ def _seed_applied_stage_1_state() -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
-def test_persisted_verify_priors_carries_exactly_the_nine_bridge_keys(monkeypatch):
-    """The write side of the bridge: ``verify_priors`` has NINE keys.
+def test_persisted_verify_priors_carries_exactly_the_eleven_bridge_keys(monkeypatch):
+    """The write side of the bridge: ``verify_priors`` has ELEVEN keys.
 
     Named exhaustively rather than checked for presence, because a new key is a
     deliberate widening of the contract and not an incidental one.
@@ -526,7 +526,25 @@ def test_persisted_verify_priors_carries_exactly_the_nine_bridge_keys(monkeypatc
     consumer, same reason as the fifth — without it a stage-2 probe stops
     watching every band a repeat round left alone.
 
-    The top-level payload is unchanged by all five widenings — each new key is
+    **Deliberate widening (#2662): ``alignment_prescription``.** The tenth. The
+    round's delay may have come from an explicit, bounded, provenance-carrying
+    prescription rather than from the aligner's own search, and the stage that
+    GRADES the round has to be able to say what that number was derived from —
+    an adoption record naming an arm without naming its measured basis is the
+    unauditable half of the thing. Same producer, same consumer, same channel
+    as the fifth; ``None`` on every ordinary round, which is what makes an
+    empty provenance block on a receipt mean exactly one thing.
+
+    **Deliberate widening (#2662): ``alignment_objective``.** The eleventh, and
+    the OUTCOME half of the tenth. A prescription alone records what a round
+    ASKED for; there is a reachable rail on which the machinery commits the
+    estimator's own seed while the round still carries the arm's name, and a
+    receipt that could not tell those apart would let an arm that never ran be
+    graded "measured better". Its own key rather than a field inside the
+    prescription because the two are written at different moments by different
+    owners, and a round that prescribed nothing still has an objective.
+
+    The top-level payload is unchanged by all seven widenings — each new key is
     nested inside ``verify_priors``, so
     ``test_persisted_payload_top_level_keys_are_the_whole_bridge`` below still
     pins the same set.
@@ -543,6 +561,8 @@ def test_persisted_verify_priors_carries_exactly_the_nine_bridge_keys(monkeypatc
         "entry_baseline",
         "proposal_fingerprint",
         "verify_measured",
+        "alignment_prescription",
+        "alignment_objective",
     }
 
 
@@ -647,6 +667,206 @@ def test_the_state_axis_crosses_the_bridge_beside_the_commanded_one(monkeypatch)
     freqs, declared = stage_2.measure_declared_transfer
     assert list(freqs) == _COMMANDED_FREQS_HZ
     assert list(declared) == [v * 2.0 for v in _COMMANDED_DELTA_DB]
+
+
+# --------------------------------------------------------------------------- #
+# 2b. the delay prescription — CROSSES, from the request body to the receipt
+# --------------------------------------------------------------------------- #
+
+
+_PRESCRIPTION_BODY = {
+    "delay_us": -450.0,
+    "basis_delay_us": -405.7,
+    "basis_artifacts": [
+        "captures/xover-series2-2026-08-17/diagnosis/landscape_delay_polarity_r1b.json",
+    ],
+    "basis_note": "direct arrival gap -405.7 +/- 3.3 us, n=33",
+}
+
+
+def test_a_delay_prescription_crosses_from_the_request_body_to_the_bridge(monkeypatch):
+    """#2662, both halves, through the REAL boundaries.
+
+    The write half starts at the request body rather than at a field poked onto
+    a conductor: the gate that validates a prescription and the thread that
+    carries it to the session are the two things that could silently not be
+    wired, and a test that installed the record by hand would pass with either
+    one missing.
+
+    The read half is the reason the durable key exists at all — the stage that
+    GRADES a round builds a fresh session and holds nothing stage 1 measured,
+    so an adopted arm could otherwise reach its adoption record with no basis
+    named. VALUES, not key presence, for ``commanded_delta``'s reason.
+    """
+    prepared = v2host.prepare_v2_session(
+        {"alignment_prescription": dict(_PRESCRIPTION_BODY)},
+        status=_status(), run_async=None, camilla_factory=None,
+    )
+    conductor, _state = _open_prepared(monkeypatch, prepared)
+    assert conductor.alignment_prescription_record["delay_us"] == -450.0
+
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    banked = (v2host.load_v2_state() or {})["verify_priors"]["alignment_prescription"]
+    assert banked == {
+        "delay_us": -450.0,
+        "basis_delay_us": -405.7,
+        # Derived on the way out, never carried in: the receipt states the
+        # residual so a reader does not have to subtract two conventions.
+        "residual_us": pytest.approx(-44.3),
+        "basis_artifacts": list(_PRESCRIPTION_BODY["basis_artifacts"]),
+        "basis_note": _PRESCRIPTION_BODY["basis_note"],
+        # …and WHAT the residual cleared: this fixture's rig crosses at
+        # 2500 Hz, whose half-period lobe is 200 µs. Without the pair, a
+        # reader finding a residual on a receipt cannot tell which lobe it was
+        # measured against, and the corner is nowhere else in the block.
+        "checked_at_fc_hz": pytest.approx(2500.0),
+        "lobe_us": pytest.approx(200.0),
+    }
+
+    # ...and the read half, on a fresh stage-2 conductor.
+    state = _seed_applied_stage_1_state()
+    state["verify_priors"]["alignment_prescription"] = {
+        k: v for k, v in banked.items() if k != "residual_us"
+    }
+    state["verify_priors"]["alignment_objective"] = "explicit_prescription_committed"
+    v2host.save_v2_state(state)
+    stage_2, _ = _stage_2(monkeypatch)
+    assert stage_2.alignment_prescription_record["basis_delay_us"] == -405.7
+    # The OUTCOME crosses beside the request. Without it the grading stage can
+    # bank an arm's provenance for a round that committed the estimator's seed.
+    assert stage_2.measure_alignment_objective == "explicit_prescription_committed"
+
+
+def test_an_out_of_lobe_prescription_refuses_the_session_before_it_opens(monkeypatch):
+    """Fail-closed at the tap, not after a ten-minute capture.
+
+    The ``0 µs`` control arm is the honest fixture here: against the measured
+    basis it leaves 405.7 µs of residual, outside the half-period lobe at this
+    rig's corner, and it is refused with its reason named rather than clamped
+    onto the boundary and measured under the arm's name.
+    """
+    del monkeypatch
+    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
+        v2host.prepare_v2_session(
+            {"alignment_prescription": {**_PRESCRIPTION_BODY, "delay_us": 0.0}},
+            status=_status(), run_async=None, camilla_factory=None,
+        )
+    assert "prescription_out_of_lobe" in str(excinfo.value)
+
+
+def test_the_tap_asks_the_preset_for_its_own_declared_window(monkeypatch):
+    """The gate must call the hardware's declaration, not just accept one.
+
+    The declared window is the only bound in the prescription gate that does
+    not rest on a number the request supplied, so "the tap forgot to pass it"
+    is the failure that silently removes it. Derived here from the SAME public
+    helper the tap uses, against the fixture's own preset, so this cannot pass
+    by agreeing with a hard-coded number.
+
+    ``basis_delay_us`` is set equal to ``delay_us``, which puts the residual at
+    zero and takes the measurement's lobe out of the question entirely: only
+    the window can refuse what follows.
+    """
+    del monkeypatch
+    from jasper.active_speaker.crossover_v2_flow import (
+        alignment_delay_search_bounds_us,
+    )
+
+    context = v2host.resolve_conductor_context(_status())
+    bounds = alignment_delay_search_bounds_us(context.preset)
+    assert bounds is not None, "this fixture's preset must declare a window"
+    hi_us = max(abs(float(b)) for b in bounds)
+
+    def _post(magnitude_us):
+        body = {
+            **_PRESCRIPTION_BODY,
+            "delay_us": -magnitude_us,
+            "basis_delay_us": -magnitude_us,
+        }
+        return v2host.prepare_v2_session(
+            {"alignment_prescription": body},
+            status=_status(), run_async=None, camilla_factory=None,
+        )
+
+    # One microsecond past the declaration is refused, by the window's name.
+    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
+        _post(hi_us + 1.0)
+    assert "prescription_outside_declared_window" in str(excinfo.value)
+    # …and exactly AT it is accepted, so the guard is a bound and not a ban.
+    assert _post(hi_us) is not None
+
+
+def test_a_committed_candidate_teaches_the_session_which_commitment_it_was(
+    monkeypatch,
+):
+    """The objective reaches the session from the candidate's frozen evidence.
+
+    ``planning.analysis_json`` already puts ``alignment_objective`` on the
+    candidate, so the commit seam reads the SAME answer the candidate's
+    fingerprint covers rather than a second reading of a live analysis. If it
+    read nothing, every round receipt would report ``committed: None`` and the
+    arm-ran question would be permanently unanswerable.
+    """
+    import dataclasses
+
+    conductor, _state = _stage_1(monkeypatch)
+    assert conductor.measure_alignment_objective == ""
+
+    # The commit seam's LAST act is publishing the candidate to the evidence
+    # store, which this harness does not stand up. Stubbed so the test exercises
+    # the session-state write it is about; the ordering the seam guarantees
+    # (every attribute write completes before the first side effect) is
+    # ``test_crossover_v2_conductor``'s to pin, not this file's.
+    conductor._seams = dataclasses.replace(
+        conductor._seams, publish_candidate=lambda _candidate: None,
+    )
+    # A REAL candidate, not a stub: the point is that the objective is read off
+    # the frozen ``analysis`` evidence ``planning.analysis_json`` writes, so a
+    # stub carrying only that key would prove the read and not the route.
+    from jasper.active_speaker.measured_crossover_candidate import (
+        MeasuredCrossoverCandidate,
+    )
+    from jasper.active_speaker.profile import ActiveSpeakerPreset
+
+    from tests.test_active_speaker_profile import _two_way_preset
+
+    conductor.commit_intervention_proposal(
+        MeasuredCrossoverCandidate(
+            program_id="prog-abc123",
+            analysis={
+                "alignment_objective": "explicit_prescription_committed",
+                "delay_us": -450.0,
+            },
+            source_preset=ActiveSpeakerPreset.from_mapping(_two_way_preset("mono")),
+            role_attenuations_db={"woofer": 0.0, "tweeter": -3.5},
+        ),
+        predicted_sum=None,
+        commanded_delta=None,
+        level_frame_finding=None,
+    )
+    assert conductor.measure_alignment_objective == "explicit_prescription_committed"
+
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    assert (v2host.load_v2_state() or {})["verify_priors"]["alignment_objective"] == (
+        "explicit_prescription_committed"
+    )
+
+
+def test_a_session_that_prescribed_nothing_persists_nothing(monkeypatch):
+    """The control: absence stays absence, and is never invented.
+
+    Every ordinary round takes this path, so an empty provenance block on a
+    receipt has to mean exactly one thing — no prescription was made — rather
+    than "one was made and something dropped it".
+    """
+    conductor, _state = _stage_1(monkeypatch)
+    assert conductor.alignment_prescription_record is None
+
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    assert (
+        (v2host.load_v2_state() or {})["verify_priors"]["alignment_prescription"]
+        is None
+    )
 
 
 def test_a_conductor_with_no_state_axis_rehydrates_none(monkeypatch):
