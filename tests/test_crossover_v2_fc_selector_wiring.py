@@ -27,6 +27,7 @@ from jasper.active_speaker.branch_chain import (
 )
 from jasper.active_speaker.crossover_v2 import fc_sweep
 from jasper.active_speaker.crossover_v2_flow import PHASE_MEASURE
+from jasper.capture_relay.spec import CaptureSpec
 # From the kernel that OWNS them rather than through the flow's namespace: the
 # flow stopped reading these when #2291 Phase 5a-v(b) moved the sweep, and
 # keeping an import alive purely as a door is what that phase's own note
@@ -34,6 +35,7 @@ from jasper.active_speaker.crossover_v2_flow import PHASE_MEASURE
 from jasper.active_speaker.fc_selector import (
     EVAL_REFUSED_BUDGET,
     EVAL_REFUSED_UNFITTABLE,
+    select_fc,
 )
 from tests.crossover_v2_fixtures import (
     FC_HZ,
@@ -943,8 +945,12 @@ def test_a_failing_sweep_never_costs_the_household_an_accepted_measure():
         c = _selector_conductor(fakes)
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(
+                # ``*args`` because the two seams differ in arity — the budget
+                # takes the planned corner count — and a TypeError from the
+                # wrong signature is ALSO caught by the guard, which would
+                # green this test without ever exercising the raise it names.
                 flow.CrossoverV2Session, broken,
-                lambda self: (_ for _ in ()).throw(ValueError("forced")),
+                lambda self, *args: (_ for _ in ()).throw(ValueError("forced")),
             )
             _run_phase(c, 1, 1)
             accepted = _run_phase(c, 2, 1)  # must NOT raise
@@ -969,7 +975,7 @@ def _sweep_ports(**overrides):
             configured_hz=FC_HZ, candidates=(FC_HZ, 1700.0),
             rejected=(), limits={"declared_floor_hz": 300.0},
         ),
-        "budget_s_of": lambda: 70.0,
+        "budget_s_of": lambda planned: 70.0,
         "journal": lambda record: None,
         "configured_fc_hz": FC_HZ,
         "protection_declared": True,
@@ -1061,8 +1067,231 @@ def test_a_journal_that_fails_inside_the_handler_does_not_double_fault():
 
 def test_the_evaluation_budget_has_one_explicit_owner():
     c = _selector_conductor(_eligible_seams())
-    assert c._fc_evaluation_budget_s() == flow.FC_SWEEP_COMPUTE_BUDGET_S
-    assert 0 < flow.FC_SWEEP_COMPUTE_BUDGET_S <= 70.0
+    planned = len(c._fc_candidate_set().candidates)
+    assert planned > 1
+    assert c._fc_evaluation_budget_s(planned) == fc_sweep.fc_sweep_budget_s(
+        planned
+    )
+    # The published ceiling is the largest plan the proposal bound allows, not
+    # a number of its own: the capture page's wait is a build-time constant and
+    # has to cover the worst case, whatever a given household proposes.
+    assert flow.FC_SWEEP_COMPUTE_BUDGET_S == fc_sweep.fc_sweep_budget_s(
+        flow.MAX_PROPOSED_FC_CANDIDATES + 1
+    )
+
+
+@pytest.mark.parametrize("planned", [1, 2, 3, 6, 12])
+def test_a_plan_of_n_corners_gets_a_budget_that_fits_n_corners(planned):
+    """The sizing promise, at the arity the forecast actually spends it at.
+
+    :func:`fc_sweep.sweep_candidates` admits its LAST corner only when
+    ``cost(1..N-1) + slowest(1..N-1) <= budget``. Bound every corner by
+    :data:`fc_sweep.FC_CORNER_COMPUTE_COST_S` and that requirement is exactly
+    ``N * cost``, so this is the relationship the budget has to satisfy — and
+    the one a bare constant silently stopped satisfying when the plan grew.
+    """
+    budget = fc_sweep.fc_sweep_budget_s(planned)
+    assert budget >= planned * fc_sweep.FC_CORNER_COMPUTE_COST_S
+
+
+def _six_corner_ports(seconds_per_corner, records, **overrides):
+    """Ports for a six-corner sweep whose every corner costs a fixed wall.
+
+    Six because that is the live jts3 plan and the largest
+    :data:`fc_sweep.MAX_PROPOSED_FC_CANDIDATES` allows — the plan that ran out
+    of budget in five of ten banked rounds.
+    """
+    corners = (1648.7, 1600.0, 1658.6, 1719.4, 1782.4, 1847.7)
+    return _sweep_ports(
+        candidate_set_of=lambda: fc_sweep.FcCandidateSet(
+            configured_hz=corners[0], candidates=corners,
+            rejected=(), limits={"declared_floor_hz": 1600.0},
+        ),
+        budget_s_of=fc_sweep.fc_sweep_budget_s,
+        journal=records.append,
+        configured_fc_hz=corners[0],
+        **overrides,
+    )
+
+
+def _fixed_cost_clock(monkeypatch, seconds_per_corner):
+    """Advance ``time.monotonic`` by a fixed cost on each corner's completion.
+
+    The sweep reads the clock twice per corner (once to forecast, once to
+    charge the corner it just ran), so a counter keyed on reads would encode
+    the loop's shape. This advances on the SECOND read of each pair instead,
+    which is the one that measures a corner.
+    """
+    now = [0.0]
+    reads = [0]
+
+    def monotonic():
+        reads[0] += 1
+        if reads[0] % 2 == 1 and reads[0] > 1:
+            now[0] += float(seconds_per_corner)
+        return now[0]
+
+    monkeypatch.setattr(fc_sweep.time, "monotonic", monotonic)
+    return now
+
+
+def test_every_corner_at_the_measured_cost_still_completes(monkeypatch):
+    """The fix, as behaviour: the budget FITS the plan it was sized for.
+
+    Six corners each costing exactly the measured per-corner ceiling must all
+    be attempted. Under the previous bare 70 s constant this same sweep
+    forecast itself short and skipped its last corner — which
+    :func:`~jasper.active_speaker.fc_selector.select_fc` then turns into an
+    unconditional keep-configured, so the household's evidence never got to
+    speak. Five of ten banked jts3 rounds ended exactly there.
+    """
+    records = []
+    _fixed_cost_clock(monkeypatch, fc_sweep.FC_CORNER_COMPUTE_COST_S)
+    got = fc_sweep.sweep_candidates(
+        object(), object(), object(),
+        **_six_corner_ports(fc_sweep.FC_CORNER_COMPUTE_COST_S, records),
+    )
+    assert [e.refusal for e in got] == ["evaluation_invalid"] * 6, (
+        "no corner may be refused for budget when every corner cost the "
+        "budgeted per-corner price"
+    )
+    summary = next(r for r in records if r.event == fc_sweep.EVENT_SWEEP)
+    assert summary.fields["comparison_complete"] is True
+    assert summary.fields["skipped"] == []
+    assert summary.fields["budget_short_by_s"] == 0.0
+    assert summary.level == logging.INFO
+
+
+def test_a_genuinely_over_budget_sweep_still_truncates_and_says_so(monkeypatch):
+    """The positive control, and the half of the guard that must NOT weaken.
+
+    A Pi slow enough to blow the measured per-corner cost still loses corners,
+    the sweep still says which ones, and
+    :func:`~jasper.active_speaker.fc_selector.select_fc` still refuses to move
+    Fc on the partial comparison. Refusing on partial evidence is the honest
+    behaviour; the defect was never the refusal, it was arriving there on a
+    budget that did not fit its own plan.
+    """
+    records = []
+    _fixed_cost_clock(monkeypatch, fc_sweep.FC_CORNER_COMPUTE_COST_S * 2)
+    got = fc_sweep.sweep_candidates(
+        object(), object(), object(),
+        **_six_corner_ports(fc_sweep.FC_CORNER_COMPUTE_COST_S * 2, records),
+    )
+    skipped = [e.fc_hz for e in got if e.refusal == EVAL_REFUSED_BUDGET]
+    assert skipped, "an over-budget sweep must still decline corners"
+    summary = next(r for r in records if r.event == fc_sweep.EVENT_SWEEP)
+
+    # LOUD: the level, the named corners, and how short the forecast fell.
+    assert summary.level == logging.WARNING
+    assert summary.fields["comparison_complete"] is False
+    assert [item["fc_hz"] for item in summary.fields["skipped"]] == [
+        round(fc, 1) for fc in skipped
+    ]
+    assert all(
+        item["reason"] == EVAL_REFUSED_BUDGET
+        for item in summary.fields["skipped"]
+    )
+    assert summary.fields["budget_short_by_s"] > 0.0
+
+    # …and the selector still will not move Fc on what came back. The verdict
+    # on SCOREABLE partial evidence is pinned where the scoring fixtures live
+    # (``test_fc_selector.test_an_incomplete_sweep_cannot_recommend_a_scored_alternative``);
+    # what this end of the wiring owns is that a truncated sweep reaches the
+    # selector still labelled incomplete, and cannot come back as a move.
+    selection = select_fc(
+        got, [], configured_hz=1648.7, limits={}, planned=len(got),
+    )
+    assert selection.comparison_complete is False
+    assert selection.kept_configured is True
+    assert selection.recommended_hz is None
+
+
+def test_the_per_corner_cost_covers_what_a_corner_was_measured_to_take():
+    """The cost is a MEASUREMENT, and the measurement is banked.
+
+    Ten live jts3 rounds (2026-08-17/18, ``captures/xover-armrun-2026-08-18``
+    and ``captures/xover-series2-2026-08-17``) attempted 45 alternative corners,
+    42 of which are bounded fit-band to fit-band and span 11.65 s to 15.52 s;
+    complete all-six sweeps ran 62.81 s to 69.84 s. A cost below the slowest
+    banked corner reopens the defect this replaced: the sweep would forecast
+    itself short of its own last corner and hand the selector a comparison it
+    must refuse to act on.
+    """
+    assert fc_sweep.FC_CORNER_COMPUTE_COST_S >= 15.52
+    # Six corners at that cost must clear the worst banked all-six sweep with
+    # room left, or "completion is the normal case" is not a claim this budget
+    # supports.
+    assert fc_sweep.fc_sweep_budget_s(6) > 69.84
+
+
+def test_the_published_result_wait_covers_the_ceiling_plus_measured_overhead():
+    """The wait the Pi mints is the ceiling plus everything else the phone waits
+    through, and it is a WHOLE number of seconds because the wire says so.
+
+    Scope, stated because the previous version of this test overreached: this
+    checks the TREE — that the Pi's own derivation covers its own budget. It
+    cannot check the FLEET. Whether a given phone is running a bundle that reads
+    the published number is a deploy-order question, and the answer is
+    ``capture-page/README.md``'s release-order entry for build 20260818.1, not
+    an assertion here.
+    """
+    wait = fc_sweep.fc_sweep_result_wait_s()
+    assert isinstance(wait, int)
+    assert wait >= fc_sweep.FC_SWEEP_COMPUTE_BUDGET_S + fc_sweep.FC_SWEEP_RESULT_OVERHEAD_S
+    # The overhead is measured, not chosen: ten banked rounds put the gap
+    # between the sweep's own elapsed_s and the captured->result wall at
+    # 10.48-12.46 s (mean 11.56).
+    assert fc_sweep.FC_SWEEP_RESULT_OVERHEAD_S >= 12.46
+
+
+def test_the_page_owns_no_copy_of_the_pi_side_wait():
+    """B1: the number has exactly one writer, and the page is not it.
+
+    The page's own constant survives as the fallback for a Pi that publishes
+    nothing — but it must NOT track the budget, because a separately-deployed
+    bundle that has to be republished whenever a Pi-side number moves is the
+    duplicate-fact defect this replaced. The two are now allowed to differ, and
+    that is the point.
+    """
+    main_js = (
+        Path(__file__).resolve().parents[1] / "capture-page" / "js" / "main.js"
+    ).read_text(encoding="utf-8")
+    # The deadline is programmed from the resolver, never from the constant.
+    assert "resultWaitMs(spec), Number(spec.duration_ms) || 0" in main_js
+    assert "published > 0 ? published * 1000 : CAPTURE_RESULT_WAIT_BUDGET_MS" in main_js
+    # …and the constant is the pre-field era's value, which is what an old Pi
+    # was measured against. Not the current ceiling: tying it to that is exactly
+    # the coupling this removes.
+    assert "const CAPTURE_RESULT_WAIT_BUDGET_MS = 90000;" in main_js
+    assert main_js.count("CAPTURE_RESULT_WAIT_BUDGET_MS") == 2
+
+
+def test_the_crossover_v2_mint_publishes_the_wait_it_derived():
+    """The spec a household's phone fetches carries the Pi's own number.
+
+    Pinned at the mint site rather than on a hand-built spec: the defect class
+    is "the value exists but nothing sends it", which only a check on the real
+    call site can catch.
+    """
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "jasper" / "web" / "correction_crossover_v2.py"
+    ).read_text(encoding="utf-8")
+    assert source.count("result_wait_s=fc_sweep_result_wait_s()") == 2, (
+        "both crossover-v2 relay mint sites must publish the wait"
+    )
+    spec = CaptureSpec(
+        kind="crossover_sweep", duration_ms=20000, pre_roll_ms=0, post_roll_ms=0,
+    ).with_result_wait(fc_sweep.fc_sweep_result_wait_s())
+    assert spec.to_dict()["result_wait_s"] == fc_sweep.fc_sweep_result_wait_s()
+    # Absent stays absent — an older Pi's spec must not acquire a default on the
+    # way through, or the page's fallback never runs for the Pi that needs it.
+    bare = CaptureSpec(
+        kind="crossover_sweep", duration_ms=20000, pre_roll_ms=0, post_roll_ms=0,
+    )
+    assert "result_wait_s" not in bare.to_dict()
+    assert CaptureSpec.from_dict(bare.to_dict()).result_wait_s is None
 
 
 def test_zero_budget_attempts_configured_then_discloses_every_skip():
@@ -1073,7 +1302,7 @@ def test_zero_budget_attempts_configured_then_discloses_every_skip():
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(
             flow.CrossoverV2Session, "_fc_evaluation_budget_s",
-            lambda self: 0.0,
+            lambda self, planned: 0.0,
         )
         _run_phase(c, 2, 1)
     planned = len(c._fc_candidate_set().candidates)
@@ -1122,7 +1351,7 @@ def test_budget_exhaustion_never_skips_the_configured_baseline(caplog):
     clock = iter((0.0, 0.0, 0.9, 0.9, 1.8, 1.8, 1.8))
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(c, "_fc_candidate_set", lambda: candidates)
-        mp.setattr(c, "_fc_evaluation_budget_s", lambda: 2.0)
+        mp.setattr(c, "_fc_evaluation_budget_s", lambda planned: 2.0)
         mp.setattr(flow.CrossoverV2Session, "_evaluate_fc_candidate", evaluate)
         mp.setattr(flow.time, "monotonic", lambda: next(clock))
         c._sweep_fc_candidates(object(), object(), object())
@@ -1143,19 +1372,24 @@ def test_budget_exhaustion_never_skips_the_configured_baseline(caplog):
         assert field in sweep_log
 
 
-def test_the_result_wait_is_named_once_and_exceeds_the_compute_budget():
+def test_the_result_wait_is_named_once_and_read_from_the_spec():
+    """The page names its fallback once and takes the live number from the Pi.
+
+    This replaced an assertion that the page's constant exceeded
+    ``FC_SWEEP_COMPUTE_BUDGET_S`` — which pinned two copies of one fact in the
+    TREE while the FLEET, where the page is a separately-deployed bundle, was
+    free to run a stale one. The fix was to delete the second copy rather than
+    to keep pinning it; what is left to check here is that the page reads the
+    spec and that its fallback stands alone.
+    """
     source = (
         Path(__file__).resolve().parents[1] / "capture-page" / "js" / "main.js"
     ).read_text(encoding="utf-8")
-    match = re.search(
-        r"const CAPTURE_RESULT_WAIT_BUDGET_MS = (\d+);",
-        source,
-    )
+    match = re.search(r"const CAPTURE_RESULT_WAIT_BUDGET_MS = (\d+);", source)
     assert match
-    wait_s = int(match.group(1)) / 1000.0
-    assert wait_s >= flow.FC_SWEEP_COMPUTE_BUDGET_S + 20.0
     assert source.count("CAPTURE_RESULT_WAIT_BUDGET_MS") == 2
-    assert "CAPTURE_RESULT_WAIT_BUDGET_MS, Number(spec.duration_ms) || 0" in source
+    assert "resultWaitMs(spec), Number(spec.duration_ms) || 0" in source
+    assert "Number(spec && spec.result_wait_s)" in source
 
 
 # --- the recommendation, and what it may not do -------------------------------
@@ -1420,7 +1654,8 @@ def test_the_proposed_corners_and_their_bounds_are_the_ones_that_shipped(shape):
 def test_the_evaluation_budget_is_the_declared_one():
     """A wall budget, stated. The forecast that spends it is the sweep's, but
     the number is a product decision and belongs in the golden."""
-    assert _selector_conductor(FakeSeams())._fc_evaluation_budget_s() == 70.0
+    conductor = _selector_conductor(FakeSeams())
+    assert conductor._fc_evaluation_budget_s(6) == 96.0
 
 
 @pytest.mark.parametrize("fc_hz", sorted(REQUIRED_BAND_WOOFER_HI_HZ))

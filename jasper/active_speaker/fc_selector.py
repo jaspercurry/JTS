@@ -36,7 +36,28 @@ MIN_RECOMMENDATION_MARGIN_DB = 1.0
 
 #: Weight on how much worse the handoff gets OFF the design axis. Lateral
 #: evidence is a COARSE gate (#1968) — six poses at 1/12 octave, not a polar
-#: measurement — so it discounts rather than dominates.
+#: measurement — and this halves it.
+#:
+#: **Halving it is not the same as bounding it, and the banked evidence says
+#: so.** The weight scales a term with no upper limit: ``excess`` is a measured
+#: dB difference, so half of a large number is still a large number.
+#:
+#: Measured over the 74 DISTINCT scored records banked from live jts3 rounds
+#: (2026-08-10, 2026-08-17 and 2026-08-18; the five corpora named in
+#: ``tests/test_fc_selector.py::test_the_lateral_term_still_measures_what_this_comment_claims``,
+#: deduplicated because the preapply/state pairs bank the same round twice), the
+#: WEIGHTED lateral term is the largest of the three in 35 of them — not a
+#: majority, but far from a discount — reaches 18.03 dB (raw
+#: ``lateral_excess_db`` up to 36.05 dB) against an anchor term whose worst is
+#: 4.98 dB, and accounts for 36.3% of the score on average and 91.9% at its
+#: peak.
+#:
+#: So it neither dominates nor recedes: on roughly half the records this coarse
+#: six-pose gate is the term that decides, which an earlier version of this
+#: comment denied outright. That is worth knowing precisely because the gate is
+#: coarse — #1968 already places it below the noise floor of what it adjudicates.
+#: Whether the weighting should change is a separate, unmade decision; this
+#: states what the number does, not what it was meant to do.
 LATERAL_ROBUSTNESS_WEIGHT = 0.5
 
 #: Weight on headroom given up: real but recoverable (turn it up), unlike a
@@ -268,12 +289,15 @@ def score_candidate(
 ) -> FcCandidateScore | None:
     """Score one candidate. Lower is better. ``None`` if not scoreable.
 
-    Three components: design-axis handoff flatness at the mark (the primary
-    term — the checkpoint's measured -4.80 dB at 1656 Hz was exactly this);
-    lateral robustness at :data:`LATERAL_ROBUSTNESS_WEIGHT`, as the EXCESS over
-    the design axis because every candidate pays the room's own off-axis cost
-    and only the difference is the crossover's, clamped at zero so a coarse
-    gate never earns credit; and headroom at :data:`HEADROOM_COST_WEIGHT`.
+    Three components: design-axis handoff flatness at the mark (the
+    checkpoint's measured -4.80 dB at 1656 Hz was exactly this); lateral
+    robustness at :data:`LATERAL_ROBUSTNESS_WEIGHT`, as the EXCESS over the
+    design axis because every candidate pays the room's own off-axis cost and
+    only the difference is the crossover's, clamped at zero so a coarse gate
+    never earns credit; and headroom at :data:`HEADROOM_COST_WEIGHT`.
+
+    Which of the three actually decides a score is measured, and it is not the
+    one the weights suggest — see :data:`LATERAL_ROBUSTNESS_WEIGHT`.
 
     **The ka/beaming prior is deliberately NOT a term.** Per PR-1's settled
     collision policy it bounds what may be PROPOSED, while the configured Fc is

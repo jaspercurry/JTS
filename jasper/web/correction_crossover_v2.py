@@ -97,6 +97,7 @@ from jasper.active_speaker.crossover_v2.round_anchor import (
 # they name are module level. A pure-organ leaf like ``journey`` above, so this
 # adds no cycle and no import cost worth deferring — every other flow symbol in
 # this module stays lazily imported inside its own function, as before.
+from jasper.active_speaker.crossover_v2.fc_sweep import fc_sweep_result_wait_s
 from jasper.active_speaker.crossover_v2.vocabulary import (
     REASON_POSITION_HOLD_EXPIRED,
     REASON_POSITION_TARGET_MISSING,
@@ -6826,6 +6827,11 @@ def prepare_v2_session(
             capture_origin=capture_origin,
             return_url=return_url,
             ttl_s=relay_link_ttl_s(plan_shape, ceiling_s),
+            # The Fc sweep runs inside THIS session's capture consume, so the
+            # phone's per-capture result wait is this flow's to publish — see
+            # ``fc_sweep_result_wait_s``. A page that predates the field keeps
+            # its own floor.
+            result_wait_s=fc_sweep_result_wait_s(),
         )
         # The conductor + publishers bind to the MINTED relay session id.
         relay_session_id = rc.pi_session.session_id
@@ -7166,6 +7172,11 @@ def prepare_v2_verify(
             capture_origin=capture_origin,
             return_url=return_url,
             ttl_s=relay_link_ttl_s(plan_shape, ceiling_s),
+            # The Fc sweep runs inside THIS session's capture consume, so the
+            # phone's per-capture result wait is this flow's to publish — see
+            # ``fc_sweep_result_wait_s``. A page that predates the field keeps
+            # its own floor.
+            result_wait_s=fc_sweep_result_wait_s(),
         )
         relay_session_id = rc.pi_session.session_id
         # Re-arm the walked-away ceiling from THIS plan (1 entry ⇒ the plain

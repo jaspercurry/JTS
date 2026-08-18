@@ -268,6 +268,33 @@ DEFERS the household's "keep the earlier measurement and continue" choice by one
 round — the escape reappears on the next rejection, and the earlier accepted take
 is never at risk in the meantime (a rejected retake leaves it standing).
 
+Build `20260818.1` moves a number OFF this page and onto the spec, which puts
+it in the "reinterpreting an existing spec field" class above (Pi first for the
+forward rollout, page first for a rollback) — with one asymmetry worth stating
+plainly, because it is the reason this build exists.
+
+The page used to hard-code its post-upload result wait at 90 s. The Pi's Fc
+sweep is bounded by a budget that grew (six corners at a measured per-corner
+cost, 96 s ceiling), and a page whose wait is shorter than the Pi's ceiling does
+not degrade — `waitForCaptureResult` throws a TERMINAL `sweepFailed` and the
+household loses a completed capture at whatever position of a ten-minute session
+it reached. So:
+
+- **New page + old Pi: safe, and this is what makes page-first legal.** An old
+  Pi sends no `result_wait_s`, and `resultWaitMs` falls back to the same 90 s
+  constant that Pi has always been measured against. Identical behaviour.
+- **Old page + new Pi: UNSAFE.** A 90 s wall against a Pi that may now take up
+  to ~108 s is the terminal-failure case above. This pair must not exist.
+- **Forward rollout → page first, Pi second**, so no phone is left on the
+  hard-coded bundle when a bigger-budget Pi arrives. **Rollback → Pi first,
+  page second**, for the mirror-image reason.
+
+Nothing gates the pair mechanically — `validate_capture_page` checks the build
+stamp's FORMAT, never a minimum — so the ordering is the whole safeguard. After
+this build the page owns no copy of the number at all: the Pi mints it
+(`fc_sweep_result_wait_s`), the spec carries it (`CaptureSpec.result_wait_s`),
+and a later budget change never needs this page republished again.
+
 The one thing that is NOT optional in either direction: the field must ride a
 repeat of the WHOLE armed payload, never a partial event. The relay's
 phone-event slot is last-write-wins, so a partial event could stand a Pi down

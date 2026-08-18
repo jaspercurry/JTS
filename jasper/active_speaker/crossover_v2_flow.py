@@ -1495,6 +1495,7 @@ from jasper.active_speaker.crossover_v2.fc_sweep import (
     FC_REJECT_ABOVE_LOWER_DRIVER_BAND as FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
     FC_REJECT_BELOW_DECLARED_FLOOR as FC_REJECT_BELOW_DECLARED_FLOOR,
     FC_REJECT_BEAMING as FC_REJECT_BEAMING,
+    FC_CORNER_COMPUTE_COST_S as FC_CORNER_COMPUTE_COST_S,
     FC_REJECT_OUTSIDE_SEARCH_BAND as FC_REJECT_OUTSIDE_SEARCH_BAND,
     FC_SWEEP_COMPUTE_BUDGET_S as FC_SWEEP_COMPUTE_BUDGET_S,
     MAX_PROPOSED_FC_CANDIDATES as MAX_PROPOSED_FC_CANDIDATES,
@@ -1503,6 +1504,7 @@ from jasper.active_speaker.crossover_v2.fc_sweep import (
     _FC_GRID_EPS_HZ as _FC_GRID_EPS_HZ,
     _fc_rejection as _fc_rejection,
     fc_candidate_set as fc_candidate_set,
+    fc_sweep_budget_s as fc_sweep_budget_s,
     resolve_fc_search_band as resolve_fc_search_band,
 )
 
@@ -7742,9 +7744,15 @@ class CrossoverV2Session:
             grid=lateral_evidence_grid_hz(),
         )
 
-    def _fc_evaluation_budget_s(self) -> float:
-        """The explicit wall budget for this one-time serial computation."""
-        return FC_SWEEP_COMPUTE_BUDGET_S
+    def _fc_evaluation_budget_s(self, planned: int) -> float:
+        """The wall budget for this one-time serial computation, sized by plan.
+
+        ``planned`` is how many corners the sweep is about to attempt, so a set
+        the household's declarations narrowed asks for less wall than a full
+        one — see :func:`~jasper.active_speaker.crossover_v2.fc_sweep.fc_sweep_budget_s`,
+        which owns the sizing rule.
+        """
+        return fc_sweep_budget_s(planned)
 
     def _sweep_fc_candidates(self, program: Any, result: Any, anchor: Any) -> None:
         """Evaluate the proposable Fc set against THIS capture, then release —

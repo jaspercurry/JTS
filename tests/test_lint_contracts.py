@@ -606,7 +606,22 @@ MAX_LINES_BY_PATH = {
     # at the full tier's shipped defaults" — stale since R15 turned the
     # pre-apply cloud off, and a docstring that contradicts itself twice on one
     # screen is worse than either number alone. 12,813 + 62 = 12,875.)
-    "jasper/active_speaker/crossover_v2_flow.py": 12_875,
+    #
+    # 2026-08-18 (Fc-sweep compute budget, #2706): 12,875 -> 12,883. +11 added,
+    # -3 removed, net +8, counted after rebasing onto the pause above rather
+    # than added on paper:
+    #    2  two imports — `fc_sweep_budget_s` and `FC_CORNER_COMPUTE_COST_S`,
+    #       now that the budget is DERIVED from the corner count instead of
+    #       being a bare constant this module re-exported
+    #    6  net on `_fc_evaluation_budget_s`, which took a `planned` argument
+    #       and a docstring saying why: a plan the household's declarations
+    #       narrowed must ask for less wall than a full one, and the sizing
+    #       rule itself lives one module over. A budget that silently ignored
+    #       its plan size is the defect this PR fixes, so an arity with no
+    #       stated reason is the shape most likely to be "simplified" back.
+    # No seam: the delegate is three lines of dispatch, and its whole job is to
+    # be the substitutable seam production binds (#2354).
+    "jasper/active_speaker/crossover_v2_flow.py": 12_883,
     # ...and 9,292 -> 9,296, +4 physical / 0 logical: the sweep caught that
     # comment overclaiming its own readership ("the surface /state, the doctor
     # and the done screen read" — no renderer reads it today). It is a forensic
@@ -647,7 +662,22 @@ MAX_LINES_BY_PATH = {
     #       the pause moves it 2520 -> 1800 s, leaving the ceiling at exactly 3
     #       holds of a 3-capture stage, which is the reader's next question
     #   -1  net from the gate-A line replaced in place
-    "jasper/web/correction_crossover_v2.py": 8_381,
+    #
+    # ...and 8,381 -> 8,392 (Fc-sweep compute budget, #2706), +11 added / 0
+    # removed, of which 3 execute:
+    #    1  the `fc_sweep_result_wait_s` import
+    #   10  the two relay mint sites, 5 each: one call passing the derived
+    #       result wait onto the CaptureSpec, and four saying why THIS module
+    #       is where it is minted. The capture page ships as a separately
+    #       deployed bundle, so a page-side copy of a Pi-side budget is a
+    #       cross-artifact drift whose failure mode is a TERMINAL sweepFailed
+    #       — the household loses a completed capture rather than getting a
+    #       degraded advisory. A reader who deletes the comment as noise is
+    #       one step from deleting the call as redundant.
+    # Both sites carry it because both mint a stage-1 session that sweeps; a
+    # helper wrapping one call and one comment would be indirection, not a
+    # seam.
+    "jasper/web/correction_crossover_v2.py": 8_392,
     # Born 2026-08-18 (#2662 slice 1) at exactly this size: the relay capture
     # provider — the choreography only the phone-relay source has. It should
     # grow only when the RELAY grows; the wired provider is its own module.

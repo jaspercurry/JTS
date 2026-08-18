@@ -294,9 +294,45 @@ function testTheLinkDeadlineIsOnlyClaimedWhenItWasActuallyObservedToPass() {
   ok();
 }
 
+// ============================================================================
+// The result wait belongs to the Pi, and the fallback is what makes the page
+// safe against one that never learned to publish it (build 20260818.1).
+//
+// This is the tolerance the release order rests on. `capture-page/README.md`
+// justifies shipping this page BEFORE the Pi on the grounds that a spec with no
+// `result_wait_s` behaves exactly as before — so that branch is a requirement,
+// not an implementation detail, and an old speaker is the thing it protects.
+// ============================================================================
+function testTheResultWaitIsThePisWhenItSentOneAndTheFallbackWhenItDidNot() {
+  const FALLBACK_MS = 90000;
+
+  // No field at all: an old Pi, and the page must not read NaN off it.
+  assert.equal(mod.resultWaitMs(specWith()), FALLBACK_MS);
+  assert.equal(mod.resultWaitMs(null), FALLBACK_MS);
+  assert.equal(mod.resultWaitMs(undefined), FALLBACK_MS);
+
+  // Malformed or non-positive reads as absent, never as "wait no time".
+  for (const bad of [0, -1, "soon", null, {}, NaN]) {
+    assert.equal(
+      mod.resultWaitMs(specWith({ result_wait_s: bad })), FALLBACK_MS,
+      `a malformed wait must fall back: ${JSON.stringify(bad)}`,
+    );
+  }
+
+  // A published wait wins, and TRACKS the spec — a derivation, not a constant.
+  assert.equal(mod.resultWaitMs(specWith({ result_wait_s: 109 })), 109000);
+  assert.equal(mod.resultWaitMs(specWith({ result_wait_s: 45 })), 45000);
+  // …including one SHORTER than the fallback. The Pi is the owner, so a future
+  // Pi that genuinely speeds up must be able to say so; max()-ing the two here
+  // would quietly make this page the owner again.
+  assert.ok(mod.resultWaitMs(specWith({ result_wait_s: 45 })) < FALLBACK_MS);
+  ok();
+}
+
 await runTestFunctions(
   [
     testTheBudgetLineOnlyEverQuotesWhatThePiPublished,
+    testTheResultWaitIsThePisWhenItSentOneAndTheFallbackWhenItDidNot,
     testAnExpiryNamesTheClockAndOnlyWhenTheSpeakerSaid,
     testOnlyAnEntryThatSuppliesOneOverridesTheFloorWindowCopy,
     testATransportDeathNamesNoClockAndSaysSoHonestly,
