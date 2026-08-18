@@ -74,8 +74,10 @@ GROUPING_RING_CONF_D = "/etc/alsa/conf.d/62-jts-ring-grouping.conf"
 #: (:func:`jasper.multiroom.reconcile.snapserver_argv`), so this ring carries
 #: 16-bit stereo. ``tests/test_grouping_ring_platform.py`` pins both ends of that
 #: binding — a widening of either side that left the other alone would be a
-#: negotiation failure at open, not a quiet conversion, because the shipped ring
-#: PCMs are raw ``type jts_ring`` rather than ``plug``-wrapped.
+#: negotiation failure at open, not a quiet conversion, because this block is
+#: opened directly and nothing wraps it: the ioplug's hw_params is single-valued
+#: in every dimension but access, and unlike the renderer lanes there is no
+#: ``plug`` PCM in front of it to absorb a mismatch.
 GROUPING_RING_FORMAT = "S16_LE"
 GROUPING_RING_CHANNELS = 2
 
