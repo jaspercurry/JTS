@@ -957,11 +957,18 @@ def test_a_level_mismatch_caveats_the_pass_screen():
 def test_a_safety_only_probe_caveats_the_pass_screen():
     """#2614: "the shape check did not run" must reach the household.
 
-    When the change axis is unavailable only the loudness half of the probe
-    runs. That is not a finding about the speaker and not a rollback — but every
-    other word on this screen says "Verified", and a household reading it would
-    take the shape check to have passed. The caveat rides BESIDE the badge for
-    ``level_mismatch``'s reason: the tracking comparator really did pass.
+    When the change axis is unavailable the probe grades the model's departure
+    and nothing about the speaker. That is not a finding about the speaker and
+    not a rollback — but every other word on this screen says "Verified", and a
+    household reading it would take the checks to have passed. The caveat rides
+    BESIDE the badge for ``level_mismatch``'s reason: the tracking comparator
+    really did pass.
+
+    **It names both halves since series-2 D1.** The pre-D1 copy said the
+    loudness half had run; on this path there is no pre-apply capture to
+    difference against, so what it called a loudness comparison was a comparison
+    against the model — the exact confusion D1 exists to end, on the surface a
+    household reads.
 
     **The copy names no cause, and that is asserted.** Four paths reach this
     verdict and only one of them is "the crossover point moved", so a cause
@@ -972,10 +979,20 @@ def test_a_safety_only_probe_caveats_the_pass_screen():
         phase="done",
         verify={
             "outcome": "pass",
+            # ``overshoot_db`` is ``None`` because since series-2 D1 this path
+            # measures no directional finding at all — there is no change
+            # reference on a state axis to difference against.
+            #
+            # ``safety_anchored`` IS on the durable record (``_delta_probe_summary``
+            # carries it), so the fixture carries it too: this is the shape the
+            # renderer will actually be handed. Nothing in the envelope reads it
+            # yet — the caveat below keys on ``verdict`` — and it is here so the
+            # fixture cannot quietly drift from the record it stands in for.
             "delta_probe": {
                 "verdict": "safety_only",
                 "reason": "commanded_axis_unavailable",
-                "boost": {"over_declared_bound": False, "overshoot_db": -1.2},
+                "safety_anchored": False,
+                "boost": {"over_declared_bound": False, "overshoot_db": None},
             },
         },
         candidate=_candidate_summary(),
@@ -986,7 +1003,9 @@ def test_a_safety_only_probe_caveats_the_pass_screen():
         n for n in env["nudges"] if n["code"] == "crossover_v2_safety_only"
     )
     assert caveat["severity"] == "warn"
-    assert "compare loudness but not the correction's shape" in caveat["text"]
+    assert "could not confirm the correction's shape or its loudness" in (
+        caveat["text"]
+    )
     # No cause clause: the reason lives on the journal, where it is specific.
     assert "crossover point" not in caveat["text"]
     assert "because" not in caveat["text"].lower()

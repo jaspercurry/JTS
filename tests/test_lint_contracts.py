@@ -516,9 +516,73 @@ MAX_LINES_BY_PATH = {
     # what costs the lines. Paying them here, in the diff that earned them, is
     # the guard working; compressing the reason out to keep a number flat would
     # be gaming it.
-    "jasper/active_speaker/crossover_v2_flow.py": 12_720,
-    "jasper/web/correction_crossover_v2.py": 9_282,
-    "jasper/active_speaker/crossover_envelope_v2.py": 4_096,
+    #
+    # 2026-08-18 (series-2 D1): `crossover_envelope_v2` 4,096 -> 4,103. Zero
+    # executable lines. One household sentence changed from a claim that had
+    # become FALSE -- "This check could compare loudness but not the
+    # correction's shape this round", on a path that since D1 compares neither
+    # -- and seven lines saying why the old wording was not merely stale but
+    # was the incident's own confusion reaching a household screen: what that
+    # copy called a loudness comparison was a comparison against the model.
+    # This file's job is household copy, so the argument for a sentence belongs
+    # beside it; and a caveat that overstates what was checked is the one kind
+    # of copy defect this screen cannot afford.
+    #
+    # 2026-08-18 (series-2 D1, panel fix round): two more, and both are the
+    # SAME defect class as the change that earned them -- an instrument's name
+    # sitting over a quantity it did not measure.
+    #
+    #  * `crossover_v2_flow` 12,720 -> 12,766. +46 physical, ~11 logical. The
+    #    delta probe's anchor became the input to a hard stop, so
+    #    `_entry_delta_db` gained the two things an input to a hard stop owes:
+    #    it says on the journal WHY there is no anchor (its most reachable arm
+    #    -- a first-ever round -- returned None silently), and it refuses a
+    #    baseline measured through another program, because an anchor is a
+    #    subtraction and a foreign one cancels a real finding as readily as a
+    #    phantom. Comparability keeps its single owner: this asks
+    #    `round_evidence`'s two identity fields, it does not re-derive the rule.
+    #    The probe's journal line also gained `safety_anchored`. The remaining
+    #    lines are the argument for each, which is what this ratchet is for.
+    #  * `correction_crossover_v2` 9,282 -> 9,292. +10, of which 1 executes.
+    #    `_delta_probe_summary` carries `safety_anchored`, because the round
+    #    receipt is write-once and `/state`, the doctor and the done screen read
+    #    THIS record -- so a fact only the receipt held was a fact no live
+    #    surface could show. The nine lines say why it sits here rather than
+    #    only there. Decision 10's note above ("stays at 9,186") described a
+    #    change that added no state key; this one adds exactly one, and it is
+    #    the key that tells "nothing was found" from "nothing looked".
+    #
+    # 2026-08-18 (series-2 D1, panel delta): `crossover_v2_flow` 12,766 ->
+    # 12,790. +24, ZERO executable. The panel's hearing lens rebuilt the phase
+    # maps and found three comments in this PR attributing `_entry_delta_db`'s
+    # baseline-is-None arm to "every first-ever round" -- which is false, and
+    # falsely reassuring in the worst direction: a first-ever round DOES capture
+    # an entry baseline, and never reaches that arm at all, because it takes the
+    # `state_axis_only` branch first. Saying which route each round actually
+    # takes, and why this asks ONE of comparability's two fields rather than
+    # both, is what costs the lines. Prose that is confidently wrong about
+    # reachability on a hearing-safety path is the same defect class this whole
+    # PR is about, so it is paid rather than compressed.
+    #
+    # 2026-08-18 (series-2 D1, panel delta round 2): 12,790 -> 12,810. +20, of
+    # which ~13 execute. Both lenses converged on the same ask: the anchor guard
+    # claimed comparability's two identity fields and compared one. It now asks
+    # BOTH through `verification.identity_mismatch` -- the identity half of
+    # `_comparability_mismatch`, extracted so the order and the two reason
+    # constants have one owner rather than a parallel spelling here -- and the
+    # MARK is the field that earned it: a baseline captured at another position
+    # is the same program on the same grid, so nothing else on this path would
+    # catch it subtracting a different room bin by bin. The identity read also
+    # moved INSIDE the fail-soft try, which is a line of nesting for a method
+    # whose whole contract is that it never loses a verdict.
+    "jasper/active_speaker/crossover_v2_flow.py": 12_810,
+    # ...and 9,292 -> 9,296, +4 physical / 0 logical: the sweep caught that
+    # comment overclaiming its own readership ("the surface /state, the doctor
+    # and the done screen read" — no renderer reads it today). It is a forensic
+    # state key, and saying which it is costs four lines on a surface whose
+    # whole job this round is telling "measured" from "not measured".
+    "jasper/web/correction_crossover_v2.py": 9_296,
+    "jasper/active_speaker/crossover_envelope_v2.py": 4_103,
     # 2026-08-18 (D7, series-2 diagnosis): +82 net on `program_analysis.py`
     # (95 added, 13 removed), counted rather than estimated —
     #   40  the argument written next to `GLITCH_RESIDUAL_SAMPLES`

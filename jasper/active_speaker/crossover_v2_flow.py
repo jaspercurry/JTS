@@ -10565,8 +10565,80 @@ class CrossoverV2Session:
         """
         baseline = self._measure_entry_baseline
         if baseline is None:
+            # NAMED, not silent (series-2 D1 fix round). Since D1 this arm
+            # decides whether the realized-energy half of the safety axis runs,
+            # so a reader asking "why did nothing check the driver" must find an
+            # answer here rather than infer it from an absent field.
+            #
+            # **Not a first-ever round** — that one never arrives here at all.
+            # It has no nameable previous graph, so its commanded axis is
+            # absent, and the caller takes the ``state_axis_only`` branch below
+            # without ever calling this method. What reaches this arm is a round
+            # that HAS a commanded axis and no usable baseline record: the three
+            # cases ``correction_crossover_v2.entry_baseline_prior_from_state``
+            # enumerates — a state file written before that key shipped, a
+            # stage 1 whose baseline capture never landed, and a truncated or
+            # hand-edited record. All three are exceptional, which is why this
+            # is WARNING.
+            log_event(
+                logger, "correction.crossover_v2_delta_probe_no_entry_anchor",
+                level=logging.WARNING, session_id=self.session_id,
+                reason="no_entry_baseline",
+            )
             return None
         try:
+            # COMPARABLE, or it is not an anchor. An anchor is a subtraction, so
+            # a curve measured through another program, or from another mic
+            # position, cancels a real finding as readily as a phantom — and
+            # since D1 the subtrahend feeds a hard stop rather than only the
+            # disclosed residual.
+            #
+            # BOTH identity fields, asked through the rule's own owner:
+            # ``verification.identity_mismatch`` is the identity half of
+            # ``_comparability_mismatch``, so the order and the two reason
+            # constants live in one place rather than in a parallel spelling
+            # here. The MARK is the field that earned the second clause — a
+            # program mismatch usually changes the grid and surfaces in the
+            # arithmetic below, while a baseline captured at another position is
+            # the same program on the same grid and subtracts a different room
+            # bin by bin, which nothing else on this path would catch.
+            #
+            # Unknown on either side is "nothing known" and does not refuse —
+            # the module's rule everywhere. A MAGNITUDE bound is deliberately
+            # not added: identity is answerable from the record, plausibility is
+            # not, and a curve that is comparable and merely wrong is what
+            # capture integrity screens for.
+            from jasper.active_speaker.crossover_v2.verification import (
+                identity_mismatch,
+            )
+
+            want_program = str(
+                getattr(
+                    self.program_for_phase(PHASE_VERIFY), "program_id", "",
+                ) or ""
+            )
+            got_program = str(getattr(baseline, "program_id", "") or "")
+            got_mark = str(getattr(baseline, "reference_mark", "") or "")
+            mismatch = (
+                identity_mismatch(
+                    program_id=got_program,
+                    reference_mark=got_mark,
+                    other_program_id=want_program,
+                    other_reference_mark=REFERENCE_MARK_DESIGN_AXIS,
+                )
+                if want_program and got_program and got_mark
+                else None
+            )
+            if mismatch is not None:
+                log_event(
+                    logger, "correction.crossover_v2_delta_probe_no_entry_anchor",
+                    level=logging.WARNING, session_id=self.session_id,
+                    reason=mismatch,
+                    baseline_program_id=got_program,
+                    baseline_reference_mark=got_mark,
+                    verify_program_id=want_program,
+                )
+                return None
             curve = baseline.curve
             entry_hz = np.asarray(curve.hz, dtype=float)
             entry_db = np.asarray(curve.db, dtype=float)
@@ -10578,9 +10650,16 @@ class CrossoverV2Session:
             measured_pre = np.interp(freqs, entry_hz, entry_db)
             return (measured_pre - predicted_s) + commanded_db
         except (ValueError, TypeError, IndexError, AttributeError) as exc:
+            # One arm for the whole body, and the identity read is INSIDE it on
+            # purpose: ``program_for_phase`` is bound at construction and cannot
+            # raise today, but a fail-soft method that computes anything outside
+            # its own guard is one refactor from losing a verdict to an
+            # accounting term. The reason names the record, not the curve,
+            # because the arm now covers both.
             log_event(
                 logger, "correction.crossover_v2_delta_probe_no_entry_anchor",
-                level=logging.WARNING, session_id=self.session_id, error=str(exc),
+                level=logging.WARNING, session_id=self.session_id,
+                reason="unusable_record", error=str(exc),
             )
             return None
 
@@ -10758,6 +10837,17 @@ class CrossoverV2Session:
                 None if probe.frame.band_hz is None
                 else tuple(round(v, 1) for v in probe.frame.band_hz)
             ),
+            # Whether the realized-energy half ran at all (series-2 D1). The
+            # forensic surface an operator greps, beside the numbers it governs:
+            # ``boost_over_declared_bound=false`` reads as "measured, nothing
+            # found" and is "not measured" whenever this is false. Two routes
+            # reach that, and a first-ever round takes the FIRST: no nameable
+            # previous graph, so no commanded axis, so the state-axis branch
+            # above — which has no change reference to anchor against by
+            # construction. The second is an ordinary round whose banked entry
+            # baseline is missing or incomparable, which
+            # ``…delta_probe_no_entry_anchor`` names on its own line.
+            safety_anchored=probe.safety_anchored,
             frame_removed_max_db=(
                 None if probe.frame_removed_max_db is None
                 else round(probe.frame_removed_max_db, 3)

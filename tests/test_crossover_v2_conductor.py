@@ -6525,7 +6525,6 @@ from tests.crossover_v2_fixtures import (
     _SUMMED_FREQS_HZ,
     _absolute,
     _alignment,
-    _anchor_entry_baseline,
     _assert_room_layer_can_read_the_evidence,
     _attempt_floor,
     _boost_vocabulary_spy,
@@ -9491,12 +9490,11 @@ def test_delta_probe_removes_the_applys_declared_level_move(caplog):
     """
     caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
     fakes = FakeSeams()
-    c = _probed_conductor(fakes)
     # The apply's move is the ONLY thing that changed the level here, so the
-    # pre-apply capture sat exactly on its prediction (#2533). Stated rather
-    # than inherited: the residual is now a change measured against this
-    # capture, so a fixture that leaves it arbitrary is measuring a phantom.
-    _anchor_entry_baseline(c, 0.0)
+    # pre-apply capture sat exactly on its prediction (#2533) -- which is
+    # ``_probed_conductor``'s stated default since series-2 D1 made the two
+    # directional safety findings changes against that capture too.
+    c = _probed_conductor(fakes)
     fakes.verify = lambda program: dataclasses.replace(
         _verify_analysis(program),
         verify_tracking_curve=_tracking_curve(c, -22.458),
@@ -9513,7 +9511,6 @@ def test_delta_probe_removes_the_applys_declared_level_move(caplog):
 
     fakes2 = FakeSeams()
     c2 = _probed_conductor(fakes2)
-    _anchor_entry_baseline(c2, 0.0)
     c2._seams = dataclasses.replace(
         c2._seams, applied_offset_db=lambda: -22.458,
     )
@@ -9541,7 +9538,6 @@ def test_a_level_mismatch_is_persisted_and_logged_at_warning(caplog):
     caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
     fakes = FakeSeams()
     c = _probed_conductor(fakes)
-    _anchor_entry_baseline(c, 0.0)
     fakes.verify = lambda program: dataclasses.replace(
         _verify_analysis(program), verify_tracking_curve=_tracking_curve(c, -22.458),
     )

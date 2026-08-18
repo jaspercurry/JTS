@@ -536,6 +536,15 @@ def _log_round(evaluation: RoundEvaluation, *, session_id: str) -> None:
         spec=record["verdicts"]["spec"]["status"],
         trust=record["axes"]["trust"]["status"],
         safety=record["axes"]["safety"]["status"],
+        # The only axis whose REASON rides this line beside its status, and it
+        # is the hearing one (series-2 D1 fix round). ``safe`` has two readings
+        # — the realized-energy check looked and found nothing, or it could not
+        # look at all — and a first-ever round takes the second by construction.
+        # Every other axis's reason is either the deciding one (``reason``
+        # above) or a number in ``evidence``; this one is a claim about what was
+        # CHECKED, and a journal that cannot tell the two apart is where the
+        # 2026-08-17 class of defect hides.
+        safety_reason=record["axes"]["safety"]["reason"],
         quality=record["axes"]["quality"]["status"],
         # #2602: WHETHER another round is coming, and where this one sat in
         # the series — the two facts a support read needs to tell "the series

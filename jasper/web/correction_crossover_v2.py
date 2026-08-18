@@ -3123,6 +3123,20 @@ def _delta_probe_summary(probe: Any) -> dict[str, Any]:
     return {
         "verdict": str(getattr(probe, "verdict", "") or ""),
         "reason": str(getattr(probe, "reason", "") or ""),
+        # Whether the realized-energy half of the safety axis ran (series-2 D1).
+        # Here for ``residual_offset_db``'s reason one step further: that number
+        # needed the record to say what was subtracted to make it a change, and
+        # this one needs the record to say whether the subtraction was possible
+        # at all — a first-ever round takes the ``state_axis_only`` branch, so
+        # its axis reports SAFE with that half unrun.
+        #
+        # A FORENSIC state key: no renderer reads it today (the done screen's
+        # caveat keys on the probe's verdict). It is here because the round
+        # receipt is write-once and this record is the LIVE one — the surface
+        # ``/state``, the doctor and the done screen would each have to read it
+        # from — so a fact only the receipt holds is a fact no live surface can
+        # ever show.
+        "safety_anchored": bool(getattr(probe, "safety_anchored", False)),
         "expected_offset_db": getattr(probe, "expected_offset_db", 0.0),
         "residual_offset_db": getattr(probe, "residual_offset_db", None),
         "entry_anchor_offset_db": getattr(probe, "entry_anchor_offset_db", None),
