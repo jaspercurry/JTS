@@ -6908,6 +6908,58 @@ async function testCommissionAutoRampLoopResetsRunningFlagOnRenderThrow() {
   return { commissionAutoRampLoopResetsRunningFlagOnRenderThrow: true };
 }
 
+async function testConfirmedOutputKeepsResetPreconditions() {
+  const initialTopology = activeTwoWayTopologyPayload();
+  initialTopology.speaker_groups[0].channels[0].identity_verified = false;
+  const confirmedTopology = JSON.parse(JSON.stringify(initialTopology));
+  confirmedTopology.speaker_groups[0].channels[0].identity_verified = true;
+  const resetPosts = [];
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response({
+      output_topology: initialTopology,
+      topology_revision: "sha256:loaded",
+      hardware_adoption: { allowed: true, identity: "sha256:hardware-loaded" },
+    })),
+    "./active-speaker/channel-identity": (_path, options = {}) =>
+      Promise.resolve(response({
+        output_topology: confirmedTopology,
+        topology_revision: "sha256:confirmed",
+        hardware_adoption: { allowed: true, identity: "sha256:hardware-confirmed" },
+      })),
+    "./output-topology/reset": (_path, options = {}) => {
+      resetPosts.push(JSON.parse(options.body || "{}"));
+      return Promise.resolve(response({
+        output_topology: emptyTopologyPayload(),
+        topology_revision: "sha256:reset",
+        hardware_adoption: { allowed: true, identity: "sha256:hardware-confirmed" },
+        reset: { status: "reset", message: "Speaker setup was reset." },
+      }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+  globalThis.__jtsConfirm = async () => true;
+
+  harness.dispatchClick({
+    "data-act": "mark-output-identity",
+    "data-group-id": "main",
+    "data-role": "woofer",
+    "data-verified": "true",
+    "data-label": "Main speaker woofer on DAC output 1",
+  });
+  await harness.flush(); await harness.flush(); await harness.flush();
+
+  harness.dispatchClick({ "data-act": "reset-output-topology" });
+  await harness.flush(); await harness.flush(); await harness.flush();
+
+  if (resetPosts.length !== 1 ||
+      resetPosts[0].topology_revision !== "sha256:confirmed" ||
+      resetPosts[0].detected_hardware_identity !== "sha256:hardware-confirmed") {
+    fail("confirming an output must retain fresh reset preconditions", { resetPosts });
+  }
+  return { confirmedOutputKeepsResetPreconditions: true };
+}
+
 async function testResetPartialCleanupSurfacesWarning() {
   const posts = [];
   const fetchHandler = baseFetch({
@@ -6915,19 +6967,20 @@ async function testResetPartialCleanupSurfacesWarning() {
       posts.push({ path, body: JSON.parse(options.body || "{}") });
       return Promise.resolve(response({
         output_topology: topologyPayload(),
-        active_speaker_reset: {
-          status: "partial",
-          errors: [{
-            id: "staged_config",
-            path: "/var/lib/jasper/active-speaker-staged.json",
-            error: "PermissionError: no access",
-          }],
+        reset: {
+          status: "needs_attention",
+          message: "Speaker setup was reset and audio is off. JTS could not finish setup cleanup; open Status before continuing.",
         },
       }));
     },
   });
   const harness = setupHarness(fetchHandler);
   await harness.flush(); await harness.flush(); await harness.flush();
+  let confirmation = null;
+  globalThis.__jtsConfirm = async (message, options) => {
+    confirmation = { message, options };
+    return true;
+  };
 
   harness.dispatchClick({ "data-act": "reset-output-topology" });
   await harness.flush(); await harness.flush(); await harness.flush();
@@ -6935,14 +6988,18 @@ async function testResetPartialCleanupSurfacesWarning() {
   if (posts.length !== 1 || posts[0].path !== "./output-topology/reset") {
     fail("reset button should post to the topology reset endpoint", { posts });
   }
+  if (!confirmation ||
+      !confirmation.message.includes("usable hardware is detected") ||
+      confirmation.options.confirmLabel !== "Reset speaker setup") {
+    fail("both reset controls should use one truthful hardware-agnostic dialog", {
+      confirmation,
+    });
+  }
   const status = harness.elements.get("status").textContent;
-  if (!status.includes("could not clear 1 active-speaker setup artifact")) {
+  if (!status.includes("could not finish setup cleanup")) {
     fail("partial active-speaker cleanup should be visible to the operator", { status });
   }
-  if (!status.includes("staged_config")) {
-    fail("partial cleanup warning should name the failed artifact id", { status });
-  }
-  for (const leak of ["/var/lib", "PermissionError"]) {
+  for (const leak of ["/var/lib", "PermissionError", "staged_config"]) {
     if (status.includes(leak)) {
       fail("partial cleanup warning should not leak backend path/error details", {
         leak,
@@ -6951,6 +7008,94 @@ async function testResetPartialCleanupSurfacesWarning() {
     }
   }
   return { resetPartialCleanupSurfacesWarning: true };
+}
+
+async function testFailedResetPreservesCommissioningPanels() {
+  for (const failureStatus of [409, 502]) {
+    const topology = activeTwoWayTopologyPayload();
+    const commissionState = {
+      commission_load: {
+        status: "loaded",
+        target: { speaker_group_id: "main", role: "woofer", audible_gain_db: -80 },
+        rollback_available: true,
+      },
+      ramp: {
+        confirmed_roles: [],
+        pending: { role: "woofer", gain_db: -80, frequency_hz: 250 },
+      },
+      floor: { status: "floor_pending_operator", floor_audio_confirmed: false },
+    };
+    const fetchHandler = baseFetch({
+      "./output-topology": () => Promise.resolve(response({
+        output_topology: topology,
+        topology_revision: "sha256:current",
+      })),
+      "./active-speaker/commission-state": () => Promise.resolve(response(commissionState)),
+      "./active-speaker/commissioning-view": () => Promise.resolve(response(
+        commissioningViewPayload({
+          status: "needs_output_confirmation",
+          current_step: "map",
+          stepStatuses: {
+            layout: "done", research: "done", map: "active",
+            safety: "todo", profile: "todo",
+          },
+        })
+      )),
+      "./output-topology/reset": () => Promise.resolve(response({
+        error: "reset refused",
+        output_topology: topology,
+        topology_revision: "sha256:current",
+      }, false, failureStatus)),
+    });
+    const harness = setupHarness(fetchHandler);
+    await loadAndSetActiveState(harness);
+    const before = harness.elements.get("view-body").innerHTML;
+    if (!before.includes(">Stop</button>")) {
+      fail("fixture must start with the commissioning controls visible", {
+        failureStatus, before,
+      });
+    }
+    globalThis.__jtsConfirm = async () => true;
+    harness.dispatchClick({ "data-act": "reset-output-topology" });
+    await harness.flush(); await harness.flush(); await harness.flush();
+    const after = harness.elements.get("view-body").innerHTML;
+    if (!after.includes(">Stop</button>")) {
+      fail("a failed reset must preserve commissioning panels", {
+        failureStatus, after,
+      });
+    }
+  }
+  return { failedResetPreservesCommissioningPanels: true };
+}
+
+async function testSavedTopologyReconcileFailureNeedsAttention() {
+  const fetchHandler = baseFetch({
+    "./output-topology": (path, options = {}) => {
+      if ((options.method || "GET") === "POST") {
+        return Promise.resolve(response({
+          output_topology: topologyPayload(),
+          topology_revision: "sha256:saved",
+          save: {
+            status: "needs_attention",
+            message: "Speaker layout was saved, but audio remains off. Open Status before continuing.",
+          },
+          reconcile: { ok: false },
+        }));
+      }
+      return Promise.resolve(response(topologyPayload()));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await harness.flush(); await harness.flush(); await harness.flush();
+
+  harness.dispatchClick({ "data-act": "save-output-topology" });
+  await harness.flush(); await harness.flush(); await harness.flush();
+
+  const status = harness.elements.get("status").textContent;
+  if (!status.includes("layout was saved, but audio remains off")) {
+    fail("a failed post-save reconcile must not announce a clean save", { status });
+  }
+  return { savedTopologyReconcileFailureNeedsAttention: true };
 }
 
 // Distributed-active Slice 4: a bonded active follower's /sound/ renders the
@@ -7946,7 +8091,10 @@ results.push(await testCommissionToneFailureStopsAutoRamp());
 results.push(await testCommissionRampLimitKeepsConfirmationOpen());
 results.push(await testCommissionAutoRampResetsRunningFlagOnThrow());
 results.push(await testCommissionAutoRampLoopResetsRunningFlagOnRenderThrow());
+results.push(await testConfirmedOutputKeepsResetPreconditions());
 results.push(await testResetPartialCleanupSurfacesWarning());
+results.push(await testFailedResetPreservesCommissioningPanels());
+results.push(await testSavedTopologyReconcileFailureNeedsAttention());
 results.push(await testFollowerModeRendersLocalDriverUi());
 results.push(await testFollowerModeSafeFallbackOnMalformedIsland());
 results.push(await testSubwooferDeadEndOffersWirelessCta());

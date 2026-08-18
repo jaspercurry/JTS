@@ -50,6 +50,24 @@ def _fake_renderer(tmp_path: Path) -> tuple[Path, Path]:
     return fake, log
 
 
+def _fake_active_speaker_cli(tmp_path: Path) -> Path:
+    """Default success seam for tests not about graph convergence itself."""
+    fake = tmp_path / "jasper-active-speaker"
+    fake.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [[ -n \"${JASPER_FAKE_ACTIVE_SPEAKER_LOG:-}\" ]]; then\n"
+        "  printf '%s\\n' \"$*\" >> \"$JASPER_FAKE_ACTIVE_SPEAKER_LOG\"\n"
+        "fi\n"
+        "if [[ -n \"${JASPER_FAKE_ACTIVE_SPEAKER_HOOK:-}\" ]]; then\n"
+        "  exec \"$JASPER_FAKE_ACTIVE_SPEAKER_HOOK\" \"$@\"\n"
+        "fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    return fake
+
+
 def _run_reconcile(
     tmp_path: Path,
     listing: str,
@@ -66,6 +84,7 @@ def _run_reconcile(
     fake_systemctl, systemctl_log = _fake_systemctl(tmp_path)
     fake_aplay = _fake_aplay(tmp_path, listing)
     fake_renderer, render_log = _fake_renderer(tmp_path)
+    fake_active_speaker = _fake_active_speaker_cli(tmp_path)
     source_template = tmp_path / "asoundrc.jasper.source"
     source_template.write_text(
         "__OUTPUTD_DAC_PCM_BLOCK__\n"
@@ -114,6 +133,7 @@ def _run_reconcile(
             "JASPER_AUDIO_QUALITY_FILE": str(audio_quality),
             "JASPER_RENDER_ASOUND_CONF": str(fake_renderer),
             "JASPER_RENDER_LOG": str(render_log),
+            "JASPER_ACTIVE_SPEAKER_CLI": str(fake_active_speaker),
             "JASPER_SYSTEMCTL": str(fake_systemctl),
             "JASPER_SYSTEMCTL_LOG": str(systemctl_log),
             "JASPER_APLAY": str(fake_aplay),
@@ -911,33 +931,86 @@ def test_env_writer_preserves_existing_jasper_env_ownership() -> None:
     assert 'jasper_env_file_repair_permissions "$FANIN_ENV_FILE" 0640 0750' in text
 
 
-def test_reconcile_script_never_reselects_the_camilla_graph() -> None:
-    """This script converges outputd, NOT the CamillaDSP graph.
-
-    Load-bearing for a claim made in another file: ``jasper/cli/output_topology_reset.py``
-    tells an operator that a failed reset leaves a SAFE residual graph, and that
-    "the reconcile kick converges outputd, not CamillaDSP". This script's own
-    comment says the same thing — "This script never restarts jasper-camilla
-    (it bounces outputd only) … so re-rendering here does NOT make the new
-    graph run" — but a comment is not a guard, and #2164 shipped two operator
-    strings built on exactly this fact.
-
-    So pin the fact where a change would break it: the executable body names
-    neither ``runtime-safe-graph`` nor ``jasper-camilla`` at all. Comment lines
-    are stripped first, and that strip is load-bearing rather than tidiness —
-    the sentence quoted above is the file's only ``jasper-camilla`` occurrence,
-    so without it this assert would fail on the very prose it exists to pin. If
-    this ever must change, the reset's module docstring and both
-    ``_print_summary`` remediation strings change with it.
-    """
+def test_reconcile_script_selects_the_final_graph_before_outputd_gating() -> None:
+    """One root path renders, applies, then derives outputd's active lane."""
     code = "\n".join(
         line
         for line in SCRIPT.read_text().splitlines()
         if not line.lstrip().startswith("#")
     )
-    assert "runtime-safe-graph" not in code
-    assert "safe_graph_for_current_topology" not in code
-    assert "jasper-camilla" not in code
+    assert "runtime-safe-graph" in code
+    assert "converge_runtime_graph" in code
+    # rindex targets the execution block, rather than the function definitions.
+    assert code.rindex("render_flat_cutover_if_needed") < code.rindex(
+        "converge_runtime_graph"
+    )
+    assert code.rindex("converge_runtime_graph") < code.rindex("gate_role_services")
+
+
+def test_runtime_convergence_only_writes_statefile_when_camilla_is_active(
+    tmp_path: Path,
+) -> None:
+    cli_log = tmp_path / "active-speaker.log"
+
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "test",
+        extra_env={"JASPER_FAKE_ACTIVE_SPEAKER_LOG": str(cli_log)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    call = cli_log.read_text(encoding="utf-8")
+    assert "runtime-safe-graph" in call
+    assert "--write-statefile" in call
+    assert "--apply-live" not in call
+    assert "--preserve-live-transport" not in call
+    assert "is-active --quiet jasper-camilla.service" not in SCRIPT.read_text(
+        encoding="utf-8"
+    )
+
+
+def test_reconcile_refuses_a_post_convergence_outputd_rejection() -> None:
+    """The second candidate is the final safety gate, not a best-effort write."""
+    code = SCRIPT.read_text(encoding="utf-8")
+    final_commit = code.rindex("if commit_outputd_env_stage; then")
+    rejection = code.index(
+        'reason=post_convergence_outputd_env_rejected', final_commit
+    )
+    gate = code.index("gate_role_services", final_commit)
+
+    assert final_commit < rejection < gate
+    assert 'runtime_converge_failed=1' in code[final_commit:gate]
+    assert "exit 78" in code[final_commit:gate]
+
+
+def test_camilla_boot_requires_successful_runtime_graph_convergence() -> None:
+    """A stale statefile cannot start Camilla after a failed boot reconcile."""
+    camilla_unit = (
+        ROOT / "deploy" / "systemd" / "jasper-camilla.service"
+    ).read_text(encoding="utf-8")
+    hardware_unit = (
+        ROOT
+        / "deploy"
+        / "systemd"
+        / "jasper-audio-hardware-reconcile.service"
+    ).read_text(encoding="utf-8")
+
+    assert "Requires=jasper-audio-hardware-reconcile.service" in camilla_unit
+    after_line = next(
+        line for line in camilla_unit.splitlines() if line.startswith("After=")
+    )
+    assert "jasper-audio-hardware-reconcile.service" in after_line
+    # The required oneshot runs the same reconciler whose final command status
+    # is nonzero when runtime convergence fails.
+    assert (
+        "ExecStart=/usr/local/sbin/jasper-audio-hardware-reconcile"
+        in hardware_unit
+    )
+    assert '[[ "$runtime_converge_failed" == "0" ]]' in SCRIPT.read_text(
+        encoding="utf-8"
+    )
 
 
 def test_reconcile_preserves_asound_template_dir_mode(tmp_path: Path):
@@ -3438,12 +3511,10 @@ def test_reconcile_refuses_to_render_against_a_corrupt_topology(tmp_path: Path):
 
     `flat_graph_muted_outputs` fails SOFT — mute nothing — which is right for
     every caller that has a guard behind it (install's statefile check, the
-    reset's contract call, the carrier's `can_host_eq`). The reconciler has
-    NOTHING behind it: it renders on boot / udev / topology-save, and CamillaDSP
-    loads the cutover from its statefile on its next start with no ordering to
-    this. So a soft failure here would overwrite a healthy width-matched graph
-    with an unmuted one and log success — silently, in the hazard direction.
-    Keeping the previous file is the fail-closed answer.
+    reset's contract call, the carrier's `can_host_eq`). This renderer must also
+    keep the last proved bytes: the later runtime selector can then reject stale
+    intent, and the boot unit ordering prevents CamillaDSP from starting when
+    that convergence fails.
     """
     conf_dir = tmp_path / "camilladsp"
     conf_dir.mkdir()
@@ -3481,8 +3552,11 @@ def test_reconcile_refuses_to_render_against_a_corrupt_topology(tmp_path: Path):
 
 
 def test_reconcile_renders_the_golden_when_no_topology_is_saved(tmp_path: Path):
-    """MISSING is not CORRUPT. A fresh box declares nothing, so nothing is
-    undeclared, and the golden unmuted graph is the correct render."""
+    """MISSING is not CORRUPT, so rendering can still seed the golden artifact.
+
+    This does not authorize playback. The runtime selector parks a fresh box
+    until the household saves an explicit mono or stereo layout.
+    """
     conf_dir = tmp_path / "camilladsp"
     conf_dir.mkdir()
     # No output_topology.json written at all.
@@ -4036,35 +4110,38 @@ def test_an_unrecognized_dac_parks_and_does_not_kick_the_coupling(tmp_path: Path
     assert events == [], events
 
 
-def test_a_no_change_pass_issues_no_coupling_kick(tmp_path: Path):
-    """THE PING-PONG GUARD, half one (design section 10.4 item 4).
+def test_a_no_change_pass_still_reconciles_topology_coupling(tmp_path: Path):
+    """Topology may change while DAC identity and rendered bytes stay stable."""
+    from jasper.output_topology import OutputTopology, save_output_topology
+    from tests.test_active_speaker_runtime_contract import _full_range_stereo
 
-    The coupling pass kicks THIS script during its arm. If a no-change run of
-    this script started the coupling unit back, the pair would ping-pong. It
-    cannot, because both directions are change-guarded: here is the proof that
-    a second, identical pass issues no start.
-    """
+    configured = _full_range_stereo()
+    unconfigured = configured.to_dict()
+    unconfigured["speaker_groups"] = []
+    unconfigured["routing"] = {}
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(OutputTopology.from_mapping(unconfigured), path=topology_path)
+
     first = _run_reconcile(tmp_path, INNOMAKER_LISTING, "--reason", "udev")
     assert first.returncode == 0, first.stderr
     (tmp_path / "systemctl.log").write_text("", encoding="utf-8")
 
+    # The household now commissions ordinary passive stereo. Hardware and all
+    # generated DAC bytes are unchanged, but auto-coupling must see new intent.
+    save_output_topology(configured, path=topology_path)
     second = _run_reconcile(tmp_path, INNOMAKER_LISTING, "--reason", "udev")
 
     assert second.returncode == 0, second.stderr
+    assert "dac_env_changed=0" in second.stderr
+    assert "render_changed=0" in second.stderr
     starts, events = _coupling_kick_lines(tmp_path, second)
-    assert starts == [], _systemctl_log(tmp_path)
-    assert len(events) == 1 and "result=skipped_no_change" in events[0], events
+    assert starts, _systemctl_log(tmp_path)
+    assert all("--no-block" in line for line in starts), starts
+    assert len(events) == 1 and "result=started" in events[0], events
 
 
-def test_the_kick_guard_reads_neither_the_floor_nor_the_route_flag(tmp_path: Path):
-    """THE GUARD IS THE dac/render PAIR SPECIFICALLY, not "anything moved".
-
-    A latency-floor re-emit is not a DAC change and a route-env change already
-    has its own restart path; neither can alter a coupling verdict. Reading the
-    coarse ``env_changed`` instead would kick on both — which is exactly how the
-    coupling pass's OWN kick (it moves the active-lane marker pair, setting
-    outputd_committed and nothing else) would start yet another coupling pass.
-    """
+def test_successful_runtime_convergence_is_the_coupling_kick_guard():
+    """The trigger is final graph success, not DAC/render byte movement."""
     source = SCRIPT.read_text(encoding="utf-8")
     call = [
         line.strip()
@@ -4072,10 +4149,14 @@ def test_the_kick_guard_reads_neither_the_floor_nor_the_route_flag(tmp_path: Pat
         if "kick_fanin_coupling_auto_if_needed " in line and "()" not in line
     ]
 
-    assert call == ['kick_fanin_coupling_auto_if_needed "$dac_env_changed" "$render_changed"'], call
-    assert "$env_changed" not in call[0]
-    assert "LATENCY_FLOOR_CHANGED" not in call[0]
-    assert "ROUTE_FANIN_CHANGED" not in call[0]
+    assert call == [
+        'kick_fanin_coupling_auto_if_needed "$dac_env_changed" "$render_changed"'
+    ], call
+    call_offset = source.index(call[0])
+    guard_offset = source.rfind(
+        'if [[ "$runtime_converge_failed" == "0" ]]', 0, call_offset
+    )
+    assert guard_offset >= 0
 
 
 def test_the_coupling_kick_never_blocks(tmp_path: Path):

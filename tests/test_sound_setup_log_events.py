@@ -36,24 +36,17 @@ def _sound_event_calls() -> list[ast.Call]:
 def test_sound_setup_migrates_the_complete_event_vocabulary():
     calls = _sound_event_calls()
 
-    # 93 / 40. This walker counts `log_event` calls made IN sound_setup.py, so
-    # #2285 dropped it by one WARNING when the summed-test rollback teardown
-    # moved to its single owner (`web_commissioning
-    # .rollback_summed_commission_teardown`) — the two surfaces had forked that
-    # teardown, and the fork is what let /correction/'s narrower catch drop the
-    # household's re-mute failure message.
+    # 94 / 40. The topology transaction adds one INFO completion event under
+    # the existing sound.output_topology_reset name. The vocabulary therefore
+    # stays fixed while the completed reset becomes observable. The save path
+    # also keeps its failure-only sound.output_topology_save_reconcile WARNING;
+    # moving broker mechanics into output_topology_runtime must not silently
+    # delete the household-facing event contract.
     #
-    # THE EVENT DID NOT GO ANYWHERE, and the assertion below is what proves
-    # that rather than leaving the reader to trust this comment: the owner takes
-    # the event name as a parameter, /sound/ still passes
-    # `sound.active_speaker_summed_test`, and the emitted vocabulary is
-    # unchanged. A count that only went down would have read identically whether
-    # the event moved or was deleted.
-    #
-    # Before that: 94 / 40, when the output-topology save guard added a WARNING
-    # refusal under the existing sound.output_topology_save name plus one new
-    # event name, sound.output_topology_save_reconcile (WARNING, failure only).
-    assert len(calls) == 93
+    # One additional event is delegated rather than emitted here: the shared
+    # summed-test rollback owner receives sound.active_speaker_summed_test by
+    # name. The separate assertion below keeps that handoff in this contract.
+    assert len(calls) == 94
     assert len({call.args[1].value for call in calls}) == 40
 
     # The delegated half of the vocabulary: an event this file no longer emits
@@ -87,18 +80,16 @@ def test_sound_setup_migrates_the_complete_event_vocabulary():
         else:
             assert "exc_info" not in keywords
 
-    # WARNING 12 -> 11: the one that left is the rollback teardown's, delegated
-    # to its owner above, not deleted.
-    assert levels == {"INFO": 54, "WARNING": 11, "ERROR": 28}
+    # The reset completion is the sole new INFO call. Warning and error counts
+    # stay fixed.
+    assert levels == {"INFO": 55, "WARNING": 11, "ERROR": 28}
 
 
 def test_every_bool_or_optional_percent_s_field_is_prerendered_as_text():
-    """Pin all 108 affected parent `%s` positions, not hand-picked examples.
+    """Pin all 117 affected parent `%s` positions, not hand-picked examples.
 
-    107 until #2603 added ``safety_profile_evaluation`` to the design-draft save
-    event, so a re-confirm wave leaves a journal trace. The ratchet moving by
-    exactly one, on a field whose name is in the digest below, is the intended
-    shape of that change.
+    This includes the topology transaction wrappers and #2603's
+    ``safety_profile_evaluation`` design-draft field.
     """
     wrapped_fields: list[str] = []
     for call in _sound_event_calls():
@@ -115,14 +106,14 @@ def test_every_bool_or_optional_percent_s_field_is_prerendered_as_text():
             assert not value.keywords
             wrapped_fields.append(f"{event}:{keyword.arg}")
 
-    # Generated once from the pre-migration parent's bool/optional `%s` field
-    # order (direct `.get`, explicit/known bool, and optional local values).
-    # The digest catches a missed, swapped, or newly invented wrapper while
-    # keeping this contract readable instead of checking in a 199-line tuple.
+    # The transaction lifecycle adds nine required wrappers: three stopped
+    # audio-session statuses on save, plus hardware/cleanup/reconcile and three
+    # stopped-session statuses on reset. The digest catches a missed, swapped,
+    # or newly invented wrapper without checking in the full tuple.
     signature = "\n".join(wrapped_fields).encode()
-    assert len(wrapped_fields) == 108
+    assert len(wrapped_fields) == 117
     assert hashlib.sha256(signature).hexdigest() == (
-        "23651ba79cc611bfbd5cf575c158a047d099330cbbc01fa211c5c728840743b1"
+        "9042492d64c676ce14ee570dcbd751784d1951ace151280703f69e3fdde98166"
     )
 
 

@@ -692,7 +692,11 @@ Active-speaker channel
 ownership lives in `/var/lib/jasper/output_topology.json` and the generated
 active CamillaDSP graph, not in an ALSA alias. `/sound/output-topology` records
 physical DAC lanes, speaker groups, passive/active modes, subwoofers, and
-safety evidence without rewriting ALSA, loading CamillaDSP, or emitting audio.
+safety evidence without playback authority of its own. The web save route
+separately coordinates park, commit, and safe runtime convergence; reset writes
+zero speaker groups and remains parked. How this saved record selects the
+runtime graph is owned by the
+[speaker-output reference](HANDOFF-speaker-output-reference.md#current-outputd-state).
 `/sound/active-speaker/channel-identity` records operator-confirmed physical
 channel identity on that saved topology, but still grants no playback
 authority. Product active-driver playback uses the protected active graph via

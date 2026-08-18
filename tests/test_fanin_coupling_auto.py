@@ -436,6 +436,17 @@ def _stub_ring_gates(monkeypatch, *, eligible: bool):
     _stub_ioplug_caps(monkeypatch)
 
 
+def _persist_ring_eligible_topology(tmp_path: Path, monkeypatch) -> Path:
+    """Save the explicit passive stereo intent required by Ring B."""
+    from jasper.output_topology import save_output_topology
+    from tests.test_active_speaker_runtime_contract import _full_range_stereo
+
+    path = tmp_path / "output_topology.json"
+    save_output_topology(_full_range_stereo(), path=path)
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
+    return path
+
+
 def _armed_outputd_env() -> str:
     """The ``outputd.env`` an ALREADY-ARMED ring box actually carries.
 
@@ -635,6 +646,7 @@ def test_auto_eligible_gadget_box_with_intent_arms_ring_and_combo(
     outputd = tmp_path / "outputd.env"
     fanin.write_text("")
     outputd.write_text("")
+    _persist_ring_eligible_topology(tmp_path, monkeypatch)
     _stub_ring_gates(monkeypatch, eligible=True)
     restarts: list[str] = []
     r = _auto(fanin, outputd, gadget=True, restarts=restarts)
@@ -830,6 +842,7 @@ def test_auto_is_idempotent_second_pass_writes_nothing(tmp_path, monkeypatch):
     outputd = tmp_path / "outputd.env"
     fanin.write_text("")
     outputd.write_text("")
+    _persist_ring_eligible_topology(tmp_path, monkeypatch)
     _stub_ring_gates(monkeypatch, eligible=True)
 
     r1 = _auto(fanin, outputd, gadget=True, restarts=[])
@@ -1038,6 +1051,22 @@ def test_ring_topology_strict_fails_closed_on_unreadable(monkeypatch):
     assert "fail-closed" in strict_detail
 
 
+def test_absent_topology_auto_decision_remains_loopback(tmp_path, monkeypatch):
+    """No saved speaker layout is not implicit stereo Ring-B permission."""
+    missing = tmp_path / "missing-output-topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(missing))
+
+    decision = ca.resolve_auto_decision(
+        marker_raw=None,
+        gadget_present=True,
+        usb_intent_enabled=True,
+        ring_gates=(("ring_topology", cr.ring_topology_ready_strict),),
+    )
+
+    assert decision.coupling == COUPLING_LOOPBACK
+    assert "no speaker layout is configured" in decision.reason
+
+
 # --------------------------------------------------------------------------
 # F6 — a stale JASPER_FANIN_RING_SLOTS self-heals BEFORE the auto gates run
 # --------------------------------------------------------------------------
@@ -1065,6 +1094,7 @@ def test_auto_stale_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypatch):
         "JASPER_FANIN_RING_SLOTS=8\n"
     )
     outputd.write_text(_armed_outputd_env())
+    _persist_ring_eligible_topology(tmp_path, monkeypatch)
 
     # Assets/topology/route/geometry eligible; conf.d says n_slots=2 so the stale
     # `=8` is shear-prone and self-heals. Use the REAL slot gate + migration so the
@@ -1118,6 +1148,7 @@ def test_auto_stale_base_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypa
     outputd.write_text(_armed_outputd_env(), encoding="utf-8")
     jasper_env.write_text("JASPER_FANIN_RING_SLOTS=8\n", encoding="utf-8")
     monkeypatch.setattr(cr, "JASPER_ENV_PATH", str(jasper_env))
+    _persist_ring_eligible_topology(tmp_path, monkeypatch)
 
     assets = ("ring_assets", lambda: (True, "assets"))
     topo = ("ring_topology", lambda: (True, "topology"))
@@ -1187,6 +1218,7 @@ def test_fresh_install_auto_arms_exactly_the_documented_combo_block(
     outputd = tmp_path / "outputd.env"
     fanin.write_text("")
     outputd.write_text("")
+    _persist_ring_eligible_topology(tmp_path, monkeypatch)
     _stub_ring_gates(monkeypatch, eligible=True)
 
     r = _auto(fanin, outputd, gadget=True, restarts=[])

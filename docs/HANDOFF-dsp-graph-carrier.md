@@ -152,10 +152,13 @@ existing layering):
   to describe the pipe sink; active/unknown carriers ignore them and refuse —
   see grouping boundary below.
 
-**Stereo hosts refuse a protected-tweeter topology (L0).** The DAC-bound
+**Stereo hosts require explicit flat-graph authority (L0).** The DAC-bound
 stereo-host carriers (base-flat + sound/correction) emit a 2-channel program
-graph with no per-driver crossover/protection, so a flat graph must never go
-live when the saved output topology assigns a protected **tweeter** role —
+graph with no per-driver crossover/protection. An absent or zero-group topology
+refuses with `flat_graph_unconfigured`; another non-passive layout refuses with
+`flat_graph_not_authorized`. Only explicit passive mono/stereo intent grants
+this carrier authority. A flat graph must never go live when the saved output
+topology assigns a protected **tweeter** role —
 full-range program would reach a compression driver (shrill + driver-damage
 risk; see [HANDOFF-audio-measurement-core.md](HANDOFF-audio-measurement-core.md)
 L0). The judgement is
@@ -167,12 +170,14 @@ re-asserts before emitting, so the pre-check-less **live-draft** SetConfig path
 is covered too — a flat graph can never reach the DAC under a protected-tweeter
 topology. The active-leader program-bake carrier is the deliberate exception:
 it is flat, but it writes to the Snap FIFO rather than a DAC and must prove that
-pipe-sink condition before emitting. Refusal is
-`CarrierCannotHostEq("flat_graph_protected_tweeter", …)` for DAC-bound flat
-hosts, or `CarrierCannotHostEq("program_bake_pipe_unavailable", …)` for a
-program bake whose grouping pipe-sink predicate no longer holds. Both are
-handled blocked outcomes; fail-closed on a corrupt / unreadable topology. The
-refusal lives at the carrier (and, for the direct correction caller, at
+pipe-sink condition before emitting. The DAC-bound carrier maps the topology
+predicate's typed reason directly into `CarrierCannotHostEq`; the possible
+reasons are `flat_graph_unconfigured`, `flat_graph_not_authorized`, and
+`flat_graph_protected_tweeter`. A program bake whose grouping pipe-sink
+predicate no longer holds instead refuses with
+`CarrierCannotHostEq("program_bake_pipe_unavailable", …)`. All are handled
+blocked outcomes. Refusal lives at the carrier (and, for the direct correction
+caller, at
 `correction.runtime_safety.assert_flat_apply_safe`), **never** on the shared
 `emit_sound_config` leaf — the multiroom solo-restore emit must stay lenient
 (un-bonding must always succeed).
@@ -197,8 +202,23 @@ the topology's per-output claim meant) and, for `channel="sub"`, **appends** its
 crossover after the mute in the same Filter step, defeating terminality outright
 — `emit_sound_config` raises on the combination. (The weave's `channel_select`
 Mixer is spliced right after `master_gain`, *before* the per-channel steps, so it
-is not the mechanism.) Non-mono topologies (stereo, unconfigured, composite) mute
-nothing and re-emit byte-for-byte as before.
+is not the mechanism.) An explicit passive stereo topology mutes nothing.
+Unconfigured and unauthorized layouts do not re-emit at all. The full
+topology-to-runtime and reset contract is owned by the
+[speaker-output reference](HANDOFF-speaker-output-reference.md#current-outputd-state).
+
+**Saved-intent materialization is one render boundary.**
+`jasper.sound.runtime.materialise_saved_dsp_on_carrier` loads the saved
+`SoundProfile` and `SoundSettings`, computes the one headroom/output trim,
+re-emits them through the selected carrier, preserves compatible room PEQs, and
+atomically writes canonical `sound_current.yml`. It does not acquire the graph
+lock or load CamillaDSP; the topology transaction owns those steps and
+re-proves the result before load. `reconcile_current_dsp` uses the same internal
+render helper, so deploy repair and topology convergence cannot spell this
+composition differently. Invalid or unhostable carriers refuse; there is no
+flat fallback. A future passive linearization layer belongs at this composition
+boundary only after explicit passive authorization, as passive speaker/program
+DSP rather than as an active crossover.
 
 `_SoundOrCorrectionCarrier` inherits this, so **room correction on a mono box is
 width-matched too** and `assert_correction_graph_safe` now passes for it — the

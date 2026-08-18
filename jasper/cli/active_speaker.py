@@ -36,6 +36,7 @@ from jasper.active_speaker.runtime_contract import (
     parked_muted_exits,
     safe_graph_for_current_topology,
 )
+from jasper.active_speaker.runtime_convergence import compose_selected_flat_graph
 from jasper.active_speaker.staging import load_staged_startup_config
 from jasper.active_speaker.startup_load import (
     build_driver_commission_load_preflight,
@@ -354,6 +355,11 @@ def _cmd_runtime_safe_graph(args: argparse.Namespace) -> int:
     wrote = False
     if args.write_statefile and decision.ok:
         try:
+            decision = compose_selected_flat_graph(
+                decision,
+                topology=topology,
+                coupling=coupling,
+            )
             wrote = apply_safe_graph_decision_to_statefile(
                 decision,
                 statefile_path=args.statefile,
@@ -362,7 +368,13 @@ def _cmd_runtime_safe_graph(args: argparse.Namespace) -> int:
                 # second, differently-read topology.
                 topology=topology,
             )
-        except ActiveSpeakerConfigError as exc:
+        except (
+            ActiveSpeakerConfigError,
+            OSError,
+            RuntimeError,
+            ValueError,
+            TypeError,
+        ) as exc:
             # Only the parked branch generates bytes, and it refuses to write
             # anything it cannot re-prove all-muted. Fail the run: a statefile
             # pointing at a config we would not write is worse than a red deploy.

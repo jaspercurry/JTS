@@ -58,7 +58,14 @@ from .correction_session_fixtures import (
 
 
 @pytest.fixture(autouse=True)
-def _stable_no_bass_graph_authority(monkeypatch):
+def _stable_no_bass_graph_authority(monkeypatch, tmp_path):
+    from jasper.output_topology import save_output_topology
+    from tests.test_active_speaker_runtime_contract import _full_range_stereo
+
+    topology_path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    save_output_topology(_full_range_stereo(), topology_path)
+
     async def classify(_cam):
         return GraphSafety(
             classification=GRAPH_APPROVED_ACTIVE_RUNTIME,
@@ -2080,6 +2087,122 @@ def test_start_handler_rejects_uncommissioned_active_speaker_before_reservation(
         },
     }
     assert "combined-crossover" not in str(exc_info.value.failure)
+
+
+def test_start_handler_rejects_unconfigured_speaker_before_reservation(
+    monkeypatch,
+):
+    """Room measurement cannot start before the household saves a layout."""
+    from jasper.web import correction_setup
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_room_correction_readiness",
+        lambda: {
+            "active": False,
+            "configured": False,
+            "room_correction_allowed": False,
+            "acoustic_commissioning": {
+                "decision_schema_version": 1,
+                "authority": None,
+                "allowed": False,
+                "status": "incomplete",
+                "reason": "output_topology_unconfigured",
+                "detail": "Choose and save a speaker layout first.",
+                "setup_href": "/sound/setup/",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        correction_setup,
+        "_reserve_start_slot",
+        lambda: pytest.fail("readiness must reject before session reservation"),
+    )
+
+    with pytest.raises(correction_setup.RoomRequestFailure) as exc_info:
+        correction_setup._handle_start(_DummyJsonHandler())
+
+    assert exc_info.value.status == HTTPStatus.CONFLICT
+    assert exc_info.value.failure["code"] == "speaker_setup_incomplete"
+    assert exc_info.value.failure["recovery_action"] == {
+        "label": "Open speaker setup",
+        "href": "/sound/setup/",
+    }
+
+
+def test_room_readiness_blocks_unconfigured_until_passive_layout_is_saved(
+    monkeypatch,
+    tmp_path,
+):
+    from jasper.active_speaker.setup_status import read_active_speaker_setup_status
+    from jasper.output_topology import new_topology_draft, save_output_topology
+    from jasper.web import correction_setup
+    from tests.test_active_speaker_runtime_contract import _full_range_stereo
+
+    topology_path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    passive = _full_range_stereo()
+    save_output_topology(
+        new_topology_draft(hardware=passive.hardware),
+        topology_path,
+    )
+
+    blocked = correction_setup._normalize_room_readiness(
+        read_active_speaker_setup_status()
+    )
+
+    assert blocked.allowed is False
+    assert blocked.reason == "output_topology_unconfigured"
+    assert blocked.blocker["code"] == "speaker_setup_incomplete"
+    assert blocked.blocker["recovery_action"] == {
+        "label": "Open speaker setup",
+        "href": "/sound/setup/",
+    }
+
+    save_output_topology(passive, topology_path)
+    allowed = correction_setup._normalize_room_readiness(
+        read_active_speaker_setup_status()
+    )
+
+    assert allowed.allowed is True
+    assert allowed.authority == "passive_not_required"
+
+
+@pytest.mark.parametrize("topology_case", ["subwoofer", "invalid-passive"])
+def test_room_readiness_blocks_zero_active_layout_without_flat_authority(
+    monkeypatch,
+    tmp_path,
+    topology_case,
+):
+    from jasper.active_speaker.setup_status import read_active_speaker_setup_status
+    from jasper.output_topology import OutputTopology, save_output_topology
+    from jasper.web import correction_setup
+    from tests.test_active_speaker_runtime_contract import (
+        _full_range_stereo,
+        _subwoofer_topology,
+    )
+
+    topology_path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    if topology_case == "subwoofer":
+        topology = _subwoofer_topology()
+    else:
+        raw = _full_range_stereo().to_dict()
+        raw["speaker_groups"][1]["channels"][0]["physical_output_index"] = 0
+        topology = OutputTopology.from_mapping(raw)
+    save_output_topology(topology, topology_path)
+
+    blocked = correction_setup._normalize_room_readiness(
+        read_active_speaker_setup_status()
+    )
+
+    assert blocked.allowed is False
+    assert blocked.reason == "output_topology_not_ready"
+    assert blocked.blocker["code"] == "speaker_setup_incomplete"
+    assert blocked.blocker["recovery_action"] == {
+        "label": "Open speaker setup",
+        "href": "/sound/setup/",
+    }
 
 
 def test_sessions_endpoint_lists_bundles(tmp_path: Path, monkeypatch):

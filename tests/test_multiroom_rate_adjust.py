@@ -332,7 +332,9 @@ def _channel_pick_check(
         recmod, "OUTPUTD_GROUPING_ENV_FILE",
         str(env_path) if env_path else "/nonexistent/grouping-outputd.env",
     )
-    monkeypatch.setattr(recmod, "_active_speaker_box_state", lambda: active_box)
+    monkeypatch.setattr(
+        recmod, "_output_topology_state", lambda: (active_box, not active_box)
+    )
     return groupmod.check_grouping_channel_pick()
 
 
@@ -376,7 +378,7 @@ def test_channel_pick_check_ok_when_wired(monkeypatch, tmp_path):
     cfg = _cfg(enabled=True, role="leader", channel="left", bond_id="b")
     # The reconciler's own pure derive writes the file → the check passes:
     # the two ends of the contract are the same function.
-    derived = outputd_grouping_env(cfg)
+    derived = outputd_grouping_env(cfg, flat_output_allowed=True)
     assert derived[OUTPUTD_DAC_CONTENT_FIFO_ENV] == MEMBER_CONTENT_FIFO
     env = tmp_path / "grouping-outputd.env"
     r = _channel_pick_check(
@@ -471,7 +473,7 @@ def test_sub_corner_check_na_for_active_speaker_box(monkeypatch):
     clears the outputd dumb lane — the SUB_HZ env is correctly absent there.
     The check must be n/a, NOT a false 'corner missing' warn."""
     import jasper.multiroom.reconcile as recmod
-    monkeypatch.setattr(recmod, "_active_speaker_box_state", lambda: True)
+    monkeypatch.setattr(recmod, "_output_topology_state", lambda: (True, False))
     r = _sub_corner_check(
         monkeypatch,
         cfg=_cfg(enabled=True, role="follower", channel="sub",
@@ -508,7 +510,7 @@ def test_sub_corner_check_ok_when_wired(monkeypatch, tmp_path):
     )
     cfg = _cfg(enabled=True, role="follower", channel="sub", bond_id="b",
                leader_addr="jts.local", crossover_hz=120.0)
-    derived = outputd_grouping_env(cfg)
+    derived = outputd_grouping_env(cfg, flat_output_allowed=True)
     assert derived[OUTPUTD_DAC_CONTENT_SUB_HZ_ENV] == "120.0"
     env = tmp_path / "grouping-outputd.env"
     r = _sub_corner_check(
@@ -619,7 +621,9 @@ def _tts_lane_check(
         "_resolved_jasper_voice_env",
         lambda: (groupmod._parse_systemd_environment(resolved_voice_text), ""),
     )
-    monkeypatch.setattr(recmod, "_active_speaker_box_state", lambda: active_box)
+    monkeypatch.setattr(
+        recmod, "_output_topology_state", lambda: (active_box, not active_box)
+    )
     return groupmod.check_grouping_tts_lane()
 
 
@@ -1032,7 +1036,9 @@ def test_outputd_grouping_env_carries_the_trim():
     )
     bonded = outputd_grouping_env(
         _cfg(enabled=True, role="follower", channel="right",
-             bond_id="b", leader_addr="jts.local", trim_db=-2.5))
+             bond_id="b", leader_addr="jts.local", trim_db=-2.5),
+        flat_output_allowed=True,
+    )
     assert bonded[OUTPUTD_DAC_CONTENT_TRIM_ENV] == "-2.5"
     solo = outputd_grouping_env(_cfg())
     assert solo[OUTPUTD_DAC_CONTENT_TRIM_ENV] == ""

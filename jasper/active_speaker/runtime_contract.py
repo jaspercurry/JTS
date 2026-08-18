@@ -159,8 +159,8 @@ GRAPH_UNSAFE = "unsafe"
 
 # The third statefile-seeding outcome, alongside "select a flat graph" and
 # "select the staged all-muted active startup graph". A parked deploy SUCCEEDS —
-# `SafeGraphDecision.ok` is true — because holding a declared-but-uncommissioned
-# speaker silent is a legal end state, not a failure.
+# `SafeGraphDecision.ok` is true — because holding a speaker silent until its
+# saved intent permits a real output graph is a legal end state, not a failure.
 PARKED_MUTED_STATUS = "parked_muted"
 PARKED_MUTED_REASON = (
     "roleful/protected topology has no staged startup graph yet; "
@@ -170,7 +170,10 @@ PARKED_MUTED_REASON = (
 # and /state all name the same two actions.
 PARKED_MUTED_EXITS = (
     "finish crossover preview to stage a startup graph, "
-    "or reset output topology to passive"
+    "or reset output setup and choose an explicit passive layout"
+)
+UNCONFIGURED_PARKED_EXIT = (
+    "choose and save a mono or stereo speaker layout before turning audio on"
 )
 # ...except on a DAC that declares no active outputd lane, where the first exit
 # is IMPOSSIBLE: commissioning can never produce a graph that reaches hardware
@@ -178,8 +181,9 @@ PARKED_MUTED_EXITS = (
 # that predicate). Naming an impossible action first sends a household down a
 # road with no end, so the capability-aware surfaces use this instead.
 PARKED_MUTED_EXITS_NO_ACTIVE_LANE = (
-    "reset output topology to passive at /sound/setup/ (passive sends "
-    "full-range to every output; requires a built-in passive crossover), "
+    "reset output setup at /sound/setup/, then choose an explicit passive "
+    "layout (passive sends full-range to every output and requires a built-in "
+    "passive crossover), "
     "or attach an active-capable DAC"
 )
 
@@ -195,6 +199,8 @@ def parked_muted_exits(topology: OutputTopology | None = None) -> str:
 
     try:
         resolved = topology or load_output_topology_strict()
+        if classify_output_contract(resolved).classification == CONTRACT_UNCONFIGURED:
+            return UNCONFIGURED_PARKED_EXIT
         gap = active_lane_capability_gap(resolved)
     except (OutputTopologyError, OSError, ValueError, TypeError, KeyError):
         return PARKED_MUTED_EXITS
@@ -239,6 +245,23 @@ CONTRACT_ACTIVE_STEREO_3WAY = "active_stereo_3way"
 CONTRACT_SUBWOOFER_PRESENT = "subwoofer_present"
 CONTRACT_PROTECTED_OUTPUTS_PRESENT = "protected_outputs_present"
 CONTRACT_UNKNOWN_OR_INVALID = "unknown_or_invalid"
+
+# Stable refusal codes for a flat full-range program graph.  The runtime
+# contract owns these machine-readable decisions; callers may add their own
+# household-facing prose, but must never infer policy from that prose.
+FlatProgramGraphBlockCode = Literal[
+    "flat_graph_unconfigured",
+    "flat_graph_not_authorized",
+    "flat_graph_protected_tweeter",
+]
+FlatProgramGraphBlock = tuple[FlatProgramGraphBlockCode, str]
+FLAT_PROGRAM_GRAPH_UNCONFIGURED: FlatProgramGraphBlockCode = "flat_graph_unconfigured"
+FLAT_PROGRAM_GRAPH_NOT_AUTHORIZED: FlatProgramGraphBlockCode = (
+    "flat_graph_not_authorized"
+)
+FLAT_PROGRAM_GRAPH_PROTECTED_TWEETER: FlatProgramGraphBlockCode = (
+    "flat_graph_protected_tweeter"
+)
 
 # The snd-aloop ACTIVE lane's playback PCM — RETIRED as an endpoint. #2534
 # deleted its PCM definitions; this change deletes its MEMBERSHIP below, so no
@@ -582,6 +605,23 @@ def classify_output_contract(topology: OutputTopology) -> OutputContract:
     )
 
 
+def topology_allows_flat_dac_graph(contract: OutputContract) -> bool:
+    """Whether this explicit topology may send a flat program to a DAC.
+
+    ``requires_roleful_graph`` answers a narrower question: whether a topology
+    needs per-driver DSP.  It must not double as permission for full-range DAC
+    playback.  In particular, an empty draft has no roleful outputs but has not
+    declared any speaker at all.  Flat playback is allowed only after the
+    household has explicitly saved one complete passive main layout.
+    """
+
+    return (
+        contract.classification
+        in (CONTRACT_NORMAL_STEREO_FULL_RANGE, CONTRACT_NORMAL_MONO_FULL_RANGE)
+        and not contract.issues
+    )
+
+
 def active_topology_requires_roleful_graph(topology: OutputTopology) -> bool:
     return classify_output_contract(topology).requires_roleful_graph
 
@@ -632,10 +672,9 @@ def ring_channels_for_topology(topology: OutputTopology) -> int | None:
 
     The topology-contract citizenship for rings (audio-graph consolidation P2):
     Ring A/Ring B carry a full-range **stereo** program on a single coherent
-    ALSA sink, so :data:`RING_STEREO_PROGRAM_CHANNELS` is the answer for the
-    plain stereo full-range contract and for an UNCONFIGURED topology (no
-    speaker groups — the common fresh-install shape, which uses the flat stereo
-    graph, exactly the shape ring replaces).
+    ALSA sink, so :data:`RING_STEREO_PROGRAM_CHANNELS` is the answer only for
+    the explicit, valid passive stereo contract. An UNCONFIGURED topology has
+    no declared speaker layout and remains parked, so it has no Ring B.
 
     Everything else has no Ring B:
 
@@ -678,12 +717,10 @@ def ring_channels_for_topology(topology: OutputTopology) -> int | None:
     # coherent L/R sink the ring drives.
     if topology_sink_is_composite(topology):
         return None
-    # Stereo full-range OR unconfigured (flat stereo fallback) are the ring-legal
-    # shapes; an explicit mono full-range cannot be driven by a stereo ring.
-    if contract.classification in (
-        CONTRACT_NORMAL_STEREO_FULL_RANGE,
-        CONTRACT_UNCONFIGURED,
-    ):
+    # A declared stereo full-range layout is the sole Ring-B shape.  An empty
+    # topology is deliberately silent; treating it as implicit stereo would
+    # give ``speaker_groups=[]`` two meanings.
+    if contract.classification == CONTRACT_NORMAL_STEREO_FULL_RANGE and not contract.issues:
         return RING_STEREO_PROGRAM_CHANNELS
     return None
 
@@ -745,11 +782,11 @@ def active_ring_channels_for_topology(topology: OutputTopology) -> int | None:
 
     ``None`` — no active ring — for:
 
-    - any topology that does not require a roleful graph (plain stereo, mono,
-      unconfigured). Those boxes have Ring B and no active ring at all. A
-      composite is not special-cased out of this: a PASSIVE stereo composite
-      requires no roleful graph, so it gets no active ring here and no Ring B
-      there — it stays on the loopback coupling, exactly as before;
+    - any topology that does not require a roleful graph. Those boxes have no
+      active ring. An explicit passive stereo single sink may use Ring B;
+      explicit mono, unconfigured, invalid, and passive composite layouts use
+      neither ring. A PASSIVE stereo composite requires no roleful graph, so it
+      gets no active ring here and no Ring B there — it stays on loopback;
     - a roleful topology whose assignments do not resolve to a coherent
       contiguous output width (an output with no assigned physical index, or a
       declared roleful set the ring layout's ``2..=8`` accept-set cannot carry).
@@ -814,34 +851,24 @@ def topology_supports_shm_ring(topology: OutputTopology) -> bool:
     return ring_channels_for_topology(topology) is not None
 
 
-def _protected_tweeter_outputs(contract: OutputContract) -> set[int]:
-    """Physical output indices the saved topology assigns to a protected tweeter."""
-    return {
-        int(item.physical_output_index)
-        for item in contract.protected_assignments
-        if item.role == "tweeter" and item.physical_output_index is not None
-    }
-
-
-def flat_program_graph_blocked_reason(
+def flat_program_graph_block(
     topology: OutputTopology | None = None,
-) -> str | None:
-    """Reason a flat full-range *program* graph must not go live, or ``None``.
+) -> FlatProgramGraphBlock | None:
+    """Typed refusal for a flat full-range *program* graph, or ``None``.
 
     The program lane (``jasper.sound.camilla_yaml.emit_sound_config`` and the
     ``/sound`` / correction callers it backs) emits a 2-channel passthrough with
-    no per-driver crossover or protection. That graph is illegal exactly when the
-    saved output topology assigns a protected *tweeter* role: full-range program
-    would reach a compression-driver tweeter (shrill, and a tweeter-damage risk).
-    This is the L0 invariant (docs/HANDOFF-audio-measurement-core.md).
+    no per-driver crossover or protection. It may reach the DAC only for one
+    complete explicit passive mono/stereo layout. Unconfigured, invalid,
+    subwoofer, and roleful/protected layouts are all blocked; the latter would
+    otherwise send full range to a compression-driver tweeter.
 
-    Returns a household-readable detail string naming the protected output(s)
-    when a flat program graph is blocked, or ``None`` when it is safe — the
-    common full-range / mono / subwoofer / unconfigured cases, so a non-active
-    speaker is unaffected. It is a *topology* predicate, not a graph check: the
-    program lane is structurally flat, so the only question is whether the
-    topology has a tweeter to protect. (Verifying a graph that *should* be
-    protective — an active baseline — is :func:`classify_camilla_graph`'s job.)
+    Returns one stable refusal code plus household-readable detail when the
+    graph is blocked, or ``None`` only when
+    :func:`topology_allows_flat_dac_graph` permits it. Policy callers branch on
+    the code; prose is presentation only. This is a *topology* predicate, not a
+    graph check. Verifying a graph that should be protective — an active
+    baseline — is :func:`classify_camilla_graph`'s job.
 
     Fail-closed: a corrupt/unreadable saved topology returns a reason (block)
     rather than raising, so a caller can never read "safe" out of a topology it
@@ -852,10 +879,30 @@ def flat_program_graph_blocked_reason(
     try:
         contract = classify_output_contract(topology or load_output_topology_strict())
     except OutputTopologyError as exc:
-        return f"the saved output topology is unavailable or invalid ({exc})"
-    if not _protected_tweeter_outputs(contract):
+        return (
+            FLAT_PROGRAM_GRAPH_NOT_AUTHORIZED,
+            f"the saved output topology is unavailable or invalid ({exc})",
+        )
+    if topology_allows_flat_dac_graph(contract):
         return None
-    return _protected_output_detail(contract)
+    if contract.classification == CONTRACT_UNCONFIGURED:
+        return FLAT_PROGRAM_GRAPH_UNCONFIGURED, "no speaker layout is configured"
+    if any(item.role == "tweeter" for item in contract.protected_assignments):
+        return FLAT_PROGRAM_GRAPH_PROTECTED_TWEETER, _protected_output_detail(contract)
+    if not contract.requires_roleful_graph:
+        detail = "saved topology is not a complete passive mono or stereo layout"
+    else:
+        detail = _protected_output_detail(contract)
+    return FLAT_PROGRAM_GRAPH_NOT_AUTHORIZED, detail
+
+
+def flat_program_graph_blocked_reason(
+    topology: OutputTopology | None = None,
+) -> str | None:
+    """Household-readable flat-program refusal detail, or ``None``."""
+
+    block = flat_program_graph_block(topology)
+    return block[1] if block is not None else None
 
 
 def _statefile_config_path(statefile_path: str | Path | None) -> str | None:
@@ -984,8 +1031,9 @@ def flat_graph_muted_outputs(
     Returns EMPTY — mute nothing — when that fails, and for three more cases
     where the flat lane has no business silencing anything:
 
-    * **unconfigured** topology (no speaker groups): nothing is declared yet, so
-      nothing is undeclared; a fresh box keeps the byte-identical stereo graph.
+    * **unconfigured** topology (no speaker groups): the renderer may still
+      produce the byte-identical stereo artifact, but runtime selection refuses
+      it and parks the speaker because no output is declared.
     * **roleful/protected** topology: the flat graph is illegal there whatever
       is muted, and refusing it is :func:`_flat_graph_allowed`'s job (issue
       #2145 owns making that refusal park instead of abort). Silencing channels
@@ -1099,7 +1147,7 @@ def _flat_graph_allowed(
             },
         )
     issues: list[dict[str, str]] = []
-    allowed = not contract.requires_roleful_graph
+    allowed = topology_allows_flat_dac_graph(contract)
     playback_channels = summary.get("playback_channels")
     full_range_outputs = flat_full_range_outputs(contract)
     # The invariant is "no emission on an output the topology does not claim".
@@ -1148,7 +1196,14 @@ def _flat_graph_allowed(
                 "blocker", "flat_full_range_graph_wider_than_topology", detail
             ))
     if not allowed:
-        if contract.requires_roleful_graph:
+        if contract.classification == CONTRACT_UNCONFIGURED:
+            issues.append(_issue(
+                "blocker",
+                "flat_full_range_graph_illegal_for_unconfigured_topology",
+                "No speaker layout is configured; keep audio parked until a "
+                "passive or active layout is saved.",
+            ))
+        elif contract.requires_roleful_graph:
             issues.append(_issue(
                 "blocker",
                 "flat_full_range_graph_illegal_for_roleful_topology",
@@ -1159,6 +1214,13 @@ def _flat_graph_allowed(
                     "can send full-range signal to the protected driver. Load protected "
                     "active startup or disconnect/clear the topology."
                 ),
+            ))
+        else:
+            issues.append(_issue(
+                "blocker",
+                "flat_full_range_graph_requires_explicit_passive_layout",
+                "A flat full-range graph requires a complete saved passive "
+                "mono or stereo layout.",
             ))
     return GraphSafety(
         classification=GRAPH_FLAT_FULL_RANGE,
@@ -4487,6 +4549,39 @@ def build_parked_muted_graph(
     )
 
 
+def parked_safe_graph_decision(
+    topology: OutputTopology,
+    *,
+    config_path: str | Path | None = None,
+    reason: str = "temporarily parked before changing saved speaker layout",
+) -> SafeGraphDecision:
+    """Return the independently-proved all-muted holding graph for topology.
+
+    This is the only temporary graph topology replacement may load before it
+    writes new speaker intent.  It has a File sink and every output terminally
+    muted, so it is legal for both the old and proposed topology.
+    """
+
+    contract = classify_output_contract(topology)
+    text, graph = build_parked_muted_graph(topology, config_path=config_path)
+    if text is not None and graph.allowed:
+        return SafeGraphDecision(
+            status=PARKED_MUTED_STATUS,
+            selected_config_path=str(parked_muted_config_path(config_path)),
+            reason=reason,
+            topology_contract=contract,
+            fallback_graph=graph,
+        )
+    return SafeGraphDecision(
+        status="blocked",
+        selected_config_path=None,
+        reason="could not prove the parked all-muted graph",
+        topology_contract=contract,
+        fallback_graph=graph,
+        issues=graph.issues,
+    )
+
+
 def safe_graph_for_current_topology(
     topology: OutputTopology | None = None,
     *,
@@ -4507,12 +4602,13 @@ def safe_graph_for_current_topology(
     """Select the only safe persisted CamillaDSP graph for this topology.
 
     ``coupling`` is the persisted fan-in -> CamillaDSP coupling
-    (``JASPER_FANIN_CAMILLA_COUPLING``). When it resolves to ``shm_ring`` AND the
-    topology takes the non-roleful flat fallback, the selected flat graph is the
-    RING flat config (``ring_flat_config_path``) instead of the loopback
-    ``flat_config_path`` — so a ring-armed box's deploy / camilla restart re-seeds
-    a ring config instead of reverting to loopback (audit finding 5). A ``None``
-    or non-ring coupling preserves the loopback flat selection byte-for-byte.
+    (``JASPER_FANIN_CAMILLA_COUPLING``). When it resolves to ``shm_ring`` AND an
+    explicit valid passive-stereo topology is ring-eligible, the selected flat
+    graph is the RING flat config (``ring_flat_config_path``) instead of the
+    loopback ``flat_config_path`` — so a ring-armed box's deploy / CamillaDSP
+    restart re-seeds a ring config instead of reverting to loopback (audit
+    finding 5). A ``None`` or non-ring coupling preserves the loopback flat
+    selection byte-for-byte.
 
     **A ROLEFUL box's ring is a different question, and this function answers it
     differently.** The flat branch picks between two PRE-RENDERED files, because
@@ -4555,6 +4651,15 @@ def safe_graph_for_current_topology(
         )
     topology = topology or load_output_topology_strict()
     contract = classify_output_contract(topology)
+    # Empty is a deliberate runtime state, not implicit stereo.  Decide it
+    # before looking at the current graph so a previously-loaded flat graph
+    # cannot be preserved after reset or on a fresh install.
+    if contract.classification == CONTRACT_UNCONFIGURED:
+        return parked_safe_graph_decision(
+            topology,
+            config_path=parked_config_path,
+            reason="no speaker layout is configured; parked with every output muted",
+        )
     statefile = Path(statefile_path or DEFAULT_CAMILLA_STATEFILE)
     applied_path = Path(applied_baseline_path or baseline_profile_state_path())
     bass_path = Path(profile_path or DEFAULT_PROFILE_PATH)
@@ -4605,7 +4710,7 @@ def safe_graph_for_current_topology(
     if (
         current_graph
         and current_graph.allowed
-        and not contract.requires_roleful_graph
+        and topology_allows_flat_dac_graph(contract)
         # A program-bake pipe is allowed by the verifier (no DAC, no driver to
         # over-drive) but is NOT a selectable solo graph: its File sink feeds the
         # snapserver FIFO, not the DAC, so preserving it on a solo speaker would
@@ -4615,11 +4720,10 @@ def safe_graph_for_current_topology(
         and current_graph.classification != GRAPH_PROGRAM_BAKE_PIPE
         # The PARKED graph (#2135) is the same shape of trap and is excluded for
         # the same reason: it is legal for ANY topology (File sink, every output
-        # muted), so without this it would be "preserved" forever on a topology
-        # that has just been reset to passive — the box would stay on /dev/null
-        # across deploy after deploy instead of taking the flat cutover. Parking
-        # is a holding state; the only way OUT of it on a passive topology is to
-        # decline to preserve it and fall through to `select_flat` below.
+        # muted), so without this it would be "preserved" forever after reset.
+        # Reset first writes the unconfigured, parked state; once the household
+        # saves an explicit passive layout, this exclusion lets the selector
+        # fall through to `select_flat` below rather than keep /dev/null.
         and current_graph.classification != GRAPH_PARKED_ALL_MUTED
     ):
         return SafeGraphDecision(
@@ -4670,7 +4774,7 @@ def safe_graph_for_current_topology(
             preferred_graph=preferred_graph,
         )
 
-    if not contract.requires_roleful_graph:
+    if topology_allows_flat_dac_graph(contract):
         # Ring-armed box: re-seed the RING flat config, not the loopback one, so a
         # camilla restart/deploy keeps the rings (audit finding 5). Fail-SAFE: the
         # loopback flat config below is the fallback whenever the ring path is not
@@ -4709,8 +4813,8 @@ def safe_graph_for_current_topology(
                     status="select_flat",
                     selected_config_path=str(ring_flat_config_path),
                     reason=(
-                        "saved topology has no roleful/protected outputs and is "
-                        "ring-eligible (stereo/unconfigured); box is ring-armed "
+                        "saved topology is an explicit passive stereo layout "
+                        "and is ring-eligible; box is ring-armed "
                         "(coupling=shm_ring)"
                     ),
                     topology_contract=contract,
@@ -4729,7 +4833,7 @@ def safe_graph_for_current_topology(
             return SafeGraphDecision(
                 status="select_flat",
                 selected_config_path=str(flat_config_path),
-                reason="saved topology has no roleful/protected outputs",
+                reason="saved topology is an explicit valid passive layout",
                 topology_contract=contract,
                 current_graph=current_graph,
                 preferred_graph=preferred_graph,
@@ -4800,10 +4904,7 @@ def safe_graph_for_current_topology(
         # considered, so a parked file can never shadow a graph that carries
         # actual driver protection. Recovery needs no operator action: the
         # moment commissioning stages a startup graph, `select_active_startup`
-        # above wins on the next deploy. (Deploy, not reconcile:
-        # `jasper-audio-hardware-reconcile` never re-runs this selection —
-        # `tests/test_audio_hardware_reconcile.py` pins that its script names
-        # neither `runtime-safe-graph` nor `safe_graph_for_current_topology`.)
+        # above wins on the next root hardware-reconcile/deploy convergence pass.
         parked_text, parked_graph = build_parked_muted_graph(
             topology, config_path=parked_config_path
         )
@@ -4919,11 +5020,8 @@ def apply_safe_graph_decision_to_statefile(
 
     if not decision.ok or not decision.selected_config_path:
         return False
+    materialise_safe_graph_decision(decision, topology=topology)
     if decision.status == PARKED_MUTED_STATUS:
-        _materialise_parked_muted_config(
-            decision.selected_config_path,
-            topology=topology,
-        )
         # Logged HERE, not at decision time: the decision function is also
         # reached by read-only callers (`runtime-safe-graph` without
         # --write-statefile, the correction reset probe, the multiroom follower's
@@ -4942,7 +5040,7 @@ def apply_safe_graph_decision_to_statefile(
             logger,
             "active_speaker.runtime_graph",
             decision=PARKED_MUTED_STATUS,
-            reason=PARKED_MUTED_REASON,
+            reason=decision.reason,
             topology_mode=decision.topology_contract.classification,
             statefile=str(statefile_path),
             config_path=decision.selected_config_path,
@@ -4952,6 +5050,31 @@ def apply_safe_graph_decision_to_statefile(
         return False
     write_camilla_statefile(statefile_path, decision.selected_config_path)
     return True
+
+
+def materialise_safe_graph_decision(
+    decision: SafeGraphDecision,
+    *,
+    topology: OutputTopology | None = None,
+) -> None:
+    """Materialise any generated graph without taking statefile ownership.
+
+    Park-before-save runs in jasper-web, where the generated-config directory
+    is writable but CamillaDSP's root-owned statefile is not.  The websocket
+    load persists that pointer on behalf of the daemon.  Root boot/reconcile
+    callers compose this helper with :func:`write_camilla_statefile` through
+    :func:`apply_safe_graph_decision_to_statefile`.
+    """
+
+    if (
+        decision.ok
+        and decision.selected_config_path
+        and decision.status == PARKED_MUTED_STATUS
+    ):
+        _materialise_parked_muted_config(
+            decision.selected_config_path,
+            topology=topology,
+        )
 
 
 def _materialise_parked_muted_config(

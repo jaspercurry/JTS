@@ -642,9 +642,9 @@ What exists:
   and `/sound/output-topology` exposes a complete replacement JSON
   contract for physical DAC lanes, speaker groups, passive/active modes,
   subwoofers, and identity/protection evidence. That topology model has
-  no playback authority, does not rewrite ALSA, and does not load
-  CamillaDSP; it only records and evaluates whether future safe sound
-  tests may proceed through their own safety session. The companion
+  no playback authority and does not rewrite ALSA or load CamillaDSP; it only
+  records and evaluates intent. The web save route separately owns the safe
+  park -> commit -> runtime-converge transaction described below. The companion
   `/sound/active-speaker/channel-identity` route records operator-confirmed
   physical channel identity for assigned topology channels. It is evidence
   about wiring only: it does not make the active path safe, does not satisfy
@@ -774,22 +774,25 @@ What exists:
   `jasper.active_speaker.runtime_contract`, via
   `jasper-active-speaker runtime-safe-graph`, after deploy copies the
   packaged configs. That boundary reads the saved
-  `jasper.output_topology` contract before choosing a fallback: an absent
-  saved topology or explicit stereo full-range/passive topology may use the
-  flat outputd graph; an explicit mono full-range topology uses a
-  WIDTH-MATCHED one — the ALSA device stays at the DAC's own width, and the
-  emitter hard-mutes the channel the topology does not claim, so no program
+  `jasper.output_topology` contract before choosing a fallback: a missing saved
+  topology, or one with zero speaker groups, is **unconfigured** and selects
+  the generated DAC-less all-muted **parked** graph. It never implies stereo or
+  authorizes a flat DAC graph. Only an explicit valid stereo full-range/passive
+  topology may use the flat outputd graph; an explicit mono full-range topology
+  uses a WIDTH-MATCHED one — the ALSA device stays at the DAC's own width, and
+  the emitter hard-mutes the channel the topology does not claim, so no program
   reaches an undeclared output. The contract re-proves that mute structurally
   off the YAML, so an unmuted surplus channel is still refused; and any
-  topology with a tweeter, protected
-  output, or subwoofer roleful assignment must preserve/select a matching
-  all-muted active startup graph. Guarded commissioning graphs are active test
-  surfaces, not persisted boot/deploy fallbacks. When the missing piece is the
-  staged startup graph, install and recovery helpers seed the generated
-  DAC-less all-muted **parked** graph (issue #2135) instead of repointing
-  Camilla at flat stereo — parking gates on the absence of that staged graph,
-  and (since #2145, below) tolerates topology blockers alongside it rather than
-  requiring the staged graph to be the *only* thing missing. Parking is deliberately narrow: a staged graph that
+  topology with a tweeter, protected output, or subwoofer roleful assignment
+  must preserve/select a matching all-muted active startup graph. Guarded
+  commissioning graphs are active test surfaces, not persisted boot/deploy
+  fallbacks. An incomplete non-passive topology also selects the parked graph;
+  `/state`, audio health, and `jasper-doctor` name its reachable next action.
+  For zero groups that action is to choose and save a mono or stereo speaker
+  layout before audio can run. For a roleful topology it is to finish or undo
+  commissioning. Parking tolerates topology blockers alongside an absent
+  startup graph (since #2145), rather than requiring the staged graph to be the
+  *only* thing missing. Parking is deliberately narrow: a staged graph that
   exists but fails its safety proof still fails closed — that is a
   commissioning bug, not a paused household. A topology-level blocker (for
   example a channel saved `protection_status="required_missing"`) no longer
@@ -804,6 +807,37 @@ What exists:
   them. `jasper-doctor` uses the same runtime classifier and
   reports a failure when a saved tweeter/protected topology is running
   `outputd-cutover.yml`, `v1.yml`, or another flat full-range graph.
+
+  **Topology save and reset contract.** A web topology save first proves and
+  loads the parked graph, commits the validated topology under the topology
+  mutation lock, then converges the runtime graph and asks the root hardware
+  reconciler to converge the generated boot graph. An explicit passive mono or
+  stereo layout authorizes the flat carrier. Before that graph is loaded,
+  `jasper.sound.runtime.materialise_saved_dsp_on_carrier` recomposes the saved
+  sound profile and saved headroom trim onto it, preserves compatible room
+  PEQs, and atomically writes canonical `sound_current.yml`. The materializer
+  owns rendering only: it takes no graph lock and never asks CamillaDSP to
+  load. The enclosing topology transaction re-proves the composed graph and
+  owns the load. An active/roleful layout instead selects a proved protected
+  active graph; an incomplete active layout stays parked.
+
+  Reset uses the same transaction but commits **zero speaker groups**. It may
+  retain the detected or last-known DAC only as metadata; it does not infer a
+  passive layout from that hardware. Reset also clears active-speaker setup
+  evidence, triggers the root reconciler, and leaves audio parked and silent
+  until the household explicitly saves mono/stereo and passive/active intent.
+  The lower recovery reset remains visible; it is the same operation as the
+  contextual detected-hardware action, not a second reset mode. Every
+  successful hardware-reconcile pass re-runs runtime graph selection, so later
+  valid intent self-converges without waiting for a deploy.
+  A reset request must present both the topology content revision and detected-
+  hardware identity from its page snapshot. A mismatch returns `409 Conflict`
+  instead of letting a stale tab clear newer intent or adopt changed hardware.
+
+  This composition point is also the boundary for any future passive-speaker
+  linearization: it may be added only after an explicit passive layout grants
+  flat-graph authority, and it composes as passive speaker/program DSP. It must
+  not be represented as an active crossover or used to infer one.
 - TTS transport: `JASPER_TTS_TRANSPORT=outputd` makes Python send
   resampled 48 kHz stereo PCM plus gain metadata over
   `JASPER_TTS_OUTPUTD_SOCKET`; in the packaged topology that socket is

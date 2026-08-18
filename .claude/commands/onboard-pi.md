@@ -260,20 +260,23 @@ do not infer it again from the board model.
 
 For a **full** profile, walk the user through these one at a time:
 
-1. **`http://<hostname>.local/voice/`** — required. Pick a voice
+1. **`http://<hostname>.local/sound/setup/`** — required first. Choose mono
+   or stereo, then passive or active. Audio stays off until the layout is
+   saved.
+2. **`http://<hostname>.local/voice/`** — required. Pick a voice
    provider (Gemini is the cheapest at ~$0.025/min; OpenAI Realtime
    is best quality at ~$0.30/min; Grok is the middle option). Paste
    an API key. The speaker won't respond to "Hey Jarvis" until this
    is set.
-2. **`http://<hostname>.local/transit/`** — optional. NYC subway / bus
+3. **`http://<hostname>.local/transit/`** — optional. NYC subway / bus
    / Citi Bike. Skip if they're not in NYC.
-3. **`http://<hostname>.local/spotify/`** — optional. Connect Spotify
+4. **`http://<hostname>.local/spotify/`** — optional. Connect Spotify
    so "play Taylor Swift" works without phone interaction.
-4. **`http://<hostname>.local/system/`** — the dashboard. Show them
+5. **`http://<hostname>.local/system/`** — the dashboard. Show them
    where status and mic-mute controls live.
 
-Tell them they're done after Step 1 (voice provider). The rest can
-happen anytime later.
+Tell them they're done after Steps 1 and 2 (speaker layout and voice provider).
+The rest can happen anytime later.
 
 For a **streambox** profile, explain that AirPlay, Spotify Connect,
 Bluetooth, DSP, grouping, and management are installed locally, while the
@@ -353,6 +356,8 @@ needed.
 ## After success
 
 For a **full** profile, confirm one last time:
+- They saved a mono/stereo passive/active layout at
+  `http://<hostname>.local/sound/setup/`.
 - They can hit `http://<hostname>.local/voice/` from their phone/laptop.
 - They've pasted an API key for at least one voice provider.
 - They've heard the speaker respond to "Hey Jarvis" with a brief

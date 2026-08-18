@@ -829,6 +829,56 @@ def test_runtime_safe_graph_cli_writes_staged_config_for_active_topology(
     assert f"config_path: {staged}" in statefile.read_text(encoding="utf-8")
 
 
+def test_runtime_safe_graph_cli_composes_flat_before_writing_statefile(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    from jasper.output_topology import save_output_topology
+    from tests.test_active_speaker_runtime_contract import (
+        _flat_yaml,
+        _full_range_stereo,
+    )
+
+    topology = _full_range_stereo()
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(topology, path=topology_path)
+    flat = tmp_path / "outputd-cutover.yml"
+    flat.write_text(_flat_yaml(), encoding="utf-8")
+    statefile = tmp_path / "outputd-statefile.yml"
+    calls = []
+
+    def compose(decision, **kwargs):
+        calls.append((decision.status, kwargs))
+        return decision
+
+    monkeypatch.setattr(
+        "jasper.cli.active_speaker.compose_selected_flat_graph", compose
+    )
+
+    code = main(
+        [
+            "runtime-safe-graph",
+            "--topology",
+            str(topology_path),
+            "--statefile",
+            str(statefile),
+            "--flat-config",
+            str(flat),
+            "--coupling",
+            "loopback",
+            "--no-applied-baseline",
+            "--write-statefile",
+            "--json",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert calls == [("select_flat", {"topology": topology, "coupling": "loopback"})]
+    assert payload["statefile_written"] is True
+
+
 def test_runtime_safe_graph_cli_prefers_applied_baseline_state(
     tmp_path: Path,
     capsys,

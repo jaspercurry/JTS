@@ -29,6 +29,7 @@ import pytest
 import yaml
 
 from jasper.active_speaker.runtime_contract import (
+    FLAT_PROGRAM_GRAPH_PROTECTED_TWEETER,
     GRAPH_APPROVED_ACTIVE_RUNTIME,
     GRAPH_FLAT_FULL_RANGE,
     NO_BASS_EXTENSION_PROFILE_SUMMARY,
@@ -46,8 +47,14 @@ from jasper.sound.graph_carrier import (
     ReemitResult,
     carrier_for_loaded_config,
 )
-from jasper.sound.profile import SimpleEq, SoundProfile, build_sound_filters
-from jasper.sound.settings import SoundSettings, output_trim_db
+from jasper.sound.profile import (
+    SimpleEq,
+    SoundProfile,
+    build_sound_filters,
+    save_profile,
+)
+from jasper.sound.runtime import materialise_saved_dsp_on_carrier
+from jasper.sound.settings import SoundSettings, output_trim_db, save_sound_settings
 from tests.test_active_speaker_runtime_contract import (
     _applied_baseline,
     _active_baseline_yaml,
@@ -58,6 +65,17 @@ from tests.test_active_speaker_runtime_contract import (
 )
 
 _STEREO_HOST_KINDS = {"base_flat", "sound_or_correction"}
+
+
+@pytest.fixture(autouse=True)
+def _saved_passive_layout(tmp_path, monkeypatch):
+    """Carrier unit tests need explicit DAC playback authorization now."""
+
+    from jasper.output_topology import save_output_topology
+
+    path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
+    save_output_topology(_full_range_stereo(), path)
 
 
 def classify_camilla_graph(*args, **kwargs):
@@ -374,6 +392,23 @@ def test_stereo_host_refuses_eq_under_protected_tweeter_topology(tmp_path, monke
     with pytest.raises(CarrierCannotHostEq) as exc:
         carrier.reemit(SoundProfile(enabled=False), member_kwargs={})  # live-draft shape
     assert exc.value.reason_code == "flat_graph_protected_tweeter"
+
+
+def test_stereo_host_dispatches_refusal_by_contract_code_not_prose(tmp_path):
+    """Presentation wording is not a graph-policy API."""
+    from jasper.sound.profile import SoundProfile
+
+    with mock.patch(
+        "jasper.active_speaker.runtime_contract.flat_program_graph_block",
+        return_value=(FLAT_PROGRAM_GRAPH_PROTECTED_TWEETER, "opaque detail"),
+    ):
+        carrier = carrier_for_loaded_config(str(BASE_CONFIG_PATH), config_dir=tmp_path)
+
+    with pytest.raises(CarrierCannotHostEq) as exc:
+        carrier.reemit(SoundProfile(enabled=False), member_kwargs={})
+
+    assert exc.value.reason_code == FLAT_PROGRAM_GRAPH_PROTECTED_TWEETER
+    assert "opaque detail" in exc.value.message
 
 
 def test_stereo_host_hosts_eq_under_full_range_topology(tmp_path, monkeypatch):
@@ -1423,26 +1458,109 @@ def test_stereo_host_reemit_is_width_matched_on_a_mono_topology(
     assert graph.details["hard_muted_outputs"] == [1]
 
 
-def test_stereo_host_reemit_on_stereo_and_unconfigured_is_byte_unchanged(
+def test_stereo_host_reemit_requires_explicit_passive_layout(
     tmp_path, monkeypatch
 ):
-    """Every non-mono box re-emits exactly what it did before."""
+    """Only an explicit passive layout may re-emit a flat DAC graph."""
     from jasper.output_topology import new_topology_draft
     from jasper.sound.profile import SimpleEq, SoundProfile
 
     profile = SoundProfile(enabled=True, simple_eq=SimpleEq(bass_db=4.0))
     golden = emit_sound_config(profile, room_peqs=[])
 
-    for index, topology in enumerate((_full_range_stereo(), new_topology_draft())):
-        _persist_topology(topology, tmp_path, monkeypatch)
-        config_dir = tmp_path / f"configs-{index}"
-        config_dir.mkdir()
+    _persist_topology(_full_range_stereo(), tmp_path, monkeypatch)
+    config_dir = tmp_path / "configured"
+    config_dir.mkdir()
+    carrier = carrier_for_loaded_config(str(BASE_CONFIG_PATH), config_dir=config_dir)
+    assert carrier.kind == "base_flat"
+    assert carrier.reemit(profile).yaml == golden
 
-        carrier = carrier_for_loaded_config(
-            str(BASE_CONFIG_PATH), config_dir=config_dir
+    _persist_topology(new_topology_draft(), tmp_path, monkeypatch)
+    parked_dir = tmp_path / "unconfigured"
+    parked_dir.mkdir()
+    parked = carrier_for_loaded_config(str(BASE_CONFIG_PATH), config_dir=parked_dir)
+    with pytest.raises(CarrierCannotHostEq) as exc_info:
+        parked.reemit(profile)
+    assert exc_info.value.reason_code == "flat_graph_unconfigured"
+    assert "Save an explicit passive mono or stereo layout" in exc_info.value.message
+
+
+def test_materialise_saved_dsp_preserves_preferences_trim_and_room_peqs(
+    tmp_path, monkeypatch
+):
+    """The reset-safe materializer composes every persisted program layer."""
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    base = config_dir / "correction_abc_123.yml"
+    base.write_text(
+        emit_sound_config(
+            SoundProfile(enabled=False),
+            room_peqs=[PeqFilter(freq=81.0, q=4.0, gain=-3.5)],
+        ),
+        encoding="utf-8",
+    )
+    profile_path = tmp_path / "sound_profile.json"
+    save_profile(
+        SoundProfile(enabled=True, simple_eq=SimpleEq(bass_db=4.0)),
+        profile_path,
+    )
+    settings_path = tmp_path / "sound_settings.json"
+    save_sound_settings(SoundSettings(headroom_trim_db=6.0), settings_path)
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
+
+    out_path = materialise_saved_dsp_on_carrier(
+        base,
+        profile_path=profile_path,
+        config_dir=config_dir,
+        coupling="loopback",
+    )
+
+    assert out_path == config_dir / "sound_current.yml"
+    generated = out_path.read_text(encoding="utf-8")
+    assert "sound_simple_bass:" in generated
+    assert "# output_trim_db=6.000" in generated
+    assert "room_peq_1:" in generated
+    assert "freq: 81" in generated
+
+
+def test_materialise_saved_dsp_fails_closed_for_unknown_carrier(
+    tmp_path, monkeypatch
+):
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    unknown = tmp_path / "operator-custom.yml"
+    unknown.write_text("# not generated by JTS\n", encoding="utf-8")
+
+    with pytest.raises(CarrierCannotHostEq) as exc_info:
+        materialise_saved_dsp_on_carrier(
+            unknown,
+            profile_path=tmp_path / "sound_profile.json",
+            config_dir=config_dir,
         )
-        assert carrier.kind == "base_flat"
-        assert carrier.reemit(profile).yaml == golden
+
+    assert exc_info.value.reason_code == "unknown_config"
+    assert not (config_dir / "sound_current.yml").exists()
+
+
+def test_materialise_saved_dsp_fails_closed_for_invalid_topology(
+    tmp_path, monkeypatch
+):
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    topology_path = tmp_path / "output_topology.json"
+    topology_path.write_text("{not valid json", encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+
+    with pytest.raises(CarrierCannotHostEq) as exc_info:
+        materialise_saved_dsp_on_carrier(
+            BASE_CONFIG_PATH,
+            profile_path=tmp_path / "sound_profile.json",
+            config_dir=config_dir,
+        )
+
+    assert exc_info.value.reason_code == "flat_graph_not_authorized"
+    assert "unavailable or invalid" in exc_info.value.message
+    assert not (config_dir / "sound_current.yml").exists()
 
 
 def test_channel_split_reemit_is_never_width_matched(tmp_path, monkeypatch):

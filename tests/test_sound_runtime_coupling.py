@@ -25,8 +25,21 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from jasper.sound import runtime
 from jasper.sound.graph_carrier import ReemitResult
+
+
+@pytest.fixture(autouse=True)
+def _saved_passive_layout(tmp_path, monkeypatch):
+    """Runtime coupling tests exercise a flat DAC graph intentionally."""
+    from jasper.output_topology import save_output_topology
+    from tests.test_active_speaker_runtime_contract import _full_range_stereo
+
+    path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
+    save_output_topology(_full_range_stereo(), path)
 
 
 class _FakeCamilla:
@@ -169,7 +182,9 @@ def test_both_chokepoints_resolve_coupling_through_one_helper(monkeypatch):
     assert "fanin_coupling_capture_kwargs(coupling)" in src
     assert "fanin_coupling_capture_kwargs=coupling_capture_kwargs" in src
     reconcile_src = inspect.getsource(runtime.reconcile_current_dsp)
-    assert "fanin_coupling_capture_kwargs(coupling)" in reconcile_src
+    assert "_render_saved_dsp_on_carrier(" in reconcile_src
+    materializer_src = inspect.getsource(runtime._render_saved_dsp_on_carrier)
+    assert "fanin_coupling_capture_kwargs(coupling)" in materializer_src
     del monkeypatch
 
 

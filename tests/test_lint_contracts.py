@@ -288,7 +288,10 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # broad catch is a MOVE, not an addition -- the /sound/ rollback teardown's
 # catch was deleted when its five forked codes moved to their single owner, and
 # the owner carries the same catch for the same reason.
-MAX_NOQA_MARKERS = 813
+# 813 -> 814 (topology commit rollback, 2026-08-18): this boundary must catch
+# arbitrary callback exceptions so it can restore the prior graph before
+# re-raising the original failure.
+MAX_NOQA_MARKERS = 814
 MAX_BLE001_MARKERS = 617
 # (Total reflects two independent +1 entries dated 2026-06-21: the AirPlay
 # latency-fit /state snapshot and the barge-in truncate wire-send guard.)

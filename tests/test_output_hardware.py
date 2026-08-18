@@ -19,10 +19,103 @@ from jasper.output_hardware import (
     OutputHardwareState,
     classify_output_cards,
     dual_apple_runtime_mapping,
+    detected_hardware_adoption_precondition,
+    detected_hardware_identity,
     parse_aplay_listing,
     probe_system_cards,
     topology_hardware_from_state,
 )
+
+
+def test_detected_hardware_identity_ignores_timestamp_and_card_number() -> None:
+    first = OutputHardwareState(
+        profile_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+        profile_label="Apple USB-C audio adapter",
+        status="ready",
+        physical_output_count=2,
+        selected_card_id="Device",
+        selected_pcm="hw:CARD=Device,DEV=0",
+        child_devices=(OutputCardFact(
+            card_id="Device", device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+            stable_path="/sys/devices/usb1/1-2",
+        ),),
+        observed_at="2026-08-18T00:00:00Z",
+    )
+    reenumerated = OutputHardwareState(
+        profile_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+        profile_label="Apple USB-C audio adapter",
+        status="ready",
+        physical_output_count=2,
+        selected_card_id="Device_1",
+        selected_pcm="hw:CARD=Device_1,DEV=0",
+        child_devices=(OutputCardFact(
+            card_id="Device_1", device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+            stable_path="/sys/devices/usb1/1-2",
+        ),),
+        observed_at="2026-08-18T00:01:00Z",
+    )
+
+    assert detected_hardware_identity(first) == detected_hardware_identity(reenumerated)
+
+
+def test_detected_hardware_identity_ignores_child_card_reordering() -> None:
+    children = (
+        OutputCardFact(card_id="A", device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+                       stable_path="/sys/devices/usb1/1-2"),
+        OutputCardFact(card_id="B", device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+                       stable_path="/sys/devices/usb1/1-3"),
+    )
+    first = OutputHardwareState(
+        profile_id=DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
+        profile_label="Dual Apple", status="ready", physical_output_count=4,
+        child_devices=children,
+    )
+    reordered = OutputHardwareState(
+        profile_id=DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
+        profile_label="Dual Apple", status="ready", physical_output_count=4,
+        child_devices=tuple(reversed(children)),
+    )
+
+    assert detected_hardware_identity(first) == detected_hardware_identity(reordered)
+
+
+def test_detected_hardware_adoption_requires_ready_usable_state() -> None:
+    missing = detected_hardware_adoption_precondition(None)
+    partial = detected_hardware_adoption_precondition(OutputHardwareState(
+        profile_id="unknown", profile_label="Unknown", status="partial",
+        physical_output_count=0,
+    ))
+    ready = detected_hardware_adoption_precondition(OutputHardwareState(
+        profile_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+        profile_label="Apple USB-C audio adapter", status="ready",
+        physical_output_count=2,
+    ))
+
+    assert missing["allowed"] is False
+    assert partial["allowed"] is False
+    assert ready["allowed"] is True
+
+
+def test_detected_hardware_identity_changes_with_readiness_or_blocker() -> None:
+    ready = OutputHardwareState(
+        profile_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+        profile_label="Apple USB-C audio adapter", status="ready",
+        physical_output_count=2,
+    )
+    partial = OutputHardwareState(
+        profile_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+        profile_label="Apple USB-C audio adapter", status="partial",
+        physical_output_count=2,
+    )
+    blocked = OutputHardwareState(
+        profile_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+        profile_label="Apple USB-C audio adapter", status="ready",
+        physical_output_count=2,
+        issues=({"severity": "blocker", "code": "route_missing", "message": "x"},),
+    )
+
+    assert detected_hardware_identity(ready) != detected_hardware_identity(partial)
+    assert detected_hardware_identity(ready) != detected_hardware_identity(blocked)
 
 
 def test_static_output_hardware_metadata_matches_dac_registry() -> None:

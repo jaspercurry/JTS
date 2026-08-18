@@ -13,17 +13,19 @@ active/passive modes, subwoofers, and verified physical output ownership live.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import re
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, cast
 
-from .atomic_io import atomic_write_text
+from .atomic_io import advisory_file_lock, atomic_write_text
 from .json_fields import JsonFields
 from .audio_hardware.dac import (
     APPLE_USB_C_DONGLE_ID as APPLE_USB_C_DONGLE_DEVICE_ID,
@@ -58,6 +60,7 @@ CLOCK_DOMAIN_REPORT_KIND = "jts_output_clock_domain_report"
 OUTPUT_LAYOUT_KIND = "jts_output_layout"
 OUTPUT_TRANSPORT_PLAN_KIND = "jts_output_transport_plan"
 OUTPUT_TOPOLOGY_PATH = "/var/lib/jasper/output_topology.json"
+OUTPUT_TOPOLOGY_LOCK_TIMEOUT_SEC = 15.0
 
 # Active-output route resolution (the playback PCM + DAC-agnostic transport plan
 # the active-crossover path rides). Owned here, not on the IO-free DAC registry,
@@ -2058,6 +2061,85 @@ def topology_path(path: str | Path | None = None) -> Path:
     )
 
 
+def topology_lock_path(path: str | Path | None = None) -> Path:
+    """Return the process-shared writer lock next to the topology artifact."""
+
+    target = topology_path(path)
+    return target.with_name(f".{target.name}.lock")
+
+
+@dataclass(frozen=True)
+class OutputTopologySnapshot:
+    """One topology and the revision of the exact bytes that produced it."""
+
+    topology: OutputTopology
+    revision: str
+
+
+def load_output_topology_snapshot(
+    path: str | Path | None = None,
+) -> OutputTopologySnapshot:
+    """Load topology and revision from one immutable byte snapshot."""
+
+    target = topology_path(path)
+    try:
+        data = target.read_bytes()
+    except FileNotFoundError:
+        return OutputTopologySnapshot(new_topology_draft(), "missing")
+    except OSError as exc:
+        raise OutputTopologyError(
+            f"could not read output topology {target}: {exc}"
+        ) from exc
+    revision = "sha256:" + hashlib.sha256(data).hexdigest()
+    try:
+        raw = json.loads(data.decode("utf-8"))
+        topology = OutputTopology.from_mapping(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise OutputTopologyError(
+            f"output topology {target} is not valid JSON: {exc}"
+        ) from exc
+    except OutputTopologyError as exc:
+        raise OutputTopologyError(
+            f"output topology {target} is invalid: {exc}"
+        ) from exc
+    return OutputTopologySnapshot(topology, revision)
+
+
+class OutputTopologyMutation:
+    """One admitted read-modify-write transaction for saved topology intent."""
+
+    def __init__(self, target: Path) -> None:
+        self.target = target
+
+    def snapshot(self) -> OutputTopologySnapshot:
+        """Read topology and revision from one immutable byte snapshot."""
+
+        return load_output_topology_snapshot(self.target)
+
+    def save(self, topology: OutputTopology) -> str:
+        """Publish one topology and return its precomputed byte revision."""
+
+        return save_output_topology(topology, self.target)
+
+
+@contextmanager
+def output_topology_mutation(
+    path: str | Path | None = None,
+    *,
+    timeout_sec: float = OUTPUT_TOPOLOGY_LOCK_TIMEOUT_SEC,
+):
+    """Serialize a bounded topology mutation across threads and processes."""
+
+    target = topology_path(path)
+    with advisory_file_lock(
+        topology_lock_path(target),
+        mode=0o660,
+        group_from_parent=True,
+        timeout_sec=timeout_sec,
+    ):
+        yield OutputTopologyMutation(target)
+
+
 def load_output_topology_strict(path: str | Path | None = None) -> OutputTopology:
     """Load persisted topology for safety-authorizing paths.
 
@@ -2164,8 +2246,8 @@ def load_output_topology(path: str | Path | None = None) -> OutputTopology:
 def save_output_topology(
     topology: OutputTopology,
     path: str | Path | None = None,
-) -> None:
-    """Persist a topology atomically. This still does not authorize playback."""
+) -> str:
+    """Persist topology atomically and return the exact published revision."""
 
     target = topology_path(path)
     data = json.dumps(topology.to_dict(), indent=2, sort_keys=True) + "\n"
@@ -2179,4 +2261,6 @@ def save_output_topology(
         mode=0o640,
         group_from_parent=True,
         best_effort_group=True,
+        durable=True,
     )
+    return "sha256:" + hashlib.sha256(data.encode("utf-8")).hexdigest()

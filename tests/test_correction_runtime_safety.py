@@ -124,8 +124,18 @@ def test_assert_flat_apply_safe_rejects_protected_tweeter_topology() -> None:
     # Apply-time backstop: room correction emits a flat 2-channel graph, which
     # must not go live under a protected-tweeter topology (stale measurements
     # applied after a driver was reassigned to an active role).
-    with pytest.raises(CorrectionRuntimeSafetyError, match="protected tweeter"):
+    with pytest.raises(CorrectionRuntimeSafetyError, match="tweeter/protected"):
         assert_flat_apply_safe(_active_topology("stereo", "active_2_way"))
+
+
+def test_assert_flat_apply_safe_rejects_unconfigured_topology() -> None:
+    from jasper.output_topology import new_topology_draft
+
+    with pytest.raises(
+        CorrectionRuntimeSafetyError,
+        match="saved passive speaker layout: no speaker layout is configured",
+    ):
+        assert_flat_apply_safe(new_topology_draft())
 
 
 def test_assert_flat_apply_safe_allows_full_range() -> None:

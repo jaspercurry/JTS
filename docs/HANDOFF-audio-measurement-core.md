@@ -1429,24 +1429,15 @@ on a substring marker, not a full parse, so a malformed/non-mapping body still
 reaches the runtime contract's own parse. Behavior-preserving; full
 active-speaker suite green.
 
-Phase 1 slice 3 landed (the L0 program-graph gate): a flat full-range program
-graph can no longer go live (emitted *or* loaded) to the DAC while the saved
-topology assigns a protected tweeter role. The shared judgement is the topology
-predicate `runtime_contract.flat_program_graph_blocked_reason()` — the program
-lane is structurally a 2-channel passthrough, so the only question is whether the
-topology has a tweeter to protect; fail-closed on a corrupt/unreadable topology.
-The refuse POLICY lives at each caller's boundary, **never** on the shared
-`emit_sound_config` leaf: the `/sound` graph-carrier (`_StereoHostCarrier`) reads
-it at construction so `can_host_eq` is `False` (the durable pre-check refuses
-early, no spurious `prepare_failed`) and re-asserts in `reemit`, so BOTH the
-live-draft SetConfig path and the durable write refuse with the existing typed
-`CarrierCannotHostEq("flat_graph_protected_tweeter", …)` → honest blocked-200;
-room correction's direct emit gates via
-`correction.runtime_safety.assert_flat_apply_safe` (the sweep entry already
-blocks measuring on a roleful topology — this is the measure-then-reassign
-backstop); the multiroom solo-restore emit stays deliberately lenient
-(un-bonding must always succeed). No-op for full-range / mono / subwoofer /
-unconfigured topologies. (An earlier cut wired the gate inside
+Phase 1 slice 3 landed (the L0 program-graph gate). The current DAC-bound
+authorization, fail-closed behavior, and refusal codes are owned by the
+[graph-carrier contract](HANDOFF-dsp-graph-carrier.md); its single judgement is
+`runtime_contract.flat_program_graph_blocked_reason()`.
+The refusal policy lives at each caller's boundary, **never** on the shared
+`emit_sound_config` leaf. Room correction's direct emit gates via
+`correction.runtime_safety.assert_flat_apply_safe`, while the multiroom
+solo-restore emit stays deliberately lenient because un-bonding must always
+succeed. (An earlier cut wired the gate inside
 `emit_sound_config` itself with an inline `graph_safety`-predicate check —
 [#871](https://github.com/jaspercurry/JTS/pull/871); a staff review found the
 leaf placement missed the live-draft SetConfig path, raised a

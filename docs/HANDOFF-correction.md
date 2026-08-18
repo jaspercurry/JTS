@@ -2156,11 +2156,13 @@ HTTPS fallback              non-/correction/ paths 302 + no-store back to HTTP
 half-measured evidence to start clean meant going to `/sound/` Advanced
 setup and hitting its RESET control — a device-perspective detour, and
 that control is nuclear (`jasper.web.sound_setup._reset_output_topology_payload`
-→ `jasper.active_speaker.reset.clear_active_speaker_setup_state()` +
-`jasper.cli.output_topology_reset.reset_to_detected_passive()`): it
-unlinks the driver research/manual-settings design draft AND resets output
-topology to passive, so "start over" meant losing the driver setup and
-going silent.
+→ `jasper.active_speaker.reset.clear_active_speaker_setup_state()` + the
+shared unconfigured-topology reset): it unlinks the driver research/manual-
+settings design draft, commits zero speaker groups, and keeps audio parked.
+Detected hardware is metadata only; reset does not infer passive intent. The
+household must explicitly save mono/stereo and passive/active intent before
+audio can resume. The detailed contract lives in the
+[speaker-output reference](HANDOFF-speaker-output-reference.md#current-outputd-state).
 
 `POST /crossover/reset` is the scoped sibling. It clears ONLY the
 measurement journey — comparison set, level locks

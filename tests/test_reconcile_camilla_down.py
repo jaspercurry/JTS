@@ -159,7 +159,7 @@ def _sandbox_state(tmp_path: Path, monkeypatch) -> None:
 
 
 def _flat_streambox(tmp_path: Path, monkeypatch):
-    """jts4's shape: no roleful topology, a stale generated graph, camilla down.
+    """jts4's passive shape: a stale generated graph with CamillaDSP down.
 
     Returns ``(stale_config, config_dir, statefile)``.
     """
@@ -168,10 +168,12 @@ def _flat_streambox(tmp_path: Path, monkeypatch):
     config_dir.mkdir(parents=True, exist_ok=True)
     stale = _stale_sound_current(config_dir)
     statefile = _statefile_at(tmp_path, monkeypatch, stale)
-    # A box with no saved roleful topology — the flat streambox jts4 is.
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "no_output_topology.json")
-    )
+    from jasper.output_topology import save_output_topology
+    from tests.test_active_speaker_runtime_contract import _full_range_stereo
+
+    topology_path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    save_output_topology(_full_range_stereo(), topology_path)
     _sandbox_state(tmp_path, monkeypatch)
     return stale, config_dir, statefile
 

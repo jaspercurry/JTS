@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -30,6 +31,7 @@ from jasper.active_speaker.measurement import (
 from jasper.output_topology import (
     OutputTopology,
     OutputTopologyError,
+    new_topology_draft,
     save_output_topology,
 )
 from tests.active_speaker_fixtures import (
@@ -83,6 +85,40 @@ def _passive_topology() -> OutputTopology:
         "mono_group_id": None,
         "subwoofer_group_ids": [],
     }
+    return OutputTopology.from_mapping(raw)
+
+
+def _subwoofer_topology() -> OutputTopology:
+    raw = _active_topology().to_dict()
+    raw["topology_id"] = "subwoofer_only"
+    raw["speaker_groups"] = [
+        {
+            "id": "sub",
+            "label": "Subwoofer",
+            "kind": "subwoofer",
+            "mode": "subwoofer",
+            "channels": [
+                {
+                    "role": "subwoofer",
+                    "physical_output_index": 0,
+                    "identity_verified": True,
+                }
+            ],
+        }
+    ]
+    raw["routing"] = {
+        "main_left_group_id": None,
+        "main_right_group_id": None,
+        "mono_group_id": None,
+        "subwoofer_group_ids": ["sub"],
+    }
+    return OutputTopology.from_mapping(raw)
+
+
+def _invalid_passive_topology() -> OutputTopology:
+    raw = _passive_topology().to_dict()
+    raw["topology_id"] = "invalid_passive_stereo"
+    raw["speaker_groups"][1]["channels"][0]["physical_output_index"] = 0
     return OutputTopology.from_mapping(raw)
 
 
@@ -265,6 +301,88 @@ def test_passive_speaker_is_ready_without_active_baseline(
     # "Runtime surface").
     assert status["commissioning"]["phase"] == "idle"
     assert status["commissioning"]["room_correction_allowed"] is True
+
+
+def test_unconfigured_speaker_is_not_passive_or_room_eligible(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    topology = new_topology_draft(hardware=_passive_topology().hardware)
+    _save_topology(monkeypatch, tmp_path, topology)
+    monkeypatch.setattr(
+        setup_mod,
+        "build_baseline_profile_candidate",
+        lambda *a, **k: pytest.fail("unconfigured topology must not build baseline"),
+    )
+
+    status = setup_mod.read_active_speaker_setup_status(
+        active_config_path="/var/lib/camilladsp/configs/sound_current.yml",
+    )
+
+    assert status["active"] is False
+    assert status["active_group_count"] == 0
+    assert status["status"] == "blocked"
+    assert status["configured"] is False
+    assert status["volume_allowed"] is False
+    assert status["grouping_allowed"] is False
+    assert status["room_correction_allowed"] is False
+    assert status["safety_muted"] is True
+    assert status["reason"] == "output_topology_unconfigured"
+    assert status["acoustic_commissioning"] == {
+        "decision_schema_version": 1,
+        "authority": None,
+        "required": True,
+        "status": "incomplete",
+        "allowed": False,
+        "reason": "output_topology_unconfigured",
+        "detail": "Choose and save a speaker layout before room correction.",
+        "setup_href": "/sound/setup/",
+    }
+
+
+@pytest.mark.parametrize(
+    ("topology_factory", "contract_issue"),
+    [
+        pytest.param(_subwoofer_topology, None, id="subwoofer-only"),
+        pytest.param(
+            _invalid_passive_topology,
+            "duplicate_physical_output",
+            id="invalid-passive",
+        ),
+    ],
+)
+def test_zero_active_layout_requires_flat_dac_authority(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    topology_factory: Callable[[], OutputTopology],
+    contract_issue: str | None,
+) -> None:
+    _save_topology(monkeypatch, tmp_path, topology_factory())
+    monkeypatch.setattr(
+        setup_mod,
+        "build_baseline_profile_candidate",
+        lambda *a, **k: pytest.fail("zero-active blocked topology must not build baseline"),
+    )
+
+    status = setup_mod.read_active_speaker_setup_status(
+        active_config_path="/var/lib/camilladsp/configs/sound_current.yml",
+    )
+
+    assert status["active"] is False
+    assert status["active_group_count"] == 0
+    assert status["status"] == "blocked"
+    assert status["configured"] is False
+    assert status["volume_allowed"] is False
+    assert status["grouping_allowed"] is False
+    assert status["room_correction_allowed"] is False
+    assert status["safety_muted"] is True
+    assert status["reason"] == "output_topology_not_ready"
+    assert status["acoustic_commissioning"]["authority"] is None
+    assert status["acoustic_commissioning"]["allowed"] is False
+    assert status["acoustic_commissioning"]["setup_href"] == "/sound/setup/"
+    issue_codes = {item["code"] for item in status["issues"]}
+    assert "output_topology_not_ready" in issue_codes
+    if contract_issue is not None:
+        assert contract_issue in issue_codes
 
 
 def test_active_speaker_blocks_volume_and_grouping_until_baseline_is_applied(
@@ -1115,6 +1233,7 @@ def test_unreadable_topology_fails_closed(
         active_config_path="/var/lib/camilladsp/configs/sound_current.yml",
     )
 
+    assert status["active"] is None
     assert status["volume_allowed"] is False
     assert status["grouping_allowed"] is False
     assert status["safety_muted"] is True

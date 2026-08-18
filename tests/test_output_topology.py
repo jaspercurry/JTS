@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from dataclasses import replace
@@ -33,6 +34,7 @@ from jasper.output_topology import (
     clock_domain_report,
     hardware_from_env,
     load_output_topology,
+    load_output_topology_snapshot,
     load_output_topology_strict,
     new_topology_draft,
     save_output_topology,
@@ -1356,6 +1358,58 @@ def test_load_output_topology_strict_allows_missing_as_unconfigured(
 
     assert loaded.status == "draft"
     assert loaded.speaker_groups == ()
+
+
+def test_topology_snapshot_revision_hashes_the_exact_loaded_bytes(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "output_topology.json"
+    topology = new_topology_draft(name="Exact bytes")
+    save_output_topology(topology, path)
+    data = path.read_bytes()
+
+    snapshot = load_output_topology_snapshot(path)
+
+    assert snapshot.topology == topology
+    assert snapshot.revision == "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+def test_mutation_save_returns_revision_without_post_write_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "output_topology.json"
+    topology = new_topology_draft(name="Published once")
+
+    with output_topology_mod.output_topology_mutation(path) as mutation:
+        monkeypatch.setattr(
+            output_topology_mod,
+            "load_output_topology_snapshot",
+            lambda *_args, **_kwargs: pytest.fail(
+                "save must not read after publication"
+            ),
+        )
+        revision = mutation.save(topology)
+
+    data = path.read_bytes()
+    assert revision == "sha256:" + hashlib.sha256(data).hexdigest()
+    assert json.loads(data)["name"] == "Published once"
+
+
+def test_topology_publication_uses_durable_atomic_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def capture(path, data, **kwargs):
+        captured.update(path=path, data=data, kwargs=kwargs)
+
+    monkeypatch.setattr(output_topology_mod, "atomic_write_text", capture)
+
+    save_output_topology(new_topology_draft(), tmp_path / "topology.json")
+
+    assert captured["kwargs"]["durable"] is True
 
 
 # --------------------------------------------------------------------------- #

@@ -346,7 +346,7 @@ def _active_speaker_output_safety_snapshot(
 
 def _active_speaker_volume_block() -> dict[str, Any] | None:
     setup = read_active_speaker_setup_status()
-    if setup.get("active") and not setup.get("volume_allowed", False):
+    if setup.get("volume_allowed") is not True:
         return setup
     return None
 
@@ -360,7 +360,7 @@ def _active_speaker_grouping_evaluation(
     drift from the target-side fail-closed decision.
     """
     setup = read_active_speaker_setup_status()
-    if setup.get("active") and not setup.get("grouping_allowed", False):
+    if setup.get("grouping_allowed") is not True:
         detail = str(
             setup.get("detail")
             or "active speaker setup is not ready for grouping"

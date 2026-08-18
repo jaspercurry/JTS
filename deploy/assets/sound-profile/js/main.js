@@ -118,6 +118,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     loading: false, saving: false, resetting: false, payload: null, draft: null,
     identity: null, clockDomain: null, activeRoute: null,
     observedHardware: null,
+    hardwareAdoption: null,
     revision: null,
     identitySaving: '', protectionSaving: '',
     error: '', dirty: false, touched: false
@@ -3987,6 +3988,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           '<span class="status-pill status-pill--blocked">blocked</span>' +
         '</div>' +
         '<p class="setting-row__hint">Reconnect the saved hardware or reconfigure the speaker layout after the attached hardware is stable. JTS keeps the saved topology intact.</p>' +
+        (outputTopology.hardwareAdoption && outputTopology.hardwareAdoption.allowed ?
+          '<button type="button" class="btn btn--primary" data-act="reset-output-topology"' +
+            (outputTopology.loading || outputTopology.saving || outputTopology.resetting ? ' disabled' : '') +
+            '>Use detected hardware</button>' : '') +
       '</div>'
     ) : '';
     return mismatchCard + savedCard;
@@ -5626,6 +5631,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     outputTopology.clockDomain = payload && payload.clock_domain || topology && topology.clock_domain || null;
     outputTopology.activeRoute = payload && payload.active_playback_route || null;
     outputTopology.observedHardware = payload && payload.output_hardware || null;
+    outputTopology.hardwareAdoption = payload && payload.hardware_adoption || null;
     i2sHat = payload && payload.i2s_hat || i2sHat;
     outputTopology.revision = payload && payload.topology_revision || null;
     outputTopology.error = '';
@@ -6839,7 +6845,12 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       }
       await refreshCommissioningView();
       if (options.nextStep) outputStepOverride = options.nextStep;
-      status('Saved speaker layout. No sound was played.');
+      var saveStatus = payload && payload.save || {};
+      var needsAttention = saveStatus.status === 'needs_attention';
+      status(
+        saveStatus.message || 'Saved speaker layout.',
+        needsAttention
+      );
     } catch (e) {
       outputTopology.saving = false;
       outputTopology.error = e.message;
@@ -6850,78 +6861,59 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   async function resetOutputTopology() {
     if (outputTopology.resetting) return;
     var ok = await jtsConfirm(
-      'Reset speaker setup? This clears the saved active crossover layout and returns this speaker to a detected passive setup. No test tone will play.',
-      {danger: true}
+      'This clears the current speaker setup. If usable hardware is detected, it will be shown after reset. Audio stays off until you choose a speaker layout.',
+      {title: 'Reset speaker setup?', confirmLabel: 'Reset speaker setup', danger: true}
     );
     if (!ok) return;
-    stopCommissionAutoRamp('');
     outputTopology.resetting = true;
     outputTopology.error = '';
-    patchActiveSpeaker({
-      commission: null,
-      commissioningView: null,
-      measurements: null,
-      baselineProfile: null,
-      error: '',
-      commissionBusy: '',
-      commissionError: ''
-    });
     render();
     try {
       var resp = await fetch('./output-topology/reset', {
         method: 'POST',
         headers: jsonHeaders(),
-        body: JSON.stringify({})
+        body: JSON.stringify({
+          topology_revision: outputTopology.revision,
+          detected_hardware_identity: outputTopology.hardwareAdoption &&
+            outputTopology.hardwareAdoption.identity
+        })
       });
       var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload.error || 'speaker setup reset failed');
+      if (!resp.ok) {
+        if (resp.status === 409 && payload.output_topology) {
+          ingestOutputTopology(payload);
+          var conflictMessage = payload.error ||
+            'Speaker setup or detected hardware changed. Review it and try again.';
+          status(conflictMessage, true);
+          render();
+          return;
+        }
+        throw new Error(payload.error || 'speaker setup reset failed');
+      }
       ingestOutputTopology(payload);
+      stopCommissionAutoRamp('');
+      patchActiveSpeaker({
+        commission: null,
+        commissioningView: null,
+        measurements: null,
+        baselineProfile: null,
+        error: '',
+        commissionBusy: '',
+        commissionError: ''
+      });
       outputStepOverride = 'layout';
-      var cleanupWarning = resetCleanupWarning(payload);
-      if (cleanupWarning) {
-        outputTopology.error = cleanupWarning;
-        status(cleanupWarning, true);
+      var resetStatus = payload && payload.reset || {};
+      if (resetStatus.status === 'needs_attention') {
+        outputTopology.error = resetStatus.message || 'Speaker setup was reset, but JTS requires attention before continuing.';
+        status(outputTopology.error, true);
       } else {
-        status('Reset speaker setup to the detected passive layout. No sound was played.');
+        status(resetStatus.message || 'Speaker setup was reset. Audio is off until you choose a speaker layout.');
       }
     } catch (e) {
       outputTopology.resetting = false;
-      outputTopology.error = e.message;
       status('Could not reset speaker setup: ' + e.message, true);
     }
     render();
-  }
-  function resetCleanupWarning(payload) {
-    var warnings = [];
-    var reset = payload && payload.active_speaker_reset || {};
-    if (reset.status === 'partial') {
-      var errors = Array.isArray(reset.errors) ? reset.errors : [];
-      var ids = [];
-      errors.forEach(function(error) {
-        if (error && error.id) ids.push(String(error.id));
-      });
-      var count = errors.length || 1;
-      var msg = 'Reset speaker setup, but JTS could not clear ' + count +
-        ' active-speaker setup artifact' + (count === 1 ? '' : 's');
-      if (ids.length) msg += ': ' + ids.join(', ');
-      msg += '. Reset again or check logs before continuing.';
-      warnings.push(msg);
-    }
-    // The startup graph is width-matched to the saved layout, so it goes stale
-    // when the layout changes. From this page the re-render runs inside
-    // jasper-web's sandbox and cannot write /etc/camilladsp; the root
-    // reconciler kicked right after is what actually converges it. Say so when
-    // the in-process attempt failed rather than reporting a clean reset — a
-    // silently failed render is how a half-muted graph got loaded before.
-    var renderError = payload && payload.reset && payload.reset.camilla &&
-      payload.reset.camilla.render_error;
-    if (renderError) {
-      warnings.push('Reset speaker setup. JTS could not re-render the startup ' +
-        'audio graph from this page (' + renderError + '); the audio reconciler ' +
-        'should do it. If one speaker output stays silent, re-run the reset or ' +
-        'deploy, and check logs.');
-    }
-    return warnings.join(' ');
   }
   async function updateOutputChannelIdentity(button) {
     if (outputTopology.dirty) {

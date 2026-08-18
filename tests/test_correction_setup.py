@@ -5305,9 +5305,18 @@ async def test_reset_safety_failure_preserves_current_and_uses_preemit_snapshot(
     tmp_path,
 ):
     """Rejected Reset output cannot overwrite or become its own fallback."""
+    from jasper.output_topology import save_output_topology
     from jasper.correction.session import SessionState
     from jasper.sound.camilla_yaml import emit_sound_config
     from jasper.sound.profile import SoundProfile
+    from tests.test_active_speaker_runtime_contract import _full_range_stereo
+
+    # This test exercises the later candidate-safety rejection.  A reset now
+    # leaves an empty topology unconfigured and parked, so declare the valid
+    # passive layout that permits the flat candidate to reach that seam.
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(_full_range_stereo(), path=topology_path)
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
 
     current = tmp_path / "sound_current.yml"
     original = emit_sound_config(SoundProfile(enabled=False))

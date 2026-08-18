@@ -803,8 +803,9 @@ def test_stereo_and_unconfigured_topologies_render_byte_identical_flat_config():
     from jasper.output_topology import new_topology_draft
     from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
 
-    # The golden: what every non-mono box has always booted. Both a saved
-    # stereo topology and a fresh empty draft must reproduce it byte-for-byte.
+    # Rendering is intentionally topology-shape-only: a saved stereo topology
+    # and a fresh empty draft produce identical flat bytes. The runtime contract
+    # separately refuses to SELECT this artifact for an unconfigured speaker.
     baseline = emit_flat_outputd_cutover_config(topology=new_topology_draft())
 
     assert emit_flat_outputd_cutover_config(topology=_stereo_topology()) == baseline

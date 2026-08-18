@@ -694,7 +694,9 @@ def test_parked_graph_keeps_the_speaker_reported_as_parked(
 
     assert state["coherence_errors"]
     assert "parked graph" in state["coherence_errors"][0]
-    assert "no staged startup graph" in state["coherence_errors"][0]
+    assert "cannot drive an active speaker layout" in state["coherence_errors"][0]
+    assert "reset output setup" in state["coherence_errors"][0]
+    assert "choose an explicit passive layout" in state["coherence_errors"][0]
     # The DAC-capability clause still rides along after this reason.
     assert state["capability_gap"] == {
         "device_id": PASSIVE_ONLY_DAC_ID,
@@ -710,6 +712,74 @@ def test_parked_graph_keeps_the_speaker_reported_as_parked(
     health = _compose(transport=state)
     assert health["signal_path"]["headline"] == _PARKED_HEADLINE
     assert health["overall"]["headline"] != "Audio is ready"
+
+
+def test_unconfigured_parked_graph_names_the_layout_action(monkeypatch, tmp_path) -> None:
+    """A fresh/reset speaker is intentionally silent, never a hidden outage."""
+    from jasper.active_speaker.runtime_contract import (
+        UNCONFIGURED_PARKED_EXIT,
+        build_parked_muted_graph,
+    )
+    from jasper.output_topology import save_output_topology
+    from tests.test_active_speaker_runtime_contract import _topology
+
+    topology = _topology([])
+    text, graph = build_parked_muted_graph(topology)
+    assert graph.allowed
+    config = tmp_path / "speaker_setup_parked.yml"
+    config.write_text(text, encoding="utf-8")
+    statefile = tmp_path / "outputd-statefile.yml"
+    statefile.write_text(f"config_path: {config}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "jasper.audio_runtime_plan.DEFAULT_CAMILLA_STATEFILE_PATH", str(statefile)
+    )
+    monkeypatch.setattr(
+        "jasper.audio_runtime_plan.DEFAULT_CAMILLA2_STATEFILE_PATH", str(statefile)
+    )
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(topology, path=topology_path)
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+
+    state = audio_health._read_transport_state(_plan_for("loopback"))
+
+    assert state["coherence_errors"] == [
+        "CamillaDSP is holding the parked graph, so every output is muted "
+        f"({UNCONFIGURED_PARKED_EXIT})"
+    ]
+    health = _compose(transport=state)
+    assert health["signal_path"]["headline"] == _PARKED_HEADLINE
+    assert health["overall"]["headline"] != "Audio is ready"
+
+
+def test_corrupt_layout_is_not_relabelled_as_unconfigured_silence(
+    monkeypatch, tmp_path
+) -> None:
+    """A safe parked graph does not conceal corrupt persisted intent."""
+    from jasper.active_speaker.runtime_contract import build_parked_muted_graph
+    from tests.test_active_speaker_runtime_contract import _topology
+
+    text, graph = build_parked_muted_graph(_topology([]))
+    assert graph.allowed
+    config = tmp_path / "speaker_setup_parked.yml"
+    config.write_text(text, encoding="utf-8")
+    statefile = tmp_path / "outputd-statefile.yml"
+    statefile.write_text(f"config_path: {config}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "jasper.audio_runtime_plan.DEFAULT_CAMILLA_STATEFILE_PATH", str(statefile)
+    )
+    monkeypatch.setattr(
+        "jasper.audio_runtime_plan.DEFAULT_CAMILLA2_STATEFILE_PATH", str(statefile)
+    )
+    topology_path = tmp_path / "output_topology.json"
+    topology_path.write_text("{not json", encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+
+    state = audio_health._read_transport_state(_plan_for("loopback"))
+
+    assert state["coherence_errors"] == [
+        "Saved speaker layout is unavailable or invalid; run jasper-doctor"
+    ]
+    assert "mono or stereo speaker layout" not in state["coherence_errors"][0]
 
 
 def test_a_degraded_transport_read_cannot_poison_later_reads(monkeypatch) -> None:

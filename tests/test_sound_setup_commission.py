@@ -47,12 +47,18 @@ def _stub_audio_hardware_reconcile(monkeypatch):
 
 
 def _web_commission_env(monkeypatch, tmp_path, controller: _FakeController) -> dict:
+    from jasper.output_topology import output_topology_mutation
+
     # #2285 P2: this box is on the ring, so the load gate's liveness conjuncts
     # have to answer. `resolve_output_layout` case 2 now names the ring
     # unconditionally, and Wave 3's `commissioning_transport_armed` gate reads
     # fan-in's coupling and outputd's ACTIVE marker FRESH and fails SAFE — so a
     # harness declaring neither reads `loopback` with the marker false and every
     # commission-load call through this env blocks. See `tests/_armed_transport.py`.
+    topology_path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    with output_topology_mutation(topology_path) as mutation:
+        mutation.save(_topology())
     arm_ring_transport(monkeypatch)
     staged = _staged(tmp_path)
     staged_path = staged["config"]["path"]
@@ -60,7 +66,6 @@ def _web_commission_env(monkeypatch, tmp_path, controller: _FakeController) -> d
     statefile.write_text(f"config_path: {staged_path}\nmute: false\n", encoding="utf-8")
     controller.persisted_path = staged_path
 
-    monkeypatch.setattr(sound_setup, "load_output_topology", lambda path=None: _topology())
     monkeypatch.setattr(
         "jasper.active_speaker.staging.load_staged_startup_config", lambda: staged
     )
@@ -1622,7 +1627,11 @@ def test_commission_load_repairs_drifted_tweeter_guard(monkeypatch, tmp_path):
     away from the staged config and block driver commissioning forever (the jts3
     "speaker isn't fully set up for driver tests yet" wedge).
     """
-    from jasper.output_topology import set_channel_protection_status
+    from jasper.output_topology import (
+        load_output_topology_strict,
+        output_topology_mutation,
+        set_channel_protection_status,
+    )
 
     controller = _FakeController("placeholder")
     _web_commission_env(monkeypatch, tmp_path, controller)
@@ -1634,15 +1643,8 @@ def test_commission_load_repairs_drifted_tweeter_guard(monkeypatch, tmp_path):
         role="tweeter",
         protection_status="required_missing",
     )
-    live = {"topology": drifted}
-    monkeypatch.setattr(
-        sound_setup, "load_output_topology", lambda path=None: live["topology"]
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "save_output_topology",
-        lambda topology: live.__setitem__("topology", topology),
-    )
+    with output_topology_mutation() as mutation:
+        mutation.save(drifted)
 
     asyncio.run(
         sound_setup._active_speaker_commission_load_payload(
@@ -1650,9 +1652,10 @@ def test_commission_load_repairs_drifted_tweeter_guard(monkeypatch, tmp_path):
         )
     )
 
+    persisted = load_output_topology_strict()
     tweeter = next(
         channel
-        for group in live["topology"].speaker_groups
+        for group in persisted.speaker_groups
         for channel in group.channels
         if channel.role == "tweeter"
     )

@@ -5,7 +5,7 @@
 """Reset helpers for active-speaker setup evidence.
 
 These helpers clear durable wizard/evidence state after the saved output
-topology is reset to passive. They intentionally do not delete generated
+topology is reset to unconfigured. They intentionally do not delete generated
 CamillaDSP YAML files: those are inert without the state/evidence JSON and can
 be useful for forensics, while a loaded runtime graph is reconciled separately.
 

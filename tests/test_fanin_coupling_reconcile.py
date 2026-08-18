@@ -46,6 +46,16 @@ def _isolate_base_jasper_env(tmp_path, monkeypatch):
 
 def isolate_base_jasper_env(tmp_path, monkeypatch):
     """Keep effective-env tests independent of the developer host's /etc state."""
+    # Ring-arm mechanics below need an explicit, commissioned passive stereo
+    # speaker. Empty speaker_groups now means "unconfigured and silent", so it
+    # is not a neutral default for tests that are specifically about the later
+    # asset, geometry, and daemon-order gates.
+    from jasper.output_topology import (
+        OUTPUT_TOPOLOGY_KIND,
+        OutputTopology,
+        save_output_topology,
+    )
+
     jasper_env = tmp_path / "jasper.env"
     jasper_env.write_text("", encoding="utf-8")
     monkeypatch.setattr(
@@ -68,6 +78,49 @@ def isolate_base_jasper_env(tmp_path, monkeypatch):
         "jasper.fanin.coupling_reconcile.ENTRY_LOCK_PATH",
         str(tmp_path / "entry.lock"),
     )
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(
+        OutputTopology.from_mapping(
+            {
+                "artifact_schema_version": 1,
+                "kind": OUTPUT_TOPOLOGY_KIND,
+                "topology_id": "test-passive-stereo",
+                "name": "Test passive stereo",
+                "status": "draft",
+                "hardware": {
+                    "device_id": "apple_usb_c_dongle",
+                    "device_label": "Apple USB-C audio adapter",
+                    "physical_output_count": 2,
+                },
+                "speaker_groups": [
+                    {
+                        "id": "left",
+                        "label": "Left",
+                        "kind": "left",
+                        "mode": "full_range_passive",
+                        "channels": [
+                            {"role": "full_range", "physical_output_index": 0}
+                        ],
+                    },
+                    {
+                        "id": "right",
+                        "label": "Right",
+                        "kind": "right",
+                        "mode": "full_range_passive",
+                        "channels": [
+                            {"role": "full_range", "physical_output_index": 1}
+                        ],
+                    },
+                ],
+                "routing": {
+                    "main_left_group_id": "left",
+                    "main_right_group_id": "right",
+                },
+            }
+        ),
+        path=topology_path,
+    )
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
 
 
 def _recorder(
@@ -2441,23 +2494,20 @@ def test_arm_shm_ring_topology_unreadable_now_fails_closed(
 # The tests above either exercise the topology_supports_shm_ring predicate in
 # isolation (tests/test_runtime_contract_ring.py) or MOCK the predicate at the
 # reconciler seam. Neither proves the actual arming gate the defect names
-# (arm_ring_topology_ineligible) resolves a REAL shipped-default topology loaded
-# from disk via load_output_topology_strict() to "eligible" — nor that a real
-# stale-subwoofer topology honestly refuses through that same gate. These close
-# that gap: a plain-stereo single-sink box (jts.local's true hardware) must NOT
-# be refused, and the refusal that DID fire on jts.local was the honest verdict
-# on its saved stale-subwoofer artifact, remediated by the reset tool.
+# (arm_ring_topology_ineligible) resolves a REAL topology loaded from disk — nor
+# that a real stale-subwoofer topology honestly refuses through that same gate.
+# These close that gap: an unconfigured draft must remain silent until a
+# passive stereo layout is saved, while the stale-subwoofer refusal stays clear.
 
 
-def test_ring_topology_ready_eligible_for_real_shipped_default_topology(
+def test_fresh_unconfigured_topology_refuses_ring_then_explicit_stereo_allows_it(
     tmp_path,
     monkeypatch,
+    _ring_assets_present,
 ):
-    # The positive end-to-end path: a genuine on-disk shipped-default Apple-dongle
-    # topology (empty speaker_groups, outputs state="unused" — what
-    # new_topology_draft writes on a fresh box) resolves through the reconciler's
-    # ring_topology_ready() gate to a TRUE, non-fail-safe verdict. jts.local must
-    # arm shm_ring once its stale artifacts are cleared.
+    # Empty speaker_groups is deliberately not passive stereo: it is an
+    # unconfigured speaker, so the ring must not create audible output until the
+    # owner saves an explicit passive stereo layout.
     from jasper.fanin.coupling_reconcile import ring_topology_ready
     from jasper.output_topology import (
         OUTPUT_TOPOLOGY_KIND,
@@ -2467,47 +2517,105 @@ def test_ring_topology_ready_eligible_for_real_shipped_default_topology(
 
     topo_path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo_path))
-    save_output_topology(
-        OutputTopology.from_mapping(
-            {
-                "artifact_schema_version": 1,
-                "kind": OUTPUT_TOPOLOGY_KIND,
-                "topology_id": "default",
-                "name": "Speaker outputs",
-                "status": "draft",
-                "hardware": {
-                    "device_id": "apple_usb_c_dongle",
-                    "device_label": "Apple USB-C audio adapter",
-                    "physical_output_count": 2,
-                    "card_id": "A",
-                    "outputs": [
-                        {
-                            "index": 0,
-                            "human_label": "Left",
-                            "terminal_label": "1",
-                            "state": "unused",
-                        },
-                        {
-                            "index": 1,
-                            "human_label": "Right",
-                            "terminal_label": "2",
-                            "state": "unused",
-                        },
-                    ],
-                },
-                "speaker_groups": [],
-                "routing": {},
-            }
-        )
+    topology = OutputTopology.from_mapping(
+        {
+            "artifact_schema_version": 1,
+            "kind": OUTPUT_TOPOLOGY_KIND,
+            "topology_id": "default",
+            "name": "Speaker outputs",
+            "status": "draft",
+            "hardware": {
+                "device_id": "apple_usb_c_dongle",
+                "device_label": "Apple USB-C audio adapter",
+                "physical_output_count": 2,
+                "card_id": "A",
+                "outputs": [
+                    {
+                        "index": 0,
+                        "human_label": "Left",
+                        "terminal_label": "1",
+                        "state": "unused",
+                    },
+                    {
+                        "index": 1,
+                        "human_label": "Right",
+                        "terminal_label": "2",
+                        "state": "unused",
+                    },
+                ],
+            },
+            "speaker_groups": [],
+            "routing": {},
+        }
+    )
+    save_output_topology(topology)
+
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(tmp_path / "outputd.env", "")
+    calls, ro, rf, rc = _recorder()
+
+    refused = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
     )
 
     ok, detail = ring_topology_ready()
 
+    assert refused.ok is False
+    assert refused.recovered is True
+    assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
+    assert "camilla:shm_ring" not in calls
+    assert ok is False
+    assert "no speaker layout is configured" in detail
+    assert "passive stereo" in detail
+
+    configured = topology.to_dict()
+    configured["speaker_groups"] = [
+        {
+            "id": "left",
+            "label": "Left",
+            "kind": "left",
+            "mode": "full_range_passive",
+            "channels": [{"role": "full_range", "physical_output_index": 0}],
+        },
+        {
+            "id": "right",
+            "label": "Right",
+            "kind": "right",
+            "mode": "full_range_passive",
+            "channels": [{"role": "full_range", "physical_output_index": 1}],
+        },
+    ]
+    configured["routing"] = {
+        "main_left_group_id": "left",
+        "main_right_group_id": "right",
+    }
+    save_output_topology(OutputTopology.from_mapping(configured))
+
+    ok, detail = ring_topology_ready()
+
+    calls.clear()
+    armed = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+
     assert ok is True
-    # A genuine eligible verdict, NOT the "topology unreadable ... deferring"
-    # fail-safe (which would also return True but for the wrong reason).
-    assert "ring-eligible" in detail
-    assert "unreadable" not in detail
+    assert "declared passive stereo" in detail
+    assert armed.ok is True
+    assert armed.direction == "arm"
+    assert calls == ["outputd", "fanin", "camilla:shm_ring"]
+    assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
 
 
 def test_ring_topology_ready_refuses_real_stale_subwoofer_with_reset_hint(

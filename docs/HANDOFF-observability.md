@@ -358,6 +358,11 @@ part of that evidence list because the detector takes a coupling TOKEN and
 derives the transport shape from it: handing it a transport SHAPE name instead
 read an armed ring box as loopback and called a playing speaker parked (#2376).
 Only that detector's `errors` reach the parked wording.
+The other intentional-silence case is the proven all-muted parked graph. Audio
+health reads that graph from the persisted Camilla statefile, and `/state`, the
+dashboard, and `jasper-doctor` surface its contract-owned next action. The
+fallback contract — including what counts as intentional silence versus a
+failure — is owned by the [speaker-output reference](HANDOFF-speaker-output-reference.md#current-outputd-state).
 Its `notes` — coherent-but-transient states, today just the
 ACTIVE-ring arm waypoint — are published as `coherence_notes` for whoever reads
 `/state` and deliberately do NOT trip the household card: it is a rung of an

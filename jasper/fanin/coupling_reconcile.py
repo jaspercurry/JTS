@@ -3094,9 +3094,9 @@ def ring_topology_ready(*, strict_unreadable: bool = False) -> tuple[bool, str]:
     TWO admitting arms, because there are two rings:
 
     - **the STEREO arm** — Ring A/Ring B carry a full-range stereo program on a
-      single coherent ALSA sink, so this is legal for the plain-stereo /
-      unconfigured output contract only. It consults
-      ``topology_supports_shm_ring``, the single stereo-ring-eligibility
+      single coherent ALSA sink, so this is legal only for an explicit valid
+      passive-stereo output contract. An unconfigured speaker stays silent. It
+      consults ``topology_supports_shm_ring``, the single stereo-ring-eligibility
       predicate, so arming a non-eligible box refuses with a crisp reason here
       instead of failing later at outputd's Rust full-range-stereo rejection (a
       confusing daemon-level rollback);
@@ -3135,7 +3135,9 @@ def ring_topology_ready(*, strict_unreadable: bool = False) -> tuple[bool, str]:
       topology's OPINION rather than an arm decision.
     """
     from jasper.active_speaker.runtime_contract import (
+        CONTRACT_UNCONFIGURED,
         active_ring_channels_for_topology,
+        classify_output_contract,
         topology_supports_shm_ring,
     )
     from jasper.output_topology import (
@@ -3155,7 +3157,12 @@ def ring_topology_ready(*, strict_unreadable: bool = False) -> tuple[bool, str]:
             )
         return True, f"topology unreadable ({exc}); deferring to outputd's own guard"
     if topology_supports_shm_ring(topology):
-        return True, "topology is ring-eligible (stereo/unconfigured single sink)"
+        return True, "topology is ring-eligible (declared passive stereo single sink)"
+    if classify_output_contract(topology).classification == CONTRACT_UNCONFIGURED:
+        return False, (
+            "no speaker layout is configured; save a passive stereo layout "
+            "before arming the full-range shm_ring coupling"
+        )
     if active_ring_channels_for_topology(topology) is not None:
         # A composite sink additionally has to clear the WIDE-wire rule (P8b
         # item 1e). Asked BEFORE the endpoint proof because it is a property of
@@ -3181,19 +3188,12 @@ def ring_topology_ready(*, strict_unreadable: bool = False) -> tuple[bool, str]:
     # PASSIVE (not roleful, so no active ring) — a roleful composite resolves 4
     # since P8b item 1b. For these shapes loopback is the right coupling and
     # the household knows the setup.
-    # A shipped-default plain stereo
-    # single-sink box (one Apple dongle / one registered DAC) is NOT refused here:
-    # ``topology_supports_shm_ring`` reports it eligible above (its lone
-    # ``child_devices`` entry is the single coherent sink the ring drives — the
-    # DEFECT-2 fix). The one way a plain single-sink box lands in THIS branch is a
-    # SAVED topology that still declares STALE roleful/subwoofer ``speaker_groups``
-    # from a prior campaign after the hardware reverted to plain stereo: the
-    # classifier honestly reports the saved sub role and a stereo ring truly cannot
-    # drive it. The remediation is to CLEAR the drifted topology so it re-derives
-    # the plain-stereo shape from detected hardware —
-    # ``jasper-output-topology-reset`` (rewrites speaker_groups=[] -> unconfigured
-    # -> ring-eligible). Name it here so the operator has an actionable next step
-    # instead of an opaque refusal.
+    # A plain single-sink speaker still needs an explicit passive stereo layout
+    # before this arm is legal. A stale roleful/subwoofer topology needs the same
+    # first recovery step: ``jasper-output-topology-reset`` clears it to the
+    # unconfigured, silent state. The household then saves a passive stereo
+    # layout and re-arms. Name both steps rather than implying reset itself arms
+    # the full-range ring.
     return False, (
         "saved output topology is not ring-eligible (the STEREO shm_ring is a "
         "full-range single-sink coupling; roleful/protected/subwoofer "
@@ -3203,8 +3203,8 @@ def ring_topology_ready(*, strict_unreadable: bool = False) -> tuple[bool, str]:
         "explicit-mono is excluded by policy, not a ring-v2 timing gap). "
         "Keeping the coupling on loopback. If this box is actually a plain stereo "
         "single-sink speaker carrying a stale roleful/subwoofer topology, run "
-        "`jasper-output-topology-reset` to re-derive a clean passive topology from "
-        "detected hardware, then re-arm."
+        "`jasper-output-topology-reset` to clear it to an unconfigured state, "
+        "save an explicit passive stereo layout, then re-arm."
     )
 
 

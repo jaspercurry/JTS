@@ -1095,12 +1095,14 @@ def check_camilla_volume_limit() -> CheckResult:
 
 @doctor_check(order=28.5, group="audio")
 def check_active_speaker_runtime_graph() -> CheckResult:
-    """Fail closed if a roleful/protected topology is running flat stereo."""
+    """Report the graph selected for saved speaker intent, fail closed if unsafe."""
     from jasper.active_speaker.runtime_contract import (
+        CONTRACT_UNCONFIGURED,
         GRAPH_PARKED_ALL_MUTED,
         classify_bass_extension_graph,
         classify_output_contract,
         parked_muted_exits,
+        topology_allows_flat_dac_graph,
     )
     from jasper.output_topology import OutputTopologyError, load_output_topology_strict
 
@@ -1113,11 +1115,14 @@ def check_active_speaker_runtime_graph() -> CheckResult:
             f"saved output topology is unavailable or invalid: {exc}",
         )
     contract = classify_output_contract(topology)
-    if not contract.requires_roleful_graph:
+    # The SSOT that authorizes a flat DAC graph is deliberately narrower than
+    # "not roleful": unconfigured and incomplete/invalid non-roleful layouts
+    # are not passive playback contracts.
+    if topology_allows_flat_dac_graph(contract):
         return CheckResult(
             "active speaker runtime graph",
             "ok",
-            f"{contract.classification}: no roleful/protected outputs configured",
+            f"{contract.classification}: explicit passive layout is valid",
         )
 
     statefile, config_path = _active_camilla_config_path()
@@ -1127,7 +1132,7 @@ def check_active_speaker_runtime_graph() -> CheckResult:
             "fail",
             (
                 f"could not read config_path from {statefile}; saved topology "
-                "has roleful/protected outputs"
+                "does not permit an unchecked flat fallback"
             ),
         )
     path = Path(config_path)
@@ -1152,25 +1157,43 @@ def check_active_speaker_runtime_graph() -> CheckResult:
         staged_metadata_path=staged_metadata_path(),
     )
     if graph.classification == GRAPH_PARKED_ALL_MUTED and graph.allowed:
-        # #2135: the box declared roleful outputs but never staged a startup
-        # graph, so the deploy parked it silent instead of failing. Nothing is
-        # broken and nothing is audible — but the household has to finish (or
-        # undo) commissioning, so this warns rather than passing green. The
-        # exits are capability-aware: on a DAC with no active outputd lane
-        # "finish crossover preview" can never succeed, so it is not offered.
-        return CheckResult(
-            "active speaker runtime graph",
-            "warn",
-            (
-                f"parked silent for {contract.classification}: "
-                f"{parked_muted_exits(topology)}"
-            ),
-            # The parked graph is a File sink with every output hard-muted, so
-            # this branch IS the speaker-is-silent state. Declared here rather
-            # than re-derived by the summary composer (#2471).
-            speaker_silent=True,
+        # A parked graph is intentional silence, not a broken runtime. This
+        # covers both a zero-group topology (the household must choose a layout)
+        # and an incomplete roleful layout (the existing commissioning exits).
+        # The action is owned by ``parked_muted_exits`` so doctor, /state, and
+        # the dashboard cannot invent three versions of it.
+        if contract.classification == CONTRACT_UNCONFIGURED or (
+            contract.requires_roleful_graph
+        ):
+            return CheckResult(
+                "active speaker runtime graph",
+                "warn",
+                (
+                    f"parked silent for {contract.classification}: "
+                    f"{parked_muted_exits(topology)}"
+                ),
+                speaker_silent=True,
+            )
+        detail = (
+            contract.issues[0]["message"]
+            if contract.issues
+            else "saved layout is not a complete passive mono or stereo layout"
         )
+        return CheckResult("active speaker runtime graph", "fail", detail)
     if graph.allowed:
+        if contract.classification == CONTRACT_UNCONFIGURED:
+            return CheckResult(
+                "active speaker runtime graph",
+                "fail",
+                "unconfigured topology must use the proved parked graph",
+            )
+        if not contract.requires_roleful_graph:
+            detail = (
+                contract.issues[0]["message"]
+                if contract.issues
+                else "saved layout is not a complete passive mono or stereo layout"
+            )
+            return CheckResult("active speaker runtime graph", "fail", detail)
         return CheckResult(
             "active speaker runtime graph",
             "ok",

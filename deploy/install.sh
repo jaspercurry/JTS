@@ -1026,8 +1026,9 @@ install_camilladsp() {
     # overwriting /var/lib/camilladsp/statefile.yml. Do not repair that
     # statefile here: the safe target depends on the saved output topology.
     # This flat graph maps full-range stereo directly to DAC outputs. It is
-    # illegal when saved output topology assigns any physical output to
-    # tweeter/protected role. After the Python package is installed,
+    # selectable only for an explicit passive mono/stereo layout; unconfigured,
+    # incomplete, and any topology with a tweeter/protected role park instead.
+    # After the Python package is installed,
     # ensure_outputd_camilla_statefile asks jasper.active_speaker's runtime
     # contract which graph is legal and fails closed if no protected graph
     # exists.
@@ -1112,8 +1113,8 @@ render_outputd_cutover_config() {
 ensure_outputd_camilla_statefile() {
     # Runtime graph selection belongs to jasper.active_speaker, not install.sh.
     # This flat graph maps full-range stereo directly to DAC outputs. It is
-    # illegal when saved output topology assigns any physical output to
-    # tweeter/protected role.
+    # selectable only for an explicit passive mono/stereo layout; unconfigured,
+    # incomplete, and any topology with a tweeter/protected role park instead.
     local output
     echo "  Checking outputd Camilla statefile against active-speaker runtime contract"
     # --ring-flat-config names the shm_ring sibling; runtime-safe-graph reads the
@@ -1181,8 +1182,8 @@ ensure_crossover_camilla_statefile() {
     # runtime-safe-graph), which on a roleful/protected topology — the ONLY
     # topology where camilla#2 is meaningful — selects the DRIVER-DOMAIN
     # (Layer-A-intact) baseline / all-muted active startup graph and NEVER
-    # the flat fallback (the contract's `select_flat` branch is gated on
-    # `not requires_roleful_graph`; see
+    # the flat fallback (the contract's `select_flat` branch is gated by
+    # `topology_allows_flat_dac_graph`; see
     # jasper/active_speaker/runtime_contract.py). So an active box gets a
     # tweeter-safe driver-domain seed.
     #
@@ -1198,7 +1199,7 @@ ensure_crossover_camilla_statefile() {
     # ever DID start on the parked pointer it would emit silence, where the
     # flat pointer would send full range to a tweeter.
     #
-    # SEAM FLAGGED FOR THE RECONCILER PR: on an ORDINARY (non-active) box
+    # SEAM FLAGGED FOR THE RECONCILER PR: on an explicit valid passive box
     # the contract returns flat, so this would seed flat into a file named
     # crossover-statefile.yml. That is BENIGN today because camilla#2 is
     # INERT there (the unit is never enabled), so the flat seed is never
@@ -1208,7 +1209,7 @@ ensure_crossover_camilla_statefile() {
     # not on the guard. The later
     # reconciler PR — which knows when the box is actually an active
     # leader — should refine this to seed the EXACT driver-domain baseline
-    # (not whatever runtime-safe-graph returns for a non-roleful topology)
+    # (not whatever runtime-safe-graph returns for a passive topology)
     # at the moment it arms the unit. We do NOT author that here: emitting
     # a precise driver-domain baseline is jasper/active_speaker/* code,
     # outside this unit's scope fence.

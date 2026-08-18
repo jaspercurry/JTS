@@ -507,13 +507,13 @@ def _research_state(
 
 
 def _active_speaker_parked_snapshot() -> dict[str, Any]:
-    """Whether the speaker is PARKED silent for unfinished commissioning (#2135).
+    """Whether the speaker is PARKED silent for incomplete speaker setup.
 
-    A roleful/protected topology with no staged startup graph is seeded a
-    proven-silent parked graph so the deploy can complete; nothing is broken and
-    nothing is audible, but the household has to finish or undo commissioning.
-    Two keys only — the config path is already in ``/state.audio``, so it is not
-    restated here.
+    An unconfigured topology, or a roleful/protected topology without its
+    startup graph, is seeded a proven-silent parked graph so the deploy can
+    complete. Nothing is audible until the household saves the next valid
+    layout. Two keys only — the config path is already in ``/state.audio``, so
+    it is not restated here.
 
     Keyed on the persisted STATEFILE, not on the live CamillaDSP config path,
     deliberately: the two other surfaces that report this state
@@ -537,10 +537,20 @@ def _active_speaker_parked_snapshot() -> dict[str, Any]:
         parked_muted_exits,
     )
     from ..audio_runtime_plan import DEFAULT_CAMILLA_STATEFILE_PATH
+    from ..output_topology import OutputTopologyError, load_output_topology_strict
 
     config_path = read_camilla_statefile_config_path(DEFAULT_CAMILLA_STATEFILE_PATH)
     parked = active_graph_is_parked(config_path)
-    return {"parked": parked, "detail": parked_muted_exits() if parked else None}
+    if not parked:
+        return {"parked": False, "detail": None}
+    try:
+        topology = load_output_topology_strict()
+    except OutputTopologyError:
+        return {
+            "parked": True,
+            "detail": "saved speaker layout is unavailable or invalid; run jasper-doctor",
+        }
+    return {"parked": True, "detail": parked_muted_exits(topology)}
 
 
 def _disk_snapshot(path: str = "/") -> dict[str, Any] | None:
@@ -1429,11 +1439,12 @@ async def _get_state(
             # non-POSIX host or statvfs error. jasper-doctor's
             # check_disk_space owns the warn(≥85%)/fail(≥95%) thresholds.
             "disk": _disk_snapshot(),
-            # Active-speaker PARKED state (#2135): a declared-but-uncommissioned
-            # roleful topology holds silence instead of blocking the deploy.
-            # {"parked": bool, "detail": <the reachable exits, or null>}. Read
-            # from the STATEFILE, like the doctor and audio_health surfaces, so
-            # a down CamillaDSP cannot make a parked box read as not-parked.
+            # Speaker-setup PARKED state (#2135): an unconfigured topology or
+            # declared-but-uncommissioned roleful topology holds silence instead
+            # of allowing an inferred flat graph. {"parked": bool, "detail":
+            # <the reachable next action, or null>}. Read from the STATEFILE,
+            # like the doctor and audio_health surfaces, so a down CamillaDSP
+            # cannot make a parked box read as not-parked.
             "active_speaker_parked": _active_speaker_parked_snapshot(),
         },
         "home_assistant": ha_status,

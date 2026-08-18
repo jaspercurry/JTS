@@ -545,8 +545,34 @@ def test_outputd_grouping_env_active_endpoint_clears_dac_content():
     active = outputd_grouping_env(_follower(), active_endpoint=True)
     assert active[OUTPUTD_DAC_CONTENT_FIFO_ENV] == ""  # cleared (no dac_content)
     assert active[OUTPUTD_TTS_SOCKET_ENV] == ""
-    dumb = outputd_grouping_env(_follower(), active_endpoint=False)
+    dumb = outputd_grouping_env(
+        _follower(), active_endpoint=False, flat_output_allowed=True
+    )
     assert dumb[OUTPUTD_DAC_CONTENT_FIFO_ENV] != ""  # dumb member arms the lane
+
+
+def test_topology_changes_revoke_dac_bypass_without_deleting_bond_intent():
+    """Reset and active-layout save both close a bonded passive DAC bypass."""
+    from jasper.multiroom.reconcile import (
+        OUTPUTD_DAC_CONTENT_FIFO_ENV,
+        _assemble_args,
+        outputd_grouping_env,
+    )
+
+    bonded = _follower()
+    allowed = outputd_grouping_env(bonded, flat_output_allowed=True)
+    after_reset = outputd_grouping_env(bonded, flat_output_allowed=False)
+    after_active_save = outputd_grouping_env(
+        bonded,
+        active_endpoint=True,
+        flat_output_allowed=False,
+    )
+
+    assert allowed[OUTPUTD_DAC_CONTENT_FIFO_ENV] == reconcile_mod.MEMBER_CONTENT_FIFO
+    assert after_reset[OUTPUTD_DAC_CONTENT_FIFO_ENV] == ""
+    assert after_active_save[OUTPUTD_DAC_CONTENT_FIFO_ENV] == ""
+    assert _assemble_args(bonded)[CLIENT_KEY]
+    assert _assemble_args(bonded, active_endpoint=True)[CLIENT_KEY]
 
 
 def test_outputd_grouping_env_emits_sub_corner_only_for_sub():
@@ -561,11 +587,13 @@ def test_outputd_grouping_env_emits_sub_corner_only_for_sub():
     )
 
     sub = dataclasses.replace(_follower(channel="sub"), crossover_hz=120.0)
-    env = outputd_grouping_env(sub)
+    env = outputd_grouping_env(sub, flat_output_allowed=True)
     assert env[OUTPUTD_DAC_CONTENT_SUB_HZ_ENV] == "120.0"
 
     for ch in ("left", "right", "stereo", "mono"):
-        env = outputd_grouping_env(_follower(channel=ch))
+        env = outputd_grouping_env(
+            _follower(channel=ch), flat_output_allowed=True
+        )
         assert OUTPUTD_DAC_CONTENT_SUB_HZ_ENV not in env
 
 
@@ -582,14 +610,24 @@ def test_outputd_grouping_env_highpasses_mains_when_bond_has_sub():
         crossover_hz=100.0,
         roster=(BondMember(addr="192.168.1.8", name="Sub", channel="sub"),),
     )
-    assert outputd_grouping_env(leader)[OUTPUTD_DAC_CONTENT_HP_HZ_ENV] == "100.0"
+    assert (
+        outputd_grouping_env(leader, flat_output_allowed=True)[
+            OUTPUTD_DAC_CONTENT_HP_HZ_ENV
+        ]
+        == "100.0"
+    )
 
     follower = dataclasses.replace(
         _follower(channel="right"),
         crossover_hz=100.0,
         subwoofer_present=True,
     )
-    assert outputd_grouping_env(follower)[OUTPUTD_DAC_CONTENT_HP_HZ_ENV] == "100.0"
+    assert (
+        outputd_grouping_env(follower, flat_output_allowed=True)[
+            OUTPUTD_DAC_CONTENT_HP_HZ_ENV
+        ]
+        == "100.0"
+    )
 
 
 def test_outputd_grouping_env_clears_main_highpass_when_not_applicable():
@@ -660,7 +698,9 @@ def test_corner_precedence_active_main_defers_wireless_highpass():
     )
 
     # As a DUMB member (active_endpoint=False): the wireless HP IS applied here.
-    dumb = outputd_grouping_env(active_main, active_endpoint=False)
+    dumb = outputd_grouping_env(
+        active_main, active_endpoint=False, flat_output_allowed=True
+    )
     assert dumb[OUTPUTD_DAC_CONTENT_HP_HZ_ENV] == "100.0"
 
     # As an ACTIVE endpoint: the wireless HP DEFERS (cleared) — the box's own
@@ -950,7 +990,9 @@ def _patch_main_io(monkeypatch, tmp_path, cfg):
     # Default to the PASSIVE path (these legacy main() tests assert dumb-member
     # behavior); the active-follower main() flow has its own tests that override
     # this. is_active_speaker_box reads the topology, so stub it for hermeticity.
-    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: False)
+    monkeypatch.setattr(
+        reconcile_mod, "_output_topology_state", lambda: (False, True)
+    )
     monkeypatch.setattr(
         reconcile_mod,
         "_systemctl_unit_state",
@@ -1733,7 +1775,7 @@ def test_main_active_follower_prechecks_early_then_swaps_camilla_after_units(
     import jasper.multiroom.follower_config as fc_mod
 
     target, order = _patch_main_io(monkeypatch, tmp_path, _follower())
-    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
+    monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (True, False))
     monkeypatch.setattr(
         fc_mod,
         "precheck_active_follower_sync",
@@ -1771,7 +1813,7 @@ def test_main_active_follower_precheck_failure_falls_back_to_solo(
     import jasper.multiroom.follower_config as fc_mod
 
     target, order = _patch_main_io(monkeypatch, tmp_path, _follower())
-    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
+    monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (True, False))
 
     def _boom(cfg_):
         raise fc_mod.ActiveFollowerError("graph_unprovable", "nope")
@@ -1811,7 +1853,7 @@ def test_refused_follower_restore_failure_keeps_sources_parked(
     import jasper.multiroom.follower_config as fc_mod
 
     _patch_main_io(monkeypatch, tmp_path, _follower())
-    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
+    monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (True, False))
 
     def fail_precheck(_cfg):
         raise fc_mod.ActiveFollowerError("graph_unprovable", "nope")
@@ -2042,7 +2084,7 @@ def test_main_active_leader_bakes_arms_camilla2_and_reseeds(tmp_path, monkeypatc
     loopback (its own receiver), the leader hosts the stream, and the endpoint
     status persists active_leader=true."""
     target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
-    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
+    monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (True, False))
     _patch_active_leader(monkeypatch, order)
 
     rc = main(["--reason", "test"])
@@ -2094,7 +2136,7 @@ def test_main_active_leader_already_armed_skips_release_probe(
     it were camilla#1 that had not let go — the probe would read `busy` and
     tear down a healthy bond."""
     target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
-    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
+    monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (True, False))
     _patch_active_leader(monkeypatch, order)
     monkeypatch.setattr(
         reconcile_mod,
@@ -2126,7 +2168,7 @@ def test_main_active_leader_precheck_failure_falls_back_to_solo(tmp_path, monkey
     import jasper.multiroom.follower_config as fc_mod
 
     target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
-    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
+    monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (True, False))
     _patch_active_leader(monkeypatch, order)
 
     def _boom(cfg_):
@@ -2165,7 +2207,7 @@ def test_main_active_leader_unbond_disables_camilla2_and_restores(
     import jasper.multiroom.follower_config as fc_mod
 
     target, order = _patch_main_io(monkeypatch, tmp_path, _disabled())
-    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
+    monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (True, False))
     _patch_active_leader(monkeypatch, order)
     # camilla#2 enabled => this box WAS an active leader.
     monkeypatch.setattr(
@@ -2205,7 +2247,7 @@ def test_main_disabled_but_active_crossover_uses_leader_teardown(
     import jasper.multiroom.follower_config as fc_mod
 
     target, order = _patch_main_io(monkeypatch, tmp_path, _disabled())
-    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
+    monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (True, False))
     _patch_active_leader(monkeypatch, order)
     states = iter((False, True, False))  # disabled, active, inactive after stop
     monkeypatch.setattr(
@@ -2262,7 +2304,7 @@ def test_main_solo_active_box_takes_follower_path_not_leader_teardown(
     import jasper.multiroom.follower_config as fc_mod
 
     target, order = _patch_main_io(monkeypatch, tmp_path, _disabled())
-    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
+    monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (True, False))
     _patch_active_leader(monkeypatch, order)
     monkeypatch.setattr(
         reconcile_mod,
@@ -2296,8 +2338,8 @@ def test_main_unknown_topology_preserves_graph_before_any_mutation(
     _target, order = _patch_main_io(monkeypatch, tmp_path, _disabled())
     monkeypatch.setattr(
         reconcile_mod,
-        "_active_speaker_box_state",
-        lambda: None,
+        "_output_topology_state",
+        lambda: (None, False),
     )
     _patch_active_leader(monkeypatch, order)
     monkeypatch.setattr(
@@ -2320,7 +2362,13 @@ def test_main_unknown_topology_preserves_graph_before_any_mutation(
         rc = main(["--reason", "test"])
 
     assert rc == 1
-    assert order == []
+    assert "outputd_restart" in order
+    assert "apply" not in order
+    assert "leader_restore" not in order
+    assert "follower_restore" not in order
+    assert "passive_restore" not in order
+    outputd_env = (tmp_path / "grouping-outputd.env").read_text()
+    assert f"{reconcile_mod.OUTPUTD_DAC_CONTENT_FIFO_ENV}=\n" in outputd_env
     events = [
         record.message
         for record in caplog.records
@@ -2343,7 +2391,7 @@ def test_main_solo_active_box_blocks_restore_when_crossover_state_unknown(
     import jasper.multiroom.follower_config as fc_mod
 
     _target, order = _patch_main_io(monkeypatch, tmp_path, _disabled())
-    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
+    monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (True, False))
     _patch_active_leader(monkeypatch, order)
     monkeypatch.setattr(
         reconcile_mod,
@@ -2392,7 +2440,7 @@ def test_main_crossover_teardown_failure_preserves_runtime_graph(
     import jasper.multiroom.follower_config as fc_mod
 
     _target, order = _patch_main_io(monkeypatch, tmp_path, _disabled())
-    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
+    monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (True, False))
     _patch_active_leader(monkeypatch, order)
     states = iter((True, True))
     monkeypatch.setattr(
@@ -2435,7 +2483,7 @@ def test_main_crossover_must_report_inactive_after_teardown(
     import jasper.multiroom.active_leader_config as alc_mod
 
     _target, order = _patch_main_io(monkeypatch, tmp_path, _disabled())
-    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
+    monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (True, False))
     _patch_active_leader(monkeypatch, order)
     states = iter((True, True, True))  # still active after successful disable
     monkeypatch.setattr(
@@ -2467,7 +2515,7 @@ def test_main_active_leader_skips_arm_when_bake_fails(tmp_path, monkeypatch):
     import jasper.multiroom.active_leader_config as alc_mod
 
     target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
-    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
+    monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (True, False))
     _patch_active_leader(monkeypatch, order)
 
     def _boom():
@@ -2491,7 +2539,7 @@ def test_main_active_leader_skips_arm_when_audio_hardware_reconcile_fails(
     re-converge to the active-content lane before camilla#2 can safely own the
     round-trip loopback. If that handoff fails, leave camilla#2 unarmed."""
     target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
-    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
+    monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (True, False))
     _patch_active_leader(monkeypatch, order)
     monkeypatch.setattr(
         reconcile_mod,
@@ -2517,7 +2565,7 @@ def test_main_active_leader_skips_bake_when_camilla1_cannot_restart(
     lane, reconcile first releases camilla#2 and reset-starts camilla#1. If
     camilla#1 still cannot come back, do not bake or re-arm camilla#2."""
     target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
-    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
+    monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (True, False))
     _patch_active_leader(monkeypatch, order)
     monkeypatch.setattr(
         reconcile_mod,
@@ -2546,7 +2594,7 @@ def test_main_active_leader_skips_arm_and_restores_when_pcm_busy(
     import jasper.multiroom.active_leader_config as alc_mod
 
     target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
-    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
+    monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (True, False))
     _patch_active_leader(monkeypatch, order)
     monkeypatch.setattr(
         reconcile_mod,
@@ -2597,7 +2645,7 @@ def test_main_active_leader_fails_closed_when_writer_lock_absent(
     import jasper.multiroom.active_leader_config as alc_mod
 
     target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
-    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
+    monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (True, False))
     _patch_active_leader(monkeypatch, order)
     monkeypatch.setattr(
         reconcile_mod,
@@ -2654,7 +2702,7 @@ def test_main_active_leader_fails_closed_through_the_real_writer_lock_probe(
     monkeypatch.setattr(reconcile_mod, "ACTIVE_CONTENT_RELEASE_TIMEOUT_SEC", 0.0)
 
     target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
-    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
+    monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (True, False))
     _patch_active_leader(monkeypatch, order)
     # Undo the helper's probe mock so the REAL flock probe runs.
     monkeypatch.setattr(
@@ -2693,7 +2741,7 @@ def test_main_active_leader_skips_bake_and_arm_when_snapserver_down(
     neither the bake NOR the camilla#2 arm runs. camilla#1 keeps the DAC on its
     solo baseline; no two-instance conflict, no reboot."""
     target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
-    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
+    monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (True, False))
     _patch_active_leader(monkeypatch, order)
     # snapserver never came up (the bake gate must refuse).
     monkeypatch.setattr(reconcile_mod, "_unit_is_active", lambda unit: False)
@@ -3173,7 +3221,7 @@ def test_active_speaker_topology_error_is_raw_unknown_but_legacy_false(
     monkeypatch.setattr(topology_mod, "load_output_topology_strict", fail_load)
 
     with caplog.at_level("WARNING", logger=reconcile_mod.logger.name):
-        assert reconcile_mod._active_speaker_box_state() is None
+        assert reconcile_mod._output_topology_state()[0] is None
         assert reconcile_mod.is_active_speaker_box() is False
 
     events = [
