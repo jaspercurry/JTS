@@ -6,13 +6,17 @@
 // `JASPER_AIRPLAY_FREE_RUNNING` in /var/lib/jasper/airplay_mode.env,
 // and `__RENDERER_DEVICE__` from the renderer-lane map (see the alsa
 // block below).
-// Default = no (synced) — synced is glitch-free since we raised
-// `resync_threshold_in_seconds` below. Toggle via
+// Default = no (synced). The shipped sync set is
+// drift_tolerance_in_seconds=0.002, resync_threshold_in_seconds=0.2, and
+// audio_backend_buffer_desired_length_in_seconds=0.5; each value's transport-
+// specific evidence and remaining gaps live in docs/HANDOFF-airplay.md. Toggle via
 // http://jts.local/airplay/ or `jasper-airplay-mode set
 // [free-running|synced]`. See jasper/web/airplay_setup.py +
 // docs/HANDOFF-airplay.md for the toggle UX and full rationale.
-// SYNC-CONSTANT PROVENANCE: the tuned values below were derived on the
-// snd-aloop transport — see the U3 note above drift_tolerance.
+// SYNC-CONSTANT PROVENANCE: drift tolerance has SHM-ring evidence for the
+// regular out-of-date/order event class. The resync threshold, backend target,
+// and latency offset are unchanged and still need their own ring reliability
+// and A/V validation; see the U3 note above drift_tolerance.
 //
 // Requires source-built shairport-sync with --with-airplay-2 plus
 // nqptp.service running (UDP 319/320). The Debian Trixie apt package
@@ -26,48 +30,29 @@ general = {
     // 17-second underrun cadence visible in the journal.
     interpolation = "auto";
     output_backend = "alsa";
-    // U3/P6d TRANSPORT PROVENANCE — read before retuning any of the four
-    // sync values below (drift_tolerance, resync_threshold, the latency
-    // offset, buffer_desired_length). All four were derived and
-    // empirically validated on the SND-ALOOP transport, where
-    // snd_pcm_delay() lies (it reports loopback ring FILL, not
-    // presentation latency — the mechanism the resync comment below
-    // documents). On the armed SHM-ring transport the ioplug reports an
-    // honest occupancy-derived delay (jts_ring_delay,
-    // c/jts-ring-ioplug/pcm_jts_ring.c), so the delay signal shairport
-    // disciplines against has DIFFERENT dynamics even though the offset
-    // formula's own terms are all downstream of fan-in and
-    // transport-independent in kind. Validation does not transfer
-    // automatically: keep resync_threshold at 0.2 through the migration,
-    // and re-derive on measurement in the box's per-lane source pass
-    // (docs/HANDOFF-audio-graph-consolidation.md, U3 arc row). The arm
-    // CLI prints the same advisory when the airplay lane is armed.
-    // Default 0.002 s is unachievable in this topology (snd-aloop +
-    // CamillaDSP + Apple dongle PLL drift). With the default,
-    // shairport corrects on every cycle and the correction itself is
-    // the audible glitch. 0.1 s lets nqptp-disciplined natural drift
-    // play through without intervention.
-    drift_tolerance_in_seconds = 0.1;
-    // **The fix.** shairport's drift correction has two paths:
+    // U3/P6d RING PROVENANCE — read before retuning the sync values below.
+    // The SHM ioplug reports honest occupancy-derived delay (jts_ring_delay,
+    // c/jts-ring-ioplug/pcm_jts_ring.c). drift_tolerance has direct ring
+    // evidence for the event class below. resync_threshold, the latency
+    // offset, and buffer_desired_length were held unchanged in that trial;
+    // keep them unchanged until their own ring reliability and A/V validation.
+    // The arm CLI prints the same advisory.
+    //
+    // A JTS4 SHM-ring A/B trial on 2026-08-18 isolated 0.002 s for its regular
+    // out-of-date/order pairs: lowering drift eliminated them while the ring
+    // stayed at the same 15/16 occupancy, so that occupancy was not sufficient
+    // to produce the events. The canonical results and open ring-validation
+    // gaps live in docs/HANDOFF-airplay.md.
+    drift_tolerance_in_seconds = 0.002;
+    // shairport's drift correction has two paths:
     // - Continuous ±1-sample stuffing (gated by drift_tolerance) —
     //   smooth, inaudible.
     // - Discrete do_flush + silence injection (gated by
     //   resync_threshold) — drops ~6,600 source frames + injects up
     //   to 250 ms of zeros = audible "tear".
-    // With our chain (shairport → snd-aloop → CamillaDSP → outputd →
-    //   USB DAC), shairport's snd_pcm_delay() reads the loopback ring
-    //   fill, not the actual final-output latency. The fill ramps up ~42 ms
-    //   over ~60 s due to ~667 ppm crystal drift between the host's
-    //   nominal 48 kHz and the dongle's actual rate. Crossing the
-    //   0.05 s default threshold triggers the audible discrete path
-    //   every ~63 s. The continuous ±1-sample path can absorb up to
-    //   ~2500 ppm drift, so we have 4× headroom — but only if the
-    //   discrete path never fires first.
-    // Raising resync_threshold to 0.2 s keeps shairport in the
-    //   continuous path. Empirically verified over multiple 5-min
-    //   samples: zero discrete-correction events, smooth ~149 ms
-    //   peak-to-peak fill swing instead of the previous
-    //   crash-and-refill cycle. See docs/HANDOFF-airplay.md.
+    // resync_threshold=0.2 prevents the historical large-error path from
+    // flushing early. It was held constant in the JTS4 ring A/B and still
+    // needs its own long-run ring validation. See docs/HANDOFF-airplay.md.
     resync_threshold_in_seconds = 0.2;
     // Derived by jasper-apply-airplay-mode as:
     //   -((target_level - chunksize + fanin_output_buffer + outputd_dac_buffer) / samplerate)
@@ -83,16 +68,14 @@ general = {
     // WiFi burst absorption and jasper-outputd owns the DAC.
     // This offset tells shairport about the fixed downstream delay
     // invisible to its ALSA handle so video/multi-room sync stays
-    // honest. Renders as -0.106667 with the production values
+    // honest. It was unchanged in the JTS4 ring A/B; end-to-end ring A/V
+    // validation remains open. Renders as -0.106667 with production values
     // (chunksize=1024, target_level=2048, fan-in output=1024,
     // outputd DAC=3072).
     audio_backend_latency_offset_in_seconds = __AUDIO_BACKEND_LATENCY_OFFSET_SECONDS__;
-    // Default 0.15 s is too tight for snd-aloop -> CamillaDSP -> outputd
-    // when CamillaDSP queuelimit is 4 chunks (~85 ms). 0.5 s gives
-    // shairport enough headroom to absorb scheduler jitter before
-    // underrunning. shairport TROUBLESHOOTING.md recommends this
-    // bump explicitly for the "alsa underrun + large sync error"
-    // pattern we see.
+    // Held at 0.5 s in the JTS4 ring A/B. A 64 ms trial changed occupancy but
+    // is not adopted: longer WiFi-disruption, reliability, and A/V validation
+    // is required first. Canonical evidence: docs/HANDOFF-airplay.md.
     audio_backend_buffer_desired_length_in_seconds = 0.5;
 };
 
