@@ -155,6 +155,16 @@ from tests.test_crossover_v2_stage_bridge import (
 # --------------------------------------------------------------------------- #
 
 
+def _hydrated_series_position(conductor: Any) -> Any:
+    """The :class:`SeriesPosition` this conductor was SEEDED with.
+
+    Distinct from anything the session computes for itself: it is purely what
+    the preparer resolved off durable state and handed over, and there is no
+    public reader because a session may only carry it, never re-derive it.
+    """
+    return conductor._series_position
+
+
 def _install_entry_baseline(conductor: Any, *, scale: float) -> EntryBaseline:
     """Give a stage-2 conductor the "before" stage 1 would have handed it.
 
@@ -3076,6 +3086,139 @@ def test_a_kept_round_banks_its_blend_instruction_and_it_reads_back():
 
     position = coordinator.series_position_from_state({"round_receipt": identity})
     assert position.previous_blend_correction is not None
+
+
+#: The 2026-08-18 round's own banked instruction, and a DIFFERENT readable
+#: correction for the speaker to be playing. The two blend tests below share
+#: them so "the instruction" and "the applied graph" are provably the same two
+#: answers in both, rather than two pairs that happen to differ.
+_BANKED_INSTRUCTION = ({"biquad_type": "Peaking", "freq": 2120.3384, "q": 2.0,
+                        "gain": -0.7171},)
+_APPLIED_INCUMBENT = ({"biquad_type": "Peaking", "freq": 1200.0, "q": 2.0,
+                       "gain": -2.5},)
+
+
+def _state_carrying_a_banked_instruction() -> dict[str, Any]:
+    """Durable state as a kept round 8 leaves it: ordinal, objectives, blend."""
+    return {
+        "round_receipt": {
+            "round_ordinal": 8,
+            "objectives": {"tilt_db": 0.4, "ripple_db": 0.9},
+            "trusted_floor_hz": 143.0,
+            "blend": {
+                "filters": [dict(f) for f in _BANKED_INSTRUCTION],
+                "residual_db": 0.7304,
+            },
+        },
+    }
+
+
+def test_a_banked_instruction_reaches_the_next_rounds_measure_stage(monkeypatch):
+    """#2698 — the hop the test above stops one step short of.
+
+    That test proves the receipt CARRIES the instruction and that the reader
+    parses it back. Neither fact iterates anything: ``_blend_prescription`` is
+    read at candidate-build time, which runs in the MEASURE stage, so a series
+    converges only if the MEASURING session is hydrated with its position too.
+    Before #2698 it was not: the one ``series_position=`` line lived in
+    ``prepare_v2_verify`` alone, ``self._series_position`` was ``None`` on
+    every measuring session, and the build silently fell back to the incumbent.
+    Measured on 2026-08-18: a round banked ``Peaking 2120.34 Hz, -0.7171 dB``
+    and the next round emitted zero blend filters, with the done screen still
+    promising the region would be trimmed.
+
+    Driven through the REAL stage-1 preparer, and DISCRIMINATING: the applied
+    profile carries a different, readable correction, so "carried the
+    instruction" and "fell back to the graph" are two distinguishable answers
+    rather than one. A fixture with no incumbent would pass against ``()`` for
+    the wrong reason.
+    """
+
+    banked, incumbent = _BANKED_INSTRUCTION, _APPLIED_INCUMBENT
+    monkeypatch.setattr(
+        "jasper.active_speaker.baseline_profile."
+        "load_applied_baseline_profile_state",
+        lambda: {"blend_correction": [dict(f) for f in incumbent]},
+    )
+    v2host.save_v2_state(_state_carrying_a_banked_instruction())
+
+    prepared = v2host.prepare_v2_session(
+        {}, status=_status(), run_async=None, camilla_factory=None,
+    )
+    conductor, _state = _open_prepared(monkeypatch, prepared)
+
+    # The series survived into the MEASURING session, ordinal and all — a
+    # position resolved to ``first()`` would carry no instruction and the
+    # assertion below would then be testing the fallback.
+    assert _hydrated_series_position(conductor).ordinal == 9
+    # …and what ``_build_candidate`` hands the emitter is that instruction,
+    # not the graph the speaker is already playing.
+    assert conductor._blend_prescription() == banked
+    # The control that makes the assertion above mean something: the fallback
+    # is reachable, readable, and a DIFFERENT answer.
+    assert flow.CrossoverV2Session._applied_blend_correction(
+        SimpleNamespace()
+    ) == incumbent
+
+
+def test_a_household_undo_withdraws_the_instruction_but_not_the_series(
+    monkeypatch,
+):
+    """The second door into the hop above, and the ruled contract it must obey.
+
+    "A round that does not KEEP its graph issues no instruction" is decided at
+    the receipt writer, for the round's OWN restore. A household Undo reverses
+    an apply from outside that path: ``observe_restore`` clears the journey
+    field by field, which its own docstring calls a standing trap, and
+    ``round_receipt`` is the fifth durable field to meet it. While stage 1
+    derived its blend from the applied graph the trap cost nothing — the
+    restore itself answered. Since #2698 stage 1 reads the receipt, so the
+    instruction has to be withdrawn explicitly or the next round composes a
+    correction onto a base the household just removed.
+
+    **What must NOT be withdrawn with it**: the ordinal. Nulling the whole
+    receipt would send the series back to round 1, and an Undo→measure cycle
+    could then be repeated past the round cap forever. Objectives and the
+    trusted floor go with the ordinal for the same reason — they frame it.
+    """
+
+    restored = _APPLIED_INCUMBENT
+    monkeypatch.setattr(
+        "jasper.active_speaker.baseline_profile."
+        "load_applied_baseline_profile_state",
+        lambda: {"blend_correction": [dict(f) for f in restored]},
+    )
+    v2host.save_v2_state(_state_carrying_a_banked_instruction())
+    # The premise, asserted rather than assumed: there really is an instruction
+    # to withdraw, or every assertion below passes for the wrong reason.
+    assert coordinator.series_position_from_state(
+        v2host.load_v2_state()
+    ).previous_blend_correction == _BANKED_INSTRUCTION
+
+    v2host.observe_restore()
+
+    position = coordinator.series_position_from_state(v2host.load_v2_state())
+    assert position.previous_blend_correction is None, (
+        "an Undo left its instruction standing"
+    )
+    assert position.previous_blend_residual_db is None, (
+        "the reading the instruction was decided against outlived it"
+    )
+    # The series itself is untouched: the cap still counts round 8, so an
+    # Undo→measure cycle cannot be repeated past it.
+    assert position.ordinal == 9
+    assert position.previous_objectives is not None
+    assert position.previous_trusted_floor_hz == 143.0
+
+    # End to end, at the surface the household feels: the next measuring
+    # session prescribes the graph Undo put back, not the discarded
+    # instruction.
+    prepared = v2host.prepare_v2_session(
+        {}, status=_status(), run_async=None, camilla_factory=None,
+    )
+    conductor, _state = _open_prepared(monkeypatch, prepared)
+
+    assert conductor._blend_prescription() == restored
 
 
 #: "the session resolved no position at all", distinct from "it resolved one

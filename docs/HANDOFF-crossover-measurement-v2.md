@@ -520,7 +520,11 @@ Three things about it are worth knowing before touching the round:
   restored round's prescription describes a speaker that no longer exists. The
   next candidate then derives its correction from the applied (restored)
   profile instead. What the round commanded is still banked — that is history,
-  and history survives a restore.
+  and history survives a restore. A household **Undo** is the other door to
+  that same state and takes the same withdrawal (#2698): `observe_restore`
+  clears the receipt's `blend` sub-object — the instruction and the residual it
+  was decided against — while keeping `round_ordinal`, so the series does not
+  lose its place against the round cap.
 - **It stops re-prescribing once the region stops improving.** A defect
   narrower than the correction can represent (`Q > 2`) cannot be matched, so
   the fit over-corrects its shoulders and the loop limit-cycles; the stop
@@ -5618,7 +5622,11 @@ level-estimator event paragraphs re-read against
 payload, and the `…_linearization_giveback` emit. All three named a level-datum
 owner the code does not have, through two symbols
 (`summed_level_reference_db`, `trim_band_delta_db`/`core_level_delta_db`) that
-do not exist repo-wide. **Scope: only the paragraphs named above were
-re-verified this pass**; the rest of the live spine carries its 2026-08-16
-reading, and the appendix's dated narrative was NOT re-verified and still shows
-the pre-#2602 five-row table, as its own status callout says it will)
+do not exist repo-wide. Carried forward: #2698 — the blend-region section's
+restored-graph bullet re-read against `_blend_prescription`,
+`coordinator._write_round_receipt`, and `observe_restore`, and extended to name
+the household-Undo door the same rule now closes. **Scope: only the paragraphs
+named above were re-verified this pass**; the rest of the live spine carries
+its 2026-08-16 reading, and the appendix's dated narrative was NOT re-verified
+and still shows the pre-#2602 five-row table, as its own status callout says
+it will)

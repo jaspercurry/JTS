@@ -763,7 +763,12 @@ def observe_restore() -> None:
     envelope resolves ``not_applicable``, and ``prepare_v2_verify`` refuses
     without ``applied``) because that argument makes the field correct by
     accident, and the accident is one screen-routing change away from being a
-    stale caveat on a live session."""
+    stale caveat on a live session.
+
+    ``round_receipt`` is the fifth (#2698), and the one field here cleared IN
+    PART rather than wholesale — it is the SERIES' memory, not the session's,
+    so the blend instruction is withdrawn while the ordinal that bounds the
+    series survives. The argument for that split is at the line itself."""
     state = load_v2_state()
     if state is None:
         return
@@ -804,6 +809,25 @@ def observe_restore() -> None:
     # record would describe a graph that is no longer live and a displacement
     # that has already been undone.
     state[ROUND_ANCHOR_STATE_KEY] = None
+    # ``round_receipt`` is the fifth field to meet the trap above (#2698), and
+    # the only one cleared IN PART. It is the SERIES' memory rather than the
+    # session's — nulling it would send the series back to round 1 and let an
+    # Undo→measure cycle repeat past the round cap forever, so the ordinal, the
+    # objectives that frame it, and the trusted floor all survive an Undo by
+    # design. What cannot is the round's blend INSTRUCTION: since #2698 the
+    # measuring stage builds its candidate from it
+    # (``CrossoverV2Session._blend_prescription``), so a surviving one would
+    # compose a correction onto the graph the household just removed. That is
+    # the same ruling ``coordinator._write_round_receipt`` already applies to a
+    # round that restores its OWN graph — a prescription describes a speaker
+    # measured through a specific incumbent, and this Undo is the other door to
+    # the same state. ``blend`` holds the filters and the residual they were
+    # decided against as one fact, so one clear withdraws both, and ``None`` is
+    # the shape that writer already uses for "this round issues no
+    # instruction".
+    receipt = state.get("round_receipt")
+    if isinstance(receipt, Mapping):
+        state["round_receipt"] = {**receipt, "blend": None}
     # fsync'd (#2291), the mirror of ``observe_apply_success``: this write
     # CLEARS the rollback anchor and flips ``applied`` after the previous graph
     # is already back on the speaker, so a power cut that loses it leaves the
@@ -7603,6 +7627,9 @@ def prepare_v2_session(
         session_wall_clock_ceiling_s,
     )
     from jasper.capture_relay import correction_adapter
+    from jasper.active_speaker.crossover_v2.coordinator import (
+        series_position_from_state,
+    )
 
     requested_tier = (raw.get("tier") if raw else None) or None
     if requested_tier is None:
@@ -7835,6 +7862,15 @@ def prepare_v2_session(
             attempt_floor=attempt_store.floor,
             speaker_id=context.topology.topology_id,
             alignment_prescription=alignment_prescription,
+            # #2698. The same series fact the grading stage reads, from the
+            # same reader and off the same durable state this snapshot is
+            # built from — because stage 1 reads it too, and reads it FIRST.
+            # ``_blend_prescription`` runs at candidate-build time, here in
+            # MEASURE, and an absent position there is not a no-op: it falls
+            # back to the incumbent, so a measuring session with no position
+            # silently discards every blend instruction the previous round
+            # banked and the series can never converge.
+            series_position=series_position_from_state(prior_raw),
         )
         persist_conductor_state(conductor, failure_code=None, evidence=refs)
         holder["run"] = build_v2_run_and_consume(
@@ -8169,10 +8205,11 @@ def prepare_v2_verify(
             # #2602: where the next round sits in the flattening series, read
             # off the receipt the previous round banked and carried forward
             # across sessions — the series outlives the session that started
-            # it. Wired HERE and only here because this is the stage that
-            # grades a round: stage 1 walks CHECK/MEASURE and never reaches
-            # ``_grade_round``, so a series position on its snapshot would be
-            # state nothing reads.
+            # it. This stage reads it in ``_grade_round_once``, the stage that
+            # grades a round. It is wired on BOTH stages since #2698:
+            # #2687 gave stage 1 its own reader (``_blend_prescription``, at
+            # candidate-build time), which falsified the argument this line
+            # once carried for being the series' only wiring site.
             series_position=series_position_from_state(state),
             attempt_floor=attempt_store.floor,
             last_attempt_decision=(
