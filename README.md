@@ -962,7 +962,11 @@ reference. Currently:
   preference; scalar-trim doctrine, the two named verify claims
   (integration vs flatness), speaker-class applicability (active
   2-way/3-way/passive), mic-tier doctrine, and the phased execution plan
-  (#1666–#1672). The handoff doc for the implementing session.
+  (#1666–#1672). Also the numbered decision record the campaign's owner
+  rulings land in — including Measurement Program v2 (ratified 2026-08-18,
+  not built): the capture schema, its two stimulus regimes, the degrees-
+  everywhere position set, and the position-major schedule. The handoff doc
+  for the implementing session.
 - [`flat-linearization-plan.md`](docs/flat-linearization-plan.md)
   — **Adopted plan (2026-07-25): the flat-linearization program** — why the
   speaker layer's measurement instrument moves from a single-point gated
