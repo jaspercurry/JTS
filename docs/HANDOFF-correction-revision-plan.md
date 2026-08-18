@@ -1054,14 +1054,18 @@ owed_on_device: the boost path is STILL OWED. An earlier reading of this
                 integration, which boost does not fix — so the selector rounds
                 should confirm boost engages when a genuine deficit exists.
                 Correction record: #1894 (2026-08-05 late). Also owed, all
-                owner-run: the new-floor CHECK/MEASURE slice (~3 min) and the
-                six-pose selection walk, which together exercise R16/R17/R18
-                on hardware for the first time; the #2233 /sound/ browser pass
+                owner-run: the new-floor CHECK/MEASURE slice (~3 min), which
+                exercises R18 on hardware for the first time; the #2233
+                /sound/ browser pass
                 (three named checks, owed before the next commissioning run
                 that delegates a level); and SetConfig->GetConfig, exercised
                 live by the flow's readback gate but probe-measured on the
                 load path only. Every one of these is EVIDENCE debt — no
-                round is waiting on code
+                round is waiting on code. The six-pose selection walk was owed
+                here too, exercising R16/R17 on hardware; it was PAUSED on
+                2026-08-18 (`STAGE1_INCLUDES_LATERAL`), so that debt is
+                deferred with it rather than outstanding — it comes back with
+                the redesigned lateral statistic, not before
 follow_ups:     #2099 owns the fit / spatial-grade / bass-room seam; #2100
                 owns honest Full-stage progress and recovery disclosure.
                 Closed by the campaign: #2098 (by #2242), #2106, #2107,

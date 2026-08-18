@@ -939,6 +939,7 @@ def test_a_remote_session_holds_every_capture_until_its_driver_reports_position(
     stated angle, and POSTs ``/crossover/v2/position-ready``.
     """
     from jasper.active_speaker.crossover_v2_flow import (
+        LATERAL_POSE_PROMPTS,
         POSITION_DEG_KEY,
         STAGE1_INCLUDES_CLOUD_MEASURE,
         STAGE1_INCLUDES_ENTRY_BASELINE,
@@ -949,7 +950,8 @@ def test_a_remote_session_holds_every_capture_until_its_driver_reports_position(
 
     shape = resolve_plan_shape(TIER_REMOTE)
     # The SHIPPED stage-1 composition, exactly as ``prepare_v2_session`` builds
-    # it — the lateral walk plus the entry baseline, no pre-apply cloud.
+    # it — the anchor pair plus the entry baseline, no pre-apply cloud and, since
+    # the 2026-08-18 pause, no lateral walk.
     stage_flags = dict(
         include_cloud_measure=STAGE1_INCLUDES_CLOUD_MEASURE,
         include_lateral=STAGE1_INCLUDES_LATERAL,
@@ -960,7 +962,15 @@ def test_a_remote_session_holds_every_capture_until_its_driver_reports_position(
         **stage_flags,
     )
     plan = spec.capture_plan
-    assert plan.capture_target == 9
+    # DERIVED from the same flags, so this moves with a flip instead of going
+    # stale. What is under test is that EVERY capture is held until its driver
+    # reports position — a property of the gate, not of how many captures there
+    # are. The multi-angle armed walk is pinned in the remote-tier suite.
+    assert plan.capture_target == (
+        2
+        + (len(LATERAL_POSE_PROMPTS) if STAGE1_INCLUDES_LATERAL else 0)
+        + (1 if STAGE1_INCLUDES_ENTRY_BASELINE else 0)
+    ) == 3
     wanted = [int(e.screen[POSITION_DEG_KEY]) for e in plan.entries]
 
     gate = PositionGate()
@@ -2809,8 +2819,11 @@ def test_stage_2_keeps_the_measuring_sessions_fc_recommendation():
     """R17, on the SAME predicate and for the same reason as the finding below.
 
     The Fc recommendation is produced at the lateral walk's close, which only a
-    MEASURING session runs. Stage 2 is a different session whose conductor has
-    no ``fc_selection`` at all, so without the carry-forward it persists
+    MEASURING session runs — and, since the 2026-08-18 pause, only one that
+    forces the walk back on. The carry-forward this pins is what re-arming
+    depends on, so it is asserted directly on the conductor rather than through
+    a shipped stage-1 session. Stage 2 is a different session whose conductor
+    has no ``fc_selection`` at all, so without the carry-forward it persists
     ``None`` over the recommendation — the household reads "your crossover
     could be 1750 Hz" while deciding, and then nothing once the tuning is
     applied. That is the half where they would act on it.
@@ -5302,6 +5315,150 @@ def test_honest_result_truth_table(changes, expected):
         assert grade["absolute_passed"] is False
         assert grade["absolute_miss_db"] == 4.3139
         assert grade["absolute_worst_hz"] == 1590.4083
+
+
+def _no_sweep_state(*, fc_selection=None):
+    """A finished commission whose stage 1 ran no candidate sweep.
+
+    The stage-1 phases are DERIVED from the stage-1 flags, so this IS the
+    shipped shape rather than a hand-written guess at it. What the tests below
+    turn on is the absent ``fc_selection``: the sweep fires only in a session
+    that walks the lateral poses, so since the 2026-08-18 pause no shipped
+    session banks a selection at all.
+
+    Deliberately NOT asserting which phases came back. Re-arming the walk
+    changes the shape here — and one of the two tests below is about a
+    behaviour that must hold in EVERY state of that flag, so pinning the shape
+    in the shared fixture would make it fail for a reason it is not about. The
+    shipped shape has its own pin in ``test_crossover_v2_lateral_evidence.py``.
+    """
+    from jasper.active_speaker.crossover_v2_flow import (
+        PHASE_VERIFY,
+        STAGE1_INCLUDES_CLOUD_MEASURE,
+        STAGE1_INCLUDES_ENTRY_BASELINE,
+        STAGE1_INCLUDES_LATERAL,
+        build_v2_cloud_index_phase_map,
+    )
+
+    stage1 = list(dict.fromkeys(build_v2_cloud_index_phase_map(
+        tier="express",
+        include_cloud_measure=STAGE1_INCLUDES_CLOUD_MEASURE,
+        include_lateral=STAGE1_INCLUDES_LATERAL,
+        include_entry_baseline=STAGE1_INCLUDES_ENTRY_BASELINE,
+    ).values()))
+    # …then stage 2's own session, which is what carries the household past the
+    # apply to the done screen. The whole journey, as a finished commission.
+    phases = [*stage1, PHASE_VERIFY]
+    state = {
+        "session_id": "cap_pause", "tier": "express", "applied": True,
+        "session_phases": phases, "accepted_phases": phases,
+        "candidate": {"fingerprint": "fp-pause"},
+        "verify": {
+            "outcome": "pass",
+            "claims": {
+                "integration": {
+                    "status": "pass", "max_db": 1.398262557, "tolerance_db": 1.5,
+                },
+                "absolute": {
+                    "status": "pass", "max_db": 0.8, "worst_db": -0.8,
+                    "worst_hz": 1590.4083, "tolerance_db": 2.0,
+                },
+            },
+        },
+        "verify_priors": {"predicted_spec": {
+            "overall_passed": False, "bands": [],
+            "comparison": {
+                "reason": "improved", "baseline_rms_db": 2.0,
+                "selected_rms_db": 1.2, "improvement_db": 0.8, "required_db": 0.5,
+            },
+        }},
+    }
+    if fc_selection is not None:
+        state["fc_selection"] = fc_selection
+    return state
+
+
+def test_a_paused_walk_commission_still_grades_and_keeps_its_undo():
+    """The coupling the 2026-08-18 lateral pause exposed, pinned end to end.
+
+    ``_post_apply_grade`` gated its success verdicts on ``comparison_complete``
+    and ``authorized_winner``, both of which read an ``fc_selection`` the
+    shipped session no longer banks. Absence read as an unfinished comparison,
+    so ``verified_target`` became structurally unreachable and every successful
+    commission told the household "not enough complete evidence to grade… this
+    report changed nothing automatically" — false over an applied tune, and
+    without the Undo sentence a dissatisfied household needs.
+
+    The post-apply grade answers "was the applied correction checked
+    afterwards". VERIFY answered it here; no selector was consulted, and none
+    had to be.
+    """
+    from jasper.active_speaker.crossover_v2_flow import (
+        PHASE_ENTRY_BASELINE,
+        STAGE1_INCLUDES_LATERAL,
+    )
+    from jasper.active_speaker.crossover_envelope_v2 import (
+        build_crossover_envelope_v2,
+    )
+
+    # This test is specifically about the SHIPPED shape, so it says so here
+    # rather than in the shared fixture: stage 1 walks no poses, which is
+    # exactly why no sweep runs and no selection is banked.
+    assert STAGE1_INCLUDES_LATERAL is False
+    state = _no_sweep_state()
+    assert state["session_phases"][:3] == [
+        PHASE_CHECK, PHASE_MEASURE, PHASE_ENTRY_BASELINE,
+    ]
+
+    v2host.save_v2_state(state)
+    block = v2host.crossover_v2_status_block()
+    grade = block["post_apply_grade"]
+
+    assert grade["outcome"] == "verified_target"
+    assert grade["graded"] is True
+    assert grade["complete"] is True
+    assert grade["candidate_fingerprint"] == "fp-pause"
+    # The absent sweep is reported as absent rather than as a failed comparison.
+    assert grade["comparison_complete"] is False
+    assert block.get("fc_selection") is None
+
+    text = build_crossover_envelope_v2({
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": block,
+    })["verdict_text"]
+    assert "reached the target" in text
+    assert "you can undo" in text, "the household lost its Undo pointer"
+    assert "changed nothing automatically" not in text
+
+
+def test_a_sweep_that_ran_and_did_not_finish_is_still_inconclusive():
+    """The other direction, and the scope limit on the exemption above.
+
+    ABSENT is not INCOMPLETE. A session that really did evaluate alternatives
+    and did not finish the comparison keeps the verdict it always had — the
+    exemption is for a question that was never asked, not a licence to pass a
+    question that was asked and left unanswered.
+    """
+    v2host.save_v2_state(_no_sweep_state(fc_selection={
+        "verdict": "keep_configured", "configured_hz": 2000.0,
+        "recommended_hz": None, "comparison_complete": False,
+        "scores": [{"fc_hz": 2000.0, "score": 3.0}, {"fc_hz": 1800.0, "score": 3.2}],
+    }))
+    assert v2host.crossover_v2_status_block()["post_apply_grade"]["outcome"] == (
+        "inconclusive"
+    )
+
+    # …and the same session with the comparison FINISHED grades, so the
+    # assertion above is about completeness rather than about the fixture.
+    v2host.save_v2_state(_no_sweep_state(fc_selection={
+        "verdict": "keep_configured", "configured_hz": 2000.0,
+        "recommended_hz": None, "comparison_complete": True,
+        "scores": [{"fc_hz": 2000.0, "score": 3.0}, {"fc_hz": 1800.0, "score": 3.2}],
+    }))
+    assert v2host.crossover_v2_status_block()["post_apply_grade"]["outcome"] == (
+        "verified_target"
+    )
 
 
 def test_exact_incident_needs_complete_comparison_for_best_evaluated():

@@ -1451,8 +1451,9 @@ def test_the_tier_chooser_quotes_the_stage_1_the_session_actually_runs():
     assert flow.STAGE1_INCLUDES_CLOUD_MEASURE is False
     # DERIVED from the three stage-1 flags rather than hardcoded, so the
     # chooser is pinned to whatever stage 1 actually runs and this test moves
-    # with a flag flip instead of going stale. R17's walk is on and #2291's
-    # entry baseline is on, so today this is 9.
+    # with a flag flip instead of going stale — which it has now done twice,
+    # for R17's flip on and the 2026-08-18 pause back off. The walk is off and
+    # #2291's entry baseline is on, so this is 3.
     expected_stage1 = (
         2
         + (len(flow.LATERAL_POSE_PROMPTS) if flow.STAGE1_INCLUDES_LATERAL else 0)
@@ -5685,8 +5686,12 @@ def test_the_consent_tier_line_derives_its_counts_and_duration():
         # twice, two lines apart. Pinned here as well as in the page's own
         # suite because this is the side that can move it.
         assert f"{target} measurements, about {minutes} minutes" in steps[0]
-    # Stage 1 alone is 7 minutes at Full and 5 at Express; the whole journey is
-    # what tier_display_info sums, pinned in its own test below.
+    # These two calls take no include_* arguments, so they exercise the
+    # BUILDER's bare defaults (pre-apply cloud ON, lateral and entry baseline
+    # OFF) — 7 minutes at Full, 5 at Express. That is NOT the shipped stage 1,
+    # which runs the opposite flags for 3 captures and 3 minutes at either
+    # tier; the whole journey is what tier_display_info sums, pinned in its own
+    # test below.
     assert build_v2_capture_plan(_roles(), FC_HZ).estimated_minutes() == 7
     assert (
         build_v2_capture_plan(_roles(), FC_HZ, tier=TIER_EXPRESS).estimated_minutes()
@@ -6364,10 +6369,25 @@ def test_worst_case_cloud_plan_fits_the_relay_index_space():
         <= MAX_CAPTURE_PLAN_ATTEMPTS
     )
     # …and the two stage-1 groups the cloud arithmetic above does not count.
-    assert flow.relay_plan_attempts_required(
+    #
+    # Asserted with the lateral walk ARMED, which is the case that binds: the
+    # walk is PAUSED (2026-08-18) and not retired, so the ceiling still has to
+    # carry it. Reading the flag here instead would let the six indexes the
+    # pause freed be spent on something else, and re-arming the walk would then
+    # refuse a blob index mid-session rather than being a flag flip.
+    worst = dict(
         cloud_measure_positions=MAX_CLOUD_MEASURE_POSITIONS,
         cloud_verify_positions=DEFAULT_CLOUD_VERIFY_POSITIONS,
-    ) == MAX_CAPTURE_PLAN_ATTEMPTS == 32
+    )
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(flow, "STAGE1_INCLUDES_LATERAL", True)
+        assert flow.relay_plan_attempts_required(
+            **worst
+        ) == MAX_CAPTURE_PLAN_ATTEMPTS == 32
+    # What the paused build actually draws — the walk's six indexes are slack
+    # held in reserve for re-arming, not headroom for a new entry.
+    assert flow.STAGE1_INCLUDES_LATERAL is False
+    assert flow.relay_plan_attempts_required(**worst) == 26
 
 
 @pytest.mark.parametrize("positions", [MIN_CLOUD_MEASURE_POSITIONS - 1,

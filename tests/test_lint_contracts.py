@@ -578,7 +578,32 @@ MAX_LINES_BY_PATH = {
     # 2026-08-18 (#2699): 12,810 -> 12,813 earns stage-1 series-position
     # hydration here; 9,296 -> 9,333 below earns Undo clearing the banked blend
     # instruction it reverses. Both ceilings equal the measured current files.
-    "jasper/active_speaker/crossover_v2_flow.py": 12_813,
+    #
+    # 2026-08-18 (lateral pause): 12,813 -> 12,874, +61 net (93 added, 32
+    # removed), counted rather than estimated. Every line is PROSE — the flag
+    # flip itself is one character:
+    #   34  the `STAGE1_INCLUDES_LATERAL` comment, which is the canonical
+    #       record of an owner ratification: four evidence findings with their
+    #       numbers, the named re-enable condition, and the non-obvious
+    #       consequence that R17's Fc sweep goes dormant with its producer
+    #   13  the MEASURE non-deferring branch, whose comment claimed NO
+    #       production caller builds that shape — the pause makes it the
+    #       shipped one, and #2291's entry baseline needed saying why it
+    #       follows the fit without deferring it
+    #   11  the sweep-trigger and module-docstring notes: where a reader lands
+    #       asking "why is there no fc_selection?"
+    #    7  the relay-capacity arithmetic, now labelled as the WALK-ARMED case
+    #       with a do-not-spend-this-slack rule, so a later round cannot raise
+    #       N on the strength of a paused count and make re-arming a refusal
+    #   -4  net trims where the old prose was simply replaced
+    # No seam to cut: this diff adds no logic, and extracting comments from the
+    # constants they explain is how a flag stops carrying its own reasons.
+    # (+1 more in the gate fix round: the module docstring's OTHER stage-1
+    # count, 56 lines below the one the pause corrected, still said "10 entries
+    # at the full tier's shipped defaults" — stale since R15 turned the
+    # pre-apply cloud off, and a docstring that contradicts itself twice on one
+    # screen is worse than either number alone. 12,813 + 62 = 12,875.)
+    "jasper/active_speaker/crossover_v2_flow.py": 12_875,
     # ...and 9,292 -> 9,296, +4 physical / 0 logical: the sweep caught that
     # comment overclaiming its own readership ("the surface /state, the doctor
     # and the done screen read" — no renderer reads it today). It is a forensic
@@ -601,14 +626,39 @@ MAX_LINES_BY_PATH = {
     # nothing reads). The reviewer probed exactly that trap; prose that
     # stops the next test author shipping a silent no-op patch is worth
     # eight lines. 9,333 − 992 + 8 = 8,349.
-    "jasper/web/correction_crossover_v2.py": 8_349,
+    #
+    # ...and 8,349 -> 8,381 (lateral pause), +32 net (40 added, 8 removed),
+    # counted rather than estimated:
+    #   25  `_post_apply_grade`'s absent-vs-incomplete rule. The pause exposed
+    #       a hidden coupling: with no candidate sweep there is no
+    #       `fc_selection`, and two gates read its absence as an unfinished
+    #       comparison — so every successful commission graded INCONCLUSIVE and
+    #       told the household a tune that IS applied "changed nothing
+    #       automatically", dropping the Undo pointer. The prose is the
+    #       finding: it states why absence is exempt, why the exemption is
+    #       sound (this grade asks "was it checked afterwards", which VERIFY
+    #       answers alone), and that a sweep which RAN and did not finish is
+    #       NOT exempt. Both directions are pinned.
+    #    3  `authorized_winner` restructured to carry that distinction
+    #    5  the remote hold budget, which quotes stage 1's wall-clock ceiling —
+    #       the pause moves it 2520 -> 1800 s, leaving the ceiling at exactly 3
+    #       holds of a 3-capture stage, which is the reader's next question
+    #   -1  net from the gate-A line replaced in place
+    "jasper/web/correction_crossover_v2.py": 8_381,
     # Born 2026-08-18 (#2662 slice 1) at exactly this size: the relay capture
     # provider — the choreography only the phone-relay source has. It should
     # grow only when the RELAY grows; the wired provider is its own module.
     # (1,080 at birth; the gate fix round deleted a reader-less identity
-    # constant, -4.)
+    # constant, -4.) UNCHANGED by the lateral pause: `relay_link_ttl_s` moved
+    # here with the extraction and its docstring quoted stage 1's old 2520 s
+    # ceiling, so the pause corrects one number in place, +0.
     "jasper/web/correction_crossover_v2_relay.py": 1_076,
-    "jasper/active_speaker/crossover_envelope_v2.py": 4_103,
+    # ...and 4,103 -> 4,107 (lateral pause), +4 net: the entry-baseline screen
+    # said the household is "BACK on the mark", true only after a walk. With
+    # the walk paused this capture follows MEASURE, where the microphone never
+    # left, so the copy drops one word and the comment says why it has to read
+    # correctly from either predecessor.
+    "jasper/active_speaker/crossover_envelope_v2.py": 4_107,
     # 2026-08-18 (D7, series-2 diagnosis): +82 net on `program_analysis.py`
     # (95 added, 13 removed), counted rather than estimated —
     #   40  the argument written next to `GLITCH_RESIDUAL_SAMPLES`

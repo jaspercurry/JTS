@@ -2172,6 +2172,30 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     fc = fc if isinstance(fc, Mapping) else {}
     fc_verdict = str(fc.get("verdict") or "")
     comparison_complete = fc.get("comparison_complete") is True
+    # **A sweep that never ran is ABSENT, not incomplete** (2026-08-18, the
+    # lateral pause). Two gates below — ``comparison_complete`` and
+    # ``authorized_winner`` — encode "the Fc comparison finished, and the corner
+    # on the speaker is the one it authorized". Neither question EXISTS when no
+    # candidate sweep ran: the sweep fires only in a session that walks the
+    # lateral poses, so since the pause ``fc_selection`` is absent on every
+    # shipped session. Reading that absence as an unfinished comparison made
+    # ``RESULT_VERIFIED_TARGET``/``_BEST_EVALUATED`` structurally unreachable —
+    # a successful commission told the household "not enough complete evidence
+    # to grade… this report changed nothing automatically" over a tune that IS
+    # applied, and dropped the Undo pointer exactly where a dissatisfied
+    # household reaches for it.
+    #
+    # This function's own question is the one in its title: was the applied
+    # correction checked AFTERWARDS. VERIFY and the post-apply group answer
+    # that by themselves and neither consults the selector, which is why the
+    # exemption is sound rather than merely convenient.
+    #
+    # **Scoped to absence only.** A sweep that RAN and did not finish still
+    # fails both gates — that is a real incomplete comparison about a session
+    # that really did evaluate alternatives, and this exemption must never
+    # reach it. Both directions are pinned in
+    # ``tests/test_correction_crossover_v2_endpoints.py``.
+    sweep_ran = bool(fc)
 
     if not block.get("applied"):
         failure = block.get("failure")
@@ -2223,10 +2247,13 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     required_db = _finite(comparison.get("required_db"))
     absolute_miss_db, absolute_worst_hz = _finite(absolute.get("max_db")), _finite(absolute.get("worst_hz"))
     result_evidence = bool(fc or comparison or integration or absolute)
-    authorized_winner = (
-        bool(str(candidate.get("fingerprint") or ""))
-        and baseline_score is not None
-        and fc_verdict == SELECTION_KEEP_CONFIGURED
+    authorized_winner = bool(str(candidate.get("fingerprint") or "")) and (
+        # No sweep ran, so there was no alternative for a winner to beat: the
+        # published candidate IS the configured corner, which is precisely what
+        # a ``keep_configured`` verdict authorizes. The fingerprint stays
+        # required — it is the evidence that a candidate was published at all.
+        not sweep_ran
+        or (baseline_score is not None and fc_verdict == SELECTION_KEEP_CONFIGURED)
     )
     material_improvement = (
         str(comparison.get("reason") or "") == "improved"
@@ -2252,7 +2279,7 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     elif (
         outcome == "inconclusive"
         or tracking_status not in {CLAIM_PASS, CLAIM_FAIL}
-        or not comparison_complete
+        or (sweep_ran and not comparison_complete)
     ):
         result_outcome = RESULT_INCONCLUSIVE
     elif fc_verdict == SELECTION_RECOMMEND:
@@ -5929,11 +5956,16 @@ def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
 #: **This is a PER-HOLD bound, and it is not the operative total.** The session's
 #: own wall-clock ceiling
 #: (:func:`~jasper.active_speaker.crossover_v2_flow.session_wall_clock_ceiling_s`,
-#: derived per plan — 2520 s for remote's stage 1 and 2040 s for its stage 2 at
+#: derived per plan — 1800 s for remote's stage 1 and 2040 s for its stage 2 at
 #: the shipped shape) covers the WHOLE walk, so a run spending anywhere near
 #: this budget on several holds ends on that ceiling long before any individual
-#: hold expires: stage 1's ceiling is only 4.2 holds' worth, so the FIFTH full
-#: hold of a nine-capture walk exceeds it. A driver that stalls once is caught
+#: hold expires: stage 1's ceiling is exactly 3 holds' worth of a 3-capture
+#: stage, so a remote stage 1 that spent a FULL hold at every position would
+#: land precisely on its ceiling. (Before the 2026-08-18 lateral pause the same
+#: sentence read 2520 s, 4.2 holds' worth, and the FIFTH full hold of a
+#: nine-capture walk exceeding it — the pause dropped both the ceiling and the
+#: captures, and left more hold per position, not less.)
+#: A driver that stalls once is caught
 #: here by name; a driver that is merely slow at every position is caught by the
 #: ceiling, and since issue #2506 that death has its OWN name too —
 #: :data:`SESSION_CEILING_EXPIRED_CODE`, raised by :meth:`PositionGate.gate`
