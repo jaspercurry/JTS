@@ -530,7 +530,6 @@ def build_v2_wired_run_and_consume(
             deadline = monotonic() + float(ceiling_s)
             target = int(plan.capture_target)
             max_attempts = int(plan.max_attempts)
-            entries = tuple(getattr(plan, "entries", ()) or ())
             accepted = 0
             attempt = 0
             while accepted < target:
@@ -548,9 +547,13 @@ def build_v2_wired_run_and_consume(
                         attempts=attempt,
                     )
                     return
-                index = accepted
+                # The wire index space, unchanged: 1-based, the next slot is
+                # ``accepted + 1`` (``_poll_capture_plan``'s own arithmetic),
+                # and the 1-based→0-based entry lookup is the plan's canonical
+                # ``entry_for_index`` so this walk never respells it.
+                index = accepted + 1
                 attempt += 1
-                entry = entries[index] if index < len(entries) else None
+                entry = plan.entry_for_index(index)
                 _authorize(index, attempt, entry)
                 verdict = _capture_one(index, attempt, entry)
                 if verdict.get("accepted"):
