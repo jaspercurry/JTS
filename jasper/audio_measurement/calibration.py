@@ -63,6 +63,24 @@ DEFAULT_CALIBRATION_DIR = Path("/var/lib/jasper/correction/calibration_mics")
 # the reverse), so the tier vocabulary is duplicated as plain string
 # literals rather than imported upward.
 #
+# `usb_ids` is the device's USB `vid:pid` as the kernel spells it in
+# `/proc/asound/<card>/usbid`. It exists so the rest of JTS can recognise a
+# measurement microphone as measurement-class *hardware* — chiefly so
+# `deploy/bin/jasper-aec-reconcile` never selects one as the voice/wake
+# input (see `measurement_mic_usb_ids` below). USB id, not serial: a UMIK-2's
+# USB serial descriptor is the literal "00000" on every unit, so serial can
+# never identify the device. Mirrors `jasper.audio_hardware.dac.DacProfile`'s
+# `usb_ids` and `jasper.mics.xvf3800.USB_VID_PIDS` — same vocabulary, one
+# tuple of "vid:pid" per registry entry.
+#
+# Only the UMIK-2 declares one, measured on the live JTS3 unit
+# (2026-08-18: `/proc/asound/UMIK2/usbid` = 2752:002b). The other three
+# entries declare an EMPTY tuple, which reads as "this project has not
+# measured this model's id" — never a guess. An unmeasured model is simply
+# not recognised as measurement-class hardware, which is the same position
+# every model was in before this field existed; guessing an id would be
+# worse, because a wrong id could exclude somebody's voice array.
+#
 # `sign_convention` is what the VENDOR's file states, and therefore how
 # `fetch_vendor_calibration` must parse it. It is per-entry rather than a
 # single hardcode in the fetcher because that hardcode was the 2026-07-27
@@ -106,6 +124,10 @@ SUPPORTED_MODELS: dict[str, dict[str, Any]] = {
         "label": "Dayton Audio iMM-6 / iMM-6C",
         "tier": "consumer",
         "sign_convention": "response",
+        # Not measured by this project (the iMM-6 is a TRRS mic that
+        # enumerates through whatever interface it is plugged into; the
+        # iMM-6C is USB-C). Empty until a real unit is read.
+        "usb_ids": (),
     },
     "dayton_umm6": {
         "provider": "dayton_audio",
@@ -113,6 +135,7 @@ SUPPORTED_MODELS: dict[str, dict[str, Any]] = {
         "label": "Dayton Audio UMM-6",
         "tier": "consumer",
         "sign_convention": "response",
+        "usb_ids": (),  # not measured by this project
     },
     "minidsp_umik1": {
         "provider": "minidsp",
@@ -120,6 +143,7 @@ SUPPORTED_MODELS: dict[str, dict[str, Any]] = {
         "label": "miniDSP UMIK-1",
         "tier": "reference",
         "sign_convention": "response",
+        "usb_ids": (),  # not measured by this project
     },
     "minidsp_umik2": {
         "provider": "minidsp",
@@ -127,6 +151,9 @@ SUPPORTED_MODELS: dict[str, dict[str, Any]] = {
         "label": "miniDSP UMIK-2",
         "tier": "reference",
         "sign_convention": "response",
+        # Read off the live JTS3 unit 2026-08-18: the mic enumerates as ALSA
+        # card `UMIK2` and `/proc/asound/UMIK2/usbid` holds this value.
+        "usb_ids": ("2752:002b",),
     },
 }
 
@@ -137,6 +164,29 @@ SUPPORTED_MODELS: dict[str, dict[str, Any]] = {
 # keeps the registry explicit) and for the phone-relay upload, whose page has
 # no sign control (see `_relay_calibration_from_setup`).
 DEFAULT_SIGN_CONVENTION = "response"
+
+
+def measurement_mic_usb_ids() -> tuple[str, ...]:
+    """Every USB ``vid:pid`` this registry declares for a measurement mic.
+
+    The one place the "is this hardware a measurement microphone?" vocabulary
+    lives. ``jasper.cli.measurement_mic`` prints this list so
+    ``deploy/bin/jasper-aec-reconcile`` can keep a calibrated measurement mic
+    out of the voice-input candidate set without carrying its own copy of the
+    ids — a measurement mic has no wake/AEC contract, so selecting one would
+    silently swap the household's room microphone for an instrument.
+
+    Lower-cased and de-duplicated, matching how the kernel writes
+    ``/proc/asound/<card>/usbid`` (``%04x:%04x``). Order follows the registry.
+    Models that declare no id (see ``SUPPORTED_MODELS``) contribute nothing.
+    """
+    ids: list[str] = []
+    for spec in SUPPORTED_MODELS.values():
+        for usb_id in spec.get("usb_ids") or ():
+            normalized = str(usb_id).strip().lower()
+            if normalized and normalized not in ids:
+                ids.append(normalized)
+    return tuple(ids)
 
 
 def mic_tier_for_model(model_key: str | None) -> str:
@@ -158,10 +208,11 @@ def mic_tier_for_model(model_key: str | None) -> str:
     and a KeyError here would be a worse failure mode than a conservative
     guess.
 
-    Not yet wired into the production analyze path
-    (``bind_production_analyze`` in
-    ``jasper/web/correction_crossover_v2.py``) — that wiring belongs to the
-    PR that actually calls ``compose_envelope`` in the measure/fit flow.
+    Consumed by the production analyze path: ``bind_production_analyze`` in
+    ``jasper/web/correction_crossover_v2.py`` resolves the tier from the
+    calibration record it already looked up and threads it onto
+    ``MeasurementPriors.mic_tier``, which ``analyze_program_capture`` carries
+    through to ``ProgramAnalysis.mic_tier``.
     """
     if model_key is None:
         return "phone"

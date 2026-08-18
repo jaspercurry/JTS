@@ -34,6 +34,22 @@ VOICE_PROVIDER_IDS_FILE="${JASPER_VOICE_PROVIDER_IDS_FILE:-/var/lib/jasper/voice
 # accessory_mic_present below). This script stays the single writer of the
 # derived AND; the accessory owner asks it to re-derive by starting this unit.
 VOICE_INPUT_ABSENT_MARKER="${JASPER_VOICE_INPUT_ABSENT_MARKER:-/var/lib/jasper/voice-input-absent}"
+# install.sh's verified-install marker, and the /run record of which build the
+# last voice (re)start was made under. Read together they answer "is the
+# running jasper-voice already this build?".
+#
+# Why a mic reconciler cares about a build id: it is the only thing that
+# restarts jasper-voice on a deploy. scripts/deploy-to-pi.sh deliberately does
+# NOT restart voice itself ("Voice is mic-hardware-dependent, so do not restart
+# jasper-voice directly here"), so a change gate that looked only at env
+# contents would let a deploy leave the daemon on the previous build's Python.
+# A changed manifest is therefore a voice-relevant change.
+#
+# The stamp lives in /run, not /var/lib, deliberately: a reboot must forget it,
+# because a freshly-booted box has no running jasper-voice to protect and the
+# unconditional restart is what starts it.
+INSTALL_MANIFEST="${JASPER_INSTALL_MANIFEST:-/var/lib/jasper/build.txt}"
+VOICE_RESTART_STAMP="${JASPER_VOICE_RESTART_STAMP:-/run/jasper-aec-reconcile/voice-restart.stamp}"
 ASOUND_ROOT="${JASPER_ASOUND_ROOT:-/proc/asound}"
 SYSTEMCTL="${JASPER_SYSTEMCTL:-systemctl}"
 DEFAULT_MIC_DEVICE_CANDIDATES="Array,L16K2Ch,L16K6Ch,C16K2Ch,C16K6Ch"
@@ -49,6 +65,11 @@ PROC_ROOT="${JASPER_PROC_ROOT:-/proc}"
 REASON="manual"
 CHECK_ONLY=0
 OUTPUTD_RESTART_NEEDED=0
+# Sticky "this pass changed something jasper-voice would pick up by
+# restarting" flag — see mark_voice_restart_if_changed and
+# voice_restart_can_be_skipped.
+VOICE_RESTART_NEEDED=0
+INSTALLED_BUILD_ID=""
 # Deferred voice restart for the "no local mic, accessory mic paired" case.
 # Set by stop_voice, flushed by restart_voice_for_accessory_mic once the
 # calling path's JASPER_MIC_DEVICE fixups have been written.
@@ -258,7 +279,147 @@ set_env_var() {
     # /etc/jasper/jasper.env is non-secret runtime config. jasper-control
     # fresh-reads it for /state after this reconciler mutates AEC/profile
     # keys, so keep the file group-readable (install migration owns group).
+    mark_voice_restart_if_changed "$2" "$3"
     jasper_env_file_set "$1" "$2" "$3" 0640 0755
+}
+
+# Keys this reconciler publishes for humans and status surfaces (/state, the
+# /wake page, the doctor) and that no daemon consumes as a runtime input.
+# Everything else set_env_var writes counts as a voice-relevant change, so a
+# key added later is voice-relevant BY DEFAULT and a forgotten classification
+# produces the safe direction (a restart), never a suppressed one.
+#
+# The exclusion is load-bearing, not tidiness: JASPER_AEC_CHIP_AEC_DAC_DETAIL
+# embeds outputd's live `chip_ref_sro_ppm=` clock estimate, which moves on
+# essentially every pass on a chip-AEC box. Counting it as a change would
+# leave the gate permanently tripped on exactly the hardware whose bounce it
+# exists to stop — a guard nobody can trip.
+#
+# Excluding the gate/alignment STATUS keys is safe because their consequences
+# are not excluded: when the DAC gate or the alignment verdict actually flips,
+# LEG_CHIP_AEC flips with it and that reaches JASPER_AEC_CHIP_AEC_ENABLED and
+# JASPER_MIC_DEVICE, both of which are counted. The alignment status is also
+# read directly by the chip-AEC skip check below, which demands "ready".
+#
+# tests/test_aec_reconcile.py pins every name here against the keys the script
+# actually writes: a typo would silently promote a descriptive key back to
+# voice-relevant and re-arm the bounce.
+VOICE_IRRELEVANT_ENV_KEYS="\
+JASPER_XVF_DISPLAY_NAME JASPER_XVF_REASON JASPER_XVF_RECOMMENDED_PROFILE \
+JASPER_AEC_CHIP_AEC_TESTING_REQUESTED JASPER_AEC_CHIP_AEC_DAC_ID \
+JASPER_AEC_CHIP_AEC_DAC_STATUS JASPER_AEC_CHIP_AEC_DAC_SOURCE \
+JASPER_AEC_CHIP_AEC_DAC_DETAIL JASPER_AEC_CHIP_AEC_DAC_ACTION \
+JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS JASPER_AEC_CHIP_AEC_ALIGNMENT_REASON \
+JASPER_AEC_CHIP_AEC_ALIGNMENT_ACTION"
+
+voice_relevant_env_key() {
+    case " ${VOICE_IRRELEVANT_ENV_KEYS} " in
+        *" $1 "*)
+            return 1
+            ;;
+    esac
+    return 0
+}
+
+# The voice half of mark_outputd_restart_if_changed, and the same test: is the
+# value this pass is about to write different from the one the pass started
+# with? Sticky and one-directional — once a difference is seen, this pass
+# restarts.
+mark_voice_restart_if_changed() {
+    local key="$1"
+    local desired="$2"
+    local current="${!key-}"
+    if [[ "$current" != "$desired" ]] && voice_relevant_env_key "$key"; then
+        VOICE_RESTART_NEEDED=1
+    fi
+}
+
+read_installed_build_id() {
+    INSTALLED_BUILD_ID="$(cat "$INSTALL_MANIFEST" 2>/dev/null || true)"
+}
+
+# What the running jasper-voice was started FROM, beyond $ENV_FILE — whose
+# contents mark_voice_restart_if_changed already compares key by key.
+#
+# Two inputs, and each is here because a real caller depends on it:
+#
+#   * the installed build. This reconciler is the only thing that restarts
+#     voice on a deploy (see INSTALL_MANIFEST above).
+#   * the accessory microphone sources another owner publishes. Pairing a
+#     remote writes that file and hands the restart back to this script
+#     (jasper.accessories.reconcile.refresh_voice_input) WITHOUT stopping
+#     voice, and the daemon reads the file at startup — so a live daemon has
+#     to be restarted to see a newly-paired remote.
+#
+# Every other caller that kicks this reconciler either mutates $ENV_FILE (the
+# /wake profile, leg, and AEC-mode endpoints) or stops jasper-voice first (the
+# chip-AEC commissioner's STOP_UNITS, the wake-corpus recorder), and a stopped
+# voice already fails unit_active_and_enabled below. Neither can be skipped.
+voice_start_inputs() {
+    probe_accessory_mics
+    printf '%s\naccessory_mic_sources=%s\n' \
+        "$INSTALLED_BUILD_ID" "$ACCESSORY_MIC_SOURCES"
+}
+
+# True only when the running voice daemon was (re)started by a pass of this
+# script that saw the same inputs. An absent manifest, an absent stamp, or an
+# accessory probe that could not answer all resolve to FALSE: "I cannot prove
+# nothing changed" must resolve to restarting.
+voice_start_inputs_match_stamp() {
+    local stamped
+    [[ -n "$INSTALLED_BUILD_ID" ]] || return 1
+    probe_accessory_mics
+    [[ "$ACCESSORY_MIC_PROBE_STATUS" == "resolved" ]] || return 1
+    stamped="$(cat "$VOICE_RESTART_STAMP" 2>/dev/null || true)"
+    [[ -n "$stamped" && "$stamped" == "$(voice_start_inputs)" ]]
+}
+
+# Best-effort, like the gate-marker writers: a stamp we fail to write only
+# costs the NEXT pass a restart it could have skipped. A stamp we cannot make
+# current is REMOVED rather than left stale — a stale-but-matching stamp is the
+# one failure that could suppress a restart that was needed.
+record_voice_restart_stamp() {
+    local dir
+    dir="$(dirname "$VOICE_RESTART_STAMP")"
+    if [[ -n "$INSTALLED_BUILD_ID" ]] \
+        && { [[ -d "$dir" ]] || install -d -m 0755 "$dir" 2>/dev/null; } \
+        && voice_start_inputs > "$VOICE_RESTART_STAMP" 2>/dev/null; then
+        return 0
+    fi
+    rm -f "$VOICE_RESTART_STAMP" 2>/dev/null || true
+}
+
+# Real exit codes, not run_systemctl's `|| true`: the gate is asking a
+# question, not issuing an order.
+unit_active_and_enabled() {
+    "$SYSTEMCTL" is-active --quiet "$1" >/dev/null 2>&1 \
+        && "$SYSTEMCTL" is-enabled --quiet "$1" >/dev/null 2>&1
+}
+
+# Would restarting jasper-voice change anything the household can hear?
+#
+# The bug this answers: deploy/udev/99-jasper-aec-reconcile.rules fires on
+# EVERY sound-card add|remove (deliberately id-agnostic — the policy lives
+# here), and every mic-bearing branch below then restarts jasper-voice
+# unconditionally. Plugging in a measurement microphone to take a room
+# measurement therefore took the assistant down with it: ~8 s of deafness
+# measured on jts3 (2026-08-18) for the chip-AEC bounce, and up to ~55 s worst
+# case (see jasper-aec-reconcile.service's TimeoutStartSec note).
+#
+# Every condition is something a skip would silently lose, and anything
+# unknown answers "restart": a false restart costs a few seconds of annoyance,
+# a false skip costs a deaf speaker until the next event.
+voice_restart_can_be_skipped() {
+    [[ "$VOICE_RESTART_NEEDED" == "0" ]] || return 1
+    # A pass that would clear the park marker is UN-parking voice, which is
+    # the whole reason to restart it.
+    [[ ! -e "$VOICE_INPUT_ABSENT_MARKER" ]] || return 1
+    # voice_provider.env is not in $ENV_FILE, so a provider that went missing
+    # or invalid is invisible to the change test above; restart_voice's park
+    # branch has to run.
+    voice_provider_configured || return 1
+    voice_start_inputs_match_stamp || return 1
+    unit_active_and_enabled jasper-voice.service || return 1
 }
 
 write_mic_profile_env() {
@@ -865,6 +1026,113 @@ mic_present() {
     [[ -f "$(card_stream_file "$spec")" ]]
 }
 
+# --- measurement-class microphone exclusion ---------------------------------
+#
+# A calibrated measurement microphone (the /correction/ wizard's UMIK-2 and
+# friends) enumerates as an ordinary capture card, and it must NEVER become the
+# voice/wake input: it carries no wake or AEC contract, so selecting one would
+# silently swap the household's room mic for an instrument.
+#
+# Identity is the USB vid:pid, never the serial — a UMIK-2's USB serial
+# descriptor is the literal "00000" on every unit. The ids are owned by
+# jasper.audio_measurement.calibration and reach bash through
+# `python -m jasper.cli.measurement_mic`, the same bridge shape
+# observe_mic_profile_state uses for the mic profile, so no second copy of the
+# vocabulary lives here. Resolved AT MOST ONCE per pass, and only once a card
+# that is actually present turns out to expose a USB id — a box with no USB
+# capture card never pays for the interpreter.
+#
+# Defense in depth, not the only defense: DEFAULT_MIC_DEVICE_CANDIDATES is a
+# closed allowlist no measurement mic appears in, so on a stock box this
+# excludes nothing. It is here for a box whose operator widened
+# JASPER_MIC_DEVICE_CANDIDATES, and it fails OPEN — a resolver that cannot
+# answer excludes nothing, because refusing to classify must never be able to
+# leave a speaker with no microphone at all.
+MEASUREMENT_USB_IDS=""
+MEASUREMENT_USB_IDS_STATUS="unresolved"
+
+card_usbid() {
+    local card path
+    card="$(card_id_from_spec "$1")"
+    path="${ASOUND_ROOT}/${card}/usbid"
+    if [[ -r "$path" ]]; then
+        # The kernel writes %04x:%04x, so this only normalises a hand-made
+        # test fixture and strips the trailing newline.
+        tr '[:upper:]' '[:lower:]' < "$path" | tr -d '[:space:]' || true
+    fi
+}
+
+resolve_measurement_usb_ids() {
+    local payload
+    [[ "$MEASUREMENT_USB_IDS_STATUS" == "unresolved" ]] || return 0
+    if ! command -v "$MIC_PROFILE_PYTHON" >/dev/null 2>&1; then
+        MEASUREMENT_USB_IDS_STATUS="unavailable"
+        log "measurement-mic registry unavailable at ${MIC_PROFILE_PYTHON}; measurement mics are NOT excluded from the mic candidates this pass"
+        return 0
+    fi
+    # stderr is deliberately NOT redirected: a traceback from a partial deploy
+    # is the whole diagnostic, same as probe_accessory_mics.
+    if payload="$("$MIC_PROFILE_PYTHON" -m jasper.cli.measurement_mic)"; then
+        MEASUREMENT_USB_IDS="$(printf '%s' "$payload" | tr '\n' ' ')"
+        MEASUREMENT_USB_IDS_STATUS="resolved"
+    else
+        MEASUREMENT_USB_IDS_STATUS="failed"
+        log "measurement-mic registry probe failed (see the message above); measurement mics are NOT excluded from the mic candidates this pass"
+    fi
+    return 0
+}
+
+# The single resolve point, and it must run in the PARENT shell: every caller
+# of measurement_class_card below sits inside a command substitution, and a
+# memo set in a subshell dies with it — the registry would be re-resolved,
+# and the interpreter re-spawned, once per candidate probe.
+#
+# Skipped outright when no candidate exposes a USB id, so a box with no USB
+# capture card never pays for the interpreter at all.
+prime_measurement_usb_ids() {
+    local candidate
+    for candidate in "${MIC_CANDIDATES[@]}"; do
+        if [[ -n "$(card_usbid "$candidate")" ]]; then
+            resolve_measurement_usb_ids
+            return 0
+        fi
+    done
+}
+
+measurement_class_card() {
+    local usbid
+    # Unresolved means priming found nothing to classify, or the resolver
+    # could not answer: either way, exclude nothing (fail open).
+    [[ "$MEASUREMENT_USB_IDS_STATUS" == "resolved" ]] || return 1
+    usbid="$(card_usbid "$1")"
+    # No USB id: an absent card, or an I2S/virtual capture device. Cannot be a
+    # registered USB measurement mic.
+    [[ -n "$usbid" ]] || return 1
+    case " ${MEASUREMENT_USB_IDS} " in
+        *" ${usbid} "*)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+# "Present AND eligible to carry the voice/wake path."
+#
+# mic_present stays a pure hardware fact (it is also what
+# derive_profile_managed_aec_mic_device asks about an XVF the profile resolver
+# has already identified); this is the SELECTION predicate, so a measurement
+# mic can never be chosen however wide the candidate list is.
+#
+# Note the scope. This stops the reconciler from SELECTING one; an operator's
+# explicit JASPER_MIC_DEVICE remains their own, exactly as is_owned_mic_value
+# already promises. What changes for a widened candidate list is that a
+# measurement card sitting in JASPER_MIC_DEVICE now reads as "no candidate
+# present", so the stale value is cleared and voice parks rather than opening
+# an instrument.
+voice_mic_present() {
+    mic_present "$1" && ! measurement_class_card "$1"
+}
+
 mic_channels() {
     local spec="$1"
     local stream channels
@@ -975,7 +1243,23 @@ derive_profile_managed_aec_mic_device() {
 }
 
 first_candidate() {
+    local candidate
     if [[ ${#MIC_CANDIDATES[@]} -gt 0 ]]; then
+        # Prefer a candidate that could actually carry voice. This value
+        # becomes FALLBACK_MIC, which the no-mic branches write into
+        # JASPER_MIC_DEVICE to clear a stale udp: selection, and which seeds
+        # JASPER_AEC_MIC_DEVICE — so naming a measurement mic here would park
+        # a speaker whose published microphone is an instrument.
+        for candidate in "${MIC_CANDIDATES[@]}"; do
+            if ! measurement_class_card "$candidate"; then
+                echo "$candidate"
+                return 0
+            fi
+        done
+        # Every candidate is a present measurement mic: a configuration with
+        # no voice microphone at all, where voice parks regardless. Keep the
+        # historical shape (a real card name) rather than inventing a third
+        # meaning for JASPER_MIC_DEVICE.
         echo "${MIC_CANDIDATES[0]}"
     else
         echo "$AEC_MIC_DEVICE"
@@ -985,7 +1269,7 @@ first_candidate() {
 first_present_candidate() {
     local candidate
     for candidate in "${MIC_CANDIDATES[@]}"; do
-        if mic_present "$candidate"; then
+        if voice_mic_present "$candidate"; then
             echo "$candidate"
             return 0
         fi
@@ -1030,12 +1314,24 @@ reset_failed_units() {
 }
 
 stop_disable_aec() {
+    # The mirror of enable_start_aec's flag: if the bridge is UP, stopping it
+    # removes a UDP carrier jasper-voice may be reading, so this pass must also
+    # restart voice. If it is already down this is a no-op and must NOT force a
+    # restart, or every direct-mic and AEC-disabled box would keep bouncing.
+    if "$SYSTEMCTL" is-active --quiet jasper-aec-bridge.service >/dev/null 2>&1; then
+        VOICE_RESTART_NEEDED=1
+    fi
     run_systemctl stop jasper-aec-bridge.service jasper-aec-init.service
     run_systemctl disable jasper-aec-bridge.service jasper-aec-init.service
     reset_failed_units jasper-aec-bridge.service jasper-aec-init.service
 }
 
 enable_start_aec() {
+    # Bouncing the bridge replaces the UDP carrier jasper-voice reads, so a
+    # pass that runs this can never also gate off the voice restart that
+    # follows it: the daemon would be left reading a socket that just went
+    # away. Caller-independent, so no call site can forget it.
+    VOICE_RESTART_NEEDED=1
     run_systemctl enable jasper-aec-init.service jasper-aec-bridge.service
     reset_failed_units jasper-aec-init.service jasper-aec-bridge.service
     # `restart` not `start`: jasper-aec-init is Type=oneshot with
@@ -1077,7 +1373,9 @@ enable_start_aec() {
 # debugging "my remote does nothing" must not be handed a confident wrong
 # answer when a partial /opt/jasper deploy left the probe module unimportable.
 #
-# Three states, mirroring observe_mic_profile_state's unavailable/failed/resolved:
+# Three answers, mirroring observe_mic_profile_state's
+# unavailable/failed/resolved (plus `unprobed`, the pre-probe sentinel the
+# memo above keys on, which no decision path ever reads):
 #   unavailable — no interpreter to ask
 #   failed      — asked, and it could not answer (stderr goes to the journal).
 #                 Covers an unimportable module, an unreadable file, AND a file
@@ -1086,11 +1384,17 @@ enable_start_aec() {
 #                 such is what sent an operator looking in the wrong place.
 #   resolved    — asked and got an answer; ACCESSORY_MIC_SOURCES may be empty
 #                 (no key, or an empty value — those are answers, not failures)
+#
+# Probed at most ONCE per pass. The published file cannot change under a
+# running pass, and two callers now ask: stop_voice's park decision and the
+# voice-restart gate's stamp (voice_start_inputs). Memoising keeps that one
+# interpreter spawn, and keeps one failure to one journal line.
 ACCESSORY_MIC_SOURCES=""
-ACCESSORY_MIC_PROBE_STATUS="unavailable"
+ACCESSORY_MIC_PROBE_STATUS="unprobed"
 
 probe_accessory_mics() {
     local payload
+    [[ "$ACCESSORY_MIC_PROBE_STATUS" == "unprobed" ]] || return 0
     ACCESSORY_MIC_SOURCES=""
     if ! command -v "$MIC_PROFILE_PYTHON" >/dev/null 2>&1; then
         ACCESSORY_MIC_PROBE_STATUS="unavailable"
@@ -1152,6 +1456,10 @@ clear_voice_input_absent() {
 }
 
 restart_voice() {
+    if voice_restart_can_be_skipped; then
+        log "event=aec_reconcile.voice_restart_skipped reason=no_voice_relevant_change profile=${AUDIO_INPUT_PROFILE:-unknown} mic=${CURRENT_MIC:-<unset>}"
+        return
+    fi
     # Voice input is available — either a local mic (the mic-present paths) or
     # a paired accessory microphone (restart_voice_for_accessory_mic below) —
     # so open the presence gate before (re)starting. Done even on the
@@ -1171,6 +1479,7 @@ restart_voice() {
     # restart from inside this reconciler can leave both jobs waiting on each
     # other after an unbond/provider/mic change.
     run_systemctl --no-block restart jasper-voice.service
+    record_voice_restart_stamp
 }
 
 park_managed_xvf() {
@@ -1198,6 +1507,21 @@ write_alignment_env() {
 
 activate_managed_chip_aec() {
     local init_status
+    # The expensive bounce: this stops voice AND the bridge, blocking-restarts
+    # jasper-aec-init, and only then brings voice back — the ~8 s of deafness
+    # a measurement-mic hotplug cost on jts3. A pass that changed nothing would
+    # re-derive the identical alignment it already verified, so skip the whole
+    # sequence when the stack it would rebuild is already up and already ready.
+    if [[ "${JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS:-}" == "ready" ]] \
+        && unit_active_and_enabled jasper-aec-init.service \
+        && unit_active_and_enabled jasper-aec-bridge.service \
+        && voice_restart_can_be_skipped; then
+        log "event=aec_reconcile.chip_aec_bounce_skipped reason=no_voice_relevant_change alignment=ready"
+        return 0
+    fi
+    # Past this point the sequence stops voice, so the restart_voice at the end
+    # must not be able to gate itself off.
+    VOICE_RESTART_NEEDED=1
     write_alignment_env "checking" "validating commissioned alignment" ""
     mark_voice_input_absent "validating commissioned chip-AEC alignment"
     run_systemctl stop jasper-voice.service jasper-aec-bridge.service
@@ -1359,6 +1683,10 @@ restart_voice_for_accessory_mic() {
 }
 
 load_env_file "$ENV_FILE"
+# Snapshot the installed build BEFORE any env write, so every
+# mark_voice_restart_if_changed comparison and the restart gate below see the
+# same pass-start view of the world.
+read_installed_build_id
 if [[ "$CHECK_ONLY" != "1" ]]; then
     ensure_mode_file
 fi
@@ -1383,6 +1711,7 @@ if [[ -n "${JASPER_XVF_ALSA_CARD:-}" ]]; then
     MIC_DEVICE_CANDIDATES_DEFAULT="${JASPER_XVF_ALSA_CARD},${DEFAULT_MIC_DEVICE_CANDIDATES}"
 fi
 split_candidates "${JASPER_MIC_DEVICE_CANDIDATES:-${AEC_MIC_DEVICE:-$MIC_DEVICE_CANDIDATES_DEFAULT}}"
+prime_measurement_usb_ids
 if [[ "$CHECK_ONLY" != "1" ]]; then
     derive_profile_managed_aec_mic_device
 fi
@@ -1563,7 +1892,18 @@ if aec_ready "$AEC_MIC_DEVICE"; then
     fi
     write_leg_env "1" "$LEG_RAW" "$LEG_DTLN" "$LEG_CHIP_AEC" "$LEG_CHIP_AEC_150" "$LEG_CHIP_AEC_210"
     restart_outputd_if_needed
-    enable_start_aec
+    # Same reasoning as the chip-AEC bounce above, on the software-AEC3 path:
+    # enable_start_aec blocking-restarts init and the bridge, which is a mic
+    # outage of its own. The two are gated TOGETHER on purpose — bouncing the
+    # bridge while leaving voice up would strand the daemon on a dead UDP
+    # carrier, a state this path never produced before.
+    if unit_active_and_enabled jasper-aec-init.service \
+        && unit_active_and_enabled jasper-aec-bridge.service \
+        && voice_restart_can_be_skipped; then
+        log "event=aec_reconcile.aec_stack_bounce_skipped reason=no_voice_relevant_change profile=${AUDIO_INPUT_PROFILE}"
+    else
+        enable_start_aec
+    fi
     restart_voice
     exit 0
 fi

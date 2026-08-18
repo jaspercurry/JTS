@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import re
 import stat as stat_module
 import urllib.error
 import urllib.parse
@@ -466,6 +467,72 @@ def test_model_label_aliases_default_and_unknown():
     assert calibration.model_label_aliases("dayton_imm6") == ["iMM-6"]
     assert calibration.model_label_aliases("minidsp_umik2") == ["umik-2"]
     assert calibration.model_label_aliases("nope") == []  # no crash on unknown
+
+
+# --- measurement-class USB identity (W1) -----------------------------------
+#
+# The registry is the ONE owner of "which hardware is a measurement
+# microphone". deploy/bin/jasper-aec-reconcile reads it through
+# `python -m jasper.cli.measurement_mic` so a calibrated measurement mic can
+# never be selected as the voice/wake input — it carries no wake or AEC
+# contract, so selecting one would swap the room mic for an instrument.
+
+
+def test_supported_models_every_entry_declares_usb_ids():
+    """Shape contract. An entry that forgot the key would make
+    `spec["usb_ids"]` a KeyError for any future direct reader, and the empty
+    tuple is a deliberate statement ("this project has not measured this
+    model's id"), not an oversight."""
+    for key, spec in calibration.SUPPORTED_MODELS.items():
+        assert "usb_ids" in spec, key
+        usb_ids = spec["usb_ids"]
+        assert isinstance(usb_ids, tuple), key
+        for usb_id in usb_ids:
+            assert isinstance(usb_id, str), key
+            # `vid:pid`, lower-case hex — exactly how the kernel writes
+            # /proc/asound/<card>/usbid, which is what bash compares against.
+            assert re.fullmatch(r"[0-9a-f]{4}:[0-9a-f]{4}", usb_id), (key, usb_id)
+
+
+def test_umik2_usb_id_is_the_measured_value():
+    """Measured on the live JTS3 unit 2026-08-18: the mic enumerates as ALSA
+    card `UMIK2` and /proc/asound/UMIK2/usbid holds this value. Pinned because
+    the reconciler's exclusion is only as good as this literal, and a UMIK-2's
+    USB serial descriptor is the constant "00000" — there is no second
+    identity to fall back on."""
+    assert calibration.SUPPORTED_MODELS["minidsp_umik2"]["usb_ids"] == (
+        "2752:002b",
+    )
+
+
+def test_measurement_mic_usb_ids_collects_declared_ids_only():
+    ids = calibration.measurement_mic_usb_ids()
+    assert "2752:002b" in ids
+    assert len(ids) == len(set(ids)), "ids must be de-duplicated"
+    assert all(usb_id == usb_id.lower() for usb_id in ids)
+    # Models that declare nothing contribute nothing — never a guessed id.
+    assert ids == ("2752:002b",)
+
+
+def test_measurement_mic_usb_ids_never_collides_with_the_voice_array():
+    """The exclusion must not be able to reject the XVF3800 voice array. An
+    over-broad measurement registry would leave the speaker deaf, which is a
+    worse failure than not excluding a measurement mic."""
+    from jasper.mics import xvf3800
+
+    assert not set(calibration.measurement_mic_usb_ids()) & set(
+        xvf3800.USB_VID_PIDS
+    )
+
+
+def test_measurement_mic_cli_prints_exactly_the_registered_ids(capsys):
+    """The shell bridge's output contract: one lower-cased id per line, exit
+    0. deploy/bin/jasper-aec-reconcile parses stdout on this shape."""
+    from jasper.cli import measurement_mic
+
+    assert measurement_mic.main([]) == 0
+    printed = capsys.readouterr().out.split()
+    assert tuple(printed) == calibration.measurement_mic_usb_ids()
 
 
 # --- mic_tier_for_model: correction-envelope trust-tier resolution (#1668 PR-B)
