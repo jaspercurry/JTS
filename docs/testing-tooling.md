@@ -1240,13 +1240,19 @@ PYTHONPATH=. .venv/bin/python scripts/harmonic-distortion-replay.py \
 fidelity-gated and the tool will bind nothing there.
 
 **What the output means, and what it cannot mean.** Every number is *dB below
-the fundamental at the drive this capture used*, printed next to that drive in
-dBFS — the corpus records no SPL anywhere, so there is no absolute figure to be
-had. Each row also carries a **measured noise floor**, taken from a phantom
-window between the harmonic images where no image can be; a value within 6 dB of
-its floor is starred and is an upper bound on the driver, not a reading of it.
-The tweeter comes back 100% floor-limited on both banked rounds, because MEASURE
-solves its gain for room SNR and lands ~27 dB below the woofer.
+the fundamental at the same excitation frequency, at the drive this capture
+used*, printed next to that drive in dBFS — the corpus records no SPL anywhere,
+so there is no absolute figure to be had. A ratio is a fraction, so it rises
+wherever the FUNDAMENTAL dips: the table carries a fundΔ column (pooled
+fundamental re its own band median) and the summary names the bin where the
+harmonic's *absolute* energy peaks — read a ratio peak against both before
+attributing it to the driver. Each row also carries a **measured noise floor**,
+taken from a phantom window between the harmonic images where no image can be;
+a value a majority of sweeps read within 6 dB of their own floors is starred
+and is an upper bound on the driver, not a reading of it. The tweeter comes
+back 100% floor-limited on both banked rounds, because MEASURE solves its gain
+for room SNR and lands it ~27 dB below the woofer in stimulus gain (~17 dB at
+the capture).
 
 **Two band edges bite, and neither is Nyquist.** Order *N* is only real up to
 `f2/N` — the deconvolution divides by `|X|² + ε` and the sweep puts no energy
@@ -1270,7 +1276,10 @@ from the round's banked `gain_plan_db` and must reproduce the session's recorded
 `program_id` (a SHA-256 over the whole schedule, so a match proves the sweep `L`
 the offsets derive from); the session volume, which no artifact records, is
 *solved* against that same id. Then the shipped `analyze_program_capture` is
-re-run and ten banked diagnostics compared. `max_residual_samples` and
+re-run and its diagnostics compared on whatever gate fields the sidecar
+carries — fail-closed: a sidecar carrying none of them is refused rather than
+read ungated, and the summary prints the count actually compared, never the
+field-list length. `max_residual_samples` and
 `glitch_detected` are deliberately excluded — D7 (`b98e9380f`) replaced the
 estimator behind both *after* this corpus was banked, so comparing them would
 report a product improvement as a broken reconstruction. A capture whose banked
