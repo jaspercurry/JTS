@@ -28,7 +28,7 @@ import math
 import numpy as np
 import pytest
 
-from jasper.active_speaker.flat_spec import BandResult, FlatSpecReport
+from jasper.active_speaker.flat_spec import BandResult, ConvergenceResidual, FlatSpecReport
 from jasper.active_speaker.flat_spec_views import (
     PositionCurve,
     directivity_table,
@@ -48,11 +48,18 @@ CORPUS_BANDS = (
 TRUSTED_FLOOR_HZ = 357.14285714285717
 
 
-def _report(rms_per_band: tuple[float | None, ...], *, excluded: int = 0) -> FlatSpecReport:
+def _report(
+    rms_per_band: tuple[float | None, ...],
+    *,
+    excluded: int = 0,
+    intervals: tuple[tuple[float, float], ...] = (),
+) -> FlatSpecReport:
     """A report carrying the corpus geometry and the given per-band RMS values.
 
     ``None`` for a band's RMS makes it unevaluable — the shape a band left with
-    no non-excluded bin produces.
+    no non-excluded bin produces. ``intervals`` are the report's published
+    exclusion spans, which the per-position views re-apply to each member
+    curve.
     """
     bands = tuple(
         BandResult(
@@ -74,7 +81,7 @@ def _report(rms_per_band: tuple[float | None, ...], *, excluded: int = 0) -> Fla
         reference_db=-24.0,
         bands=bands,
         overall_passed=False,
-        excluded_intervals=(),
+        excluded_intervals=intervals,
         best_effort_above_hz=16000.0,
         smoothing_fraction=3,
         trusted_floor_hz=TRUSTED_FLOOR_HZ,
@@ -89,6 +96,20 @@ def _log_grid(n: int = 89, lo_hz: float = 142.8571) -> np.ndarray:
 
 def _flat_curve(grid: np.ndarray, level_db: float = -24.0) -> np.ndarray:
     return np.full(len(grid), level_db, dtype=float)
+
+
+def _hand_power_mean_db(values_db: np.ndarray) -> float:
+    """``10*log10(mean(10**(dB/10)))``, re-implemented fresh in this file.
+
+    Never the module's own helper: the point is to catch a regression to the
+    linear-dB-mean-vs-power-mean trap this repo has shipped at least three
+    times, and a test calling the implementation it is checking would catch
+    nothing. Same reason `tests/test_flat_spec.py` carries its own copy.
+    """
+    total = 0.0
+    for value in values_db:
+        total += 10.0 ** (float(value) / 10.0)
+    return 10.0 * math.log10(total / len(values_db))
 
 
 def _position(
@@ -186,17 +207,35 @@ def test_a_top_octave_deviation_moves_the_linear_pool_about_twelve_times_harder(
     assert top_log / mid_log == pytest.approx(1.0, rel=1e-9)
 
 
-def test_the_shipped_number_is_lifted_not_recomputed() -> None:
-    """``linear_rms_db`` IS ``spec_convergence_residual``'s answer, bit for bit.
+def test_the_shipped_number_is_lifted_not_recomputed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``linear_rms_db`` is whatever the ONE pooler says, not a second sum.
 
-    The view prints the two side by side; if it recomputed the shipped one the
-    comparison would be between two implementations rather than between two
-    weightings of one measurement.
+    Equality with the real `spec_convergence_residual` is necessary but not
+    sufficient — a faithful re-implementation would satisfy it and still be a
+    second owner. So the pooler is replaced with one returning a value no
+    arithmetic over this report could produce: if `linear_rms_db` follows it,
+    the view is genuinely *calling* the shipped pooler rather than agreeing
+    with it. The per-octave figure must NOT follow, because that one is this
+    module's own.
     """
+    from jasper.active_speaker import flat_spec_views
     from jasper.active_speaker.flat_spec import spec_convergence_residual
 
     report = _report((0.7135, 0.5089, 0.9116))
-    assert log_pooled_residual(report).linear_rms_db == spec_convergence_residual(report).rms_db
+    honest = log_pooled_residual(report)
+    assert honest.linear_rms_db == spec_convergence_residual(report).rms_db
+
+    monkeypatch.setattr(
+        flat_spec_views,
+        "spec_convergence_residual",
+        lambda _report_arg: ConvergenceResidual(
+            rms_db=1234.5, n_bins=99, n_excluded=7, evaluable=True,
+        ),
+    )
+    patched = flat_spec_views.log_pooled_residual(report)
+    assert patched.linear_rms_db == 1234.5
+    # ...and the log pooling is untouched by it, being this module's own work.
+    assert patched.rms_db == honest.rms_db
 
 
 def test_log_pooling_is_hand_computable_from_the_band_table() -> None:
@@ -516,6 +555,128 @@ def test_the_directivity_split_adds_back_up() -> None:
         # A downward tilt reads as a real level drop, worse the higher it goes.
         assert band.level_offset_db < 0.0
     assert off_row.bands[0].level_offset_db > off_row.bands[-1].level_offset_db
+
+
+def test_the_reference_is_a_power_mean_across_positions_not_a_db_average() -> None:
+    """Two on-axis positions at UNEQUAL levels, which is the only case that
+    can tell the two means apart.
+
+    Energy-averaging −30 and −20 dB lands at −22.596 dB, pulled toward the
+    louder one, because that one carries ten times the power. Averaging the
+    dB numbers lands at −25.0, halfway. Every fixture whose reference
+    positions sit at the same level makes those identical, which is how a
+    plain-average regression hides.
+
+    The asymmetry is the signature: against a power-mean reference the two
+    positions' offsets are −7.40 and +2.60 dB and do NOT cancel; against a
+    dB-average one they would be exactly ∓5.
+    """
+    grid = _log_grid()
+    positions = (
+        _position("p_quiet", ONAX, grid, _flat_curve(grid, -30.0)),
+        _position("p_loud", ONAX, grid, _flat_curve(grid, -20.0)),
+    )
+    table = directivity_table(_report((0.7, 0.5, 0.9)), positions, reference_role=ONAX)
+    expected = _hand_power_mean_db(np.array([-30.0, -20.0]))
+    assert expected == pytest.approx(-22.5963731, abs=1e-6)
+    assert min(table.reference_db) == pytest.approx(expected, abs=1e-9)
+    assert max(table.reference_db) == pytest.approx(expected, abs=1e-9)
+    # Unmistakably not the dB average, which is what the trap produces.
+    assert abs(expected - (-25.0)) > 2.0
+
+    quiet = next(row for row in table.rows if row.position_id == "p_quiet")
+    loud = next(row for row in table.rows if row.position_id == "p_loud")
+    assert quiet.level_offset_db == pytest.approx(-30.0 - expected, abs=1e-9)
+    assert loud.level_offset_db == pytest.approx(-20.0 - expected, abs=1e-9)
+    assert quiet.level_offset_db is not None and loud.level_offset_db is not None
+    # They sum to -4.807 dB, not to zero: the reference sits nearer the louder
+    # position, so the quiet one is further from it than the loud one is.
+    assert quiet.level_offset_db + loud.level_offset_db == pytest.approx(-4.807, abs=1e-2)
+
+
+def test_the_level_offset_is_a_power_mean_across_frequency_not_a_db_average() -> None:
+    """A position whose level swings inside the band, which is the only case
+    that can tell those two apart along the frequency axis.
+
+    A curve alternating between −40 and −20 dB averages to −30 dB as dB
+    numbers, and to about −23 dB as energy — the loud bins dominate. So a
+    position that a dB average calls "level with on-axis" is really some
+    7 dB hotter, and every flat fixture reports the same number either way.
+    """
+    grid = _log_grid()
+    swinging = np.where(np.arange(len(grid)) % 2 == 0, -40.0, -20.0)
+    report = _report((0.7, 0.5, 0.9))
+    positions = (
+        _position("p_on", ONAX, grid, _flat_curve(grid, -30.0)),
+        _position("p_swing", OFFAX, grid, swinging),
+    )
+    table = directivity_table(report, positions, reference_role=ONAX)
+    row = next(r for r in table.rows if r.position_id == "p_swing")
+
+    ref_lo, ref_hi = report.reference_band_hz
+    in_band = (grid >= ref_lo) & (grid < ref_hi)
+    expected = _hand_power_mean_db(swinging[in_band]) - _hand_power_mean_db(
+        np.full(int(in_band.sum()), -30.0),
+    )
+    assert row.level_offset_db == pytest.approx(expected, abs=1e-9)
+    # A dB average over the same bins would report roughly nothing at all.
+    assert abs(float(np.mean(swinging[in_band])) - (-30.0)) < 1.0
+    assert row.level_offset_db is not None and row.level_offset_db > 5.0
+
+    # The same helper drives every per-band offset, so pin one of those too.
+    band = row.bands[0]
+    source = report.bands[0]
+    graded_lo = source.graded_lo_hz or source.f_lo_hz
+    inside = (grid >= graded_lo) & (grid < source.f_hi_hz)
+    band_expected = _hand_power_mean_db(swinging[inside]) - _hand_power_mean_db(
+        np.full(int(inside.sum()), -30.0),
+    )
+    assert band.level_offset_db == pytest.approx(band_expected, abs=1e-9)
+    assert band.level_offset_db is not None and band.level_offset_db > 5.0
+
+
+def test_the_reports_exclusion_intervals_are_applied_to_every_member_curve() -> None:
+    """A mid-band excluded span must remove bins from the per-position views.
+
+    The honesty screen's result is published as intervals, and the per-role
+    numbers are only comparable to the pooled one if they are graded over the
+    same region of spectrum. A view that ignored the intervals would grade the
+    interference-dominated bins the pooled figure dropped, silently, and the
+    two numbers would answer different questions.
+
+    1-2 kHz sits inside the 250 Hz-2 kHz band, so excluding it must show up as
+    a non-zero excluded count AND move the residual.
+    """
+    grid = _log_grid()
+    # A curve that is flat except for a large bump exactly where the mask bites,
+    # so removing those bins cannot fail to change the answer.
+    bumped = _flat_curve(grid)
+    bumped[(grid >= 1000.0) & (grid < 2000.0)] += 8.0
+    positions = (_position("p_on", ONAX, grid, bumped),)
+
+    masked = role_split_flatness(
+        _report((0.7, 0.5, 0.9), intervals=((1000.0, 2000.0),)), positions, primary_role=ONAX,
+    )
+    unmasked = role_split_flatness(_report((0.7, 0.5, 0.9)), positions, primary_role=ONAX)
+    assert masked.primary is not None and unmasked.primary is not None
+    masked_position = masked.primary.positions[0]
+    unmasked_position = unmasked.primary.positions[0]
+
+    assert masked_position.n_excluded > 0
+    assert unmasked_position.n_excluded == 0
+    assert masked_position.n_bins < unmasked_position.n_bins
+    assert masked_position.rms_db is not None and unmasked_position.rms_db is not None
+    # The bump was the dominant deviation; dropping it must move the number a
+    # long way, not by a rounding error.
+    assert masked_position.rms_db < unmasked_position.rms_db - 1.0
+
+    # The directivity table applies the same intervals, so its band bin counts
+    # must shrink by the same evidence.
+    table_masked = directivity_table(
+        _report((0.7, 0.5, 0.9), intervals=((1000.0, 2000.0),)), positions, reference_role=ONAX,
+    )
+    table_unmasked = directivity_table(_report((0.7, 0.5, 0.9)), positions, reference_role=ONAX)
+    assert table_masked.rows[0].bands[0].n_bins < table_unmasked.rows[0].bands[0].n_bins
 
 
 def test_the_table_is_json_serialisable() -> None:

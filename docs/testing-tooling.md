@@ -1184,13 +1184,18 @@ PYTHONPATH=. .venv/bin/python scripts/render-metric-views.py \
     --json /tmp/metric-views.json
 ```
 
-The arithmetic is **not** in the script. It is
+Every **measurement** in the output comes from
 [`jasper/active_speaker/flat_spec_views.py`](../jasper/active_speaker/flat_spec_views.py)
 — product code, pure, pinned by
 [`tests/test_flat_spec_views.py`](../tests/test_flat_spec_views.py) — so the
-tool cannot print a figure the product will not later compute identically. The
-script owns only what is lab-only: walking the tree, rehydrating a persisted
-`FlatSpecReport`, and joining positions to the walk log that drove them.
+tool cannot print a residual, offset, or weight the product will not later
+compute identically. The script owns what is lab-only: walking the tree,
+rehydrating a persisted `FlatSpecReport`, joining positions to the walk log
+that drove them, and two presentation-layer subtractions the table needs and
+no consumer does — the `gap` column, and the bins-per-octave `ratio` in the
+band-weight block. Both are differences of published numbers, and both embed
+a *display* choice (which "other" role to show when there are several) that
+would become product policy if it moved onto the result types.
 
 Three views, none of which grades anything: `log_pooled_residual` re-pools the
 report's own per-band figures with equal weight per octave;

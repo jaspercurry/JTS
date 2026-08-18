@@ -128,6 +128,18 @@ def _band_octaves(band: BandResult) -> float:
     Returns ``0.0`` for any band whose span is empty, inverted, or
     non-finite — a weight of zero, which drops the band out of a weighted
     mean rather than letting a NaN swallow the whole pooled figure.
+
+    **The UPPER edge is taken as graded in full.** A report carries the edge
+    the floor raised but not the frequency axis it was evaluated on, so a
+    band whose axis stopped short of ``f_hi_hz`` — a capture that never
+    reached 16 kHz, say — is indistinguishable here from one that covered
+    it, and this weight would overstate its span. The band's own
+    :attr:`~jasper.active_speaker.flat_spec.BandResult.n_bins` is the
+    quantity that notices, which is why
+    :attr:`BandWeight.bins_per_octave` is published beside the weight rather
+    than folded into it: an anomalously low density is that truncation
+    showing. Detecting it here would need the axis, which would mean taking
+    the curve, which would make this a second evaluator.
     """
     lo = band.graded_lo_hz if band.graded_lo_hz is not None else band.f_lo_hz
     hi = band.f_hi_hz
@@ -1064,7 +1076,14 @@ def directivity_table(
 
     usable_reference = [p for p in reference if _on_grid(p)]
     if not usable_reference:
-        reason = "reference positions do not share one frequency grid"
+        # Reaching here means every reference position failed against the FIRST
+        # one's own axis — which that one can only do by disagreeing with
+        # itself, since its frequencies trivially equal the grid they defined.
+        # So the cause is always a position whose magnitude and frequency
+        # arrays are different lengths, never a grid disagreement between
+        # positions; saying the latter would send a reader looking at the
+        # wrong thing.
+        reason = "a reference position's magnitude and frequency arrays differ in length"
         return DirectivityTable(
             freqs_hz=tuple(float(f) for f in grid),
             reference_role=reference_role,

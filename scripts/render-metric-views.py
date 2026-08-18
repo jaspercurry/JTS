@@ -7,12 +7,16 @@
 capture bundle, beside the pooled number the product actually shipped.
 
 LAB TOOLING. Reads gitignored `captures/` evidence, prints a report, writes
-nothing back into the bundle. The arithmetic is not here: every number comes
-from `jasper.active_speaker.flat_spec_views`, which is product code, so this
-tool cannot compute a figure the product will not later compute the same way.
-What lives here is the part that IS lab-only — walking a receipts tree,
-rehydrating a persisted report, and joining an arm's positions to the walk log
-that drove them.
+nothing back into the bundle. Every MEASUREMENT here comes from
+`jasper.active_speaker.flat_spec_views`, which is product code, so this tool
+cannot compute a residual, offset, or weight the product will not later
+compute the same way. What lives here is the part that IS lab-only — walking a
+receipts tree, rehydrating a persisted report, joining an arm's positions to
+the walk log that drove them, and the two subtractions this table wants and no
+consumer does: the `gap` column and the bins-per-octave `ratio`. Both are
+differences of numbers the views already publish, and both carry a display
+choice — which "other" role to put in a single column when a cloud sampled
+several — that would turn into product policy if it moved onto a result type.
 
 Usage:
 
@@ -303,7 +307,7 @@ def _render_headline(arms: list[ArmViews], reference_role: str) -> None:
         offax = [r for r in arm.split.others if r.evaluable and r.log_rms_db is not None]
         # The single worst other role, not a mean of them: averaging roles is
         # the thing these views exist to stop doing.
-        worst_other = max(offax, key=lambda r: r.log_rms_db or 0.0) if offax else None
+        worst_other = max(offax, key=lambda r: r.log_rms_db) if offax else None
         gap = (
             worst_other.log_rms_db - primary.log_rms_db
             if worst_other is not None
