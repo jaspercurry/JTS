@@ -459,7 +459,33 @@ MAX_LINES_BY_PATH = {
     "jasper/active_speaker/crossover_v2_flow.py": 12_645,
     "jasper/web/correction_crossover_v2.py": 9_186,
     "jasper/active_speaker/crossover_envelope_v2.py": 4_096,
-    "jasper/audio_measurement/program_analysis.py": 6_978,
+    # 2026-08-18 (D7, series-2 diagnosis): +82 net on `program_analysis.py`
+    # (95 added, 13 removed), counted rather than estimated —
+    #   40  the argument written next to `GLITCH_RESIDUAL_SAMPLES`
+    #   26  correcting two now-FALSE claims the discontinuity block inherited
+    #       as settled (D7's second clause: "every glitch is a step" and "a
+    #       clean capture's integer-located residuals sit well under a sample",
+    #       both falsified by series 2) plus the observable that correction
+    #       leaves behind
+    #   14  the residual block's own comment
+    #   15  the sub-sample residual loop itself, against 13 removed: the
+    #       EXECUTABLE change is +2 lines. Everything else is why.
+    # The 40 is the load-bearing part. That absence WAS the defect:
+    # a 1.5-sample threshold with nothing recording the resolution of the
+    # estimator feeding it sat below its own instrument noise for two series,
+    # rejected eight physically-clean captures, and took a round to exactly
+    # its retake budget. A threshold in samples is not a fact on its own, so
+    # the number and its instrument are now one comment; compressing that out
+    # to keep this integer flat is precisely how it happens again.
+    #
+    # The seam this file wants is real and deliberately NOT cut here: the
+    # drift/glitch estimator (`DriftEstimate`, `_sweep_occurrence*`,
+    # `_repeat_epsilon`, `_subsample_separation`, `_locate_discontinuity`,
+    # `_estimate_drift`) is one coherent "capture timing coherence" concern
+    # with a clean boundary. Moving it is a ~300-line relocation inside a file
+    # other live sessions of this fix wave are also editing, which is a
+    # collision, not a cleanup. Take it in a quiet window and lower this back.
+    "jasper/audio_measurement/program_analysis.py": 7_060,
 }
 
 

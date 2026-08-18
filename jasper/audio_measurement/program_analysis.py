@@ -134,6 +134,46 @@ class ConfiguredPathConditioningError(ValueError):
 
 # A capture is rejected when the drift baselines disagree by more than this many
 # samples-equivalent, or the primary drift exceeds the ppm bound (design §5.6.3).
+#
+# A threshold in samples is only meaningful against the RESOLUTION of the
+# estimator that feeds it, so the two facts are owned here together (D7,
+# series-2 diagnosis 2026-08-17).
+#
+# What went wrong: until D7 the residual was measured from
+# `_locate_in_window`'s integer `located_start`, i.e. the plain
+# `int(np.argmax(...))` of a full-band correlation of the DRY stimulus against
+# the ROOM-CONVOLVED capture (`capture_relay.alignment.cross_correlation_alignment`
+# — no band-limiting, no envelope, no sub-sample refinement). That correlation
+# yields the room impulse response rather than a symmetric autocorrelation
+# peak, so its argmax hops between adjacent early lobes by a few samples, and
+# 1.5 sat BELOW its own instrument noise. Across series 2 that rejected eight
+# physically-clean captures at a reported 2.00-3.13 samples. The diagnosis's
+# own independent re-derivation put those eight at 0.022-0.076, LOWER than the
+# twenty accepted captures' 0.027-0.110, with Pearson r = -0.059 between what
+# the guard reported and the real quantity. Cost: ~13 minutes of hardware time,
+# and round 2 spent its 3-extra retake budget exactly, one draw from a lost
+# round.
+#
+# Why 1.5 is right NOW: `_estimate_drift` measures the residual with
+# `_subsample_separation` (occurrence-vs-occurrence — same stimulus, same room
+# IR, so the peak is sharp). Replaying those same 28 hardware captures through
+# it reports 0.038-0.299 samples (mean 0.116) and rejects NONE of them, so 1.5
+# clears this estimator's measured floor by ~5x. The eight land at 0.083-0.229,
+# INSIDE the twenty accepted captures' 0.038-0.299 — the same "the rejected
+# ones are not the anomalous ones" result the diagnosis got independently.
+#
+# The guard's TEETH are unchanged, and that is measured rather than argued: on
+# a capture carrying a real timeline step the two estimators return the SAME
+# number to three decimals, because a real step is a real separation and both
+# instruments measure it. #1765's +64-sample insertion lands the within-role
+# spread at 32.0 samples and #2533's +128-sample shape at 42.7; an insertion as
+# small as +4 samples still rejects (spread 2.0) and +2 still passes (spread
+# 1.0), before and after D7 alike. What changed is only the noise floor
+# underneath those numbers: on the hardware corpus it fell from 0.23-3.13
+# samples to 0.04-0.30. Both directions are pinned by
+# `tests/test_audio_measurement_program_analysis.py` — raise this number and
+# the splice guard loosens; lower it and the estimator's own floor starts
+# rejecting clean captures again.
 GLITCH_RESIDUAL_SAMPLES = 1.5
 MAX_DRIFT_PPM = 500.0
 
@@ -156,8 +196,8 @@ REPEAT_LEVEL_TOLERANCE_DB = 0.3
 
 # Timeline-discontinuity change-point (2026-07-27 forensics, issue #1765).
 #
-# Every glitch this system has actually produced was a DISCRETE timeline step,
-# never clock drift: across the 2026-07-22..27 JTS3 journal (57 MEASURE
+# Every glitch this system has produced by a real TIMELINE fault was a DISCRETE
+# step, never clock drift: across the 2026-07-22..27 JTS3 journal (57 MEASURE
 # captures) both `program_analysis.glitch` events fired on the residual guard
 # with epsilon comfortably INSIDE MAX_DRIFT_PPM — 2026-07-23 at 30.53 ppm /
 # 798.46 samples, 2026-07-27 at 94.12 ppm / 32.36 samples. The 500 ppm bound
@@ -171,6 +211,15 @@ REPEAT_LEVEL_TOLERANCE_DB = 0.3
 # pair sits entirely after it, so 32.097 ppm = the TRUE drift; demeaned
 # residual 32.2 predicted vs 32.357 observed).
 #
+# That "real timeline fault" qualifier is load-bearing, and series 2 is why
+# (D7). The unqualified version of the sentence above — every glitch is a step —
+# was inherited as settled and is false: a THIRD class exists in which nothing
+# happened to the capture at all and the residual guard fired on its own
+# estimator's noise, with epsilon in the normal branch and no step resolvable.
+# Eight of those in one series. See `GLITCH_RESIDUAL_SAMPLES` for the finding
+# and the fix; the 2026-07 forensic above stands unchanged as a description of
+# the step class it actually studied.
+#
 # So the reported `epsilon_ppm` on a glitched capture is an ARTEFACT of the
 # step, not a drift measurement, and "the baselines disagree" says nothing
 # about what actually broke. This estimator names it: fit a single-step
@@ -178,10 +227,21 @@ REPEAT_LEVEL_TOLERANCE_DB = 0.3
 # where it landed. Diagnostic ONLY — like `per_role_epsilon_ppm` it never
 # gates `glitch_detected`, so no capture's accept/reject changes.
 #
-# Thresholds: a clean capture's integer-located residuals sit well under a
-# sample, so a fitted step this large cannot come from locate noise; the RSS
-# ratio additionally requires the step model to EXPLAIN the capture rather
-# than merely soak up one extra degree of freedom.
+# Thresholds: a fitted step this large should not come from locate noise, and
+# the RSS ratio additionally requires the step model to EXPLAIN the capture
+# rather than merely soak up one extra degree of freedom. NOTE (D7): this fit
+# still reads the INTEGER `located_start` — unlike the residual guard, which
+# no longer does — and the margin here is thinner than it looks. The premise
+# was "a clean capture's integer-located residuals sit well under a sample";
+# series 2 measured 2.00-3.13 on eight clean captures, so 4.0 is nearer 1.5x
+# that noise than the comfortable multiple it was chosen as. This estimator
+# gates nothing (diagnostic only), so it is recorded rather than retuned here.
+# What a journal reader will now see, because D7 changed the verdict beside it
+# and not this fit: replaying the ten r1b laterals, two resolve a spurious
+# -4.2 / -4.0 step after `sweep_w_rep2` next to an ACCEPTED capture. Pre-D7
+# both were rejected, so the same spurious step rode along with a rejection
+# and read as corroboration. It never was; treat a step this close to 4.0 as
+# locate noise until this threshold is re-derived from a real distribution.
 DISCONTINUITY_MIN_SAMPLES = 4.0
 DISCONTINUITY_RSS_RATIO = 0.25
 
@@ -2635,7 +2695,6 @@ def _estimate_drift(
     program: ExcitationProgram,
     capture: np.ndarray,
     sample_rate: int,
-    global_offset: int,
     locations: Sequence[SegmentLocation],
 ) -> DriftEstimate:
     occurrences_by_role = _sweep_occurrences_by_role(locations)
@@ -2682,13 +2741,36 @@ def _estimate_drift(
     # drivers (three occurrences each); an old-shaped 3-sweep program still
     # gets it for the woofer pair only, the single-sweep tweeter covered by
     # the ε ppm bound alone.
-    groups: dict[Any, list[float]] = {}
+    #
+    # Each occurrence is placed against its group's FIRST by
+    # `_subsample_separation`, never read off `located_start` — the resolution
+    # argument, and why 1.5 is the right number against this estimator, is
+    # owned by `GLITCH_RESIDUAL_SAMPLES` (D7). Placing them relatively also
+    # cancels the global offset and the driver's constant acoustic delay
+    # structurally, which is why `global_offset` is no longer a parameter; the
+    # demeaning stays because the within-role SPREAD is the statistic.
+    # Grouped here rather than through `_sweep_occurrences_by_role` (used above
+    # for the epsilon gate) on purpose: that owner drops a role-less sweep,
+    # where this guard has always grouped them together. The two agree for
+    # every program that can reach here — `RoleBand.__post_init__` refuses a
+    # role that is not a non-empty string, so a role-less MEASURE sweep cannot
+    # be composed — so this is scope discipline, not drift.
+    groups: dict[Any, list[SegmentLocation]] = {}
     for loc in stimulus_locs:
-        start = program.segment(loc.segment_id).start_sample
-        residual = loc.located_start - (global_offset + start * (1.0 + epsilon))
-        groups.setdefault(loc.role, []).append(residual)
+        groups.setdefault(loc.role, []).append(loc)
     max_residual = 0.0
-    for resids in groups.values():
+    for members in groups.values():
+        reference = members[0]
+        ref_seg = program.segment(reference.segment_id)
+        resids = [0.0]
+        for loc in members[1:]:
+            scheduled_sep = (
+                program.segment(loc.segment_id).start_sample - ref_seg.start_sample
+            )
+            measured_sep = _subsample_separation(
+                capture, reference.located_start, loc.located_start, ref_seg.n_samples,
+            )
+            resids.append(measured_sep - scheduled_sep * (1.0 + epsilon))
         mean = sum(resids) / len(resids)
         for r in resids:
             max_residual = max(max_residual, abs(r - mean))
@@ -5782,7 +5864,7 @@ def _analyze_measure(
     if priors.crossover_fc_hz is None:
         raise ValueError("MEASURE analysis requires priors.crossover_fc_hz")
     fc_hz = float(priors.crossover_fc_hz)
-    drift = _estimate_drift(program, capture, sample_rate, global_offset, locations)
+    drift = _estimate_drift(program, capture, sample_rate, locations)
 
     seg_w = program.segment("sweep_w")
     seg_t = program.segment("sweep_t")
