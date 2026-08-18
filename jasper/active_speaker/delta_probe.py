@@ -245,6 +245,21 @@ Two consequences follow, and both are deliberate:
   a real defect and a real next-round target (the blend region is where this
   model is known blind, #2600); it is not a hazard, and it no longer pulls a
   measured, safe, improving graph off a household's speaker.
+
+**What the anchor is trusted for, stated plainly.** An anchor is a subtraction,
+so a wrong one can cancel a real finding as easily as a phantom — measured on
+this module's own inputs, an entry curve 1e6 dB high turns a genuine 5 dB
+over-realization into ``boost_overshoot_db = −999995`` and a SAFE verdict, while
+one 1e6 dB low refuses loudly. That trust is not new and is not this rule's to
+establish: :attr:`DeltaProbeMap.residual_offset_db` has rested on the same
+curve since #2533, and its own hard stop
+(``verification.SAFETY_UNCOMMANDED_LEVEL_LOUDER``) can be masked the same way.
+Nothing in this module can check it — comparability is the round evidence's
+question (``round_evidence`` answers it by ``program_id`` and
+``reference_mark``, and ``verification.evaluate_benefit`` refuses an
+incomparable pair) — so what is owed here is the same sentence
+:attr:`DeltaProbeMap.entry_anchor_offset_db` already carries: it discloses what
+was removed, and it is **not** a warrant that what is left is clean.
 """
 from __future__ import annotations
 
