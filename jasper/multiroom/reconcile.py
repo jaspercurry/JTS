@@ -877,7 +877,7 @@ def is_active_speaker_box() -> bool:
     still takes the active path, where the follower apply fail-closes (no ready
     baseline → refuse to bond) rather than silently degrading to a full-range
     dumb follower. Legacy boolean consumers fail-soft unknown to ``False``;
-    the grouping reconciler reads :func:`_active_speaker_box_state` directly
+    the grouping reconciler reads :func:`_output_topology_state` directly
     and blocks graph transitions on unknown."""
     return _output_topology_state()[0] is True
 

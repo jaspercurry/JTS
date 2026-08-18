@@ -2339,22 +2339,24 @@ def test_local_sub_on_the_innomaker_is_accepted(monkeypatch, tmp_path: Path):
     assert topo_path.exists()
 
 
-def test_topology_save_kicks_the_audio_hardware_reconcile(
+def test_topology_save_kicks_hardware_and_grouping_reconcile(
     monkeypatch,
     tmp_path: Path,
 ):
-    """A save changes what the running graph must be, so it converges the box
-    the way the reset path does. Without this the wizard wrote a new layout
-    and nothing re-resolved outputd's env until the next boot."""
+    """A save converges hardware and revokes any stale grouping DAC bypass."""
     monkeypatch.setenv(
         "JASPER_OUTPUT_TOPOLOGY_PATH",
         str(tmp_path / "output_topology.json"),
     )
     calls: list[dict] = []
     sentinel = {"ok": True, "action": "start"}
+    grouping_env = tmp_path / "grouping-outputd.env"
+    grouping_env.write_text("JASPER_OUTPUTD_DAC_CONTENT_FIFO=/run/armed.fifo\n")
 
     def fake_manage_units(*units, **kwargs):
         calls.append({"units": units, **kwargs})
+        if "jasper-grouping-reconcile.service" in units:
+            grouping_env.write_text("JASPER_OUTPUTD_DAC_CONTENT_FIFO=\n")
         return sentinel
 
     monkeypatch.setattr(
@@ -2376,12 +2378,16 @@ def test_topology_save_kicks_the_audio_hardware_reconcile(
         _innomaker_topology_payload(active=False)
     )
 
-    assert calls and calls[0]["units"] == ("jasper-audio-hardware-reconcile.service",)
+    assert calls and calls[0]["units"] == (
+        "jasper-audio-hardware-reconcile.service",
+        "jasper-grouping-reconcile.service",
+    )
     assert calls[0]["verb"] == "start"
     assert calls[0]["reason"] == "output_topology_save"
     # A topology replacement first parks audio, then waits for the root
     # reconciler to make outputd agree with the final saved topology.
     assert calls[0]["no_block"] is False
+    assert grouping_env.read_text() == "JASPER_OUTPUTD_DAC_CONTENT_FIFO=\n"
     assert saved["reconcile"] is sentinel
     assert set(saved["hardware_adoption"]) == {"allowed", "identity"}
 

@@ -28,6 +28,8 @@ from jasper.output_topology import (
 logger = logging.getLogger("jasper.output_topology_runtime")
 
 RECONCILE_UNIT = "jasper-audio-hardware-reconcile.service"
+GROUPING_RECONCILE_UNIT = "jasper-grouping-reconcile.service"
+RECONCILE_UNITS = (RECONCILE_UNIT, GROUPING_RECONCILE_UNIT)
 
 
 def topology_summary(topology: OutputTopology) -> dict[str, Any]:
@@ -57,13 +59,13 @@ def read_before(path: str | Path | None) -> dict[str, Any]:
 
 
 def trigger_reconcile(*, reason: str = "output_topology_reset") -> dict[str, Any]:
-    """Synchronously ask the root reconciler to apply saved topology state."""
+    """Synchronously ask both topology consumers to apply saved state."""
 
     from jasper.control.restart_broker import manage_units
 
     try:
         result = manage_units(
-            RECONCILE_UNIT,
+            *RECONCILE_UNITS,
             verb="start",
             reason=reason,
             no_block=False,
@@ -75,7 +77,7 @@ def trigger_reconcile(*, reason: str = "output_topology_reset") -> dict[str, Any
         logger,
         "output_topology.reconcile",
         reason=reason,
-        unit=RECONCILE_UNIT,
+        unit=",".join(RECONCILE_UNITS),
         ok=bool(result.get("ok")),
         error=result.get("error"),
         level=logging.INFO if result.get("ok") else logging.WARNING,
