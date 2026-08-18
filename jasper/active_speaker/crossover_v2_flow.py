@@ -5042,11 +5042,14 @@ class CrossoverV2Session:
         self._attempt_history = list(attempt_history)[
             -AttemptBudget().hard_cap_attempts:
         ]
-        # #2602's series memory, resolved by the host from durable state and
-        # held opaquely: this class never reads inside it. ``None`` normalizes
-        # to the opening round at the one use site, which is also the only
-        # place ``coordinator`` is imported (see the TYPE_CHECKING note above —
-        # importing it here would pull ``flat_spec`` into every flow import).
+        # #2602's series memory, resolved by the host from durable state — on
+        # BOTH stages since #2698, because the two readers run on different
+        # ones. ``_grade_round_once`` (stage 2) normalizes ``None`` to the
+        # opening round and imports ``coordinator`` to do it (see the
+        # TYPE_CHECKING note above — importing it here would pull
+        # ``flat_spec`` into every flow import); ``_blend_prescription``
+        # (stage 1, since #2687) reads ``previous_blend_correction`` and takes
+        # its own documented direction on ``None``.
         self._series_position = series_position
         self._attempt_floor = attempt_floor
         self._last_attempt_decision = (

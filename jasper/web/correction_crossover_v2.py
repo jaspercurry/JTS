@@ -7603,6 +7603,9 @@ def prepare_v2_session(
         session_wall_clock_ceiling_s,
     )
     from jasper.capture_relay import correction_adapter
+    from jasper.active_speaker.crossover_v2.coordinator import (
+        series_position_from_state,
+    )
 
     requested_tier = (raw.get("tier") if raw else None) or None
     if requested_tier is None:
@@ -7835,6 +7838,15 @@ def prepare_v2_session(
             attempt_floor=attempt_store.floor,
             speaker_id=context.topology.topology_id,
             alignment_prescription=alignment_prescription,
+            # #2698. The same series fact the grading stage reads, from the
+            # same reader and off the same durable state this snapshot is
+            # built from — because stage 1 reads it too, and reads it FIRST.
+            # ``_blend_prescription`` runs at candidate-build time, here in
+            # MEASURE, and an absent position there is not a no-op: it falls
+            # back to the incumbent, so a measuring session with no position
+            # silently discards every blend instruction the previous round
+            # banked and the series can never converge.
+            series_position=series_position_from_state(prior_raw),
         )
         persist_conductor_state(conductor, failure_code=None, evidence=refs)
         holder["run"] = build_v2_run_and_consume(
@@ -8169,10 +8181,11 @@ def prepare_v2_verify(
             # #2602: where the next round sits in the flattening series, read
             # off the receipt the previous round banked and carried forward
             # across sessions — the series outlives the session that started
-            # it. Wired HERE and only here because this is the stage that
-            # grades a round: stage 1 walks CHECK/MEASURE and never reaches
-            # ``_grade_round``, so a series position on its snapshot would be
-            # state nothing reads.
+            # it. This stage reads it in ``_grade_round``, the stage that
+            # grades a round. It is wired on BOTH stages since #2698:
+            # #2687 gave stage 1 its own reader (``_blend_prescription``, at
+            # candidate-build time), which falsified the argument this line
+            # once carried for being the series' only wiring site.
             series_position=series_position_from_state(state),
             attempt_floor=attempt_store.floor,
             last_attempt_decision=(

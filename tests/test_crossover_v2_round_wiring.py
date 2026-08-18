@@ -155,6 +155,16 @@ from tests.test_crossover_v2_stage_bridge import (
 # --------------------------------------------------------------------------- #
 
 
+def _hydrated_series_position(conductor: Any) -> Any:
+    """The :class:`SeriesPosition` this conductor was SEEDED with.
+
+    Distinct from anything the session computes for itself: it is purely what
+    the preparer resolved off durable state and handed over, and there is no
+    public reader because a session may only carry it, never re-derive it.
+    """
+    return conductor._series_position
+
+
 def _install_entry_baseline(conductor: Any, *, scale: float) -> EntryBaseline:
     """Give a stage-2 conductor the "before" stage 1 would have handed it.
 
@@ -3076,6 +3086,66 @@ def test_a_kept_round_banks_its_blend_instruction_and_it_reads_back():
 
     position = coordinator.series_position_from_state({"round_receipt": identity})
     assert position.previous_blend_correction is not None
+
+
+def test_a_banked_instruction_reaches_the_next_rounds_measure_stage(monkeypatch):
+    """#2698 — the hop the test above stops one step short of.
+
+    That test proves the receipt CARRIES the instruction and that the reader
+    parses it back. Neither fact iterates anything: ``_blend_prescription`` is
+    read at candidate-build time, which runs in the MEASURE stage, so a series
+    converges only if the MEASURING session is hydrated with its position too.
+    Before #2698 it was not: the one ``series_position=`` line lived in
+    ``prepare_v2_verify`` alone, ``self._series_position`` was ``None`` on
+    every measuring session, and the build silently fell back to the incumbent.
+    Measured on 2026-08-18: a round banked ``Peaking 2120.34 Hz, -0.7171 dB``
+    and the next round emitted zero blend filters, with the done screen still
+    promising the region would be trimmed.
+
+    Driven through the REAL stage-1 preparer, and DISCRIMINATING: the applied
+    profile carries a different, readable correction, so "carried the
+    instruction" and "fell back to the graph" are two distinguishable answers
+    rather than one. A fixture with no incumbent would pass against ``()`` for
+    the wrong reason.
+    """
+
+    banked = ({"biquad_type": "Peaking", "freq": 2120.3384, "q": 2.0,
+               "gain": -0.7171},)
+    incumbent = ({"biquad_type": "Peaking", "freq": 1200.0, "q": 2.0,
+                  "gain": -2.5},)
+    monkeypatch.setattr(
+        "jasper.active_speaker.baseline_profile."
+        "load_applied_baseline_profile_state",
+        lambda: {"blend_correction": [dict(f) for f in incumbent]},
+    )
+    v2host.save_v2_state({
+        "round_receipt": {
+            "round_ordinal": 8,
+            "objectives": {"tilt_db": 0.4, "ripple_db": 0.9},
+            "blend": {
+                "filters": [dict(f) for f in banked],
+                "residual_db": 0.7304,
+            },
+        },
+    })
+
+    prepared = v2host.prepare_v2_session(
+        {}, status=_status(), run_async=None, camilla_factory=None,
+    )
+    conductor, _state = _open_prepared(monkeypatch, prepared)
+
+    # The series survived into the MEASURING session, ordinal and all — a
+    # position resolved to ``first()`` would carry no instruction and the
+    # assertion below would then be testing the fallback.
+    assert _hydrated_series_position(conductor).ordinal == 9
+    # …and what ``_build_candidate`` hands the emitter is that instruction,
+    # not the graph the speaker is already playing.
+    assert conductor._blend_prescription() == banked
+    # The control that makes the assertion above mean something: the fallback
+    # is reachable, readable, and a DIFFERENT answer.
+    assert flow.CrossoverV2Session._applied_blend_correction(
+        SimpleNamespace()
+    ) == incumbent
 
 
 #: "the session resolved no position at all", distinct from "it resolved one
