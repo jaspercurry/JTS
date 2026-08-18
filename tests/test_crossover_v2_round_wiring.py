@@ -189,7 +189,9 @@ def _install_entry_baseline(conductor: Any, *, scale: float) -> EntryBaseline:
     return baseline
 
 
-def _tracking_curve_change_from_entry(conductor: Any, *, change_db: float) -> tuple:
+def _tracking_curve_change_from_entry(
+    conductor: Any, *, change_db: float, louder_spike_db: float | None = None,
+) -> tuple:
     """A post-apply tracking curve that missed by ``change_db``, both ways.
 
     ``(freqs, measured, predicted)`` for ``verify_tracking_curve``, built so the
@@ -212,6 +214,15 @@ def _tracking_curve_change_from_entry(conductor: Any, *, change_db: float) -> tu
     baseline for both, so a fixture that decouples them is testing a wiring the
     speaker does not have.
 
+    ``louder_spike_db`` adds that much at ONE bin. It is what separates a
+    ``model_error`` the #2559 deferral does not spare from a hearing hazard, and
+    the separation is the structured-run rule: one bin is enough for
+    ``realized_louder_than_commanded`` (unstructured, so the lenience is
+    withheld) and far too narrow for ``boost_over_declared_bound`` (which needs
+    a 1/3-octave run before it will call anything a hazard). A fixture that
+    wants the probe's rollback CLASS to take the graph off — rather than the
+    safety axis, which outranks it — has to sit in exactly that gap.
+
     Requires ``_install_entry_baseline`` to have run.
     """
     import numpy as np
@@ -232,7 +243,11 @@ def _tracking_curve_change_from_entry(conductor: Any, *, change_db: float) -> tu
         np.asarray(commanded[1], dtype=float),
     )
     predicted = measured_pre + commanded_db
-    return (freqs, predicted + change_db, predicted)
+    measured = predicted + change_db
+    if louder_spike_db is not None:
+        measured = measured.copy()
+        measured[len(measured) // 2] += louder_spike_db
+    return (freqs, measured, predicted)
 
 
 def _install_applied_graph(monkeypatch, *, boosts: bool) -> None:
@@ -869,13 +884,13 @@ def test_two_restore_triggers_run_one_undo_and_keep_the_honest_sentence(
     # A second capture in the same session, carrying a probe verdict that used
     # to fire the seam's own immediate rollback: 2 dB LOUDER than the applied
     # filters commanded, across the whole band. Nothing restores a second time.
-    freqs = np.asarray(_COMMANDED_FREQS_HZ, dtype=float)
-    predicted = np.zeros_like(freqs)
     _consume_verify(
         conductor,
         dataclasses.replace(
             _post_apply_analysis(conductor),
-            verify_tracking_curve=(freqs, predicted + 2.0, predicted),
+            verify_tracking_curve=_tracking_curve_change_from_entry(
+                conductor, change_db=-2.0, louder_spike_db=+4.0,
+            ),
         ),
         attempt=2,
     )
@@ -2432,13 +2447,18 @@ def test_a_probe_rollback_at_the_cloud_close_banks_its_round(
     # 2 dB LOUDER than commanded across the band: a ``model_error`` the #2559
     # deferral does not spare, which is the class this branch exists for. The
     # Full tier grades at the cloud close, so VERIFY only stashes it.
-    freqs = np.asarray(_COMMANDED_FREQS_HZ, dtype=float)
-    predicted = np.zeros_like(freqs)
+    #
+    # Stated against the ENTRY capture, not against a flat model curve: the
+    # direction that withholds the deferral is a measured change since
+    # series-2 D1, and a decoupled fixture would let the entry baseline's own
+    # shape decide it — which is the fixture testing itself.
     assert _consume_verify(
         conductor,
         dataclasses.replace(
             _post_apply_analysis(conductor),
-            verify_tracking_curve=(freqs, predicted + 2.0, predicted),
+            verify_tracking_curve=_tracking_curve_change_from_entry(
+                conductor, change_db=-2.0, louder_spike_db=+4.0,
+            ),
         ),
     ).accepted
 

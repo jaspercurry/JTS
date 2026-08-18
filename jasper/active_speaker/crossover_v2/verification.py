@@ -201,6 +201,7 @@ __all__ = [
     "SAFETY_BOOST_OVER_DECLARED_BOUND",
     "SAFETY_CLIPPED_CAPTURE",
     "SAFETY_NO_FINDING",
+    "SAFETY_NO_FINDING_UNMEASURED",
     "SAFETY_UNCOMMANDED_LEVEL_LOUDER",
     "SPEC_BAND_OUT_OF_TOLERANCE",
     "SPEC_IN_TOLERANCE",
@@ -889,10 +890,30 @@ SAFETY_BOOST_OVER_DECLARED_BOUND = "boost_realized_above_probe_tolerance"
 SAFETY_UNCOMMANDED_LEVEL_LOUDER = "uncommanded_level_shift_louder"
 #: A stimulus segment carried a full-scale run.
 SAFETY_CLIPPED_CAPTURE = "clipped_capture"
-#: Nothing in the evidence available says this state is unsafe. **Not the same
-#: claim as "this state is safe"** — see :func:`evaluate_applied_safety`, whose
-#: evidence mapping reports which instruments actually looked.
+#: Nothing in the evidence available says this state is unsafe, **and the
+#: realized-energy check was one of the instruments that looked.**
 SAFETY_NO_FINDING = "no_unsafe_finding"
+#: Nothing says this state is unsafe, and the realized-energy check **did not
+#: run** — there was no pre-apply capture to difference this one against, so
+#: the only instrument that can see energy in a driver the graph did not
+#: declare was not able to look (series-2 D1 fix round).
+#:
+#: **Why this is a separate reason and not a footnote in the evidence.** The
+#: axis had one SAFE reason, and "we checked and found nothing" and "we could
+#: not check" collapsed into it. That is the same dishonesty D1 is about —
+#: an instrument's name over a quantity it did not measure — one layer up, and
+#: it is not rare: a first-ever round reaches it BY CONSTRUCTION (no prior
+#: applied profile ⇒ no nameable previous graph ⇒ ``state_axis_only``), as does
+#: every committed alternative-Fc round and every capture whose quiet bins are
+#: too few to anchor. This is :class:`~.contracts.BenefitStatus.INDETERMINATE`'s
+#: argument on this axis (#1868: *"we do not know" must have somewhere to live*
+#: rather than defaulting to the success value).
+#:
+#: The STATUS stays :attr:`~.contracts.SafetyStatus.SAFE` and the adoption row
+#: is unchanged, deliberately: refusing on an absent measurement would revert
+#: every first-ever round, which is the one thing this module declines to do
+#: everywhere else. What changes is what the receipt and the journal SAY.
+SAFETY_NO_FINDING_UNMEASURED = "no_unsafe_finding_realized_energy_unmeasured"
 
 #: The integrity check name a clipped stimulus segment fails. The literal is
 #: :data:`jasper.audio_measurement.program_analysis.INTEGRITY_CHECK_CLIPPED_RUN`,
@@ -935,16 +956,26 @@ def evaluate_applied_safety(
     cancels and delivered energy does not. The model's departure still travels
     in ``evidence``, as the next-round target it is.
 
-    **Two of the three cannot be measured without a pre-apply capture, and the
+    **The FIRST finding cannot be measured without a pre-apply capture, and the
     axis says so rather than passing.** ``safety_anchored`` in ``evidence`` is
-    the probe's own answer to "did the hearing half run at all", and it is False
-    on an unanchored map and on the ``safety_only`` path. Refusing on the
-    unanchored quantity instead is the defect above; refusing on absence is the
-    thing this module already declines to do everywhere else (see the
-    ``probe_graded`` note below). What still holds with no anchor: the clipped
-    check, which needs none, and the electrical bound the graph carries by
-    construction — a deterministic biquad chain whose peak cost is computed and
-    pre-paid (``linearization_fit.worst_headroom_cost_db``) under the project's
+    the probe's own answer to "did that half run at all", and it is False on an
+    unanchored map and on the ``safety_only`` path. Refusing on the unanchored
+    quantity instead is the defect above; refusing on absence is the thing this
+    module already declines to do everywhere else (see the ``probe_graded`` note
+    below).
+
+    What still holds with no anchor, measured rather than assumed: the **level**
+    rule does — ``residual_offset_db`` is gated on having quiet bins, not on
+    having an anchor, so an ordinary unanchored round measured +6 dB whole-band
+    still reaches :data:`SAFETY_UNCOMMANDED_LEVEL_LOUDER` (it reports the
+    absolute quiet-bin disagreement rather than a change, which is the pre-#2533
+    reading of that number). The **clipped** check needs no probe at all. Only
+    on the ``safety_only`` path does the level rule also fall away, because
+    there ``residual_offset_db`` is ``None`` by construction — that path grades
+    the model's departure and nothing else. Underneath all three sits the
+    electrical bound the graph carries whatever any of them say: a deterministic
+    biquad chain whose peak cost is computed and pre-paid
+    (``linearization_fit.worst_headroom_cost_db``) under the project's
     ``devices.volume_limit = 0.0`` ceiling.
 
     **Direction is the discriminator, and it is load-bearing.** The same
@@ -1088,7 +1119,16 @@ def evaluate_applied_safety(
         )
     if clipped:
         return Verdict(SafetyStatus.UNSAFE, SAFETY_CLIPPED_CAPTURE, evidence)
-    return Verdict(SafetyStatus.SAFE, SAFETY_NO_FINDING, evidence)
+    # Nothing found — and the reason says whether the instrument that finds it
+    # was able to look. See :data:`SAFETY_NO_FINDING_UNMEASURED` for why that is
+    # a reason of its own rather than an evidence key nobody reads, and why the
+    # status is unchanged.
+    return Verdict(
+        SafetyStatus.SAFE,
+        SAFETY_NO_FINDING if evidence["safety_anchored"]
+        else SAFETY_NO_FINDING_UNMEASURED,
+        evidence,
+    )
 
 
 # --------------------------------------------------------------------------
@@ -1332,10 +1372,10 @@ def _model_departure_target(probe: Any | None) -> list[str]:
         return []
     if not bool(getattr(probe, "model_departure_over_tolerance", False)):
         return []
-    amount = _finite_number(getattr(probe, "max_signed_error_db", None))
+    amount = _finite_or_none(getattr(probe, "max_signed_error_db", None))
     if amount is None:
         return []
-    where = _finite_number(getattr(probe, "max_signed_error_hz", None))
+    where = _finite_or_none(getattr(probe, "max_signed_error_hz", None))
     at = "" if where is None else f"@{where:.0f}Hz"
     return [f"{QUALITY_MODEL_DEPARTURE}:{amount:.2f}dB{at}"]
 
@@ -1651,8 +1691,8 @@ def evaluate_iteration_headroom(
         # BESIDE them so the next round can check the frame rather than assume
         # it. ``movement_comparable`` is the answer this round reached about
         # the pair, recorded rather than left to be re-derived from them.
-        "trusted_floor_hz": _finite_number(trusted_floor_hz),
-        "previous_trusted_floor_hz": _finite_number(previous_trusted_floor_hz),
+        "trusted_floor_hz": _finite_or_none(trusted_floor_hz),
+        "previous_trusted_floor_hz": _finite_or_none(previous_trusted_floor_hz),
         "movement_comparable": movement_comparable,
     }
 
@@ -1673,7 +1713,7 @@ def evaluate_iteration_headroom(
     return Verdict(IterationHeadroom.REACHABLE, HEADROOM_REACHABLE, evidence)
 
 
-def _finite_number(value: float | None) -> float | None:
+def _finite_or_none(value: float | None) -> float | None:
     """A finite number, or ``None`` — the same unknown-vs-zero rule as elsewhere.
 
     Worked example, and the reason it exists: a non-finite trusted floor is an
@@ -1681,6 +1721,12 @@ def _finite_number(value: float | None) -> float | None:
     compares false against everything — a silent permanent refusal rather than
     an honest absence. The same holds for every optional number this module
     lifts off an evidence object, which is why it is not named for the floor.
+
+    Named ``_or_none`` rather than ``_finite_number`` because six other modules
+    already have a private ``_finite_number`` and every one of them RAISES on a
+    bad value (``(value, *, field) -> float``). This one returns ``None``. Two
+    private names would not collide, but a reader who knows the other five
+    would read this call site backwards.
     """
 
     if value is None or isinstance(value, bool) or not isinstance(value, (int, float)):

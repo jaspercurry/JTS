@@ -1166,7 +1166,12 @@ def test_an_anchored_verdict_is_re_gradable_from_the_store_alone(monkeypatch):
     # this test is about what crosses the bridge, not about the capture loop.
     anchor_db = -2.5
     conductor._measure_entry_baseline = EntryBaseline(
-        program_id="regrade-fixture",
+        # This SESSION's verify program, not a stand-in: since series-2 D1 the
+        # probe refuses an anchor measured through another program, so a
+        # placeholder here would exercise that refusal instead of the bridge.
+        program_id=conductor.program_for_phase(
+            crossover_v2_flow.PHASE_VERIFY
+        ).program_id,
         reference_mark="design_axis_mark",
         curve=ResponseCurve(freqs, (predicted - commanded) + anchor_db),
         excluded=tuple(False for _ in freqs),

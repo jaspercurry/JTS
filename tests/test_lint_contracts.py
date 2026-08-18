@@ -527,8 +527,32 @@ MAX_LINES_BY_PATH = {
     # This file's job is household copy, so the argument for a sentence belongs
     # beside it; and a caveat that overstates what was checked is the one kind
     # of copy defect this screen cannot afford.
-    "jasper/active_speaker/crossover_v2_flow.py": 12_720,
-    "jasper/web/correction_crossover_v2.py": 9_282,
+    #
+    # 2026-08-18 (series-2 D1, panel fix round): two more, and both are the
+    # SAME defect class as the change that earned them -- an instrument's name
+    # sitting over a quantity it did not measure.
+    #
+    #  * `crossover_v2_flow` 12,720 -> 12,766. +46, of which ~14 execute. The
+    #    delta probe's anchor became the input to a hard stop, so
+    #    `_entry_delta_db` gained the two things an input to a hard stop owes:
+    #    it says on the journal WHY there is no anchor (its most reachable arm
+    #    -- a first-ever round -- returned None silently), and it refuses a
+    #    baseline measured through another program, because an anchor is a
+    #    subtraction and a foreign one cancels a real finding as readily as a
+    #    phantom. Comparability keeps its single owner: this asks
+    #    `round_evidence`'s two identity fields, it does not re-derive the rule.
+    #    The probe's journal line also gained `safety_anchored`. The remaining
+    #    lines are the argument for each, which is what this ratchet is for.
+    #  * `correction_crossover_v2` 9,282 -> 9,292. +10, of which 1 executes.
+    #    `_delta_probe_summary` carries `safety_anchored`, because the round
+    #    receipt is write-once and `/state`, the doctor and the done screen read
+    #    THIS record -- so a fact only the receipt held was a fact no live
+    #    surface could show. The nine lines say why it sits here rather than
+    #    only there. Decision 10's note above ("stays at 9,186") described a
+    #    change that added no state key; this one adds exactly one, and it is
+    #    the key that tells "nothing was found" from "nothing looked".
+    "jasper/active_speaker/crossover_v2_flow.py": 12_766,
+    "jasper/web/correction_crossover_v2.py": 9_292,
     "jasper/active_speaker/crossover_envelope_v2.py": 4_103,
     # 2026-08-18 (D7, series-2 diagnosis): +82 net on `program_analysis.py`
     # (95 added, 13 removed), counted rather than estimated —

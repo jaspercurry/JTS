@@ -2357,13 +2357,50 @@ probe's own 1.5 dB measurement tolerance; it is now
 old string, and they were reporting the old quantity, so the two spellings mark
 two instruments.
 
-**No anchor, no finding.** Without a pre-apply capture there is only the model's
-error, so the two directional findings are not made — `safety_anchored` on the
-map and in the safety evidence says which. That is the case on the
-`safety_only` path by construction (a change measurement shares no reference
-with a state axis). What still holds there: the clipped check, and the graph's
-own electrical bound — a deterministic biquad chain whose peak cost is computed
-and pre-paid under `devices.volume_limit = 0.0`.
+**No anchor, no finding — and the round SAYS so.** Without a pre-apply capture
+there is only the model's error, so the two directional findings are not made.
+That is not an edge case: a **first-ever round reaches it by construction** (no
+prior applied profile ⇒ no nameable previous graph ⇒ `state_axis_only`), as does
+every committed alternative-Fc round and every capture with too few quiet bins
+to anchor. So the safety axis has two SAFE reasons, not one:
+`no_unsafe_finding` (the realized-energy check looked, found nothing) and
+`no_unsafe_finding_realized_energy_unmeasured` (it could not look). The status
+and the adoption row are identical — refusing on an absent measurement would
+revert every first round — and what differs is what the receipt and the journal
+claim was checked. #1868's rule on this axis: *"we do not know" must have
+somewhere to live rather than defaulting to the success value.*
+
+It is on four surfaces: the axis reason, `safety_anchored` in the safety
+evidence and on the map, `safety_anchored=` on
+`event=correction.crossover_v2_delta_probe`, `safety_reason=` on
+`event=correction.crossover_v2_round_graded`, and `safety_anchored` in the
+durable `verify.delta_probe` summary that `/state`, the doctor and the done
+screen read. `event=correction.crossover_v2_delta_probe_no_entry_anchor` names
+which arm produced it (`no_entry_baseline` / `incomparable_program` /
+`unusable_curve`).
+
+What still holds with no anchor: on an ordinary round the **level** rule does —
+`residual_offset_db` is gated on having quiet bins, not on having an anchor. On
+the `safety_only` path it does not (`residual_offset_db` is `None` there). The
+clipped check always does, and underneath all three sits the graph's own
+electrical bound — a deterministic biquad chain whose peak cost is computed and
+pre-paid under `devices.volume_limit = 0.0`.
+
+**The anchor must be COMPARABLE, and that is checked.** An anchor is a
+subtraction, so a curve measured through another program cancels a real finding
+as readily as a phantom. `crossover_v2_flow._entry_delta_db` refuses a baseline
+whose `program_id` disagrees with this round's VERIFY program — the same two
+identity fields `round_evidence` uses and `evaluate_benefit` refuses on, asked
+here rather than re-derived. Unknown on either side is "nothing known" and does
+not refuse.
+
+**What the anchored rule can and cannot see.** It catches a hazard the moment it
+APPEARS: a band this apply left alone whose output rises across the apply reads
+its full size (#2614's case). It does **not** see one already present in BOTH
+captures — a band running hot since an earlier round subtracts to zero here,
+identically, because "nothing changed" is what the two captures say. That is the
+price of an instrument that cannot be fooled by the model. The onset is where a
+standing hazard is catchable, and it is caught there.
 
 **The model's departure is still measured, and lands on QUALITY.**
 `DeltaProbeMap.model_departure_over_tolerance` / `max_signed_error_db` is the

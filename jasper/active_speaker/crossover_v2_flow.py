@@ -10565,6 +10565,44 @@ class CrossoverV2Session:
         """
         baseline = self._measure_entry_baseline
         if baseline is None:
+            # NAMED, not silent (series-2 D1 fix round). This is the most
+            # REACHABLE arm of the three — a first-ever round has no prior
+            # applied profile at all — and since D1 it decides whether the
+            # realized-energy half of the safety axis runs, so a reader asking
+            # "why did nothing check the driver" must find an answer here rather
+            # than infer it from an absent field.
+            log_event(
+                logger, "correction.crossover_v2_delta_probe_no_entry_anchor",
+                level=logging.WARNING, session_id=self.session_id,
+                reason="no_entry_baseline",
+            )
+            return None
+        # COMPARABLE, or it is not an anchor. An anchor is a subtraction, so a
+        # curve measured through another program or at another mark cancels a
+        # real finding as readily as a phantom — and since D1 the subtrahend
+        # feeds a hard stop rather than only the disclosed residual. The
+        # comparability rule has one owner (``round_evidence`` answers it by
+        # ``program_id`` and ``reference_mark``, and ``evaluate_benefit``
+        # refuses an incomparable pair on those two fields); this asks the same
+        # question of the same two fields against the program this round's
+        # VERIFY capture is composed from. Unknown on either side is "nothing
+        # known" and does not refuse — the module's rule everywhere.
+        verify_program_id = str(
+            getattr(self.program_for_phase(PHASE_VERIFY), "program_id", "") or ""
+        )
+        baseline_program_id = str(getattr(baseline, "program_id", "") or "")
+        if (
+            verify_program_id
+            and baseline_program_id
+            and baseline_program_id != verify_program_id
+        ):
+            log_event(
+                logger, "correction.crossover_v2_delta_probe_no_entry_anchor",
+                level=logging.WARNING, session_id=self.session_id,
+                reason="incomparable_program",
+                baseline_program_id=baseline_program_id,
+                verify_program_id=verify_program_id,
+            )
             return None
         try:
             curve = baseline.curve
@@ -10580,7 +10618,8 @@ class CrossoverV2Session:
         except (ValueError, TypeError, IndexError, AttributeError) as exc:
             log_event(
                 logger, "correction.crossover_v2_delta_probe_no_entry_anchor",
-                level=logging.WARNING, session_id=self.session_id, error=str(exc),
+                level=logging.WARNING, session_id=self.session_id,
+                reason="unusable_curve", error=str(exc),
             )
             return None
 
@@ -10758,6 +10797,13 @@ class CrossoverV2Session:
                 None if probe.frame.band_hz is None
                 else tuple(round(v, 1) for v in probe.frame.band_hz)
             ),
+            # Whether the realized-energy half ran at all (series-2 D1). The
+            # forensic surface an operator greps, beside the numbers it governs:
+            # ``boost_over_declared_bound=false`` reads as "measured, nothing
+            # found" and is "not measured" on every round that had no pre-apply
+            # capture to difference against — which is every first-ever round,
+            # by construction.
+            safety_anchored=probe.safety_anchored,
             frame_removed_max_db=(
                 None if probe.frame_removed_max_db is None
                 else round(probe.frame_removed_max_db, 3)

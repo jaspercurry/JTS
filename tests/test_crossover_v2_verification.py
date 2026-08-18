@@ -97,6 +97,7 @@ from jasper.active_speaker.crossover_v2.verification import (
     SAFETY_BOOST_OVER_DECLARED_BOUND,
     SAFETY_CLIPPED_CAPTURE,
     SAFETY_NO_FINDING,
+    SAFETY_NO_FINDING_UNMEASURED,
     SAFETY_UNCOMMANDED_LEVEL_LOUDER,
     SPEC_BAND_OUT_OF_TOLERANCE,
     SPEC_IN_TOLERANCE,
@@ -784,6 +785,7 @@ class _Probe:
         residual_offset_tolerance_db=1.5,
         boost_over_declared_bound=False,
         boost_overshoot_db=None,
+        safety_anchored=True,
     ):
         self.verdict = verdict
         self.reason = reason
@@ -791,6 +793,11 @@ class _Probe:
         self.residual_offset_tolerance_db = residual_offset_tolerance_db
         self.boost_over_declared_bound = boost_over_declared_bound
         self.boost_overshoot_db = boost_overshoot_db
+        # Whether the realized-energy check ran (series-2 D1). Defaults to the
+        # round that HAD a pre-apply capture, because that is the ordinary
+        # shape every other assertion in this file means; the unanchored one is
+        # its own test.
+        self.safety_anchored = safety_anchored
 
 
 class _Integrity:
@@ -862,6 +869,32 @@ def test_no_finding_is_reported_as_safe_and_says_what_looked():
     # because nothing looked" — see the function's own docstring.
     assert verdict.evidence["probe_graded"] is True
     assert verdict.evidence["integrity_graded"] is True
+
+
+def test_no_finding_says_whether_the_realized_energy_check_could_run():
+    """"Safe" had two readings and now has two reasons (series-2 D1).
+
+    ``no_unsafe_finding`` says the realized-energy check looked and found
+    nothing. ``no_unsafe_finding_realized_energy_unmeasured`` says it could not
+    look — there was no pre-apply capture to difference this one against — and a
+    first-ever round reaches that BY CONSTRUCTION, so it is the common case
+    rather than an edge one. The status and the adoption row are identical,
+    deliberately: refusing on an absent measurement would revert every first
+    round. What differs is what the receipt and the journal claim was checked.
+    """
+    checked = evaluate_applied_safety(
+        probe=_Probe(safety_anchored=True), integrity=_Integrity(),
+    )
+    unchecked = evaluate_applied_safety(
+        probe=_Probe(safety_anchored=False), integrity=_Integrity(),
+    )
+
+    assert checked.status is unchecked.status is SafetyStatus.SAFE
+    assert checked.reason == SAFETY_NO_FINDING
+    assert unchecked.reason == SAFETY_NO_FINDING_UNMEASURED
+    assert checked.reason != unchecked.reason
+    assert checked.evidence["safety_anchored"] is True
+    assert unchecked.evidence["safety_anchored"] is False
 
 
 def test_an_absent_probe_is_reported_as_safe_but_ungraded():

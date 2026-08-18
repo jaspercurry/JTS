@@ -9164,6 +9164,10 @@ def test_the_probe_verdict_is_persisted_even_on_a_pass():
     assert persisted == {
         "verdict": "level_mismatch",
         "reason": "uncommanded_level_shift",
+        # Absent on this stand-in too, and ``False`` is the honest reading of
+        # that: the realized-energy check cannot have run on a probe that does
+        # not carry the field (series-2 D1).
+        "safety_anchored": False,
         "expected_offset_db": -22.458,
         "residual_offset_db": -4.0,
         # Absent on this duck-typed stand-in, and absent is what "unknown"

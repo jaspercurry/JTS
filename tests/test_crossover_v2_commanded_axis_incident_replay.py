@@ -57,6 +57,7 @@ from jasper.active_speaker.branch_chain import (
     CrossoverSection,
     crossover_response_complex,
 )
+from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import commanded as cmd
 from jasper.active_speaker.delta_probe import (
     DELTA_PROBE_MIN_BINS,
@@ -876,19 +877,27 @@ def _repeat_round_axes():
     return applied_db, commanded[1], declared[1], band
 
 
-def _entry_baseline(measured_pre):
+def _entry_baseline(session, measured_pre):
     """A PRE-apply capture the session's ``_entry_delta_db`` can read.
 
-    The real record, not a stub: that method reads ``curve`` and ``excluded``
-    today, and a duck-typed pair would keep passing if it started reading a
-    third field. Identity strings are placeholders — nothing here grades them.
+    The real record, not a stub: that method reads ``curve``, ``excluded`` and
+    ``program_id``, and a duck-typed trio would keep passing if it started
+    reading a fourth field.
+
+    ``program_id`` is this SESSION's own VERIFY program, not a placeholder,
+    because ``_entry_delta_db`` refuses an anchor measured through another
+    program (series-2 D1: an anchor is a subtraction, so a curve from a
+    different capture cancels a real finding as readily as a phantom). A
+    fixture stating a stand-in id here would exercise the refusal instead of
+    the rule under test — which is what it did before this argument was
+    written down.
     """
     from jasper.active_speaker.crossover_v2.contracts import ResponseCurve
     from jasper.active_speaker.crossover_v2.round_evidence import EntryBaseline
 
     return EntryBaseline(
-        program_id="verify",
-        reference_mark="mark",
+        program_id=session.program_for_phase(flow.PHASE_VERIFY).program_id,
+        reference_mark=flow.REFERENCE_MARK_DESIGN_AXIS,
         curve=ResponseCurve(FREQS_HZ, measured_pre),
         excluded=tuple(False for _ in FREQS_HZ),
         graph_fingerprint="entry-graph",
@@ -1241,7 +1250,7 @@ def test_the_session_run_of_the_probe_carries_the_state_axis_to_the_classifier(c
         # than handed to the classifier, because ``_run_delta_probe`` building
         # this curve and then quietly not passing it is exactly the wiring gap
         # this test exists to catch.
-        session._measure_entry_baseline = _entry_baseline(measured_pre)
+        session._measure_entry_baseline = _entry_baseline(session, measured_pre)
         return session._run_delta_probe()
 
     with_axis = _probe_from_session((FREQS_HZ, declared_db))
@@ -1447,7 +1456,7 @@ def _probe_from_repeat_round_session(*, hot_db: float):
     session._measure_declared_transfer = (FREQS_HZ, declared_db)
     session._verify_tracking_curve = (FREQS_HZ, measured_post, applied_db)
     session._verify_trusted_band_hz = TRUSTED_BAND_HZ
-    session._measure_entry_baseline = _entry_baseline(measured_pre)
+    session._measure_entry_baseline = _entry_baseline(session, measured_pre)
     return session._run_delta_probe()
 
 
