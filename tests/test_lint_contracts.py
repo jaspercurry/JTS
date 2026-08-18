@@ -485,6 +485,26 @@ def test_noqa_debt_does_not_grow() -> None:
 #  * `crossover_envelope_v2` stays at 4,096. The prescription adds no household
 #    screen: the fourth declared-polarity objective reuses the sentence the
 #    other three already earned.
+#
+# 2026-08-18 (#2662, the two-lens panel's fix round). Three more, all paying for
+# findings rather than for features — which is the ratchet doing exactly what it
+# is for, since a fix round that could not afford its own explanation would ship
+# the fix and lose the reason.
+#  * `program_analysis` 7,155 -> 7,193. The cross-check's second derivation is
+#    DELETED here and the answer is carried on the candidate instead, so the
+#    executable count barely moves; what costs the lines is the field's own
+#    paragraph (a reader has to know why it is carried and not computed, which
+#    is the whole defect), the `not-committed` disclosure gaining the delay that
+#    was committed instead, and the two Fc guards on the lobe tripwire finally
+#    saying why neither covers the other.
+#  * `crossover_v2_flow` 12,682 -> 12,720. One more ctor argument, one field,
+#    one property and one read off the candidate's frozen evidence — the same
+#    route `measure_proposal_fingerprint` already takes, and the comment says so
+#    rather than re-deriving it.
+#  * `correction_crossover_v2` 9,258 -> 9,282. One durable key, one rehydrate,
+#    one hand-off, and the sentence recording that the preset's declared window
+#    is now asked at the tap instead of ten minutes later at a screen that
+#    blames the microphone.
 MAX_LINES_BY_PATH = {
     # 2026-08-17 (#2603): +11 on top of the two bumps above, and the ratchet
     # catching its own author again. The representative RoleBand pair at
@@ -496,8 +516,8 @@ MAX_LINES_BY_PATH = {
     # what costs the lines. Paying them here, in the diff that earned them, is
     # the guard working; compressing the reason out to keep a number flat would
     # be gaming it.
-    "jasper/active_speaker/crossover_v2_flow.py": 12_682,
-    "jasper/web/correction_crossover_v2.py": 9_258,
+    "jasper/active_speaker/crossover_v2_flow.py": 12_720,
+    "jasper/web/correction_crossover_v2.py": 9_282,
     "jasper/active_speaker/crossover_envelope_v2.py": 4_096,
     # 2026-08-18 (D7, series-2 diagnosis): +82 net on `program_analysis.py`
     # (95 added, 13 removed), counted rather than estimated —
@@ -530,7 +550,7 @@ MAX_LINES_BY_PATH = {
     # same night — the two sessions D7's own note above names as the reason its
     # seam was not cut. Both bumps are real and neither subsumes the other, so
     # the number carries both.
-    "jasper/audio_measurement/program_analysis.py": 7_155,
+    "jasper/audio_measurement/program_analysis.py": 7_193,
 }
 
 

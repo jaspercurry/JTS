@@ -754,6 +754,104 @@ def test_an_out_of_lobe_prescription_refuses_the_session_before_it_opens(monkeyp
     assert "prescription_out_of_lobe" in str(excinfo.value)
 
 
+def test_the_tap_asks_the_preset_for_its_own_declared_window(monkeypatch):
+    """The gate must call the hardware's declaration, not just accept one.
+
+    The declared window is the only bound in the prescription gate that does
+    not rest on a number the request supplied, so "the tap forgot to pass it"
+    is the failure that silently removes it. Derived here from the SAME public
+    helper the tap uses, against the fixture's own preset, so this cannot pass
+    by agreeing with a hard-coded number.
+
+    ``basis_delay_us`` is set equal to ``delay_us``, which puts the residual at
+    zero and takes the measurement's lobe out of the question entirely: only
+    the window can refuse what follows.
+    """
+    del monkeypatch
+    from jasper.active_speaker.crossover_v2_flow import (
+        alignment_delay_search_bounds_us,
+    )
+
+    context = v2host.resolve_conductor_context(_status())
+    bounds = alignment_delay_search_bounds_us(context.preset)
+    assert bounds is not None, "this fixture's preset must declare a window"
+    hi_us = max(abs(float(b)) for b in bounds)
+
+    def _post(magnitude_us):
+        body = {
+            **_PRESCRIPTION_BODY,
+            "delay_us": -magnitude_us,
+            "basis_delay_us": -magnitude_us,
+        }
+        return v2host.prepare_v2_session(
+            {"alignment_prescription": body},
+            status=_status(), run_async=None, camilla_factory=None,
+        )
+
+    # One microsecond past the declaration is refused, by the window's name.
+    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
+        _post(hi_us + 1.0)
+    assert "prescription_outside_declared_window" in str(excinfo.value)
+    # …and exactly AT it is accepted, so the guard is a bound and not a ban.
+    assert _post(hi_us) is not None
+
+
+def test_a_committed_candidate_teaches_the_session_which_commitment_it_was(
+    monkeypatch,
+):
+    """The objective reaches the session from the candidate's frozen evidence.
+
+    ``planning.analysis_json`` already puts ``alignment_objective`` on the
+    candidate, so the commit seam reads the SAME answer the candidate's
+    fingerprint covers rather than a second reading of a live analysis. If it
+    read nothing, every round receipt would report ``committed: None`` and the
+    arm-ran question would be permanently unanswerable.
+    """
+    import dataclasses
+
+    conductor, _state = _stage_1(monkeypatch)
+    assert conductor.measure_alignment_objective == ""
+
+    # The commit seam's LAST act is publishing the candidate to the evidence
+    # store, which this harness does not stand up. Stubbed so the test exercises
+    # the session-state write it is about; the ordering the seam guarantees
+    # (every attribute write completes before the first side effect) is
+    # ``test_crossover_v2_conductor``'s to pin, not this file's.
+    conductor._seams = dataclasses.replace(
+        conductor._seams, publish_candidate=lambda _candidate: None,
+    )
+    # A REAL candidate, not a stub: the point is that the objective is read off
+    # the frozen ``analysis`` evidence ``planning.analysis_json`` writes, so a
+    # stub carrying only that key would prove the read and not the route.
+    from jasper.active_speaker.measured_crossover_candidate import (
+        MeasuredCrossoverCandidate,
+    )
+    from jasper.active_speaker.profile import ActiveSpeakerPreset
+
+    from tests.test_active_speaker_profile import _two_way_preset
+
+    conductor.commit_intervention_proposal(
+        MeasuredCrossoverCandidate(
+            program_id="prog-abc123",
+            analysis={
+                "alignment_objective": "explicit_prescription_committed",
+                "delay_us": -450.0,
+            },
+            source_preset=ActiveSpeakerPreset.from_mapping(_two_way_preset("mono")),
+            role_attenuations_db={"woofer": 0.0, "tweeter": -3.5},
+        ),
+        predicted_sum=None,
+        commanded_delta=None,
+        level_frame_finding=None,
+    )
+    assert conductor.measure_alignment_objective == "explicit_prescription_committed"
+
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    assert (v2host.load_v2_state() or {})["verify_priors"]["alignment_objective"] == (
+        "explicit_prescription_committed"
+    )
+
+
 def test_a_session_that_prescribed_nothing_persists_nothing(monkeypatch):
     """The control: absence stays absence, and is never invented.
 

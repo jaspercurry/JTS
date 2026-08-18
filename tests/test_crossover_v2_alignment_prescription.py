@@ -71,6 +71,12 @@ from jasper.audio_measurement.program_analysis import (
 )
 
 from tests.test_active_speaker_profile import _two_way_preset
+from tests.test_audio_measurement_program_analysis import (
+    SR,
+    _band_impulse,
+    _roles,
+    _synthesize,
+)
 
 # --------------------------------------------------------------------------- #
 # The series-2 rig, as the banked state records it.
@@ -584,18 +590,26 @@ def test_the_prescription_outranks_the_low_snr_ladder():
     assert prescribed.polarity_agrees_with_sum is None
 
 
-def _low_snr_candidate_at(prescribed_us: float):
-    """One candidate off a real capture the SNR verdict refused for alignment.
+def _overlapping_branches() -> tuple[np.ndarray, np.ndarray]:
+    """Two BAND-LIMITED driver IRs whose passbands overlap across Fc.
 
-    Two impulses 11 samples apart with a trustworthy anchor supplied the way
-    the aligner supplies one — the fixture shape the ``_build_candidate`` tests
-    already use — so what is exercised below is the production model path, not
-    a restatement of it.
+    Bare impulses will not do, and finding that out is what a mutation harness
+    is for: two full-band deltas sum to a magnitude the residual delay barely
+    moves (three distinct dB values across the whole curve), so a test asserting
+    "these two arms predict identically" passed even with the anchor withdrawal
+    switched OFF. Band-limited branches that actually overlap make the summed
+    magnitude a real function of the residual, which is the only way the
+    withdrawal's consequence is observable at all.
     """
-    woofer_ir = np.zeros(8192)
-    tweeter_ir = np.zeros(8192)
-    woofer_ir[1000] = 1.0
-    tweeter_ir[1011] = 1.0
+    return (
+        _band_impulse(200, 150.0, 6000.0, 1.0, n=8192),
+        _band_impulse(211, 300.0, 20000.0, 0.7, n=8192),
+    )
+
+
+def _low_snr_candidate_at(prescribed_us: float):
+    """One candidate off a real capture the SNR verdict refused for alignment."""
+    woofer_ir, tweeter_ir = _overlapping_branches()
     alignment = AlignmentEstimate(
         delay_us=-650.0, raw_delay_us=-650.0, parallax_us=0.0,
         polarity="normal", polarity_sign=1, confidence=0.9, status=ALIGNMENT_OK,
@@ -654,10 +668,7 @@ def test_a_trusted_capture_keeps_its_residual_so_its_model_tracks_the_arm():
     model carries ``prescribed − anchor``. Two arms then predict differently —
     the pre-apply net the low-SNR arm above does without.
     """
-    woofer_ir = np.zeros(8192)
-    tweeter_ir = np.zeros(8192)
-    woofer_ir[1000] = 1.0
-    tweeter_ir[1011] = 1.0
+    woofer_ir, tweeter_ir = _overlapping_branches()
 
     def _at(prescribed_us):
         alignment = AlignmentEstimate(
@@ -705,6 +716,72 @@ def _published_agreement(*, seed_sign: int, prescribed: float | None):
         explicit_alignment_delay_us=prescribed,
     )
     return candidate
+
+
+def _analyzed(prescribed_us: float | None):
+    """A REAL published :class:`ProgramAnalysis`, prescription and all.
+
+    Through ``analyze_program_capture`` rather than ``_build_candidate``: the
+    two-owner defect this pins lived at the PUBLISH site, one function further
+    out, so a test that stopped at the candidate could not see it — and did
+    not, for one mutation round. The branches are inverted relative to each
+    other, so correlation reads the seed as inverted and the flat sum has a
+    real disagreement available to it.
+    """
+    from jasper.audio_measurement.program import build_measure_program
+    from jasper.audio_measurement.program_analysis import (
+        MeasurementGeometry,
+        analyze_program_capture,
+    )
+
+    program = build_measure_program(
+        {"woofer": -11.0, "tweeter": -13.0}, _roles(),
+        sweep_durations={"woofer": 0.8, "tweeter": 0.6},
+    )
+    capture = _synthesize(
+        program,
+        woofer_ir=_band_impulse(200, 150.0, 6000.0, 1.0),
+        tweeter_ir=_band_impulse(225, 300.0, 20000.0, -0.7),
+        epsilon=0.0,
+    )
+    return analyze_program_capture(
+        program, capture, SR,
+        priors=MeasurementPriors(
+            crossover_fc_hz=2000.0,
+            explicit_alignment_delay_us=prescribed_us,
+        ),
+        geometry=MeasurementGeometry(),
+    )
+
+
+def test_the_publish_site_carries_the_selections_answer_not_its_own():
+    """The two-owner defect, pinned where it actually lived.
+
+    ``_analyze_measure`` re-derived this cross-check against a single
+    objective while the selection used the widened rule, so a PRESCRIBED round
+    published ``None`` — "never asked" — to every durable surface while the
+    journal said the comparison ran. Asserted on the published estimate, and
+    against the candidate the same analysis carries, so the two cannot drift
+    apart again without this failing.
+    """
+    automatic = _analyzed(None)
+    assert automatic.alignment.polarity_agrees_with_sum is not None
+    assert (
+        automatic.alignment.polarity_agrees_with_sum
+        is automatic.candidate.polarity_agrees_with_sum
+    )
+
+    prescribed = _analyzed(-450.0)
+    assert prescribed.candidate.alignment_objective == (
+        ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION
+    )
+    # The published answer is a real comparison, never "never asked"…
+    assert prescribed.alignment.polarity_agrees_with_sum is not None
+    # …and it is the SAME object the selection produced.
+    assert (
+        prescribed.alignment.polarity_agrees_with_sum
+        is prescribed.candidate.polarity_agrees_with_sum
+    )
 
 
 def test_the_published_polarity_agreement_is_the_one_the_objective_answered():
