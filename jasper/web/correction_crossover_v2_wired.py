@@ -503,6 +503,10 @@ def build_v2_wired_run_and_consume(
                     recorder.abort()
             recording = recorder.finish(tail_s=WIRED_POST_ROLL_S)
             answer = _mint_answer(recording)
+            # Our own mint always carries both mappings; the `or {}` is for the
+            # type only, never a reachable default.
+            report = answer.capture_integrity or {}
+            device_meta = answer.device or {}
             log_event(
                 logger,
                 "correction.crossover_v2_wired_capture",
@@ -512,8 +516,8 @@ def build_v2_wired_run_and_consume(
                 frames=recording.frames,
                 gaps=recording.gap_count,
                 gap_frames=recording.gap_frames,
-                zero_runs=int(answer.capture_integrity["zero_run_count"]),
-                channel=int(answer.device["channel_selected"]),
+                zero_runs=int(report.get("zero_run_count", 0)),
+                channel=int(device_meta.get("channel_selected", 0)),
             )
             try:
                 verdict = conductor.consume_capture(index, attempt, answer, entry)

@@ -95,6 +95,7 @@ thread that will not join is an error, never a hang.
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -191,7 +192,7 @@ class WiredMicDevice:
 
 
 def resolve_wired_mic(
-    *, proc_asound: str | Path = "/proc/asound",
+    *, proc_asound: str | os.PathLike[str] = "/proc/asound",
 ) -> WiredMicDevice | None:
     """The first measurement-class capture card present, or ``None``.
 

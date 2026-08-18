@@ -268,6 +268,25 @@ device for the first ~30 seconds of every remote session.
    position. The held begin is then admitted.
 5. Repeat. Analysis, apply, verify and restore are unchanged.
 
+**The WIRED capture source changes steps 1–2 of this contract** (#2662 W2b,
+`jasper/web/correction_crossover_v2_wired.py`). When a measurement-class USB
+mic is plugged into the Pi (usbid matched against the calibration registry —
+a UMIK-2; never a voice array) the session opens on the wired source by
+default (`JASPER_CAPTURE_SOURCE` overrides in either direction, documented in
+`.env.example`): the Pi plays and records on one host, so there is **no phone,
+no relay dependency, and none of the three capture-device gestures** — the
+walk begins on its own. The position gate is unchanged (step 3–4 exactly as
+above: every begin still holds until `/position-ready`), and one step is new:
+when stage 1's pre-apply group is walked, the held set closes on
+`POST /correction/crossover/v2/complete` (empty body) — the wired stand-in
+for the phone's all-spots-measured confirmation; the wait is bounded by the
+session's wall-clock ceiling and expires as `session_ceiling_expired`. A
+REJECTED wired capture auto-retries the same position on the next attempt
+(bounded by the plan's own admission budget), so the rejected-capture stall
+below is a relay-session shape. Wired captures carry real frame/gap counters
+plus the ≥128-zero dropout scan in `capture_integrity`, so the analyzer's
+frame-accounting checks always evaluate them.
+
 **A REJECTED capture ends an unattended run — watch for it.** When a capture is
 rejected (clipped, too quiet, locate failed, …) the capture page renders a
 human **"Try again"** affordance and — with the one exception below — nothing
@@ -610,6 +629,8 @@ the module, not a second copy here.
 | [`crossover_envelope_v2.py`](../jasper/active_speaker/crossover_envelope_v2.py) | The pure `status → envelope` renderer: step list, screen dispatch, registry copy. |
 | [`web/correction_crossover_v2.py`](../jasper/web/correction_crossover_v2.py) | The web host: endpoint bindings, durable v2 state, the real seams, apply/restore, `resolve_conductor_context`, `persist_conductor_state`. |
 | [`web/correction_crossover_v2_relay.py`](../jasper/web/correction_crossover_v2_relay.py) | The relay capture provider (#2662): the plan-walk hosting (`build_v2_run_and_consume`), the phone phase ladder, purge grace, and link-TTL policy. The host re-publishes its names. |
+| [`web/correction_crossover_v2_wired.py`](../jasper/web/correction_crossover_v2_wired.py) | The WIRED capture provider (#2662 W2b): source resolution (`JASPER_CAPTURE_SOURCE` + registry usbid match), the local plan walk against the same conductor hooks, and the answer mint. |
+| [`audio_measurement/wired_capture.py`](../jasper/audio_measurement/wired_capture.py) | The wired capture engine: registry-anchored device probe, parameterized S32_LE ALSA capture with exact gap accounting, the re-homed ≥128-zero dropout scan, 32-bit WAV encode. |
 | [`crossover_v2/capture_source.py`](../jasper/active_speaker/crossover_v2/capture_source.py) | The capture-source seam's contract (decision 13): provider identities and the WAV+metadata answer any source owes the session. |
 | [`audio_measurement/program.py`](../jasper/audio_measurement/program.py) | The excitation-program model and its composers. Pure data, no safety decisions. |
 | [`audio_measurement/program_analysis.py`](../jasper/audio_measurement/program_analysis.py) | The pure analysis: locate/segment, drift, gated transfer functions, prediction, VERIFY tracking. |
