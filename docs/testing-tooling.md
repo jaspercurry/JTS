@@ -35,6 +35,7 @@
 | Replay recorded tuning attempts through the S3 improve/stop policy, and see whether the loop would have claimed an improvement that was only noise | [Attempts-loop replay](#attempts-loop-replay) |
 | Find out whether a banked session's cloud null evidence actually *bound* the linearization fit, and what the fit does without it | [Severed-twin replay](#severed-twin-replay) |
 | Hold a specific field incident still in CI — minimize a gitignored bank to a committed fixture and characterize the defect it produced | [Committed incident replay](#committed-incident-replay) |
+| Ask why a banked session's pooled flatness reads worse than its on-axis response sounds — re-read the same evaluation per octave and per position role | [Metric-honesty views](#metric-honesty-views) |
 | Grade the boost-permission gate's decision against a defect you injected on purpose (rather than one a room happened to produce) | [`tests/test_crossover_v2_boost_scenarios.py`](../tests/test_crossover_v2_boost_scenarios.py) — synthetic spatial scenarios, the validation ladder's third rung |
 | Validate two Apple USB-C DACs as a lab-only output topology | [Dual Apple DAC lab runner](#dual-apple-dac-lab-runner) |
 | Manually detect, probe, or move the experimental USB turntable on JTS3 | [USB turntable experiment](#usb-turntable-experiment) |
@@ -1155,6 +1156,58 @@ filters were produced by whatever build recorded it, so its numbers and a fresh
 replay's will differ wherever the fit has moved since; that is cross-era
 evolution, not a fidelity failure, and the wired-vs-severed diff is a
 within-run comparison precisely so it does not depend on the difference.
+
+---
+
+## Metric-honesty views
+
+Severed-twin and the committed replay both ask *was the fit bound by the right
+evidence*. This one asks a different question of the same banked receipts:
+**is the pooled flatness number answering the question a listener asked?**
+
+Two properties of the shipped pooling say no, and both are visible in the
+receipt itself. The cloud grades on the linear `rfft` axis, so a band's graded
+bin count tracks its width in hertz rather than octaves — on the 2026-08-18
+arm-run that is 5,462 bins in the one octave 8–16 kHz against 1,121 across the
+2.485 graded octaves of 250 Hz–2 kHz, a 12.1:1 per-octave overweight. And
+`combine_positions` is an unweighted power mean, so a coverage-edge position
+enters the headline with the same weight as the listening-seat one.
+
+[`scripts/render-metric-views.py`](../scripts/render-metric-views.py) re-reads
+every `cloud_verify.json` under a receipts tree without those two properties,
+printing the result beside the number the product shipped:
+
+```sh
+PYTHONPATH=. .venv/bin/python scripts/render-metric-views.py \
+    captures/xover-armrun-2026-08-18/receipts \
+    --walk-logs captures/xover-armrun-2026-08-18/logs \
+    --json /tmp/metric-views.json
+```
+
+The arithmetic is **not** in the script. It is
+[`jasper/active_speaker/flat_spec_views.py`](../jasper/active_speaker/flat_spec_views.py)
+— product code, pure, pinned by
+[`tests/test_flat_spec_views.py`](../tests/test_flat_spec_views.py) — so the
+tool cannot print a figure the product will not later compute identically. The
+script owns only what is lab-only: walking the tree, rehydrating a persisted
+`FlatSpecReport`, and joining positions to the walk log that drove them.
+
+Three views, none of which grades anything: `log_pooled_residual` re-pools the
+report's own per-band figures with equal weight per octave;
+`role_split_flatness` reports on-axis and off-axis as separate numbers and
+never averages them; `directivity_table` normalises every position to the
+on-axis reference and emits a JSON table a prescriber can consume. The
+session's one verdict stays the report's `overall_passed` — a test fails the
+build if any view grows a `passed` field.
+
+`--walk-logs` is optional and best-effort. The cloud does not bank a numeric
+microphone angle, only a role, so angles are recovered by joining
+`(index, attempt, role)` against the walk driver's `released …` lines.
+`(index, attempt)` alone is **not** unique — on the arm-run every arm carries
+the same four pairs and eleven of thirteen logs contain all four, at two
+different angle assignments. When the covering logs disagree the join is
+declined and every view degrades to role-only, which is honest; a wrong angle
+would be a plausible-looking lie on every row.
 
 ---
 
