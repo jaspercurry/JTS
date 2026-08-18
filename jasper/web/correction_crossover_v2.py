@@ -7522,6 +7522,11 @@ def prepare_v2_session(
     chooser is how a household changes instrument.
     """
     from jasper.active_speaker.branch_chain import confirmed_protection_sections
+    from jasper.active_speaker.crossover_v2.alignment_prescription import (
+        ALIGNMENT_PRESCRIPTION_KEY,
+        AlignmentPrescriptionRefused,
+        read_alignment_prescription,
+    )
     from jasper.active_speaker.crossover_v2_flow import (
         STAGE1_INCLUDES_CLOUD_MEASURE,
         STAGE1_INCLUDES_ENTRY_BASELINE,
@@ -7567,6 +7572,23 @@ def prepare_v2_session(
             "a new session"
         )
     context = resolve_conductor_context(status)
+    # #2662, and it happens HERE for two reasons. It is the untrusted-input
+    # boundary, so a malformed or out-of-lobe prescription is refused before any
+    # relay registration, evidence store, or capture — an operator walking a
+    # delay sweep learns at the tap, not after a ten-minute measurement. And it
+    # is the first point holding the crossover corner the bound is a half-period
+    # of. Never inherited from the lapsed session's durable state the way
+    # ``tier`` above deliberately is: a prescription is one round's explicit
+    # instruction, and a "measure again" that silently re-ran an arm would put
+    # that arm's name on a round nobody asked for.
+    try:
+        alignment_prescription = read_alignment_prescription(
+            (raw or {}).get(ALIGNMENT_PRESCRIPTION_KEY), fc_hz=context.fc_hz,
+        )
+    except AlignmentPrescriptionRefused as exc:
+        raise CrossoverV2Refused(
+            f"the alignment prescription was refused ({exc.reason}): {exc.detail}"
+        ) from exc
     try:
         protection_sections = confirmed_protection_sections(
             context.safety_profile, context.role_targets
@@ -7736,6 +7758,7 @@ def prepare_v2_session(
             tweeter_measurement_band_hz=context.tweeter_measurement_band_hz,
             attempt_floor=attempt_store.floor,
             speaker_id=context.topology.topology_id,
+            alignment_prescription=alignment_prescription,
         )
         persist_conductor_state(conductor, failure_code=None, evidence=refs)
         holder["run"] = build_v2_run_and_consume(

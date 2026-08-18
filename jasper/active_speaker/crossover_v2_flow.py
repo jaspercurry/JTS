@@ -125,6 +125,9 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     # :mod:`jasper.active_speaker.flat_spec` through
     # :mod:`jasper.active_speaker.crossover_v2.verification`, and this module
     # already imports ``flat_spec`` lazily everywhere else for that reason.
+    from jasper.active_speaker.crossover_v2.alignment_prescription import (
+        AlignmentPrescription,
+    )
     from jasper.active_speaker.crossover_v2.coordinator import (
         RoundPorts,
         SeriesPosition,
@@ -4981,6 +4984,7 @@ class CrossoverV2Session:
         speaker_id: str = "",
         tuning_attempt_id: str = "",
         sound_design_revision: int | None = None,
+        alignment_prescription: "AlignmentPrescription | None" = None,
     ) -> None:
         roles = tuple(roles_bands)
         if len(roles) != 2:
@@ -4997,6 +5001,12 @@ class CrossoverV2Session:
         self._roles = roles
         self._woofer, self._tweeter = roles[0], roles[1]
         self._fc_hz = float(fc_hz)
+        # #2662. Already validated by the request boundary that accepted it —
+        # this session holds it, it does not re-judge it, and a session that was
+        # handed none runs the automatic alignment exactly as before. Held as
+        # the record rather than the bare float so the round receipt can name
+        # the measured basis without a second copy of it living anywhere.
+        self._alignment_prescription = alignment_prescription
         # PR-4: the contract-derived analysis bands for the cloud-group
         # honesty pipeline (combine's echo/signal bands, the null gate's
         # search band) -- computed once here so every group-close event uses
@@ -5669,6 +5679,10 @@ class CrossoverV2Session:
             # which is not a priors concern.
             alignment_delay_bounds_us=alignment_delay_search_bounds_us(self._preset),
             applied_alignment=self._applied_alignment(),
+            explicit_alignment_delay_us=(
+                None if self._alignment_prescription is None
+                else self._alignment_prescription.delay_us
+            ),
         )
 
     def _applied_alignment(self) -> AppliedAlignment | None:

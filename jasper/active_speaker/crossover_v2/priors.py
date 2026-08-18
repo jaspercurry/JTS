@@ -175,6 +175,7 @@ def measure_priors(
     ambient_report: Any,
     alignment_delay_bounds_us: tuple[float, float] | None,
     applied_alignment: AppliedAlignment | None,
+    explicit_alignment_delay_us: float | None,
 ) -> MeasurementPriors:
     """MEASURE's priors — the widest set, and the only §4.2 de-embedding.
 
@@ -206,6 +207,20 @@ def measure_priors(
     then) or produced no ambient report, in which case the verdict stays
     honestly absent rather than guessed.
 
+    ``explicit_alignment_delay_us`` — the household's validated delay
+    PRESCRIPTION for this session, or ``None`` for every ordinary round —
+    arrives as an argument for ``applied_alignment``'s reasons and one of its
+    own: it is a REQUEST fact, validated at the boundary the request arrived on
+    (:func:`~jasper.active_speaker.crossover_v2.alignment_prescription.read_alignment_prescription`),
+    and this module could not reach for it even in principle.  **Required and
+    undefaulted**, like its six siblings, and for the sharpest version of that
+    rule: a caller that forgot it would run the AUTOMATIC alignment while the
+    round, its receipt, and the operator all called it a prescribed arm.
+
+    It survives :func:`candidate_priors` untouched, which is the behaviour a
+    swept corner needs: a prescription is a fact about the drivers' physical
+    arrival gap, and that gap does not move when the crossover corner does.
+
     The three configured-path fields are gated on ``protection_sections_by_role``
     together, and that grouping is load-bearing:
     ``_compose_configured_path_ir`` RAISES on a partial prior set, so a
@@ -219,6 +234,7 @@ def measure_priors(
         crossover_fc_hz=fc_hz,
         alignment_delay_bounds_us=alignment_delay_bounds_us,
         applied_alignment=applied_alignment,
+        explicit_alignment_delay_us=explicit_alignment_delay_us,
         ambient_report=ambient_report,
         measurement_protection_response_by_role=role_transfers(
             protection_sections_by_role

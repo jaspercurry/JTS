@@ -1,0 +1,409 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""ONE inter-driver delay, prescribed from a named measurement (#2662).
+
+A sibling of :mod:`.blend_correction`: pure functions, no I/O, no session, and
+the strict reader for one prescription the host hands the machinery.  That
+module prescribes a *shape* for the blend region; this one prescribes the
+*timing* between the two drivers.
+
+**Why a prescription exists at all.**  The automatic aligner estimates the
+inter-driver delay from the capture, and on the 2026-08-17 series it estimated
+it with the wrong sign and hopped correlation lobes between captures of the
+same speaker (the direct arrival gap was invariant at −405.7 ± 3.3 µs, n = 33,
+while the estimator's own answers across those same captures ran +96, +62,
+−231, −367, −280 µs).  A wrong estimator is not fixed by widening the automatic
+search — PR #1649's snap radius is a deliberate ambiguity budget and its
+negatives stand — it is answered by letting a bench measurement *say the
+number*, and then making the ordinary machinery measure and grade that number
+like any other candidate.
+
+**One field, one owner.**  This module produces no second runtime knob.  A
+prescription is a way of COMPUTING the delay that
+:class:`~jasper.audio_measurement.program_analysis.AlignmentEstimate` already
+owns: it is handed down as
+``MeasurementPriors.explicit_alignment_delay_us``, committed by
+``_select_alignment_pair`` as that estimate's ``delay_us``, and folded onto the
+candidate by the same
+:func:`~jasper.active_speaker.crossover_v2.planning.alignment_to_candidate_fields`
+every automatic round goes through.  Every consumer downstream of that estimate
+— the summed model's residual, the predicted sum the accountability gate
+grades, the commanded delta, the headroom recompute, the emitted graph and its
+``prove_static_delay_binding`` proof, VERIFY's tracking reference — reads the
+prescribed number because it reads the one field.  That coherence is the whole
+reason the prescription enters at the estimate rather than being stamped onto
+the candidate afterwards: a candidate whose graph carries one delay and whose
+prediction models another is the exact defect the series-2 diagnosis found in
+the automatic path (`predicted_ripple_db` describing a speaker whose drivers
+are time-coincident when they were 0.4 ms apart).
+
+**Two gates, and they compose.**  Neither is sufficient alone:
+
+* **Provenance** makes the basis auditable.  A prescription must name what it
+  was measured from, so a human reading the round receipt can go and check.
+* **The bound** makes the prescription a bounded excursion from that named
+  basis: it may not leave the summation more than half a period at Fc away from
+  the basis's own answer — the comb lobe, the same geometry the aligner's
+  ``left_anchor_lobe`` tripwire watches, taken from
+  :func:`~jasper.audio_measurement.program_analysis.half_period_us` so the two
+  cannot drift apart.
+
+**Where the bound is measured FROM, and why it is not the incumbent.**  From
+the declared measured basis, not from the delay the speaker currently plays.
+A step-size bound anchored on the incumbent would forbid exactly the correction
+a lobe-hopped incumbent needs: on the series-2 speaker the incumbent sat
++501.7 µs from the physically-coincident answer, more than a period and a half
+at Fc, so every arm that could fix it would be refused and the bound would be
+widened by hand at the first bench session — which is how a fail-closed guard
+becomes decorative.  Anchoring on the basis asks the question that is actually
+worth asking: *does this prescription leave the drivers within one lobe of
+where the measurement says coincident is?*  The incumbent is not ignored; it is
+simply not the reference — the aligner still evaluates ``left_anchor_lobe``
+against the capture's own anchor and still raises its selection log when a
+commitment leaves it.
+
+**Fail-closed, never clamped.**  Every refusal below names its reason and
+raises.  A prescription that is out of bounds is not pulled to the boundary and
+run: the operator asked for an arm, and a silently different arm is worse than
+no arm, because its receipt would carry the arm's name.
+
+**Absence is the automatic path, and it is never inherited.**  ``None`` from
+:func:`read_alignment_prescription` means no prescription was made, and every
+byte of the automatic selection is unchanged.  Unlike the session tier — which
+a re-measure deliberately inherits from the lapsed session (#2639) — a
+prescription is per-round and explicit.  Inheriting one would let an operator's
+"measure again" silently re-run an arm they did not ask for, which is the same
+class of dishonesty as clamping.
+
+**One parser, two gate policies.**  :func:`read_alignment_prescription` is the
+REQUEST gate — shape, provenance, and the bound — and it is the only place the
+bound is ever applied.  :func:`alignment_prescription_from_mapping` reads a
+prescription back out of this repository's own durable state, where the
+question is different: that prescription was validated when it was accepted,
+the round it drove has already been measured, and re-judging it at grading time
+could only ever throw away the evidence of a round that really happened.  So
+the read-back re-checks the shape (a hand-edited state file is still refused)
+and returns ``None`` rather than raising.  The two share the field parsing
+outright, so the only thing that differs between them is the thing that should.
+"""
+
+from __future__ import annotations
+
+import logging
+import math
+from dataclasses import dataclass
+from typing import Any, Mapping
+
+from jasper.audio_measurement.program_analysis import half_period_us
+from jasper.log_event import log_event
+
+__all__ = [
+    "ALIGNMENT_PRESCRIPTION_KEY",
+    "PRESCRIPTION_REFUSAL_REASONS",
+    "AlignmentPrescription",
+    "AlignmentPrescriptionRefused",
+    "alignment_prescription_from_mapping",
+    "read_alignment_prescription",
+]
+
+logger = logging.getLogger(__name__)
+
+#: Said when a durable read-back cannot be parsed — the one line this module
+#: emits, and only on the fail-soft path, where a silent ``None`` would leave a
+#: receipt honestly empty with no way to tell that from "no prescription was
+#: made".
+PRESCRIPTION_UNREADABLE_EVENT = "correction.crossover_v2_alignment_prescription_unreadable"
+
+#: The request-body key a prescription arrives under.  Named here rather than
+#: spelled at the web boundary for the reason every other vocabulary constant in
+#: this package is: the reader that owns the shape owns the name of the shape.
+ALIGNMENT_PRESCRIPTION_KEY = "alignment_prescription"
+
+#: The closed vocabulary of refusals, so a caller can branch on a reason without
+#: reading a message.  Same rule as
+#: :data:`~.contracts.PLAN_REFUSAL_REASONS`: by type and code, never by prose.
+PRESCRIPTION_MALFORMED = "prescription_malformed"
+PRESCRIPTION_DELAY_INVALID = "prescription_delay_invalid"
+PRESCRIPTION_BASIS_INVALID = "prescription_basis_invalid"
+PRESCRIPTION_PROVENANCE_MISSING = "prescription_provenance_missing"
+PRESCRIPTION_FC_UNKNOWN = "prescription_fc_unknown"
+PRESCRIPTION_OUT_OF_LOBE = "prescription_out_of_lobe"
+PRESCRIPTION_REFUSAL_REASONS = frozenset({
+    PRESCRIPTION_MALFORMED,
+    PRESCRIPTION_DELAY_INVALID,
+    PRESCRIPTION_BASIS_INVALID,
+    PRESCRIPTION_PROVENANCE_MISSING,
+    PRESCRIPTION_FC_UNKNOWN,
+    PRESCRIPTION_OUT_OF_LOBE,
+})
+
+#: The field names a prescription may carry.  Anything else is refused rather
+#: than ignored: a misspelled ``basis_artifact`` that silently dropped the
+#: provenance would leave the bound checking a prescription against a basis
+#: nobody declared, which is the one failure this reader exists to prevent.
+_PRESCRIPTION_FIELDS = frozenset({
+    "delay_us",
+    "basis_delay_us",
+    "basis_artifacts",
+    "basis_note",
+})
+
+
+class AlignmentPrescriptionRefused(ValueError):
+    """One prescription this module would not accept, and why.
+
+    Carries a ``reason`` from :data:`PRESCRIPTION_REFUSAL_REASONS` beside the
+    human ``detail``, following :class:`~.contracts.CrossoverV2ContractError`'s
+    rule: the classification travels with the raise, so a caller never has to
+    re-derive it from wording no test owns.
+    """
+
+    def __init__(self, reason: str, detail: str) -> None:
+        super().__init__(detail)
+        self.reason = reason
+        self.detail = detail
+
+
+@dataclass(frozen=True)
+class AlignmentPrescription:
+    """A validated inter-driver delay, and the measurement that justifies it.
+
+    ``delay_us`` and ``basis_delay_us`` are both in
+    :class:`~jasper.audio_measurement.program_analysis.AlignmentEstimate`'s
+    signed frame — ``(D_woofer − D_tweeter)``, so a POSITIVE value delays the
+    tweeter and a negative one delays the woofer.  One frame for both is what
+    makes :attr:`residual_us` a physical quantity rather than a subtraction of
+    two conventions.
+
+    ``basis_delay_us`` is the delay the named measurement says would leave the
+    drivers coincident.  ``basis_artifacts`` names where that came from, and is
+    required: a bound checked against an undeclared basis is arithmetic, not
+    provenance.  ``basis_note`` is the human line beside it (a spread, a sample
+    count, a method) and is optional — it is what a reader wants and not
+    something a validator can meaningfully check, so requiring it would buy
+    ceremony rather than trust.
+    """
+
+    delay_us: float
+    basis_delay_us: float
+    basis_artifacts: tuple[str, ...]
+    basis_note: str = ""
+
+    @property
+    def residual_us(self) -> float:
+        """How far this prescription leaves the drivers from the basis's answer.
+
+        The quantity the bound is expressed in, and the one the series-2
+        diagnosis tabulates its arms by: ``0.0`` prescribes exactly what the
+        measurement says, and the sign says which driver is left early.
+        """
+        return self.delay_us - self.basis_delay_us
+
+    def to_dict(self) -> dict[str, Any]:
+        """The receipt's view: what was prescribed, and what justifies it."""
+        return {
+            "delay_us": self.delay_us,
+            "basis_delay_us": self.basis_delay_us,
+            "residual_us": self.residual_us,
+            "basis_artifacts": list(self.basis_artifacts),
+            "basis_note": self.basis_note,
+        }
+
+
+def _finite_number(value: Any, *, reason: str, field: str) -> float:
+    """One numeric field, strictly.
+
+    ``bool`` is refused explicitly because it is an ``int`` in Python and
+    ``float(True)`` is ``1.0`` — a delay of "true" microseconds would otherwise
+    validate.  Strings are refused for :func:`.blend_correction.
+    blend_filters_from_mapping`'s reason: ``float("-450")`` succeeds, so
+    accepting one would make the reader's strictness depend on the encoder's
+    habits rather than on the contract.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise AlignmentPrescriptionRefused(
+            reason, f"{field} must be a number, got {type(value).__name__}",
+        )
+    number = float(value)
+    if not math.isfinite(number):
+        raise AlignmentPrescriptionRefused(
+            reason, f"{field} must be finite, got {number!r}",
+        )
+    return number
+
+
+def _parse_prescription(raw: Mapping[str, Any]) -> AlignmentPrescription:
+    """The shape and the provenance, and NOT the bound.
+
+    Shared whole between the request gate and the durable read-back, so the
+    only thing that differs between those two is their gate policy — which is
+    the only thing that should.
+    """
+    if not isinstance(raw, Mapping):
+        raise AlignmentPrescriptionRefused(
+            PRESCRIPTION_MALFORMED,
+            f"a prescription must be a mapping, got {type(raw).__name__}",
+        )
+    unknown = sorted(set(raw) - _PRESCRIPTION_FIELDS)
+    if unknown:
+        raise AlignmentPrescriptionRefused(
+            PRESCRIPTION_MALFORMED,
+            f"unknown prescription field(s): {', '.join(unknown)}",
+        )
+    if "delay_us" not in raw:
+        raise AlignmentPrescriptionRefused(
+            PRESCRIPTION_DELAY_INVALID, "a prescription must state delay_us",
+        )
+    delay_us = _finite_number(
+        raw["delay_us"], reason=PRESCRIPTION_DELAY_INVALID, field="delay_us",
+    )
+    if "basis_delay_us" not in raw:
+        raise AlignmentPrescriptionRefused(
+            PRESCRIPTION_BASIS_INVALID,
+            "a prescription must state the basis_delay_us it was derived from",
+        )
+    basis_delay_us = _finite_number(
+        raw["basis_delay_us"],
+        reason=PRESCRIPTION_BASIS_INVALID,
+        field="basis_delay_us",
+    )
+    artifacts = _read_artifacts(raw.get("basis_artifacts"))
+    note = raw.get("basis_note", "")
+    if not isinstance(note, str):
+        raise AlignmentPrescriptionRefused(
+            PRESCRIPTION_PROVENANCE_MISSING,
+            f"basis_note must be text, got {type(note).__name__}",
+        )
+    return AlignmentPrescription(
+        delay_us=delay_us,
+        basis_delay_us=basis_delay_us,
+        basis_artifacts=artifacts,
+        basis_note=note,
+    )
+
+
+def read_alignment_prescription(
+    raw: Mapping[str, Any] | None, *, fc_hz: float,
+) -> AlignmentPrescription | None:
+    """THE request gate.  One point, and the one derivation of the bound.
+
+    ``None`` when the request carries no prescription — the automatic path,
+    untouched.  Otherwise a validated :class:`AlignmentPrescription`, or
+    :class:`AlignmentPrescriptionRefused` naming which gate said no.
+
+    ``fc_hz`` is the crossover corner the bound is a half-period of.  The
+    caller passes the corner the speaker is commissioned at (the one its rounds
+    are measured through); an alternative-Fc sweep re-scores the same
+    prescription at other corners, where the aligner's own ``left_anchor_lobe``
+    tripwire keeps watching the same geometry and discloses if a corner would
+    move the commitment out of its lobe.  Gating here and observing there is
+    deliberate: an operator's input fails closed at the boundary, the
+    machinery's own exploration is reported rather than refused.
+
+    **The bound is inclusive.**  A prescription exactly half a period from its
+    basis is legal; one past it is refused.  Exactness is legal in this
+    repository's gates, and a strict comparison here would make the legality of
+    a round depend on floating-point noise in the sixth decimal of a corner
+    frequency.
+    """
+    if raw is None:
+        return None
+    prescription = _parse_prescription(raw)
+    # Checked after the shape and before the bound: an unusable corner is a
+    # different problem from an out-of-lobe prescription, and reporting the
+    # second would send an operator to re-derive a number that was fine.
+    if not isinstance(fc_hz, (int, float)) or isinstance(fc_hz, bool):
+        raise AlignmentPrescriptionRefused(
+            PRESCRIPTION_FC_UNKNOWN,
+            f"the crossover corner must be a number, got {type(fc_hz).__name__}",
+        )
+    corner = float(fc_hz)
+    if not math.isfinite(corner) or corner <= 0.0:
+        raise AlignmentPrescriptionRefused(
+            PRESCRIPTION_FC_UNKNOWN,
+            "a prescription's bound is a half-period at the crossover corner, "
+            f"which is undefined at fc_hz={corner!r}",
+        )
+    lobe_us = half_period_us(corner)
+    if abs(prescription.residual_us) > lobe_us:
+        raise AlignmentPrescriptionRefused(
+            PRESCRIPTION_OUT_OF_LOBE,
+            f"{prescription.delay_us:.1f} us leaves "
+            f"{prescription.residual_us:.1f} us of residual against the "
+            f"declared basis {prescription.basis_delay_us:.1f} us, outside the "
+            f"+/-{lobe_us:.1f} us half-period lobe at {corner:.1f} Hz",
+        )
+    return prescription
+
+
+def alignment_prescription_from_mapping(
+    raw: Any,
+) -> AlignmentPrescription | None:
+    """A prescription read back out of this repository's own durable state.
+
+    The read-back half of the pair this module's docstring describes: the same
+    shape and provenance checks, deliberately NOT the bound, and ``None``
+    instead of a raise.
+
+    Why no bound.  The only mappings that reach here were written by
+    :func:`read_alignment_prescription` accepting them, so re-applying the
+    bound could not catch a prescription the boundary let through — it could
+    only refuse one whose corner moved between the stage that measured the
+    round and the stage that grades it, and refusing there would discard the
+    evidence of a round that really ran.  The bound has one owner, and it is
+    the boundary.
+
+    Why still strict about shape.  A hand-edited or truncated state file is a
+    real input here, and a receipt that banked half a prescription would be
+    claiming provenance it does not have.  Anything unreadable is ``None`` plus
+    one WARNING, so an empty provenance slot on a receipt is always
+    distinguishable from a silently mangled one.
+    """
+    if raw is None:
+        return None
+    try:
+        return _parse_prescription(raw)
+    except AlignmentPrescriptionRefused as exc:
+        log_event(
+            logger,
+            PRESCRIPTION_UNREADABLE_EVENT,
+            level=logging.WARNING,
+            reason=exc.reason,
+            detail=exc.detail,
+        )
+        return None
+
+
+def _read_artifacts(value: Any) -> tuple[str, ...]:
+    """The named provenance, strictly and non-empty.
+
+    A bare string is refused rather than wrapped: ``"a,b"`` and ``["a", "b"]``
+    would otherwise be one artifact and two, decided by punctuation.
+    """
+    if value is None:
+        raise AlignmentPrescriptionRefused(
+            PRESCRIPTION_PROVENANCE_MISSING,
+            "a prescription must name the basis_artifacts it was measured from",
+        )
+    if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)):
+        raise AlignmentPrescriptionRefused(
+            PRESCRIPTION_PROVENANCE_MISSING,
+            "basis_artifacts must be a list of names, got "
+            f"{type(value).__name__}",
+        )
+    artifacts: list[str] = []
+    for entry in value:
+        if not isinstance(entry, str) or not entry.strip():
+            raise AlignmentPrescriptionRefused(
+                PRESCRIPTION_PROVENANCE_MISSING,
+                "every basis_artifacts entry must be a non-blank name",
+            )
+        artifacts.append(entry.strip())
+    if not artifacts:
+        raise AlignmentPrescriptionRefused(
+            PRESCRIPTION_PROVENANCE_MISSING,
+            "a prescription must name at least one basis artifact",
+        )
+    return tuple(artifacts)
