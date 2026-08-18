@@ -569,6 +569,26 @@ def test_a_position_gate_hold_is_retried_until_released(monkeypatch):
     assert ("authorize", 1, 1) in conductor.events
 
 
+def test_a_conductor_deferral_is_bounded_by_the_session_ceiling(monkeypatch):
+    """The retained VERIFY hold (D10) defers from the CONDUCTOR, which no
+    gate bounds — the runner's own ceiling must end it, with the honest
+    cumulative code, so no wait in this runner is unbounded."""
+    terminal = []
+
+    def _defer_forever(index, attempt, entry):
+        raise CaptureBeginDeferred("awaiting_apply", "hold")
+
+    conductor = FakeConductor(authorize=_defer_forever)
+    volume = VolumeRecorder()
+    runner = _build(conductor, volume, monkeypatch=monkeypatch, persists=[],
+                    terminal=terminal, ceiling_s=0.05)
+    with pytest.raises(CaptureBeginRefused) as caught:
+        _run(runner)
+    assert caught.value.code == REASON_SESSION_CEILING_EXPIRED
+    assert terminal == [REASON_SESSION_CEILING_EXPIRED]
+    assert volume.events == ["open", "abandon"]
+
+
 def test_stop_abandons_the_volume_and_raises_stopped(monkeypatch):
     stop_event = threading.Event()
     stop_event.set()
@@ -1040,3 +1060,27 @@ def test_prepared_session_defaults_to_the_relay_source():
     )
     assert prepared.capture_source == SOURCE_RELAY
     assert prepared.request_complete is None
+
+
+def test_the_wired_provider_reaches_the_host_only_at_call_time():
+    """The relay provider's import-shape pin, mirrored for its sibling: the
+    host imports NEITHER provider lazily by accident — it must stay free to
+    import this module without a cycle, so the provider's host reach-backs
+    are call-time only. Asserted on a real interpreter (catches indirect
+    routes a source scan cannot); the find_spec line is the positive
+    control proving the absent name is a real module."""
+    import subprocess
+    import sys
+
+    probe = (
+        "import importlib.util, sys\n"
+        "import jasper.web.correction_crossover_v2_wired\n"
+        "assert 'jasper.web.correction_crossover_v2' not in sys.modules, "
+        "'the wired provider imported the host at module scope'\n"
+        "assert importlib.util.find_spec("
+        "'jasper.web.correction_crossover_v2') is not None\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True,
+    )
+    assert completed.returncode == 0, completed.stderr

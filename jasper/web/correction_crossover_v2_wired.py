@@ -423,7 +423,7 @@ def build_v2_wired_run_and_consume(
                 if stop_event.is_set():
                     raise CaptureStopped("capture stopped")
 
-        def _authorize(index: int, attempt: int, entry: Any) -> None:
+        def _authorize(index: int, attempt: int, entry: Any, deadline: float) -> None:
             held_logged = False
             while True:
                 _raise_if_stopped()
@@ -437,6 +437,17 @@ def build_v2_wired_run_and_consume(
                     conductor.authorize_begin(index, attempt, entry)
                     return
                 except CaptureBeginDeferred:
+                    # A deferral from the CONDUCTOR (the retained-but-unreached
+                    # VERIFY hold — D10) has no gate bounding it, so the loop
+                    # carries the session ceiling itself: every wait in this
+                    # runner is bounded, and the code that expires it is the
+                    # honest cumulative clock, never a transport claim.
+                    if monotonic() > deadline:
+                        raise CaptureBeginRefused(
+                            REASON_SESSION_CEILING_EXPIRED,
+                            "The measurement ran out of time while a capture "
+                            "was still being held back.",
+                        ) from None
                     if not held_logged:
                         held_logged = True
                         log_event(
@@ -563,7 +574,7 @@ def build_v2_wired_run_and_consume(
                 index = accepted + 1
                 attempt += 1
                 entry = plan.entry_for_index(index)
-                _authorize(index, attempt, entry)
+                _authorize(index, attempt, entry, deadline)
                 verdict = _capture_one(index, attempt, entry)
                 if verdict.get("accepted"):
                     accepted += 1

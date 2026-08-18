@@ -756,7 +756,7 @@ MAX_LINES_BY_PATH = {
     # `jasper/audio_measurement/wired_capture.py` (the measurement kernel,
     # importable by non-web callers, capped below), so this module should
     # grow only when the wired SESSION choreography grows.
-    "jasper/web/correction_crossover_v2_wired.py": 736,
+    "jasper/web/correction_crossover_v2_wired.py": 747,
     # ...and 4,103 -> 4,107 (lateral pause), +4 net: the entry-baseline screen
     # said the household is "BACK on the mark", true only after a walk. With
     # the walk paused this capture follows MEASURE, where the microphone never
