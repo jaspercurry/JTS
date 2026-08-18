@@ -979,10 +979,16 @@ def test_a_safety_only_probe_caveats_the_pass_screen():
         phase="done",
         verify={
             "outcome": "pass",
+            # ``overshoot_db`` is ``None`` because since series-2 D1 this path
+            # measures no directional finding at all — it has no pre-apply
+            # capture to difference against. The record's own ``safety_anchored``
+            # is deliberately NOT here: ``_delta_probe_summary`` does not persist
+            # it (the round receipt's safety evidence does), and a fixture
+            # carrying a key the durable record will not have is a fixture
+            # testing a surface that does not exist.
             "delta_probe": {
                 "verdict": "safety_only",
                 "reason": "commanded_axis_unavailable",
-                "safety_anchored": False,
                 "boost": {"over_declared_bound": False, "overshoot_db": None},
             },
         },
