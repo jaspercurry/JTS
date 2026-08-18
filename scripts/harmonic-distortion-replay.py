@@ -33,6 +33,9 @@ than reporting:
    its :data:`FIDELITY_FIELDS` compared against the sidecar's own ``diagnostic``
    block — the analysis AS PERFORMED. Only then is the distortion read trusted,
    because it rides that analysis's located anchors and clock-drift estimate.
+   Fail-closed: a sidecar carrying NONE of the gate fields is refused (zero
+   comparisons is not a passed gate), a partial block is compared on exactly
+   the fields it has, and the summary prints the count actually compared.
 
 Captures are bound to sidecars by ``wav_sha256``, never by filename.
 
@@ -283,9 +286,12 @@ def glitch_disclosure(summary: dict[str, Any], want: dict[str, Any]) -> str | No
 def read_capture(program, capture_samples, calibration, orders, fc_hz, sidecar):
     """Gate one capture, then read every sweep segment's distortion.
 
-    Returns ``(readings, failures, disclosure)``. ``readings`` is empty when the
-    gate failed: a capture whose analysis does not reproduce is not evidence
-    about a speaker.
+    Returns ``(readings, failures, disclosure, compared)`` where ``compared``
+    is how many of :data:`FIDELITY_FIELDS` the sidecar actually carried for
+    comparison. ``readings`` is empty when the gate failed — a capture whose
+    analysis does not reproduce is not evidence about a speaker — and a
+    sidecar carrying NONE of the gate fields is refused outright rather than
+    read ungated: zero comparisons is not a passed gate.
     """
     from jasper.audio_measurement import deconv
     from jasper.audio_measurement.distortion import read_segment_distortion
@@ -301,6 +307,18 @@ def read_capture(program, capture_samples, calibration, orders, fc_hz, sidecar):
         analyze_program_capture,
     )
 
+    banked = sidecar.get("diagnostic") or {}
+    compared = sum(
+        1 for field in FIDELITY_FIELDS
+        if field in banked and banked[field] is not None
+    )
+    if compared == 0:
+        return [], [
+            "sidecar carries none of the gate's diagnostic fields — nothing "
+            "to compare means nothing was validated, so the capture is "
+            "refused rather than read ungated"
+        ], None, 0
+
     rate = program.sample_rate_hz
     analysis = analyze_program_capture(
         program, capture_samples, rate,
@@ -309,10 +327,9 @@ def read_capture(program, capture_samples, calibration, orders, fc_hz, sidecar):
         priors=MeasurementPriors(crossover_fc_hz=fc_hz),
     )
     summary = analysis_diagnostic_summary(analysis)
-    banked = sidecar.get("diagnostic") or {}
     failures = fidelity_failures(summary, banked)
     if failures:
-        return [], failures, None
+        return [], failures, None, compared
     disclosure = glitch_disclosure(summary, banked)
 
     # The same bounding `analyze_program_capture` applies before locating, so
@@ -344,7 +361,7 @@ def read_capture(program, capture_samples, calibration, orders, fc_hz, sidecar):
                 },
             )
         )
-    return readings, [], disclosure
+    return readings, [], disclosure, compared
 
 
 def _pooled(values: list[float]) -> float:
@@ -353,14 +370,48 @@ def _pooled(values: list[float]) -> float:
 
 def report(all_readings, orders) -> dict[str, Any]:
     """Print the per-role read and return it as a JSON-able structure."""
+    from jasper.audio_measurement.distortion import worst_clear_of_floor
+
     by_role: dict[str, list] = {}
     for reading in all_readings:
         by_role.setdefault(reading.role or "?", []).append(reading)
 
-    out: dict[str, Any] = {"roles": {}}
+    print("\nEvery H-N value is dB BELOW THE FUNDAMENTAL at the same "
+          "excitation frequency (more negative = cleaner); floors are in the "
+          "same units. fundΔ is the pooled fundamental re its own band "
+          "median: a dip there inflates the ratios on that row with no "
+          "change in harmonic energy, so read ratio peaks against it.")
+    out: dict[str, Any] = {
+        "reference": {
+            "harmonic_db": "dB below the fundamental at the same excitation "
+                           "frequency; floors identical",
+            "fundamental_re_band_median_db": "pooled fundamental minus its "
+                                             "own band median (a notch here "
+                                             "inflates the row's ratios)",
+            "drive_dbfs": "stimulus/effective re digital full scale; capture "
+                          "re the capture device's full scale; no SPL exists "
+                          "in this corpus",
+        },
+        "roles": {},
+    }
     for role, readings in sorted(by_role.items()):
         first = readings[0]
         drives = [r.drive for r in readings]
+        # Pooling below is BY GRID INDEX, valid because every sweep of one
+        # role shares one SweepMeta, hence one FFT length and one masked grid.
+        # Checked, because pooling by index silently lies otherwise.
+        if not all(
+            np.array_equal(r.freqs_hz, first.freqs_hz) for r in readings
+        ):
+            raise SystemExit(f"role {role}: sweep grids disagree; cannot pool")
+        # np.median partitions NaN to the end of each slice and inspects the
+        # last slot, so a bin where ANY sweep is NaN pools to NaN. Here a bin
+        # is NaN for every sweep or for none (the mask is a pure function of
+        # the shared meta), so pooled bins are either fully real or NaN.
+        fund_pool = np.median(
+            np.stack([r.fundamental_db for r in readings]), axis=0
+        )
+        fund_delta = fund_pool - float(np.median(fund_pool))
         print(f"\n=== {role}  ({len(readings)} sweeps from "
               f"{len({r.drive.notes['wav_sha256_12'] for r in readings if r.drive.notes})} captures)")
         print(f"    sweep {first.sweep.f1:.0f}-{first.sweep.f2:.0f} Hz, L={first.sweep.L:.4f} s; "
@@ -374,14 +425,19 @@ def report(all_readings, orders) -> dict[str, Any]:
               f"{min(r.clearance_s for r in readings):+.3f} s worst "
               f"({'all clean' if all(r.images_clean for r in readings) else 'CONTAMINATED'})")
 
-        header = "      Hz  " + "".join(f"   H{o} dB  floor" for o in orders) + "    THD%"
+        header = ("      Hz   fundΔ "
+                  + "".join(f"   H{o} dB  floor" for o in orders) + "    THD%")
         print(header)
         rows = []
         for probe in PROBE_FREQUENCIES_HZ:
             if not (first.band_hz[0] <= probe <= first.band_hz[1]):
                 continue
-            row: dict[str, Any] = {"hz": probe}
-            cells = []
+            i0 = int(np.argmin(np.abs(first.freqs_hz - probe)))
+            row: dict[str, Any] = {
+                "hz": probe,
+                "fundamental_re_band_median_db": round(float(fund_delta[i0]), 1),
+            }
+            cells = [f" {float(fund_delta[i0]):+6.1f} "]
             for order in orders:
                 vals, floors, limited = [], [], []
                 for r in readings:
@@ -394,8 +450,12 @@ def report(all_readings, orders) -> dict[str, Any]:
                 # NaN means "past this order's own band edge" — printed as a
                 # dash so it can never be read as a very clean measurement.
                 beyond = not math.isfinite(value)
-                row[f"h{order}_db"] = None if beyond else round(value, 1)
-                row[f"h{order}_floor_db"] = None if beyond else round(floor, 1)
+                row[f"h{order}_below_fundamental_db"] = (
+                    None if beyond else round(value, 1)
+                )
+                row[f"h{order}_floor_below_fundamental_db"] = (
+                    None if beyond else round(floor, 1)
+                )
                 row[f"h{order}_floor_limited"] = None if beyond else at_floor
                 cells.append(
                     f" {'—':>7} {'—':>6}" if beyond
@@ -412,18 +472,12 @@ def report(all_readings, orders) -> dict[str, Any]:
 
         worst, floor_fraction = {}, {}
         # The summary pools per grid point exactly as the table rows do —
-        # median value, median floor, majority floor-limited vote — so the
-        # headline cannot contradict its own table. A per-sweep `worst()`
-        # here would instead name an isolated excursion that the other 32
-        # sweeps vote down as floor noise (the tweeter shows exactly that).
-        # The grids are index-aligned by construction: every sweep of one
-        # role shares one SweepMeta, hence one FFT length and one masked
-        # grid. Checked, because pooling by index silently lies otherwise.
+        # median value, majority floor-limited vote — so the headline cannot
+        # contradict its own table, and a per-sweep worst() cannot headline
+        # an isolated excursion the other sweeps vote down as floor noise.
+        # Eligibility is `worst_clear_of_floor`'s — the module owns the
+        # policy; this report only supplies pooled arrays.
         for order in orders:
-            if not all(
-                np.array_equal(r.freqs_hz, first.freqs_hz) for r in readings
-            ):
-                raise SystemExit(f"role {role}: sweep grids disagree; cannot pool")
             values = np.median(
                 np.stack([r.relative_db[order] for r in readings]), axis=0
             )
@@ -432,13 +486,36 @@ def report(all_readings, orders) -> dict[str, Any]:
             ).sum(axis=0) > len(readings) / 2
             share = float(np.mean(limited))
             floor_fraction[f"h{order}"] = round(share, 3)
-            eligible = np.isfinite(values) & ~limited
-            if eligible.any():
-                index = int(np.argmax(np.where(eligible, values, -np.inf)))
-                f, v = float(first.freqs_hz[index]), float(values[index])
-                worst[f"h{order}"] = {"hz": round(f, 1), "db": round(v, 1)}
-                print(f"    worst H{order} clear of the floor: {v:+.1f} dB at "
-                      f"{f:.0f} Hz  ({100 * share:.1f}% of the band is floor-limited)")
+            f, v = worst_clear_of_floor(first.freqs_hz, values, limited)
+            if math.isfinite(v):
+                index = int(np.argmin(np.abs(first.freqs_hz - f)))
+                fd = float(fund_delta[index])
+                worst[f"h{order}"] = {
+                    "hz": round(f, 1),
+                    "below_fundamental_db": round(v, 1),
+                    "fundamental_re_band_median_db": round(fd, 1),
+                }
+                print(f"    worst H{order} ratio clear of the floor: {v:+.1f} dB "
+                      f"at {f:.0f} Hz, where fundΔ is {fd:+.1f} dB  "
+                      f"({100 * share:.1f}% of the band is floor-limited)")
+                # The ratio's worst bin can be the DENOMINATOR's doing (a
+                # fundamental notch), so the bin where the harmonic's own
+                # energy peaks is named beside it — same eligibility owner,
+                # argmax over the absolute curve fundamental + ratio.
+                fa, _level = worst_clear_of_floor(
+                    first.freqs_hz, fund_pool + values, limited
+                )
+                ia = int(np.argmin(np.abs(first.freqs_hz - fa)))
+                worst[f"h{order}"]["absolute_energy_peak"] = {
+                    "hz": round(fa, 1),
+                    "below_fundamental_db": round(float(values[ia]), 1),
+                    "fundamental_re_band_median_db": round(
+                        float(fund_delta[ia]), 1
+                    ),
+                }
+                print(f"      highest absolute H{order} energy clear of the "
+                      f"floor: {fa:.0f} Hz (ratio {float(values[ia]):+.1f} dB, "
+                      f"fundΔ {float(fund_delta[ia]):+.1f} dB)")
             else:
                 worst[f"h{order}"] = None
                 print(f"    worst H{order}: NOT MEASURABLE — {100 * share:.1f}% of "
@@ -454,9 +531,9 @@ def report(all_readings, orders) -> dict[str, Any]:
             "worst_clear_of_floor": worst,
             "rows": rows,
         }
-    print("\n  * = the pooled point sits within "
-          "FLOOR_LIMITED_MARGIN_DB of the measured floor: an upper bound on the "
-          "driver, not a reading of it.")
+    print("\n  * = a majority of the sweeps read this point within "
+          "FLOOR_LIMITED_MARGIN_DB (6 dB) of their own per-sweep floors — an "
+          "upper bound on the driver, not a reading of it.")
     return out
 
 
@@ -520,9 +597,9 @@ def main() -> int:
         print("NO calibration supplied: harmonic-to-fundamental ratios carry the "
               "mic's own C(N·f) - C(f) tilt")
 
-    all_readings, gate_failures, disclosures = [], 0, []
+    all_readings, gate_failures, disclosures, compared_ok = [], 0, [], []
     for capture in captures:
-        readings, failures, disclosure = read_capture(
+        readings, failures, disclosure, compared = read_capture(
             program, load_mono(capture.wav), calibration, orders, fc_hz,
             capture.sidecar,
         )
@@ -534,14 +611,22 @@ def main() -> int:
             continue
         if disclosure:
             disclosures.append(f"{capture.wav.name}: {disclosure}")
+        compared_ok.append(compared)
         all_readings.extend(readings)
 
     if not all_readings:
         print("\nno capture passed its gate")
         return 1
-    print(f"\n{len(captures) - gate_failures}/{len(captures)} captures reproduced "
-          f"{len(FIDELITY_FIELDS)} banked diagnostics; "
-          f"{len(all_readings)} sweeps read")
+    # The count printed is what was actually compared, never the field-list
+    # length: a sidecar carrying zero gate fields is refused above, and a
+    # partial one passes on exactly the fields it has.
+    spread = (
+        f"{min(compared_ok)}" if min(compared_ok) == max(compared_ok)
+        else f"{min(compared_ok)}-{max(compared_ok)}"
+    )
+    print(f"\n{len(compared_ok)}/{len(captures)} captures reproduced every "
+          f"banked diagnostic they carry ({spread} of {len(FIDELITY_FIELDS)} "
+          f"gate fields per capture); {len(all_readings)} sweeps read")
     if disclosures:
         print(f"\n{len(disclosures)} capture(s) disagree with the bank on integrity:")
         for line in disclosures:
