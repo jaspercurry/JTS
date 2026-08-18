@@ -373,7 +373,9 @@ def extract_harmonic_ir(
                 - round(harmonic_time_advance_s(meta, other) * sample_rate)
             )
         ) for other in adjacent)
-        neighbor_half_width = max(1, int(math.floor(0.4 * neighbor_gap)))
+        neighbor_half_width = max(
+            1, int(math.floor(HARMONIC_WINDOW_GAP_FRACTION * neighbor_gap))
+        )
         if start <= neighbor_center + neighbor_half_width and end > (
             neighbor_center - neighbor_half_width
         ):

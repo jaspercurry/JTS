@@ -20,9 +20,9 @@ Why that arithmetic matters (the trap)
 :data:`jasper.audio_measurement.program_analysis.DECONV_PRE_GUARD_S` is 0.25 s.
 That is the right value for its job — it only has to contain the linear IR's
 non-causal shoulder plus the first driver's acoustic delay. It is far SMALLER
-than the harmonic advances at measurement sweep rates (a 4 s / 150 Hz MEASURE
-woofer sweep has ``L ≈ 1.55 s``, so H2 leads by ``≈ 1.07 s`` and H3 by
-``≈ 1.70 s``). Deconvolution is circular, so at the production window every
+than the harmonic advances at measurement sweep rates (the shipped 150-4000 Hz
+MEASURE woofer sweep has ``L = 1.2200 s``, so H2 leads by ``L·ln 2 ≈ 0.85 s``
+and H3 by ``L·ln 3 ≈ 1.34 s``). Deconvolution is circular, so at the production window every
 harmonic image wraps off the front of the array. Analysis on this path
 therefore re-deconvolves the SAME capture bytes at a pre-guard derived from the
 sweep's own ``L`` — :func:`required_pre_guard_s`. Nothing about the production
@@ -210,6 +210,20 @@ class HarmonicReading:
         separation = values - floor
         return ~(separation >= float(margin_db))
 
+    def harmonic_db(self, order: int) -> np.ndarray:
+        """Absolute level of order ``order`` — ``fundamental_db + relative_db``.
+
+        Same (deconvolution) units and grid as ``fundamental_db``, so like
+        every absolute magnitude here it is meaningful as a difference. This
+        is the curve to consult before believing a peak in ``relative_db``:
+        the ratio rises wherever the FUNDAMENTAL dips (a notch at the
+        excitation frequency), and only a peak that also shows here is the
+        harmonic's own doing.
+        """
+        return np.asarray(self.fundamental_db, dtype=np.float64) + np.asarray(
+            self.relative_db[order], dtype=np.float64
+        )
+
     def worst(
         self, order: int, *, above_floor: bool = True
     ) -> tuple[float, float]:
@@ -221,15 +235,39 @@ class HarmonicReading:
         an order that never clears its floor returns ``(nan, nan)``, which is
         the honest reading of "nothing measurable here".
         """
-        values = np.asarray(self.relative_db[order], dtype=np.float64)
-        eligible = np.isfinite(values)
-        if above_floor:
-            eligible &= ~self.floor_limited(order)
-        if not np.any(eligible):
-            return float("nan"), float("nan")
-        candidates = np.where(eligible, values, -np.inf)
-        index = int(np.argmax(candidates))
-        return float(self.freqs_hz[index]), float(values[index])
+        return worst_clear_of_floor(
+            self.freqs_hz,
+            self.relative_db[order],
+            self.floor_limited(order) if above_floor else None,
+        )
+
+
+def worst_clear_of_floor(
+    freqs_hz: np.ndarray,
+    relative_db: np.ndarray,
+    floor_limited: np.ndarray | None = None,
+) -> tuple[float, float]:
+    """``(frequency_hz, relative_db)`` of the worst (highest) eligible point.
+
+    The one owner of the eligibility policy every summary shares: a point
+    counts only while it is finite (inside the order's own band) and — when a
+    mask is supplied — not floor-limited. No eligible point returns
+    ``(nan, nan)``, the honest reading of "nothing measurable here".
+    :meth:`HarmonicReading.worst` applies it to one reading; a caller that
+    pools several readings (the replay CLI) applies it to its pooled arrays,
+    so the module and the lab report cannot drift on what "worst" means.
+    """
+    values = np.asarray(relative_db, dtype=np.float64)
+    eligible = np.isfinite(values)
+    if floor_limited is not None:
+        eligible &= ~np.asarray(floor_limited, dtype=bool)
+    if not np.any(eligible):
+        return float("nan"), float("nan")
+    index = int(np.argmax(np.where(eligible, values, -np.inf)))
+    return (
+        float(np.asarray(freqs_hz, dtype=np.float64)[index]),
+        float(values[index]),
+    )
 
 
 def validated_orders(orders: Sequence[int]) -> tuple[int, ...]:
@@ -255,7 +293,12 @@ def _image_half_width_s(meta: SweepMeta, order: int) -> float:
     Its rule is :data:`~.deconv.HARMONIC_WINDOW_GAP_FRACTION` of the distance to
     the NEAREST neighbouring order's centre, and for every ``N ≥ 1`` that
     neighbour is ``N+1`` — ``ln((N+1)/N) < ln(N/(N−1))`` for all ``N ≥ 2``, and
-    order 1 has no lower neighbour at all.
+    order 1 has no lower neighbour at all. This computes the width from the
+    PREDICTED centre; the runtime function measures its gap from the SEARCHED
+    one, so the two can differ by up to the fraction times the ±2 ms search —
+    the net leading-edge excursion is at most 0.6× the search radius (the
+    fail-safe arithmetic in the :data:`PRE_GUARD_SEARCH_MARGIN_S` comment),
+    which that margin absorbs.
     """
     return (
         deconv.HARMONIC_WINDOW_GAP_FRACTION
@@ -310,14 +353,20 @@ def required_pre_guard_s(
     The order-``N`` image sits ``L·ln(N)`` ahead of the linear IR
     (:func:`~jasper.audio_measurement.deconv.harmonic_time_advance_s`) and is
     windowed to ``±`` :func:`_image_half_width_s`, so its leading edge sits at
-    ``L·ln(N) + half_width`` before the direct arrival. The phantom floor window
-    for each order sits FURTHER back still (between images ``N`` and ``N+1``),
-    and is included here because a floor that wrapped is worse than no floor.
+    ``L·ln(N) + half_width`` before the direct arrival. The maximum over the
+    requested orders' image edges is what binds.
     :data:`PRE_GUARD_SEARCH_MARGIN_S` covers the local-peak search.
 
-    The fundamental (order 1) is included unconditionally: it is windowed by the
-    same rule and extends backwards too, so a pre-guard that ignored it could
-    still fail. Returns the maximum over every window.
+    The other windows in the max are belt-and-braces, not binding: the
+    fundamental's edge (``0.4·L·ln 2`` from the arrival) is always inside any
+    requested order's edge (``L·ln N ≥ L·ln 2`` alone exceeds it), and each
+    phantom-floor window sits in the gap BELOW its image — nearer the arrival —
+    so its edge is strictly inside that image's own (see
+    :func:`_phantom_window_s`). They are enumerated anyway so this stays the
+    maximum over EVERY window the read will cut, rather than an argument about
+    which dominates — if the window geometry ever moves, the guard follows it
+    instead of the argument going stale.
+    ``tests/test_audio_measurement_distortion.py`` asserts coverage per window.
     """
     orders = validated_orders(orders)
     edges = [
@@ -418,8 +467,10 @@ def _phantom_floor_ir(
     """A window where no harmonic image can be — the read's own noise floor.
 
     Returns ``(windowed_ir, length_ratio)``. The window is centred at the
-    advance ``L·ln(order + ½)``, strictly between image ``order`` and image
-    ``order+1``, and widened until it just clears BOTH of their windows (times
+    advance ``L·ln(order − ½)``, strictly between image ``order−1`` and image
+    ``order`` — the arrival side of the image it describes, per
+    :func:`_phantom_window_s`, which owns the geometry and the reason — and
+    widened until it just clears BOTH of their windows (times
     :data:`_PHANTOM_WINDOW_SAFETY`). What it contains is therefore everything
     the deconvolution puts at a harmonic-like time offset EXCEPT a harmonic:
     capture noise, the Tikhonov regularization residue, and room decay
@@ -475,9 +526,12 @@ def harmonic_reading_from_ir(
     :func:`~jasper.audio_measurement.deconv.extract_harmonic_ir` raises rather
     than returning a window of the wrong thing.
 
-    ``band_hz`` defaults to :func:`analysis_band_hz` and is intersected with it
-    when supplied, so a caller cannot widen the read past where the orders are
-    real. ``pre_guard_s`` / ``preceding_silence_s`` are recorded, not used: the
+    ``band_hz`` defaults to :func:`order_band_hz` of the LOWEST requested order
+    (178-2000 Hz for the shipped woofer sweep at orders ``(2, 3)``) and a
+    supplied band is intersected with that, so a caller cannot widen the read
+    past where any order is real; each higher order is then NaN-masked to its
+    own shorter edge, and THD to :func:`analysis_band_hz`.
+    ``pre_guard_s`` / ``preceding_silence_s`` are recorded, not used: the
     caller that windowed the capture is the only one that knows them, and a
     reading that could not state them would hide its own cleanliness.
     """
@@ -497,7 +551,7 @@ def harmonic_reading_from_ir(
                 f"overlap the band where orders {orders} are real"
             )
     band = (derived_lo, derived_hi)
-    all_orders_hi = min(band[1], order_band_hz(meta, max(orders))[1])
+    all_orders_hi = min(band[1], analysis_band_hz(meta, orders)[1])
 
     # Every window shares ONE FFT length, derived from the widest of them (the
     # fundamental's). Per-window lengths would give each order a different bin
