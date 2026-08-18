@@ -106,6 +106,7 @@ __all__ = [
     "FC_REJECT_BELOW_DECLARED_FLOOR",
     "FC_REJECT_BEAMING",
     "FC_REJECT_OUTSIDE_SEARCH_BAND",
+    "FC_CORNER_COMPUTE_COST_S",
     "FC_SWEEP_COMPUTE_BUDGET_S",
     "MAX_PROPOSED_FC_CANDIDATES",
     "Adjudication",
@@ -117,6 +118,7 @@ __all__ = [
     "candidate_set",
     "evaluate_candidate",
     "fc_candidate_set",
+    "fc_sweep_budget_s",
     "refusal",
     "resolve_fc_search_band",
     "sweep_candidates",
@@ -159,11 +161,57 @@ FC_REJECT_OUTSIDE_SEARCH_BAND = "outside_declared_search_band"
 # edge comparison must not refuse a value it just rounded onto that edge.
 _FC_GRID_EPS_HZ = 0.05
 
-#: One-time serial candidate-sweep wall budget. The capture page separately
-#: owns a 90 s end-to-end result wait, leaving 20 s for anchor analysis, result
-#: publication, polling, and loaded-Pi variance. Post-P0.1 live-Pi all-six
-#: timing is unverified; this is the bounded deployment ceiling.
-FC_SWEEP_COMPUTE_BUDGET_S = 70.0
+#: What ONE corner costs to score, measured on live jts3 — 43 alternative
+#: corners across ten banked rounds (2026-08-17/18) spanning 11.65 s to
+#: 15.52 s. Rounded UP from the slowest of them, not fitted to it: 43 corners
+#: on one speaker do not locate a true worst case to a tenth of a second, and
+#: the two directions are not symmetric — too high costs a slow Pi some extra
+#: wall before it truncates, too low re-opens the defect this replaced. The
+#: configured corner is far cheaper (~1.7-2.3 s) because
+#: :func:`evaluate_candidate` reuses the anchor's own analysis rather than
+#: re-running it.
+FC_CORNER_COMPUTE_COST_S = 16.0
+
+
+def fc_sweep_budget_s(planned: int) -> float:
+    """The wall a sweep of ``planned`` corners may spend.
+
+    **Sized by the work, not by what was left over.** The prior figure was a
+    bare 70 s taken top-down from the phone's 90 s result wait minus 20 s of
+    overhead, and its own comment conceded that all-six timing was unverified.
+    Ten banked jts3 rounds then measured what the sweep actually costs, and
+    five of the ten ran out: the sixth corner was skipped, which — since
+    :func:`~jasper.active_speaker.fc_selector.select_fc` refuses to move Fc on
+    a partial comparison — made those rounds structurally unable to recommend
+    anything, whatever the evidence said. Two of them would have recommended a
+    different corner had the last one been scored.
+
+    **Why ``planned x cost`` rather than a bigger constant.** The forecast in
+    :func:`sweep_candidates` admits the last corner only when
+    ``cost(1..N-1) + slowest(1..N-1) <= budget``. With every corner costing at
+    most :data:`FC_CORNER_COMPUTE_COST_S` that requirement is exactly
+    ``N * cost``, so this form is the smallest budget that structurally fits
+    the plan it was given — and it keeps fitting when the plan changes size,
+    which a constant cannot. It also carries real slack rather than sitting on
+    the boundary: charging the near-free configured corner a full corner's cost
+    buys back roughly one corner of headroom for a loaded Pi.
+
+    What it does NOT do is promise completion. A Pi slow enough to exceed the
+    measured per-corner ceiling still truncates, loudly — see
+    :func:`sweep_candidates`'s disclosure.
+    """
+    return max(1, int(planned)) * FC_CORNER_COMPUTE_COST_S
+
+
+#: The largest budget any plan can ask for — the full proposed set plus the
+#: configured corner. The capture page's ``CAPTURE_RESULT_WAIT_BUDGET_MS`` must
+#: stay above THIS, not above whatever a particular household's declarations
+#: happen to propose, because the phone's wait is a build-time constant and the
+#: plan size is not. Overrunning that wait is not a degraded advisory: the page
+#: throws a terminal ``sweepFailed`` and the household loses the capture.
+#: ``test_the_result_wait_is_named_once_and_exceeds_the_compute_budget`` is what
+#: keeps the two moving together.
+FC_SWEEP_COMPUTE_BUDGET_S = fc_sweep_budget_s(MAX_PROPOSED_FC_CANDIDATES + 1)
 
 #: The exceptions a candidate evaluation may fail with and still leave the
 #: capture acceptable. An enumeration rather than a blind ``except Exception``
@@ -727,7 +775,7 @@ def sweep_candidates(
     *,
     evaluate: Callable[[float, Any, Any, Any], FcCandidateEvaluation],
     candidate_set_of: Callable[[], FcCandidateSet],
-    budget_s_of: Callable[[], float],
+    budget_s_of: Callable[[int], float],
     journal: Callable[[GateRecord], None],
     configured_fc_hz: float,
     protection_declared: bool,
@@ -779,6 +827,12 @@ def sweep_candidates(
     # nothing left to restore.
     started = time.monotonic()
     slowest_s = 0.0
+    #: How much MORE wall the forecast wanted than the budget allowed, at the
+    #: moment it declined a corner. 0.0 when nothing was declined. The one
+    #: actionable number in the incomplete disclosure: it says whether the plan
+    #: missed by a second or by half a corner, which is the difference between
+    #: a loaded Pi and a budget that no longer fits its work.
+    budget_short_by_s = 0.0
     evaluations: list[FcCandidateEvaluation] = []
     try:
         # INSIDE the try, with the disclosure log, so "never raises" is
@@ -789,7 +843,10 @@ def sweep_candidates(
         # outside this block — where an advisory could have cost the
         # household an ACCEPTED MEASURE (resilience lens).
         candidates = candidate_set_of()
-        budget_s = budget_s_of()
+        # The budget is sized from the plan it is about to spend, so a set
+        # narrowed by declarations is not handed the whole speaker's wall and a
+        # full set is not handed less than it needs (:func:`fc_sweep_budget_s`).
+        budget_s = budget_s_of(len(candidates.candidates))
         for fc_hz in candidates.candidates:
             elapsed = time.monotonic() - started
             # Forecast, not a bare deadline check: a candidate costs about
@@ -799,6 +856,7 @@ def sweep_candidates(
             # nothing to forecast from, and a sweep that scores nothing has
             # no comparison to offer.
             if evaluations and elapsed + slowest_s > budget_s:
+                budget_short_by_s = elapsed + slowest_s - budget_s
                 evaluations.extend(
                     refusal(rest, EVAL_REFUSED_BUDGET)
                     for rest in candidates.candidates[len(evaluations):]
@@ -828,21 +886,41 @@ def sweep_candidates(
         comparison_complete = fc_comparison_complete(
             evaluations, len(candidates.candidates)
         )
-        journal(GateRecord(event=EVENT_SWEEP, fields={
-            "configured_hz": round(configured_fc_hz, 1),
-            "planned": len(candidates.candidates),
-            "evaluated": sum(1 for e in evaluations if e.refusal is None),
-            "candidate_order": [round(fc, 1) for fc in candidates.candidates],
-            "attempted": attempted,
-            "skipped": skipped,
-            "comparison_complete": comparison_complete,
-            "elapsed_s": round(time.monotonic() - started, 2),
-            "budget_s": round(budget_s, 2),
-            "limits": {k: round(v, 1) for k, v in candidates.limits.items()},
-            "rejected": [
-                [round(fc, 1), reason] for fc, reason in candidates.rejected
-            ],
-        }))
+        # WARNING when the comparison came up short, because that is the state
+        # in which the selector can no longer move Fc no matter what the
+        # evidence says — a suppressed recommendation, not a slower one. The
+        # same line either way rather than a second event name: this is the
+        # sweep's one disclosure, and ``skipped`` already names every corner it
+        # could not reach. What the level adds is that nobody has to be reading
+        # INFO to find out (five of ten banked jts3 rounds ended here, silently
+        # at INFO, and the suppression was only visible by parsing the field).
+        journal(GateRecord(
+            event=EVENT_SWEEP,
+            level=logging.INFO if comparison_complete else logging.WARNING,
+            fields={
+                "configured_hz": round(configured_fc_hz, 1),
+                "planned": len(candidates.candidates),
+                "evaluated": sum(1 for e in evaluations if e.refusal is None),
+                "candidate_order": [
+                    round(fc, 1) for fc in candidates.candidates
+                ],
+                "attempted": attempted,
+                "skipped": skipped,
+                "comparison_complete": comparison_complete,
+                "elapsed_s": round(time.monotonic() - started, 2),
+                "budget_s": round(budget_s, 2),
+                # Always present, 0.0 when nothing was declined, so a reader
+                # never has to tell "the budget was not short" apart from "this
+                # build does not say".
+                "budget_short_by_s": round(budget_short_by_s, 2),
+                "limits": {
+                    k: round(v, 1) for k, v in candidates.limits.items()
+                },
+                "rejected": [
+                    [round(fc, 1), reason] for fc, reason in candidates.rejected
+                ],
+            },
+        ))
     except _SWEEP_ERRORS as exc:
         # The whole advisory declined, loudly. Same caught set as the
         # per-candidate handler above; ``CrossoverV2FlowError`` is a

@@ -97,7 +97,7 @@ const withoutImports = raw
     'const PAGE_VERSION_URL = new URL("https://capture.test/version.json");',
   )
   .replace(
-    "const CAPTURE_RESULT_WAIT_BUDGET_MS = 90000;",
+    "const CAPTURE_RESULT_WAIT_BUDGET_MS = 116000;",
     "const CAPTURE_RESULT_WAIT_BUDGET_MS = 25;",
   );
 if (/^import\s/m.test(withoutImports)) {

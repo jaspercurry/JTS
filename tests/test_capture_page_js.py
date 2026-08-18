@@ -217,7 +217,7 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         # deployed page still advertises [1, 2, 3], so this page build must
         # publish AFTER the Pis stop emitting 1 and 2, not before.
         "supported_capture_protocol_versions": [3],
-        "capture_page_build": "20260815.5",
+        "capture_page_build": "20260818.1",
     }
     # The ?v= query is the page's ONLY cache-invalidation mechanism, and the
     # Pi's build gate checks the stamp's FORMAT, not its value — so a phone
@@ -225,7 +225,7 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
     # version.json without bumping this is therefore a shipping hazard, not a
     # cosmetic mismatch: that is what this pairing exists to catch, and what it
     # caught for the flat-linearization PR-3b page fix.
-    assert "main.js?v=20260815-5" in index_html
+    assert "main.js?v=20260818-1" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260802-1"' in main_js
     # Bumped with #2094: the recorder worklet now reports the frame count the
@@ -406,9 +406,9 @@ def test_the_build_refuses_rather_than_publishing_without_the_shared_helper(tmp_
 # The published state of capture-page/js/**, paired with the build stamp it
 # ships under. See the test below for why a digest rather than a rule.
 _CAPTURE_PAGE_JS_DIGEST = (
-    "d354cafd3ad199eb2f6b6c8e3d1b0c5ad84e492dafdd9a0c554e3aeec6a214cc"
+    "a6e33e209eb4b2c360c3c6fac50850aae81de53fe1ebf02e9305402a45ed6656"
 )
-_CAPTURE_PAGE_JS_DIGEST_BUILD = "20260815.5"
+_CAPTURE_PAGE_JS_DIGEST_BUILD = "20260818.1"
 
 
 def test_capture_page_js_cannot_change_without_a_deliberate_build_stamp_decision():
@@ -1585,7 +1585,7 @@ def test_capture_page_plan_loop_timeouts_are_terminal_not_stale_retries():
     assert "failure.sweepFailed = true;" in result_body
     assert "throw failure;" in result_body
     # The named result wait gives the Pi's bounded analysis real headroom.
-    assert "const CAPTURE_RESULT_WAIT_BUDGET_MS = 90000;" in main_js
+    assert "const CAPTURE_RESULT_WAIT_BUDGET_MS = 116000;" in main_js
     assert "CAPTURE_RESULT_WAIT_BUDGET_MS, Number(spec.duration_ms) || 0" in result_body
 
 

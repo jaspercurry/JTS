@@ -75,8 +75,12 @@ async function loadCapturePageIdentity() {
 const DEVICE_STORAGE_KEY = "jts.capture.selected-device";
 const SETUP_IDENTITY_SCHEMA = 1;
 // End-to-end post-upload wait floor. The Pi's one-time serial Fc sweep owns a
-// 70 s compute ceiling; this page owns the larger result/publication window.
-const CAPTURE_RESULT_WAIT_BUDGET_MS = 90000;
+// 96 s compute ceiling (six corners at its measured per-corner cost); this page
+// owns the larger result/publication window, leaving 20 s for anchor analysis,
+// result publication, polling, and loaded-Pi variance. A floor, not a cost: a
+// healthy round answers in ~70 s and moves on, so this only bites when the
+// speaker has genuinely gone quiet.
+const CAPTURE_RESULT_WAIT_BUDGET_MS = 116000;
 // Calibration files are ordinarily a few kilobytes. Keep enough headroom for
 // real vendor files while staying well below the relay's 1 MiB event ceiling:
 // the full text is sent exactly once for Pi validation, never in meter batches.

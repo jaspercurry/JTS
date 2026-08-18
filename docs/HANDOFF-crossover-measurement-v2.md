@@ -3237,8 +3237,12 @@ automatic rollback now genuinely runs. Which stage binds it is declared once, in
 **Two bounds worth knowing before you touch it.**
 
 *Compute and result waits have separate, explicit owners.* The serial sweep's
-one-time compute budget is `FC_SWEEP_COMPUTE_BUDGET_S` (70 s); the capture
-page owns `CAPTURE_RESULT_WAIT_BUDGET_MS` (90 s minimum) for anchor analysis, result
+one-time compute budget is derived per sweep by `fc_sweep_budget_s(planned)` —
+`planned × FC_CORNER_COMPUTE_COST_S` (16 s, rounded up from the measured
+per-corner ceiling), so a plan narrowed by declarations asks for less wall than
+a full one. `FC_SWEEP_COMPUTE_BUDGET_S` is the largest budget any plan can ask
+for (six corners, 96 s); the capture page owns `CAPTURE_RESULT_WAIT_BUDGET_MS`
+(116 s minimum) and must stay above that ceiling plus 20 s for anchor analysis, result
 publication, polling, and loaded-Pi variance. The configured candidate always
 starts. Later candidates start only when the slowest attempt so far forecasts
 they fit; otherwise each is represented as `evaluation_budget_spent`.
@@ -3250,11 +3254,13 @@ budget-skipped candidate does. An incomplete sweep may retain the safe
 configured-Fc linearization, but cannot select, persist, or present an
 alternative as best; its durable summary labels the comparison incomplete.
 
-*Memory is bounded by releasing, not by caching.* Historical pre-P0.1 live-Pi
-evidence put alternatives around 10.1–10.4 s each, a serial all-six path around
-55–62 s, and analysis workspaces around 400–500 MB. P0.1's smoothing speedup is
-locally measured; post-P0.1 live-Pi all-six timing is unverified. The 70 s
-budget is a bounded deployment ceiling, not a claimed runtime. Each
+*Memory is bounded by releasing, not by caching.* Ten banked jts3 rounds
+(2026-08-17/18) measure an alternative corner at 11.65–15.52 s, the configured
+corner at 1.7–2.3 s (it reuses the anchor's analysis rather than re-running it),
+and a complete all-six sweep at 62.81–69.84 s; analysis workspaces are around
+400–500 MB. The derived budget is a bounded deployment ceiling, not a claimed
+runtime — it is sized so completion is the normal case, not so it is
+guaranteed. Each
 candidate's intermediates are released before the next allocates. The retained
 set holds compact executable candidates, bounded full prediction/delta arrays,
 and ~120-point lateral scoring arrays; all six are capped below 512 kB by test.
@@ -3266,6 +3272,12 @@ attempted and reasoned skipped candidates, elapsed/budget, and
 be scored is disclosed with a reason code, never dropped: `fit_refused`
 (no candidate, or the session is not Layer-1a eligible), `no_trusted_crossover_region`,
 `evaluation_budget_spent`.
+
+The sweep line is emitted at **WARNING** when `comparison_complete=false`,
+because that is the state in which the selector can no longer move Fc whatever
+the evidence says. Its `budget_short_by_s` field says how much more wall the
+forecast wanted (`0.0` when nothing was declined) — the number that separates a
+momentarily loaded Pi from a budget that no longer fits its work.
 
 ### Failure taxonomy & debugging
 
