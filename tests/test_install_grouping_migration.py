@@ -31,7 +31,30 @@ CLIENT_LATENCY_MS, LEFT/RIGHT_DELAY_MS, CROSSOVER_HZ, MAINS_HIGHPASS, and
 SUBWOOFER_PRESENT, none of which were ever plausibly hand-set in jasper.env
 pre-wizard (they are wizard/control-plane-only fields). So the assertion
 direction is shell_keys <= config_keys (every migrated key is one the
-reader actually reads), not exact-coverage equality.
+reader actually reads) — the INVERSE of transit's own
+provider_keys <= shell_keys (every canonical key must be migrated) —
+not exact-coverage equality. Both directions derive truth from source,
+but they guard different failure modes: transit's guards against a real
+key falling out of the shell array; this one guards against a dead
+literal sitting in it (exactly the JASPER_GROUPING_ENABLED bug this PR
+fixes).
+
+_DOCUMENTED_EXCLUDED_KEYS pins the prose enumeration above as a real
+contract (transit's own diff-pin, inverted: transit asserts
+shell_keys - provider_keys == {"JASPER_TRAVEL_DEFAULT_MODE"}; this
+asserts config_keys - shell_keys == the documented set) — added after
+adversarial-gate review (2026-08-18, PR #2695) found the prose sentence
+immediately following this enumeration in migrate_grouping's comment
+block stated something false, with no test to catch it: the sentence
+claimed an unmigrated key "still reaches the daemon" via
+jasper-grouping-reconcile.service's EnvironmentFile stacking, but that
+EnvironmentFile line was removed at c3ea20e1b and load_config has never
+read os.environ regardless — an unmigrated key is silently inert, not
+"uncleaned but live". Fixed in migrate_grouping's comment in this same
+PR. A hand-maintained set here is the right call, not a violation of
+"derive from source": which keys are deliberately wizard-only is a
+design-intent fact no source text can express, unlike shell_keys and
+config_keys which are always mechanically re-derived above.
 """
 from __future__ import annotations
 
@@ -39,10 +62,30 @@ import re
 import subprocess
 from pathlib import Path
 
+from jasper.multiroom.config import load_config
+
 
 ROOT = Path(__file__).resolve().parents[1]
 ENV_MIGRATIONS_LIB = ROOT / "deploy" / "lib" / "install" / "env-migrations.sh"
 MULTIROOM_CONFIG_PY = ROOT / "jasper" / "multiroom" / "config.py"
+
+# The keys load_config reads that migrate_grouping's comment documents as
+# deliberately excluded (wizard/control-plane-only, never plausibly
+# hand-set in jasper.env pre-wizard). Kept here, not derived, because
+# "which keys are deliberately excluded" is a design decision, not
+# something mechanically recoverable from either source file.
+_DOCUMENTED_EXCLUDED_KEYS = frozenset({
+    "JASPER_GROUPING_ROSTER",
+    "JASPER_GROUPING_PEER_ADDR",
+    "JASPER_GROUPING_PEER_NAME",
+    "JASPER_GROUPING_TRIM_DB",
+    "JASPER_GROUPING_CLIENT_LATENCY_MS",
+    "JASPER_GROUPING_LEFT_DELAY_MS",
+    "JASPER_GROUPING_RIGHT_DELAY_MS",
+    "JASPER_GROUPING_CROSSOVER_HZ",
+    "JASPER_GROUPING_MAINS_HIGHPASS",
+    "JASPER_GROUPING_SUBWOOFER_PRESENT",
+})
 
 
 def _shell_migration_keys() -> set[str]:
@@ -91,6 +134,13 @@ def test_shell_migration_keys_are_read_by_config() -> None:
     # it again.
     assert shell_keys <= config_keys
     assert "JASPER_GROUPING_ENABLED" not in shell_keys
+
+    # Pins the exclusion migrate_grouping's comment documents in prose:
+    # everything load_config reads beyond the shell array is exactly the
+    # wizard/control-plane-only key set, not an accidental gap. If a new
+    # key is added to load_config and nobody decides whether it needs a
+    # migration path, this fails instead of the gap sitting undetected.
+    assert config_keys - shell_keys == _DOCUMENTED_EXCLUDED_KEYS
 
 
 def _run_migrate(tmp_path: Path) -> subprocess.CompletedProcess[str]:
@@ -157,7 +207,52 @@ def test_migrates_legacy_enable_flag_from_jasper_env(tmp_path: Path) -> None:
     assert proc.returncode == 0, proc.stderr
 
     grouping = _read_env(state_dir / "grouping.env")
+    # Assert presence before value so a regression reads as a clean
+    # AssertionError ("key missing") rather than an opaque KeyError.
+    assert "JASPER_GROUPING" in grouping
+    assert "JASPER_GROUPING_BOND_ID" in grouping
     assert grouping["JASPER_GROUPING"] == "on"
     assert grouping["JASPER_GROUPING_BOND_ID"] == "abc123"
     # The legacy line must be cleaned out of jasper.env, not left duplicated.
     assert "JASPER_GROUPING=" not in (env_dir / "jasper.env").read_text()
+
+
+def test_migrates_bare_enable_flag_yields_invalid_config(tmp_path: Path) -> None:
+    """SF2 (adversarial-gate, 2026-08-18, PR #2695): the realistic hazardous
+    legacy shape is a BARE JASPER_GROUPING=on with no
+    JASPER_GROUPING_BOND_ID and no pre-existing grouping.env — plausible on
+    a box where an operator (or an old bootstrap) only ever set the
+    top-level flag and never finished configuring a bond. Before this PR,
+    that value was inert (never migrated at all, per the enable-key bug this
+    PR fixes). After, it migrates — and load_config's own fail-LOUD
+    validation (a bond_id-less enabled config is invalid, not silently
+    corrected) means the result is enabled=True with a non-None error, not
+    grouping quietly staying off.
+
+    This test pins exactly that config-level outcome and stops there. It
+    deliberately does NOT reach into jasper.audio_runtime_plan (whose
+    route_mode_from_grouping_config maps an errored config to
+    route_mode="invalid_grouping", which coupling_supported_for_route then
+    blocks for shm_ring, resolving the ring to loopback) or
+    jasper.cli.doctor.grouping (whose check_grouping_snapcast_installed
+    gates only on `enabled`, so it FAILs on this shape too) — those chains
+    belong to their own subsystems' test suites, and dragging them into a
+    migration test would blur where migrate_grouping's responsibility ends.
+    The consequence is real and is documented in the PR body with citations
+    instead.
+    """
+    env_dir = tmp_path / "etc"
+    state_dir = tmp_path / "state"
+    env_dir.mkdir()
+    state_dir.mkdir()
+    (env_dir / "jasper.env").write_text("JASPER_GROUPING=on\n")
+
+    proc = _run_migrate(tmp_path)
+    assert proc.returncode == 0, proc.stderr
+
+    grouping_env = state_dir / "grouping.env"
+    assert grouping_env.exists()
+    cfg = load_config(str(grouping_env))
+    assert cfg.enabled is True
+    assert cfg.error is not None
+    assert "BOND_ID" in cfg.error
