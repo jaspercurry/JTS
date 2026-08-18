@@ -91,6 +91,81 @@ def test_the_grouping_confd_declares_exactly_one_pcm_and_it_is_the_grouping_ring
     assert GROUPING_RING_CONF_D == f"/etc/alsa/conf.d/{_GROUPING_CONF.name}"
 
 
+def _strip_conf_comments(text: str) -> str:
+    """Drop ``#``-to-end-of-line comments that are not inside a quoted string.
+
+    Needed because the structural counts below must see the DECLARATION, not
+    the header prose: this file's comments legitimately contain braces and
+    apostrophes. The scanner tracks double quotes as it walks, so a ``#`` inside
+    ``path "…"`` is kept.
+    """
+    out: list[str] = []
+    in_quote = False
+    in_comment = False
+    for ch in text:
+        if ch == "\n":
+            in_comment = False
+            out.append(ch)
+            continue
+        if in_comment:
+            continue
+        if ch == '"':
+            in_quote = not in_quote
+        elif ch == "#" and not in_quote:
+            in_comment = True
+            continue
+        out.append(ch)
+    return "".join(out)
+
+
+def test_the_grouping_confd_is_structurally_one_block_and_nothing_else():
+    """Catches MALFORMATION and the ALIAS form, which key names cannot.
+
+    The key-name guard below reads the block's contents; it is blind to text
+    OUTSIDE the block and to a declaration with no braces at all. Both are
+    reachable and both are worse than a bad key:
+
+    * A stray brace or a stray top-level token makes the whole drop-in
+      unparseable, and alsa-lib reads this directory on EVERY PCM open on the
+      box — so the blast radius is every renderer on every box, including the
+      boxes that never group.
+    * `pcm.jts_ring_active_playback "jts_ring_grouping"` is a valid ALSA ALIAS.
+      It declares no block, so a block-shaped scan never sees it, and this file
+      sorts LAST in conf.d — after 60- and 61- — so it would hold override
+      authority over a PCM another file already defined.
+
+    Empirically established rather than argued: an identical stray-closing-brace
+    mutation is caught by the shipped guards for 60-jts-ring.conf and
+    61-jts-renderer-lanes.conf, and was NOT caught for this file before this
+    test existed.
+
+    The one-block form is asserted exactly, so a nested block (an ALSA
+    ``hint { … }``, which the ioplug does skip) fails here rather than silently
+    widening the shape. If one is ever genuinely wanted, widen this deliberately.
+    """
+    stripped = _strip_conf_comments(_read(_GROUPING_CONF))
+    assert stripped.count('"') % 2 == 0, (
+        f"{_GROUPING_CONF.name} has an odd number of double quotes — an "
+        "unterminated string makes the whole drop-in unparseable"
+    )
+    assert stripped.count("{") == stripped.count("}") == 1, (
+        f"{_GROUPING_CONF.name} must be exactly one unnested PCM block; found "
+        f"{stripped.count('{')} '{{' and {stripped.count('}')} '}}'. A stray "
+        "brace makes alsa-lib fail to parse the directory on every PCM open."
+    )
+    prefix = stripped[: stripped.index("{")].strip()
+    suffix = stripped[stripped.index("}") + 1 :].strip()
+    assert prefix == f"pcm.{GROUPING_RING_PCM}", (
+        f"the only thing before the block may be `pcm.{GROUPING_RING_PCM}`; "
+        f"found {prefix!r}"
+    )
+    assert suffix == "", (
+        f"nothing may follow the block; found {suffix!r}. An ALSA alias line "
+        "here declares no braces, so the block-shaped guards cannot see it — "
+        "and this file sorts after 60-/61-, so it would win."
+    )
+
+
 def test_the_grouping_confd_uses_only_keys_the_ioplug_accepts():
     """Every key in the block is one the C parser handles, derived from the C.
 
@@ -293,6 +368,50 @@ def test_the_confd_path_key_is_the_ring_file_python_names():
     assert m.group(1) == GROUPING_RING_FILE
 
 
+def test_the_doctor_stall_check_judges_the_grouping_ring(monkeypatch, tmp_path):
+    """The grouping ring is in ``check_ring_reader_stall``'s hand-kept tuple.
+
+    It belongs there by the check's own stated reason: the alarm exists for a
+    ring whose writer is the **C ioplug**, whose drop counters are process-local
+    fields printed at close and therefore invisible to any reader. The grouping
+    ring is exactly that shape — snapclient writes it through the same plugin —
+    so without an entry a bonded endpoint whose CamillaDSP wedged would drop
+    audio with nothing reporting it.
+
+    **Inert until the file exists**, which is why it can land now rather than
+    with the transport: ``ring_stall_verdict`` answers ``present=False`` for an
+    absent file (asserted below against a path that does not exist), and the
+    check ``continue``s on every non-present ring. So on every box in the fleet
+    this entry costs one stat and changes no verdict, and it starts judging by
+    itself on the box where something creates the ring.
+
+    Pinned by EXECUTION rather than by scanning the source: the paths the check
+    actually asks about are recorded, so an entry deleted or respelled fails
+    here.
+    """
+    from jasper import ring_assets
+    from jasper.cli import doctor
+
+    # An absent file is not present -> the check skips it. The inertness claim.
+    assert ring_assets.ring_stall_verdict(str(tmp_path / "absent.ring")).present is False
+
+    asked: list[str] = []
+
+    def _spy(path: str, **kwargs: object) -> ring_assets.RingStallVerdict:
+        asked.append(path)
+        return ring_assets.RingStallVerdict(present=False, detail="absent (test)")
+
+    monkeypatch.setattr(ring_assets, "ring_stall_verdict", _spy)
+    result = doctor.audio_runtime.check_ring_reader_stall()
+
+    assert GROUPING_RING_FILE in asked, (
+        "check_ring_reader_stall must judge the grouping ring — its tuple is "
+        f"hand-kept, and it only asked about {asked}"
+    )
+    # Every ring absent => the check stays quiet, which is the fleet's state.
+    assert result.status == "ok"
+
+
 # --- T-3: install coverage, and the deliberate rm -f asymmetry --------------
 
 
@@ -322,30 +441,49 @@ def test_the_installer_ships_the_grouping_confd():
 def test_the_deploy_does_not_unlink_the_grouping_ring_file():
     """``grouping.ring`` is deliberately absent from install's ``rm -f`` list.
 
-    The coupling's three ring files are unlinked on every deploy because they
-    MUST be — an existing mapping created at an older default geometry is a
-    fatal attach mismatch — and the deploy's own core-graph bounce is what
-    re-creates and re-attaches them.
+    The reason is a FAILURE-ESCALATION ASYMMETRY between the two ends' units,
+    not a difference in which daemon is running at that instant:
 
-    The grouping ring is the other way round. Nothing has stopped its writer at
-    that point in the install: ``jasper-snapclient.service`` is parked by
-    ``park_audio_clients_for_core_graph_restart`` and started again by
-    ``reconcile_grouping_state``, and BOTH live inside ``install_systemd_units``,
-    which runs after ``install_jts_ring_platform``. So an unlink there would
-    land under a live bonded writer — snapclient writing an inode nothing can
-    name while its reader creates and attaches a fresh file, with no error on
-    either side. The residual of NOT deleting it is smaller and loud: after a
-    conf.d geometry change, a box that already created the ring since boot meets
-    -EINVAL at open until a reboot clears the tmpfs.
+    * A stale-geometry ring on the coupling path is a fatal attach for
+      ``jasper-fanin``, whose unit carries ``StartLimitBurst=5`` and
+      ``StartLimitAction=reboot`` — it reboots the box mid-install, before
+      ``write_build_manifest``. That is the trap
+      ``tests/test_install_ring_platform_sequencing.py`` documents, and it makes
+      unlinking those three MANDATORY.
+    * ``jasper-snapclient.service`` carries ``StartLimitBurst=4`` and NO
+      ``StartLimitAction``, by explicit design — its own unit comment reads
+      *"follower degrades, visible; never reboots the household."* A stale
+      ``grouping.ring`` costs four retries and one ``failed`` unit, surfaced on
+      ``/state`` and by ``jasper-doctor``. Unlinking buys nothing against an
+      outcome that is already bounded and already visible.
+
+    **Install ORDER is not the reason**, though it is real and is pinned
+    mechanically by ``test_install_ring_platform_sequencing``. Order does not
+    separate the two cases: the three rings above also have live writers at that
+    instant, and the park set that stops snapclient has a third call site
+    (``park_low_memory_build_units``, gated on a low-memory box) that runs before
+    the ring-platform step — so no statement about who is parked there holds on
+    every box. The escalation asymmetry holds in every ordering.
+
+    Scoped WIDER than the sibling in
+    ``test_install_ring_platform_sequencing``, deliberately: that one reads
+    ``install_jts_ring_platform``'s body, this one scans the whole file, so an
+    ``rm -f`` added anywhere in ``ring-platform.sh`` is caught too.
 
     Design §3.4, ``captures/DESIGN-PROPOSAL-grouping-ring-2026-08-17.md``.
     """
+    from jasper.ring_assets import (
+        RING_A_PROGRAM_FILE,
+        RING_ACTIVE_CONTENT_FILE,
+        RING_B_CONTENT_FILE,
+    )
+
     platform = _read(_RING_PLATFORM_SH)
     removed = set(re.findall(r"^\s*rm -f (/dev/shm/jts-ring/\S+)$", platform, re.MULTILINE))
     assert removed == {
-        "/dev/shm/jts-ring/program.ring",
-        "/dev/shm/jts-ring/content.ring",
-        "/dev/shm/jts-ring/active-content.ring",
+        RING_A_PROGRAM_FILE,
+        RING_B_CONTENT_FILE,
+        RING_ACTIVE_CONTENT_FILE,
     }, f"the deploy-time ring rm -f set changed: {sorted(removed)}"
     assert GROUPING_RING_FILE not in removed
     # The asymmetry is stated where the lines are, not only here.

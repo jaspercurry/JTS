@@ -391,23 +391,33 @@ install_jts_ring_platform() {
     #
     # AND ONLY THESE THREE. `grouping.ring` — the bonded endpoint's snapcast
     # ingress, pcm.jts_ring_grouping in 62-jts-ring-grouping.conf — is
-    # deliberately absent, and stays absent when its consumers arrive. The
-    # asymmetry is not an oversight:
-    #   - The three above MUST be unlinked (an older default's geometry is a
-    #     fatal attach mismatch), and the deploy's own core-graph bounce is
-    #     what re-creates and re-attaches them.
-    #   - Nothing has stopped the grouping ingress's writer at this point.
-    #     `jasper-snapclient.service` is parked by
-    #     park_audio_clients_for_core_graph_restart and started again by
-    #     reconcile_grouping_state — BOTH inside install_systemd_units, which
-    #     runs after this function. So an unlink here lands under a live bonded
-    #     writer: snapclient would keep writing an inode nothing can name while
-    #     its reader creates and attaches a fresh file, with no error on either
-    #     side. That is the ring-file twin of the pathname-vs-inode residual
-    #     c/jts-ring-ioplug/jts_ring_shm.c records for the writer lock.
-    # The residual of NOT deleting it is smaller and loud: after a conf.d
-    # geometry change, a box that already created the ring since boot meets
-    # -EINVAL at open until a reboot clears the tmpfs. Design §3.4:
+    # deliberately absent, and stays absent when its consumers arrive.
+    #
+    # The reason is a FAILURE-ESCALATION ASYMMETRY between the two ends' units,
+    # not a difference in which daemon is running at this instant:
+    #   - A stale-geometry ring on the coupling path is a FATAL attach for
+    #     jasper-fanin, whose unit carries StartLimitBurst=5 and
+    #     StartLimitAction=reboot. It burns the burst and REBOOTS the box
+    #     mid-install, before write_build_manifest can stamp the manifest —
+    #     the trap documented in tests/test_install_ring_platform_sequencing.py
+    #     (test_ring_platform_deletes_stale_tmpfs_rings_before_systemd_units).
+    #     Unlinking those three is MANDATORY: not unlinking them costs a
+    #     reboot loop.
+    #   - jasper-snapclient.service carries StartLimitBurst=4 and NO
+    #     StartLimitAction, by explicit design — its own unit comment says
+    #     "follower degrades, visible; never reboots the household." A stale
+    #     grouping.ring therefore costs four retries and one `failed` unit,
+    #     surfaced on /state and by jasper-doctor. Unlinking buys nothing
+    #     against an outcome that is already bounded and already visible.
+    #
+    # Do NOT re-derive this from install ORDER. Order is real and is pinned by
+    # test_install_ring_platform_sequencing, but it does not separate the two
+    # cases: the three rings above also have live writers at this instant, and
+    # the park set that stops snapclient has a third call site
+    # (park_low_memory_build_units, gated on a low-memory box) that runs before
+    # this step, so no statement about who is parked here holds on every box.
+    # The escalation asymmetry holds in every ordering, which is why it is the
+    # reason recorded. Design §3.4:
     # captures/DESIGN-PROPOSAL-grouping-ring-2026-08-17.md.
     rm -f /dev/shm/jts-ring/program.ring
     rm -f /dev/shm/jts-ring/content.ring

@@ -168,6 +168,10 @@ def test_conf_asset_echoes_state_what_was_placed_not_what_the_box_is_doing(tmp_p
     assert proc.returncode == 0, proc.stdout + proc.stderr
     out = proc.stdout + proc.stderr
     assert "60-jts-ring.conf (pcm.jts_ring_capture" in out
+    assert (
+        "Installed /etc/alsa/conf.d/62-jts-ring-grouping.conf "
+        "(pcm.jts_ring_grouping; the bonded endpoint's snapcast ingress)" in out
+    )
     assert "Installed /etc/tmpfiles.d/jts-ring.conf and applied /dev/shm/jts-ring" in out
     # The unconditioned label, in both parenthetical spellings it had.
     assert "; inert)" not in out
