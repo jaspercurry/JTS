@@ -233,7 +233,11 @@ Two consequences follow, and both are deliberate:
   measurement of the speaker; without it there is only the model's error, which
   is the thing that just cost a round. :attr:`DeltaProbeMap.safety_anchored`
   says which, so "safe" can be read as "measured and nothing found" or "not
-  measured" and never as the wrong one of the two.
+  measured" and never as the wrong one of the two. The offline twin above is
+  the one caller for which that costs nothing and always did: it passes no
+  entry curve, reads no directional finding, and needs neither — its
+  ``realized`` is a render measured directly against a control, so its
+  ``realized − claimed`` never had the commanded term in it to cancel.
 * **The model's own departure is still reported** — as
   :attr:`DeltaProbeMap.max_signed_error_db` and
   :attr:`DeltaProbeMap.model_departure_over_tolerance`, which is the quantity
