@@ -54,10 +54,11 @@ are time-coincident when they were 0.4 ms apart).
 the declared measured basis, not from the delay the speaker currently plays.
 A step-size bound anchored on the incumbent would forbid exactly the correction
 a lobe-hopped incumbent needs: on the series-2 speaker the incumbent sat
-+501.7 µs from the physically-coincident answer, more than a period and a half
-at Fc, so every arm that could fix it would be refused and the bound would be
-widened by hand at the first bench session — which is how a fail-closed guard
-becomes decorative.  Anchoring on the basis asks the question that is actually
++501.7 µs from the physically-coincident answer — **1.65 half-period lobes**
+(0.83 of a period at Fc = 1648.7 Hz, whose lobe is 303.27 µs) — so every arm
+that could fix it would be refused, the only admissible prescription would be
+one that changed almost nothing, and the bound would be widened by hand at the
+first bench session, which is how a fail-closed guard becomes decorative.  Anchoring on the basis asks the question that is actually
 worth asking: *does this prescription leave the drivers within one lobe of
 where the measurement says coincident is?*  The incumbent is not ignored; it is
 simply not the reference — the aligner still evaluates ``left_anchor_lobe``
@@ -93,7 +94,7 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Mapping
 
 from jasper.audio_measurement.program_analysis import half_period_us
@@ -130,6 +131,14 @@ PRESCRIPTION_BASIS_INVALID = "prescription_basis_invalid"
 PRESCRIPTION_PROVENANCE_MISSING = "prescription_provenance_missing"
 PRESCRIPTION_FC_UNKNOWN = "prescription_fc_unknown"
 PRESCRIPTION_OUT_OF_LOBE = "prescription_out_of_lobe"
+#: The preset's own declared delay window — the ONE bound in this gate that
+#: does not depend on a number the operator supplied. It has always existed
+#: (``crossover_v2_flow.alignment_delay_plausible``, the Fix-3 screen) but it
+#: fired ten minutes into a session, at a MEASURE screen whose household copy
+#: asks the user to move the microphone; on a prescribed arm that copy is a lie
+#: about a number the request could have been refused for at the tap. Its own
+#: reason, never that screen's.
+PRESCRIPTION_OUTSIDE_DECLARED_WINDOW = "prescription_outside_declared_window"
 PRESCRIPTION_REFUSAL_REASONS = frozenset({
     PRESCRIPTION_MALFORMED,
     PRESCRIPTION_DELAY_INVALID,
@@ -137,6 +146,7 @@ PRESCRIPTION_REFUSAL_REASONS = frozenset({
     PRESCRIPTION_PROVENANCE_MISSING,
     PRESCRIPTION_FC_UNKNOWN,
     PRESCRIPTION_OUT_OF_LOBE,
+    PRESCRIPTION_OUTSIDE_DECLARED_WINDOW,
 })
 
 #: The field names a prescription may carry.  Anything else is refused rather
@@ -148,6 +158,15 @@ _PRESCRIPTION_FIELDS = frozenset({
     "basis_delay_us",
     "basis_artifacts",
     "basis_note",
+    # Written BY the gate, not supplied to it — but accepted on the way back in
+    # so a durable block round-trips through the same parser rather than
+    # needing a second, laxer one. A request that supplies them is harmless:
+    # the gate overwrites both with what it actually checked.
+    "checked_at_fc_hz",
+    "lobe_us",
+    # Derived on the way out. Accepted on the way in for the same round-trip
+    # reason and likewise never trusted — ``residual_us`` is a property.
+    "residual_us",
 })
 
 
@@ -190,6 +209,16 @@ class AlignmentPrescription:
     basis_delay_us: float
     basis_artifacts: tuple[str, ...]
     basis_note: str = ""
+    #: The corner the bound was evaluated at, and the lobe it produced.  Filled
+    #: by :func:`read_alignment_prescription` after the bound passes, so a
+    #: receipt states not only the residual but WHAT IT WAS COMPARED AGAINST —
+    #: a reader who finds a residual of 155.7 µs on a receipt cannot otherwise
+    #: tell whether that cleared a 303 µs lobe or a 270 µs one without knowing
+    #: the corner, and the corner is not elsewhere in the block.  ``None`` on a
+    #: record that has not been through the bound (the durable read-back of a
+    #: pre-#2662 block, or a hand-built one).
+    checked_at_fc_hz: float | None = None
+    lobe_us: float | None = None
 
     @property
     def residual_us(self) -> float:
@@ -209,6 +238,8 @@ class AlignmentPrescription:
             "residual_us": self.residual_us,
             "basis_artifacts": list(self.basis_artifacts),
             "basis_note": self.basis_note,
+            "checked_at_fc_hz": self.checked_at_fc_hz,
+            "lobe_us": self.lobe_us,
         }
 
 
@@ -281,17 +312,50 @@ def _parse_prescription(raw: Mapping[str, Any]) -> AlignmentPrescription:
         basis_delay_us=basis_delay_us,
         basis_artifacts=artifacts,
         basis_note=note,
+        checked_at_fc_hz=_optional_number(raw.get("checked_at_fc_hz")),
+        lobe_us=_optional_number(raw.get("lobe_us")),
     )
 
 
+def _optional_number(value: Any) -> float | None:
+    """A finite number, or ``None`` — never a raise.
+
+    These two fields are the GATE's own record of what it checked, not a
+    requester's claim, so an unreadable one on the way back in is missing
+    context rather than a malformed prescription.  Refusing here would let a
+    truncated durable block cost a round its provenance entirely.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
 def read_alignment_prescription(
-    raw: Mapping[str, Any] | None, *, fc_hz: float,
+    raw: Mapping[str, Any] | None,
+    *,
+    fc_hz: float,
+    declared_bounds_us: tuple[float, float] | None,
 ) -> AlignmentPrescription | None:
-    """THE request gate.  One point, and the one derivation of the bound.
+    """THE request gate.  One point, and the one derivation of the lobe bound.
 
     ``None`` when the request carries no prescription — the automatic path,
     untouched.  Otherwise a validated :class:`AlignmentPrescription`, or
     :class:`AlignmentPrescriptionRefused` naming which gate said no.
+
+    ``declared_bounds_us`` is the PRESET's own unsigned delay-magnitude window,
+    already margin-expanded — the caller derives it from the single existing
+    owner, ``crossover_v2_flow.alignment_delay_search_bounds_us``, and hands it
+    in, because this module may not import the flow.  ``None`` is "the preset
+    declares no window", which is that helper's own answer for a preset with no
+    ``delay_range_ms`` and means there is nothing to gate on.
+
+    **Required and undefaulted**, unlike anything else here.  This is the only
+    bound in the gate that does NOT rest on a number the requester supplied: the
+    lobe bound checks a prescription against a basis the same request declared,
+    so a prescriber willing to declare a wrong basis passes it.  A caller that
+    forgot this argument would lose the hardware's own opinion and never know,
+    which is the exact failure a defaulted keyword hides.
 
     ``fc_hz`` is the crossover corner the bound is a half-period of.  The
     caller passes the corner the speaker is commissioned at (the one its rounds
@@ -326,6 +390,21 @@ def read_alignment_prescription(
             "a prescription's bound is a half-period at the crossover corner, "
             f"which is undefined at fc_hz={corner!r}",
         )
+    # The HARDWARE's bound first, then the measurement's. A prescription the
+    # preset could never emit is refused for that, not for a lobe it also
+    # happens to miss: the two send an operator to different places (re-declare
+    # the region vs re-derive the basis).
+    if declared_bounds_us is not None:
+        lo_us, hi_us = (abs(float(b)) for b in declared_bounds_us)
+        lo_us, hi_us = min(lo_us, hi_us), max(lo_us, hi_us)
+        magnitude_us = abs(prescription.delay_us)
+        if not (lo_us <= magnitude_us <= hi_us):
+            raise AlignmentPrescriptionRefused(
+                PRESCRIPTION_OUTSIDE_DECLARED_WINDOW,
+                f"{prescription.delay_us:.1f} us is {magnitude_us:.1f} us of "
+                f"delay, outside the preset's declared window of "
+                f"{lo_us:.1f}-{hi_us:.1f} us",
+            )
     lobe_us = half_period_us(corner)
     if abs(prescription.residual_us) > lobe_us:
         raise AlignmentPrescriptionRefused(
@@ -335,7 +414,9 @@ def read_alignment_prescription(
             f"declared basis {prescription.basis_delay_us:.1f} us, outside the "
             f"+/-{lobe_us:.1f} us half-period lobe at {corner:.1f} Hz",
         )
-    return prescription
+    # What the bound was actually evaluated against, recorded on the record the
+    # receipt banks. A residual alone does not say which lobe cleared it.
+    return replace(prescription, checked_at_fc_hz=corner, lobe_us=lobe_us)
 
 
 def alignment_prescription_from_mapping(

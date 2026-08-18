@@ -487,8 +487,8 @@ def _seed_applied_stage_1_state() -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
-def test_persisted_verify_priors_carries_exactly_the_ten_bridge_keys(monkeypatch):
-    """The write side of the bridge: ``verify_priors`` has TEN keys.
+def test_persisted_verify_priors_carries_exactly_the_eleven_bridge_keys(monkeypatch):
+    """The write side of the bridge: ``verify_priors`` has ELEVEN keys.
 
     Named exhaustively rather than checked for presence, because a new key is a
     deliberate widening of the contract and not an incidental one.
@@ -535,7 +535,16 @@ def test_persisted_verify_priors_carries_exactly_the_ten_bridge_keys(monkeypatch
     as the fifth; ``None`` on every ordinary round, which is what makes an
     empty provenance block on a receipt mean exactly one thing.
 
-    The top-level payload is unchanged by all six widenings — each new key is
+    **Deliberate widening (#2662): ``alignment_objective``.** The eleventh, and
+    the OUTCOME half of the tenth. A prescription alone records what a round
+    ASKED for; there is a reachable rail on which the machinery commits the
+    estimator's own seed while the round still carries the arm's name, and a
+    receipt that could not tell those apart would let an arm that never ran be
+    graded "measured better". Its own key rather than a field inside the
+    prescription because the two are written at different moments by different
+    owners, and a round that prescribed nothing still has an objective.
+
+    The top-level payload is unchanged by all seven widenings — each new key is
     nested inside ``verify_priors``, so
     ``test_persisted_payload_top_level_keys_are_the_whole_bridge`` below still
     pins the same set.
@@ -553,6 +562,7 @@ def test_persisted_verify_priors_carries_exactly_the_ten_bridge_keys(monkeypatch
         "proposal_fingerprint",
         "verify_measured",
         "alignment_prescription",
+        "alignment_objective",
     }
 
 
@@ -705,6 +715,12 @@ def test_a_delay_prescription_crosses_from_the_request_body_to_the_bridge(monkey
         "residual_us": pytest.approx(-44.3),
         "basis_artifacts": list(_PRESCRIPTION_BODY["basis_artifacts"]),
         "basis_note": _PRESCRIPTION_BODY["basis_note"],
+        # …and WHAT the residual cleared: this fixture's rig crosses at
+        # 2500 Hz, whose half-period lobe is 200 µs. Without the pair, a
+        # reader finding a residual on a receipt cannot tell which lobe it was
+        # measured against, and the corner is nowhere else in the block.
+        "checked_at_fc_hz": pytest.approx(2500.0),
+        "lobe_us": pytest.approx(200.0),
     }
 
     # ...and the read half, on a fresh stage-2 conductor.
@@ -712,9 +728,13 @@ def test_a_delay_prescription_crosses_from_the_request_body_to_the_bridge(monkey
     state["verify_priors"]["alignment_prescription"] = {
         k: v for k, v in banked.items() if k != "residual_us"
     }
+    state["verify_priors"]["alignment_objective"] = "explicit_prescription_committed"
     v2host.save_v2_state(state)
     stage_2, _ = _stage_2(monkeypatch)
     assert stage_2.alignment_prescription_record["basis_delay_us"] == -405.7
+    # The OUTCOME crosses beside the request. Without it the grading stage can
+    # bank an arm's provenance for a round that committed the estimator's seed.
+    assert stage_2.measure_alignment_objective == "explicit_prescription_committed"
 
 
 def test_an_out_of_lobe_prescription_refuses_the_session_before_it_opens(monkeypatch):

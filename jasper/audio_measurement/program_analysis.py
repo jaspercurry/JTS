@@ -586,9 +586,17 @@ ALIGNMENT_DECLARED_POLARITY_OBJECTIVES = frozenset({
 #: The commitments an explicit PRESCRIPTION produced — both arms of it. Public
 #: because it answers a question the host must be able to ask of a finished
 #: candidate without re-deriving it: "the prescription I handed down — was it
-#: actually committed?" The candidate already carries ``alignment_objective``,
-#: so membership here IS that answer, and the round receipt banks it rather than
-#: inventing a second field that could disagree with the objective.
+#: actually committed?"
+#:
+#: Its consumer is
+#: ``crossover_v2.coordinator._round_measurements``, which banks the committed
+#: ``alignment_objective`` on the round receipt beside the prescription and
+#: spells membership here out as that block's ``committed`` bit. That pairing
+#: is load-bearing rather than decorative: a prescription alone records only
+#: what a round ASKED for, and there is a reachable rail — an ``ALIGNMENT_OK``
+#: estimate whose band holds no scorable bin, so :func:`_select_alignment_pair`
+#: returns ``None`` and the seed is committed — on which a round can carry an
+#: arm's name while having measured the estimator's own answer instead.
 ALIGNMENT_EXPLICIT_PRESCRIPTION_OBJECTIVES = frozenset({
     ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION,
     ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR,
@@ -1524,6 +1532,16 @@ class CrossoverCandidate:
     alignment_objective: str = ""
     seed_polarity_sign: int | None = None
     left_anchor_lobe: bool = False
+    #: Did correlation's polarity answer survive the objective that chose it?
+    #: Carried from :attr:`AlignmentPairSelection.polarity_agrees_with_sum`
+    #: rather than re-derived, so this repository holds ONE opinion about which
+    #: commitments answer that question. It was re-derived here for a while,
+    #: with the two derivations gated on different objective sets after #2662
+    #: widened one of them — the journal then said the comparison ran and
+    #: agreed while three durable surfaces recorded "never asked", on rounds
+    #: where a prescription had actually overridden correlation and flipped the
+    #: polarity. ``None`` means no flat sum ever answered it.
+    polarity_agrees_with_sum: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -4243,7 +4261,14 @@ def _select_alignment_pair(
         return _ripple_db(freqs_band, summed, lo_hz, hi_hz)
 
     def _left_anchor_lobe(delay_us: float) -> bool:
-        """Did the commitment leave the comb lobe the anchor owns?"""
+        """Did the commitment leave the comb lobe the anchor owns?
+
+        The two Fc guards are not redundant and neither covers the other:
+        ``not (fc_hz > 0.0)`` rejects zero, negatives AND NaN (every NaN
+        comparison is False), while ``isfinite`` rejects ``+inf`` — which
+        passes ``> 0.0`` and would make :func:`half_period_us` return ``0.0``,
+        turning this tripwire into one that fires on every commitment.
+        """
         if anchor_delay_us is None or not (fc_hz > 0.0) or not math.isfinite(fc_hz):
             return False
         return abs(delay_us - anchor_delay_us) > half_period_us(fc_hz)
@@ -6112,15 +6137,16 @@ def _analyze_measure(
             alignment,
             polarity=candidate.polarity,
             polarity_sign=polarity_sign_of(candidate.polarity),
-            # Only the flat-sum commitment answers the cross-check: the
-            # low-SNR path commits the declared design precisely BECAUSE the
-            # evidence a flat sum would read is untrustworthy, so it reports
-            # "not asked" rather than a comparison that never happened.
-            polarity_agrees_with_sum=(
-                polarity_sign_of(candidate.polarity) == candidate.seed_polarity_sign
-                if candidate.alignment_objective == ALIGNMENT_COMMITTED_FLAT_SUM
-                else None
-            ),
+            # READ, not re-derived. The rule — only a commitment whose POLARITY
+            # the flat sum actually chose may answer this — belongs to
+            # :attr:`AlignmentPairSelection.polarity_agrees_with_sum`, and the
+            # candidate carried its answer here. A second derivation lived at
+            # this line and drifted the moment #2662 widened that rule: it kept
+            # testing one objective, so a prescribed round that overrode
+            # correlation and FLIPPED the polarity published "never asked"
+            # while the journal, one function away, said the comparison ran and
+            # disagreed.
+            polarity_agrees_with_sum=candidate.polarity_agrees_with_sum,
         )
     # The delay half keeps its own condition: the anchor path is exactly where
     # the committed delay can differ from the estimate's GCC seed, and reading
@@ -6301,27 +6327,6 @@ def _build_candidate(
         if alignment.status == ALIGNMENT_OK
         else None
     )
-    # A prescription that never reached a commitment is the one failure a delay
-    # sweep must not absorb quietly: the operator asked for an arm and the round
-    # would otherwise measure the trims-only fallback under that arm's name. The
-    # aligner's own refusal is still respected (a railed delay search leaves the
-    # branch pair in an unknown frame, and `alignment_to_candidate_fields` will
-    # apply no delay at all) — what changes is that the round SAYS SO, here,
-    # where the fact is known, instead of leaving a reader to infer it from an
-    # objective string that mentions the seed.
-    if explicit_alignment_delay_us is not None and (
-        selection is None
-        or selection.objective not in ALIGNMENT_EXPLICIT_PRESCRIPTION_OBJECTIVES
-    ):
-        log_event(
-            logger, "program_analysis.alignment_prescription_not_committed",
-            level=logging.WARNING,
-            woofer_role=woofer_role, tweeter_role=tweeter_role,
-            fc_hz=round(float(fc_hz), 3),
-            prescribed_delay_us=round(float(explicit_alignment_delay_us), 3),
-            alignment_status=alignment.status,
-            objective=None if selection is None else selection.objective,
-        )
     if selection is None:
         polarity_sign = alignment.polarity_sign
         delay_us = seed_delay_us
@@ -6411,6 +6416,33 @@ def _build_candidate(
             # the anchor and Fc) so the candidate, the journal and the receipt
             # all read one derivation.
             left_anchor_lobe=selection.left_anchor_lobe,
+        )
+    # A prescription that never reached a commitment is the one failure a delay
+    # sweep must not absorb quietly: the operator asked for an arm and the round
+    # would otherwise measure a fallback under that arm's name. The aligner's
+    # own refusals are still respected — a railed delay search leaves the branch
+    # pair in an unknown frame, and an unscorable band leaves the estimator's
+    # seed standing — what changes is that the round SAYS SO, here, rather than
+    # leaving a reader to infer it from an objective string that mentions a seed.
+    #
+    # Emitted AFTER the block above so it can name what WAS committed instead:
+    # the selection is ``None`` on exactly the rails worth disclosing, so
+    # reading its objective would print ``null`` in the one case an operator
+    # most needs the answer. ``committed_delay_us`` rides beside it because the
+    # gap between asked-for and committed is the whole finding.
+    if (
+        explicit_alignment_delay_us is not None
+        and alignment_objective not in ALIGNMENT_EXPLICIT_PRESCRIPTION_OBJECTIVES
+    ):
+        log_event(
+            logger, "program_analysis.alignment_prescription_not_committed",
+            level=logging.WARNING,
+            woofer_role=woofer_role, tweeter_role=tweeter_role,
+            fc_hz=round(float(fc_hz), 3),
+            prescribed_delay_us=round(float(explicit_alignment_delay_us), 3),
+            committed_delay_us=round(float(delay_us), 3),
+            alignment_status=alignment.status,
+            objective=alignment_objective,
         )
     snap_delta_us = None if anchor_delay_us is None else delay_us - anchor_delay_us
     # #1667: re-solve the tweeter trim for minimum summed-response ripple
@@ -6576,6 +6608,12 @@ def _build_candidate(
         alignment_objective=alignment_objective,
         seed_polarity_sign=alignment.polarity_sign,
         left_anchor_lobe=left_anchor_lobe,
+        # From the selection that MADE the comparison, never re-derived. A
+        # selection-less arm (no scoring band, or a refused estimate) asked
+        # nothing, and ``None`` is what that is.
+        polarity_agrees_with_sum=(
+            None if selection is None else selection.polarity_agrees_with_sum
+        ),
     )
     return candidate, (freqs, predicted_db)
 

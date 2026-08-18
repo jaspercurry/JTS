@@ -51,6 +51,9 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
+from jasper.audio_measurement.program_analysis import (
+    ALIGNMENT_EXPLICIT_PRESCRIPTION_OBJECTIVES,
+)
 from jasper.log_event import log_event
 
 from .contracts import ENTRY_GRAPH_FINGERPRINT_UNKNOWN, AdoptionOutcome
@@ -376,6 +379,14 @@ class RoundEvidence:
     #: Defaulted, and ``None`` is honest for the overwhelming majority of
     #: rounds, which prescribe nothing.
     alignment_prescription: "AlignmentPrescription | None" = None
+    #: WHICH commitment produced the round's delay
+    #: (:data:`~jasper.audio_measurement.program_analysis.ALIGNMENT_COMMITMENTS`),
+    #: or ``""`` when no candidate was committed. Banked beside the
+    #: prescription because the pair is what makes an adoption record honest:
+    #: alone, the prescription says only what was ASKED for, and a reachable
+    #: rail (an ``ALIGNMENT_OK`` estimate with no scorable band) commits the
+    #: estimator's seed while the round still carries the arm's name.
+    alignment_objective: str = ""
 
 
 @dataclass(frozen=True)
@@ -1039,7 +1050,24 @@ def _round_measurements(
     # one forward would be how an arm gets re-run without being asked for.
     prescription = evidence.alignment_prescription
     if prescription is not None:
-        measurements["alignment_prescription"] = prescription.to_dict()
+        objective = str(evidence.alignment_objective or "")
+        measurements["alignment_prescription"] = {
+            **prescription.to_dict(),
+            # The OUTCOME beside the request, and the reason both are here.
+            # ``objective`` names which commitment the machinery actually
+            # reached; ``committed`` is that one bit spelled out so a grader
+            # does not have to import a frozenset to read it, derived HERE from
+            # ``objective`` at the single site that banks either — one writer,
+            # never two facts that could disagree. ``None`` is the third
+            # answer, and it is not "no": a round whose fit never committed a
+            # candidate has no objective to report, and saying ``False`` there
+            # would claim the machinery declined an arm it never reached.
+            "objective": objective,
+            "committed": (
+                None if not objective
+                else objective in ALIGNMENT_EXPLICIT_PRESCRIPTION_OBJECTIVES
+            ),
+        }
     return measurements
 
 

@@ -4967,6 +4967,7 @@ class CrossoverV2Session:
         measure_entry_baseline: "EntryBaseline | None" = None,
         measure_gate_window_ms: float | None = None,
         measure_proposal_fingerprint: str = "",
+        measure_alignment_objective: str = "",
         verify_pilot_transfer_prior: Mapping[str, Any] | None = None,
         driver_class_by_role: Mapping[str, str] | None = None,
         radiating_diameter_mm_by_role: Mapping[str, float] | None = None,
@@ -5333,6 +5334,15 @@ class CrossoverV2Session:
         # stage 1 predates #2392. The receipt reads it as the candidate arm,
         # never as a missing proposal.
         self._measure_proposal_fingerprint: str = str(measure_proposal_fingerprint or "")
+        # WHICH commitment produced the committed candidate's delay (#2662),
+        # travelling the same route as the fingerprint above and for the same
+        # reason: it is written by the stage that FITS and read by the stage
+        # that GRADES, and those are different sessions. ``""`` is "no
+        # candidate has been committed yet", which is a third answer from
+        # either "the prescription was committed" or "it was not" — a round
+        # receipt that collapsed them would let an arm the machinery never ran
+        # be graded as one that did.
+        self._measure_alignment_objective: str = str(measure_alignment_objective or "")
         # The proposal itself, for THIS session only — an
         # ``InterventionProposal``, a ``PlanRefusal``, or ``None`` before the
         # commit. Deliberately not persisted: the fingerprint above is the
@@ -6117,6 +6127,19 @@ class CrossoverV2Session:
         ``""`` is "nothing proposed", never "the proposal is unknown".
         """
         return self._measure_proposal_fingerprint
+
+    @property
+    def measure_alignment_objective(self) -> str:
+        """Which commitment produced this round's delay, or ``""`` (#2662).
+
+        Read by the host's durable persist and handed back to the stage that
+        grades the round, exactly like :attr:`measure_proposal_fingerprint`.
+        Its one consumer is the round receipt, which pairs it with the
+        prescription so an adopted arm's record says not only what was ASKED
+        for but whether the machinery actually committed it — the difference
+        between an arm that ran and an arm that silently did not.
+        """
+        return self._measure_alignment_objective
 
     @property
     def alignment_prescription_record(self) -> dict[str, Any] | None:
@@ -8826,6 +8849,17 @@ class CrossoverV2Session:
             if isinstance(planned, InterventionProposal)
             else ""
         )
+        # #2662. Read off the candidate's own frozen evidence rather than from
+        # a live analysis object: ``planning.analysis_json`` already puts
+        # ``alignment_objective`` there, so this is the SAME answer the
+        # candidate's fingerprint covers and not a second reading of it. Both
+        # commit sites reach this seam, so both record it.
+        analysis_evidence = getattr(candidate, "analysis", None)
+        self._measure_alignment_objective = str(
+            (analysis_evidence or {}).get("alignment_objective") or ""
+            if isinstance(analysis_evidence, Mapping)
+            else ""
+        )
         self._seams.publish_candidate(candidate)
         self._publish_level_frame_finding(level_frame_finding)
 
@@ -9672,6 +9706,10 @@ class CrossoverV2Session:
                 # fingerprint: this stage builds a fresh session and holds no
                 # candidate to derive one from.
                 alignment_prescription=self._alignment_prescription,
+                # …and whether the machinery COMMITTED it. Rehydrated on the
+                # same route, because an arm's provenance without its outcome
+                # is a receipt that can credit a round the arm never ran.
+                alignment_objective=self._measure_alignment_objective,
                 # WHAT THIS ROUND PROPOSED (#2392), preferred over what it
                 # applied. The fingerprint travelled here from the committing
                 # stage through durable ``verify_priors``, exactly as the

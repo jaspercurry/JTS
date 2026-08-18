@@ -3546,6 +3546,16 @@ def persist_conductor_state(
             "alignment_prescription": getattr(
                 conductor, "alignment_prescription_record", None
             ),
+            # …and WHICH commitment the fit reached, the fact that turns the
+            # block above from "this arm was asked for" into "this arm ran".
+            # Its own key rather than a field inside the prescription: the
+            # prescription is the REQUEST and this is the OUTCOME, they are
+            # written at different moments by different owners, and nesting one
+            # in the other would make a round that prescribed nothing have
+            # nowhere to record an objective it still has.
+            "alignment_objective": getattr(
+                conductor, "measure_alignment_objective", "",
+            ),
             # #2291's measured "before": the summed capture stage 1 takes at
             # the mark immediately before apply, which stage 2's benefit
             # verdict differences its own capture against. Produced in one
@@ -7571,6 +7581,7 @@ def prepare_v2_session(
         CrossoverV2Session,
         CrossoverV2FlowError,
         V2ConductorSnapshot,
+        alignment_delay_search_bounds_us,
         attempt_history_from_state,
         build_v2_cloud_index_phase_map,
         build_v2_session_spec,
@@ -7634,7 +7645,15 @@ def prepare_v2_session(
     # name on a round nobody asked for.
     try:
         alignment_prescription = read_alignment_prescription(
-            (raw or {}).get(ALIGNMENT_PRESCRIPTION_KEY), fc_hz=context.fc_hz,
+            (raw or {}).get(ALIGNMENT_PRESCRIPTION_KEY),
+            fc_hz=context.fc_hz,
+            # The preset's own declared window, from its single owner. It is
+            # the one bound here that does not rest on a number the request
+            # supplied — and it already existed as the Fix-3 plausibility
+            # screen, ten minutes downstream, wearing household copy that asks
+            # the user to move the microphone. Asking it HERE is what stops a
+            # prescribed arm being blamed on a mic.
+            declared_bounds_us=alignment_delay_search_bounds_us(context.preset),
         )
     except AlignmentPrescriptionRefused as exc:
         raise CrossoverV2Refused(
@@ -7993,6 +8012,10 @@ def prepare_v2_verify(
     # so this durable record is the only way the round it grades can name what
     # its delay was derived from.
     alignment_prescription = alignment_prescription_prior_from_state(state)
+    alignment_objective = str(
+        (priors_raw.get("alignment_objective") if isinstance(priors_raw, Mapping)
+         else "") or ""
+    )
     gate_ms = (
         priors_raw.get("gate_window_ms") if isinstance(priors_raw, Mapping) else None
     )
@@ -8123,6 +8146,7 @@ def prepare_v2_verify(
             measure_proposal_fingerprint=proposal_fingerprint,
             measure_entry_baseline=entry_baseline,
             alignment_prescription=alignment_prescription,
+            measure_alignment_objective=alignment_objective,
             measure_gate_window_ms=(
                 float(gate_ms) if isinstance(gate_ms, (int, float)) else None
             ),

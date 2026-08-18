@@ -34,6 +34,7 @@ from jasper.active_speaker.crossover_v2.alignment_prescription import (
     PRESCRIPTION_FC_UNKNOWN,
     PRESCRIPTION_MALFORMED,
     PRESCRIPTION_OUT_OF_LOBE,
+    PRESCRIPTION_OUTSIDE_DECLARED_WINDOW,
     PRESCRIPTION_PROVENANCE_MISSING,
     PRESCRIPTION_REFUSAL_REASONS,
     AlignmentPrescription,
@@ -56,6 +57,7 @@ from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR,
     ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION,
     ALIGNMENT_COMMITTED_FLAT_SUM,
+    ALIGNMENT_COMMITTED_SEED_NO_SCORING_BAND,
     ALIGNMENT_COMMITMENTS,
     ALIGNMENT_DECLARED_POLARITY_OBJECTIVES,
     ALIGNMENT_EXPLICIT_PRESCRIPTION_OBJECTIVES,
@@ -63,6 +65,7 @@ from jasper.audio_measurement.program_analysis import (
     AlignmentEstimate,
     AppliedAlignment,
     MeasurementPriors,
+    _build_candidate,
     _select_alignment_pair,
     half_period_us,
 )
@@ -88,6 +91,26 @@ ARTIFACTS = (
     "captures/xover-series2-2026-08-17/diagnosis/landscape_delay_polarity_r1b.json",
     "captures/xover-series2-2026-08-17/diagnosis/item5_phase_share.json",
 )
+
+
+#: Tonight's speaker's declared delay window: `preview-default-2way` carries
+#: ``delay_range_ms = [0.0, 1.0]`` (verified in ``series2-state-r1b.json``),
+#: which ``alignment_delay_search_bounds_us`` margin-expands by 0.1 ms to
+#: 0–1100 µs. Every arm is representable here.
+TONIGHT_WINDOW_US = (0.0, 1100.0)
+#: The OTHER shipped preset shape, and the one that would have bitten:
+#: ``bc_de250_dayton_e150he44_v1`` declares ``[0.05, 0.3]`` ms → 0–400 µs, so
+#: the two best arms are outside the hardware's own declaration.
+HORN_WINDOW_US = (0.0, 400.0)
+
+
+def _read(
+    body: object, *, fc_hz: float = FC_HZ, declared_bounds_us=TONIGHT_WINDOW_US,
+):
+    """The gate as the request boundary calls it, on tonight's rig."""
+    return read_alignment_prescription(
+        body, fc_hz=fc_hz, declared_bounds_us=declared_bounds_us,
+    )
 
 
 def _arm(arm_us: float, **overrides: object) -> dict:
@@ -120,7 +143,7 @@ def test_the_bound_is_a_half_period_at_fc_and_nothing_else():
     two opinions about where a comb lobe ends.
     """
     lobe_us = half_period_us(FC_HZ)
-    widest = read_alignment_prescription(
+    widest = _read(
         _arm(BASIS_US + lobe_us), fc_hz=FC_HZ,
     )
     assert widest is not None
@@ -139,7 +162,7 @@ def test_exactly_at_the_bound_is_legal_and_past_it_is_refused(direction):
     lobe_us = half_period_us(FC_HZ)
     at_bound = BASIS_US + direction * lobe_us
     assert abs(at_bound - BASIS_US) <= lobe_us, "the at-bound arm is really at it"
-    assert read_alignment_prescription(_arm(at_bound), fc_hz=FC_HZ) is not None
+    assert _read(_arm(at_bound), fc_hz=FC_HZ) is not None
 
     # The smallest representable step past the bound IN THE DELAY, walked until
     # the residual it produces actually exceeds the lobe — the sum's own ULP is
@@ -153,7 +176,7 @@ def test_exactly_at_the_bound_is_legal_and_past_it_is_refused(direction):
         past_delay = float(np.nextafter(past_delay, direction * np.inf))
     assert abs(past_delay - BASIS_US) > lobe_us, "the past-bound arm is really past it"
     with pytest.raises(AlignmentPrescriptionRefused) as excinfo:
-        read_alignment_prescription(_arm(past_delay), fc_hz=FC_HZ)
+        _read(_arm(past_delay), fc_hz=FC_HZ)
     assert excinfo.value.reason == PRESCRIPTION_OUT_OF_LOBE
 
 
@@ -169,7 +192,7 @@ def test_the_corrected_arm_set_clears_the_bound_and_the_control_arm_does_not():
     admitted = {}
     for arm_us in ARMS_US:
         try:
-            admitted[arm_us] = read_alignment_prescription(
+            admitted[arm_us] = _read(
                 _arm(arm_us), fc_hz=FC_HZ,
             ).residual_us
         except AlignmentPrescriptionRefused as exc:
@@ -199,7 +222,7 @@ def test_every_swept_corner_admits_the_same_four_arms():
         admitted = []
         for arm_us in ARMS_US:
             try:
-                read_alignment_prescription(_arm(arm_us), fc_hz=fc_hz)
+                _read(_arm(arm_us), fc_hz=fc_hz)
             except AlignmentPrescriptionRefused:
                 continue
             admitted.append(arm_us)
@@ -211,16 +234,26 @@ def test_the_bound_is_measured_from_the_basis_not_from_the_incumbent():
     """The design decision, pinned as behaviour.
 
     The series-2 incumbent (+96.0 µs applied) sits 501.7 µs from the measured
-    basis — more than a period and a half at Fc. A bound anchored on it would
-    refuse every arm that could fix the misalignment, which is how a
+    basis — **1.65 half-period lobes**, 0.83 of a period at Fc. A bound anchored
+    on it would refuse every arm that could fix the misalignment, which is how a
     fail-closed guard becomes decorative. Anchored on the declared basis, the
     optimum arm is admitted and the incumbent itself would not be.
+
+    The ratio is asserted, not narrated: this docstring justified the design
+    deviation with "more than a period and a half" for one review round, which
+    was wrong by half a lobe — the conclusion survived, the arithmetic did not,
+    and a number a test does not own is a number that can drift again.
     """
     incumbent_us = 96.0
+    lobes = abs(incumbent_us - BASIS_US) / half_period_us(FC_HZ)
+    assert lobes == pytest.approx(1.6543, abs=5e-4)
+    assert abs(incumbent_us - BASIS_US) / (1e6 / FC_HZ) == pytest.approx(
+        0.8272, abs=5e-4,
+    )
     assert abs(incumbent_us - BASIS_US) > half_period_us(FC_HZ)
-    assert read_alignment_prescription(_arm(-450.0), fc_hz=FC_HZ) is not None
+    assert _read(_arm(-450.0), fc_hz=FC_HZ) is not None
     with pytest.raises(AlignmentPrescriptionRefused) as excinfo:
-        read_alignment_prescription(_arm(incumbent_us), fc_hz=FC_HZ)
+        _read(_arm(incumbent_us), fc_hz=FC_HZ)
     assert excinfo.value.reason == PRESCRIPTION_OUT_OF_LOBE
 
 
@@ -232,7 +265,7 @@ def test_an_unusable_corner_is_its_own_refusal(fc_hz):
     re-derive a number that was fine.
     """
     with pytest.raises(AlignmentPrescriptionRefused) as excinfo:
-        read_alignment_prescription(_arm(-450.0), fc_hz=fc_hz)
+        _read(_arm(-450.0), fc_hz=fc_hz)
     assert excinfo.value.reason == PRESCRIPTION_FC_UNKNOWN
 
 
@@ -263,7 +296,7 @@ def test_a_prescription_without_real_provenance_is_refused(mutation, reason):
     and read it.
     """
     with pytest.raises(AlignmentPrescriptionRefused) as excinfo:
-        read_alignment_prescription(_arm(-450.0, **mutation), fc_hz=FC_HZ)
+        _read(_arm(-450.0, **mutation), fc_hz=FC_HZ)
     assert excinfo.value.reason == reason
 
 
@@ -271,7 +304,7 @@ def test_a_prescription_missing_its_artifacts_key_entirely_is_refused():
     body = _arm(-450.0)
     del body["basis_artifacts"]
     with pytest.raises(AlignmentPrescriptionRefused) as excinfo:
-        read_alignment_prescription(body, fc_hz=FC_HZ)
+        _read(body, fc_hz=FC_HZ)
     assert excinfo.value.reason == PRESCRIPTION_PROVENANCE_MISSING
 
 
@@ -299,14 +332,14 @@ def test_the_reader_is_strict_about_shape(mutation, reason):
     the reader's strictness depend on the encoder's habits.
     """
     with pytest.raises(AlignmentPrescriptionRefused) as excinfo:
-        read_alignment_prescription(_arm(-450.0, **mutation), fc_hz=FC_HZ)
+        _read(_arm(-450.0, **mutation), fc_hz=FC_HZ)
     assert excinfo.value.reason == reason
 
 
 @pytest.mark.parametrize("raw", (["not", "a", "mapping"], "text", 7))
 def test_a_non_mapping_prescription_is_refused(raw):
     with pytest.raises(AlignmentPrescriptionRefused) as excinfo:
-        read_alignment_prescription(raw, fc_hz=FC_HZ)
+        _read(raw, fc_hz=FC_HZ)
     assert excinfo.value.reason == PRESCRIPTION_MALFORMED
 
 
@@ -322,16 +355,89 @@ def test_every_refusal_reason_is_in_the_closed_vocabulary():
         (_arm(0.0), FC_HZ),
     ):
         with pytest.raises(AlignmentPrescriptionRefused) as excinfo:
-            read_alignment_prescription(body, fc_hz=fc_hz)
+            _read(body, fc_hz=fc_hz)
         raised.add(excinfo.value.reason)
+    # The declared-window refusal needs a NARROWER preset than tonight's to
+    # fire at all, which is exactly why it is the one bound here an
+    # operator-supplied basis cannot talk its way past.
+    with pytest.raises(AlignmentPrescriptionRefused) as excinfo:
+        _read(_arm(-450.0), declared_bounds_us=HORN_WINDOW_US)
+    raised.add(excinfo.value.reason)
     assert raised <= PRESCRIPTION_REFUSAL_REASONS
     assert raised == PRESCRIPTION_REFUSAL_REASONS
 
 
+def test_the_presets_declared_window_is_asked_at_the_tap_not_ten_minutes_later():
+    """The one bound here that does not rest on a requester-supplied number.
+
+    ``crossover_v2_flow.alignment_delay_plausible`` has always screened the
+    committed delay against the preset's ``delay_range_ms`` — but downstream,
+    inside the MEASURE capture rungs, at a screen whose household copy asks the
+    user to move the microphone. On a prescribed arm that is a lie about a
+    number the request could have been refused for immediately, so the gate
+    asks the same declaration at the tap under its own reason.
+
+    Pinned on BOTH shipped shapes, because the difference is the whole point:
+    ``bc_de250_dayton_e150he44_v1`` declares 0.05–0.3 ms (0–400 µs expanded)
+    and would refuse the two best arms outright, while tonight's speaker
+    declares 0–1 ms (0–1100 µs) and admits every one.
+    """
+    horn_verdicts = {}
+    for arm_us in ARMS_US:
+        try:
+            _read(_arm(arm_us), declared_bounds_us=HORN_WINDOW_US)
+            horn_verdicts[arm_us] = "accepted"
+        except AlignmentPrescriptionRefused as exc:
+            horn_verdicts[arm_us] = exc.reason
+    assert horn_verdicts == {
+        # Still the lobe: 0 µs never gets as far as the window question.
+        0.0: PRESCRIPTION_OUT_OF_LOBE,
+        -250.0: "accepted",
+        -350.0: "accepted",
+        -450.0: PRESCRIPTION_OUTSIDE_DECLARED_WINDOW,
+        -550.0: PRESCRIPTION_OUTSIDE_DECLARED_WINDOW,
+    }
+
+    # Tonight's rig: the window is not what is doing any work.
+    tonight = {
+        arm_us: _read(_arm(arm_us)).delay_us
+        for arm_us in ARMS_US if arm_us != 0.0
+    }
+    assert tonight == {-250.0: -250.0, -350.0: -350.0, -450.0: -450.0, -550.0: -550.0}
+
+
+def test_the_hardware_window_is_answered_before_the_measurements_lobe():
+    """Two refusals send an operator to two different places.
+
+    A prescription the preset could never emit is refused for THAT — go
+    re-declare the region — rather than for a lobe it also happens to miss,
+    which would say go re-derive the basis. The ordering is what keeps the
+    named reason actionable.
+    """
+    both_wrong = _arm(-900.0)
+    with pytest.raises(AlignmentPrescriptionRefused) as excinfo:
+        _read(both_wrong, declared_bounds_us=HORN_WINDOW_US)
+    assert excinfo.value.reason == PRESCRIPTION_OUTSIDE_DECLARED_WINDOW
+    # …and with no declaration to answer, the same arm falls through to the
+    # measurement's own bound rather than passing.
+    with pytest.raises(AlignmentPrescriptionRefused) as excinfo:
+        _read(both_wrong, declared_bounds_us=None)
+    assert excinfo.value.reason == PRESCRIPTION_OUT_OF_LOBE
+
+
+def test_a_preset_that_declares_no_window_gates_on_the_lobe_alone():
+    """``None`` is ``alignment_delay_search_bounds_us``'s own answer for a
+    preset with no ``delay_range_ms``, and it means nothing to gate on — the
+    same posture ``alignment_delay_plausible`` takes. It must not read as a
+    zero-width window that refuses everything.
+    """
+    assert _read(_arm(-450.0), declared_bounds_us=None) is not None
+
+
 def test_no_prescription_reads_as_the_automatic_path():
     """Absence is not a refusal — it is every ordinary round."""
-    assert read_alignment_prescription(None, fc_hz=FC_HZ) is None
-    assert read_alignment_prescription({}.get(ALIGNMENT_PRESCRIPTION_KEY),
+    assert _read(None, fc_hz=FC_HZ) is None
+    assert _read({}.get(ALIGNMENT_PRESCRIPTION_KEY),
                                        fc_hz=FC_HZ) is None
 
 
@@ -351,7 +457,7 @@ def test_the_read_back_does_not_re_apply_the_bound():
     """
     out_of_lobe = _arm(0.0)
     with pytest.raises(AlignmentPrescriptionRefused):
-        read_alignment_prescription(out_of_lobe, fc_hz=FC_HZ)
+        _read(out_of_lobe, fc_hz=FC_HZ)
     recovered = alignment_prescription_from_mapping(out_of_lobe)
     assert recovered is not None
     assert recovered.delay_us == 0.0
@@ -366,7 +472,7 @@ def test_the_read_back_still_refuses_a_mangled_record(caplog):
 
 
 def test_a_prescription_round_trips_through_its_receipt_shape():
-    prescription = read_alignment_prescription(_arm(-450.0), fc_hz=FC_HZ)
+    prescription = _read(_arm(-450.0), fc_hz=FC_HZ)
     record = prescription.to_dict()
     assert record["residual_us"] == pytest.approx(-44.3)
     assert record["basis_artifacts"] == list(ARTIFACTS)
@@ -476,6 +582,254 @@ def test_the_prescription_outranks_the_low_snr_ladder():
     assert prescribed.objective == ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR
     assert prescribed.polarity_sign == 1
     assert prescribed.polarity_agrees_with_sum is None
+
+
+def _low_snr_candidate_at(prescribed_us: float):
+    """One candidate off a real capture the SNR verdict refused for alignment.
+
+    Two impulses 11 samples apart with a trustworthy anchor supplied the way
+    the aligner supplies one — the fixture shape the ``_build_candidate`` tests
+    already use — so what is exercised below is the production model path, not
+    a restatement of it.
+    """
+    woofer_ir = np.zeros(8192)
+    tweeter_ir = np.zeros(8192)
+    woofer_ir[1000] = 1.0
+    tweeter_ir[1011] = 1.0
+    alignment = AlignmentEstimate(
+        delay_us=-650.0, raw_delay_us=-650.0, parallax_us=0.0,
+        polarity="normal", polarity_sign=1, confidence=0.9, status=ALIGNMENT_OK,
+        anchor_delay_us=-3 / 48_000 * 1e6, snapped_delay_us=None,
+    )
+    return _build_candidate(
+        woofer_ir, tweeter_ir, 48_000, 16_384, FC_HZ, "woofer", "tweeter",
+        alignment, None,
+        alignment_delay_bounds_us=(0.0, 1100.0),
+        branch_snr_insufficient=True,
+        explicit_alignment_delay_us=prescribed_us,
+    )
+
+
+def test_the_low_snr_arm_withdraws_the_anchor_and_its_model_goes_arm_blind():
+    """The BEHAVIOURAL guard on
+    :data:`ALIGNMENT_DECLARED_POLARITY_OBJECTIVES` membership, and the
+    disclosure of what that membership costs.
+
+    That set has two jobs, and only one of them had a test: the household
+    wording (mirrored in the browser module, which the JS test pins) and the
+    NUMERIC one — ``_build_candidate`` withdraws the refused capture's anchor
+    from the summed model, so ``summed_model_residual_delay_us`` returns 0.0
+    and the shipped prediction stays in the independently-aligned frame.
+    Dropping the prescription's low-SNR objective from that set turns the
+    withdrawal off silently; nothing but this test notices.
+
+    **And the consequence, stated rather than implied.** On this arm the
+    predicted curve is bit-identical no matter which delay was prescribed. That
+    is CORRECT — the capture supplied no trustworthy frame, and phasing a model
+    the accountability gate can refuse on by an untrusted number is the #2617
+    hazard — but it means the arm has no pre-apply discriminating net: two arms
+    predict the same thing, so nothing before the speaker plays can tell them
+    apart. It is also model-only-adoption-proof, in the strongest possible
+    sense: on this arm the model cannot express a preference, so an adoption
+    can only ever rest on measurement.
+    """
+    a, (freqs_a, pred_a) = _low_snr_candidate_at(-350.0)
+    b, (freqs_b, pred_b) = _low_snr_candidate_at(-550.0)
+
+    # Both committed their own arm, exactly…
+    assert (a.delay_us, b.delay_us) == (-350.0, -550.0)
+    assert a.alignment_objective == ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR
+    # …the withdrawal fired, so neither model carries a residual…
+    assert a.snap_delta_us != pytest.approx(0.0, abs=1e-9)
+    # …and the prediction is therefore identical across two different arms.
+    assert np.array_equal(freqs_a, freqs_b)
+    assert np.array_equal(pred_a, pred_b)
+
+
+def test_a_trusted_capture_keeps_its_residual_so_its_model_tracks_the_arm():
+    """The other side of the same membership, and why it is not symmetric.
+
+    On a capture that PASSED its SNR verdict the anchor is trustworthy, so the
+    prescription's commitment stays out of the declared-polarity set and its
+    model carries ``prescribed − anchor``. Two arms then predict differently —
+    the pre-apply net the low-SNR arm above does without.
+    """
+    woofer_ir = np.zeros(8192)
+    tweeter_ir = np.zeros(8192)
+    woofer_ir[1000] = 1.0
+    tweeter_ir[1011] = 1.0
+
+    def _at(prescribed_us):
+        alignment = AlignmentEstimate(
+            delay_us=-650.0, raw_delay_us=-650.0, parallax_us=0.0,
+            polarity="normal", polarity_sign=1, confidence=0.9,
+            status=ALIGNMENT_OK,
+            anchor_delay_us=-3 / 48_000 * 1e6, snapped_delay_us=None,
+        )
+        return _build_candidate(
+            woofer_ir, tweeter_ir, 48_000, 16_384, FC_HZ, "woofer", "tweeter",
+            alignment, None,
+            alignment_delay_bounds_us=(0.0, 1100.0),
+            explicit_alignment_delay_us=prescribed_us,
+        )
+
+    a, (_fa, pred_a) = _at(-350.0)
+    b, (_fb, pred_b) = _at(-550.0)
+    assert a.alignment_objective == ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION
+    assert b.alignment_objective == ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION
+    assert not np.array_equal(pred_a, pred_b)
+
+
+def _published_agreement(*, seed_sign: int, prescribed: float | None):
+    """The ``polarity_agrees_with_sum`` a finished candidate PUBLISHES.
+
+    ``_analyze_measure`` copies this field onto the estimate every durable
+    surface then reads (the receipt's ``analysis_json``, the household review
+    row, the journal), so this is the published value one hop from publication
+    — and the copy itself is a single pass-through line, mutation-pinned.
+    """
+    woofer_ir = np.zeros(8192)
+    tweeter_ir = np.zeros(8192)
+    woofer_ir[1000] = 1.0
+    tweeter_ir[1011] = 1.0
+    alignment = AlignmentEstimate(
+        delay_us=-650.0, raw_delay_us=-650.0, parallax_us=0.0,
+        polarity="normal" if seed_sign > 0 else "inverted",
+        polarity_sign=seed_sign, confidence=0.9, status=ALIGNMENT_OK,
+        anchor_delay_us=-3 / 48_000 * 1e6, snapped_delay_us=None,
+    )
+    candidate, _predicted = _build_candidate(
+        woofer_ir, tweeter_ir, 48_000, 16_384, FC_HZ, "woofer", "tweeter",
+        alignment, None,
+        alignment_delay_bounds_us=(0.0, 1100.0),
+        explicit_alignment_delay_us=prescribed,
+    )
+    return candidate
+
+
+def test_the_published_polarity_agreement_is_the_one_the_objective_answered():
+    """ONE owner for the cross-check, across all three arms.
+
+    The rule — only a commitment whose POLARITY the flat sum actually chose may
+    answer this — lives on
+    :attr:`AlignmentPairSelection.polarity_agrees_with_sum`. It was ALSO
+    re-derived at the publish site against a single objective, and #2662
+    widening the rule split the two: a prescribed round that overrode
+    correlation and FLIPPED the polarity published "never asked" while the
+    journal, one function away, said the comparison ran and disagreed. Three
+    durable surfaces read the published value, so the disagreement was not
+    cosmetic.
+
+    The third arm is the one that matters: it must publish ``False`` — a
+    comparison that ran and disagreed — never ``None``.
+    """
+    automatic = _published_agreement(seed_sign=1, prescribed=None)
+    assert automatic.alignment_objective == ALIGNMENT_COMMITTED_FLAT_SUM
+    assert automatic.polarity_agrees_with_sum is True
+
+    agreeing = _published_agreement(seed_sign=1, prescribed=-450.0)
+    assert agreeing.alignment_objective == ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION
+    assert agreeing.polarity_agrees_with_sum is True
+
+    overriding = _published_agreement(seed_sign=-1, prescribed=-450.0)
+    assert overriding.alignment_objective == ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION
+    assert overriding.polarity == "normal"          # correlation said inverted
+    assert overriding.polarity_agrees_with_sum is False
+
+
+def test_an_arm_that_asked_nothing_publishes_none_not_a_false_agreement():
+    """The other direction of the same honesty.
+
+    On the low-SNR arm the polarity is the DECLARATION, not a flat-sum result,
+    so no comparison happened — and recording "correlation agreed" because
+    nothing disagreed with it is the dishonesty the field exists to avoid.
+    """
+    candidate, _predicted = _low_snr_candidate_at(-450.0)
+    assert candidate.alignment_objective == ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR
+    assert candidate.polarity_agrees_with_sum is None
+
+
+def test_a_prescription_that_reaches_no_commitment_says_so_at_warning(caplog):
+    """The disclosure surface, pinned with its fields.
+
+    An arm that silently measures the trims-only or seed fallback under the
+    arm's name is the failure this whole path exists to remove, and the WARNING
+    is what a bench operator has between the round and the receipt. Its FIELDS
+    are asserted, not just its presence: a line that fires without saying which
+    delay was prescribed or what was committed instead cannot be acted on.
+    """
+    woofer_ir = np.zeros(8192)
+    tweeter_ir = np.zeros(8192)
+    woofer_ir[1000] = 1.0
+    tweeter_ir[1011] = 1.0
+    alignment = AlignmentEstimate(
+        delay_us=96.0, raw_delay_us=96.0, parallax_us=0.0,
+        polarity="normal", polarity_sign=1, confidence=0.9, status=ALIGNMENT_OK,
+        anchor_delay_us=None, snapped_delay_us=None,
+    )
+    with caplog.at_level(logging.WARNING):
+        _build_candidate(
+            woofer_ir, tweeter_ir, 48_000, 16_384, 2000.0, "woofer", "tweeter",
+            alignment, None,
+            tweeter_sweep_lo_hz=2000.0, woofer_sweep_hi_hz=2000.0,
+            explicit_alignment_delay_us=-450.0,
+        )
+    assert "program_analysis.alignment_prescription_not_committed" in caplog.text
+    assert "prescribed_delay_us=-450.0" in caplog.text
+    # What was committed INSTEAD — the half an operator has to act on, and the
+    # half that reads `null` if the line is emitted before the objective
+    # resolves (it was, for one review round).
+    assert "committed_delay_us=96.0" in caplog.text
+    assert f"objective={ALIGNMENT_COMMITTED_SEED_NO_SCORING_BAND}" in caplog.text
+
+    # …and the control: a COMMITTED prescription says nothing, so the line
+    # cannot become background noise an operator learns to ignore.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        _low_snr_candidate_at(-450.0)
+    assert "alignment_prescription_not_committed" not in caplog.text
+
+
+def test_the_selection_event_names_the_prescribed_delay(caplog):
+    """The second disclosure surface: ``prescribed_delay_us`` on the selection
+    line is what makes "this round's delay was prescribed, not searched"
+    greppable in a journal.
+
+    ``None`` on every ordinary round is half the contract — a field that were
+    always present would not separate the two — so both are asserted.
+    """
+    freqs, W, T = _lr4_branches()
+    woofer_ir = np.zeros(8192)
+    tweeter_ir = np.zeros(8192)
+    woofer_ir[1000] = 1.0
+    tweeter_ir[1011] = 1.0
+    del freqs, W, T
+
+    def _emit(prescribed):
+        alignment = AlignmentEstimate(
+            delay_us=-650.0, raw_delay_us=-650.0, parallax_us=0.0,
+            polarity="normal", polarity_sign=1, confidence=0.9,
+            status=ALIGNMENT_OK,
+            anchor_delay_us=-3 / 48_000 * 1e6, snapped_delay_us=None,
+        )
+        caplog.clear()
+        with caplog.at_level(logging.INFO):
+            _build_candidate(
+                woofer_ir, tweeter_ir, 48_000, 16_384, FC_HZ, "woofer", "tweeter",
+                alignment, None,
+                alignment_delay_bounds_us=(0.0, 1100.0),
+                explicit_alignment_delay_us=prescribed,
+            )
+        return caplog.text
+
+    prescribed_text = _emit(-450.0)
+    assert "program_analysis.alignment_selection" in prescribed_text
+    assert "prescribed_delay_us=-450.0" in prescribed_text
+
+    automatic_text = _emit(None)
+    assert "program_analysis.alignment_selection" in automatic_text
+    # logfmt renders an absent value as `null`, not `None`.
+    assert "prescribed_delay_us=null" in automatic_text
 
 
 def test_both_prescription_objectives_are_registered_in_the_vocabulary():
@@ -647,7 +1001,7 @@ _USABLE_ANALYSIS = SimpleNamespace(
 )
 
 
-def _evidence_for(prescription):
+def _evidence_for(prescription, objective=ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION):
     return coordinator.RoundEvidence(
         session_id="cap_direct",
         tier="express",
@@ -664,6 +1018,7 @@ def _evidence_for(prescription):
         round_ordinal=1,
         previous_objectives=None,
         alignment_prescription=prescription,
+        alignment_objective=objective,
     )
 
 
@@ -672,21 +1027,95 @@ def _evaluation_stub():
     return type("_E", (), {"blend": None, "region_benefit": None})()
 
 
-def _round_measurements_for(prescription):
+def _round_measurements_for(prescription, **kwargs):
     return coordinator._round_measurements(
-        _evidence_for(prescription), _evaluation_stub(),
+        _evidence_for(prescription, **kwargs), _evaluation_stub(),
     )
 
 
 def test_an_adopted_arms_receipt_names_what_its_timing_rests_on():
     """The adoption record has to carry the provenance, not just the number."""
-    prescription = read_alignment_prescription(_arm(-450.0), fc_hz=FC_HZ)
+    prescription = _read(_arm(-450.0), fc_hz=FC_HZ)
     banked = _round_measurements_for(prescription)["alignment_prescription"]
     assert banked["delay_us"] == -450.0
     assert banked["basis_delay_us"] == BASIS_US
     assert banked["residual_us"] == pytest.approx(-44.3)
     assert banked["basis_artifacts"] == list(ARTIFACTS)
     assert "n=33" in banked["basis_note"]
+    assert banked["objective"] == ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION
+    assert banked["committed"] is True
+    # …and what the residual was checked against, so a reader is not left
+    # guessing which corner's lobe 44.3 µs cleared.
+    assert banked["checked_at_fc_hz"] == pytest.approx(FC_HZ)
+    assert banked["lobe_us"] == pytest.approx(half_period_us(FC_HZ))
+
+
+@pytest.mark.parametrize(
+    ("objective", "committed"),
+    [
+        (ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION, True),
+        (ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR, True),
+        # The reachable rail, and the reason this field exists at all.
+        (ALIGNMENT_COMMITTED_SEED_NO_SCORING_BAND, False),
+        (ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR, False),
+        (ALIGNMENT_COMMITTED_FLAT_SUM, False),
+        # No candidate committed at all is a THIRD answer, not a "no".
+        ("", None),
+    ],
+)
+def test_the_receipt_says_whether_the_arm_actually_ran(objective, committed):
+    """An arm's provenance without its outcome can credit a round that never
+    measured the arm.
+
+    The rail is reachable, not theoretical: an ``ALIGNMENT_OK`` estimate whose
+    band holds no scorable bin makes ``_select_alignment_pair`` return ``None``,
+    and the seed — the estimator's own lobe-hopping answer — is committed while
+    the round still carries the prescription's name. A grader reading only the
+    prescription would call that "the arm measured better".
+    """
+    prescription = _read(_arm(-450.0), fc_hz=FC_HZ)
+    banked = _round_measurements_for(
+        prescription, objective=objective,
+    )["alignment_prescription"]
+    assert banked["objective"] == objective
+    assert banked["committed"] is committed
+
+
+def test_the_uncommitted_rail_is_reachable_and_the_receipt_reports_it():
+    """The rail END TO END, not asserted from a hand-picked objective string.
+
+    A real capture, a real prescription, a band with no scorable bin — the
+    machinery commits the SEED, and the receipt built from that round's
+    objective says the arm did not run.
+    """
+    woofer_ir = np.zeros(8192)
+    tweeter_ir = np.zeros(8192)
+    woofer_ir[1000] = 1.0
+    tweeter_ir[1011] = 1.0
+    seed_us = 96.0
+    alignment = AlignmentEstimate(
+        delay_us=seed_us, raw_delay_us=seed_us, parallax_us=0.0,
+        polarity="normal", polarity_sign=1, confidence=0.9, status=ALIGNMENT_OK,
+        anchor_delay_us=None, snapped_delay_us=None,
+    )
+    candidate, _predicted = _build_candidate(
+        # The two branches' declared sweeps MEET at Fc instead of overlapping,
+        # so the scoring band holds no bin, `_select_alignment_pair` returns
+        # None, and the seed stands — with the estimate still ALIGNMENT_OK.
+        woofer_ir, tweeter_ir, 48_000, 16_384, 2000.0, "woofer", "tweeter",
+        alignment, None,
+        tweeter_sweep_lo_hz=2000.0, woofer_sweep_hi_hz=2000.0,
+        explicit_alignment_delay_us=-450.0,
+    )
+    assert candidate.alignment_objective == ALIGNMENT_COMMITTED_SEED_NO_SCORING_BAND
+    assert candidate.delay_us == pytest.approx(seed_us)
+
+    prescription = _read(_arm(-450.0), fc_hz=FC_HZ)
+    banked = _round_measurements_for(
+        prescription, objective=candidate.alignment_objective,
+    )["alignment_prescription"]
+    assert banked["delay_us"] == -450.0
+    assert banked["committed"] is False
 
 
 def test_an_ordinary_round_banks_no_prescription_block():
@@ -701,7 +1130,7 @@ def test_the_prescription_is_not_an_instruction_the_next_round_inherits():
     its incumbent. A prescription there is how an arm gets re-run without being
     asked for — each arm of a delay sweep is prescribed explicitly.
     """
-    prescription = read_alignment_prescription(_arm(-450.0), fc_hz=FC_HZ)
+    prescription = _read(_arm(-450.0), fc_hz=FC_HZ)
     published: list[dict] = []
     decision = coordinator.run_round(
         _evidence_for(prescription),
@@ -726,7 +1155,7 @@ def test_the_prescription_is_not_an_instruction_the_next_round_inherits():
 
 def test_the_record_is_frozen():
     """A prescription cannot be edited after the gate accepted it."""
-    prescription = read_alignment_prescription(_arm(-450.0), fc_hz=FC_HZ)
+    prescription = _read(_arm(-450.0), fc_hz=FC_HZ)
     assert isinstance(prescription, AlignmentPrescription)
     with pytest.raises(dataclasses.FrozenInstanceError):
         prescription.delay_us = 0.0  # type: ignore[misc]
