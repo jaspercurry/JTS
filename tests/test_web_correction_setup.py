@@ -520,6 +520,9 @@ def test_known_post_routes_reach_csrf_guard():
         # The remote tier's position release — an external driver's POST, and
         # CSRF-guarded exactly like every other mutating route here.
         "/crossover/v2/position-ready",
+        # The wired session's all-spots-measured confirmation (#2662 W2b) —
+        # same driver-facing shape as position-ready, same CSRF guard.
+        "/crossover/v2/complete",
         # P6 tuning-LLM routes.
         "/interpret", "/propose", "/propose/apply",
     }
@@ -552,7 +555,14 @@ def test_crossover_v2_refusal_is_logged_not_silent(monkeypatch, caplog):
     """W6 finding: a refused v2 session/verify start (CrossoverV2Refused or any
     other precondition ValueError) mapped straight to a 400 with NO journal
     signal — the failed session-start was invisible in journalctl. The 400
-    response is correct for the browser; the gap was purely observability."""
+    response is correct for the browser; the gap was purely observability.
+
+    The refusal this bare box hits FIRST moved once (#2662 W2b): the relay
+    origin is now required only when the session actually opens on the relay,
+    so prepare's own speaker-level gate fires ahead of the old
+    "phone-mic relay capture is not configured" — a wired session must work on
+    a relay-unconfigured Pi. The subject here is unchanged: whichever gate
+    refuses, the refusal is journaled, never silent."""
     monkeypatch.delenv("JASPER_CAPTURE_RELAY_BASE", raising=False)
     monkeypatch.setattr(
         correction_setup, "guard_mutating_request", lambda handler: True
@@ -569,7 +579,7 @@ def test_crossover_v2_refusal_is_logged_not_silent(monkeypatch, caplog):
     assert len(records) == 1
     message = records[0].getMessage()
     assert "route=/crossover/v2/session" in message
-    assert "phone-mic relay capture is not configured" in message
+    assert "no active crossover to measure" in message
 
 
 def test_flow_error_reaching_the_500_arm_is_copy_not_a_programmer_string(
