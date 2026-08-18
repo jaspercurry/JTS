@@ -379,6 +379,35 @@ class FlatSpecReport:
         }
 
 
+@dataclass(frozen=True)
+class GradedSpec:
+    """One :func:`evaluate_flat_spec` call: its inputs and its verdict, together.
+
+    A consumer that needs to read the graded CURVE — not just the verdict about
+    it — needs three arrays and a report that provably describe the same
+    evaluation. Handing those over as four loose arguments makes it possible to
+    pair a curve with someone else's mask, or a report with a re-derived one;
+    the crossover blend correction
+    (:mod:`jasper.active_speaker.crossover_v2.blend_correction`) reads all four
+    and prescribes a filter from them, so "these came from one evaluation" has
+    to be a property of the type rather than a convention at the call site.
+
+    ``excluded`` is the mask as it was HANDED to the evaluator — for the
+    spatial cloud that is the merged honesty mask (the combiner's
+    power-vs-median screen unioned with the identified-null registry), which is
+    the whole reason a consumer wants it rather than re-deriving one.
+
+    Not persisted, and not a wire shape: :meth:`FlatSpecReport.to_dict` remains
+    the durable copy of the half that is durable. This is a live in-process
+    handoff, which is why it may hold arrays at all.
+    """
+
+    freqs_hz: np.ndarray
+    curve_db: np.ndarray
+    excluded: np.ndarray
+    report: FlatSpecReport
+
+
 def _power_mean_db(values_db: np.ndarray) -> float:
     """``10*log10(mean(10**(dB/10)))`` -- the power (energy) mean the plan's
     combiner and this evaluator both use, NOT a linear average of dB
